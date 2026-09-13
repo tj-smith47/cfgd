@@ -198,6 +198,36 @@ fn installed_packages_summary(
     Some(parts.join(", "))
 }
 
+/// The trust cfgd grants a declared Homebrew tap on the reader's behalf.
+///
+/// Homebrew reads a tap's index while tapping it and refuses a tap it has not
+/// been told to trust, so `BrewTapManager::install` records the grant first.
+/// That is a decision about what the machine will run, made for the reader
+/// because they declared the tap, so the row that adds it says so in one
+/// clause rather than leaving the extra command invisible. It is not a warning
+/// and needs no note: trust is what declaring a tap asked for.
+///
+/// First in the chain, so the clause reads the same on the preview bullet and
+/// on the settled row. The install shortfall a tap could otherwise state is a
+/// race between plan and execute, and a row cannot hold two clauses.
+fn brew_tap_trust_summary(action: &Action) -> Option<String> {
+    let taps = match action {
+        Action::Package(PackageAction::Install { manager, .. }) => {
+            manager == crate::BREW_TAP_MANAGER
+        }
+        // A module's install action is minted per manager, so the whole
+        // resolved set answers for the action.
+        Action::Module(ModuleAction {
+            kind: ModuleActionKind::InstallPackages { resolved },
+            ..
+        }) => resolved
+            .first()
+            .is_some_and(|pkg| pkg.manager == crate::BREW_TAP_MANAGER),
+        _ => false,
+    };
+    taps.then(|| "trusted first".to_string())
+}
+
 /// How many entries an install NAMES, for the two shapes whose executed set
 /// can be narrower than their planned one.
 fn planned_package_count(action: &Action) -> Option<usize> {
@@ -289,7 +319,8 @@ pub fn action_produced_detail(
     delivered: usize,
     versions: &[(String, String)],
 ) -> Option<String> {
-    env_write_summary(action)
+    brew_tap_trust_summary(action)
+        .or_else(|| env_write_summary(action))
         .or_else(|| deploy_files_summary(action))
         .or_else(|| installed_packages_summary(action, installed, delivered))
         .or_else(|| provisioned_managers_summary(action, installed, versions))

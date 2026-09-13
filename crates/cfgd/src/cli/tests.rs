@@ -17996,6 +17996,52 @@ fn every_produced_count_is_an_action_rows_detail() {
         None,
         "a preview has no executed count, so it qualifies nothing"
     );
+
+    // A brew tap is the one install whose row states something the reader did
+    // not write: cfgd records a Homebrew trust grant before adding the tap,
+    // because current brew refuses an untrusted name while reading its index.
+    // The clause is the same on the preview and on the settled row, and it is
+    // the row's ONLY clause, so both shapes carrying a brew tap are walked.
+    let tap = Action::Package(cfgd_core::providers::PackageAction::Install {
+        manager: cfgd_core::BREW_TAP_MANAGER.to_string(),
+        packages: vec!["charmbracelet/tap".to_string()],
+        origin: "local".to_string(),
+    });
+    let module_tap = Action::Module(ModuleAction {
+        module_name: "nvim".to_string(),
+        kind: ModuleActionKind::InstallPackages {
+            resolved: vec![cfgd_core::modules::ResolvedPackage {
+                canonical_name: "charmbracelet/tap".to_string(),
+                resolved_name: "charmbracelet/tap".to_string(),
+                manager: cfgd_core::BREW_TAP_MANAGER.to_string(),
+                version: None,
+                script: None,
+                creates: None,
+                only_if: None,
+                unless: None,
+                manager_declared: true,
+                min_version: None,
+            }],
+        },
+        origin: None,
+    });
+    for (label, action) in [("package", &tap), ("module", &module_tap)] {
+        assert_eq!(
+            action_produced_detail(action, None, 0, &[]).as_deref(),
+            Some("trusted first"),
+            "the {label} tap preview states the grant cfgd records for the reader"
+        );
+        assert_eq!(
+            action_produced_detail(action, Some(0), 0, &[]).as_deref(),
+            Some("trusted first"),
+            "the settled {label} tap row states the same one clause"
+        );
+    }
+    assert_eq!(
+        action_produced_detail(&install, Some(1), 0, &[]).as_deref(),
+        Some("1 already installed"),
+        "a non-tap install keeps its own shortfall clause"
+    );
 }
 
 /// Whether `literal` ends on a parenthetical whose body is `{…} <noun>` or

@@ -153,6 +153,8 @@ declarations fold together rather than replace one another); on Linux only the f
 | `unless` | no | string | Idempotency guard for a `prefer: [script]` install: run only if this command exits non-zero. Ignored for manager-backed installs |
 | `platforms` | no | list | Platform filter — skip on non-matching platforms. Values: OS (`linux`, `macos`), distro (`ubuntu`, `fedora`, `arch`), or arch (`x86_64`, `aarch64`) |
 
+An entry that resolves to `brew-tap` declares a Homebrew tap. cfgd grants a declared tap Homebrew's trust before adding it, because current Homebrew reads a tap's index while tapping and refuses a tap it has not been told to trust. The row that adds the tap says `trusted first`.
+
 ### File Entry Fields
 
 | Field | Required | Type | Description |

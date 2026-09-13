@@ -79,11 +79,11 @@ fn is_missing_trust_subcommand(message: &str) -> bool {
 }
 
 impl BrewTapManager {
-    // Current brew ignores formulae, casks and commands from a tap the user
-    // has not trusted (`brew trust --tap` records the grant in trust.json,
-    // non-interactively — the command takes no confirmation), so a tap cfgd
-    // adds is only usable once trusted. A real trust failure leaves the tap's
-    // formulae uninstallable, which fails the install it belongs to.
+    // Homebrew reads a tap's index while tapping it and refuses a tap it has
+    // not been told to trust, so the grant has to exist BEFORE `brew tap`
+    // runs. `brew trust --tap` records the name in trust.json without the tap
+    // being present, and takes no confirmation. A real trust failure leaves
+    // the tap's formulae uninstallable, which fails the install it belongs to.
     fn trust_tap(&self, tap: &str) -> Result<()> {
         match run_pkg_cmd_msg(
             "brew-tap",
@@ -183,6 +183,13 @@ impl PackageManager for BrewTapManager {
         cx: &cfgd_core::providers::PackageContext<'_>,
     ) -> Result<()> {
         for tap in taps {
+            // Trust precedes the tap because current brew reads the tap's
+            // index as it adds it and refuses an untrusted name, so a grant
+            // recorded afterwards is never reached. An older brew has no gate
+            // and no `trust` subcommand at all, which `trust_tap` tolerates,
+            // so this one order is correct on every brew and no version probe
+            // is needed.
+            self.trust_tap(tap)?;
             let label = format!("brew tap {}", tap);
             run_pkg_cmd_live(
                 cx,
@@ -191,7 +198,6 @@ impl PackageManager for BrewTapManager {
                 &label,
                 "install",
             )?;
-            self.trust_tap(tap)?;
         }
         Ok(())
     }

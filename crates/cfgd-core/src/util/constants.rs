@@ -15,6 +15,11 @@ pub const SKIPPED_MODULES_ANNOTATION: &str = "cfgd.io/skipped-modules";
 /// under it.
 pub const SCRIPT_SENTINEL: &str = "script";
 
+/// The registered name of the Homebrew tap sub-manager. cfgd grants a declared
+/// tap trust before adding it, and the row that reports the add says so, so the
+/// name is matched in core as well as spelled by the manager itself.
+pub const BREW_TAP_MANAGER: &str = "brew-tap";
+
 /// Default namespace the cfgd operator + CSI driver are deployed into. Used by
 /// `kubectl cfgd version` to locate the operator Deployment and CSI DaemonSet
 /// when no explicit `--namespace` is given.

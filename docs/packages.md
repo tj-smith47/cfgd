@@ -404,6 +404,8 @@ Cargo.toml, apt list), flatpak `remote`, or snap `classic`. The struct form
 still rejects unknown keys, so a typo like `flatpak: {packges: [...]}` is
 reported loudly rather than silently dropped.
 
+cfgd grants a declared tap Homebrew's trust before adding it, because current Homebrew reads a tap's index while tapping and refuses a tap it has not been told to trust. The row that adds the tap says `trusted first`.
+
 ## Windows Package Managers
 
 ### winget

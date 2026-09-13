@@ -761,7 +761,7 @@ mod brew_shim {
 
     #[test]
     #[serial]
-    fn brew_tap_install_taps_then_trusts_each_entry() {
+    fn brew_tap_install_trusts_each_entry_before_tapping_it() {
         let shim = ToolShim::install(SHIM_ENV, 0, "", "");
         let p = test_printer();
         let st = test_state();
@@ -783,10 +783,14 @@ mod brew_shim {
                 .position(|l| *l == needle)
                 .unwrap_or_else(|| panic!("missing `{needle}` in {lines:?}"))
         };
-        // Trust follows its own tap: brew ignores an untrusted tap's formulae,
-        // so a formula install later in the run needs the grant already recorded.
-        assert!(tap_at("tap org/foo") < tap_at("trust --tap org/foo"));
-        assert!(tap_at("tap org/bar") < tap_at("trust --tap org/bar"));
+        // The grant precedes its own tap: brew reads the tap's index while
+        // adding it and refuses a name it has not been told to trust, so a
+        // trust recorded afterwards is never reached.
+        assert!(tap_at("trust --tap org/foo") < tap_at("tap org/foo"));
+        assert!(tap_at("trust --tap org/bar") < tap_at("tap org/bar"));
+        // Each entry is trusted and tapped before the next one starts, so a
+        // per-entry pair is what runs, not two batched passes.
+        assert!(tap_at("tap org/foo") < tap_at("trust --tap org/bar"));
     }
 
     #[test]
@@ -799,13 +803,19 @@ mod brew_shim {
         BrewTapManager
             .install(&["org/foo".into()], &cx)
             .expect("an old brew with no trust gate needs no trust step");
-        assert!(shim.argv_log().contains("tap org/foo"));
+        // The refusal comes from the FIRST spawn now, so tolerating it is what
+        // lets the tap run at all.
+        assert!(
+            shim.argv_log().lines().any(|l| l == "tap org/foo"),
+            "the tap still runs after an unknown-command refusal: {}",
+            shim.argv_log()
+        );
     }
 
     #[test]
     #[serial]
     fn brew_tap_install_propagates_a_real_trust_failure() {
-        let _shim = ToolShim::install_failing_on(SHIM_ENV, "trust", "Error: org/foo is not tapped");
+        let shim = ToolShim::install_failing_on(SHIM_ENV, "trust", "Error: org/foo is not tapped");
         let p = test_printer();
         let st = test_state();
         let cx = test_package_context(&p, &st);
@@ -816,6 +826,11 @@ mod brew_shim {
         assert!(
             msg.contains("brew trust --tap org/foo"),
             "error must name the trust step that failed: {msg}"
+        );
+        assert!(
+            !shim.argv_log().lines().any(|l| l == "tap org/foo"),
+            "a refused grant stops the tap: {}",
+            shim.argv_log()
         );
     }
 
