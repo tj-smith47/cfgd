@@ -404,8 +404,8 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------------
-    // PackageManager trait impls via a fake scoop binary. scoop_cmd() honors the
-    // CFGD_SCOOP_BIN seam first (tool_cmd_with_resolver), so a ToolShim carries
+    // PackageManager trait impls via a fake scoop binary. scoop_cmd() spawns the
+    // path the CFGD_SCOOP_BIN seam resolved (tool_cmd_at), so a ToolShim carries
     // argv logging for spawn-count claims; the PATH-shim tests predate the seam
     // and stay on PATH manipulation.
     // ---------------------------------------------------------------------------
