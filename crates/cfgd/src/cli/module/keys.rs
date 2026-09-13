@@ -6,13 +6,13 @@ use cfgd_core::output::{Doc, ICON_ARROW, Printer, Role};
 ///
 /// Both key verbs need the same binary and neither can do anything without it,
 /// so the one route to it is resolved once here.
-fn require_cosign(printer: &Printer) -> std::result::Result<(), String> {
+fn provision_cosign(printer: &Printer) -> std::result::Result<(), String> {
     let registry = crate::cli::build_registry();
     crate::cli::helpers::provision_tool(printer, &registry, "cosign", "CFGD_COSIGN_BIN")
 }
 
 pub fn cmd_module_keys_generate(printer: &Printer, output_dir: Option<&str>) -> anyhow::Result<()> {
-    if let Err(msg) = require_cosign(printer) {
+    if let Err(msg) = provision_cosign(printer) {
         return Err(crate::cli::cli_error(
             "cosign",
             "tool_missing",
@@ -148,7 +148,7 @@ pub fn cmd_module_keys_rotate(
     dir: Option<&str>,
     artifacts: &[String],
 ) -> anyhow::Result<()> {
-    if let Err(msg) = require_cosign(printer) {
+    if let Err(msg) = provision_cosign(printer) {
         return Err(crate::cli::cli_error(
             "cosign",
             "tool_missing",

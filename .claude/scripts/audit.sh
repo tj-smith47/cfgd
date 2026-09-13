@@ -867,13 +867,20 @@ log_section "DRY — Repeated String Literals"
 # are Rust-mandated literals that cannot be replaced by a const, so skip them —
 # `strip_attr_lines` drops a wrapped attribute's continuation lines too, not
 # just the line that opens it.
+# A `"..."` pattern with a length floor baked in cannot find a literal's own
+# opening quote: on `f("a", g("b"))` the floor rejects `"a"`, so the scan starts
+# again at that literal's CLOSING quote and reports the text BETWEEN two
+# literals as one. Pair the quotes first with an unbounded `"[^"]*"` (grep -o
+# resumes after each match, so quotes pair 1-2, 3-4, ...) and apply the floor
+# afterwards, where it can only reject a whole literal.
 dupes=$(while IFS= read -r -d '' rsfile; do
     case "$rsfile" in
         */tests.rs|*_test.rs|*/test_*.rs|*/tests_*.rs|*/test_helpers.rs|*/output/*) continue ;;
     esac
     strip_test_blocks_from_file "$rsfile" \
         | strip_attr_lines \
-        | grep -oh '"[^"]\{30,\}"' || true
+        | grep -oh '"[^"]*"' \
+        | awk 'length($0) >= 32' || true
 done < <(audit_scan_files) \
     | sort | uniq -c | sort -rn \
     | awk '$1 > 2 {print}' \
@@ -914,6 +921,12 @@ log_section "DRY — Duplicated Function Definitions"
 # Excusing the `Owner` site keeps each name's budget for a real duplicate.
 # `ApplyRun::execute` runs one reconcile; `cli::execute` dispatches clap
 # subcommands. Nothing is shared between them but the verb.
+#
+# `install_cmd_for` is excused by name in the awk list rather than per site: it
+# is the sanctioned per-manager declaration table (shared-utils.md,
+# `SimpleManager::install_cmd`, where the table owns HOW a family installs and
+# every surface emitting an install composes from it), so each manager owning
+# one is the convention itself, and every manager added later owes one too.
 #
 # The remaining pairs excuse a name two unrelated TYPES both answer, where
 # nothing but the verb is shared: `Slot::lane` names a package-manager family
@@ -1085,6 +1098,15 @@ ALLOWED_FN_PAIRS=(
     # row naming a value change.
     "arrow crates/cfgd-core/src/providers/mod.rs"
     "arrow crates/cfgd-core/src/reconciler/live_tree.rs"
+    # `Tier::of` / `AfterPlanState::of` in reconciler/types.rs keep the budget as
+    # the cataloged inherent `::of` constructor convention (shared-utils.md,
+    # `ModuleSurfaces::of(spec)` and `AfterPlanState::of`); these two are that
+    # same convention on unrelated types, `SpecChange::of` building one lockfile
+    # diff row and `InventoryDetail::of` folding the `--show-*` trio into a view.
+    # `drop_trait_impl_lines` cannot see an inherent impl, so without these the
+    # check reads three constructors as three free functions.
+    "of crates/cfgd-core/src/modules/lockfile.rs"
+    "of crates/cfgd/src/cli/mod.rs"
 )
 allowed_pairs_file="$STRIP_CACHE_DIR/allowed-fn-pairs"
 printf '%s\n' "${ALLOWED_FN_PAIRS[@]}" > "$allowed_pairs_file"
@@ -1129,7 +1151,8 @@ done < <(audit_scan_files) \
         $2 != "skipped" && $2 != "metrics_handler" && $2 != "compose" && \
         $2 != "default_cache_dir" && $2 != "default_cache_dir_for" && \
         $2 != "field_tree" && $2 != "resolve_runtime_dir" && \
-        $2 != "probe_dir_writable" && $2 != "surface_stale_skills" \
+        $2 != "probe_dir_writable" && $2 != "surface_stale_skills" && \
+        $2 != "install_cmd_for" \
         {print}' || true)
 rm -f "$allowed_pairs_file"
 if [[ -n "$fn_dupes" ]]; then

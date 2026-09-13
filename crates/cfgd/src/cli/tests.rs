@@ -20151,7 +20151,7 @@ fn cmd_module_build_no_module_yaml_fails() {
 #[test]
 #[serial_test::serial]
 fn cmd_module_keys_generate_no_cosign_fails() {
-    // Parallel CosignTestShim tests set CFGD_COSIGN_BIN; force require_cosign
+    // Parallel CosignTestShim tests set CFGD_COSIGN_BIN; force provision_cosign
     // through the PATH-only branch, and empty PATH so the missing-tool error
     // fires whether or not the host has cosign. Spawn-exclusion guard first
     // so it drops last, bracketing the empty-PATH window.
@@ -37884,6 +37884,11 @@ fn provision_tool_reports_success_once_the_install_lands_the_binary() {
 #[test]
 #[serial_test::serial]
 fn provision_tool_with_no_manager_names_the_routes_it_considered_and_spawns_nothing() {
+    // The seam is process-global, so a sibling sweeping the managers would spawn
+    // this shim and the log would carry a `tap` this call never made. The
+    // spawn-exclusion guard comes first so it drops last, bracketing the window
+    // the seam is set in.
+    let _spawn_excl = cfgd_core::test_helpers::path_env_mutation_guard();
     let shim = cfgd_core::test_helpers::ToolShim::install("CFGD_BREW_BIN", 0, "", "");
     let _seam = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_COSIGN_BIN", ABSENT_SEAM_PATH);
     let printer = test_printer();

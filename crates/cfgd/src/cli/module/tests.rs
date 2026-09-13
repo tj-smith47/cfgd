@@ -1979,7 +1979,7 @@ fn cmd_module_search_no_registries_json() {
 #[test]
 #[serial_test::serial]
 fn cmd_module_keys_generate_no_cosign_fails() {
-    // Parallel CosignTestShim tests set CFGD_COSIGN_BIN; force require_cosign
+    // Parallel CosignTestShim tests set CFGD_COSIGN_BIN; force provision_cosign
     // through the PATH-only branch, and empty PATH so the missing-tool error
     // fires whether or not the host has cosign. Spawn-exclusion guard first
     // so it drops last, bracketing the empty-PATH window.
@@ -4592,7 +4592,7 @@ fn cmd_module_keys_rotate_no_cosign_fails() {
 #[test]
 #[serial_test::serial]
 fn cmd_module_keys_rotate_no_existing_key_fails() {
-    // Satisfy require_cosign via the seam (any existing file) so the
+    // Satisfy provision_cosign via the seam (any existing file) so the
     // missing-key check is reached whether or not the host has cosign;
     // the flow errors before ever invoking the binary.
     let dir = tempfile::tempdir().unwrap();
