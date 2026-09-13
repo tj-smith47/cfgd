@@ -133,7 +133,7 @@ fn validate_config_policy_empty_package_name_denied() {
     let req = extract_req(review);
     let err = validate_object_spec::<ConfigPolicySpec>(&req).unwrap_err();
     assert!(
-        err.contains("packages[0].name must not be empty"),
+        err.contains("spec.packages[0].name: package name must not be empty"),
         "expected error about empty package name, got: {err}"
     );
 }
@@ -1167,7 +1167,7 @@ fn validate_cluster_config_policy_empty_package_name_denied() {
     let req = extract_req(review);
     let err = validate_object_spec::<ClusterConfigPolicySpec>(&req).unwrap_err();
     assert!(
-        err.contains("packages[0].name must not be empty"),
+        err.contains("spec.packages[0].name: package name must not be empty"),
         "expected error about empty package name, got: {err}"
     );
 }

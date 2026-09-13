@@ -1194,20 +1194,13 @@ fn installed_reason(version: &Option<String>) -> String {
 
 /// The version requirement a package entry embeds, when it embeds one.
 ///
-/// The grammar is deliberately narrow, because `@` is also a legal NAME
-/// character (brew's `python@3.12`, npm's `@scope/name`): the trailing segment
-/// counts as a spec only when it announces itself with a range operator
-/// (`^14`, `>=2.1`, `~1.4`, `*`) or a `v`-prefixed version (`v1.2.3`), and
-/// parses as a semver requirement after the `v` is stripped. Anything else is
-/// part of the package's name and carries no satisfaction semantics.
+/// The announcement test is [`cfgd_schema::announces_version_spec`], shared
+/// with the package-name gate so the two cannot disagree about where a name
+/// ends; what this adds is that the segment parses as a semver requirement
+/// after the `v` is stripped.
 fn embedded_version_spec(entry: &str) -> Option<String> {
     let (name, raw) = entry.rsplit_once('@')?;
-    if name.is_empty() || raw.is_empty() {
-        return None;
-    }
-    let looks_like_spec = raw.starts_with(['^', '~', '>', '<', '=', '*'])
-        || (raw.starts_with(['v', 'V']) && raw[1..].starts_with(|c: char| c.is_ascii_digit()));
-    if !looks_like_spec {
+    if name.is_empty() || !cfgd_schema::announces_version_spec(raw) {
         return None;
     }
     let normalized = crate::declared_floor_version(raw);

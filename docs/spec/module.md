@@ -207,6 +207,18 @@ based on `prefer` order and platform availability.
 | `deny` | list of string | No | `[]` | Package manager names that must not be used for this package, even if available. |
 | `platforms` | list of string | No | `[]` | Platform filter. When set, this entry is skipped on non-matching platforms. Values: OS (`linux`, `macos`), distro (`ubuntu`, `fedora`, `arch`), or architecture (`x86_64`, `aarch64`). Omit to match all platforms. |
 
+`name`, each `aliases` value, and each `prefer` / `deny` token are checked when the module is
+parsed. One is refused when it is empty, when it holds whitespace, or when it holds one of `&`,
+`<`, `>`, `(`, `)`, `^`, `|`, `"`, `%`, `!`, or a line break: a package name becomes an argument
+on a manager's command line, and on Windows several managers are reached through a `cmd.exe`
+shim where those characters would start a second command. Ordinary packaging spellings are
+unaffected, including `@scope/pkg`, `foo@1.2`, `libfoo-dev:amd64`,
+`Microsoft.VisualStudio.2022.Community`, `foo[extra]`, `devel/py-pipx` and
+`github.com/x/y@latest`. A trailing version spec is judged as a version rather than as part of
+the name, so cfgd's own pin grammar (`tool@^14`, `tool@>=2.1`, `tool@v1.2.3`) still parses; the
+spec itself may hold only digits, identifiers and range operators. The cluster-side `Module`
+resource applies the same rule.
+
 **Example (cross-platform tool with manager aliases):**
 ```yaml
 packages:

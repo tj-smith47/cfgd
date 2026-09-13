@@ -732,6 +732,136 @@ fn module_validate_rejects_empty_package_name() {
 /// merge cannot key on has to be refused where the message can still name the
 /// entry: an empty one keys nothing, and two entries sharing one make the API
 /// server reject the whole resource naming neither.
+/// Every slot of a `Module`'s package entry answers to the same grammar the
+/// machine's own parser applies, so a name the API server admits is one the
+/// machine can install.
+#[test]
+fn module_validate_refuses_a_package_slot_carrying_a_metacharacter() {
+    let cases: [(&str, PackageEntry); 4] = [
+        (
+            "spec.packages[0].name",
+            PackageEntry {
+                name: "foo&calc".to_string(),
+                ..Default::default()
+            },
+        ),
+        (
+            "spec.packages[0].aliases.brew",
+            PackageEntry {
+                name: "ripgrep".to_string(),
+                aliases: [("brew".to_string(), "rg&calc".to_string())]
+                    .into_iter()
+                    .collect(),
+                ..Default::default()
+            },
+        ),
+        (
+            "spec.packages[0].prefer[0]",
+            PackageEntry {
+                name: "ripgrep".to_string(),
+                prefer: vec!["brew&calc".to_string()],
+                ..Default::default()
+            },
+        ),
+        (
+            "spec.packages[0].deny[0]",
+            PackageEntry {
+                name: "ripgrep".to_string(),
+                deny: vec!["brew&calc".to_string()],
+                ..Default::default()
+            },
+        ),
+    ];
+    for (slot, pkg) in cases {
+        let spec = ModuleSpec {
+            packages: vec![pkg],
+            ..Default::default()
+        };
+        let errors = spec
+            .validate()
+            .expect_err("a slot carrying '&' must be refused");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.starts_with(&format!("{slot}: ")) && e.contains("&calc")),
+            "{slot} is named with the offending value: {errors:?}"
+        );
+    }
+}
+
+/// The same entry spelled the way real ecosystems spell it is admitted, so the
+/// refusal above cannot have widened into a legitimate Module.
+#[test]
+fn module_validate_admits_the_package_spellings_real_ecosystems_use() {
+    let spec = ModuleSpec {
+        packages: vec![PackageEntry {
+            name: "@scope/pkg".to_string(),
+            aliases: [
+                ("pkg".to_string(), "devel/py-pipx".to_string()),
+                (
+                    "winget".to_string(),
+                    "Microsoft.VisualStudio.2022.Community".to_string(),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+            prefer: vec!["brew-cask".to_string()],
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    spec.validate()
+        .expect("a module of real package spellings validates");
+}
+
+/// A MachineConfig's own package list is judged by the same grammar; it names
+/// packages the agent installs directly, with no Module in between.
+#[test]
+fn machine_config_validate_refuses_a_package_name_carrying_a_metacharacter() {
+    let spec = MachineConfigSpec {
+        hostname: "box".to_string(),
+        profile: "dev".to_string(),
+        module_refs: Vec::new(),
+        packages: vec![PackageRef {
+            name: "foo&calc".to_string(),
+            version: None,
+        }],
+        files: Vec::new(),
+        system_settings: BTreeMap::new(),
+    };
+    let errors = spec
+        .validate()
+        .expect_err("a package name carrying '&' must be refused");
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.starts_with("spec.packages[0].name: ") && e.contains("foo&calc")),
+        "{errors:?}"
+    );
+}
+
+/// A policy's required-package list reaches a machine as a demand, so it
+/// answers to the grammar the machine will parse.
+#[test]
+fn config_policy_validate_refuses_a_package_name_carrying_a_metacharacter() {
+    let spec = ConfigPolicySpec {
+        packages: vec![PackageRef {
+            name: "foo&calc".to_string(),
+            version: None,
+        }],
+        ..Default::default()
+    };
+    let errors = spec
+        .validate()
+        .expect_err("a package name carrying '&' must be refused");
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.starts_with("spec.packages[0].name: ") && e.contains("foo&calc")),
+        "{errors:?}"
+    );
+}
+
 #[test]
 fn module_validate_rejects_an_empty_file_target() {
     let spec = ModuleSpec {

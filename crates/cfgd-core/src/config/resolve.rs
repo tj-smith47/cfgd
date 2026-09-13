@@ -7,7 +7,8 @@ use cfgd_schema::{BackupSpec, ScriptSpec};
 use super::parse::{find_profile_path, load_profile};
 use super::profile_spec::{
     EnvScope, FilesSpec, PackagesSpec, ProfileDocument, ProfileSpec, SecretSpec, SystemSettings,
-    validate_backup_specs, validate_managed_file_specs, validate_secret_specs,
+    validate_backup_specs, validate_managed_file_specs, validate_package_specs,
+    validate_secret_specs,
 };
 use super::source::{EnvVar, ShellAlias};
 use crate::errors::{ConfigError, Result};
@@ -191,6 +192,7 @@ pub fn resolve_profile(profile_name: &str, profiles_dir: &Path) -> Result<Resolv
 
     validate_secret_specs(&merged.secrets)?;
     validate_managed_file_specs(&merged.files.managed)?;
+    validate_package_specs(&merged.packages)?;
     validate_backup_specs(&merged.backups)?;
     cfgd_schema::validate_script_bodies("profile", &merged.scripts)
         .map_err(|e| crate::errors::ConfigError::Invalid { message: e.0 })?;
@@ -861,6 +863,61 @@ mod tests {
                 entry.manager
             );
         }
+    }
+
+    /// Plant a name a command line would read as syntax into every package
+    /// list the schema offers, through the real deserializer, and require the
+    /// parse-boundary validator to refuse each one under its own field path.
+    ///
+    /// Walked over `PACKAGE_SCHEMA_PATHS` rather than over a hand-written list
+    /// of managers, so a manager or sub-list added to the schema is checked
+    /// here the day it joins the table.
+    #[test]
+    fn every_package_list_the_schema_offers_refuses_a_name_that_carries_a_metacharacter() {
+        for entry in PACKAGE_SCHEMA_PATHS {
+            let yaml = match entry.path.split_once('.') {
+                Some((manager, sublist)) => format!("{manager}:\n  {sublist}: [\"foo&calc\"]\n"),
+                None => format!("{}: [\"foo&calc\"]\n", entry.path),
+            };
+            let spec: PackagesSpec = serde_yaml::from_str(&yaml)
+                .unwrap_or_else(|e| panic!("`{}` parses as a package list: {e}", entry.path));
+            let why = validate_package_specs(&spec)
+                .expect_err(&format!("`{}` refuses a name carrying '&'", entry.path))
+                .to_string();
+            assert!(
+                why.contains("foo&calc") && why.contains("spec.packages."),
+                "`{}` names the offending entry and its field path: {why}",
+                entry.path
+            );
+        }
+    }
+
+    /// A custom manager's own list is reached by the same walk, even though it
+    /// is discovered by name rather than named in the schema-path table.
+    #[test]
+    fn a_custom_managers_package_list_refuses_a_name_that_carries_a_metacharacter() {
+        let spec: PackagesSpec = serde_yaml::from_str(
+            "custom:\n  - name: asdf\n    check: 'command -v asdf'\n    listInstalled: 'asdf list'\n    install: 'asdf install {package}'\n    uninstall: 'asdf uninstall {package}'\n    packages: [\"nodejs&calc\"]\n",
+        )
+        .expect("a custom manager parses");
+        let why = validate_package_specs(&spec)
+            .expect_err("a custom manager's list is judged too")
+            .to_string();
+        assert!(
+            why.contains("spec.packages.custom[0].packages[0]") && why.contains("nodejs&calc"),
+            "the refusal names the custom entry's own path: {why}"
+        );
+    }
+
+    /// The spellings real ecosystems use survive every list form, so the
+    /// refusal cannot quietly widen into a legitimate profile.
+    #[test]
+    fn the_package_name_gate_admits_the_spellings_real_ecosystems_use() {
+        let spec: PackagesSpec = serde_yaml::from_str(
+            "brew:\n  taps: [charmbracelet/tap]\n  formulae: [foo+bar, foo~bar]\n  casks: [foo_bar]\napt: [\"libfoo-dev:amd64\"]\nnpm:\n  global: [\"@scope/pkg\"]\ncargo: [\"foo@1.2\"]\ngo: [\"github.com/x/y@latest\"]\npkg: [devel/py-pipx]\nwinget: [Microsoft.VisualStudio.2022.Community]\npipx: [\"foo[extra]\"]\n",
+        )
+        .expect("a profile of real package spellings parses");
+        validate_package_specs(&spec).expect("every spelling a real ecosystem uses is admitted");
     }
 
     fn layer(name: &str, env_scope: Option<EnvScope>) -> ProfileLayer {

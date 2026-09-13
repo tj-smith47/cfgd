@@ -37,7 +37,7 @@ pub use modeline::{SchemaDocKind, docs_url, schema_modeline, with_schema_modelin
 pub use module::{
     ModuleDocument, ModuleFileEntry, ModuleLockEntry, ModuleLockfile, ModuleMetadata,
     ModulePackageEntry, ModuleRegistryEntry, ModuleSpec, parse_module,
-    validate_module_file_entries,
+    validate_module_file_entries, validate_module_package_entries,
 };
 pub use origin::{OriginSpec, OriginType, SshHostKeyPolicy};
 pub(crate) use parse::validate_api_version;
@@ -52,7 +52,8 @@ pub use profile_spec::{
     AptSpec, BrewSpec, CargoSpec, CustomManagerSpec, EncryptionConstraint, EnvScope, FilesSpec,
     FlatpakSpec, ManagedFileSpec, MergeSpec, NpmSpec, PackagesSpec, ProfileDocument,
     ProfileMetadata, ProfileSpec, SecretSpec, SnapSpec, SystemSettings, render_backup_name_pattern,
-    validate_backup_specs, validate_managed_file_specs, validate_secret_specs,
+    validate_backup_specs, validate_managed_file_specs, validate_package_specs,
+    validate_secret_specs,
 };
 
 // The value types cfgd-schema owns, kept resolvable at their long-standing

@@ -259,6 +259,35 @@ pub struct ModuleFileEntry {
     pub patch: Option<PatchSpec>,
 }
 
+/// Validate every package name a module entry can carry: the default `name`,
+/// the per-manager `aliases` overrides, and the manager tokens in `prefer` and
+/// `deny`.
+///
+/// All four reach a resolved package as either the name a manager installs or
+/// the manager that installs it, so all four answer to the one grammar in
+/// [`cfgd_schema::validate_package_name`]; the field path this states is the
+/// one the author wrote.
+pub fn validate_module_package_entries(entries: &[ModulePackageEntry]) -> Result<()> {
+    for (i, entry) in entries.iter().enumerate() {
+        let refuse = |subject: String, name: &str| -> Result<()> {
+            cfgd_schema::validate_package_name(&subject, name)
+                .map_err(|e| ConfigError::Invalid { message: e.0 })?;
+            Ok(())
+        };
+        refuse(format!("spec.packages[{i}].name"), &entry.name)?;
+        for (manager, alias) in &entry.aliases {
+            refuse(format!("spec.packages[{i}].aliases.{manager}"), alias)?;
+        }
+        for (j, manager) in entry.prefer.iter().enumerate() {
+            refuse(format!("spec.packages[{i}].prefer[{j}]"), manager)?;
+        }
+        for (j, manager) in entry.deny.iter().enumerate() {
+            refuse(format!("spec.packages[{i}].deny[{j}]"), manager)?;
+        }
+    }
+    Ok(())
+}
+
 /// Validate every module file entry: the `patch` strategy shape (see
 /// `validate_file_patch_shape`) and the `target` the cluster-side SSA merge
 /// keys on (see [`cfgd_schema::validate_file_target`]).
@@ -339,6 +368,7 @@ pub fn parse_module(contents: &str) -> Result<ModuleDocument> {
         .into());
     }
     super::parse::validate_api_version(&doc.api_version)?;
+    validate_module_package_entries(&doc.spec.packages)?;
     validate_module_file_entries(&doc.spec.files)?;
     if let Some(scripts) = &doc.spec.scripts {
         cfgd_schema::validate_script_bodies(&format!("module '{}'", doc.metadata.name), scripts)
@@ -976,6 +1006,47 @@ unless: command -v rustc
         let err = serde_yaml::from_str::<ModulePackageEntry>(yaml)
             .expect_err("deny_unknown_fields must reject bogusGuard");
         assert!(format!("{err}").contains("unknown field"));
+    }
+
+    /// Every slot of a module package entry that becomes a package name or the
+    /// manager installing it, driven through the real `parse_module` so the
+    /// refusal is the one an author actually meets.
+    #[test]
+    fn parse_module_refuses_a_package_slot_carrying_a_metacharacter() {
+        for (slot, body) in [
+            ("spec.packages[0].name", "    - name: foo&calc\n"),
+            (
+                "spec.packages[0].aliases.brew",
+                "    - name: ripgrep\n      aliases:\n        brew: rg&calc\n",
+            ),
+            (
+                "spec.packages[0].prefer[0]",
+                "    - name: ripgrep\n      prefer: [\"brew&calc\"]\n",
+            ),
+            (
+                "spec.packages[0].deny[0]",
+                "    - name: ripgrep\n      deny: [\"brew&calc\"]\n",
+            ),
+        ] {
+            let yaml = format!(
+                "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: nvim\nspec:\n  packages:\n{body}"
+            );
+            let why = parse_module(&yaml)
+                .expect_err("a slot carrying '&' is refused at parse time")
+                .to_string();
+            assert!(
+                why.contains(slot) && why.contains("&calc"),
+                "{slot} names its own field path and the offending name: {why}"
+            );
+        }
+    }
+
+    /// The same entry with the spellings real ecosystems use parses, so the
+    /// gate above cannot have widened into a legitimate module.
+    #[test]
+    fn parse_module_admits_the_package_spellings_real_ecosystems_use() {
+        let yaml = "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: nvim\nspec:\n  packages:\n    - name: \"@scope/pkg\"\n      aliases:\n        pkg: devel/py-pipx\n        winget: Microsoft.VisualStudio.2022.Community\n      prefer: [brew-cask, apt]\n      deny: [snap]\n";
+        parse_module(yaml).expect("a module of real package spellings parses");
     }
 
     #[test]

@@ -899,9 +899,7 @@ fn validate_policy_fields(
 ) -> Vec<String> {
     let mut errors = Vec::new();
     for (i, pkg) in packages.iter().enumerate() {
-        if pkg.name.is_empty() {
-            errors.push(format!("spec.packages[{i}].name must not be empty"));
-        }
+        push_package_name_errors(&mut errors, &format!("spec.packages[{i}].name"), &pkg.name);
         if let Some(ver) = &pkg.version
             && VersionReq::parse(ver).is_err()
         {
@@ -940,9 +938,7 @@ impl MachineConfigSpec {
             }
         }
         for (i, pkg) in self.packages.iter().enumerate() {
-            if pkg.name.is_empty() {
-                errors.push(format!("spec.packages[{i}].name must not be empty"));
-            }
+            push_package_name_errors(&mut errors, &format!("spec.packages[{i}].name"), &pkg.name);
         }
         for (i, file) in self.files.iter().enumerate() {
             if file.path.is_empty() {
@@ -1080,6 +1076,14 @@ impl DriftAlertSpec {
     }
 }
 
+/// Collect a package name's refusal under the field path that holds it, so a
+/// name the machine's own parser would reject never reaches a machine.
+fn push_package_name_errors(errors: &mut Vec<String>, subject: &str, name: &str) {
+    if let Err(e) = cfgd_schema::validate_package_name(subject, name) {
+        errors.push(e.to_string());
+    }
+}
+
 /// Collect a `platforms:` list's refusals under the field path that holds it,
 /// so a tag no host can match is named where it was written.
 fn push_tag_errors(errors: &mut Vec<String>, subject: impl Fn() -> String, tags: &[String]) {
@@ -1095,8 +1099,27 @@ impl ModuleSpec {
     pub fn validate(&self) -> Result<(), Vec<String>> {
         let mut errors = Vec::new();
         for (i, pkg) in self.packages.iter().enumerate() {
-            if pkg.name.is_empty() {
-                errors.push(format!("spec.packages[{i}].name must not be empty"));
+            push_package_name_errors(&mut errors, &format!("spec.packages[{i}].name"), &pkg.name);
+            for (manager, alias) in &pkg.aliases {
+                push_package_name_errors(
+                    &mut errors,
+                    &format!("spec.packages[{i}].aliases.{manager}"),
+                    alias,
+                );
+            }
+            for (j, manager) in pkg.prefer.iter().enumerate() {
+                push_package_name_errors(
+                    &mut errors,
+                    &format!("spec.packages[{i}].prefer[{j}]"),
+                    manager,
+                );
+            }
+            for (j, manager) in pkg.deny.iter().enumerate() {
+                push_package_name_errors(
+                    &mut errors,
+                    &format!("spec.packages[{i}].deny[{j}]"),
+                    manager,
+                );
             }
             push_tag_errors(
                 &mut errors,

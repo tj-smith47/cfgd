@@ -959,6 +959,106 @@ pub fn validate_backup_unit_shape<'a>(
     Ok(())
 }
 
+/// The characters a package name may not carry.
+///
+/// On Windows a manager's executable is often a `.cmd`/`.bat` shim, which cfgd
+/// runs as `cmd /c call <shim>`; the program is then `cmd.exe`, so Rust's own
+/// batch-file argument quoting does not apply and every one of these reaches
+/// cmd.exe's parser with its metacharacter meaning intact. `foo&calc` would
+/// install `foo` and then run `calc`.
+const REFUSED_PACKAGE_NAME_CHARS: &[char] =
+    &['&', '<', '>', '(', ')', '^', '|', '"', '%', '!', '\n', '\r'];
+
+/// Why a declared package name was refused, as a complete sentence naming the
+/// entry it judged and the name it read.
+///
+/// The message is the whole error: a caller with its own error type prefixes
+/// its own field path rather than re-wording the refusal, the same relabel
+/// [`FileShapeError`] takes.
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub struct PackageNameError(pub String);
+
+/// Refuse a package name that cannot safely become a command-line argument.
+///
+/// A package list is DATA: a config source may declare one without the
+/// `allowScripts` trust a source needs to run anything. A name carrying a
+/// shell metacharacter erases that line on Windows, where several managers are
+/// reached through a `cmd.exe` shim, so the name is refused where it is parsed
+/// rather than per manager. Whitespace goes with it: a name holding a space
+/// splits into two arguments under every `CommandLineToArgv` reader.
+///
+/// The ONE grammar behind both the machine's own `spec.packages` (profile,
+/// module entry, per-manager alias and `prefer` target) and the cluster-side
+/// `Module.spec.packages`, so a name the API server admits is one the machine's
+/// own parser also accepts.
+///
+/// Ordinary packaging spellings survive: `@scope/pkg`, `foo@1.2`,
+/// `libfoo-dev:amd64`, `Microsoft.VisualStudio.2022.Community`, `foo[extra]`,
+/// `devel/py-pipx`, `github.com/x/y@latest`. So does cfgd's own version-pin
+/// grammar (`tool@^14`, `tool@>=2.1`), whose range operators are judged as a
+/// version spec rather than as part of the name.
+pub fn validate_package_name(subject: &str, name: &str) -> Result<(), PackageNameError> {
+    if name.trim().is_empty() {
+        return Err(PackageNameError(format!(
+            "{subject}: package name must not be empty or whitespace-only"
+        )));
+    }
+    if let Some(c) = name.chars().find(|c| c.is_whitespace()) {
+        return Err(PackageNameError(format!(
+            "{subject}: package name '{name}' must not contain whitespace ({c:?} splits it into two arguments)"
+        )));
+    }
+    // A version spec is spelled in range operators, three of which (`^`, `>`,
+    // `<`) the name half refuses outright, so the two halves are judged apart:
+    // the name against the metacharacter set, the spec against the characters
+    // a version is written in.
+    let (named, spec) = match name.rsplit_once('@') {
+        Some((head, tail)) if !head.is_empty() && announces_version_spec(tail) => {
+            (head, Some(tail))
+        }
+        _ => (name, None),
+    };
+    if let Some(c) = named
+        .chars()
+        .find(|c| REFUSED_PACKAGE_NAME_CHARS.contains(c))
+    {
+        return Err(PackageNameError(format!(
+            "{subject}: package name '{name}' must not contain {c:?}; a package name becomes a command-line argument, and this character starts a second command on a Windows shim"
+        )));
+    }
+    if let Some(spec) = spec
+        && let Some(c) = spec.chars().find(|c| !is_version_spec_char(*c))
+    {
+        return Err(PackageNameError(format!(
+            "{subject}: package name '{name}' declares the version spec '{spec}', which must not contain {c:?}; a version is spelled in digits, identifiers and range operators alone"
+        )));
+    }
+    Ok(())
+}
+
+/// Whether the segment after an entry's last `@` ANNOUNCES itself as a version
+/// spec rather than being part of the package's name.
+///
+/// The grammar is deliberately narrow, because `@` is also a legal name
+/// character (brew's `python@3.12`, npm's `@scope/name`): the segment counts
+/// only when it opens on a range operator (`^14`, `>=2.1`, `~1.4`, `*`) or on a
+/// `v`-prefixed version (`v1.2.3`). The ONE statement of that test, read by the
+/// name gate above and by the source-decision classifier that goes on to parse
+/// the spec itself.
+pub fn announces_version_spec(segment: &str) -> bool {
+    segment.starts_with(['^', '~', '>', '<', '=', '*'])
+        || (segment.starts_with(['v', 'V'])
+            && segment[1..].starts_with(|c: char| c.is_ascii_digit()))
+}
+
+/// Whether one character can appear in a semver requirement: a digit or
+/// identifier character, a separator, or a range operator.
+fn is_version_spec_char(c: char) -> bool {
+    c.is_ascii_alphanumeric()
+        || matches!(c, '.' | '-' | '+' | '^' | '~' | '>' | '<' | '=' | '*' | ',')
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1001,6 +1101,81 @@ mod tests {
                 "{bad} is not a usable unit name"
             );
         }
+    }
+
+    /// The ONE package-name grammar both the machine's own `spec.packages` and
+    /// the cluster-side `Module.spec.packages` answer to, stated against the
+    /// spellings real ecosystems use so the refusal cannot quietly widen into
+    /// them.
+    #[test]
+    fn a_package_name_carries_no_character_a_command_line_reads_as_syntax() {
+        for good in [
+            "@scope/pkg",
+            "foo@1.2",
+            "libfoo-dev:amd64",
+            "Microsoft.VisualStudio.2022.Community",
+            "foo[extra]",
+            "devel/py-pipx",
+            "github.com/x/y@latest",
+            "foo_bar",
+            "foo+bar",
+            "foo~bar",
+            "charmbracelet/tap",
+            "python@3.12",
+            // cfgd's own version-pin grammar, whose range operators the name
+            // half refuses: the spec half is judged as a version instead.
+            "tool@^14",
+            "tool@>=2.1",
+            "tool@v1.2.3",
+            "tool@>=1.0,<2.0",
+        ] {
+            validate_package_name("pkg", good)
+                .unwrap_or_else(|e| panic!("{good} is a name a real ecosystem uses: {e}"));
+        }
+        for bad in [
+            "",
+            "   ",
+            "foo bar",
+            "foo\tbar",
+            "foo&calc",
+            "foo<x",
+            "foo>x",
+            "foo(x",
+            "foo)x",
+            "foo^x",
+            "foo|x",
+            "foo\"x",
+            "foo%x%",
+            "foo!x!",
+            "foo\nbar",
+            "foo\rbar",
+            // The spec half admits version characters alone, so a
+            // metacharacter cannot ride in behind a range operator.
+            "tool@^1&calc",
+            "tool&calc@^1",
+            "@^1",
+        ] {
+            let why = validate_package_name("spec.packages.brew[0]", bad)
+                .expect_err("a name a command line reads as syntax is refused")
+                .to_string();
+            assert!(
+                why.starts_with("spec.packages.brew[0]: "),
+                "the refusal opens on the caller's own field path: {why}"
+            );
+        }
+    }
+
+    /// The refusal names the offending name itself, so a reader editing a long
+    /// list knows which entry to change.
+    #[test]
+    fn a_refused_package_name_is_quoted_back_to_the_reader() {
+        let why = validate_package_name("module 'nvim' package 2", "foo&calc")
+            .expect_err("a metacharacter is refused")
+            .to_string();
+        assert!(
+            why.contains("module 'nvim' package 2") && why.contains("foo&calc"),
+            "the refusal names the subject and the name: {why}"
+        );
     }
 
     #[test]

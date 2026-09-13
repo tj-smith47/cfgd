@@ -962,6 +962,48 @@ pub fn validate_managed_file_specs(specs: &[ManagedFileSpec]) -> Result<()> {
     Ok(())
 }
 
+/// Validate every package name under `spec.packages`, naming the schema path
+/// that holds the refused one.
+///
+/// The walk is over the SERIALIZED spec rather than a second hand-written list
+/// of manager fields: every array in `spec.packages` holds package names (the
+/// scalar knobs are `file:`, `flatpak.remote` and the custom manager's command
+/// templates), so a manager or a sub-list added to the schema is covered the
+/// day it is added instead of the day someone remembers this function.
+pub fn validate_package_specs(packages: &PackagesSpec) -> Result<()> {
+    let value = serde_json::to_value(packages).map_err(|e| ConfigError::Invalid {
+        message: format!("spec.packages could not be read: {e}"),
+    })?;
+    validate_package_names_in("spec.packages", &value)
+}
+
+/// Walk one serialized node of `spec.packages`, judging every string that sits
+/// in an array and descending through the `custom[]` objects.
+fn validate_package_names_in(path: &str, value: &serde_json::Value) -> Result<()> {
+    match value {
+        serde_json::Value::Array(items) => {
+            for (i, item) in items.iter().enumerate() {
+                match item {
+                    serde_json::Value::String(name) => {
+                        cfgd_schema::validate_package_name(&format!("{path}[{i}]"), name)
+                            .map_err(|e| ConfigError::Invalid { message: e.0 })?;
+                    }
+                    other => validate_package_names_in(&format!("{path}[{i}]"), other)?,
+                }
+            }
+        }
+        serde_json::Value::Object(fields) => {
+            for (key, field) in fields {
+                if field.is_array() || field.is_object() {
+                    validate_package_names_in(&format!("{path}.{key}"), field)?;
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 /// Validate that each secret has at least one delivery target (`target` or
 /// `envs`), and that a `template` names a value it can wrap: it must sit on a
 /// provider reference (a sops file decrypts to content, not a value) and must
