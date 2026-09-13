@@ -368,6 +368,8 @@ impl SecretProvider for MockSecretProvider {
 pub struct MockSystemConfigurator {
     pub configurator_name: String,
     pub available: bool,
+    /// The binary this configurator drives, as `required_tool()` answers it.
+    pub required_tool: Option<&'static str>,
     pub apply_calls: Mutex<Vec<serde_yaml::Value>>,
     pub drift: Mutex<Vec<SystemDrift>>,
     pub fail_apply: Mutex<bool>,
@@ -379,6 +381,7 @@ impl MockSystemConfigurator {
         Self {
             configurator_name: name.to_string(),
             available: true,
+            required_tool: None,
             apply_calls: Mutex::new(Vec::new()),
             drift: Mutex::new(Vec::new()),
             fail_apply: Mutex::new(false),
@@ -388,6 +391,18 @@ impl MockSystemConfigurator {
 
     pub fn unavailable(mut self) -> Self {
         self.available = false;
+        self
+    }
+
+    /// Declare the binary this configurator drives.
+    ///
+    /// The planner installs a registered-but-unavailable configurator's tool in
+    /// `Bootstrap` and configures the setting in the same run, and that path is
+    /// otherwise reachable only through a real configurator whose registration
+    /// is gated to one operating system. A fixture naming a tool here proves the
+    /// planner on every host.
+    pub fn requiring_tool(mut self, tool: &'static str) -> Self {
+        self.required_tool = Some(tool);
         self
     }
 
@@ -413,6 +428,10 @@ impl SystemConfigurator for MockSystemConfigurator {
 
     fn is_available(&self) -> bool {
         self.available
+    }
+
+    fn required_tool(&self) -> Option<&'static str> {
+        self.required_tool
     }
 
     fn current_state(&self) -> crate::errors::Result<serde_yaml::Value> {

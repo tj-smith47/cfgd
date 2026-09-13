@@ -479,14 +479,31 @@ tokei v12.1.2:
         // `PATH` mutation can land between them and they disagree.
         let _path = cfgd_core::test_helpers::path_env_read_guard();
         let home = tempfile::tempdir().unwrap();
-        let planned = cfgd_core::with_test_home(home.path(), || CargoManager.bootstrap_plan());
         if cfg!(windows) {
-            assert!(
-                planned.is_none(),
-                "the installer is piped into `sh`, so Windows is offered no arm: {planned:?}"
-            );
+            // Windows has no `sh` for rustup's installer, so the route there is
+            // a mediator that packages rustup itself. Each arm is driven by a
+            // delivery rather than by the host probe, so which of the three this
+            // machine carries cannot decide what the plan declares.
+            for method in ["winget", "chocolatey", "scoop"] {
+                let plan = cfgd_core::with_test_home(home.path(), || {
+                    CargoManager.bootstrap_plan_given(&|m| m == method)
+                })
+                .unwrap_or_else(|| panic!("{method} packages the rustup that delivers cargo"));
+                assert_eq!(plan.method, method);
+                assert!(
+                    plan.requires.is_empty(),
+                    "the mediator fetches what it installs, so the arm names no tool: {:?}",
+                    plan.requires
+                );
+                assert_eq!(
+                    plan.creates_path_dirs,
+                    [cfgd_core::to_posix_string(home.path().join(".cargo/bin"))],
+                    "the toolchain behind the arm lands cargo where rustup always does"
+                );
+            }
             return;
         }
+        let planned = cfgd_core::with_test_home(home.path(), || CargoManager.bootstrap_plan());
         // Off Windows the plan describes what the cascade needs whatever this
         // host carries, and whether the host can carry it out is
         // `feasible_bootstrap_plan`'s question, so the planner can name `curl`
@@ -506,15 +523,19 @@ tokei v12.1.2:
     fn cargo_path_dirs_matches_the_bootstrap_plans_declaration() {
         let _path = cfgd_core::test_helpers::path_env_read_guard();
         let home = tempfile::tempdir().unwrap();
-        if cfg!(windows) {
-            let planned = cfgd_core::with_test_home(home.path(), || CargoManager.bootstrap_plan());
-            assert!(planned.is_none(), "Windows is offered no arm: {planned:?}");
-            return;
-        }
         cfgd_core::with_test_home(home.path(), || {
-            let plan = CargoManager
-                .bootstrap_plan()
-                .expect("every host with a shell plans rustup");
+            // The Windows arms are driven by a delivery, for the same reason
+            // the sibling above drives them: a host carrying no mediator plans
+            // nothing, and the declaration is what this compares.
+            let plan = if cfg!(windows) {
+                CargoManager
+                    .bootstrap_plan_given(&|m| m == "winget")
+                    .expect("winget packages the rustup that delivers cargo")
+            } else {
+                CargoManager
+                    .bootstrap_plan()
+                    .expect("every host with a shell plans rustup")
+            };
             let printer = cfgd_core::test_helpers::test_printer();
             let state = cfgd_core::test_helpers::test_state();
             let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);

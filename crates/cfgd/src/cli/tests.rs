@@ -38212,6 +38212,34 @@ fn apt_only_registry() -> cfgd_core::providers::ProviderRegistry {
     registry
 }
 
+/// The key a stand-in desktop configurator registers under, and the tool it
+/// drives.
+///
+/// Every real configurator whose absence a package can fix is registered on one
+/// operating system alone, so a fixture declaring one proves the planner on that
+/// host and nothing at all on the others. The mock registers everywhere, and the
+/// TOOL stays `gsettings`, whose apt route is what the assertions below read.
+const DESKTOP_MOCK: &str = "mockDesktop";
+const DESKTOP_MOCK_TOOL: &str = "gsettings";
+
+/// [`apt_only_registry`] plus a configurator that is unavailable for the one
+/// reason a package manager can remove: the tool it drives is not here.
+fn apt_only_registry_with_unavailable_desktop() -> cfgd_core::providers::ProviderRegistry {
+    let mut registry = apt_only_registry();
+    registry.add_system_configurator(Box::new(
+        cfgd_core::test_helpers::MockSystemConfigurator::new(DESKTOP_MOCK)
+            .unavailable()
+            .requiring_tool(DESKTOP_MOCK_TOOL),
+    ));
+    registry
+}
+
+/// The settings body the three pins below declare for [`DESKTOP_MOCK`].
+fn desktop_mock_settings() -> serde_yaml::Value {
+    serde_yaml::from_str("org.gnome.desktop.interface:\n  color-scheme: prefer-dark\n")
+        .expect("the fixture is a mapping")
+}
+
 /// A declared `gsettings` setting on a host with no gsettings plans the
 /// install and the setting in one run.
 ///
@@ -38221,22 +38249,20 @@ fn apt_only_registry() -> cfgd_core::providers::ProviderRegistry {
 #[serial_test::serial]
 fn a_declared_gsettings_setting_plans_the_tool_ahead_of_the_configurator() {
     // The read guard, not the write one: what makes the tool absent here is the
-    // consumer's own seam, which is the question the planner asks, so the
+    // configurator's own answer, which is the question the planner asks, so the
     // process-global PATH only has to hold still.
     let _path_lock = cfgd_core::test_helpers::path_env_read_guard();
     let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
     let _paths = cfgd_core::test_helpers::CommandPathMemoTtlGuard::always_expired();
     let _avail = cfgd_core::test_helpers::AvailabilityMemoTtlGuard::always_expired();
-    let _seam = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_GSETTINGS_BIN", ABSENT_SEAM_PATH);
-    let registry = apt_only_registry();
+    let registry = apt_only_registry_with_unavailable_desktop();
     let state = cfgd_core::test_helpers::test_state();
     let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &state);
     let mut resolved = cfgd_core::test_helpers::make_empty_resolved();
-    resolved.merged.system.insert(
-        "gsettings".to_string(),
-        serde_yaml::from_str("org.gnome.desktop.interface:\n  color-scheme: prefer-dark\n")
-            .expect("the fixture is a mapping"),
-    );
+    resolved
+        .merged
+        .system
+        .insert(DESKTOP_MOCK.to_string(), desktop_mock_settings());
 
     let plan = reconciler
         .plan(
@@ -38262,7 +38288,7 @@ fn a_declared_gsettings_setting_plans_the_tool_ahead_of_the_configurator() {
                         required_by,
                         ..
                     },
-                ) if tool == "gsettings" => {
+                ) if tool == DESKTOP_MOCK_TOOL => {
                     Some((package.clone(), installer.clone(), required_by.clone()))
                 }
                 _ => None,
@@ -38275,7 +38301,7 @@ fn a_declared_gsettings_setting_plans_the_tool_ahead_of_the_configurator() {
     );
     assert_eq!(prereq.1, "apt", "and the installer is that manager");
     assert!(
-        prereq.2.contains(&"system:gsettings".to_string()),
+        prereq.2.contains(&format!("system:{DESKTOP_MOCK}")),
         "the node names the consumer waiting on it: {:?}",
         prereq.2
     );
@@ -38303,7 +38329,7 @@ fn a_declared_gsettings_setting_plans_the_tool_ahead_of_the_configurator() {
                     tool,
                     ..
                 },
-            ) if configurator == "gsettings" && tool == "gsettings"
+            ) if configurator == DESKTOP_MOCK && tool == DESKTOP_MOCK_TOOL
         )),
         "and the setting is planned as work this run does, not as a skip"
     );
@@ -38379,22 +38405,20 @@ fn a_configurator_whose_seam_points_at_its_tool_plans_no_prerequisite_for_it() {
 #[serial_test::serial]
 fn a_run_filtered_to_the_system_phase_withholds_the_configure_step_it_left_the_install_out_of() {
     // The read guard, not the write one: what makes the tool absent here is the
-    // consumer's own seam, which is the question the planner asks, so the
+    // configurator's own answer, which is the question the planner asks, so the
     // process-global PATH only has to hold still.
     let _path_lock = cfgd_core::test_helpers::path_env_read_guard();
     let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
     let _paths = cfgd_core::test_helpers::CommandPathMemoTtlGuard::always_expired();
     let _avail = cfgd_core::test_helpers::AvailabilityMemoTtlGuard::always_expired();
-    let _seam = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_GSETTINGS_BIN", ABSENT_SEAM_PATH);
-    let registry = apt_only_registry();
+    let registry = apt_only_registry_with_unavailable_desktop();
     let state = cfgd_core::test_helpers::test_state();
     let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &state);
     let mut resolved = cfgd_core::test_helpers::make_empty_resolved();
-    resolved.merged.system.insert(
-        "gsettings".to_string(),
-        serde_yaml::from_str("org.gnome.desktop.interface:\n  color-scheme: prefer-dark\n")
-            .expect("the fixture is a mapping"),
-    );
+    resolved
+        .merged
+        .system
+        .insert(DESKTOP_MOCK.to_string(), desktop_mock_settings());
     let mut plan = reconciler
         .plan(
             &resolved,
@@ -38441,7 +38465,8 @@ fn a_run_filtered_to_the_system_phase_withholds_the_configure_step_it_left_the_i
     cfgd_core::reconciler::render_plan_tree(&plan, Some(&filter), &tree_printer);
     let tree = cfgd_core::test_helpers::captured_text(&tree_buf);
     assert!(
-        tree.contains("gsettings") && tree.contains(cfgd_core::reconciler::PREREQUISITE_NOT_IN_RUN),
+        tree.contains(DESKTOP_MOCK)
+            && tree.contains(cfgd_core::reconciler::PREREQUISITE_NOT_IN_RUN),
         "the row still renders, carrying its reason:\n{tree}"
     );
 
@@ -38556,22 +38581,20 @@ fn a_run_filtered_to_the_system_phase_withholds_the_configure_step_it_left_the_i
 #[serial_test::serial]
 fn a_configure_step_whose_install_delivered_nothing_fails_on_what_it_observed() {
     // The read guard, not the write one: what makes the tool absent here is the
-    // consumer's own seam, which is the question both probes ask, so the
+    // configurator's own answer, which is the question both probes ask, so the
     // process-global PATH only has to hold still.
     let _path_lock = cfgd_core::test_helpers::path_env_read_guard();
     let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
     let _paths = cfgd_core::test_helpers::CommandPathMemoTtlGuard::always_expired();
     let _avail = cfgd_core::test_helpers::AvailabilityMemoTtlGuard::always_expired();
-    let _seam = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_GSETTINGS_BIN", ABSENT_SEAM_PATH);
-    let registry = apt_only_registry();
+    let registry = apt_only_registry_with_unavailable_desktop();
     let state = cfgd_core::test_helpers::test_state();
     let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &state);
     let mut resolved = cfgd_core::test_helpers::make_empty_resolved();
-    resolved.merged.system.insert(
-        "gsettings".to_string(),
-        serde_yaml::from_str("org.gnome.desktop.interface:\n  color-scheme: prefer-dark\n")
-            .expect("the fixture is a mapping"),
-    );
+    resolved
+        .merged
+        .system
+        .insert(DESKTOP_MOCK.to_string(), desktop_mock_settings());
     let plan = reconciler
         .plan(
             &resolved,
@@ -38605,7 +38628,9 @@ fn a_configure_step_whose_install_delivered_nothing_fails_on_what_it_observed() 
         .collect();
     assert_eq!(
         failures,
-        vec!["'gsettings' is unavailable: gsettings is not on PATH".to_string()],
+        vec![format!(
+            "'{DESKTOP_MOCK}' is unavailable: {DESKTOP_MOCK_TOOL} is not on PATH"
+        )],
         "the sentence states the probe's own answer"
     );
 }
