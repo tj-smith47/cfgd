@@ -875,6 +875,9 @@ pub fn require_tool_with_seam(
         }
         return Err(format!("{env_var} points to {custom} which is not a file"));
     }
+    // no-provision-route-ok: this is the refusal itself, shared by every tool
+    // including the ones no manager packages; the caller decides whether a
+    // route exists and reaches `provision_tool` when one does.
     require_tool(default, install_hint)
 }
 

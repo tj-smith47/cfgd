@@ -166,6 +166,8 @@ pub fn cosign_cmd() -> std::process::Command {
 /// Delegates to [`crate::require_tool_with_seam`] to share the env-var-override logic
 /// with every other shimmable tool in cfgd-core.
 pub fn require_cosign() -> std::result::Result<(), String> {
+    // provision-route: cfgd module keys generate and cfgd module keys rotate
+    // install cosign before they sign, and cfgd doctor --fix reports it.
     super::process::require_tool_with_seam(COSIGN_BIN_ENV, "cosign", None)
 }
 

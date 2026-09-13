@@ -1655,6 +1655,27 @@ pub(in crate::cli) fn sign_and_attest(
     })
 }
 
+/// Get a tool a one-shot verb needs, through the managers this host already
+/// has, and answer why not when no manager packages it here.
+///
+/// The wrapper over [`cfgd_core::providers::provision_tool`] every verb outside
+/// a plan takes: those verbs hold no `PackageContext`, and the install records
+/// nothing about a package cfgd needed for itself, so it runs under the null
+/// store. `seam_env` is the tool's own `CFGD_*_BIN` override, `""` for a tool
+/// with none.
+pub(in crate::cli) fn provision_tool(
+    printer: &Printer,
+    registry: &cfgd_core::providers::ProviderRegistry,
+    tool: &str,
+    seam_env: &str,
+) -> std::result::Result<(), String> {
+    let state = cfgd_core::providers::NoOpPackageState;
+    // own-context-ok: the verbs reaching here run outside a plan and hold no
+    // RunContext to borrow one from.
+    let cx = cfgd_core::providers::PackageContext::new(printer, &state);
+    cfgd_core::providers::provision_tool(tool, seam_env, registry, &cx)
+}
+
 pub(in crate::cli) use cfgd_core::short_commit;
 
 #[cfg(test)]
