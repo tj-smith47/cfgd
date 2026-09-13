@@ -1336,7 +1336,7 @@ mod tests {
     /// on unix.
     #[test]
     fn path_is_rooted_names_what_a_rooted_value_starts_from_on_every_host() {
-        for candidate in ["/x", r"C:\x", r"\\srv\share", "C:x"] {
+        for candidate in ["/x", r"C:\x", r"\\srv\share", "C:x", "a:b.txt"] {
             assert!(
                 path_is_rooted(candidate).is_some(),
                 "'{candidate}' is rooted and must be named as such"

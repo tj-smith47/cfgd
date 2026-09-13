@@ -9888,12 +9888,7 @@ struct PathPopulatingManager {
 impl PathPopulatingManager {
     /// Where this manager's binary lives, under the name the host resolves it by.
     fn binary(&self) -> std::path::PathBuf {
-        let name = if cfg!(windows) {
-            format!("{}.exe", self.stem)
-        } else {
-            self.stem.clone()
-        };
-        self.dir.join(name)
+        crate::test_helpers::probe_tool_path(&self.dir, &self.stem)
     }
 }
 
@@ -9920,9 +9915,7 @@ impl PackageManager for PathPopulatingManager {
         Ok(HashSet::new())
     }
     fn install(&self, _packages: &[String], _: &PackageContext<'_>) -> Result<()> {
-        let path = self.binary();
-        std::fs::write(&path, b"#!/bin/sh\nexit 0\n")?;
-        crate::set_file_permissions(&path, 0o755)?;
+        crate::test_helpers::write_probe_tool(&self.dir, &self.stem);
         Ok(())
     }
     fn uninstall(&self, _packages: &[String], _: &PackageContext<'_>) -> Result<()> {

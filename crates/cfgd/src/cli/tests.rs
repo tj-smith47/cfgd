@@ -9065,7 +9065,6 @@ fn required_tool_body(impl_body: &str) -> Option<&str> {
 /// has none, and the host stays unconfigured with nothing reporting why. The
 /// population is derived from the trait impls themselves, so a configurator
 /// or provider added to either crate joins the walk with it.
-
 #[test]
 fn every_system_configurator_and_secret_provider_names_its_tool_or_says_why_not() {
     const TRAITS: [&str; 3] = ["SystemConfigurator", "SecretBackend", "SecretProvider"];

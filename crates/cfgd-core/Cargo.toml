@@ -187,6 +187,10 @@ version = "1"
 optional = true
 
 [dev-dependencies]
+# The crate's own unit tests reach `test_capture` and `pretty_assertions`, both
+# of which are gated on the `test-helpers` feature alone, so a bare
+# `cargo test -p cfgd-core` fails to compile without this self-entry.
+cfgd-core = { path = ".", features = ["test-helpers"] }
 # `in_memory` builds indicatif's vt100-backed `InMemoryTerm`, the emulated
 # screen `Printer::for_test_live_terminal` draws the live region onto. A
 # recording buffer cannot answer "what is still on the terminal" — it holds

@@ -1836,24 +1836,35 @@ spec:
 /// `BootstrappedPathDirsGuard::capture_and_clear()` is required too for the
 /// negative direction — the bootstrapped registry is searched after `PATH`.
 ///
-/// Unix-only: the probe files are `/bin/sh` no-ops, and Windows resolves an
-/// executable by `PATHEXT` rather than by the exec bit.
+/// Unix-only: the probe files are `/bin/sh` no-ops.
 #[cfg(unix)]
 pub struct ProbePath {
     _tmp: tempfile::TempDir,
     _path: EnvVarGuard,
 }
 
-/// Write one no-op executable named `stem` into `dir`, and hand back its path.
+/// Where a probe tool named `stem` lives inside `dir`, under the name the host
+/// resolves it by.
 ///
 /// The name carries `.exe` on Windows, which is what makes the file resolvable
-/// there: `command_path` searches by `PATHEXT`, not by an exec bit.
-pub fn write_probe_tool(dir: &Path, stem: &str) -> std::path::PathBuf {
-    let bin = if cfg!(windows) {
+/// there: `command_path` searches by `PATHEXT`, not by an exec bit. This is the
+/// one statement of that rule, so a caller holding the path of a tool it planted
+/// asks here rather than spelling the suffix again.
+pub fn probe_tool_path(dir: &Path, stem: &str) -> std::path::PathBuf {
+    if cfg!(windows) {
         dir.join(format!("{stem}.exe"))
     } else {
         dir.join(stem)
-    };
+    }
+}
+
+/// Write one no-op executable named `stem` into `dir`, and hand back its path.
+///
+/// The name comes from [`probe_tool_path`]. The body is a `/bin/sh` no-op on
+/// every host, so the planted file is resolvable but not runnable on Windows: a
+/// pin that spawns one wants [`write_tool_shim`] instead.
+pub fn write_probe_tool(dir: &Path, stem: &str) -> std::path::PathBuf {
+    let bin = probe_tool_path(dir, stem);
     std::fs::write(&bin, "#!/bin/sh\nexit 0\n").expect("write probe tool");
     crate::set_file_permissions(&bin, 0o755).expect("chmod probe tool");
     bin

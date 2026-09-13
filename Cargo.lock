@@ -622,6 +622,7 @@ dependencies = [
 name = "cfgd-core"
 version = "0.9.0"
 dependencies = [
+ "cfgd-core",
  "cfgd-crd",
  "cfgd-schema",
  "chrono",
