@@ -2792,7 +2792,7 @@ fn a_manifest_carrying_a_metacharacter_name_is_refused_naming_the_file() {
             .to_string();
         assert!(
             why.contains(subject) && why.contains("foo&calc"),
-            "the refusal names the manifest, the list, the position and the name: {why}"
+            "the refusal names the subject `{subject}` and the refused name: {why}"
         );
     }
 }

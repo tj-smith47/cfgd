@@ -1041,9 +1041,9 @@ fn manifest_path(config_dir: &Path, file: &str) -> Result<PathBuf> {
 /// Brewfile's three lists, whose positions each restart at zero, name which of
 /// them the position indexes.
 fn validate_merged_names(file: &str, list: Option<&str>, names: &[String]) -> Result<()> {
-    // One buffer for the whole file: a subject is read only when a name is
-    // refused, so the happy path over four manifests need not mint a String per
-    // package on a path that runs twice per command.
+    // One buffer per list: a subject is read only when a name is refused, so
+    // the happy path over four manifests need not mint a String per package on
+    // a path that runs twice per command.
     let mut subject = String::new();
     for (i, name) in names.iter().enumerate() {
         subject.clear();

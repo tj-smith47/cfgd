@@ -1844,15 +1844,18 @@ pub struct ProbePath {
     _path: EnvVarGuard,
 }
 
-/// Write one no-op executable named `name` into `dir`, and hand back its path.
-#[cfg(unix)]
-fn write_probe_tool(dir: &Path, name: &str) -> std::path::PathBuf {
-    use std::os::unix::fs::PermissionsExt;
-    let bin = dir.join(name);
+/// Write one no-op executable named `stem` into `dir`, and hand back its path.
+///
+/// The name carries `.exe` on Windows, which is what makes the file resolvable
+/// there: `command_path` searches by `PATHEXT`, not by an exec bit.
+pub fn write_probe_tool(dir: &Path, stem: &str) -> std::path::PathBuf {
+    let bin = if cfg!(windows) {
+        dir.join(format!("{stem}.exe"))
+    } else {
+        dir.join(stem)
+    };
     std::fs::write(&bin, "#!/bin/sh\nexit 0\n").expect("write probe tool");
-    let mut perms = std::fs::metadata(&bin).expect("stat").permissions();
-    perms.set_mode(0o755);
-    std::fs::set_permissions(&bin, perms).expect("chmod");
+    crate::set_file_permissions(&bin, 0o755).expect("chmod probe tool");
     bin
 }
 

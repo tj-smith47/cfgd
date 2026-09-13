@@ -812,6 +812,10 @@ pub fn parse_duration_str(s: &str) -> Result<std::time::Duration, String> {
 /// on Windows while parsing as an ordinary name everywhere else. A value written
 /// on one OS reaches the others through a config repository or a source, so a
 /// shape `Path::join` would read as rooted on ANY host is refused on all of them.
+///
+/// The drive test is ANY single ASCII letter before a colon, not only a letter
+/// some host has a drive under, so a unix file genuinely named `a:b.txt` is
+/// refused everywhere: Windows reads that same string as drive-relative.
 pub fn path_is_rooted(raw: &str) -> Option<&'static str> {
     let mut chars = raw.chars();
     let drive_relative = matches!(

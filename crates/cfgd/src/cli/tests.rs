@@ -9028,18 +9028,6 @@ fn no_system_configurator_registration_is_gated_on_a_tool_probe() {
     );
 }
 
-/// A configurator or secret provider whose whole availability question is
-/// "is this binary here" names that binary through `required_tool()`, and the
-/// planner installs it in `Bootstrap` ahead of the phase that needs it. One
-/// that answers `false` for a reason no package changes — a kernel interface,
-/// a platform, an init system, a key file that does not exist — declares
-/// nothing, and says on its impl why installing something would not help.
-///
-/// Without the marker the two cases are one silence: a configurator that
-/// simply forgot to name its tool reads exactly like one that deliberately
-/// has none, and the host stays unconfigured with nothing reporting why. The
-/// population is derived from the trait impls themselves, so a configurator
-/// or provider added to either crate joins the walk with it.
 /// The body of `required_tool` inside one literal-blanked trait impl, brace
 /// counted from its own opening brace.
 ///
@@ -9064,6 +9052,19 @@ fn required_tool_body(impl_body: &str) -> Option<&str> {
     }
     None
 }
+
+/// A configurator or secret provider whose whole availability question is
+/// "is this binary here" names that binary through `required_tool()`, and the
+/// planner installs it in `Bootstrap` ahead of the phase that needs it. One
+/// that answers `false` for a reason no package changes — a kernel interface,
+/// a platform, an init system, a key file that does not exist — declares
+/// nothing, and says on its impl why installing something would not help.
+///
+/// Without the marker the two cases are one silence: a configurator that
+/// simply forgot to name its tool reads exactly like one that deliberately
+/// has none, and the host stays unconfigured with nothing reporting why. The
+/// population is derived from the trait impls themselves, so a configurator
+/// or provider added to either crate joins the walk with it.
 
 #[test]
 fn every_system_configurator_and_secret_provider_names_its_tool_or_says_why_not() {

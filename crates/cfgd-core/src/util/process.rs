@@ -1010,19 +1010,6 @@ mod tests {
         assert!(command_available("sh"));
     }
 
-    /// Write an executable file named so `command_path(stem)` can resolve it.
-    fn write_probe_tool(dir: &std::path::Path, stem: &str) -> std::path::PathBuf {
-        let name = if cfg!(windows) {
-            format!("{stem}.exe")
-        } else {
-            stem.to_string()
-        };
-        let path = dir.join(name);
-        std::fs::write(&path, b"#!/bin/sh\nexit 0\n").expect("write probe tool");
-        crate::set_file_permissions(&path, 0o755).expect("chmod probe tool");
-        path
-    }
-
     #[test]
     #[serial]
     fn command_path_resolves_a_tool_only_a_registered_dir_holds() {
@@ -1035,7 +1022,7 @@ mod tests {
         let _dirs = crate::test_helpers::BootstrappedPathDirsGuard::capture();
         let dir = tempfile::tempdir().expect("tempdir");
         let stem = "cfgd-probe-registered-tool";
-        let expected = write_probe_tool(dir.path(), stem);
+        let expected = crate::test_helpers::write_probe_tool(dir.path(), stem);
 
         assert!(
             command_path(stem).is_none(),
@@ -1058,8 +1045,8 @@ mod tests {
         let on_path = tempfile::tempdir().expect("tempdir");
         let registered = tempfile::tempdir().expect("tempdir");
         let stem = "cfgd-probe-shadowed-tool";
-        let preferred = write_probe_tool(on_path.path(), stem);
-        write_probe_tool(registered.path(), stem);
+        let preferred = crate::test_helpers::write_probe_tool(on_path.path(), stem);
+        crate::test_helpers::write_probe_tool(registered.path(), stem);
 
         register_bootstrapped_path_dirs(&[registered.path().to_string_lossy().into_owned()]);
         let _path =
@@ -1111,7 +1098,7 @@ mod tests {
                     command_path(stem).is_none(),
                     "nothing named {stem} exists yet"
                 );
-                let expected = write_probe_tool(dir.path(), stem);
+                let expected = crate::test_helpers::write_probe_tool(dir.path(), stem);
                 let memoized = command_path(stem);
                 drop(path);
                 (dir, expected, memoized)
@@ -1151,7 +1138,7 @@ mod tests {
             command_path(stem).is_none(),
             "nothing named {stem} exists yet"
         );
-        let expected = write_probe_tool(dir.path(), stem);
+        let expected = crate::test_helpers::write_probe_tool(dir.path(), stem);
 
         assert_eq!(
             command_path(stem).as_deref(),
@@ -1171,7 +1158,7 @@ mod tests {
         let empty = tempfile::tempdir().expect("tempdir");
         let holding = tempfile::tempdir().expect("tempdir");
         let stem = "cfgd-probe-path-rekey";
-        let expected = write_probe_tool(holding.path(), stem);
+        let expected = crate::test_helpers::write_probe_tool(holding.path(), stem);
 
         let first = crate::test_helpers::EnvVarGuard::set("PATH", &empty.path().to_string_lossy());
         assert!(command_path(stem).is_none());
@@ -1201,7 +1188,7 @@ mod tests {
     fn a_resolution_queues_behind_a_tests_empty_path_window() {
         let dir = tempfile::tempdir().expect("tempdir");
         let stem = "cfgd-probe-queued-reader";
-        write_probe_tool(dir.path(), stem);
+        crate::test_helpers::write_probe_tool(dir.path(), stem);
 
         let excl = crate::test_helpers::path_env_mutation_guard();
         let dirs = crate::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
