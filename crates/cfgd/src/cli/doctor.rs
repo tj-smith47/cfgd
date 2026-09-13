@@ -4,21 +4,68 @@ use cfgd_core::PathDisplayExt;
 use cfgd_core::output::{Doc, Printer, Role, doc::SectionBuilder};
 use cfgd_core::providers::PackageManagerExt;
 
-pub(super) fn cmd_doctor(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
+pub(super) fn cmd_doctor(cli: &Cli, printer: &Printer, fix: bool) -> anyhow::Result<()> {
     // A failed verdict must fail the process so `cfgd doctor && cfgd apply`
     // stops instead of sailing into a guaranteed-broken apply. The Doc is
     // already emitted, so exit directly (mirroring cmd_profile_migrate)
     // rather than return an error the central sink would re-render.
-    if !run_doctor(cli, printer)? {
+    if !run_doctor(cli, printer, fix)? {
         cfgd_core::exit::ExitCode::Error.exit();
     }
     Ok(())
 }
 
+/// The tools a check reports on, with the `CFGD_*_BIN` seam each is reached
+/// through (`""` for a tool with none).
+///
+/// `--fix` installs exactly what the rows above report, so a tool added to the
+/// Tools or Secrets section joins this list with it. The optional secret
+/// providers are deliberately absent: their rows say "optional", and a reader
+/// asking cfgd to repair its prerequisites did not ask for four vendor CLIs.
+const FIXABLE_TOOLS: &[(&str, &str)] = &[("git", ""), ("sops", "CFGD_SOPS_BIN")];
+
+/// Install every tool of [`FIXABLE_TOOLS`] this host is missing, before the
+/// probes run.
+///
+/// Ahead of the probes rather than after them, so the report a reader ends up
+/// looking at states the machine as `--fix` left it, not as it was found.
+fn fix_missing_tools(printer: &Printer) {
+    let missing: Vec<&(&str, &str)> = FIXABLE_TOOLS
+        .iter()
+        // provision-route: cfgd doctor --fix, which is the loop below
+        .filter(|(tool, seam)| cfgd_core::require_tool_with_seam(seam, tool, None).is_err())
+        .collect();
+    if missing.is_empty() {
+        return;
+    }
+    let section = printer.section("Install missing tools");
+    // The install commits live rows of its own through the printer, which is a
+    // top-level emit while this section is open unless the depth is inherited.
+    let _inherit = printer.depth_inheritance();
+    let registry = crate::cli::build_registry();
+    for (tool, seam) in missing {
+        match crate::cli::helpers::provision_tool(printer, &registry, tool, seam) {
+            // name-row-ok: the row names the executable, not an outcome
+            Ok(()) => {
+                section.status(Role::Ok, *tool).qualifier("installed");
+            }
+            // name-row-ok: the row names the executable, not an outcome
+            Err(reason) => {
+                // no-next-step: the reason lists the managers that would have
+                // installed it, which is the only move left to the reader
+                section.status(Role::Fail, *tool).detail(reason);
+            }
+        }
+    }
+}
+
 /// Runs every doctor probe, emits the report Doc, and returns whether the
 /// verdict passed. Kept separate from the process-exit wrapper so it stays
 /// unit-testable.
-pub(crate) fn run_doctor(cli: &Cli, printer: &Printer) -> anyhow::Result<bool> {
+pub(crate) fn run_doctor(cli: &Cli, printer: &Printer, fix: bool) -> anyhow::Result<bool> {
+    if fix {
+        fix_missing_tools(printer);
+    }
     // One spinner across every probe, renamed per group: doctor shells out to
     // git, sops and each package manager before it prints anything at all.
     let (output, extras) = printer.narrate("Probing: config", |sp| {
@@ -609,7 +656,7 @@ fn build_config_section(s: SectionBuilder, cfg: &DoctorConfigCheck) -> SectionBu
     }
 }
 
-// no-next-step: the row's detail names the install to run
+// no-next-step: the row's detail names the command that installs the tool
 fn build_tools_section(s: SectionBuilder, git_available: bool) -> SectionBuilder {
     if git_available {
         // name-row-ok: the row names the executable, not an outcome
@@ -618,10 +665,16 @@ fn build_tools_section(s: SectionBuilder, git_available: bool) -> SectionBuilder
         // name-row-ok: the row names the executable, not an outcome
         s.status_with(Role::Fail, "git", |f| {
             f.qualifier(cfgd_core::Absence::NotFound.as_str())
-                .detail("install git to use cfgd")
+                .detail(MSG_RUN_DOCTOR_FIX)
         })
     }
 }
+
+/// What a row naming a missing tool says to do about it.
+///
+/// One sentence for every such row, because the answer is the same whichever
+/// tool is missing: cfgd installs it through the manager this host already has.
+const MSG_RUN_DOCTOR_FIX: &str = "run `cfgd doctor --fix` to install it";
 
 fn build_secrets_section(mut s: SectionBuilder, secrets: &DoctorSecretsCheck) -> SectionBuilder {
     s = if secrets.sops_available {
@@ -634,7 +687,7 @@ fn build_secrets_section(mut s: SectionBuilder, secrets: &DoctorSecretsCheck) ->
         // name-row-ok: the row names the executable, not an outcome
         s.status_with(Role::Warn, "sops", |f| {
             f.qualifier(cfgd_core::Absence::NotFound.as_str())
-                .detail("required for secrets (https://github.com/getsops/sops#install)")
+                .detail(format!("required for secrets; {MSG_RUN_DOCTOR_FIX}"))
         })
     };
 

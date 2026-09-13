@@ -42,7 +42,7 @@ keys while carrying six). The keys live in the builder and its golden.
 | deploy                       | yes               | image-volume pin rewrites consumed by CI           |
 | diff                         | yes               | drift reporting                                    |
 | diff_module                  | yes               | per-module drift reporting                         |
-| doctor                       | no                | dev-tooling                                        |
+| doctor                       | yes               | the health verdict and every check's row, read by CI; under `--fix` the rows state the machine the repair left |
 | enroll                       | yes               | machine identity exposed to gateway                |
 | exec                         | yes               | the target a wrapper script ran a command against  |
 | explain                      | no                | dev-tooling                                        |

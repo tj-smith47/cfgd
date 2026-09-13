@@ -9,7 +9,7 @@ Tools
   ✓ git: found
 
 Secrets
-  ⚠ sops: not found — required for secrets (https://github.com/getsops/sops#install)
+  ⚠ sops: not found — required for secrets; run `cfgd doctor --fix` to install it
   ✓ age key: /home/test/.config/sops/age/keys.txt
   ✓ .sops.yaml: /home/test/.config/cfgd/.sops.yaml
   ✓ Provider 1password: available

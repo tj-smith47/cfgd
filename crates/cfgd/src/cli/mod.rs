@@ -1227,9 +1227,13 @@ pub enum Command {
 
     /// Check system health and dependencies
     #[command(
-        long_about = "Diagnose environment prerequisites, tool versions, and config validity.\n\nChecks what cfgd needs in order to run here: config validity, required tools, secret backends, declared package managers, module resolution, profile layout, and cfgd's own state store. It does not compare your managed files, env vars or system settings against the machine — run `cfgd diff` or `cfgd status` for that.\n\nExamples:\n  cfgd doctor\n  cfgd --output json doctor"
+        long_about = "Diagnose environment prerequisites, tool versions, and config validity.\n\nChecks what cfgd needs in order to run here: config validity, required tools, secret backends, declared package managers, module resolution, profile layout, and cfgd's own state store. It does not compare your managed files, env vars or system settings against the machine — run `cfgd diff` or `cfgd status` for that.\n\nWith --fix, every required tool a check reports missing is installed through the package manager this host already has, and the report then states what is there afterwards.\n\nExamples:\n  cfgd doctor\n  cfgd doctor --fix\n  cfgd --output json doctor"
     )]
-    Doctor,
+    Doctor {
+        /// Install every required tool a check reports missing
+        #[arg(long)]
+        fix: bool,
+    },
 
     /// Show the directory roots cfgd reads and writes
     #[command(
@@ -2911,7 +2915,7 @@ pub fn execute(
                 yes,
             } => profile::cmd_profile_migrate(cli, printer, name.as_deref(), *all, *dry_run, *yes),
         },
-        Command::Doctor => doctor::cmd_doctor(cli, printer),
+        Command::Doctor { fix } => doctor::cmd_doctor(cli, printer, *fix),
         Command::Paths => paths::cmd_paths(cli, printer, dir_sources),
         Command::Init {
             path,

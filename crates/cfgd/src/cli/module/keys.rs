@@ -2,12 +2,17 @@ use super::*;
 use cfgd_core::PathDisplayExt;
 use cfgd_core::output::{Doc, ICON_ARROW, Printer, Role};
 
+/// Get cosign onto this host, or say why this host cannot have it.
+///
+/// Both key verbs need the same binary and neither can do anything without it,
+/// so the one route to it is resolved once here.
+fn require_cosign(printer: &Printer) -> std::result::Result<(), String> {
+    let registry = crate::cli::build_registry();
+    crate::cli::helpers::provision_tool(printer, &registry, "cosign", "CFGD_COSIGN_BIN")
+}
+
 pub fn cmd_module_keys_generate(printer: &Printer, output_dir: Option<&str>) -> anyhow::Result<()> {
-    if let Err(msg) = cfgd_core::require_tool_with_seam(
-        "CFGD_COSIGN_BIN",
-        "cosign",
-        Some("install it from https://docs.sigstore.dev/cosign/installation/"),
-    ) {
+    if let Err(msg) = require_cosign(printer) {
         return Err(crate::cli::cli_error(
             "cosign",
             "tool_missing",
@@ -143,11 +148,7 @@ pub fn cmd_module_keys_rotate(
     dir: Option<&str>,
     artifacts: &[String],
 ) -> anyhow::Result<()> {
-    if let Err(msg) = cfgd_core::require_tool_with_seam(
-        "CFGD_COSIGN_BIN",
-        "cosign",
-        Some("install it from https://docs.sigstore.dev/cosign/installation/"),
-    ) {
+    if let Err(msg) = require_cosign(printer) {
         return Err(crate::cli::cli_error(
             "cosign",
             "tool_missing",

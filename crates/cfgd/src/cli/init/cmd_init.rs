@@ -989,19 +989,28 @@ pub(crate) fn regenerate_workflow(config_dir: &Path, printer: &Printer) -> anyho
 }
 
 pub(super) fn check_prerequisites(printer: &Printer) -> bool {
-    if !cfgd_core::command_available("git") {
-        printer
-            .status(Role::Fail, "Git is not installed")
-            .detail("cfgd requires git");
-        if cfg!(target_os = "macos") {
-            printer.hint("Install with `xcode-select --install`");
-        } else {
-            // install-verb-ok: advice for a human, not an install cfgd emits
-            printer.hint("Install with `sudo apt install git` (or your package manager)");
-        }
-        return false;
+    if cfgd_core::command_available("git") {
+        return true;
     }
-    true
+    let registry = crate::cli::build_registry();
+    match crate::cli::helpers::provision_tool(printer, &registry, "git", "") {
+        Ok(()) => {
+            printer.status_simple(Role::Ok, "Installed git");
+            true
+        }
+        Err(reason) => {
+            printer
+                .status(Role::Fail, "Git is not installed")
+                .detail(reason);
+            // The one route left when no manager cfgd drives is here: the
+            // Command Line Tools installer is macOS's own, and cfgd cannot
+            // drive its GUI prompt.
+            if cfg!(target_os = "macos") {
+                printer.hint("Install with `xcode-select --install`");
+            }
+            false
+        }
+    }
 }
 
 #[cfg(test)]

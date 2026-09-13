@@ -6,7 +6,7 @@ Config
   Profile  default
 
 Tools
-  ✗ git: not found — install git to use cfgd
+  ✗ git: not found — run `cfgd doctor --fix` to install it
 
 Secrets
   ✓ sops: found (3.8.1)
