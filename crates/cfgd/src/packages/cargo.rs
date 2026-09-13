@@ -749,9 +749,9 @@ tokei v12.1.2:
             let unspawnable = dir.path().join("cargo");
             std::fs::write(&unspawnable, "").expect("write the unspawnable file");
             let _g = EnvVarGuard::set(SHIM_ENV, unspawnable.to_string_lossy().as_ref());
-            let err = CargoManager
-                .available_version("ripgrep")
-                .expect_err("ENOENT spawn must surface as CommandFailed, not a panic");
+            let err = CargoManager.available_version("ripgrep").expect_err(
+                "a file nothing can execute must surface as CommandFailed, not a panic",
+            );
             assert!(
                 matches!(err, cfgd_core::errors::CfgdError::Package(
                     cfgd_core::errors::PackageError::CommandFailed { ref manager, .. }) if manager == "cargo"),

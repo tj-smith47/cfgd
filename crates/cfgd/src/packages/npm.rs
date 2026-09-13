@@ -1900,9 +1900,9 @@ mod tests {
             let printer = test_printer();
             let state = cfgd_core::test_helpers::test_state();
             let cx = PackageContext::new(&printer, &state);
-            let err = NpmManager
-                .installed_packages(&cx)
-                .expect_err("ENOENT spawn must surface as CommandFailed, not a panic");
+            let err = NpmManager.installed_packages(&cx).expect_err(
+                "a file nothing can execute must surface as CommandFailed, not a panic",
+            );
             assert!(
                 matches!(err, cfgd_core::errors::CfgdError::Package(
                     PackageError::CommandFailed { ref manager, .. }) if manager == "npm"),
@@ -1914,9 +1914,9 @@ mod tests {
         #[serial]
         fn npm_available_version_spawn_failure_maps_to_command_failed() {
             let _g = install_unspawnable();
-            let err = NpmManager
-                .available_version("typescript")
-                .expect_err("ENOENT spawn must surface as CommandFailed");
+            let err = NpmManager.available_version("typescript").expect_err(
+                "a file nothing can execute must surface as CommandFailed, not a panic",
+            );
             assert!(
                 matches!(err, cfgd_core::errors::CfgdError::Package(
                     PackageError::CommandFailed { ref manager, .. }) if manager == "npm"),
@@ -1933,9 +1933,9 @@ mod tests {
             let printer = test_printer();
             let state = cfgd_core::test_helpers::test_state();
             let cx = PackageContext::new(&printer, &state);
-            let err = NpmManager
-                .installed_packages_with_versions(&cx)
-                .expect_err("ENOENT spawn must surface as CommandFailed");
+            let err = NpmManager.installed_packages_with_versions(&cx).expect_err(
+                "a file nothing can execute must surface as CommandFailed, not a panic",
+            );
             assert!(
                 matches!(err, cfgd_core::errors::CfgdError::Package(
                     PackageError::CommandFailed { ref manager, .. }) if manager == "npm"),
