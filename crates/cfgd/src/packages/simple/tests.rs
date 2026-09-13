@@ -77,8 +77,9 @@ fn yum_manager_has_correct_fields() {
 fn apk_manager_has_correct_fields() {
     let mgr = apk_manager();
     assert_eq!(mgr.name(), "apk");
-    // apk doesn't use sudo in install_cmd (Alpine runs as root)
-    assert!(!mgr.install_cmd.contains(&"sudo"));
+    // An Alpine container runs as root, where strip_sudo_for_exec drops the
+    // declared sudo; a non-root Alpine host needs it declared.
+    assert!(mgr.install_cmd.starts_with(&["sudo"]));
     assert!(!mgr.ignore_update_exit);
     // apk has no list_with_versions override
     assert!(mgr.list_with_versions.is_none());
@@ -109,8 +110,7 @@ fn zypper_manager_has_correct_fields() {
 fn pkg_manager_has_correct_fields() {
     let mgr = pkg_manager();
     assert_eq!(mgr.name(), "pkg");
-    // FreeBSD pkg doesn't use sudo
-    assert!(!mgr.install_cmd.contains(&"sudo"));
+    assert!(mgr.install_cmd.starts_with(&["sudo"]));
     assert!(mgr.install_cmd.contains(&"-y"));
     assert!(!mgr.ignore_update_exit);
 }
@@ -275,7 +275,7 @@ fn dnf_manager_list_cmd_uses_installed_flag_not_positional() {
 #[test]
 fn apk_manager_install_cmd_is_add() {
     let mgr = apk_manager();
-    assert_eq!(mgr.install_cmd, &["apk", "add"]);
+    assert_eq!(mgr.install_cmd, &["sudo", "apk", "add"]);
 }
 
 #[test]
@@ -296,8 +296,8 @@ fn zypper_manager_list_cmd_searches_installed() {
 #[test]
 fn pkg_manager_install_uses_dash_y() {
     let mgr = pkg_manager();
-    assert_eq!(mgr.install_cmd, &["pkg", "install", "-y"]);
-    assert_eq!(mgr.uninstall_cmd, &["pkg", "remove", "-y"]);
+    assert_eq!(mgr.install_cmd, &["sudo", "pkg", "install", "-y"]);
+    assert_eq!(mgr.uninstall_cmd, &["sudo", "pkg", "remove", "-y"]);
 }
 
 /// Every family's `raise_verb` must be a token of the very command it claims
@@ -651,8 +651,8 @@ mod seam_tests {
     #[test]
     #[serial]
     fn apk_install_invokes_apk_add() {
-        // apk_manager has no `sudo` prefix; its install_cmd is `apk add`,
-        // and the seam routes through APK_BIN_ENV directly.
+        // The seam is set, so `strip_sudo_for_exec` drops the declared
+        // `sudo` and the shim sees `add` as argv[0].
         let shim = ToolShim::install(APK_BIN_ENV, 0, "", "");
         let printer = test_printer();
         let state = test_state();
@@ -829,5 +829,68 @@ mod seam_tests {
             !shim.argv_log().is_empty(),
             "the second ask must actually spawn pkg again, not read a cached failure"
         );
+    }
+}
+
+/// Every Unix family installs as a privileged user, and the declaration is the
+/// only place that can say so: [`strip_sudo_for_exec`] drops the `sudo` when the
+/// process is already root or a test has set the family's seam, so a family that
+/// never declared one spawns `pkg install -y` as an ordinary user and FreeBSD
+/// refuses it. That is how the `pkg` and `apk` families came to be unable to
+/// install anything on a non-root host, for their own packages and for a
+/// mediated bootstrap alike.
+///
+/// Judged on the declaration, so the claim holds at either uid, and then on the
+/// composed argv with no seam set, whose two arms are the two uids.
+#[test]
+#[serial_test::serial]
+fn every_unix_family_declares_the_privilege_its_install_needs() {
+    let families = [
+        ("apt", APT_GET_BIN_ENV),
+        ("dnf", DNF_BIN_ENV),
+        ("yum", YUM_BIN_ENV),
+        ("apk", APK_BIN_ENV),
+        ("pacman", PACMAN_BIN_ENV),
+        ("zypper", ZYPPER_BIN_ENV),
+        ("pkg", PKG_BIN_ENV),
+    ];
+    for (name, _) in families {
+        let mgr = simple_manager(name).unwrap_or_else(|| panic!("{name} is a family"));
+        for (slot, cmd) in [
+            ("install_cmd", Some(mgr.install_cmd)),
+            ("uninstall_cmd", Some(mgr.uninstall_cmd)),
+            ("update_cmd", mgr.update_cmd),
+            ("upgrade_cmd", mgr.upgrade_cmd),
+        ] {
+            let Some(cmd) = cmd else { continue };
+            assert_eq!(
+                cmd.first(),
+                Some(&"sudo"),
+                "{name}'s {slot} must lead with sudo so a non-root host can run it: {cmd:?}"
+            );
+        }
+    }
+
+    // No seam, so the composition answers from the uid alone.
+    let _seams: Vec<_> = families
+        .iter()
+        .map(|(_, seam)| cfgd_core::test_helpers::EnvVarGuard::unset(seam))
+        .collect();
+    let root = cfgd_core::is_root();
+    for (name, _) in families {
+        let cmd = family_install_command(name, &["ripgrep"])
+            .unwrap_or_else(|| panic!("{name} composes an install"));
+        let program = cmd.get_program().to_string_lossy().into_owned();
+        if root {
+            assert_ne!(
+                program, "sudo",
+                "{name} must not re-elevate a run that is already root"
+            );
+        } else {
+            assert_eq!(
+                program, "sudo",
+                "{name} must elevate an install an ordinary user cannot perform"
+            );
+        }
     }
 }
