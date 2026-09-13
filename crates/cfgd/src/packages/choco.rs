@@ -17,7 +17,7 @@ pub struct ChocolateyManager;
 /// is set by an existing install; the literal is the installer's own default for
 /// the machine-wide install cfgd's bootstrap performs. Windows-only, because the
 /// bootstrap is a PowerShell script that runs nowhere else.
-fn choco_bin_dir() -> Option<std::path::PathBuf> {
+pub(super) fn choco_bin_dir() -> Option<std::path::PathBuf> {
     if !cfg!(windows) {
         return None;
     }

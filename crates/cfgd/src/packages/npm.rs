@@ -1018,15 +1018,37 @@ mod tests {
         };
         let plan = planned.expect("the cascade reached an arm this host can run");
         assert_eq!(plan.method, expected_method);
+        // The literal, not `nvm_bootstrap_plan().requires`: the plan IS that
+        // function's value, so reading it back here would compare the producer
+        // with itself and let the pair it declares shrink unnoticed. Naming
+        // only curl is how a plan was approved and then died inside an install
+        // on a FreeBSD host with no bash.
         assert_eq!(
             plan.requires,
             if expected_method == NPM_FALLBACK_METHOD {
-                nvm_bootstrap_plan().requires
+                vec!["curl".to_string(), "bash".to_string()]
             } else {
                 Vec::<String>::new()
             }
         );
         assert!(plan.creates_path_dirs.is_empty());
+    }
+
+    /// The nvm arm's prerequisites, as the two names rather than as whatever
+    /// the arm currently declares. The installer's pipeline is fetched by curl
+    /// and RUN by bash, so naming only curl is how a plan was approved and then
+    /// died inside the install on a FreeBSD host carrying neither.
+    ///
+    /// Stated here as well as in the cascade pin above because the cascade
+    /// reaches this arm only on a host with no mediator at all, and a host with
+    /// apt would never run the comparison.
+    #[cfg(not(windows))]
+    #[test]
+    fn the_nvm_arm_requires_both_the_fetcher_and_the_shell_that_runs_it() {
+        assert_eq!(
+            nvm_bootstrap_plan().requires,
+            vec!["curl".to_string(), "bash".to_string()]
+        );
     }
 
     #[test]

@@ -17,7 +17,7 @@ pub struct ScoopManager;
 /// Where the Scoop installer puts its shims — `SCOOP` when the user pins a root,
 /// otherwise the installer's default under the home directory. Windows-only,
 /// because the bootstrap is a PowerShell script that runs nowhere else.
-fn scoop_shims_dir() -> Option<std::path::PathBuf> {
+pub(super) fn scoop_shims_dir() -> Option<std::path::PathBuf> {
     if !cfg!(windows) {
         return None;
     }

@@ -10,9 +10,10 @@ use cfgd_core::providers::{BootstrapPlan, PackageManager};
 
 use super::shared::{
     MediatedArms, bootstrap_via_brew_then_system, bootstrap_via_system_manager,
-    detect_brew_system_method, partition_already_installed, pip_user_scripts_dir, pkg_run,
-    planned_method_failed, planned_method_unavailable, resolve_tool_with_fallbacks, run_pkg_cmd,
-    run_pkg_cmd_live, run_pkg_query, tool_cmd_with_resolver, upgrade_each,
+    command_failure_reason, detect_brew_system_method, partition_already_installed,
+    pip_user_scripts_dir, pkg_run, planned_method_failed, planned_method_unavailable,
+    planned_step_failed, resolve_tool_with_fallbacks, run_pkg_cmd, run_pkg_cmd_live, run_pkg_query,
+    tool_cmd_with_resolver, tool_seam_var, upgrade_each,
 };
 
 pub struct PipxManager;
@@ -125,6 +126,114 @@ fn pipx_pip_tool() -> &'static str {
         .unwrap_or(order[0])
 }
 
+/// How this run reaches pip: the program to spawn, the arguments that come
+/// before pip's own, and the name a message calls it by.
+///
+/// The Windows `py` launcher is the one route that is not a pip of its own, so
+/// it carries the `-m pip` that makes it one.
+struct PipRoute {
+    program: PathBuf,
+    leading: &'static [&'static str],
+    tool: &'static str,
+}
+
+impl PipRoute {
+    fn direct(tool: &'static str, program: PathBuf) -> Self {
+        PipRoute {
+            program,
+            leading: &[],
+            tool,
+        }
+    }
+
+    fn launcher(program: PathBuf) -> Self {
+        PipRoute {
+            program,
+            leading: &["-m", "pip"],
+            tool: "py -m pip",
+        }
+    }
+
+    /// The directory holding the interpreter's own console scripts, which is
+    /// where this pip was found. `None` for the launcher, which lives with
+    /// Windows rather than with any interpreter.
+    fn tools_dir(&self) -> Option<&std::path::Path> {
+        if self.leading.is_empty() {
+            self.program.parent()
+        } else {
+            None
+        }
+    }
+
+    fn command(&self) -> Command {
+        let program = self.program.clone();
+        let mut cmd = tool_cmd_with_resolver("pip", move || Some(program));
+        cmd.args(self.leading);
+        cmd
+    }
+}
+
+/// Where this run's pip is, or `None` when the machine has none.
+///
+/// The seam answers ahead of every probe: the name walk below would otherwise
+/// resolve the host's own pip before a test's planted one was ever reached.
+/// After that it is `$PATH` and the directories a bootstrap registered, then the
+/// places a Windows Python install leaves pip without touching either.
+fn find_pip() -> Option<PipRoute> {
+    if let Ok(seam) = std::env::var(tool_seam_var("pip")) {
+        let planted = PathBuf::from(seam);
+        if planted.is_file() {
+            return Some(PipRoute::direct("pip", planted));
+        }
+    }
+    let fallbacks = pip_fallbacks();
+    pip_tool_order()
+        .into_iter()
+        .find_map(|tool| {
+            resolve_tool_with_fallbacks(tool, &fallbacks).map(|path| PipRoute::direct(tool, path))
+        })
+        .or_else(|| windows_py_launcher().map(PipRoute::launcher))
+}
+
+fn pip_fallbacks() -> Vec<PathBuf> {
+    if cfg!(windows) {
+        windows_pip_candidates()
+    } else {
+        Vec::new()
+    }
+}
+
+/// Every `pip.exe` a Windows Python install could have left under
+/// `%LOCALAPPDATA%\Programs\Python`, which is where the winget and Microsoft
+/// Store interpreters land.
+///
+/// The tree is READ rather than composed: the directory carries the
+/// interpreter's own minor version, and the arm that just installed it edits the
+/// user's `PATH` in the registry, which this process cannot see.
+pub(super) fn windows_pip_candidates() -> Vec<PathBuf> {
+    let Some(root) =
+        std::env::var_os("LOCALAPPDATA").map(|a| PathBuf::from(a).join("Programs").join("Python"))
+    else {
+        return Vec::new();
+    };
+    let Ok(entries) = std::fs::read_dir(&root) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .map(|e| e.path().join("Scripts").join("pip.exe"))
+        .collect()
+}
+
+/// The `py` launcher the Python installer puts beside Windows itself, the one
+/// route to pip that does not depend on which minor was installed or on where
+/// its `Scripts` directory ended up.
+pub(super) fn windows_py_launcher() -> Option<PathBuf> {
+    let root = std::env::var_os("SystemRoot").unwrap_or_else(|| r"C:\Windows".into());
+    let launcher = PathBuf::from(root).join("py.exe");
+    launcher.is_file().then_some(launcher)
+}
+
 // Single source for the pip fallback's user-scripts dir, so
 // `bootstrap_plan`'s declaration and `path_dirs`'s recording can never
 // drift apart.
@@ -175,9 +284,6 @@ impl PackageManager for PipxManager {
             // user's own scripts directory, which is the directory this plan
             // promises. It names no required tool because the arm itself
             // delivers the `pip` that step runs.
-            // every-platform-ok: winget is only ever the method on a host whose
-            // own probe found winget, and the pip step behind it spawns the
-            // interpreter's own pip with no shell in between.
             PIPX_WINGET_METHOD => {
                 Some(BootstrapPlan::new(PIPX_WINGET_METHOD).creating(pipx_pip_scripts_dir()))
             }
@@ -220,13 +326,17 @@ impl PackageManager for PipxManager {
         }
 
         // Fall back to pip. Resolved to a full path rather than spawned by bare
-        // name: `command_path` searches the directories cfgd bootstrapped this
-        // run as well as `$PATH`, and a bare-name spawn searches only `$PATH`.
-        let Some((pip_cmd, pip_path)) = pip_tool_order()
-            .into_iter()
-            .find_map(|tool| cfgd_core::command_path(tool).map(|path| (tool, path)))
-        else {
+        // name: the winget arm above leaves an interpreter whose directory a
+        // Windows installer adds to the user's registry `PATH`, which this
+        // process cannot see, so a bare-name spawn would miss what just landed.
+        let Some(pip) = find_pip() else {
             return Err(match cx.planned_method() {
+                Some(PIPX_WINGET_METHOD) => planned_step_failed(
+                    "pipx",
+                    PIPX_WINGET_METHOD,
+                    "pip",
+                    "it is on neither PATH nor any directory the interpreter creates",
+                ),
                 Some(method) => planned_method_unavailable("pipx", method),
                 None => PackageError::BootstrapFailed {
                     manager: "pipx".into(),
@@ -235,23 +345,39 @@ impl PackageManager for PipxManager {
             }
             .into());
         };
+        // The interpreter's own scripts directory, so the rest of this run
+        // resolves the pip it holds and, once the install below lands, the pipx
+        // beside it. `command_path` searches what a bootstrap registered as well
+        // as `$PATH`.
+        if let Some(dir) = pip.tools_dir() {
+            cfgd_core::register_bootstrapped_path_dirs(&[cfgd_core::to_posix_string(dir)]);
+        }
 
-        let label = format!("Installing pipx via {}", pip_cmd);
+        let label = format!("Installing pipx via {}", pip.tool);
         let result = pkg_run(
             cx,
-            Command::new(pip_path).args(["install", "--user", "pipx"]),
+            pip.command().args(["install", "--user", "pipx"]),
             &label,
         )
         .map_err(|e| PackageError::BootstrapFailed {
             manager: "pipx".into(),
-            message: format!("{} install failed: {}", pip_cmd, e),
+            message: format!("{} install failed: {}", pip.tool, e),
         })?;
         if !result.status.success() {
             return Err(match cx.planned_method() {
+                // The mediator delivered the interpreter it packages; pip is
+                // what then failed, so the refusal names pip rather than sending
+                // the reader to check a winget that worked.
+                Some(PIPX_WINGET_METHOD) => planned_step_failed(
+                    "pipx",
+                    PIPX_WINGET_METHOD,
+                    pip.tool,
+                    &command_failure_reason(&result),
+                ),
                 Some(method) => planned_method_failed("pipx", method, &result),
                 None => PackageError::BootstrapFailed {
                     manager: "pipx".into(),
-                    message: format!("{} install --user pipx failed", pip_cmd),
+                    message: format!("{} install --user pipx failed", pip.tool),
                 },
             }
             .into());
@@ -622,7 +748,15 @@ mod tests {
             // (`pip install --user`), and it is the one arm that names the tool
             // it spawns.
             PIPX_FALLBACK_METHOD => {
-                assert_eq!(plan.requires, vec![pipx_pip_tool().to_string()]);
+                // The names, not `pipx_pip_tool()`: the plan IS that function's
+                // value, so reading it back here would compare the producer
+                // with itself and let the arm name a tool no pip is called.
+                assert_eq!(plan.requires.len(), 1, "{:?}", plan.requires);
+                assert!(
+                    ["pip3", "pip"].contains(&plan.requires[0].as_str()),
+                    "the pip arm names the interpreter's own pip: {:?}",
+                    plan.requires
+                );
                 assert!(
                     plan.creates_path_dirs.iter().all(is_user_scripts_dir),
                     "{:?}",
@@ -654,6 +788,34 @@ mod tests {
                 assert!(plan.creates_path_dirs.is_empty());
             }
         }
+    }
+
+    /// The pip arm's prerequisite, as the names pip actually goes by rather
+    /// than as whatever the arm currently declares: a plan naming a tool no pip
+    /// is called would be approved and then die looking for it.
+    ///
+    /// Driven with nothing on `PATH` and brew seamed to a file that is not
+    /// there, because the cascade reaches this arm only where no mediator
+    /// answers, and a host carrying brew or apt would never run the comparison.
+    #[test]
+    #[serial_test::serial]
+    fn the_pip_arm_requires_a_tool_pip_is_actually_called() {
+        let _path_excl = cfgd_core::test_helpers::path_env_mutation_guard();
+        let _path = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
+        let _no_brew = cfgd_core::test_helpers::EnvVarGuard::set(
+            "CFGD_BREW_BIN",
+            "/nonexistent/cfgd-no-brew-on-this-host",
+        );
+        let plan = PipxManager
+            .bootstrap_plan()
+            .expect("the pip arm is the route left when no mediator answers");
+        assert_eq!(plan.method, PIPX_FALLBACK_METHOD, "{plan:?}");
+        assert_eq!(plan.requires.len(), 1, "{:?}", plan.requires);
+        assert!(
+            ["pip3", "pip"].contains(&plan.requires[0].as_str()),
+            "the pip arm names the interpreter's own pip: {:?}",
+            plan.requires
+        );
     }
 
     /// One host, two planned methods, two answers: `path_dirs` reads the
@@ -818,6 +980,65 @@ mod tests {
         );
 
         assert!(windows_user_pipx_candidates().is_empty());
+    }
+
+    /// A winget or Microsoft Store interpreter lands under
+    /// `%LOCALAPPDATA%\Programs\Python`, and the minor in that path belongs to
+    /// whichever one was installed, so the tree is read rather than composed.
+    #[test]
+    #[serial_test::serial]
+    fn windows_pip_candidates_come_from_the_programs_python_tree() {
+        let local = tempfile::tempdir().unwrap();
+        let scripts = local
+            .path()
+            .join("Programs")
+            .join("Python")
+            .join("Python313")
+            .join("Scripts");
+        std::fs::create_dir_all(&scripts).unwrap();
+        let _guard = cfgd_core::test_helpers::EnvVarGuard::set(
+            "LOCALAPPDATA",
+            local.path().to_string_lossy().as_ref(),
+        );
+
+        assert_eq!(
+            windows_pip_candidates(),
+            vec![scripts.join("pip.exe")],
+            "the pip an installed interpreter carries must be findable off PATH"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn windows_pip_candidates_are_empty_without_a_programs_python_tree() {
+        let local = tempfile::tempdir().unwrap();
+        let _guard = cfgd_core::test_helpers::EnvVarGuard::set(
+            "LOCALAPPDATA",
+            local.path().to_string_lossy().as_ref(),
+        );
+
+        assert!(windows_pip_candidates().is_empty());
+    }
+
+    /// The launcher is the route that survives not knowing which minor was
+    /// installed, and it is a route only when it is really there.
+    #[test]
+    #[serial_test::serial]
+    fn the_py_launcher_is_read_from_the_windows_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let _guard = cfgd_core::test_helpers::EnvVarGuard::set(
+            "SystemRoot",
+            root.path().to_string_lossy().as_ref(),
+        );
+        assert_eq!(
+            windows_py_launcher(),
+            None,
+            "a Windows directory with no launcher in it is no route to pip"
+        );
+
+        let launcher = root.path().join("py.exe");
+        std::fs::write(&launcher, "").unwrap();
+        assert_eq!(windows_py_launcher(), Some(launcher));
     }
 
     // ---------------------------------------------------------------------

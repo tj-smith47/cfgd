@@ -10,9 +10,9 @@ use cfgd_core::providers::{BootstrapPlan, PackageContext, PackageManager};
 #[cfg(windows)]
 use super::shared::detect_windows_method;
 use super::shared::{
-    MediatedArms, bootstrap_via_shell_script, bootstrap_via_system_manager, home_relative_dir,
-    pkg_run, planned_method_failed, resolve_tool_with_fallbacks, run_pkg_cmd, run_pkg_cmd_live,
-    run_pkg_query, tool_cmd_with_resolver,
+    MediatedArms, bootstrap_via_shell_script, bootstrap_via_system_manager, command_failure_reason,
+    home_relative_dir, pkg_run, planned_step_failed, resolve_tool_with_fallbacks, run_pkg_cmd,
+    run_pkg_cmd_live, run_pkg_query, tool_cmd_with_resolver,
 };
 
 pub struct CargoManager;
@@ -69,27 +69,24 @@ pub(super) fn cargo_cmd() -> Command {
 /// command resolution was memoized before the install put it there.
 ///
 /// `~/.cargo/bin` is where rustup's own installer lands it; a Windows mediator
-/// lands it in its own shim tree instead (scoop's `shims`, chocolatey's `bin`),
-/// so those are named too rather than left to a `PATH` this process read before
-/// the arm ran.
+/// lands it in its own shim tree instead, so those two directories are read off
+/// the managers that own them rather than re-derived here. Both answer `None`
+/// off Windows, where neither manager is a route.
 fn rustup_fallbacks() -> Vec<PathBuf> {
     let exe = if cfg!(windows) {
         "rustup.exe"
     } else {
         "rustup"
     };
-    let mut dirs = vec![home_relative_dir("~/.cargo/bin")];
-    if cfg!(windows) {
-        dirs.push(home_relative_dir("~/scoop/shims"));
-        dirs.push(
-            std::env::var_os("ChocolateyInstall")
-                .map(|root| std::path::Path::new(&root).join("bin")),
-        );
-    }
-    dirs.into_iter()
-        .flatten()
-        .map(|dir| dir.join(exe))
-        .collect()
+    [
+        home_relative_dir("~/.cargo/bin"),
+        super::scoop::scoop_shims_dir(),
+        super::choco::choco_bin_dir(),
+    ]
+    .into_iter()
+    .flatten()
+    .map(|dir| dir.join(exe))
+    .collect()
 }
 
 fn rustup_cmd() -> Command {
@@ -119,7 +116,12 @@ fn install_default_toolchain(cx: &PackageContext<'_>, planned: Option<&str>) -> 
         return Ok(());
     }
     Err(match planned {
-        Some(method) => planned_method_failed("cargo", method, &result),
+        // The mediator installed the rustup it packages; the toolchain step is
+        // what then failed, so the refusal names rustup rather than sending the
+        // reader to check a manager that worked.
+        Some(method) => {
+            planned_step_failed("cargo", method, "rustup", &command_failure_reason(&result))
+        }
         None => PackageError::BootstrapFailed {
             manager: "cargo".into(),
             message: "rustup default stable failed".into(),

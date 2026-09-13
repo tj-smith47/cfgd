@@ -1024,6 +1024,26 @@ pub(super) fn planned_method_declined(manager: &str, method: &str) -> PackageErr
     }
 }
 
+/// The mediator the plan named did its half, and the tool behind it failed.
+///
+/// Told apart from [`planned_method_failed`] because the failing party is not
+/// the mediator: winget installs the interpreter it packages and pip is what
+/// then installs pipx, so naming winget would send the reader to check a tool
+/// that worked. `step` is that second tool, and `detail` is what it said.
+pub(super) fn planned_step_failed(
+    manager: &str,
+    method: &str,
+    step: &str,
+    detail: &str,
+) -> PackageError {
+    PackageError::BootstrapFailed {
+        manager: manager.into(),
+        message: format!(
+            "{method} installed its part, but {step} could not finish installing {manager}: {detail}"
+        ),
+    }
+}
+
 /// The mediator the plan named ran and failed. Its diagnostic travels in the
 /// error rather than in a note, because there is no next method to narrate
 /// toward and a caller-owned window settles no line of its own.
