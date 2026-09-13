@@ -9040,6 +9040,31 @@ fn no_system_configurator_registration_is_gated_on_a_tool_probe() {
 /// has none, and the host stays unconfigured with nothing reporting why. The
 /// population is derived from the trait impls themselves, so a configurator
 /// or provider added to either crate joins the walk with it.
+/// The body of `required_tool` inside one literal-blanked trait impl, brace
+/// counted from its own opening brace.
+///
+/// Bounded to that method rather than to the rest of the impl, because a
+/// sibling method further down holds `Some(` of its own and would answer for a
+/// `required_tool` that names nothing.
+fn required_tool_body(impl_body: &str) -> Option<&str> {
+    let (_, rest) = impl_body.split_once("fn required_tool")?;
+    let open = rest.find('{')?;
+    let mut depth = 0i32;
+    for (offset, ch) in rest[open..].char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&rest[open..open + offset]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 #[test]
 fn every_system_configurator_and_secret_provider_names_its_tool_or_says_why_not() {
     const TRAITS: [&str; 3] = ["SystemConfigurator", "SecretBackend", "SecretProvider"];
@@ -9088,7 +9113,13 @@ fn every_system_configurator_and_secret_provider_names_its_tool_or_says_why_not(
                     break;
                 }
             }
-            if body.contains("fn required_tool") {
+            // A body that names a tool hands one back, through either spelling
+            // of the option: a bare `None` names nothing the planner can
+            // install and is what the trait already defaults to, so it falls
+            // through to the marker branch and must say why no install helps.
+            let declares = required_tool_body(&body)
+                .is_some_and(|b| b.contains("Some(") || b.contains("then_some("));
+            if declares {
                 declared.push(site);
                 continue;
             }
@@ -37797,12 +37828,13 @@ fn provision_tool_installs_through_the_manager_the_tool_table_routes_to() {
 /// The success arm: the install lands the binary, and `provision_tool` says so.
 ///
 /// Every other pin here stops at a refusal, so the one path a reader depends on
-/// — cfgd got the tool — was carried by nothing. The tool appears BETWEEN the
-/// two probes, which is what the arm is for: the first resolution misses and is
-/// memoized, the install retires that memo, and the second resolution finds the
-/// binary sitting in the directory `PATH` already named. Without the
-/// invalidation the second probe reads the stale miss and the run reports a
-/// failure on a machine that has the tool.
+/// — cfgd got the tool — was carried by nothing. What makes the first probe
+/// miss is the memo `CommandPathMemoTtlGuard::never_expires` holds: the binary
+/// is already in the directory `PATH` names by then, and only the primed miss
+/// stands between the caller and the tool. The install retires that memo, and
+/// the second resolution finds the binary. Without the invalidation the second
+/// probe reads the stale miss and the run reports a failure on a machine that
+/// has the tool.
 #[test]
 #[cfg(unix)]
 #[serial_test::serial]
@@ -37810,7 +37842,9 @@ fn provision_tool_reports_success_once_the_install_lands_the_binary() {
     // The write guard, and the spawn stays inside its window: the whole claim
     // is about what a PATH resolution answers before and after the install, so
     // the window has to hold across both. The child it spawns is the shim at an
-    // absolute `CFGD_BREW_BIN` path.
+    // absolute `CFGD_BREW_BIN` path, and the guard is re-entrant per thread, so
+    // the read-after-write deadlock its own doc warns of cannot happen inside
+    // this window either.
     let _path_lock = cfgd_core::test_helpers::path_env_mutation_guard();
     let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
     // Never expires, so nothing but the install's own invalidation can clear
@@ -37827,11 +37861,7 @@ fn provision_tool_reports_success_once_the_install_lands_the_binary() {
     // What `brew install cosign` would have done, done here: the binary lands
     // in a directory that was already on PATH, so nothing new is registered and
     // only the memo stands between the caller and the tool.
-    let landed = probe.dir().join("cosign");
-    std::fs::write(&landed, "#!/bin/sh\nexit 0\n").expect("write the installed binary");
-    let mut perms = std::fs::metadata(&landed).expect("stat").permissions();
-    std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
-    std::fs::set_permissions(&landed, perms).expect("chmod");
+    probe.plant("cosign");
 
     let before = cfgd_core::command_resolution_generation();
     let printer = test_printer();
@@ -37891,7 +37921,9 @@ fn doctor_fix_installs_every_missing_tool_through_the_tool_table() {
     // seam, so an empty PATH is the only way to report it missing, and it is
     // also what leaves brew the one manager `provision_tool` can reach. The
     // child it spawns is the shim at an absolute `CFGD_BREW_BIN` path, so
-    // nothing in the window resolves a name through the PATH it emptied.
+    // nothing in the window resolves a name through the PATH it emptied, and
+    // the guard is re-entrant per thread, so the read-after-write deadlock its
+    // own doc warns of cannot happen here either.
     let _path_lock = cfgd_core::test_helpers::path_env_mutation_guard();
     let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
     // The memos outlive the empty-PATH window they were filled outside of, so
@@ -38072,9 +38104,10 @@ fn a_declared_gsettings_setting_plans_the_tool_ahead_of_the_configurator() {
 /// already on this host, so nothing is planned to install it.
 ///
 /// The seeding pass used to ask `command_available` a second time after the
-/// configurator's `is_available()` had already answered through the seam, and
-/// a bare `PATH` lookup answers a different question: a gsettings kept outside
-/// `PATH` got a prerequisite node for a tool the run would never use.
+/// configurator's `is_available()` had already answered through the seam. That
+/// second probe was a `continue`, so all it could ever do was suppress a node
+/// the seam had already made unnecessary; the gate that actually decides is
+/// `is_available()`, which is what this pins.
 #[test]
 #[serial_test::serial]
 fn a_configurator_whose_seam_points_at_its_tool_plans_no_prerequisite_for_it() {
@@ -38129,8 +38162,10 @@ fn a_configurator_whose_seam_points_at_its_tool_plans_no_prerequisite_for_it() {
 ///
 /// `--phase system`, `--skip bootstrap` and `--only system` all reach this
 /// through the one mark `filter_plan` settles after both selector grammars
-/// have been resolved. Before it, the run executed the configure step anyway
-/// and failed on a tool it never attempted to install.
+/// have been resolved, so both of that function's exits are driven here.
+/// Before it, the run executed the configure step anyway and failed on a tool
+/// it never attempted to install, which is why the filtered plan is carried
+/// through to a real apply rather than stopping at the render.
 #[test]
 #[serial_test::serial]
 fn a_run_filtered_to_the_system_phase_withholds_the_configure_step_it_left_the_install_out_of() {
@@ -38221,8 +38256,82 @@ fn a_run_filtered_to_the_system_phase_withholds_the_configure_step_it_left_the_i
     .header(&header_printer);
     let header = cfgd_core::test_helpers::captured_text(&header_buf);
     assert!(
+        header.contains(cfgd_core::reconciler::RunTitle::Plan.as_str()),
+        "the header rendered, so its silence about actions is a fact:\n{header}"
+    );
+    assert!(
         !header.contains("Actions"),
         "and the header promises no action, because the one in scope is withheld:\n{header}"
+    );
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let apply_printer = test_printer();
+    let result = reconciler
+        .apply(
+            &plan,
+            &resolved,
+            dir.path(),
+            &apply_printer,
+            Some(&filter),
+            &[],
+            cfgd_core::reconciler::ReconcileContext::Apply,
+            false,
+            None,
+            &cfgd_core::AbortFlag::new(),
+        )
+        .expect("a withheld configure step is not a failure");
+    assert!(
+        result.action_results.iter().all(|r| r.error.is_none()),
+        "the run this filter scoped reports no failure: {:?}",
+        result.action_results
+    );
+    assert_eq!(
+        result
+            .action_results
+            .iter()
+            .filter(|r| r.not_attempted.is_some())
+            .count(),
+        1,
+        "and the configure step is priced as not attempted, not as a skip that ran"
+    );
+
+    // The second grammar, through `filter_plan`'s other exit: `--skip` and
+    // `--only` prune nodes before the mark is settled, so the withholding has
+    // to be re-derived from what survived rather than from the filter alone.
+    let mut skipped = reconciler
+        .plan(
+            &resolved,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            cfgd_core::reconciler::ReconcileContext::Apply,
+        )
+        .expect("plan");
+    super::plan_ops::filter_plan(
+        &mut skipped,
+        &["bootstrap".to_string()],
+        &[],
+        None,
+        &printer,
+        &registry,
+        &std::collections::HashSet::new(),
+    );
+    let skipped_withheld: Vec<&'static str> = skipped
+        .phases
+        .iter()
+        .flat_map(|p| p.actions())
+        .filter_map(|a| match a {
+            cfgd_core::reconciler::Action::System(
+                cfgd_core::reconciler::SystemAction::ConfigureAfterInstall { .. },
+            ) => Some(a.pre_skip_reason()),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    assert_eq!(
+        skipped_withheld,
+        vec![cfgd_core::reconciler::PREREQUISITE_NOT_IN_RUN],
+        "`--skip bootstrap` drops the install the same way, and says so on the same row"
     );
 }
 

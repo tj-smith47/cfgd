@@ -1844,18 +1844,25 @@ pub struct ProbePath {
     _path: EnvVarGuard,
 }
 
+/// Write one no-op executable named `name` into `dir`, and hand back its path.
+#[cfg(unix)]
+fn write_probe_tool(dir: &Path, name: &str) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = dir.join(name);
+    std::fs::write(&bin, "#!/bin/sh\nexit 0\n").expect("write probe tool");
+    let mut perms = std::fs::metadata(&bin).expect("stat").permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&bin, perms).expect("chmod");
+    bin
+}
+
 #[cfg(unix)]
 impl ProbePath {
     /// A `PATH` of one directory containing an executable per name.
     pub fn containing(names: &[&str]) -> Self {
-        use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::TempDir::new().expect("tempdir");
         for name in names {
-            let bin = tmp.path().join(name);
-            std::fs::write(&bin, "#!/bin/sh\nexit 0\n").expect("write probe tool");
-            let mut perms = std::fs::metadata(&bin).expect("stat").permissions();
-            perms.set_mode(0o755);
-            std::fs::set_permissions(&bin, perms).expect("chmod");
+            write_probe_tool(tmp.path(), name);
         }
         let path = EnvVarGuard::set("PATH", tmp.path().to_str().expect("utf-8 tempdir"));
         Self {
@@ -1864,11 +1871,11 @@ impl ProbePath {
         }
     }
 
-    /// The one directory this `PATH` holds, for a test that has to put a
-    /// binary there AFTER a resolution has already missed it — which is how a
-    /// tool appearing mid-run is reproduced without a second `PATH` write.
-    pub fn dir(&self) -> &Path {
-        self._tmp.path()
+    /// Put an executable into this `PATH` AFTER a resolution has already missed
+    /// it, which is how a tool appearing mid-run is reproduced without a second
+    /// `PATH` write.
+    pub fn plant(&self, name: &str) -> std::path::PathBuf {
+        write_probe_tool(self._tmp.path(), name)
     }
 }
 
