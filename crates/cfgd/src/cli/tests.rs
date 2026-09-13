@@ -32006,11 +32006,11 @@ fn every_manager_install_the_cli_emits_spells_its_weak_dependency_policy_once() 
 /// resolves differently depending on which spawn ran.
 ///
 /// The word is judged by allowlist and not by a tell for the argv builders:
-/// outside its declaration each file spells `install` in exactly two shapes
-/// that reach no argv, and anything else carrying the word answers to the
-/// declaration or to the hatch. A tell has to recognize every builder there
-/// is, and the first one it missed was a `.args([` whose elements sit on
-/// their own lines, which is winget's own declaration shape.
+/// outside a declaration the word appears in exactly two shapes that reach no
+/// argv, and anything else carrying the word answers to the declaration or to
+/// the hatch. A tell has to recognize every builder there is, and the first
+/// one it missed was a `.args([` whose elements sit on their own lines, which
+/// is winget's own declaration shape.
 ///
 /// A raw `Command::new` on one of the three names, anywhere under `packages/`,
 /// is the same defect one layer down: it skips the `CFGD_*_BIN` seam the
@@ -32028,6 +32028,7 @@ fn every_windows_manager_install_the_cli_emits_comes_from_its_declaration() {
         "Command::new(\"scoop\")",
     ];
     const NAMED: &[&str] = &["winget.rs", "choco.rs", "scoop.rs"];
+    const WORD: &str = "\"install\"";
 
     let packages = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("src")
@@ -32041,35 +32042,54 @@ fn every_windows_manager_install_the_cli_emits_comes_from_its_declaration() {
                 above.starts_with("//") && above.contains(MARKER)
             })
     };
-    // The call whose argument list each line sits in. An argument written on
-    // its own line names no call, so the word's own shape cannot tell an
-    // error-kind label from an argv element. Brackets are counted on the
-    // literal-blanked line less any trailing comment, because chocolatey's
-    // bootstrap carries unbalanced parentheses inside its PowerShell script.
+    // The call whose argument list the word sits in, read at the word's own
+    // position, so a call spelled and closed on one line encloses the word it
+    // carries. A bracket is labelled with the identifier run ending at it and
+    // never with its line: a line naming `run_pkg_cmd` in an outer argument or
+    // in a trailing comment would otherwise bless every argv element under a
+    // builder it opened, and `.args([` labels its own group with the empty
+    // string because the character before the `[` is a bracket. Brackets are
+    // counted on the literal-blanked line less any trailing comment, because
+    // chocolatey's bootstrap carries unbalanced parentheses inside its
+    // PowerShell script.
     let enclosing_calls = |lines: &[(usize, String)]| {
         let mut out: Vec<Option<String>> = Vec::with_capacity(lines.len());
         let mut open: Vec<String> = Vec::new();
         for (_, line) in lines {
-            out.push(open.last().cloned());
             let blanked = cfgd_core::test_helpers::blank_string_literals(line);
-            for ch in blanked.split("//").next().unwrap_or_default().chars() {
+            let code = blanked.split("//").next().unwrap_or_default();
+            let word = line.find(WORD);
+            let mut at_word: Option<Option<String>> = None;
+            for (at, ch) in code.char_indices() {
+                if word == Some(at) {
+                    at_word = Some(open.last().cloned());
+                }
                 match ch {
-                    '(' | '[' => open.push(line.trim().to_string()),
+                    '(' | '[' => {
+                        let ident = code[..at]
+                            .trim_end_matches(|c: char| {
+                                c.is_alphanumeric() || matches!(c, '_' | '.' | ':')
+                            })
+                            .len();
+                        open.push(code[ident..at].to_string());
+                    }
                     ')' | ']' => {
                         open.pop();
                     }
                     _ => {}
                 }
             }
+            out.push(at_word.unwrap_or_else(|| open.last().cloned()));
         }
         out
     };
     // The two shapes carrying the word outside a declaration that reach no
     // argv: winget's `upgrade_verb`, whose install IS its raise, and the
-    // error-kind label each of the three hands `run_pkg_cmd_live`.
+    // error-kind label each of the three hands `run_pkg_cmd_live`, which is an
+    // argument of that call itself. An argv element sits under a `.arg(` or
+    // `.args(` group instead, whose own label carries no helper name.
     let reaches_no_argv = |line: &str, call: Option<&str>| {
-        line.contains("Some(\"install\")")
-            || (line.trim() == "\"install\"," && call.is_some_and(|c| c.contains("run_pkg_cmd")))
+        line.contains("Some(\"install\")") || call.is_some_and(|c| c.contains("run_pkg_cmd"))
     };
 
     let mut offenders = Vec::new();
@@ -32128,14 +32148,14 @@ fn every_windows_manager_install_the_cli_emits_comes_from_its_declaration() {
         for (i, (n, line)) in lines.iter().enumerate() {
             if line.trim_start().starts_with("//")
                 || (start..=end).contains(&i)
-                || !line.contains("\"install\"")
+                || !line.contains(WORD)
             {
                 continue;
             }
             if reaches_no_argv(line, calls[i].as_deref()) {
                 words_outside += 1;
             } else if !hatched(&lines, i) {
-                offenders.push(format!("{name}:{n}: {}", line.trim()));
+                offenders.push(format!("{}:{n}: {}", path.display(), line.trim()));
             }
         }
         // Anti-vacuity in the direction that decides the walk: each declaring
