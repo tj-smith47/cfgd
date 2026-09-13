@@ -1910,10 +1910,15 @@ fn windows_pkg_argv_cmd_shim_runs_via_cmd_slash_c() {
         ]
     );
     let bat = windows_pkg_argv("tool", Some(std::path::Path::new("C:/bin/tool.bat")));
-    assert_eq!(bat[0], "cmd");
-    assert_eq!(bat[1], "/c");
-    assert_eq!(bat[2], "call");
-    assert_eq!(bat[3], "C:/bin/tool.bat");
+    assert_eq!(
+        bat,
+        vec![
+            "cmd".to_string(),
+            "/c".into(),
+            "call".into(),
+            "C:/bin/tool.bat".into()
+        ]
+    );
 }
 
 #[test]
@@ -2614,11 +2619,12 @@ fn command_factory_name(code: &str) -> Option<String> {
 /// literal, inside a comment, and as real code after a statement) can be fed
 /// to it directly.
 fn unhatched_seam_reading_factories(src: &str) -> Vec<(String, usize)> {
-    const TELLS: [&str; 2] = ["std::env::var(", "tool_seam_var("];
+    const TELLS: [&str; 3] = ["std::env::var(", "tool_seam_var(", "tool_cmd("];
     let lines: Vec<&str> = src.lines().collect();
+    let code: Vec<String> = lines.iter().map(|l| code_of(l)).collect();
     let mut offenders = Vec::new();
     for (i, line) in lines.iter().enumerate() {
-        let Some(name) = command_factory_name(&code_of(line)) else {
+        let Some(name) = command_factory_name(&code[i]) else {
             continue;
         };
         // The whole comment block above the head, so a reason too long for one
@@ -2634,8 +2640,7 @@ fn unhatched_seam_reading_factories(src: &str) -> Vec<(String, usize)> {
         }
         let mut depth = 0i32;
         let mut opened = false;
-        for body_line in &lines[i..] {
-            let body_code = code_of(body_line);
+        for body_code in &code[i..] {
             depth += body_code.matches('{').count() as i32;
             depth -= body_code.matches('}').count() as i32;
             opened |= depth > 0;
@@ -2673,9 +2678,10 @@ fn every_manager_command_factory_spawns_the_path_its_resolver_chose() {
             continue;
         }
         let src = cfgd_core::test_helpers::production_slice_of(&path);
-        factories += src
-            .lines()
-            .filter(|l| command_factory_name(&code_of(l)).is_some())
+        let code: Vec<String> = src.lines().map(code_of).collect();
+        factories += code
+            .iter()
+            .filter(|c| command_factory_name(c).is_some())
             .count();
         for line in src.lines() {
             if line.contains("// seam-read-ok:") {
@@ -2717,6 +2723,11 @@ fn the_seam_read_walk_reads_a_tell_only_where_it_runs() {
     let hatched = "// seam-read-ok: it is its own resolver\nfn loud_cmd() -> Command {\n    tool_seam_var(n);\n}\n";
     let hatched_over_two_lines = "/// what it does\n// seam-read-ok: it is its own\n// resolver\nfn loud_cmd() -> Command {\n    tool_seam_var(n);\n}\n";
     let past_the_body = "fn quiet_cmd() -> Command {\n    Command::new(\"x\")\n}\n\nfn other() {\n    std::env::var(n);\n}\n";
+    // `tool_cmd_at` takes the path its resolver already chose and reads no
+    // seam, so the generic factory's name must not be found inside it.
+    let resolved_factory = "fn quiet_cmd() -> Command {\n    tool_cmd_at(name, resolved)\n}\n";
+    let generic_factory =
+        "fn loud_cmd() -> Command {\n    tool_cmd(APT_GET_BIN_ENV, \"apt-get\")\n}\n";
 
     for (label, src) in [
         ("a literal", in_a_literal),
@@ -2724,6 +2735,10 @@ fn the_seam_read_walk_reads_a_tell_only_where_it_runs() {
         ("a hatched factory", hatched),
         ("a hatch spanning two lines", hatched_over_two_lines),
         ("a sibling below the body", past_the_body),
+        (
+            "a factory taking an already-resolved path",
+            resolved_factory,
+        ),
     ] {
         assert!(
             unhatched_seam_reading_factories(src).is_empty(),
@@ -2731,8 +2746,14 @@ fn the_seam_read_walk_reads_a_tell_only_where_it_runs() {
             unhatched_seam_reading_factories(src)
         );
     }
-    assert_eq!(
-        unhatched_seam_reading_factories(after_a_statement),
-        vec![("loud_cmd".to_string(), 1)],
-    );
+    for (label, src) in [
+        ("a statement", after_a_statement),
+        ("the generic seam factory", generic_factory),
+    ] {
+        assert_eq!(
+            unhatched_seam_reading_factories(src),
+            vec![("loud_cmd".to_string(), 1)],
+            "{label} is a seam read"
+        );
+    }
 }
