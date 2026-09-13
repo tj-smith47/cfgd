@@ -4,13 +4,36 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+      day: "saturday"
+    cooldown:
+      default-days: 7
     commit-message:
       prefix: "chore"
       include: "scope"
-    # Group routine version bumps into one weekly PR; Dependabot security
-    # updates bypass grouping and arrive as individual PRs regardless.
+    # Group routine version bumps into one weekly PR. Security updates bypass
+    # the version group, so they carry a group of their own and arrive as one
+    # PR per ecosystem on an advisory day instead of one per dependency.
     groups:
       cargo:
+        patterns: ["*"]
+      cargo-security:
+        applies-to: security-updates
+        patterns: ["*"]
+  - package-ecosystem: "gomod"
+    directory: "/function-cfgd"
+    schedule:
+      interval: "weekly"
+      day: "saturday"
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+    groups:
+      go-modules:
+        patterns: ["*"]
+      go-modules-security:
+        applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: "github-actions"
     # `directory: "/"` reaches .github/workflows plus a ROOT-level action.yml —
@@ -22,11 +45,17 @@ updates:
       - "/.github/actions/*"
     schedule:
       interval: "weekly"
+      day: "saturday"
+    cooldown:
+      default-days: 7
     commit-message:
       prefix: "chore"
       include: "scope"
     groups:
       github-actions:
+        patterns: ["*"]
+      github-actions-security:
+        applies-to: security-updates
         patterns: ["*"]
     ignore:
       # Self-managed: the floating @v1 is moved by anodizer-action's own
@@ -43,11 +72,18 @@ updates:
       - "/function-cfgd"
       - "/tests/e2e/cli"
       - "/ecosystem/olm"
+      - "/demo"
     schedule:
       interval: "weekly"
+      day: "saturday"
+    cooldown:
+      default-days: 7
     commit-message:
       prefix: "chore"
       include: "scope"
     groups:
       docker:
+        patterns: ["*"]
+      docker-security:
+        applies-to: security-updates
         patterns: ["*"]
