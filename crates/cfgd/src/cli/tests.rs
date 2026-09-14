@@ -34005,7 +34005,9 @@ fn component_health_fixture() -> super::status::StatusOutput {
                 },
             )
             .collect(),
-            Some("default"),
+            // The profile every render of this fixture names, so each row's own
+            // owner is the one the section is asked for.
+            Some("base"),
         ),
         warnings: Vec::new(),
         classification_degraded: false,
@@ -34381,7 +34383,7 @@ fn component_health_nests_the_recorded_drift_under_its_owner() {
                 last_hash: Some("hash1".into()),
                 last_applied: Some(1_715_680_800),
             }],
-            Some("default"),
+            Some("base"),
         ));
     output.drift = vec![
         event(
