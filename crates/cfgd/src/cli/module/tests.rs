@@ -3894,9 +3894,9 @@ fn cmd_module_list_wide_format_emits_seven_column_table() {
 #[serial_test::serial]
 fn cmd_module_show_resolved_renders_platform_filtered_and_resolved_packages() {
     // Drives two resolve_package outcome arms in cmd_module_show:
-    // - Ok(Some(_)) clean-resolved package, prints \"<n> -> <mgr> install <r>\"
-    // - Ok(None) platform-filtered, prints \"<n>, platforms: <list> — skipped\"
-    //   on a Linux/macOS runner with a 'windows'-only entry.
+    // - Ok(Some(_)) clean-resolved package, prints "<n> via <mgr>"
+    // - Ok(None) platform-filtered, prints "<n>, platforms: <list> — skipped
+    //   (platform filter)" for the entry naming the other host.
     // The aliases + platforms format strings (lines 212-223) are also
     // exercised on the resolved entry — they're computed for every package
     // regardless of resolution outcome, even though only the Err arm emits
@@ -3952,12 +3952,20 @@ fn cmd_module_show_resolved_renders_platform_filtered_and_resolved_packages() {
     #[cfg(target_os = "windows")]
     {
         assert!(
-            output.contains("notepad → "),
-            "resolved entry should render '<name> -> <mgr> install ...', got: {output}"
+            output.contains("notepad") && output.contains(" via "),
+            "a resolved entry states the manager it landed on, got: {output}"
+        );
+        assert!(
+            !output.contains("install"),
+            "a `show` performs nothing, so no row spells an install verb, got: {output}"
         );
         assert!(
             output.contains("curl") && output.contains("skipped (platform filter)"),
             "platforms-filtered entry should report 'skipped (platform filter)', got: {output}"
+        );
+        assert!(
+            output.contains("platforms: linux/macos"),
+            "skipped entry should render platform_str with the host-rejected list, got: {output}"
         );
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
