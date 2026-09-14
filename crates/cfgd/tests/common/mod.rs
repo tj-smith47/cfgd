@@ -263,6 +263,8 @@ pub fn cli_for(config_dir: &std::path::Path, state_dir: &std::path::Path) -> Cli
             scan: false,
             exit_code: false,
             show_values: false,
+            show_scripts: false,
+            show_all: false,
         }),
     }
 }

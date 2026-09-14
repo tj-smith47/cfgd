@@ -514,6 +514,8 @@ fn test_cli(dir: &Path) -> super::super::Cli {
             scan: false,
             exit_code: false,
             show_values: false,
+            show_scripts: false,
+            show_all: false,
         }),
     }
 }
@@ -3337,6 +3339,8 @@ mod profile_update_module_cleanup {
                 scan: false,
                 exit_code: false,
                 show_values: false,
+                show_scripts: false,
+                show_all: false,
             }),
         }
     }

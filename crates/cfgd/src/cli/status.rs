@@ -2804,6 +2804,60 @@ pub(super) struct StatusRun {
     pub mask_env_values: cfgd_core::config::MaskEnvValues,
 }
 
+/// A retired `cfgd status` spelling: the flag, the sentence a run naming it is
+/// given, and the command that does the job now.
+///
+/// A removed flag that clap no longer declares gets the bare "unexpected
+/// argument", which tells a script's author nothing about where the display
+/// went. Both spellings stay declared and hidden so the refusal can name the
+/// replacement, the way [`crate::cli::plan_ops::LEGACY_PHASE_TOKENS`] owns the
+/// one wording of a retired `--phase` spelling.
+///
+/// A replacement is a command a reader can run, so it re-parses; a `<word>`
+/// placeholder stands for the argument only the reader knows.
+pub(crate) type LegacyStatusFlag = (&'static str, &'static str, &'static str);
+
+pub(crate) const LEGACY_STATUS_FLAGS: &[LegacyStatusFlag] = &[
+    (
+        "--show-scripts",
+        "`cfgd status` no longer lists scripts",
+        "cfgd module show <module>",
+    ),
+    (
+        "--show-all",
+        "`cfgd status` no longer takes `--show-all`",
+        "cfgd status -o wide",
+    ),
+];
+
+/// The retired spelling this invocation carried, in table order.
+pub(super) fn retired_status_flags(
+    show_scripts: bool,
+    show_all: bool,
+) -> Option<&'static LegacyStatusFlag> {
+    let carried = [show_scripts, show_all];
+    LEGACY_STATUS_FLAGS
+        .iter()
+        .zip(carried)
+        .find_map(|(flag, given)| given.then_some(flag))
+}
+
+/// The refusal a retired spelling earns: one sentence naming the replacement,
+/// and the replacement again as a command block a reader can copy.
+pub(super) fn retired_status_flag_error(flag: &LegacyStatusFlag) -> anyhow::Error {
+    let (spelling, reason, replacement) = flag;
+    crate::cli::cli_error_with_hints(
+        *spelling,
+        "invalid_argument",
+        format!("{reason}; run `{replacement}` instead."),
+        serde_json::json!({ "replacement": replacement }),
+        vec![cfgd_core::output::HintCommands::new(
+            "Run this instead:",
+            [replacement.to_string()],
+        )],
+    )
+}
+
 pub(super) fn cmd_status(
     cli: &Cli,
     printer: &Printer,
@@ -3793,6 +3847,71 @@ mod tests {
     use cfgd_core::output::Printer;
     use cfgd_core::output::Verbosity;
     use cfgd_core::state::{ApplyRecord, ApplyStatus};
+
+    /// Every retired `cfgd status` spelling is still declared, still reaches its
+    /// own table row, and names a replacement a reader can actually run.
+    ///
+    /// The table and [`retired_status_flags`] agree by POSITION, so a third
+    /// entry added to one and not the other would refuse the wrong flag; the
+    /// walk drives each spelling through clap and asks which row comes back.
+    /// A `<word>` in a replacement stands for the argument only the reader
+    /// knows, so the parse substitutes a concrete token for it.
+    #[test]
+    fn every_retired_status_flag_names_its_replacement() {
+        for (n, entry) in LEGACY_STATUS_FLAGS.iter().enumerate() {
+            let (spelling, reason, replacement) = entry;
+            let parsed = crate::cli::Cli::try_parse_from(["cfgd", "status", spelling])
+                .unwrap_or_else(|e| panic!("`cfgd status {spelling}` must still parse: {e}"));
+            let Some(crate::cli::Command::Status {
+                show_scripts,
+                show_all,
+                ..
+            }) = parsed.command
+            else {
+                panic!("`cfgd status {spelling}` parsed as another command");
+            };
+            let carried = retired_status_flags(show_scripts, show_all)
+                .unwrap_or_else(|| panic!("`{spelling}` reaches no row of the table"));
+            assert_eq!(
+                carried, entry,
+                "`{spelling}` reaches row {n}'s neighbour; the table and \
+                 `retired_status_flags` disagree about order"
+            );
+
+            assert!(
+                !reason.trim().is_empty(),
+                "`{spelling}` states no reason a run naming it is refused"
+            );
+            assert!(
+                !replacement.trim().is_empty(),
+                "`{spelling}` names no replacement, so the refusal tells a \
+                 script's author nothing about where the display went"
+            );
+            let runnable: Vec<String> = replacement
+                .split_whitespace()
+                .map(|word| {
+                    if word.starts_with('<') && word.ends_with('>') {
+                        "x".to_string()
+                    } else {
+                        word.to_string()
+                    }
+                })
+                .collect();
+            crate::cli::Cli::try_parse_from(&runnable).unwrap_or_else(|e| {
+                panic!("the replacement `{replacement}` does not re-parse: {e}")
+            });
+
+            let rendered = retired_status_flag_error(entry).to_string();
+            assert!(
+                rendered.contains(replacement),
+                "the refusal for `{spelling}` must name `{replacement}`: {rendered}"
+            );
+        }
+        assert!(
+            LEGACY_STATUS_FLAGS.len() >= 2,
+            "the table has stopped holding the spellings this command retired"
+        );
+    }
 
     /// A recorded row whose producer stated NO operands reads as a
     /// divergence, not as an absence — on the shell kinds too.

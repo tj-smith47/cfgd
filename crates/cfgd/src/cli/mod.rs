@@ -1305,6 +1305,12 @@ pub enum Command {
         exit_code: bool,
         #[arg(long, help = SHOW_VALUES_HELP, conflicts_with = "mask_env_values")]
         show_values: bool,
+        /// Retired: `cfgd status` no longer lists scripts.
+        #[arg(short = 's', long = "show-scripts", hide = true)]
+        show_scripts: bool,
+        /// Retired: the itemized view is `-o wide`.
+        #[arg(short = 'a', long = "show-all", hide = true)]
+        show_all: bool,
     },
 
     /// Show detailed diffs
@@ -3036,20 +3042,25 @@ pub fn execute(
             scan,
             exit_code,
             show_values,
-        } => status::cmd_status(
-            cli,
-            printer,
-            module.as_deref(),
-            status::StatusRun {
-                exit_code: *exit_code,
-                scan: *scan,
-                mask_env_values: if *show_values {
-                    cfgd_core::config::MaskEnvValues::None
-                } else {
-                    printer.mask_env_values()
+            show_scripts,
+            show_all,
+        } => match status::retired_status_flags(*show_scripts, *show_all) {
+            Some(flag) => Err(status::retired_status_flag_error(flag)),
+            None => status::cmd_status(
+                cli,
+                printer,
+                module.as_deref(),
+                status::StatusRun {
+                    exit_code: *exit_code,
+                    scan: *scan,
+                    mask_env_values: if *show_values {
+                        cfgd_core::config::MaskEnvValues::None
+                    } else {
+                        printer.mask_env_values()
+                    },
                 },
-            },
-        ),
+            ),
+        },
         Command::Diff { module, exit_code } => {
             diff::cmd_diff(cli, printer, module.as_deref(), *exit_code)
         }

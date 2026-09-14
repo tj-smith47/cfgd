@@ -814,6 +814,12 @@ section rather than reordering it by whatever the scan reached first.
 `✓ No drift detected` is claimed only after `--scan`; without one the row says
 nothing was checked.
 
+`cfgd status -s` / `--show-scripts` and `cfgd status -a` / `--show-all` are
+retired. Both spellings still parse, and a run that passes one is refused with
+the command that replaced it: `cfgd module show <module>` lists a module's
+hooks and their steps, and `cfgd status -o wide` renders the itemized
+inventories `--show-all` used to add.
+
 `-o wide` replaces the counts with the inventories, each row backed by a check
 carrying its own verdict, and drops the `Drift` section: every finding is
 already inline on the row for the thing it was found on. A row with no check

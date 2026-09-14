@@ -214,6 +214,8 @@ impl CliTestHarness {
                 scan: false,
                 exit_code: false,
                 show_values: false,
+                show_scripts: false,
+                show_all: false,
             }),
         }
     }
@@ -1331,6 +1333,8 @@ fn status_scan_is_a_plain_flag_that_composes_with_exit_code_and_module() {
             scan,
             exit_code,
             show_values: _,
+            show_scripts: _,
+            show_all: _,
         }) = parsed.command
         else {
             panic!("{argv:?} did not parse as status");
@@ -2230,6 +2234,8 @@ fn test_cli_with_state(dir: &Path, state_dir: Option<PathBuf>) -> Cli {
             scan: false,
             exit_code: false,
             show_values: false,
+            show_scripts: false,
+            show_all: false,
         }),
     }
 }
@@ -5716,6 +5722,8 @@ fn run_apply_home_unset_errors_and_creates_no_state() {
             scan: false,
             exit_code: false,
             show_values: false,
+            show_scripts: false,
+            show_all: false,
         }),
     };
     let printer = test_printer();
@@ -6292,6 +6300,8 @@ fn execute_status_command() {
         scan: false,
         exit_code: false,
         show_values: false,
+        show_scripts: false,
+        show_all: false,
     });
     super::execute(&cli, h.printer(), &super::paths::DirSources::all_default()).unwrap();
     h.assert_header("Status");
