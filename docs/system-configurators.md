@@ -5,7 +5,7 @@ The `system:` section in profiles routes each key to a registered system configu
 `cfgd plan` and `cfgd apply` sort a `system:` key this host cannot run as declared into three cases:
 
 - A **known configurator whose tool is simply missing** (`gsettings`, `xfconf-query`, `kwriteconfig6`, `ssh-keygen`, `gpg`, `git`) does not stay unavailable: the configurator names the binary it drives, cfgd plans the install in the `Bootstrap` phase, and the `System` phase runs the configurator after it. Outside a run, `cfgd doctor --fix` installs the tools `cfgd doctor` reports as missing (`git` and `sops`).
-- A **known configurator that isn't available** for a reason no install changes (the wrong platform, no running init system, a kernel interface this host does not expose) is skipped neutrally: this is expected, not a problem.
+- A **known configurator that isn't available** for a reason no install changes (the wrong platform, no running init system, a kernel interface this host does not expose) is skipped neutrally: this is expected, not a problem. Every configurator cfgd ships is registered on every host, so the skip names the configurator and the reason (`'windowsRegistry' is not available on this host`) rather than claiming cfgd has no such key.
 - An **unknown key with no matching configurator** (typically a typo, e.g. `gti` for `git`) surfaces as a warning: `unknown system key 'gti' — no such configurator (ignored)`. The key is ignored, but the warning makes the typo easy to catch.
 
 Each configurator follows the same pattern: read what the system has now, compare against what you want, and apply the difference.

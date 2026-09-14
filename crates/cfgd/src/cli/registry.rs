@@ -179,65 +179,38 @@ pub(in crate::cli) fn build_registry_with_config_and_packages(
     let mut registry = ProviderRegistry::new();
     registry.set_package_managers(package_managers_for_registry());
 
-    // Register system configurators based on OS
+    // Every configurator cfgd ships, registered on every host: `is_available()`
+    // is the ONE answer to "can this host run it", and every consumer filters
+    // through `available_system_configurators`. A platform or tool probe here
+    // answers a different question in the same breath, and the reader pays for
+    // the difference: an unregistered key gets `plan`'s "no configurator
+    // registered for '<key>'" with `unknown: true` — cfgd claiming it has never
+    // heard of `windowsRegistry` — instead of the "'<key>' is not available on
+    // this host" refusal the configurator itself states. `gpgKeys` also reads
+    // `CFGD_GPG_BIN` in its own `is_available`, so a probe here dropped it
+    // before its seam was ever consulted.
     use crate::system::*;
 
-    // ShellConfigurator: `chsh` on Unix, Windows Terminal settings.json on Windows
-    if cfg!(unix) || cfg!(windows) {
-        registry.add_system_configurator(Box::new(ShellConfigurator));
-    }
-
-    if cfg!(target_os = "macos") {
-        registry.add_system_configurator(Box::new(MacosDefaultsConfigurator));
-        registry.add_system_configurator(Box::new(LaunchAgentConfigurator));
-    }
-
-    if cfg!(target_os = "linux") {
-        registry.add_system_configurator(Box::new(SystemdUnitConfigurator::default()));
-        // Linux desktop configurators — each checks CLI availability at runtime via is_available()
-        registry.add_system_configurator(Box::new(GsettingsConfigurator));
-        registry.add_system_configurator(Box::new(KdeConfigConfigurator));
-        registry.add_system_configurator(Box::new(XfconfConfigurator));
-    }
-
-    // Environment configurator is available on Unix and Windows
-    if cfg!(unix) || cfg!(windows) {
-        registry.add_system_configurator(Box::new(EnvironmentConfigurator));
-    }
-
-    // Windows registry configurator
-    if cfg!(windows) {
-        registry.add_system_configurator(Box::new(WindowsRegistryConfigurator));
-    }
-
-    // Windows service configurator
-    if cfg!(windows) {
-        registry.add_system_configurator(Box::new(WindowsServiceConfigurator));
-    }
-
-    // The three cross-platform tool-backed configurators, registered
-    // unconditionally: `is_available()` is the one answer to "can this host run
-    // it" and every consumer filters through `available_system_configurators`.
-    // A probe here answers a different question in the same breath, so a host
-    // missing the tool got `plan`'s "no configurator registered" — which is
-    // false — instead of "not available on this host". `gpgKeys` also reads
-    // `CFGD_GPG_BIN` in its own `is_available`, so the probe dropped it before
-    // its seam was ever consulted.
+    registry.add_system_configurator(Box::new(ShellConfigurator));
+    registry.add_system_configurator(Box::new(MacosDefaultsConfigurator));
+    registry.add_system_configurator(Box::new(LaunchAgentConfigurator));
+    registry.add_system_configurator(Box::new(SystemdUnitConfigurator::default()));
+    registry.add_system_configurator(Box::new(GsettingsConfigurator));
+    registry.add_system_configurator(Box::new(KdeConfigConfigurator));
+    registry.add_system_configurator(Box::new(XfconfConfigurator));
+    registry.add_system_configurator(Box::new(EnvironmentConfigurator));
+    registry.add_system_configurator(Box::new(WindowsRegistryConfigurator));
+    registry.add_system_configurator(Box::new(WindowsServiceConfigurator));
     registry.add_system_configurator(Box::new(SshKeysConfigurator));
     registry.add_system_configurator(Box::new(GpgKeysConfigurator));
     registry.add_system_configurator(Box::new(GitConfigurator));
-
-    // Node/infrastructure system configurators (Linux-only, gated at compile time)
-    #[cfg(unix)]
-    {
-        registry.add_system_configurator(Box::new(SysctlConfigurator));
-        registry.add_system_configurator(Box::new(KernelModuleConfigurator));
-        registry.add_system_configurator(Box::new(ContainerdConfigurator));
-        registry.add_system_configurator(Box::new(KubeletConfigurator));
-        registry.add_system_configurator(Box::new(AppArmorConfigurator));
-        registry.add_system_configurator(Box::new(SeccompConfigurator));
-        registry.add_system_configurator(Box::new(CertificateConfigurator));
-    }
+    registry.add_system_configurator(Box::new(SysctlConfigurator));
+    registry.add_system_configurator(Box::new(KernelModuleConfigurator));
+    registry.add_system_configurator(Box::new(ContainerdConfigurator));
+    registry.add_system_configurator(Box::new(KubeletConfigurator));
+    registry.add_system_configurator(Box::new(AppArmorConfigurator));
+    registry.add_system_configurator(Box::new(SeccompConfigurator));
+    registry.add_system_configurator(Box::new(CertificateConfigurator));
 
     // Register secret backend and providers
     let (backend_name, age_key_path) = secret_backend_from_config(cfg);

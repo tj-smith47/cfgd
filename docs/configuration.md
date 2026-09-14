@@ -840,7 +840,7 @@ Run `cfgd paths` afterward to confirm the new locations.
 
 ## Linux
 
-On Linux, cfgd supports desktop environment-specific system configurators in addition to the cross-platform features:
+On Linux, cfgd supports desktop environment-specific system configurators in addition to the cross-platform features. A profile may still declare a configurator belonging to another platform: cfgd registers every configurator on every host, so the declaration is planned as a `System` skip naming the configurator and the reason, never reported as a key cfgd does not know.
 
 | Feature | Linux behavior |
 |---|---|

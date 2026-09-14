@@ -1,7 +1,5 @@
-#[cfg(unix)]
 mod node;
 
-#[cfg(unix)]
 pub use node::*;
 
 pub mod gpg_keys;

@@ -8971,25 +8971,49 @@ fn build_registry_has_package_managers() {
     assert!(names.contains(&"npm"), "should include npm");
 }
 
+/// The whole registered population, on whatever host runs the suite.
+///
+/// Registration answers "does cfgd ship a configurator for this key", which is
+/// the same answer on every operating system; `is_available()` answers "can
+/// this host run it". A key missing from the registry is the one case the
+/// planner has to word as `unknown`, and cfgd has never not heard of
+/// `windowsRegistry`.
 #[test]
-fn build_registry_has_system_configurators() {
+fn build_registry_registers_every_configurator_on_every_host() {
     let registry = super::build_registry();
-    assert!(
-        registry.system_configurators().len() >= 6,
-        "registry should have at least 6 system configurators on Linux, got: {}",
-        registry.system_configurators().len()
-    );
-    let names: Vec<&str> = registry
+    let mut names: Vec<&str> = registry
         .system_configurators()
         .iter()
         .map(|c| c.name())
         .collect();
-    for expected in ["shell", "environment", "sshKeys", "gpgKeys", "git"] {
-        assert!(
-            names.contains(&expected),
-            "the {expected} configurator is registered on every host it compiles for, got: {names:?}"
-        );
-    }
+    names.sort_unstable();
+    let mut expected = [
+        "apparmor",
+        "certificates",
+        "containerd",
+        "environment",
+        "git",
+        "gpgKeys",
+        "gsettings",
+        "kdeConfig",
+        "kernelModules",
+        "kubelet",
+        "launchAgents",
+        "macosDefaults",
+        "seccomp",
+        "shell",
+        "sshKeys",
+        "sysctl",
+        "systemdUnits",
+        "windowsRegistry",
+        "windowsServices",
+        "xfconf",
+    ];
+    expected.sort_unstable();
+    assert_eq!(
+        names, expected,
+        "every configurator cfgd ships is registered on every host"
+    );
 }
 
 /// Registration answers "does cfgd have a configurator for this key"; only
@@ -9026,6 +9050,159 @@ fn no_system_configurator_registration_is_gated_on_a_tool_probe() {
          drops it before its own seam is consulted:\n{}",
         offenders.join("\n")
     );
+
+    // The platform half of the same conflation, bounded to the block itself so
+    // a `#[cfg]` elsewhere in the file is not read as one. A configurator
+    // compiled out, or registered only on its own operating system, leaves the
+    // planner calling a key cfgd ships a configurator for "not registered".
+    let first = production
+        .find("add_system_configurator")
+        .expect("the walk reads the registration block itself, not a renamed remnant");
+    let last = production
+        .rfind("add_system_configurator")
+        .expect("the block has a last registration");
+    let block = &production[first..last];
+    let gated: Vec<&str> = block
+        .lines()
+        .filter(|l| {
+            let code = l.split("//").next().unwrap_or("");
+            code.contains("cfg!(") || code.contains("#[cfg(")
+        })
+        .collect();
+    assert!(
+        gated.is_empty(),
+        "registration is unconditional; a platform gate here makes an \
+         off-platform declaration read as a key cfgd does not know rather than \
+         one this host cannot run:\n{}",
+        gated.join("\n")
+    );
+}
+
+/// A configurator this host cannot run, and the settings body a profile
+/// declares for it, whichever host runs the suite.
+///
+/// Both members of the pair refuse for the PLATFORM and name no
+/// [`cfgd_core::providers::SystemConfigurator::required_tool`], which is the
+/// case the two pins below are about.
+fn off_platform_configurator() -> (&'static str, serde_yaml::Value) {
+    let key = if cfg!(windows) {
+        "macosDefaults"
+    } else {
+        "windowsRegistry"
+    };
+    let body = if cfg!(windows) {
+        "com.apple.dock:\n  autohide: true\n"
+    } else {
+        "HKCU\\Software\\Cfgd:\n  Sample: \"1\"\n"
+    };
+    (
+        key,
+        serde_yaml::from_str(body).expect("the fixture is a mapping"),
+    )
+}
+
+/// The plan a profile declaring [`off_platform_configurator`] produces against
+/// the real registry.
+fn off_platform_plan(
+    registry: &cfgd_core::providers::ProviderRegistry,
+    state: &cfgd_core::state::StateStore,
+    key: &str,
+    body: serde_yaml::Value,
+) -> cfgd_core::reconciler::Plan {
+    let reconciler = cfgd_core::reconciler::Reconciler::new(registry, state);
+    let mut resolved = cfgd_core::test_helpers::make_empty_resolved();
+    resolved.merged.system.insert(key.to_string(), body);
+    reconciler
+        .plan(
+            &resolved,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            cfgd_core::reconciler::ReconcileContext::Apply,
+        )
+        .expect("plan")
+}
+
+/// Declaring a configurator off its own platform is refused, not called
+/// unknown.
+///
+/// The registration block used to gate `windowsRegistry` on `cfg!(windows)`, so
+/// a Linux host reading a profile that declares one got `no configurator
+/// registered for 'windowsRegistry'` with `unknown: true` — cfgd claiming it
+/// ships no such thing, which sends the reader looking for a typo. The
+/// configurator is registered everywhere now and refuses for itself.
+#[test]
+fn a_configurator_declared_off_its_platform_is_refused_rather_than_unknown() {
+    let (key, body) = off_platform_configurator();
+    let registry = super::build_registry();
+    let state = cfgd_core::test_helpers::test_state();
+    let plan = off_platform_plan(&registry, &state, key, body);
+    let skip = plan
+        .phases
+        .iter()
+        .flat_map(|p| p.actions())
+        .find_map(|a| match a {
+            cfgd_core::reconciler::Action::System(cfgd_core::reconciler::SystemAction::Skip {
+                configurator,
+                reason,
+                unknown,
+                ..
+            }) if configurator == key => Some((reason.clone(), *unknown)),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("the {key} declaration is planned as a System skip"));
+    assert!(
+        !skip.1,
+        "a registered configurator is never unknown: {:?}",
+        skip
+    );
+    assert!(
+        skip.0
+            .contains(&format!("'{key}' is not available on this host")),
+        "and the reason is the host refusal the configurator itself states: {}",
+        skip.0
+    );
+}
+
+/// A platform refusal never becomes an install.
+///
+/// `configurator_tool_to_install` asks `is_available()` first and
+/// `required_tool()` second, and every configurator that refuses for its
+/// platform declares no tool, so there is nothing for `Bootstrap` to schedule.
+/// Registering the whole population on every host is what makes that order
+/// load-bearing: an unregistered key never reached the question at all.
+#[test]
+fn a_configurator_refusing_for_its_platform_plans_no_prerequisite_install() {
+    let (key, body) = off_platform_configurator();
+    let registry = super::build_registry();
+    assert!(
+        registry
+            .system_configurators()
+            .iter()
+            .find(|c| c.name() == key)
+            .map(|c| !c.is_available() && c.required_tool().is_none())
+            .unwrap_or(false),
+        "the fixture's premise: {key} is registered, refuses here, and names no tool"
+    );
+    let state = cfgd_core::test_helpers::test_state();
+    let plan = off_platform_plan(&registry, &state, key, body);
+    for action in plan.phases.iter().flat_map(|p| p.actions()) {
+        match action {
+            cfgd_core::reconciler::Action::Manager(
+                cfgd_core::reconciler::ManagerAction::Prerequisite { required_by, .. },
+            ) => assert!(
+                !required_by.iter().any(|c| c == &format!("system:{key}")),
+                "no tool install is scheduled for a platform refusal: {required_by:?}"
+            ),
+            cfgd_core::reconciler::Action::System(
+                cfgd_core::reconciler::SystemAction::ConfigureAfterInstall { configurator, .. },
+            ) => assert_ne!(
+                configurator, key,
+                "and the setting is not planned as work an install unblocks"
+            ),
+            _ => {}
+        }
+    }
 }
 
 /// The body of `required_tool` inside one literal-blanked trait impl, brace

@@ -649,11 +649,11 @@ Common configurators:
 | Key | Platform | Description |
 |-----|----------|-------------|
 | `shell` | All | Default login shell path (e.g. `/bin/zsh`). |
-| `systemd` | Linux | systemd unit management. |
+| `systemdUnits` | Linux | systemd unit management. |
 | `gsettings` | Linux | GNOME/GTK desktop settings via gsettings. |
 | `kdeConfig` | Linux | KDE Plasma settings via kwriteconfig. |
 | `xfconf` | Linux | XFCE desktop settings via xfconf-query. |
-| `launchd` | macOS | launchd plist management. |
+| `launchAgents` | macOS | launchd plist management. |
 | `environment` | All | System-level environment file management. |
 | `macosDefaults` | macOS | macOS `defaults write` settings. |
 | `sysctl` | Linux | sysctl kernel parameter tuning. |
@@ -662,12 +662,14 @@ Common configurators:
 | `kubelet` | Linux | kubelet configuration for Kubernetes nodes. |
 | `apparmor` | Linux | AppArmor profile management. |
 | `seccomp` | Linux | seccomp filter deployment. |
-| `certificates` | All | CA certificate installation. |
+| `certificates` | Linux | CA certificate installation into the system trust store. |
 | `windowsRegistry` | Windows | Registry key/value management. |
 | `windowsServices` | Windows | Windows Service lifecycle management. |
 | `sshKeys` | All | SSH key pair provisioning and permission enforcement. |
 | `gpgKeys` | All | GPG key provisioning and validity tracking. |
 | `git` | All | Global git configuration (`git config --global`). |
+
+The Platform column says which hosts can run a configurator, not which hosts know about it: cfgd registers all of them everywhere. A key declared off its platform is planned as a `System` skip naming the configurator and the refusal, so `windowsRegistry` on Linux reads `'windowsRegistry' is not available on this host`. Only a key no configurator claims (a typo) is reported as unknown.
 
 **Example:**
 ```yaml
