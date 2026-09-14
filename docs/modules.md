@@ -96,7 +96,7 @@ Gating comes at three levels, each the same field with the same tag vocabulary:
 | Level | Field | Gated-out behavior |
 |-------|-------|--------------------|
 | Module | `spec.platforms` | The module is skipped whole, and shows as a **Skipped** action. |
-| Package | `spec.packages[].platforms` | The package is not installed; `cfgd module show` lists it as `skipped (platform filter)`. |
+| Package | `spec.packages[].platforms` | The package is not installed; `cfgd module show --resolved` lists it as `skipped (platform filter)`. |
 | Entry | `spec.env[].platforms`, `spec.aliases[].platforms` | The entry is absent from this machine's desired state entirely; the document surfaces annotate it `(platforms: macos)`. |
 
 Use `spec.platforms` for a wholly platform-specific module, the per-package
@@ -610,7 +610,7 @@ A module reads as one of seven states:
 |---|---|---|
 | `Synced` | converged, with every check behind it answered | any status surface where a check covers the module |
 | `Applied` | its last apply completed and no check has looked since | any status surface with no scan on record for the module |
-| `Installed` | the module is on this machine, presence rather than convergence | `cfgd module list` and `cfgd module show` |
+| `Installed` | the module is on this machine, presence rather than convergence | `cfgd module list` |
 | `Drifted` | a live scan found a package missing or a file diverged | only `--scan` (and `--exit-code`, which implies it) |
 | `Unknown` | a check of its own could not run, so no verdict was reached | any surface reporting an erroring check |
 | `Failed` | its last apply had a failing action | any status surface |
@@ -757,7 +757,8 @@ A source that delivers only modules (no profiles) is valid; see [Source-Delivere
 
 ```sh
 cfgd module list                           # list modules and their status
-cfgd module show nvim                      # show details: packages, files, deps, resolved managers
+cfgd module show nvim                      # what the module declares: packages, files, env, scripts
+cfgd module show nvim --resolved           # what this host resolves the declaration to
 cfgd module show nvim --show-values        # reveal full env variable values (masked by default)
 cfgd module show nvim --show-scripts       # print each script's full body
 cfgd module show nvim --show-all           # both of the above

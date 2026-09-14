@@ -2,8 +2,7 @@ use super::*;
 use crate::cli::output_types::SourcePolicyOutput;
 use cfgd_core::PathDisplayExt;
 use cfgd_core::config::{ConfigSourceDocument, PolicyItems, SourceConstraints, SourceSpec};
-use cfgd_core::output::{Doc, KvPair, Printer, Role, doc::SectionBuilder, renderer::Table};
-use cfgd_core::state::source_status_display;
+use cfgd_core::output::{Doc, KvPair, Printer, Role, doc::SectionBuilder};
 
 /// Build the not-found error returned by `cmd_source_show`. The central error
 /// sink (`main.rs::render_cli_error`) renders the structured `{error, name,
@@ -33,11 +32,18 @@ pub fn build_source_not_found_error(name: &str, available: &[String]) -> anyhow:
     )
 }
 
+/// Build the `cfgd source show` Doc: what a subscription DECLARES and what the
+/// source's own manifest declares back.
+///
+/// What the state store remembers about the subscription — its status, the
+/// commit it last fetched, the ref the lockfile pins, the resources it owns on
+/// this machine — belongs to `cfgd source list` and `cfgd status`, which is
+/// why nothing here opens one.
 pub fn build_source_show_doc(
     output: &SourceShowOutput,
     manifest: Option<&ConfigSourceDocument>,
     profiles_dir: Option<&Path>,
-    now: &str,
+    detail: crate::cli::InventoryDetail,
 ) -> Doc {
     // `Show source:acme`, not `Source: acme`: the subject IS an owner, and a
     // `Label: value` title spelled its kind a second way — every other surface
@@ -72,68 +78,6 @@ pub fn build_source_show_doc(
         doc = doc.kv("Pin Version", pin);
     }
 
-    if let Some(ref state_info) = output.state {
-        doc = doc.section("State", |s| {
-            // The two commit rows sit together and Version closes the block:
-            // a reader comparing what is checked out against what the lockfile
-            // pins is comparing two SHAs, and a row between them makes that a
-            // search instead of a glance.
-            let (status, role) = source_status_display(&state_info.status);
-            let mut rows = vec![KvPair::role_valued("Status", status, role)];
-            if state_info.last_fetched.is_some() {
-                rows.push(KvPair::new(
-                    "Last Sync",
-                    crate::cli::source::list::last_sync_display(
-                        state_info.last_fetched.as_deref(),
-                        now,
-                    ),
-                ));
-            }
-            if let Some(ref commit) = state_info.last_commit {
-                rows.push(KvPair::new("Last Commit", short_commit(commit)));
-            }
-            if let Some(ref locked_commit) = state_info.locked_commit {
-                rows.push(KvPair::new("Locked Commit", short_commit(locked_commit)));
-            }
-            if let Some(ref locked_ref) = state_info.locked_ref {
-                rows.push(KvPair::new("Locked Ref", locked_ref));
-            }
-            // Signed is a fact ABOUT the checked-out commit, but it follows the
-            // lock rows rather than sitting between the two SHAs it would split.
-            if state_info.last_commit.is_some() {
-                rows.push(KvPair::new("Signed", cfgd_core::yes_no(state_info.signed)));
-            }
-            // Version lives in the Manifest block, which states what the source
-            // DECLARES; repeating the same string here made one fact look like
-            // two. A source whose manifest could not be loaded has no Manifest
-            // block at all, and then the recorded version is the only answer
-            // there is — that is the one case this row still renders.
-            if let Some(ref version) = state_info.version
-                && manifest
-                    .and_then(|m| m.metadata.version.as_deref())
-                    .is_none()
-            {
-                rows.push(KvPair::new("Version", version));
-            }
-            s.kv_rows(rows)
-        });
-    }
-
-    doc = doc.section_if_nonempty(
-        "Managed Resources",
-        &output.managed_resources,
-        |s, resources| {
-            let mut table = Table::new(["Type", "Resource"]);
-            for r in resources {
-                table = table.row([
-                    r.resource_type.clone(),
-                    cfgd_core::fold_home_in_text(&r.resource_id),
-                ]);
-            }
-            s.table(table.without_unfillable_columns())
-        },
-    );
-
     // Modules this source DELIVERS — its manifest `provides.modules` allow-list
     // (the bodies a subscriber can resolve from this source).
     doc = doc.section_if_nonempty("Modules", &output.modules, |s, modules| {
@@ -148,7 +92,7 @@ pub fn build_source_show_doc(
         // The policy the payload carries IS the policy the human render shows:
         // this builder is pure, so re-deriving one here from a spec would let a
         // caller's `-o json` disagree with its own screen.
-        doc = source_manifest_doc_sections(doc, m, output.policy.as_ref(), profiles_dir);
+        doc = source_manifest_doc_sections(doc, m, output.policy.as_ref(), profiles_dir, detail);
     }
 
     doc.with_data(output)
@@ -176,6 +120,7 @@ pub fn source_manifest_doc_sections(
     manifest: &ConfigSourceDocument,
     policy: Option<&SourcePolicyOutput>,
     profiles_dir: Option<&Path>,
+    detail: crate::cli::InventoryDetail,
 ) -> Doc {
     let mut doc = doc.section("Manifest", |s| {
         // Name, then what the source SAYS it is, then which revision of it —
@@ -220,7 +165,10 @@ pub fn source_manifest_doc_sections(
                     match profiles_dir.map(|dir| cfgd_core::config::resolve_profile(name, dir)) {
                         Some(Ok(resolved)) => {
                             for (block, rows) in
-                                crate::cli::profile::show::profile_inventory_blocks(&resolved)
+                                crate::cli::profile::show::profile_inventory_blocks(
+                                    crate::cli::profile::show::own_profile_spec(&resolved),
+                                    detail,
+                                )
                             {
                                 if rows.is_empty() {
                                     continue;
@@ -459,7 +407,12 @@ fn append_policy_items(mut s: SectionBuilder, items: &PolicyItems) -> SectionBui
     s
 }
 
-pub fn cmd_source_show(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Result<()> {
+pub fn cmd_source_show(
+    cli: &Cli,
+    printer: &Printer,
+    name: &str,
+    detail: crate::cli::InventoryDetail,
+) -> anyhow::Result<()> {
     let config_path = cli.config.clone();
     let mut cfg = config::load_config(&config_path)?;
     drain_config_deprecations(printer, &mut cfg);
@@ -472,48 +425,6 @@ pub fn cmd_source_show(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Resu
         }
     };
 
-    let state = open_state_store(cli.state_dir.as_deref(), cli.scope())?;
-    let state_info = state.config_source_by_name(name)?;
-    let resources = state.managed_resources_by_source(name)?;
-
-    let config_dir = config_dir(cli);
-    let lock_entry = match cfgd_core::load_sources_lockfile(&config_dir) {
-        Ok(lf) => lf.sources.into_iter().find(|e| e.name == name),
-        Err(e) => {
-            printer.status_simple(
-                Role::Warn,
-                format!(
-                    "Could not read sources.lock: {}",
-                    cfgd_core::output::collapse_to_subject_line(&e),
-                ),
-            );
-            None
-        }
-    };
-
-    let state_with_lock = state_info.map(|s| SourceStateInfo {
-        status: s.status,
-        last_fetched: s.last_fetched,
-        last_commit: s.last_commit,
-        signed: s.last_commit_signed,
-        version: s.source_version,
-        locked_ref: lock_entry.as_ref().and_then(|e| e.resolved_ref.clone()),
-        locked_commit: lock_entry.as_ref().map(|e| e.resolved_commit.clone()),
-    });
-    // When there is no state DB row yet (source added but never synced), still
-    // surface lockfile data so callers can inspect the resolved SHA.
-    let state = state_with_lock.or_else(|| {
-        lock_entry.as_ref().map(|lock| SourceStateInfo {
-            status: "pending".to_string(),
-            last_fetched: None,
-            last_commit: None,
-            signed: None,
-            version: None,
-            locked_ref: lock.resolved_ref.clone(),
-            locked_commit: Some(lock.resolved_commit.clone()),
-        })
-    });
-
     let mut output = SourceShowOutput {
         name: name.to_string(),
         url: source_spec.origin.url.clone(),
@@ -524,14 +435,6 @@ pub fn cmd_source_show(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Resu
         sync_interval: source_spec.sync.interval.clone(),
         auto_apply: source_spec.sync.auto_apply,
         pin_version: source_spec.sync.pin_version.clone(),
-        state,
-        managed_resources: resources
-            .iter()
-            .map(|r| SourceResourceEntry {
-                resource_type: r.resource_type.clone(),
-                resource_id: r.resource_id.clone(),
-            })
-            .collect(),
         modules: Vec::new(),
         policy: None,
         manifest: None,
@@ -585,7 +488,7 @@ pub fn cmd_source_show(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Resu
         &output,
         manifest,
         profiles_dir.as_deref(),
-        &cfgd_core::utc_now_iso8601(),
+        detail,
     ));
     Ok(())
 }

@@ -15,6 +15,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use cfgd::cli::InventoryDetail;
 use cfgd::cli::profile::show::build_profile_show_doc;
 use cfgd_core::config::{
     AptSpec, BrewSpec, CargoSpec, EnvVar, FilesSpec, LayerPolicy, ManagedFileSpec, MergedProfile,
@@ -35,6 +36,82 @@ fn layer(name: &str) -> ProfileLayer {
     }
 }
 
+fn layer_with(name: &str, spec: ProfileSpec) -> ProfileLayer {
+    ProfileLayer {
+        spec,
+        ..layer(name)
+    }
+}
+
+/// What the `workstation` profile itself declares, as opposed to what the
+/// `base` layer under it contributes. The default render is this spec; the
+/// merged view below is what `--resolved` renders.
+fn own_spec() -> ProfileSpec {
+    let mut system = cfgd_core::config::SystemSettings::new();
+    system.insert(
+        "shellAliases".into(),
+        serde_yaml::Value::String("default".into()),
+    );
+
+    ProfileSpec {
+        inherits: vec!["base".into()],
+        modules: vec!["dev-tools".into()],
+        env: vec![
+            EnvVar {
+                name: "EDITOR".into(),
+                value: "nvim".into(),
+                platforms: vec![],
+            },
+            EnvVar {
+                name: "GH_TOKEN".into(),
+                value: "ghp_secret_token_value".into(),
+                platforms: vec![],
+            },
+            EnvVar {
+                name: "HOMEBREW_NO_ANALYTICS".into(),
+                value: "1".into(),
+                platforms: vec!["darwin".into()],
+            },
+        ],
+        aliases: vec![ShellAlias {
+            name: "gs".into(),
+            command: "git status".into(),
+            platforms: vec![],
+        }],
+        packages: Some(PackagesSpec {
+            brew: Some(BrewSpec {
+                file: None,
+                taps: vec![],
+                formulae: vec!["ripgrep".into()],
+                casks: vec![],
+            }),
+            ..PackagesSpec::default()
+        }),
+        files: Some(FilesSpec {
+            managed: vec![ManagedFileSpec {
+                patch: None,
+                source: "bashrc".into(),
+                target: PathBuf::from("/home/user/.bashrc"),
+                strategy: None,
+                private: false,
+                origin: None,
+                encryption: None,
+                permissions: None,
+            }],
+            permissions: HashMap::new(),
+        }),
+        system,
+        secrets: vec![SecretSpec {
+            source: "op://Personal/GitHub/token".into(),
+            target: Some(PathBuf::from("/home/user/.config/gh/token")),
+            template: None,
+            backend: None,
+            envs: None,
+        }],
+        ..ProfileSpec::default()
+    }
+}
+
 fn happy_resolved() -> ResolvedProfile {
     let mut system = std::collections::BTreeMap::new();
     system.insert(
@@ -47,7 +124,7 @@ fn happy_resolved() -> ResolvedProfile {
     );
 
     ResolvedProfile {
-        layers: vec![layer("base"), layer("workstation")],
+        layers: vec![layer("base"), layer_with("workstation", own_spec())],
         merged: MergedProfile {
             modules: vec!["base".into(), "dev-tools".into()],
             env: vec![
@@ -159,6 +236,8 @@ fn profile_show_happy_human() {
         Path::new("/etc/cfgd/cfgd.yaml"),
         &[],
         printer.arrow(),
+        InventoryDetail::default(),
+        false,
     ));
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "profile_show/happy.txt");
@@ -174,6 +253,8 @@ fn profile_show_happy_json() {
         Path::new("/etc/cfgd/cfgd.yaml"),
         &[],
         printer.arrow(),
+        InventoryDetail::default(),
+        false,
     ));
     drop(printer);
     let expected = serde_json::json!({
@@ -198,7 +279,71 @@ fn profile_show_empty_human() {
         Path::new("/etc/cfgd/cfgd.yaml"),
         &[],
         printer.arrow(),
+        InventoryDetail::default(),
+        false,
     ));
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "profile_show/empty.txt");
+}
+
+/// `--resolved` renders the merged view: every layer's contribution folded
+/// together, headed by the `Layers` section naming what contributed. The
+/// default render above is the profile's own declaration, and the two goldens
+/// sit beside each other so the difference is readable.
+#[test]
+fn profile_show_resolved_renders_the_merged_view() {
+    let resolved = happy_resolved();
+    let (printer, cap) = Printer::for_test_doc();
+    printer.emit(build_profile_show_doc(
+        &resolved,
+        "workstation",
+        Path::new("/etc/cfgd/cfgd.yaml"),
+        &[],
+        printer.arrow(),
+        InventoryDetail::default(),
+        true,
+    ));
+    drop(printer);
+    cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "profile_show/resolved.txt");
+}
+
+/// A declared env VALUE is masked by default and rendered in the clear under
+/// `--show-values`; the pair renders here so neither half can drift alone.
+#[test]
+fn profile_show_masks_declared_env_values_until_show_values() {
+    let resolved = happy_resolved();
+
+    let (printer, cap) = Printer::for_test_doc();
+    printer.emit(build_profile_show_doc(
+        &resolved,
+        "workstation",
+        Path::new("/etc/cfgd/cfgd.yaml"),
+        &[],
+        printer.arrow(),
+        InventoryDetail::default(),
+        false,
+    ));
+    drop(printer);
+    let masked = cap.human();
+    assert!(
+        !masked.contains("ghp_secret_token_value"),
+        "a declared env value renders masked by default: {masked}"
+    );
+
+    let (printer, cap) = Printer::for_test_doc();
+    printer.emit(build_profile_show_doc(
+        &resolved,
+        "workstation",
+        Path::new("/etc/cfgd/cfgd.yaml"),
+        &[],
+        printer.arrow(),
+        InventoryDetail::of(true, false, false),
+        false,
+    ));
+    drop(printer);
+    let shown = cap.human();
+    assert!(
+        shown.contains("ghp_secret_token_value"),
+        "--show-values renders the declared value in the clear: {shown}"
+    );
 }

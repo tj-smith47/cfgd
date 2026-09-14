@@ -1442,6 +1442,7 @@ fn manifest_sections_text(manifest: &cfgd_core::config::ConfigSourceDocument) ->
         manifest,
         Some(&policy),
         None,
+        crate::cli::InventoryDetail::default(),
     ));
     drop(printer);
     cfgd_core::test_helpers::captured_text(&buf)
@@ -1519,9 +1520,10 @@ fn source_manifest_sections_head_each_provided_profile_with_its_owner_token() {
     );
 }
 
-/// The subscriber must see what a profile DECLARES before subscribing — env
-/// values included — rendered through the same inventory `cfgd profile show`
-/// builds rather than a second renderer of this screen's own.
+/// The subscriber must see what a profile DECLARES before subscribing,
+/// rendered through the same inventory `cfgd profile show` builds rather than
+/// a second renderer of this screen's own. A declared env VALUE masks here as
+/// it does on every other surface, and `--show-values` is the one unmask.
 #[test]
 fn source_manifest_sections_render_a_provided_profiles_own_content() {
     let dir = tempfile::tempdir().unwrap();
@@ -1538,16 +1540,33 @@ fn source_manifest_sections_render_a_provided_profiles_own_content() {
         &manifest,
         None,
         Some(dir.path()),
+        crate::cli::InventoryDetail::default(),
     ));
     drop(printer);
     let out = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
-        out.contains("EDITOR") && out.contains("vim"),
-        "an env value must be visible before subscribing: {out}"
+        out.contains("EDITOR") && !out.contains("vim"),
+        "a declared env name renders and its value masks: {out}"
     );
     assert!(
         out.contains("brew formulae") && out.contains("ripgrep"),
         "packages must render through the profile inventory: {out}"
+    );
+
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    printer.emit(crate::cli::source::show::source_manifest_doc_sections(
+        cfgd_core::output::Doc::new(),
+        &manifest,
+        None,
+        Some(dir.path()),
+        crate::cli::InventoryDetail::of(true, false, false),
+    ));
+    drop(printer);
+    let shown = cfgd_core::test_helpers::captured_text(&buf);
+    assert!(
+        shown.contains("vim"),
+        "--show-values renders the declared value in the clear: {shown}"
     );
 }
 
@@ -1567,6 +1586,7 @@ fn source_manifest_sections_report_a_profile_the_source_does_not_ship() {
             &manifest,
             None,
             profiles_dir,
+            crate::cli::InventoryDetail::default(),
         ));
         drop(printer);
         cfgd_core::test_helpers::captured_text(&buf)
@@ -1645,6 +1665,7 @@ fn source_manifest_sections_render_the_effective_policy_when_a_spec_is_given() {
         &manifest,
         Some(&policy),
         None,
+        crate::cli::InventoryDetail::default(),
     ));
     drop(printer);
     let out = cfgd_core::test_helpers::captured_text(&buf);
@@ -6195,7 +6216,11 @@ fn execute_profile_list() {
 fn execute_profile_show() {
     let h = CliTestHarness::builder().build();
     let cli = h.cli_with_command(Command::Profile {
-        command: ProfileCommand::Show { name: None },
+        command: ProfileCommand::Show {
+            name: None,
+            resolved: false,
+            show_values: false,
+        },
     });
     super::execute(&cli, h.printer(), &super::paths::DirSources::all_default()).unwrap();
     h.assert_output_contains("default");
@@ -9484,6 +9509,7 @@ fn module_show_not_found() {
         &printer,
         "nonexistent",
         super::InventoryDetail::default(),
+        false,
     );
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("not found"));
@@ -9550,6 +9576,7 @@ spec:
         &printer,
         "dev-tools",
         super::InventoryDetail::default(),
+        false,
     )
     .unwrap();
     drop(printer);
@@ -9597,6 +9624,7 @@ spec:
         &printer,
         "secrets-mod",
         super::InventoryDetail::default(),
+        false,
     )
     .unwrap();
     {
@@ -9614,6 +9642,7 @@ spec:
             values: true,
             scripts: cfgd_core::output::ScriptsForm::Condensed,
         },
+        false,
     )
     .unwrap();
     drop(printer);
@@ -9636,8 +9665,13 @@ fn module_show_suggests_available_modules() {
     let cli = test_cli_with_state(dir.path(), Some(state_dir));
     let printer = test_printer();
 
-    let result =
-        module::cmd_module_show(&cli, &printer, "emacs", super::InventoryDetail::default());
+    let result = module::cmd_module_show(
+        &cli,
+        &printer,
+        "emacs",
+        super::InventoryDetail::default(),
+        false,
+    );
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("not found"));
 }
@@ -9671,6 +9705,7 @@ spec:
         &printer,
         "scripted",
         super::InventoryDetail::default(),
+        false,
     )
     .unwrap();
     drop(printer);
@@ -11008,6 +11043,7 @@ fn module_show_structured_output() {
         &printer,
         "json-mod",
         super::InventoryDetail::default(),
+        false,
     )
     .unwrap();
     drop(printer);
@@ -12168,7 +12204,12 @@ fn cmd_source_show_not_found() {
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
 
-    let result = super::source::cmd_source_show(&cli, &test_printer(), "nonexistent");
+    let result = super::source::cmd_source_show(
+        &cli,
+        &test_printer(),
+        "nonexistent",
+        super::InventoryDetail::default(),
+    );
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("not found"));
 }
@@ -12205,7 +12246,13 @@ spec:
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    super::source::cmd_source_show(&cli, &printer, "team-config").unwrap();
+    super::source::cmd_source_show(
+        &cli,
+        &printer,
+        "team-config",
+        super::InventoryDetail::default(),
+    )
+    .unwrap();
     drop(printer);
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -16925,7 +16972,7 @@ fn every_rendered_label_is_title_case() {
     // One witness per composer shape: a `.kv` key, a `KvPair`, a tuple pushed
     // into a row vector, and a table header. A regex that quietly stopped
     // matching one of the four would otherwise pass by finding nothing.
-    for witness in ["Scope", "Files Hash", "Drift Count", "Last Sync"] {
+    for witness in ["Scope", "Pinned Ref", "Drift Count", "New Integrity"] {
         assert!(
             seen.iter().any(|l| l == witness),
             "the walk no longer reaches the composer that renders {witness:?} \
@@ -20051,7 +20098,12 @@ fn cmd_source_show_exists() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    let result = super::source::cmd_source_show(&cli, &printer, "team-config");
+    let result = super::source::cmd_source_show(
+        &cli,
+        &printer,
+        "team-config",
+        super::InventoryDetail::default(),
+    );
     assert!(
         result.is_ok(),
         "source show should succeed: {:?}",
@@ -20076,7 +20128,13 @@ fn cmd_source_show_structured_json() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
-    super::source::cmd_source_show(&cli, &printer, "team-config").unwrap();
+    super::source::cmd_source_show(
+        &cli,
+        &printer,
+        "team-config",
+        super::InventoryDetail::default(),
+    )
+    .unwrap();
     drop(printer);
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -20996,7 +21054,13 @@ fn json_schema_source_list() {
 #[test]
 fn json_schema_source_show() {
     let h = CliTestHarness::builder().json().rich_config().build();
-    super::source::cmd_source_show(&h.cli(), h.printer(), "team-config").unwrap();
+    super::source::cmd_source_show(
+        &h.cli(),
+        h.printer(),
+        "team-config",
+        super::InventoryDetail::default(),
+    )
+    .unwrap();
     let parsed = h.json_output();
     assert_json_has_fields(&parsed, &["name", "url"]);
 }
@@ -23734,7 +23798,13 @@ fn cmd_source_list_structured_json_includes_state_info() {
 fn cmd_source_show_displays_all_key_fields() {
     let h = CliTestHarness::builder().rich_config().build();
 
-    super::source::cmd_source_show(&h.cli(), h.printer(), "team-config").unwrap();
+    super::source::cmd_source_show(
+        &h.cli(),
+        h.printer(),
+        "team-config",
+        super::InventoryDetail::default(),
+    )
+    .unwrap();
 
     let output = h.output();
     assert!(
@@ -23771,8 +23841,14 @@ fn cmd_source_show_displays_all_key_fields() {
     );
 }
 
+/// `source show` renders the DECLARED subscription. What the state store
+/// remembers about it — the fetch status, the last commit, the resources the
+/// source put on this machine — belongs to `cfgd source list` and `cfgd
+/// status`, which is why nothing here opens one. The rows the store used to
+/// feed are asserted absent so a re-added State or Managed Resources section
+/// fails here rather than in a golden.
 #[test]
-fn cmd_source_show_with_state_shows_status_section() {
+fn cmd_source_show_renders_no_recorded_state_or_managed_resources() {
     let h = CliTestHarness::builder().rich_config().build();
     let state = super::open_state_store(Some(h.state_path()), cfgd_core::Scope::User).unwrap();
     state
@@ -23786,79 +23862,61 @@ fn cmd_source_show_with_state_shows_status_section() {
             last_commit_signed: None,
         })
         .unwrap();
-
-    super::source::cmd_source_show(&h.cli(), h.printer(), "team-config").unwrap();
-
-    let output = h.output();
-    assert!(
-        output.contains("State"),
-        "should display State section, got: {output}"
-    );
-    assert!(
-        output.contains("Status"),
-        "should display Status within State section, got: {output}"
-    );
-    assert!(
-        output.contains("Last Sync"),
-        "should display Last Fetched, got: {output}"
-    );
-    // Last Commit should be truncated to 12 chars
-    assert!(
-        output.contains("deadbeef1234"),
-        "should display truncated commit hash, got: {output}"
-    );
-    assert!(
-        output.contains("3.1.0"),
-        "should display version, got: {output}"
-    );
-}
-
-#[test]
-fn cmd_source_show_with_managed_resources_shows_table() {
-    let h = CliTestHarness::builder().rich_config().build();
-    let state = super::open_state_store(Some(h.state_path()), cfgd_core::Scope::User).unwrap();
     state
         .upsert_managed_resource("package", "brew/curl", "team-config", None, None)
         .unwrap();
-    state
-        .upsert_managed_resource("file", "~/.bashrc", "team-config", None, None)
-        .unwrap();
+    drop(state);
 
-    super::source::cmd_source_show(&h.cli(), h.printer(), "team-config").unwrap();
+    super::source::cmd_source_show(
+        &h.cli(),
+        h.printer(),
+        "team-config",
+        super::InventoryDetail::default(),
+    )
+    .unwrap();
 
     let output = h.output();
+    for absent in [
+        "State",
+        "Last Sync",
+        "deadbeef1234",
+        "Managed Resources",
+        "brew/curl",
+    ] {
+        assert!(
+            !output.contains(absent),
+            "a `show` renders no recorded fact; found {absent:?} in: {output}"
+        );
+    }
     assert!(
-        output.contains("Managed Resources"),
-        "should display Managed Resources section, got: {output}"
-    );
-    assert!(
-        output.contains("brew/curl"),
-        "should list brew/curl resource, got: {output}"
-    );
-    assert!(
-        output.contains("~/.bashrc"),
-        "should list ~/.bashrc resource, got: {output}"
+        output.contains("Branch"),
+        "the declared subscription still renders: {output}"
     );
 }
 
+/// The same in `-o json`: the two recorded blocks are gone from the payload,
+/// so a consumer reading them is told rather than handed a stale shape.
 #[test]
-fn cmd_source_show_json_includes_managed_resources() {
+fn cmd_source_show_json_carries_no_recorded_state_or_managed_resources() {
     let h = CliTestHarness::builder().rich_config().json().build();
     let state = super::open_state_store(Some(h.state_path()), cfgd_core::Scope::User).unwrap();
     state
         .upsert_managed_resource("env", "EDITOR", "team-config", None, None)
         .unwrap();
+    drop(state);
 
-    super::source::cmd_source_show(&h.cli(), h.printer(), "team-config").unwrap();
+    super::source::cmd_source_show(
+        &h.cli(),
+        h.printer(),
+        "team-config",
+        super::InventoryDetail::default(),
+    )
+    .unwrap();
 
     let parsed = h.json_output();
     assert_eq!(parsed["name"], "team-config");
-    let resources = parsed["managedResources"]
-        .as_array()
-        .expect("should be array");
-    assert_eq!(resources.len(), 1);
-    assert_eq!(resources[0]["resourceType"], "env");
-    assert_eq!(resources[0]["resourceId"], "EDITOR");
+    assert!(parsed.get("managedResources").is_none(), "{parsed}");
+    assert!(parsed.get("state").is_none(), "{parsed}");
 }
 
 // -----------------------------------------------------------------------
@@ -27315,8 +27373,13 @@ mod cmd_source_add_local {
             .expect("cmd_source_update");
 
             let baseline_len = h.output().len();
-            super::source::cmd_source_show(&h.cli(), h.printer(), "shown-src")
-                .expect("cmd_source_show");
+            super::source::cmd_source_show(
+                &h.cli(),
+                h.printer(),
+                "shown-src",
+                super::InventoryDetail::default(),
+            )
+            .expect("cmd_source_show");
             let full = h.output();
             let show_out = &full[baseline_len..];
 
@@ -28254,6 +28317,7 @@ fn execute_module_show_dispatch() {
     let cli = h.cli_with_command(Command::Module {
         command: ModuleCommand::Show {
             name: "test-mod".to_string(),
+            resolved: false,
             show_values: false,
             show_scripts: false,
             show_all: false,
@@ -28582,6 +28646,7 @@ spec:
     let cli = h.cli_with_command(Command::Source {
         command: SourceCommand::Show {
             name: "my-src".to_string(),
+            show_values: false,
         },
     });
     super::execute(&cli, h.printer(), &super::paths::DirSources::all_default())
@@ -36256,11 +36321,6 @@ fn no_report_slot_spells_the_home_directory_absolutely() {
         sync_interval: "5m".into(),
         auto_apply: false,
         pin_version: None,
-        state: None,
-        managed_resources: vec![super::output_types::SourceResourceEntry {
-            resource_type: "file".into(),
-            resource_id: under_home(".zshrc"),
-        }],
         modules: Vec::new(),
         policy: None,
         manifest: None,
@@ -36298,8 +36358,8 @@ fn no_report_slot_spells_the_home_directory_absolutely() {
         directory: under_home(".config/cfgd/modules/nvim"),
         source: "local".into(),
         depends: Vec::new(),
-        state: None,
         spec: Default::default(),
+        resolved: None,
     };
     // The compliance surfaces name a checked file by its `<category>:<target>`
     // key, and the export line names the file it wrote.
@@ -36410,7 +36470,12 @@ fn no_report_slot_spells_the_home_directory_absolutely() {
         ),
         (
             "cfgd source show",
-            super::source::show::build_source_show_doc(&source_show, None, None, now),
+            super::source::show::build_source_show_doc(
+                &source_show,
+                None,
+                None,
+                super::InventoryDetail::default(),
+            ),
         ),
         (
             "cfgd source list",
@@ -36425,11 +36490,8 @@ fn no_report_slot_spells_the_home_directory_absolutely() {
             super::module::list_show::build_module_show_doc(
                 &module_show,
                 None,
-                &[],
                 super::InventoryDetail::default(),
-                true,
                 "->",
-                now,
             ),
         ),
         (
@@ -40894,5 +40956,373 @@ fn every_hook_table_a_production_site_builds_reads_the_one_hook_set() {
     assert_eq!(
         hatched_tables, 3,
         "the walk found {hatched_tables} hatched hook tables, so it is no longer reaching them"
+    );
+}
+
+/// The MACHINE / RESOLVED / RECORDED producers a `show` or a `list` may not
+/// reach, derived from `shared-utils.md` one class at a time.
+///
+/// RESOLVED: `modules::resolve_package` is the one site deciding which manager
+/// a package lands on, `fill_available_versions` the one asking what a manager
+/// offers, `applicable_here` the one filter of a `platforms:` list, and
+/// `Platform::current()` the host probe all three answer against. MACHINE:
+/// `PackageContext::installed_for` is the one question "what does this manager
+/// report installed", reached through `RunContext::package_context`, with
+/// `installed_packages` its trait-level form and `is_available(` the provider
+/// probe beside it. RECORDED: `StateStore` is the store itself (`open_state`
+/// the way a caller gets one, `state.db` its file),
+/// `module_status_display` / `module_listing_display` the words a recorded
+/// module state renders as, and `humanize_age_cell` the age of a recorded
+/// instant. `.state_store(` is deliberately absent: every spelling of it in the
+/// workspace is a test harness's, so a walk looking for it would be looking for
+/// nothing.
+///
+/// A lockfile entry is deliberately NOT a tell: `module show` renders its
+/// `Source`, `URL` and `Pinned Ref`, which are what the entry DECLARES, and the
+/// rule's own never-clause names four things a show may not open — a state
+/// store, a package context, a platform probe and a manager registry.
+const FACT_CLASS_TELLS: &[&str] = &[
+    "StateStore",
+    "open_state",
+    "state.db",
+    "resolve_package(",
+    "fill_available_versions(",
+    "installed_for(",
+    "package_context(",
+    "installed_packages",
+    "is_available(",
+    "Platform::current()",
+    "applicable_here(",
+    "module_status_display(",
+    "module_listing_display(",
+    "humanize_age_cell(",
+];
+
+/// The one hatch: a `<noun> list` may carry ONE recorded status column and its
+/// age, so the read that fills it says so on its own line or the line above.
+const LIST_STATUS_HATCH: &str = "list-status-ok:";
+
+/// Every leaf subcommand whose last token is `show` or `list`, as
+/// `(rendered path, cmd_* function name)`, plus `explain` — read off
+/// `Cli::command()` so a verb joining the tree joins this population with it.
+fn show_and_list_population() -> Vec<(String, String)> {
+    use clap::CommandFactory;
+    fn walk(cmd: &clap::Command, path: &mut Vec<String>, out: &mut Vec<Vec<String>>) {
+        let mut leaf = true;
+        for sub in cmd.get_subcommands() {
+            leaf = false;
+            path.push(sub.get_name().to_string());
+            walk(sub, path, out);
+            path.pop();
+        }
+        if leaf && !path.is_empty() {
+            out.push(path.clone());
+        }
+    }
+    let root = Cli::command();
+    let mut leaves = Vec::new();
+    walk(&root, &mut Vec::new(), &mut leaves);
+    let mut population: Vec<(String, String)> = leaves
+        .into_iter()
+        .filter(|p| {
+            p.last().is_some_and(|t| t == "show" || t == "list") || p == &["explain".to_string()]
+        })
+        .map(|p| (p.join(" "), format!("cmd_{}", p.join("_"))))
+        .collect();
+    population.sort();
+    population.dedup();
+    population
+}
+
+/// The one member whose renderer does not carry its own name: `alias show` is
+/// dispatched straight into `cmd_config_get` (`cli/mod.rs`), which is the
+/// function that renders it, so the walk reads that body for it.
+const DISPATCHED_RENDERERS: &[(&str, &str)] = &[("alias show", "cmd_config_get")];
+
+/// The `(name, first line, last line)` of every `fn` declared in `lines`.
+fn declared_fn_spans(lines: &[&str]) -> Vec<(String, usize, usize)> {
+    let mut spans = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        let code = blank_string_literals(line.split("//").next().unwrap_or(line));
+        let Some(at) = code.find("fn ") else { continue };
+        let qualifiers = code[..at].trim();
+        if !(qualifiers.is_empty()
+            || qualifiers.starts_with("pub")
+            || qualifiers.starts_with("async")
+            || qualifiers.starts_with("const"))
+        {
+            continue;
+        }
+        let rest = &code[at + 3..];
+        let end = rest
+            .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+            .unwrap_or(rest.len());
+        if end == 0 || !rest[end..].starts_with(['(', '<']) {
+            continue;
+        }
+        let mut depth = 0i32;
+        let mut opened = false;
+        let mut last = i;
+        for (j, l) in lines.iter().enumerate().skip(i) {
+            let code = blank_string_literals(l.split("//").next().unwrap_or(l));
+            depth += code.matches('{').count() as i32 - code.matches('}').count() as i32;
+            opened |= code.contains('{');
+            last = j;
+            if opened && depth <= 0 {
+                break;
+            }
+        }
+        spans.push((rest[..end].to_string(), i, last));
+    }
+    spans
+}
+
+/// Every tell a verb's own render reaches, as `<fn>:<line>  <code>`.
+///
+/// The span is the entry function's body plus every `build_*` function it calls
+/// in the same file, transitively; a function whose name carries `_resolved_`
+/// is the verb's `--resolved` branch and is skipped by name. Comments are cut
+/// and string literals blanked before a line is judged, so a tell named in
+/// prose or inside a literal is not a reach.
+fn fact_class_reaches(source: &str, entry: &str, hatch_allowed: bool) -> Vec<String> {
+    let lines: Vec<&str> = source.lines().collect();
+    let spans = declared_fn_spans(&lines);
+    let mut queue = vec![entry.to_string()];
+    let mut seen = std::collections::BTreeSet::new();
+    let mut reaches = Vec::new();
+    while let Some(name) = queue.pop() {
+        if name.contains("_resolved_") || !seen.insert(name.clone()) {
+            continue;
+        }
+        let Some((_, from, to)) = spans.iter().find(|(n, _, _)| *n == name) else {
+            continue;
+        };
+        for n in *from..=*to {
+            let code = blank_string_literals(lines[n].split("//").next().unwrap_or(lines[n]));
+            for call in code.split("build_").skip(1) {
+                let end = call
+                    .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+                    .unwrap_or(call.len());
+                if call[end..].starts_with('(') {
+                    queue.push(format!("build_{}", &call[..end]));
+                }
+            }
+            let Some(tell) = FACT_CLASS_TELLS.iter().find(|t| code.contains(**t)) else {
+                continue;
+            };
+            // The marker is read off the line itself or off the contiguous
+            // comment block above it, the same reach `// style-gate-ok:` takes:
+            // a reason worth writing rarely fits on one line, and a hatch that
+            // only reads the line above rewards a one-word excuse.
+            let hatched = lines[n].contains(LIST_STATUS_HATCH)
+                || lines[..n]
+                    .iter()
+                    .rev()
+                    .take_while(|l| l.trim_start().starts_with("//"))
+                    .any(|l| l.contains(LIST_STATUS_HATCH));
+            if hatch_allowed && hatched {
+                continue;
+            }
+            reaches.push(format!("{name}:{}  {tell}  {}", n + 1, lines[n].trim()));
+        }
+    }
+    reaches.sort();
+    reaches
+}
+
+/// A read verb renders one class of fact, and its shape says which: a `show`
+/// renders what the YAML DECLARES, a `list` adds at most one recorded status
+/// column, and what this host RESOLVED the declaration into goes behind
+/// `--resolved`. What is on the machine now is `status`/`diff`/`verify`'s
+/// alone.
+///
+/// The boundary was drawn from the screens: `cfgd module show` opened a state
+/// store for a `Status` row `cfgd status <module>` already renders, resolved
+/// every declared package against this host's managers so its `Packages`
+/// section named a manager the YAML does not, and `cfgd source show` opened a
+/// second store for a `State` section `cfgd source list` carries — so three
+/// verbs answered the same question and a reader could not tell which of them
+/// was describing their config and which was describing their machine.
+///
+/// The population is clap's, so a new `show` or `list` joins it mechanically;
+/// the FLOOR is that every member resolves to a `cmd_*` function the walk can
+/// find, so a renamed renderer fails the pin rather than silently leaving the
+/// verb unwalked.
+#[test]
+fn every_show_and_list_verb_renders_only_its_fact_classes() {
+    let cli_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli");
+    let sources: Vec<(std::path::PathBuf, String)> = rust_sources_under(&cli_dir)
+        .into_iter()
+        .filter(|p| p.file_name().is_none_or(|n| n != "tests.rs"))
+        .filter(|p| !p.components().any(|c| c.as_os_str() == "tests"))
+        .map(|path| {
+            let body = cfgd_core::test_helpers::production_slice_of(&path);
+            (path, body)
+        })
+        .collect();
+    assert!(
+        sources.len() > 40,
+        "the walk read {} CLI sources — it is looking at the wrong root",
+        sources.len()
+    );
+
+    // Self-check: a tell nothing in either crate's production code spells is a
+    // stale tell, and a walk looking for one is a walk that cannot fail.
+    let everything: String = sources
+        .iter()
+        .map(|(_, b)| b.as_str())
+        .chain(core_production_sources().iter().map(|(_, b)| b.as_str()))
+        .collect::<Vec<_>>()
+        .join("\n");
+    for tell in FACT_CLASS_TELLS {
+        assert!(
+            everything.contains(tell),
+            "`{tell}` appears nowhere in production code: a stale tell judges nothing"
+        );
+    }
+
+    let mut offenders = Vec::new();
+    let mut walked = 0usize;
+    for (path, entry) in show_and_list_population() {
+        let entry = DISPATCHED_RENDERERS
+            .iter()
+            .find(|(verb, _)| *verb == path)
+            .map(|(_, f)| (*f).to_string())
+            .unwrap_or(entry);
+        let Some((_, source)) = sources.iter().find(|(_, body)| {
+            declared_fn_spans(&body.lines().collect::<Vec<_>>())
+                .iter()
+                .any(|(n, _, _)| *n == entry)
+        }) else {
+            offenders.push(format!(
+                "`cfgd {path}` renders through no `{entry}` the walk can find"
+            ));
+            continue;
+        };
+        walked += 1;
+        let is_list = path.ends_with("list");
+        for reach in fact_class_reaches(source, &entry, is_list) {
+            offenders.push(format!("`cfgd {path}` ({entry}) reaches {reach}"));
+        }
+    }
+    assert!(
+        walked >= 13,
+        "the walk judged {walked} verbs — the clap population stopped reaching them"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a `show` renders DECLARED and a `list` adds one recorded status column; what this host \
+         resolved goes behind `--resolved` (a `*_resolved_*` function) and what is on the machine \
+         belongs to `status`/`diff`/`verify`:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// The walk above judges a tell by where it sits, so each of the four places
+/// one can sit is judged here rather than assumed.
+#[test]
+fn the_fact_class_walk_judges_a_tell_by_where_it_sits() {
+    const SOURCE: &str = r#"
+// open_state in a comment is prose, not a reach
+fn cmd_noun_show(cli: &Cli) -> Doc {
+    let label = "open_state";
+    let rows = build_noun_show_resolved_rows(cli);
+    build_noun_show_doc(rows)
+}
+
+fn build_noun_show_resolved_rows(cli: &Cli) -> Vec<Row> {
+    let state = open_state_store(cli)?;
+    state.rows()
+}
+
+fn build_noun_show_doc(rows: Vec<Row>) -> Doc {
+    Doc::new().kv_rows(rows)
+}
+
+fn cmd_noun_list(cli: &Cli) -> Doc {
+    // list-status-ok: the Status column is this listing's one recorded fact
+    let state = open_state_store(cli)?;
+    build_noun_list_doc(state)
+}
+
+fn build_noun_list_doc(state: Store) -> Doc {
+    Doc::new().kv("Age", humanize_age_cell(state.at(), now))
+}
+"#;
+    assert!(
+        fact_class_reaches(SOURCE, "cmd_noun_show", false).is_empty(),
+        "a tell in a comment, in a string literal or inside a `_resolved_` function is not a reach"
+    );
+    assert_eq!(
+        fact_class_reaches(SOURCE, "cmd_noun_list", true).len(),
+        1,
+        "the hatch spares the line it is written above, and nothing else"
+    );
+    assert_eq!(
+        fact_class_reaches(SOURCE, "cmd_noun_list", false).len(),
+        2,
+        "a `show` gets no hatch at all"
+    );
+}
+
+/// Two knobs a read verb carries, each with one meaning across the whole CLI:
+/// `--resolved` asks for what THIS host reads the declaration as, and
+/// `--show-values` asks a masked declared env value to render in the clear.
+///
+/// They are per-verb flags rather than global ones, so the help text is the
+/// only thing telling a reader they are the same knob — and clap prints it
+/// once per verb. Two wordings read as two features. The walk takes every leaf
+/// subcommand's arguments, matches on the long name, and holds each against
+/// the ONE const its `help =` reads.
+#[test]
+fn every_resolved_and_show_values_flag_reads_one_help() {
+    use clap::CommandFactory;
+
+    fn walk(cmd: &clap::Command, path: &str, found: &mut Vec<(String, String)>) {
+        for arg in cmd.get_arguments() {
+            let Some(long) = arg.get_long() else { continue };
+            if long != "resolved" && long != "show-values" {
+                continue;
+            }
+            let help = arg
+                .get_help()
+                .map(|h| h.to_string())
+                .unwrap_or_else(|| format!("<{path} --{long} carries no help at all>"));
+            found.push((format!("{path} --{long}"), help));
+        }
+        for sub in cmd.get_subcommands() {
+            walk(sub, &format!("{path} {}", sub.get_name()), found);
+        }
+    }
+
+    let cmd = Cli::command();
+    let mut found = Vec::new();
+    walk(&cmd, "cfgd", &mut found);
+
+    let mut resolved = 0;
+    let mut show_values = 0;
+    for (where_, help) in &found {
+        let expected = if where_.ends_with("--resolved") {
+            resolved += 1;
+            super::RESOLVED_HELP
+        } else {
+            show_values += 1;
+            super::SHOW_VALUES_HELP
+        };
+        assert_eq!(
+            help, expected,
+            "`{where_}` words the flag itself instead of reading the one help const"
+        );
+    }
+
+    // A floor on each half: a walk that found no flag at all would pass every
+    // assertion above while proving nothing.
+    assert!(
+        resolved >= 2,
+        "expected every verb offering a resolved view to carry --resolved, found {resolved}"
+    );
+    assert!(
+        show_values >= 3,
+        "expected every verb rendering a declared env value to carry --show-values, found {show_values}"
     );
 }

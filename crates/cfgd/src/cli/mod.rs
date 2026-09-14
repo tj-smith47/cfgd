@@ -443,6 +443,20 @@ fn paired_flag(set: bool, unset: bool) -> Option<bool> {
     }
 }
 
+/// The ONE help string every `--resolved` flag reads.
+///
+/// The flag is per verb rather than global — it changes WHAT a read verb
+/// renders, not how — so the wording has to come from one place or two verbs
+/// describe the same switch differently.
+/// `every_resolved_and_show_values_flag_reads_one_help` walks clap for a
+/// second wording.
+pub const RESOLVED_HELP: &str = "Render what this host resolves the declaration to";
+
+/// The ONE help string every `--show-values` flag reads. A declared env value
+/// is masked on every surface that renders one, and this flag is the single
+/// spelling of the unmask.
+pub const SHOW_VALUES_HELP: &str = "Show full env variable values (default: masked)";
+
 /// What an invocation asked a module's inventories to reveal: the declared env
 /// values in full, and the form its declared scripts render in.
 ///
@@ -1144,8 +1158,7 @@ pub enum Command {
         /// Exit 5 when drift is detected (for CI gating); implies --scan
         #[arg(long = "exit-code", short = 'e')]
         exit_code: bool,
-        /// With --module: itemize the inventories and show full env variable values (implies -o wide)
-        #[arg(long)]
+        #[arg(long, help = SHOW_VALUES_HELP)]
         show_values: bool,
     },
 
@@ -1639,6 +1652,8 @@ pub enum SourceCommand {
     Show {
         /// Source name
         name: String,
+        #[arg(long, help = SHOW_VALUES_HELP)]
+        show_values: bool,
     },
 
     /// Remove a source subscription
@@ -2047,10 +2062,14 @@ pub enum ProfileCommand {
         /// Profile name
         name: String,
     },
-    /// Show the resolved profile
+    /// Show what a profile declares: its inherits chain and its own spec
     Show {
         /// Profile name (default: active profile)
         name: Option<String>,
+        #[arg(long, help = RESOLVED_HELP)]
+        resolved: bool,
+        #[arg(long, help = SHOW_VALUES_HELP)]
+        show_values: bool,
     },
     /// Create a new profile
     Create(Box<ProfileCreateArgs>),
@@ -2182,12 +2201,13 @@ pub enum ModuleCommand {
     /// List available modules and their status
     #[command(alias = "ls")]
     List,
-    /// Show module details: packages, files, deps, resolved managers
+    /// Show what a module declares: packages, files, env, aliases, scripts
     Show {
         /// Module name
         name: String,
-        /// Show full env variable values (default: masked)
-        #[arg(long)]
+        #[arg(long, help = RESOLVED_HELP)]
+        resolved: bool,
+        #[arg(long, help = SHOW_VALUES_HELP)]
         show_values: bool,
         /// Show each script's full body (default: its first line)
         #[arg(long = "show-scripts", short = 's')]
@@ -2891,9 +2911,17 @@ pub fn execute(
             verify::cmd_verify(cli, printer, module.as_deref(), *exit_code)
         }
         Command::Profile { command } => match command {
-            ProfileCommand::Show { name } => {
-                profile::cmd_profile_show(cli, printer, name.as_deref())
-            }
+            ProfileCommand::Show {
+                name,
+                resolved,
+                show_values,
+            } => profile::cmd_profile_show(
+                cli,
+                printer,
+                name.as_deref(),
+                *resolved,
+                InventoryDetail::of(*show_values, false, false),
+            ),
             ProfileCommand::List => profile::cmd_profile_list(cli, printer),
             ProfileCommand::Switch { name } => profile::cmd_profile_switch(cli, name, printer),
             ProfileCommand::Create(args) => profile::cmd_profile_create(cli, printer, args),
@@ -2955,6 +2983,7 @@ pub fn execute(
             ModuleCommand::List => module::cmd_module_list(cli, printer),
             ModuleCommand::Show {
                 name,
+                resolved,
                 show_values,
                 show_scripts,
                 show_all,
@@ -2963,6 +2992,7 @@ pub fn execute(
                 printer,
                 name,
                 InventoryDetail::of(*show_values, *show_scripts, *show_all),
+                *resolved,
             ),
             ModuleCommand::Create(args) => module::cmd_module_create(cli, printer, args),
             ModuleCommand::Update(args) => module::cmd_module_update_local(cli, printer, args),
@@ -3087,7 +3117,12 @@ pub fn execute(
                 source::cmd_source_priority(cli, printer, name, *value)
             }
             SourceCommand::List => source::cmd_source_list(cli, printer),
-            SourceCommand::Show { name } => source::cmd_source_show(cli, printer, name),
+            SourceCommand::Show { name, show_values } => source::cmd_source_show(
+                cli,
+                printer,
+                name,
+                InventoryDetail::of(*show_values, false, false),
+            ),
             SourceCommand::Remove {
                 name,
                 keep_all,

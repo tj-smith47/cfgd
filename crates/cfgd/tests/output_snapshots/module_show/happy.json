@@ -42,6 +42,24 @@
         "target": "~/.tmux.conf"
       }
     ],
+    "packages": [
+      {
+        "name": "ripgrep"
+      },
+      {
+        "name": "winget-only-tool",
+        "platforms": [
+          "windows"
+        ]
+      },
+      {
+        "minVersion": "1.0",
+        "name": "obscure-tool",
+        "prefer": [
+          "nix"
+        ]
+      }
+    ],
     "scripts": {
       "onChange": [],
       "onDrift": [
@@ -57,14 +75,5 @@
       ],
       "preReconcile": []
     }
-  },
-  "state": {
-    "filesHash": "789ghi012jkl",
-    "gitSources": null,
-    "installedAt": "2026-05-14T10:00:00Z",
-    "lastApplied": 1715680800,
-    "moduleName": "dev-tools",
-    "packagesHash": "abc123def456",
-    "status": "installed"
   }
 }

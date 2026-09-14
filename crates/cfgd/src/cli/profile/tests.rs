@@ -611,7 +611,14 @@ fn profile_show_named_profile() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    cmd_profile_show(&cli, &printer, Some("default")).unwrap();
+    cmd_profile_show(
+        &cli,
+        &printer,
+        Some("default"),
+        false,
+        crate::cli::InventoryDetail::default(),
+    )
+    .unwrap();
     drop(printer);
     let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
@@ -632,7 +639,14 @@ fn profile_show_active_profile() {
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     // None means "show the active profile" — reads from cfgd.yaml
-    cmd_profile_show(&cli, &printer, None).unwrap();
+    cmd_profile_show(
+        &cli,
+        &printer,
+        None,
+        false,
+        crate::cli::InventoryDetail::default(),
+    )
+    .unwrap();
     drop(printer);
     let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
@@ -645,15 +659,46 @@ fn profile_show_active_profile() {
     );
 }
 
+/// The default render names the `inherits:` chain rather than folding it;
+/// `--resolved` is what renders the merged view and the `Layers` section
+/// naming what contributed.
 #[test]
-fn profile_show_inherited_profile_resolves_layers() {
+fn profile_show_names_its_inherits_and_resolves_layers_under_resolved() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
+    cmd_profile_show(
+        &cli,
+        &printer,
+        Some("work"),
+        false,
+        crate::cli::InventoryDetail::default(),
+    )
+    .unwrap();
+    drop(printer);
+    let declared = cfgd_core::test_helpers::captured_text(&buf);
+    assert!(
+        declared.contains("Inherits") && declared.contains("default"),
+        "the default render names the chain rather than folding it, got: {declared}"
+    );
+    assert!(
+        !declared.contains("Layers"),
+        "the merged view belongs to `--resolved`, got: {declared}"
+    );
+
     // work inherits from default, should resolve both layers
-    cmd_profile_show(&cli, &printer, Some("work")).unwrap();
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    cmd_profile_show(
+        &cli,
+        &printer,
+        Some("work"),
+        true,
+        crate::cli::InventoryDetail::default(),
+    )
+    .unwrap();
     drop(printer);
     let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
@@ -676,7 +721,14 @@ fn profile_show_nonexistent_profile_fails() {
     let cli = test_cli(dir.path());
     let printer = make_printer();
 
-    let err = cmd_profile_show(&cli, &printer, Some("nonexistent")).unwrap_err();
+    let err = cmd_profile_show(
+        &cli,
+        &printer,
+        Some("nonexistent"),
+        false,
+        crate::cli::InventoryDetail::default(),
+    )
+    .unwrap_err();
     assert!(
         err.to_string().contains("not found"),
         "should mention profile not found, got: {err}"
@@ -690,7 +742,14 @@ fn profile_show_no_config_fails() {
     let printer = make_printer();
 
     // No cfgd.yaml — showing active profile should fail
-    let err = cmd_profile_show(&cli, &printer, None).unwrap_err();
+    let err = cmd_profile_show(
+        &cli,
+        &printer,
+        None,
+        false,
+        crate::cli::InventoryDetail::default(),
+    )
+    .unwrap_err();
     assert!(
         err.to_string().contains("not found"),
         "should mention config not found, got: {err}"
@@ -1921,7 +1980,14 @@ fn profile_show_json_schema() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
-    cmd_profile_show(&cli, &printer, Some("default")).unwrap();
+    cmd_profile_show(
+        &cli,
+        &printer,
+        Some("default"),
+        false,
+        crate::cli::InventoryDetail::default(),
+    )
+    .unwrap();
     drop(printer);
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -2041,7 +2107,14 @@ spec:
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    cmd_profile_show(&cli, &printer, Some("files-test")).unwrap();
+    cmd_profile_show(
+        &cli,
+        &printer,
+        Some("files-test"),
+        false,
+        crate::cli::InventoryDetail::default(),
+    )
+    .unwrap();
     drop(printer);
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -2063,7 +2136,14 @@ fn profile_show_displays_packages_section() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    cmd_profile_show(&cli, &printer, Some("default")).unwrap();
+    cmd_profile_show(
+        &cli,
+        &printer,
+        Some("default"),
+        false,
+        crate::cli::InventoryDetail::default(),
+    )
+    .unwrap();
     drop(printer);
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -2099,7 +2179,14 @@ spec:
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    cmd_profile_show(&cli, &printer, Some("secret-show")).unwrap();
+    cmd_profile_show(
+        &cli,
+        &printer,
+        Some("secret-show"),
+        false,
+        crate::cli::InventoryDetail::default(),
+    )
+    .unwrap();
     drop(printer);
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -2134,7 +2221,14 @@ spec:
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    cmd_profile_show(&cli, &printer, Some("sys-show")).unwrap();
+    cmd_profile_show(
+        &cli,
+        &printer,
+        Some("sys-show"),
+        false,
+        crate::cli::InventoryDetail::default(),
+    )
+    .unwrap();
     drop(printer);
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -2318,7 +2412,14 @@ spec:
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    cmd_profile_show(&cli, &printer, Some("rich")).unwrap();
+    cmd_profile_show(
+        &cli,
+        &printer,
+        Some("rich"),
+        false,
+        crate::cli::InventoryDetail::default(),
+    )
+    .unwrap();
     drop(printer);
     let output = cfgd_core::test_helpers::captured_text(&buf);
 
@@ -2393,7 +2494,14 @@ fn profile_show_no_packages_omits_section() {
     let cli = test_cli(dir.path());
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    cmd_profile_show(&cli, &printer, Some("bare")).unwrap();
+    cmd_profile_show(
+        &cli,
+        &printer,
+        Some("bare"),
+        false,
+        crate::cli::InventoryDetail::default(),
+    )
+    .unwrap();
     drop(printer);
     let output = cfgd_core::test_helpers::captured_text(&buf);
 
@@ -2439,7 +2547,14 @@ spec:
     let cli = test_cli(dir.path());
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    cmd_profile_show(&cli, &printer, Some("env-secret")).unwrap();
+    cmd_profile_show(
+        &cli,
+        &printer,
+        Some("env-secret"),
+        false,
+        crate::cli::InventoryDetail::default(),
+    )
+    .unwrap();
     drop(printer);
     let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
@@ -2480,7 +2595,14 @@ spec:
     let cli = test_cli(dir.path());
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    cmd_profile_show(&cli, &printer, Some("both-secret")).unwrap();
+    cmd_profile_show(
+        &cli,
+        &printer,
+        Some("both-secret"),
+        false,
+        crate::cli::InventoryDetail::default(),
+    )
+    .unwrap();
     drop(printer);
     let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
@@ -2549,14 +2671,22 @@ fn profile_show_no_env_omits_section() {
     let cli = test_cli(dir.path());
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    cmd_profile_show(&cli, &printer, Some("noenv")).unwrap();
+    cmd_profile_show(
+        &cli,
+        &printer,
+        Some("noenv"),
+        false,
+        crate::cli::InventoryDetail::default(),
+    )
+    .unwrap();
     drop(printer);
     let output = cfgd_core::test_helpers::captured_text(&buf);
-    // Layers always renders (every profile has itself as a layer); every other
-    // optional section disappears when its underlying collection is empty.
+    // Every optional section disappears when what the profile declares for it
+    // is empty; the `Layers` section is the merged view's and renders only
+    // under `--resolved`.
     assert!(
-        output.contains("Layers"),
-        "Layers should render, got: {output}"
+        !output.contains("Layers"),
+        "Layers belongs to the merged view, got: {output}"
     );
     assert!(
         !output.contains("Env"),
@@ -2591,7 +2721,14 @@ fn profile_show_no_files_omits_section() {
     let cli = test_cli(dir.path());
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    cmd_profile_show(&cli, &printer, Some("nofiles")).unwrap();
+    cmd_profile_show(
+        &cli,
+        &printer,
+        Some("nofiles"),
+        false,
+        crate::cli::InventoryDetail::default(),
+    )
+    .unwrap();
     drop(printer);
     let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
@@ -4650,7 +4787,14 @@ fn profile_roundtrip_canonical_create_show_update_delete() {
     assert!(manifest.is_file());
 
     // show resolves the canonical form by name
-    cmd_profile_show(&cli, &printer, Some("trip")).unwrap();
+    cmd_profile_show(
+        &cli,
+        &printer,
+        Some("trip"),
+        false,
+        crate::cli::InventoryDetail::default(),
+    )
+    .unwrap();
 
     // update writes back to the same canonical path
     let mut uargs = make_profile_update_args();

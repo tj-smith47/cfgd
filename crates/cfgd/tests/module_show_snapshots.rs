@@ -4,8 +4,9 @@
 //!   - `module_list/happy.{txt,json}` — populated entries + wide=false table
 //!   - `module_list/empty.txt`        — empty list (status + hint shape)
 //!   - `module_show/happy.{txt,json}` — populated module with remote lock,
-//!     state, packages (mix of Resolved/Skipped/Unresolved), files, env,
-//!     aliases, lifecycle scripts
+//!     declared packages, files, env, aliases, lifecycle scripts
+//!   - `module_show/resolved.txt`     — the same module under `--resolved`
+//!     (packages as Resolved/Skipped/Unresolved rows)
 //!   - `module_show/not_found.txt`    — error path (status + hint)
 //!
 //! Goldens live under `tests/output_snapshots/`. Regenerate with:
@@ -20,18 +21,13 @@ use cfgd::cli::module::list_show::{
 };
 use cfgd::cli::module::{ModuleListEntry, ModuleShowMetadata, ModuleShowOutput};
 use cfgd_core::config::{
-    EnvVar, ModuleFileEntry, ModuleLockEntry, ModuleSpec, ScriptCommand, ScriptEntry, ScriptSpec,
-    ShellAlias,
+    EnvVar, ModuleFileEntry, ModuleLockEntry, ModulePackageEntry, ModuleSpec, ScriptCommand,
+    ScriptEntry, ScriptSpec, ShellAlias,
 };
 use cfgd_core::output::{Printer, ScriptsForm, Theme, Verbosity};
-use cfgd_core::state::ModuleStateRecord;
 use pretty_assertions::assert_eq;
 
 mod common;
-
-/// Two hours after the fixture's `installed_at`, so a rendered `Last Applied`
-/// age reads a fixed `2h ago` in the goldens below.
-const NOW: &str = "2026-05-14T12:00:00Z";
 
 const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
 
@@ -79,19 +75,27 @@ fn happy_show_output() -> ModuleShowOutput {
         directory: "/etc/cfgd/modules/dev-tools".into(),
         source: "remote".into(),
         depends: vec!["base".into()],
-        state: Some(ModuleStateRecord {
-            module_name: "dev-tools".into(),
-            installed_at: "2026-05-14T10:00:00Z".into(),
-            last_applied: Some(1_715_680_800),
-            packages_hash: "abc123def456".into(),
-            files_hash: "789ghi012jkl".into(),
-            git_sources: None,
-            status: cfgd_core::state::MODULE_STATUS_INSTALLED.into(),
-        }),
+        resolved: None,
         spec: ModuleSpec {
             depends: vec!["base".into()],
             platforms: vec![],
-            packages: vec![],
+            packages: vec![
+                ModulePackageEntry {
+                    name: "ripgrep".into(),
+                    ..ModulePackageEntry::default()
+                },
+                ModulePackageEntry {
+                    name: "winget-only-tool".into(),
+                    platforms: vec!["windows".into()],
+                    ..ModulePackageEntry::default()
+                },
+                ModulePackageEntry {
+                    name: "obscure-tool".into(),
+                    prefer: vec!["nix".into()],
+                    min_version: Some("1.0".into()),
+                    ..ModulePackageEntry::default()
+                },
+            ],
             files: vec![
                 ModuleFileEntry {
                     patch: None,
@@ -201,11 +205,8 @@ fn module_show_renders_every_declaring_hook_in_execution_order() {
     printer.emit(build_module_show_doc(
         &output,
         None,
-        &[],
         InventoryDetail::default(),
-        true,
         printer.arrow(),
-        NOW,
     ));
     drop(printer);
     let human = cap.human();
@@ -290,14 +291,11 @@ fn emit_knobbed_show(form: ScriptsForm, golden: &str) {
     printer.emit(build_module_show_doc(
         &output,
         None,
-        &[],
         InventoryDetail {
             values: false,
             scripts: form,
         },
-        true,
         printer.arrow(),
-        NOW,
     ));
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), golden);
@@ -335,14 +333,11 @@ fn module_show_scripts_full_renders_the_approved_dracula_bytes() {
     printer.emit(build_module_show_doc(
         &output,
         None,
-        &[],
         InventoryDetail {
             values: false,
             scripts: ScriptsForm::Full,
         },
-        true,
         printer.arrow(),
-        NOW,
     ));
     drop(printer);
     // raw-capture-ok: the pitch's own bytes are the expectation — captured_text would strip exactly what this test compares
@@ -419,16 +414,12 @@ fn module_list_empty_human() {
 fn module_show_happy_human() {
     let output = happy_show_output();
     let lock = happy_lock_entry();
-    let pkgs = happy_packages();
     let (printer, cap) = Printer::for_test_doc();
     printer.emit(build_module_show_doc(
         &output,
         Some(&lock),
-        &pkgs,
         InventoryDetail::default(),
-        true,
         printer.arrow(),
-        NOW,
     ));
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "module_show/happy.txt");
@@ -438,16 +429,12 @@ fn module_show_happy_human() {
 fn module_show_happy_json() {
     let output = happy_show_output();
     let lock = happy_lock_entry();
-    let pkgs = happy_packages();
     let (printer, cap) = Printer::for_test_doc();
     printer.emit(build_module_show_doc(
         &output,
         Some(&lock),
-        &pkgs,
         InventoryDetail::default(),
-        true,
         printer.arrow(),
-        NOW,
     ));
     drop(printer);
     let expected = serde_json::to_value(&output).unwrap();
@@ -457,6 +444,27 @@ fn module_show_happy_json() {
         "emit -o json must match serde_json::to_value(output)"
     );
     cap.assert_json_snapshot_in(Path::new(SNAPSHOT_ROOT), "module_show/happy.json");
+}
+
+/// `--resolved` renders what THIS host made of the declared entries: the
+/// manager that won, the version it offers, the entries the platform gate
+/// skipped and the ones no manager could satisfy. The default render above is
+/// the declaration those rows came from, and the two goldens sit beside each
+/// other so the difference between the classes is readable.
+#[test]
+fn module_show_resolved_renders_what_this_host_made_of_the_declaration() {
+    let mut output = happy_show_output();
+    output.resolved = Some(happy_packages());
+    let lock = happy_lock_entry();
+    let (printer, cap) = Printer::for_test_doc();
+    printer.emit(build_module_show_doc(
+        &output,
+        Some(&lock),
+        InventoryDetail::default(),
+        printer.arrow(),
+    ));
+    drop(printer);
+    cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "module_show/resolved.txt");
 }
 
 #[test]

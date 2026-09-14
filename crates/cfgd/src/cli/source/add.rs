@@ -174,11 +174,16 @@ pub(super) fn run_source_add(
         &manifest.spec.policy.constraints,
         allow_unsigned,
     );
+    // This screen is what the reader approves the subscription FROM, so the
+    // env values a remote profile declares render in the clear: a masked value
+    // is one the subscriber accepts without having seen it. `source show`
+    // masks, because by then the subscription is already in place.
     printer.emit(super::show::source_manifest_doc_sections(
         Doc::new(),
         manifest,
         Some(&policy),
         profiles_dir.as_deref(),
+        crate::cli::InventoryDetail::of(true, false, false),
     ));
 
     // Profile selection: explicit flag > platform auto-detect > single profile > interactive

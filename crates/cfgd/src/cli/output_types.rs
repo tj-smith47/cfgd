@@ -1160,8 +1160,6 @@ pub struct SourceShowOutput {
     pub sync_interval: String,
     pub auto_apply: bool,
     pub pin_version: Option<String>,
-    pub state: Option<SourceStateInfo>,
-    pub managed_resources: Vec<SourceResourceEntry>,
     /// Module names this source declares deliverable — its manifest
     /// `spec.provides.modules` allow-list (the module bodies it offers to
     /// subscribers). Empty (and omitted from the wire) when the source delivers
@@ -1255,33 +1253,6 @@ pub struct SourceEncryptionOutput {
     pub backend: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<String>,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SourceStateInfo {
-    pub status: String,
-    /// The ISO 8601 stamp of the last fetch; the human render humanizes it.
-    pub last_fetched: Option<String>,
-    pub last_commit: Option<String>,
-    /// Whether the fetched commit carried a signature cfgd accepts. `None` is
-    /// "not known", never "unsigned".
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub signed: Option<bool>,
-    pub version: Option<String>,
-    /// Resolved tag name from sources.lock (None for HEAD-tracking sources).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub locked_ref: Option<String>,
-    /// 40-char commit SHA from sources.lock at time of last lock.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub locked_commit: Option<String>,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SourceResourceEntry {
-    pub resource_type: String,
-    pub resource_id: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -2289,7 +2260,7 @@ mod tests {
     }
 
     #[test]
-    fn source_show_output_camelcases_all_fields_and_nests_state() {
+    fn source_show_output_camelcases_every_declared_field_and_carries_no_recorded_block() {
         let v = SourceShowOutput {
             name: "infra".to_string(),
             url: "https://example.com/r.git".to_string(),
@@ -2300,19 +2271,6 @@ mod tests {
             sync_interval: "5m".to_string(),
             auto_apply: false,
             pin_version: Some("v1.2.3".to_string()),
-            state: Some(SourceStateInfo {
-                status: "fresh".to_string(),
-                last_fetched: Some("2026-01-01T00:00:00Z".to_string()),
-                last_commit: Some("abc".to_string()),
-                signed: Some(true),
-                version: Some("v1.2.3".to_string()),
-                locked_ref: None,
-                locked_commit: None,
-            }),
-            managed_resources: vec![SourceResourceEntry {
-                resource_type: "Module".to_string(),
-                resource_id: "shell".to_string(),
-            }],
             modules: vec!["dev-tools".to_string()],
             policy: Some(SourcePolicyOutput {
                 require_signed_commits: true,
@@ -2340,8 +2298,8 @@ mod tests {
         assert_eq!(json["syncInterval"], json!("5m"));
         assert_eq!(json["autoApply"], json!(false));
         assert_eq!(json["pinVersion"], json!("v1.2.3"));
-        assert_eq!(json["state"]["status"], json!("fresh"));
-        assert_eq!(json["managedResources"][0]["resourceType"], json!("Module"));
+        assert!(json.get("state").is_none(), "{json}");
+        assert!(json.get("managedResources").is_none(), "{json}");
         assert_eq!(json["policy"]["requireSignedCommits"], json!(true));
         assert_eq!(json["policy"]["signedCommitsBypassed"], json!(true));
         assert_eq!(json["policy"]["scriptsAllowed"], json!(false));
@@ -2397,8 +2355,6 @@ mod tests {
             sync_interval: "5m".to_string(),
             auto_apply: false,
             pin_version: None,
-            state: None,
-            managed_resources: Vec::new(),
             modules: Vec::new(),
             policy: None,
             manifest: None,
@@ -2413,37 +2369,6 @@ mod tests {
             "no manifest means no effective policy to report — the key must be \
              omitted, not serialized as null: {json}"
         );
-    }
-
-    #[test]
-    fn source_state_info_emits_camelcase_keys() {
-        let v = SourceStateInfo {
-            status: "stale".to_string(),
-            last_fetched: Some("2026-01-01T00:00:00Z".to_string()),
-            last_commit: Some("c0ffee".to_string()),
-            signed: None,
-            version: Some("v0.1".to_string()),
-            locked_ref: Some("v2.1.0".to_string()),
-            locked_commit: Some("a".repeat(40)),
-        };
-        let json = serde_json::to_value(&v).unwrap();
-        assert_eq!(json["status"], json!("stale"));
-        assert_eq!(json["lastFetched"], json!("2026-01-01T00:00:00Z"));
-        assert_eq!(json["lastCommit"], json!("c0ffee"));
-        assert_eq!(json["version"], json!("v0.1"));
-        assert_eq!(json["lockedRef"], json!("v2.1.0"));
-        assert_eq!(json["lockedCommit"], json!("a".repeat(40)));
-    }
-
-    #[test]
-    fn source_resource_entry_camelcases_resource_type_and_id() {
-        let v = SourceResourceEntry {
-            resource_type: "Profile".to_string(),
-            resource_id: "dev".to_string(),
-        };
-        let json = serde_json::to_value(&v).unwrap();
-        assert_eq!(json["resourceType"], json!("Profile"));
-        assert_eq!(json["resourceId"], json!("dev"));
     }
 
     #[test]

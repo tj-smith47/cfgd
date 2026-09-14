@@ -1519,7 +1519,19 @@ List available profiles. Marks the active one.
 
 ### `cfgd profile show`
 
-Show the fully resolved profile (all inheritance layers merged).
+Show what the profile itself DECLARES: the profiles it inherits from named
+rather than folded, and its own aliases, env, packages, files, system settings
+and secrets with their platform annotations intact. Env values are masked by
+default; `--show-values` renders them in the clear.
+
+```sh
+cfgd profile show work                # what this profile declares
+cfgd profile show work --resolved     # the merged view, every layer folded in
+cfgd profile show work --show-values  # reveal full env values
+```
+
+`--resolved` renders the fully merged profile plus the `Layers` section naming
+what contributed to it.
 
 ### `cfgd profile switch <name>`
 
@@ -1657,14 +1669,36 @@ payload's `status` field carries the stored token instead (`installed`,
 
 ### `cfgd module show <name>`
 
-Show module details: packages, files, dependencies, resolved managers. Env variable values are masked by default (shows `***` with last 3 chars).
+Show what the module DECLARES: its packages, files, env, aliases and lifecycle
+scripts, conditions intact. A package renders every manager it names, its
+`prefer` order and its `minVersion`; a `platforms:`-gated entry renders with
+its platform annotation on every host. Env variable values are masked by
+default (`***` with the last 3 characters).
 
 ```sh
-cfgd module show my-tool                 # env values masked, scripts condensed
+cfgd module show my-tool                 # what the module declares
+cfgd module show my-tool --resolved      # what this host resolves it to
 cfgd module show my-tool --show-values   # reveal full env values
 cfgd module show my-tool --show-scripts  # each script's full body
 cfgd module show my-tool --show-all      # both
 ```
+
+`--resolved` re-renders the `Packages` section as what THIS host made of the
+declaration: the manager that won, the version it offers, the entries the
+platform gate skipped, and the ones no available manager can satisfy.
+
+```
+Packages
+  ✓ ripgrep → brew install ripgrep (14.1.0)
+  ◉ winget-only-tool, platforms: windows — skipped (platform filter)
+  ⚠ obscure-tool (prefer: nix), min: 1.0 — unresolved: no manager available on this platform
+```
+
+What the machine and the state store say about the module (whether it is
+installed, when it was last applied, its recorded content hashes, its locked
+commit) belongs to `cfgd status <name>`, `cfgd module list` and `cfgd diff`.
+`module show` opens no state store and probes no manager unless `--resolved`
+asks it to.
 
 The `Scripts` section lists every lifecycle hook the module declares, in the
 order the hooks run, each step one row of its own. No drift engine ever watches
@@ -1956,10 +1990,17 @@ rather than a default, and carries `null` there on the wire.
 
 ### `cfgd source show <name>`
 
-Show source details, provided profiles, policy breakdown, conflicts, and the
-modules the source delivers (its manifest `provides.modules` allow-list). The
-delivered modules appear under a `Modules` section in human output and as a
-`modules` array in the structured (`-o json`/`-o yaml`) payload.
+Show what the subscription DECLARES: the source's URL, branch, priority and
+knobs, the profiles its manifest provides, the policy breakdown, conflicts, and
+the modules the source delivers (its manifest `provides.modules` allow-list).
+The delivered modules appear under a `Modules` section in human output and as a
+`modules` array in the structured (`-o json`/`-o yaml`) payload. A nested
+profile's env values are masked; `--show-values` renders them in the clear.
+
+What the state store remembers about the subscription (its fetch status, the
+commit it is at, when it last synced, and the resources it put on this machine)
+belongs to `cfgd source list` and `cfgd status`, which is why `source show`
+opens no state store.
 
 A `Policy` section shows what is actually enforced on the source, so an
 operator can audit it without opening the manifest YAML: the manifest's

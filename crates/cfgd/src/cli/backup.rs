@@ -242,6 +242,10 @@ pub fn build_backup_list_doc(entries: &[BackupListEntry], now: &str) -> Doc {
             ),
             (status, role),
             (
+                // list-status-ok: the age of this listing's ONE recorded status
+                // column — a backup unit's whole subject is the history of its
+                // runs, so the last one's outcome and when it happened are the
+                // facts the listing exists to state.
                 cfgd_core::humanize_age_cell(e.last_run_at.as_deref(), now),
                 None,
             ),

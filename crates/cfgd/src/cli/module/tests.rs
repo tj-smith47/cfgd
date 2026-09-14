@@ -489,7 +489,14 @@ fn rendered_list(cli: &super::Cli) -> String {
 fn rendered_show(cli: &super::Cli, name: &str) -> String {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    cmd_module_show(cli, &printer, name, crate::cli::InventoryDetail::default()).unwrap();
+    cmd_module_show(
+        cli,
+        &printer,
+        name,
+        crate::cli::InventoryDetail::default(),
+        false,
+    )
+    .unwrap();
     drop(printer);
     cfgd_core::test_helpers::captured_text(&buf)
 }
@@ -546,41 +553,39 @@ fn module_list_borrows_synced_from_the_scan_the_store_recorded() {
     }
 }
 
-/// `module show`'s Status row answers the same question off the same store,
-/// so the two surfaces cannot call one machine state by two names.
+/// `module list` may borrow one recorded status column; `module show` may
+/// borrow none. Whatever the store recorded — an installed module, a scoped
+/// scan, a machine-wide one — the DECLARED render states none of it, so a
+/// re-added Status row fails here rather than in a golden.
 #[test]
-fn module_show_borrows_synced_from_the_scan_the_store_recorded() {
+fn module_show_states_no_recorded_status_whatever_the_store_recorded() {
     let (dir, cli) = setup_recorded_modules(&["alpha", "beta"]);
     let _home = cfgd_core::with_test_home_guard(dir.path());
 
     let unchecked = rendered_show(&cli, "alpha");
-    assert!(
-        unchecked.contains("Installed"),
-        "a record no check covers states its own fact, got:\n{unchecked}"
-    );
-
     recorded_state(&cli)
         .record_scoped_scan(["module:alpha"])
         .unwrap();
     let scoped = rendered_show(&cli, "alpha");
-    assert!(
-        scoped.contains("Synced"),
-        "the scanned module keeps the verdict its own scan earned, got:\n{scoped}"
-    );
-    let neighbour = rendered_show(&cli, "beta");
-    assert!(
-        neighbour.contains("Installed") && !neighbour.contains("Synced"),
-        "one module's scan is no evidence about its neighbour, got:\n{neighbour}"
-    );
-
     recorded_state(&cli).record_scan().unwrap();
-    for name in ["alpha", "beta"] {
-        let machine = rendered_show(&cli, name);
-        assert!(
-            machine.contains("Synced"),
-            "a machine-wide scan covers every module, got:\n{machine}"
-        );
+    let machine = rendered_show(&cli, "alpha");
+
+    for (what, rendered) in [
+        ("an installed record", &unchecked),
+        ("a scoped scan", &scoped),
+        ("a machine-wide scan", &machine),
+    ] {
+        for word in ["Status", "Installed", "Synced", "Last Applied"] {
+            assert!(
+                !rendered.contains(word),
+                "{what} must not reach a `show`; found {word:?} in:\n{rendered}"
+            );
+        }
     }
+    assert_eq!(
+        unchecked, machine,
+        "a `show` renders the same bytes whatever the store recorded"
+    );
 }
 
 #[test]
@@ -639,6 +644,7 @@ fn cmd_module_show_not_found() {
         &printer,
         "ghost",
         crate::cli::InventoryDetail::default(),
+        false,
     )
     .unwrap_err();
     assert!(
@@ -667,6 +673,7 @@ fn cmd_module_show_displays_details() {
         &printer,
         "devtools",
         crate::cli::InventoryDetail::default(),
+        false,
     )
     .unwrap();
     drop(printer);
@@ -720,6 +727,7 @@ fn cmd_module_show_local_does_not_load_locked_remotes() {
         &printer,
         "local-mod",
         crate::cli::InventoryDetail::default(),
+        false,
     )
     .unwrap();
     drop(printer);
@@ -752,6 +760,7 @@ fn cmd_module_show_falls_through_to_locked_modules() {
         &printer,
         "private-mod",
         crate::cli::InventoryDetail::default(),
+        false,
     )
     .unwrap_err();
     assert!(
@@ -778,6 +787,7 @@ fn cmd_module_show_with_available_hint() {
         &printer,
         "missing",
         crate::cli::InventoryDetail::default(),
+        false,
     )
     .unwrap_err();
     drop(printer);
@@ -818,6 +828,7 @@ fn cmd_module_show_env_masking() {
         &printer,
         "secrets-mod",
         crate::cli::InventoryDetail::default(),
+        false,
     )
     .unwrap();
     drop(printer);
@@ -850,6 +861,7 @@ fn cmd_module_show_env_unmasked() {
             values: true,
             scripts: cfgd_core::output::ScriptsForm::Condensed,
         },
+        false,
     )
     .unwrap();
     drop(printer);
@@ -878,6 +890,7 @@ fn cmd_module_show_json_schema() {
         &printer,
         "jmod",
         crate::cli::InventoryDetail::default(),
+        false,
     )
     .unwrap();
     drop(printer);
@@ -2266,6 +2279,7 @@ fn cmd_module_show_json_with_lockfile_entry() {
         &printer,
         "remote-mod",
         crate::cli::InventoryDetail::default(),
+        false,
     )
     .unwrap();
     drop(printer);
@@ -2312,6 +2326,7 @@ fn cmd_module_show_table_with_lockfile_entry() {
         &printer,
         "locked-mod",
         crate::cli::InventoryDetail::default(),
+        false,
     )
     .unwrap();
     drop(printer);
@@ -2325,13 +2340,12 @@ fn cmd_module_show_table_with_lockfile_entry() {
         output.contains("v2.0"),
         "should show pinned ref, got: {output}"
     );
+    // The commit and the integrity digest are what the LOCKFILE recorded, not
+    // what the module declares, so they render on `cfgd module list` and
+    // `cfgd status` rather than here.
     assert!(
-        output.contains("aabbccdd"),
-        "should show commit, got: {output}"
-    );
-    assert!(
-        output.contains("sha256:cafebabe"),
-        "should show integrity, got: {output}"
+        !output.contains("aabbccdd") && !output.contains("sha256:cafebabe"),
+        "a recorded lock fact renders on no `show`, got: {output}"
     );
 }
 
@@ -2352,6 +2366,7 @@ fn cmd_module_show_aliases() {
         &printer,
         "alias-mod",
         crate::cli::InventoryDetail::default(),
+        false,
     )
     .unwrap();
     drop(printer);
@@ -2388,6 +2403,7 @@ fn cmd_module_show_scripts() {
         &printer,
         "script-mod",
         crate::cli::InventoryDetail::default(),
+        false,
     )
     .unwrap();
     drop(printer);
@@ -2428,6 +2444,7 @@ fn cmd_module_show_files_with_git_source() {
         &printer,
         "git-file-mod",
         crate::cli::InventoryDetail::default(),
+        false,
     )
     .unwrap();
     drop(printer);
@@ -3830,7 +3847,7 @@ fn cmd_module_list_wide_format_emits_seven_column_table() {
 // global lock as the #[serial] PATH mutators (cli/paths.rs, cli/kubectl.rs,
 // cli/init/tests.rs) or plain `cargo test` (shared-process) races them.
 #[serial_test::serial]
-fn cmd_module_show_renders_platform_filtered_and_resolved_packages() {
+fn cmd_module_show_resolved_renders_platform_filtered_and_resolved_packages() {
     // Drives two resolve_package outcome arms in cmd_module_show:
     // - Ok(Some(_)) clean-resolved package, prints \"<n> -> <mgr> install <r>\"
     // - Ok(None) platform-filtered, prints \"<n>, platforms: <list> — skipped\"
@@ -3859,6 +3876,7 @@ fn cmd_module_show_renders_platform_filtered_and_resolved_packages() {
         &printer,
         "rich",
         crate::cli::InventoryDetail::default(),
+        true,
     )
     .unwrap();
     drop(printer);
@@ -4274,6 +4292,7 @@ fn cmd_module_show_json_depends() {
         &printer,
         "dep-show",
         crate::cli::InventoryDetail::default(),
+        false,
     )
     .unwrap();
     drop(printer);
@@ -4482,8 +4501,8 @@ fn module_show_output_json_fields() {
         directory: "/home/user/.config/cfgd/modules/test-mod".to_string(),
         source: "remote".to_string(),
         depends: vec!["base".to_string()],
-        state: None,
         spec: config::ModuleSpec::default(),
+        resolved: None,
     };
     let json = serde_json::to_value(&output).unwrap();
     assert_eq!(json["name"], "test-mod");
@@ -7945,19 +7964,16 @@ fn every_surface_naming_the_shell_pair_lists_aliases_first() {
         directory: "/cfg/modules/nvim".into(),
         source: "local".into(),
         depends: Vec::new(),
-        state: None,
         spec: spec.clone(),
+        resolved: None,
     };
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     printer.emit(super::list_show::build_module_show_doc(
         &show,
         None,
-        &[],
         crate::cli::InventoryDetail::default(),
-        true,
         "->",
-        now,
     ));
     drop(printer);
     surfaces.push((
@@ -7996,6 +8012,8 @@ fn every_surface_naming_the_shell_pair_lists_aliases_first() {
         std::path::Path::new("/cfg/config.yaml"),
         &[],
         printer.arrow(),
+        crate::cli::InventoryDetail::default(),
+        true,
     ));
     drop(printer);
     surfaces.push((

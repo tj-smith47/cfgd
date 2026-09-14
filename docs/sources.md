@@ -254,7 +254,8 @@ Manage existing subscriptions:
 
 ```sh
 cfgd source list                                        # list subscribed sources
-cfgd source show acme-corp                              # details, policies, conflicts
+cfgd source show acme-corp                              # declared subscription, policies, conflicts
+cfgd source show acme-corp --show-values                # reveal a provided profile's env values
 cfgd source remove acme-corp                            # unsubscribe
 cfgd source update                                      # fetch latest from all sources
 ```
@@ -308,10 +309,12 @@ Policy
 ```
 
 Each provided profile is headed by the `profile:<name>` token an apply header uses, and
-its contents are the same inventory `cfgd profile show` renders. Env values are shown in
-full (secrets stay `${secret:...}` references), so you see what a subscription would put
-in your environment before you take it. A profile the manifest promises but the checkout
-does not carry is reported under its own token rather than rendered empty.
+its contents are the same declared inventory `cfgd profile show` renders. On `source add`
+the env values are shown in full (secrets stay `${secret:...}` references), because that
+screen is what you approve the subscription from; on `source show` they are masked like
+every other declared env value, and `--show-values` reveals them. A profile the manifest
+promises but the checkout does not carry is reported under its own token rather than
+rendered empty.
 
 The `Policy` rows read in one polarity (`Scripts Allowed  false`, never a mix of
 "allowed" and "blocked" phrasings). On `source show` they are the *effective* policy,

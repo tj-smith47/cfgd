@@ -1,18 +1,25 @@
 use super::*;
 use cfgd_core::PathDisplayExt;
 use cfgd_core::config::{
-    EnvVar, ManagedFileSpec, PackagesSpec, ProfileLayer, ResolvedProfile, SecretSpec, ShellAlias,
+    EnvVar, FilesSpec, ManagedFileSpec, PackagesSpec, ProfileLayer, ProfileSpec, ResolvedProfile,
+    SecretSpec, ShellAlias,
 };
 use cfgd_core::output::{Doc, KvPair, Printer};
 
-/// Build the `cfgd profile show` Doc from a resolved profile. Pure; consumes
-/// nothing — the caller serializes `{name, resolved}` as the structured payload.
+/// Build the `cfgd profile show` Doc.
+///
+/// The default view is the profile's OWN document: the `inherits:` it names
+/// and the entries it declares itself, every `platforms:` gate annotated
+/// rather than applied. `--resolved` renders what this host folds that chain
+/// into — the layers that contributed and the merged inventories.
 pub fn build_profile_show_doc(
     resolved: &ResolvedProfile,
     name: &str,
     config_path: &Path,
     sources: &[cfgd_core::reconciler::ComposedSource],
     arrow: &str,
+    detail: crate::cli::InventoryDetail,
+    show_resolved: bool,
 ) -> Doc {
     // header-row-ok: the heading names the profile and the blocks below ARE the
     // module inventory, so this header states the config file and what it
@@ -33,7 +40,40 @@ pub fn build_profile_show_doc(
                 },
             ));
 
-    doc = doc.section("Layers", |s| {
+    doc = if show_resolved {
+        build_profile_show_resolved_sections(doc, resolved, detail)
+    } else {
+        let own = own_profile_spec(resolved);
+        let inherits: Vec<String> = own.map(|s| s.inherits.clone()).unwrap_or_default();
+        let mut doc = if inherits.is_empty() {
+            doc
+        } else {
+            doc.kv_rows(vec![KvPair::new("Inherits", inherits.join(", "))])
+        };
+        for (block, rows) in profile_inventory_blocks(own, detail) {
+            if rows.is_empty() {
+                continue;
+            }
+            doc = doc.section(block, |s| s.kv_rows(rows));
+        }
+        doc
+    };
+
+    doc.with_data(serde_json::json!({
+        "name": name,
+        "resolved": resolved,
+    }))
+}
+
+/// The `--resolved` half of `cfgd profile show`: the layers that contributed
+/// to this host's fold of the chain, and the merged inventories that fold
+/// produced.
+fn build_profile_show_resolved_sections(
+    doc: Doc,
+    resolved: &ResolvedProfile,
+    detail: crate::cli::InventoryDetail,
+) -> Doc {
+    let mut doc = doc.section("Layers", |s| {
         resolved.layers.iter().fold(s, |s, layer: &ProfileLayer| {
             s.kv(
                 &layer.profile_name,
@@ -42,35 +82,85 @@ pub fn build_profile_show_doc(
         })
     });
 
-    for (name, rows) in profile_inventory_blocks(resolved) {
+    let merged = &resolved.merged;
+    let blocks = inventory_blocks(
+        &merged.env,
+        &merged.aliases,
+        Some(&merged.packages),
+        Some(&merged.files),
+        &merged.system,
+        &merged.secrets,
+        detail,
+    );
+    for (block, rows) in blocks {
         if rows.is_empty() {
             continue;
         }
-        doc = doc.section(name, |s| s.kv_rows(rows));
+        doc = doc.section(block, |s| s.kv_rows(rows));
     }
-
-    doc.with_data(serde_json::json!({
-        "name": name,
-        "resolved": resolved,
-    }))
+    doc
 }
 
-/// A profile's own inventory — Aliases, Env, Packages, Files, System, Secrets
-/// — as named blocks of kv rows, aliases leading the shell pair as they do on
-/// every surface that names both. A block with no rows is returned empty rather than omitted,
-/// so a caller decides whether an empty block is a skipped section or an
-/// empty-state one.
+/// The profile's OWN declared spec: the last layer the operator wrote, which
+/// is the profile the invocation named. A resolution with no local layer at
+/// all (a synthesized one) has no document to show.
+pub fn own_profile_spec(resolved: &ResolvedProfile) -> Option<&ProfileSpec> {
+    resolved
+        .layers
+        .iter()
+        .rfind(|layer| layer.source == cfgd_core::config::LOCAL_LAYER)
+        .map(|layer| &layer.spec)
+}
+
+/// A profile's DECLARED inventory — Aliases, Env, Packages, Files, System,
+/// Secrets — as named blocks of kv rows, aliases leading the shell pair as
+/// they do on every surface that names both. A block with no rows is returned
+/// empty rather than omitted, so a caller decides whether an empty block is a
+/// skipped section or an empty-state one.
 ///
 /// The ONE derivation of those rows. `cfgd profile show` renders each block as
-/// a top-level section; `cfgd source show` / `cfgd source add` render the same
-/// blocks as subsections under the `profile:<name>` owner of each profile the
-/// source provides. Only the section DEPTH differs, so what a subscriber reads
+/// a top-level section; `cfgd source show` renders the same blocks as
+/// subsections under the `profile:<name>` owner of each profile the source
+/// provides. Only the section DEPTH differs, so what a subscriber reads
 /// before subscribing and what they read afterwards cannot say different
 /// things about the same profile.
-pub fn profile_inventory_blocks(resolved: &ResolvedProfile) -> Vec<(&'static str, Vec<KvPair>)> {
-    let mut env_sorted: Vec<&EnvVar> = resolved.merged.env.iter().collect();
+///
+/// Declared means the document's own words: a `platforms:`-gated entry is
+/// listed with its annotation on every host, and every env value masks unless
+/// the invocation asked to see it.
+pub fn profile_inventory_blocks(
+    spec: Option<&ProfileSpec>,
+    detail: crate::cli::InventoryDetail,
+) -> Vec<(&'static str, Vec<KvPair>)> {
+    let Some(spec) = spec else {
+        return inventory_blocks(&[], &[], None, None, &Default::default(), &[], detail);
+    };
+    inventory_blocks(
+        &spec.env,
+        &spec.aliases,
+        spec.packages.as_ref(),
+        spec.files.as_ref(),
+        &spec.system,
+        &spec.secrets,
+        detail,
+    )
+}
+
+/// The six inventory blocks over whichever set of entries the caller holds —
+/// a profile's own declaration, or the merge of its whole chain. The two views
+/// differ in what they carry, never in how a row reads.
+fn inventory_blocks(
+    env: &[EnvVar],
+    aliases: &[ShellAlias],
+    packages: Option<&PackagesSpec>,
+    files: Option<&FilesSpec>,
+    system: &cfgd_core::config::SystemSettings,
+    secrets: &[SecretSpec],
+    detail: crate::cli::InventoryDetail,
+) -> Vec<(&'static str, Vec<KvPair>)> {
+    let mut env_sorted: Vec<&EnvVar> = env.iter().collect();
     env_sorted.sort_by(|a, b| a.name.cmp(&b.name));
-    let mut aliases_sorted: Vec<&ShellAlias> = resolved.merged.aliases.iter().collect();
+    let mut aliases_sorted: Vec<&ShellAlias> = aliases.iter().collect();
     aliases_sorted.sort_by(|a, b| a.name.cmp(&b.name));
 
     vec![
@@ -78,29 +168,45 @@ pub fn profile_inventory_blocks(resolved: &ResolvedProfile) -> Vec<(&'static str
             "Aliases",
             aliases_sorted
                 .iter()
-                .map(|al| KvPair::new(&al.name, &al.command))
+                .map(|al| {
+                    KvPair::new(
+                        &al.name,
+                        crate::cli::module::list_show::gated_value(al.command.clone(), *al),
+                    )
+                })
                 .collect(),
         ),
         (
             "Env",
             env_sorted
                 .iter()
-                .map(|ev| KvPair::new(&ev.name, &ev.value))
+                .map(|ev| {
+                    let value = if detail.values {
+                        ev.value.clone()
+                    } else {
+                        crate::cli::module::keys::mask_value(&ev.value)
+                    };
+                    KvPair::new(
+                        &ev.name,
+                        crate::cli::module::list_show::gated_value(value, *ev),
+                    )
+                })
                 .collect(),
         ),
         (
             "Packages",
-            package_display_rows(&resolved.merged.packages)
+            packages
+                .map(package_display_rows)
+                .unwrap_or_default()
                 .into_iter()
                 .map(|(label, value)| KvPair::new(label, value))
                 .collect(),
         ),
         (
             "Files",
-            resolved
-                .merged
-                .files
-                .managed
+            files
+                .map(|f| f.managed.as_slice())
+                .unwrap_or_default()
                 .iter()
                 .map(|file: &ManagedFileSpec| {
                     KvPair::new(
@@ -112,18 +218,14 @@ pub fn profile_inventory_blocks(resolved: &ResolvedProfile) -> Vec<(&'static str
         ),
         (
             "System",
-            resolved
-                .merged
-                .system
+            system
                 .keys()
                 .map(|k| KvPair::new(k.as_str(), "(configured)"))
                 .collect(),
         ),
         (
             "Secrets",
-            resolved
-                .merged
-                .secrets
+            secrets
                 .iter()
                 .map(|secret: &SecretSpec| {
                     let value = match (&secret.target, &secret.envs) {
@@ -195,7 +297,13 @@ fn package_display_rows(pkgs: &PackagesSpec) -> Vec<(String, String)> {
     rows
 }
 
-pub fn cmd_profile_show(cli: &Cli, printer: &Printer, name: Option<&str>) -> anyhow::Result<()> {
+pub fn cmd_profile_show(
+    cli: &Cli,
+    printer: &Printer,
+    name: Option<&str>,
+    resolved_view: bool,
+    detail: crate::cli::InventoryDetail,
+) -> anyhow::Result<()> {
     let declared;
     let (profile_name, resolved) = match name {
         Some(n) => {
@@ -250,6 +358,8 @@ pub fn cmd_profile_show(cli: &Cli, printer: &Printer, name: Option<&str>) -> any
         &cli.config,
         &declared,
         printer.arrow(),
+        detail,
+        resolved_view,
     ));
     Ok(())
 }

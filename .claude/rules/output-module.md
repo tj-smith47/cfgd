@@ -57,6 +57,27 @@ Push Module                           Push Module
 
 **Every wait is narrated either IN the frame it fills or BEFORE that frame; a title over a frozen screen is the defect.** Which of the two shapes a command takes is decided by whether the frame REPORTS the wait as a row of its own. A BODY wait is reported by the frame (`✓ Pushed module`, `Initialized at …`, the Gateway verdict), so the title lands first and the wait narrates under it — a bar the library call is handed (`Some(printer)`), or one the section opens beside it. A PRE-FRAME wait is reported by nothing in the frame (a fetch that only feeds a comparison), so it narrates FIRST — `narrate` / `narrate_silent`, whose bar retires into nothing — and the title lands with the result it produced; `verify` and `doctor` are the shape, and `diff`, `sync`, `source update`, `source add`, `module registry add` and `module upgrade` follow it. A library call that commits lines of its own (`printer.run`'s clone transcript) is handed a Quiet sink (`printer.at_verbosity(Verbosity::Quiet)`) so the bar owns the wait's surface — `source add` and `source update` both fetch that way. A title whose frame reports its own wait, a wait that PROMPTS the reader, and an early return that narrates nothing each carry `// heading-first-ok: <why>`. `no_command_paints_its_heading_before_the_wait_that_fills_it` walks `crates/cfgd/src/cli/`.
 
+## Fact classes: which verb renders which
+
+Every fact a read verb renders is one of four classes, and the verb's shape decides which classes it may render by default:
+
+- **DECLARED**: what the YAML says, conditions intact. A package lists every manager it names and its `prefer`; a `platforms:`-gated entry renders with its `platform_annotation()`, on every host; an `inherits:` chain is named, not folded.
+- **RESOLVED**: what the declared spec becomes on THIS host: the manager that won, the offered version, the entries `applicable_here` kept, the merged layer fold, an effective strategy or schedule.
+- **MACHINE**: what is on the machine now: installed, missing, drifted, checked live, daemon health.
+- **RECORDED**: what the state store or a lockfile remembers: last apply, hashes, scan stamps, history rows, standing drift rows, a pinned commit.
+
+| Verb shape | Default | Behind a flag | Never |
+|---|---|---|---|
+| `<noun> show`, `config show`, `explain` | DECLARED | RESOLVED under `--resolved` | MACHINE, RECORDED |
+| `<noun> list` | DECLARED, plus at most ONE recorded status column and its age (`// list-status-ok: <why>`) | RESOLVED under `--resolved` | MACHINE |
+| `status`, `status <module>`, `diff`, `verify`, `daemon status` | MACHINE and RECORDED, headed by the resolved header block | | |
+| `log`, `compliance *`, `backup list` | RECORDED (the history the verb exists to read) | | MACHINE probes |
+| `doctor` | prerequisites of the machine (tools, permissions, paths) | | a managed resource's presence or drift |
+
+`--resolved` is the ONE spelling of the flag, per verb, never global: it changes WHAT is rendered, not how. A `show` verb's `-o yaml` is the serializer's YAML of the same payload, syntax-highlighted when colour is on, never a hand-rendered document and never the file's comments (a literal-file channel is a separate flag). A `show` verb never opens a state store, a package context, a platform probe or a manager registry outside its `--resolved` branch. **Every declared env VALUE masks by default** through `mask_value`, on every surface rendering one (`module show`, `profile show`, `source show`, `status <module> --show-values`); `--show-values` is the ONE spelling of the unmask. A rendered URL never carries its userinfo. A standing drift row (one the run could not re-check) renders under its own `Standing` heading at `Role::Warn` on every surface that prices it, never as a member of the live rows.
+
+`every_show_and_list_verb_renders_only_its_fact_classes` derives the population from clap (every leaf named `show` or `list`, plus `explain` and `config show`) and walks each verb's builder for the MACHINE/RESOLVED/RECORDED tells; a `--resolved` branch lives in its own `*_resolved_*` function, which the walk skips by name.
+
 ## Wording rules every closing line and hint obeys
 
 Each convention here carries a walk-the-population pin (in `crates/cfgd/src/cli/tests.rs` unless noted) that fails on the next member that breaks it.

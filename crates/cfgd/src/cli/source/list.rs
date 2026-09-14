@@ -184,6 +184,9 @@ pub fn cmd_source_list(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
         return Ok(());
     }
 
+    // list-status-ok: the store answers this listing's ONE recorded status
+    // column (a subscription's sync state) and the age beside it. Everything
+    // else the table renders is declared by `spec.sources[]`.
     let state = open_state_store(cli.state_dir.as_deref(), cli.scope())?;
     let entries = configured_source_entries(&cfg, &state);
 

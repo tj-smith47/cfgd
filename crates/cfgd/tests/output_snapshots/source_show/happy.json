@@ -2,20 +2,6 @@
   "acceptRecommended": true,
   "autoApply": false,
   "branch": "main",
-  "managedResources": [
-    {
-      "resourceId": "brew/curl",
-      "resourceType": "package"
-    },
-    {
-      "resourceId": "~/.bashrc",
-      "resourceType": "file"
-    },
-    {
-      "resourceId": "EDITOR",
-      "resourceType": "env"
-    }
-  ],
   "manifest": {
     "description": "Team-wide baseline",
     "modules": [
@@ -52,13 +38,6 @@
   },
   "priority": 100,
   "profile": "team",
-  "state": {
-    "lastCommit": "deadbeef1234567890abcdef",
-    "lastFetched": "2026-05-14T10:00:00Z",
-    "signed": true,
-    "status": "active",
-    "version": "3.1.0"
-  },
   "syncInterval": "1h",
   "url": "https://github.com/team/config"
 }

@@ -1,12 +1,13 @@
 Module: dev-tools
-  Version        1.4.0
-  Dependencies   base
-  Directory      /etc/cfgd/modules/dev-tools
-  Source         local
-  Status         Synced
-  Last Applied   2h ago
-  Packages Hash  abc123def456
-  Files Hash     789ghi012jkl
+  Version       1.4.0
+  Dependencies  base
+  Directory     /etc/cfgd/modules/dev-tools
+  Source        local
+
+Packages
+  ripgrep
+  winget-only-tool (platforms: windows)
+  obscure-tool                          — prefer: nix, min: 1.0
 
 Files
   vimrc                     ~/.vimrc

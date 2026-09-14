@@ -341,7 +341,9 @@ For bash/zsh, aliases are written as `alias name="command"`. For fish, they're w
 
 ```sh
 cfgd profile list                  # list available profiles
-cfgd profile show                  # show resolved profile (all layers merged)
+cfgd profile show                  # what the profile declares, its inherits named
+cfgd profile show --resolved       # the merged view, all layers folded in
+cfgd profile show --show-values    # reveal full env variable values (masked by default)
 cfgd profile switch work           # switch active profile
 cfgd profile create dev            # create a new profile (interactive or with flags)
 cfgd profile update dev --package brew:ripgrep  # modify a profile
