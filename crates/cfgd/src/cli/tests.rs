@@ -41889,45 +41889,126 @@ fn every_dispatched_renderer_has_a_coverage_row() {
     }
 }
 
-/// Where the `gated_value(` call at `at` lands, when that is anywhere but the
-/// VALUE slot of a `kv`-shaped row — `None` when the call is where it belongs.
+/// The argument each row composer's SUBJECT — the name column a reader scans
+/// down — occupies, zero-based. An empty callee is a tuple, which is the pair
+/// shape `command_list` takes, and its first element is that same name column.
+const SUBJECT_SLOT: &[(&str, usize)] = &[
+    ("", 0),
+    ("kv", 0),
+    ("KvPair::new", 0),
+    ("CommandPair::new", 0),
+    ("CommandPair::typed", 0),
+    ("status", 1),
+    ("status_with", 1),
+    ("status_owner_with", 1),
+];
+
+/// The `(callee, zero-based argument index)` the expression at `at` occupies,
+/// or `None` when nothing in the statement encloses it.
 ///
-/// The statement is the unit: a result let-bound to a name becomes that name's
-/// row subject, and a call sitting in argument one of a composer is the name
-/// column itself. Both are the shape the walk below refuses.
-fn gated_value_misplacement(code: &str, at: usize) -> Option<String> {
-    let stmt_start = code[..at].rfind([';', '{', '}']).map_or(0, |p| p + 1);
-    if code[stmt_start..at].contains("let ") {
-        return Some(
-            "let-bound, so the annotated value becomes a row's subject rather than its value"
-                .to_string(),
-        );
-    }
+/// The callee is read path-qualified, so `KvPair::new` is distinguishable from
+/// any other `new`; a method call stops at the `.` and reads as its bare name.
+/// Commas are counted at the enclosing call's own depth, so a closure or a
+/// nested call between the open paren and `at` does not shift the index.
+fn enclosing_argument(code: &str, at: usize, stmt_start: usize) -> Option<(String, usize)> {
     let bytes = code.as_bytes();
     let mut depth = 0i32;
     let mut i = at;
     while i > stmt_start {
         i -= 1;
         match bytes[i] {
-            b')' => depth += 1,
+            b')' | b']' | b'}' => depth += 1,
             b'(' if depth == 0 => break,
-            b'(' => depth -= 1,
+            b'(' | b'[' | b'{' => depth -= 1,
             _ => {}
         }
     }
     if bytes.get(i) != Some(&b'(') || i < stmt_start {
-        return Some("not passed into a row composer at all".to_string());
+        return None;
     }
-    // Path-qualified, so `KvPair::new` is distinguishable from any other
-    // `new`; a method call stops at the `.` and reads as its bare name.
     let start = code[..i]
         .rfind(|c: char| !(c.is_alphanumeric() || c == '_' || c == ':'))
         .map_or(0, |p| p + 1);
-    let callee = code[start..i].trim_start_matches(':');
-    let first_argument = !code[i + 1..at].contains(',');
-    match (callee, first_argument) {
-        ("kv" | "KvPair::new", false) => None,
-        (_, true) => Some(format!(
+    let callee = code[start..i].trim_start_matches(':').to_string();
+    let mut depth = 0i32;
+    let mut index = 0usize;
+    for b in code[i + 1..at].bytes() {
+        match b {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth -= 1,
+            b',' if depth == 0 => index += 1,
+            _ => {}
+        }
+    }
+    Some((callee, index))
+}
+
+/// Whether `code[at..at + len]` is a whole identifier rather than a fragment of
+/// a longer one.
+fn is_whole_word(code: &str, at: usize, len: usize) -> bool {
+    let ident = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
+    let before = at == 0 || !ident(code.as_bytes()[at - 1]);
+    let after = code.as_bytes().get(at + len).is_none_or(|c| !ident(*c));
+    before && after
+}
+
+/// The name a `let` statement binds, read out of the text between the start of
+/// the statement and the call — `None` when the statement is not a binding.
+fn let_bound_name(stmt: &str) -> Option<String> {
+    let at = stmt.rfind("let ")? + 4;
+    let rest = stmt[at..].trim_start();
+    let rest = rest.strip_prefix("mut ").unwrap_or(rest).trim_start();
+    let end = rest
+        .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .unwrap_or(rest.len());
+    (end > 0 && rest[end..].trim_start().starts_with('=')).then(|| rest[..end].to_string())
+}
+
+/// Where the `gated_value(` call at `at` lands, when that is anywhere but the
+/// VALUE slot of a `kv`-shaped row — `None` when the call is where it belongs.
+///
+/// A binding is not itself a misplacement: rustfmt splitting a long line, or a
+/// value that has to be computed before the row is built, both produce one, and
+/// the annotated string still lands in the value slot. So a let-bound result is
+/// followed to the bound name's own uses inside `scope`, the enclosing function,
+/// and refused only where that name reaches the SUBJECT slot of a row composer
+/// ([`SUBJECT_SLOT`]); a name reaching argument two or later is the value column
+/// the gate belongs in. A call written straight into a composer is judged on the
+/// slot it sits in.
+fn gated_value_misplacement(
+    code: &str,
+    at: usize,
+    scope: std::ops::Range<usize>,
+) -> Option<String> {
+    let stmt_start = code[..at].rfind([';', '{', '}']).map_or(0, |p| p + 1);
+    if let Some(name) = let_bound_name(&code[stmt_start..at]) {
+        let end = scope.end.min(code.len()).max(at);
+        let mut from = at;
+        while let Some(rel) = code[from..end].find(&name) {
+            let occ = from + rel;
+            from = occ + name.len();
+            if !is_whole_word(code, occ, name.len()) {
+                continue;
+            }
+            let stmt_start = code[..occ].rfind([';', '{', '}']).map_or(0, |p| p + 1);
+            let Some((callee, index)) = enclosing_argument(code, occ, stmt_start) else {
+                continue;
+            };
+            if SUBJECT_SLOT.contains(&(callee.as_str(), index)) {
+                return Some(format!(
+                    "let-bound to `{name}`, which reaches argument {} of `{callee}(`, a name column",
+                    index + 1
+                ));
+            }
+        }
+        return None;
+    }
+    let Some((callee, index)) = enclosing_argument(code, at, stmt_start) else {
+        return Some("not passed into a row composer at all".to_string());
+    };
+    match (callee.as_str(), index) {
+        ("kv" | "KvPair::new", i) if i > 0 => None,
+        (_, 0) => Some(format!(
             "argument one of `{callee}(`, which is a name column"
         )),
         _ => Some(format!(
@@ -41967,6 +42048,11 @@ fn no_gated_value_result_reaches_a_name_column() {
             .map(|l| blank_string_literals(l.split("//").next().unwrap_or(l)))
             .collect();
         let joined = code.join("\n");
+        // A let-binding is followed to its uses inside the function that holds
+        // it, so the walk needs each hit's enclosing span. Both are derived
+        // only once a file has a hit, since most files have none.
+        let mut spans: Option<Vec<(String, usize, usize)>> = None;
+        let mut starts: Option<Vec<usize>> = None;
         let mut from = 0usize;
         while let Some(rel) = joined[from..].find(CALL) {
             let at = from + rel;
@@ -41980,7 +42066,25 @@ fn no_gated_value_result_reaches_a_name_column() {
             if lines[n].contains(HATCH) || (n > 0 && lines[n - 1].contains(HATCH)) {
                 continue;
             }
-            if let Some(why) = gated_value_misplacement(&joined, at) {
+            let spans = spans.get_or_insert_with(|| declared_fn_spans(&lines));
+            let starts = starts.get_or_insert_with(|| {
+                code.iter()
+                    .scan(0usize, |acc, l| {
+                        let at = *acc;
+                        *acc += l.len() + 1;
+                        Some(at)
+                    })
+                    .collect()
+            });
+            // The TIGHTEST enclosing span, so a nested `fn` is its own scope.
+            let scope = spans
+                .iter()
+                .filter(|(_, f, t)| n >= *f && n <= *t)
+                .max_by_key(|(_, f, _)| *f)
+                .map_or(0..joined.len(), |(_, f, t)| {
+                    starts[*f]..starts.get(t + 1).copied().unwrap_or(joined.len())
+                });
+            if let Some(why) = gated_value_misplacement(&joined, at, scope) {
                 offenders.push(format!("{}:{}: {why}", path.display(), n + 1));
             }
         }
@@ -42002,6 +42106,86 @@ fn no_gated_value_result_reaches_a_name_column() {
          says why with `{HATCH} <why>`):\n{}",
         offenders.join("\n")
     );
+}
+
+/// [`gated_value_misplacement`] reads a binding through to the slot the bound
+/// name lands in, so only a name that reaches a row's SUBJECT is refused.
+///
+/// The rows are the shapes the walk above meets: the call written straight into
+/// each slot, and the same call let-bound first — which rustfmt produces on its
+/// own whenever the composed line runs long. The value-slot bindings are the
+/// counter-examples the earlier blanket refusal failed; the subject-slot ones
+/// are the regression the walk exists for.
+#[test]
+fn a_let_bound_gate_annotation_is_judged_by_the_slot_its_name_reaches() {
+    // (code, whether the walk must refuse it, what the row shows)
+    let cases: &[(&str, bool, &str)] = &[
+        (
+            "s.kv(&a.name, gated_value(a.command.clone(), a))",
+            false,
+            "written straight into the value slot",
+        ),
+        (
+            "s.kv(gated_value(a.command.clone(), a), &a.command)",
+            true,
+            "written straight into the subject slot",
+        ),
+        (
+            "let value = gated_value(a.command.clone(), a); s.kv(&a.name, value)",
+            false,
+            "let-bound, name in the value slot",
+        ),
+        (
+            "let value = gated_value(a.command.clone(), a); s.kv(value, &a.command)",
+            true,
+            "let-bound, name in the subject slot",
+        ),
+        (
+            "let value = gated_value(a.command.clone(), a); \
+             KvPair::new(&a.name, value)",
+            false,
+            "let-bound, name in `KvPair::new`'s value slot",
+        ),
+        (
+            "let value = gated_value(a.command.clone(), a); \
+             s.status_with(Role::Warn, value, |f| f)",
+            true,
+            "let-bound, name is a status row's subject",
+        ),
+        (
+            "let value = gated_value(a.command.clone(), a); \
+             s.status_with(Role::Warn, a.name.clone(), |f| f.detail(value))",
+            false,
+            "let-bound, name in a status row's detail",
+        ),
+        (
+            "let value = gated_value(a.command.clone(), a); \
+             s.command_list([(value, a.command.clone())])",
+            true,
+            "let-bound, name is a command list pair's name column",
+        ),
+        (
+            "let v = gated_value(a.command.clone(), a); s.kv(&vv, v)",
+            false,
+            "a longer identifier sharing the binding's prefix is not the name",
+        ),
+        (
+            "gated_value(a.command.clone(), a);",
+            true,
+            "handed to no composer at all",
+        ),
+    ];
+    for (code, refused, what) in cases {
+        let at = code
+            .find("gated_value(")
+            .expect("every case calls the composer");
+        let why = gated_value_misplacement(code, at, 0..code.len());
+        assert_eq!(
+            why.is_some(),
+            *refused,
+            "{what}: the walk answered {why:?} for `{code}`"
+        );
+    }
 }
 
 /// The `(name, first line, last line)` of every `fn` declared in `lines`.
