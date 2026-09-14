@@ -18875,7 +18875,7 @@ fn every_time_column_renders_a_relative_time() {
 /// `source list`'s column is headed `Source`, because the value is not always a
 /// URL a browser would take (a local source's origin is a directory) — so the
 /// label walk below cannot see it, and it is named here instead. A name that
-/// matches no function in `cli/` fails the walk, so a renamed composer is
+/// matches no function in either crate fails the walk, so a renamed composer is
 /// reported rather than silently dropped from the population.
 const URL_RENDERING_COMPOSERS: &[&str] = &["fn sources_table("];
 
@@ -18899,32 +18899,57 @@ fn names_a_url(label: &str) -> bool {
 /// `a_credentialed_registry_url_renders_stripped_and_serializes_whole` pins
 /// from the other side.
 ///
-/// Judged per ENCLOSING FUNCTION, like the time-column walk: a cell can be
-/// built rows away from the `Table::new` naming its column. A slot rendering a
-/// URL that genuinely must keep its userinfo says so with a
-/// `// raw-url-ok: <why>` marker.
+/// Judged on the SLOT's own call expression: a function rendering two URLs was
+/// exempted whole by whichever one of them folded, so a second row beside a
+/// folded one could carry a token. A composer named in the roster above is the
+/// exception and keeps whole-function judgement, because the composer IS the
+/// slot. A slot rendering a URL that genuinely must keep its userinfo says so
+/// with a `// raw-url-ok: <why>` marker.
+///
+/// The population is every production `.rs` of BOTH crates: a URL row reaches a
+/// scrollback the same way whichever crate composed it, and cfgd-core renders
+/// sources, registries and module origins of its own.
 #[test]
 fn every_rendered_url_is_stripped_of_its_userinfo() {
     let mut offenders = Vec::new();
     let mut seen: Vec<String> = Vec::new();
     let mut composers_found: Vec<&str> = Vec::new();
-    for (path, body) in cli_production_sources() {
+    let mut core_files = 0usize;
+    for (path, body) in cli_production_sources()
+        .into_iter()
+        .chain(core_production_sources())
+    {
+        if path.components().any(|c| c.as_os_str() == "cfgd-core") {
+            core_files += 1;
+        }
         let lines: Vec<&str> = body.lines().collect();
-        let mut sites: Vec<(usize, String)> = rendered_labels(&body)
+        let mut sites: Vec<(usize, String, bool)> = rendered_labels(&body)
             .into_iter()
             .filter(|(_, label)| names_a_url(label))
+            .map(|(at, label)| (at, label, false))
             .collect();
         for composer in URL_RENDERING_COMPOSERS {
             if let Some(at) = body.find(composer) {
                 composers_found.push(composer);
-                sites.push((at, (*composer).to_string()));
+                sites.push((at, (*composer).to_string(), true));
             }
         }
-        for (at, label) in sites {
+        for (at, label, whole_fn) in sites {
             seen.push(label.clone());
             let n = body[..at].matches('\n').count();
-            let scope = enclosing_fn_text(&lines, n);
-            if scope.contains("display_url") || label_hatched(&lines, n, "// raw-url-ok:") {
+            // The SLOT's own expression, not the function holding it: a
+            // function rendering two URLs was exempted whole by whichever one
+            // of them folded. A named composer is the exception and is judged
+            // whole, because the composer IS the slot.
+            let judged = if whole_fn {
+                enclosing_fn_text(&lines, n)
+            } else {
+                match body[at..].find('(') {
+                    Some(rel) => bracketed_span(&body, at + rel).1.to_string(),
+                    None => String::new(),
+                }
+            };
+            if judged.contains("display_url") || label_hatched(&lines, n, "// raw-url-ok:") {
                 continue;
             }
             offenders.push(format!("{}:{}: {label:?}", path.display(), n + 1));
@@ -18941,6 +18966,14 @@ fn every_rendered_url_is_stripped_of_its_userinfo() {
     assert!(
         seen.iter().filter(|l| *l == "URL").count() >= 3,
         "the walk no longer reaches the three `URL` slots — it found {seen:?}"
+    );
+    // cfgd-core renders no URL row today, so its half of the population has no
+    // witness of its own; the floor is the file count instead, or the crate
+    // could drop out of the walk and every URL it starts rendering would be
+    // judged by nobody.
+    assert!(
+        core_files > 150,
+        "the walk no longer reaches the cfgd-core sources — it read {core_files}"
     );
     assert!(
         offenders.is_empty(),
