@@ -324,7 +324,7 @@ GW_URL=""
 expose_gateway() {
     log "Exposing the device gateway"
     kubectl -n "$NAMESPACE" patch service cfgd-gateway \
-        -p '{"spec":{"type":"NodePort"}}' >/dev/null
+        -p '{"spec":{"type":"NodePort"}}' >/dev/null  # rc-ok: set -Eeuo ends the bring-up here
     local port node_ip
     port="$(kubectl -n "$NAMESPACE" get service cfgd-gateway \
         -o jsonpath='{.spec.ports[0].nodePort}')"
