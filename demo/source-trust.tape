@@ -24,8 +24,9 @@ Set FontFamily "FiraCode Nerd Font Mono"
 Set FontSize 15
 Set Width 1320
 # Sized to the tallest scene: beats 11–13 accumulate without a clear (the
-# healed sync, the description, the closing listing are one arc), and at
-# 1000 the sync's own heading had scrolled off before the payoff frame.
+# healed sync, the description, the closing listing are one arc) — 51 rows
+# against this grid's 60, measured at this head — and at 1000 the sync's own
+# heading had scrolled off before the payoff frame.
 Set Height 1200
 Set TypingSpeed 50ms
 Set Padding 20
@@ -146,8 +147,8 @@ Sleep 2100ms
 Type "cfgd source add file://$HOME/team-config --name jarvispro --branch master --profile team --yes"
 Enter
 Wait@30s /cfgd\$$/
-# 19 lines → 3.4s
-Sleep 3400ms
+# 21 lines → 3.6s
+Sleep 3600ms
 
 Hide
 Type "clear"
@@ -294,8 +295,8 @@ Sleep 3300ms
 Type "cfgd source show jarvispro"
 Enter
 Wait@10s /cfgd\$$/
-# 32 lines → 4.7s
-Sleep 4700ms
+# 25 lines → 4.0s
+Sleep 4s
 
 # Beat 13: the arc closes where act one rested — a healthy subscription, now
 # behind a signing demand it satisfies. `cfgd status` also
