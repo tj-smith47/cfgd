@@ -561,8 +561,12 @@ pub(crate) fn cmd_module_show(
         "local"
     };
 
+    // One context for the whole invocation: the `--resolved` rows and the
+    // `Secrets` masking policy below both need one, and a second would repeat
+    // the config load, the source composition and the profile resolution the
+    // first already paid for.
+    let ctx = crate::cli::RunContext::new(cli, printer);
     let resolved_packages = if resolved {
-        let ctx = crate::cli::RunContext::new(cli, printer);
         Some(build_module_show_resolved_package_rows(
             &ctx,
             &module.spec,
@@ -592,7 +596,7 @@ pub(crate) fn cmd_module_show(
     let secret_envs = detail
         .masking
         .wants_secret_envs()
-        .then(|| crate::cli::RunContext::new(cli, printer).secret_env_names())
+        .then(|| ctx.secret_env_names())
         .flatten();
     let detail = match secret_envs.as_ref() {
         Some(names) => detail.with_secret_envs(names),
