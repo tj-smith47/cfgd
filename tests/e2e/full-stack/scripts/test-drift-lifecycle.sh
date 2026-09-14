@@ -101,9 +101,14 @@ begin_test "FS-DRIFT-04: Drift resolution lifecycle"
 # Delete DriftAlert
 kubectl delete driftalert "drift-${DEVICE_1}" -n cfgd-system --ignore-not-found 2>/dev/null || true
 
-# Patch MC to trigger re-reconcile (changes generation)
+# Patch MC to trigger re-reconcile (changes generation). A patch that never
+# landed means the generation never moved, so the wait below would time out
+# against a controller that was given nothing to do.
+FS04_PATCH_RC=0
 kubectl patch machineconfig "mc-${DEVICE_1}" -n cfgd-system --type=merge \
-    -p '{"spec":{"packages":[{"name":"vim"},{"name":"git"},{"name":"curl"},{"name":"wget"}]}}' 2>/dev/null || true
+    -p '{"spec":{"packages":[{"name":"vim"},{"name":"git"},{"name":"curl"},{"name":"wget"}]}}' \
+    >/dev/null 2>&1 || FS04_PATCH_RC=$?
+echo "  MC patch rc: ${FS04_PATCH_RC}"
 
 # Wait for MC to clear drift (controller may set status=False or remove the condition entirely)
 echo "  Waiting for drift to clear..."
@@ -125,10 +130,11 @@ echo "  MC driftDetected: $(kubectl get machineconfig "mc-${DEVICE_1}" -n cfgd-s
     -o jsonpath='{.status.conditions[?(@.type=="DriftDetected")].status}' 2>/dev/null || echo 'unknown')"
 echo "  MC Ready status: $READY_STATUS"
 
-if $DRIFT_CLEARED; then
+if [ "$FS04_PATCH_RC" -eq 0 ] && $DRIFT_CLEARED; then
     pass_test "FS-DRIFT-04"
 else
-    fail_test "FS-DRIFT-04" "Drift was not cleared after DriftAlert removal and spec change"
+    fail_test "FS-DRIFT-04" \
+        "Drift was not cleared after DriftAlert removal and spec change (patch rc ${FS04_PATCH_RC})"
 fi
 
 # =================================================================

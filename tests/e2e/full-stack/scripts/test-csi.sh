@@ -48,7 +48,7 @@ spec:
 EOF
 
         # Create an injection-enabled namespace
-        kubectl create namespace "e2e-csi-test-${E2E_RUN_ID}" 2>/dev/null || true
+        kubectl create namespace "e2e-csi-test-${E2E_RUN_ID}" 2>/dev/null || true # rc-ok: idempotent ensure of the namespace; a genuine failure fails the resource creates into it below
         kubectl label namespace "e2e-csi-test-${E2E_RUN_ID}" cfgd.io/inject-modules=true --overwrite 2>/dev/null
 
         sleep 3
@@ -197,7 +197,7 @@ EOF
 
         # Create injection-enabled namespace
         CSI03_NS="e2e-csi-multi-${E2E_RUN_ID}"
-        kubectl create namespace "$CSI03_NS" 2>/dev/null || true
+        kubectl create namespace "$CSI03_NS" 2>/dev/null || true # rc-ok: idempotent ensure of the namespace; a genuine failure fails the resource creates into it below
         kubectl label namespace "$CSI03_NS" cfgd.io/inject-modules=true --overwrite 2>/dev/null
 
         sleep 3
@@ -259,7 +259,7 @@ else
     # Mount it in a fresh namespace — this should be a cache hit since
     # FS-CSI-01 already pulled it.
     CSI04_NS="e2e-csi-cache-${E2E_RUN_ID}"
-    kubectl create namespace "$CSI04_NS" 2>/dev/null || true
+    kubectl create namespace "$CSI04_NS" 2>/dev/null || true # rc-ok: idempotent ensure of the namespace; a genuine failure fails the resource creates into it below
     kubectl label namespace "$CSI04_NS" cfgd.io/inject-modules=true --overwrite 2>/dev/null
 
     sleep 3
@@ -333,7 +333,7 @@ if ! $CSI_AVAILABLE; then
     skip_test "FS-CSI-05" "CSI driver not ready"
 else
     CSI05_NS="e2e-csi-invalid-${E2E_RUN_ID}"
-    kubectl create namespace "$CSI05_NS" 2>/dev/null || true
+    kubectl create namespace "$CSI05_NS" 2>/dev/null || true # rc-ok: idempotent ensure of the namespace; a genuine failure fails the resource creates into it below
     kubectl label namespace "$CSI05_NS" cfgd.io/inject-modules=true --overwrite 2>/dev/null
 
     sleep 3
@@ -424,7 +424,7 @@ spec:
 EOF
 
         CSI06_NS="e2e-csi-update-${E2E_RUN_ID}"
-        kubectl create namespace "$CSI06_NS" 2>/dev/null || true
+        kubectl create namespace "$CSI06_NS" 2>/dev/null || true # rc-ok: idempotent ensure of the namespace; a genuine failure fails the resource creates into it below
         kubectl label namespace "$CSI06_NS" cfgd.io/inject-modules=true --overwrite 2>/dev/null
 
         sleep 3
@@ -559,7 +559,7 @@ if ! $CSI_AVAILABLE; then
     skip_test "FS-CSI-09" "CSI driver not ready"
 else
     CSI09_NS="e2e-csi-unmount-${E2E_RUN_ID}"
-    kubectl create namespace "$CSI09_NS" 2>/dev/null || true
+    kubectl create namespace "$CSI09_NS" 2>/dev/null || true # rc-ok: idempotent ensure of the namespace; a genuine failure fails the resource creates into it below
     kubectl label namespace "$CSI09_NS" cfgd.io/inject-modules=true --overwrite 2>/dev/null
 
     sleep 3
@@ -630,7 +630,7 @@ if ! $CSI_AVAILABLE; then
     skip_test "FS-CSI-10" "CSI driver not ready"
 else
     CSI10_NS="e2e-csi-ro-${E2E_RUN_ID}"
-    kubectl create namespace "$CSI10_NS" 2>/dev/null || true
+    kubectl create namespace "$CSI10_NS" 2>/dev/null || true # rc-ok: idempotent ensure of the namespace; a genuine failure fails the resource creates into it below
     kubectl label namespace "$CSI10_NS" cfgd.io/inject-modules=true --overwrite 2>/dev/null
 
     sleep 3

@@ -57,7 +57,7 @@ start_heartbeat() {
         trap - EXIT
         while true; do
             kubectl annotate namespace -l "$E2E_RUN_LABEL" \
-                "cfgd.io/heartbeat=$(date -u +%s)" --overwrite >/dev/null 2>&1 || true
+                "cfgd.io/heartbeat=$(date -u +%s)" --overwrite >/dev/null 2>&1 || true # rc-ok: background heartbeat; a missed annotation is retried on the next interval
             sleep "$HEARTBEAT_INTERVAL_SECONDS"
         done
     ) &

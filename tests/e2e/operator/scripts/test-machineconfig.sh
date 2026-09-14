@@ -256,7 +256,7 @@ sleep 5
 # Delete the MachineConfig — DriftAlert becomes orphaned
 # Remove finalizers first in case controller added them
 kubectl patch machineconfig "e2e-ephemeral-mc-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" \
-    --type=json -p='[{"op":"replace","path":"/metadata/finalizers","value":[]}]' 2>/dev/null || true
+    --type=json -p='[{"op":"replace","path":"/metadata/finalizers","value":[]}]' 2>/dev/null || true # rc-ok: clearing finalizers is best-effort; OP-ERR-03 asserts only that the operator survives the orphaned alert
 kubectl delete machineconfig "e2e-ephemeral-mc-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" --wait=false --ignore-not-found 2>/dev/null || true
 
 # Wait for MC to actually be gone
@@ -303,7 +303,7 @@ RESTARTS_BEFORE=$(kubectl get pods -n cfgd-system -l app=cfgd-operator \
 
 # Create and immediately delete a MachineConfig to race the controller
 for i in $(seq 1 5); do
-    kubectl apply -n "$E2E_NAMESPACE" -f - <<EOF 2>/dev/null || true
+    kubectl apply -n "$E2E_NAMESPACE" -f - <<EOF 2>/dev/null || true # rc-ok: the rapid create/delete race asserts only that the operator does not crash
 apiVersion: cfgd.io/v1alpha1
 kind: MachineConfig
 metadata:

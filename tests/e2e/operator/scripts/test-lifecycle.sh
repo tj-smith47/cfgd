@@ -219,7 +219,7 @@ echo "  compliantCount after update: ${COMPLIANT_AFTER:-not set}"
 # The verdict reads the facts from AFTER the update: `CP_STATUS` is the initial
 # evaluation, captured before the patch, so a policy that never re-evaluated
 # passed on it.
-if [ "$LC05_PATCH_RC" -eq 0 ] && [ -n "$CP_STATUS" ] && [ -n "$COMPLIANT_AFTER" ]; then
+if [ "$LC05_PATCH_RC" -eq 0 ] && [ -n "$CP_STATUS" ] && [ "${COMPLIANT_AFTER:-0}" -ge 1 ] 2>/dev/null; then
     pass_test "OP-LC-05"
 else
     fail_test "OP-LC-05" "ConfigPolicy was not re-evaluated after MC update (patch rc=${LC05_PATCH_RC}, compliantCount after=${COMPLIANT_AFTER:-unset})"

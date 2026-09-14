@@ -41,7 +41,7 @@ spec:
       keyless: true
 EOF
 
-        kubectl create namespace "$OCI01_NS" 2>/dev/null || true
+        kubectl create namespace "$OCI01_NS" 2>/dev/null || true # rc-ok: idempotent ensure of the namespace; a genuine failure fails the resource creates into it below
         kubectl label namespace "$OCI01_NS" cfgd.io/inject-modules=true --overwrite 2>/dev/null
 
         sleep 3
@@ -170,7 +170,7 @@ spec:
 EOF
         fi
 
-        kubectl create namespace "$OCI02_NS" 2>/dev/null || true
+        kubectl create namespace "$OCI02_NS" 2>/dev/null || true # rc-ok: idempotent ensure of the namespace; a genuine failure fails the resource creates into it below
         kubectl label namespace "$OCI02_NS" cfgd.io/inject-modules=true --overwrite 2>/dev/null
 
         sleep 3
@@ -411,7 +411,7 @@ spec:
       keyless: true
 EOF
 
-        kubectl create namespace "$OCI05_NS" 2>/dev/null || true
+        kubectl create namespace "$OCI05_NS" 2>/dev/null || true # rc-ok: idempotent ensure of the namespace; a genuine failure fails the resource creates into it below
         kubectl label namespace "$OCI05_NS" cfgd.io/inject-modules=true --overwrite 2>/dev/null
 
         sleep 3
@@ -491,7 +491,7 @@ spec:
       keyless: true
 EOF
 
-        kubectl create namespace "$OCI06_NS" 2>/dev/null || true
+        kubectl create namespace "$OCI06_NS" 2>/dev/null || true # rc-ok: idempotent ensure of the namespace; a genuine failure fails the resource creates into it below
         kubectl label namespace "$OCI06_NS" cfgd.io/inject-modules=true --overwrite 2>/dev/null
 
         # Wait for registry-credentials to be replicated by Reflector

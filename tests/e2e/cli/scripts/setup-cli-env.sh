@@ -40,9 +40,7 @@ SCRATCH="$CLI_SCRATCH/$CALLER"
 mkdir -p "$SCRATCH"
 
 # Git identity: common/scratch-home.sh writes $HOME/.gitconfig under the scratch
-# home, which is the one every suite runs under. A second one here exported
-# GIT_CONFIG_GLOBAL, which wins over $HOME/.gitconfig, so the CLI suites got the
-# identity without the default-branch pin the other writer sets.
+# home, which is the one every suite runs under.
 
 # --- Helpers ---
 

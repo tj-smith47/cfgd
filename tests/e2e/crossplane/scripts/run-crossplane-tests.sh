@@ -307,7 +307,7 @@ fi
 begin_test "XP-07: TeamConfig with policy generates ConfigPolicy"
 
 XP07_NS="xp07-policy-$(date +%s)"
-kubectl create namespace "$XP07_NS" 2>/dev/null || true
+kubectl create namespace "$XP07_NS" 2>/dev/null || true # rc-ok: idempotent ensure of the namespace; a genuine failure fails the resource creates into it below
 
 kubectl apply -f - <<EOF
 apiVersion: cfgd.io/v1alpha1
@@ -605,8 +605,8 @@ begin_test "XP-13: Multiple TeamConfigs in different namespaces"
 
 XP13_NS_A="xp13-team-a-$(date +%s)"
 XP13_NS_B="xp13-team-b-$(date +%s)"
-kubectl create namespace "$XP13_NS_A" 2>/dev/null || true
-kubectl create namespace "$XP13_NS_B" 2>/dev/null || true
+kubectl create namespace "$XP13_NS_A" 2>/dev/null || true # rc-ok: idempotent ensure of the namespace; a genuine failure fails the resource creates into it below
+kubectl create namespace "$XP13_NS_B" 2>/dev/null || true # rc-ok: idempotent ensure of the namespace; a genuine failure fails the resource creates into it below
 
 kubectl apply -f - <<EOF
 apiVersion: cfgd.io/v1alpha1

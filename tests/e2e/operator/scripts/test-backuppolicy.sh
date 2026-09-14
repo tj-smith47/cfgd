@@ -6,7 +6,7 @@ echo "=== BackupPolicy Tests ==="
 
 BP_NS="e2e-backup-${E2E_RUN_ID}"
 
-kubectl create namespace "$BP_NS" 2>/dev/null || true
+kubectl create namespace "$BP_NS" 2>/dev/null || true # rc-ok: idempotent ensure of the namespace; a genuine failure fails the resource creates into it below
 kubectl label namespace "$BP_NS" "$E2E_RUN_LABEL" --overwrite 2>/dev/null
 
 # =================================================================

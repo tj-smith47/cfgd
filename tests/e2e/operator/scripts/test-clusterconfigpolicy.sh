@@ -10,8 +10,8 @@ echo "=== ClusterConfigPolicy Tests ==="
 begin_test "OP-CCP-01: ClusterConfigPolicy — namespaceSelector filtering"
 
 # Create two namespaces: one matching, one not
-kubectl create namespace "e2e-team-alpha-${E2E_RUN_ID}" 2>/dev/null || true
-kubectl create namespace "e2e-team-beta-${E2E_RUN_ID}" 2>/dev/null || true
+kubectl create namespace "e2e-team-alpha-${E2E_RUN_ID}" 2>/dev/null || true # rc-ok: idempotent ensure of the namespace; a genuine failure fails the resource creates into it below
+kubectl create namespace "e2e-team-beta-${E2E_RUN_ID}" 2>/dev/null || true # rc-ok: idempotent ensure of the namespace; a genuine failure fails the resource creates into it below
 kubectl label namespace "e2e-team-alpha-${E2E_RUN_ID}" "$E2E_RUN_LABEL" cfgd.io/team=alpha --overwrite 2>/dev/null
 kubectl label namespace "e2e-team-beta-${E2E_RUN_ID}" "$E2E_RUN_LABEL" cfgd.io/team=beta --overwrite 2>/dev/null
 
@@ -136,8 +136,8 @@ NS_A="e2e-ns-a-${E2E_RUN_ID}"
 NS_B="e2e-ns-b-${E2E_RUN_ID}"
 
 # --- Setup: create two ephemeral namespaces with labels ---
-kubectl create namespace "$NS_A" 2>/dev/null || true
-kubectl create namespace "$NS_B" 2>/dev/null || true
+kubectl create namespace "$NS_A" 2>/dev/null || true # rc-ok: idempotent ensure of the namespace; a genuine failure fails the resource creates into it below
+kubectl create namespace "$NS_B" 2>/dev/null || true # rc-ok: idempotent ensure of the namespace; a genuine failure fails the resource creates into it below
 kubectl label namespace "$NS_A" "$E2E_RUN_LABEL" cfgd.io/team=frontend --overwrite 2>/dev/null
 kubectl label namespace "$NS_B" "$E2E_RUN_LABEL" cfgd.io/team=frontend --overwrite 2>/dev/null
 

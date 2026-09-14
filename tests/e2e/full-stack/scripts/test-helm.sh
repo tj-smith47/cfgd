@@ -19,7 +19,7 @@ done
 helm_test_ns() {
     local id="$1"
     HELM_NS="e2e-helm-${id}-${E2E_RUN_ID}"
-    kubectl create namespace "$HELM_NS" 2>/dev/null || true
+    kubectl create namespace "$HELM_NS" 2>/dev/null || true # rc-ok: idempotent ensure of the namespace; a genuine failure fails the resource creates into it below
     kubectl label namespace "$HELM_NS" "$E2E_RUN_LABEL" --overwrite 2>/dev/null || true
     # Wait for Reflector to replicate registry-credentials (needed for imagePullSecrets)
     local deadline=$((SECONDS + 30))

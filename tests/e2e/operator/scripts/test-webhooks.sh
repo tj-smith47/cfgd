@@ -85,7 +85,7 @@ kubectl delete machineconfig e2e-bad-mc -n "$E2E_NAMESPACE" --ignore-not-found 2
 begin_test "OP-WH-02: Mutating webhook — pod injection"
 
 # Create a namespace with the injection label
-kubectl create namespace "e2e-inject-${E2E_RUN_ID}" 2>/dev/null || true
+kubectl create namespace "e2e-inject-${E2E_RUN_ID}" 2>/dev/null || true # rc-ok: idempotent ensure of the namespace; a genuine failure fails the resource creates into it below
 kubectl label namespace "e2e-inject-${E2E_RUN_ID}" "$E2E_RUN_LABEL" cfgd.io/inject-modules=true --overwrite 2>/dev/null
 
 # Ensure a Module CRD exists for the webhook to look up
@@ -595,7 +595,7 @@ kubectl delete module "e2e-valid-mod-${E2E_RUN_ID}" --ignore-not-found 2>/dev/nu
 begin_test "OP-WH-15: MachineConfig serde defaults on minimal spec"
 
 # Create a minimal MachineConfig with only required fields
-kubectl apply -n "$E2E_NAMESPACE" -f - 2>&1 <<EOF || true
+kubectl apply -n "$E2E_NAMESPACE" -f - 2>&1 <<EOF || true # rc-ok: a failed apply leaves the stored object empty and OP-WH-15's field checks go red
 apiVersion: cfgd.io/v1alpha1
 kind: MachineConfig
 metadata:
