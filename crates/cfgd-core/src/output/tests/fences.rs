@@ -3214,24 +3214,31 @@ fn every_env_mutating_test_helper_is_named_in_the_mutator_roster() {
 }
 
 /// A walk that reads several sources reads each one through
-/// [`crate::test_helpers::production_slice_of`], which owns both halves the
-/// walk needs: the read that must not be swallowed, and the per-file floor on
-/// what the slice returned.
+/// [`crate::test_helpers::production_slice_of`], or through the `cfgd` crate's
+/// own `floored_production_body`, which own both halves the walk needs: the
+/// read that must not be swallowed, and the per-file floor on what the cut
+/// returned.
 ///
 /// The pure [`crate::test_helpers::production_slice`] takes a body, so a caller
 /// reaching it inside a loop has already read the file itself and can only
 /// carry the floor by hand — which is how the same block came to be copied,
-/// and how most walks came to carry no floor at all. A caller that genuinely
-/// holds one compiled-in body and no path keeps the pure cut and says so with
-/// `// unfloored-slice-ok: <why>` on that line or the one above it.
+/// and how most walks came to carry no floor at all. `cli::tests::production_body`
+/// is the same pure cut in the other crate, so both spellings are judged here;
+/// a rule that needled only one left the whole cfgd-crate population outside it.
+/// A caller that genuinely holds one compiled-in body and no path keeps the pure
+/// cut and says so with `// unfloored-slice-ok: <why>` on that line or the one
+/// above it.
 #[test]
 fn every_multi_file_production_walk_reads_through_the_floored_helper() {
-    // Spelled in parts, or this walk's own needle is the first offender it
+    // Spelled in parts, or this walk's own needles are the first offenders it
     // finds.
-    let needle = concat!("production_", "slice");
+    let needles = [
+        concat!("production_", "slice"),
+        concat!("production_", "body"),
+    ];
     let hatch = concat!("unfloored-", "slice-ok:");
     let mut offenders = Vec::new();
-    let mut sources = 0usize;
+    let mut sources = [0usize; 2];
     for path in workspace_rust_files() {
         // `test_helpers.rs` holds the shared walk BODIES, so exempting the file
         // would hide the newest multi-file walk from this rule. Only its own
@@ -3247,50 +3254,67 @@ fn every_multi_file_production_walk_reads_through_the_floored_helper() {
             })
         };
         let lines: Vec<&str> = body.lines().collect();
-        let mut spells = false;
+        let mut spells = [false; 2];
         for (n, line) in lines.iter().enumerate() {
             if line.trim_start().starts_with("//") {
                 continue;
             }
-            if !line.contains(needle) {
+            let code = line.trim_start();
+            if line.contains(" fn ") || code.starts_with("fn ") {
                 continue;
             }
-            if line.contains(" fn ") {
-                continue;
+            for (slot, needle) in needles.iter().enumerate() {
+                if !line.contains(needle) {
+                    continue;
+                }
+                spells[slot] = true;
+                // The bare identifier, judged by both its edges: a neighbouring
+                // identifier character is the floored helper of either crate
+                // (`production_slice_of`, `floored_production_body`) or one of
+                // its own test names, and anything else is the pure cut reached
+                // by name — called, handed to a `map`, or imported under a name
+                // this walk would never see.
+                let bare = line.match_indices(needle).any(|(at, _)| {
+                    let after = line[at + needle.len()..].chars().next();
+                    let before = line[..at].chars().next_back();
+                    !after.is_some_and(|c| c.is_alphanumeric() || c == '_')
+                        && !before.is_some_and(|c| c.is_alphanumeric() || c == '_')
+                });
+                if !bare {
+                    continue;
+                }
+                let above = n.checked_sub(1).map(|i| lines[i]).unwrap_or_default();
+                if line.contains(hatch) || above.contains(hatch) {
+                    continue;
+                }
+                offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
             }
-            spells = true;
-            // The bare identifier, judged by what FOLLOWS it: an `_` there is
-            // the floored helper or one of its own test names, and anything
-            // else is the pure cut reached by name — called, handed to a
-            // `map`, or imported under a name this walk would never see.
-            let bare = line
-                .match_indices(needle)
-                .any(|(at, _)| !line[at + needle.len()..].starts_with('_'));
-            if !bare {
-                continue;
-            }
-            let above = n.checked_sub(1).map(|i| lines[i]).unwrap_or_default();
-            if line.contains(hatch) || above.contains(hatch) {
-                continue;
-            }
-            offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
         }
-        if spells {
-            sources += 1;
+        for (slot, spelled) in spells.iter().enumerate() {
+            if *spelled {
+                sources[slot] += 1;
+            }
         }
     }
     assert!(
         offenders.is_empty(),
-        "read the file through `cfgd_core::test_helpers::production_slice_of`, \
-         which reads it and floors the slice at the lines preceding its test \
-         module, or say why one body needs the pure cut with \
-         `// unfloored-slice-ok: <why>`:\n{}",
+        "read the file through `cfgd_core::test_helpers::production_slice_of` \
+         or `cli::tests::floored_production_body`, which read it and floor the \
+         cut at the lines preceding its test module, or say why one body needs \
+         the pure cut with `// unfloored-slice-ok: <why>`:\n{}",
         offenders.join("\n")
     );
     assert!(
-        sources >= 4,
-        "the walk found the slice helper in {sources} sources; it has stopped \
-         reading the population it judges"
+        sources[0] >= 4,
+        "the walk found the slice helper in {} sources; it has stopped \
+         reading the population it judges",
+        sources[0]
+    );
+    assert!(
+        sources[1] >= 1,
+        "the walk found the body helper in {} sources; it has stopped \
+         reading the population it judges",
+        sources[1]
     );
 }
 

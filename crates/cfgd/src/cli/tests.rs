@@ -16870,6 +16870,7 @@ fn production_body(body: &str) -> String {
 /// reports the population as swept.
 fn floored_production_body(path: &std::path::Path) -> String {
     let body = walked_file_body(path);
+    // unfloored-slice-ok: the floor over what this cut returned is the assert below.
     let production = production_body(&body);
     let first_test = body
         .lines()
@@ -17553,8 +17554,7 @@ fn every_reconciler_the_binary_builds_names_its_recording_scope() {
         if path.file_name().is_some_and(|n| n == "tests.rs") {
             continue;
         }
-        let body = walked_file_body(&path);
-        let production = production_body(&body);
+        let production = floored_production_body(&path);
         let lines: Vec<&str> = production.lines().collect();
         for (n, line) in lines.iter().enumerate() {
             if !line.contains("Reconciler::new(") {
@@ -17605,8 +17605,7 @@ fn every_single_subject_source_title_uses_the_owner_spelling() {
         if path.file_name().is_some_and(|n| n == "tests.rs") {
             continue;
         }
-        let body = walked_file_body(&path);
-        let production = production_body(&body);
+        let production = floored_production_body(&path);
         for (n, line) in production.lines().enumerate() {
             owner_titles += line.matches("heading_owner_prefixed(").count();
             let Some(at) = line.find(".heading(") else {
@@ -17677,8 +17676,10 @@ fn source_verb_body(file: &str) -> Vec<String> {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("src/cli/source")
         .join(file);
-    let body = std::fs::read_to_string(&path).expect("the verb's source file is checked out");
-    production_body(&body).lines().map(str::to_string).collect()
+    floored_production_body(&path)
+        .lines()
+        .map(str::to_string)
+        .collect()
 }
 
 /// A `source` verdict carries a count exactly when the verb can address more
@@ -17855,8 +17856,7 @@ fn cli_file_body(relative: &str) -> String {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("src/cli")
         .join(relative);
-    let body = std::fs::read_to_string(&path).expect("the verb's source file is checked out");
-    production_body(&body)
+    floored_production_body(&path)
 }
 
 /// Every mutating `source` and `module` verb closes its SUCCESS path on a next
@@ -17903,9 +17903,7 @@ fn every_mutating_verb_closes_on_a_next_step() {
     let module_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli/module");
     let mut judged = 0usize;
     for (verb, file, handler, terminal) in mutating_module_verbs() {
-        let body = std::fs::read_to_string(module_dir.join(file))
-            .expect("the verb's source file is checked out");
-        let body = production_body(&body);
+        let body = floored_production_body(&module_dir.join(file));
         let lines: Vec<&str> = body.lines().collect();
         let handler_body = fn_body(&lines, handler)
             .unwrap_or_else(|| panic!("module/{file} declares `{handler}`"));
@@ -18082,9 +18080,7 @@ fn no_artifact_verb_serializes_its_platform_flag_as_the_platform_it_resolved() {
         echoed_header_key,
     } in platform_resolving_artifact_verbs()
     {
-        let source =
-            std::fs::read_to_string(cli_dir.join(file)).expect("the verb's source is checked out");
-        let source = production_body(&source);
+        let source = floored_production_body(&cli_dir.join(file));
         let lines: Vec<&str> = source.lines().collect();
         let body =
             fn_body(&lines, handler).unwrap_or_else(|| panic!("{file} declares `{handler}`"));
@@ -18475,7 +18471,7 @@ fn every_sidecar_report_is_worded_by_sidecar_outcome_detail() {
 fn every_produced_count_is_an_action_rows_detail() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../cfgd-core/src/reconciler/format.rs");
-    let body = production_body(&std::fs::read_to_string(&path).expect("format.rs is checked out"));
+    let body = floored_production_body(&path);
     let lines: Vec<&str> = body.lines().collect();
     let mut judged = 0usize;
     let mut offenders = Vec::new();
@@ -19103,7 +19099,7 @@ fn every_stored_enum_has_a_display_counterpart() {
         .join("../cfgd-core/src/state/types.rs")
         .canonicalize()
         .expect("the workspace sibling crate is checked out beside this one");
-    let body = production_body(&std::fs::read_to_string(&path).expect("read state/types.rs"));
+    let body = floored_production_body(&path);
 
     let mut checked = Vec::new();
     let mut offenders = Vec::new();
@@ -19876,8 +19872,8 @@ fn no_apply_path_warn_restates_a_printer_line() {
                 .filter(|p| p.file_name().is_none_or(|n| n != "tests.rs"))
                 .filter(|p| !p.components().any(|c| c.as_os_str() == "tests"))
                 .map(|path| {
-                    let body = walked_file_body(&path);
-                    (path, production_body(&body))
+                    let production = floored_production_body(&path);
+                    (path, production)
                 }),
         )
         .collect();
@@ -33656,7 +33652,7 @@ fn every_catalog_sourced_sources_column_can_be_absent() {
         offenders.join("\n")
     );
 
-    let daemon = production_body(&std::fs::read_to_string(cli_dir.join("daemon.rs")).unwrap());
+    let daemon = floored_production_body(&cli_dir.join("daemon.rs"));
     let lines: Vec<&str> = daemon.lines().collect();
     let merge = fn_body(&lines, "daemon_source_row").expect("daemon_source_row is declared");
     for substitute in ["unwrap_or", "map_or", "is_some_and", "ABSENT"] {
@@ -36126,8 +36122,7 @@ fn no_journal_line_folds_the_home_directory() {
         {
             continue;
         }
-        let raw = walked_file_body(&path);
-        let body = production_body(&raw);
+        let body = floored_production_body(&path);
         let lines: Vec<&str> = body.lines().collect();
         for (n, line) in lines.iter().enumerate() {
             let code = line.trim_start();
@@ -37638,9 +37633,8 @@ fn serializing_type_names() -> std::collections::BTreeSet<String> {
         }
         crate_roots += 1;
         for path in rust_sources_under(&src) {
-            let body = walked_file_body(&path);
             let mut serializes = false;
-            for line in production_body(&body).lines() {
+            for line in floored_production_body(&path).lines() {
                 let code = line.trim();
                 if code.starts_with("#[") {
                     serializes = serializes || code.contains("Serialize");
@@ -37748,8 +37742,7 @@ fn no_serialized_payload_slot_renders_a_path_with_the_host_separator() {
                 continue;
             }
             files += 1;
-            let body = walked_file_body(&path);
-            let production = production_body(&body);
+            let production = floored_production_body(&path);
             let lines: Vec<&str> = production.lines().collect();
             let mut depth = 0i32;
             let mut inside: Option<i32> = None;
@@ -38281,7 +38274,7 @@ fn every_plan_running_verb_settles_its_link_deployed_hashes() {
     let mut seen = 0usize;
     let mut unsettled = Vec::new();
     for path in sources {
-        let body = production_body(&std::fs::read_to_string(&path).unwrap());
+        let body = floored_production_body(&path);
         let lines: Vec<&str> = body.lines().collect();
         for (n, line) in lines.iter().enumerate() {
             if !line.contains("ApplyRun::new(") {
@@ -38349,8 +38342,7 @@ fn every_manager_spawn_under_packages_inherits_the_bootstrapped_dirs() {
         .filter(|p| p.file_name().is_none_or(|n| n != "tests.rs"))
         .filter(|p| !p.components().any(|c| c.as_os_str() == "tests"))
     {
-        let body = std::fs::read_to_string(&path).unwrap();
-        let production = production_body(&body);
+        let production = floored_production_body(&path);
         let lines: Vec<&str> = production.lines().collect();
         for (n, line) in lines.iter().enumerate() {
             if line.trim_start().starts_with("//") || !spawns.iter().any(|s| line.contains(s)) {
@@ -38502,7 +38494,7 @@ fn every_multi_arm_bootstrap_honours_the_planned_method() {
         .filter(|p| p.file_name().is_none_or(|n| n != "tests.rs"))
         .filter(|p| !p.components().any(|c| c.as_os_str() == "tests"))
     {
-        let production = production_body(&std::fs::read_to_string(&path).unwrap());
+        let production = floored_production_body(&path);
         let lines: Vec<&str> = production.lines().collect();
         for (n, line) in lines.iter().enumerate() {
             if line.trim_start() != "fn bootstrap(" && !line.contains(" fn bootstrap(&self") {
@@ -38594,7 +38586,7 @@ fn every_offered_bootstrap_plan_says_which_platforms_run_its_arm() {
         .filter(|p| p.file_name().is_none_or(|n| n != "tests.rs"))
         .filter(|p| !p.components().any(|c| c.as_os_str() == "tests"))
     {
-        let production = production_body(&std::fs::read_to_string(&path).unwrap());
+        let production = floored_production_body(&path);
         let lines: Vec<&str> = production.lines().collect();
         for (n, line) in lines.iter().enumerate() {
             if !line.contains(" fn bootstrap_plan_given(") {
@@ -39947,8 +39939,7 @@ fn every_docs_pointer_the_cli_renders_goes_through_the_linked_slot() {
         {
             continue;
         }
-        let body = walked_file_body(&path);
-        let production = production_body(&body);
+        let production = floored_production_body(&path);
         let lines: Vec<&str> = production.lines().collect();
         for (n, line) in lines.iter().enumerate() {
             let code = line.trim_start();
@@ -40880,7 +40871,7 @@ fn every_annotated_kv_slot_states_a_fact_its_row_cannot_show() {
         if path.components().any(|c| c.as_os_str() == "tests") {
             continue;
         }
-        let production = production_body(&walked_file_body(&path));
+        let production = floored_production_body(&path);
         sources.push((path, production));
     }
     let mut found: Vec<(String, String)> = Vec::new();
