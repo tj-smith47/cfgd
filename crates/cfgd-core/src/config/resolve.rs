@@ -171,6 +171,125 @@ impl ResolvedProfile {
     }
 }
 
+/// Which layer delivered each declared resource that is NOT an env var or an
+/// alias: the packages, system settings, secrets and scripts a subscription can
+/// put on the machine.
+///
+/// The sibling of [`EntryOwners`], and recorded by the merge for the same
+/// reason: last-writer-wins is the merge's own rule, so a second walk applying
+/// it again is a second implementation, and the row `cfgd source remove` looks
+/// a subscription's resources up by would name a layer whose declaration is not
+/// the one that survived. The value is [`ProfileLayer::source`] rather than the
+/// `kind:name` token [`EntryOwners`] holds, because `managed_resources.source`
+/// is what the removal selects on.
+///
+/// Display-free and never persisted: `#[serde(skip)]` where it hangs off
+/// [`MergedProfile`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LayerSources {
+    /// `<manager>/<declared entry>` ([`crate::state::package_resource_id`]) to
+    /// the layer that declared it. Keyed on the DECLARED entry, which is what a
+    /// layer holds; a reader matching the row a manager's
+    /// `package_identity` composes folds this key through the same function.
+    pub packages: std::collections::HashMap<String, String>,
+    /// `<configurator>.<key>`
+    /// ([`crate::reconciler::system_resource_key`]) to the layer that declared
+    /// that leaf, plus the bare `<configurator>` a whole withheld block records
+    /// under.
+    pub system: std::collections::HashMap<String, String>,
+    /// `spec.secrets[].source`, the key the merge itself deduplicates a secret
+    /// by, so one declaration answers for every action it mints.
+    pub secrets: std::collections::HashMap<String, String>,
+    /// A script's `run` string ([`cfgd_schema::ScriptEntry::run_str`]), the id
+    /// its action records under.
+    pub scripts: std::collections::HashMap<String, String>,
+}
+
+impl LayerSources {
+    /// Record `source` against every package, system key, secret and script
+    /// `spec` declares, overwriting an earlier claim exactly as the merge
+    /// overwrites the declaration itself.
+    pub fn claim(&mut self, source: &str, spec: &ProfileSpec) {
+        if let Some(packages) = &spec.packages {
+            for manager in packages.manager_names() {
+                for package in desired_packages_for_spec(&manager, packages) {
+                    self.packages.insert(
+                        crate::state::package_resource_id(&manager, &package),
+                        source.to_string(),
+                    );
+                }
+            }
+        }
+        for (configurator, value) in &spec.system {
+            // A block withheld whole records under the configurator alone, so
+            // the last layer to declare anything under it answers for that row.
+            self.system.insert(configurator.clone(), source.to_string());
+            self.claim_system_keys(source, configurator, "", value);
+        }
+        for secret in &spec.secrets {
+            self.secrets
+                .insert(secret.source.clone(), source.to_string());
+        }
+        if let Some(scripts) = &spec.scripts {
+            for entry in scripts.hooks().into_iter().flat_map(|(_, entries)| entries) {
+                self.scripts
+                    .insert(entry.run_str().to_string(), source.to_string());
+            }
+        }
+    }
+
+    /// Claim every leaf a configurator's declared mapping reaches, under the
+    /// key its own drift row composes: one level for a flat mapping, two for a
+    /// nested one (a `defaults` domain, a gsettings schema), which is as deep
+    /// as `diff_nested_mapping` goes.
+    fn claim_system_keys(
+        &mut self,
+        source: &str,
+        configurator: &str,
+        key_prefix: &str,
+        value: &serde_yaml::Value,
+    ) {
+        let Some(mapping) = value.as_mapping() else {
+            return;
+        };
+        for (key, inner) in mapping {
+            let Some(key) = key.as_str() else { continue };
+            let key_path = if key_prefix.is_empty() {
+                key.to_string()
+            } else {
+                format!("{key_prefix}.{key}")
+            };
+            // A declared key repeating its own configurator's name is malformed
+            // and composes no row; claiming it would trip the composer's own
+            // assertion.
+            if crate::reconciler::system_key_doubling_error(configurator, &key_path).is_none() {
+                self.system.insert(
+                    crate::reconciler::system_resource_key(configurator, &key_path),
+                    source.to_string(),
+                );
+            }
+            self.claim_system_keys(source, configurator, &key_path, inner);
+        }
+    }
+
+    /// The layer to record `id` under for a resource of `kind`, as
+    /// `action_resource_info` spells the pair. `fallback` covers an id no layer
+    /// declares, which stays whatever the caller already had.
+    pub fn recording_layer<'a>(&'a self, kind: &str, id: &str, fallback: &'a str) -> &'a str {
+        let claimed = match kind {
+            "package" => self.packages.get(id),
+            "system" => self.system.get(id),
+            "secret" => self.secrets.get(id),
+            "script" => self.scripts.get(id),
+            _ => None,
+        };
+        match claimed {
+            Some(source) if !source.is_empty() => source,
+            _ => fallback,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct MergedProfile {
     pub modules: Vec<String>,
@@ -187,6 +306,10 @@ pub struct MergedProfile {
     /// so a `-o json` reader sees the payload it always saw.
     #[serde(skip)]
     pub entry_owners: EntryOwners,
+    /// Which layer delivered each surviving package, system key, secret and
+    /// script. Never serialized, for the same reason.
+    #[serde(skip)]
+    pub layer_sources: LayerSources,
 }
 
 /// Resolve a profile by loading it and its full inheritance chain, then merging.
@@ -313,6 +436,7 @@ pub fn merge_layers(layers: &[ProfileLayer]) -> MergedProfile {
         // Env: later layer overrides earlier by name; `PATH` concatenates.
         crate::fold_env_layer(&mut merged.env, &env, crate::PATH_LIST_SEPARATOR);
         merged.entry_owners.claim(&layer_owner, &env, &aliases);
+        merged.layer_sources.claim(&layer.source, &layer.spec);
         for secret in secrets {
             merged.entry_owners.claim_env_names(
                 &layer_owner,

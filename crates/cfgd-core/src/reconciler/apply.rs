@@ -1026,40 +1026,58 @@ pub(super) fn merge_env_result(
 }
 
 /// Which composed layer declared each package a profile's package actions
-/// install.
+/// install, keyed by the row id the apply writes.
 ///
 /// One `PackageAction::Install` batches every package its manager is missing,
 /// and those entries can have arrived on different layers, so the action's own
-/// origin cannot say which subscription delivered any one of them. The layer
-/// list can: the LAST layer declaring a `(manager, package)` pair is the layer
-/// whose declaration survived the merge, which is `merge_layers`' own
-/// last-writer-wins rule rather than a second opinion about precedence.
-struct PackageLayers(std::collections::HashMap<String, String>);
+/// origin cannot say which subscription delivered any one of them. The merge's
+/// own claim can ([`crate::config::LayerSources`]), and it is keyed on the
+/// DECLARED entry: a manager whose `package_identity` is not the identity
+/// function records its rows under something else (`go`'s `rsc.io/2fa` is the
+/// row `2fa`, winget folds case, FreeBSD `pkg` drops the version suffix), so
+/// both sides are folded through that same function here and the lookup cannot
+/// miss.
+struct PackageLayers<'r> {
+    by_row: std::collections::HashMap<String, String>,
+    registry: &'r ProviderRegistry,
+}
 
-impl PackageLayers {
-    fn of(resolved: &ResolvedProfile) -> Self {
-        let mut by_row = std::collections::HashMap::new();
-        for layer in &resolved.layers {
-            let Some(packages) = &layer.spec.packages else {
+impl<'r> PackageLayers<'r> {
+    fn of(resolved: &ResolvedProfile, registry: &'r ProviderRegistry) -> Self {
+        let mut layers = Self {
+            by_row: std::collections::HashMap::new(),
+            registry,
+        };
+        for (declared, source) in &resolved.merged.layer_sources.packages {
+            let Some((manager, entry)) = crate::state::split_package_resource_id(declared) else {
                 continue;
             };
-            for manager in packages.manager_names() {
-                for package in crate::config::desired_packages_for_spec(&manager, packages) {
-                    by_row.insert(
-                        crate::state::package_resource_id(&manager, &package),
-                        layer.source.clone(),
-                    );
-                }
-            }
+            let row = layers.row_id(manager, entry);
+            layers.by_row.insert(row, source.clone());
         }
-        Self(by_row)
+        layers
     }
 
-    /// The layer to record `resource_id` under. `fallback` covers a package no
-    /// layer declares — an entry the CLI folded in from a Brewfile or a
-    /// `package.json` after the merge — which stays whatever the action said.
-    fn recording_layer<'a>(&'a self, resource_id: &str, fallback: &'a str) -> &'a str {
-        match self.0.get(resource_id) {
+    /// A `(manager, package)` pair as the row it records under: the manager's
+    /// own identity for the name, so a declared entry and the row the writer
+    /// composes reach the same key.
+    fn row_id(&self, manager: &str, package: &str) -> String {
+        let identity = self
+            .registry
+            .package_managers()
+            .iter()
+            .find(|m| m.name() == manager)
+            .map(|m| m.package_identity(package))
+            .unwrap_or_else(|| package.to_string());
+        crate::state::package_resource_id(manager, &identity)
+    }
+
+    /// The layer to record a `(manager, package)` pair under. `fallback` covers
+    /// a package no layer declares — an entry the CLI folded in from a Brewfile
+    /// or a `package.json` after the merge — which stays whatever the action
+    /// said.
+    fn recording_layer<'a>(&'a self, manager: &str, package: &str, fallback: &'a str) -> &'a str {
+        match self.by_row.get(&self.row_id(manager, package)) {
             Some(source) if !source.is_empty() => source,
             _ => fallback,
         }
@@ -2260,7 +2278,7 @@ impl<'a> super::Reconciler<'a> {
         resolved: &ResolvedProfile,
         modules: &[ResolvedModule],
     ) -> Result<()> {
-        let package_layers = PackageLayers::of(resolved);
+        let package_layers = PackageLayers::of(resolved, self.registry);
         for result in results {
             if !result.success {
                 continue;
@@ -2299,7 +2317,7 @@ impl<'a> super::Reconciler<'a> {
                                 .and_then(|m| m.persisted_uninstall());
                             self.state.upsert_package_resource(
                                 &rid,
-                                package_layers.recording_layer(&rid, recording_layer),
+                                package_layers.recording_layer(&manager, pkg, recording_layer),
                                 Some(apply_id),
                                 uninstall_cmd.as_deref(),
                             )?;

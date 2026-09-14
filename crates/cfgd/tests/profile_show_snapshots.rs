@@ -215,6 +215,7 @@ fn happy_resolved() -> ResolvedProfile {
             scripts: Default::default(),
             backups: Vec::new(),
             entry_owners: Default::default(),
+            layer_sources: Default::default(),
         },
     }
 }

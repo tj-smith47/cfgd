@@ -31130,20 +31130,43 @@ fn a_shortfall_this_runs_provisions_delivered_is_worded_as_delivered() {
 /// clean it up, and the Keep / Remove / Cancel prompt that exists for exactly
 /// that question is unreachable.
 ///
-/// Both halves are driven: a file action carries its own delivering layer,
-/// while `plan_packages` mints every install under `local` because one batch
-/// can hold entries from several layers, so the package half is answered per
-/// package from the layer list.
+/// Every kind a layer can deliver is driven: a file action and its chmod carry
+/// their own delivering layer, while packages, system keys, secrets and scripts
+/// are answered from the merge's own claim, because one package batch can hold
+/// entries from several layers and the other three mint under `local` by
+/// default. The `cargo` manager here folds case, so its declared `Ripgrep-Cli`
+/// records under the row `cargo/ripgrep-cli`: the claim is keyed on the
+/// declared entry and the row on the manager's identity, and a lookup that does
+/// not fold both loses every manager whose identity is not the identity
+/// function (`go`, FreeBSD `pkg`, winget, chocolatey, scoop).
 #[test]
 fn an_apply_records_each_row_under_the_layer_that_delivered_it() {
     let state = test_state();
     let mut registry = ProviderRegistry::new();
     registry.add_package_manager(Box::new(MockPackageManager::new("brew")));
+    registry.add_package_manager(Box::new(MockPackageManager::new("cargo").case_folding()));
+    registry.add_system_configurator(Box::new(MockSystemConfigurator::new("sysctl").with_drift(
+        vec![crate::providers::SystemDrift {
+            key: "kernel.pid_max".to_string(),
+            expected: "4096".to_string(),
+            actual: "32768".to_string(),
+        }],
+    )));
 
     let dir = tempfile::tempdir().unwrap();
     let source = dir.path().join("gitconfig");
     std::fs::write(&source, "[user]\n").unwrap();
     let target = dir.path().join("deployed-gitconfig");
+    // The chmod-alone shape: an entry whose link is already correct plans no
+    // deploy, so the permissions action is the row's only writer.
+    let chmod_target = dir.path().join("deployed-netrc");
+    std::fs::write(&chmod_target, "machine example\n").unwrap();
+
+    let mut system = SystemSettings::new();
+    system.insert(
+        "sysctl".to_string(),
+        serde_yaml::from_str("kernel.pid_max: 4096").unwrap(),
+    );
 
     let mut resolved = make_empty_resolved();
     resolved.layers.push(ProfileLayer {
@@ -31157,29 +31180,63 @@ fn an_apply_records_each_row_under_the_layer_that_delivered_it() {
                     formulae: vec!["ripgrep".to_string()],
                     ..Default::default()
                 }),
+                cargo: Some(CargoSpec {
+                    file: None,
+                    packages: vec!["Ripgrep-Cli".to_string()],
+                }),
+                ..Default::default()
+            }),
+            system,
+            secrets: vec![SecretSpec {
+                source: "op://vault/item/field".to_string(),
+                target: None,
+                template: None,
+                backend: None,
+                envs: Some(vec!["ACME_TOKEN".to_string()]),
+            }],
+            scripts: Some(ScriptSpec {
+                pre_apply: vec![ScriptEntry::Simple("exit 0".to_string())],
                 ..Default::default()
             }),
             ..Default::default()
         },
     });
+    // The merge is what claims the delivering layer, so the pin reads the same
+    // merged profile a resolve would hand the reconciler.
+    resolved.merged = merge_layers(&resolved.layers);
 
     let reconciler = Reconciler::new(&registry, &state);
     let plan = reconciler
         .plan(
             &resolved,
-            vec![FileAction::Create {
-                source: source.clone(),
-                target: target.clone(),
-                origin: "acme".to_string(),
-                strategy: FileStrategy::Copy,
-                source_hash: None,
-                patch: None,
-            }],
-            vec![PackageAction::Install {
-                manager: "brew".to_string(),
-                packages: vec!["ripgrep".to_string()],
-                origin: LOCAL_LAYER.to_string(),
-            }],
+            vec![
+                FileAction::Create {
+                    source: source.clone(),
+                    target: target.clone(),
+                    origin: "acme".to_string(),
+                    strategy: FileStrategy::Copy,
+                    source_hash: None,
+                    patch: None,
+                },
+                FileAction::SetPermissions {
+                    target: chmod_target.clone(),
+                    mode: 0o600,
+                    origin: "acme".to_string(),
+                    chmod_path: None,
+                },
+            ],
+            vec![
+                PackageAction::Install {
+                    manager: "brew".to_string(),
+                    packages: vec!["ripgrep".to_string()],
+                    origin: LOCAL_LAYER.to_string(),
+                },
+                PackageAction::Install {
+                    manager: "cargo".to_string(),
+                    packages: vec!["Ripgrep-Cli".to_string()],
+                    origin: LOCAL_LAYER.to_string(),
+                },
+            ],
             Vec::new(),
             ReconcileContext::Apply,
         )
@@ -31208,13 +31265,26 @@ fn an_apply_records_each_row_under_the_layer_that_delivered_it() {
         .into_iter()
         .map(|r| (r.resource_type, r.resource_id))
         .collect();
+    // Every kind is judged in one pass, so a mutant that loses several names
+    // all of them rather than the first one the loop reached.
+    let missing: Vec<(&str, String)> = [
+        ("package", "brew/ripgrep".to_string()),
+        // The declared `Ripgrep-Cli` against the row this manager's identity
+        // spells.
+        ("package", "cargo/ripgrep-cli".to_string()),
+        ("file", crate::to_posix_string(&target)),
+        ("file", crate::to_posix_string(&chmod_target)),
+        ("system", "sysctl.kernel.pid_max".to_string()),
+        ("secret", "op://vault/item/field".to_string()),
+        ("script", "exit 0".to_string()),
+    ]
+    .into_iter()
+    .filter(|(rtype, rid)| !delivered.contains(&(rtype.to_string(), rid.clone())))
+    .collect();
     assert!(
-        delivered.contains(&("package".to_string(), "brew/ripgrep".to_string())),
-        "the package the source declared is recorded under it: {delivered:?}"
-    );
-    assert!(
-        delivered.contains(&("file".to_string(), crate::to_posix_string(&target))),
-        "the file the source delivered is recorded under it: {delivered:?}"
+        missing.is_empty(),
+        "these are not recorded under the source that delivered them: {missing:?} \
+         (recorded: {delivered:?})"
     );
     let local: Vec<(String, String)> = state
         .managed_resources_by_source(LOCAL_LAYER)
@@ -31223,9 +31293,10 @@ fn an_apply_records_each_row_under_the_layer_that_delivered_it() {
         .map(|r| (r.resource_type, r.resource_id))
         .collect();
     assert!(
-        !local
-            .iter()
-            .any(|(rtype, _)| rtype == "package" || rtype == "file"),
+        !local.iter().any(|(rtype, _)| matches!(
+            rtype.as_str(),
+            "package" | "file" | "system" | "secret" | "script"
+        )),
         "nothing the source delivered is also claimed by the operator: {local:?}"
     );
 }

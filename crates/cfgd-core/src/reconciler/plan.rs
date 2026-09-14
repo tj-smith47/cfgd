@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::PathDisplayExt;
-use crate::config::{LOCAL_LAYER, MergedProfile, ResolvedProfile, ScriptSpec};
+use crate::config::{LOCAL_LAYER, MergedProfile, ResolvedProfile};
 use crate::errors::Result;
 use crate::expand_tilde;
 use crate::modules::ResolvedModule;
@@ -154,7 +154,7 @@ impl<'a> super::Reconciler<'a> {
 
         observe(PhaseName::PreScripts);
         let (pre_script_actions, post_script_actions) =
-            self.plan_scripts(&resolved.merged.scripts, context);
+            self.plan_scripts(&resolved.merged, context);
 
         // Module work is attributed to the phase whose KIND it is, so a
         // module's packages sit beside the profile's in `Packages` rather than
@@ -509,12 +509,16 @@ impl<'a> super::Reconciler<'a> {
                         configurator.name(),
                         &drift.key,
                     );
+                    let rid = super::format::system_resource_key(configurator.name(), &drift.key);
                     actions.push(Action::System(SystemAction::SetValue {
                         configurator: configurator.name().to_string(),
                         key: drift.key,
                         desired: drift.expected,
                         current: drift.actual,
-                        origin: LOCAL_LAYER.to_string(),
+                        origin: profile
+                            .layer_sources
+                            .recording_layer("system", &rid, LOCAL_LAYER)
+                            .to_string(),
                     }));
                 }
             }
@@ -537,7 +541,10 @@ impl<'a> super::Reconciler<'a> {
                 actions.push(Action::System(SystemAction::ConfigureAfterInstall {
                     configurator: key.clone(),
                     tool: tool.to_string(),
-                    origin: LOCAL_LAYER.to_string(),
+                    origin: profile
+                        .layer_sources
+                        .recording_layer("system", key, LOCAL_LAYER)
+                        .to_string(),
                     prerequisite_withheld: false,
                 }));
                 continue;
@@ -565,7 +572,10 @@ impl<'a> super::Reconciler<'a> {
             actions.push(Action::System(SystemAction::Skip {
                 configurator: key.clone(),
                 reason,
-                origin: LOCAL_LAYER.to_string(),
+                origin: profile
+                    .layer_sources
+                    .recording_layer("system", key, LOCAL_LAYER)
+                    .to_string(),
                 unknown: !registered,
             }));
         }
@@ -591,6 +601,13 @@ impl<'a> super::Reconciler<'a> {
 
         for secret in &profile.secrets {
             let has_envs = secret.envs.as_ref().is_some_and(|e| !e.is_empty());
+            // One declaration, one layer: the merge deduplicates a secret by
+            // `source`, so every action this entry mints records under the same
+            // layer whichever arm below builds it.
+            let origin = profile
+                .layer_sources
+                .recording_layer("secret", &secret.source, LOCAL_LAYER)
+                .to_string();
 
             // Check if it's a provider reference
             if let Some((provider_name, reference)) =
@@ -611,7 +628,7 @@ impl<'a> super::Reconciler<'a> {
                             reference: reference.to_string(),
                             target: crate::expand_tilde(target),
                             template: secret.template.clone(),
-                            origin: LOCAL_LAYER.to_string(),
+                            origin: origin.clone(),
                         }));
                     }
 
@@ -622,7 +639,7 @@ impl<'a> super::Reconciler<'a> {
                             reference: reference.to_string(),
                             envs: secret.envs.clone().unwrap_or_default(),
                             template: secret.template.clone(),
-                            origin: LOCAL_LAYER.to_string(),
+                            origin: origin.clone(),
                         }));
                     }
 
@@ -631,7 +648,7 @@ impl<'a> super::Reconciler<'a> {
                         actions.push(Action::Secret(SecretAction::Skip {
                             source: secret.source.clone(),
                             reason: "no target or envs specified".to_string(),
-                            origin: LOCAL_LAYER.to_string(),
+                            origin: origin.clone(),
                         }));
                     }
                 } else {
@@ -648,7 +665,7 @@ impl<'a> super::Reconciler<'a> {
                             provider_name,
                             self.secret_tool_unobtainable(tool)
                         ),
-                        origin: LOCAL_LAYER.to_string(),
+                        origin: origin.clone(),
                     }));
                 }
             } else if secret.target.is_some() && has_backend {
@@ -668,14 +685,14 @@ impl<'a> super::Reconciler<'a> {
                         .map(crate::expand_tilde)
                         .unwrap_or_default(),
                     backend: backend_name,
-                    origin: LOCAL_LAYER.to_string(),
+                    origin: origin.clone(),
                 }));
 
                 if has_envs {
                     actions.push(Action::Secret(SecretAction::Skip {
                         source: secret.source.clone(),
                         reason: "env injection requires a secret provider reference; SOPS file targets cannot inject env vars".to_string(),
-                        origin: LOCAL_LAYER.to_string(),
+                        origin: origin.clone(),
                     }));
                 }
             } else if secret.target.is_none() && has_envs && !has_backend {
@@ -684,7 +701,7 @@ impl<'a> super::Reconciler<'a> {
                 actions.push(Action::Secret(SecretAction::Skip {
                     source: secret.source.clone(),
                     reason: "env injection requires a secret provider reference (e.g. 1password://, vault://)".to_string(),
-                    origin: LOCAL_LAYER.to_string(),
+                    origin: origin.clone(),
                 }));
             } else if !has_backend {
                 let tool = self
@@ -698,7 +715,7 @@ impl<'a> super::Reconciler<'a> {
                         "no secret backend available{}",
                         self.secret_tool_unobtainable(tool)
                     ),
-                    origin: LOCAL_LAYER.to_string(),
+                    origin: origin.clone(),
                 }));
             }
         }
@@ -708,9 +725,10 @@ impl<'a> super::Reconciler<'a> {
 
     fn plan_scripts(
         &self,
-        scripts: &ScriptSpec,
+        profile: &MergedProfile,
         context: ReconcileContext,
     ) -> (Vec<Action>, Vec<Action>) {
+        let scripts = &profile.scripts;
         let (pre_entries, pre_phase, post_entries, post_phase) = match context {
             ReconcileContext::Apply => (
                 &scripts.pre_apply,
@@ -726,13 +744,22 @@ impl<'a> super::Reconciler<'a> {
             ),
         };
 
+        // The action's own id is its `run` string, which is also the key the
+        // merge claimed the declaring layer under.
+        let layer_of = |entry: &crate::config::ScriptEntry| {
+            profile
+                .layer_sources
+                .recording_layer("script", entry.run_str(), LOCAL_LAYER)
+                .to_string()
+        };
+
         let pre_actions = pre_entries
             .iter()
             .map(|entry| {
                 Action::Script(ScriptAction::Run {
                     entry: entry.clone(),
                     phase: pre_phase.clone(),
-                    origin: LOCAL_LAYER.to_string(),
+                    origin: layer_of(entry),
                 })
             })
             .collect();
@@ -743,7 +770,7 @@ impl<'a> super::Reconciler<'a> {
                 Action::Script(ScriptAction::Run {
                     entry: entry.clone(),
                     phase: post_phase.clone(),
-                    origin: LOCAL_LAYER.to_string(),
+                    origin: layer_of(entry),
                 })
             })
             .collect();

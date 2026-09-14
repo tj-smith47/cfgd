@@ -400,6 +400,7 @@ mod tests {
             scripts: crate::config::ScriptSpec::default(),
             backups: Vec::new(),
             entry_owners: crate::config::EntryOwners::default(),
+            layer_sources: crate::config::LayerSources::default(),
         }
     }
 

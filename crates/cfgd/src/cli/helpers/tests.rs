@@ -1416,6 +1416,7 @@ fn resolve_desired_state_module_only_isolates_every_profile_owned_field() {
                 post_backup: vec![],
             }],
             entry_owners: Default::default(),
+            layer_sources: Default::default(),
         },
     };
 

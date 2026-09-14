@@ -58,6 +58,7 @@ pub(super) fn merge_with_policy(
         // `PATH` concatenates.
         crate::fold_env_layer(&mut merged.env, &env, crate::PATH_LIST_SEPARATOR);
         merged.entry_owners.claim(&layer_owner, &env, &aliases);
+        merged.layer_sources.claim(&layer.source, &layer.spec);
         for secret in secrets {
             merged.entry_owners.claim_env_names(
                 &layer_owner,
