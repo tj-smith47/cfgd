@@ -1344,12 +1344,19 @@ fn status_scan_is_a_plain_flag_that_composes_with_exit_code_and_module() {
         assert_eq!(module.as_deref(), want_module, "{argv:?} module");
     }
 
-    // `--scan` has no short form, and no other short flag stands in for it:
-    // `status` declares no `-s` at all.
-    assert!(
-        Cli::try_parse_from(["cfgd", "status", "-s"]).is_err(),
-        "`status` declares no -s"
-    );
+    // `--scan` has no short form. `-s` parses, but only as the retired
+    // `--show-scripts` spelling the run is refused for; it must never stand in
+    // for the scan.
+    let short_s = Cli::try_parse_from(["cfgd", "status", "-s"])
+        .expect("`-s` stays declared so the refusal can name its replacement");
+    let Some(Command::Status {
+        scan, show_scripts, ..
+    }) = short_s.command
+    else {
+        panic!("`cfgd status -s` did not parse as status");
+    };
+    assert!(!scan, "`-s` must not turn the scan on");
+    assert!(show_scripts, "`-s` is the retired `--show-scripts`");
 }
 
 /// `--model` / `--provider` / `--yes` govern every `generate` target, not just
