@@ -86,9 +86,10 @@ pub fn verify(
         // path vs binary) match like with like. Read before the claimed-key
         // skip below because the listing is the context's memo: the floor pass
         // above already asked this manager, so the question costs nothing here.
-        let ok = cx
-            .installed_for(*mgr)?
-            .contains(&mgr.package_identity(&ep.name));
+        let Some(listing) = listing_or_check_error(*mgr, cx, &mut check_errors) else {
+            continue;
+        };
+        let ok = listing.contains(&mgr.package_identity(&ep.name));
 
         // ONE identity per (manager, package), whichever origin declared it —
         // the same key every CLI live check mints, which is also why the floor
@@ -224,6 +225,41 @@ impl SystemCheckError {
     #[must_use]
     pub fn subject(&self) -> String {
         crate::fold_home_in_text(&self.key)
+    }
+}
+
+/// One manager's installed listing, or ONE erroring check standing for the
+/// whole manager.
+///
+/// A manager whose enumeration failed knows nothing about any package declared
+/// under it, so neither a presence verdict nor a floor verdict could be
+/// anything but invented: the failure IS the check's answer, and it travels as
+/// data the way a configurator's failed probe does. The key is the manager
+/// name, because the manager is what could not be read; every package under it
+/// contributes neither a finding nor a pass, so a recorded row for one of them
+/// stands rather than being healed by a check that never ran.
+///
+/// The `check_errors` list both package passes thread is also the memo: a
+/// manager already reported is not asked again, which matters because
+/// [`crate::providers::PackageContext::installed_for`] memoizes successes only
+/// and would otherwise re-shell once per package the manager declares.
+fn listing_or_check_error(
+    mgr: &dyn crate::providers::PackageManager,
+    cx: &crate::providers::PackageContext<'_>,
+    check_errors: &mut Vec<SystemCheckError>,
+) -> Option<std::sync::Arc<crate::providers::InstalledPackages>> {
+    if check_errors.iter().any(|ce| ce.key == mgr.name()) {
+        return None;
+    }
+    match cx.installed_for(mgr) {
+        Ok(listing) => Some(listing),
+        Err(e) => {
+            check_errors.push(SystemCheckError {
+                key: mgr.name().to_string(),
+                error: crate::output::collapse_to_subject_line(e),
+            });
+            None
+        }
     }
 }
 
@@ -381,7 +417,9 @@ pub fn package_version_drift(
         let Some(mgr) = available.iter().find(|m| m.name() == ep.manager) else {
             continue;
         };
-        let installed = cx.installed_for(*mgr)?;
+        let Some(installed) = listing_or_check_error(*mgr, cx, &mut check_errors) else {
+            continue;
+        };
         match package_version_floor(*mgr, &installed, &ep.name, ep.min_version.as_deref()) {
             VersionFloor::Met => {}
             VersionFloor::Unreadable { detail } => check_errors.push(SystemCheckError {

@@ -664,7 +664,8 @@ machine was scanned — and stamps every module of the chain it resolved under
 `scopedScans` instead, which is what dates that module's own verdicts. It composes with `--module` (scanning that one module) and with
 `--exit-code`. `--exit-code` / `-e` implies `--scan` and additionally exits `5`
 when the scan found drift, or `1` when a check itself failed (a system
-configurator's probe, or a pinned package whose manager reports no version): the same split `cfgd diff --exit-code` and `cfgd verify --exit-code`
+configurator's probe, a pinned package whose manager reports no version, or a
+package manager that cannot list what it holds): the same split `cfgd diff --exit-code` and `cfgd verify --exit-code`
 report, since an unknown state outranks a known one (see
 [Exit Codes](#exit-codes)); `--scan` on its own never changes the exit code.
 A failed check is never silently dropped: the report renders it as its own
@@ -1091,6 +1092,13 @@ carries the failure in `systemErrors` (the same `{key, error}` entries
 own clause (`5 passed, 0 failed, 1 check could not run`). With `--exit-code`
 such a run exits `1` ahead of `5`: an unanswered check reads as "unknown",
 not "clean" (see [Exit Codes](#exit-codes)).
+
+A package manager that cannot list what it holds (`pipx list --json` exiting
+non-zero, an unreadable package database) is the same row, keyed by the
+manager: `pipx: error checking drift — pipx failed to list installed
+packages: ...`. Every package declared under that manager is left unanswered
+rather than reported missing, one row stands for the manager however many
+packages it holds, and every other manager's findings are reported as usual.
 
 ### `cfgd doctor`
 

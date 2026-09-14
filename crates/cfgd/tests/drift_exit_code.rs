@@ -209,6 +209,115 @@ fn an_erroring_check_outranks_real_drift_on_every_exit_code_surface() {
     }
 }
 
+/// A `pipx` stand-in whose listing fails the way a real one does when an
+/// installed venv has gone bad: the tool runs, and `pipx list --json` exits
+/// non-zero. Every other invocation succeeds, so the manager is available and
+/// only the question "what do you hold" is unanswerable.
+fn unlistable_pipx(dir: &Path) -> std::path::PathBuf {
+    write_tool_shim(
+        dir,
+        "pipx-unlistable",
+        &[
+            ShimArm {
+                matches: "list",
+                stdout: "",
+                stderr: "Error: '/opt/venvs/pynvim' has an invalid interpreter",
+                exit_code: 1,
+            },
+            ShimArm::always("", "", 0),
+        ],
+    )
+}
+
+/// A `cargo` stand-in holding nothing, so a package declared onto it is a
+/// plain missing-package finding beside the unlistable manager above.
+fn empty_cargo(dir: &Path) -> std::path::PathBuf {
+    write_tool_shim(dir, "cargo-empty", &[ShimArm::always("", "", 0)])
+}
+
+/// One module declaring a package under each of the two managers above.
+fn write_unlistable_manager_config(dir: &Path) {
+    let module_dir = dir.join("modules").join("mixed");
+    std::fs::create_dir_all(&module_dir).unwrap();
+    std::fs::write(
+        module_dir.join("module.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: mixed\nspec:\n  packages:\n    - name: demo\n      prefer: [pipx]\n    - name: demo-cargo\n      prefer: [cargo]\n",
+    )
+    .unwrap();
+    let profiles_dir = dir.join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(
+        profiles_dir.join("tiny.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: tiny\nspec:\n  modules:\n    - mixed\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("cfgd.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: tiny\n",
+    )
+    .unwrap();
+}
+
+/// A manager that cannot be listed is one row, and the run still reports
+/// everything else.
+///
+/// The listing failure used to leave the check through `?`: `cfgd verify` on a
+/// box whose `pipx list --json` exits 1 printed that one sentence, exited 1,
+/// and said nothing about any other manager, file or setting.
+#[test]
+fn a_manager_that_cannot_be_listed_is_one_row_on_every_exit_code_surface() {
+    let config_tmp = tempfile::tempdir().unwrap();
+    let home_tmp = tempfile::tempdir().unwrap();
+    write_unlistable_manager_config(config_tmp.path());
+    let pipx = unlistable_pipx(config_tmp.path());
+    let cargo = empty_cargo(config_tmp.path());
+
+    for args in EXIT_CODE_SURFACES {
+        let state_tmp = tempfile::tempdir().unwrap();
+        let mut cmd = Command::cargo_bin("cfgd").unwrap();
+        let out = cmd
+            .args(args)
+            .arg("--config")
+            .arg(config_tmp.path().join("cfgd.yaml"))
+            .arg("--state-dir")
+            .arg(state_tmp.path())
+            .env("HOME", home_tmp.path())
+            .env("USERPROFILE", home_tmp.path())
+            .env("CFGD_CACHE_DIR", home_tmp.path().join("cache"))
+            .env("CFGD_PIPX_BIN", &pipx)
+            .env("CFGD_CARGO_BIN", &cargo)
+            .output()
+            .unwrap();
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            out.status.code(),
+            Some(1),
+            "cfgd {args:?}: a manager that could not be listed outranks DriftDetected, got: {text}"
+        );
+        let rows: Vec<&str> = text
+            .lines()
+            .filter(|l| l.contains("error checking drift") && l.contains("pipx"))
+            .collect();
+        assert_eq!(
+            rows.len(),
+            1,
+            "cfgd {args:?}: the manager is one row however many passes met it, got: {text}"
+        );
+        assert!(
+            rows[0].contains("invalid interpreter"),
+            "cfgd {args:?}: the row carries what the manager said, got: {text}"
+        );
+        assert!(
+            text.contains("demo-cargo"),
+            "cfgd {args:?}: the healthy manager's finding still renders, got: {text}"
+        );
+    }
+}
+
 /// An `apk` stand-in: it OFFERS `demo` at 3.0.0 (so the declaration's
 /// `minVersion` resolves onto apk) while its installed listing carries no
 /// versions at all — apk's real listing format, which is why apk has no

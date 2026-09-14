@@ -648,6 +648,113 @@ fn verify_returns_results() {
     assert!(!bat.matches);
 }
 
+/// A manager that cannot say what it holds is ONE erroring check, and every
+/// other half of the run is still reported.
+///
+/// The listing failure used to leave `verify` through `?`, so a host whose
+/// `pipx list --json` exits non-zero saw that one sentence and nothing else:
+/// no finding from any other manager, no file, system or env half, and a
+/// record that resolved nothing because the check never ran.
+#[test]
+fn a_manager_that_cannot_list_is_one_erroring_check_and_the_rest_still_reports() {
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(
+        crate::test_helpers::MockPackageManager::new("cargo").with_installed(&["ripgrep"]),
+    ));
+    registry.add_package_manager(Box::new(
+        crate::test_helpers::MockPackageManager::new("npm")
+            .failing_to_list("EACCES: permission denied"),
+    ));
+
+    let mut resolved = make_empty_resolved();
+    resolved.merged.packages.cargo = Some(crate::config::CargoSpec {
+        file: None,
+        packages: vec!["ripgrep".to_string(), "bat".to_string()],
+    });
+    // The npm entry pins a floor too, so BOTH package passes meet the same
+    // unlistable manager and the reader is still told once.
+    let modules = vec![ResolvedModule {
+        dep_pulled: false,
+        name: "web".to_string(),
+        packages: vec![ResolvedPackage {
+            canonical_name: "left-pad".to_string(),
+            resolved_name: "left-pad".to_string(),
+            manager: "npm".to_string(),
+            manager_declared: false,
+            version: None,
+            script: None,
+            creates: None,
+            only_if: None,
+            unless: None,
+            min_version: Some("2.0.0".to_string()),
+        }],
+        files: vec![],
+        env: vec![],
+        aliases: vec![],
+        post_apply_scripts: vec![],
+        pre_apply_scripts: Vec::new(),
+        pre_reconcile_scripts: Vec::new(),
+        post_reconcile_scripts: Vec::new(),
+        on_change_scripts: Vec::new(),
+        on_drift_scripts: Vec::new(),
+        system: BTreeMap::new(),
+        depends: vec![],
+        dir: PathBuf::from("."),
+        origin: None,
+        platform_skip_reason: None,
+    }];
+
+    let printer = test_printer();
+    let cx = crate::providers::PackageContext::new(&printer, &state);
+    let report = verify(&resolved, &registry, &state, &modules, &cx, true).unwrap();
+
+    let npm_errors: Vec<_> = report
+        .check_errors
+        .iter()
+        .filter(|e| e.key == "npm")
+        .collect();
+    assert_eq!(
+        npm_errors.len(),
+        1,
+        "the manager is what could not be read, so it is one row however many \
+         packages are declared under it: {:?}",
+        report.check_errors
+    );
+    assert!(
+        npm_errors[0].error.contains("EACCES: permission denied"),
+        "the row carries what the manager said: {:?}",
+        npm_errors[0]
+    );
+    assert!(
+        !report
+            .results
+            .iter()
+            .any(|r| r.resource_id.starts_with("npm:")),
+        "a package under an unlistable manager is neither a finding nor a pass: {:?}",
+        report.results
+    );
+    let bat = report
+        .results
+        .iter()
+        .find(|r| r.resource_id == "cargo:bat")
+        .unwrap_or_else(|| {
+            panic!(
+                "the healthy manager's finding still reports: {:?}",
+                report.results
+            )
+        });
+    assert!(!bat.matches);
+    assert!(
+        report
+            .results
+            .iter()
+            .any(|r| r.resource_id == "cargo:ripgrep" && r.matches),
+        "and so does its pass: {:?}",
+        report.results
+    );
+}
+
 #[test]
 #[serial_test::serial(enumeration_memo)]
 fn verify_asks_each_manager_once_however_many_packages_are_declared() {

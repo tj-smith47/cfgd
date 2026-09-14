@@ -609,6 +609,23 @@ impl LiveDriftReport {
     }
 }
 
+/// Fold more erroring checks into a list, keyed by subject.
+///
+/// Two passes can fail on the same manager for the same reason — the package
+/// plan and the declared-floor pass both ask it what it holds — and the reader
+/// is owed the fact once. First writer wins: the passes run in a fixed order,
+/// so the surviving detail is the one the earlier pass read.
+pub(super) fn extend_check_errors(
+    into: &mut Vec<super::output_types::SystemCheckError>,
+    more: impl IntoIterator<Item = super::output_types::SystemCheckError>,
+) {
+    for err in more {
+        if !into.iter().any(|held| held.key == err.key) {
+            into.push(err);
+        }
+    }
+}
+
 /// Non-matching live verify results across every category the live scan covers
 /// (profile files, module files, packages, system, declared env vars and
 /// aliases). This is a FULL-machine check, so it also writes the record the
@@ -712,8 +729,16 @@ fn live_drift_results_inner(
         .iter()
         .map(|m| m.as_ref())
         .collect();
-    let pkg_actions =
-        packages::plan_packages(&resolved.merged, modules, &all_managers, cfgd_installed, cx)?;
+    // A manager whose listing fails is one erroring check under Packages, not
+    // the end of the scan: the plan below is the check, so aborting it took
+    // every other manager's finding down with it.
+    let (pkg_actions, mut package_check_errors) = packages::plan_packages_checked(
+        &resolved.merged,
+        modules,
+        &all_managers,
+        cfgd_installed,
+        cx,
+    )?;
     for action in &pkg_actions {
         drift.extend(package_action_drift(action, registry));
     }
@@ -731,9 +756,10 @@ fn live_drift_results_inner(
         modules,
         Some(&registry.manager_map()),
     );
-    let (version_drift, package_check_errors) =
+    let (version_drift, version_check_errors) =
         cfgd_core::reconciler::package_version_drift(&effective, registry, cx)?;
     drift.extend(version_drift);
+    extend_check_errors(&mut package_check_errors, version_check_errors);
 
     // Managers: a manager the plan would provision or refuse is itself drift —
     // the same signal `diff`'s `cfgd:managers` group renders, from the same
@@ -976,22 +1002,31 @@ pub(super) fn manager_verify_results(
     modules: &[ResolvedModule],
     cfgd_installed: &std::collections::HashSet<String>,
     cx: &cfgd_core::providers::PackageContext<'_>,
-) -> anyhow::Result<Vec<VerifyResult>> {
+) -> anyhow::Result<(
+    Vec<VerifyResult>,
+    Vec<super::output_types::SystemCheckError>,
+)> {
     let all_managers: Vec<&dyn cfgd_core::providers::PackageManager> = registry
         .package_managers()
         .iter()
         .map(|m| m.as_ref())
         .collect();
-    let pkg_actions =
-        packages::plan_packages(&resolved.merged, modules, &all_managers, cfgd_installed, cx)?;
-    Ok(manager_drift_actions(cfgd_core::reconciler::plan_managers(
+    let (pkg_actions, check_errors) = packages::plan_packages_checked(
+        &resolved.merged,
+        modules,
+        &all_managers,
+        cfgd_installed,
+        cx,
+    )?;
+    let results = manager_drift_actions(cfgd_core::reconciler::plan_managers(
         registry,
         &pkg_actions,
         &[],
     ))
     .iter()
     .flat_map(manager_action_drift)
-    .collect())
+    .collect();
+    Ok((results, check_errors))
 }
 
 #[cfg(test)]
@@ -2336,7 +2371,7 @@ mod tests {
         let state = cfgd_core::state::StateStore::open_in_memory().unwrap();
         let cx = cfgd_core::providers::PackageContext::new(&printer, &state);
 
-        let results = manager_verify_results(
+        let (results, _) = manager_verify_results(
             &resolved,
             &registry,
             &modules,
@@ -2375,7 +2410,7 @@ mod tests {
         let state = cfgd_core::state::StateStore::open_in_memory().unwrap();
         let cx = cfgd_core::providers::PackageContext::new(&printer, &state);
 
-        let results = manager_verify_results(
+        let (results, _) = manager_verify_results(
             &resolved,
             &registry,
             &modules,

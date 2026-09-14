@@ -122,6 +122,7 @@ pub fn cmd_verify(
                 module_filter.is_none(),
             )?;
             let mut results = report.results;
+            let mut check_errors = report.check_errors;
             // The reconciler cannot reach the file manager (crate boundary), so it no
             // longer checks managed files. Fold in content-aware file results here so a
             // file whose bytes drifted out-of-band fails verification and drives
@@ -165,15 +166,22 @@ pub fn cmd_verify(
             if module_filter.is_none() {
                 sp.set_message("Verifying: package managers");
                 let cfgd_installed = cfgd_installed_packages(state)?;
-                results.extend(super::live_drift::manager_verify_results(
-                    &resolved,
-                    &registry,
-                    &resolved_modules,
-                    &cfgd_installed,
-                    &pkg_cx,
-                )?);
+                // The manager half plans packages, so it meets the same
+                // unlistable manager the reconciler's package half already
+                // reported; the fold keys on the manager so the reader is told
+                // once.
+                let (manager_results, manager_check_errors) =
+                    super::live_drift::manager_verify_results(
+                        &resolved,
+                        &registry,
+                        &resolved_modules,
+                        &cfgd_installed,
+                        &pkg_cx,
+                    )?;
+                results.extend(manager_results);
+                super::live_drift::extend_check_errors(&mut check_errors, manager_check_errors);
             }
-            Ok((results, report.check_errors))
+            Ok((results, check_errors))
         })?;
     // `reconciler::verify` is pure compute — this seam is where its results
     // become recorded rows, from the producer literals, BEFORE the display

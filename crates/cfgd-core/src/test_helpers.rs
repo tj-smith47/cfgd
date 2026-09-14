@@ -3635,6 +3635,10 @@ pub struct MockPackageManager {
     /// rather than a planned raise. `false` by default: every manager that
     /// lists versions carries a raise verb, distinct or its own install.
     no_upgrade_verb: bool,
+    /// When set, every enumeration fails with this message instead of
+    /// answering. The `pipx list --json` shape: the tool is on the host and
+    /// runs, and what it reports back is an error.
+    listing_error: Option<String>,
 }
 
 impl MockPackageManager {
@@ -3667,7 +3671,16 @@ impl MockPackageManager {
             versions: std::collections::BTreeMap::new(),
             comparisons_fail: false,
             no_upgrade_verb: false,
+            listing_error: None,
         }
+    }
+
+    /// A manager that is on the host and cannot say what it holds, so every
+    /// package declared under it is unanswerable rather than missing.
+    #[must_use]
+    pub fn failing_to_list(mut self, message: &str) -> Self {
+        self.listing_error = Some(message.to_string());
+        self
     }
 
     /// The `pkg version -t` shape: the version comparator fails to spawn
@@ -3938,6 +3951,13 @@ impl crate::providers::PackageManager for MockPackageManager {
     ) -> crate::errors::Result<std::collections::HashSet<String>> {
         self.enumerations
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if let Some(message) = &self.listing_error {
+            return Err(crate::errors::PackageError::ListFailed {
+                manager: self.mgr_name.clone(),
+                message: message.clone(),
+            }
+            .into());
+        }
         let mut reported = self.installed.clone();
         reported.extend(self.landed.lock().unwrap().iter().cloned());
         Ok(reported)

@@ -27,7 +27,7 @@ use cfgd_core::output::Role;
 use cfgd_core::providers::{
     OrphanedPackage, PackageAction, PackageContext, PackageManager, PackageManagerExt,
 };
-use cfgd_core::reconciler::ActualPackages;
+use cfgd_core::reconciler::{ActualPackages, SystemCheckError};
 
 mod brew;
 mod cargo;
@@ -123,6 +123,34 @@ pub fn plan_packages(
     Ok(plan_packages_observed(profile, modules, managers, cfgd_installed, cx)?.0)
 }
 
+/// [`plan_packages`] for a CHECK, where a manager that cannot be listed is a
+/// row rather than the end of the run.
+///
+/// The write paths keep the abort: a plan that silently left a manager's
+/// packages out would install or prune against a set cfgd never read. A check
+/// has no such stake — it reports what it found and states, per manager, what
+/// it could not read — so the failures come back as one
+/// [`SystemCheckError`] each, keyed by the manager name, and the other
+/// managers' actions are still planned and still priced.
+pub fn plan_packages_checked(
+    profile: &MergedProfile,
+    modules: &[ResolvedModule],
+    managers: &[&dyn PackageManager],
+    cfgd_installed: &HashSet<String>,
+    cx: &PackageContext<'_>,
+) -> Result<(Vec<PackageAction>, Vec<SystemCheckError>)> {
+    let (actions, _, unlistable) =
+        plan_packages_inner(profile, modules, managers, cfgd_installed, cx)?;
+    let errors = unlistable
+        .into_iter()
+        .map(|(manager, e)| SystemCheckError {
+            key: manager,
+            error: cfgd_core::output::collapse_to_subject_line(e),
+        })
+        .collect();
+    Ok((actions, errors))
+}
+
 /// The observation's version for one listed package: the version the manager
 /// reported, unless it reported none. [`UNKNOWN_PACKAGE_VERSION`] is the
 /// [`PackageManager::installed_packages_with_versions`] contract's sentinel
@@ -155,8 +183,36 @@ pub fn plan_packages_observed(
     cfgd_installed: &HashSet<String>,
     cx: &PackageContext<'_>,
 ) -> Result<(Vec<PackageAction>, ActualPackages)> {
+    let (actions, actual, unlistable) =
+        plan_packages_inner(profile, modules, managers, cfgd_installed, cx)?;
+    // A write path plans against what it could read, so a manager it could not
+    // read ends the run: installing or pruning under a manager whose installed
+    // set is unknown is the one outcome no verdict here can justify.
+    match unlistable.into_iter().next() {
+        Some((_, e)) => Err(e),
+        None => Ok((actions, actual)),
+    }
+}
+
+/// The planner both public forms share, with every manager whose enumeration
+/// failed carried out beside the actions instead of ending the walk. Which of
+/// the two answers that is — an error or a row — belongs to the caller's
+/// purpose, not to the planner.
+#[allow(clippy::type_complexity)]
+fn plan_packages_inner(
+    profile: &MergedProfile,
+    modules: &[ResolvedModule],
+    managers: &[&dyn PackageManager],
+    cfgd_installed: &HashSet<String>,
+    cx: &PackageContext<'_>,
+) -> Result<(
+    Vec<PackageAction>,
+    ActualPackages,
+    Vec<(String, cfgd_core::errors::CfgdError)>,
+)> {
     let mut actions = Vec::new();
     let mut actual = ActualPackages::default();
+    let mut unlistable: Vec<(String, cfgd_core::errors::CfgdError)> = Vec::new();
 
     // Single-source the desired set from the effective (profile ⊕ modules) view
     // so this planner sees exactly what every other read/write surface does.
@@ -265,7 +321,13 @@ pub fn plan_packages_observed(
             // reports identities and passes through untouched). Managers whose
             // enumeration reports no version record `None`, and a pinned item
             // under them stays pending (fail-closed).
-            let enumerated = cx.installed_for(*manager)?;
+            let enumerated = match cx.installed_for(*manager) {
+                Ok(enumerated) => enumerated,
+                Err(e) => {
+                    unlistable.push((manager.name().to_string(), e));
+                    continue;
+                }
+            };
             actual.record_enumeration(
                 manager.name(),
                 enumerated
@@ -349,7 +411,7 @@ pub fn plan_packages_observed(
         }
     }
 
-    Ok((actions, actual))
+    Ok((actions, actual, unlistable))
 }
 
 /// Apply package actions.
