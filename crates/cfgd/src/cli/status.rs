@@ -1815,6 +1815,56 @@ enum FindingSlot {
     OwnerVerdict,
 }
 
+/// Who declares each `(manager, package)` pair this render knows about,
+/// derived ONCE off a [`StatusOutput`] before the findings are walked.
+///
+/// [`package_owner`] used to answer each finding by scanning `modules` and then
+/// `managed_resources` from the top, splitting every recorded row's package
+/// list as it went: a machine with a few hundred findings and a few thousand
+/// recorded rows paid hundreds of thousands of string splits per render. The
+/// answer is the same one; only the number of times the rows are read changed.
+///
+/// The two halves stay separate because the precedence is: a module declaring
+/// ANY of a row's names outranks a profile row holding one of them, and a
+/// merged map would let the name order decide instead.
+struct PackageOwners {
+    /// `(manager, package)` to the FIRST module of `output.modules` whose
+    /// resolution declares it, matching the `find` this replaced.
+    by_module: std::collections::BTreeMap<(String, String), cfgd_core::reconciler::Owner>,
+    /// The `(manager, package)` pairs the profile's own recorded rows hold.
+    by_profile: std::collections::BTreeSet<(String, String)>,
+}
+
+impl PackageOwners {
+    fn of(output: &StatusOutput) -> Self {
+        use cfgd_core::reconciler::Owner;
+        let mut by_module = std::collections::BTreeMap::new();
+        for module in &output.modules {
+            for (name, managers) in &module.declared.package_managers {
+                for manager in managers {
+                    by_module
+                        .entry((manager.clone(), name.clone()))
+                        .or_insert_with(|| Owner::module(&module.name));
+                }
+            }
+        }
+        let mut by_profile = std::collections::BTreeSet::new();
+        for row in &output.managed_resources {
+            let Some((manager, declared)) = package_id_parts(&row.resource_type, &row.resource_id)
+            else {
+                continue;
+            };
+            for name in declared.split(',').map(str::trim) {
+                by_profile.insert((manager.to_string(), name.to_string()));
+            }
+        }
+        Self {
+            by_module,
+            by_profile,
+        }
+    }
+}
+
 /// Which owner a `<manager>:<names>` package row belongs to: the module whose
 /// current resolution declares one of the names under that manager, then the
 /// profile when the profile's own recorded package rows hold one of them.
@@ -1824,32 +1874,26 @@ enum FindingSlot {
 /// the finding walk and the erroring-check walk, which mint the same id.
 fn package_owner(
     resource_id: &str,
-    output: &StatusOutput,
+    owners: &PackageOwners,
     profile_owner: Option<&cfgd_core::reconciler::Owner>,
 ) -> Option<cfgd_core::reconciler::Owner> {
-    use cfgd_core::reconciler::Owner;
     // The id's own producer owns its grammar; a hand-guessed separator here is
     // how a declared package rendered loose while its owner read clean.
     let (manager, names) = cfgd_core::reconciler::split_package_drift_resource_id(resource_id)?;
     let names = || names.iter().map(|name| name.trim());
-    let declaring = output.modules.iter().find(|m| {
-        names().any(|name| {
-            m.declared
-                .package_managers
-                .get(name)
-                .is_some_and(|managers| managers.contains(manager))
-        })
-    });
-    if let Some(m) = declaring {
-        return Some(Owner::module(&m.name));
+    if let Some(owner) = names().find_map(|name| {
+        owners
+            .by_module
+            .get(&(manager.to_string(), name.to_string()))
+    }) {
+        return Some(owner.clone());
     }
     // The profile's declaration is its own recorded package rows, read back
     // through the same split their producer's composer is pinned against.
-    let profile_declares = output.managed_resources.iter().any(|r| {
-        package_id_parts(&r.resource_type, &r.resource_id).is_some_and(|(m, declared)| {
-            m == manager
-                && names().any(|name| declared.split(',').map(str::trim).any(|d| d == name))
-        })
+    let profile_declares = names().any(|name| {
+        owners
+            .by_profile
+            .contains(&(manager.to_string(), name.to_string()))
     });
     profile_declares.then(|| profile_owner.cloned()).flatten()
 }
@@ -1898,7 +1942,7 @@ fn check_key_names_env_surface(key: &str) -> bool {
 /// The env arm is [`check_key_names_env_surface`].
 fn check_error_owner(
     key: &str,
-    output: &StatusOutput,
+    owners: &PackageOwners,
     profile_owner: Option<&cfgd_core::reconciler::Owner>,
 ) -> Option<cfgd_core::reconciler::Owner> {
     use cfgd_core::reconciler::Owner;
@@ -1908,7 +1952,7 @@ fn check_error_owner(
         )));
     }
     if key.contains(':') {
-        return package_owner(key, output, profile_owner);
+        return package_owner(key, owners, profile_owner);
     }
     profile_owner.cloned()
 }
@@ -1936,7 +1980,7 @@ fn check_error_owner(
 /// clean — so it renders as a loose finding.
 fn finding_owner(
     event: &cfgd_core::state::DriftEvent,
-    output: &StatusOutput,
+    owners: &PackageOwners,
     profile_owner: Option<&cfgd_core::reconciler::Owner>,
 ) -> (
     Option<cfgd_core::reconciler::Owner>,
@@ -2021,7 +2065,7 @@ fn finding_owner(
                 );
             }
             (
-                package_owner(&event.resource_id, output, profile_owner),
+                package_owner(&event.resource_id, owners, profile_owner),
                 Some("package"),
                 FindingSlot::Child(None),
             )
@@ -2089,6 +2133,11 @@ fn component_health_rows(output: &StatusOutput, profile: Option<&str>) -> Compon
             .or_default() += 1;
     }
 
+    // Who declares each package, derived once: the findings walk and the
+    // erroring-check walk below both ask, and each answer used to re-read every
+    // module and every recorded row.
+    let package_owners = PackageOwners::of(output);
+
     // ONE walk over the unresolved recorded findings: each event lands under
     // its owner's token with its worded child row and its shortfall noun, or
     // in `loose` when no owner can carry it. The managed env FILE's own
@@ -2108,7 +2157,7 @@ fn component_health_rows(output: &StatusOutput, profile: Option<&str>) -> Compon
         if drop_env_file_row && event.resource_type == ENV_RESOURCE_TYPE {
             continue;
         }
-        let (owner, noun, slot) = finding_owner(event, output, profile_owner.as_ref());
+        let (owner, noun, slot) = finding_owner(event, &package_owners, profile_owner.as_ref());
         match owner {
             Some(owner) => {
                 let token = owner.token();
@@ -2143,7 +2192,7 @@ fn component_health_rows(output: &StatusOutput, profile: Option<&str>) -> Compon
     let unanswered: std::collections::BTreeSet<String> = output
         .system_errors
         .iter()
-        .filter_map(|err| check_error_owner(&err.key, output, profile_owner.as_ref()))
+        .filter_map(|err| check_error_owner(&err.key, &package_owners, profile_owner.as_ref()))
         .map(|owner| owner.token())
         .collect();
 
@@ -4323,7 +4372,8 @@ mod tests {
                     want: None,
                     have: None,
                 };
-                let (owner, _, _) = finding_owner(&event, &output, Some(&profile_owner));
+                let (owner, _, _) =
+                    finding_owner(&event, &PackageOwners::of(&output), Some(&profile_owner));
                 if let Some(owner) = owner {
                     reached.insert(owner.token());
                 }
