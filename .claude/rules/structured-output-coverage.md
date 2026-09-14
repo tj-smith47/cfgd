@@ -14,6 +14,7 @@ keys while carrying six). The keys live in the builder and its golden.
 | Command                      | has_data_payload? | Why / Why not                                      |
 |------------------------------|-------------------|----------------------------------------------------|
 | alias_list                   | yes               | alias inventory                                    |
+| alias_show                   | yes               | dispatched into `cmd_config_get`; the payload is that key/value |
 | apply                        | yes               | apply-result records consumed by CI                |
 | backup_gc                    | yes               | what a destination change orphaned, and what collecting it did |
 | backup_list                  | yes               | backup inventory / snapshot list queried by scripts |

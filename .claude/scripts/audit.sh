@@ -1440,6 +1440,21 @@ if [ -f "$rule_file" ]; then
     # it behind, since the new name trips the check above while the old one sits
     # there looking answered.
     stale=$(LC_ALL=C comm -13 <(echo "$cmds_in_code") <(echo "$cmds_in_table" | tr ' ' '_'))
+    # A dispatched renderer is a command whose body lives under another
+    # command's name: `alias show` is dispatched straight into `cmd_config_get`,
+    # so no `cmd_alias_show` is ever declared and its row would read as stale.
+    # The pairs are the ones `DISPATCHED_RENDERERS` (crates/cfgd/src/cli/tests.rs)
+    # holds, and `every_dispatched_renderer_has_a_coverage_row` pins the two lists
+    # against each other.
+    dispatched_renderers="alias_show:cmd_config_get"
+    for pair in $dispatched_renderers; do
+        row="${pair%%:*}"
+        renderer="${pair##*:}"
+        if [[ $'\n'$cmds_in_code$'\n' == *$'\n'"${renderer#cmd_}"$'\n'* ]]; then
+            stale=$(printf '%s\n' "$stale" | grep -vx "$row" || true)
+        fi
+    done
+    stale=$(printf '%s' "$stale" | sed '/^$/d')
     if [ -n "$stale" ]; then
         log_error "Rows in $rule_file naming a cmd_* that no longer exists in crates/cfgd/src/cli/:"
         echo "$stale"

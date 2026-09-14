@@ -41688,6 +41688,39 @@ fn show_and_list_population() -> Vec<(String, String)> {
 /// function that renders it, so the walk reads that body for it.
 const DISPATCHED_RENDERERS: &[(&str, &str)] = &[("alias show", "cmd_config_get")];
 
+/// A dispatched renderer still owes the structured-output table a row: the
+/// table is read as the inventory of what cfgd exposes, and a command whose
+/// body lives under another name is exactly the one a reader cannot find by
+/// grepping for its own `cmd_*`. `audit.sh` keeps the same pairs beside its
+/// stale-row check so the row it requires here is not flagged as naming a
+/// function that does not exist.
+#[test]
+fn every_dispatched_renderer_has_a_coverage_row() {
+    let path = cfgd_core::test_helpers::workspace_root()
+        .join(".claude/rules/structured-output-coverage.md");
+    let table = walked_file_body(&path);
+    let rows: Vec<&str> = table
+        .lines()
+        .filter_map(|line| line.strip_prefix("| "))
+        .filter_map(|line| line.split('|').next())
+        .map(str::trim)
+        .collect();
+    assert!(
+        rows.contains(&"config_get"),
+        "the walk read no rows from {}: it is reading the wrong file",
+        path.display()
+    );
+    for (verb, renderer) in DISPATCHED_RENDERERS {
+        let row = verb.replace(' ', "_");
+        assert!(
+            rows.contains(&row.as_str()),
+            "`{verb}` renders through `{renderer}` and has no `{row}` row in \
+             .claude/rules/structured-output-coverage.md — a dispatched renderer \
+             is the one a reader cannot find by grepping for its own cmd_*"
+        );
+    }
+}
+
 /// The `(name, first line, last line)` of every `fn` declared in `lines`.
 fn declared_fn_spans(lines: &[&str]) -> Vec<(String, usize, usize)> {
     let mut spans = Vec::new();
