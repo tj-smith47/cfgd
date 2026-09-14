@@ -1,11 +1,14 @@
 # Whole take plays at 1:1 (make-gif-flat.sh, no ramp) — this tape's claim is a
-# single chain (module → registry → cluster → pod → update → convergence), and
-# every link in it has to be watchable or the chain is not what was shown.
+# single chain (module → registry → cluster → pod → update → convergence),
+# closing on the other direction of the same channel (the cluster owning a
+# backup schedule the machine declared), and every link in it has to be
+# watchable or the chain is not what was shown.
 #
 # Dwell rule, applied to every visible beat below: a hold is 1.5s plus 0.1s per
-# line the beat printed, clamped to [2s, 6s]; the one payoff beat (beat 5, the
-# module's own file running inside the pod) gets +1.5s on top; a beat whose
-# output is a single line holds 2s; a typed line that prints nothing holds 1s.
+# line the beat printed, clamped to [2s, 6s]; each act's payoff beat (beat 5,
+# the module's own file running inside the pod; beat 16, the projected
+# schedule) gets +1.5s on top; a beat whose output is a single line holds 2s;
+# a typed line that prints nothing holds 1s.
 # A reader needs time in proportion to what landed on screen, so each Sleep
 # below carries the line count it was computed from, measured off a real render
 # of that verb rather than guessed. The closing hold reads nothing and stays 2s.
@@ -44,11 +47,23 @@ Set Framerate 50
 # lands on (`cfgd init --theme dracula`, hidden in four tapes and on camera in
 # init.tape; the sync fixture writes `spec.output.theme` straight into its cfgd.yaml),
 # so the whole set renders in one theme whatever the operator's config names.
+# CFGD_CONFIG, CFGD_STATE_DIR and CFGD_CACHE_DIR do for cfgd's own three
+# directories what KUBECONFIG does for kubectl: the closing act enrolls this
+# host with the demo gateway and checks in, so without them the take would
+# write a device credential and a backup history into the recording operator's
+# real state directory.
 Hide
-Type "export KUBECONFIG=$HOME/.cache/cfgd-debug/demo-k8s/kubeconfig PATH=$HOME/.cache/cfgd-debug/demo-k8s/bin:$PATH COSIGN_PASSWORD= CFGD_THEME=dracula"
+Type "export KUBECONFIG=$HOME/.cache/cfgd-debug/demo-k8s/kubeconfig PATH=$HOME/.cache/cfgd-debug/demo-k8s/bin:$PATH COSIGN_PASSWORD= CFGD_THEME=dracula CFGD_CONFIG=$HOME/.cache/cfgd-debug/demo-k8s/fixture/cfgd.yaml CFGD_STATE_DIR=$HOME/.cache/cfgd-debug/demo-k8s/state CFGD_CACHE_DIR=$HOME/.cache/cfgd-debug/demo-k8s/cache"
 Enter
 Sleep 500ms
 Type "cd $HOME/.cache/cfgd-debug/demo-k8s/fixture"
+Enter
+Sleep 500ms
+# The gateway's address and the bootstrap token the setup script minted. Both
+# are per-run values (a NodePort and a freshly minted token), so the enrollment
+# beat reads them from the fixture instead of naming an address no second run
+# would have.
+Type "export GW_URL=$(cat gateway.url) BOOTSTRAP=$(cat bootstrap.token)"
 Enter
 Sleep 500ms
 # The prompt the other tapes get from the demo container's own `tj` account on
@@ -86,8 +101,8 @@ Sleep 2800ms
 Type "cfgd module push ./tools --artifact localhost:5001/demo/tools:v1 --sign --key ./cosign.key"
 Enter
 Wait@60s /demo\$$/
-# 7 lines → 2.2s
-Sleep 2200ms
+# 8 lines → 2.3s
+Sleep 2300ms
 
 # Beat 3: the module becomes a cluster object. The Module resource is cluster-scoped
 # and carries the artifact reference under the name the CLUSTER reaches the
@@ -160,8 +175,8 @@ Sleep 2s
 Type "cfgd module push ./tools --artifact localhost:5001/demo/tools:v2 --sign --key ./cosign.key"
 Enter
 Wait@60s /demo\$$/
-# 7 lines → 2.2s
-Sleep 2200ms
+# 8 lines → 2.3s
+Sleep 2300ms
 
 # Beat 8: the cluster learns about v2. The Module's Artifact column flipping to
 # :v2 is the desired state moving; the pod annotation moves with it so the
@@ -222,6 +237,66 @@ Enter
 Wait@60s /demo\$$/
 # 9 lines → 2.4s
 Sleep 2400ms
+
+Hide
+Type "clear"
+Enter
+Sleep 500ms
+Show
+Sleep 1s
+
+# Beat 12: the third act — the cluster starts owning a schedule. The machine
+# enrolls with the device gateway the same chart installed, and the credential
+# it saves is what every later check-in authenticates with. The plaintext
+# warning is cfgd's own: this throwaway gateway is reached over http, which is
+# exactly the case the warning exists for.
+Type "cfgd enroll --server-url $GW_URL --token $BOOTSTRAP"
+Enter
+Wait@60s /demo\$$/
+# 16 lines → 3.1s
+Sleep 3100ms
+
+# Beat 13: the two cluster objects. The MachineConfig names this host by
+# `spec.hostname` — the only key the gateway resolves a device by — and carries
+# the label the policy selects on; the BackupPolicy re-schedules the `notes`
+# unit the machine's own profile declares. The profile hands that unit's
+# schedule to the cluster (`scheduleOwner: Cluster`) and still names a nightly
+# cadence of its own, so the hourly one the policy sets is a projection over a
+# declaration rather than a second opinion beside it.
+Type "kubectl apply -f machine.yaml -f backup-policy.yaml"
+Enter
+Wait@60s /demo\$$/
+# 2 lines → 2s
+Sleep 2s
+
+# Beat 14: the controller has to have matched the machine before the check-in
+# can carry anything down — `status.units[0].schedule` holding the policy's
+# cadence is that having happened. Waiting on the status rather than sleeping
+# is what keeps the payoff from depending on how busy the cluster is.
+Type "kubectl wait --for=jsonpath='{.status.units[0].schedule}'='17 * * * *' bpol/hourly-notes --timeout=2m"
+Enter
+Wait@3m /demo\$$/
+# 1 line → 2s
+Sleep 2s
+
+# Beat 15: the check-in, which is the whole channel: the device reports what it
+# declares and the gateway answers with the cadences the cluster owns for it.
+Type "cfgd checkin --server-url $GW_URL"
+Enter
+Wait@60s /demo\$$/
+# 8 lines → 2.3s
+Sleep 2300ms
+
+# Beat 16: the payoff, and the line this act exists for — held longer than the
+# plumbing around it. `cfgd backup list` reads the machine's own profile, and
+# the `notes` unit now runs on the cluster's cadence: `17 * * * *`, retention
+# 7, and `projected` in the Schedule Owner column, which is the word for a unit
+# whose declared schedule a policy actually overrode.
+Type "cfgd backup list"
+Enter
+Wait@30s /demo\$$/
+# 4 lines → 2s, +1.5s as this act's payoff beat
+Sleep 3500ms
 
 # Closing hold — the last beat's own hold already covers reading it; this is
 # only the breath before the loop snaps back.

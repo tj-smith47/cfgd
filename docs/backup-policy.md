@@ -119,6 +119,10 @@ Every run of a projected unit reads that answer, not just the daemon's scheduled
 leaves behind. `scheduleOwner: Local` pins both halves at once, the schedule and the retention,
 because a unit the machine owns takes nothing from the cluster.
 
+![a cluster-owned backup schedule](../demo/cfgd-k8s.gif)
+*The closing act: a machine enrolls, a `BackupPolicy` selects it, and after one check-in
+`cfgd backup list` reads the policy's cadence with `projected` in the Schedule Owner column.*
+
 ## Example
 
 ```yaml
