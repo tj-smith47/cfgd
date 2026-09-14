@@ -139,8 +139,11 @@ fn occupied_default_destination(dest: &Path) -> Option<&'static str> {
 /// [`cfgd_core::is_same_inode`] can only say "different" about a path it
 /// cannot open. The inode question then catches what the fold cannot: two
 /// genuinely different spellings of one directory, reached through a symlink.
-/// The occupancy probe reads the folded path for the same reason; the message
-/// still names the path the caller wrote.
+/// The occupancy probe then reads the DEFAULT directory, which is the
+/// directory the refusal is about: the fold is a comparison value, so where the
+/// match came from the inode it names a path that is not that directory, and
+/// probing it answered about the caller's spelling instead of about what the
+/// default holds. The message still names the path the caller wrote.
 fn refuse_occupied_default_destination(dest: &Path) -> anyhow::Result<()> {
     let default = cfgd_core::default_config_dir();
     let folded = cfgd_core::lexically_normalized(dest);
@@ -149,7 +152,7 @@ fn refuse_occupied_default_destination(dest: &Path) -> anyhow::Result<()> {
     {
         return Ok(());
     }
-    let Some(finding) = occupied_default_destination(&folded) else {
+    let Some(finding) = occupied_default_destination(&default) else {
         return Ok(());
     };
     let shown = cfgd_core::fold_home_in_text(&dest.display_posix());

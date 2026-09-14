@@ -382,6 +382,49 @@ fn apply_from_refuses_a_config_pointed_at_what_the_default_dir_links_to() {
 }
 
 #[test]
+fn apply_from_names_what_the_default_dir_holds_when_the_config_is_a_link_to_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    source_repo(&src);
+    let home = tmp.path().join("home");
+    let dest = default_config_dir(&home);
+    std::fs::write(dest.join("notes.txt"), "somebody's").unwrap();
+
+    // A second name for the default directory, matched by its inode rather
+    // than by the lexical fold. The fold is a comparison value: it still spells
+    // the link, so probing it reported on the caller's spelling instead of on
+    // what the default directory holds.
+    let link = tmp.path().join("link-to-default");
+    if !link_default_dir_at(&dest, &link) {
+        return;
+    }
+
+    run(
+        &home,
+        &[
+            "apply",
+            "--dry-run",
+            "--yes",
+            "--from",
+            &src.display().to_string(),
+            "--config",
+            &link.join("cfgd.yaml").display().to_string(),
+        ],
+    )
+    .code(1)
+    .stderr(predicate::str::contains(
+        "Refusing to write into the default config directory",
+    ))
+    .stderr(predicate::str::contains("it is not empty"));
+
+    assert_eq!(
+        std::fs::read_to_string(dest.join("notes.txt")).unwrap(),
+        "somebody's"
+    );
+    assert!(!dest.join(".git").exists(), "nothing was cloned over it");
+}
+
+#[test]
 fn the_refusal_is_a_classified_error_with_its_two_ways_forward_as_commands() {
     let tmp = tempfile::tempdir().unwrap();
     let src = tmp.path().join("src");
