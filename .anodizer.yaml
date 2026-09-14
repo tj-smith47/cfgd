@@ -263,15 +263,8 @@ workspaces:
         # "nothing rewritten". Re-enroll it if it ever names a version again.
         #
         # docs/installation.md also carries four anchored regions from the
-        # operator and CSI crates. A whole-file sweep overlaps every anchored
-        # region in the file it sweeps, so anodizer refuses the run when one
-        # old version would become two different new ones. That is reachable
-        # the day the operator or CSI version converges on the cfgd version and
-        # the two bump differently in one release: `anodizer tag` stops with
-        # that refusal before writing anything. Anchoring this entry too would
-        # remove the overlap, and it would take six anchors to cover the eight
-        # occurrences this file holds, so the sweep stays whole-file and the
-        # refusal is the guard.
+        # operator and CSI crates; those claim their lines first and this sweep
+        # takes the rest, so the two may bump differently in one release.
         version_files:
           - docs/installation.md
           - docs/skill.md
