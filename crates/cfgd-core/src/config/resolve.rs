@@ -242,7 +242,7 @@ impl LayerSources {
     /// key its own drift row composes: one level for a flat mapping, two for a
     /// nested one (a `defaults` domain, a gsettings schema), which is as deep
     /// as `diff_nested_mapping` goes.
-    fn claim_system_keys(
+    pub(crate) fn claim_system_keys(
         &mut self,
         source: &str,
         configurator: &str,

@@ -31134,7 +31134,11 @@ fn a_shortfall_this_runs_provisions_delivered_is_worded_as_delivered() {
 /// their own delivering layer, while packages, system keys, secrets and scripts
 /// are answered from the merge's own claim, because one package batch can hold
 /// entries from several layers and the other three mint under `local` by
-/// default. The `cargo` manager here folds case, so its declared `Ripgrep-Cli`
+/// default. A system key a MODULE declares is folded in after that merge, so it
+/// is claimed at the fold instead, under the layer that delivered the module:
+/// the `kernelModules` key below is declared by nothing but a module the `acme`
+/// source delivered, and reaches the same row the profile's own `sysctl` key
+/// does. The `cargo` manager here folds case, so its declared `Ripgrep-Cli`
 /// records under the row `cargo/ripgrep-cli`: the claim is keyed on the
 /// declared entry and the row on the manager's identity, and a lookup that does
 /// not fold both loses every manager whose identity is not the identity
@@ -31152,6 +31156,15 @@ fn an_apply_records_each_row_under_the_layer_that_delivered_it() {
             actual: "32768".to_string(),
         }],
     )));
+    registry.add_system_configurator(Box::new(
+        MockSystemConfigurator::new("kernelModules").with_drift(vec![
+            crate::providers::SystemDrift {
+                key: "overlay".to_string(),
+                expected: "true".to_string(),
+                actual: "false".to_string(),
+            },
+        ]),
+    ));
 
     let dir = tempfile::tempdir().unwrap();
     let source = dir.path().join("gitconfig");
@@ -31205,6 +31218,19 @@ fn an_apply_records_each_row_under_the_layer_that_delivered_it() {
     // merged profile a resolve would hand the reconciler.
     resolved.merged = merge_layers(&resolved.layers);
 
+    // A module the same source delivered, declaring a system key the profile
+    // does not: its claim can only come from the fold that merges it in.
+    let mut module_system = SystemSettings::new();
+    module_system.insert(
+        "kernelModules".to_string(),
+        serde_yaml::from_str("overlay: true").unwrap(),
+    );
+    let mut source_module = resolved_module_with_package("acme-node", "unused-tool", "brew");
+    source_module.packages.clear();
+    source_module.system = module_system;
+    source_module.origin = Some("acme".to_string());
+    source_module.dir = dir.path().to_path_buf();
+
     let reconciler = Reconciler::new(&registry, &state);
     let plan = reconciler
         .plan(
@@ -31237,7 +31263,7 @@ fn an_apply_records_each_row_under_the_layer_that_delivered_it() {
                     origin: LOCAL_LAYER.to_string(),
                 },
             ],
-            Vec::new(),
+            vec![source_module],
             ReconcileContext::Apply,
         )
         .unwrap();
@@ -31275,6 +31301,8 @@ fn an_apply_records_each_row_under_the_layer_that_delivered_it() {
         ("file", crate::to_posix_string(&target)),
         ("file", crate::to_posix_string(&chmod_target)),
         ("system", "sysctl.kernel.pid_max".to_string()),
+        // Declared by a module alone, claimed at the fold that merges it in.
+        ("system", "kernelModules.overlay".to_string()),
         ("secret", "op://vault/item/field".to_string()),
         ("script", "exit 0".to_string()),
     ]

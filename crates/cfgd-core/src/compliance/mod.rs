@@ -685,7 +685,7 @@ pub fn collect_system_diffs(
     registry: &ProviderRegistry,
 ) -> Vec<SystemDiff> {
     let available = registry.available_system_configurators();
-    let system = crate::effective::effective_system_map(profile, modules);
+    let (system, _) = crate::effective::effective_system_map(profile, modules);
 
     system
         .iter()

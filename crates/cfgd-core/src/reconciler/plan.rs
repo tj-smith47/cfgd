@@ -404,6 +404,7 @@ impl<'a> super::Reconciler<'a> {
     ) -> Vec<(String, String)> {
         let mut tools: Vec<(String, String)> =
             crate::effective::effective_system_map(profile, modules)
+                .0
                 .keys()
                 .filter_map(|key| {
                     self.configurator_tool_to_install(key)
@@ -493,7 +494,7 @@ impl<'a> super::Reconciler<'a> {
         profile: &MergedProfile,
         modules: &[ResolvedModule],
     ) -> Result<Vec<Action>> {
-        let system = crate::effective::effective_system_map(profile, modules);
+        let (system, layer_sources) = crate::effective::effective_system_map(profile, modules);
 
         let mut actions = Vec::new();
 
@@ -515,8 +516,7 @@ impl<'a> super::Reconciler<'a> {
                         key: drift.key,
                         desired: drift.expected,
                         current: drift.actual,
-                        origin: profile
-                            .layer_sources
+                        origin: layer_sources
                             .recording_layer("system", &rid, LOCAL_LAYER)
                             .to_string(),
                     }));
@@ -541,8 +541,7 @@ impl<'a> super::Reconciler<'a> {
                 actions.push(Action::System(SystemAction::ConfigureAfterInstall {
                     configurator: key.clone(),
                     tool: tool.to_string(),
-                    origin: profile
-                        .layer_sources
+                    origin: layer_sources
                         .recording_layer("system", key, LOCAL_LAYER)
                         .to_string(),
                     prerequisite_withheld: false,
@@ -572,8 +571,7 @@ impl<'a> super::Reconciler<'a> {
             actions.push(Action::System(SystemAction::Skip {
                 configurator: key.clone(),
                 reason,
-                origin: profile
-                    .layer_sources
+                origin: layer_sources
                     .recording_layer("system", key, LOCAL_LAYER)
                     .to_string(),
                 unknown: !registered,

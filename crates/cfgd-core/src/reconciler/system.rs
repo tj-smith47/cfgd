@@ -28,7 +28,7 @@ impl<'a> super::Reconciler<'a> {
                 // alone would miss a module-contributed configurator key — the action
                 // plans but the apply silently no-ops (the original module-vs-profile
                 // coherence gap this branch closes).
-                let system = crate::effective::effective_system_map(profile, modules);
+                let (system, _) = crate::effective::effective_system_map(profile, modules);
                 if let Some(desired_value) = system.get(configurator.as_str()) {
                     // The caller settles this action's one `system:<name>.<key>`
                     // line and drains the sink under it, so the configurator's
@@ -81,7 +81,7 @@ impl<'a> super::Reconciler<'a> {
                     }
                     .into());
                 };
-                let system = crate::effective::effective_system_map(profile, modules);
+                let (system, _) = crate::effective::effective_system_map(profile, modules);
                 let Some(desired) = system.get(configurator.as_str()) else {
                     return Ok(format!("system:{}", configurator));
                 };

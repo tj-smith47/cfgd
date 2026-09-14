@@ -135,7 +135,7 @@ pub fn verify(
     // the recording and the scan stamp all still happen at the caller, and
     // the errored configurator contributes no system row — so its recorded
     // rows stand rather than being healed by a check that never ran.
-    let system = crate::effective::effective_system_map(&resolved.merged, modules);
+    let (system, _) = crate::effective::effective_system_map(&resolved.merged, modules);
     for sc in registry.available_system_configurators() {
         if let Some(desired) = system.get(sc.name()) {
             let drifts = match sc.diff(desired) {

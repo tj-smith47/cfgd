@@ -752,10 +752,9 @@ the machine. `-o json` carries it as `source` on every `managedResources[]` row.
 
 Some rows read `local` whatever delivered them. A generated env file, its rc
 line and the live session fold every layer into one surface, so no single
-source can claim them. A system setting a MODULE declares is folded in after
-the layer merge, as is a package list read out of a `Brewfile` or a
-`package.json`, so those name the layer only when a profile layer declares them
-too.
+source can claim them. A package list read out of a `Brewfile` or a
+`package.json` is folded in after the layer merge, so it names the layer only
+when a profile layer declares the same package too.
 
 The default module report is a summary: one count per declared surface, then
 what the scan found. `Status` leads the block. The report names no scope: you

@@ -56,7 +56,8 @@ pub fn cmd_checkin(
     // uses to tell one desired config from another never moved when a module's
     // settings changed, and the drift scan never checked a setting only a module
     // declared.
-    let system = cfgd_core::effective::effective_system_map(&resolved.merged, &resolved_modules);
+    let (system, _) =
+        cfgd_core::effective::effective_system_map(&resolved.merged, &resolved_modules);
     let config_yaml =
         serde_yaml::to_string(&system).context("failed to serialize system config")?;
     let config_hash = cfgd_core::sha256_hex(config_yaml.as_bytes());

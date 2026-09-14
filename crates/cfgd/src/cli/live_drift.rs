@@ -821,7 +821,7 @@ fn live_drift_results_inner(
     sp.set_message("Scanning: system");
     let mut check_errors: Vec<super::output_types::SystemCheckError> = Vec::new();
     let mut evaluated_system: Vec<String> = Vec::new();
-    let system = cfgd_core::effective::effective_system_map(&resolved.merged, modules);
+    let (system, _) = cfgd_core::effective::effective_system_map(&resolved.merged, modules);
     for configurator in &registry.available_system_configurators() {
         if let Some(desired) = system.get(configurator.name()) {
             match configurator.diff(desired) {
