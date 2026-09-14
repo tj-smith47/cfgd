@@ -93,6 +93,8 @@ jobs:
           # this job publishes ONLY cargo, for all crates, in dependency order.
           # The exact complement of publish-crate.yml's `--skip cargo`. A scoped
           # dispatch appends --crate so only that crate publishes.
-          args: release --publish-only --publishers cargo${{ inputs.crate != '' && format(' --crate {0}', inputs.crate) || '' }}
+          # --skip preflight: release.yml's pre-tag `preflight` job already ran
+          # the whole check (environment, credential probes, reconcile).
+          args: release --publish-only --publishers cargo --skip preflight${{ inputs.crate != '' && format(' --crate {0}', inputs.crate) || '' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}

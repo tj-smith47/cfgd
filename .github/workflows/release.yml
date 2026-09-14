@@ -34,12 +34,17 @@ env:
   # so version and checksum move together in one file.
 
 jobs:
-  # `release --publish-only` suppresses anodizer's auto-preflight, so a missing
-  # or rotated publisher secret would otherwise first surface mid-publish — after
-  # `tag` has pushed git tags and earlier crates have published. Gate the tag
-  # push on a deterministic secret-presence check across every publisher.
+  # `anodizer preflight` runs the whole pre-release check once, before any tag
+  # exists: the environment half (required tools, secrets, endpoint
+  # reachability, parseable key material), a credential probe against every
+  # configured publisher, and a reconcile sweep that asks each registry whether
+  # the derived next version already exists. A rotated token or a burned
+  # version therefore fails here instead of mid-publish, after `tag` has
+  # pushed tags and earlier crates have published. Every later
+  # `anodizer release` leg passes `--skip=preflight` because this job is the
+  # one run of that engine.
   preflight:
-    name: Preflight secrets
+    name: Preflight
     # The bump-message guard breaks a self-retrigger loop: the tag job lands
     # the bump commit on master with GH_PAT (PAT pushes DO trigger workflows),
     # CI runs on it, and its success would fire a second Release run whose tag
@@ -57,8 +62,9 @@ jobs:
       contents: read
       # The runtime injects ACTIONS_ID_TOKEN_REQUEST_URL/TOKEN only into jobs
       # that can mint OIDC tokens; anodizer's preflight validates those env
-      # vars on behalf of the MCP-registry publisher (github-oidc auth), so
-      # without this the check fails even though every secret is present.
+      # vars on behalf of the MCP-registry publisher (github-oidc auth) and
+      # probes the registry with the minted token, so without this the check
+      # fails even though every secret is present.
       id-token: write
     steps:
       - name: Check out repository
@@ -66,7 +72,7 @@ jobs:
         with:
           ref: ${{ github.event.workflow_run.head_sha || inputs.ref || github.sha }}
 
-      - name: Validate publisher secrets
+      - name: Run anodizer preflight
         uses: tj-smith47/anodizer-action@v1
         with:
           version: ${{ env.ANODIZER_VERSION }}
@@ -74,7 +80,7 @@ jobs:
           docker-password: ${{ secrets.GITHUB_TOKEN }}
           gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
           apk-private-key: ${{ secrets.APK_PRIVATE_KEY }}
-          args: release --preflight-secrets
+          args: preflight
         env:
           AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
           CHOCOLATEY_API_KEY: ${{ secrets.CHOCOLATEY_API_KEY }}
