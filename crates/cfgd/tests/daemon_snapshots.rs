@@ -140,6 +140,8 @@ fn declared_sources() -> Vec<cfgd::cli::output_types::SourceListEntry> {
             require_signed_commits: Some(false),
             last_commit: None,
             drift_count: None,
+            locked_ref: None,
+            locked_commit: None,
         },
         cfgd::cli::output_types::SourceListEntry {
             name: "team".to_string(),
@@ -152,6 +154,8 @@ fn declared_sources() -> Vec<cfgd::cli::output_types::SourceListEntry> {
             require_signed_commits: Some(true),
             last_commit: Some("abc1234567890def".to_string()),
             drift_count: None,
+            locked_ref: None,
+            locked_commit: None,
         },
     ]
 }

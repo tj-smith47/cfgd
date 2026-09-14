@@ -196,7 +196,12 @@ pub fn cmd_source_list(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     // column (a subscription's sync state) and the age beside it. Everything
     // else the table renders is declared by `spec.sources[]`.
     let state = open_state_store(cli.state_dir.as_deref(), cli.scope())?;
-    let entries = configured_source_entries(&cfg, &state);
+    // declared-lock-ok: the pinned ref and commit reach the `-o json` payload
+    // alone; no column renders either, so the table stays declared plus its one
+    // recorded status column. An unreadable lockfile leaves both absent rather
+    // than failing a listing that does not depend on them.
+    let lock = cfgd_core::load_sources_lockfile(&config_dir(cli)).unwrap_or_default();
+    let entries = configured_source_entries(&cfg, &state, &lock);
 
     printer.emit(build_source_list_doc(&entries, printer.is_wide(), &now));
     Ok(())
@@ -214,12 +219,16 @@ pub fn configured_source_entries(
     // list-status-ok: the store answers this listing's one recorded column — a
     // source's status and when it last fetched. Every other cell is declared.
     state: &cfgd_core::state::StateStore,
+    // declared-lock-ok: the pinned ref and commit are payload-only fields; no
+    // cell of the table reads either.
+    lock: &cfgd_core::config::SourcesLockfile,
 ) -> Vec<SourceListEntry> {
     cfg.spec
         .sources
         .iter()
         .map(|source| {
             let state_info = state.config_source_by_name(&source.name).ok().flatten();
+            let locked = lock.sources.iter().find(|e| e.name == source.name);
             SourceListEntry {
                 name: source.name.clone(),
                 url: Some(source.origin.url.clone()),
@@ -234,6 +243,8 @@ pub fn configured_source_entries(
                 require_signed_commits: Some(source.subscription.require_signed_commits),
                 last_commit: state_info.as_ref().and_then(|s| s.last_commit.clone()),
                 drift_count: None,
+                locked_ref: locked.and_then(|e| e.resolved_ref.clone()),
+                locked_commit: locked.map(|e| e.resolved_commit.clone()),
             }
         })
         .collect()
@@ -256,6 +267,8 @@ mod tests {
             require_signed_commits: Some(false),
             last_commit: None,
             drift_count: None,
+            locked_ref: None,
+            locked_commit: None,
         }
     }
 

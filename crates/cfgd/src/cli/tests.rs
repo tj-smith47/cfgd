@@ -36923,6 +36923,8 @@ fn no_report_slot_spells_the_home_directory_absolutely() {
         require_signed_commits: None,
         last_commit: None,
         drift_count: None,
+        locked_ref: None,
+        locked_commit: None,
     }];
     let backups = vec![super::output_types::BackupListEntry {
         name: "notes".into(),

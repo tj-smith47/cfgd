@@ -2894,7 +2894,10 @@ pub(super) fn cmd_status(
     // The declared catalog, not just the names: the shared `Sources` table
     // carries columns (origin, priority, signing demand) the status payload
     // never held.
-    let configured_sources = super::source::list::configured_source_entries(cfg, state);
+    // declared-lock-ok: the lockfile's pinned ref and commit reach the row
+    // payload alone; no cell of the shared `Sources` table reads either.
+    let lock = cfgd_core::load_sources_lockfile(&config_dir).unwrap_or_default();
+    let configured_sources = super::source::list::configured_source_entries(cfg, state, &lock);
 
     // The per-file half of the table: each listed module's recorded manifest,
     // and — only when the wide table will read them — the resolved

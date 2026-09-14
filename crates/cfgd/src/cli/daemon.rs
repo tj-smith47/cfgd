@@ -133,8 +133,11 @@ fn configured_source_catalog(
     let Ok(state) = open_state_store(cli.state_dir.as_deref(), cli.scope()) else {
         return (Vec::new(), declared);
     };
+    // declared-lock-ok: carried to the `-o json` payload's rows alone; the
+    // shared `Sources` table renders no lockfile cell.
+    let lock = cfgd_core::load_sources_lockfile(&config_dir(cli)).unwrap_or_default();
     (
-        super::source::list::configured_source_entries(&cfg, &state),
+        super::source::list::configured_source_entries(&cfg, &state, &lock),
         declared,
     )
 }
@@ -299,6 +302,10 @@ fn daemon_source_row(
         // (see `SourceStatus::drift_count`), so the `Drift` column is dropped
         // rather than filled with the machine-wide total.
         drift_count: src.drift_count,
+        // The daemon reports no lockfile of its own; the catalog row carries
+        // what `sources.lock` pins.
+        locked_ref: declared.and_then(|e| e.locked_ref.clone()),
+        locked_commit: declared.and_then(|e| e.locked_commit.clone()),
     }
 }
 
@@ -1219,6 +1226,8 @@ mod tests {
             require_signed_commits: Some(true),
             last_commit: None,
             drift_count: None,
+            locked_ref: None,
+            locked_commit: None,
         };
         status.sources.push(cfgd_core::daemon::SourceStatus {
             name: "team".into(),
@@ -1298,6 +1307,8 @@ mod tests {
             require_signed_commits: None,
             last_commit: Some("0000000000000000000000000000000000000000".into()),
             drift_count: None,
+            locked_ref: None,
+            locked_commit: None,
         };
         let row = daemon_source_row(&status.sources[0], std::slice::from_ref(&stale));
         assert_eq!(

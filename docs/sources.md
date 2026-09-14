@@ -724,6 +724,16 @@ Show source:acme-corp
 
 What the last fetch recorded (the status, the commit it landed on, whether that commit was signed, and how long ago it was) belongs to `cfgd source list` and `cfgd status`, which read the state store. `source show` opens none, so it reports nothing a fetch has to have happened for.
 
+That split reaches the payload too: `source show -o json` no longer carries a `state` object or a `managedResources` array (both were present up to cfgd 0.10). `cfgd source list -o json` carries the recorded side of every subscription — `status`, `lastFetched`, `lastCommit`, `signed`, `version`, plus the `lockedRef` and `lockedCommit` this lockfile pins — and `cfgd status -o json` carries `managedResources[]`, whose `source` field names the owner each row belongs to.
+
+```bash
+$ cfgd source list -o json | jq '.[] | select(.name == "acme-corp") | {lockedRef, lockedCommit}'
+{
+  "lockedRef": "v2.1.0",
+  "lockedCommit": "9f3c1ab2c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9ab"
+}
+```
+
 `cfgd sync`, `cfgd source add`, and `cfgd source update` all record the fetch, so the `Last Sync` / `Status` / `Signed` columns of `source list` and the `Sources` table in `cfgd status` reflect whichever of the three last touched the source. `Last Sync` is rendered as an age (`2h ago`, `18d ago`, `never`); the ISO 8601 instant stays in `-o json` as `lastFetched`. `Signed` is `yes` / `no` for the commit that fetch landed on, and `-` when cfgd could not read the checkout to say.
 
 **Committing the lockfile** to your config repo (alongside `cfgd.yaml`) is recommended: it guarantees that every machine applying the config checks out the identical commits, and `git diff sources.lock` shows exactly what a source update advanced to.

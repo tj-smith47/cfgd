@@ -760,6 +760,15 @@ pub struct SourceListEntry {
     /// rows cannot answer it either). The machine-wide total is a header fact,
     /// never a row's.
     pub drift_count: Option<u32>,
+    /// The ref `sources.lock` pins for this source, and the commit that ref
+    /// resolved to, full length. Payload-only: neither gets a column, so this
+    /// listing keeps its one recorded status column and `source show` keeps
+    /// rendering what the subscription DECLARES. They ride here because a
+    /// lockfile fact readable only from a human render is not readable, and
+    /// this is the one listing whose payload already carries a subscription's
+    /// recorded side. `None` is "the lockfile names no entry for this source".
+    pub locked_ref: Option<String>,
+    pub locked_commit: Option<String>,
 }
 
 /// One `spec.backups[]` entry plus its last recorded run, for
@@ -2240,6 +2249,8 @@ mod tests {
             require_signed_commits: Some(true),
             last_commit: Some("0123456789abcdef0123456789abcdef01234567".to_string()),
             drift_count: None,
+            locked_ref: Some("refs/tags/v1.2.0".to_string()),
+            locked_commit: Some("89abcdef0123456789abcdef0123456789abcdef".to_string()),
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["name"], json!("main"));
@@ -2255,6 +2266,17 @@ mod tests {
             "the payload keeps the full id; only the column shortens it"
         );
         assert_eq!(json["driftCount"], Value::Null);
+        assert_eq!(
+            json["lockedRef"],
+            json!("refs/tags/v1.2.0"),
+            "the ref `sources.lock` pins lives on this listing's payload, \
+             which is where `source show` no longer carries it"
+        );
+        assert_eq!(
+            json["lockedCommit"],
+            json!("89abcdef0123456789abcdef0123456789abcdef"),
+            "and the commit it resolved to, full length"
+        );
     }
 
     #[test]

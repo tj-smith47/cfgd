@@ -2043,6 +2043,21 @@ commit it is at, when it last synced, and the resources it put on this machine)
 belongs to `cfgd source list` and `cfgd status`, which is why `source show`
 opens no state store.
 
+The payload follows the render. `source show -o json` carried a `state` object
+and a `managedResources` array up to cfgd 0.10; both are gone, and each fact
+they held is read elsewhere:
+
+| Dropped from `source show -o json` | Read it from |
+|---|---|
+| `state.status`, `state.lastFetched`, `state.lastCommit`, `state.signed`, `state.version` | `cfgd source list -o json` (`status`, `lastFetched`, `lastCommit`, `signed`, `version`), or `cfgd status -o json`'s `sources[]` |
+| `state.lockedRef`, `state.lockedCommit` | `cfgd source list -o json` (`lockedRef`, `lockedCommit`) |
+| `managedResources[]` | `cfgd status -o json`'s `managedResources[]`, filtered by `source` |
+
+```bash
+cfgd source list -o json | jq '.[] | select(.name == "acme-corp") | {status, lastCommit, lockedRef, lockedCommit}'
+cfgd status -o json | jq '.managedResources[] | select(.source == "source:acme-corp")'
+```
+
 A `Policy` section shows what is actually enforced on the source, so an
 operator can audit it without opening the manifest YAML: the manifest's
 `policy.constraints` combined with this machine's own `subscription`
