@@ -195,8 +195,11 @@ INITIAL_NON_COMPLIANT=$(kubectl get configpolicy "e2e-lc-policy-${E2E_RUN_ID}" -
 echo "  Initial nonCompliantCount: ${INITIAL_NON_COMPLIANT:-not set}"
 
 # Update the MC to include curl (making it compliant)
+LC05_PATCH_RC=0
 kubectl patch machineconfig "e2e-lc-mc-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" --type=merge \
-    -p '{"spec":{"packages":[{"name":"vim"},{"name":"git"},{"name":"curl"}]}}' 2>/dev/null
+    -p '{"spec":{"packages":[{"name":"vim"},{"name":"git"},{"name":"curl"}]}}' \
+    > /dev/null 2>&1 || LC05_PATCH_RC=$?
+echo "  MC spec patch rc: $LC05_PATCH_RC"
 
 # Wait for policy to re-evaluate — poll until compliantCount changes or appears
 echo "  Waiting for ConfigPolicy re-evaluation after MC update..."
@@ -213,11 +216,13 @@ done
 
 echo "  compliantCount after update: ${COMPLIANT_AFTER:-not set}"
 
-if [ -n "$CP_STATUS" ]; then
-    # Policy was evaluated — pass if compliance status was tracked at all
+# The verdict reads the facts from AFTER the update: `CP_STATUS` is the initial
+# evaluation, captured before the patch, so a policy that never re-evaluated
+# passed on it.
+if [ "$LC05_PATCH_RC" -eq 0 ] && [ -n "$CP_STATUS" ] && [ -n "$COMPLIANT_AFTER" ]; then
     pass_test "OP-LC-05"
 else
-    fail_test "OP-LC-05" "ConfigPolicy was not re-evaluated after MC update"
+    fail_test "OP-LC-05" "ConfigPolicy was not re-evaluated after MC update (patch rc=${LC05_PATCH_RC}, compliantCount after=${COMPLIANT_AFTER:-unset})"
 fi
 
 # =================================================================

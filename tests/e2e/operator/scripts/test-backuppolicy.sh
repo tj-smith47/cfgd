@@ -49,9 +49,14 @@ spec:
 EOF
 
 # The device gateway writes this map at check-in; this suite runs no device, so
-# the patch stands in for one that reported the unit as its own.
+# the patch stands in for one that reported the unit as its own. Its status is
+# read here because OP-BP-01 asserts machinesMatched and the host list, neither
+# of which the patch touches: a patch that never landed would leave OP-BP-03
+# reporting a wrong owner rather than a missing premise.
+BP_PIN_RC=0
 kubectl patch machineconfig nuc-02 -n "$BP_NS" --subresource=status --type=merge \
-    -p '{"status":{"backupScheduleOwners":{"dotfiles":"local"}}}' 2>/dev/null
+    -p '{"status":{"backupScheduleOwners":{"dotfiles":"local"}}}' > /dev/null 2>&1 || BP_PIN_RC=$?
+echo "  nuc-02 schedule-owner patch rc: $BP_PIN_RC"
 
 kubectl apply -f - <<EOF
 apiVersion: cfgd.io/v1alpha1
@@ -98,11 +103,11 @@ echo "  unitsSummary:      ${BP01_SUMMARY:-not set}"
 # WHICH two hostnames is the point of the third MachineConfig: a selector that
 # admitted nuc-03 and dropped nuc-01 still reports two rows. status.units is
 # sorted by (hostname, name), so the order is stable.
-if [ "$BP01_ROWS" -eq 2 ] && assert_equals "$BP01_MATCHED" "2" &&
+if [ "$BP_PIN_RC" -eq 0 ] && [ "$BP01_ROWS" -eq 2 ] && assert_equals "$BP01_MATCHED" "2" &&
     assert_equals "$BP01_HOSTS" "nuc-01 nuc-02"; then
     pass_test "OP-BP-01"
 else
-    fail_test "OP-BP-01" "Expected nuc-01 and nuc-02 with machinesMatched=2, got rows=${BP01_ROWS} (${BP01_HOSTS:-none}), matched=${BP01_MATCHED:-unset}"
+    fail_test "OP-BP-01" "Expected nuc-01 and nuc-02 with machinesMatched=2 and the nuc-02 status patch applied, got rows=${BP01_ROWS} (${BP01_HOSTS:-none}), matched=${BP01_MATCHED:-unset}, patch rc=${BP_PIN_RC}"
 fi
 
 # =================================================================

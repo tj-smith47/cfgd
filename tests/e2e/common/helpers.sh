@@ -132,12 +132,6 @@ create_e2e_namespace() {
 cleanup_e2e() {
     echo "Cleaning up E2E resources for run $E2E_RUN_ID..."
 
-    # The scratch root holding this run's HOME, when scratch-home.sh made it
-    # rather than a suite that owns its own removal.
-    if [ -n "${E2E_SCRATCH_OWNED:-}" ]; then
-        rm -rf "$E2E_SCRATCH_OWNED"
-    fi
-
     # Stop refreshing the heartbeat first: once the run is tearing down, the
     # namespace SHOULD become reapable if cascade deletion is interrupted.
     stop_heartbeat
@@ -155,6 +149,13 @@ cleanup_e2e() {
     for kind in module clusterconfigpolicy; do
         kubectl delete "$kind" -l "$E2E_JOB_LABEL" --ignore-not-found 2>/dev/null || true
     done
+
+    # Last: the scratch root holds this run's $HOME, and every kubectl above
+    # resolves its discovery cache under it. Removed here when scratch-home.sh
+    # made the root, rather than by a suite that owns its own removal.
+    if [ -n "${E2E_SCRATCH_OWNED:-}" ]; then
+        rm -rf "$E2E_SCRATCH_OWNED"
+    fi
 }
 
 # --- K8s helpers ---

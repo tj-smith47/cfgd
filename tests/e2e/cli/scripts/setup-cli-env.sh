@@ -39,12 +39,10 @@ CALLER="$(basename "${BASH_SOURCE[1]}" .sh)"
 SCRATCH="$CLI_SCRATCH/$CALLER"
 mkdir -p "$SCRATCH"
 
-# Git identity — use isolated config so tests never modify user's global gitconfig
-export GIT_CONFIG_GLOBAL="$CLI_SCRATCH/.gitconfig"
-if [ ! -f "$GIT_CONFIG_GLOBAL" ]; then
-    git config --file "$GIT_CONFIG_GLOBAL" user.name "cfgd-test"
-    git config --file "$GIT_CONFIG_GLOBAL" user.email "test@cfgd.io"
-fi
+# Git identity: common/scratch-home.sh writes $HOME/.gitconfig under the scratch
+# home, which is the one every suite runs under. A second one here exported
+# GIT_CONFIG_GLOBAL, which wins over $HOME/.gitconfig, so the CLI suites got the
+# identity without the default-branch pin the other writer sets.
 
 # --- Helpers ---
 

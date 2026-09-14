@@ -63,8 +63,11 @@ BEFORE_TS="$MC_STATUS"
 sleep 2
 
 # Update the spec
+MC02_PATCH_RC=0
 kubectl patch machineconfig e2e-workstation-1 -n "$E2E_NAMESPACE" --type=merge \
-    -p '{"spec":{"packages":[{"name":"vim"},{"name":"git"},{"name":"curl"},{"name":"ripgrep"}]}}' 2>/dev/null
+    -p '{"spec":{"packages":[{"name":"vim"},{"name":"git"},{"name":"curl"},{"name":"ripgrep"}]}}' \
+    > /dev/null 2>&1 || MC02_PATCH_RC=$?
+echo "  Spec patch rc: $MC02_PATCH_RC"
 
 # Wait for new reconciliation — poll until timestamp changes
 echo "  Waiting for re-reconciliation..."
@@ -82,10 +85,10 @@ done
 echo "  Before: $BEFORE_TS"
 echo "  After:  ${AFTER_TS:-unchanged}"
 
-if [ -n "$AFTER_TS" ] && [ "$AFTER_TS" != "$BEFORE_TS" ]; then
+if [ "$MC02_PATCH_RC" -eq 0 ] && [ -n "$AFTER_TS" ] && [ "$AFTER_TS" != "$BEFORE_TS" ]; then
     pass_test "OP-MC-02"
 else
-    fail_test "OP-MC-02" "Controller did not re-reconcile after spec update"
+    fail_test "OP-MC-02" "Controller did not re-reconcile after spec update (patch rc=${MC02_PATCH_RC})"
 fi
 
 # =================================================================

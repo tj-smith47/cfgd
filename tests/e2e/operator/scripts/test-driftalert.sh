@@ -73,9 +73,14 @@ begin_test "OP-DA-02: DriftAlert cleanup"
 # Delete the drift alert
 kubectl delete driftalert e2e-drift-1 -n "$E2E_NAMESPACE" --ignore-not-found 2>/dev/null || true
 
-# Update MC spec to bump generation and trigger re-reconcile (clear drift flag)
+# Update MC spec to bump generation and trigger re-reconcile (clear drift flag).
+# The poll below reads an ABSENT DriftDetected condition as cleared, so a patch
+# that never landed has to be a failure here rather than a silent pass.
+DA02_PATCH_RC=0
 kubectl patch machineconfig e2e-drift-mc-${E2E_RUN_ID} -n "$E2E_NAMESPACE" --type=merge \
-    -p '{"spec":{"packages":[{"name":"vim"},{"name":"git"},{"name":"curl"},{"name":"wget"}]}}' 2>/dev/null
+    -p '{"spec":{"packages":[{"name":"vim"},{"name":"git"},{"name":"curl"},{"name":"wget"}]}}' \
+    > /dev/null 2>&1 || DA02_PATCH_RC=$?
+echo "  MC spec patch rc: $DA02_PATCH_RC"
 
 # Wait for MC to clear drift status (DriftDetected=False or condition removed)
 echo "  Waiting for drift to clear..."
@@ -91,8 +96,8 @@ for i in $(seq 1 30); do
     sleep 1
 done
 
-if $DRIFT_CLEARED; then
+if [ "$DA02_PATCH_RC" -eq 0 ] && $DRIFT_CLEARED; then
     pass_test "OP-DA-02"
 else
-    fail_test "OP-DA-02" "Drift was not cleared after DriftAlert removal and spec change"
+    fail_test "OP-DA-02" "Drift was not cleared after DriftAlert removal and spec change (patch rc=${DA02_PATCH_RC})"
 fi

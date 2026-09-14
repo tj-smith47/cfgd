@@ -78,6 +78,11 @@ fi
 
 # --- the real config directory comes out of the run untouched ---
 
+# Every line carries `|| true`: the group is the left side of a pipeline, so it
+# runs in a subshell that inherits `set -e`, and one unreadable subdirectory
+# would abort it before the two `git` lines ran — leaving a shorter digest that
+# still compares equal to itself and a guard weaker than it reads.
+#
 # `cksum` rather than a `find -printf` format: the CLI suite also runs on macOS,
 # whose find has no -printf, and content is what a clobber changes. `.git` is
 # walked as HEAD plus the porcelain status instead of byte-for-byte, because
@@ -91,7 +96,7 @@ e2e_real_config_fingerprint() {
     {
         readlink "$E2E_REAL_CONFIG_DIR" || true
         find -L "$E2E_REAL_CONFIG_DIR" -name .git -prune -o -print \
-            -type f -exec cksum {} + 2>/dev/null
+            -type f -exec cksum {} + 2>/dev/null || true
         git -C "$E2E_REAL_CONFIG_DIR" rev-parse HEAD 2>/dev/null || true
         git -C "$E2E_REAL_CONFIG_DIR" status --porcelain 2>/dev/null || true
     } | LC_ALL=C sort | { sha256sum 2>/dev/null || shasum -a 256; } | cut -d' ' -f1
