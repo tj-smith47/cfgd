@@ -7,7 +7,7 @@ echo "=== BackupPolicy Tests ==="
 BP_NS="e2e-backup-${E2E_RUN_ID}"
 
 ensure_namespace "$BP_NS"
-kubectl label namespace "$BP_NS" "$E2E_RUN_LABEL" --overwrite 2>/dev/null # rc-ok: the run tag the janitor ages leaked namespaces out by; no case asserts on it
+kubectl label namespace "$BP_NS" "$E2E_RUN_LABEL" --overwrite 2>/dev/null || true # rc-ok: the run tag the janitor ages leaked namespaces out by; no case asserts on it
 
 # =================================================================
 # OP-BP-01: A policy over two machines, one of which pins its unit

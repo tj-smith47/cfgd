@@ -256,7 +256,7 @@ EOF
         # the map under an Update claim. Asserted here, the check-in below is
         # red before and green after inside one run.
         kubectl get machineconfig "${GW31_MC_NAME}" -n "${E2E_NAMESPACE}" \
-            -o json --show-managed-fields=true > $GW_SCRATCH/gw31-seeded.json 2>/dev/null # rc-ok: a failed read leaves the file empty, so the seeded-map and owner assertions below go red
+            -o json --show-managed-fields=true > $GW_SCRATCH/gw31-seeded.json 2>/dev/null || true # rc-ok: a failed read leaves the file empty, so the seeded-map and owner assertions below go red
         GW31_SEEDED_MAP=$(jq -c '.status.packageVersions // {}' $GW_SCRATCH/gw31-seeded.json 2>/dev/null || echo "{}")
         GW31_SEEDED_OWNERS=$(jq -r \
             '[.metadata.managedFields[] | select(.operation=="Update") | select((.fieldsV1|tostring)|contains("f:packageVersions")) | .manager] | join(",")' \
@@ -290,7 +290,7 @@ EOF
             # The gateway awaits the apply before it answers, so the object read
             # here already carries whatever the check-in wrote.
             kubectl get machineconfig "${GW31_MC_NAME}" -n "${E2E_NAMESPACE}" \
-                -o json --show-managed-fields=true > $GW_SCRATCH/gw31-mc.json 2>/dev/null # rc-ok: a failed read leaves the file empty, so the takeover assertions below go red
+                -o json --show-managed-fields=true > $GW_SCRATCH/gw31-mc.json 2>/dev/null || true # rc-ok: a failed read leaves the file empty, so the takeover assertions below go red
             GW31_MAP=$(jq -c '.status.packageVersions // {}' $GW_SCRATCH/gw31-mc.json 2>/dev/null || echo "{}")
 
             GW31_APPLY_OP=$(kubectl get machineconfig "${GW31_MC_NAME}" -n "${E2E_NAMESPACE}" \

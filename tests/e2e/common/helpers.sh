@@ -104,13 +104,6 @@ cp_to_pod() {
 
 # --- Namespace & cleanup helpers ---
 
-# Ensure a namespace exists, and fail the case when it genuinely cannot.
-#
-# `kubectl create namespace X || true` reads the same either way: the namespace
-# was already there from an earlier run, or the API server refused and every
-# resource the case creates into it is about to fail with nothing saying why.
-# The rc is captured and re-checked with a `get`, so only the second one stops
-# the case.
 # Label a resource, and fail the caller when the label does not take.
 #
 # A label is what a later selector matches on — an injection webhook's
@@ -128,6 +121,13 @@ ensure_label() {
   fi
 }
 
+# Ensure a namespace exists, and fail the case when it genuinely cannot.
+#
+# `kubectl create namespace X || true` reads the same either way: the namespace
+# was already there from an earlier run, or the API server refused and every
+# resource the case creates into it is about to fail with nothing saying why.
+# The rc is captured and re-checked with a `get`, so only the second one stops
+# the case.
 ensure_namespace() {
   local ns="$1" rc=0
   kubectl create namespace "$ns" >/dev/null 2>&1 || rc=$?
