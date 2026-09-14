@@ -85,8 +85,12 @@ Colour is decided ONCE, per `Printer`, at construction, and folded into its them
 (`Theme::with_colors`), so a capture buffer cannot be styled by construction rather
 than merely stripped by convention. Production supplies the decision as a
 `ColorChoice` (`Auto` resolves `console`'s detection minus
-`output::printer::colors_must_be_disabled(&format)`; `--no-color` passes `Never`);
-every capture constructor supplies `false`. No PRODUCTION code writes `console`'s colour
+`output::printer::colors_must_be_disabled(&format)`; `--no-color` passes `Never`).
+That veto covers only the formats whose payload is a machine contract
+(`OutputFormat::refuses_color`): `-o yaml` is highlighted under the ordinary
+decision and asks STDOUT rather than stderr, because the payload is the only
+thing colour reaches there. Every capture constructor supplies `false` except
+`for_test_with_theme_colored` and `for_test_with_theme_and_format(.., colors)`. No PRODUCTION code writes `console`'s colour
 flags, so nothing a run does can change what a printer already decided. Tests write them
 through exactly one guard — `output::printer::ColorGlobalOn`, which restores the prior
 values on drop including on unwind — and only to reproduce the flags being ON as the

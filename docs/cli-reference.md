@@ -1378,6 +1378,14 @@ Docs        https://github.com/tj-smith47/cfgd/blob/v<version>/docs/spec/module.
 `<version>` is the running binary's, so the page a row opens documents the
 schema that binary just explained.
 
+`-o yaml` is the one structured format whose payload carries colour: the
+serialized YAML is syntax-highlighted in the printer's own theme when the colour
+decision is on, and written as plain bytes when it is off (`--color never`,
+`NO_COLOR`, `TERM=dumb`, or a stdout that is not a terminal). The bytes under the
+escapes are the same document either way, so a consumer piping the output to
+`yq` reads exactly what a reader sees on the terminal. `-o json`, `-o name` and
+the selector formats never carry an escape at all.
+
 Hyperlinks are detected from the terminal, never from a flag: iTerm2, WezTerm,
 VS Code's terminal, Ghostty, Hyper, Windows Terminal, kitty, Alacritty, Konsole,
 and any VTE-based terminal (GNOME Terminal, Tilix) from VTE 0.50 on. Inside `tmux`

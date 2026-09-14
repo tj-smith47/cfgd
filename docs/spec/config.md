@@ -98,7 +98,7 @@ spec:
 
   output:
     usageHints: bool
-    maskEnvValues: All | None
+    maskEnvValues: All | Secrets | None
     theme: string
     # or:
     theme:
@@ -513,7 +513,7 @@ spec:
 |-------|------|----------|---------|-------------|
 | `theme` | string or object | No | `default` | Output theme name or detailed theme config. See [spec.output.theme](#specoutputtheme). |
 | `usageHints` | bool | No | `true` | Whether closing `→` usage hints render. `--no-hints` / `CFGD_USAGE_HINTS` override for one invocation. |
-| `maskEnvValues` | enum | No | `All` | Which declared env values render masked. See [MaskEnvValues values](#maskenvvalues-values). |
+| `maskEnvValues` | enum | No | `All` | Which declared env values render masked: `All`, `Secrets` or `None`. See [MaskEnvValues values](#maskenvvalues-values). |
 
 `spec.theme` and `spec.usageHints` are the pre-`spec.output` spellings. cfgd still reads
 both and reports each as a deprecation naming its new path; the new key wins when both are
@@ -594,6 +594,7 @@ characters; the stored value and `-o json` are untouched either way.
 | Value | Description |
 |-------|-------------|
 | `All` | Mask every declared env value on every surface that renders one. **(default)** |
+| `Secrets` | Mask only a value a declared secret exports: a name listed in any `spec.secrets[].envs` of the resolved chain. Every other value renders in full. |
 | `None` | Render every declared env value in full, as though `--show-values` had been passed. |
 
 ---
