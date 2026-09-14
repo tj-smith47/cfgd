@@ -495,7 +495,7 @@ tasks:
       - task: snapshot
 
   commit:
-    desc: "Lint (regenerates artifacts), re-stage only the user's intended files, then commit. Usage: stage with `git add` first, then `task commit -- -m 'msg'`."
+    desc: "Lint (regenerates artifacts), re-stage only the user's intended files, then commit. A breaking signal (a `!` subject marker, a `BREAKING CHANGE` footer or `#major`) on a crate below 1.0 is refused unless BREAKING_CHANGE_APPROVED=1, which only the user sets. Usage: stage with `git add` first, then `task commit -- -m 'msg'`."
     preconditions:
       - sh: test -n "$(git diff --cached --name-only)"
         msg: "Nothing staged. Stage files with `git add <path>` before running task commit."
@@ -510,18 +510,18 @@ tasks:
         vars:
           STAGED_LIST: "{{.STAGED_PRE}}"
           MODIFIED_LIST: "{{.MODIFIED_PRE}}"
-      - git commit {{.CLI_ARGS}}
+      - .claude/scripts/commit-guard.sh {{.CLI_ARGS}}
 
   commit:quick:
-    desc: "Lightweight commit: commit already-staged files WITHOUT the lint/snapshot chain. Use only when the full `task commit` is blocked by an issue unrelated to the staged change AND the code gates (fmt/clippy/test/audit) were run manually. Usage: `git add <paths>` first, then `task commit:quick -- -F msg.txt` (or `-- -m 'msg'`)."
+    desc: "Lightweight commit: commit already-staged files WITHOUT the lint/snapshot chain. Use only when the full `task commit` is blocked by an issue unrelated to the staged change AND the code gates (fmt/clippy/test/audit) were run manually. A breaking signal (a `!` subject marker, a `BREAKING CHANGE` footer or `#major`) on a crate below 1.0 is refused unless BREAKING_CHANGE_APPROVED=1, which only the user sets. Usage: `git add <paths>` first, then `task commit:quick -- -F msg.txt` (or `-- -m 'msg'`)."
     preconditions:
       - sh: test -n "$(git diff --cached --name-only)"
         msg: "Nothing staged. Stage files with `git add <path>` before running task commit:quick."
     cmds:
-      - git commit {{.CLI_ARGS}}
+      - .claude/scripts/commit-guard.sh {{.CLI_ARGS}}
 
   commit:local:
-    desc: "Like `task commit`, but runs the snapshot dry-run with a locally-built anodizer instead of the installed one. Use during a coordinated anodizer+cfgd bump when the installed anodizer predates the .anodizer.yaml schema (e.g. new v0.10 fields the released binary rejects). Build it first (`cargo build --release -p anodizer` in the anodizer repo). Override the path with ANODIZER_LOCAL=... . Usage: `git add` first, then `task commit:local -- -m 'msg'`."
+    desc: "Like `task commit`, but runs the snapshot dry-run with a locally-built anodizer instead of the installed one. Use during a coordinated anodizer+cfgd bump when the installed anodizer predates the .anodizer.yaml schema (e.g. new v0.10 fields the released binary rejects). Build it first (`cargo build --release -p anodizer` in the anodizer repo). Override the path with ANODIZER_LOCAL=... . A breaking signal (a `!` subject marker, a `BREAKING CHANGE` footer or `#major`) on a crate below 1.0 is refused unless BREAKING_CHANGE_APPROVED=1, which only the user sets. Usage: `git add` first, then `task commit:local -- -m 'msg'`."
     vars:
       ANODIZER_LOCAL: '{{.ANODIZER_LOCAL | default "/opt/repos/anodizer/target/release/anodizer"}}'
     preconditions:

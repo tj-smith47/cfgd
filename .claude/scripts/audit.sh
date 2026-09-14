@@ -2385,6 +2385,17 @@ else
     fi
 fi
 
+log_section "Commit guard"
+
+guard_out="$(mktemp)"
+if .claude/scripts/commit-guard.sh --self-test >"$guard_out" 2>&1; then
+    log_ok "commit-guard.sh refuses a breaking signal on a crate below 1.0"
+else
+    log_error "commit-guard.sh's own self-test does not pass:"
+    cat "$guard_out"
+fi
+rm -f "$guard_out"
+
 # --- Summary ---
 printf "\n"
 _bold; printf "=== Audit Complete: %d errors, %d warnings ===\n" "$ERRORS" "$WARNINGS"; _reset

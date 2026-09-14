@@ -44,6 +44,12 @@ Primary YAML (KRM-inspired: `apiVersion`, `kind`, `metadata`, `spec`). TOML also
 - **A boolean knob that EDITS stored state comes as a `--x` / `--no-x` pair**, never a lone `--x`. A lone setter can only ever turn a knob on, so a recorded demand becomes unrevokable from the CLI; the pair is also what keeps "the caller said nothing" (leave the stored value alone) distinct from "the caller said false". The positive half `conflicts_with` the negative, both `requires` the subject being edited, and the command collapses the pair into an `Option<bool>` through `cli::paired_flag`. A knob on a CREATE verb (`source add`) stays a lone `ArgAction::SetTrue`: there is no stored value to preserve. `every_source_update_toggle_is_a_settable_unsettable_pair` walks `source update`'s real clap definition and fails until a new toggle there carries its counterpart.
 - **Every top-level `Command` variant carries `long_about` with an `Examples:` block.** Regression-guard via ux-consistency audit.
 
+## Commits
+
+A commit subject never carries `!`, a `BREAKING CHANGE` footer or `#major` on a crate below
+1.0 unless the user asked for that commit in their own words; `task commit` refuses it, and
+the override `BREAKING_CHANGE_APPROVED=1` is the user's to set, never the agent's.
+
 ## Quality scripts
 - `.claude/scripts/audit.sh` — DRY violations, banned patterns, module boundary violations
 
