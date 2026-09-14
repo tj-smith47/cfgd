@@ -770,7 +770,7 @@ cfgd module delete nvim --purge            # remove deployed target files, delet
 
 The same discover → edit → preview → apply loop drives every authoring command:
 
-![the CLI authoring loop: explain a field, update the config, plan, apply](../demo/cfgd-author.gif)
+![the CLI authoring loop: show a module's declared inventory, explain a field, update the config, plan, apply](../demo/cfgd-author.gif)
 
 ### File Adoption
 

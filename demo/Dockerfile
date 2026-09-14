@@ -23,10 +23,10 @@ RUN userdel -r ubuntu
 # `cfgd module show`, whose render is twice the recorded terminal's height;
 # ubuntu:24.04 ships only util-linux's `more`, which counts a coloured
 # render's SGR escapes as printable width and so breaks every highlighted
-# script body at the wrong column). nvim is deliberately
-# absent — the demo's first beat is `nvim` failing with "command not
-# found" — and none of these packages pull in Ubuntu's command-not-found
-# handler, so that failure stays the plain bash message.
+# script body at the wrong column). nvim is deliberately absent — the demo's
+# first beat is `nvim` failing with "command not found" — and none of these
+# packages pull in Ubuntu's command-not-found handler, so that failure stays
+# the plain bash message.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
        sudo \

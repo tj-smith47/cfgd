@@ -67,16 +67,6 @@ Wait@30s /cfgd\$$/
 Type "cfgd profile update base --module -jarvis --module -clift"
 Enter
 Wait@30s /cfgd\$$/
-
-# Homebrew 7 refuses to load a non-official tap's formulae until that tap is
-# trusted, and it reads the index while tapping, so beat 5's on-camera
-# `brew-tap install charmbracelet/tap` fails outright without this. Trusting
-# the tap is the same one-off decision a person tapping it by hand makes, and
-# it is hidden for the reason the module strip above is: it is nothing this
-# tape claims.
-Type "brew trust charmbracelet/tap"
-Enter
-Wait@60s /cfgd\$$/
 Type "clear"
 Enter
 Sleep 500ms
@@ -95,30 +85,37 @@ Sleep 4600ms
 # included, so beat 3's authoring lands against a visible inventory rather
 # than against a name. The render is 94 rows against this grid's 46, measured
 # off a real `cfgd module show nvim -s` in this image at 125x46, so it goes
-# through a pager instead of scrolling 48 rows off the top unread. `less -R`
+# through a pager instead of scrolling 48 rows off the top unread. `less`
 # rather than the `more` ubuntu:24.04 ships: `more` counts the SGR escapes as
 # printable width and breaks every highlighted script body at the wrong
 # column, so the demo image installs `less` for this beat. The report writes
 # to stderr like every other cfgd render, so the redirect is what reaches the
-# pager at all, and `--color always` is what survives the pipe.
-Type "cfgd module show nvim -s --color always 2>&1 | less -R"
+# pager at all, and `--color always` is what survives the pipe. `-X` keeps
+# the pager off the alternate screen, which otherwise blanks the terminal for
+# the whole render and wipes the beat again on `q`: with it beat 0's status
+# stays readable through the wait and the scripts tail stays on screen while
+# beat 1 types under it.
+Type "cfgd module show nvim -s --color always 2>&1 | less -RX"
 Enter
-# Nothing is on screen until every manager has been enumerated, about 15s in
-# this image, so the wait is on the first page rather than on a clock.
+# The first page appears only once every manager has been enumerated, about 20s
+# in this image, so the wait is on that page rather than on a clock.
 Wait+Screen@60s /Module: nvim/
 # A full page is 45 rows, past the dwell rule's 6s ceiling either way.
 Sleep 6s
 Space
 Sleep 6s
-# The third page is the tail of the scripts section, four rows, where `less`
-# holds at `(END)` until it is told to leave. The returning prompt is what
-# proves it left, so the quit is waited on rather than held over with a
-# clock.
+# `less` clamps its last page to a full screen rather than advancing the six
+# rows that remain of the 94, so the third page repeats all but the tail of
+# the second, ending on the closing `fi` with `(END)` on the bottom row. A
+# full screen holds the same 6s ceiling the two pages before it do. The
+# returning prompt is what proves the pager left, so the quit is waited on
+# rather than held over with a clock.
 Space
-Sleep 2s
+Sleep 6s
 Type "q"
 Wait@10s /cfgd\$$/
-Sleep 2s
+# `q` prints nothing, which is the dwell rule's 1s arm.
+Sleep 1s
 
 # Beat 1: render the schema/field docs for a resource path — proves you can
 # discover what a profile accepts without opening docs or an editor.
