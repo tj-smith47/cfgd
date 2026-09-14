@@ -36421,6 +36421,78 @@ fn no_production_site_joins_the_module_cache_segment_by_hand() {
     );
 }
 
+/// A `managed_resources` row records the layer that delivered the resource, so
+/// a planner minting an action's `origin` reads the merge's own claim
+/// (`config::LayerSources::recording_layer`) rather than the local constant.
+/// The five exceptions are the package BATCH actions, which name many packages
+/// under one manager: their per-package rows are answered at record time by
+/// `reconciler::apply::PackageLayers`, and the `Skip` row is keyed on the bare
+/// manager name no declared entry claims. A sixth bare mint is a resource whose
+/// source column would read `local` whatever subscription declared it, which is
+/// the defect this walk exists to catch.
+#[test]
+fn every_recorded_origin_names_the_layer_that_delivered_it() {
+    const HATCH: &str = "batch-origin-ok:";
+    const FLOOR_FILES: [usize; 2] = [80, 90];
+    const FLOOR_HATCHED: usize = 5;
+
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let roots = [manifest.join("src"), manifest.join("../cfgd-core/src")];
+    let mut offenders = Vec::new();
+    let mut hatched = 0usize;
+    for (r, root) in roots.iter().enumerate() {
+        let mut seen = 0usize;
+        for path in rust_sources_under(root) {
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default()
+                .to_string();
+            if name == "tests.rs"
+                || name == "test_helpers.rs"
+                || path.components().any(|c| c.as_os_str() == "tests")
+            {
+                continue;
+            }
+            seen += 1;
+            let production = cfgd_core::test_helpers::production_slice_of(&path);
+            let lines = cfgd_core::test_helpers::logical_source_lines(&production);
+            for (i, (n, line)) in lines.iter().enumerate() {
+                let code = line.split("//").next().unwrap_or(line);
+                if !code.contains("origin: LOCAL_LAYER") {
+                    continue;
+                }
+                if lines[i.saturating_sub(1)..=i]
+                    .iter()
+                    .any(|(_, l)| l.contains(HATCH))
+                {
+                    hatched += 1;
+                    continue;
+                }
+                offenders.push(format!("{}:{}: {}", path.display(), n, line.trim()));
+            }
+        }
+        assert!(
+            seen >= FLOOR_FILES[r],
+            "the walk read {seen} files under {} — under the floor, so it is \
+             looking at the wrong root",
+            root.display()
+        );
+    }
+    assert!(
+        hatched >= FLOOR_HATCHED,
+        "the walk found {hatched} hatched mints, fewer than the {FLOOR_HATCHED} the \
+         workspace holds, so it is no longer reading them"
+    );
+    assert!(
+        offenders.is_empty(),
+        "an action's `origin` names the layer that delivered the resource, read off \
+         `config::LayerSources::recording_layer`, never the local constant (or carries \
+         `// {HATCH} <why>`):\n{}",
+        offenders.join("\n")
+    );
+}
+
 /// Every identifier-shaped token in `text`, quoted literals blanked first.
 fn identifier_tokens(text: &str) -> Vec<String> {
     let blanked = blank_string_literals(text);

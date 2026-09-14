@@ -364,6 +364,7 @@ fn plan_packages_inner(
                 actions.push(PackageAction::Install {
                     manager: manager.name().to_string(),
                     packages: to_install,
+                    // batch-origin-ok: a batch action names many packages at once; each recorded row's layer is answered per package by `reconciler::apply::PackageLayers`.
                     origin: LOCAL_LAYER.to_string(),
                 });
             }
@@ -374,6 +375,7 @@ fn plan_packages_inner(
                 actions.push(PackageAction::Uninstall {
                     manager: manager.name().to_string(),
                     packages: to_uninstall,
+                    // batch-origin-ok: a batch action names many packages at once; each recorded row's layer is answered per package by `reconciler::apply::PackageLayers`.
                     origin: LOCAL_LAYER.to_string(),
                 });
             }
@@ -389,6 +391,7 @@ fn plan_packages_inner(
             actions.push(PackageAction::Install {
                 manager: manager.name().to_string(),
                 packages: desired,
+                // batch-origin-ok: a batch action names many packages at once; each recorded row's layer is answered per package by `reconciler::apply::PackageLayers`.
                 origin: LOCAL_LAYER.to_string(),
             });
         } else if bootstrapping.contains(cfgd_core::manager_family(manager.name())) {
@@ -397,6 +400,7 @@ fn plan_packages_inner(
             actions.push(PackageAction::Install {
                 manager: manager.name().to_string(),
                 packages: desired,
+                // batch-origin-ok: a batch action names many packages at once; each recorded row's layer is answered per package by `reconciler::apply::PackageLayers`.
                 origin: LOCAL_LAYER.to_string(),
             });
         } else {
@@ -406,6 +410,7 @@ fn plan_packages_inner(
                     "'{}' not available — cannot auto-install on this platform",
                     manager.name()
                 ),
+                // batch-origin-ok: a skip row is keyed on the bare manager name, which no declared entry claims, so no layer delivered it.
                 origin: LOCAL_LAYER.to_string(),
             });
         }
