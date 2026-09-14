@@ -66,10 +66,12 @@ Sleep 500ms
 Type "export GW_URL=$(cat gateway.url) BOOTSTRAP=$(cat bootstrap.token)"
 Enter
 Sleep 500ms
-# The prompt the other tapes get from the demo container's own `tj` account on
-# a `--hostname jarvispro` container. Set explicitly here because this shell is
-# the recording host's, and every `Wait` below keys off the `demo$` it ends in.
-Type "export PS1='tj@jarvispro:~/demo$ '"
+# The prompt the other tapes get from the demo container's own `tj` account.
+# Set explicitly here because this shell is the recording host's, and every
+# `Wait` below keys off the `demo$` it ends in. The host part is read off the
+# machine rather than named: the enrollment beat registers this device under
+# `uname -n`, and a prompt claiming another name reads as a second machine.
+Type 'export PS1="tj@$(uname -n):~/demo$ "'
 Enter
 Wait@30s /demo\$$/
 Type "clear"

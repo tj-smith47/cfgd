@@ -415,11 +415,17 @@ spec:
       scheduleOwner: Cluster
 EOF
 
+    # The object is named for the machine it describes, folded to the lowercase
+    # a k8s name allows. A fixed name would put a second hostname on camera
+    # beside the one `cfgd enroll` registers the device under.
+    local machine_name
+    machine_name="$(uname -n | tr '[:upper:]' '[:lower:]')"
+
     cat > "$fixture/machine.yaml" <<EOF
 apiVersion: cfgd.io/v1alpha1
 kind: MachineConfig
 metadata:
-  name: jarvispro
+  name: ${machine_name}
   namespace: ${DEMO_NAMESPACE}
   labels:
     cfgd.io/tier: workstation
