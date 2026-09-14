@@ -1471,18 +1471,37 @@ if [ -f "$rule_file" ]; then
     # the pipe on its first match, and the SIGPIPE that follows fails the whole
     # pipeline under `set -o pipefail` — which reads as "no payload found" and
     # passes the rows with the most to say.
+    # The reach is TRANSITIVE, the same way `fact_class_reaches`
+    # (crates/cfgd/src/cli/tests.rs) queues every helper it discovers: a
+    # payload built two helpers down from the `cmd_*` body is still that
+    # command's payload, and following one level only would pass the row.
+    # Bounded at five rounds so a helper pair calling each other cannot spin.
     _payload_span() {
-        local span_file="$1" span_line="$2" span_body helper helper_line
+        local span_file="$1" span_line="$2" span_body frontier visited round
+        local helper helper_line helper_body found
         span_body=$(awk -v start="$span_line" \
             'NR < start { next } NR > start && /^}/ { exit } { print }' "$span_file")
         printf '%s\n' "$span_body"
-        for helper in $(printf '%s\n' "$span_body" \
-                          | grep -oE '\bbuild_[a-z0-9_]+' | LC_ALL=C sort -u || true); do
-            helper_line=$(grep -nE "^(pub(\(crate\)|\(super\))? fn |fn )${helper}\b" \
-                            "$span_file" | awk -F: 'NR == 1 { print $1 }') || helper_line=""
-            [ -n "$helper_line" ] || continue
-            awk -v start="$helper_line" \
-                'NR < start { next } NR > start && /^}/ { exit } { print }' "$span_file"
+        frontier="$span_body"
+        visited=""
+        for round in 1 2 3 4 5; do
+            found=""
+            for helper in $(printf '%s\n' "$frontier" \
+                              | grep -oE '\bbuild_[a-z0-9_]+' | LC_ALL=C sort -u || true); do
+                if [[ $'\n'$visited$'\n' == *$'\n'"$helper"$'\n'* ]]; then
+                    continue
+                fi
+                visited="$visited"$'\n'"$helper"
+                helper_line=$(grep -nE "^(pub(\(crate\)|\(super\))? fn |fn )${helper}\b" \
+                                "$span_file" | awk -F: 'NR == 1 { print $1 }') || helper_line=""
+                [ -n "$helper_line" ] || continue
+                helper_body=$(awk -v start="$helper_line" \
+                    'NR < start { next } NR > start && /^}/ { exit } { print }' "$span_file")
+                printf '%s\n' "$helper_body"
+                found="$found"$'\n'"$helper_body"
+            done
+            [ -n "$found" ] || break
+            frontier="$found"
         done
     }
     no_rows=$(grep -E '^\| [a-z][a-z0-9_]*[ ]*\|[ ]*no[ ]*\|' "$rule_file" \
