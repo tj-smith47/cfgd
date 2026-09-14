@@ -25,10 +25,10 @@
 use std::path::Path;
 
 use cfgd::cli::status::{
-    ModuleDeclared, ModuleDrift, ModuleFilePresence, ModuleFileStatus, ModulePackagePresence,
-    ModulePackageStatus, ModuleStatus, ModuleStatusEntry, ModuleStatusView, SURFACE_ENV,
-    SURFACE_FILES, SURFACE_PACKAGES, StatusOutput, build_fleet_status_doc, build_module_status_doc,
-    build_module_status_not_found_doc,
+    ManagedResourceRow, ModuleDeclared, ModuleDrift, ModuleFilePresence, ModuleFileStatus,
+    ModulePackagePresence, ModulePackageStatus, ModuleStatus, ModuleStatusEntry, ModuleStatusView,
+    SURFACE_ENV, SURFACE_FILES, SURFACE_PACKAGES, StatusOutput, build_fleet_status_doc,
+    build_module_status_doc, build_module_status_not_found_doc, managed_resource_payload,
 };
 use cfgd_core::config::{EnvVar, ShellAlias};
 use cfgd_core::modules::{DeclaredScript, HookScripts, ModuleSurfaces};
@@ -81,26 +81,29 @@ fn dev_tools_declared() -> ModuleDeclared {
 /// recorded as the planner grouped them, one row per manager), and the
 /// per-package rows a profile-level install writes, which the table groups
 /// back into one row per manager.
-fn managed_resources() -> Vec<ManagedResource> {
-    [
-        ("env", "/home/user/.cfgd.env"),
-        ("file", "~/.bashrc"),
-        ("module", "dev-tools:files:12"),
-        ("module", "dev-tools:packages:gcc,cargo,git"),
-        ("module", "dev-tools:packages:neovim,age,fd"),
-        ("module", "dev-tools:script"),
-        ("package", "brew/ripgrep"),
-        ("package", "brew/bat"),
-    ]
-    .into_iter()
-    .map(|(resource_type, resource_id)| ManagedResource {
-        resource_type: resource_type.into(),
-        resource_id: resource_id.into(),
-        source: "local".into(),
-        last_hash: Some("hash1".into()),
-        last_applied: Some(1_715_680_800),
-    })
-    .collect()
+fn managed_resources() -> Vec<ManagedResourceRow> {
+    managed_resource_payload(
+        [
+            ("env", "/home/user/.cfgd.env"),
+            ("file", "~/.bashrc"),
+            ("module", "dev-tools:files:12"),
+            ("module", "dev-tools:packages:gcc,cargo,git"),
+            ("module", "dev-tools:packages:neovim,age,fd"),
+            ("module", "dev-tools:script"),
+            ("package", "brew/ripgrep"),
+            ("package", "brew/bat"),
+        ]
+        .into_iter()
+        .map(|(resource_type, resource_id)| ManagedResource {
+            resource_type: resource_type.into(),
+            resource_id: resource_id.into(),
+            source: "local".into(),
+            last_hash: Some("hash1".into()),
+            last_applied: Some(1_715_680_800),
+        })
+        .collect(),
+        Some("default"),
+    )
 }
 
 fn clean_output() -> StatusOutput {

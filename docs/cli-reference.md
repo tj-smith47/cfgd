@@ -2069,9 +2069,15 @@ they held is read elsewhere:
 | `state.lockedRef`, `state.lockedCommit` | `cfgd source list -o json` (`lockedRef`, `lockedCommit`) |
 | `managedResources[]` | `cfgd status -o json`'s `managedResources[]`, filtered by `source` |
 
+Each `managedResources[]` row carries the `source` it was delivered by (the
+source's own name, or `local` for a row this machine declared) and an `owner`
+holding the token the human `Owner` column prints for it (`module:nvim`,
+`profile:work`, `cfgd:env`), so the same row can be selected either way:
+
 ```bash
 cfgd source list -o json | jq '.[] | select(.name == "acme-corp") | {status, lastCommit, lockedRef, lockedCommit}'
-cfgd status -o json | jq '.managedResources[] | select(.source == "source:acme-corp")'
+cfgd status -o json | jq '.managedResources[] | select(.source == "acme-corp")'
+cfgd status -o json | jq '.managedResources[] | select(.owner == "module:nvim")'
 ```
 
 A `Policy` section shows what is actually enforced on the source, so an

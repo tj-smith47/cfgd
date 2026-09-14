@@ -10,7 +10,7 @@ pub struct StatusOutput {
     pub sources: Vec<cfgd_core::state::ConfigSourceRecord>,
     pub pending_decisions: Vec<cfgd_core::state::PendingDecision>,
     pub modules: Vec<ModuleStatusEntry>,
-    pub managed_resources: Vec<cfgd_core::state::ManagedResource>,
+    pub managed_resources: Vec<ManagedResourceRow>,
     /// Source batches no decision row can name (a dotted custom manager) —
     /// withheld from every plan fail-closed, so the dashboard names them here
     /// instead of showing clean-empty. Same lines the `plan` payload's
@@ -82,6 +82,66 @@ impl StatusOutput {
     /// the same shape `VerifyOutput` and `DiffSummary` carry.
     pub fn any_drift(&self) -> bool {
         !self.drift.is_empty() || !self.standing.is_empty()
+    }
+}
+
+/// One recorded row as a reader and a `-o json` consumer both receive it: the
+/// stored fact, plus the owner the Managed Resources table prints in its Owner
+/// column.
+///
+/// The owner is DERIVED — the state store records what was applied and under
+/// which source, never whose it is — so it used to exist on the human table
+/// alone and a payload consumer had no key to filter a component's rows by.
+/// One derivation fills both, which is what lets the documented
+/// `jq '.managedResources[] | select(.owner == "module:nvim")'` name the rows
+/// the table shows under `module:nvim`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedResourceRow {
+    #[serde(flatten)]
+    pub resource: cfgd_core::state::ManagedResource,
+    pub owner: String,
+}
+
+impl std::ops::Deref for ManagedResourceRow {
+    type Target = cfgd_core::state::ManagedResource;
+
+    fn deref(&self) -> &Self::Target {
+        &self.resource
+    }
+}
+
+/// Every recorded row with its owner derived once, for the payload and the
+/// table alike.
+pub fn managed_resource_payload(
+    items: Vec<cfgd_core::state::ManagedResource>,
+    profile: Option<&str>,
+) -> Vec<ManagedResourceRow> {
+    let profile_owner = profile.map_or_else(
+        || NO_DETAIL.to_string(),
+        |p| cfgd_core::reconciler::Owner::profile(p).token(),
+    );
+    items
+        .into_iter()
+        .map(|resource| {
+            let owner = recorded_row_owner(&resource, &profile_owner);
+            ManagedResourceRow { resource, owner }
+        })
+        .collect()
+}
+
+/// The owner token one recorded row belongs to.
+///
+/// A package row is the profile's however it was recorded, a row naming a
+/// module is that module's, and everything else asks
+/// [`recorded_owner`], which is the reconciler's own split.
+fn recorded_row_owner(r: &cfgd_core::state::ManagedResource, profile_owner: &str) -> String {
+    if package_id_parts(&r.resource_type, &r.resource_id).is_some() {
+        return profile_owner.to_string();
+    }
+    match module_id_parts(&r.resource_type, &r.resource_id) {
+        Some((module, _)) => cfgd_core::reconciler::Owner::module(module).token(),
+        None => recorded_owner(r, profile_owner),
     }
 }
 
@@ -1064,7 +1124,7 @@ pub fn build_fleet_status_doc(
                 // terminal wraps it rather than cutting names off the tail.
                 .wrapping()
                 .owner_column("Owner");
-            for row in managed_resource_rows(items, &output.modules, profile, resources) {
+            for row in managed_resource_rows(items, &output.modules, resources) {
                 t = t.row(row);
             }
             s.table(t.without_unfillable_columns())
@@ -1143,20 +1203,17 @@ pub struct ManagedResourceDetail {
 /// the row above says nothing has, which is the shape `derivable_profile`
 /// exists to refuse. Those rows carry [`NO_DETAIL`] instead.
 fn managed_resource_rows(
-    items: &[cfgd_core::state::ManagedResource],
+    items: &[ManagedResourceRow],
     modules: &[ModuleStatusEntry],
-    profile: Option<&str>,
     detail: &ManagedResourceDetail,
 ) -> Vec<[String; 5]> {
     let mut rows: Vec<[String; 5]> = Vec::with_capacity(items.len());
-    let profile_owner = profile.map_or_else(
-        || NO_DETAIL.to_string(),
-        |p| cfgd_core::reconciler::Owner::profile(p).token(),
-    );
-    // Keyed by (manager, source) rather than manager alone: two sources
+    // Keyed by (owner, manager, source) rather than manager alone: two sources
     // delivering one manager's packages are two facts, and a merged row would
-    // attribute both to whichever source sorted first.
-    let mut own_packages: std::collections::BTreeMap<(&str, &str), Vec<&str>> =
+    // attribute both to whichever source sorted first. The owner is the one
+    // the rows themselves carry, so a group cannot be filed under a second
+    // derivation of it.
+    let mut own_packages: std::collections::BTreeMap<(&str, &str, &str), Vec<&str>> =
         std::collections::BTreeMap::new();
 
     for r in items {
@@ -1165,7 +1222,7 @@ fn managed_resource_rows(
         }
         if let Some((manager, package)) = package_id_parts(&r.resource_type, &r.resource_id) {
             own_packages
-                .entry((manager, r.source.as_str()))
+                .entry((r.owner.as_str(), manager, r.source.as_str()))
                 .or_default()
                 .push(package);
             continue;
@@ -1185,14 +1242,14 @@ fn managed_resource_rows(
             };
             rows.push([
                 display_type(kind).to_string(),
-                recorded_owner(r, &profile_owner),
+                r.owner.clone(),
                 resource,
                 recorded_row_method(r, detail),
                 r.source.clone(),
             ]);
             continue;
         };
-        let owner = cfgd_core::reconciler::Owner::module(module).token();
+        let owner = r.owner.clone();
         let declared = modules
             .iter()
             .find(|m| m.name == module)
@@ -1243,11 +1300,11 @@ fn managed_resource_rows(
         ]);
     }
 
-    for ((manager, source), mut packages) in own_packages {
+    for ((owner, manager, source), mut packages) in own_packages {
         packages.sort_unstable();
         rows.push([
             display_type("package").to_string(),
-            profile_owner.clone(),
+            owner.to_string(),
             format!("{manager}: {}", packages.join(", ")),
             NO_DETAIL.to_string(),
             source.to_string(),
@@ -1591,7 +1648,7 @@ pub(super) struct ModuleTally {
 /// the exception: it serves `-o json` alone, the table rendering no script row
 /// and the health clause counting no scripts.
 pub(super) fn recorded_module_tallies(
-    items: &[cfgd_core::state::ManagedResource],
+    items: &[ManagedResourceRow],
     declared: &std::collections::BTreeMap<String, ModuleDeclared>,
 ) -> std::collections::BTreeMap<String, ModuleTally> {
     let mut tallies: std::collections::BTreeMap<String, ModuleTally> =
@@ -2434,6 +2491,22 @@ pub enum ModuleStatusView<'a> {
     },
 }
 
+/// A Shell row's clause column: what the row itself reports, with the entry's
+/// own `platforms:` gate named beside it.
+///
+/// The gate is a declared property like a package's `prefer` or `min`, and
+/// [`cfgd_core::platform::PlatformGated::platform_annotation`] leaves the
+/// punctuation to the call site. Comma-joined, the way
+/// `module show` joins a declared package's clauses, so the two surfaces read
+/// the same gate the same way.
+fn shell_row_clauses(cause: &str, gate: Option<&str>) -> String {
+    match gate {
+        Some(tags) if cause.is_empty() => tags.to_string(),
+        Some(tags) => format!("{cause}, {tags}"),
+        None => cause.to_string(),
+    }
+}
+
 /// The wide view's inventories: one section per declared surface, each row
 /// carrying its own verdict.
 fn render_module_inventories(
@@ -2580,13 +2653,22 @@ fn render_module_inventories(
         // a verdict, and renders through the declaration-shaped composer
         // instead of borrowing the ✓ a scan would have earned.
         let checked_live = output.drift_checked_live;
-        let clean_row = move |s: SectionBuilder, subject: String| {
+        // The gate a declared entry carries is a property of the entry, so it
+        // rides the clause column each of these rows already has — the name
+        // column is what a reader scans down, and an annotation there pads
+        // every ungated sibling out to the width of the longest gate.
+        let clean_row = move |s: SectionBuilder, subject: String, gate: Option<String>| {
             if probe_errored {
-                s.status_with(Role::Info, subject, |f| f.detail(NOT_SCANNED))
+                s.status_with(Role::Info, subject, |f| {
+                    f.detail(shell_row_clauses(NOT_SCANNED, gate.as_deref()))
+                })
             } else if checked_live {
-                s.status(Role::Ok, subject)
+                match gate {
+                    Some(tags) => s.status_with(Role::Ok, subject, |f| f.detail(tags)),
+                    None => s.status(Role::Ok, subject),
+                }
             } else {
-                s.command_list([(subject, String::new())])
+                s.command_list([(subject, gate.unwrap_or_default())])
             }
         };
         doc = doc.section("Shell", |s| {
@@ -2594,9 +2676,12 @@ fn render_module_inventories(
                 let mut sorted: Vec<&cfgd_core::config::ShellAlias> = aliases.iter().collect();
                 sorted.sort_by(|a, b| a.name.cmp(&b.name));
                 sorted.into_iter().fold(s, |s, alias| {
-                    let subject = super::module::list_show::gated_value(alias.name.clone(), alias);
+                    let gate = cfgd_core::platform::PlatformGated::platform_annotation(alias);
                     match shell_cause(SURFACE_ALIASES, &alias.name) {
-                        Some(cause) => s.status_with(Role::Warn, subject, |f| f.detail(cause)),
+                        Some(cause) => {
+                            let detail = shell_row_clauses(&cause, gate.as_deref());
+                            s.status_with(Role::Warn, alias.name.clone(), |f| f.detail(detail))
+                        }
                         // `--show-values` asks to see the declared document, so
                         // a row with nothing to report is the kv pair `cfgd
                         // module show` renders for the same item: the name in
@@ -2612,7 +2697,7 @@ fn render_module_inventories(
                             &alias.name,
                             super::module::list_show::gated_value(alias.command.clone(), alias),
                         ),
-                        None => clean_row(s, subject),
+                        None => clean_row(s, alias.name.clone(), gate),
                     }
                 })
             });
@@ -2620,11 +2705,16 @@ fn render_module_inventories(
                 let mut sorted: Vec<&cfgd_core::config::EnvVar> = env.iter().collect();
                 sorted.sort_by(|a, b| a.name.cmp(&b.name));
                 sorted.into_iter().fold(s, |s, ev| {
-                    // Declared state, so a gated entry is listed and annotated
-                    // exactly as `module show` annotates it.
-                    let subject = super::module::list_show::gated_value(ev.name.clone(), ev);
+                    // Declared state, so a gated entry is listed with its gate
+                    // named in the clause column beside whatever else the row
+                    // reports — the same column `module show` hangs a declared
+                    // package's gate off.
+                    let gate = cfgd_core::platform::PlatformGated::platform_annotation(ev);
                     match shell_cause(SURFACE_ENV, &ev.name) {
-                        Some(cause) => s.status_with(Role::Warn, subject, |f| f.detail(cause)),
+                        Some(cause) => {
+                            let detail = shell_row_clauses(&cause, gate.as_deref());
+                            s.status_with(Role::Warn, ev.name.clone(), |f| f.detail(detail))
+                        }
                         // facts-block-ok: the inventory row this branch
                         // renders stands in for a status row, beside other
                         // rows of the same inventory.
@@ -2632,7 +2722,7 @@ fn render_module_inventories(
                             &ev.name,
                             super::module::list_show::gated_value(ev.value.clone(), ev),
                         ),
-                        None => clean_row(s, subject),
+                        None => clean_row(s, ev.name.clone(), gate),
                     }
                 })
             });
@@ -2772,7 +2862,10 @@ pub(super) fn cmd_status(
     // report work awaiting an answer that no answer can release.
     let mut pending = reconciler::Subscriptions::known(cfg.spec.sources.iter().map(|s| &s.name))
         .answerable(state.pending_decisions()?);
-    let resources = state.managed_resources()?;
+    // The owner the table prints is derived, so it is derived once, here, and
+    // carried on the row every consumer of this run reads.
+    let resources =
+        managed_resource_payload(state.managed_resources()?, derivable_profile(profile_name));
 
     let config_dir = config_dir(cli);
 
@@ -3780,14 +3873,29 @@ mod tests {
         );
     }
 
-    fn recorded(resource_type: &str, resource_id: &str) -> cfgd_core::state::ManagedResource {
-        cfgd_core::state::ManagedResource {
-            resource_type: resource_type.to_string(),
-            resource_id: resource_id.to_string(),
-            source: "local".to_string(),
-            last_hash: None,
-            last_applied: None,
-        }
+    /// A recorded row as a run carries it: the stored fact plus the owner the
+    /// Owner column and `-o json` both read off the row. Under `base`;
+    /// `recorded_under` is for a fixture whose rows belong to another profile.
+    fn recorded(resource_type: &str, resource_id: &str) -> ManagedResourceRow {
+        recorded_under(Some("base"), resource_type, resource_id)
+    }
+
+    fn recorded_under(
+        profile: Option<&str>,
+        resource_type: &str,
+        resource_id: &str,
+    ) -> ManagedResourceRow {
+        managed_resource_payload(
+            vec![cfgd_core::state::ManagedResource {
+                resource_type: resource_type.to_string(),
+                resource_id: resource_id.to_string(),
+                source: "local".to_string(),
+                last_hash: None,
+                last_applied: None,
+            }],
+            profile,
+        )
+        .remove(0)
     }
 
     /// A declared-package map keyed the way `ModuleDeclared::of` builds it:
@@ -3879,7 +3987,6 @@ mod tests {
                 recorded("package", "brew/bat"),
             ],
             &[],
-            Some("base"),
             &ManagedResourceDetail::default(),
         );
         assert_eq!(
@@ -3929,7 +4036,6 @@ mod tests {
                 recorded("env", cfgd_core::state::ENV_SESSION_RESOURCE_ID),
             ],
             &[],
-            Some("base"),
             &ManagedResourceDetail::default(),
         );
 
@@ -4136,16 +4242,82 @@ mod tests {
         );
     }
 
+    /// The `owner` key `-o json` carries on a managed-resource row is the
+    /// token the human Owner column prints for that same row.
+    ///
+    /// The owner is derived — nothing records it — so it used to exist on the
+    /// table alone and `docs/cli-reference.md` documented a
+    /// `jq '.managedResources[] | select(...)'` filter with no key to select
+    /// on. One derivation now fills both, and this reads the payload's own
+    /// serialization against the table the doc builder renders.
+    #[test]
+    fn every_managed_resource_row_serializes_the_owner_its_column_prints() {
+        let rows = managed_resource_payload(
+            vec![
+                cfgd_core::state::ManagedResource {
+                    resource_type: "module".to_string(),
+                    resource_id: "nvim:files:6".to_string(),
+                    source: "local".to_string(),
+                    last_hash: None,
+                    last_applied: None,
+                },
+                cfgd_core::state::ManagedResource {
+                    resource_type: "package".to_string(),
+                    resource_id: cfgd_core::state::package_resource_id("brew", "bat"),
+                    source: "local".to_string(),
+                    last_hash: None,
+                    last_applied: None,
+                },
+                cfgd_core::state::ManagedResource {
+                    resource_type: "file".to_string(),
+                    resource_id: "/home/u/.gitconfig".to_string(),
+                    source: "local".to_string(),
+                    last_hash: None,
+                    last_applied: None,
+                },
+            ],
+            Some("base"),
+        );
+        let payload = serde_json::to_value(&rows).expect("the payload serializes");
+        let owners: Vec<&str> = payload
+            .as_array()
+            .expect("an array of rows")
+            .iter()
+            .map(|row| row["owner"].as_str().expect("every row carries an owner"))
+            .collect();
+        assert_eq!(
+            owners,
+            vec!["module:nvim", "profile:base", "profile:base"],
+            "got: {payload}"
+        );
+        // The stored fact is still the payload's, flattened beside the owner.
+        assert_eq!(payload[0]["resourceId"], "nvim:files:6", "got: {payload}");
+
+        let table = managed_resource_rows(&rows, &[], &ManagedResourceDetail::default());
+        for owner in &owners {
+            assert!(
+                table.iter().any(|row| row[1] == *owner),
+                "the payload names `{owner}` and the Owner column does not: {table:?}"
+            );
+        }
+        let columns: std::collections::BTreeSet<&str> =
+            table.iter().map(|row| row[1].as_str()).collect();
+        let serialized: std::collections::BTreeSet<&str> = owners.into_iter().collect();
+        assert_eq!(
+            columns, serialized,
+            "the two sides name different owner sets: {table:?}"
+        );
+    }
+
     /// Two sources delivering one manager's packages are two facts. Merging
     /// them would attribute both to whichever source sorted first.
     #[test]
     fn one_manager_delivered_by_two_sources_stays_two_rows() {
         let mut remote = recorded("package", "brew/fd");
-        remote.source = "acme".to_string();
+        remote.resource.source = "acme".to_string();
         let rows = managed_resource_rows(
             &[recorded("package", "brew/bat"), remote],
             &[],
-            Some("base"),
             &ManagedResourceDetail::default(),
         );
         assert_eq!(rows.len(), 2, "{rows:?}");
@@ -4165,12 +4337,11 @@ mod tests {
     fn a_row_no_profile_can_be_named_for_reads_a_dash_and_sorts_last() {
         let rows = managed_resource_rows(
             &[
-                recorded("package", "brew/bat"),
-                recorded("module", "nvim:files:2"),
-                recorded("env", "~/.cfgd.env"),
+                recorded_under(None, "package", "brew/bat"),
+                recorded_under(None, "module", "nvim:files:2"),
+                recorded_under(None, "env", "~/.cfgd.env"),
             ],
             &[],
-            None,
             &ManagedResourceDetail::default(),
         );
         let owners: Vec<&str> = rows.iter().map(|r| r[1].as_str()).collect();
@@ -4197,7 +4368,6 @@ mod tests {
                 recorded("module", "nvim:packages:git,gcc"),
             ],
             &[nvim_entry(declared)],
-            Some("base"),
             &ManagedResourceDetail::default(),
         );
         let resources: Vec<&str> = rows.iter().map(|r| r[2].as_str()).collect();
@@ -4220,7 +4390,6 @@ mod tests {
         let rows = managed_resource_rows(
             &[recorded("module", "nvim:packages:neovim,git")],
             &[nvim_entry(split)],
-            Some("base"),
             &ManagedResourceDetail::default(),
         );
         assert_eq!(rows[0][2], "git, neovim");
@@ -4292,7 +4461,6 @@ mod tests {
                 recorded("module", "gone:script"),
             ],
             &[],
-            Some("base"),
             &ManagedResourceDetail::default(),
         );
         let resources: Vec<&str> = rows.iter().map(|r| r[2].as_str()).collect();
@@ -4312,7 +4480,6 @@ mod tests {
             let rows = managed_resource_rows(
                 &[recorded("env", cfgd_core::state::ENV_SESSION_RESOURCE_ID)],
                 &[],
-                Some("base"),
                 &ManagedResourceDetail::default(),
             );
             rows[0][2].clone()
@@ -4356,7 +4523,6 @@ mod tests {
                 recorded("Running script", "echo hi"),
             ],
             &[],
-            Some("base"),
             &ManagedResourceDetail::default(),
         );
         // Owner order, so the surfaces are named in the order the tree
@@ -5064,13 +5230,16 @@ mod tests {
                 modules: Vec::new(),
                 // One recorded owner, so the Component Health section whose
                 // heading carries the freshness annotation renders.
-                managed_resources: vec![cfgd_core::state::ManagedResource {
-                    resource_type: "file".to_string(),
-                    resource_id: "~/.gitconfig".to_string(),
-                    source: "local".to_string(),
-                    last_hash: Some("hash1".to_string()),
-                    last_applied: Some(1_715_680_800),
-                }],
+                managed_resources: managed_resource_payload(
+                    vec![cfgd_core::state::ManagedResource {
+                        resource_type: "file".to_string(),
+                        resource_id: "~/.gitconfig".to_string(),
+                        source: "local".to_string(),
+                        last_hash: Some("hash1".to_string()),
+                        last_applied: Some(1_715_680_800),
+                    }],
+                    Some("base"),
+                ),
                 warnings: Vec::new(),
                 classification_degraded: false,
                 classification_degraded_code: None,
@@ -5999,7 +6168,6 @@ mod tests {
         let rows = managed_resource_rows(
             &resources,
             &output.modules,
-            Some("base"),
             &ManagedResourceDetail::default(),
         );
         let listed: usize = rows
@@ -6039,7 +6207,6 @@ mod tests {
         let wide_rows = managed_resource_rows(
             &resources,
             &output.modules,
-            Some("base"),
             &ManagedResourceDetail {
                 wide: true,
                 module_files: std::collections::BTreeMap::from([("nvim".to_string(), manifest)]),
@@ -6069,7 +6236,6 @@ mod tests {
         let rows = managed_resource_rows(
             &[recorded("file", "~/.stale")],
             &[],
-            Some("base"),
             &ManagedResourceDetail {
                 wide: true,
                 ..Default::default()
@@ -6090,27 +6256,30 @@ mod tests {
     #[test]
     fn the_component_health_counts_what_the_table_lists() {
         let resources = vec![
-            recorded("file", "~/.bashrc"),
-            recorded("file", "~/.vimrc"),
-            recorded("package", "brew/ripgrep"),
-            recorded("package", "brew/bat"),
-            recorded("package", "apt/git"),
-            recorded("env", "/home/user/.cfgd.env"),
-            recorded("env", "/home/user/.config/fish/conf.d/cfgd-env.fish"),
-            recorded("env", "/home/user/.bashrc"),
-            recorded("env", "/home/user/.zshenv"),
-            recorded("env", "/home/user/.profile"),
-            recorded("env", cfgd_core::state::ENV_SESSION_RESOURCE_ID),
+            recorded_under(Some("default"), "file", "~/.bashrc"),
+            recorded_under(Some("default"), "file", "~/.vimrc"),
+            recorded_under(Some("default"), "package", "brew/ripgrep"),
+            recorded_under(Some("default"), "package", "brew/bat"),
+            recorded_under(Some("default"), "package", "apt/git"),
+            recorded_under(Some("default"), "env", "/home/user/.cfgd.env"),
+            recorded_under(
+                Some("default"),
+                "env",
+                "/home/user/.config/fish/conf.d/cfgd-env.fish",
+            ),
+            recorded_under(Some("default"), "env", "/home/user/.bashrc"),
+            recorded_under(Some("default"), "env", "/home/user/.zshenv"),
+            recorded_under(Some("default"), "env", "/home/user/.profile"),
+            recorded_under(
+                Some("default"),
+                "env",
+                cfgd_core::state::ENV_SESSION_RESOURCE_ID,
+            ),
         ];
         let mut output = empty_output();
         output.managed_resources = resources.clone();
 
-        let table = managed_resource_rows(
-            &resources,
-            &[],
-            Some("default"),
-            &ManagedResourceDetail::default(),
-        );
+        let table = managed_resource_rows(&resources, &[], &ManagedResourceDetail::default());
         let rows_of =
             |owner: &str, ty: &str| table.iter().filter(|r| r[1] == owner && r[0] == ty).count();
         // A package row's Resource cell is `manager: a, b`; its unit is the
@@ -6305,7 +6474,6 @@ mod tests {
             let rows = managed_resource_rows(
                 &[recorded("module", "nvim:packages:thing")],
                 &[nvim_entry(declared)],
-                Some("base"),
                 &ManagedResourceDetail::default(),
             );
             assert_eq!(
@@ -6325,7 +6493,6 @@ mod tests {
         let rows = managed_resource_rows(
             &[recorded("module", "nvim:packages:neovim")],
             &[nvim_entry(both)],
-            Some("base"),
             &ManagedResourceDetail::default(),
         );
         assert_eq!(
