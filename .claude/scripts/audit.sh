@@ -1444,6 +1444,46 @@ if [ -f "$rule_file" ]; then
         log_error "Rows in $rule_file naming a cmd_* that no longer exists in crates/cfgd/src/cli/:"
         echo "$stale"
     fi
+    # A `no` row is the table's promise that this command emits no structured
+    # payload, and a consumer decides from it whether `-o json` is worth
+    # parsing at all. The rationale column cannot be checked, but the claim
+    # can: a body reaching `.with_data(` contradicts its own row. The span is
+    # the same one `every_show_and_list_verb_renders_only_its_fact_classes`
+    # reads — the function's own body plus every `build_*` helper it calls in
+    # the same file, each cut at the first `}` in column 1, which is where
+    # rustfmt closes a file-scope function.
+    # Every reader here drains its producer: a `grep -q` or a `head -1` closes
+    # the pipe on its first match, and the SIGPIPE that follows fails the whole
+    # pipeline under `set -o pipefail` — which reads as "no payload found" and
+    # passes the rows with the most to say.
+    _payload_span() {
+        local span_file="$1" span_line="$2" span_body helper helper_line
+        span_body=$(awk -v start="$span_line" \
+            'NR < start { next } NR > start && /^}/ { exit } { print }' "$span_file")
+        printf '%s\n' "$span_body"
+        for helper in $(printf '%s\n' "$span_body" \
+                          | grep -oE '\bbuild_[a-z0-9_]+' | LC_ALL=C sort -u || true); do
+            helper_line=$(grep -nE "^(pub(\(crate\)|\(super\))? fn |fn )${helper}\b" \
+                            "$span_file" | awk -F: 'NR == 1 { print $1 }') || helper_line=""
+            [ -n "$helper_line" ] || continue
+            awk -v start="$helper_line" \
+                'NR < start { next } NR > start && /^}/ { exit } { print }' "$span_file"
+        done
+    }
+    no_rows=$(grep -E '^\| [a-z][a-z0-9_]*[ ]*\|[ ]*no[ ]*\|' "$rule_file" \
+        | awk -F'|' '{print $2}' | tr -d ' ') || no_rows=""
+    for cmd in $no_rows; do
+        while IFS=: read -r cmd_file cmd_line; do
+            [ -n "$cmd_file" ] || continue
+            cmd_span=$(_payload_span "$cmd_file" "$cmd_line")
+            if [[ $cmd_span == *".with_data("* ]]; then
+                log_error "$rule_file records $cmd as carrying no payload, but cmd_$cmd reaches .with_data( ($cmd_file:$cmd_line) — flip the row to yes and say who reads the payload"
+            fi
+        done < <(rg --type rust --color never -n \
+                    "^(pub(\(crate\)|\(super\))? fn |fn )cmd_${cmd}\\b" \
+                    crates/cfgd/src/cli/ --glob '!**/tests.rs' --glob '!**/tests/**' \
+                    2>/dev/null | awk -F: '{print $1":"$2}')
+    done
 else
     log_error "Structured-output coverage table missing: $rule_file"
 fi

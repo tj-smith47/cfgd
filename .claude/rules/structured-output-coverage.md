@@ -26,17 +26,17 @@ keys while carrying six). The keys live in the builder and its golden.
 | compliance_export            | yes               | compliance data exported to scripts                |
 | compliance_history           | yes               | drift history queried by scripts                   |
 | compliance_snapshot          | yes               | snapshot consumed by scripts                       |
-| config_edit                  | no                | opens $EDITOR; no data output                      |
+| config_edit                  | yes               | post-edit validation verdict (path + valid flag), the shape `source_edit` already puts on the wire |
 | config_get                   | yes               | key/value queried by scripts                       |
 | configpolicy_validate        | yes               | validation result consumed by scripts/CI           |
 | config_set                   | yes               | mutation records                                   |
 | config_show                  | yes               | inspector consumed by scripts                      |
 | config_unset                 | yes               | mutation records                                   |
 | daemon                       | no                | dispatcher only                                    |
-| daemon_install               | no                | one-shot setup; no scripting consumer              |
+| daemon_install               | yes               | the installed service's platform, name, unit path and whether it started |
 | daemon_service               | no                | internal service registration; no scripting consumer |
 | daemon_status                | yes               | daemon health queried by scripts                   |
-| daemon_uninstall             | no                | one-shot teardown; no scripting consumer           |
+| daemon_uninstall             | yes               | the service a teardown removed, and whether it was there to remove |
 | debug                        | yes               | ephemeral-container facts consumed by debug tooling |
 | decide                       | yes               | pending-decision listing + resolution records      |
 | deploy                       | yes               | image-volume pin rewrites consumed by CI           |
@@ -45,21 +45,21 @@ keys while carrying six). The keys live in the builder and its golden.
 | doctor                       | yes               | the health verdict and every check's row, read by CI; under `--fix` the rows state the machine the repair left |
 | enroll                       | yes               | machine identity exposed to gateway                |
 | exec                         | yes               | the target a wrapper script ran a command against  |
-| explain                      | no                | dev-tooling                                        |
+| explain                      | yes               | the schema an editor plugin or doc generator reads instead of scraping the rendered tree |
 | generate                     | yes               | generated module metadata                          |
 | generate_scan_only           | yes               | scan results consumed by scripts                   |
 | image_pack                   | yes               | packed-image artifact + digest records             |
-| init                         | no                | one-shot setup; no scripting consumer              |
+| init                         | yes               | the directory the scaffold wrote, read by whatever chains the next command |
 | inject                       | yes               | patch result records consumed by CI                |
-| log                          | no                | already a streaming log surface                    |
-| log_show_output              | no                | streaming log display helper                       |
+| log                          | yes               | apply history queried by scripts; the human surface is a table over the same entries |
+| log_show_output              | yes               | one apply's captured script output, read by CI when the history rows are not enough |
 | machineconfig_validate       | yes               | validation result consumed by scripts/CI           |
 | module_add_from_registry     | yes               | add-result records                                 |
 | module_add_remote            | yes               | add-result records                                 |
 | module_build                 | yes               | build artifact records                             |
 | module_create                | yes               | new module metadata                                |
 | module_delete                | yes               | deletion records                                   |
-| module_edit                  | no                | opens $EDITOR; no data output                      |
+| module_edit                  | yes               | post-edit validation verdict (path + valid flag) |
 | module_export                | yes               | export artifact metadata                           |
 | module_keys_generate         | yes               | key pair paths                                     |
 | module_keys_list             | yes               | key inventory                                      |
@@ -80,7 +80,7 @@ keys while carrying six). The keys live in the builder and its golden.
 | plan                         | yes               | plan output consumed by CI                         |
 | profile_create               | yes               | new profile metadata                               |
 | profile_delete               | yes               | deletion records                                   |
-| profile_edit                 | no                | opens $EDITOR; no data output                      |
+| profile_edit                 | yes               | post-edit validation verdict (path + valid flag) |
 | profile_list                 | yes               | profile inventory                                  |
 | profile_migrate              | yes               | migration records consumed by scripts              |
 | profile_show                 | yes               | introspection                                      |
@@ -89,8 +89,8 @@ keys while carrying six). The keys live in the builder and its golden.
 | profile_validate             | yes               | validation result consumed by scripts/CI           |
 | pull                         | yes               | pull result records                                |
 | rollback                     | yes               | rollback result records                            |
-| secret_decrypt               | no                | plaintext via data_line; not a structured payload  |
-| secret_edit                  | no                | opens $EDITOR; no data output                      |
+| secret_decrypt               | yes               | plaintext, delivered in the payload under a structured format so it does not also reach raw stdout |
+| secret_edit                  | yes               | post-edit validation verdict (path + valid flag) |
 | secret_encrypt               | yes               | encryption result records                          |
 | secret_init                  | yes               | backend configuration records                      |
 | skill_install                | yes               | install-result records (paths written per provider) |

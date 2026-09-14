@@ -709,27 +709,22 @@ sources:
     lockedAt: "2026-06-09T14:32:01Z"
 ```
 
-`cfgd source show acme-corp` surfaces the lockfile data in the State section:
+`cfgd source show acme-corp` renders what the subscription declares: the URL, the branch, the priority and the pin, then the manifest and the policy the source ships.
 
 ```
 Show source:acme-corp
-  URL            git@github.com:acme-corp/dev-config.git
-  Branch         master
-  Priority       500
-  Pin Version    ~2
-
-State
-  Status         Active
-  Last Sync      2h ago
-  Last Commit    9f3c1ab2c4d0
-  Locked Commit  9f3c1ab2c4d0
-  Locked Ref     v2.1.0
-  Signed         yes
+  URL                 git@github.com:acme-corp/dev-config.git
+  Branch              master
+  Priority            500
+  Accept Recommended  yes
+  Sync Interval       1h
+  Auto Apply          no
+  Pin Version         ~2
 ```
 
-When a source has been added but never synced, `source show` still surfaces the lockfile entry (with `Status: pending`) so you can confirm the intended SHA before the first apply.
+What the last fetch recorded (the status, the commit it landed on, whether that commit was signed, and how long ago it was) belongs to `cfgd source list` and `cfgd status`, which read the state store. `source show` opens none, so it reports nothing a fetch has to have happened for.
 
-`cfgd sync`, `cfgd source add`, and `cfgd source update` all record the fetch, so the `Last Sync` / `Last Commit` / `Signed` values above and the `Sources` table in `cfgd status` reflect whichever of the three last touched the source. `Last Sync` is rendered as an age (`2h ago`, `18d ago`, `never`); the ISO 8601 instant stays in `-o json` as `lastFetched`. `Signed` is `yes` / `no` for the commit that fetch landed on, and `-` when cfgd could not read the checkout to say.
+`cfgd sync`, `cfgd source add`, and `cfgd source update` all record the fetch, so the `Last Sync` / `Status` / `Signed` columns of `source list` and the `Sources` table in `cfgd status` reflect whichever of the three last touched the source. `Last Sync` is rendered as an age (`2h ago`, `18d ago`, `never`); the ISO 8601 instant stays in `-o json` as `lastFetched`. `Signed` is `yes` / `no` for the commit that fetch landed on, and `-` when cfgd could not read the checkout to say.
 
 **Committing the lockfile** to your config repo (alongside `cfgd.yaml`) is recommended: it guarantees that every machine applying the config checks out the identical commits, and `git diff sources.lock` shows exactly what a source update advanced to.
 
