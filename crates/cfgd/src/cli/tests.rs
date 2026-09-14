@@ -33987,23 +33987,26 @@ fn component_health_fixture() -> super::status::StatusOutput {
                 declared: Default::default(),
             },
         ],
-        managed_resources: [
-            ("file", "~/.gitconfig"),
-            ("env", "/home/user/.cfgd.env"),
-            ("env", "/home/user/.bashrc"),
-            ("env", cfgd_core::state::ENV_SESSION_RESOURCE_ID),
-        ]
-        .into_iter()
-        .map(
-            |(resource_type, resource_id)| cfgd_core::state::ManagedResource {
-                resource_type: resource_type.into(),
-                resource_id: resource_id.into(),
-                source: "local".into(),
-                last_hash: Some("hash1".into()),
-                last_applied: Some(1_715_680_800),
-            },
-        )
-        .collect(),
+        managed_resources: super::status::managed_resource_payload(
+            [
+                ("file", "~/.gitconfig"),
+                ("env", "/home/user/.cfgd.env"),
+                ("env", "/home/user/.bashrc"),
+                ("env", cfgd_core::state::ENV_SESSION_RESOURCE_ID),
+            ]
+            .into_iter()
+            .map(
+                |(resource_type, resource_id)| cfgd_core::state::ManagedResource {
+                    resource_type: resource_type.into(),
+                    resource_id: resource_id.into(),
+                    source: "local".into(),
+                    last_hash: Some("hash1".into()),
+                    last_applied: Some(1_715_680_800),
+                },
+            )
+            .collect(),
+            Some("default"),
+        ),
         warnings: Vec::new(),
         classification_degraded: false,
         classification_degraded_code: None,
@@ -34370,13 +34373,16 @@ fn component_health_nests_the_recorded_drift_under_its_owner() {
     // grammar `upsert_package_resource` really writes.
     output
         .managed_resources
-        .push(cfgd_core::state::ManagedResource {
-            resource_type: "package".into(),
-            resource_id: cfgd_core::state::package_resource_id("brew", "fd"),
-            source: "local".into(),
-            last_hash: Some("hash1".into()),
-            last_applied: Some(1_715_680_800),
-        });
+        .extend(super::status::managed_resource_payload(
+            vec![cfgd_core::state::ManagedResource {
+                resource_type: "package".into(),
+                resource_id: cfgd_core::state::package_resource_id("brew", "fd"),
+                source: "local".into(),
+                last_hash: Some("hash1".into()),
+                last_applied: Some(1_715_680_800),
+            }],
+            Some("default"),
+        ));
     output.drift = vec![
         event(
             "module",
@@ -34984,6 +34990,28 @@ const HEADER_BEARING_FLOOR: &[&str] = &[
     "sync.rs:cmd_sync",
 ];
 
+/// The verbs that hatch out of the header rule, each with a `// no-header-ok:`
+/// reason on its declaration. Listed member by member, the shape this repo
+/// gives every hatched population (`SERIAL_PINS`, `PINNED_HINT_COMPOSERS`,
+/// `DISPATCHED_RENDERERS`): a count lets the next verb hatch itself out
+/// silently, and which verbs render no header block is a decision, not a
+/// tally.
+const HEADER_HATCHED: &[&str] = &[
+    "apply.rs:cmd_apply",
+    "backup.rs:cmd_backup_gc",
+    "backup.rs:cmd_backup_list",
+    "backup.rs:cmd_backup_restore",
+    "backup.rs:cmd_backup_rollback",
+    "backup.rs:cmd_backup_run",
+    "checkin.rs:cmd_checkin",
+    "compliance.rs:cmd_compliance_export",
+    "decide.rs:cmd_decide",
+    "list_show.rs:cmd_module_list",
+    "plan.rs:cmd_plan",
+    "pull.rs:cmd_pull",
+    "status.rs:cmd_status_module",
+];
+
 /// Every `cmd_*` under `src/cli/` that reaches the run's resolved
 /// configuration, as `(source path, function name)`.
 ///
@@ -35098,12 +35126,10 @@ fn every_verb_reporting_on_a_resolved_configuration_opens_on_the_header_block() 
          `{HATCH} <why>`):\n{}",
         missing.join("\n")
     );
-    // Counted rather than listed member by member: the hatched set moves with
-    // every verb that reads config for a reason other than reporting on it,
-    // and a floor is what catches a walk that hatched everything.
-    assert!(
-        hatched.len() < verbs.len(),
-        "every member is hatched, so this walk judges nothing: {hatched:?}"
+    hatched.sort();
+    assert_eq!(
+        hatched, HEADER_HATCHED,
+        "the hatched population moved, and this walk decides what it covers"
     );
 }
 
@@ -36871,22 +36897,25 @@ fn no_report_slot_spells_the_home_directory_absolutely() {
                 ..Default::default()
             },
         }],
-        managed_resources: vec![
-            cfgd_core::state::ManagedResource {
-                resource_type: "env".into(),
-                resource_id: under_home(".cfgd.env"),
-                source: "local".into(),
-                last_hash: None,
-                last_applied: None,
-            },
-            cfgd_core::state::ManagedResource {
-                resource_type: "module".into(),
-                resource_id: "nvim:files:6".into(),
-                source: "local".into(),
-                last_hash: None,
-                last_applied: None,
-            },
-        ],
+        managed_resources: super::status::managed_resource_payload(
+            vec![
+                cfgd_core::state::ManagedResource {
+                    resource_type: "env".into(),
+                    resource_id: under_home(".cfgd.env"),
+                    source: "local".into(),
+                    last_hash: None,
+                    last_applied: None,
+                },
+                cfgd_core::state::ManagedResource {
+                    resource_type: "module".into(),
+                    resource_id: "nvim:files:6".into(),
+                    source: "local".into(),
+                    last_hash: None,
+                    last_applied: None,
+                },
+            ],
+            Some("default"),
+        ),
         warnings: Vec::new(),
         classification_degraded: false,
         classification_degraded_code: None,
@@ -41803,12 +41832,41 @@ const DISPATCHED_RENDERERS: &[(&str, &str)] = &[("alias show", "cmd_config_get")
 /// body lives under another name is exactly the one a reader cannot find by
 /// grepping for its own `cmd_*`. `audit.sh` keeps the same pairs beside its
 /// stale-row check so the row it requires here is not flagged as naming a
-/// function that does not exist.
+/// function that does not exist — and this walk reads that shell list, so a
+/// pair added to one side and not the other fails rather than sitting there
+/// looking answered.
 #[test]
 fn every_dispatched_renderer_has_a_coverage_row() {
     let path = cfgd_core::test_helpers::workspace_root()
         .join(".claude/rules/structured-output-coverage.md");
     let table = walked_file_body(&path);
+    let audit = walked_file_body(
+        &cfgd_core::test_helpers::workspace_root().join(".claude/scripts/audit.sh"),
+    );
+    let assignment = audit
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("dispatched_renderers=\""))
+        .and_then(|rest| rest.strip_suffix('"'))
+        .unwrap_or_else(|| {
+            panic!("audit.sh no longer assigns `dispatched_renderers=\"…\"`, so the two lists are unpinned")
+        });
+    let mut shell_pairs: Vec<String> = assignment.split_whitespace().map(str::to_string).collect();
+    assert!(
+        !shell_pairs.is_empty(),
+        "audit.sh's `dispatched_renderers` read empty: the walk is judging nothing"
+    );
+    let mut rust_pairs: Vec<String> = DISPATCHED_RENDERERS
+        .iter()
+        .map(|(verb, renderer)| format!("{}:{renderer}", verb.replace(' ', "_")))
+        .collect();
+    shell_pairs.sort();
+    rust_pairs.sort();
+    assert_eq!(
+        shell_pairs, rust_pairs,
+        "`audit.sh`'s dispatched-renderer pairs and `DISPATCHED_RENDERERS` \
+         name different sets, so one of the two gates is judging a command \
+         the other has never heard of"
+    );
     let rows: Vec<&str> = table
         .lines()
         .filter_map(|line| line.strip_prefix("| "))
@@ -41829,6 +41887,121 @@ fn every_dispatched_renderer_has_a_coverage_row() {
              is the one a reader cannot find by grepping for its own cmd_*"
         );
     }
+}
+
+/// Where the `gated_value(` call at `at` lands, when that is anywhere but the
+/// VALUE slot of a `kv`-shaped row — `None` when the call is where it belongs.
+///
+/// The statement is the unit: a result let-bound to a name becomes that name's
+/// row subject, and a call sitting in argument one of a composer is the name
+/// column itself. Both are the shape the walk below refuses.
+fn gated_value_misplacement(code: &str, at: usize) -> Option<String> {
+    let stmt_start = code[..at].rfind([';', '{', '}']).map_or(0, |p| p + 1);
+    if code[stmt_start..at].contains("let ") {
+        return Some(
+            "let-bound, so the annotated value becomes a row's subject rather than its value"
+                .to_string(),
+        );
+    }
+    let bytes = code.as_bytes();
+    let mut depth = 0i32;
+    let mut i = at;
+    while i > stmt_start {
+        i -= 1;
+        match bytes[i] {
+            b')' => depth += 1,
+            b'(' if depth == 0 => break,
+            b'(' => depth -= 1,
+            _ => {}
+        }
+    }
+    if bytes.get(i) != Some(&b'(') || i < stmt_start {
+        return Some("not passed into a row composer at all".to_string());
+    }
+    // Path-qualified, so `KvPair::new` is distinguishable from any other
+    // `new`; a method call stops at the `.` and reads as its bare name.
+    let start = code[..i]
+        .rfind(|c: char| !(c.is_alphanumeric() || c == '_' || c == ':'))
+        .map_or(0, |p| p + 1);
+    let callee = code[start..i].trim_start_matches(':');
+    let first_argument = !code[i + 1..at].contains(',');
+    match (callee, first_argument) {
+        ("kv" | "KvPair::new", false) => None,
+        (_, true) => Some(format!(
+            "argument one of `{callee}(`, which is a name column"
+        )),
+        _ => Some(format!(
+            "an argument of `{callee}(`, not a key/value pair's value slot"
+        )),
+    }
+}
+
+/// A declared entry's `platforms:` gate annotates the VALUE a surface renders,
+/// never the name a reader scans down.
+///
+/// `cfgd status <module>` annotated both — the alias and env rows put
+/// `gated_value`'s result in the row SUBJECT, so an ungated sibling was padded
+/// out to the width of the longest gate and the name column stopped being a
+/// column of names. The rules catalog stated the rule and nothing enforced it,
+/// which is how two sites sat through the sweep that minted it. Every
+/// production call now hands its result straight to a `kv` value slot; a call
+/// site that genuinely must annotate a name says so with
+/// `// name-annotation-ok: <why>` on its line or the one above.
+#[test]
+fn no_gated_value_result_reaches_a_name_column() {
+    const HATCH: &str = "// name-annotation-ok:";
+    const CALL: &str = "gated_value(";
+    let mut offenders: Vec<String> = Vec::new();
+    let mut sites = 0usize;
+    let mut files = 0usize;
+    for (path, production) in cli_production_sources()
+        .into_iter()
+        .chain(core_production_sources())
+    {
+        files += 1;
+        let lines: Vec<&str> = production.lines().collect();
+        // Literals blanked and comments cut, so neither a documented spelling
+        // nor the hatch marker itself reads as a call.
+        let code: Vec<String> = lines
+            .iter()
+            .map(|l| blank_string_literals(l.split("//").next().unwrap_or(l)))
+            .collect();
+        let joined = code.join("\n");
+        let mut from = 0usize;
+        while let Some(rel) = joined[from..].find(CALL) {
+            let at = from + rel;
+            from = at + CALL.len();
+            // The declaration itself is not a call site.
+            if joined[..at].ends_with("fn ") {
+                continue;
+            }
+            sites += 1;
+            let n = joined[..at].matches('\n').count();
+            if lines[n].contains(HATCH) || (n > 0 && lines[n - 1].contains(HATCH)) {
+                continue;
+            }
+            if let Some(why) = gated_value_misplacement(&joined, at) {
+                offenders.push(format!("{}:{}: {why}", path.display(), n + 1));
+            }
+        }
+    }
+    assert!(
+        files > 150,
+        "the walk read {files} production sources across both crates, so it is \
+         judging a narrower population than it claims"
+    );
+    assert!(
+        sites >= 4,
+        "the walk found {sites} `gated_value(` call sites: it is no longer \
+         reading the surfaces that annotate a declared value"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a declared entry's `platforms:` gate annotates the value column a \
+         surface already has, never the name column a reader scans down (or \
+         says why with `{HATCH} <why>`):\n{}",
+        offenders.join("\n")
+    );
 }
 
 /// The `(name, first line, last line)` of every `fn` declared in `lines`.

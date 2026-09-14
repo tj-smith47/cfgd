@@ -1444,8 +1444,9 @@ if [ -f "$rule_file" ]; then
     # command's name: `alias show` is dispatched straight into `cmd_config_get`,
     # so no `cmd_alias_show` is ever declared and its row would read as stale.
     # The pairs are the ones `DISPATCHED_RENDERERS` (crates/cfgd/src/cli/tests.rs)
-    # holds, and `every_dispatched_renderer_has_a_coverage_row` pins the two lists
-    # against each other.
+    # holds. `every_dispatched_renderer_has_a_coverage_row` reads the assignment
+    # below and asserts the two sets are equal, so a pair added to one list and
+    # not the other fails that test.
     dispatched_renderers="alias_show:cmd_config_get"
     for pair in $dispatched_renderers; do
         row="${pair%%:*}"
