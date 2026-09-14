@@ -133,14 +133,25 @@ impl ColorChoice {
             // (the stdout answer) styles `cfgd apply 2> log` into the log file
             // and strips `cfgd apply | tee log` on a live terminal — both
             // backwards.
+            //
+            // `-o yaml` is the exception, and asks STDOUT: its payload is the
+            // only thing a colour decision can reach, and that payload goes to
+            // stdout. Asking stderr there would highlight `cfgd status -o yaml
+            // > out.yaml` into the file whenever the terminal happened to be
+            // the error channel.
             Self::Auto => {
-                console::colors_enabled_stderr() && !colors_must_be_disabled(output_format)
+                let channel = if matches!(output_format, OutputFormat::Yaml) {
+                    console::colors_enabled()
+                } else {
+                    console::colors_enabled_stderr()
+                };
+                channel && !colors_must_be_disabled(output_format)
             }
             // An explicit request outranks `NO_COLOR` / `TERM=dumb` (the
             // convention is a default, not a veto) but never outranks the
-            // structured-output gate: an escape inside a JSON string field is
+            // machine-contract gate: an escape inside a JSON string field is
             // corrupt data, not a styling preference.
-            Self::Always => !output_format.is_structured(),
+            Self::Always => !output_format.refuses_color(),
             Self::Never => false,
         }
     }
@@ -148,18 +159,20 @@ impl ColorChoice {
 
 /// Whether a `Printer` for `output_format` must refuse colour outright.
 ///
-/// Honors `NO_COLOR` / `TERM=dumb`, and additionally disables colour under
-/// structured output (Json / Yaml / Template / Jsonpath / Name) so a role-styled
-/// emission cannot leak ANSI escapes into payload string fields — the contract is
-/// enforced at construction, not by every caller remembering to wrap with
-/// `with_data`.
+/// Honors `NO_COLOR` / `TERM=dumb`, and additionally disables colour under the
+/// formats whose payload is a machine contract (Json / Template / Jsonpath /
+/// Name) so a role-styled emission cannot leak ANSI escapes into payload string
+/// fields — the contract is enforced at construction, not by every caller
+/// remembering to wrap with `with_data`. `-o yaml` is not one of them
+/// ([`OutputFormat::refuses_color`]): its payload is syntax-highlighted when
+/// this decision comes back false.
 ///
 /// Split out of [`ColorChoice::resolve`] so the decision is testable without
 /// reading `console`'s colour flags at all.
 pub(crate) fn colors_must_be_disabled(output_format: &OutputFormat) -> bool {
     std::env::var_os("NO_COLOR").is_some()
         || std::env::var_os("TERM").is_some_and(|t| t == "dumb")
-        || output_format.is_structured()
+        || output_format.refuses_color()
 }
 
 /// Stamp what THIS terminal can show onto `theme` iff colour resolved on: OSC 8
@@ -436,6 +449,13 @@ impl Printer {
     /// A verb whose own `--show-values` was passed unmasks regardless.
     pub fn masks_env_values(&self) -> bool {
         self.mask_env_values.masks()
+    }
+
+    /// This run's masking policy itself, for a surface that renders one NAMED
+    /// value at a time and so has to ask about that name rather than about
+    /// every value at once (`cli::EnvValueMasking`).
+    pub fn mask_env_values(&self) -> crate::config::MaskEnvValues {
+        self.mask_env_values
     }
 
     pub fn verbosity(&self) -> Verbosity {
@@ -1074,6 +1094,21 @@ impl Printer {
             let json = doc.data_or_self_json();
             *cap.doc_json.lock().unwrap_or_else(|e| e.into_inner()) = Some(json);
         }
+        // `-o yaml`'s payload is the one structured format that carries colour,
+        // so it is the one that leaves through the highlighter rather than
+        // through the raw writer. The bytes under the escapes are the same
+        // `yaml_payload` the plain path writes; with the decision off nothing
+        // is highlighted and the raw arm below writes them verbatim.
+        if self.colors && matches!(self.output_format, OutputFormat::Yaml) {
+            let yaml = super::structured::yaml_payload(&doc, self.list_envelope);
+            for line in self
+                .renderer
+                .highlight_lines(&yaml, "yaml", &self.syntax_set)
+            {
+                self.sink_stdout.write_line(&line);
+            }
+            return;
+        }
         let handled = super::structured::emit_structured(
             self.sink_stdout.as_ref(),
             self.sink_stderr.as_ref(),
@@ -1646,6 +1681,12 @@ mod tests {
         assert!(!p.is_structured());
     }
 
+    /// The four formats whose payload is a machine contract carry no escape at
+    /// any terminal. `-o yaml` is not among them: its bytes are a document a
+    /// person reads as often as a script parses, so it follows the ordinary
+    /// colour decision — which is what
+    /// `a_yaml_payload_is_highlighted_when_the_colour_decision_is_on_and_plain_when_it_is_off`
+    /// renders both sides of.
     #[test]
     #[serial]
     fn structured_output_disables_colors() {
@@ -1655,7 +1696,6 @@ mod tests {
 
         for fmt in [
             OutputFormat::Json,
-            OutputFormat::Yaml,
             OutputFormat::Name,
             OutputFormat::Jsonpath("{.foo}".into()),
             OutputFormat::Template("{{ . }}".into()),
@@ -1665,6 +1705,10 @@ mod tests {
                 "colors should be disabled for {fmt:?}"
             );
         }
+        assert!(
+            !colors_must_be_disabled(&OutputFormat::Yaml),
+            "-o yaml takes the ordinary colour decision rather than the veto"
+        );
     }
 
     #[test]
@@ -2786,6 +2830,85 @@ mod tests {
         assert!(
             diagnostics.contains("Checking packages"),
             "the failing step went unreported: {diagnostics:?}"
+        );
+    }
+
+    /// `-o yaml` renders the SAME document as the plain path, wearing escapes.
+    ///
+    /// The two arms are one payload: a reader piping the bytes to `yq` and a
+    /// reader looking at them on a terminal must be reading the same YAML, so
+    /// the coloured capture is asserted to strip back to the plain one rather
+    /// than merely to contain escapes.
+    #[test]
+    fn a_yaml_payload_is_highlighted_when_the_colour_decision_is_on_and_plain_when_it_is_off() {
+        let payload = serde_json::json!({"name": "nvim", "packages": ["neovim"]});
+        let render = |colors: bool| {
+            let (printer, buf) = Printer::for_test_with_theme_and_format(
+                super::super::Theme::from_preset("dracula"),
+                OutputFormat::Yaml,
+                colors,
+            );
+            printer.emit(super::super::doc::Doc::new().with_data(payload.clone()));
+            // raw-capture-ok: the escapes ARE this test's subject, and `captured_text` strips exactly them
+            buf.lock().unwrap().clone()
+        };
+        let plain = render(false);
+        let colored = render(true);
+        assert!(
+            !plain.contains('\u{1b}'),
+            "a colourless `-o yaml` run puts plain bytes on stdout: {plain:?}"
+        );
+        assert!(
+            colored.contains('\u{1b}'),
+            "a coloured `-o yaml` run highlights its payload: {colored:?}"
+        );
+        assert_eq!(
+            console::strip_ansi_codes(&colored),
+            plain,
+            "the highlighted payload must strip back to the plain one byte for byte"
+        );
+        assert!(
+            plain.contains("name: nvim"),
+            "the payload is the YAML: {plain:?}"
+        );
+    }
+
+    /// The colour veto covers the machine-contract formats and NOT `-o yaml`.
+    ///
+    /// The environment is pinned because the veto reads `NO_COLOR` / `TERM`:
+    /// left ambient, the YAML half would pass or fail by how the suite was
+    /// started rather than by what the format says.
+    #[test]
+    #[serial]
+    fn the_colour_veto_names_the_machine_contract_formats_and_leaves_yaml_out() {
+        let _no_color = crate::test_helpers::EnvVarGuard::unset("NO_COLOR");
+        let _term = crate::test_helpers::EnvVarGuard::set("TERM", "xterm-256color");
+        assert!(
+            !colors_must_be_disabled(&OutputFormat::Yaml),
+            "`-o yaml` follows the ordinary colour decision"
+        );
+        for refusing in [
+            OutputFormat::Json,
+            OutputFormat::Name,
+            OutputFormat::Jsonpath("{.x}".into()),
+            OutputFormat::Template("{{.x}}".into()),
+        ] {
+            assert!(
+                colors_must_be_disabled(&refusing),
+                "{refusing:?} must refuse colour outright"
+            );
+        }
+        assert!(
+            ColorChoice::Always.resolve(&OutputFormat::Yaml),
+            "`--color always -o yaml` highlights"
+        );
+        assert!(
+            !ColorChoice::Always.resolve(&OutputFormat::Json),
+            "`--color always -o json` still refuses: an escape in a JSON field is corrupt data"
+        );
+        assert!(
+            !ColorChoice::Never.resolve(&OutputFormat::Yaml),
+            "`--color never -o yaml` puts plain bytes on stdout"
         );
     }
 }

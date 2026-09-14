@@ -2165,8 +2165,11 @@ fn the_plan_json_payload_is_the_same_bytes_under_a_preset_that_overrides_the_arr
     let scope = ScopeReport::capture(&plan, false);
     let decisions = no_decisions();
     let render = |theme: cfgd_core::output::Theme| {
-        let (printer, buf) =
-            Printer::for_test_with_theme_and_format(theme, cfgd_core::output::OutputFormat::Json);
+        let (printer, buf) = Printer::for_test_with_theme_and_format(
+            theme,
+            cfgd_core::output::OutputFormat::Json,
+            false,
+        );
         let ctx = reconciler::RunContext {
             title: reconciler::RunTitle::Plan,
             config_path: None,

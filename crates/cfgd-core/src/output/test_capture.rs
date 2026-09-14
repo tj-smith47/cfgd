@@ -229,21 +229,29 @@ impl Printer {
         (p, buf)
     }
 
-    /// Like `for_test_with_theme` but also pins the output format, for a test
-    /// proving a structured payload is byte-identical across themes/presets —
-    /// `for_test_with_theme` alone always answers `Table`, so the JSON branch
-    /// a `-o json` command takes is unreachable through it.
+    /// Like `for_test_with_theme` but also pins the output format and the
+    /// colour decision, for a test proving a structured payload is
+    /// byte-identical across themes/presets — `for_test_with_theme` alone
+    /// always answers `Table`, so the JSON branch a `-o json` command takes is
+    /// unreachable through it.
+    ///
+    /// `colors` is the axis `-o yaml` needs: it is the one structured format
+    /// whose payload carries colour, so a claim about its highlighted bytes has
+    /// to be able to ask for them. Every other format refuses colour at
+    /// construction whatever is passed here.
     pub fn for_test_with_theme_and_format(
         theme: Theme,
         format: OutputFormat,
+        colors: bool,
     ) -> (Self, Arc<Mutex<String>>) {
         let buf = Arc::new(Mutex::new(String::new()));
+        let colors = colors && !format.refuses_color();
         let p = build_test_printer(
             buf.clone(),
             theme,
             Verbosity::Quiet,
             format,
-            false,
+            colors,
             None,
             None,
         );
@@ -719,6 +727,18 @@ mod tests {
                 .0
                 .colors(),
             "the one colour-ON capture constructor must actually carry colour"
+        );
+        assert!(
+            Printer::for_test_with_theme_and_format(Theme::default(), OutputFormat::Yaml, true)
+                .0
+                .colors(),
+            "`-o yaml` carries colour, so the format capture must be able to ask for it"
+        );
+        assert!(
+            !Printer::for_test_with_theme_and_format(Theme::default(), OutputFormat::Json, true)
+                .0
+                .colors(),
+            "a format whose payload is a machine contract refuses colour whatever a test asks for"
         );
     }
 
