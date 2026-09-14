@@ -38,7 +38,7 @@ fn fix_missing_tools(printer: &Printer) {
     if missing.is_empty() {
         return;
     }
-    let section = printer.section("Install missing tools");
+    let section = printer.section("Install Missing Tools");
     // The install commits live rows of its own through the printer, which is a
     // top-level emit while this section is open unless the depth is inherited.
     let _inherit = printer.depth_inheritance();

@@ -466,6 +466,7 @@ fn cmd_generate_scan_only(printer: &Printer, args: &GenerateArgs) -> anyhow::Res
             sec.kv("Exports", shell_result.exports.len().to_string());
         }
         if !shell_result.path_additions.is_empty() {
+            // name-row-ok: `PATH` is the environment variable's own name.
             sec.kv(
                 "PATH Additions",
                 shell_result.path_additions.len().to_string(),

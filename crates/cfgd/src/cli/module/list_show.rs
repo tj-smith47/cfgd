@@ -285,6 +285,7 @@ pub fn build_module_show_doc(
         // and its integrity hash are what the lockfile REMEMBERS, so they
         // belong to `cfgd status <module>` with the rest of the recorded state.
         rows.push(KvPair::new("Source", "remote"));
+        // acronym-ok: URL is an acronym, which Title Case keeps capitalized.
         rows.push(KvPair::new("URL", &entry.url));
         rows.push(KvPair::new("Pinned Ref", &entry.pinned_ref));
     } else {

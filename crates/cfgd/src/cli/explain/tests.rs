@@ -197,7 +197,7 @@ fn explain_cmd_no_args_lists_types() {
     printer.flush();
     let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
-        output.contains("Available resource types"),
+        output.contains("Available Resource Types"),
         "expected header listing resource types, got: {output}"
     );
     assert!(

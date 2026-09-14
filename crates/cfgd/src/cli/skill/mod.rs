@@ -8,7 +8,7 @@
 use std::path::PathBuf;
 
 use anyhow::anyhow;
-use cfgd_core::output::{Doc, Printer, Role, collapse_to_subject_line};
+use cfgd_core::output::{Doc, KvPair, Printer, Role, collapse_to_subject_line, renderer::Table};
 use cfgd_core::providers::skill::{
     Detection, InstalledSkill, SkillProvider, SkillScope, all_skill_providers,
 };
@@ -425,33 +425,37 @@ pub fn cmd_skill_list(printer: &Printer, global: bool) -> anyhow::Result<()> {
         installed.extend(listed);
     }
 
-    let heading = format!("Installed skills ({} scope)", scope_word(scope));
+    let doc = Doc::new()
+        .heading("Installed Skills")
+        .kv_rows(vec![KvPair::new("Scope", scope_word(scope))]);
     let doc = if installed.is_empty() {
-        Doc::new().section(heading, |sec| {
-            sec.status_with(Role::Info, "No skills installed".to_string(), |f| f)
-        })
+        doc.status(Role::Info, "No skills installed")
     } else {
-        Doc::new().section(heading, |mut sec| {
-            for s in &installed {
-                let version = s.cfgd_version.as_deref().unwrap_or("unknown");
-                let subject = format!(
-                    "{}/{}: {} ({})",
-                    s.provider,
-                    s.kind.as_str(),
-                    cfgd_core::fold_home_in_text(&cfgd_core::to_posix_string(&s.path)),
-                    version
-                );
-                let role = if s.stale { Role::Warn } else { Role::Ok };
-                sec = sec.status_with(role, subject, |f| {
-                    if s.stale {
-                        f.detail("stale — run `cfgd skill update`".to_string())
-                    } else {
-                        f
-                    }
-                });
-            }
-            sec
-        })
+        let mut table = Table::new(["Provider", "Kind", "Path", "Version"]);
+        for s in &installed {
+            table = table.row([
+                s.provider.clone(),
+                s.kind.as_str().to_string(),
+                cfgd_core::fold_home_in_text(&cfgd_core::to_posix_string(&s.path)),
+                s.cfgd_version
+                    .clone()
+                    .unwrap_or_else(|| cfgd_core::ABSENT.to_string()),
+            ]);
+        }
+        let doc = doc.table(table.without_unfillable_columns());
+        // The Version column states the stamp each skill was rendered at; what
+        // to DO about one older than this cfgd is the closing hint's to say,
+        // once for the listing rather than once per row.
+        let stale = installed.iter().filter(|s| s.stale).count();
+        if stale == 0 {
+            doc
+        } else {
+            doc.hint(format!(
+                "{} rendered by an older cfgd; run `cfgd skill update` to refresh {}",
+                cfgd_core::pluralize(stale, "skill"),
+                if stale == 1 { "it" } else { "them" }
+            ))
+        }
     };
 
     let payload = SkillListPayload {

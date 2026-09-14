@@ -12,7 +12,7 @@ pub fn build_profile_list_doc(entries: &[super::ProfileListEntry], wide: bool) -
         return doc.with_data(entries);
     }
 
-    if wide {
+    let table = if wide {
         let mut t = Table::new(["Profile", "Active", "Inherits", "Modules"]);
         for e in entries {
             t = t.row([
@@ -24,18 +24,29 @@ pub fn build_profile_list_doc(entries: &[super::ProfileListEntry], wide: bool) -
                 e.module_count.to_string(),
             ]);
         }
-        doc = doc.table(t.without_unfillable_columns());
+        t
     } else {
-        for entry in entries {
-            if entry.active {
-                doc = doc.status(Role::Ok, format!("{} (active)", entry.name));
-            } else {
-                doc = doc.status(Role::Info, entry.name.clone());
+        // The narrow table carries every fact the wide one does, folded into
+        // one cell: a profile's parents and its module count both answer "what
+        // does this profile bring", and neither is worth its own column at 80.
+        let mut t = Table::new(["Profile", "Active", "Contents"]);
+        for e in entries {
+            let mut contents = cfgd_core::pluralize(e.module_count, "module");
+            if let Some(inherits) = e.inherits.as_deref() {
+                contents.push_str(", inherits ");
+                contents.push_str(inherits);
             }
+            t = t.row([
+                e.name.clone(),
+                cfgd_core::yes_no(Some(e.active)).to_string(),
+                contents,
+            ]);
         }
-    }
+        t
+    };
 
-    doc.with_data(entries)
+    doc.table(table.without_unfillable_columns())
+        .with_data(entries)
 }
 
 /// Doc emitted when the profiles directory is absent.

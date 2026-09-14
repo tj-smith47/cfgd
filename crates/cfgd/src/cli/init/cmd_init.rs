@@ -47,6 +47,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
     // through a bound `SectionGuard`.
     // heading-first-ok: the clone paints its own live window beneath the
     // committed header, so this frame reports the wait it opened
+    // name-row-ok: `cfgd` is the product's own name, lowercase everywhere.
     let init_section = printer.section("Initialize cfgd");
     // The clone below runs inside a live output window, which paints beneath
     // the last committed line — a heading still deferred to its first status

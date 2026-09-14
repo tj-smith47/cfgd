@@ -756,7 +756,8 @@ fn push_tree_rows(rows: &mut Vec<CommandPair>, fields: &[&FieldNode], depth: usi
 pub fn build_explain_index_doc() -> Doc {
     let schemas = all_schemas();
     let outputs: Vec<ExplainOutput> = schemas.iter().map(schema_to_output).collect();
-    let mut table = Table::new(["NAME", "API/KIND", "LOCATION"]);
+    // acronym-ok: API is an acronym, which Title Case keeps capitalized.
+    let mut table = Table::new(["Name", "API/Kind", "Location"]);
     for s in schemas {
         table = table.row([
             s.name.clone(),
@@ -765,7 +766,7 @@ pub fn build_explain_index_doc() -> Doc {
         ]);
     }
     Doc::new()
-        .heading("Available resource types")
+        .heading("Available Resource Types")
         .table(table.without_unfillable_columns())
         .hint("Run `cfgd explain <resource>` for details")
         .hint("Run `cfgd explain <resource>.<field>` to drill into a field")
@@ -792,6 +793,7 @@ pub fn build_explain_schema_doc(schema: &ResourceSchema, recursive: bool) -> Doc
             KvPair::new("Location", schema.location.as_str()),
             docs_row(&schema.docs, schema.docs_url()),
         ])
+        // name-row-ok: `spec` is the YAML key these fields hang off.
         .section("Fields (under spec)", |s| {
             append_fields(s, &fields, recursive)
         });

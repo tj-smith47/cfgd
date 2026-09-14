@@ -5,6 +5,7 @@ use cfgd_core::output::{Doc, Printer, Role, renderer::Table};
 /// so callers can assemble entries from disk and tests can drive the renderer
 /// directly without touching the filesystem.
 pub fn build_alias_list_doc(entries: &[AliasListEntry]) -> Doc {
+    // acronym-ok: CLI is an acronym, which Title Case keeps capitalized.
     let mut doc = Doc::new().heading("CLI Aliases");
 
     if entries.is_empty() {
@@ -27,6 +28,7 @@ pub fn build_alias_list_doc(entries: &[AliasListEntry]) -> Doc {
 pub fn build_alias_list_no_config_doc() -> Doc {
     let empty: Vec<AliasListEntry> = Vec::new();
     Doc::new()
+        // acronym-ok: CLI is an acronym, which Title Case keeps capitalized.
         .heading("CLI Aliases")
         .status(Role::Info, "No config file found")
         .with_data(&empty)

@@ -1310,6 +1310,7 @@ pub(crate) async fn cmd_version_async(
             .kv("Client", env!("CARGO_PKG_VERSION"))
             .kv("Server (k8s)", &server_label)
             .kv("Operator", &operator_label)
+            // acronym-ok: CSI is an acronym, which Title Case keeps capitalized.
             .kv("CSI", &csi_label)
             .with_data(serde_json::json!({
                 "version": env!("CARGO_PKG_VERSION"),

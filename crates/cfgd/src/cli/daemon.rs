@@ -197,6 +197,7 @@ pub fn build_daemon_status_doc(
                     modules: &s.modules,
                     arrow,
                 });
+            // acronym-ok: PID is an acronym, which Title Case keeps capitalized.
             rows.push(KvPair::new("PID", s.pid.to_string()));
             // A measured duration, not a declared one: the intervals below
             // are the operator's own literals and stay verbatim.

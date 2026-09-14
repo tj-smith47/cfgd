@@ -1,5 +1,5 @@
-Available resource types
-NAME                 API/KIND                              LOCATION                          
+Available Resource Types
+Name                 API/Kind                              Location                          
 ─────────────────────────────────────────────────────────────────────────────────────────────
 Module               cfgd.io/v1alpha1/Module               modules/<name>/module.yaml
 Profile              cfgd.io/v1alpha1/Profile              profiles/<name>/profile.yaml

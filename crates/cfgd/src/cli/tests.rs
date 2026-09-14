@@ -6488,7 +6488,7 @@ fn execute_explain_no_resource() {
     super::execute(&cli, h.printer(), &super::paths::DirSources::all_default()).unwrap();
     let output = h.output();
     assert!(
-        output.contains("Available resource types")
+        output.contains("Available Resource Types")
             || output.contains("NAME")
             || output.contains("config"),
         "explain (all resources) should list available resource types, got: {output}"
@@ -16781,6 +16781,9 @@ const TITLE_SMALL_WORDS: &[&str] = &[
 /// that is not the first. A word opening with a non-letter (`(k8s)`, `.sops`)
 /// is left to its own spelling.
 fn is_title_case(label: &str) -> bool {
+    if shouts(label) {
+        return false;
+    }
     label.split_whitespace().enumerate().all(|(i, word)| {
         let Some(first) = word.chars().next() else {
             return true;
@@ -16790,6 +16793,21 @@ fn is_title_case(label: &str) -> bool {
         }
         i > 0 && TITLE_SMALL_WORDS.contains(&word.trim_end_matches(':'))
     })
+}
+
+/// Whether `label` holds a run of three or more letters in all caps.
+///
+/// `NAME  API/KIND  LOCATION` reads as a different product from the
+/// `Last Sync` two columns over, and the first-letter rule above cannot tell
+/// them apart: every word of a shouted header is already capitalized. Judged on
+/// each alphabetic run rather than on whitespace-separated words, so the
+/// `KIND` half of `API/KIND` is reached. Two letters are left alone — `ID` and
+/// `OS` are how English writes those — and a genuine acronym in an otherwise
+/// Title Case label takes the `// acronym-ok:` marker.
+fn shouts(label: &str) -> bool {
+    label
+        .split(|c: char| !c.is_alphabetic())
+        .any(|run| run.chars().count() >= 3 && run.chars().all(|c| c.is_uppercase()))
 }
 
 /// Whether line `n` itself is covered by `marker`: on the line, or anywhere in
@@ -16953,13 +16971,38 @@ fn rendered_labels(body: &str) -> Vec<(usize, String)> {
     labels
 }
 
+/// Every heading and section head a CLI source spells as a literal.
+///
+/// Kept apart from [`rendered_labels`] because a heading is not a data column:
+/// it names the block below it rather than a fact beside it, so the walks
+/// judging what a VALUE reads as have no business seeing one. Both gathers feed
+/// the Title Case rule, which governs the whole left column a reader scans.
+fn rendered_headings(body: &str) -> Vec<(usize, String)> {
+    let mut labels: Vec<(usize, String)> = Vec::new();
+    for opener in [".heading(", ".section("] {
+        for (at, _) in body.match_indices(opener) {
+            let rest = &body[at + opener.len()..];
+            if let Some(lit) = rest
+                .trim_start()
+                .strip_prefix('"')
+                .and_then(|r| r.split('"').next())
+            {
+                labels.push((at, lit.to_string()));
+            }
+        }
+    }
+    labels
+}
+
 #[test]
 fn every_rendered_label_is_title_case() {
     let mut offenders = Vec::new();
     let mut seen: Vec<String> = Vec::new();
     for (path, body) in cli_production_sources() {
         let lines: Vec<&str> = body.lines().collect();
-        for (at, label) in rendered_labels(&body) {
+        let mut gathered = rendered_labels(&body);
+        gathered.extend(rendered_headings(&body));
+        for (at, label) in gathered {
             if label.is_empty() {
                 continue;
             }
@@ -16970,6 +17013,7 @@ fn every_rendered_label_is_title_case() {
             let n = body[..at].matches('\n').count();
             if lines[n].trim_start().starts_with("//")
                 || label_hatched(&lines, n, "// name-row-ok:")
+                || (shouts(&label) && label_hatched(&lines, n, "// acronym-ok:"))
             {
                 continue;
             }
@@ -16979,7 +17023,13 @@ fn every_rendered_label_is_title_case() {
     // One witness per composer shape: a `.kv` key, a `KvPair`, a tuple pushed
     // into a row vector, and a table header. A regex that quietly stopped
     // matching one of the four would otherwise pass by finding nothing.
-    for witness in ["Scope", "Pinned Ref", "Drift Count", "New Integrity"] {
+    for witness in [
+        "Scope",
+        "Pinned Ref",
+        "Drift Count",
+        "New Integrity",
+        "Installed Skills",
+    ] {
         assert!(
             seen.iter().any(|l| l == witness),
             "the walk no longer reaches the composer that renders {witness:?} \
@@ -16996,6 +17046,11 @@ fn every_rendered_label_is_title_case() {
     assert!(
         !is_title_case("Reconcile interval") && is_title_case("Reconcile Interval"),
         "the case rule itself must separate the two spellings it exists to judge"
+    );
+    assert!(
+        !is_title_case("NAME") && !is_title_case("API/KIND") && is_title_case("OS Version"),
+        "the shout rule itself must separate a shouted header from a \
+         two-letter word English writes in caps"
     );
 }
 
@@ -38681,7 +38736,7 @@ fn doctor_fix_installs_every_missing_tool_through_the_tool_table() {
     }
     let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
-        output.contains("Install missing tools"),
+        output.contains("Install Missing Tools"),
         "the repair says what it did before the report it repaired for: {output}"
     );
 }

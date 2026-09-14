@@ -746,6 +746,9 @@ pub fn cmd_module_search(cli: &Cli, printer: &Printer, query: &str) -> anyhow::R
         .map(|m| &m.registries[..])
         .unwrap_or(&[]);
     if registries.is_empty() {
+        // The same element type a found listing serializes, so one payload shape
+        // answers both outcomes.
+        let no_results: Vec<super::ModuleSearchResult> = Vec::new();
         printer.emit(
             Doc::new()
                 // heading-first-ok: an early return with nothing to search and
@@ -754,7 +757,7 @@ pub fn cmd_module_search(cli: &Cli, printer: &Printer, query: &str) -> anyhow::R
                 .heading_title("Search Modules", query)
                 .status(Role::Info, NO_REGISTRIES_MSG)
                 .hint_commands("Add a registry:", &["cfgd module registry add <git-url>"])
-                .with_data(serde_json::json!([])),
+                .with_data(&no_results),
         );
         return Ok(());
     }
@@ -1178,12 +1181,15 @@ pub fn cmd_module_registry_rename(
 }
 
 pub fn cmd_module_registry_list(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
+    // An empty listing serializes the same element type a populated one does, so a
+    // consumer reading the payload sees one shape whether or not a registry exists.
+    let no_registries: Vec<super::RegistryListEntry> = Vec::new();
     if !cli.config.exists() {
         printer.emit(
             Doc::new()
                 .heading("Module Registries")
                 .status(Role::Info, "No config found")
-                .with_data(serde_json::json!([])),
+                .with_data(&no_registries),
         );
         return Ok(());
     }
@@ -1202,7 +1208,7 @@ pub fn cmd_module_registry_list(cli: &Cli, printer: &Printer) -> anyhow::Result<
                 .heading("Module Registries")
                 .status(Role::Info, NO_REGISTRIES_MSG)
                 .hint_commands("Add one:", &["cfgd module registry add <git-url>"])
-                .with_data(serde_json::json!([])),
+                .with_data(&no_registries),
         );
         return Ok(());
     }
@@ -1215,6 +1221,7 @@ pub fn cmd_module_registry_list(cli: &Cli, printer: &Printer) -> anyhow::Result<
         })
         .collect();
 
+    // acronym-ok: URL is an acronym, which Title Case keeps capitalized.
     let mut t = cfgd_core::output::renderer::Table::new(["Name", "URL"]);
     for e in &entries {
         t = t.row([e.name.clone(), e.url.clone()]);
