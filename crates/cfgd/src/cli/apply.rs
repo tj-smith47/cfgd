@@ -161,21 +161,9 @@ pub fn run_apply(
     };
 
     // --from: clone from git source or use local path as config directory.
-    // When --config points to a non-default path, use its parent as the clone target
-    // so the cloned config ends up where the user expects.
     if let Some(from) = &args.from {
-        let cli_config_dir = cli.config.parent().map(|p| p.to_path_buf());
-        let default_dir = cfgd_core::default_config_dir();
-        let target = if let Some(ref dir) = cli_config_dir {
-            if *dir != default_dir && !cli.config.exists() {
-                Some(dir.as_path())
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-        init::resolve_from(from, target, "master", printer)?;
+        let target = init::from_destination(&cli.config);
+        init::resolve_from(from, target.as_deref(), "master", printer)?;
     }
 
     let dry_run = args.dry_run;

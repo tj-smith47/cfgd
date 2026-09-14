@@ -19,18 +19,8 @@ pub fn cmd_plan(
 
     // --from: mirror cmd_apply so `plan` can be pointed at a git source or local path.
     if let Some(from) = &args.from {
-        let cli_config_dir = cli.config.parent().map(|p| p.to_path_buf());
-        let default_dir = cfgd_core::default_config_dir();
-        let target = if let Some(ref dir) = cli_config_dir {
-            if *dir != default_dir && !cli.config.exists() {
-                Some(dir.as_path())
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-        init::resolve_from(from, target, "master", printer)?;
+        let target = init::from_destination(&cli.config);
+        init::resolve_from(from, target.as_deref(), "master", printer)?;
     }
 
     let config_dir = config_dir(cli);

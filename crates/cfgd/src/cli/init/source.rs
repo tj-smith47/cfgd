@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use cfgd_core::PathDisplayExt;
 use cfgd_core::output::{Printer, Role};
@@ -31,6 +31,21 @@ pub(super) fn is_clonable_source(value: &str) -> bool {
     path.join(".git").exists()
 }
 
+/// The directory a `--from` run materialises into, read off the `--config` the
+/// caller gave: `None` when that is the default config directory, which
+/// [`resolve_from`] then refuses to write into unless it is free.
+///
+/// The path is absolutized first, so a relative `--config cfgd.yaml` names the
+/// working directory rather than an empty parent. Whether the file already
+/// exists is deliberately not part of the answer: reading an existing
+/// `--config` as "no destination given" is what sent a run pointed at a
+/// scratch directory into the invoking user's own config directory instead.
+pub(crate) fn from_destination(config: &Path) -> Option<PathBuf> {
+    let config = cfgd_core::absolutize_path(config);
+    let dir = config.parent()?;
+    (dir != cfgd_core::default_config_dir()).then(|| dir.to_path_buf())
+}
+
 /// Resolve a --from value to a config directory path.
 /// Git sources (URLs or local repos) are cloned to the target dir.
 /// Plain local paths are used directly (must contain cfgd.yaml).
@@ -42,9 +57,14 @@ pub(crate) fn resolve_from(
 ) -> anyhow::Result<std::path::PathBuf> {
     let from = &*cfgd_core::resolve_repo_reference(from);
     if is_clonable_source(from) {
-        let dest = target
-            .map(|p| p.to_path_buf())
-            .unwrap_or_else(cfgd_core::default_config_dir);
+        let dest = match target {
+            Some(path) => path.to_path_buf(),
+            None => {
+                let default = cfgd_core::default_config_dir();
+                refuse_occupied_default_destination(&default)?;
+                default
+            }
+        };
         if !dest.join("cfgd.yaml").exists() {
             std::fs::create_dir_all(&dest)?;
             clone_into(&dest, from, branch, printer)?;
@@ -72,6 +92,51 @@ pub(crate) fn resolve_from(
         }
         Ok(path)
     }
+}
+
+/// What the default config directory was found to hold, worded for the refusal
+/// below, or `None` when it is free for this run to write into.
+///
+/// The three findings are ordered by what the reader has to act on first: a
+/// symlink is reported as a symlink even when it points at a config repository,
+/// because the directory that would be written is not the one the path names.
+fn occupied_default_destination(dest: &Path) -> Option<&'static str> {
+    if std::fs::symlink_metadata(dest).is_ok_and(|meta| meta.file_type().is_symlink()) {
+        return Some("it is a symlink");
+    }
+    if dest.join(cfgd_core::config::CONFIG_FILENAME).exists() {
+        return Some("it already holds a cfgd.yaml");
+    }
+    match std::fs::read_dir(dest) {
+        Ok(mut entries) => entries.next().map(|_| "it is not empty"),
+        // An unreadable directory is a directory this run cannot prove is
+        // free, and the whole point of the check is that the cost of being
+        // wrong is somebody's config repository.
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+        Err(_) => Some("it could not be read"),
+    }
+}
+
+/// Refuse to write a `--from` source into the default config directory when
+/// the caller named no destination and that directory is already somebody's.
+///
+/// A verb that materialises a config from `--from` resolves a missing
+/// destination to [`cfgd_core::default_config_dir`], and the only guard there
+/// used to be a `cfgd.yaml` at the top of it: a directory holding a git
+/// checkout, a symlink into one, or anything else at all was cloned straight
+/// over. The `cfgd.yaml` arm was no guard either — it skipped the clone and
+/// handed the directory back, so `apply --from` went on to apply whatever
+/// config it found against the real machine.
+fn refuse_occupied_default_destination(dest: &Path) -> anyhow::Result<()> {
+    let Some(finding) = occupied_default_destination(dest) else {
+        return Ok(());
+    };
+    anyhow::bail!(
+        "Refusing to write into the default config directory {}: {finding}. \
+         Name a destination (`cfgd init <dir> --from <source>`), or point `--config` \
+         at the config you want this run to use.",
+        cfgd_core::fold_home_in_text(&dest.display_posix())
+    )
 }
 
 /// The origin URL and HEAD commit a checkout is really at.

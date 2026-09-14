@@ -109,8 +109,24 @@ repository reference: `cfgd apply --from`, `cfgd plan --from`,
 
 `init` never writes over a config directory that already has a `cfgd.yaml`: it
 reports `Already initialized at <dir>` and neither clones nor re-scaffolds. With
-`--from`, the run continues to the `--apply` / `--apply-module` step against the
-existing config; `--name` / `--theme` are applied as overrides.
+`--from` and a named destination, the run continues to the `--apply` /
+`--apply-module` step against the existing config; `--name` / `--theme` are
+applied as overrides.
+
+With `--from` and **no** destination named, the config lands in the default
+config directory (`~/.config/cfgd`, or `$XDG_CONFIG_HOME/cfgd`), and cfgd
+refuses when that directory is already somebody's — it holds a `cfgd.yaml`, it
+is not empty, or it is a symlink:
+
+```
+Error: Refusing to write into the default config directory ~/.config/cfgd: it
+already holds a cfgd.yaml. Name a destination (`cfgd init <dir> --from
+<source>`), or point `--config` at the config you want this run to use.
+```
+
+The refusal exits `1` and covers every verb that materialises a config from
+`--from`: `cfgd init`, `cfgd apply` and `cfgd plan`. `--config <dir>/cfgd.yaml`
+names the destination for the latter two, whether or not that file exists yet.
 
 See [bootstrap.md](bootstrap.md) for the full init flow.
 
