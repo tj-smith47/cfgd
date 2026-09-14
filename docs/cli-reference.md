@@ -750,6 +750,13 @@ column `cfgd source remove` looks a subscription's resources up by, so
 removing a source can offer to keep them (they become `local`) or take them off
 the machine. `-o json` carries it as `source` on every `managedResources[]` row.
 
+Some rows read `local` whatever delivered them. A generated env file, its rc
+line and the live session fold every layer into one surface, so no single
+source can claim them. A system setting a MODULE declares is folded in after
+the layer merge, as is a package list read out of a `Brewfile` or a
+`package.json`, so those name the layer only when a profile layer declares them
+too.
+
 The default module report is a summary: one count per declared surface, then
 what the scan found. `Status` leads the block. The report names no scope: you
 named the module on the command line, so restating it tells you only what you
