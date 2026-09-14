@@ -20,16 +20,17 @@ Set Shell "bash"
 Set FontFamily "FiraCode Nerd Font Mono"
 Set FontSize 15
 Set Width 1320
-# 1320x914 at font size 15 measures 125x46. The grid is sized to the tallest
-# single render below — the closing `cfgd status -o wide`, 40 rows including
-# the line that typed it, the plain dashboard's rows with the file aggregate
-# blown into one row per deployed file — plus six rows of headroom. That beat
-# is preceded by a clear, so it never shares the frame with the authoring loop
-# above it; the loop's own beats scroll as they go, each whole on screen while
-# it is the beat being read. A taller grid only pads the closing frame with
-# empty background. Beat 0b's `cfgd module show` is the one render taller
-# than this grid, at 94 rows, which is why that beat pages instead of
-# scrolling most of itself away unread.
+# 1320x914 at font size 15 measures 125x45, counted off the take's own frames
+# rather than from the pixel arithmetic, which lands a row high. The grid is
+# sized to the tallest single render below — the closing `cfgd status -o wide`,
+# 40 rows including the line that typed it, the plain dashboard's rows with the
+# file aggregate blown into one row per deployed file — plus five rows of
+# headroom. That beat is preceded by a clear, so it never shares the frame
+# with the authoring loop above it; the loop's own beats scroll as they go,
+# each whole on screen while it is the beat being read. A taller grid only
+# pads the closing frame with empty background. Beat 0b's `cfgd module show`
+# is the one render taller than this grid, at 90 rows, which is why that beat
+# pages instead of scrolling most of itself away unread.
 Set Height 914
 Set TypingSpeed 50ms
 Set Padding 20
@@ -83,9 +84,9 @@ Sleep 4600ms
 
 # Beat 0b: what the profile actually declares for one module, scripts
 # included, so beat 3's authoring lands against a visible inventory rather
-# than against a name. The render is 94 rows against this grid's 46, measured
-# off a real `cfgd module show nvim -s` in this image at 125x46, so it goes
-# through a pager instead of scrolling 48 rows off the top unread. `less`
+# than against a name. The render is 90 rows against this grid's 45, measured
+# off a real `cfgd module show nvim -s` in this image at 125x45, so it goes
+# through a pager instead of scrolling 45 rows off the top unread. `less`
 # rather than the `more` ubuntu:24.04 ships: `more` counts the SGR escapes as
 # printable width and breaks every highlighted script body at the wrong
 # column, so the demo image installs `less` for this beat. The report writes
@@ -100,12 +101,13 @@ Enter
 # The first page appears only once every manager has been enumerated, about 20s
 # in this image, so the wait is on that page rather than on a clock.
 Wait+Screen@60s /Module: nvim/
-# A full page is 45 rows, past the dwell rule's 6s ceiling either way.
+# `less` keeps the bottom row for its own prompt, so a full page is 44 rows,
+# past the dwell rule's 6s ceiling either way.
 Sleep 6s
 Space
 Sleep 6s
-# `less` clamps its last page to a full screen rather than advancing the six
-# rows that remain of the 94, so the third page repeats all but the tail of
+# `less` clamps its last page to a full screen rather than advancing the two
+# rows that remain of the 90, so the third page repeats all but the tail of
 # the second, ending on the closing `fi` with `(END)` on the bottom row. A
 # full screen holds the same 6s ceiling the two pages before it do. The
 # returning prompt is what proves the pager left, so the quit is waited on
@@ -122,16 +124,16 @@ Sleep 1s
 Type "cfgd explain profile.spec.packages"
 Enter
 Wait@60s /cfgd\$$/
-# 27 lines → 4.2s
-Sleep 4200ms
+# 28 lines → 4.3s
+Sleep 4300ms
 
 # Beat 2: recurse into one manager key — brew is not just a list, it carries
 # taps / formulae / casks / a Brewfile path, which is what beat 3 leans on.
 Type "cfgd explain profile.spec.packages.brew"
 Enter
 Wait@60s /cfgd\$$/
-# 14 lines → 2.9s
-Sleep 2900ms
+# 15 lines → 3.0s
+Sleep 3s
 
 # Beat 2b: the same field, recursively, so every shape under `brew` and the
 # field's own Docs row (a link on a terminal that opens one, the release-
@@ -226,7 +228,7 @@ Enter
 Type "cfgd status -o wide"
 Enter
 Wait@60s /cfgd\$$/
-# ~39 lines → 5.4s
+# 39 lines → 5.4s
 Sleep 5400ms
 
 # Closing hold — the last beat's own hold already covers reading it; this is
