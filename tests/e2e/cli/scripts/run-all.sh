@@ -9,6 +9,10 @@ echo "=== cfgd Exhaustive CLI Tests ==="
 export CLI_SCRATCH=$(mktemp -d)
 trap 'rm -rf "$CLI_SCRATCH"' EXIT
 
+# Every suite below runs the real binary as the invoking user: the redirect that
+# keeps it out of that user's own home goes in before the first one starts.
+source "$SCRIPT_DIR/../../common/scratch-home.sh"
+
 SUITES=(
     test-global.sh
     test-init.sh
@@ -63,13 +67,18 @@ echo ""
 echo "═══════════════════════════════════════"
 echo "  CLI E2E Summary"
 echo "═══════════════════════════════════════"
-if [ ${#FAILED_SUITES[@]} -eq 0 ]; then
+CONFIG_DIR_OK=0
+assert_real_config_dir_unchanged || CONFIG_DIR_OK=1
+
+if [ ${#FAILED_SUITES[@]} -eq 0 ] && [ "$CONFIG_DIR_OK" -eq 0 ]; then
     echo "  All suites passed!"
     exit 0
 else
-    echo "  FAILED suites:"
-    for s in "${FAILED_SUITES[@]}"; do
-        echo "    - $s"
-    done
+    if [ ${#FAILED_SUITES[@]} -gt 0 ]; then
+        echo "  FAILED suites:"
+        for s in "${FAILED_SUITES[@]}"; do
+            echo "    - $s"
+        done
+    fi
     exit 1
 fi

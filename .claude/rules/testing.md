@@ -44,6 +44,30 @@ raw `tokio::task::spawn_blocking` anywhere in workspace production code unless
 the call line (or the line above it) carries
 `// spawn-blocking-ok: <why the closure resolves no home paths>`.
 
+## No test run reaches the real config directory
+
+The shell suites under `tests/e2e/*/scripts/` run the real binary as the
+invoking user, so every path cfgd resolves from `$HOME` or `$XDG_*` is that
+user's own. `tests/e2e/common/scratch-home.sh` is the ONE redirect: it exports
+`HOME`, `USERPROFILE` and all four `XDG_*` directories into the run's scratch
+root, asserts the redirect took before anything else reads `$HOME`, and passes
+through only the seams a suite genuinely needs out of the real home
+(`CARGO_HOME`, `RUSTUP_HOME`, `KUBECONFIG`, `DOCKER_CONFIG`, the three
+`HELM_*`). It also fingerprints the real config directory at source time;
+`assert_real_config_dir_unchanged` re-reads it and every `run-all.sh` fails the
+whole run when it moved. `helpers.sh` sources it, so every suite reaches it, and
+`every_e2e_suite_runs_under_the_one_scratch_home` (`crates/cfgd/src/cli/tests.rs`)
+walks every `tests/e2e/*/scripts/run-all.sh` for both halves, so a new suite
+directory trips over the rule.
+
+The binary answers for its own half: a verb that materialises a config from
+`--from` with no destination named refuses to write into a default config
+directory that already holds a `cfgd.yaml`, is not empty, or is a symlink
+(`crates/cfgd/tests/from_default_dir_refusal.rs`). Both halves exist because
+neither one was enough: an e2e `apply --from` pointed at a scratch `--config`
+cloned its fixture into a developer's `~/.config/cfgd`, and `secret` wrote an
+age key beside it.
+
 ## A test never inherits its terminal shape from the ambient one
 
 `cargo test` from a pipe and `script -qec "cargo test" /dev/null` (a real pty)

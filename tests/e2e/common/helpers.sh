@@ -7,6 +7,9 @@ set -euo pipefail
 E2E_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO_ROOT="$(cd "$E2E_ROOT/../.." && pwd)"
 
+# Before anything below reads $HOME, a registry credential or a tool config.
+source "$E2E_ROOT/common/scratch-home.sh"
+
 CFGD_NAMESPACE="${CFGD_NAMESPACE:-cfgd-system}"
 
 PASS_COUNT=0
@@ -128,6 +131,12 @@ create_e2e_namespace() {
 
 cleanup_e2e() {
     echo "Cleaning up E2E resources for run $E2E_RUN_ID..."
+
+    # The scratch root holding this run's HOME, when scratch-home.sh made it
+    # rather than a suite that owns its own removal.
+    if [ -n "${E2E_SCRATCH_OWNED:-}" ]; then
+        rm -rf "$E2E_SCRATCH_OWNED"
+    fi
 
     # Stop refreshing the heartbeat first: once the run is tearing down, the
     # namespace SHOULD become reapable if cascade deletion is interrupted.

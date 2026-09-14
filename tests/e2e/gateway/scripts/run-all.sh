@@ -2,6 +2,9 @@
 # run-all.sh for gateway tests — sources domain files in same process
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# The real binary runs as the invoking user; keep it out of that user's home.
+source "$SCRIPT_DIR/../../common/scratch-home.sh"
 source "$SCRIPT_DIR/setup-gateway-env.sh"
 
 export GW_SCRATCH=$(mktemp -d)
@@ -26,4 +29,7 @@ source "$SCRIPT_DIR/test-admin.sh"
 source "$SCRIPT_DIR/test-streaming.sh"
 source "$SCRIPT_DIR/test-dashboard.sh"
 
-print_summary "Gateway Tests"
+SUMMARY_RC=0
+print_summary "Gateway Tests" || SUMMARY_RC=1
+assert_real_config_dir_unchanged || SUMMARY_RC=1
+exit "$SUMMARY_RC"

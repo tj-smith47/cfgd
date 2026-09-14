@@ -41886,3 +41886,69 @@ fn every_resolved_and_show_values_flag_reads_one_help() {
         "expected every verb rendering a declared env value to carry --show-values, found {show_values}"
     );
 }
+
+/// Every e2e suite runs under the one scratch-home redirect.
+///
+/// The shell suites run the real binary as the invoking user, so a suite whose
+/// `run-all.sh` does not put the redirect in force resolves `$HOME`, `$XDG_*`
+/// and therefore the default config directory to that user's own — which is how
+/// a `--from` fixture came to own a developer's `~/.config/cfgd`. The walk is
+/// over `run-all.sh` rather than the per-suite files because that is the one
+/// file a new suite directory cannot do without.
+#[test]
+fn every_e2e_suite_runs_under_the_one_scratch_home() {
+    const REDIRECT: &str = "common/scratch-home.sh";
+    // Named, so a renamed or deleted suite directory fails by name rather than
+    // shrinking the population the walk judges.
+    const KNOWN_SUITES: [&str; 5] = ["cli", "full-stack", "gateway", "node", "operator"];
+
+    let e2e = cfgd_core::test_helpers::workspace_root().join("tests/e2e");
+    let redirect = e2e.join("common/scratch-home.sh");
+    assert!(
+        redirect.is_file(),
+        "the one redirect every suite sources is gone: {}",
+        redirect.display()
+    );
+
+    let entries =
+        std::fs::read_dir(&e2e).unwrap_or_else(|e| panic!("cannot read {}: {e}", e2e.display()));
+    let mut found: Vec<String> = Vec::new();
+    let mut offenders: Vec<String> = Vec::new();
+    for entry in entries {
+        let entry = entry.unwrap_or_else(|e| panic!("cannot read an entry of tests/e2e: {e}"));
+        let run_all = entry.path().join("scripts/run-all.sh");
+        if !run_all.is_file() {
+            continue;
+        }
+        let suite = entry.file_name().to_string_lossy().into_owned();
+        // A read failure fails the walk; a suite that cannot be read is a suite
+        // whose redirect cannot be judged.
+        let body = walked_file_body(&run_all);
+        if !body.contains(REDIRECT) {
+            offenders.push(format!(
+                "tests/e2e/{suite}/scripts/run-all.sh — sources no {REDIRECT}"
+            ));
+        }
+        if !body.contains("assert_real_config_dir_unchanged") {
+            offenders.push(format!(
+                "tests/e2e/{suite}/scripts/run-all.sh — never checks the real config dir survived"
+            ));
+        }
+        found.push(suite);
+    }
+
+    found.sort();
+    for known in KNOWN_SUITES {
+        assert!(
+            found.iter().any(|s| s == known),
+            "tests/e2e/{known}/scripts/run-all.sh is gone — the walk now judges {found:?}"
+        );
+    }
+    assert!(
+        offenders.is_empty(),
+        "every e2e suite runs the real binary as the invoking user, so its run-all.sh \
+         sources tests/e2e/{REDIRECT} and fails the run when the real config directory \
+         changed:\n{}",
+        offenders.join("\n")
+    );
+}
