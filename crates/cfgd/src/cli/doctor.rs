@@ -114,6 +114,86 @@ pub struct DoctorConfigSource {
 
 /// Gather every doctor check into the stable JSON payload + display-only extras.
 /// The lib call to `modules::load_all_modules` takes a `Printer`.
+/// The per-module prerequisite rows, and the manager-to-modules routing the
+/// Package Managers section reads.
+///
+/// Both come out of ONE walk over the declared packages. The Package Managers
+/// section states how many modules route to each manager, which is the same
+/// question this walk already answered per module, so resolving it there a
+/// second time would ask every manager for its listing again — once per module
+/// package rather than once for the run. `doctor_resolves_a_two_module_walk_in_one_pass`
+/// pins the count.
+fn build_module_routes(
+    module_list: &[String],
+    all_modules: &std::collections::HashMap<String, cfgd_core::modules::LoadedModule>,
+    mgr_map: &std::collections::HashMap<String, &dyn cfgd_core::providers::PackageManager>,
+    platform: &Platform,
+    cx: Option<&cfgd_core::providers::PackageContext<'_>>,
+) -> (
+    Vec<DoctorModuleCheck>,
+    std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
+) {
+    let mut module_routes: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> =
+        std::collections::BTreeMap::new();
+
+    let module_checks: Vec<DoctorModuleCheck> = module_list
+        .iter()
+        .map(|mod_name| {
+            let Some(module) = all_modules.get(mod_name) else {
+                return DoctorModuleCheck {
+                    name: mod_name.clone(),
+                    valid: false,
+                    error: Some(format!("module {}", cfgd_core::Absence::NotFound)),
+                    managers: Vec::new(),
+                    unresolved: Vec::new(),
+                };
+            };
+            // First-seen order, which is the module's own package order: the
+            // row reads as the author listed them.
+            let mut order: Vec<String> = Vec::new();
+            let mut counts: std::collections::HashMap<String, usize> =
+                std::collections::HashMap::new();
+            let mut unresolved: Vec<String> = Vec::new();
+            for entry in &module.spec.packages {
+                match modules::resolve_package(entry, mod_name, platform, mgr_map, cx) {
+                    Ok(Some(resolved)) => {
+                        let count = counts.entry(resolved.manager.clone()).or_insert(0);
+                        if *count == 0 {
+                            order.push(resolved.manager.clone());
+                        }
+                        *count += 1;
+                        module_routes
+                            .entry(resolved.manager)
+                            .or_default()
+                            .insert(mod_name.clone());
+                    }
+                    // Gated off this platform: the package is not declared
+                    // here, so it routes nowhere and states nothing.
+                    Ok(None) => {}
+                    Err(e) => unresolved.push(e.to_string()),
+                }
+            }
+            let managers = order
+                .into_iter()
+                .map(|name| DoctorModuleManagerRoute {
+                    available: mgr_map.get(&name).is_some_and(|m| m.is_available()),
+                    package_count: counts.get(&name).copied().unwrap_or(0),
+                    name,
+                })
+                .collect();
+            DoctorModuleCheck {
+                name: mod_name.clone(),
+                valid: true,
+                error: None,
+                managers,
+                unresolved,
+            }
+        })
+        .collect();
+
+    (module_checks, module_routes)
+}
+
 fn collect_doctor_output(
     cli: &Cli,
     printer: &Printer,
@@ -301,73 +381,13 @@ fn collect_doctor_output(
     let platform = Platform::current();
     let doctor_cx = ctx.package_context().ok();
 
-    // Manager name to the modules routing to it, filled by the one resolution
-    // below and read again by the Package Managers section, which would
-    // otherwise resolve every module package a second time to answer the same
-    // question.
-    let mut module_routes: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> =
-        std::collections::BTreeMap::new();
-
-    let module_checks: Vec<DoctorModuleCheck> = module_list
-        .iter()
-        .map(|mod_name| {
-            let Some(module) = all_modules.get(mod_name) else {
-                return DoctorModuleCheck {
-                    name: mod_name.clone(),
-                    valid: false,
-                    error: Some(format!("module {}", cfgd_core::Absence::NotFound)),
-                    managers: Vec::new(),
-                    unresolved: Vec::new(),
-                };
-            };
-            // First-seen order, which is the module's own package order: the
-            // row reads as the author listed them.
-            let mut order: Vec<String> = Vec::new();
-            let mut counts: std::collections::HashMap<String, usize> =
-                std::collections::HashMap::new();
-            let mut unresolved: Vec<String> = Vec::new();
-            for entry in &module.spec.packages {
-                match modules::resolve_package(
-                    entry,
-                    mod_name,
-                    platform,
-                    &mgr_map,
-                    doctor_cx.as_ref(),
-                ) {
-                    Ok(Some(resolved)) => {
-                        let count = counts.entry(resolved.manager.clone()).or_insert(0);
-                        if *count == 0 {
-                            order.push(resolved.manager.clone());
-                        }
-                        *count += 1;
-                        module_routes
-                            .entry(resolved.manager)
-                            .or_default()
-                            .insert(mod_name.clone());
-                    }
-                    // Gated off this platform: the package is not declared
-                    // here, so it routes nowhere and states nothing.
-                    Ok(None) => {}
-                    Err(e) => unresolved.push(e.to_string()),
-                }
-            }
-            let managers = order
-                .into_iter()
-                .map(|name| DoctorModuleManagerRoute {
-                    available: mgr_map.get(&name).is_some_and(|m| m.is_available()),
-                    package_count: counts.get(&name).copied().unwrap_or(0),
-                    name,
-                })
-                .collect();
-            DoctorModuleCheck {
-                name: mod_name.clone(),
-                valid: true,
-                error: None,
-                managers,
-                unresolved,
-            }
-        })
-        .collect();
+    let (module_checks, module_routes) = build_module_routes(
+        &module_list,
+        &all_modules,
+        &mgr_map,
+        platform,
+        doctor_cx.as_ref(),
+    );
 
     // Deduplicate brew-tap / brew-cask under the parent brew manager so the
     // human + structured output shows brew once.
@@ -904,4 +924,102 @@ fn config_ok(cfg: &DoctorConfigCheck) -> bool {
         cfg.state,
         DoctorConfigState::Valid | DoctorConfigState::MissingAtDefault
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn loaded(name: &str, packages: &[&str]) -> cfgd_core::modules::LoadedModule {
+        let yaml = format!(
+            "packages:\n{}",
+            packages
+                .iter()
+                .map(|p| format!("  - name: {p}\n"))
+                .collect::<String>()
+        );
+        cfgd_core::modules::LoadedModule {
+            name: name.to_string(),
+            spec: serde_yaml::from_str(&yaml).expect("a module spec of declared packages"),
+            dir: std::path::PathBuf::from("/nonexistent"),
+            version: None,
+            origin: None,
+        }
+    }
+
+    /// One question per manager for the whole module walk, however many
+    /// packages the modules declare under it.
+    ///
+    /// The routing map and the per-module rows come out of one pass, so the
+    /// Package Managers section can state how many modules route to a manager
+    /// without resolving every module package a second time. Resolved twice,
+    /// a two-module report asks each manager for its installed listing once
+    /// per package instead of once per run.
+    #[test]
+    #[serial_test::serial(enumeration_memo)]
+    fn doctor_resolves_a_two_module_walk_in_one_pass() {
+        // The count is a memo-hit claim, so the memo's age ceiling is pinned
+        // out of reach — unpinned it rests on the 30s wall clock. The group is
+        // the one every other pin of this ceiling joins: two pins alive at
+        // once restore each other's saved value, leaving the seam pinned for
+        // the rest of the binary with nothing going red where the second pin
+        // was written.
+        let _ttl = cfgd_core::test_helpers::EnumerationMemoTtlGuard::never_expires();
+        let (enumerations, routes, checks) =
+            cfgd_core::test_helpers::measured_in_a_stable_generation(|| {
+                let apt = cfgd_core::test_helpers::MockPackageManager::new("apt")
+                    .with_installed(&["curl", "jq", "fd", "ripgrep"]);
+                let counter = apt.enumeration_counter();
+                let mgr_map: std::collections::HashMap<
+                    String,
+                    &dyn cfgd_core::providers::PackageManager,
+                > = std::collections::HashMap::from([(
+                    "apt".to_string(),
+                    &apt as &dyn cfgd_core::providers::PackageManager,
+                )]);
+
+                let all_modules = std::collections::HashMap::from([
+                    ("tools".to_string(), loaded("tools", &["curl", "jq"])),
+                    ("search".to_string(), loaded("search", &["fd", "ripgrep"])),
+                ]);
+                let module_list = vec!["tools".to_string(), "search".to_string()];
+
+                let printer = cfgd_core::test_helpers::test_printer();
+                let state = cfgd_core::state::StateStore::open_in_memory()
+                    .expect("an in-memory state store");
+                let cx = cfgd_core::providers::PackageContext::new(&printer, &state);
+
+                let (checks, routes) = build_module_routes(
+                    &module_list,
+                    &all_modules,
+                    &mgr_map,
+                    Platform::current(),
+                    Some(&cx),
+                );
+                (
+                    counter.load(std::sync::atomic::Ordering::SeqCst),
+                    routes,
+                    checks,
+                )
+            });
+
+        assert_eq!(
+            enumerations, 1,
+            "four declared packages over two modules must cost one listing"
+        );
+        assert_eq!(
+            routes.get("apt").map(|m| m.len()),
+            Some(2),
+            "the Package Managers section reads its module count off this map: {routes:?}"
+        );
+        let counts: Vec<usize> = checks
+            .iter()
+            .flat_map(|c| c.managers.iter().map(|m| m.package_count))
+            .collect();
+        assert_eq!(
+            counts,
+            vec![2, 2],
+            "each module row states the packages routing to the manager"
+        );
+    }
 }
