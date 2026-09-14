@@ -348,7 +348,8 @@ over the profile's value.
 when it is non-empty and the current platform matches none of the tags, the entry is not part of
 this machine's desired state at all and appears on no surface. `cfgd module show` and
 `cfgd status <module>` list it anyway — they describe what the module declares — annotated
-`(platforms: macos)`.
+`(platforms: macos)`. Under `cfgd module show --resolved` the same entry reads
+`skipped (platform filter)`, which is what this host made of it.
 
 `PATH` is the one name whose surviving declarations **concatenate** rather than replace, so a
 common declaration and a gated one both reach the generated env file, in declaration order with

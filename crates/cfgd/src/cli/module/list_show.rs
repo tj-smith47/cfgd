@@ -179,6 +179,40 @@ fn declared_package_clauses(entry: &cfgd_core::config::ModulePackageEntry) -> St
     clauses.join(", ")
 }
 
+/// One `--resolved` package row: what this host RESOLVED the declared entry to,
+/// stated as a fact rather than as the command that would install it. The
+/// version is what the manager currently offers and is dropped when it states
+/// none; the manager's own name for the package follows it in parentheses only
+/// where it differs from the declared name, which is the whole reason a reader
+/// needs both.
+///
+/// ```text
+/// neovim → 0.12.5 via brew
+/// gcc → 12.12 via apt (build-essential)
+/// pynvim via pipx
+/// ```
+///
+/// An install VERB belongs to a `plan` / `apply` action row, whose subject
+/// comes from `action_display_subject`; a `show` performs nothing.
+fn resolved_package_row(
+    name: &str,
+    manager: &str,
+    resolved_name: &str,
+    version: Option<&str>,
+    arrow: &str,
+) -> String {
+    let offered = match version {
+        Some(v) => format!(" {arrow} {v}"),
+        None => String::new(),
+    };
+    let spelled = if resolved_name == name {
+        String::new()
+    } else {
+        format!(" ({resolved_name})")
+    };
+    format!("{name}{offered} via {manager}{spelled}")
+}
+
 /// The `Packages` section of `cfgd module show --resolved`: what THIS host
 /// reads each declared entry as — the manager that won, the name it installs
 /// under and the version it offers.
@@ -193,19 +227,10 @@ fn build_module_show_resolved_packages(doc: Doc, packages: &[PackageDisplay], ar
                 manager,
                 resolved_name,
                 version,
-            } => {
-                let ver = version
-                    .as_ref()
-                    .map(|v| format!(" ({})", v))
-                    .unwrap_or_default();
-                s.status(
-                    Role::Ok,
-                    format!(
-                        "{} {} {} install {}{}",
-                        name, arrow, manager, resolved_name, ver
-                    ),
-                )
-            }
+            } => s.status(
+                Role::Ok,
+                resolved_package_row(name, manager, resolved_name, version.as_deref(), arrow),
+            ),
             PackageDisplay::Skipped { name, platforms } => {
                 s.status_with(Role::Info, format!("{}{}", name, platforms), |f| {
                     f.detail(crate::cli::status::PLATFORM_SKIPPED)
@@ -541,6 +566,37 @@ pub(crate) fn cmd_module_show(
 #[cfg(test)]
 mod role_mapping_tests {
     use super::*;
+
+    /// A `--resolved` package row states what this host resolved the entry
+    /// TO. All three shapes render here: the manager's package name appears
+    /// only where it differs from the declared one, the offered version is
+    /// dropped where the manager states none, and no shape carries an install
+    /// verb, which belongs to a row that performs the install.
+    #[test]
+    fn a_resolved_package_row_states_a_fact_and_never_an_install_verb() {
+        assert_eq!(
+            resolved_package_row("neovim", "brew", "neovim", Some("0.12.5"), "→"),
+            "neovim → 0.12.5 via brew"
+        );
+        assert_eq!(
+            resolved_package_row("gcc", "apt", "build-essential", Some("12.12"), "→"),
+            "gcc → 12.12 via apt (build-essential)"
+        );
+        assert_eq!(
+            resolved_package_row("pynvim", "pipx", "pynvim", None, "→"),
+            "pynvim via pipx"
+        );
+        for row in [
+            resolved_package_row("neovim", "brew", "neovim", Some("0.12.5"), "→"),
+            resolved_package_row("gcc", "apt", "build-essential", Some("12.12"), "→"),
+            resolved_package_row("pynvim", "pipx", "pynvim", None, "→"),
+        ] {
+            assert!(
+                !row.contains("install"),
+                "a `show` performs nothing, so no row spells an install verb: {row}"
+            );
+        }
+    }
 
     #[test]
     fn source_role_pinks_remote_only() {

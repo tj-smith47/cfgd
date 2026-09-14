@@ -3888,8 +3888,12 @@ fn cmd_module_show_resolved_renders_platform_filtered_and_resolved_packages() {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         assert!(
-            output.contains("curl → "),
-            "resolved entry should render '<name> -> <mgr> install ...', got: {output}"
+            output.contains("curl") && output.contains(" via "),
+            "a resolved entry states the manager it landed on, got: {output}"
+        );
+        assert!(
+            !output.contains("install"),
+            "a `show` performs nothing, so no row spells an install verb, got: {output}"
         );
         assert!(
             output.contains("notepad") && output.contains("skipped (platform filter)"),

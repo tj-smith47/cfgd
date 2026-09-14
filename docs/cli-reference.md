@@ -1689,7 +1689,7 @@ platform gate skipped, and the ones no available manager can satisfy.
 
 ```
 Packages
-  ✓ ripgrep → brew install ripgrep (14.1.0)
+  ✓ ripgrep → 14.1.0 via brew
   ◉ winget-only-tool, platforms: windows — skipped (platform filter)
   ⚠ obscure-tool (prefer: nix), min: 1.0 — unresolved: no manager available on this platform
 ```
