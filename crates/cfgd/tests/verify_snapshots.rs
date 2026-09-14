@@ -10,10 +10,30 @@
 use std::path::Path;
 
 use cfgd::cli::verify::{VerifyOutput, build_verify_doc};
-use cfgd_core::output::Printer;
+use cfgd_core::output::{ConfigHeader, Printer};
 use cfgd_core::reconciler::VerifyResult;
 
 const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
+
+/// The config the fixtures report against — a fixed path, so the header block
+/// every `verify` opens on is the same bytes on every host.
+const CONFIG_PATH: &str = "/etc/cfgd/cfgd.yaml";
+
+/// Emit one fixture through the real builder, header included.
+fn emit(printer: &Printer, output: &VerifyOutput) {
+    printer.emit(build_verify_doc(
+        output,
+        None,
+        &ConfigHeader {
+            config_path: Some(Path::new(CONFIG_PATH)),
+            sources: &[],
+            profile: Some("base"),
+            profile_inherits: &[],
+            modules: &[],
+            arrow: printer.arrow(),
+        },
+    ));
+}
 
 fn pkg_ok(name: &str) -> VerifyResult {
     VerifyResult {
@@ -80,7 +100,7 @@ fn empty_fixture() -> VerifyOutput {
 fn verify_ok_human() {
     let output = ok_fixture();
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_verify_doc(&output, None));
+    emit(&printer, &output);
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "verify/ok.txt");
 }
@@ -89,7 +109,7 @@ fn verify_ok_human() {
 fn verify_ok_json() {
     let output = ok_fixture();
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_verify_doc(&output, None));
+    emit(&printer, &output);
     drop(printer);
 
     let expected = serde_json::to_value(&output).unwrap();
@@ -106,7 +126,7 @@ fn verify_ok_json() {
 fn verify_drift_human() {
     let output = drift_fixture();
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_verify_doc(&output, None));
+    emit(&printer, &output);
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "verify/drift.txt");
 }
@@ -115,7 +135,7 @@ fn verify_drift_human() {
 fn verify_empty_human() {
     let output = empty_fixture();
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_verify_doc(&output, None));
+    emit(&printer, &output);
     drop(printer);
     let human = cap.human();
     assert!(

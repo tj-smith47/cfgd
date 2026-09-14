@@ -66,13 +66,23 @@ pub struct StatusOutput {
     /// branch, which probes nothing.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub system_errors: Vec<super::output_types::SystemCheckError>,
-    /// Rows `drift` above already folds in for rendering: the same
-    /// `standing` key `diff` and `verify` carry, so a `-o json` consumer
-    /// finds this run's own findings and the store's carried-forward rows
-    /// under one name across all three surfaces. Populated only on the
-    /// scanning branch — the recorded-state dashboard reads `drift` alone.
+    /// Rows this run owns but could not re-examine, under the same
+    /// `standing` key `diff` and `verify` carry: the store's own answer, kept
+    /// out of `drift` so a consumer can tell what this run found from what it
+    /// carried forward. Populated only on the scanning branch — the
+    /// recorded-state dashboard reads `drift` alone.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub standing: Vec<cfgd_core::state::DriftEvent>,
+}
+
+impl StatusOutput {
+    /// Whether this machine stands on any drift a reader must act on: a row
+    /// this run found, or one it owns and could not re-examine. The ONE
+    /// composition — the closing hint and the `--exit-code` gate both read it,
+    /// the same shape `VerifyOutput` and `DiffSummary` carry.
+    pub fn any_drift(&self) -> bool {
+        !self.drift.is_empty() || !self.standing.is_empty()
+    }
 }
 
 #[derive(Serialize)]
@@ -305,6 +315,14 @@ impl ModuleStatus {
         cfgd_core::state::module_status_display(&self.status, self.drift_verdict())
     }
 
+    /// Whether this module stands on any drift a reader must act on: a row
+    /// this run found, or one its scope owns and could not re-examine. The ONE
+    /// composition — the verdict, the closing hint and the `--exit-code` gate
+    /// all read it, the same shape `VerifyOutput` and `DiffSummary` carry.
+    fn any_drift(&self) -> bool {
+        !self.drift.is_empty() || !self.standing.is_empty()
+    }
+
     /// The ONE composition of this module's two drift facts — rows in the
     /// Drift section, checks that could not run — into the verdict both the
     /// `Status` word and the `--exit-code` gate read, so the word a reader
@@ -317,7 +335,7 @@ impl ModuleStatus {
     fn drift_verdict(&self) -> cfgd_core::state::DriftVerdict {
         covered_verdict(
             cfgd_core::state::DriftVerdict::from_checks(
-                !self.drift.is_empty(),
+                self.any_drift(),
                 !self.system_errors.is_empty(),
             ),
             check_covers(
@@ -1013,6 +1031,10 @@ pub fn build_fleet_status_doc(
         );
     }
 
+    // Rows the scan owns but could not re-examine, after the live rows it
+    // did: the record's own answer, never a member of what this run found.
+    doc = super::live_drift::standing_section(doc, &output.standing);
+
     doc = doc.section_if_nonempty(
         "Managed Resources",
         &output.managed_resources,
@@ -1038,7 +1060,7 @@ pub fn build_fleet_status_doc(
     // recent check still stands behind is pending work, whether this run did
     // the looking or read what the last one recorded. Only once that evidence
     // has gone stale does the look outrank the heal.
-    if !output.drift.is_empty() && !stale {
+    if output.any_drift() && !stale {
         doc = doc.hint(super::heal_drift_hint(None));
     } else if stale {
         doc = doc.hint(SCAN_HINT);
@@ -2297,14 +2319,28 @@ pub fn build_module_status_doc(output: &ModuleStatus, view: ModuleStatusView, no
                     Some(drift_checked_note(false, freshest, now)),
                 )
             };
-            render_module_drift_section(
-                doc,
-                &output.drift,
-                &output.system_errors,
-                output.drift_checked_live,
-                verified,
-                note.as_deref(),
-            )
+            // A run that found nothing but carries rows it could not
+            // re-examine has no clean verdict to offer: the `Standing` section
+            // below is the report, and "No drift detected" over it would
+            // contradict the rows on the next line.
+            //
+            // drift-chain-ok: whether the section has a verdict to state at
+            // all, not whether the run stands on drift — `any_drift` is that.
+            if output.drift.is_empty()
+                && output.system_errors.is_empty()
+                && !output.standing.is_empty()
+            {
+                doc
+            } else {
+                render_module_drift_section(
+                    doc,
+                    &output.drift,
+                    &output.system_errors,
+                    output.drift_checked_live,
+                    verified,
+                    note.as_deref(),
+                )
+            }
         }
         // No Drift section: every finding is already an inline verdict on the
         // inventory row for the thing it was found on, and repeating it below
@@ -2314,13 +2350,18 @@ pub fn build_module_status_doc(output: &ModuleStatus, view: ModuleStatusView, no
         }
     };
 
+    // Rows this module's scope owns but the scan could not re-examine, after
+    // whatever the view rendered of what it did check: the record's own
+    // answer, on both views, never folded in among the live rows.
+    doc = super::live_drift::standing_section(doc, &output.standing);
+
     // Same rule as the fleet report, same staleness gate, and it belongs to
     // the REPORT rather than to either view: the wide view states its drifted
     // verdicts on the inventory rows instead of in a section, and a report
     // showing drift owes the reader the healing command either way. A
     // recorded view invites a check only once its freshest evidence has gone
     // stale — a fresh record re-invited the look it was just handed.
-    doc = if !output.drift.is_empty() && !stale {
+    doc = if output.any_drift() && !stale {
         doc.hint(super::heal_drift_hint(Some(&output.name)))
     } else if stale {
         doc.hint(SCAN_HINT)
@@ -2936,19 +2977,19 @@ pub(super) fn cmd_status(
         // by the scan itself, and a row it did not re-find was just resolved
         // as healed. What it could NOT re-check it deliberately left standing
         // (`live_drift`'s keep-set), and those rows are still the store's
-        // answer the moment this command returns — dropping them would render
-        // and price a verdict the record contradicts. The displayed set is
-        // therefore the scan's findings plus its own keep-set, the kept rows
-        // carrying their stored producer literals unchanged. A key can appear
-        // in both (a package the presence pass found drifted whose floor check
-        // also errored), so the live wording wins on a tie.
+        // answer the moment this command returns — dropping them would price a
+        // verdict the record contradicts. They are the STORE's answer rather
+        // than this scan's, so they stay out of `drift` and render under their
+        // own heading after the live rows; a key can appear in both (a package
+        // the presence pass found drifted whose floor check also errored), and
+        // the live finding is the one that keeps it.
         output.drift.clear();
         for r in &drift {
             output
                 .drift
                 .push(super::live_drift::drift_event_from(r, &merged_env_items));
         }
-        let standing_rows: Vec<cfgd_core::state::DriftEvent> = report
+        output.standing = report
             .standing
             .into_iter()
             .filter(|e| {
@@ -2957,8 +2998,6 @@ pub(super) fn cmd_status(
                     .any(|r| r.resource_type == e.resource_type && r.resource_id == e.resource_id)
             })
             .collect();
-        output.drift.extend(standing_rows.iter().cloned());
-        output.standing = standing_rows;
     }
 
     // Built from the composition this command already resolved: the rows say
@@ -2987,14 +3026,14 @@ pub(super) fn cmd_status(
     ));
 
     if exit_code {
-        // `--exit-code` implies the scan, so `drift` is the union the scan
-        // just rendered: its findings plus the rows it kept standing. Pricing
-        // the findings alone would exit 0 on a machine whose store — written
-        // by this very command — still holds unresolved drift. The two facts
-        // rank through the same verdict the module surface prices, so a
-        // check that could not run outranks drift it might have found.
+        // `--exit-code` implies the scan, so the price is what the scan just
+        // rendered: its findings AND the rows it kept standing. Pricing the
+        // findings alone would exit 0 on a machine whose store — written by
+        // this very command — still holds unresolved drift. The two facts rank
+        // through the same verdict the module surface prices, so a check that
+        // could not run outranks drift it might have found.
         exit_on_drift_verdict(cfgd_core::state::DriftVerdict::from_checks(
-            !output.drift.is_empty(),
+            output.any_drift(),
             !output.system_errors.is_empty(),
         ));
     }
@@ -3090,6 +3129,11 @@ fn join_package_state(
         .collect()
 }
 
+// no-header-ok: the invocation named the module, and this report answers for
+// that one module rather than for the configuration around it — its header
+// leads on the module's own Status row (`the_status_row_leads_a_module_report`)
+// and carries no Scope row for the same reason. The config, sources and
+// profile behind it are what `cfgd status` states.
 pub(super) fn cmd_status_module(
     ctx: &RunContext<'_>,
     mod_name: &str,
@@ -3426,11 +3470,15 @@ pub(super) fn cmd_status_module(
                     &resolved_modules,
                     registry,
                 );
-                // Sliced off `drift` AFTER classification: the payload's
-                // `standing` is exactly the rows the human render lists,
-                // never a list captured upstream of the classifier.
+                // Classified but kept OUT of `drift`: the payload's
+                // `standing` is exactly the rows the human render lists under
+                // its own heading, and they are the store's answer rather than
+                // this scan's. The classification still runs, because the
+                // inventory rows a standing row names must read its verdict
+                // (`drifted_ids`, `scanned_packages`) — what it decides is the
+                // section a row renders in, never whether the row is known.
                 if !standing.rows.is_empty() {
-                    let drift_len_before_standing = drift.len();
+                    let mut classified: Vec<ModuleDrift> = Vec::new();
                     classify_recorded_drift_for_chain(
                         standing.rows,
                         &ChainOwnership {
@@ -3439,14 +3487,11 @@ pub(super) fn cmd_status_module(
                             managers: &managers,
                             mod_name,
                         },
-                        &mut drift,
+                        &mut classified,
                         &mut drifted_ids,
                         &mut scanned_packages,
                     );
-                    standing_rows = drift[drift_len_before_standing..]
-                        .iter()
-                        .map(|d| d.event.clone())
-                        .collect();
+                    standing_rows = classified.into_iter().map(|d| d.event).collect();
                 }
                 Ok(())
             },
@@ -9470,8 +9515,8 @@ mod tests {
         );
     }
 
-    /// A package the Drift section names never reads `not scanned` beside
-    /// its finding, on the scan branch as on the recorded one: a `prefer:
+    /// A package a report names never reads `not scanned` beside its finding,
+    /// on the scan branch as on the recorded one: a `prefer:
     /// [script]` entry is seeded `NotScanned` by the scan (no manager to
     /// ask) and `NotInstalled` by its standing row, and `-o json`'s
     /// `packageState` must carry the verdict whichever seed landed first.
@@ -9524,9 +9569,14 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(captured.trim())
             .unwrap_or_else(|e| panic!("invalid JSON: {e}, got: {captured}"));
         assert_eq!(
-            parsed["drift"][0]["resourceId"],
+            parsed["standing"][0]["resourceId"],
             serde_json::json!("script:mytool"),
-            "the standing row is the finding the section names, got: {parsed}"
+            "the row the scan could not re-check stands under its own key, got: {parsed}"
+        );
+        assert_eq!(
+            parsed["drift"],
+            serde_json::json!([]),
+            "a standing row is not something this scan found, got: {parsed}"
         );
         assert_eq!(
             parsed["packageState"][0],
@@ -9536,8 +9586,8 @@ mod tests {
     }
 
     /// `status --module --scan`'s `-o json` `standing` set IS the set the
-    /// human render's Drift section lists — driven from the one store, twice,
-    /// once per format. The package this scan could not re-check (a
+    /// human render's Standing section lists — driven from the one store,
+    /// twice, once per format. The package this scan could not re-check (a
     /// `script`-managed package: no manager to ask, so it never joins
     /// `checked`) stands in both; a recorded row for a package the module
     /// gates off this host is in neither, because the scope every scoped
@@ -9626,9 +9676,9 @@ mod tests {
             .iter()
             .map(|e| e["resourceId"].as_str().unwrap_or_default())
             .collect();
-        assert_eq!(
-            drift_ids, standing_ids,
-            "`standing` is exactly the set the Drift section renders, got: {parsed}"
+        assert!(
+            drift_ids.is_empty(),
+            "a row the scan could not re-check is the store's answer, never one              of this run's own findings, got: {parsed}"
         );
 
         let human_cli = test_cli_for(config_path, state_dir.path());

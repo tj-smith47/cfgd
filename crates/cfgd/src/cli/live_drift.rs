@@ -37,6 +37,46 @@ use cfgd_core::reconciler::{Action, ManagerAction, VerifyResult};
 use crate::files::{CfgdFileManager, module_patch_binding};
 use crate::packages;
 
+/// The heading every surface that prices standing drift renders those rows
+/// under. A standing row is one the run's own scope owns but could not
+/// re-examine, so it is the STORE's answer rather than this run's: listed
+/// among the live rows it reads as something the check just found.
+pub const STANDING_SECTION: &str = "Standing";
+
+/// One standing row's `(subject, cause)`, so `diff`, `verify` and both
+/// `status` surfaces cannot word the store's own answer three different ways.
+///
+/// The cause comes from the chooser rather than the operand pair: a row
+/// recorded with no operands (an older daemon's, a module script row) has
+/// nothing to state, and rendering the absence words for it reads as a
+/// divergence the store never recorded.
+pub fn standing_row(e: &cfgd_core::state::DriftEvent) -> (String, String) {
+    (
+        cfgd_core::output::drift_item_subject(&e.resource_type, &e.resource_id),
+        cfgd_core::output::drift_cause(
+            &e.resource_type,
+            e.expected.as_deref().unwrap_or_default(),
+            e.actual.as_deref().unwrap_or_default(),
+        ),
+    )
+}
+
+/// The `Standing` section as a buffered [`cfgd_core::output::Doc`] block,
+/// rendered after the live rows and at [`cfgd_core::output::Role::Warn`]: the
+/// rows state what the record still holds, not what this run found. Empty
+/// input renders nothing.
+pub fn standing_section(
+    doc: cfgd_core::output::Doc,
+    standing: &[cfgd_core::state::DriftEvent],
+) -> cfgd_core::output::Doc {
+    doc.section_if_nonempty(STANDING_SECTION, standing, |s, rows| {
+        rows.iter().fold(s, |s, e| {
+            let (subject, cause) = standing_row(e);
+            s.status_with(cfgd_core::output::Role::Warn, subject, |f| f.detail(cause))
+        })
+    })
+}
+
 /// The ONE shaping of a live [`VerifyResult`] into a recorded-shape
 /// [`cfgd_core::state::DriftEvent`], for a caller (`cmd_status`,
 /// `cmd_status_module`'s two drift loops) that must fold a live-scan finding

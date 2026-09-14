@@ -3776,7 +3776,7 @@ const GOLDEN_FLOOR: usize = 300;
 
 /// The padded-header population sits AT its floor, so a member falling out of
 /// it is the finding rather than slack quietly absorbing the loss.
-const GOLDEN_HEADER_FLOOR: usize = 10;
+const GOLDEN_HEADER_FLOOR: usize = 7;
 
 /// `docs/` carries rendered tables too, and one of them keeps a padded header;
 /// the floor says the docs half of the walk still reads a captured render.

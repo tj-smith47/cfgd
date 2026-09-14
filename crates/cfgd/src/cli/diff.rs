@@ -412,31 +412,7 @@ pub fn cmd_diff(
         !sys_rows.is_empty()
     };
 
-    // Rows the walk above could not re-find (a bare legacy module id, a
-    // system key outside every configurator this scan evaluated, a check
-    // error's own key) — the store's own answer, kept unresolved by
-    // `live_drift_results` and rendered here through the same drift-row
-    // renderer every section above used, never a second wording.
-    let has_standing_drift = {
-        let sec = printer.section_or_collapse("Standing");
-        let _inherit = printer.depth_inheritance();
-        for e in &report.standing {
-            // Through the chooser, not the operand pair: a row recorded with
-            // no operands (an older daemon's, a module script row) has nothing
-            // to state, and rendering the absence words for it reads as a
-            // divergence the store never recorded.
-            sec.status(
-                Role::Warn,
-                cfgd_core::output::drift_item_subject(&e.resource_type, &e.resource_id),
-            )
-            .detail(cfgd_core::output::drift_cause(
-                &e.resource_type,
-                e.expected.as_deref().unwrap_or_default(),
-                e.actual.as_deref().unwrap_or_default(),
-            ));
-        }
-        !report.standing.is_empty()
-    };
+    let has_standing_drift = render_standing_section(printer, &report.standing);
     diff_payload.standing = report.standing;
 
     diff_payload.summary = DiffSummary {
@@ -489,7 +465,26 @@ pub(super) fn env_drift_ordered(
 /// A failed check outranks drift: `DriftDetected` tells a script the machine
 /// needs an apply, while a check that could not run means the answer is
 /// unknown, which is an error rather than a verdict.
-fn diff_exit_code(summary: &DiffSummary) -> Option<cfgd_core::exit::ExitCode> {
+/// Rows the walk could not re-find (a bare legacy module id, a system key
+/// outside every configurator this scan evaluated, a check error's own key) —
+/// the store's own answer, kept unresolved by `live_drift_results` and drawn
+/// here under the heading and role every surface pricing standing gives them.
+///
+/// Answers whether anything rendered, which is the flag `DiffSummary` prices.
+pub(super) fn render_standing_section(
+    printer: &Printer,
+    standing: &[cfgd_core::state::DriftEvent],
+) -> bool {
+    let sec = printer.section_or_collapse(super::live_drift::STANDING_SECTION);
+    let _inherit = printer.depth_inheritance();
+    for e in standing {
+        let (subject, cause) = super::live_drift::standing_row(e);
+        sec.status(Role::Warn, subject).detail(cause);
+    }
+    !standing.is_empty()
+}
+
+pub(super) fn diff_exit_code(summary: &DiffSummary) -> Option<cfgd_core::exit::ExitCode> {
     if summary.check_failed() {
         return Some(cfgd_core::exit::ExitCode::Error);
     }

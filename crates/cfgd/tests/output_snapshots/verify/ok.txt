@@ -1,4 +1,6 @@
 Verify
+  Config   /etc/cfgd/cfgd.yaml
+  Profile  base
 
 Resources
   ✓ package curl    — installed

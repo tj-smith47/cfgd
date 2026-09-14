@@ -3517,7 +3517,11 @@ spec:
 #[test]
 fn expand_aliases_no_builtins() {
     // Aliases come from cfgd.yaml only — no hardcoded builtins.
-    // Without a config, "add" and "remove" pass through unchanged.
+    // Without a config, "add" and "remove" pass through unchanged. The temp
+    // home is what makes that the claim: the invoking user's own cfgd.yaml
+    // declares both of these names.
+    let tmp_home = tempfile::tempdir().unwrap();
+    let _home = cfgd_core::with_test_home_guard(tmp_home.path());
     let args = vec!["cfgd".into(), "add".into(), "~/.zshrc".into()];
     let expanded = expand_aliases(args.clone());
     assert_eq!(expanded, args);
@@ -3536,7 +3540,10 @@ fn expand_aliases_no_match_passthrough() {
 
 #[test]
 fn expand_aliases_skips_global_flags() {
-    // Without config-defined aliases, "add" passes through even with global flags
+    // Without config-defined aliases, "add" passes through even with global
+    // flags — over a temp home, for the reason above.
+    let tmp_home = tempfile::tempdir().unwrap();
+    let _home = cfgd_core::with_test_home_guard(tmp_home.path());
     let args = vec![
         "cfgd".into(),
         "--verbose".into(),
@@ -17120,6 +17127,100 @@ fn array_of_pairs(body: &str, from: usize) -> usize {
         .expect("the list is a bracketed array of pairs")
 }
 
+/// One standing row reads the same and prices the same on `verify` and on
+/// `diff`.
+///
+/// A standing row is one the run's own scope owns but could not re-examine, so
+/// it is the STORE's answer rather than this run's. `verify` had listed those
+/// rows inside its `Resources` section at `Role::Fail`, indistinguishable from
+/// a check that had just failed, while `diff` gave them their own `Standing`
+/// heading at `Role::Warn` — one machine, two readings of one row. Both now
+/// render the same heading, the same role and the same subject/cause pair, and
+/// both price the row into `DriftDetected` rather than exiting clean over a
+/// record they just wrote.
+#[test]
+fn one_standing_row_reads_and_prices_the_same_on_verify_and_diff() {
+    use crate::cli::output_types::DiffSummary;
+    use crate::cli::verify::{VerifyOutput, verify_doc_for_test};
+
+    let row = cfgd_core::state::DriftEvent {
+        id: 0,
+        timestamp: "2026-05-12T14:00:00Z".to_string(),
+        resource_type: "package".to_string(),
+        resource_id: "brew:jq".to_string(),
+        expected: Some(cfgd_core::PACKAGE_WANT_INSTALLED.to_string()),
+        actual: Some("absent".to_string()),
+        want: None,
+        have: None,
+        resolved_by: None,
+        source: cfgd_core::config::LOCAL_LAYER.to_string(),
+    };
+
+    let verify_text = {
+        let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
+        let arrow = printer.arrow().to_string();
+        printer.emit(verify_doc_for_test(
+            &VerifyOutput {
+                results: Vec::new(),
+                pass_count: 0,
+                fail_count: 0,
+                system_errors: Vec::new(),
+                standing: vec![row.clone()],
+            },
+            None,
+            &arrow,
+        ));
+        drop(printer);
+        cap.human()
+    };
+    let diff_text = {
+        let (printer, buf) =
+            cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+        assert!(
+            super::diff::render_standing_section(&printer, std::slice::from_ref(&row)),
+            "a rendered standing row is what `DiffSummary::has_standing_drift` prices"
+        );
+        drop(printer);
+        cfgd_core::test_helpers::captured_text(&buf)
+    };
+
+    let (subject, cause) = super::live_drift::standing_row(&row);
+    for (verb, text) in [("verify", &verify_text), ("diff", &diff_text)] {
+        assert!(
+            text.contains(super::live_drift::STANDING_SECTION),
+            "{verb} renders its standing rows under their own heading, got:\n{text}"
+        );
+        assert!(
+            text.contains(&subject) && text.contains(&cause),
+            "{verb} words a standing row as `{subject}` / `{cause}`, got:\n{text}"
+        );
+    }
+    assert!(
+        !verify_text.contains("Resources"),
+        "a standing row is not a resource this run checked, got:\n{verify_text}"
+    );
+
+    // The same exit code from each verb's own predicate: neither may report a
+    // machine clean while the record it just wrote still holds the row.
+    assert_eq!(
+        super::verify::verify_exit_code(&VerifyOutput {
+            results: Vec::new(),
+            pass_count: 0,
+            fail_count: 0,
+            system_errors: Vec::new(),
+            standing: vec![row],
+        }),
+        Some(cfgd_core::exit::ExitCode::DriftDetected),
+    );
+    assert_eq!(
+        super::diff::diff_exit_code(&DiffSummary {
+            has_standing_drift: true,
+            ..Default::default()
+        }),
+        Some(cfgd_core::exit::ExitCode::DriftDetected),
+    );
+}
+
 /// A report that finds drift says how to heal it, and a report that finds none
 /// says nothing — the hint is the report's own answer to what it just found.
 /// Every drift surface had ended on the finding alone, leaving the reader to
@@ -17128,7 +17229,7 @@ fn array_of_pairs(body: &str, from: usize) -> usize {
 fn every_drift_verdict_offers_the_heal_and_only_when_it_reports_drift() {
     use crate::cli::diff::{DiffScope, build_diff_doc};
     use crate::cli::output_types::{DiffOutput, DiffSummary};
-    use crate::cli::verify::{VerifyOutput, build_verify_doc};
+    use crate::cli::verify::{VerifyOutput, verify_doc_for_test};
 
     let rendered = |doc: cfgd_core::output::Doc| -> String {
         let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
@@ -17174,17 +17275,17 @@ fn every_drift_verdict_offers_the_heal_and_only_when_it_reports_drift() {
         system_errors: Vec::new(),
         standing: Vec::new(),
     };
-    let verify = rendered(build_verify_doc(&failing, None));
+    let verify = rendered(verify_doc_for_test(&failing, None, "\u{2192}"));
     assert!(
         verify.contains("Run `cfgd apply` to reconcile"),
         "a failing verify offers the same heal every other drift surface does: {verify}"
     );
-    let verify_scoped = rendered(build_verify_doc(&failing, Some("nvim")));
+    let verify_scoped = rendered(verify_doc_for_test(&failing, Some("nvim"), "\u{2192}"));
     assert!(
         verify_scoped.contains("Run `cfgd apply --module nvim` to reconcile"),
         "a `--module` verify scopes its heal: {verify_scoped}"
     );
-    let verify_clean = rendered(build_verify_doc(
+    let verify_clean = rendered(verify_doc_for_test(
         &VerifyOutput {
             results: vec![cfgd_core::reconciler::VerifyResult {
                 resource_type: "package".into(),
@@ -17200,6 +17301,7 @@ fn every_drift_verdict_offers_the_heal_and_only_when_it_reports_drift() {
             standing: Vec::new(),
         },
         None,
+        "\u{2192}",
     ));
     assert!(
         !verify_clean.contains("to reconcile"),
@@ -34491,6 +34593,110 @@ fn every_config_and_profile_header_row_comes_from_the_one_builder() {
     );
 }
 
+/// The other half of the same rule: a verb REPORTING on a resolved
+/// configuration opens on that header block, or says why it does not.
+///
+/// The walk above catches a surface that builds the rows by hand; it says
+/// nothing about one that renders them nowhere at all, which is how `cfgd
+/// verify` shipped a pass/fail ledger about a machine with no statement of the
+/// config, sources, profile or modules it had been measured against. The
+/// population is the verbs whose output IS a report on a resolved
+/// configuration — the MACHINE/RECORDED row of the fact-class table in
+/// `output-module.md`, plus the two verbs that name what a composition
+/// resolved to. Each must reach [`cfgd_core::output::config_header_rows`] from
+/// its own entry function, directly or through a function it calls in the same
+/// file; a verb that renders no header block carries `// no-header-ok: <why>`
+/// on its declaration or in the comment block above it.
+const HEADER_BEARING_VERBS: &[(&str, &str)] = &[
+    ("status.rs", "cmd_status"),
+    ("status.rs", "cmd_status_module"),
+    ("diff.rs", "cmd_diff"),
+    ("diff.rs", "cmd_diff_module"),
+    ("verify.rs", "cmd_verify"),
+    ("daemon.rs", "cmd_daemon_status"),
+    ("sync.rs", "cmd_sync"),
+];
+
+/// Whether `entry`, or any function it calls in the same file, spells
+/// `needle`. Comments are cut and string literals blanked before a line is
+/// judged, so a name mentioned in prose is not a reach.
+fn call_closure_reaches(source: &str, entry: &str, needle: &str) -> bool {
+    let lines: Vec<&str> = source.lines().collect();
+    let spans = declared_fn_spans(&lines);
+    let names: Vec<String> = spans.iter().map(|(n, _, _)| n.clone()).collect();
+    let mut queue = vec![entry.to_string()];
+    let mut seen = std::collections::BTreeSet::new();
+    while let Some(name) = queue.pop() {
+        if !seen.insert(name.clone()) {
+            continue;
+        }
+        let Some((_, from, to)) = spans.iter().find(|(n, _, _)| *n == name) else {
+            continue;
+        };
+        for line in &lines[*from..=*to] {
+            let code = blank_string_literals(line.split("//").next().unwrap_or(line));
+            if code.contains(needle) {
+                return true;
+            }
+            for cand in &names {
+                if code.contains(&format!("{cand}(")) {
+                    queue.push(cand.clone());
+                }
+            }
+        }
+    }
+    false
+}
+
+#[test]
+fn every_verb_reporting_on_a_resolved_configuration_opens_on_the_header_block() {
+    const HATCH: &str = "// no-header-ok:";
+    let cli_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli");
+    let mut missing: Vec<String> = Vec::new();
+    let mut hatched: Vec<String> = Vec::new();
+    for (file, entry) in HEADER_BEARING_VERBS {
+        let path = cli_dir.join(file);
+        let body = cfgd_core::test_helpers::production_slice_of(&path);
+        let lines: Vec<&str> = body.lines().collect();
+        let at = lines
+            .iter()
+            .position(|l| {
+                let code = l.trim_start();
+                code.contains(&format!("fn {entry}("))
+                    && (code.starts_with("fn ") || code.starts_with("pub"))
+            })
+            .unwrap_or_else(|| panic!("{file} no longer declares `{entry}`"));
+        let is_hatched = lines[at].contains(HATCH)
+            || lines[..at]
+                .iter()
+                .rev()
+                .take_while(|l| l.trim_start().starts_with("//"))
+                .any(|l| l.contains(HATCH));
+        if is_hatched {
+            hatched.push(format!("{file}:{entry}"));
+            continue;
+        }
+        if !call_closure_reaches(&body, entry, "config_header_rows(") {
+            missing.push(format!("{file}:{entry}"));
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "a verb reporting on a resolved configuration opens on \
+         `cfgd_core::output::config_header_rows`, so a reader can tell what the \
+         verdict was measured against (or says why it renders none with \
+         `{HATCH} <why>`):\n{}",
+        missing.join("\n")
+    );
+    // The one hatched member, counted so a walk that stopped finding the
+    // entry functions at all cannot pass by checking nothing.
+    assert_eq!(
+        hatched,
+        vec!["status.rs:cmd_status_module".to_string()],
+        "the hatched population moved, and this walk decides what it covers"
+    );
+}
+
 /// An owner already held as an [`cfgd_core::reconciler::Owner`] renders through
 /// its own `label()`, never through a hand-composed `OwnerLabel`.
 ///
@@ -36496,7 +36702,7 @@ fn no_report_slot_spells_the_home_directory_absolutely() {
         ),
         (
             "cfgd verify",
-            super::verify::build_verify_doc(&verify_output, None),
+            super::verify::verify_doc_for_test(&verify_output, None, "\u{2192}"),
         ),
     ];
     for (surface, doc) in docs {
