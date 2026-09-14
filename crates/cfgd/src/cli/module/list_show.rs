@@ -163,6 +163,12 @@ pub fn build_module_not_found_error(name: &str, available: &[String]) -> anyhow:
 /// and renders as the bare name.
 fn declared_package_clauses(entry: &cfgd_core::config::ModulePackageEntry) -> String {
     let mut clauses = Vec::new();
+    // The gate is a declared property of the entry like `prefer` and `min`, so
+    // it hangs off the description column with them. In the name column it
+    // padded every other package's name out to the width of the annotation.
+    if let Some(tags) = cfgd_core::platform::PlatformGated::platform_annotation(entry) {
+        clauses.push(tags);
+    }
     if !entry.prefer.is_empty() {
         clauses.push(format!("prefer: {}", entry.prefer.join(", ")));
     }
@@ -307,12 +313,7 @@ pub fn build_module_show_doc(
             s.command_list(
                 entries
                     .iter()
-                    .map(|entry| {
-                        (
-                            gated_value(entry.name.clone(), entry),
-                            declared_package_clauses(entry),
-                        )
-                    })
+                    .map(|entry| (entry.name.clone(), declared_package_clauses(entry)))
                     .collect::<Vec<_>>(),
             )
         }),
@@ -640,6 +641,35 @@ mod role_mapping_tests {
                 "a `show` performs nothing, so no row spells an install verb: {row}"
             );
         }
+    }
+
+    /// Every declared property of a package entry hangs off the description
+    /// column, the `platforms:` gate included.
+    ///
+    /// The gate was the one that sat in the NAME cell, so one gated entry
+    /// padded every other package's name out to the width of its annotation.
+    /// The name column names the package and nothing else.
+    #[test]
+    fn a_declared_package_entrys_platform_gate_is_one_of_its_clauses() {
+        let mut entry = cfgd_core::config::ModulePackageEntry {
+            name: "winget-only-tool".to_string(),
+            ..Default::default()
+        };
+        entry.platforms = vec!["windows".to_string()];
+        assert_eq!(declared_package_clauses(&entry), "platforms: windows");
+
+        entry.prefer = vec!["nix".to_string()];
+        entry.min_version = Some("1.0".to_string());
+        assert_eq!(
+            declared_package_clauses(&entry),
+            "platforms: windows, prefer: nix, min: 1.0"
+        );
+
+        let ungated = cfgd_core::config::ModulePackageEntry {
+            name: "ripgrep".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(declared_package_clauses(&ungated), "");
     }
 
     #[test]

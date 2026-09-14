@@ -8,8 +8,8 @@ Module: dev-tools
 
 Packages
   ripgrep
-  winget-only-tool (platforms: windows)
-  obscure-tool                          — prefer: nix, min: 1.0
+  winget-only-tool — platforms: windows
+  obscure-tool     — prefer: nix, min: 1.0
 
 Files
   vimrc                     ~/.vimrc
