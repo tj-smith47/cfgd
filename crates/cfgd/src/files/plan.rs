@@ -860,6 +860,7 @@ impl super::CfgdFileManager {
             desired_mode,
             strategy,
             source,
+            managed,
         )))
     }
 
@@ -879,20 +880,29 @@ impl super::CfgdFileManager {
     ) -> Result<Option<FileAction>> {
         Ok(self
             .declared_mode(target, managed, profile)?
-            .map(|mode| Self::set_permissions_action(target, mode, strategy, source)))
+            .map(|mode| Self::set_permissions_action(target, mode, strategy, source, managed)))
     }
 
     /// The chmod action for a declared mode, naming the file that mode is for.
+    ///
+    /// The layer comes off the entry, exactly as the `Create` and `Update`
+    /// beside it take theirs: the chmod names the same target those actions do
+    /// and records the same tracking row, so a hardcoded layer here overwrites
+    /// the one the deploy just recorded.
     fn set_permissions_action(
         target: &Path,
         mode: u32,
         strategy: FileStrategy,
         source: Option<&Path>,
+        managed: &ManagedFileSpec,
     ) -> FileAction {
         FileAction::SetPermissions {
             target: target.to_path_buf(),
             mode,
-            origin: LOCAL_LAYER.to_string(),
+            origin: managed
+                .origin
+                .clone()
+                .unwrap_or_else(|| LOCAL_LAYER.to_string()),
             chmod_path: source
                 .filter(|_| matches!(strategy, FileStrategy::Symlink))
                 .map(Path::to_path_buf),
@@ -1823,6 +1833,69 @@ mod tests {
             ),
             "per-file permissions field should produce SetPermissions 700"
         );
+    }
+
+    /// A chmod names the same target its deploy does and records the same
+    /// tracking row, so it carries the entry's own delivering layer.
+    ///
+    /// `cfgd source remove <name>` finds what a subscription put on the machine
+    /// by `managed_resources.source` alone. A chmod minting `local` writes that
+    /// column last for a target whose deploy recorded the source, and for an
+    /// entry whose link is already correct it is the row's only writer.
+    #[test]
+    #[cfg(unix)]
+    fn a_chmod_carries_the_layer_that_delivered_the_file_it_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path();
+
+        let target = config_dir.join("netrc");
+        fs::write(&target, "machine example").unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o644)).unwrap();
+
+        let managed = ManagedFileSpec {
+            patch: None,
+            source: "netrc".to_string(),
+            target: target.clone(),
+            strategy: Some(FileStrategy::Symlink),
+            private: false,
+            origin: Some("acme".to_string()),
+            encryption: None,
+            permissions: Some("600".to_string()),
+        };
+        let resolved = make_resolved(FilesSpec {
+            managed: vec![managed.clone()],
+            permissions: HashMap::new(),
+        });
+        let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
+
+        // Both producers: the already-linked branch reads the target's mode,
+        // the re-link branch plans from the declaration alone.
+        for action in [
+            fm.check_permissions(
+                &target,
+                &managed,
+                &resolved.merged,
+                FileStrategy::Symlink,
+                None,
+            )
+            .unwrap(),
+            fm.planned_permissions(
+                &target,
+                &managed,
+                &resolved.merged,
+                FileStrategy::Symlink,
+                None,
+            )
+            .unwrap(),
+        ] {
+            match action.expect("a declared mode plans a chmod") {
+                FileAction::SetPermissions { origin, .. } => assert_eq!(
+                    origin, "acme",
+                    "the chmod records under the layer that delivered the file"
+                ),
+                other => panic!("expected SetPermissions, got {other:?}"),
+            }
+        }
     }
 
     #[test]
