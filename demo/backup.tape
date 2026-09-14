@@ -121,8 +121,8 @@ Sleep 4700ms
 Type "cfgd backup rollback notes --yes && cat ~/notes.md"
 Enter
 Wait@10s /cfgd\$$/
-# 14 lines → 2.9s
-Sleep 2900ms
+# 15 lines → 3.0s
+Sleep 3s
 
 # Beat 6: close the loop on the ledger — the unit counts exactly the snapshot
 # it took (the restore's safety copy is a sidecar beside the source, never a
@@ -131,7 +131,7 @@ Sleep 2900ms
 Type "cfgd backup list"
 Enter
 Wait@10s /cfgd\$$/
-# 5 lines → 2s
+# 4 lines → 2s
 Sleep 2s
 
 # Closing hold — the last beat's own hold already covers reading it; this is
