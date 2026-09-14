@@ -18,7 +18,7 @@ pub fn build_profile_show_doc(
     config_path: &Path,
     sources: &[cfgd_core::reconciler::ComposedSource],
     arrow: &str,
-    detail: crate::cli::InventoryDetail,
+    detail: crate::cli::InventoryDetail<'_>,
     show_resolved: bool,
 ) -> Doc {
     // header-row-ok: the heading names the profile and the blocks below ARE the
@@ -71,7 +71,7 @@ pub fn build_profile_show_doc(
 fn build_profile_show_resolved_sections(
     doc: Doc,
     resolved: &ResolvedProfile,
-    detail: crate::cli::InventoryDetail,
+    detail: crate::cli::InventoryDetail<'_>,
 ) -> Doc {
     let mut doc = doc.section("Layers", |s| {
         resolved.layers.iter().fold(s, |s, layer: &ProfileLayer| {
@@ -130,7 +130,7 @@ pub fn own_profile_spec(resolved: &ResolvedProfile) -> Option<&ProfileSpec> {
 /// the invocation asked to see it.
 pub fn profile_inventory_blocks(
     spec: Option<&ProfileSpec>,
-    detail: crate::cli::InventoryDetail,
+    detail: crate::cli::InventoryDetail<'_>,
 ) -> Vec<(&'static str, Vec<KvPair>)> {
     let Some(spec) = spec else {
         return inventory_blocks(&[], &[], None, None, &Default::default(), &[], detail);
@@ -156,7 +156,7 @@ fn inventory_blocks(
     files: Option<&FilesSpec>,
     system: &cfgd_core::config::SystemSettings,
     secrets: &[SecretSpec],
-    detail: crate::cli::InventoryDetail,
+    detail: crate::cli::InventoryDetail<'_>,
 ) -> Vec<(&'static str, Vec<KvPair>)> {
     let mut env_sorted: Vec<&EnvVar> = env.iter().collect();
     env_sorted.sort_by(|a, b| a.name.cmp(&b.name));
@@ -181,10 +181,10 @@ fn inventory_blocks(
             env_sorted
                 .iter()
                 .map(|ev| {
-                    let value = if detail.values {
-                        ev.value.clone()
-                    } else {
+                    let value = if detail.masking.masks(&ev.name) {
                         crate::cli::module::keys::mask_value(&ev.value)
+                    } else {
+                        ev.value.clone()
                     };
                     KvPair::new(
                         &ev.name,
@@ -302,7 +302,7 @@ pub fn cmd_profile_show(
     printer: &Printer,
     name: Option<&str>,
     resolved_view: bool,
-    detail: crate::cli::InventoryDetail,
+    detail: crate::cli::InventoryDetail<'_>,
 ) -> anyhow::Result<()> {
     let declared;
     let (profile_name, resolved) = match name {
@@ -351,6 +351,12 @@ pub fn cmd_profile_show(
             (active, resolved)
         }
     };
+
+    // The names `MaskEnvValues::Secrets` masks by come off the chain this
+    // command already resolved, so no surface of it has to guess which values
+    // a declared secret exports.
+    let secret_envs = resolved.secret_env_names();
+    let detail = detail.with_secret_envs(&secret_envs);
 
     printer.emit(build_profile_show_doc(
         &resolved,

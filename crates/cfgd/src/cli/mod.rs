@@ -457,31 +457,130 @@ pub const RESOLVED_HELP: &str = "Render what this host resolves the declaration 
 /// spelling of the unmask.
 pub const SHOW_VALUES_HELP: &str = "Show full env variable values (default: masked)";
 
-/// What an invocation asked a module's inventories to reveal: the declared env
-/// values in full, and the form its declared scripts render in.
+/// Which declared env values THIS run renders masked, and the names it needs
+/// to answer that per value.
+///
+/// [`cfgd_core::config::MaskEnvValues`] alone cannot answer for
+/// [`MaskEnvValues::Secrets`](cfgd_core::config::MaskEnvValues::Secrets): that
+/// word names a SET of env vars — every name any `spec.secrets[].envs` of the
+/// resolved chain exports — which only a command that has resolved its
+/// configuration holds. So the policy travels from the printer and the set is
+/// attached later, by the command, through [`Self::with_secret_envs`].
+///
+/// A `Secrets` run whose command could not resolve a chain masks everything:
+/// the set it would have had to consult is the only thing that could have said
+/// a value is safe to print, and a resolution that failed says nothing.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct EnvValueMasking<'a> {
+    policy: cfgd_core::config::MaskEnvValues,
+    secret_envs: Option<&'a std::collections::BTreeSet<String>>,
+}
+
+impl<'a> EnvValueMasking<'a> {
+    /// The run's policy, with no secret names resolved yet.
+    #[must_use]
+    pub fn of(policy: cfgd_core::config::MaskEnvValues) -> Self {
+        Self {
+            policy,
+            secret_envs: None,
+        }
+    }
+
+    /// Mask nothing: what `--show-values` and `--show-all` ask for.
+    #[must_use]
+    pub fn revealing() -> Self {
+        Self::of(cfgd_core::config::MaskEnvValues::None)
+    }
+
+    /// The same policy with the run's declared secret env names in hand.
+    #[must_use]
+    pub fn with_secret_envs(self, names: &'a std::collections::BTreeSet<String>) -> Self {
+        Self {
+            secret_envs: Some(names),
+            ..self
+        }
+    }
+
+    /// Whether the value beside `name` renders masked.
+    #[must_use]
+    pub fn masks(&self, name: &str) -> bool {
+        match self.policy {
+            cfgd_core::config::MaskEnvValues::All => true,
+            cfgd_core::config::MaskEnvValues::None => false,
+            cfgd_core::config::MaskEnvValues::Secrets => {
+                self.secret_envs.is_none_or(|names| names.contains(name))
+            }
+        }
+    }
+
+    /// Whether EVERY value masks whatever its name, which is what lets a
+    /// surface skip resolving the secret names at all — and what decides
+    /// whether `cfgd status <module>` itemizes its declared inventories.
+    #[must_use]
+    pub fn masks_every_value(&self) -> bool {
+        self.policy.masks()
+    }
+
+    /// Whether this run still has to resolve the secret names before it can
+    /// answer [`Self::masks`] for real.
+    #[must_use]
+    pub fn wants_secret_envs(&self) -> bool {
+        self.policy.masks_only_secrets() && self.secret_envs.is_none()
+    }
+}
+
+/// What an invocation asked a module's inventories to reveal: which declared
+/// env values render in full, and the form its declared scripts render in.
 ///
 /// `cfgd module show` reads its three flags through `of`; the default is the
 /// view an invocation that passed none of them asks for.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct InventoryDetail {
-    /// Whether a declared env value renders in full rather than masked.
-    pub values: bool,
+pub struct InventoryDetail<'a> {
+    /// Which declared env values render masked.
+    pub masking: EnvValueMasking<'a>,
     /// The form the `Scripts` section takes.
     pub scripts: cfgd_core::output::ScriptsForm,
 }
 
-impl InventoryDetail {
+impl<'a> InventoryDetail<'a> {
     /// The view the `--show-values` / `--show-scripts` / `--show-all` trio asks
     /// for; `--show-all` is each of the other two.
-    pub fn of(values: bool, scripts: bool, all: bool) -> Self {
+    pub fn of(masking: EnvValueMasking<'a>, scripts: bool, all: bool) -> Self {
         Self {
-            values: values || all,
+            masking: if all {
+                EnvValueMasking::revealing()
+            } else {
+                masking
+            },
             scripts: if scripts || all {
                 cfgd_core::output::ScriptsForm::Full
             } else {
                 cfgd_core::output::ScriptsForm::Condensed
             },
         }
+    }
+
+    /// The same view with the run's declared secret env names in hand.
+    #[must_use]
+    pub fn with_secret_envs(self, names: &'a std::collections::BTreeSet<String>) -> Self {
+        Self {
+            masking: self.masking.with_secret_envs(names),
+            ..self
+        }
+    }
+}
+
+/// The masking one read verb runs under: the run-wide policy the printer
+/// carries, unless the verb's own `--show-values` asked for every value.
+#[must_use]
+pub fn env_value_masking(
+    printer: &cfgd_core::output::Printer,
+    show_values: bool,
+) -> EnvValueMasking<'static> {
+    if show_values {
+        EnvValueMasking::revealing()
+    } else {
+        EnvValueMasking::of(printer.mask_env_values())
     }
 }
 
@@ -912,7 +1011,8 @@ pub struct Cli {
     )]
     pub theme: Option<String>,
 
-    /// Which declared env values render masked: all (the default) or none.
+    /// Which declared env values render masked: all (the default), secrets
+    /// (only a value a declared secret exports) or none.
     /// `spec.output.maskEnvValues` does the same thing persistently; this flag
     /// wins over it, and a verb's own `--show-values` is the per-verb spelling
     /// of `none`.
@@ -921,7 +1021,7 @@ pub struct Cli {
         global = true,
         value_name = "MODE",
         env = "CFGD_MASK_ENV_VALUES",
-        value_parser = clap::builder::PossibleValuesParser::new(["all", "none"])
+        value_parser = clap::builder::PossibleValuesParser::new(["all", "secrets", "none"])
     )]
     pub mask_env_values: Option<String>,
 
@@ -2943,7 +3043,11 @@ pub fn execute(
             status::StatusRun {
                 exit_code: *exit_code,
                 scan: *scan,
-                show_values: *show_values || !printer.masks_env_values(),
+                mask_env_values: if *show_values {
+                    cfgd_core::config::MaskEnvValues::None
+                } else {
+                    printer.mask_env_values()
+                },
             },
         ),
         Command::Diff { module, exit_code } => {
@@ -2969,7 +3073,7 @@ pub fn execute(
                 printer,
                 name.as_deref(),
                 *resolved,
-                InventoryDetail::of(*show_values || !printer.masks_env_values(), false, false),
+                InventoryDetail::of(env_value_masking(printer, *show_values), false, false),
             ),
             ProfileCommand::List => profile::cmd_profile_list(cli, printer),
             ProfileCommand::Switch { name } => profile::cmd_profile_switch(cli, name, printer),
@@ -3041,7 +3145,7 @@ pub fn execute(
                 printer,
                 name,
                 InventoryDetail::of(
-                    *show_values || !printer.masks_env_values(),
+                    env_value_masking(printer, *show_values),
                     *show_scripts,
                     *show_all,
                 ),
@@ -3176,7 +3280,7 @@ pub fn execute(
                 cli,
                 printer,
                 name,
-                InventoryDetail::of(*show_values || !printer.masks_env_values(), false, false),
+                InventoryDetail::of(env_value_masking(printer, *show_values), false, false),
             ),
             SourceCommand::Remove {
                 name,

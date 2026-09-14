@@ -43,7 +43,7 @@ pub fn build_source_show_doc(
     output: &SourceShowOutput,
     manifest: Option<&ConfigSourceDocument>,
     profiles_dir: Option<&Path>,
-    detail: crate::cli::InventoryDetail,
+    detail: crate::cli::InventoryDetail<'_>,
 ) -> Doc {
     // `Show source:acme`, not `Source: acme`: the subject IS an owner, and a
     // `Label: value` title spelled its kind a second way — every other surface
@@ -124,7 +124,7 @@ pub fn source_manifest_doc_sections(
     manifest: &ConfigSourceDocument,
     policy: Option<&SourcePolicyOutput>,
     profiles_dir: Option<&Path>,
-    detail: crate::cli::InventoryDetail,
+    detail: crate::cli::InventoryDetail<'_>,
 ) -> Doc {
     let mut doc = doc.section("Manifest", |s| {
         // Name, then what the source SAYS it is, then which revision of it —
@@ -168,6 +168,12 @@ pub fn source_manifest_doc_sections(
                     // look" vs "is absent" split `try_file_identity` draws.
                     match profiles_dir.map(|dir| cfgd_core::config::resolve_profile(name, dir)) {
                         Some(Ok(resolved)) => {
+                            // The secret names a `Secrets` run masks by are
+                            // the ones THIS profile declares: the source's own
+                            // chain is what the rows below come from, not the
+                            // chain the reader's machine runs under.
+                            let secret_envs = resolved.secret_env_names();
+                            let detail = detail.with_secret_envs(&secret_envs);
                             for (block, rows) in
                                 crate::cli::profile::show::profile_inventory_blocks(
                                     crate::cli::profile::show::own_profile_spec(&resolved),
@@ -415,7 +421,7 @@ pub fn cmd_source_show(
     cli: &Cli,
     printer: &Printer,
     name: &str,
-    detail: crate::cli::InventoryDetail,
+    detail: crate::cli::InventoryDetail<'_>,
 ) -> anyhow::Result<()> {
     let config_path = cli.config.clone();
     let mut cfg = config::load_config(&config_path)?;

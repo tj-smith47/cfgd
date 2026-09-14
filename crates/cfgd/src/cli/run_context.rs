@@ -1,4 +1,5 @@
 use std::cell::{Cell, OnceCell};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use cfgd_core::config::{CfgdConfig, PackagesSpec, ResolvedProfile};
@@ -141,6 +142,18 @@ impl<'a> RunContext<'a> {
         let pair = resolve_profile_for(self.cli, cfg)?;
         let (name, resolved) = self.profile.get_or_init(|| pair);
         Ok((cfg, name, resolved))
+    }
+
+    /// Every env var name a declared secret exports, across the profile chain
+    /// this run resolves — the set `MaskEnvValues::Secrets` masks by.
+    ///
+    /// `None` where the run could not resolve a chain at all, which a caller
+    /// reads as "say nothing", never as "no secrets": a `Secrets` run holding
+    /// no set masks every value rather than printing one it cannot vouch for.
+    pub(in crate::cli) fn secret_env_names(&self) -> Option<BTreeSet<String>> {
+        self.config_and_profile()
+            .ok()
+            .map(|(_, _, resolved)| resolved.secret_env_names())
     }
 
     /// Best-effort name of the profile a module-only command runs under: the

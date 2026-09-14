@@ -337,7 +337,7 @@ fn profile_show_masks_declared_env_values_until_show_values() {
         Path::new("/etc/cfgd/cfgd.yaml"),
         &[],
         printer.arrow(),
-        InventoryDetail::of(true, false, false),
+        InventoryDetail::of(cfgd::cli::EnvValueMasking::revealing(), false, false),
         false,
     ));
     drop(printer);

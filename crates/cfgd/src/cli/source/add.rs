@@ -183,7 +183,7 @@ pub(super) fn run_source_add(
         manifest,
         Some(&policy),
         profiles_dir.as_deref(),
-        crate::cli::InventoryDetail::of(true, false, false),
+        crate::cli::InventoryDetail::of(crate::cli::EnvValueMasking::revealing(), false, false),
     ));
 
     // Profile selection: explicit flag > platform auto-detect > single profile > interactive

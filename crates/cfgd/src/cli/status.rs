@@ -2237,7 +2237,11 @@ fn display_type(kind: &str) -> &str {
 ///
 /// `now` is a parameter, not a clock read, so the `Last Applied` age pins in a
 /// golden.
-pub fn build_module_status_doc(output: &ModuleStatus, view: ModuleStatusView, now: &str) -> Doc {
+pub fn build_module_status_doc(
+    output: &ModuleStatus,
+    view: ModuleStatusView<'_>,
+    now: &str,
+) -> Doc {
     // One aligned block: the Status row needs a role-tinted value, which only
     // `kv_rows` can carry, and `kv_rows` does not coalesce with a preceding
     // `kv` block — so every row of the header is built here.
@@ -2256,7 +2260,7 @@ pub fn build_module_status_doc(output: &ModuleStatus, view: ModuleStatusView, no
     }
     // The counts are what the compact view has INSTEAD of the inventories: a
     // report that showed both would state every fact twice.
-    if view == ModuleStatusView::Compact {
+    if matches!(view, ModuleStatusView::Compact) {
         rows.push(KvPair::new("Packages", output.packages.to_string()));
         rows.push(KvPair::new("Files", output.files.to_string()));
         // `Aliases` and `Env` are the two halves of the shell surface `diff`
@@ -2345,9 +2349,7 @@ pub fn build_module_status_doc(output: &ModuleStatus, view: ModuleStatusView, no
         // No Drift section: every finding is already an inline verdict on the
         // inventory row for the thing it was found on, and repeating it below
         // would let one report state a verdict twice.
-        ModuleStatusView::Inventory { show_values } => {
-            render_module_inventories(doc, output, show_values)
-        }
+        ModuleStatusView::Inventory { masking } => render_module_inventories(doc, output, masking),
     };
 
     // Rows this module's scope owns but the scan could not re-examine, after
@@ -2382,18 +2384,25 @@ pub fn build_module_status_doc(output: &ModuleStatus, view: ModuleStatusView, no
 }
 
 /// How much of a module a status report itemizes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ModuleStatusView {
+#[derive(Debug, Clone, Copy)]
+pub enum ModuleStatusView<'a> {
     /// Counts, then the drift the scan found (the default).
     Compact,
     /// One row per declared item, with each one's verdict inline (`-o wide`).
-    /// `show_values` renders the declared value beside a name.
-    Inventory { show_values: bool },
+    /// `masking` decides, per name, whether the declared value renders
+    /// beside it or the row states the name alone.
+    Inventory {
+        masking: crate::cli::EnvValueMasking<'a>,
+    },
 }
 
 /// The wide view's inventories: one section per declared surface, each row
 /// carrying its own verdict.
-fn render_module_inventories(doc: Doc, output: &ModuleStatus, show_values: bool) -> Doc {
+fn render_module_inventories(
+    doc: Doc,
+    output: &ModuleStatus,
+    masking: crate::cli::EnvValueMasking<'_>,
+) -> Doc {
     // A check that could not run belongs to the section whose rows it is about,
     // read through the ONE key-grammar answerer the Component Health
     // attribution asks: an env surface's own path is a finding about the Shell
@@ -2561,7 +2570,7 @@ fn render_module_inventories(doc: Doc, output: &ModuleStatus, show_values: bool)
                         // facts-block-ok: this branch renders the inventory row
                         // INSTEAD of a status row, and the rows around it are
                         // the same inventory, not a run's result lines.
-                        None if show_values && !probe_errored => s.kv(
+                        None if !masking.masks(&alias.name) && !probe_errored => s.kv(
                             &alias.name,
                             super::module::list_show::gated_value(alias.command.clone(), alias),
                         ),
@@ -2581,7 +2590,7 @@ fn render_module_inventories(doc: Doc, output: &ModuleStatus, show_values: bool)
                         // facts-block-ok: the inventory row this branch
                         // renders stands in for a status row, beside other
                         // rows of the same inventory.
-                        None if show_values && !probe_errored => s.kv(
+                        None if !masking.masks(&ev.name) && !probe_errored => s.kv(
                             &ev.name,
                             super::module::list_show::gated_value(ev.value.clone(), ev),
                         ),
@@ -2655,8 +2664,8 @@ pub(super) struct StatusRun {
     pub exit_code: bool,
     /// Check the machine rather than reporting what is recorded.
     pub scan: bool,
-    /// Render each declared item's own value beside its name.
-    pub show_values: bool,
+    /// Which declared env values render beside their names.
+    pub mask_env_values: cfgd_core::config::MaskEnvValues,
 }
 
 pub(super) fn cmd_status(
@@ -2668,7 +2677,7 @@ pub(super) fn cmd_status(
     let StatusRun {
         exit_code,
         scan,
-        show_values,
+        mask_env_values,
     } = run;
     // `--exit-code` implies the live scan `--scan` names explicitly: a CI
     // gate has to reflect reality regardless of whether the caller also asked
@@ -2679,9 +2688,19 @@ pub(super) fn cmd_status(
     if let Some(mod_name) = module_filter {
         // `--show-values` is a request to see the declared items themselves,
         // which only the itemized view has rows for, so it implies that view
-        // rather than silently doing nothing beside the counts.
-        let view = if printer.is_wide() || show_values {
-            ModuleStatusView::Inventory { show_values }
+        // rather than silently doing nothing beside the counts. So does any
+        // policy under which SOME value would render: a run masking every one
+        // of them has nothing to itemize that the counts do not already say.
+        let masking = crate::cli::EnvValueMasking::of(mask_env_values);
+        // Resolved only where the answer depends on it, because a `show`-class
+        // report should not load a profile to decide it has nothing to reveal.
+        let secret_envs = masking.wants_secret_envs().then(|| ctx.secret_env_names());
+        let masking = match secret_envs.as_ref().and_then(Option::as_ref) {
+            Some(names) => masking.with_secret_envs(names),
+            None => masking,
+        };
+        let view = if printer.is_wide() || !masking.masks_every_value() {
+            ModuleStatusView::Inventory { masking }
         } else {
             ModuleStatusView::Compact
         };
@@ -3139,7 +3158,7 @@ pub(super) fn cmd_status_module(
     mod_name: &str,
     exit_code: bool,
     do_scan: bool,
-    view: ModuleStatusView,
+    view: ModuleStatusView<'_>,
 ) -> anyhow::Result<()> {
     let cli = ctx.cli();
     let printer = ctx.printer();
@@ -5498,7 +5517,9 @@ mod tests {
             // The invocation the wording above describes: `--show-values`,
             // under which a clean row is a kv pair. An errored probe is not a
             // clean row, so the verdict has to survive the flag.
-            ModuleStatusView::Inventory { show_values: true },
+            ModuleStatusView::Inventory {
+                masking: crate::cli::EnvValueMasking::revealing(),
+            },
             "2026-05-14T10:05:00Z",
         ));
         drop(printer);
@@ -5573,7 +5594,9 @@ mod tests {
         let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
         printer.emit(build_module_status_doc(
             &output,
-            ModuleStatusView::Inventory { show_values: true },
+            ModuleStatusView::Inventory {
+                masking: crate::cli::EnvValueMasking::revealing(),
+            },
             "2026-05-14T10:05:00Z",
         ));
         drop(printer);
@@ -6455,7 +6478,7 @@ mod tests {
             &printer,
             Some("test-mod"),
             StatusRun {
-                show_values: true,
+                mask_env_values: cfgd_core::config::MaskEnvValues::None,
                 ..StatusRun::default()
             },
         )
@@ -6518,7 +6541,11 @@ mod tests {
                 &printer,
                 Some("test-mod"),
                 StatusRun {
-                    show_values,
+                    mask_env_values: if show_values {
+                        cfgd_core::config::MaskEnvValues::None
+                    } else {
+                        cfgd_core::config::MaskEnvValues::All
+                    },
                     ..StatusRun::default()
                 },
             )
@@ -7845,7 +7872,9 @@ mod tests {
             "test-mod",
             false,
             false,
-            ModuleStatusView::Inventory { show_values: false },
+            ModuleStatusView::Inventory {
+                masking: crate::cli::EnvValueMasking::default(),
+            },
         )
         .unwrap();
         drop(printer);
@@ -8079,7 +8108,9 @@ mod tests {
             "test-mod",
             false,
             false,
-            ModuleStatusView::Inventory { show_values: false },
+            ModuleStatusView::Inventory {
+                masking: crate::cli::EnvValueMasking::default(),
+            },
         )
         .unwrap();
         drop(printer);
@@ -8252,7 +8283,9 @@ mod tests {
             "test-mod",
             false,
             true,
-            ModuleStatusView::Inventory { show_values: false },
+            ModuleStatusView::Inventory {
+                masking: crate::cli::EnvValueMasking::default(),
+            },
         )
         .unwrap();
         drop(printer);
@@ -8288,7 +8321,9 @@ mod tests {
             "test-mod",
             false,
             true,
-            ModuleStatusView::Inventory { show_values: false },
+            ModuleStatusView::Inventory {
+                masking: crate::cli::EnvValueMasking::default(),
+            },
         )
         .unwrap();
         drop(printer);
@@ -8323,7 +8358,9 @@ mod tests {
             "test-mod",
             false,
             true,
-            ModuleStatusView::Inventory { show_values: false },
+            ModuleStatusView::Inventory {
+                masking: crate::cli::EnvValueMasking::default(),
+            },
         )
         .unwrap();
         drop(printer);
@@ -8359,7 +8396,9 @@ mod tests {
             "test-mod",
             false,
             false,
-            ModuleStatusView::Inventory { show_values: false },
+            ModuleStatusView::Inventory {
+                masking: crate::cli::EnvValueMasking::default(),
+            },
         )
         .unwrap();
         drop(printer);
@@ -8411,7 +8450,9 @@ mod tests {
             "test-mod",
             false,
             false,
-            ModuleStatusView::Inventory { show_values: false },
+            ModuleStatusView::Inventory {
+                masking: crate::cli::EnvValueMasking::default(),
+            },
         )
         .unwrap();
         drop(printer);
@@ -9292,7 +9333,9 @@ mod tests {
             "test-mod",
             false,
             false,
-            ModuleStatusView::Inventory { show_values: false },
+            ModuleStatusView::Inventory {
+                masking: crate::cli::EnvValueMasking::default(),
+            },
         )
         .unwrap();
         drop(printer);
@@ -9383,7 +9426,9 @@ mod tests {
             "test-mod",
             false,
             false,
-            ModuleStatusView::Inventory { show_values: false },
+            ModuleStatusView::Inventory {
+                masking: crate::cli::EnvValueMasking::default(),
+            },
         )
         .unwrap();
         drop(printer);

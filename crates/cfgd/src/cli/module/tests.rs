@@ -860,7 +860,7 @@ fn cmd_module_show_env_unmasked() {
         &printer,
         "env-mod",
         crate::cli::InventoryDetail {
-            values: true,
+            masking: crate::cli::EnvValueMasking::revealing(),
             scripts: cfgd_core::output::ScriptsForm::Condensed,
         },
         false,
@@ -7985,11 +7985,15 @@ fn every_surface_naming_the_shell_pair_lists_aliases_first() {
         ),
         (
             "cfgd status <module> -o wide",
-            crate::cli::status::ModuleStatusView::Inventory { show_values: false },
+            crate::cli::status::ModuleStatusView::Inventory {
+                masking: crate::cli::EnvValueMasking::default(),
+            },
         ),
         (
             "cfgd status <module> --show-values",
-            crate::cli::status::ModuleStatusView::Inventory { show_values: true },
+            crate::cli::status::ModuleStatusView::Inventory {
+                masking: crate::cli::EnvValueMasking::revealing(),
+            },
         ),
     ] {
         let (printer, buf) =

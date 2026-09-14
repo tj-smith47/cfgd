@@ -292,7 +292,7 @@ fn emit_knobbed_show(form: ScriptsForm, golden: &str) {
         &output,
         None,
         InventoryDetail {
-            values: false,
+            masking: cfgd::cli::EnvValueMasking::default(),
             scripts: form,
         },
         printer.arrow(),
@@ -334,7 +334,7 @@ fn module_show_scripts_full_renders_the_approved_dracula_bytes() {
         &output,
         None,
         InventoryDetail {
-            values: false,
+            masking: cfgd::cli::EnvValueMasking::default(),
             scripts: ScriptsForm::Full,
         },
         printer.arrow(),

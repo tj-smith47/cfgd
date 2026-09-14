@@ -6567,6 +6567,7 @@
             "description": "Which declared env values cfgd hides where it renders one. Omitted, every value is masked.",
             "enum": [
               "All",
+              "Secrets",
               "None"
             ],
             "name": "maskEnvValues",

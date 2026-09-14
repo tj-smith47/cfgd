@@ -151,6 +151,24 @@ impl ResolvedProfile {
         local_names.pop();
         local_names.into_iter().rev().map(String::from).collect()
     }
+
+    /// Every env var name a declared secret exports, across every layer of the
+    /// chain and the merge they fold into.
+    ///
+    /// The ONE derivation of the set `MaskEnvValues::Secrets` masks by: a
+    /// declared value is a secret's value exactly when a `spec.secrets[].envs`
+    /// entry names it. Both halves are read because a layer's secret can be
+    /// dropped or rewritten by the fold, and a name the operator wrote in ANY
+    /// layer of the chain they are looking at is still a secret's name.
+    pub fn secret_env_names(&self) -> std::collections::BTreeSet<String> {
+        let per_layer = self.layers.iter().flat_map(|layer| &layer.spec.secrets);
+        per_layer
+            .chain(self.merged.secrets.iter())
+            .filter_map(|secret| secret.envs.as_ref())
+            .flatten()
+            .cloned()
+            .collect()
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -956,5 +974,74 @@ mod tests {
             layer("child", Some(EnvScope::Login)),
         ]);
         assert_eq!(merged.env_scope, EnvScope::Login);
+    }
+
+    fn secret_layer(name: &str, envs: &[&str]) -> ProfileLayer {
+        ProfileLayer {
+            spec: ProfileSpec {
+                secrets: vec![crate::config::SecretSpec {
+                    source: format!("{name}-secret"),
+                    target: None,
+                    template: None,
+                    backend: None,
+                    envs: Some(envs.iter().map(|e| (*e).to_string()).collect()),
+                }],
+                ..Default::default()
+            },
+            ..layer(name, None)
+        }
+    }
+
+    /// The set `MaskEnvValues::Secrets` masks by is the union over the WHOLE
+    /// chain and the merge it folds into: a parent's secret still names a
+    /// secret's value on the screen the operator is looking at, even where the
+    /// child's fold no longer carries that secret. A secret declaring no
+    /// `envs:` exports no name and contributes nothing.
+    #[test]
+    fn the_secret_env_names_of_a_chain_are_the_union_of_every_layer_and_the_merge() {
+        let layers = vec![
+            secret_layer("base", &["AWS_SECRET_ACCESS_KEY"]),
+            secret_layer("child", &["GH_TOKEN"]),
+            ProfileLayer {
+                spec: ProfileSpec {
+                    secrets: vec![crate::config::SecretSpec {
+                        source: "no-envs".to_string(),
+                        target: None,
+                        template: None,
+                        backend: None,
+                        envs: None,
+                    }],
+                    ..Default::default()
+                },
+                ..layer("leaf", None)
+            },
+        ];
+        // The two halves are read separately, because neither implies the
+        // other: a layer's secret the fold dropped still named a secret on the
+        // screen the operator is looking at, and a secret composition added is
+        // in no layer of the chain at all.
+        let mut merged = merge_layers(&layers);
+        merged.secrets.clear();
+        let layers_only = ResolvedProfile {
+            layers: layers.clone(),
+            merged,
+        };
+        let names = layers_only.secret_env_names();
+        assert!(names.contains("AWS_SECRET_ACCESS_KEY"), "{names:?}");
+        assert!(names.contains("GH_TOKEN"), "{names:?}");
+        assert!(
+            !names.contains("EDITOR"),
+            "a name no secret exports is not in the set: {names:?}"
+        );
+        assert_eq!(names.len(), 2, "{names:?}");
+
+        let merged_only = ResolvedProfile {
+            layers: Vec::new(),
+            merged: merge_layers(&layers),
+        };
+        let names = merged_only.secret_env_names();
+        assert!(names.contains("AWS_SECRET_ACCESS_KEY"), "{names:?}");
+        assert!(names.contains("GH_TOKEN"), "{names:?}");
+        assert_eq!(names.len(), 2, "{names:?}");
     }
 }

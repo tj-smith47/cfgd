@@ -261,7 +261,7 @@ fn build_module_show_resolved_packages(doc: Doc, packages: &[PackageDisplay], ar
 pub fn build_module_show_doc(
     output: &ModuleShowOutput,
     lock_entry: Option<&ModuleLockEntry>,
-    detail: crate::cli::InventoryDetail,
+    detail: crate::cli::InventoryDetail<'_>,
     arrow: &str,
 ) -> Doc {
     // One aligned block: `kv_rows` does not coalesce with a preceding `kv`
@@ -337,10 +337,10 @@ pub fn build_module_show_doc(
 
     doc = doc.section_if_nonempty("Env", &output.spec.env, |s, env| {
         env.iter().fold(s, |s, ev| {
-            let display = if detail.values {
-                ev.value.clone()
-            } else {
+            let display = if detail.masking.masks(&ev.name) {
                 mask_value(&ev.value)
+            } else {
+                ev.value.clone()
             };
             s.kv(&ev.name, gated_value(display, ev))
         })
@@ -497,7 +497,7 @@ pub(crate) fn cmd_module_show(
     cli: &Cli,
     printer: &Printer,
     name: &str,
-    detail: crate::cli::InventoryDetail,
+    detail: crate::cli::InventoryDetail<'_>,
     resolved: bool,
 ) -> anyhow::Result<()> {
     let config_dir = config_dir(cli);
@@ -553,6 +553,21 @@ pub(crate) fn cmd_module_show(
         depends: module.spec.depends.clone(),
         spec: module.spec.clone(),
         resolved: resolved_packages,
+    };
+
+    // `MaskEnvValues::Secrets` names a SET of env vars, and that set lives in
+    // the profile chain rather than in the module — a module declares no
+    // secrets of its own. Resolved only where the policy needs it, so an
+    // ordinary `module show` still reads the module's own files and nothing
+    // else.
+    let secret_envs = detail
+        .masking
+        .wants_secret_envs()
+        .then(|| crate::cli::RunContext::new(cli, printer).secret_env_names())
+        .flatten();
+    let detail = match secret_envs.as_ref() {
+        Some(names) => detail.with_secret_envs(names),
+        None => detail,
     };
 
     printer.emit(build_module_show_doc(

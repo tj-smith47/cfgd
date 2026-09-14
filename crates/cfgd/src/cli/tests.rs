@@ -1688,7 +1688,7 @@ fn source_manifest_sections_render_a_provided_profiles_own_content() {
         &manifest,
         None,
         Some(dir.path()),
-        crate::cli::InventoryDetail::of(true, false, false),
+        crate::cli::InventoryDetail::of(crate::cli::EnvValueMasking::revealing(), false, false),
     ));
     drop(printer);
     let shown = cfgd_core::test_helpers::captured_text(&buf);
@@ -9779,7 +9779,7 @@ spec:
         &printer,
         "secrets-mod",
         super::InventoryDetail {
-            values: true,
+            masking: crate::cli::EnvValueMasking::revealing(),
             scripts: cfgd_core::output::ScriptsForm::Condensed,
         },
         false,
@@ -15111,7 +15111,9 @@ fn every_verdict_that_shows_pending_work_names_the_command_that_settles_it() {
         // in a Drift section, and closes on the same command for it.
         for view in [
             super::status::ModuleStatusView::Compact,
-            super::status::ModuleStatusView::Inventory { show_values: false },
+            super::status::ModuleStatusView::Inventory {
+                masking: crate::cli::EnvValueMasking::default(),
+            },
         ] {
             let (printer, buf) = test_printer_capture();
             printer.emit(super::status::build_module_status_doc(
@@ -36976,7 +36978,9 @@ fn no_report_slot_spells_the_home_directory_absolutely() {
             "cfgd status <module> -o wide",
             super::status::build_module_status_doc(
                 &module,
-                super::status::ModuleStatusView::Inventory { show_values: false },
+                super::status::ModuleStatusView::Inventory {
+                    masking: crate::cli::EnvValueMasking::default(),
+                },
                 now,
             ),
         ),
@@ -41950,5 +41954,125 @@ fn every_e2e_suite_runs_under_the_one_scratch_home() {
          sources tests/e2e/{REDIRECT} and fails the run when the real config directory \
          changed:\n{}",
         offenders.join("\n")
+    );
+}
+
+/// `MaskEnvValues::Secrets` masks a value exactly when a declared secret
+/// exports its NAME, and the two surfaces that render a declared env value the
+/// same way have to agree about which one that is: a screen where `module
+/// show` prints a token `profile show` hides is worse than either policy on
+/// its own. Both halves are driven from one masking so a change to either
+/// render has to keep them one answer.
+#[test]
+fn a_secrets_run_masks_only_the_values_a_declared_secret_exports() {
+    use cfgd_core::config::MaskEnvValues;
+
+    let dir = tempfile::tempdir().unwrap();
+    create_module_in_dir(
+        dir.path(),
+        "mixed-mod",
+        r#"apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: mixed-mod
+spec:
+  env:
+    - name: GH_TOKEN
+      value: ghp-secret-token-abc
+    - name: EDITOR
+      value: nvim-is-not-a-secret
+"#,
+    );
+
+    let secret_envs: std::collections::BTreeSet<String> =
+        ["GH_TOKEN".to_string()].into_iter().collect();
+    let detail = super::InventoryDetail::of(
+        super::EnvValueMasking::of(MaskEnvValues::Secrets),
+        false,
+        false,
+    )
+    .with_secret_envs(&secret_envs);
+
+    let state_dir = dir.path().join("state");
+    let cli = test_cli_with_state(dir.path(), Some(state_dir));
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    module::cmd_module_show(&cli, &printer, "mixed-mod", detail, false).unwrap();
+    drop(printer);
+    let module_render = cfgd_core::test_helpers::captured_text(&buf);
+
+    // The profile surface, over the same two names and the same masking.
+    let spec: cfgd_core::config::ProfileSpec = serde_yaml::from_str(
+        "env:\n  - name: GH_TOKEN\n    value: ghp-secret-token-abc\n  - name: EDITOR\n    value: nvim-is-not-a-secret\n",
+    )
+    .unwrap();
+    let profile_render: String =
+        super::profile::show::profile_inventory_blocks(Some(&spec), detail)
+            .into_iter()
+            .flat_map(|(_, rows)| rows)
+            .map(|row| format!("{} {}\n", row.key, row.value))
+            .collect();
+
+    for (surface, render) in [
+        ("module show", &module_render),
+        ("profile show", &profile_render),
+    ] {
+        assert!(
+            !render.contains("ghp-secret-token-abc"),
+            "{surface} must mask the value a declared secret exports:\n{render}"
+        );
+        assert!(
+            render.contains("nvim-is-not-a-secret"),
+            "{surface} must render a value no secret exports in full:\n{render}"
+        );
+    }
+}
+
+/// Every production site that masks a declared env value asks ONE question —
+/// `EnvValueMasking::masks(name)` — so a surface cannot answer for a name the
+/// rest of the run would have answered differently. The walk reads the whole
+/// `cli/` production tree and fails on a `mask_value(` call whose own function
+/// never consults the masking.
+#[test]
+fn every_declared_env_value_a_surface_masks_is_decided_by_the_one_masking() {
+    let cli_dir = cfgd_core::test_helpers::workspace_root()
+        .join("crates")
+        .join("cfgd")
+        .join("src")
+        .join("cli");
+    let mut witnesses = 0usize;
+    for path in cfgd_core::test_helpers::rust_sources_under(&cli_dir) {
+        // A `tests.rs` is a whole file of test region: nothing cuts it, so the
+        // walk names it rather than reading its asserts as production sites.
+        if path.file_stem().is_some_and(|s| s == "tests") {
+            continue;
+        }
+        let body = cfgd_core::test_helpers::production_slice_of(&path);
+        for (i, raw) in body.lines().enumerate() {
+            let line = cfgd_core::test_helpers::blank_string_literals(raw);
+            if !line.contains("mask_value(") || line.contains("fn mask_value") {
+                continue;
+            }
+            witnesses += 1;
+            // The decision is taken on the branch that chose this call, which
+            // the walk reads as the ten lines above it: every masking site is
+            // one `if` away from the value it masks.
+            let window: String = body
+                .lines()
+                .skip(i.saturating_sub(10))
+                .take(11)
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(
+                window.contains("masking.masks("),
+                "{}:{} masks a declared env value without asking EnvValueMasking::masks:\n{window}",
+                path.display(),
+                i + 1
+            );
+        }
+    }
+    assert!(
+        witnesses >= 2,
+        "the walk found {witnesses} masking sites; `module show` and `profile show` both mask one"
     );
 }

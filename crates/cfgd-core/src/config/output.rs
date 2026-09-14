@@ -47,6 +47,10 @@ pub enum MaskEnvValues {
     /// Mask every declared value. The default.
     #[default]
     All,
+    /// Mask only a value a declared secret exports: a name listed in any
+    /// `spec.secrets[].envs` of the resolved chain. Every other value renders
+    /// in full.
+    Secrets,
     /// Mask nothing: every declared value renders in full, as though
     /// `--show-values` had been passed to every verb that takes it.
     None,
@@ -54,14 +58,26 @@ pub enum MaskEnvValues {
 
 case_insensitive_enum!(MaskEnvValues {
     "All" => MaskEnvValues::All,
+    "Secrets" => MaskEnvValues::Secrets,
     "None" => MaskEnvValues::None,
 });
 
 impl MaskEnvValues {
-    /// Whether a declared env value renders masked under this policy.
+    /// Whether EVERY declared env value renders masked under this policy.
+    ///
+    /// The blunt question, for a caller with no name in hand. A caller
+    /// rendering one named value asks `cli::EnvValueMasking::masks(name)`,
+    /// which is the only reader that can answer for [`Self::Secrets`].
     #[must_use]
     pub fn masks(self) -> bool {
         matches!(self, Self::All)
+    }
+
+    /// Whether this policy masks a value only because a declared secret
+    /// exports its name.
+    #[must_use]
+    pub fn masks_only_secrets(self) -> bool {
+        matches!(self, Self::Secrets)
     }
 }
 
@@ -70,10 +86,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn mask_env_values_parses_every_casing_of_its_two_words() {
+    fn mask_env_values_parses_every_casing_of_its_three_words() {
         for (raw, want) in [
             ("All", MaskEnvValues::All),
             ("all", MaskEnvValues::All),
+            ("Secrets", MaskEnvValues::Secrets),
+            ("secrets", MaskEnvValues::Secrets),
+            ("SECRETS", MaskEnvValues::Secrets),
             ("NONE", MaskEnvValues::None),
             ("none", MaskEnvValues::None),
         ] {
@@ -81,8 +100,20 @@ mod tests {
             assert_eq!(parsed, want, "{raw} must parse as {want:?}");
         }
         assert!(
-            serde_yaml::from_str::<MaskEnvValues>("secrets").is_err(),
+            serde_yaml::from_str::<MaskEnvValues>("some").is_err(),
             "a word no variant spells must be refused"
+        );
+        assert!(
+            MaskEnvValues::All.masks() && !MaskEnvValues::All.masks_only_secrets(),
+            "All masks everything and is not the secrets-only policy"
+        );
+        assert!(
+            !MaskEnvValues::Secrets.masks() && MaskEnvValues::Secrets.masks_only_secrets(),
+            "Secrets masks by name, so the blunt question answers no"
+        );
+        assert!(
+            !MaskEnvValues::None.masks() && !MaskEnvValues::None.masks_only_secrets(),
+            "None masks nothing"
         );
     }
 

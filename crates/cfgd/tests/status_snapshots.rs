@@ -722,7 +722,9 @@ fn status_per_module_clean_human() {
 fn status_per_module_wide_human() {
     emit_module(
         &per_module_scanned_output(),
-        ModuleStatusView::Inventory { show_values: false },
+        ModuleStatusView::Inventory {
+            masking: cfgd::cli::EnvValueMasking::default(),
+        },
         "status/per_module_wide.txt",
     );
 }
@@ -733,7 +735,9 @@ fn status_per_module_wide_human() {
 fn status_per_module_show_values_human() {
     emit_module(
         &per_module_scanned_output(),
-        ModuleStatusView::Inventory { show_values: true },
+        ModuleStatusView::Inventory {
+            masking: cfgd::cli::EnvValueMasking::revealing(),
+        },
         "status/per_module_show_values.txt",
     );
 }

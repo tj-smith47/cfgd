@@ -398,6 +398,11 @@
           "type": "string"
         },
         {
+          "const": "Secrets",
+          "description": "Mask only a value a declared secret exports: a name listed in any `spec.secrets[].envs` of the resolved chain. Every other value renders in full.",
+          "type": "string"
+        },
+        {
           "const": "None",
           "description": "Mask nothing: every declared value renders in full, as though `--show-values` had been passed to every verb that takes it.",
           "type": "string"
