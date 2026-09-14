@@ -1829,8 +1829,10 @@ enum FindingSlot {
 /// merged map would let the name order decide instead.
 struct PackageOwners {
     /// `(manager, package)` to the FIRST module of `output.modules` whose
-    /// resolution declares it, matching the `find` this replaced.
-    by_module: std::collections::BTreeMap<(String, String), cfgd_core::reconciler::Owner>,
+    /// resolution declares it, carrying that module's index so a row naming
+    /// several packages answers with the earliest-declared module, as the
+    /// `find` over modules this replaced did.
+    by_module: std::collections::BTreeMap<(String, String), (usize, cfgd_core::reconciler::Owner)>,
     /// The `(manager, package)` pairs the profile's own recorded rows hold.
     by_profile: std::collections::BTreeSet<(String, String)>,
 }
@@ -1839,12 +1841,12 @@ impl PackageOwners {
     fn of(output: &StatusOutput) -> Self {
         use cfgd_core::reconciler::Owner;
         let mut by_module = std::collections::BTreeMap::new();
-        for module in &output.modules {
+        for (index, module) in output.modules.iter().enumerate() {
             for (name, managers) in &module.declared.package_managers {
                 for manager in managers {
                     by_module
                         .entry((manager.clone(), name.clone()))
-                        .or_insert_with(|| Owner::module(&module.name));
+                        .or_insert_with(|| (index, Owner::module(&module.name)));
                 }
             }
         }
@@ -1881,11 +1883,16 @@ fn package_owner(
     // how a declared package rendered loose while its owner read clean.
     let (manager, names) = cfgd_core::reconciler::split_package_drift_resource_id(resource_id)?;
     let names = || names.iter().map(|name| name.trim());
-    if let Some(owner) = names().find_map(|name| {
-        owners
-            .by_module
-            .get(&(manager.to_string(), name.to_string()))
-    }) {
+    // A legacy comma-joined row names several packages, and the module that
+    // declares one FIRST owns it however the names are ordered in the id.
+    if let Some((_, owner)) = names()
+        .filter_map(|name| {
+            owners
+                .by_module
+                .get(&(manager.to_string(), name.to_string()))
+        })
+        .min_by_key(|(index, _)| *index)
+    {
         return Some(owner.clone());
     }
     // The profile's declaration is its own recorded package rows, read back
@@ -4525,6 +4532,50 @@ mod tests {
             owners,
             ["cfgd:env", "module:nvim", cfgd_core::ABSENT],
             "{rows:?}"
+        );
+    }
+
+    /// A legacy comma-joined package row answers with the module that declares
+    /// one of its names FIRST, whatever order the names sit in the id.
+    ///
+    /// `package_drift_resource_id` mints exactly one package per row, so only a
+    /// row written by an older cfgd carries several. The owner lookup is a map
+    /// now rather than a scan over the modules, and a map answers by the key it
+    /// is asked for: asking name by name would let the id's own ordering pick
+    /// the owner, so the module INDEX rides along and the earliest wins.
+    #[test]
+    fn a_legacy_multi_name_package_row_answers_with_the_first_module_that_declares_one() {
+        let first = ModuleStatusEntry {
+            name: "alpha".to_string(),
+            declared: ModuleDeclared {
+                package_managers: declared_managers(&[("a", "brew")]),
+                ..ModuleDeclared::default()
+            },
+            ..nvim_entry(ModuleDeclared::default())
+        };
+        let second = ModuleStatusEntry {
+            name: "beta".to_string(),
+            declared: ModuleDeclared {
+                package_managers: declared_managers(&[("b", "brew")]),
+                ..ModuleDeclared::default()
+            },
+            ..nvim_entry(ModuleDeclared::default())
+        };
+        let mut output = empty_output();
+        output.modules = vec![first, second];
+        let owners = PackageOwners::of(&output);
+
+        // `b` leads the id, `a` is declared by the earlier module.
+        let owner = package_owner("brew:b,a", &owners, None);
+        assert_eq!(
+            owner.map(|o| o.token()).as_deref(),
+            Some("module:alpha"),
+            "the earliest-declared module owns the row"
+        );
+        assert_eq!(
+            package_owner("brew:a,b", &owners, None).map(|o| o.token()),
+            package_owner("brew:b,a", &owners, None).map(|o| o.token()),
+            "the id's name order does not decide the owner"
         );
     }
 
