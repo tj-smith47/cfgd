@@ -680,6 +680,10 @@ pub struct DoctorManagerCheck {
     pub can_bootstrap: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bootstrap_method: Option<String>,
+    /// How many declared modules have a package that resolves to this manager.
+    /// A manager no `spec.packages` list names is still used when a module
+    /// routes to it, which is what the `(not used)` annotation reads.
+    pub used_by_modules: usize,
 }
 
 #[derive(Serialize)]
@@ -688,23 +692,22 @@ pub struct DoctorModuleCheck {
     pub name: String,
     pub valid: bool,
     pub error: Option<String>,
+    /// The managers this module's packages resolve to on this host, in the
+    /// order its package list reaches them, with whether each one is here.
     #[serde(default)]
-    pub packages: Vec<DoctorModulePackageCheck>,
+    pub managers: Vec<DoctorModuleManagerRoute>,
+    /// One message per declared package no manager on this host can deliver.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unresolved: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct DoctorModulePackageCheck {
+pub struct DoctorModuleManagerRoute {
     pub name: String,
-    pub resolved_name: String,
-    pub manager: String,
-    pub installed: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub version: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub skip_reason: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
+    pub available: bool,
+    /// How many of the module's declared packages route to this manager.
+    pub package_count: usize,
 }
 
 #[derive(Serialize)]
@@ -2022,12 +2025,14 @@ mod tests {
                 declared: true,
                 can_bootstrap: false,
                 bootstrap_method: None,
+                used_by_modules: 0,
             }],
             modules: vec![DoctorModuleCheck {
                 name: "shell".to_string(),
                 valid: true,
                 error: None,
-                packages: vec![],
+                managers: vec![],
+                unresolved: vec![],
             }],
             system_configurators: vec![DoctorConfiguratorCheck {
                 name: "systemd".to_string(),
@@ -2127,6 +2132,7 @@ mod tests {
             declared: false,
             can_bootstrap: false,
             bootstrap_method: None,
+            used_by_modules: 0,
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["name"], json!("apt"));
@@ -2147,75 +2153,54 @@ mod tests {
             declared: true,
             can_bootstrap: true,
             bootstrap_method: Some("curl-installer".to_string()),
+            used_by_modules: 2,
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["bootstrapMethod"], json!("curl-installer"));
     }
 
     #[test]
-    fn doctor_module_check_emits_packages_array_and_null_error() {
+    fn doctor_module_check_emits_its_manager_routes_and_null_error() {
         let v = DoctorModuleCheck {
             name: "git".to_string(),
             valid: true,
             error: None,
-            packages: vec![DoctorModulePackageCheck {
-                name: "git".to_string(),
-                resolved_name: "git".to_string(),
-                manager: "apt".to_string(),
-                installed: true,
-                version: Some("2.40.1".to_string()),
-                skip_reason: None,
-                error: None,
+            managers: vec![DoctorModuleManagerRoute {
+                name: "apt".to_string(),
+                available: true,
+                package_count: 3,
             }],
+            unresolved: vec![],
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["name"], json!("git"));
         assert_eq!(json["valid"], json!(true));
         assert_eq!(json["error"], Value::Null);
-        let pkgs = json["packages"].as_array().expect("packages is array");
-        assert_eq!(pkgs.len(), 1);
-        assert_eq!(pkgs[0]["resolvedName"], json!("git"));
-    }
-
-    #[test]
-    fn doctor_module_package_check_skips_all_none_optionals() {
-        let v = DoctorModulePackageCheck {
-            name: "ripgrep".to_string(),
-            resolved_name: "ripgrep".to_string(),
-            manager: "brew".to_string(),
-            installed: false,
-            version: None,
-            skip_reason: None,
-            error: None,
-        };
-        let json = serde_json::to_value(&v).unwrap();
-        assert_eq!(json["name"], json!("ripgrep"));
-        assert_eq!(json["resolvedName"], json!("ripgrep"));
-        assert_eq!(json["manager"], json!("brew"));
-        assert_eq!(json["installed"], json!(false));
-        assert!(json.get("version").is_none(), "version must be skipped");
         assert!(
-            json.get("skipReason").is_none(),
-            "skipReason must be skipped"
+            json.get("unresolved").is_none(),
+            "an empty unresolved list must be skipped"
         );
-        assert!(json.get("error").is_none(), "error must be skipped");
+        let routes = json["managers"].as_array().expect("managers is array");
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0]["name"], json!("apt"));
+        assert_eq!(routes[0]["available"], json!(true));
+        assert_eq!(routes[0]["packageCount"], json!(3));
     }
 
     #[test]
-    fn doctor_module_package_check_includes_all_optionals_when_populated() {
-        let v = DoctorModulePackageCheck {
-            name: "bat".to_string(),
-            resolved_name: "bat-cat".to_string(),
-            manager: "cargo".to_string(),
-            installed: false,
-            version: Some("0.24.0".to_string()),
-            skip_reason: Some("offline".to_string()),
-            error: Some("network".to_string()),
+    fn doctor_module_check_lists_a_package_no_manager_can_deliver() {
+        let v = DoctorModuleCheck {
+            name: "jarvis".to_string(),
+            valid: true,
+            error: None,
+            managers: vec![],
+            unresolved: vec!["no available manager for `ripgrep`".to_string()],
         };
         let json = serde_json::to_value(&v).unwrap();
-        assert_eq!(json["version"], json!("0.24.0"));
-        assert_eq!(json["skipReason"], json!("offline"));
-        assert_eq!(json["error"], json!("network"));
+        assert_eq!(
+            json["unresolved"],
+            json!(["no available manager for `ripgrep`"])
+        );
     }
 
     #[test]

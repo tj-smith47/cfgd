@@ -1119,10 +1119,20 @@ it. A tool no manager on this host packages is reported with the managers that
 would have installed it, and the run carries on.
 
 `doctor` reads prerequisites, not managed state. It does not compare your managed files, env
-vars, aliases or system settings against the machine, and it records nothing — use
-[`cfgd diff`](#cfgd-diff) or [`cfgd status`](#cfgd-status) for that. The one place it does look
-at the machine is package presence: a module's declared packages are queried through their
-manager so a missing prerequisite is named before an apply hits it.
+vars, aliases or system settings against the machine, it does not ask whether a declared
+package is installed, and it records nothing — use [`cfgd diff`](#cfgd-diff) or
+[`cfgd status`](#cfgd-status) for that. Each module gets one row naming the managers its
+declared packages resolve to on this host, and whether each one is here:
+
+```
+Modules
+  ✓ nvim — brew, npm available
+  ✗ jarvis — brew missing (14 packages route to it)
+```
+
+The `Package Managers` section reads the same resolution: a manager no `spec.packages` list
+names still counts as used when a module routes to it (`brew: available (used by 3 modules)`),
+and only a manager nothing reaches reads `(not used)`.
 
 Exits non-zero when the verdict fails (an invalid config, a config missing at an
 explicitly-given `--config`/`CFGD_CONFIG`/`--config-dir` path, an unresolvable module, or a

@@ -17141,7 +17141,8 @@ fn array_of_pairs(body: &str, from: usize) -> usize {
 #[test]
 fn one_standing_row_reads_and_prices_the_same_on_verify_and_diff() {
     use crate::cli::output_types::DiffSummary;
-    use crate::cli::verify::{VerifyOutput, verify_doc_for_test};
+    use crate::cli::verify::VerifyOutput;
+    use crate::cli::verify::test_support::verify_doc_for_test;
 
     let row = cfgd_core::state::DriftEvent {
         id: 0,
@@ -17229,7 +17230,8 @@ fn one_standing_row_reads_and_prices_the_same_on_verify_and_diff() {
 fn every_drift_verdict_offers_the_heal_and_only_when_it_reports_drift() {
     use crate::cli::diff::{DiffScope, build_diff_doc};
     use crate::cli::output_types::{DiffOutput, DiffSummary};
-    use crate::cli::verify::{VerifyOutput, verify_doc_for_test};
+    use crate::cli::verify::VerifyOutput;
+    use crate::cli::verify::test_support::verify_doc_for_test;
 
     let rendered = |doc: cfgd_core::output::Doc| -> String {
         let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
@@ -24881,6 +24883,7 @@ fn build_doctor_doc_manager_declared_unavailable_can_bootstrap_emits_warn() {
         declared: true,
         can_bootstrap: true,
         bootstrap_method: Some("curl".into()),
+        used_by_modules: 0,
     }];
     let extras = super::doctor::DoctorExtras::default();
     let text = emit_doc(&output, &extras);
@@ -24899,6 +24902,7 @@ fn build_doctor_doc_manager_declared_unavailable_no_bootstrap_emits_fail() {
         declared: true,
         can_bootstrap: false,
         bootstrap_method: None,
+        used_by_modules: 0,
     }];
     let extras = super::doctor::DoctorExtras::default();
     let text = emit_doc(&output, &extras);
@@ -24913,6 +24917,40 @@ fn build_doctor_doc_manager_declared_unavailable_no_bootstrap_emits_fail() {
 }
 
 #[test]
+fn build_doctor_doc_manager_a_module_routes_to_reads_as_used() {
+    let mut output = base_doctor_output();
+    output.package_managers = vec![
+        super::output_types::DoctorManagerCheck {
+            name: "brew".into(),
+            available: true,
+            declared: false,
+            can_bootstrap: false,
+            bootstrap_method: None,
+            used_by_modules: 3,
+        },
+        super::output_types::DoctorManagerCheck {
+            name: "pacman".into(),
+            available: true,
+            declared: false,
+            can_bootstrap: false,
+            bootstrap_method: None,
+            used_by_modules: 0,
+        },
+    ];
+    let extras = super::doctor::DoctorExtras::default();
+    let text = emit_doc(&output, &extras);
+    assert!(
+        text.contains("brew: available (used by 3 modules)"),
+        "a manager no `spec.packages` list names is still used when modules \
+         route to it, got: {text}"
+    );
+    assert!(
+        text.contains("pacman: available (not used)"),
+        "a manager nothing routes to reads as unused, got: {text}"
+    );
+}
+
+#[test]
 fn build_doctor_doc_manager_undeclared_unavailable_emits_nothing_for_that_entry() {
     let mut output = base_doctor_output();
     output.package_managers = vec![super::output_types::DoctorManagerCheck {
@@ -24921,6 +24959,7 @@ fn build_doctor_doc_manager_undeclared_unavailable_emits_nothing_for_that_entry(
         declared: false,
         can_bootstrap: false,
         bootstrap_method: None,
+        used_by_modules: 0,
     }];
     let extras = super::doctor::DoctorExtras::default();
     let text = emit_doc(&output, &extras);
@@ -24937,7 +24976,8 @@ fn build_doctor_doc_module_invalid_emits_fail_with_detail() {
         name: "broken-mod".into(),
         valid: false,
         error: Some("YAML parse error".into()),
-        packages: vec![],
+        managers: vec![],
+        unresolved: vec![],
     }];
     let extras = super::doctor::DoctorExtras::default();
     let text = emit_doc(&output, &extras);
@@ -24958,7 +24998,8 @@ fn build_doctor_doc_module_valid_no_packages_emits_ok() {
         name: "empty-mod".into(),
         valid: true,
         error: None,
-        packages: vec![],
+        managers: vec![],
+        unresolved: vec![],
     }];
     let extras = super::doctor::DoctorExtras::default();
     let text = emit_doc(&output, &extras);
@@ -24969,110 +25010,98 @@ fn build_doctor_doc_module_valid_no_packages_emits_ok() {
 }
 
 #[test]
-fn build_doctor_doc_module_package_with_error_emits_fail() {
+fn build_doctor_doc_module_with_a_package_no_manager_can_deliver_emits_fail() {
     let mut output = base_doctor_output();
     output.modules = vec![super::output_types::DoctorModuleCheck {
         name: "mod-a".into(),
         valid: true,
         error: None,
-        packages: vec![super::output_types::DoctorModulePackageCheck {
-            name: "ripgrep".into(),
-            resolved_name: "ripgrep".into(),
-            manager: "cargo".into(),
-            installed: false,
-            version: None,
-            skip_reason: None,
-            error: Some("resolver error".into()),
-        }],
+        managers: vec![],
+        unresolved: vec!["no available manager for `ripgrep`".into()],
     }];
     let extras = super::doctor::DoctorExtras::default();
     let text = emit_doc(&output, &extras);
     assert!(
-        text.contains("ripgrep") && text.contains("resolver error"),
-        "should show package error detail, got: {text}"
-    );
-}
-
-#[test]
-fn build_doctor_doc_module_package_skipped_emits_info() {
-    let mut output = base_doctor_output();
-    output.modules = vec![super::output_types::DoctorModuleCheck {
-        name: "mod-b".into(),
-        valid: true,
-        error: None,
-        packages: vec![super::output_types::DoctorModulePackageCheck {
-            name: "brew-only".into(),
-            resolved_name: "brew-only".into(),
-            manager: String::new(),
-            installed: false,
-            version: None,
-            skip_reason: Some("platform".into()),
-            error: None,
-        }],
-    }];
-    let extras = super::doctor::DoctorExtras::default();
-    let text = emit_doc(&output, &extras);
-    assert!(
-        text.contains("brew-only") && text.contains("skipped") && text.contains("platform"),
-        "should show platform-skipped package as info, got: {text}"
-    );
-}
-
-#[test]
-fn build_doctor_doc_module_package_not_installed_emits_fail() {
-    let mut output = base_doctor_output();
-    output.modules = vec![super::output_types::DoctorModuleCheck {
-        name: "mod-c".into(),
-        valid: true,
-        error: None,
-        packages: vec![super::output_types::DoctorModulePackageCheck {
-            name: "fd".into(),
-            resolved_name: "fd-find".into(),
-            manager: "apt".into(),
-            installed: false,
-            version: None,
-            skip_reason: None,
-            error: None,
-        }],
-    }];
-    let extras = super::doctor::DoctorExtras::default();
-    let text = emit_doc(&output, &extras);
-    assert!(
-        text.contains("fd") && text.contains("not installed"),
-        "should show not-installed package as fail, got: {text}"
+        text.contains("mod-a") && text.contains("no available manager for `ripgrep`"),
+        "should show what the module resolution could not route, got: {text}"
     );
     assert!(
         text.contains("Some checks failed"),
-        "all_passed should be false for uninstalled package, got: {text}"
+        "all_passed should be false for an unroutable package, got: {text}"
     );
 }
 
 #[test]
-fn build_doctor_doc_module_package_installed_with_version_emits_ok() {
+fn build_doctor_doc_module_whose_managers_are_all_here_emits_ok() {
     let mut output = base_doctor_output();
     output.modules = vec![super::output_types::DoctorModuleCheck {
-        name: "mod-d".into(),
+        name: "nvim".into(),
         valid: true,
         error: None,
-        packages: vec![super::output_types::DoctorModulePackageCheck {
-            name: "bat".into(),
-            resolved_name: "bat".into(),
-            manager: "cargo".into(),
-            installed: true,
-            version: Some("0.24.0".into()),
-            skip_reason: None,
-            error: None,
-        }],
+        managers: vec![
+            super::output_types::DoctorModuleManagerRoute {
+                name: "brew".into(),
+                available: true,
+                package_count: 4,
+            },
+            super::output_types::DoctorModuleManagerRoute {
+                name: "npm".into(),
+                available: true,
+                package_count: 2,
+            },
+        ],
+        unresolved: vec![],
     }];
     let extras = super::doctor::DoctorExtras::default();
     let text = emit_doc(&output, &extras);
     assert!(
-        text.contains("bat") && text.contains("0.24.0") && text.contains("cargo"),
-        "should show installed package with version and manager, got: {text}"
+        text.contains("nvim") && text.contains("brew, npm available"),
+        "should name every manager the module routes to, got: {text}"
+    );
+    assert!(
+        !text.contains("4"),
+        "an all-available module states no package counts, got: {text}"
     );
     assert!(
         text.contains("Passed every check"),
-        "all_passed should be true when package is installed, got: {text}"
+        "all_passed should be true when every manager is here, got: {text}"
+    );
+}
+
+#[test]
+fn build_doctor_doc_module_missing_a_manager_names_it_and_what_routes_to_it() {
+    let mut output = base_doctor_output();
+    output.modules = vec![super::output_types::DoctorModuleCheck {
+        name: "jarvis".into(),
+        valid: true,
+        error: None,
+        managers: vec![
+            super::output_types::DoctorModuleManagerRoute {
+                name: "brew".into(),
+                available: false,
+                package_count: 14,
+            },
+            super::output_types::DoctorModuleManagerRoute {
+                name: "apt".into(),
+                available: true,
+                package_count: 1,
+            },
+        ],
+        unresolved: vec![],
+    }];
+    let extras = super::doctor::DoctorExtras::default();
+    let text = emit_doc(&output, &extras);
+    assert!(
+        text.contains("jarvis") && text.contains("brew missing (14 packages route to it)"),
+        "should name the missing manager and its share, got: {text}"
+    );
+    assert!(
+        !text.contains("apt"),
+        "a manager that is here is not a shortfall clause, got: {text}"
+    );
+    assert!(
+        text.contains("Some checks failed"),
+        "all_passed should be false for a missing manager, got: {text}"
     );
 }
 
@@ -25252,6 +25281,7 @@ fn build_doctor_doc_manager_can_bootstrap_no_method_emits_generic_hint() {
         declared: true,
         can_bootstrap: true,
         bootstrap_method: None,
+        used_by_modules: 0,
     }];
     let extras = super::doctor::DoctorExtras::default();
     let text = emit_doc(&output, &extras);
@@ -36702,7 +36732,7 @@ fn no_report_slot_spells_the_home_directory_absolutely() {
         ),
         (
             "cfgd verify",
-            super::verify::verify_doc_for_test(&verify_output, None, "\u{2192}"),
+            super::verify::test_support::verify_doc_for_test(&verify_output, None, "\u{2192}"),
         ),
     ];
     for (surface, doc) in docs {
@@ -40066,6 +40096,54 @@ fn no_doctor_section_or_verdict_borrows_the_managed_resource_vocabulary() {
              examines"
         );
     }
+
+    // The same rule one level down, on the ROWS: whether a declared package is
+    // on the machine, and which version of it, is what `status` and `diff`
+    // report. doctor's module rows state a prerequisite — whether the manager
+    // each package routes to is here — so the file may resolve a package and
+    // may not probe one.
+    const PRESENCE_TELLS: &[&str] = &[
+        "package_is_installed",
+        "fill_available_versions",
+        "installed_for(",
+        "installed_packages",
+        "Absence::NotInstalled",
+    ];
+    const PRESENCE_HATCH: &str = "// presence-row-ok:";
+    let mut presence: Vec<String> = Vec::new();
+    let plines: Vec<&str> = production.lines().collect();
+    for (i, line) in plines.iter().enumerate() {
+        let code = blank_string_literals(line.split("//").next().unwrap_or(line));
+        if !PRESENCE_TELLS.iter().any(|t| code.contains(t)) || line.contains(PRESENCE_HATCH) {
+            continue;
+        }
+        // The hatch may head the contiguous comment block above the line, so a
+        // reason long enough to wrap still reaches its subject.
+        let mut above = i;
+        let mut hatched = false;
+        while above > 0 && plines[above - 1].trim_start().starts_with("//") {
+            above -= 1;
+            hatched |= plines[above].contains(PRESENCE_HATCH);
+        }
+        if hatched {
+            continue;
+        }
+        presence.push(format!("doctor.rs:{}: {}", i + 1, line.trim()));
+    }
+    assert!(
+        presence.is_empty(),
+        "doctor asks whether a declared package is on the machine, which is \
+         what `status` and `diff` report; its module rows state whether the \
+         manager the package routes to is here (or the line carries \
+         `{PRESENCE_HATCH} <why>`):\n{}",
+        presence.join("\n")
+    );
+    assert!(
+        production.contains("modules::resolve_package("),
+        "the presence walk read a doctor.rs that no longer resolves a module \
+         package at all — it is judging the wrong file, not a doctor that \
+         stopped probing"
+    );
 }
 
 /// `diff`, `verify` and `status` each ask "does this run stand on any drift"

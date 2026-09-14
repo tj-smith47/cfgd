@@ -14,7 +14,7 @@ use cfgd::cli::doctor::{
 };
 use cfgd::cli::output_types::{
     DoctorConfigCheck, DoctorConfigState, DoctorConfiguratorCheck, DoctorManagerCheck,
-    DoctorModuleCheck, DoctorModulePackageCheck, DoctorOutput, DoctorProviderCheck,
+    DoctorModuleCheck, DoctorModuleManagerRoute, DoctorOutput, DoctorProviderCheck,
     DoctorSecretsCheck,
 };
 use cfgd_core::output::Printer;
@@ -57,6 +57,7 @@ fn happy_fixture() -> (DoctorOutput, DoctorExtras) {
                 declared: true,
                 can_bootstrap: false,
                 bootstrap_method: None,
+                used_by_modules: 1,
             },
             DoctorManagerCheck {
                 name: "brew".into(),
@@ -64,32 +65,19 @@ fn happy_fixture() -> (DoctorOutput, DoctorExtras) {
                 declared: false,
                 can_bootstrap: false,
                 bootstrap_method: None,
+                used_by_modules: 0,
             },
         ],
         modules: vec![DoctorModuleCheck {
             name: "dotfiles".into(),
             valid: true,
             error: None,
-            packages: vec![
-                DoctorModulePackageCheck {
-                    name: "bat".into(),
-                    resolved_name: "bat".into(),
-                    manager: "cargo".into(),
-                    installed: true,
-                    version: Some("0.24.0".into()),
-                    skip_reason: None,
-                    error: None,
-                },
-                DoctorModulePackageCheck {
-                    name: "ripgrep".into(),
-                    resolved_name: "ripgrep".into(),
-                    manager: "cargo".into(),
-                    installed: true,
-                    version: Some("14.1.0".into()),
-                    skip_reason: None,
-                    error: None,
-                },
-            ],
+            managers: vec![DoctorModuleManagerRoute {
+                name: "cargo".into(),
+                available: true,
+                package_count: 2,
+            }],
+            unresolved: vec![],
         }],
         system_configurators: vec![DoctorConfiguratorCheck {
             name: "shell".into(),
@@ -125,6 +113,7 @@ fn one_warn_fixture() -> (DoctorOutput, DoctorExtras) {
         declared: true,
         can_bootstrap: true,
         bootstrap_method: Some("curl".into()),
+        used_by_modules: 0,
     });
     extras.config_sources = vec![DoctorConfigSource {
         name: "team-base".into(),
@@ -136,16 +125,12 @@ fn one_warn_fixture() -> (DoctorOutput, DoctorExtras) {
 fn one_fail_fixture() -> (DoctorOutput, DoctorExtras) {
     let (mut output, extras) = happy_fixture();
     output.git = false;
-    // A declared module package that isn't installed should drive the overall
-    // failure summary, not just `git: not found`.
-    output.modules[0].packages.push(DoctorModulePackageCheck {
-        name: "fd".into(),
-        resolved_name: "fd-find".into(),
-        manager: "cargo".into(),
-        installed: false,
-        version: None,
-        skip_reason: None,
-        error: None,
+    // A module whose packages route to a manager this host does not have
+    // should drive the overall failure summary, not just `git: not found`.
+    output.modules[0].managers.push(DoctorModuleManagerRoute {
+        name: "brew".into(),
+        available: false,
+        package_count: 3,
     });
     (output, extras)
 }

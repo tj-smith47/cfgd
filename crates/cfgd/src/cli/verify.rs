@@ -443,28 +443,11 @@ pub fn build_verify_doc(
     doc.with_data(output.clone())
 }
 
-/// A `verify` Doc with a bare header block, for a fixture whose subject is the
-/// report's rows rather than the configuration behind them.
-#[cfg(test)]
-pub(crate) fn verify_doc_for_test(output: &VerifyOutput, module: Option<&str>, arrow: &str) -> Doc {
-    build_verify_doc(
-        output,
-        module,
-        &cfgd_core::output::ConfigHeader {
-            config_path: None,
-            sources: &[],
-            profile: None,
-            profile_inherits: &[],
-            modules: &[],
-            arrow,
-        },
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    use super::test_support::verify_doc_for_test;
     use serial_test::serial;
 
     /// `cfgd verify --module <name>` against a local module set carrying a
@@ -1168,5 +1151,31 @@ mod tests {
             human.contains("1 passed, 0 failed, 1 check could not run"),
             "the tally names the unanswered check as its own clause, got: {human}"
         );
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::*;
+
+    /// A `verify` Doc with a bare header block, for a fixture whose subject is
+    /// the report's rows rather than the configuration behind them.
+    pub(crate) fn verify_doc_for_test(
+        output: &VerifyOutput,
+        module: Option<&str>,
+        arrow: &str,
+    ) -> Doc {
+        build_verify_doc(
+            output,
+            module,
+            &cfgd_core::output::ConfigHeader {
+                config_path: None,
+                sources: &[],
+                profile: None,
+                profile_inherits: &[],
+                modules: &[],
+                arrow,
+            },
+        )
     }
 }

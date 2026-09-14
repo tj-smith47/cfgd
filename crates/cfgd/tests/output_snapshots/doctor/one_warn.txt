@@ -17,13 +17,11 @@ Secrets
 
 Package Managers
   ✓ cargo: available (declared in config)
-  ◉ brew: available (not used in config)
+  ◉ brew: available (not used)
   ⚠ rustup: not found — can auto-bootstrap via curl
 
 Modules
-  dotfiles
-    ✓ bat 0.24.0 (cargo, bat)
-    ✓ ripgrep 14.1.0 (cargo, ripgrep)
+  ✓ dotfiles — cargo available
 
 Installation
   ✓ State store: accessible

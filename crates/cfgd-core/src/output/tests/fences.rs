@@ -2383,7 +2383,7 @@ const SERIAL_PINS: &[(&str, &str, &str, usize)] = &[
         "EnumerationMemoTtlGuard::",
         "enumeration_memo",
         "enumeration_memo_ttl(",
-        14,
+        13,
     ),
     (
         "ModuleReuseTtlGuard::",

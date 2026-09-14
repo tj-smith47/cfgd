@@ -17,13 +17,10 @@ Secrets
 
 Package Managers
   ✓ cargo: available (declared in config)
-  ◉ brew: available (not used in config)
+  ◉ brew: available (not used)
 
 Modules
-  dotfiles
-    ✓ bat 0.24.0 (cargo, bat)
-    ✓ ripgrep 14.1.0 (cargo, ripgrep)
-    ✗ fd — not installed (cargo fd-find)
+  ✗ dotfiles — brew missing (3 packages route to it)
 
 Installation
   ✓ State store: accessible
