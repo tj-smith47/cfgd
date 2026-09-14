@@ -402,7 +402,7 @@ fn preset_syntax_theme(preset: &str) -> Option<&'static str> {
 /// `Clone` so a printer derived from another (`Printer::at_verbosity`) inherits
 /// the theme it was actually rendering with — presets, config overrides and the
 /// colour stamp together — instead of rebuilding a preset from a name and
-/// silently dropping `spec.theme.overrides`.
+/// silently dropping `spec.output.theme.overrides`.
 ///
 /// A theme also carries the syntect theme a highlighted code block is painted
 /// with, so `Printer::syntax_highlight` paints in the preset the rest of the

@@ -6316,6 +6316,7 @@ mod tests {
             list_envelope: false,
             no_hints: false,
             theme: None,
+            mask_env_values: None,
             jsonpath: None,
             yes: false,
             state_dir: Some(state_dir.to_path_buf()),

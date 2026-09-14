@@ -521,6 +521,7 @@ fn is_value_taking_flag(flag: &str) -> bool {
             | "--scope"
             | "--theme"
             | "--color"
+            | "--mask-env-values"
     )
 }
 
@@ -541,6 +542,7 @@ fn is_value_taking_flag_inline(arg: &str) -> bool {
         "--scope=",
         "--theme=",
         "--color=",
+        "--mask-env-values=",
     ];
     PREFIXES.iter().any(|p| arg.starts_with(p))
 }
@@ -680,7 +682,7 @@ pub fn resolve_color_choice(no_color: bool, color: ColorWhen) -> cfgd_core::outp
     }
 }
 
-/// Read the `spec.theme` block every entry point builds its printer from.
+/// Read the `spec.output.theme` block every entry point builds its printer from.
 ///
 /// Best-effort by design: a missing, unreadable or malformed config falls back
 /// to the default theme rather than failing, because a printer has to exist
@@ -705,7 +707,7 @@ pub fn resolve_theme_config(
         .exists()
         .then(|| cfgd_core::config::load_config(config_path).ok())
         .flatten()
-        .and_then(|c| c.spec.theme);
+        .and_then(|c| c.spec.theme().cloned());
     match preset {
         None => stored,
         Some(name) => {
@@ -747,8 +749,38 @@ pub fn resolve_hints_enabled(config_path: &Path, no_hints_flag: bool) -> bool {
         .exists()
         .then(|| cfgd_core::config::load_config(config_path).ok())
         .flatten()
-        .and_then(|c| c.spec.usage_hints);
+        .and_then(|c| c.spec.usage_hints());
     stored.unwrap_or(true)
+}
+
+/// Resolve which declared env values this run renders masked, folding
+/// `--mask-env-values`, `CFGD_MASK_ENV_VALUES` and `spec.output.maskEnvValues`
+/// into the one decision the printer carries
+/// (`Printer::with_mask_env_values`). Precedence: the flag beats the env var
+/// beats the config field beats the default (every value masked).
+///
+/// `CFGD_MASK_ENV_VALUES` is bound to the flag through clap's own `env`, so a
+/// word neither spelling accepts is a usage error before this runs.
+///
+/// Best-effort by design, mirroring [`resolve_theme_config`]: a missing,
+/// unreadable or malformed config masks rather than failing, which is also the
+/// safe direction — a config cfgd cannot read never reveals a value.
+pub fn resolve_mask_env_values(
+    config_path: &Path,
+    flag: Option<&str>,
+) -> cfgd_core::config::MaskEnvValues {
+    use std::str::FromStr;
+    if let Some(raw) = flag
+        && let Ok(mode) = cfgd_core::config::MaskEnvValues::from_str(raw)
+    {
+        return mode;
+    }
+    config_path
+        .exists()
+        .then(|| cfgd_core::config::load_config(config_path).ok())
+        .flatten()
+        .and_then(|c| c.spec.mask_env_values())
+        .unwrap_or_default()
 }
 
 #[derive(Debug, Clone)]
@@ -870,7 +902,7 @@ pub struct Cli {
     )]
     pub color: ColorWhen,
 
-    /// Theme preset for this invocation (overrides spec.theme.name; spec.theme.overrides still apply)
+    /// Theme preset for this invocation (overrides spec.output.theme.name; its overrides still apply)
     #[arg(
         long,
         global = true,
@@ -879,6 +911,19 @@ pub struct Cli {
         value_parser = clap::builder::PossibleValuesParser::new(cfgd_core::output::Theme::PRESET_NAMES)
     )]
     pub theme: Option<String>,
+
+    /// Which declared env values render masked: all (the default) or none.
+    /// `spec.output.maskEnvValues` does the same thing persistently; this flag
+    /// wins over it, and a verb's own `--show-values` is the per-verb spelling
+    /// of `none`.
+    #[arg(
+        long = "mask-env-values",
+        global = true,
+        value_name = "MODE",
+        env = "CFGD_MASK_ENV_VALUES",
+        value_parser = clap::builder::PossibleValuesParser::new(["all", "none"])
+    )]
+    pub mask_env_values: Option<String>,
 
     /// Output format: table, wide, json, yaml, name, jsonpath=EXPR, template=TMPL, template-file=PATH
     #[arg(long, short = 'o', global = true, default_value = "table")]
@@ -1158,7 +1203,7 @@ pub enum Command {
         /// Exit 5 when drift is detected (for CI gating); implies --scan
         #[arg(long = "exit-code", short = 'e')]
         exit_code: bool,
-        #[arg(long, help = SHOW_VALUES_HELP)]
+        #[arg(long, help = SHOW_VALUES_HELP, conflicts_with = "mask_env_values")]
         show_values: bool,
     },
 
@@ -1652,7 +1697,7 @@ pub enum SourceCommand {
     Show {
         /// Source name
         name: String,
-        #[arg(long, help = SHOW_VALUES_HELP)]
+        #[arg(long, help = SHOW_VALUES_HELP, conflicts_with = "mask_env_values")]
         show_values: bool,
     },
 
@@ -2068,7 +2113,7 @@ pub enum ProfileCommand {
         name: Option<String>,
         #[arg(long, help = RESOLVED_HELP)]
         resolved: bool,
-        #[arg(long, help = SHOW_VALUES_HELP)]
+        #[arg(long, help = SHOW_VALUES_HELP, conflicts_with = "mask_env_values")]
         show_values: bool,
     },
     /// Create a new profile
@@ -2207,7 +2252,7 @@ pub enum ModuleCommand {
         name: String,
         #[arg(long, help = RESOLVED_HELP)]
         resolved: bool,
-        #[arg(long, help = SHOW_VALUES_HELP)]
+        #[arg(long, help = SHOW_VALUES_HELP, conflicts_with = "mask_env_values")]
         show_values: bool,
         /// Show each script's full body (default: its first line)
         #[arg(long = "show-scripts", short = 's')]
@@ -2898,7 +2943,7 @@ pub fn execute(
             status::StatusRun {
                 exit_code: *exit_code,
                 scan: *scan,
-                show_values: *show_values,
+                show_values: *show_values || !printer.masks_env_values(),
             },
         ),
         Command::Diff { module, exit_code } => {
@@ -2924,7 +2969,7 @@ pub fn execute(
                 printer,
                 name.as_deref(),
                 *resolved,
-                InventoryDetail::of(*show_values, false, false),
+                InventoryDetail::of(*show_values || !printer.masks_env_values(), false, false),
             ),
             ProfileCommand::List => profile::cmd_profile_list(cli, printer),
             ProfileCommand::Switch { name } => profile::cmd_profile_switch(cli, name, printer),
@@ -2995,7 +3040,11 @@ pub fn execute(
                 cli,
                 printer,
                 name,
-                InventoryDetail::of(*show_values, *show_scripts, *show_all),
+                InventoryDetail::of(
+                    *show_values || !printer.masks_env_values(),
+                    *show_scripts,
+                    *show_all,
+                ),
                 *resolved,
             ),
             ModuleCommand::Create(args) => module::cmd_module_create(cli, printer, args),
@@ -3127,7 +3176,7 @@ pub fn execute(
                 cli,
                 printer,
                 name,
-                InventoryDetail::of(*show_values, false, false),
+                InventoryDetail::of(*show_values || !printer.masks_env_values(), false, false),
             ),
             SourceCommand::Remove {
                 name,

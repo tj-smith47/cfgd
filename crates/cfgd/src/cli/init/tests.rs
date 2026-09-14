@@ -376,7 +376,7 @@ fn scaffold_includes_default_theme() {
 
     scaffold(dir.path(), Some("test"), None, &printer).unwrap();
     let cfg = config::load_config(&dir.path().join("cfgd.yaml")).unwrap();
-    assert_eq!(cfg.spec.theme.unwrap().name, "default");
+    assert_eq!(cfg.spec.theme().unwrap().name, "default");
 }
 
 #[test]
@@ -386,7 +386,7 @@ fn scaffold_with_custom_theme() {
 
     scaffold(dir.path(), Some("test"), Some("minimal"), &printer).unwrap();
     let cfg = config::load_config(&dir.path().join("cfgd.yaml")).unwrap();
-    assert_eq!(cfg.spec.theme.unwrap().name, "minimal");
+    assert_eq!(cfg.spec.theme().unwrap().name, "minimal");
 }
 
 #[test]
@@ -3541,7 +3541,7 @@ fn cmd_init_from_git_applies_name_and_theme_overrides_together() {
         "metadata.name should be overridden to the --name value"
     );
     assert_eq!(
-        cfg.spec.theme.as_ref().map(|t| t.name.as_str()),
+        cfg.spec.theme().map(|t| t.name.as_str()),
         Some("dracula"),
         "spec.theme.name should be overridden to the --theme value"
     );

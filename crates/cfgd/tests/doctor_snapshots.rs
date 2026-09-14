@@ -29,6 +29,7 @@ fn happy_fixture() -> (DoctorOutput, DoctorExtras) {
             name: Some("test-host".into()),
             profile: Some("default".into()),
             error: None,
+            legacy_output_keys: Vec::new(),
             state: DoctorConfigState::Valid,
         },
         git: true,
@@ -143,6 +144,7 @@ fn bare_fixture() -> (DoctorOutput, DoctorExtras) {
             name: Some("test-host".into()),
             profile: Some("default".into()),
             error: None,
+            legacy_output_keys: Vec::new(),
             state: DoctorConfigState::Valid,
         },
         git: true,
@@ -201,6 +203,38 @@ fn doctor_happy_json() {
         "doctor -o json must serialize exactly DoctorOutput (regression anchor)"
     );
     cap.assert_json_snapshot_in(Path::new(SNAPSHOT_ROOT), "doctor/happy.json");
+}
+
+/// A document still carrying a pre-`spec.output` flat key gets one Warn row
+/// per key, naming the nested key that replaced it and the command that
+/// writes it. A migrated document renders none of them.
+#[test]
+fn doctor_reports_each_legacy_presentation_key_as_a_warn_row() {
+    let (mut output, extras) = happy_fixture();
+    output.config.legacy_output_keys = vec!["spec.theme".into(), "spec.usageHints".into()];
+    let (printer, cap) = Printer::for_test_doc();
+    printer.emit(build_doctor_doc(&output, &extras));
+    drop(printer);
+    let human = cap.human();
+    for (old, new) in cfgd_core::config::LEGACY_OUTPUT_KEYS {
+        assert!(
+            human.contains(old) && human.contains(new),
+            "expected a row naming {old} and {new}, got:\n{human}"
+        );
+    }
+    assert!(
+        human.contains("cfgd config set output.theme"),
+        "the row must name the command that writes the new key, got:\n{human}"
+    );
+
+    let (clean, extras) = happy_fixture();
+    let (printer, cap) = Printer::for_test_doc();
+    printer.emit(build_doctor_doc(&clean, &extras));
+    drop(printer);
+    assert!(
+        !cap.human().contains("spec.theme"),
+        "a migrated document names no legacy key"
+    );
 }
 
 #[test]

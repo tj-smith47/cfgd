@@ -91,6 +91,13 @@ pub struct Printer {
     /// (`{apiVersion, kind: List, items}`). Off by default — bare arrays stay
     /// byte-identical. Never affects projecting formats (name/jsonpath/template).
     pub(crate) list_envelope: bool,
+    /// Which declared env values this run renders masked, resolved ONCE from
+    /// `--mask-env-values` / `CFGD_MASK_ENV_VALUES` / `spec.output.maskEnvValues`
+    /// (`cli::resolve_mask_env_values`). Held here because the printer is the
+    /// one object every verb receives, so no verb re-reads the config to learn
+    /// what the run already decided; a per-verb `--show-values` unmasks that
+    /// verb's own surface on top of it.
+    pub(crate) mask_env_values: crate::config::MaskEnvValues,
 }
 
 /// How a `Printer` under construction decides whether it may emit colour.
@@ -220,7 +227,7 @@ impl Printer {
         )
     }
 
-    /// Production constructor for a printer built from the user's `spec.theme`
+    /// Production constructor for a printer built from the user's `spec.output.theme`
     /// block: the preset it names AND the per-slot `overrides` it declares.
     ///
     /// Separate from [`Printer::with_format`] because the override pass has to
@@ -282,6 +289,7 @@ impl Printer {
             interactive_stdin: super::prompts::stdin_is_terminal(),
             colors,
             list_envelope: false,
+            mask_env_values: crate::config::MaskEnvValues::default(),
         }
     }
 
@@ -289,7 +297,7 @@ impl Printer {
     /// output format, and the List-envelope setting.
     ///
     /// The process printer is built from the config that existed at startup, so
-    /// on a fresh machine `cfgd init --theme dracula` would write `spec.theme`
+    /// on a fresh machine `cfgd init --theme dracula` would write `spec.output.theme`
     /// and then render its own run in the default theme — the one command whose
     /// output cannot show the theme it just chose. Re-theming after the config
     /// is written closes that gap.
@@ -309,7 +317,7 @@ impl Printer {
     }
 
     /// A copy of this printer at `verbosity`, inheriting the theme (preset plus
-    /// `spec.theme.overrides`) and every ambient terminal decision and test
+    /// `spec.output.theme.overrides`) and every ambient terminal decision and test
     /// channel from `self` — see `Printer::build_derived`.
     ///
     /// The one way to mint the quiet sink a command hands to a library call, and
@@ -390,6 +398,7 @@ impl Printer {
             interactive_stdin: self.interactive_stdin,
             colors: self.colors,
             list_envelope: self.list_envelope,
+            mask_env_values: self.mask_env_values,
         }
     }
 
@@ -404,7 +413,7 @@ impl Printer {
     /// Enable or disable closing `→` usage hints for this printer's lifetime.
     /// Builder-style, mirroring [`Self::with_list_envelope`]; on by default.
     /// Wired from `cli::resolve_hints_enabled` (`--no-hints` /
-    /// `CFGD_USAGE_HINTS` / `spec.usageHints`).
+    /// `CFGD_USAGE_HINTS` / `spec.output.usageHints`).
     ///
     /// The decision lives on the `Renderer` rather than on `Printer` itself:
     /// `SectionGuard` and `Doc` rendering hold their own `Arc<Renderer>`
@@ -413,6 +422,20 @@ impl Printer {
     pub fn with_hints_enabled(self, enabled: bool) -> Self {
         self.renderer.set_hints_enabled(enabled);
         self
+    }
+
+    /// Set which declared env values this printer's run renders masked.
+    /// Builder-style, mirroring [`Self::with_list_envelope`]; masks everything
+    /// by default. Wired from `cli::resolve_mask_env_values`.
+    pub fn with_mask_env_values(mut self, mask: crate::config::MaskEnvValues) -> Self {
+        self.mask_env_values = mask;
+        self
+    }
+
+    /// Whether a declared env value renders masked on this run's surfaces.
+    /// A verb whose own `--show-values` was passed unmasks regardless.
+    pub fn masks_env_values(&self) -> bool {
+        self.mask_env_values.masks()
     }
 
     pub fn verbosity(&self) -> Verbosity {
@@ -1521,7 +1544,23 @@ mod tests {
         );
     }
 
-    /// `spec.theme.overrides` is a documented field, and until the process
+    /// The masking decision is settled once, at construction, and every
+    /// derived printer carries it: a verb handed a quiet sink or a re-themed
+    /// copy must not fall back to masking a run asked to reveal.
+    #[test]
+    fn derived_printers_inherit_the_env_masking_decision() {
+        let revealing = Printer::silent().with_mask_env_values(crate::config::MaskEnvValues::None);
+        assert!(!revealing.masks_env_values());
+        assert!(!revealing.at_verbosity(Verbosity::Quiet).masks_env_values());
+        assert!(!revealing.rethemed("dracula").masks_env_values());
+
+        // The other direction too, so this cannot pass with the field pinned.
+        let masking = Printer::silent();
+        assert!(masking.masks_env_values(), "masking is the default");
+        assert!(masking.at_verbosity(Verbosity::Quiet).masks_env_values());
+    }
+
+    /// `spec.output.theme.overrides` is a documented field, and until the process
     /// printer was built from the whole block it was inert: `main` passed only
     /// `theme.name`, so `Theme::from_config` was reachable from nothing but its
     /// own tests and every declared override was silently dropped.
@@ -1815,7 +1854,7 @@ mod tests {
         assert_eq!(parsed, payload, "default emit must keep the bare array");
     }
 
-    /// `spec.usageHints: false` / `CFGD_USAGE_HINTS=false` / `--no-hints`
+    /// `spec.output.usageHints: false` / `CFGD_USAGE_HINTS=false` / `--no-hints`
     /// resolve to `Printer::with_hints_enabled(false)`, which must suppress
     /// BOTH the hint text AND its leading blank line — a bare blank left
     /// behind would be a visible artifact of a feature that is supposed to

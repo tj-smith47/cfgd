@@ -201,6 +201,7 @@ impl CliTestHarness {
             list_envelope: false,
             no_hints: false,
             theme: None,
+            mask_env_values: None,
             jsonpath: None,
             yes: false,
             state_dir: Some(self.state_dir.path().to_path_buf()),
@@ -406,6 +407,75 @@ fn every_value_taking_global_flag_is_skipped_by_the_subcommand_locator() {
         }
     }
     assert!(walked >= 10, "the walk found only {walked} global flags");
+}
+
+/// `--show-values` is the per-verb spelling of `--mask-env-values none`, so
+/// the two cannot both be given: a verb declaring one without the conflict
+/// would let a run ask for masking globally and unmasking locally with no
+/// answer. Walk clap's real tree so the next verb to grow a `--show-values`
+/// trips here; the global flag's own shape is checked on the way past.
+#[test]
+fn every_show_values_flag_conflicts_with_the_global_masking_knob() {
+    use clap::CommandFactory;
+
+    fn walk(cmd: &clap::Command, path: &str, found: &mut Vec<String>) {
+        for arg in cmd.get_arguments().filter(|a| !a.is_global_set()) {
+            if arg.get_long() != Some("show-values") {
+                continue;
+            }
+            let here = format!("{path} --show-values");
+            assert!(
+                arg.is_global_set()
+                    || cmd
+                        .get_arg_conflicts_with(arg)
+                        .iter()
+                        .any(|other| other.get_id() == "mask_env_values"),
+                "`{here}` does not conflict with the global --mask-env-values"
+            );
+            found.push(here);
+        }
+        for sub in cmd.get_subcommands() {
+            walk(sub, &format!("{path} {}", sub.get_name()), found);
+        }
+    }
+
+    let root = Cli::command();
+    let global = root
+        .get_arguments()
+        .find(|a| a.get_long() == Some("mask-env-values"))
+        .expect("Cli carries a --mask-env-values");
+    assert!(
+        global.is_global_set(),
+        "--mask-env-values on Cli must be global"
+    );
+    assert_eq!(
+        global.get_env().and_then(|e| e.to_str()),
+        Some("CFGD_MASK_ENV_VALUES")
+    );
+
+    let mut built = Cli::command();
+    built.build();
+    let mut found = Vec::new();
+    walk(&built, "cfgd", &mut found);
+    assert!(
+        found.len() >= 4,
+        "the walk found only {} --show-values flags: {found:?}",
+        found.len()
+    );
+
+    Cli::try_parse_from(["cfgd", "module", "show", "nvim", "--show-values"])
+        .expect("--show-values alone parses");
+    Cli::try_parse_from([
+        "cfgd",
+        "module",
+        "show",
+        "nvim",
+        "--show-values",
+        "--mask-env-values",
+        "none",
+    ])
+    .map(|_| ())
+    .expect_err("the two spellings of the same decision must not both be given");
 }
 
 /// `--yes` / `-y` / `CFGD_YES` is ONE global flag on `Cli`. A subcommand that
@@ -966,7 +1036,7 @@ fn resolve_theme_config_falls_back_to_the_default_theme_when_it_cannot_read_one(
     );
 
     let broken = dir.path().join("broken.yaml");
-    std::fs::write(&broken, "spec: [this is not a mapping\n").expect("write broken config");
+    std::fs::write(&broken, "spec: 'this is not a mapping\n").expect("write broken config");
     assert!(
         super::resolve_theme_config(&broken, None).is_none(),
         "an unparseable config resolves no theme rather than failing"
@@ -983,7 +1053,24 @@ fn resolve_hints_enabled_defaults_on_with_no_config_flag_or_env() {
 }
 
 #[test]
-fn resolve_hints_enabled_reads_spec_usage_hints() {
+fn resolve_hints_enabled_reads_spec_output_usage_hints() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("cfgd.yaml");
+    std::fs::write(
+        &path,
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n  output:\n    usageHints: false\n",
+    )
+    .expect("write config");
+    assert!(
+        !super::resolve_hints_enabled(&path, false),
+        "spec.output.usageHints: false must turn hints off"
+    );
+}
+
+/// The flat `spec.usageHints` is the pre-`spec.output` spelling and still
+/// loads, so the resolver reads a document that has not migrated yet.
+#[test]
+fn resolve_hints_enabled_reads_the_legacy_flat_usage_hints_key() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("cfgd.yaml");
     std::fs::write(
@@ -993,8 +1080,49 @@ fn resolve_hints_enabled_reads_spec_usage_hints() {
     .expect("write config");
     assert!(
         !super::resolve_hints_enabled(&path, false),
-        "spec.usageHints: false must turn hints off"
+        "the legacy flat key must still turn hints off"
     );
+}
+
+#[test]
+fn resolve_mask_env_values_defaults_to_masking_every_value() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    assert!(
+        super::resolve_mask_env_values(&dir.path().join("absent.yaml"), None).masks(),
+        "with nothing said, every declared env value masks"
+    );
+}
+
+/// Precedence for the masking knob: the flag beats what the config stores,
+/// which beats the default. `CFGD_MASK_ENV_VALUES` reaches this function as
+/// the flag value, clap having already resolved the env var into it.
+#[test]
+fn resolve_mask_env_values_precedence_flag_beats_spec_beats_default() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("cfgd.yaml");
+    std::fs::write(
+        &path,
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n  output:\n    maskEnvValues: none\n",
+    )
+    .expect("write config");
+    assert!(
+        !super::resolve_mask_env_values(&path, None).masks(),
+        "spec.output.maskEnvValues: none must stop masking"
+    );
+    assert!(
+        super::resolve_mask_env_values(&path, Some("all")).masks(),
+        "--mask-env-values all must outrank the stored none"
+    );
+}
+
+/// An unreadable config masks rather than failing, which is the safe
+/// direction: a config cfgd cannot parse never reveals a value.
+#[test]
+fn an_unparseable_config_still_masks_every_env_value() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let broken = dir.path().join("broken.yaml");
+    std::fs::write(&broken, "spec: 'this is not a mapping\n").expect("write broken config");
+    assert!(super::resolve_mask_env_values(&broken, None).masks());
 }
 
 #[test]
@@ -1006,7 +1134,7 @@ fn resolve_hints_enabled_precedence_flag_beats_env_beats_spec_beats_default() {
     let path = dir.path().join("cfgd.yaml");
     std::fs::write(
         &path,
-        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n  usageHints: false\n",
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n  output:\n    usageHints: false\n",
     )
     .expect("write config");
 
@@ -2089,6 +2217,7 @@ fn test_cli_with_state(dir: &Path, state_dir: Option<PathBuf>) -> Cli {
         list_envelope: false,
         no_hints: false,
         theme: None,
+        mask_env_values: None,
         jsonpath: None,
         yes: false,
         state_dir,
@@ -4152,10 +4281,11 @@ kind: Config
 metadata:
   name: test
 spec:
-  theme: dracula
+  output:
+    theme: dracula
 "#;
     let cfg = config::parse_config(yaml, std::path::Path::new("cfgd.yaml")).unwrap();
-    let theme = cfg.spec.theme.unwrap();
+    let theme = cfg.spec.theme().unwrap();
     assert_eq!(theme.name, "dracula");
     assert!(theme.overrides.is_empty());
 }
@@ -4167,12 +4297,13 @@ fn theme_struct_form_deserializes() {
                      metadata:\n\
                      \x20 name: test\n\
                      spec:\n\
-                     \x20 theme:\n\
-                     \x20\x20\x20 name: dracula\n\
-                     \x20\x20\x20 overrides:\n\
-                     \x20\x20\x20\x20\x20 success: '#50fa7b'\n";
+                     \x20 output:\n\
+                     \x20\x20\x20 theme:\n\
+                     \x20\x20\x20\x20\x20 name: dracula\n\
+                     \x20\x20\x20\x20\x20 overrides:\n\
+                     \x20\x20\x20\x20\x20\x20\x20 success: '#50fa7b'\n";
     let cfg = config::parse_config(yaml, std::path::Path::new("cfgd.yaml")).unwrap();
-    let theme = cfg.spec.theme.unwrap();
+    let theme = cfg.spec.theme().unwrap();
     assert_eq!(theme.name, "dracula");
     assert_eq!(theme.overrides.success.as_deref(), Some("#50fa7b"));
 }
@@ -5572,6 +5703,7 @@ fn run_apply_home_unset_errors_and_creates_no_state() {
         list_envelope: false,
         no_hints: false,
         theme: None,
+        mask_env_values: None,
         jsonpath: None,
         yes: false,
         state_dir: None,
@@ -6133,6 +6265,7 @@ fn execute_with_no_subcommand_prints_help_and_returns_ok() {
         list_envelope: false,
         no_hints: false,
         theme: None,
+        mask_env_values: None,
         jsonpath: None,
         yes: false,
         state_dir: Some(h.state_path().to_path_buf()),
@@ -21906,6 +22039,7 @@ fn workstation_daemon_hooks_build_registry_returns_populated_registry() {
         },
         spec: cfgd_core::config::ConfigSpec::default(),
         deprecations: Vec::new(),
+        legacy_output_keys: Vec::new(),
     };
     let registry = hooks.build_registry(&cfg);
     assert!(
@@ -23330,6 +23464,7 @@ fn build_registry_with_config_populates_secret_backend() {
             ..config::ConfigSpec::default()
         },
         deprecations: Vec::new(),
+        legacy_output_keys: Vec::new(),
     };
     let registry = super::build_registry_with_config_and_packages(Some(&cfg), None);
     assert!(
@@ -24861,6 +24996,7 @@ fn base_doctor_output() -> super::output_types::DoctorOutput {
             name: Some("mybox".into()),
             profile: Some("default".into()),
             error: None,
+            legacy_output_keys: Vec::new(),
             state: super::output_types::DoctorConfigState::Valid,
         },
         git: true,

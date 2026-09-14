@@ -57,7 +57,8 @@ metadata:
   name: cfgd-config
 spec:
   profile: base
-  theme: dracula
+  output:
+    theme: dracula
   daemon:
     enabled: true
     sync:

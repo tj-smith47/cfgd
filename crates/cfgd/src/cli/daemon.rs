@@ -43,7 +43,7 @@ pub(super) fn cmd_daemon(
     // re-resolves colour from the terminal, so `--no-color` reached the process
     // printer and nothing else and the daemon drew a fully coloured reconcile
     // tree into journald. It also re-resolves the theme from nothing, dropping
-    // the configured `spec.theme` on the way.
+    // the configured `spec.output.theme` on the way.
     let daemon_printer = std::sync::Arc::new(printer.at_verbosity(if cli.quiet {
         cfgd_core::output::Verbosity::Quiet
     } else if cli.verbose > 0 {
@@ -606,6 +606,7 @@ mod tests {
             list_envelope: false,
             no_hints: false,
             theme: None,
+            mask_env_values: None,
             jsonpath: None,
             yes: false,
             state_dir: None,

@@ -24,6 +24,7 @@ pub(crate) fn make_cli(config: PathBuf) -> Cli {
         list_envelope: false,
         no_hints: false,
         theme: None,
+        mask_env_values: None,
         jsonpath: None,
         yes: false,
         state_dir: None,

@@ -6101,7 +6101,7 @@
   },
   {
     "apiVersion": "cfgd.io/v1alpha1",
-    "description": "The root cfgd configuration: active profile, sources, daemon, theme.",
+    "description": "The root cfgd configuration: active profile, sources, daemon, output.",
     "docs": "docs/spec/config.md#fields",
     "docsUrl": "https://github.com/tj-smith47/cfgd/blob/v<VERSION>/docs/spec/config.md#fields",
     "fields": [
@@ -6562,6 +6562,188 @@
         "typeName": "OriginSpec"
       },
       {
+        "children": [
+          {
+            "description": "Which declared env values cfgd hides where it renders one. Omitted, every value is masked.",
+            "enum": [
+              "All",
+              "None"
+            ],
+            "name": "maskEnvValues",
+            "required": false,
+            "type": "string",
+            "typeName": "MaskEnvValues"
+          },
+          {
+            "children": [
+              {
+                "description": "Preset name (`default`, `dracula`, `solarized-dark`, `solarized-light`, `nord`, `monokai`, `adventure-time`, `catppuccin-mocha`, `gruvbox-dark`, `tokyo-night`, `one-dark`, `minimal`). Default: `default`.",
+                "name": "name",
+                "required": false,
+                "type": "string"
+              },
+              {
+                "children": [
+                  {
+                    "description": "Color for accent status lines: attention without alarm. Hex color.",
+                    "name": "accent",
+                    "required": false,
+                    "type": "string"
+                  },
+                  {
+                    "description": "Color for an added diff line. Hex color.",
+                    "name": "diffAdd",
+                    "required": false,
+                    "type": "string"
+                  },
+                  {
+                    "description": "Color for an unchanged diff context line. Hex color.",
+                    "name": "diffContext",
+                    "required": false,
+                    "type": "string"
+                  },
+                  {
+                    "description": "Color for a removed diff line. Hex color.",
+                    "name": "diffRemove",
+                    "required": false,
+                    "type": "string"
+                  },
+                  {
+                    "description": "Color for failure status lines. Hex color.",
+                    "name": "error",
+                    "required": false,
+                    "type": "string"
+                  },
+                  {
+                    "description": "Color for a top-level heading. Hex color (`\"#ff0000\"`).",
+                    "name": "header",
+                    "required": false,
+                    "type": "string"
+                  },
+                  {
+                    "description": "Glyph rendered for an `old -> new` relationship (e.g. `→`).",
+                    "name": "iconArrow",
+                    "required": false,
+                    "type": "string"
+                  },
+                  {
+                    "description": "Glyph for failure status lines. Default varies by preset (e.g. `✗`).",
+                    "name": "iconFail",
+                    "required": false,
+                    "type": "string"
+                  },
+                  {
+                    "description": "Glyph for informational status lines. Default varies by preset.",
+                    "name": "iconInfo",
+                    "required": false,
+                    "type": "string"
+                  },
+                  {
+                    "description": "Glyph for success status lines. Default varies by preset (e.g. `✓`).",
+                    "name": "iconOk",
+                    "required": false,
+                    "type": "string"
+                  },
+                  {
+                    "description": "Glyph for pending status lines. Default varies by preset.",
+                    "name": "iconPending",
+                    "required": false,
+                    "type": "string"
+                  },
+                  {
+                    "description": "Glyph for in-progress status lines. Default varies by preset.",
+                    "name": "iconRunning",
+                    "required": false,
+                    "type": "string"
+                  },
+                  {
+                    "description": "Glyph for skipped status lines. Default varies by preset.",
+                    "name": "iconSkipped",
+                    "required": false,
+                    "type": "string"
+                  },
+                  {
+                    "description": "Glyph for warning status lines. Default varies by preset (e.g. `⚠`).",
+                    "name": "iconWarn",
+                    "required": false,
+                    "type": "string"
+                  },
+                  {
+                    "description": "Color for informational status lines. Hex color.",
+                    "name": "info",
+                    "required": false,
+                    "type": "string"
+                  },
+                  {
+                    "description": "Color for de-emphasized text (hints, notes, qualifiers). Hex color.",
+                    "name": "muted",
+                    "required": false,
+                    "type": "string"
+                  },
+                  {
+                    "description": "Color for action lines at the deepest nesting level of a run. Hex color (`\"#ff0000\"`). Presets that carry no palette foreground of their own leave it unset.",
+                    "name": "primary",
+                    "required": false,
+                    "type": "string"
+                  },
+                  {
+                    "description": "Color for in-progress status lines and spinner labels. Hex color.",
+                    "name": "running",
+                    "required": false,
+                    "type": "string"
+                  },
+                  {
+                    "description": "Color for secondary status lines: structural pivots, labels, and identifiers. Hex color.",
+                    "name": "secondary",
+                    "required": false,
+                    "type": "string"
+                  },
+                  {
+                    "description": "Color for success status lines. Hex color.",
+                    "name": "success",
+                    "required": false,
+                    "type": "string"
+                  },
+                  {
+                    "description": "Color for schema type annotations in explain output. Hex color (`\"#8be9fd\"`).",
+                    "name": "typeHint",
+                    "required": false,
+                    "type": "string"
+                  },
+                  {
+                    "description": "Color for warning status lines. Hex color.",
+                    "name": "warning",
+                    "required": false,
+                    "type": "string"
+                  }
+                ],
+                "description": "Per-color and per-icon overrides applied on top of the named preset.",
+                "name": "overrides",
+                "required": false,
+                "type": "object",
+                "typeName": "ThemeOverrides"
+              }
+            ],
+            "description": "Colours and glyphs cfgd renders with: a named preset (`default`, `dracula`, `solarized-dark`, `solarized-light`, `nord`, `monokai`, `adventure-time`, `catppuccin-mocha`, `gruvbox-dark`, `tokyo-night`, `one-dark`, `minimal`) plus per-slot overrides. Omitted, the `default` preset applies.",
+            "name": "theme",
+            "required": false,
+            "type": "object",
+            "typeName": "ThemeConfig"
+          },
+          {
+            "description": "Whether closing `→` usage hints render. Omitted, hints render.",
+            "name": "usageHints",
+            "required": false,
+            "type": "boolean"
+          }
+        ],
+        "description": "How cfgd renders what it reports: theme, usage hints, and which declared env values are masked. Omitted, every default applies.",
+        "name": "output",
+        "required": false,
+        "type": "object",
+        "typeName": "OutputConfig"
+      },
+      {
         "description": "Name of the active `ProfileSpec` to reconcile against.",
         "name": "profile",
         "required": false,
@@ -6785,162 +6967,6 @@
       {
         "children": [
           {
-            "description": "Preset name (`default`, `dracula`, `solarized-dark`, `solarized-light`, `nord`, `monokai`, `adventure-time`, `catppuccin-mocha`, `gruvbox-dark`, `tokyo-night`, `one-dark`, `minimal`). Default: `default`.",
-            "name": "name",
-            "required": false,
-            "type": "string"
-          },
-          {
-            "children": [
-              {
-                "description": "Color for accent status lines: attention without alarm. Hex color.",
-                "name": "accent",
-                "required": false,
-                "type": "string"
-              },
-              {
-                "description": "Color for an added diff line. Hex color.",
-                "name": "diffAdd",
-                "required": false,
-                "type": "string"
-              },
-              {
-                "description": "Color for an unchanged diff context line. Hex color.",
-                "name": "diffContext",
-                "required": false,
-                "type": "string"
-              },
-              {
-                "description": "Color for a removed diff line. Hex color.",
-                "name": "diffRemove",
-                "required": false,
-                "type": "string"
-              },
-              {
-                "description": "Color for failure status lines. Hex color.",
-                "name": "error",
-                "required": false,
-                "type": "string"
-              },
-              {
-                "description": "Color for a top-level heading. Hex color (`\"#ff0000\"`).",
-                "name": "header",
-                "required": false,
-                "type": "string"
-              },
-              {
-                "description": "Glyph rendered for an `old -> new` relationship (e.g. `→`).",
-                "name": "iconArrow",
-                "required": false,
-                "type": "string"
-              },
-              {
-                "description": "Glyph for failure status lines. Default varies by preset (e.g. `✗`).",
-                "name": "iconFail",
-                "required": false,
-                "type": "string"
-              },
-              {
-                "description": "Glyph for informational status lines. Default varies by preset.",
-                "name": "iconInfo",
-                "required": false,
-                "type": "string"
-              },
-              {
-                "description": "Glyph for success status lines. Default varies by preset (e.g. `✓`).",
-                "name": "iconOk",
-                "required": false,
-                "type": "string"
-              },
-              {
-                "description": "Glyph for pending status lines. Default varies by preset.",
-                "name": "iconPending",
-                "required": false,
-                "type": "string"
-              },
-              {
-                "description": "Glyph for in-progress status lines. Default varies by preset.",
-                "name": "iconRunning",
-                "required": false,
-                "type": "string"
-              },
-              {
-                "description": "Glyph for skipped status lines. Default varies by preset.",
-                "name": "iconSkipped",
-                "required": false,
-                "type": "string"
-              },
-              {
-                "description": "Glyph for warning status lines. Default varies by preset (e.g. `⚠`).",
-                "name": "iconWarn",
-                "required": false,
-                "type": "string"
-              },
-              {
-                "description": "Color for informational status lines. Hex color.",
-                "name": "info",
-                "required": false,
-                "type": "string"
-              },
-              {
-                "description": "Color for de-emphasized text (hints, notes, qualifiers). Hex color.",
-                "name": "muted",
-                "required": false,
-                "type": "string"
-              },
-              {
-                "description": "Color for action lines at the deepest nesting level of a run. Hex color (`\"#ff0000\"`). Presets that carry no palette foreground of their own leave it unset.",
-                "name": "primary",
-                "required": false,
-                "type": "string"
-              },
-              {
-                "description": "Color for in-progress status lines and spinner labels. Hex color.",
-                "name": "running",
-                "required": false,
-                "type": "string"
-              },
-              {
-                "description": "Color for secondary status lines: structural pivots, labels, and identifiers. Hex color.",
-                "name": "secondary",
-                "required": false,
-                "type": "string"
-              },
-              {
-                "description": "Color for success status lines. Hex color.",
-                "name": "success",
-                "required": false,
-                "type": "string"
-              },
-              {
-                "description": "Color for schema type annotations in explain output. Hex color (`\"#8be9fd\"`).",
-                "name": "typeHint",
-                "required": false,
-                "type": "string"
-              },
-              {
-                "description": "Color for warning status lines. Hex color.",
-                "name": "warning",
-                "required": false,
-                "type": "string"
-              }
-            ],
-            "description": "Per-color and per-icon overrides applied on top of the named preset.",
-            "name": "overrides",
-            "required": false,
-            "type": "object",
-            "typeName": "ThemeOverrides"
-          }
-        ],
-        "description": "Colours and glyphs cfgd renders with: a named preset (`default`, `dracula`, `solarized-dark`, `solarized-light`, `nord`, `monokai`, `adventure-time`, `catppuccin-mocha`, `gruvbox-dark`, `tokyo-night`, `one-dark`, `minimal`) plus per-slot overrides. Omitted, the `default` preset applies.",
-        "name": "theme",
-        "required": false,
-        "type": "object",
-        "typeName": "ThemeConfig"
-      },
-      {
-        "children": [
-          {
             "description": "Release channel to track (e.g. `stable`, `beta`). When unset, cfgd uses its built-in default channel.",
             "name": "channel",
             "required": false,
@@ -6994,12 +7020,6 @@
         "required": false,
         "type": "object",
         "typeName": "UpdateConfig"
-      },
-      {
-        "description": "Whether closing `→` usage hints render. Omitted, hints render.",
-        "name": "usageHints",
-        "required": false,
-        "type": "boolean"
       }
     ],
     "kind": "Config",

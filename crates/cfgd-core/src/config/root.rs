@@ -8,6 +8,7 @@ use super::ai::AiConfig;
 use super::compliance::ComplianceConfig;
 use super::daemon::DaemonConfig;
 use super::origin::OriginSpec;
+use super::output::{MaskEnvValues, OutputConfig};
 use super::security::{ModulesConfig, SecurityConfig};
 use super::source::SourceSpec;
 use super::sync_secrets::SecretsConfig;
@@ -45,6 +46,12 @@ pub struct CfgdConfig {
     /// boundary that owns a terminal drains these through `printer.deprecation()`.
     #[serde(skip)]
     pub deprecations: Vec<String>,
+    /// The pre-`spec.output` flat keys this document still spells, as
+    /// `config::LEGACY_OUTPUT_KEYS` names them. Not part of the schema: never
+    /// serialized, never compared. `cfgd doctor` reports one as a row telling
+    /// the reader which nested key replaced it.
+    #[serde(skip)]
+    pub legacy_output_keys: Vec<String>,
 }
 
 impl CfgdConfig {
@@ -120,13 +127,10 @@ pub struct ConfigSpec {
     #[serde(default)]
     pub sources: Vec<SourceSpec>,
 
-    /// Colours and glyphs cfgd renders with: a named preset (`default`,
-    /// `dracula`, `solarized-dark`, `solarized-light`, `nord`, `monokai`,
-    /// `adventure-time`, `catppuccin-mocha`, `gruvbox-dark`, `tokyo-night`,
-    /// `one-dark`, `minimal`) plus per-slot overrides. Omitted, the
-    /// `default` preset applies.
+    /// How cfgd renders what it reports: theme, usage hints, and which
+    /// declared env values are masked. Omitted, every default applies.
     #[serde(default)]
-    pub theme: Option<ThemeConfig>,
+    pub output: Option<OutputConfig>,
 
     /// Module configuration: registries and security.
     #[serde(default)]
@@ -162,10 +166,26 @@ pub struct ConfigSpec {
     /// Update policy for the cfgd binary and authored skills.
     #[serde(default)]
     pub update: Option<UpdateConfig>,
+}
 
-    /// Whether closing `→` usage hints render. Omitted, hints render.
-    #[serde(default)]
-    pub usage_hints: Option<bool>,
+impl ConfigSpec {
+    /// The theme block `spec.output.theme` declares.
+    #[must_use]
+    pub fn theme(&self) -> Option<&ThemeConfig> {
+        self.output.as_ref().and_then(|o| o.theme.as_ref())
+    }
+
+    /// What `spec.output.usageHints` declares.
+    #[must_use]
+    pub fn usage_hints(&self) -> Option<bool> {
+        self.output.as_ref().and_then(|o| o.usage_hints)
+    }
+
+    /// What `spec.output.maskEnvValues` declares.
+    #[must_use]
+    pub fn mask_env_values(&self) -> Option<MaskEnvValues> {
+        self.output.as_ref().and_then(|o| o.mask_env_values)
+    }
 }
 
 /// Schema for `spec.fileStrategy`: the [`FileStrategy`] variants minus `Patch`.
@@ -312,6 +332,7 @@ pub fn minimal_config() -> CfgdConfig {
         },
         spec: ConfigSpec::default(),
         deprecations: Vec::new(),
+        legacy_output_keys: Vec::new(),
     }
 }
 

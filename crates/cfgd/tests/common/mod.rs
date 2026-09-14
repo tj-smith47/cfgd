@@ -248,6 +248,7 @@ pub fn cli_for(config_dir: &std::path::Path, state_dir: &std::path::Path) -> Cli
         list_envelope: false,
         no_hints: false,
         theme: None,
+        mask_env_values: None,
         jsonpath: None,
         yes: false,
         state_dir: Some(state_dir.to_path_buf()),
@@ -1558,7 +1559,7 @@ pub fn config_test_setup() -> (tempfile::TempDir, tempfile::TempDir) {
     std::fs::create_dir_all(config_dir.path().join("profiles")).unwrap();
     std::fs::write(
         config_dir.path().join("cfgd.yaml"),
-        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n  theme:\n    name: monokai\n",
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n  output:\n    theme:\n      name: monokai\n",
     )
     .unwrap();
     std::fs::write(

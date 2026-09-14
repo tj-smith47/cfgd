@@ -11,6 +11,7 @@ mod image_lock;
 mod modeline;
 mod module;
 mod origin;
+mod output;
 mod parse;
 mod platform;
 mod profile_spec;
@@ -40,12 +41,13 @@ pub use module::{
     validate_module_file_entries, validate_module_package_entries,
 };
 pub use origin::{OriginSpec, OriginType, SshHostKeyPolicy};
+pub use output::{MaskEnvValues, OutputConfig};
 pub(crate) use parse::validate_api_version;
 pub use parse::{
-    CONFIG_FILENAME, CONFIG_FILENAME_TOML, PROFILE_FILENAME, ProfileEntry, ProfileForm,
-    ProfileManifests, ProfileScanEntry, canonical_profile_path, find_profile_path, load_config,
-    load_profile, parse_config, parse_config_source, resolve_config_path, scan_profile_manifests,
-    scan_profiles, scan_profiles_tolerant,
+    CONFIG_FILENAME, CONFIG_FILENAME_TOML, LEGACY_OUTPUT_KEYS, PROFILE_FILENAME, ProfileEntry,
+    ProfileForm, ProfileManifests, ProfileScanEntry, canonical_profile_path, find_profile_path,
+    load_config, load_profile, parse_config, parse_config_source, resolve_config_path,
+    scan_profile_manifests, scan_profiles, scan_profiles_tolerant,
 };
 pub use platform::{PlatformInfo, detect_platform, match_platform_profile, source_profile_names};
 pub use profile_spec::{

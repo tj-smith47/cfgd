@@ -456,7 +456,7 @@ fn explain_cmd_unknown_field_path() {
 fn explain_theme_overrides_complete() {
     // ThemeOverrides has 22 fields (14 styles + 8 icons) — verify schema matches
     let config = find_schema("Config").unwrap();
-    let fields = resolve_field_path(&config.fields, &["theme", "overrides"]);
+    let fields = resolve_field_path(&config.fields, &["output", "theme", "overrides"]);
     let children = fields.unwrap();
     assert_eq!(
         children.len(),
@@ -984,7 +984,7 @@ fn every_explain_docs_pointer_names_a_real_heading() {
     // Every heading that IS a field path (`spec.<dotted.path>`, no prose
     // words) in a doc file this walk visited must be reached by some field's
     // own pointer. A heading annotating a variant in prose
-    // (`spec.theme (object form)`) carries a space and is not itself an
+    // (`spec.output.theme (object form)`) carries a space and is not itself an
     // addressable path, so it is exempt. A file no schema's `doc_body`
     // embeds (`ConfigSource`'s `docs/sources.md`, the CRD `Module`'s
     // `docs/operator.md`) is reached only by a kind-level pointer, never a

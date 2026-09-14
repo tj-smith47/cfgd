@@ -38,7 +38,7 @@ struct PluginCli {
     )]
     color: ColorWhen,
 
-    /// Theme preset for this invocation (overrides spec.theme.name; spec.theme.overrides still apply)
+    /// Theme preset for this invocation (overrides spec.output.theme.name; spec.output.theme.overrides still apply)
     #[arg(
         long,
         global = true,

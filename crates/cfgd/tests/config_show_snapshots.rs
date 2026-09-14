@@ -95,9 +95,13 @@ fn happy_config() -> CfgdConfig {
                     sync: Default::default(),
                 },
             ],
-            theme: Some(ThemeConfig {
-                name: "dracula".into(),
-                overrides: Default::default(),
+            output: Some(cfgd_core::config::OutputConfig {
+                theme: Some(ThemeConfig {
+                    name: "dracula".into(),
+                    overrides: Default::default(),
+                }),
+                usage_hints: None,
+                mask_env_values: Some(cfgd_core::config::MaskEnvValues::None),
             }),
             modules: Some(ModulesConfig {
                 registries: vec![
@@ -120,9 +124,9 @@ fn happy_config() -> CfgdConfig {
             ai: None,
             compliance: None,
             update: None,
-            usage_hints: None,
         },
         deprecations: Vec::new(),
+        legacy_output_keys: Vec::new(),
     }
 }
 
@@ -138,6 +142,7 @@ fn empty_config() -> CfgdConfig {
             ..ConfigSpec::default()
         },
         deprecations: Vec::new(),
+        legacy_output_keys: Vec::new(),
     }
 }
 

@@ -2844,7 +2844,7 @@ fn backup_run_unknown_name_exits_6_with_hint_in_stderr() {
 
 /// A config + profile + module whose `plan` always finds exactly one pending
 /// file deploy, so it renders `perform_preview_hint`'s closing `→` line.
-/// `usage_hints` writes (or omits) `spec.usageHints` in the config.
+/// `usage_hints` writes (or omits) `spec.output.usageHints` in the config.
 fn create_hint_producing_config(dir: &std::path::Path, usage_hints: Option<bool>) {
     std::fs::create_dir_all(dir.join("profiles")).unwrap();
     std::fs::create_dir_all(dir.join("modules/example/files")).unwrap();
@@ -2961,7 +2961,7 @@ fn cfgd_usage_hints_env_suppresses_the_hint_and_its_leading_blank_end_to_end() {
     );
 }
 
-/// `spec.usageHints: false` reaching a real command's rendered output.
+/// `spec.output.usageHints: false` reaching a real command's rendered output.
 #[test]
 fn spec_usage_hints_false_suppresses_the_hint_and_its_leading_blank_end_to_end() {
     let dir = tempfile::tempdir().unwrap();

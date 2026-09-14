@@ -41,6 +41,7 @@ fn doctor_output_roundtrips_through_emit() {
             name: Some("test-host".into()),
             profile: Some("base".into()),
             error: None,
+            legacy_output_keys: Vec::new(),
             state: DoctorConfigState::Valid,
         },
         git: true,

@@ -71,8 +71,25 @@ pub fn build_config_show_doc(cfg: &CfgdConfig, config_path: &Path) -> Doc {
         doc = doc.section("Secrets", |s| s.kv("Backend", &secrets.backend));
     }
 
-    if let Some(ref theme) = cfg.spec.theme {
-        doc = doc.section("Theme", |s| s.kv("Theme", &theme.name));
+    if let Some(ref output) = cfg.spec.output {
+        let rows: Vec<cfgd_core::output::KvPair> = [
+            output
+                .theme
+                .as_ref()
+                .map(|t| cfgd_core::output::KvPair::new("Theme", t.name.clone())),
+            output
+                .usage_hints
+                .map(|h| cfgd_core::output::KvPair::new("Usage Hints", yes_no(Some(h)))),
+            output
+                .mask_env_values
+                .map(|m| cfgd_core::output::KvPair::new("Mask Env Values", m.as_str().to_string())),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        if !rows.is_empty() {
+            doc = doc.section("Output", |s| s.kv_rows(rows));
+        }
     }
 
     doc.with_data(cfg)
@@ -275,6 +292,41 @@ pub(super) fn parse_yaml_value(s: &str) -> serde_yaml::Value {
     }
 }
 
+/// Resolve a `spec`-relative key path onto the nested `spec.output.*` key that
+/// owns it, so `theme.name` and `output.theme.name` name one field.
+///
+/// `None` for every other path. The legacy flat spelling still names a real
+/// key in a document that has not been migrated, which is why `get` falls back
+/// to it and `set` removes it once it has written the nested one.
+pub(super) fn nested_output_key(key: &str) -> Option<String> {
+    let (head, rest) = match key.split_once('.') {
+        Some((head, rest)) => (head, Some(rest)),
+        None => (key, None),
+    };
+    let nested = cfgd_core::config::LEGACY_OUTPUT_KEYS
+        .iter()
+        .find(|(old, _)| old.strip_prefix("spec.") == Some(head))
+        .map(|(_, new)| new.trim_start_matches("spec."))?;
+    Some(match rest {
+        Some(rest) => format!("{nested}.{rest}"),
+        None => nested.to_string(),
+    })
+}
+
+/// The inverse: the flat spelling a `spec`-relative `output.*` key replaced,
+/// so a `get` naming the current key still answers from a document that has
+/// not been migrated. `None` for every other path.
+pub(super) fn flat_output_key(key: &str) -> Option<String> {
+    let (old, new) = cfgd_core::config::LEGACY_OUTPUT_KEYS
+        .iter()
+        .find_map(|(old, new)| {
+            let new = new.trim_start_matches("spec.");
+            (key == new || key.strip_prefix(new)?.starts_with('.'))
+                .then_some((old.trim_start_matches("spec."), new))
+        })?;
+    Some(format!("{old}{}", &key[new.len()..]))
+}
+
 pub fn cmd_config_get(cli: &Cli, printer: &Printer, key: &str) -> anyhow::Result<()> {
     let config_path = &cli.config;
     if !config_path.exists() {
@@ -308,7 +360,14 @@ pub fn cmd_config_get(cli: &Cli, printer: &Printer, key: &str) -> anyhow::Result
         }
     };
 
-    let value = match walk_yaml_path(spec, key) {
+    // A legacy flat key names the nested one; a document that still carries
+    // the flat spelling is answered from it rather than reported missing.
+    let alias = nested_output_key(key).or_else(|| flat_output_key(key));
+    let resolved = nested_output_key(key).unwrap_or_else(|| key.to_string());
+    let value = match walk_yaml_path(spec, &resolved).or_else(|e| match alias.as_deref() {
+        Some(alias) if alias != resolved => walk_yaml_path(spec, alias),
+        _ => Err(e),
+    }) {
         Ok(v) => v,
         Err(e) => {
             let msg = format!("{}", e);
@@ -365,11 +424,27 @@ pub fn cmd_config_set(cli: &Cli, printer: &Printer, key: &str, value: &str) -> a
     let parsed_value = parse_yaml_value(value);
     let mut previous: serde_json::Value = serde_json::Value::Null;
 
+    // A presentation knob is written where it now lives, whichever spelling
+    // the caller reached for, and the flat key it replaced is dropped with it.
+    let nested = nested_output_key(key);
+    let written_key = nested.clone().unwrap_or_else(|| key.to_string());
     let mutate_result = mutate_config_yaml(config_path, true, |raw| {
         let spec = raw
             .get_mut("spec")
             .ok_or_else(|| anyhow::anyhow!("config has no 'spec' section"))?;
-        let (parent, leaf_key) = walk_yaml_path_mut(spec, key)?;
+        if nested.is_some() {
+            let flat = serde_yaml::Value::String(
+                key.split_once('.')
+                    .map_or(key, |(head, _)| head)
+                    .to_string(),
+            );
+            if let Some(map) = spec.as_mapping_mut()
+                && let Some(prior) = map.remove(&flat)
+            {
+                previous = serde_json::to_value(&prior).unwrap_or(serde_json::Value::Null);
+            }
+        }
+        let (parent, leaf_key) = walk_yaml_path_mut(spec, &written_key)?;
         let yaml_key = serde_yaml::Value::String(leaf_key);
         if let Some(prior) = parent.get(&yaml_key) {
             previous = serde_json::to_value(prior).unwrap_or(serde_json::Value::Null);
@@ -397,9 +472,9 @@ pub fn cmd_config_set(cli: &Cli, printer: &Printer, key: &str, value: &str) -> a
 
     printer.emit(
         Doc::new()
-            .status(Role::Ok, format!("Set {} = {}", key, value))
+            .status(Role::Ok, format!("Set {} = {}", written_key, value))
             .with_data(serde_json::json!({
-                "key": key,
+                "key": written_key,
                 "value": value_json,
                 "previousValue": previous,
             })),
@@ -416,17 +491,36 @@ pub fn cmd_config_unset(cli: &Cli, printer: &Printer, key: &str) -> anyhow::Resu
 
     let mut previous: serde_json::Value = serde_json::Value::Null;
 
+    let nested = nested_output_key(key);
+    let written_key = nested.clone().unwrap_or_else(|| key.to_string());
     let mutate_result = mutate_config_yaml(config_path, true, |raw| {
         let spec = raw
             .get_mut("spec")
             .ok_or_else(|| anyhow::anyhow!("config has no 'spec' section"))?;
-        let (parent, leaf_key) = walk_yaml_path_mut(spec, key)?;
+        // Unsetting a presentation knob clears both spellings: one left
+        // standing is a value the reader believes they removed.
+        let mut removed_flat = false;
+        if nested.is_some() {
+            let flat = serde_yaml::Value::String(
+                key.split_once('.')
+                    .map_or(key, |(head, _)| head)
+                    .to_string(),
+            );
+            if let Some(map) = spec.as_mapping_mut()
+                && let Some(prior) = map.remove(&flat)
+            {
+                previous = serde_json::to_value(&prior).unwrap_or(serde_json::Value::Null);
+                removed_flat = true;
+            }
+        }
+        let (parent, leaf_key) = walk_yaml_path_mut(spec, &written_key)?;
         let yaml_key = serde_yaml::Value::String(leaf_key.clone());
         match parent.remove(&yaml_key) {
             Some(prior) => {
                 previous = serde_json::to_value(&prior).unwrap_or(serde_json::Value::Null);
                 Ok(())
             }
+            None if removed_flat => Ok(()),
             None => Err(anyhow::Error::new(cfgd_core::errors::CfgdError::Config(
                 cfgd_core::errors::ConfigError::KeyNotFound {
                     key: key.to_string(),
@@ -451,9 +545,9 @@ pub fn cmd_config_unset(cli: &Cli, printer: &Printer, key: &str) -> anyhow::Resu
 
     printer.emit(
         Doc::new()
-            .status(Role::Ok, format!("Unset {}", key))
+            .status(Role::Ok, format!("Unset {}", written_key))
             .with_data(serde_json::json!({
-                "key": key,
+                "key": written_key,
                 "previousValue": previous,
                 "removed": true,
             })),
@@ -525,6 +619,7 @@ mod tests {
             list_envelope: false,
             no_hints: false,
             theme: None,
+            mask_env_values: None,
             jsonpath: None,
             yes: false,
             state_dir: None,
@@ -568,8 +663,9 @@ metadata:
   name: test
 spec:
   profile: work
-  theme:
-    name: monokai
+  output:
+    theme:
+      name: monokai
 "#;
 
     fn write_sample_config(dir: &std::path::Path) -> std::path::PathBuf {
@@ -780,6 +876,98 @@ spec:
 
         let err = cmd_config_get(&cli, &printer, "profile").unwrap_err();
         assert_no_config_error(&err, &path);
+    }
+
+    /// `theme.name` and `output.theme.name` name one field: `get` answers
+    /// either spelling from the nested block a migrated document carries.
+    #[test]
+    fn cmd_config_get_answers_a_legacy_key_from_the_nested_block() {
+        let dir = tempfile::tempdir().unwrap();
+        let cli = test_cli_for(write_sample_config(dir.path()));
+        let (printer, cap) = Printer::for_test_doc();
+
+        cmd_config_get(&cli, &printer, "theme.name").unwrap();
+        drop(printer);
+
+        assert_eq!(cap.human().trim(), "monokai");
+    }
+
+    /// A document still carrying the flat key is answered from it, so `get`
+    /// never reports a key the file visibly holds as missing.
+    #[test]
+    fn cmd_config_get_falls_back_to_the_flat_key_a_document_still_spells() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cfgd.yaml");
+        std::fs::write(
+            &path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: work\n  theme:\n    name: nord\n",
+        )
+        .unwrap();
+        let cli = test_cli_for(path);
+        let (printer, cap) = Printer::for_test_doc();
+
+        cmd_config_get(&cli, &printer, "output.theme.name").unwrap();
+        drop(printer);
+
+        assert_eq!(cap.human().trim(), "nord");
+    }
+
+    /// Whichever spelling the caller reached for, the write lands under
+    /// `spec.output` and the flat key it replaced is dropped with it.
+    #[test]
+    fn cmd_config_set_writes_the_nested_key_and_drops_the_flat_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cfgd.yaml");
+        std::fs::write(
+            &path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: work\n  theme:\n    name: nord\n",
+        )
+        .unwrap();
+        let cli = test_cli_for(path.clone());
+        let printer = test_printer();
+
+        cmd_config_set(&cli, &printer, "theme.name", "dracula").unwrap();
+
+        let written: serde_yaml::Value =
+            serde_yaml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let spec = written.get("spec").expect("spec survives the rewrite");
+        assert!(
+            spec.get("theme").is_none(),
+            "the flat key must be gone, got: {spec:?}"
+        );
+        assert_eq!(
+            spec.get("output")
+                .and_then(|o| o.get("theme"))
+                .and_then(|t| t.get("name"))
+                .and_then(serde_yaml::Value::as_str),
+            Some("dracula")
+        );
+    }
+
+    /// Unsetting clears both spellings: one left standing is a value the
+    /// reader believes they removed.
+    #[test]
+    fn cmd_config_unset_clears_both_spellings_of_a_presentation_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cfgd.yaml");
+        std::fs::write(
+            &path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: work\n  theme: nord\n  output:\n    theme:\n      name: dracula\n",
+        )
+        .unwrap();
+        let cli = test_cli_for(path.clone());
+        let printer = test_printer();
+
+        cmd_config_unset(&cli, &printer, "theme").unwrap();
+
+        let written: serde_yaml::Value =
+            serde_yaml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let spec = written.get("spec").expect("spec survives the rewrite");
+        assert!(spec.get("theme").is_none(), "flat key left standing");
+        assert!(
+            spec.get("output").is_none_or(|o| o.get("theme").is_none()),
+            "nested key left standing: {spec:?}"
+        );
     }
 
     #[test]

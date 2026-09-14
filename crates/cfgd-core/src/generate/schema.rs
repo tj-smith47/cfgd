@@ -568,10 +568,6 @@ spec:
       # optional: Inherit (default), Auto, Prompt, Notify, Manual
       policy: Inherit
 
-  # Whether closing usage hints render.
-  # optional, bool, default: true
-  usageHints: true
-
   # Daemon configuration — controls the background reconciliation loop.
   # optional
   daemon:
@@ -662,31 +658,42 @@ spec:
         autoApply: false       # optional, bool, default: false
         pinVersion: v1.2.3     # optional, string — pin to a specific source version
 
-  # Theme configuration — controls terminal output styling.
-  # Can be a string (theme name) or an object with name and overrides.
-  # optional, default: "default"
-  # String form: theme: dracula
-  # Object form:
-  theme:
-    name: default              # optional, string, default: "default"
-    overrides:                 # optional — override individual theme colors/icons
-      header: cyan             # optional, string — color name
-      success: green           # optional, string
-      warning: yellow          # optional, string
-      error: red               # optional, string
-      info: blue               # optional, string
-      muted: gray              # optional, string
-      running: cyan            # optional, string — in-progress status color
-      diffAdd: green           # optional, string
-      diffRemove: red          # optional, string
-      diffContext: gray        # optional, string
-      iconOk: "✓"              # optional, string — icon character
-      iconWarn: "⚠"            # optional, string
-      iconFail: "✗"            # optional, string
-      iconPending: "○"         # optional, string
-      iconRunning: "◐"         # optional, string
-      iconSkipped: "—"         # optional, string
-      iconArrow: "→"           # optional, string
+  # Output settings — how cfgd renders what it reports.
+  # optional
+  output:
+    # Whether closing usage hints render.
+    # optional, bool, default: true
+    usageHints: true
+
+    # Which declared env values render masked.
+    # optional: All (default), None
+    maskEnvValues: All
+
+    # Theme configuration — controls terminal output styling.
+    # Can be a string (theme name) or an object with name and overrides.
+    # optional, default: "default"
+    # String form: theme: dracula
+    # Object form:
+    theme:
+      name: default              # optional, string, default: "default"
+      overrides:                 # optional — override individual theme colors/icons
+        header: cyan             # optional, string — color name
+        success: green           # optional, string
+        warning: yellow          # optional, string
+        error: red               # optional, string
+        info: blue               # optional, string
+        muted: gray              # optional, string
+        running: cyan            # optional, string — in-progress status color
+        diffAdd: green           # optional, string
+        diffRemove: red          # optional, string
+        diffContext: gray        # optional, string
+        iconOk: "✓"              # optional, string — icon character
+        iconWarn: "⚠"            # optional, string
+        iconFail: "✗"            # optional, string
+        iconPending: "○"         # optional, string
+        iconRunning: "◐"         # optional, string
+        iconSkipped: "—"         # optional, string
+        iconArrow: "→"           # optional, string
 
   # Module registries and security settings.
   # optional

@@ -627,6 +627,12 @@ pub struct DoctorConfigCheck {
     pub name: Option<String>,
     pub profile: Option<String>,
     pub error: Option<String>,
+    /// The pre-`spec.output` flat presentation keys this config still spells,
+    /// as `config::LEGACY_OUTPUT_KEYS` names them. Empty for a migrated
+    /// config, which is what lets a consumer gate on the list rather than
+    /// matching a rendered sentence.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub legacy_output_keys: Vec<String>,
     /// Typed classification driving rendering and verdict scoring. Skipped
     /// from serialization: the consumer-facing JSON field set stays frozen —
     /// `valid`/`error` carry the same values as before this field existed.
@@ -2009,6 +2015,7 @@ mod tests {
                 name: Some("host".to_string()),
                 profile: Some("default".to_string()),
                 error: None,
+                legacy_output_keys: Vec::new(),
                 state: DoctorConfigState::Valid,
             },
             git: true,
@@ -2069,6 +2076,7 @@ mod tests {
             name: None,
             profile: None,
             error: Some("missing".to_string()),
+            legacy_output_keys: Vec::new(),
             state: DoctorConfigState::Invalid,
         };
         let json = serde_json::to_value(&v).unwrap();

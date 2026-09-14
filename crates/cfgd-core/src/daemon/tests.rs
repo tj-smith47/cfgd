@@ -428,7 +428,7 @@ fn find_server_url_returns_none_for_git_origin() {
             daemon: None,
             secrets: None,
             sources: vec![],
-            theme: None,
+            output: None,
             modules: None,
             security: None,
             aliases: std::collections::HashMap::new(),
@@ -436,9 +436,9 @@ fn find_server_url_returns_none_for_git_origin() {
             ai: None,
             compliance: None,
             update: None,
-            usage_hints: None,
         },
         deprecations: Vec::new(),
+        legacy_output_keys: Vec::new(),
     };
     assert!(find_server_url(&config).is_none());
 }
@@ -464,7 +464,7 @@ fn find_server_url_returns_url_for_server_origin() {
             daemon: None,
             secrets: None,
             sources: vec![],
-            theme: None,
+            output: None,
             modules: None,
             security: None,
             aliases: std::collections::HashMap::new(),
@@ -472,9 +472,9 @@ fn find_server_url_returns_url_for_server_origin() {
             ai: None,
             compliance: None,
             update: None,
-            usage_hints: None,
         },
         deprecations: Vec::new(),
+        legacy_output_keys: Vec::new(),
     };
     assert_eq!(
         find_server_url(&config),
@@ -3581,7 +3581,7 @@ fn find_server_url_picks_server_among_multiple_origins() {
             daemon: None,
             secrets: None,
             sources: vec![],
-            theme: None,
+            output: None,
             modules: None,
             security: None,
             aliases: std::collections::HashMap::new(),
@@ -3589,9 +3589,9 @@ fn find_server_url_picks_server_among_multiple_origins() {
             ai: None,
             compliance: None,
             update: None,
-            usage_hints: None,
         },
         deprecations: Vec::new(),
+        legacy_output_keys: Vec::new(),
     };
     assert_eq!(
         find_server_url(&config),
@@ -3614,7 +3614,7 @@ fn find_server_url_returns_none_for_empty_origins() {
             daemon: None,
             secrets: None,
             sources: vec![],
-            theme: None,
+            output: None,
             modules: None,
             security: None,
             aliases: std::collections::HashMap::new(),
@@ -3622,9 +3622,9 @@ fn find_server_url_returns_none_for_empty_origins() {
             ai: None,
             compliance: None,
             update: None,
-            usage_hints: None,
         },
         deprecations: Vec::new(),
+        legacy_output_keys: Vec::new(),
     };
     assert!(find_server_url(&config).is_none());
 }
@@ -4227,7 +4227,7 @@ fn find_server_url_picks_first_server_among_duplicates() {
             daemon: None,
             secrets: None,
             sources: vec![],
-            theme: None,
+            output: None,
             modules: None,
             security: None,
             aliases: std::collections::HashMap::new(),
@@ -4235,9 +4235,9 @@ fn find_server_url_picks_first_server_among_duplicates() {
             ai: None,
             compliance: None,
             update: None,
-            usage_hints: None,
         },
         deprecations: Vec::new(),
+        legacy_output_keys: Vec::new(),
     };
     assert_eq!(
         find_server_url(&config),
@@ -6455,7 +6455,7 @@ fn try_server_checkin_no_server_origin_returns_false() {
             daemon: None,
             secrets: None,
             sources: vec![],
-            theme: None,
+            output: None,
             modules: None,
             security: None,
             aliases: std::collections::HashMap::new(),
@@ -6463,9 +6463,9 @@ fn try_server_checkin_no_server_origin_returns_false() {
             ai: None,
             compliance: None,
             update: None,
-            usage_hints: None,
         },
         deprecations: Vec::new(),
+        legacy_output_keys: Vec::new(),
     };
     let resolved = ResolvedProfile {
         layers: vec![ProfileLayer {
@@ -6521,7 +6521,7 @@ fn try_server_checkin_with_server_origin_calls_checkin() {
             daemon: None,
             secrets: None,
             sources: vec![],
-            theme: None,
+            output: None,
             modules: None,
             security: None,
             aliases: std::collections::HashMap::new(),
@@ -6529,9 +6529,9 @@ fn try_server_checkin_with_server_origin_calls_checkin() {
             ai: None,
             compliance: None,
             update: None,
-            usage_hints: None,
         },
         deprecations: Vec::new(),
+        legacy_output_keys: Vec::new(),
     };
     let resolved = ResolvedProfile {
         layers: vec![ProfileLayer {
@@ -21179,6 +21179,7 @@ mod backup_timers {
                 ..Default::default()
             },
             deprecations: Vec::new(),
+            legacy_output_keys: Vec::new(),
         };
         let resolved = ResolvedProfile {
             layers: vec![ProfileLayer {
@@ -21245,6 +21246,7 @@ mod backup_timers {
                 ..Default::default()
             },
             deprecations: Vec::new(),
+            legacy_output_keys: Vec::new(),
         };
         let resolved = ResolvedProfile {
             layers: vec![ProfileLayer {
@@ -21310,6 +21312,7 @@ mod backup_timers {
                 ..Default::default()
             },
             deprecations: Vec::new(),
+            legacy_output_keys: Vec::new(),
         };
         let resolved = ResolvedProfile {
             layers: vec![ProfileLayer {
@@ -21378,6 +21381,7 @@ mod backup_timers {
                 ..Default::default()
             },
             deprecations: Vec::new(),
+            legacy_output_keys: Vec::new(),
         };
         let resolved = ResolvedProfile {
             layers: vec![ProfileLayer {

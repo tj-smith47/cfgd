@@ -59,6 +59,7 @@ fn cli_for(config_dir: &Path) -> cfgd::cli::Cli {
         list_envelope: false,
         no_hints: false,
         theme: None,
+        mask_env_values: None,
         jsonpath: None,
         yes: false,
         state_dir: None,

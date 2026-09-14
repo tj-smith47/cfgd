@@ -56,6 +56,13 @@
         "url": "https://cfgd.example.com"
       }
     ],
+    "output": {
+      "maskEnvValues": "None",
+      "theme": {
+        "name": "dracula"
+      },
+      "usageHints": null
+    },
     "profile": "base",
     "secrets": {
       "backend": "sops",
@@ -110,10 +117,6 @@
         }
       }
     ],
-    "theme": {
-      "name": "dracula"
-    },
-    "update": null,
-    "usageHints": null
+    "update": null
   }
 }

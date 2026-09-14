@@ -650,6 +650,7 @@ pub(super) fn test_derived_config(
             },
             spec: ConfigSpec::default(),
             deprecations: Vec::new(),
+            legacy_output_keys: Vec::new(),
         },
         profile_name: marker.to_string(),
         resolved: ResolvedProfile {

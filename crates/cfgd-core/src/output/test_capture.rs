@@ -162,6 +162,7 @@ fn build_test_printer(
         // styling, never because another thread flipped a process-global flag.
         colors,
         list_envelope: false,
+        mask_env_values: crate::config::MaskEnvValues::default(),
     }
 }
 
@@ -457,6 +458,7 @@ impl Printer {
             interactive_stdin: false,
             colors: false,
             list_envelope: false,
+            mask_env_values: crate::config::MaskEnvValues::default(),
         }
     }
 

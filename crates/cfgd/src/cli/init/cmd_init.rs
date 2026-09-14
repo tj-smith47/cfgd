@@ -539,7 +539,8 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
 /// here prevents a new flag from silently regressing on the clone path (the
 /// way `--name` once did).
 ///
-/// The override set is exactly `{name → metadata.name, theme → spec.theme}`.
+/// The override set is exactly
+/// `{name → metadata.name, theme → spec.output.theme}`.
 /// Every other `Init` flag is intentionally absent: `apply` / `apply_profile`
 /// / `apply_module` / `dry_run` / `yes` / `install_daemon` are behavioral and
 /// run identically on both the clone and scaffold paths; `branch` / `from` /
@@ -562,10 +563,12 @@ fn apply_clone_overrides(
         cfg.metadata.name = name.to_string();
     }
     if let Some(theme) = theme {
-        cfg.spec.theme = Some(config::ThemeConfig {
+        let mut output = cfg.spec.output.take().unwrap_or_default();
+        output.theme = Some(config::ThemeConfig {
             name: theme.to_string(),
             overrides: config::ThemeOverrides::default(),
         });
+        cfg.spec.output = Some(output);
     }
     crate::cli::helpers::rewrite_user_yaml(config_path, &cfg)?;
     Ok(())
@@ -890,7 +893,8 @@ kind: Config
 metadata:
   name: {config_name}
 spec:
-  theme: {theme_value}
+  output:
+    theme: {theme_value}
   fileStrategy: Symlink
   aliases:
     add: "profile update --file"
@@ -1083,7 +1087,7 @@ mod tests {
     // ─── apply_clone_overrides — theme override ───────────────────
 
     #[test]
-    fn apply_clone_overrides_theme_override_mutates_spec_theme() {
+    fn apply_clone_overrides_theme_override_mutates_the_nested_output_theme() {
         let dir = tempfile::tempdir().unwrap();
         let config_path = write_minimal_config(dir.path());
 
@@ -1092,11 +1096,11 @@ mod tests {
         let cfg = config::load_config(&config_path).unwrap();
         let theme = cfg
             .spec
-            .theme
-            .expect("spec.theme must be set after override");
+            .theme()
+            .expect("spec.output.theme must be set after override");
         assert_eq!(
             theme.name, "catppuccin",
-            "spec.theme.name must equal the supplied --theme override"
+            "spec.output.theme.name must equal the supplied --theme override"
         );
     }
 
@@ -1111,7 +1115,7 @@ mod tests {
 
         let cfg = config::load_config(&config_path).unwrap();
         assert_eq!(cfg.metadata.name, "my-machine");
-        let theme = cfg.spec.theme.expect("spec.theme must be set");
+        let theme = cfg.spec.theme().expect("spec.output.theme must be set");
         assert_eq!(theme.name, "minimal");
     }
 }

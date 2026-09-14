@@ -42,7 +42,7 @@ Set Framerate 50
 # because this tape records on the HOST, where cfgd reads the recording
 # operator's own ~/.config/cfgd — dracula is the preset the rest of the set
 # lands on (`cfgd init --theme dracula`, hidden in four tapes and on camera in
-# init.tape; the sync fixture writes `spec.theme` straight into its cfgd.yaml),
+# init.tape; the sync fixture writes `spec.output.theme` straight into its cfgd.yaml),
 # so the whole set renders in one theme whatever the operator's config names.
 Hide
 Type "export KUBECONFIG=$HOME/.cache/cfgd-debug/demo-k8s/kubeconfig PATH=$HOME/.cache/cfgd-debug/demo-k8s/bin:$PATH COSIGN_PASSWORD= CFGD_THEME=dracula"

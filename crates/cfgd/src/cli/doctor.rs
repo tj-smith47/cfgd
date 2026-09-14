@@ -131,6 +131,7 @@ fn collect_doctor_output(
                         name: Some(cfg.metadata.name.clone()),
                         profile: cfg.spec.profile.clone(),
                         error: None,
+                        legacy_output_keys: cfg.legacy_output_keys.clone(),
                         state: DoctorConfigState::Valid,
                     },
                     Some(cfg),
@@ -143,6 +144,7 @@ fn collect_doctor_output(
                     name: None,
                     profile: None,
                     error: Some(format!("{}", e)),
+                    legacy_output_keys: Vec::new(),
                     state: DoctorConfigState::Invalid,
                 },
                 None,
@@ -166,6 +168,7 @@ fn collect_doctor_output(
                 name: None,
                 profile: None,
                 error: Some(cfgd_core::Absence::NotFound.to_string()),
+                legacy_output_keys: Vec::new(),
                 state,
             },
             None,
@@ -594,6 +597,20 @@ fn build_config_section(s: SectionBuilder, cfg: &DoctorConfigCheck) -> SectionBu
             // facts-block-ok: the block closes this arm's section; the rows
             // below are the match's other arms, not rows after it
             s = s.kv_block(pairs);
+            for old in &cfg.legacy_output_keys {
+                let new = cfgd_core::config::LEGACY_OUTPUT_KEYS
+                    .iter()
+                    .find(|(legacy, _)| legacy == old)
+                    .map(|(_, new)| *new)
+                    .unwrap_or(old.as_str());
+                // name-row-ok: the row names the key, not an outcome
+                s = s.status_with(Role::Warn, old.clone(), |sf| {
+                    sf.qualifier(format!("moved to {new}")).detail(format!(
+                        "run `cfgd config set {} <value>`",
+                        new.trim_start_matches("spec.")
+                    ))
+                });
+            }
             s
         }
         DoctorConfigState::MissingAtDefault => s.status_with(Role::Warn, "Config file", |sf| {

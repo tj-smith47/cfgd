@@ -155,7 +155,7 @@ cfgd init --from git@github.com:you/machine-config.git --theme minimal
 
 For fresh repos, the theme is written into `cfgd.yaml`. For cloned repos, the theme is injected into the existing `cfgd.yaml`.
 
-To try a preset without persisting it, the global `--theme` flag (or `CFGD_THEME`) overrides `spec.theme.name` for one invocation:
+To try a preset without persisting it, the global `--theme` flag (or `CFGD_THEME`) overrides `spec.output.theme.name` for one invocation:
 
 ```sh
 cfgd status --theme nord
