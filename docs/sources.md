@@ -724,7 +724,7 @@ Show source:acme-corp
 
 What the last fetch recorded (the status, the commit it landed on, whether that commit was signed, and how long ago it was) belongs to `cfgd source list` and `cfgd status`, which read the state store. `source show` opens none, so it reports nothing a fetch has to have happened for.
 
-That split reaches the payload too: `source show -o json` no longer carries a `state` object or a `managedResources` array (both were present up to cfgd 0.10). `cfgd source list -o json` carries the recorded side of every subscription — `status`, `lastFetched`, `lastCommit`, `signed`, `version`, plus the `lockedRef` and `lockedCommit` this lockfile pins — and `cfgd status -o json` carries `managedResources[]`, whose `source` field names the owner each row belongs to.
+That split reaches the payload too: `source show -o json` no longer carries a `state` object or a `managedResources` array (both were present up to cfgd 0.10). `cfgd source list -o json` carries the recorded side of every subscription — `status`, `lastFetched`, `lastCommit`, `signed`, `version`, plus the `lockedRef` and `lockedCommit` this lockfile pins — and `cfgd status -o json` carries `managedResources[]`, whose `owner` field names the owner each row belongs to.
 
 ```bash
 $ cfgd source list -o json | jq '.[] | select(.name == "acme-corp") | {lockedRef, lockedCommit}'

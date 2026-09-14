@@ -2067,16 +2067,14 @@ they held is read elsewhere:
 |---|---|
 | `state.status`, `state.lastFetched`, `state.lastCommit`, `state.signed`, `state.version` | `cfgd source list -o json` (`status`, `lastFetched`, `lastCommit`, `signed`, `version`), or `cfgd status -o json`'s `sources[]` |
 | `state.lockedRef`, `state.lockedCommit` | `cfgd source list -o json` (`lockedRef`, `lockedCommit`) |
-| `managedResources[]` | `cfgd status -o json`'s `managedResources[]`, filtered by `source` |
+| `managedResources[]` | `cfgd status -o json`'s `managedResources[]`, filtered by `owner` |
 
-Each `managedResources[]` row carries the `source` it was delivered by (the
-source's own name, or `local` for a row this machine declared) and an `owner`
-holding the token the human `Owner` column prints for it (`module:nvim`,
-`profile:work`, `cfgd:env`), so the same row can be selected either way:
+Each `managedResources[]` row carries an `owner` holding the token the human
+`Owner` column prints for it (`module:nvim`, `profile:work`, `cfgd:env`), so a
+consumer selects the rows one component owns:
 
 ```bash
 cfgd source list -o json | jq '.[] | select(.name == "acme-corp") | {status, lastCommit, lockedRef, lockedCommit}'
-cfgd status -o json | jq '.managedResources[] | select(.source == "acme-corp")'
 cfgd status -o json | jq '.managedResources[] | select(.owner == "module:nvim")'
 ```
 

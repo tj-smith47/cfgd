@@ -132,13 +132,20 @@ pub fn managed_resource_payload(
 
 /// The owner token one recorded row belongs to.
 ///
-/// A package row is the profile's however it was recorded, a row naming a
-/// module is that module's, and everything else asks
+/// A row naming a module is that module's; everything else asks
 /// [`recorded_owner`], which is the reconciler's own split.
+///
+/// `profile_owner` is [`cfgd_core::reconciler::Owner::profile`]'s token for what
+/// [`derivable_profile`] answered, which the recorded row does not carry: the
+/// owner reads the same vocabulary the reconciler assigns the very actions that
+/// wrote these rows, so a package the profile declared reads that token here
+/// exactly as the plan and apply trees head its group and as `diff` reports its
+/// drift. The header leaves its `Profile` row out for a run that resolved none,
+/// so the same derivation decides the owner: a nameless token here would name a
+/// profile the row above says nothing has, which is the shape
+/// [`derivable_profile`] exists to refuse. Those rows carry [`NO_DETAIL`]
+/// instead.
 fn recorded_row_owner(r: &cfgd_core::state::ManagedResource, profile_owner: &str) -> String {
-    if package_id_parts(&r.resource_type, &r.resource_id).is_some() {
-        return profile_owner.to_string();
-    }
     match module_id_parts(&r.resource_type, &r.resource_id) {
         Some((module, _)) => cfgd_core::reconciler::Owner::module(module).token(),
         None => recorded_owner(r, profile_owner),
@@ -961,7 +968,8 @@ pub fn build_fleet_status_doc(
     resources: &ManagedResourceDetail,
 ) -> Doc {
     // One derivation for the whole document: the header's `Profile` row and
-    // the Managed Resources Owner column name the same profile or neither does.
+    // each recorded row's serialized owner come from the same
+    // `derivable_profile` answer, so both name the profile or neither does.
     let profile = head.profile;
     let mut doc = Doc::new()
         .heading("Status")
@@ -1192,16 +1200,8 @@ pub struct ManagedResourceDetail {
 /// unfillable-column settle drops the column whole; `-o json` carries the raw
 /// aggregate ids either way — the pinned wire contract.
 ///
-/// `profile` is what [`derivable_profile`] answered for the resolved name,
-/// which the recorded row does not carry: the Owner column reads the same
-/// vocabulary the reconciler assigns the very actions that wrote these rows,
-/// so a package the profile declared reads
-/// [`cfgd_core::reconciler::Owner::profile`]'s token here exactly as the plan
-/// and apply trees head its group and as `diff` reports its drift. The header
-/// leaves its `Profile` row out for a run that resolved none, so the same
-/// derivation decides the column: a nameless token here would name a profile
-/// the row above says nothing has, which is the shape `derivable_profile`
-/// exists to refuse. Those rows carry [`NO_DETAIL`] instead.
+/// The Owner column is each row's own [`ManagedResourceRow::owner`], derived
+/// once by [`recorded_row_owner`] and never re-derived here.
 fn managed_resource_rows(
     items: &[ManagedResourceRow],
     modules: &[ModuleStatusEntry],
@@ -2045,9 +2045,10 @@ fn finding_owner(
 /// below renders — the profile and cfgd's own env surfaces — and any owner
 /// only an unresolved recorded finding names.
 ///
-/// The owner split is [`recorded_owner`]'s and the module counts are the
-/// recorded tallies already on `output.modules`, so this section and the
-/// table cannot attribute one row to two owners or two counts. The verdicts
+/// The owner is the one each [`ManagedResourceRow`] already carries and the
+/// module counts are the recorded tallies already on `output.modules`, so this
+/// section and the table cannot attribute one row to two owners or two
+/// counts. The verdicts
 /// pass [`cfgd_core::state::module_status_display`] the RECORDED drift
 /// verdict — whether this owner holds an unresolved recorded finding — so a
 /// row reads `Drifted`/warn exactly when its nested findings say why, over
@@ -2081,8 +2082,11 @@ fn component_health_rows(output: &StatusOutput, profile: Option<&str>) -> Compon
             }
             display_type(&r.resource_type)
         };
-        let token = recorded_owner(r, profile_token.as_deref().unwrap_or(NO_DETAIL));
-        *recorded.entry(token).or_default().entry(noun).or_default() += 1;
+        *recorded
+            .entry(r.owner.clone())
+            .or_default()
+            .entry(noun)
+            .or_default() += 1;
     }
 
     // ONE walk over the unresolved recorded findings: each event lands under
