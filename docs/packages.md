@@ -468,7 +468,7 @@ packages:
       snap: nvim
 ```
 
-cfgd picks the first available manager that satisfies the version constraint, using `aliases` to map package names where they differ.
+cfgd picks the first available manager that satisfies the version constraint, using `aliases` to map package names where they differ. A manager that cannot state what it offers is not a manager that failed the constraint: the entry resolves onto it anyway, with the floor carried to the live check below rather than ending the run.
 
 A `minVersion` is a standing declaration, not a one-time resolution check: every drift surface (`cfgd diff`, `cfgd status --scan`, `cfgd verify`, and each of their `--module` scoped forms) compares the version the manager reports INSTALLED against the floor, so a package that ages out of its constraint is drift rather than convergence. A manager that cannot state an installed version (apk, pacman, zypper and FreeBSD `pkg` list names only) makes that floor unanswerable: the surfaces report it as a check that could not run and exit `1`, never as clean. The same holds for a version stated in a form nothing can compare against (a `git-20240101` snapshot tag, say), and for the DECLARATION itself: a `minVersion` written in a form its manager cannot read (`>=1.2`, `1.2.x`) is reported as a check that could not run rather than as a package permanently below its floor. A leading `v` is not such a form: `minVersion: "v1.2.0"` is the same floor as `1.2.0`.
 

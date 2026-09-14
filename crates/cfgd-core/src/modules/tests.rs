@@ -568,6 +568,82 @@ fn resolve_package_keeps_a_candidate_a_malformed_floor_could_not_judge() {
     );
 }
 
+/// A manager that cannot state what it OFFERS has shown nothing about the
+/// floor, so dropping the candidate on that answer deleted the package from
+/// the plan and aborted every command at config resolution. The declaration
+/// travels on instead, for the live check that owns the report.
+#[test]
+fn resolve_package_keeps_a_candidate_whose_manager_states_no_version() {
+    let quiet = MockManager::new("quiet-mgr");
+    let managers = make_manager_map(&[("quiet-mgr", &quiet)]);
+    let platform = linux_ubuntu_platform();
+
+    let entry = ModulePackageEntry {
+        name: "silent-pkg".into(),
+        min_version: Some("0.9".into()),
+        prefer: vec!["quiet-mgr".into()],
+        ..Default::default()
+    };
+
+    let result = resolve_package(&entry, "nvim", &platform, &managers, None)
+        .unwrap()
+        .expect("the package still resolves");
+    assert_eq!(result.manager, "quiet-mgr");
+    assert_eq!(result.version, None, "nothing was proven about the offer");
+    assert_eq!(
+        result.min_version.as_deref(),
+        Some("0.9"),
+        "and the floor travels on, for the check that names it"
+    );
+}
+
+/// A proven candidate outranks an earlier silent one: the author can observe
+/// which manager meets the floor, and that is the choice this order has always
+/// made.
+#[test]
+fn resolve_package_prefers_a_proven_candidate_over_an_earlier_silent_one() {
+    let quiet = MockManager::new("quiet-first");
+    let loud = MockManager::new("loud-second").with_package("paired-pkg", "1.4.0");
+    let managers = make_manager_map(&[("quiet-first", &quiet), ("loud-second", &loud)]);
+    let platform = linux_ubuntu_platform();
+
+    let entry = ModulePackageEntry {
+        name: "paired-pkg".into(),
+        min_version: Some("0.9".into()),
+        prefer: vec!["quiet-first".into(), "loud-second".into()],
+        ..Default::default()
+    };
+
+    let result = resolve_package(&entry, "nvim", &platform, &managers, None)
+        .unwrap()
+        .expect("the package resolves");
+    assert_eq!(result.manager, "loud-second");
+    assert_eq!(result.version, Some("1.4.0".into()));
+}
+
+/// A candidate that PROVES it offers below the floor is a fact and is passed
+/// over; the silent candidate ahead of it is what the entry falls back to.
+#[test]
+fn resolve_package_falls_back_to_the_silent_candidate_when_the_proven_one_is_below() {
+    let quiet = MockManager::new("quiet-ahead");
+    let low = MockManager::new("low-behind").with_package("shortfall-pkg", "0.2.0");
+    let managers = make_manager_map(&[("quiet-ahead", &quiet), ("low-behind", &low)]);
+    let platform = linux_ubuntu_platform();
+
+    let entry = ModulePackageEntry {
+        name: "shortfall-pkg".into(),
+        min_version: Some("0.9".into()),
+        prefer: vec!["quiet-ahead".into(), "low-behind".into()],
+        ..Default::default()
+    };
+
+    let result = resolve_package(&entry, "nvim", &platform, &managers, None)
+        .unwrap()
+        .expect("the package resolves");
+    assert_eq!(result.manager, "quiet-ahead");
+    assert_eq!(result.version, None);
+}
+
 #[test]
 fn resolve_package_unresolvable() {
     let apt = MockManager::new("apt").with_package("neovim", "0.6.1");
@@ -586,12 +662,12 @@ fn resolve_package_unresolvable() {
     };
 
     let result = resolve_package(&entry, "nvim", &platform, &managers, None);
-    assert!(result.is_err());
+    let err = result.unwrap_err().to_string();
+    assert!(err.contains("cannot be resolved"), "{err}");
     assert!(
-        result
-            .unwrap_err()
-            .to_string()
-            .contains("cannot be resolved")
+        err.contains("every available manager offers a version below the declared minVersion 0.9"),
+        "the refusal says WHICH of the two things it is, since a manager that \
+         was never asked successfully satisfies nothing either: {err}"
     );
 }
 
@@ -786,6 +862,10 @@ fn resolve_package_manager_not_registered() {
     assert!(
         err.contains("cannot be resolved"),
         "error should indicate unresolvable: {err}"
+    );
+    assert!(
+        err.contains("no manager for it is available on this host"),
+        "nothing was asked about a floor here: {err}"
     );
 }
 

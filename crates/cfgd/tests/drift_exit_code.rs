@@ -406,6 +406,80 @@ fn a_pinned_package_whose_version_cannot_be_read_escalates_on_every_exit_code_su
     }
 }
 
+/// The same versionless `apk` stand-in, minus any answer about what it
+/// OFFERS: `apk policy demo` prints nothing. A real manager answers this way
+/// whenever its index is unreachable, and `pipx` answers it always.
+fn offerless_apk(dir: &Path) -> std::path::PathBuf {
+    write_tool_shim(
+        dir,
+        "apk-offerless",
+        &[
+            ShimArm::on("list", "demo-3.0.0-r0 x86_64 {demo} (MIT) [installed]\n"),
+            ShimArm::always("", "", 0),
+        ],
+    )
+}
+
+/// A declared floor never costs the reader the whole run.
+///
+/// Resolution used to drop every candidate whose manager could not state what
+/// it offers, so a pinned package under such a manager ended every command at
+/// config resolution with one `cannot be resolved` sentence and nothing else.
+/// The floor travels to the live check instead, which reports it as a check
+/// that could not run, while `plan` gets on with the run.
+#[test]
+fn a_pinned_package_whose_manager_states_no_offer_still_resolves() {
+    let config_tmp = tempfile::tempdir().unwrap();
+    let home_tmp = tempfile::tempdir().unwrap();
+    write_pinned_package_config(config_tmp.path(), "apk");
+    let apk = offerless_apk(config_tmp.path());
+
+    let run = |args: &[&str]| {
+        let state_tmp = tempfile::tempdir().unwrap();
+        let mut cmd = Command::cargo_bin("cfgd").unwrap();
+        let out = cmd
+            .args(args)
+            .arg("--config")
+            .arg(config_tmp.path().join("cfgd.yaml"))
+            .arg("--state-dir")
+            .arg(state_tmp.path())
+            .env("HOME", home_tmp.path())
+            .env("USERPROFILE", home_tmp.path())
+            .env("CFGD_CACHE_DIR", home_tmp.path().join("cache"))
+            .env("CFGD_APK_BIN", &apk)
+            .output()
+            .unwrap();
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        (out.status.code(), text)
+    };
+
+    let (code, text) = run(&["verify", "--exit-code"]);
+    assert!(
+        !text.contains("cannot be resolved"),
+        "an unanswerable offer is not a resolution failure, got: {text}"
+    );
+    assert_eq!(
+        code,
+        Some(1),
+        "the floor nobody could judge is an erroring check, got: {text}"
+    );
+    assert!(
+        text.contains("apk:demo") && text.contains("error checking drift"),
+        "and it renders as its own row, got: {text}"
+    );
+
+    let (code, text) = run(&["plan"]);
+    assert!(
+        !text.contains("cannot be resolved"),
+        "`cfgd plan` renders a plan rather than aborting, got: {text}"
+    );
+    assert_eq!(code, Some(0), "and exits clean, got: {text}");
+}
+
 /// A `dnf`/`rpm` pair that OFFERS `demo` at 3.0.0 and reports 1.0.0 installed
 /// — a machine holding a package whose declared floor it no longer meets.
 ///

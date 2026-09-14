@@ -879,13 +879,11 @@ pub enum ModuleError {
         platforms: String,
     },
 
-    #[error(
-        "package '{package}' in module '{module}' cannot be resolved: no available manager satisfies the requirements (minVersion: {min_version})"
-    )]
+    #[error("package '{package}' in module '{module}' cannot be resolved: {reason}")]
     UnresolvablePackage {
         module: String,
         package: String,
-        min_version: String,
+        reason: String,
     },
 
     #[error("failed to fetch git source for module '{module}': {url}: {message}")]

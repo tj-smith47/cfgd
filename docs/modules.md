@@ -265,12 +265,17 @@ The full resolution logic for each package entry:
    - If the candidate is `"script"`, the `script` field must be present (error if missing). Scripts are always considered "available," and version checks are skipped (the script manages its own versioning). See [Script Execution](#script-execution) below.
    - Otherwise, check that the manager is installed and available on this machine. If not, skip to the next candidate.
    - Resolve the package name: use `aliases[manager]` if present, otherwise fall back to `name`.
-   - If `minVersion` is specified, query the manager for the available version. If the package is not found or the version is below the minimum, skip this manager.
+   - If `minVersion` is specified, query the manager for the available version. A manager that offers a version below the minimum is skipped. A manager that cannot state what it offers at all (its index is unreachable, or the manager lists no available versions) has shown nothing about the floor, so the candidate stands: it resolves with no version, and the floor is carried to the live check, which reports it as a check that could not run.
    - If all checks pass, the manager is selected.
-4. **If no candidate satisfies:** resolution fails and the run stops, naming the package, its module and the floor nothing met:
+4. **If no candidate satisfies:** resolution fails and the run stops, naming the package, its module and which of the two things happened. Either no manager for it is on this host at all:
    ```
-   ✗ package 'neovim' in module 'demo' cannot be resolved: no available manager satisfies the requirements (minVersion: 99.0)
+   ✗ package 'neovim' in module 'demo' cannot be resolved: no manager for it is available on this host, and none can be bootstrapped
    ```
+   or every manager that could be asked proved it offers too old a copy:
+   ```
+   ✗ package 'neovim' in module 'demo' cannot be resolved: every available manager offers a version below the declared minVersion 99.0
+   ```
+   A manager that could not be asked successfully is neither of those, and never ends the run.
    A candidate cfgd can bootstrap counts as satisfying: it resolves optimistically (no version can be queried before the manager itself exists), and `cfgd diff` names the route the bootstrap would take:
    ```
    ⚠ chocolatey: not installed — can provision via system
