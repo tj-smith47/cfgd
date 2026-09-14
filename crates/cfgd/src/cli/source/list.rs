@@ -64,7 +64,13 @@ pub fn sources_table(entries: &[SourceListEntry], wide: bool, now: &str) -> Tabl
             // display slot; the payload keeps the absolute path.
             entries
                 .iter()
-                .map(|e| cell(e.url.as_deref().map(cfgd_core::fold_home_in_text)))
+                .map(|e| {
+                    cell(
+                        e.url
+                            .as_deref()
+                            .map(|u| cfgd_core::fold_home_in_text(&cfgd_core::display_url(u))),
+                    )
+                })
                 .collect(),
         ),
         (

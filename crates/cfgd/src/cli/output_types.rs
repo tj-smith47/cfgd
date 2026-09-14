@@ -1297,8 +1297,13 @@ pub struct AliasListEntry {
 #[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct KeyListEntry {
     pub name: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub fingerprint: Option<String>,
+    /// Whether the private half of this key pair sits beside the public one.
+    ///
+    /// The field was `fingerprint: Option<String>` carrying the prose
+    /// `"private key: yes"` — a name promising a digest, a type promising the
+    /// fact could be unknown, and a value a consumer had to substring-match to
+    /// read a boolean cfgd already knew.
+    pub private_key_present: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub created: Option<String>,
 }
@@ -2425,28 +2430,31 @@ mod tests {
         assert_eq!(json["url"], json!("oci://registry.example.com"));
     }
 
+    /// The private-key fact is a boolean a consumer reads directly, and an
+    /// unstamped key still carries it: only `created`, which genuinely may be
+    /// unreadable, drops out of the payload.
     #[test]
-    fn key_list_entry_skips_none_fingerprint_and_created() {
+    fn key_list_entry_states_the_private_key_fact_and_skips_an_unknown_created() {
         let v = KeyListEntry {
             name: "signing".to_string(),
-            fingerprint: None,
+            private_key_present: false,
             created: None,
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["name"], json!("signing"));
-        assert!(json.get("fingerprint").is_none());
+        assert_eq!(json["privateKeyPresent"], json!(false));
         assert!(json.get("created").is_none());
     }
 
     #[test]
-    fn key_list_entry_includes_fingerprint_and_created_when_some() {
+    fn key_list_entry_includes_the_private_key_fact_and_created_when_known() {
         let v = KeyListEntry {
             name: "signing".to_string(),
-            fingerprint: Some("SHA256:abc".to_string()),
+            private_key_present: true,
             created: Some("2026-01-01T00:00:00Z".to_string()),
         };
         let json = serde_json::to_value(&v).unwrap();
-        assert_eq!(json["fingerprint"], json!("SHA256:abc"));
+        assert_eq!(json["privateKeyPresent"], json!(true));
         assert_eq!(json["created"], json!("2026-01-01T00:00:00Z"));
     }
 

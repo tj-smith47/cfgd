@@ -83,23 +83,31 @@ pub fn cmd_module_keys_generate(printer: &Printer, output_dir: Option<&str>) -> 
     Ok(())
 }
 
-pub fn cmd_module_keys_list(printer: &Printer) -> anyhow::Result<()> {
-    let locations = [
-        ("./cosign.key", "./cosign.pub"),
-        ("~/.cfgd/cosign.key", "~/.cfgd/cosign.pub"),
-    ];
+/// The key-pair locations `cfgd module keys list` probes.
+///
+/// `--dir` is the same argument `keys generate` and `keys rotate` take, and it
+/// means the same thing: the directory holding the pair. Given one, that
+/// directory is the whole search — a listing that answered about `~/.cfgd`
+/// after being asked about a project directory would report a key the caller
+/// did not ask about. Given none, the two locations the other two verbs write
+/// to by default are probed, current directory first.
+fn key_pair_locations(dir: Option<&str>) -> Vec<std::path::PathBuf> {
+    match dir {
+        Some(d) => vec![cfgd_core::expand_tilde(Path::new(d))],
+        None => vec![
+            cfgd_core::expand_tilde(Path::new(".")),
+            cfgd_core::expand_tilde(Path::new("~/.cfgd")),
+        ],
+    }
+}
 
+pub fn cmd_module_keys_list(printer: &Printer, dir: Option<&str>) -> anyhow::Result<()> {
     let mut entries: Vec<super::KeyListEntry> = Vec::new();
-    for (private, public) in &locations {
-        let priv_path = cfgd_core::expand_tilde(Path::new(private));
-        let pub_path = cfgd_core::expand_tilde(Path::new(public));
+    for base in key_pair_locations(dir) {
+        let priv_path = base.join("cosign.key");
+        let pub_path = base.join("cosign.pub");
 
         if pub_path.exists() {
-            let fingerprint = if priv_path.exists() {
-                Some("private key: yes".to_string())
-            } else {
-                Some("private key: no".to_string())
-            };
             let created = std::fs::metadata(&pub_path)
                 .ok()
                 .and_then(|m| m.modified().ok())
@@ -112,7 +120,7 @@ pub fn cmd_module_keys_list(printer: &Printer) -> anyhow::Result<()> {
                 });
             entries.push(super::KeyListEntry {
                 name: cfgd_core::to_posix_string(&pub_path),
-                fingerprint,
+                private_key_present: priv_path.exists(),
                 created,
             });
         }
@@ -127,16 +135,14 @@ pub fn cmd_module_keys_list(printer: &Printer) -> anyhow::Result<()> {
     } else {
         // The rows are a display slot and the key files sit under home; the
         // payload below keeps the absolute path a script needs.
-        let pairs: Vec<(String, String)> = entries
-            .iter()
-            .map(|e| {
-                (
-                    cfgd_core::fold_home_in_text(&e.name),
-                    e.fingerprint.clone().unwrap_or_default(),
-                )
-            })
-            .collect();
-        doc = doc.kv_block(pairs);
+        let mut table = cfgd_core::output::renderer::Table::new(["Key", "Private Key"]);
+        for e in &entries {
+            table = table.row([
+                cfgd_core::fold_home_in_text(&e.name),
+                cfgd_core::yes_no(Some(e.private_key_present)).to_string(),
+            ]);
+        }
+        doc = doc.table(table.without_unfillable_columns());
     }
 
     printer.emit(doc.with_data(&entries));
@@ -463,7 +469,7 @@ mod tests {
         let _home = with_test_home_guard(tmp.path());
         let _cwd = cfgd_core::test_helpers::CwdGuard::set(tmp.path()).expect("cwd guard");
         let (printer, cap) = Printer::for_test_doc();
-        cmd_module_keys_list(&printer).expect("list should not error");
+        cmd_module_keys_list(&printer, None).expect("list should not error");
         let human = cap.human();
         assert!(
             human.contains("No signing keys found"),
@@ -479,7 +485,7 @@ mod tests {
         std::fs::write(cfgd_dir.join("cosign.pub"), "fake-pub-key").expect("write pub key");
         let _home = with_test_home_guard(tmp.path());
         let (printer, cap) = Printer::for_test_doc();
-        cmd_module_keys_list(&printer).expect("list should not error");
+        cmd_module_keys_list(&printer, None).expect("list should not error");
         let json = cap.json().expect("doc should have json payload");
         let entries = json.as_array().expect("payload should be an array");
         assert!(!entries.is_empty(), "should find at least one key entry");
@@ -640,7 +646,7 @@ mod tests {
         let _cwd = cfgd_core::test_helpers::CwdGuard::set(tmp.path()).expect("cwd guard");
 
         let (printer, cap) = Printer::for_test_doc();
-        cmd_module_keys_list(&printer).expect("list should not error");
+        cmd_module_keys_list(&printer, None).expect("list should not error");
         let json = cap.json().expect("doc should have json payload");
         let entries = json.as_array().expect("payload should be an array");
         assert!(
@@ -649,12 +655,10 @@ mod tests {
                 .any(|e| e["name"].as_str().is_some_and(|n| n.contains("cosign.pub"))),
             "expected entry to include the local cosign.pub: {entries:?}"
         );
-        // Private-key sentinel should mention "yes" because both files exist.
+        // The private half is there, so the payload states it as `true`.
         assert!(
-            entries
-                .iter()
-                .any(|e| e["fingerprint"].as_str().is_some_and(|f| f.contains("yes"))),
-            "expected 'private key: yes' for an entry: {entries:?}"
+            entries.iter().any(|e| e["privateKeyPresent"] == true),
+            "expected privateKeyPresent true for an entry: {entries:?}"
         );
     }
 
@@ -725,12 +729,45 @@ mod tests {
         );
     }
 
+    /// `--dir` is the whole search, not an addition to it.
+    ///
+    /// The three key verbs take one `--dir` meaning one thing: the directory
+    /// holding the pair. A listing that answered about `~/.cfgd` as well would
+    /// report a key the caller did not ask about, under a flag the other two
+    /// verbs use to pick exactly one directory.
     #[test]
     #[serial]
-    fn list_local_dir_without_priv_uses_no_sentinel() {
-        // Drives the "./cosign.pub" branch where priv_path.exists()=false,
-        // producing "private key: no" instead of "yes". `CwdGuard` holds the
-        // exclusive spawn-environment guard while the process is chdir'd.
+    fn list_dir_lists_that_directory_and_nothing_else() {
+        let home = tempfile::tempdir().expect("home tempdir");
+        let asked = tempfile::tempdir().expect("asked tempdir");
+        std::fs::write(asked.path().join("cosign.pub"), "asked-pub").expect("write pub");
+        std::fs::write(asked.path().join("cosign.key"), "asked-priv").expect("write priv");
+        // A default location holding its own pair, which the answer must not
+        // mention once a directory was named.
+        let dotcfgd = home.path().join(".cfgd");
+        std::fs::create_dir_all(&dotcfgd).expect("mk ~/.cfgd");
+        std::fs::write(dotcfgd.join("cosign.pub"), "home-pub").expect("write home pub");
+        let _home = with_test_home_guard(home.path());
+
+        let (printer, cap) = Printer::for_test_doc();
+        cmd_module_keys_list(&printer, asked.path().to_str()).expect("list should not error");
+        let json = cap.json().expect("doc should have json payload");
+        let entries = json.as_array().expect("payload should be an array");
+        assert_eq!(entries.len(), 1, "one directory, one pair: {entries:?}");
+        assert_eq!(entries[0]["privateKeyPresent"], true);
+        let name = entries[0]["name"].as_str().unwrap_or_default();
+        assert!(
+            name.contains(&cfgd_core::to_posix_string(asked.path())),
+            "the entry is the named directory's pair: {name}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn list_local_dir_without_priv_reports_the_private_key_absent() {
+        // Drives the "./cosign.pub" branch where priv_path.exists()=false, so
+        // the payload states `false`. `CwdGuard` holds the exclusive
+        // spawn-environment guard while the process is chdir'd.
         let tmp = tempfile::tempdir().expect("tempdir");
         std::fs::write(tmp.path().join("cosign.pub"), "fake-pub").expect("write pub");
         // No cosign.key — exercises the priv_path.exists()==false arm.
@@ -740,14 +777,12 @@ mod tests {
         let _home = with_test_home_guard(tmp.path());
 
         let (printer, cap) = Printer::for_test_doc();
-        cmd_module_keys_list(&printer).expect("list should not error");
+        cmd_module_keys_list(&printer, None).expect("list should not error");
         let json = cap.json().expect("doc should have json payload");
         let entries = json.as_array().expect("payload should be array");
         assert!(
-            entries
-                .iter()
-                .any(|e| e["fingerprint"].as_str().is_some_and(|f| f.contains("no"))),
-            "expected 'private key: no' sentinel: {entries:?}"
+            entries.iter().any(|e| e["privateKeyPresent"] == false),
+            "expected privateKeyPresent false: {entries:?}"
         );
     }
 }

@@ -69,6 +69,7 @@ This file is an **INDEX**. The reasoning — why a helper exists, what breaks wi
 - `validate_env_var_name(name)` / `validate_alias_name(name)` — low-level shape checks; prefer the user-facing one above for user input.
 - `shell_escape_value(value)` — escape a value for a shell `export`.
 - `xml_escape(s)` — escape `&<>"'` for XML/plist.
+- `display_url(url)` — the ONE display rendering of a URL: the same string with any userinfo removed, so a declared credential never reaches a scrollback. Every human slot naming a source, registry or module origin reads it; the stored value and `-o json` keep the URL whole (`every_rendered_url_is_stripped_of_its_userinfo`).
 - `escape_control_chars(s)` — render control characters as visible `\xNN`. The ESCAPE policy of the output system's three (see `output/mod.rs`'s `//!`); reach for it on a string a command builds OUTSIDE the renderer.
 - `cursor_safe(s)` (`output/mod.rs`) — the ONE renderer FOLD for text cfgd did not author. Its routed-slot inventory and the fold/escape/strip split live in that module's `//!`; `output-module.md` states the rule.
 - `cfgd_schema::validate_file_patch_shape(subject, source_is_empty, strategy, patch, encryption_declared, private)` → `Result<(), FileShapeError>` — the ONE source/strategy/patch/encryption shape rule, shared by the local parser and the Module CRD's `validate()`; `config::profile_spec`'s wrapper relabels its message as a `ConfigError`.

@@ -1224,7 +1224,7 @@ pub fn cmd_module_registry_list(cli: &Cli, printer: &Printer) -> anyhow::Result<
     // acronym-ok: URL is an acronym, which Title Case keeps capitalized.
     let mut t = cfgd_core::output::renderer::Table::new(["Name", "URL"]);
     for e in &entries {
-        t = t.row([e.name.clone(), e.url.clone()]);
+        t = t.row([e.name.clone(), cfgd_core::display_url(&e.url)]);
     }
 
     printer.emit(

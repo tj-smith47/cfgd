@@ -2365,7 +2365,11 @@ pub enum ModuleKeysCommand {
     },
     /// List known signing keys
     #[command(alias = "ls")]
-    List,
+    List {
+        /// Directory to look in (default: the current directory and ~/.cfgd)
+        #[arg(long, short)]
+        dir: Option<String>,
+    },
     /// Rotate signing keys: generate a new pair and re-sign specified artifacts
     Rotate {
         /// Directory containing the current cosign.key to replace
@@ -3095,7 +3099,9 @@ pub fn execute(
                 ModuleKeysCommand::Generate { dir } => {
                     module::cmd_module_keys_generate(printer, dir.as_deref())
                 }
-                ModuleKeysCommand::List => module::cmd_module_keys_list(printer),
+                ModuleKeysCommand::List { dir } => {
+                    module::cmd_module_keys_list(printer, dir.as_deref())
+                }
                 ModuleKeysCommand::Rotate { dir, artifacts } => {
                     module::cmd_module_keys_rotate(printer, dir.as_deref(), artifacts)
                 }

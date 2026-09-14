@@ -59,7 +59,10 @@ pub fn build_source_show_doc(
         // A local source's URL is a directory: folded like every display
         // slot, the payload keeping the absolute path.
         // acronym-ok: URL is an acronym, which Title Case keeps capitalized.
-        .kv("URL", cfgd_core::fold_home_in_text(&output.url))
+        .kv(
+            "URL",
+            cfgd_core::fold_home_in_text(&cfgd_core::display_url(&output.url)),
+        )
         .kv("Branch", &output.branch)
         .kv("Priority", output.priority.to_string())
         .kv(

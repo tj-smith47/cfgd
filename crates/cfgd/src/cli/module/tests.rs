@@ -1908,6 +1908,45 @@ fn cmd_module_registry_list_json() {
     assert!(arr[0]["url"].as_str().unwrap().contains("example.com"));
 }
 
+/// The two halves of the URL rule from the outside: the table strips the
+/// credentials a declared registry URL carries, and the `-o json` payload keeps
+/// the URL whole for a consumer that has to fetch with it.
+///
+/// Pinned as a pair against ONE declared registry, because each half alone
+/// passes on a listing that strips everywhere or nowhere.
+#[test]
+fn a_credentialed_registry_url_renders_stripped_and_serializes_whole() {
+    const DECLARED: &str = "https://tj:ghp_s3cr3t@example.com/team.git";
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+    cmd_module_registry_add(&cli, &make_printer(), DECLARED, Some("team")).unwrap();
+
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    cmd_module_registry_list(&cli, &printer).unwrap();
+    drop(printer);
+    let human = cfgd_core::test_helpers::captured_text(&buf);
+    assert!(
+        human.contains("https://example.com/team.git"),
+        "the table renders the URL without its userinfo: {human}"
+    );
+    assert!(
+        !human.contains("ghp_s3cr3t") && !human.contains("tj:"),
+        "no credential reaches the terminal: {human}"
+    );
+
+    let cli_json = test_cli_json(dir.path());
+    let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
+    cmd_module_registry_list(&cli_json, &printer).unwrap();
+    drop(printer);
+    let json = cap.json().expect("doc captured json");
+    assert_eq!(
+        json.as_array().and_then(|a| a.first()).map(|e| &e["url"]),
+        Some(&serde_json::json!(DECLARED)),
+        "the payload keeps the declared URL byte-for-byte: {json}"
+    );
+}
+
 #[test]
 fn cmd_module_registry_list_no_config() {
     let dir = tempfile::tempdir().unwrap();
@@ -1931,7 +1970,7 @@ fn cmd_module_registry_list_no_config() {
 fn cmd_module_keys_list_no_keys() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    cmd_module_keys_list(&printer).unwrap();
+    cmd_module_keys_list(&printer, None).unwrap();
     drop(printer);
 
     let output = cfgd_core::test_helpers::captured_text(&buf);

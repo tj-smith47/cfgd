@@ -6477,6 +6477,80 @@ mod tests {
         );
     }
 
+    /// The two halves of the value rule, driven against ONE fixture: asked for,
+    /// a declared env value renders in the clear; not asked for, it is not on
+    /// the screen at all.
+    ///
+    /// `status <module>` is the one env-rendering surface with no masked middle
+    /// state — `module show`, `profile show` and `source show` mask a value
+    /// they always render, while this report renders the name alone until
+    /// `--show-values` asks for the rest. Pinned as a pair because each half
+    /// alone passes on a report that renders every value always, or none ever.
+    #[test]
+    fn an_env_value_renders_in_the_clear_only_where_show_values_asked_for_it() {
+        const SECRET: &str = "s3cr3t-token-value";
+        let tmp_home = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp_home.path());
+        let (config_dir, state_dir, config_path) = setup_env_with_module();
+        std::fs::write(
+            config_dir
+                .path()
+                .join("modules")
+                .join("test-mod")
+                .join("module.yaml"),
+            format!(
+                "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: test-mod\nspec:\n  env:\n    - name: API_TOKEN\n      value: {SECRET}\n"
+            ),
+        )
+        .unwrap();
+        // Both halves render the ITEMIZED view, so the only difference between
+        // the two runs is the flag: the counts view has no item row to carry a
+        // value in the first place.
+        let mut cli = test_cli_for(config_path, state_dir.path());
+        cli.output = super::OutputFormatArg(cfgd_core::output::OutputFormat::Wide);
+
+        let render = |show_values: bool| {
+            let (printer, cap) =
+                Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Wide);
+            cmd_status(
+                &cli,
+                &printer,
+                Some("test-mod"),
+                StatusRun {
+                    show_values,
+                    ..StatusRun::default()
+                },
+            )
+            .unwrap();
+            drop(printer);
+            cap.human()
+        };
+
+        let asked = render(true);
+        let row = asked
+            .lines()
+            .find(|l| l.split_whitespace().next() == Some("API_TOKEN"))
+            .unwrap_or_else(|| panic!("no API_TOKEN row: {asked}"));
+        assert_eq!(
+            row.split_whitespace().collect::<Vec<_>>(),
+            vec!["API_TOKEN", SECRET],
+            "--show-values renders the declared value in the clear, unmasked \
+             and unquoted: {row}"
+        );
+
+        let unasked = render(false);
+        assert!(
+            unasked.contains("API_TOKEN"),
+            "the declared name is still inventory: {unasked}"
+        );
+        assert!(
+            !unasked.contains(SECRET)
+                && !unasked.contains(crate::cli::module::keys::mask_value(SECRET).as_str()),
+            "without the flag the report renders no value at all, masked or \
+             otherwise: {unasked}"
+        );
+    }
+
     /// `-o wide` reaches the same view through the global output flag, with no
     /// values shown.
     #[test]

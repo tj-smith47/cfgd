@@ -90,7 +90,7 @@ fn module_keys_list_empty_human() {
         cfgd_core::test_helpers::EnvVarGuard::set("HOME", tmp.path().to_str().unwrap());
 
     let (printer, cap) = Printer::for_test_doc();
-    module::cmd_module_keys_list(&printer).unwrap();
+    module::cmd_module_keys_list(&printer, None).unwrap();
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
@@ -112,7 +112,7 @@ fn module_keys_list_empty_json() {
         cfgd_core::test_helpers::EnvVarGuard::set("HOME", tmp.path().to_str().unwrap());
 
     let (printer, cap) = Printer::for_test_doc();
-    module::cmd_module_keys_list(&printer).unwrap();
+    module::cmd_module_keys_list(&printer, None).unwrap();
     drop(printer);
 
     let json = cap.json().expect("doc captured json");

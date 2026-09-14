@@ -712,9 +712,89 @@ pub fn is_package_presence_want(expected: &str) -> bool {
     matches!(expected, PACKAGE_WANT_INSTALLED | PACKAGE_WANT_ABSENT)
 }
 
+/// A URL as a report renders it: the same string with any userinfo removed.
+///
+/// A git remote may legitimately carry credentials in its authority
+/// (`https://user:ghp_xxx@github.com/acme/config.git`), and cfgd stores what
+/// the author declared. Every human surface naming a source, a registry or a
+/// module's origin renders that string, so the token reaches a terminal
+/// scrollback, a screen share and a pasted bug report. Stripping it is a
+/// display decision only: the stored value, the value cfgd clones from and the
+/// `-o json` payload all keep the URL byte-for-byte, because a consumer
+/// reading the payload may need to fetch with it.
+///
+/// The strip is deliberately textual rather than a URL parse. cfgd accepts
+/// shapes no parser agrees on — `git@github.com:acme/config.git` (scp-like, no
+/// scheme), a bare `owner/repo` shorthand, a local directory — and a parse that
+/// refuses one of those would have to fall back to rendering the raw string,
+/// which is the leak. The authority is the span between `://` and the first
+/// `/`, `?` or `#` after it; userinfo is whatever precedes the last `@` inside
+/// it. A string with no `://` is returned unchanged, so an scp-like remote
+/// keeps its `git@host` (a username, never a secret, and the only spelling
+/// that remote has).
+#[must_use]
+pub fn display_url(url: &str) -> String {
+    let Some(scheme_end) = url.find("://") else {
+        return url.to_string();
+    };
+    let authority_start = scheme_end + "://".len();
+    let authority_len = url[authority_start..]
+        .find(['/', '?', '#'])
+        .unwrap_or(url.len() - authority_start);
+    let authority = &url[authority_start..authority_start + authority_len];
+    let Some(at) = authority.rfind('@') else {
+        return url.to_string();
+    };
+    format!(
+        "{}{}",
+        &url[..authority_start],
+        &url[authority_start + at + 1..]
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn display_url_strips_userinfo_and_leaves_every_other_shape_alone() {
+        assert_eq!(
+            display_url("https://user:ghp_token@github.com/acme/config.git"),
+            "https://github.com/acme/config.git"
+        );
+        assert_eq!(
+            display_url("https://token@github.com/acme/config.git"),
+            "https://github.com/acme/config.git"
+        );
+        // No userinfo, and the path survives whole.
+        assert_eq!(
+            display_url("https://github.com/acme/config.git"),
+            "https://github.com/acme/config.git"
+        );
+        // An authority with no path at all still strips.
+        assert_eq!(
+            display_url("https://u:p@example.test"),
+            "https://example.test"
+        );
+        // A query or fragment ends the authority the same way a slash does.
+        assert_eq!(
+            display_url("https://u:p@example.test?ref=main"),
+            "https://example.test?ref=main"
+        );
+        // No scheme: an scp-like remote, a shorthand and a local path are
+        // returned verbatim, `git@host` included.
+        assert_eq!(
+            display_url("git@github.com:acme/config.git"),
+            "git@github.com:acme/config.git"
+        );
+        assert_eq!(display_url("acme/config"), "acme/config");
+        assert_eq!(display_url("/srv/config"), "/srv/config");
+        // An `@` in the PATH is not userinfo.
+        assert_eq!(
+            display_url("https://example.test/acme@2/config.git"),
+            "https://example.test/acme@2/config.git"
+        );
+    }
 
     #[test]
     fn canonical_bool_str_accepts_truthy_spellings() {

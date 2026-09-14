@@ -10963,7 +10963,7 @@ fn module_registry_rename_no_config() {
 fn module_keys_list_no_keys() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    module::cmd_module_keys_list(&printer).unwrap();
+    module::cmd_module_keys_list(&printer, None).unwrap();
     drop(printer);
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -10980,7 +10980,7 @@ fn module_keys_list_with_pub_key() {
 
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    module::cmd_module_keys_list(&printer).unwrap();
+    module::cmd_module_keys_list(&printer, None).unwrap();
     drop(printer);
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -18727,6 +18727,91 @@ fn every_time_column_renders_a_relative_time() {
     );
     assert!(
         names_a_moment("Last Run") && names_a_moment("CreatedAt") && !names_a_moment("Format"),
+        "the label rule itself must separate the names it exists to judge"
+    );
+}
+
+/// The composers that render a URL under a column name that does not say so.
+///
+/// `source list`'s column is headed `Source`, because the value is not always a
+/// URL a browser would take (a local source's origin is a directory) — so the
+/// label walk below cannot see it, and it is named here instead. A name that
+/// matches no function in `cli/` fails the walk, so a renamed composer is
+/// reported rather than silently dropped from the population.
+const URL_RENDERING_COMPOSERS: &[&str] = &["fn sources_table("];
+
+/// Whether a rendered label names a URL.
+fn names_a_url(label: &str) -> bool {
+    label == "URL" || label.ends_with(" URL")
+}
+
+/// A rendered URL carries no userinfo.
+///
+/// A git remote may legitimately hold credentials in its authority
+/// (`https://user:ghp_xxx@github.com/acme/config.git`), and cfgd renders the
+/// string the author declared on four surfaces: `module registry list`'s table,
+/// `module show`'s `URL` row, `source list`'s `Source` column and `source
+/// show`'s `URL` row. Each one puts the token into a terminal scrollback, a
+/// screen share and whatever gets pasted into a bug report.
+///
+/// [`cfgd_core::display_url`] is the one strip, and it is DISPLAY only: the
+/// stored value, the value cfgd clones from and every `-o json` payload keep
+/// the URL whole, which
+/// `a_credentialed_registry_url_renders_stripped_and_serializes_whole` pins
+/// from the other side.
+///
+/// Judged per ENCLOSING FUNCTION, like the time-column walk: a cell can be
+/// built rows away from the `Table::new` naming its column. A slot rendering a
+/// URL that genuinely must keep its userinfo says so with a
+/// `// raw-url-ok: <why>` marker.
+#[test]
+fn every_rendered_url_is_stripped_of_its_userinfo() {
+    let mut offenders = Vec::new();
+    let mut seen: Vec<String> = Vec::new();
+    let mut composers_found: Vec<&str> = Vec::new();
+    for (path, body) in cli_production_sources() {
+        let lines: Vec<&str> = body.lines().collect();
+        let mut sites: Vec<(usize, String)> = rendered_labels(&body)
+            .into_iter()
+            .filter(|(_, label)| names_a_url(label))
+            .collect();
+        for composer in URL_RENDERING_COMPOSERS {
+            if let Some(at) = body.find(composer) {
+                composers_found.push(composer);
+                sites.push((at, (*composer).to_string()));
+            }
+        }
+        for (at, label) in sites {
+            seen.push(label.clone());
+            let n = body[..at].matches('\n').count();
+            let scope = enclosing_fn_text(&lines, n);
+            if scope.contains("display_url") || label_hatched(&lines, n, "// raw-url-ok:") {
+                continue;
+            }
+            offenders.push(format!("{}:{}: {label:?}", path.display(), n + 1));
+        }
+    }
+    for composer in URL_RENDERING_COMPOSERS {
+        assert!(
+            composers_found.contains(composer),
+            "the roster names a composer `cli/` no longer holds: {composer}"
+        );
+    }
+    // One witness per surface family, so a gather that quietly stopped
+    // matching cannot pass by finding nothing.
+    assert!(
+        seen.iter().filter(|l| *l == "URL").count() >= 3,
+        "the walk no longer reaches the three `URL` slots — it found {seen:?}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a rendered URL is stripped of its userinfo through \
+         `cfgd_core::display_url` (a slot that must keep it takes a \
+         `// raw-url-ok:` marker):\n{}",
+        offenders.join("\n")
+    );
+    assert!(
+        names_a_url("URL") && names_a_url("Registry URL") && !names_a_url("URLs Checked"),
         "the label rule itself must separate the names it exists to judge"
     );
 }
@@ -28725,7 +28810,7 @@ fn execute_module_keys_list_dispatch() {
     let h = CliTestHarness::builder().build();
     let cli = h.cli_with_command(Command::Module {
         command: ModuleCommand::Keys {
-            command: ModuleKeysCommand::List,
+            command: ModuleKeysCommand::List { dir: None },
         },
     });
     super::execute(&cli, h.printer(), &super::paths::DirSources::all_default())
@@ -36812,7 +36897,7 @@ fn no_report_slot_spells_the_home_directory_absolutely() {
     std::fs::write(home.path().join(".cfgd/cosign.pub"), "public-key-bytes")
         .expect("plant a public key under home");
     let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
-    super::module::cmd_module_keys_list(&printer).expect("list the signing keys");
+    super::module::cmd_module_keys_list(&printer, None).expect("list the signing keys");
     drop(printer);
     let listing = cap
         .json()

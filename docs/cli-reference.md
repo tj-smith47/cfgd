@@ -1923,12 +1923,18 @@ Manage cosign signing keys for module artifacts.
 ```sh
 cfgd module keys generate --dir keys/          # new key pair
 cfgd module keys list                          # known signing keys
+cfgd module keys list --dir keys/              # only that directory
 cfgd module keys rotate --dir keys/ --artifacts ghcr.io/me/my-module:1.0.0
 ```
 
 `generate` writes a new cosign key pair (`-d`/`--dir`, default: current
 directory). `rotate` generates a new pair in place of the `cosign.key` in
 `--dir` and re-signs the artifacts named by `--artifacts` (repeatable).
+
+`list` takes the same `-d`/`--dir`: given one, that directory is the whole
+search; given none, the current directory and `~/.cfgd` are both probed. The
+`Private Key` column says whether the private half sits beside the public one,
+and `-o json` states it as `privateKeyPresent`.
 
 ## Source Commands
 
