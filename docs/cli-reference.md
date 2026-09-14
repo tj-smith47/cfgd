@@ -119,14 +119,30 @@ refuses when that directory is already somebody's — it holds a `cfgd.yaml`, it
 is not empty, or it is a symlink:
 
 ```
-Error: Refusing to write into the default config directory ~/.config/cfgd: it
-already holds a cfgd.yaml. Name a destination (`cfgd init <dir> --from
-<source>`), or point `--config` at the config you want this run to use.
+✗ Refusing to write into the default config directory ~/.config/cfgd: it already holds a cfgd.yaml.
+
+→ Name a destination, or point --config at the config you want this run to use:
+  $ cfgd init <dir> --from <source>
+  $ cfgd apply --from <source> --config <dir>/cfgd.yaml
 ```
 
 The refusal exits `1` and covers every verb that materialises a config from
 `--from`: `cfgd init`, `cfgd apply` and `cfgd plan`. `--config <dir>/cfgd.yaml`
 names the destination for the latter two, whether or not that file exists yet.
+The question is asked about the directory rather than the path: a `--config`
+that walks back into the default directory (`~/.config/cfgd/../cfgd/cfgd.yaml`)
+or names what it is a symlink to is refused under the same rule.
+
+Under `-o json` it carries the stable kind `config_dir_occupied`:
+
+```json
+{
+  "destination": "~/.config/cfgd",
+  "error": "config_dir_occupied",
+  "finding": "it already holds a cfgd.yaml",
+  "name": "~/.config/cfgd"
+}
+```
 
 See [bootstrap.md](bootstrap.md) for the full init flow.
 
@@ -2664,7 +2680,7 @@ selector format's success shape and an error doc's shape rarely agree:
   ```
 
   `error` is a machine-readable kind (`not_found`, `registry_not_found`, `already_exists`,
-  `parse_failed`, `key_not_found`, `target_not_writable`, …), `name` identifies the subject
+  `parse_failed`, `key_not_found`, `target_not_writable`, `config_dir_occupied`, …), `name` identifies the subject
   (module / source / profile / registry / key), and any
   command-specific fields follow. `name` is present only when the failure has a subject to
   report: an empty subject is omitted from the payload rather than serialized as `""`. A

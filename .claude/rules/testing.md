@@ -61,9 +61,14 @@ walks every `tests/e2e/*/scripts/run-all.sh` for both halves, so a new suite
 directory trips over the rule.
 
 The binary answers for its own half: a verb that materialises a config from
-`--from` with no destination named refuses to write into a default config
-directory that already holds a `cfgd.yaml`, is not empty, or is a symlink
-(`crates/cfgd/tests/from_default_dir_refusal.rs`). Both halves exist because
+`--from` refuses to write into a default config directory that already holds a
+`cfgd.yaml`, is not empty, or is a symlink
+(`crates/cfgd/tests/from_default_dir_refusal.rs`). The question is asked about
+the DIRECTORY — `is_same_inode` against `default_config_dir()` — so a `--config`
+that walks back into it through `..` or names what it is a symlink to is
+refused under the same rule, and every `--from` verb reads its destination
+through `init::from_destination`
+(`every_from_verb_takes_its_destination_from_from_destination`). Both halves exist because
 neither one was enough: an e2e `apply --from` pointed at a scratch `--config`
 cloned its fixture into a developer's `~/.config/cfgd`, and `secret` wrote an
 age key beside it.

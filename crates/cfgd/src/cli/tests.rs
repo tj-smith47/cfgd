@@ -42212,6 +42212,131 @@ fn every_e2e_suite_runs_under_the_one_scratch_home() {
     );
 }
 
+/// Every `--from` verb resolves its destination through
+/// `init::from_destination`, so the refusal that guards the default config
+/// directory cannot be walked around by a verb that forgot to ask.
+///
+/// `apply` and `plan` each carry their own copy of the same two lines, which is
+/// the shape that let a `&& !cli.config.exists()` bug sit in both files at once
+/// — and a fourth `--from` verb would carry a third copy. The walk resolves a
+/// `let`-bound argument back to its own `let` before judging it, so
+/// `init::resolve_from(from, target.as_deref(), …)` is read as the
+/// `from_destination` call that produced `target`.
+///
+/// `// positional-destination-ok: <why>` on the call's line or in the comment
+/// run above it hatches a site whose destination is not a `--config` at all
+/// (`cmd_init`'s positional path).
+#[test]
+fn every_from_verb_takes_its_destination_from_from_destination() {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut offenders = Vec::new();
+    let mut call_sites = 0usize;
+    for path in rust_sources_under(&src) {
+        // The walk judges production call sites; `tests.rs` (this file and
+        // `init/tests.rs`) drives `resolve_from` directly with every shape.
+        if path.file_name().is_some_and(|n| n == "tests.rs") {
+            continue;
+        }
+        let production = cfgd_core::test_helpers::production_slice_of(&path);
+        let blanked: Vec<String> = production.lines().map(blank_string_literals).collect();
+        let lines: Vec<&str> = production.lines().collect();
+        for (n, blank) in blanked.iter().enumerate() {
+            if blank.contains("fn resolve_from") || !blank.contains("resolve_from(") {
+                continue;
+            }
+            call_sites += 1;
+            if line_hatched(&lines, n, "// positional-destination-ok:") {
+                continue;
+            }
+            let Some(target) = resolve_from_target_arg(&blanked, n) else {
+                offenders.push(format!(
+                    "{}:{}: {} — cannot read the destination argument",
+                    path.display(),
+                    n + 1,
+                    lines[n].trim()
+                ));
+                continue;
+            };
+            if !target.contains("from_destination(") {
+                offenders.push(format!(
+                    "{}:{}: {} — destination is `{}`",
+                    path.display(),
+                    n + 1,
+                    lines[n].trim(),
+                    target.trim()
+                ));
+            }
+        }
+    }
+    assert!(
+        call_sites >= 3,
+        "the walk found {call_sites} `resolve_from` call sites; `init`, `apply` and `plan` \
+         each have one, so the walk is reading less than it claims"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a `--from` verb resolves its destination itself instead of through \
+         `init::from_destination`, so the default-config-directory refusal does not \
+         guard it (say why with `// positional-destination-ok:`):\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// The second argument of the `resolve_from(` call on line `n`, with a
+/// `let`-bound name resolved back to its own `let` first.
+///
+/// The call's arguments are read off the blanked lines, so a `,` inside a
+/// string literal cannot end an argument early; the statement is folded until
+/// the call's parentheses balance, so a wrapped call is one statement.
+fn resolve_from_target_arg(blanked: &[String], n: usize) -> Option<String> {
+    let start = blanked[n].find("resolve_from(")? + "resolve_from(".len();
+    let mut depth = 1usize;
+    let mut args: Vec<String> = vec![String::new()];
+    let mut line = n;
+    let mut rest = blanked[n][start..].to_string();
+    loop {
+        for ch in rest.chars() {
+            match ch {
+                '(' | '[' | '{' => depth += 1,
+                ')' | ']' | '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return resolve_let_bound(blanked, n, args.get(1)?);
+                    }
+                }
+                ',' if depth == 1 => {
+                    args.push(String::new());
+                    continue;
+                }
+                _ => {}
+            }
+            // Every arm that could drop depth to 0 has returned by here.
+            if let Some(last) = args.last_mut() {
+                last.push(ch);
+            }
+        }
+        line += 1;
+        rest = blanked.get(line)?.clone();
+    }
+}
+
+/// `target.as_deref()` answers the question about `target`'s own `let`, which
+/// is where the destination is really decided.
+fn resolve_let_bound(blanked: &[String], n: usize, arg: &str) -> Option<String> {
+    let arg = arg.trim();
+    let name = arg.split(['.', ' ']).next().unwrap_or(arg).trim();
+    if name.is_empty() || !name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+        return Some(arg.to_string());
+    }
+    let needle = format!("let {name} =");
+    for line in blanked[..n].iter().rev() {
+        if let Some(at) = line.find(&needle) {
+            return Some(line[at..].to_string());
+        }
+    }
+    Some(arg.to_string())
+}
+
 /// `MaskEnvValues::Secrets` masks a value exactly when a declared secret
 /// exports its NAME, and the two surfaces that render a declared env value the
 /// same way have to agree about which one that is: a screen where `module

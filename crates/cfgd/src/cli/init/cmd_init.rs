@@ -84,6 +84,8 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
     let destination_named_by_clone = from.as_deref().is_some_and(is_clonable_source);
     let target_dir = if let Some(from) = from.as_deref() {
         let explicit_path = args.path.map(|p| cfgd_core::expand_tilde(Path::new(p)));
+        // positional-destination-ok: `init` takes its destination as a positional
+        // argument, not off `--config`, so there is no `--config` to read it from.
         resolve_from(from, explicit_path.as_deref(), args.branch, printer)?
     } else {
         match args.path {

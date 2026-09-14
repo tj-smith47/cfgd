@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use cfgd_core::PathDisplayExt;
-use cfgd_core::output::{Printer, Role};
+use cfgd_core::output::{HintCommands, Printer, Role};
 
 /// Returns true if the value is a clonable source: a git URL, a `file://` URL,
 /// a repository directory named `<name>.git`, or a local directory that is a
@@ -33,7 +33,8 @@ pub(super) fn is_clonable_source(value: &str) -> bool {
 
 /// The directory a `--from` run materialises into, read off the `--config` the
 /// caller gave: `None` when that is the default config directory, which
-/// [`resolve_from`] then refuses to write into unless it is free.
+/// [`resolve_from`] resolves for itself and then guards through
+/// [`refuse_occupied_default_destination`].
 ///
 /// The path is absolutized first, so a relative `--config cfgd.yaml` names the
 /// working directory rather than an empty parent. Whether the file already
@@ -59,13 +60,10 @@ pub(crate) fn resolve_from(
     if is_clonable_source(from) {
         let dest = match target {
             Some(path) => path.to_path_buf(),
-            None => {
-                let default = cfgd_core::default_config_dir();
-                refuse_occupied_default_destination(&default)?;
-                default
-            }
+            None => cfgd_core::default_config_dir(),
         };
-        if !dest.join("cfgd.yaml").exists() {
+        refuse_occupied_default_destination(&dest)?;
+        if !dest.join(cfgd_core::config::CONFIG_FILENAME).exists() {
             std::fs::create_dir_all(&dest)?;
             clone_into(&dest, from, branch, printer)?;
         } else {
@@ -118,7 +116,7 @@ fn occupied_default_destination(dest: &Path) -> Option<&'static str> {
 }
 
 /// Refuse to write a `--from` source into the default config directory when
-/// the caller named no destination and that directory is already somebody's.
+/// `dest` names it and it is already somebody's.
 ///
 /// A verb that materialises a config from `--from` resolves a missing
 /// destination to [`cfgd_core::default_config_dir`], and the only guard there
@@ -127,16 +125,35 @@ fn occupied_default_destination(dest: &Path) -> Option<&'static str> {
 /// over. The `cfgd.yaml` arm was no guard either — it skipped the clone and
 /// handed the directory back, so `apply --from` went on to apply whatever
 /// config it found against the real machine.
+///
+/// The question is asked about the DIRECTORY, not about the string
+/// [`from_destination`] compared: [`cfgd_core::absolutize_path`] leaves `..` as
+/// a literal component, so `--config ~/.config/cfgd/../cfgd/cfgd.yaml` named
+/// the default directory under a spelling no string comparison matches, and a
+/// `--config` pointed at whatever the default directory is a symlink to named
+/// it under another. [`cfgd_core::is_same_inode`] answers both.
 fn refuse_occupied_default_destination(dest: &Path) -> anyhow::Result<()> {
+    let default = cfgd_core::default_config_dir();
+    if dest != default && !cfgd_core::is_same_inode(dest, &default) {
+        return Ok(());
+    }
     let Some(finding) = occupied_default_destination(dest) else {
         return Ok(());
     };
-    anyhow::bail!(
-        "Refusing to write into the default config directory {}: {finding}. \
-         Name a destination (`cfgd init <dir> --from <source>`), or point `--config` \
-         at the config you want this run to use.",
-        cfgd_core::fold_home_in_text(&dest.display_posix())
-    )
+    let shown = cfgd_core::fold_home_in_text(&dest.display_posix());
+    Err(crate::cli::cli_error_with_hints(
+        shown.clone(),
+        "config_dir_occupied",
+        format!("Refusing to write into the default config directory {shown}: {finding}."),
+        serde_json::json!({ "destination": shown, "finding": finding }),
+        vec![HintCommands::new(
+            "Name a destination, or point --config at the config you want this run to use:",
+            [
+                "cfgd init <dir> --from <source>",
+                "cfgd apply --from <source> --config <dir>/cfgd.yaml",
+            ],
+        )],
+    ))
 }
 
 /// The origin URL and HEAD commit a checkout is really at.

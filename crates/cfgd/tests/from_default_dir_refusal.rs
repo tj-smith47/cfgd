@@ -210,3 +210,155 @@ fn apply_from_materialises_into_the_directory_config_names() {
     );
     assert!(!dest.join(".git").exists());
 }
+
+#[test]
+fn plan_from_refuses_a_default_dir_that_already_holds_a_config() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    source_repo(&src);
+    let home = tmp.path().join("home");
+    let dest = default_config_dir(&home);
+    std::fs::write(dest.join("cfgd.yaml"), "apiVersion: cfgd.io/v1alpha1\n").unwrap();
+
+    // `plan` carries its own copy of the two lines `apply` has, and nothing
+    // pinned it: the refusal is documented as covering all three verbs.
+    run(&home, &["plan", "--from", &src.display().to_string()])
+        .code(1)
+        .stderr(predicate::str::contains(
+            "Refusing to write into the default config directory",
+        ));
+
+    assert_eq!(
+        std::fs::read_to_string(dest.join("cfgd.yaml")).unwrap(),
+        "apiVersion: cfgd.io/v1alpha1\n"
+    );
+}
+
+#[test]
+fn apply_from_refuses_a_config_that_walks_back_into_the_default_dir() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    source_repo(&src);
+    let home = tmp.path().join("home");
+    let dest = default_config_dir(&home);
+    std::fs::write(dest.join("cfgd.yaml"), "apiVersion: cfgd.io/v1alpha1\n").unwrap();
+
+    // `absolutize_path` leaves `..` a literal component, so this spelling names
+    // the default directory under a string no comparison with it matches.
+    let walked = home
+        .join(".config")
+        .join("cfgd")
+        .join("..")
+        .join("cfgd")
+        .join("cfgd.yaml");
+    run(
+        &home,
+        &[
+            "apply",
+            "--dry-run",
+            "--yes",
+            "--from",
+            &src.display().to_string(),
+            "--config",
+            &walked.display().to_string(),
+        ],
+    )
+    .code(1)
+    .stderr(predicate::str::contains(
+        "Refusing to write into the default config directory",
+    ));
+
+    assert_eq!(
+        std::fs::read_to_string(dest.join("cfgd.yaml")).unwrap(),
+        "apiVersion: cfgd.io/v1alpha1\n"
+    );
+    assert!(!dest.join(".git").exists(), "nothing was cloned over it");
+}
+
+#[cfg(unix)]
+#[test]
+fn apply_from_refuses_a_config_pointed_at_what_the_default_dir_links_to() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    source_repo(&src);
+    let home = tmp.path().join("home");
+    let real = tmp.path().join("elsewhere");
+    std::fs::create_dir_all(&real).unwrap();
+    std::fs::write(real.join("cfgd.yaml"), "apiVersion: cfgd.io/v1alpha1\n").unwrap();
+    std::fs::create_dir_all(home.join(".config")).unwrap();
+    std::os::unix::fs::symlink(&real, home.join(".config").join("cfgd")).unwrap();
+
+    // The link's target is the same directory under a different name, and the
+    // refusal is about the directory.
+    run(
+        &home,
+        &[
+            "apply",
+            "--dry-run",
+            "--yes",
+            "--from",
+            &src.display().to_string(),
+            "--config",
+            &real.join("cfgd.yaml").display().to_string(),
+        ],
+    )
+    .code(1)
+    .stderr(predicate::str::contains(
+        "Refusing to write into the default config directory",
+    ));
+
+    assert!(!real.join(".git").exists(), "nothing was cloned over it");
+}
+
+#[test]
+fn the_refusal_is_a_classified_error_with_its_two_ways_forward_as_commands() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    source_repo(&src);
+    let home = tmp.path().join("home");
+    let dest = default_config_dir(&home);
+    std::fs::write(dest.join("cfgd.yaml"), "apiVersion: cfgd.io/v1alpha1\n").unwrap();
+
+    // Human mode: the remediation is a `$` block, not prose inside the subject.
+    let human = run(
+        &home,
+        &[
+            "--color",
+            "never",
+            "init",
+            "--from",
+            &src.display().to_string(),
+        ],
+    )
+    .code(1)
+    .get_output()
+    .stderr
+    .clone();
+    let human = String::from_utf8(human).unwrap();
+    assert!(
+        human.contains("$ cfgd init <dir> --from <source>")
+            && human.contains("$ cfgd apply --from <source> --config <dir>/cfgd.yaml"),
+        "both ways forward render as commands, got:\n{human}"
+    );
+    assert!(
+        !human.contains("Name a destination (`cfgd init"),
+        "the remediation is no longer inside the error subject:\n{human}"
+    );
+
+    // `-o json`: a user error, not an unclassified internal one.
+    let structured = run(
+        &home,
+        &["-o", "json", "init", "--from", &src.display().to_string()],
+    )
+    .code(1)
+    .get_output()
+    .stdout
+    .clone();
+    let payload: serde_json::Value =
+        serde_json::from_slice(&structured).expect("one error object on stdout");
+    assert_eq!(payload["error"], "config_dir_occupied", "got: {payload}");
+    assert_eq!(
+        payload["finding"], "it already holds a cfgd.yaml",
+        "got: {payload}"
+    );
+}
