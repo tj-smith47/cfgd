@@ -907,6 +907,7 @@ fn apply_result_counts() {
     let result = ApplyResult {
         action_results: vec![
             ActionResult {
+                origin: None,
                 after_plan: None,
                 phase: "files".to_string(),
                 description: "test".to_string(),
@@ -920,6 +921,7 @@ fn apply_result_counts() {
                 drift_rows: Vec::new(),
             },
             ActionResult {
+                origin: None,
                 after_plan: None,
                 phase: "files".to_string(),
                 description: "test2".to_string(),
@@ -8034,6 +8036,7 @@ fn a_withheld_session_publish_leaves_no_env_session_row_while_its_siblings_recor
                   phase: PhaseName,
                   rows: Vec<(String, String)>,
                   not_attempted: Option<String>| ActionResult {
+        origin: None,
         after_plan: None,
         phase: phase.as_str().to_string(),
         description: crate::reconciler::format_action_description(action),
@@ -8123,6 +8126,7 @@ fn a_result_the_run_never_attempted_writes_no_row_and_heals_none() {
         .record_managed_resources(
             apply_id,
             &[ActionResult {
+                origin: None,
                 after_plan: None,
                 phase: PhaseName::Files.as_str().to_string(),
                 description: crate::reconciler::format_action_description(&action),
@@ -31116,4 +31120,112 @@ fn a_shortfall_this_runs_provisions_delivered_is_worded_as_delivered() {
     assert!(!Reconciler::delivered_by_this_run(
         &delivered, "brew", "neovim"
     ));
+}
+
+/// A tracking row names the layer that delivered the resource, not `local`.
+///
+/// `cfgd source remove <name>` looks up what a subscription put on the machine
+/// by `managed_resources.source` alone, so a row recorded under `local` for an
+/// item a source delivered leaves the operator with no way to hand it back or
+/// clean it up, and the Keep / Remove / Cancel prompt that exists for exactly
+/// that question is unreachable.
+///
+/// Both halves are driven: a file action carries its own delivering layer,
+/// while `plan_packages` mints every install under `local` because one batch
+/// can hold entries from several layers, so the package half is answered per
+/// package from the layer list.
+#[test]
+fn an_apply_records_each_row_under_the_layer_that_delivered_it() {
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(MockPackageManager::new("brew")));
+
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("gitconfig");
+    std::fs::write(&source, "[user]\n").unwrap();
+    let target = dir.path().join("deployed-gitconfig");
+
+    let mut resolved = make_empty_resolved();
+    resolved.layers.push(ProfileLayer {
+        source: "acme".to_string(),
+        profile_name: "acme/required".to_string(),
+        priority: 2000,
+        policy: LayerPolicy::Required,
+        spec: ProfileSpec {
+            packages: Some(PackagesSpec {
+                brew: Some(BrewSpec {
+                    formulae: vec!["ripgrep".to_string()],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+    });
+
+    let reconciler = Reconciler::new(&registry, &state);
+    let plan = reconciler
+        .plan(
+            &resolved,
+            vec![FileAction::Create {
+                source: source.clone(),
+                target: target.clone(),
+                origin: "acme".to_string(),
+                strategy: FileStrategy::Copy,
+                source_hash: None,
+                patch: None,
+            }],
+            vec![PackageAction::Install {
+                manager: "brew".to_string(),
+                packages: vec!["ripgrep".to_string()],
+                origin: LOCAL_LAYER.to_string(),
+            }],
+            Vec::new(),
+            ReconcileContext::Apply,
+        )
+        .unwrap();
+
+    let printer = test_printer();
+    let result = reconciler
+        .apply(
+            &plan,
+            &resolved,
+            dir.path(),
+            &printer,
+            None,
+            &[],
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .unwrap();
+    assert_eq!(result.status, ApplyStatus::Success);
+
+    let delivered: Vec<(String, String)> = state
+        .managed_resources_by_source("acme")
+        .unwrap()
+        .into_iter()
+        .map(|r| (r.resource_type, r.resource_id))
+        .collect();
+    assert!(
+        delivered.contains(&("package".to_string(), "brew/ripgrep".to_string())),
+        "the package the source declared is recorded under it: {delivered:?}"
+    );
+    assert!(
+        delivered.contains(&("file".to_string(), crate::to_posix_string(&target))),
+        "the file the source delivered is recorded under it: {delivered:?}"
+    );
+    let local: Vec<(String, String)> = state
+        .managed_resources_by_source(LOCAL_LAYER)
+        .unwrap()
+        .into_iter()
+        .map(|r| (r.resource_type, r.resource_id))
+        .collect();
+    assert!(
+        !local
+            .iter()
+            .any(|(rtype, _)| rtype == "package" || rtype == "file"),
+        "nothing the source delivered is also claimed by the operator: {local:?}"
+    );
 }

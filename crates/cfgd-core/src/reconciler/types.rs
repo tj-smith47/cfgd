@@ -472,6 +472,51 @@ impl Action {
             _ => None,
         }
     }
+
+    /// The composed layer that delivered the work this action performs, or
+    /// `None` for work cfgd itself owns.
+    ///
+    /// Every declared action already carries the layer token the plan renders
+    /// as its ` <- <source>` suffix; this reads that same fact back so the
+    /// apply can record it on the tracking row it writes, which is what
+    /// `cfgd source remove` looks a removed subscription's resources up by.
+    /// An empty token and [`crate::config::LOCAL_LAYER`] both mean the
+    /// operator's own config, exactly as
+    /// [`super::format::provenance_suffix`] reads them.
+    ///
+    /// The env surface and a manager node carry no token: a generated env file
+    /// folds every layer into one file, and a bootstrapped manager is cfgd's
+    /// own scaffolding, so neither belongs to a single subscription.
+    pub fn origin(&self) -> Option<&str> {
+        match self {
+            Action::File(fa) => Some(match fa {
+                FileAction::Create { origin, .. }
+                | FileAction::Update { origin, .. }
+                | FileAction::Delete { origin, .. }
+                | FileAction::SetPermissions { origin, .. }
+                | FileAction::Skip { origin, .. } => origin,
+            }),
+            Action::Package(pa) => Some(match pa {
+                PackageAction::Install { origin, .. }
+                | PackageAction::Uninstall { origin, .. }
+                | PackageAction::Skip { origin, .. } => origin,
+            }),
+            Action::Secret(sa) => Some(match sa {
+                SecretAction::Decrypt { origin, .. }
+                | SecretAction::Resolve { origin, .. }
+                | SecretAction::ResolveEnv { origin, .. }
+                | SecretAction::Skip { origin, .. } => origin,
+            }),
+            Action::System(sa) => Some(match sa {
+                SystemAction::SetValue { origin, .. }
+                | SystemAction::Skip { origin, .. }
+                | SystemAction::ConfigureAfterInstall { origin, .. } => origin,
+            }),
+            Action::Script(ScriptAction::Run { origin, .. }) => Some(origin),
+            Action::Module(ma) => ma.origin.as_deref(),
+            Action::Env(_) | Action::Manager(_) => None,
+        }
+    }
 }
 
 /// Module-level action — first-class phase, not flattened into packages/files.
@@ -1449,6 +1494,16 @@ pub struct ActionResult {
     /// `-o json` shape.
     #[serde(skip)]
     pub drift_rows: Vec<(String, String)>,
+    /// The composed layer that delivered this action, read off the action
+    /// itself through [`Action::origin`] rather than re-derived from
+    /// `description`, so the token the plan printed beside the row and the
+    /// token the tracking row records are one string. `None` for work cfgd
+    /// owns, which records as [`crate::config::LOCAL_LAYER`].
+    ///
+    /// Not serialized: the apply payload already carries each action's origin
+    /// under the plan, and this is the recording half of the same fact.
+    #[serde(skip)]
+    pub origin: Option<String>,
     /// What this result is, when the plan never named it — see [`AfterPlan`].
     /// `None` for every planned action, and the ONE thing that keeps such a
     /// result out of the three counts the header's `Actions N planned` is

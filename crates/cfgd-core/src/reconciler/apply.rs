@@ -1018,8 +1018,67 @@ pub(super) fn merge_env_result(
         installed: None,
         versions: Default::default(),
         drift_rows,
+        // A generated env file folds every layer at once, so no single
+        // subscription delivered it.
+        origin: None,
         after_plan: Some(AfterPlan::EnvSurface),
     });
+}
+
+/// Which composed layer declared each package a profile's package actions
+/// install.
+///
+/// One `PackageAction::Install` batches every package its manager is missing,
+/// and those entries can have arrived on different layers, so the action's own
+/// origin cannot say which subscription delivered any one of them. The layer
+/// list can: the LAST layer declaring a `(manager, package)` pair is the layer
+/// whose declaration survived the merge, which is `merge_layers`' own
+/// last-writer-wins rule rather than a second opinion about precedence.
+struct PackageLayers(std::collections::HashMap<String, String>);
+
+impl PackageLayers {
+    fn of(resolved: &ResolvedProfile) -> Self {
+        let mut by_row = std::collections::HashMap::new();
+        for layer in &resolved.layers {
+            let Some(packages) = &layer.spec.packages else {
+                continue;
+            };
+            for manager in packages.manager_names() {
+                for package in crate::config::desired_packages_for_spec(&manager, packages) {
+                    by_row.insert(
+                        crate::state::package_resource_id(&manager, &package),
+                        layer.source.clone(),
+                    );
+                }
+            }
+        }
+        Self(by_row)
+    }
+
+    /// The layer to record `resource_id` under. `fallback` covers a package no
+    /// layer declares — an entry the CLI folded in from a Brewfile or a
+    /// `package.json` after the merge — which stays whatever the action said.
+    fn recording_layer<'a>(&'a self, resource_id: &str, fallback: &'a str) -> &'a str {
+        match self.0.get(resource_id) {
+            Some(source) if !source.is_empty() => source,
+            _ => fallback,
+        }
+    }
+}
+
+/// The `managed_resources.source` value one settled action's row records.
+///
+/// `cfgd source remove <name>` finds what a subscription put on the machine by
+/// this column alone, so a row recorded under [`LOCAL_LAYER`] for an item a
+/// source delivered is a row nothing can hand back or clean up. The answer
+/// travels on the result, read off the action by [`Action::origin`]; an empty
+/// token means the same thing as [`LOCAL_LAYER`], exactly as the plan's
+/// provenance suffix reads it.
+fn recording_layer(result: &ActionResult) -> &str {
+    match result.origin.as_deref() {
+        Some(origin) if !origin.is_empty() => origin,
+        _ => LOCAL_LAYER,
+    }
 }
 
 fn is_post_apply_script(action: &Action) -> bool {
@@ -1849,6 +1908,7 @@ impl<'a> super::Reconciler<'a> {
                                 installed: None,
                                 versions: Default::default(),
                                 drift_rows: Vec::new(),
+                                origin: None,
                                 after_plan: Some(AfterPlan::EnvSurface),
                             });
                         }
@@ -1963,6 +2023,7 @@ impl<'a> super::Reconciler<'a> {
                             installed: None,
                             versions: Default::default(),
                             drift_rows: Vec::new(),
+                            origin: None,
                             after_plan: Some(AfterPlan::ChangeHook),
                         });
                     }
@@ -1980,6 +2041,7 @@ impl<'a> super::Reconciler<'a> {
                             installed: None,
                             versions: Default::default(),
                             drift_rows: Vec::new(),
+                            origin: None,
                             after_plan: Some(AfterPlan::ChangeHook),
                         });
                         if !continue_on_err {
@@ -2036,6 +2098,7 @@ impl<'a> super::Reconciler<'a> {
                                 installed: None,
                                 versions: Default::default(),
                                 drift_rows: Vec::new(),
+                                origin: module.origin.clone(),
                                 after_plan: Some(AfterPlan::ChangeHook),
                             });
                         }
@@ -2057,6 +2120,7 @@ impl<'a> super::Reconciler<'a> {
                                 installed: None,
                                 versions: Default::default(),
                                 drift_rows: Vec::new(),
+                                origin: module.origin.clone(),
                                 after_plan: Some(AfterPlan::ChangeHook),
                             });
                             if !continue_on_err {
@@ -2196,6 +2260,7 @@ impl<'a> super::Reconciler<'a> {
         resolved: &ResolvedProfile,
         modules: &[ResolvedModule],
     ) -> Result<()> {
+        let package_layers = PackageLayers::of(resolved);
         for result in results {
             if !result.success {
                 continue;
@@ -2206,6 +2271,10 @@ impl<'a> super::Reconciler<'a> {
             if result.not_attempted.is_some() {
                 continue;
             }
+
+            // Which layer this apply records the row under, so that removing
+            // a subscription can find everything it put on the machine.
+            let recording_layer = recording_layer(result);
 
             // Packages track per-resolved-name under "package"/"<mgr>/<pkg>" so the
             // set is usable for declarative prune. The generic parser is lossy for
@@ -2230,7 +2299,7 @@ impl<'a> super::Reconciler<'a> {
                                 .and_then(|m| m.persisted_uninstall());
                             self.state.upsert_package_resource(
                                 &rid,
-                                LOCAL_LAYER,
+                                package_layers.recording_layer(&rid, recording_layer),
                                 Some(apply_id),
                                 uninstall_cmd.as_deref(),
                             )?;
@@ -2308,8 +2377,13 @@ impl<'a> super::Reconciler<'a> {
                 }
                 continue;
             }
-            self.state
-                .upsert_managed_resource(&rtype, &rid, LOCAL_LAYER, None, Some(apply_id))?;
+            self.state.upsert_managed_resource(
+                &rtype,
+                &rid,
+                recording_layer,
+                None,
+                Some(apply_id),
+            )?;
             if rtype == ENV_RESOURCE_TYPE {
                 // An `env:inject:<rc>` action's subject is the shell rc file,
                 // but the check that reads it records the source line under
@@ -2595,6 +2669,9 @@ impl<'a> super::Reconciler<'a> {
             } else {
                 Vec::new()
             },
+            // Off the action itself, so the layer the plan printed beside
+            // this row is the layer its tracking row records.
+            origin: action.origin().map(str::to_string),
             // The plan named this action, so the header already promised it.
             after_plan: None,
         });

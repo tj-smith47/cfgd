@@ -83,6 +83,7 @@ fn ctx(title: RunTitle) -> RunContext<'static> {
 
 fn action_result(success: bool) -> ActionResult {
     ActionResult {
+        origin: None,
         after_plan: None,
         phase: "files".to_string(),
         description: "file:create:/tmp/x".to_string(),
@@ -774,6 +775,7 @@ fn a_pre_skipped_action_is_priced_outside_the_counted_rollup() {
     skipped_that_ran.skipped = true;
     result.action_results.push(skipped_that_ran);
     result.action_results.push(ActionResult {
+        origin: None,
         after_plan: None,
         phase: "bootstrap".to_string(),
         description: "env:refresh".to_string(),
@@ -858,6 +860,7 @@ fn after_plan_result(subject: AfterPlan, state: AfterPlanState) -> ActionResult 
     let success = state != AfterPlanState::Failed;
     let changed = state == AfterPlanState::Performed;
     ActionResult {
+        origin: None,
         after_plan: Some(subject),
         phase: "bootstrap".to_string(),
         description: "env:write:/home/me/.cfgd.env".to_string(),

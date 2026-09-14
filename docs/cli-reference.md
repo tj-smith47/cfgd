@@ -743,6 +743,13 @@ Managed Resources
   file     module:nvim       /home/you/.config/nvim (12 files)  local
 ```
 
+The `Source` column is a different fact from `Owner`: it names the layer the
+last apply recorded the row under, which is `local` for something you declared
+yourself and the source name for something a subscription delivered. It is the
+column `cfgd source remove` looks a subscription's resources up by, so
+removing a source can offer to keep them (they become `local`) or take them off
+the machine. `-o json` carries it as `source` on every `managedResources[]` row.
+
 The default module report is a summary: one count per declared surface, then
 what the scan found. `Status` leads the block. The report names no scope: you
 named the module on the command line, so restating it tells you only what you

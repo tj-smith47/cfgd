@@ -330,6 +330,7 @@ fn apply_after_plan_work_human_and_json() {
         action_results: [(true, false), (true, true), (false, false), (false, false)]
             .into_iter()
             .map(|(success, skipped)| ActionResult {
+                origin: None,
                 after_plan: Some(AfterPlan::EnvSurface),
                 phase: "bootstrap".to_string(),
                 description: "env:write:/home/me/.cfgd.env".to_string(),
