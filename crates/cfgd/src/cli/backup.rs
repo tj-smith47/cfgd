@@ -61,6 +61,9 @@ fn find_backup_spec<'a>(
 /// — every unit then falls back to what its own profile declares, which is the
 /// same degradation the listing's history columns take.
 pub(in crate::cli) fn recorded_projections(
+    // list-status-ok: the cluster-owned cadences a check-in recorded, which is
+    // what the listing's Schedule Owner column states and the only store read
+    // it makes for a declared unit.
     state: Option<&cfgd_core::state::StateStore>,
 ) -> cfgd_core::backup::ScheduleProjections {
     state
@@ -76,6 +79,9 @@ pub(in crate::cli) fn recorded_projections(
 /// the same DB in the same command is exactly what that context exists to stop.
 fn unit_context<'a>(
     ctx: &'a RunContext<'_>,
+    // list-status-ok: the store this borrows is the run's own, and for the
+    // listing it answers exactly one question — the recorded history each
+    // declared unit has.
 ) -> anyhow::Result<(PathBuf, &'a cfgd_core::state::StateStore, PathBuf)> {
     let cli = ctx.cli();
     let config_dir = config_dir(cli);
@@ -290,6 +296,9 @@ pub fn build_backup_snapshot_list_doc(
     for e in entries {
         t = t.row([
             e.name.clone(),
+            // list-status-ok: a snapshot's age IS this listing's recorded
+            // column — the history is the only thing `backup list` exists
+            // to read, and a declared unit records nothing else.
             cfgd_core::humanize_age_cell(Some(&e.created), now),
             format_bytes(e.size_bytes),
         ]);

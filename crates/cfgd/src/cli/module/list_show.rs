@@ -53,6 +53,8 @@ fn source_role(source: &str) -> Option<Role> {
 /// own fact, that the module is on the machine — through the LISTING half of
 /// the vocabulary, instead of a `Synced` no check earned.
 fn status_cell(status: &str, checked: bool) -> (String, Option<Role>) {
+    // list-status-ok: this IS the listing's one recorded status column, and the
+    // word it renders is the vocabulary's, never a second derivation.
     let (word, role) = cfgd_core::state::module_listing_display(status, recorded_verdict(checked));
     (word.to_string(), Some(role))
 }
@@ -260,6 +262,9 @@ fn build_module_show_resolved_packages(doc: Doc, packages: &[PackageDisplay], ar
 /// `Packages` section renders those rows instead.
 pub fn build_module_show_doc(
     output: &ModuleShowOutput,
+    // declared-lock-ok: the entry supplies the `Source`, `URL` and `Pinned Ref`
+    // rows — where a remote module is declared to come from, written down in
+    // the lockfile because no other file states it.
     lock_entry: Option<&ModuleLockEntry>,
     detail: crate::cli::InventoryDetail<'_>,
     arrow: &str,
@@ -362,6 +367,9 @@ pub(crate) fn cmd_module_list(cli: &Cli, printer: &Printer) -> anyhow::Result<()
     let config_dir = config_dir(cli);
     let cache_base = module_cache_dir(cli)?;
     let all_modules = modules::load_all_modules(&config_dir, &cache_base, &[], printer)?;
+    // declared-lock-ok: which modules are remote, and where from, is declared
+    // in the lockfile and nowhere else — the Source column states that, not
+    // anything a past run did on this machine.
     let lockfile = modules::load_lockfile(&config_dir)?;
 
     if all_modules.is_empty() {
@@ -541,6 +549,9 @@ pub(crate) fn cmd_module_show(
         }
     };
 
+    // declared-lock-ok: the `Source`, `URL` and `Pinned Ref` rows below say
+    // where this module is declared to come from; a remote module declares its
+    // origin in the lockfile and in no other file.
     let lockfile = modules::load_lockfile(&config_dir)?;
     let lock_entry = lockfile.modules.iter().find(|e| e.name == name);
     let source_type = if lock_entry.is_some() {

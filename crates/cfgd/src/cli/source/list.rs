@@ -156,6 +156,8 @@ type Cell = (String, Option<Role>);
 /// calls it, so `Last Sync` and `backup list`'s `Last Run` cannot disagree
 /// about what a listed instant reads as.
 pub fn last_sync_display(last_fetched: Option<&str>, now: &str) -> String {
+    // list-status-ok: the age of this listing's one recorded column, rendered
+    // through the workspace's own age cell so every listed instant reads alike.
     cfgd_core::humanize_age_cell(last_fetched, now)
 }
 
@@ -209,6 +211,8 @@ pub fn cmd_source_list(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
 /// stated once, in the header of whichever report holds it.
 pub fn configured_source_entries(
     cfg: &cfgd_core::config::CfgdConfig,
+    // list-status-ok: the store answers this listing's one recorded column — a
+    // source's status and when it last fetched. Every other cell is declared.
     state: &cfgd_core::state::StateStore,
 ) -> Vec<SourceListEntry> {
     cfg.spec

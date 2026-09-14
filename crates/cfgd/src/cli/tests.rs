@@ -41614,11 +41614,16 @@ fn every_hook_table_a_production_site_builds_reads_the_one_hook_set() {
 /// workspace is a test harness's, so a walk looking for it would be looking for
 /// nothing.
 ///
-/// A lockfile entry is deliberately NOT a tell: `module show` renders its
-/// `Source`, `URL` and `Pinned Ref`, which are what the entry DECLARES, and the
-/// rule's own never-clause names four things a show may not open — a state
-/// store, a package context, a platform probe and a manager registry.
+/// A lockfile is RECORDED — what a past resolution pinned — so reading one is
+/// a tell like any other. The three rows `module show` renders from it
+/// (`Source`, `URL`, `Pinned Ref`) are the exception rather than the rule, and
+/// they say so on the read itself through [`DECLARED_LOCK_HATCH`]: a remote
+/// module's origin and ref are declared in no other file, so a `show` that
+/// withheld them would state nothing about where the module came from.
 const FACT_CLASS_TELLS: &[&str] = &[
+    "load_lockfile(",
+    "load_sources_lockfile(",
+    "LockEntry",
     "StateStore",
     "open_state",
     "state.db",
@@ -41635,9 +41640,16 @@ const FACT_CLASS_TELLS: &[&str] = &[
     "humanize_age_cell(",
 ];
 
-/// The one hatch: a `<noun> list` may carry ONE recorded status column and its
+/// The one hatch a `<noun> list` may take: ONE recorded status column and its
 /// age, so the read that fills it says so on its own line or the line above.
 const LIST_STATUS_HATCH: &str = "list-status-ok:";
+
+/// The hatch for a lockfile read whose rows state what the lockfile DECLARES
+/// about a remote module — its origin, its pinned ref — rather than what a
+/// past run recorded about this machine. Open to a `show` as well as a `list`,
+/// because the fact is declared and the lockfile is only where it is written
+/// down.
+const DECLARED_LOCK_HATCH: &str = "declared-lock-ok:";
 
 /// Every leaf subcommand whose last token is `show` or `list`, as
 /// `(rendered path, cmd_* function name)`, plus `explain` — read off
@@ -41716,14 +41728,18 @@ fn declared_fn_spans(lines: &[&str]) -> Vec<(String, usize, usize)> {
 
 /// Every tell a verb's own render reaches, as `<fn>:<line>  <code>`.
 ///
-/// The span is the entry function's body plus every `build_*` function it calls
-/// in the same file, transitively; a function whose name carries `_resolved_`
-/// is the verb's `--resolved` branch and is skipped by name. Comments are cut
-/// and string literals blanked before a line is judged, so a tell named in
-/// prose or inside a literal is not a reach.
+/// The span is the entry function's body plus every function it calls in the
+/// same file, transitively — every one, not only the `build_*` ones, or a
+/// renderer named anything else (`profile_inventory_blocks`,
+/// `source_manifest_doc_sections`) carries whatever it reads out of the walk's
+/// sight. A function whose name carries `_resolved_` is the verb's
+/// `--resolved` branch and is skipped by name. Comments are cut and string
+/// literals blanked before a line is judged, so a tell named in prose or
+/// inside a literal is not a reach.
 fn fact_class_reaches(source: &str, entry: &str, hatch_allowed: bool) -> Vec<String> {
     let lines: Vec<&str> = source.lines().collect();
     let spans = declared_fn_spans(&lines);
+    let names: Vec<String> = spans.iter().map(|(n, _, _)| n.clone()).collect();
     let mut queue = vec![entry.to_string()];
     let mut seen = std::collections::BTreeSet::new();
     let mut reaches = Vec::new();
@@ -41736,12 +41752,9 @@ fn fact_class_reaches(source: &str, entry: &str, hatch_allowed: bool) -> Vec<Str
         };
         for n in *from..=*to {
             let code = blank_string_literals(lines[n].split("//").next().unwrap_or(lines[n]));
-            for call in code.split("build_").skip(1) {
-                let end = call
-                    .find(|c: char| !(c.is_alphanumeric() || c == '_'))
-                    .unwrap_or(call.len());
-                if call[end..].starts_with('(') {
-                    queue.push(format!("build_{}", &call[..end]));
+            for cand in &names {
+                if code.contains(&format!("{cand}(")) {
+                    queue.push(cand.clone());
                 }
             }
             let Some(tell) = FACT_CLASS_TELLS.iter().find(|t| code.contains(**t)) else {
@@ -41751,13 +41764,15 @@ fn fact_class_reaches(source: &str, entry: &str, hatch_allowed: bool) -> Vec<Str
             // comment block above it, the same reach `// style-gate-ok:` takes:
             // a reason worth writing rarely fits on one line, and a hatch that
             // only reads the line above rewards a one-word excuse.
-            let hatched = lines[n].contains(LIST_STATUS_HATCH)
-                || lines[..n]
-                    .iter()
-                    .rev()
-                    .take_while(|l| l.trim_start().starts_with("//"))
-                    .any(|l| l.contains(LIST_STATUS_HATCH));
-            if hatch_allowed && hatched {
+            let marked = |hatch: &str| {
+                lines[n].contains(hatch)
+                    || lines[..n]
+                        .iter()
+                        .rev()
+                        .take_while(|l| l.trim_start().starts_with("//"))
+                        .any(|l| l.contains(hatch))
+            };
+            if marked(DECLARED_LOCK_HATCH) || (hatch_allowed && marked(LIST_STATUS_HATCH)) {
                 continue;
             }
             reaches.push(format!("{name}:{}  {tell}  {}", n + 1, lines[n].trim()));
@@ -41885,6 +41900,21 @@ fn cmd_noun_list(cli: &Cli) -> Doc {
 fn build_noun_list_doc(state: Store) -> Doc {
     Doc::new().kv("Age", humanize_age_cell(state.at(), now))
 }
+
+fn cmd_other_show(cli: &Cli) -> Doc {
+    inventory_blocks(cli)
+}
+
+fn inventory_blocks(cli: &Cli) -> Doc {
+    let state = open_state_store(cli)?;
+    Doc::new().kv_rows(state.rows())
+}
+
+fn cmd_locked_show(cli: &Cli) -> Doc {
+    // declared-lock-ok: a remote module's origin is written down here alone
+    let lock = load_lockfile(cli)?;
+    Doc::new().kv("URL", lock.url)
+}
 "#;
     assert!(
         fact_class_reaches(SOURCE, "cmd_noun_show", false).is_empty(),
@@ -41899,6 +41929,15 @@ fn build_noun_list_doc(state: Store) -> Doc {
         fact_class_reaches(SOURCE, "cmd_noun_list", false).len(),
         2,
         "a `show` gets no hatch at all"
+    );
+    assert_eq!(
+        fact_class_reaches(SOURCE, "cmd_other_show", false).len(),
+        1,
+        "the walk follows every same-file helper, not only the `build_*` ones"
+    );
+    assert!(
+        fact_class_reaches(SOURCE, "cmd_locked_show", false).is_empty(),
+        "the lockfile hatch spares a read whose rows state what the lockfile declares"
     );
 }
 
