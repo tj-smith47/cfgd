@@ -16862,6 +16862,36 @@ fn production_body(body: &str) -> String {
         .join("\n")
 }
 
+/// The production text of `path`, floored the way [`production_slice_of`] floors
+/// its own cut: every non-blank line preceding the file's first `#[cfg(test)]`
+/// survives the blanking, and a file that contributes nothing at all fails the
+/// walk outright. A source read as empty is otherwise indistinguishable from one
+/// holding no offender, so a walk that went blind partway down a file still
+/// reports the population as swept.
+fn floored_production_body(path: &std::path::Path) -> String {
+    let body = walked_file_body(path);
+    let production = production_body(&body);
+    let first_test = body
+        .lines()
+        .position(|l| {
+            let code = l.trim_start();
+            code.starts_with("#[cfg(test)]") || code.starts_with("#[cfg(all(test")
+        })
+        .unwrap_or_else(|| body.lines().count());
+    let before_tests = body
+        .lines()
+        .take(first_test)
+        .filter(|l| !l.trim().is_empty())
+        .count();
+    let walked = production.lines().filter(|l| !l.trim().is_empty()).count();
+    assert!(
+        walked > 0 && walked >= before_tests,
+        "{}: the walk read {walked} lines of the {before_tests} that precede this file's first test item",
+        path.display()
+    );
+    production
+}
+
 /// Every production `.rs` under `src/cli/`, with its `#[cfg(test)]` items and
 /// `tests.rs` itself removed — the population every literal sweep below walks.
 fn cli_production_sources() -> Vec<(std::path::PathBuf, String)> {
@@ -16872,8 +16902,8 @@ fn cli_production_sources() -> Vec<(std::path::PathBuf, String)> {
         .filter(|p| p.file_name().is_none_or(|n| n != "tests.rs"))
         .filter(|p| !p.components().any(|c| c.as_os_str() == "tests"))
         .map(|path| {
-            let body = walked_file_body(&path);
-            (path, production_body(&body))
+            let production = floored_production_body(&path);
+            (path, production)
         })
         .collect()
 }
@@ -19610,8 +19640,8 @@ fn provider_note_calls() -> Vec<ProviderNoteCall> {
                 .is_none_or(|n| n != "tests_snapshot_bridge.rs")
         })
         .map(|path| {
-            let body = walked_file_body(&path);
-            (path, production_body(&body))
+            let production = floored_production_body(&path);
+            (path, production)
         })
         .collect();
 
@@ -19752,8 +19782,8 @@ fn core_production_sources() -> Vec<(std::path::PathBuf, String)> {
         .filter(|p| p.file_name().is_none_or(|n| n != "tests.rs"))
         .filter(|p| !p.components().any(|c| c.as_os_str() == "tests"))
         .map(|path| {
-            let body = walked_file_body(&path);
-            (path, production_body(&body))
+            let production = floored_production_body(&path);
+            (path, production)
         })
         .collect()
 }
