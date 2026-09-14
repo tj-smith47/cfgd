@@ -1,5 +1,6 @@
 {
   "aliases": 1,
+  "commit": "deadbeef1234567890abcdef1234567890abcdef",
   "depends": [
     "base"
   ],
@@ -62,6 +63,8 @@
   "driftCheckedLive": true,
   "env": 2,
   "files": 12,
+  "filesHash": "789ghi012jkl",
+  "integrity": "sha256:cafef00d",
   "lastApplied": "2026-05-14T10:00:00Z",
   "name": "dev-tools",
   "packageState": [
@@ -77,6 +80,7 @@
     }
   ],
   "packages": 2,
+  "packagesHash": "abc123def456",
   "scriptCounts": [
     {
       "count": 1,

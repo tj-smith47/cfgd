@@ -1,6 +1,10 @@
 Status: dev-tools
-  Status        Drifted
-  Last Applied  5m ago
+  Status         Drifted
+  Last Applied   5m ago
+  Packages Hash  abc123def456
+  Files Hash     789ghi012jkl
+  Commit         deadbeef1234
+  Integrity      sha256:cafef00d
 
 Packages
   ✓ neovim  — brew

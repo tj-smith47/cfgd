@@ -1,13 +1,17 @@
 Status: dev-tools
-  Status        Applied
-  Last Applied  5m ago
-  Packages      2
-  Files         12
-  Shell         3
-    Aliases     1
-    Env         2
-  System        shell
-  Dependencies  base
+  Status         Applied
+  Last Applied   5m ago
+  Packages Hash  abc123def456
+  Files Hash     789ghi012jkl
+  Commit         deadbeef1234
+  Integrity      sha256:cafef00d
+  Packages       2
+  Files          12
+  Shell          3
+    Aliases      1
+    Env          2
+  System         shell
+  Dependencies   base
 
 Drift
   ◉ No drift recorded — drift never checked

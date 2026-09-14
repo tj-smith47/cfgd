@@ -15057,6 +15057,10 @@ fn every_verdict_that_shows_pending_work_names_the_command_that_settles_it() {
     // The module report is the same read, one owner narrower, and closes on
     // the same command scoped to the module it is about.
     let module_drift = |timestamp: &str| super::status::ModuleStatus {
+        packages_hash: None,
+        files_hash: None,
+        commit: None,
+        integrity: None,
         name: "nvim".to_string(),
         packages: 0,
         files: 1,
@@ -36796,6 +36800,10 @@ fn no_report_slot_spells_the_home_directory_absolutely() {
         standing: Vec::new(),
     };
     let module = super::status::ModuleStatus {
+        packages_hash: None,
+        files_hash: None,
+        commit: None,
+        integrity: None,
         name: "nvim".into(),
         packages: 0,
         files: 1,

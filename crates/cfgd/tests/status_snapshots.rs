@@ -348,6 +348,13 @@ fn per_module_output() -> ModuleStatus {
         depends: vec!["base".into()],
         status: "installed".into(),
         last_applied: Some("2026-05-14T10:00:00Z".into()),
+        // The four facts only the state store and the lockfile hold: the two
+        // digests that apply wrote, and the commit and integrity the lockfile
+        // pinned this remote module to.
+        packages_hash: Some("abc123def456".into()),
+        files_hash: Some("789ghi012jkl".into()),
+        commit: Some("deadbeef1234567890abcdef1234567890abcdef".into()),
+        integrity: Some("sha256:cafef00d".into()),
         scope: None,
         package_state: vec![
             ModulePackageStatus {
@@ -399,6 +406,13 @@ fn per_module_scanned_output() -> ModuleStatus {
         depends: vec!["base".into()],
         status: "installed".into(),
         last_applied: Some("2026-05-14T10:00:00Z".into()),
+        // The four facts only the state store and the lockfile hold: the two
+        // digests that apply wrote, and the commit and integrity the lockfile
+        // pinned this remote module to.
+        packages_hash: Some("abc123def456".into()),
+        files_hash: Some("789ghi012jkl".into()),
+        commit: Some("deadbeef1234567890abcdef1234567890abcdef".into()),
+        integrity: Some("sha256:cafef00d".into()),
         scope: None,
         package_state: vec![
             ModulePackageStatus {
@@ -822,6 +836,68 @@ fn status_per_module_json_carries_script_counts() {
         json["scriptCounts"],
         serde_json::json!([{"hook": "preApply", "count": 1}, {"hook": "postApply", "count": 2}])
     );
+}
+
+/// The four recorded facts behind a module's last apply reach both halves of
+/// `cfgd status <module>`: the human rows carry the commit in the short form
+/// every human slot naming one uses, `-o json` carries every value whole, and
+/// a module whose record holds none of them renders no row at all rather than
+/// four empty ones.
+#[test]
+fn status_per_module_renders_and_serializes_its_recorded_facts() {
+    let output = per_module_output();
+    let (printer, cap) = Printer::for_test_doc();
+    printer.emit(build_module_status_doc(
+        &output,
+        ModuleStatusView::Compact,
+        NOW,
+    ));
+    drop(printer);
+    let human = cap.human();
+    for row in [
+        "Packages Hash  abc123def456",
+        "Files Hash     789ghi012jkl",
+        "Commit         deadbeef1234",
+        "Integrity      sha256:cafef00d",
+    ] {
+        assert!(human.contains(row), "missing row {row:?}: {human}");
+    }
+    assert!(
+        !human.contains("deadbeef1234567890"),
+        "the commit row renders short: {human}"
+    );
+    let json = cap.json().expect("doc captured json");
+    assert_eq!(json["packagesHash"], "abc123def456");
+    assert_eq!(json["filesHash"], "789ghi012jkl");
+    assert_eq!(json["commit"], "deadbeef1234567890abcdef1234567890abcdef");
+    assert_eq!(json["integrity"], "sha256:cafef00d");
+
+    let mut bare = per_module_output();
+    bare.packages_hash = None;
+    bare.files_hash = None;
+    bare.commit = None;
+    bare.integrity = None;
+    let (printer, cap) = Printer::for_test_doc();
+    printer.emit(build_module_status_doc(
+        &bare,
+        ModuleStatusView::Compact,
+        NOW,
+    ));
+    drop(printer);
+    let human = cap.human();
+    for key in ["Packages Hash", "Files Hash", "Commit", "Integrity"] {
+        assert!(
+            !human.contains(key),
+            "a record holding no {key} renders no row: {human}"
+        );
+    }
+    let json = cap.json().expect("doc captured json");
+    for key in ["packagesHash", "filesHash", "commit", "integrity"] {
+        assert!(
+            json.get(key).is_none(),
+            "{key} must stay off the wire: {json}"
+        );
+    }
 }
 
 #[test]

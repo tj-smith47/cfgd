@@ -233,6 +233,22 @@ pub struct ModuleStatus {
     pub depends: Vec<String>,
     pub status: String,
     pub last_applied: Option<String>,
+    /// The digests the last apply recorded for this module's declared package
+    /// set and its declared files — what the next reconcile compares against
+    /// to decide the module is unchanged. RECORDED, so they belong here
+    /// rather than on `cfgd module show`, which reads the declaration.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub packages_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub files_hash: Option<String>,
+    /// What the lockfile REMEMBERS about a remote module: the commit its
+    /// checkout is pinned at and the integrity digest of the directory that
+    /// commit delivered. Absent for a local module, which no lockfile entry
+    /// names.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub integrity: Option<String>,
     /// What the run that last applied this module was scoped to, when that was
     /// an isolated `--module` run (`module:nvim`). A profile-wide run leaves it
     /// empty: the profile applied every module it carries, and naming it here
@@ -2229,6 +2245,13 @@ fn display_type(kind: &str) -> &str {
     }
 }
 
+/// A recorded string fact as the report should carry it: `None` for a record
+/// that holds none and for one whose column was never filled in.
+fn recorded_fact(raw: Option<&str>) -> Option<String> {
+    raw.filter(|value| !value.is_empty())
+        .map(|value| value.to_string())
+}
+
 /// Build the per-module `cfgd status <module>` Doc.
 ///
 /// Every row's subject is the thing's identity and its detail is what the
@@ -2257,6 +2280,21 @@ pub fn build_module_status_doc(
             "Last Applied",
             cfgd_core::humanize_age_cell(Some(last), now),
         ));
+    }
+    // The four recorded facts behind that apply: the two digests it wrote, and
+    // what the lockfile pinned the checkout it read to. `-o json` carries each
+    // whole; the commit renders short, as every human slot naming one does.
+    if let Some(hash) = &output.packages_hash {
+        rows.push(KvPair::new("Packages Hash", hash));
+    }
+    if let Some(hash) = &output.files_hash {
+        rows.push(KvPair::new("Files Hash", hash));
+    }
+    if let Some(commit) = &output.commit {
+        rows.push(KvPair::new("Commit", cfgd_core::short_commit(commit)));
+    }
+    if let Some(integrity) = &output.integrity {
+        rows.push(KvPair::new("Integrity", integrity));
     }
     // The counts are what the compact view has INSTEAD of the inventories: a
     // report that showed both would state every fact twice.
@@ -2618,6 +2656,10 @@ fn render_module_inventories(
 /// and `status: "not found"`. Returns Ok(()) — no main-side error rendering.
 pub fn build_module_status_not_found_doc(name: &str) -> Doc {
     let payload = ModuleStatus {
+        packages_hash: None,
+        files_hash: None,
+        commit: None,
+        integrity: None,
         name: name.to_string(),
         packages: 0,
         files: 0,
@@ -3180,6 +3222,11 @@ pub(super) fn cmd_status_module(
 
     let state = ctx.state()?;
     let state_rec = state.module_state_by_name(mod_name)?;
+    // What the lockfile remembers about this module, for the two recorded rows
+    // a remote module carries. A lockfile this run cannot read leaves them out
+    // rather than ending a report about the machine's state.
+    let lockfile = modules::load_lockfile(config_dir).unwrap_or_default();
+    let lock_entry = lockfile.modules.iter().find(|e| e.name == mod_name);
 
     let status = state_rec
         .as_ref()
@@ -3601,6 +3648,13 @@ pub(super) fn cmd_status_module(
         declared,
         status,
         last_applied,
+        // Each of the four is a plain `String` on its record, and a record
+        // written before the fact was known holds the empty string; an empty
+        // value is nothing to report, so it reads as absent on both surfaces.
+        packages_hash: recorded_fact(state_rec.as_ref().map(|s| s.packages_hash.as_str())),
+        files_hash: recorded_fact(state_rec.as_ref().map(|s| s.files_hash.as_str())),
+        commit: recorded_fact(lock_entry.map(|e| e.commit.as_str())),
+        integrity: recorded_fact(lock_entry.map(|e| e.integrity.as_str())),
         scope,
         package_state,
         deployed_files,
@@ -5122,6 +5176,10 @@ mod tests {
         // recorded one stands behind its empty section, and nothing else does.
         let module = |last_scan_at: Option<&str>, checked_live: bool| {
             let output = ModuleStatus {
+                packages_hash: None,
+                files_hash: None,
+                commit: None,
+                integrity: None,
                 name: "nvim".to_string(),
                 packages: 0,
                 files: 0,
@@ -5259,6 +5317,10 @@ mod tests {
     #[test]
     fn no_module_headline_claims_synced_over_an_erroring_check() {
         let errored = ModuleStatus {
+            packages_hash: None,
+            files_hash: None,
+            commit: None,
+            integrity: None,
             name: "nvim".to_string(),
             packages: 1,
             files: 0,
@@ -5476,6 +5538,10 @@ mod tests {
             .map(|n| n.to_string_lossy().into_owned())
             .expect("the primary env file is a file");
         let output = ModuleStatus {
+            packages_hash: None,
+            files_hash: None,
+            commit: None,
+            integrity: None,
             name: "nvim".to_string(),
             packages: 0,
             files: 0,
@@ -5551,6 +5617,10 @@ mod tests {
     #[test]
     fn a_package_floor_check_error_leaves_the_shell_rows_their_verdicts() {
         let output = ModuleStatus {
+            packages_hash: None,
+            files_hash: None,
+            commit: None,
+            integrity: None,
             name: "nvim".to_string(),
             packages: 1,
             files: 0,
@@ -8576,6 +8646,10 @@ mod tests {
 
     fn module_status_with_scope(scope: Option<&str>) -> ModuleStatus {
         ModuleStatus {
+            packages_hash: None,
+            files_hash: None,
+            commit: None,
+            integrity: None,
             name: "nvim".into(),
             packages: 0,
             files: 0,

@@ -7955,6 +7955,10 @@ fn every_surface_naming_the_shell_pair_lists_aliases_first() {
     };
     let declared = cfgd_core::modules::ModuleSurfaces::of(&spec);
     let module_status = crate::cli::status::ModuleStatus {
+        packages_hash: None,
+        files_hash: None,
+        commit: None,
+        integrity: None,
         name: "nvim".into(),
         packages: 0,
         files: 0,
