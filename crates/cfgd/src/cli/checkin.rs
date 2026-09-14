@@ -5,6 +5,8 @@ use cfgd_core::PathDisplayExt;
 use cfgd_core::output::{Doc, Printer, Role};
 use cfgd_core::server_client::{DeviceCredential, ServerClient};
 
+// no-header-ok: the verdict is about what the gateway accepted, and the
+// machine identity it reports is the header a reader of this verb needs.
 pub fn cmd_checkin(
     cli: &Cli,
     printer: &Printer,

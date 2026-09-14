@@ -356,6 +356,8 @@ pub fn build_module_show_doc(
     doc.with_data(output)
 }
 
+// no-header-ok: a `<noun> list` states what is declared, and reads the
+// resolved chain only to mark which rows the active profile names.
 pub(crate) fn cmd_module_list(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     let config_dir = config_dir(cli);
     let cache_base = module_cache_dir(cli)?;

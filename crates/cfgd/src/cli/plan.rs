@@ -1,5 +1,8 @@
 use super::*;
 
+// no-header-ok: same as apply — `reconciler::ApplyRun` renders the header
+// once the plan is final, so the profile label is carried down rather than
+// printed here.
 pub fn cmd_plan(
     cli: &Cli,
     printer: &cfgd_core::output::Printer,

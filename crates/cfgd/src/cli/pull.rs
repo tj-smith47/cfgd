@@ -3,6 +3,8 @@ use super::*;
 use cfgd_core::daemon::PullOutcome;
 use cfgd_core::output::{Doc, Printer, Role};
 
+// no-header-ok: this verb reports what a git pull of the config directory
+// did; it loads the config only to refuse a run that has none.
 pub fn cmd_pull(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     printer.heading("Pull");
 

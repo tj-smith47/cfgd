@@ -26,6 +26,8 @@ pub fn build_profile_show_doc(
     // subscribes to. The `Layers` section is not that fact: it lists only the
     // sources that CONTRIBUTED a layer, so on a machine that has never synced
     // it names none while `spec.sources[]` names two.
+    let own = own_profile_spec(resolved);
+    let inherits: Vec<String> = own.map(|s| s.inherits.clone()).unwrap_or_default();
     let mut doc =
         Doc::new()
             .heading_title("Profile", name)
@@ -34,7 +36,7 @@ pub fn build_profile_show_doc(
                     config_path: Some(config_path),
                     sources,
                     profile: None,
-                    profile_inherits: &[],
+                    profile_inherits: &inherits,
                     modules: &[],
                     arrow,
                 },
@@ -43,13 +45,7 @@ pub fn build_profile_show_doc(
     doc = if show_resolved {
         build_profile_show_resolved_sections(doc, resolved, detail)
     } else {
-        let own = own_profile_spec(resolved);
-        let inherits: Vec<String> = own.map(|s| s.inherits.clone()).unwrap_or_default();
-        let mut doc = if inherits.is_empty() {
-            doc
-        } else {
-            doc.kv_rows(vec![KvPair::new("Inherits", inherits.join(", "))])
-        };
+        let mut doc = doc;
         for (block, rows) in profile_inventory_blocks(own, detail) {
             if rows.is_empty() {
                 continue;

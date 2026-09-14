@@ -106,6 +106,9 @@ impl reconciler::RunExecutor for ReconcilerExecutor<'_> {
     }
 }
 
+// no-header-ok: the run header is rendered once the plan is final, by
+// `reconciler::ApplyRun`, which builds the block through the one builder;
+// printing it here would state the same four facts twice.
 pub fn cmd_apply(
     cli: &Cli,
     printer: &cfgd_core::output::Printer,

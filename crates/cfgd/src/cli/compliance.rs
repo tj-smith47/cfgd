@@ -147,6 +147,8 @@ pub(super) fn cmd_compliance_snapshot(cli: &Cli, printer: &Printer) -> anyhow::R
 }
 
 /// Export snapshot to the configured export path and emit a compliance summary Doc.
+// no-header-ok: this verb writes a file and reports the path; the snapshot
+// verb beside it is the one that reports on a resolved configuration.
 pub(super) fn cmd_compliance_export(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     let ctx = RunContext::new(cli, printer);
     let (cfg, snapshot) = collect_and_store_compliance_snapshot(&ctx)?;

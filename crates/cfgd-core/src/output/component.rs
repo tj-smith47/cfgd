@@ -428,6 +428,7 @@ pub fn config_header_rows(head: &ConfigHeader<'_>) -> Vec<KvPair> {
                 .join(", "),
         ));
     }
+    let chain = profile_inherits.join(&format!(" {arrow} "));
     if let Some(profile) = profile {
         if profile_inherits.is_empty() {
             rows.push(KvPair::new("Profile", profile));
@@ -435,9 +436,15 @@ pub fn config_header_rows(head: &ConfigHeader<'_>) -> Vec<KvPair> {
             rows.push(KvPair::annotated(
                 "Profile",
                 profile,
-                format!("inherits: {}", profile_inherits.join(&format!(" {arrow} "))),
+                format!("inherits: {chain}"),
             ));
         }
+    } else if !profile_inherits.is_empty() {
+        // A surface whose heading already names the profile passes no `profile`
+        // value, so the chain has no row to annotate and becomes one of its
+        // own — still built here, so the two renders of one fact cannot use
+        // two separators.
+        rows.push(KvPair::new("Inherits", chain));
     }
     rows.extend(modules_header_row_for(modules));
     rows

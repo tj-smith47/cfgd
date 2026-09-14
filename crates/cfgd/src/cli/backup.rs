@@ -298,6 +298,9 @@ pub fn build_backup_snapshot_list_doc(
     doc.with_data(entries)
 }
 
+// no-header-ok: a listing of the snapshots the history recorded. It reads
+// config to find the declared units, and reports on those rows rather than
+// on the configuration they came from.
 pub fn cmd_backup_list(
     cli: &Cli,
     printer: &Printer,
@@ -541,6 +544,8 @@ fn snapshot_selection_error(name: &str, e: cfgd_core::errors::BackupError) -> an
     )
 }
 
+// no-header-ok: the run header comes from `reconciler::ApplyRun`, which
+// this verb builds through `ApplyRun::unplanned`.
 pub fn cmd_backup_restore(
     cli: &Cli,
     printer: &Printer,
@@ -740,6 +745,8 @@ pub fn build_backup_rollback_list_doc(entries: &[BackupRollbackEntry], now: &str
     doc.with_data(entries)
 }
 
+// no-header-ok: the run header comes from `reconciler::ApplyRun`, as it
+// does for every verb that closes on the shared rollup.
 pub fn cmd_backup_rollback(
     cli: &Cli,
     printer: &Printer,
@@ -918,6 +925,8 @@ fn confirm_rollback(
     })
 }
 
+// no-header-ok: the run header comes from `reconciler::ApplyRun`, as it
+// does for every verb that closes on the shared rollup.
 pub fn cmd_backup_run(cli: &Cli, printer: &Printer, name: Option<&str>) -> anyhow::Result<()> {
     let outcome = run_backup_run(cli, printer, name)?;
 
@@ -1068,6 +1077,8 @@ pub fn run_backup_run(
 /// whose history could not be read is the same answer for the same reason, and
 /// it reaches the exit through the run's own tally rather than a second
 /// condition beside it.
+// no-header-ok: a report on the snapshot rows a destination change
+// stranded, not on the configuration those rows were declared in.
 pub fn cmd_backup_gc(cli: &Cli, printer: &Printer, name: Option<&str>) -> anyhow::Result<()> {
     // The payload Doc is already on stdout by the time the exit code is
     // decided, so exiting here rather than returning an error keeps a failed

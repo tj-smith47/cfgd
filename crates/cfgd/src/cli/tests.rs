@@ -34815,9 +34815,11 @@ fn every_config_and_profile_header_row_comes_from_the_one_builder() {
         "kv(\"Config\"",
         "kv(\"Sources\"",
         "kv(\"Profile\"",
+        "kv(\"Inherits\"",
         "KvPair::new(\"Config\"",
         "KvPair::new(\"Sources\"",
         "KvPair::new(\"Profile\"",
+        "KvPair::new(\"Inherits\"",
         "(\"Config\".to_string()",
         "(\"Sources\".to_string()",
         "(\"Profile\".to_string()",
@@ -34919,15 +34921,65 @@ fn every_config_and_profile_header_row_comes_from_the_one_builder() {
 /// its own entry function, directly or through a function it calls in the same
 /// file; a verb that renders no header block carries `// no-header-ok: <why>`
 /// on its declaration or in the comment block above it.
-const HEADER_BEARING_VERBS: &[(&str, &str)] = &[
-    ("status.rs", "cmd_status"),
-    ("status.rs", "cmd_status_module"),
-    ("diff.rs", "cmd_diff"),
-    ("diff.rs", "cmd_diff_module"),
-    ("verify.rs", "cmd_verify"),
-    ("daemon.rs", "cmd_daemon_status"),
-    ("sync.rs", "cmd_sync"),
+/// How a verb reaches the run's resolved configuration: the loader itself, its
+/// `--module` isolate, and the `RunContext` accessor that memoizes the same
+/// load for a command asking twice.
+const CONFIG_LOAD_TELLS: &[&str] = &[
+    "load_config_and_profile(",
+    "load_config_and_profile_module_scoped(",
+    "config_and_profile()",
 ];
+
+/// The members that report on a resolved configuration without reaching the
+/// loader, so the derivation below cannot see them: `daemon status` parses the
+/// config itself (the daemon it reports on may be running under a profile this
+/// process would resolve differently), and the two `--module` reports read
+/// their module rather than the chain.
+const HEADER_BEARING_EXTRAS: &[(&str, &str)] = &[
+    ("status.rs", "cmd_status_module"),
+    ("diff.rs", "cmd_diff_module"),
+    ("daemon.rs", "cmd_daemon_status"),
+];
+
+/// The members the derivation must find, whatever else it finds: a walk that
+/// stopped reading the sources would otherwise pass by judging an empty
+/// population.
+const HEADER_BEARING_FLOOR: &[&str] = &[
+    "status.rs:cmd_status",
+    "diff.rs:cmd_diff",
+    "verify.rs:cmd_verify",
+    "sync.rs:cmd_sync",
+];
+
+/// Every `cmd_*` under `src/cli/` that reaches the run's resolved
+/// configuration, as `(source path, function name)`.
+///
+/// Derived rather than listed, so a verb that starts consuming the loader
+/// joins the population with it and has to answer the rule.
+fn header_bearing_verbs() -> Vec<(std::path::PathBuf, String)> {
+    let mut verbs: Vec<(std::path::PathBuf, String)> = Vec::new();
+    for (path, body) in cli_production_sources() {
+        let lines: Vec<&str> = body.lines().collect();
+        for (name, _, _) in declared_fn_spans(&lines) {
+            if !name.starts_with("cmd_") {
+                continue;
+            }
+            if CONFIG_LOAD_TELLS
+                .iter()
+                .any(|tell| call_closure_reaches(&body, &name, tell))
+            {
+                verbs.push((path.clone(), name));
+            }
+        }
+    }
+    let cli_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli");
+    for (file, entry) in HEADER_BEARING_EXTRAS {
+        verbs.push((cli_dir.join(file), (*entry).to_string()));
+    }
+    verbs.sort();
+    verbs.dedup();
+    verbs
+}
 
 /// Whether `entry`, or any function it calls in the same file, spells
 /// `needle`. Comments are cut and string literals blanked before a line is
@@ -34963,12 +35015,18 @@ fn call_closure_reaches(source: &str, entry: &str, needle: &str) -> bool {
 #[test]
 fn every_verb_reporting_on_a_resolved_configuration_opens_on_the_header_block() {
     const HATCH: &str = "// no-header-ok:";
-    let cli_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli");
+    let verbs = header_bearing_verbs();
     let mut missing: Vec<String> = Vec::new();
     let mut hatched: Vec<String> = Vec::new();
-    for (file, entry) in HEADER_BEARING_VERBS {
-        let path = cli_dir.join(file);
-        let body = cfgd_core::test_helpers::production_slice_of(&path);
+    let mut named: Vec<String> = Vec::new();
+    for (path, entry) in &verbs {
+        let file = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default()
+            .to_string();
+        named.push(format!("{file}:{entry}"));
+        let body = cfgd_core::test_helpers::production_slice_of(path);
         let lines: Vec<&str> = body.lines().collect();
         let at = lines
             .iter()
@@ -34992,6 +35050,13 @@ fn every_verb_reporting_on_a_resolved_configuration_opens_on_the_header_block() 
             missing.push(format!("{file}:{entry}"));
         }
     }
+    for member in HEADER_BEARING_FLOOR {
+        assert!(
+            named.iter().any(|n| n == member),
+            "the derivation no longer finds `{member}`, so it is judging a \
+             narrower population than it claims: {named:?}"
+        );
+    }
     assert!(
         missing.is_empty(),
         "a verb reporting on a resolved configuration opens on \
@@ -35000,12 +35065,12 @@ fn every_verb_reporting_on_a_resolved_configuration_opens_on_the_header_block() 
          `{HATCH} <why>`):\n{}",
         missing.join("\n")
     );
-    // The one hatched member, counted so a walk that stopped finding the
-    // entry functions at all cannot pass by checking nothing.
-    assert_eq!(
-        hatched,
-        vec!["status.rs:cmd_status_module".to_string()],
-        "the hatched population moved, and this walk decides what it covers"
+    // Counted rather than listed member by member: the hatched set moves with
+    // every verb that reads config for a reason other than reporting on it,
+    // and a floor is what catches a walk that hatched everything.
+    assert!(
+        hatched.len() < verbs.len(),
+        "every member is hatched, so this walk judges nothing: {hatched:?}"
     );
 }
 

@@ -1,6 +1,5 @@
 Profile: workstation
-  Config  /etc/cfgd/cfgd.yaml
-
+  Config    /etc/cfgd/cfgd.yaml
   Inherits  base
 
 Aliases

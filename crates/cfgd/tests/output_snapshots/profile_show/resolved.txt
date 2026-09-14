@@ -1,5 +1,6 @@
 Profile: workstation
-  Config  /etc/cfgd/cfgd.yaml
+  Config    /etc/cfgd/cfgd.yaml
+  Inherits  base
 
 Layers
   base         source=local priority=1000

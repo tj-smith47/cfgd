@@ -47,6 +47,8 @@ pub(super) struct DecideListOutput {
     pub classification_degraded_reason: Option<String>,
 }
 
+// no-header-ok: a report on the source decisions still pending, which is a
+// question about the sources rather than about what they composed to.
 pub(super) fn cmd_decide(
     cli: &Cli,
     printer: &Printer,
