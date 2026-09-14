@@ -37808,10 +37808,29 @@ fn native_paths_in_declared_documents(region: &str) -> (Vec<(usize, String)>, us
         let mut judged: Vec<usize> = Vec::new();
         let mut depth = 0i32;
         for (i, text) in lines[n..].iter().enumerate() {
-            depth += text.matches(['(', '[', '{']).count() as i32;
-            depth -= text.matches([')', ']', '}']).count() as i32;
+            // A document literal spells braces and brackets of its own — a
+            // `{}` placeholder, a YAML flow mapping, a `#` comment holding
+            // either — so the depth is counted on the line with every literal
+            // body blanked and the trailing comment cut, the same reading
+            // `declared_fn_spans` takes. Counted raw, one such line leaves the
+            // depth permanently positive and the span swallows the rest of the
+            // file, attributing every later render to this document.
+            let code = blank_string_literals(text.split("//").next().unwrap_or(text));
+            depth += code.matches(['(', '[', '{']).count() as i32;
+            depth -= code.matches([')', ']', '}']).count() as i32;
             judged.push(n + i);
-            if depth <= 0 && text.trim_end().ends_with([';', '?', ')']) {
+            // The statement ends where the code ends it, so a line carrying a
+            // trailing comment is asked without it. The raw line is asked too:
+            // a multi-line raw literal's closing `"#;` reads as an opening
+            // quote to a per-line blanker, which would eat the `;` that ends
+            // the statement.
+            let ends = |text: &str| text.trim_end().ends_with([';', '?', ')']);
+            if depth <= 0 && (ends(text) || ends(text.split("//").next().unwrap_or(text))) {
+                break;
+            }
+            // A source the blanking still cannot balance (a macro spelling one
+            // half of a pair) ends the span here rather than the file.
+            if i > 60 {
                 break;
             }
         }
@@ -38016,6 +38035,62 @@ fn the_declared_document_walk_reads_a_native_path_it_plants_itself() {
     assert!(
         native_paths_in_declared_documents(&printed).0.is_empty(),
         "a printed line is no planted document"
+    );
+
+    // A stray opening brace must not carry the judged span past the
+    // statement's own closing line: every render below would be attributed to
+    // this document, and one unbalanced line would blind the walk for the whole
+    // rest of the file. The brace is placed each of the four ways a line can
+    // carry an unpaired one, and the native render two statements below stays
+    // outside the span each time.
+    let head = "\"apiVersion: cfgd.io/v1alpha1\\nkind: Profile\\nspec:\\n  files:\\n    \
+                managed:\\n      - target: ";
+    let below = "\n    let other = target.len();\n    let message = \
+                 format!(\"cannot read {}\", pathNATIVE);";
+    for (placement, statement) in [
+        (
+            "in the document's own literal",
+            format!("    let profile = format!({head}a {{ brace\\n\");"),
+        ),
+        (
+            "in a trailing comment",
+            format!("    let profile = format!({head}plain\\n\"); // a {{ brace"),
+        ),
+        (
+            "in a literal below the document line",
+            format!(
+                "    let profile = format!({head}{{}}\\n\",\n        \
+                 format!(\"{{ brace\"),\n    );"
+            ),
+        ),
+        (
+            "on the closing line",
+            format!(
+                "    let profile = format!({head}{{}}\\n\",\n        \
+                 cfgd_core::to_posix_string(&target),\n    ); // closes a {{ brace"
+            ),
+        ),
+    ] {
+        let region = format!("{statement}{below}").replace("NATIVE", &native);
+        let (found, _) = native_paths_in_declared_documents(&region);
+        assert!(
+            found.is_empty(),
+            "a stray brace {placement} carried the span past the statement: {found:?}"
+        );
+    }
+
+    // A source the blanking still cannot balance — a macro spelling one half
+    // of a pair — ends the span at the ceiling rather than at the end of the
+    // file, so a render far below it is nobody's document.
+    let unbalanced = format!(
+        "    let profile = format!({head}{{}}\\n\",\n        open_one_paren!(\n{}{below}",
+        "        let filler = 1;\n".repeat(70)
+    )
+    .replace("NATIVE", &native);
+    let (found, _) = native_paths_in_declared_documents(&unbalanced);
+    assert!(
+        found.is_empty(),
+        "a span the brackets never close ends at the ceiling: {found:?}"
     );
 
     // A key named mid-sentence opens no YAML line.
