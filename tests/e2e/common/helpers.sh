@@ -104,6 +104,39 @@ cp_to_pod() {
 
 # --- Namespace & cleanup helpers ---
 
+# Ensure a namespace exists, and fail the case when it genuinely cannot.
+#
+# `kubectl create namespace X || true` reads the same either way: the namespace
+# was already there from an earlier run, or the API server refused and every
+# resource the case creates into it is about to fail with nothing saying why.
+# The rc is captured and re-checked with a `get`, so only the second one stops
+# the case.
+# Label a resource, and fail the caller when the label does not take.
+#
+# A label is what a later selector matches on — an injection webhook's
+# namespace label, a policy's targetSelector. `kubectl label … || true` reads
+# the same whether the label landed or the API server refused, and a case
+# asserting the ABSENCE of an effect (FS-CSI-05: the pod must not run;
+# FS-CSI-09: no mount is left behind) then passes because nothing was ever
+# injected. The rc is read here so a caller can put it in its verdict.
+ensure_label() {
+  local rc=0
+  kubectl label "$@" >/dev/null 2>&1 || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "FAIL: could not label: kubectl label $* (rc=$rc)" >&2
+    return 1
+  fi
+}
+
+ensure_namespace() {
+  local ns="$1" rc=0
+  kubectl create namespace "$ns" >/dev/null 2>&1 || rc=$?
+  if [ "$rc" -ne 0 ] && ! kubectl get namespace "$ns" >/dev/null 2>&1; then
+    echo "FAIL: namespace $ns could not be created (rc=$rc)" >&2
+    return 1
+  fi
+}
+
 create_e2e_namespace() {
     if ! kubectl get namespace "$E2E_NAMESPACE" > /dev/null 2>&1; then
         kubectl create namespace "$E2E_NAMESPACE"

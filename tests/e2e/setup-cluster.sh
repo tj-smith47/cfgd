@@ -28,7 +28,7 @@ kubectl cluster-info >/dev/null 2>&1 || {
 # --- Step 1b: Pre-flight permission checks ---
 # RBAC is managed by ArgoCD (see /db/manifests/k3s/namespaces/cfgd-system/e2e-rbac.yaml).
 # This script only verifies the runner SA has what it needs; it does NOT apply RBAC.
-kubectl create namespace cfgd-system 2>/dev/null || true # rc-ok: idempotent ensure of the namespace; a genuine failure fails the resource creates into it below
+ensure_namespace cfgd-system
 
 # --- Step 1c: Serialize on shared cluster state via a coordination Lease ---
 # Two near-simultaneous setups mutate the same cluster-scoped state (CRDs,

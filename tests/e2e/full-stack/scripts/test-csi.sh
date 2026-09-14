@@ -48,8 +48,8 @@ spec:
 EOF
 
         # Create an injection-enabled namespace
-        kubectl create namespace "e2e-csi-test-${E2E_RUN_ID}" 2>/dev/null || true # rc-ok: idempotent ensure of the namespace; a genuine failure fails the resource creates into it below
-        kubectl label namespace "e2e-csi-test-${E2E_RUN_ID}" cfgd.io/inject-modules=true --overwrite 2>/dev/null
+        ensure_namespace "e2e-csi-test-${E2E_RUN_ID}"
+        ensure_label namespace "e2e-csi-test-${E2E_RUN_ID}" cfgd.io/inject-modules=true --overwrite
 
         sleep 3
 
@@ -197,8 +197,8 @@ EOF
 
         # Create injection-enabled namespace
         CSI03_NS="e2e-csi-multi-${E2E_RUN_ID}"
-        kubectl create namespace "$CSI03_NS" 2>/dev/null || true # rc-ok: idempotent ensure of the namespace; a genuine failure fails the resource creates into it below
-        kubectl label namespace "$CSI03_NS" cfgd.io/inject-modules=true --overwrite 2>/dev/null
+        ensure_namespace "$CSI03_NS"
+        ensure_label namespace "$CSI03_NS" cfgd.io/inject-modules=true --overwrite
 
         sleep 3
 
@@ -259,8 +259,8 @@ else
     # Mount it in a fresh namespace — this should be a cache hit since
     # FS-CSI-01 already pulled it.
     CSI04_NS="e2e-csi-cache-${E2E_RUN_ID}"
-    kubectl create namespace "$CSI04_NS" 2>/dev/null || true # rc-ok: idempotent ensure of the namespace; a genuine failure fails the resource creates into it below
-    kubectl label namespace "$CSI04_NS" cfgd.io/inject-modules=true --overwrite 2>/dev/null
+    ensure_namespace "$CSI04_NS"
+    ensure_label namespace "$CSI04_NS" cfgd.io/inject-modules=true --overwrite
 
     sleep 3
 
@@ -333,8 +333,9 @@ if ! $CSI_AVAILABLE; then
     skip_test "FS-CSI-05" "CSI driver not ready"
 else
     CSI05_NS="e2e-csi-invalid-${E2E_RUN_ID}"
-    kubectl create namespace "$CSI05_NS" 2>/dev/null || true # rc-ok: idempotent ensure of the namespace; a genuine failure fails the resource creates into it below
-    kubectl label namespace "$CSI05_NS" cfgd.io/inject-modules=true --overwrite 2>/dev/null
+    ensure_namespace "$CSI05_NS"
+    CSI05_LABELLED=true
+    ensure_label namespace "$CSI05_NS" cfgd.io/inject-modules=true --overwrite || CSI05_LABELLED=false
 
     sleep 3
 
@@ -361,7 +362,11 @@ EOF
         -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
     echo "  Pod phase: ${POD_PHASE:-<not found>}"
 
-    if [ "$POD_PHASE" = "Pending" ] || [ "$POD_PHASE" = "" ]; then
+    if ! $CSI05_LABELLED; then
+        # Every branch below reads as a pass when the webhook was never asked to
+        # inject, so the case is only meaningful on a labelled namespace.
+        fail_test "FS-CSI-05" "Namespace $CSI05_NS could not be labelled for injection"
+    elif [ "$POD_PHASE" = "Pending" ] || [ "$POD_PHASE" = "" ]; then
         pass_test "FS-CSI-05"
     elif [ "$POD_PHASE" = "Running" ]; then
         # Pod is Running — check if the CSI volume was actually injected.
@@ -424,8 +429,8 @@ spec:
 EOF
 
         CSI06_NS="e2e-csi-update-${E2E_RUN_ID}"
-        kubectl create namespace "$CSI06_NS" 2>/dev/null || true # rc-ok: idempotent ensure of the namespace; a genuine failure fails the resource creates into it below
-        kubectl label namespace "$CSI06_NS" cfgd.io/inject-modules=true --overwrite 2>/dev/null
+        ensure_namespace "$CSI06_NS"
+        ensure_label namespace "$CSI06_NS" cfgd.io/inject-modules=true --overwrite
 
         sleep 3
 
@@ -559,8 +564,9 @@ if ! $CSI_AVAILABLE; then
     skip_test "FS-CSI-09" "CSI driver not ready"
 else
     CSI09_NS="e2e-csi-unmount-${E2E_RUN_ID}"
-    kubectl create namespace "$CSI09_NS" 2>/dev/null || true # rc-ok: idempotent ensure of the namespace; a genuine failure fails the resource creates into it below
-    kubectl label namespace "$CSI09_NS" cfgd.io/inject-modules=true --overwrite 2>/dev/null
+    ensure_namespace "$CSI09_NS"
+    CSI09_LABELLED=true
+    ensure_label namespace "$CSI09_NS" cfgd.io/inject-modules=true --overwrite || CSI09_LABELLED=false
 
     sleep 3
 
@@ -606,7 +612,11 @@ EOF
 
         # Verify no mount leftovers
         CSI_MOUNTS=$(exec_in_pod mount 2>/dev/null | grep "cfgd" | grep "csi-unmount-test" || echo "")
-        if [ -z "$CSI_MOUNTS" ]; then
+        if ! $CSI09_LABELLED; then
+            # No label, no injected volume, and "no mount left behind" is then
+            # a fact about a pod that never had one.
+            fail_test "FS-CSI-09" "Namespace $CSI09_NS could not be labelled for injection"
+        elif [ -z "$CSI_MOUNTS" ]; then
             pass_test "FS-CSI-09"
         else
             fail_test "FS-CSI-09" "CSI mount still present after pod deletion"
@@ -630,8 +640,8 @@ if ! $CSI_AVAILABLE; then
     skip_test "FS-CSI-10" "CSI driver not ready"
 else
     CSI10_NS="e2e-csi-ro-${E2E_RUN_ID}"
-    kubectl create namespace "$CSI10_NS" 2>/dev/null || true # rc-ok: idempotent ensure of the namespace; a genuine failure fails the resource creates into it below
-    kubectl label namespace "$CSI10_NS" cfgd.io/inject-modules=true --overwrite 2>/dev/null
+    ensure_namespace "$CSI10_NS"
+    ensure_label namespace "$CSI10_NS" cfgd.io/inject-modules=true --overwrite
 
     sleep 3
 

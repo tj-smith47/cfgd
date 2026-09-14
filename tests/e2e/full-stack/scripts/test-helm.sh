@@ -19,8 +19,8 @@ done
 helm_test_ns() {
     local id="$1"
     HELM_NS="e2e-helm-${id}-${E2E_RUN_ID}"
-    kubectl create namespace "$HELM_NS" 2>/dev/null || true # rc-ok: idempotent ensure of the namespace; a genuine failure fails the resource creates into it below
-    kubectl label namespace "$HELM_NS" "$E2E_RUN_LABEL" --overwrite 2>/dev/null || true
+    ensure_namespace "$HELM_NS"
+    kubectl label namespace "$HELM_NS" "$E2E_RUN_LABEL" --overwrite 2>/dev/null || true # rc-ok: the run tag the janitor ages leaked namespaces out by; no case asserts on it
     # Wait for Reflector to replicate registry-credentials (needed for imagePullSecrets)
     local deadline=$((SECONDS + 30))
     while [ $SECONDS -lt $deadline ]; do

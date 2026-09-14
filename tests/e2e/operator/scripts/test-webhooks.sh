@@ -85,8 +85,8 @@ kubectl delete machineconfig e2e-bad-mc -n "$E2E_NAMESPACE" --ignore-not-found 2
 begin_test "OP-WH-02: Mutating webhook — pod injection"
 
 # Create a namespace with the injection label
-kubectl create namespace "e2e-inject-${E2E_RUN_ID}" 2>/dev/null || true # rc-ok: idempotent ensure of the namespace; a genuine failure fails the resource creates into it below
-kubectl label namespace "e2e-inject-${E2E_RUN_ID}" "$E2E_RUN_LABEL" cfgd.io/inject-modules=true --overwrite 2>/dev/null
+ensure_namespace "e2e-inject-${E2E_RUN_ID}"
+ensure_label namespace "e2e-inject-${E2E_RUN_ID}" "$E2E_RUN_LABEL" cfgd.io/inject-modules=true --overwrite
 
 # Ensure a Module CRD exists for the webhook to look up
 kubectl apply -f - <<EOF
