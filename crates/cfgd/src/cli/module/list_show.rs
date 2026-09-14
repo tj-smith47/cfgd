@@ -9,7 +9,7 @@ use cfgd_core::output::{Doc, KvPair, Printer, Role, renderer::Table};
 ///
 /// Only the `--resolved` view builds one: the default `module show` renders
 /// the module's DECLARED entries, which need no host to read.
-#[derive(serde::Serialize)]
+#[derive(Debug, serde::Serialize)]
 #[serde(tag = "state")]
 pub enum PackageDisplay {
     #[serde(rename = "resolved", rename_all = "camelCase")]
@@ -450,12 +450,27 @@ fn build_module_show_resolved_package_rows(
     // Which manager already holds a bare entry is part of what "resolved"
     // means, so the display reads the same installed state the plan does.
     let pkg_cx = ctx.package_context()?;
-    let installed = Some(&pkg_cx);
     let registry = build_registry();
-    let mgr_map = registry.manager_map();
-    let platform = Platform::current();
-    Ok(spec
-        .packages
+    Ok(module_show_resolved_rows(
+        spec,
+        name,
+        Platform::current(),
+        &registry.manager_map(),
+        Some(&pkg_cx),
+    ))
+}
+
+/// The resolution itself, over a caller-supplied registry, platform and
+/// installed state — so what each of the three shapes becomes is provable
+/// without a host that happens to hold the right managers.
+pub(super) fn module_show_resolved_rows(
+    spec: &cfgd_core::config::ModuleSpec,
+    name: &str,
+    platform: &Platform,
+    mgr_map: &std::collections::HashMap<String, &dyn cfgd_core::providers::PackageManager>,
+    installed: Option<&cfgd_core::providers::PackageContext<'_>>,
+) -> Vec<PackageDisplay> {
+    spec.packages
         .iter()
         .map(|entry| {
             let clauses = declared_package_clauses(entry);
@@ -470,11 +485,11 @@ fn build_module_show_resolved_package_rows(
                 format!(", platforms: {}", entry.platforms.join("/"))
             };
 
-            match modules::resolve_package(entry, name, platform, &mgr_map, installed) {
+            match modules::resolve_package(entry, name, platform, mgr_map, installed) {
                 Ok(Some(mut resolved)) => {
                     // `module show --resolved` prints the version beside each
                     // package, so it is one of the surfaces that asks for one.
-                    modules::fill_available_versions(std::slice::from_mut(&mut resolved), &mgr_map);
+                    modules::fill_available_versions(std::slice::from_mut(&mut resolved), mgr_map);
                     PackageDisplay::Resolved {
                         name: entry.name.clone(),
                         manager: resolved.manager.clone(),
@@ -492,7 +507,7 @@ fn build_module_show_resolved_package_rows(
                 },
             }
         })
-        .collect())
+        .collect()
 }
 
 pub(crate) fn cmd_module_show(

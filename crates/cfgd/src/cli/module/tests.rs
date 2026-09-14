@@ -8122,3 +8122,89 @@ fn every_surface_naming_the_shell_pair_lists_aliases_first() {
         "cfgd diff's Shell section lists env vars ahead of aliases: {ordered:#?}"
     );
 }
+
+/// `module show --resolved` states which manager each declared package lands
+/// on, and the three answers a resolution can give reach three different rows.
+///
+/// The rows were captured from hand-built `PackageDisplay` values, so the
+/// resolution itself — the only host-reading part of the verb — was proven by
+/// nothing: a manager map that stopped being consulted, or a platform gate
+/// that stopped filtering, would have rendered the same golden.
+#[test]
+fn module_show_resolved_rows_states_each_of_the_three_resolutions() {
+    use cfgd_core::providers::PackageManager;
+    use cfgd_core::test_helpers::MockPackageManager;
+
+    let apt = MockPackageManager::new("apt")
+        .with_installed_at("ripgrep", "14.0.0")
+        .offering("ripgrep", "14.1.0");
+    let mgr_map: std::collections::HashMap<String, &dyn PackageManager> =
+        [("apt".to_string(), &apt as &dyn PackageManager)]
+            .into_iter()
+            .collect();
+    let platform = cfgd_core::platform::Platform {
+        os: cfgd_core::platform::Os::Linux,
+        distro: cfgd_core::platform::Distro::Debian,
+        version: "12".to_string(),
+        arch: cfgd_core::platform::Arch::X86_64,
+    };
+
+    let mut gated = make_pkg("mas-cli");
+    gated.platforms = vec!["darwin".to_string()];
+    let mut unsatisfiable = make_pkg("ghostty");
+    unsatisfiable.prefer = vec!["brew".to_string()];
+
+    let spec = cfgd_core::config::ModuleSpec {
+        packages: vec![make_pkg("ripgrep"), gated, unsatisfiable],
+        ..Default::default()
+    };
+
+    let (printer, _cap) = cfgd_core::output::Printer::for_test_doc();
+    let state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+    let cx = cfgd_core::providers::PackageContext::new(&printer, &state);
+    let rows = super::list_show::module_show_resolved_rows(
+        &spec,
+        "dev-tools",
+        &platform,
+        &mgr_map,
+        Some(&cx),
+    );
+
+    assert_eq!(rows.len(), 3, "one row per declared package: {rows:#?}");
+    match &rows[0] {
+        super::list_show::PackageDisplay::Resolved {
+            name,
+            manager,
+            resolved_name,
+            version,
+        } => {
+            assert_eq!(name, "ripgrep");
+            assert_eq!(manager, "apt", "the one available manager holding it wins");
+            assert_eq!(resolved_name, "ripgrep");
+            assert_eq!(
+                version.as_deref(),
+                Some("14.1.0"),
+                "the row states what the manager OFFERS, which is what \
+                 `fill_available_versions` fills and not the installed copy"
+            );
+        }
+        other => panic!("a package an available manager holds resolves: {other:#?}"),
+    }
+    match &rows[1] {
+        super::list_show::PackageDisplay::Skipped { name, platforms } => {
+            assert_eq!(name, "mas-cli");
+            assert_eq!(
+                platforms, ", platforms: darwin",
+                "the row says which host the entry was declared for"
+            );
+        }
+        other => panic!("a platform-gated entry resolves to nothing on this host: {other:#?}"),
+    }
+    match &rows[2] {
+        super::list_show::PackageDisplay::Unresolved { summary, error } => {
+            assert!(summary.starts_with("ghostty"), "summary: {summary}");
+            assert!(!error.is_empty(), "the row states why it could not resolve");
+        }
+        other => panic!("an entry no available manager can satisfy is unresolved: {other:#?}"),
+    }
+}

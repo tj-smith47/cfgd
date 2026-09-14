@@ -3639,6 +3639,10 @@ pub struct MockPackageManager {
     /// answering. The `pipx list --json` shape: the tool is on the host and
     /// runs, and what it reports back is an error.
     listing_error: Option<String>,
+    /// What `available_version` answers per package — what this manager
+    /// OFFERS, which is a different question from what it holds installed and
+    /// is the one `fill_available_versions` asks.
+    offered: std::collections::BTreeMap<String, String>,
 }
 
 impl MockPackageManager {
@@ -3672,7 +3676,17 @@ impl MockPackageManager {
             comparisons_fail: false,
             no_upgrade_verb: false,
             listing_error: None,
+            offered: std::collections::BTreeMap::new(),
         }
+    }
+
+    /// The version this manager OFFERS for a package, for a surface that
+    /// prints one beside each entry; a name left out answers `None`, which is
+    /// what a manager with no such package says.
+    #[must_use]
+    pub fn offering(mut self, pkg: &str, version: &str) -> Self {
+        self.offered.insert(pkg.to_string(), version.to_string());
+        self
     }
 
     /// A manager that is on the host and cannot say what it holds, so every
@@ -4042,8 +4056,8 @@ impl crate::providers::PackageManager for MockPackageManager {
         Ok(())
     }
 
-    fn available_version(&self, _package: &str) -> crate::errors::Result<Option<String>> {
-        Ok(None)
+    fn available_version(&self, package: &str) -> crate::errors::Result<Option<String>> {
+        Ok(self.offered.get(package).cloned())
     }
 
     fn version_meets_minimum_checked(
