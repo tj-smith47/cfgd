@@ -730,7 +730,7 @@ That split reaches the payload too: `source show -o json` no longer carries a `s
 $ cfgd source list -o json | jq '.[] | select(.name == "acme-corp") | {lockedRef, lockedCommit}'
 {
   "lockedRef": "v2.1.0",
-  "lockedCommit": "9f3c1ab2c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9ab"
+  "lockedCommit": "89abcdef0123456789abcdef0123456789abcdef"
 }
 ```
 
