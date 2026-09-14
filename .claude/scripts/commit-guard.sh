@@ -223,7 +223,7 @@ STAGED="$(git diff --cached --name-only)"
 REFUSAL="$(refusal_for "$MESSAGE" "$STAGED")"
 
 if [ -n "$REFUSAL" ] && [ "${BREAKING_CHANGE_APPROVED:-}" != "1" ]; then
-    printf '%s' "$REFUSAL" >&2
+    printf '%s\n' "$REFUSAL" >&2
     exit 1
 fi
 
