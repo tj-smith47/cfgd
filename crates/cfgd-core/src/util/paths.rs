@@ -959,9 +959,12 @@ pub fn absolutize_path(path: &std::path::Path) -> std::path::PathBuf {
 /// nothing at all — so `<default>/absent/../cfgd.yaml` named the default
 /// config directory and every check said it did not.
 ///
-/// A leading `..` (or one following another with nothing to pop) is kept: there
-/// is no component to remove, and dropping it would fold two different
-/// relative paths together.
+/// A `..` with no normal component before it is KEPT, never dropped — after a
+/// root, after a Windows prefix, and at the head of a relative path alike.
+/// There is nothing to pop, and inventing a pop would equate two paths that
+/// name different places: `/a/../../b` folds to `/../b`, not to `/b`, because a
+/// comparison fold that claimed those were one would answer the refusal it
+/// exists for with a lie on any path crossing a mount point.
 pub fn lexically_normalized(path: &std::path::Path) -> std::path::PathBuf {
     use std::path::Component;
     let mut out = std::path::PathBuf::new();

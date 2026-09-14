@@ -885,3 +885,43 @@ fn carry_dir_mode_refuses_a_symlink_instead_of_chmodding_what_it_points_at() {
         "the directory the planted link points at must keep its own mode"
     );
 }
+
+// --- lexically_normalized: the fold, and the `..` it refuses to invent ---
+
+/// Every shape [`lexically_normalized`] folds, compared through
+/// [`crate::to_posix_string`] so one table holds on both separators.
+///
+/// The last three rows are the ones that decide whether the fold can be
+/// trusted for a refusal: `..` pops a normal component and nothing else, so
+/// after a root or a Windows prefix it stays, and `/a/../../b` stays a
+/// different path from `/b`. A `//` root and a drive prefix are each read by
+/// one platform's parser alone, so each is asserted where that parser runs.
+#[test]
+fn lexically_normalized_keeps_every_dotdot_it_has_nothing_to_pop() {
+    let mut rows: Vec<(&str, &str)> = vec![
+        ("a/./b", "a/b"),
+        ("a/b/../c", "a/c"),
+        ("../x", "../x"),
+        ("a/..", "."),
+        ("/a/../../b", "/../b"),
+    ];
+    #[cfg(unix)]
+    rows.push(("//a", "/a"));
+    #[cfg(windows)]
+    rows.extend([(r"C:\a\..\b", "C:/b"), (r"C:\..\b", "C:/../b")]);
+
+    // Every row is judged before anything fails, so a change to the fold names
+    // each shape it moved rather than only the first one in the table.
+    let moved: Vec<String> = rows
+        .iter()
+        .filter_map(|(input, want)| {
+            let got = crate::to_posix_string(lexically_normalized(Path::new(input)));
+            (got != *want).then(|| format!("`{input}` folded to `{got}`, not `{want}`"))
+        })
+        .collect();
+    assert!(
+        moved.is_empty(),
+        "the lexical fold pops a normal component and nothing else: {}",
+        moved.join("; ")
+    );
+}
