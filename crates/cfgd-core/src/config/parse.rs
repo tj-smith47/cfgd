@@ -125,8 +125,8 @@ fn fold_legacy_output(
             ));
         } else {
             deprecations.push(format!(
-                "config: {old} moved to {new}; the flat key still works for now but will be \
-                 removed in a future release."
+                "config: {old} moved to {new}. Move the key; the flat spelling is \
+                 still read."
             ));
         }
     };

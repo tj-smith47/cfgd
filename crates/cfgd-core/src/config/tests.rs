@@ -2472,12 +2472,28 @@ spec:
         vec!["spec.theme".to_string(), "spec.usageHints".to_string()]
     );
     for (old, new) in super::parse::LEGACY_OUTPUT_KEYS {
+        let reported = cfg
+            .deprecations
+            .iter()
+            .find(|d| d.contains(old) && d.contains(new))
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected a deprecation naming {old} and {new}, got: {:?}",
+                    cfg.deprecations
+                )
+            });
+        // A deprecation tells the reader what to do now. A release it names no
+        // number for, and a "for now" the reader cannot date, are both a
+        // schedule cfgd does not keep.
+        for hedge in ["for now", "future release", "will be removed"] {
+            assert!(
+                !reported.contains(hedge),
+                "the deprecation for {old} dates itself against nothing: {reported}"
+            );
+        }
         assert!(
-            cfg.deprecations
-                .iter()
-                .any(|d| d.contains(old) && d.contains(new)),
-            "expected a deprecation naming {old} and {new}, got: {:?}",
-            cfg.deprecations
+            reported.contains("Move the key"),
+            "the deprecation for {old} must say what to do: {reported}"
         );
     }
 }
