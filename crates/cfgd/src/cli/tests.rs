@@ -538,8 +538,9 @@ fn no_subcommand_declares_its_own_yes_flag() {
 
 /// `cfgd module show` is the one verb that lists a module's declared scripts,
 /// so it alone carries the two flags that ask for their bodies. A script is
-/// declared and then run with nothing checking it afterwards, so `status` says
-/// nothing about one and declares neither flag.
+/// declared and then run with nothing checking it afterwards, so `status` shows
+/// none: it keeps both spellings only as hidden retired ones, which parse so the
+/// run can be refused by name and never reach a display.
 ///
 /// `--show-values` stays on both verbs, with no short spelling and a help line
 /// naming no script: a reader who asked for env values and got seven script
@@ -560,6 +561,8 @@ fn only_module_show_carries_the_script_body_flags() {
         .expect("cfgd module show is declared");
 
     for (long, short) in [("show-scripts", 's'), ("show-all", 'a')] {
+        let long_flag = format!("--{long}");
+        let short_flag = format!("-{short}");
         let arg = module_show
             .get_arguments()
             .find(|a| a.get_long() == Some(long))
@@ -573,24 +576,38 @@ fn only_module_show_carries_the_script_body_flags() {
             matches!(arg.get_action(), clap::ArgAction::SetTrue),
             "`cfgd module show --{long}` is a boolean, so it takes no value"
         );
+        let retired = status
+            .get_arguments()
+            .find(|a| a.get_long() == Some(long))
+            .unwrap_or_else(|| panic!("`cfgd status` keeps --{long} as a retired spelling"));
         assert!(
-            status
-                .get_arguments()
-                .all(|a| a.get_long() != Some(long) && a.get_short() != Some(short)),
-            "`cfgd status` declares neither --{long} nor -{short}"
+            retired.is_hide_set(),
+            "`cfgd status --{long}` is retired, so its help lists it no more"
         );
-        assert!(
-            Cli::try_parse_from(["cfgd", "status", &format!("--{long}")]).is_err()
-                && Cli::try_parse_from([
-                    "cfgd",
-                    "status",
-                    "--module",
-                    "nvim",
-                    &format!("-{short}")
-                ])
-                .is_err(),
-            "`cfgd status --{long}` must not parse"
+        assert_eq!(
+            retired.get_short(),
+            Some(short),
+            "`cfgd status -{short}` parses as the retired spelling it always was"
         );
+        for argv in [
+            vec!["cfgd", "status", &long_flag],
+            vec!["cfgd", "status", "--module", "nvim", &short_flag],
+        ] {
+            let parsed = Cli::try_parse_from(&argv)
+                .unwrap_or_else(|e| panic!("{argv:?} parses so the refusal can name it: {e}"));
+            let Some(Command::Status {
+                show_scripts,
+                show_all,
+                ..
+            }) = parsed.command
+            else {
+                panic!("{argv:?} did not parse as status");
+            };
+            assert!(
+                crate::cli::status::retired_status_flags(show_scripts, show_all).is_some(),
+                "{argv:?} must be refused rather than rendered"
+            );
+        }
     }
 
     for verb in [status, module_show] {

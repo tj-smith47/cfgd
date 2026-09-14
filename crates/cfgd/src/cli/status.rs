@@ -2875,6 +2875,9 @@ pub(crate) const LEGACY_STATUS_FLAGS: &[LegacyStatusFlag] = &[
     (
         "--show-all",
         "`cfgd status` no longer takes `--show-all`",
+        // name-row-ok: the replacement column is the bare command its two
+        // readers quote for themselves, the sentence in backticks and the hint
+        // block as a `$` line; backticks here would reach the screen.
         "cfgd status -o wide",
     ),
 ];
