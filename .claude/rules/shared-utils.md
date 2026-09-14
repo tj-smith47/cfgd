@@ -337,6 +337,7 @@ A PowerShell function-wrapper alias carries its command as a quoted string built
 - `PATH_LIST_SEPARATOR` / `is_inherited_path_ref(segment)` — the host's `PATH` separator and the ONE predicate for a segment that REFERS to the ambient `PATH`; read by `fold_env_layer` and the env engine's own `PATH` line.
 - `absolutize_path(path)` — make a path absolute LEXICALLY without requiring it to exist; use at any CLI entry point. Never canonicalizes, so a symlinked config keeps the name the user gave it.
 - `resolve_relative_path(path, base)` — resolve relative to base with traversal validation.
+- `lexically_normalized(path)` — fold `.` and `..` away without touching the filesystem, so two spellings of one directory compare equal even where a component does not exist. COMPARISON only; never render the result, which drops the spelling the caller wrote. `apply_from_refuses_a_config_walking_back_through_a_component_that_is_not_there` pins it.
 - `resolve_managed_file_source(source, config_dir)` — the ONE resolution of a `spec.files[].source` against the config dir, taken by BOTH readers of that field.
 - `validate_path_within(path, root)` — canonicalize and verify containment.
 - `validate_no_traversal(path)` — reject a reference containing `..` or naming nothing of its own; use for any path cfgd reads or writes.

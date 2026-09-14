@@ -85,7 +85,7 @@ pub(crate) fn resolve_from(
         if !path.exists() {
             anyhow::bail!("Path does not exist: {}", path.posix());
         }
-        if !path.join("cfgd.yaml").exists() {
+        if !path.join(cfgd_core::config::CONFIG_FILENAME).exists() {
             anyhow::bail!("No cfgd.yaml found in {}", path.posix());
         }
         Ok(path)
@@ -131,13 +131,25 @@ fn occupied_default_destination(dest: &Path) -> Option<&'static str> {
 /// a literal component, so `--config ~/.config/cfgd/../cfgd/cfgd.yaml` named
 /// the default directory under a spelling no string comparison matches, and a
 /// `--config` pointed at whatever the default directory is a symlink to named
-/// it under another. [`cfgd_core::is_same_inode`] answers both.
+/// it under another.
+///
+/// Two answers, in this order. [`cfgd_core::lexically_normalized`] folds both
+/// spellings first, because a `..` walking back through a component that does
+/// not exist (`<default>/absent/../cfgd.yaml`) stats nothing, and
+/// [`cfgd_core::is_same_inode`] can only say "different" about a path it
+/// cannot open. The inode question then catches what the fold cannot: two
+/// genuinely different spellings of one directory, reached through a symlink.
+/// The occupancy probe reads the folded path for the same reason; the message
+/// still names the path the caller wrote.
 fn refuse_occupied_default_destination(dest: &Path) -> anyhow::Result<()> {
     let default = cfgd_core::default_config_dir();
-    if dest != default && !cfgd_core::is_same_inode(dest, &default) {
+    let folded = cfgd_core::lexically_normalized(dest);
+    if folded != cfgd_core::lexically_normalized(&default)
+        && !cfgd_core::is_same_inode(dest, &default)
+    {
         return Ok(());
     }
-    let Some(finding) = occupied_default_destination(dest) else {
+    let Some(finding) = occupied_default_destination(&folded) else {
         return Ok(());
     };
     let shown = cfgd_core::fold_home_in_text(&dest.display_posix());

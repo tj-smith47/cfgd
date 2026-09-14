@@ -312,15 +312,29 @@ pub fn is_same_inode(a: &std::path::Path, b: &std::path::Path) -> bool {
     }
 }
 
-/// The Windows arm of [`try_file_identity`]. The probe is a `File::open` rather
-/// than a stat, so it can also fail with a sharing violation.
+/// The Windows arm of [`try_file_identity`]. The probe is an open rather than a
+/// stat, so it can also fail with a sharing violation.
+///
+/// Opened with no access rights and `FILE_FLAG_BACKUP_SEMANTICS`, which is what
+/// lets a DIRECTORY handle be obtained at all: a plain `File::open` fails with
+/// "access is denied" on one, so `is_same_inode` answered `false` for two
+/// spellings of the same directory on Windows and every refusal built on it
+/// silently stopped refusing there. Zero access is enough — the file index and
+/// volume serial come from the handle's metadata, not from its contents — and
+/// it is also what lets the probe answer for a file another process holds
+/// exclusively.
 #[cfg(windows)]
 pub fn try_file_identity(path: &std::path::Path) -> std::io::Result<FileIdentity> {
+    use std::os::windows::fs::OpenOptionsExt;
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Storage::FileSystem::BY_HANDLE_FILE_INFORMATION;
+    use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS;
     use windows_sys::Win32::Storage::FileSystem::GetFileInformationByHandle;
 
-    let file = std::fs::File::open(path)?;
+    let file = std::fs::OpenOptions::new()
+        .access_mode(0)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)?;
     // SAFETY: `BY_HANDLE_FILE_INFORMATION` is a plain-old-data struct of
     // integer fields; the all-zero bit pattern is a valid initial value
     // that `GetFileInformationByHandle` overwrites before it is read.

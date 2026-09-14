@@ -943,6 +943,45 @@ pub fn absolutize_path(path: &std::path::Path) -> std::path::PathBuf {
     }
 }
 
+/// Fold `.` and `..` out of a path WITHOUT touching the filesystem.
+///
+/// For COMPARISON only, and never rendered: the result is a path that may not
+/// exist under that spelling (`a/b/../c` folds to `a/c` whatever `b` is), so
+/// it answers "do these two strings name the same place" and nothing else.
+/// Every human slot keeps the path as the caller wrote it.
+///
+/// [`absolutize_path`] deliberately leaves `..` a literal component, because
+/// collapsing it can disagree with a real symlink earlier in the path. That is
+/// the right default for a path cfgd is about to READ; it is not enough for a
+/// refusal, where the question is whether a spelling reaches a directory cfgd
+/// must not write into. `is_same_inode` answers that for two paths that both
+/// stat, and a `..` walking back through a component that does not exist stats
+/// nothing at all — so `<default>/absent/../cfgd.yaml` named the default
+/// config directory and every check said it did not.
+///
+/// A leading `..` (or one following another with nothing to pop) is kept: there
+/// is no component to remove, and dropping it would fold two different
+/// relative paths together.
+pub fn lexically_normalized(path: &std::path::Path) -> std::path::PathBuf {
+    use std::path::Component;
+    let mut out = std::path::PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir
+                if matches!(out.components().next_back(), Some(Component::Normal(_))) =>
+            {
+                out.pop();
+            }
+            other => out.push(other),
+        }
+    }
+    if out.as_os_str().is_empty() {
+        out.push(".");
+    }
+    out
+}
+
 /// Resolve a relative path against a base directory with traversal validation.
 /// Absolute paths are returned as-is. Relative paths are validated with
 /// `validate_no_traversal` and then joined to `base`.

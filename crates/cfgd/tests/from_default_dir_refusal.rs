@@ -48,6 +48,28 @@ fn run(home: &Path, args: &[&str]) -> assert_cmd::assert::Assert {
         .assert()
 }
 
+/// Point the default config directory at `real` as a symbolic link, answering
+/// whether the host made one.
+///
+/// Windows makes a directory symlink here just as Unix does, but only for a
+/// user who holds the privilege; a stock workstation refuses outright. The
+/// refusal is not this pin's subject, so a host that cannot hold a link leaves
+/// the case unrun rather than failing on somebody else's wording — and the
+/// wording is asserted on the way out, so a different failure is still a
+/// failure.
+fn link_default_dir_at(real: &Path, link: &Path) -> bool {
+    match cfgd_core::create_symlink(real, link) {
+        Ok(()) => true,
+        Err(err) => {
+            assert!(
+                err.to_string().contains("Developer Mode"),
+                "symlink creation failed for a reason that is not privilege: {err}"
+            );
+            false
+        }
+    }
+}
+
 /// The default config directory under a throwaway home, created empty.
 fn default_config_dir(home: &Path) -> std::path::PathBuf {
     let dir = home.join(".config").join("cfgd");
@@ -99,7 +121,6 @@ fn init_from_refuses_a_non_empty_default_dir() {
     );
 }
 
-#[cfg(unix)]
 #[test]
 fn init_from_refuses_a_symlinked_default_dir() {
     let tmp = tempfile::tempdir().unwrap();
@@ -109,7 +130,9 @@ fn init_from_refuses_a_symlinked_default_dir() {
     let real = tmp.path().join("elsewhere");
     std::fs::create_dir_all(&real).unwrap();
     std::fs::create_dir_all(home.join(".config")).unwrap();
-    std::os::unix::fs::symlink(&real, home.join(".config").join("cfgd")).unwrap();
+    if !link_default_dir_at(&real, &home.join(".config").join("cfgd")) {
+        return;
+    }
 
     run(&home, &["init", "--from", &src.display().to_string()])
         .code(1)
@@ -275,7 +298,53 @@ fn apply_from_refuses_a_config_that_walks_back_into_the_default_dir() {
     assert!(!dest.join(".git").exists(), "nothing was cloned over it");
 }
 
-#[cfg(unix)]
+#[test]
+fn apply_from_refuses_a_config_walking_back_through_a_component_that_is_not_there() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    source_repo(&src);
+    let home = tmp.path().join("home");
+    let dest = default_config_dir(&home);
+    std::fs::write(dest.join("cfgd.yaml"), "apiVersion: cfgd.io/v1alpha1\n").unwrap();
+
+    // `x` does not exist, so this spelling stats nothing and the inode question
+    // could only answer "different"; the lexical fold is what still reads it as
+    // the default directory.
+    let walked = dest.join("x").join("..").join("cfgd.yaml");
+    let structured = run(
+        &home,
+        &[
+            "-o",
+            "json",
+            "apply",
+            "--dry-run",
+            "--yes",
+            "--from",
+            &src.display().to_string(),
+            "--config",
+            &walked.display().to_string(),
+        ],
+    )
+    .code(1)
+    .get_output()
+    .stdout
+    .clone();
+    let payload: serde_json::Value =
+        serde_json::from_slice(&structured).expect("one error object on stdout");
+    assert_eq!(payload["error"], "config_dir_occupied", "got: {payload}");
+
+    // The refusal fires before anything creates a directory, so the component
+    // the caller spelled is not left behind inside somebody's config directory.
+    assert!(
+        !dest.join("x").exists(),
+        "the absent component was not created on the way to the refusal"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dest.join("cfgd.yaml")).unwrap(),
+        "apiVersion: cfgd.io/v1alpha1\n"
+    );
+}
+
 #[test]
 fn apply_from_refuses_a_config_pointed_at_what_the_default_dir_links_to() {
     let tmp = tempfile::tempdir().unwrap();
@@ -286,7 +355,9 @@ fn apply_from_refuses_a_config_pointed_at_what_the_default_dir_links_to() {
     std::fs::create_dir_all(&real).unwrap();
     std::fs::write(real.join("cfgd.yaml"), "apiVersion: cfgd.io/v1alpha1\n").unwrap();
     std::fs::create_dir_all(home.join(".config")).unwrap();
-    std::os::unix::fs::symlink(&real, home.join(".config").join("cfgd")).unwrap();
+    if !link_default_dir_at(&real, &home.join(".config").join("cfgd")) {
+        return;
+    }
 
     // The link's target is the same directory under a different name, and the
     // refusal is about the directory.
