@@ -3321,8 +3321,8 @@ fn cmd_module_create_with_apply_and_yes_drives_full_apply_sequence() {
 
 /// `cfgd module create --apply` leaves alone the rows its scope never resolved.
 ///
-/// The run resolves no profile at all — its desired set is the module the
-/// command line named plus whatever that module depends on — so both halves of
+/// The run resolves no profile at all: its desired set is the module the
+/// command line named plus whatever that module depends on, so both halves of
 /// the removal claim are ones it cannot make. Left at the builder's `true`
 /// default it retired every `env-var` and `alias` row on the machine, which is
 /// what `cfgd source remove` reads to find what a subscription put there, and
@@ -3331,7 +3331,7 @@ fn cmd_module_create_with_apply_and_yes_drives_full_apply_sequence() {
 /// Two runs, because the second half only shows on a converged env surface: the
 /// first creates the module whose entries the file then holds, and the second
 /// depends on it, so its plan carries a package install and no env write at
-/// all — which is the state the trailing resolve arm answers in.
+/// all, which is the state the trailing resolve arm answers in.
 #[test]
 #[serial_test::serial]
 fn module_create_apply_keeps_the_rows_its_scope_never_resolved() {
@@ -3384,6 +3384,15 @@ fn module_create_apply_keeps_the_rows_its_scope_never_resolved() {
     {
         let state = crate::cli::open_state_store(cli.state_dir.as_deref(), cli.scope())
             .expect("open state");
+        // The first run WROTE the env surface, so its own entries were recorded
+        // by the converging half no scope gates. Clearing them is what makes
+        // the question asked of the second run "does it record these off a
+        // surface it never touched", which is the half the flag gates.
+        for (rtype, _) in declared {
+            state
+                .prune_managed_resources_except(rtype, &[])
+                .expect("clear the rows the converging run recorded");
+        }
         for (rtype, id) in foreign {
             state
                 .upsert_managed_resource(rtype, id, "acme", None, None)
@@ -3420,6 +3429,12 @@ fn module_create_apply_keeps_the_rows_its_scope_never_resolved() {
         .into_iter()
         .map(|r| (r.resource_type, r.resource_id))
         .collect();
+    let all_tracked: Vec<(String, String)> = state
+        .managed_resources()
+        .expect("read every tracking row")
+        .into_iter()
+        .map(|r| (r.resource_type, r.resource_id))
+        .collect();
     let standing: Vec<(String, String)> = state
         .unresolved_drift()
         .expect("read drift rows")
@@ -3438,6 +3453,19 @@ fn module_create_apply_keeps_the_rows_its_scope_never_resolved() {
             standing.contains(&(rtype.to_string(), (*id).to_string())),
             "a module-scoped apply resolved the finding of an entry it never \
              checked: {standing:?}"
+        );
+    }
+    // The other side of the same switch: the flag gates RECORDING as well as
+    // retiring, so a scoped run that converged nothing writes no tracking row
+    // even for the entries it declared. Those get their rows from the next
+    // whole-picture apply, the way `cfgd apply --module` leaves them. A
+    // widening of the guard that recorded here would pass both assertions
+    // above unnoticed.
+    for (rtype, id) in declared {
+        assert!(
+            !all_tracked.contains(&(rtype.to_string(), id.to_string())),
+            "a module-scoped apply recorded a tracking row for an entry it saw \
+             only part of the picture for: {all_tracked:?}"
         );
     }
 }
