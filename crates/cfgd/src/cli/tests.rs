@@ -29057,7 +29057,12 @@ fn execute_module_keys_list_dispatch() {
 }
 
 #[test]
+#[serial_test::serial]
 fn execute_module_keys_generate_dispatch() {
+    // The arm provisions cosign when it is missing, and provision_tool falls
+    // through to the first manager this host has, so the dispatch is driven
+    // with every manager pinned at a path that is not there.
+    let _managers = cfgd_core::test_helpers::NoHostManagers::pinned_missing();
     let out_dir = tempfile::tempdir().unwrap();
     let h = CliTestHarness::builder().build();
     let cli = h.cli_with_command(Command::Module {
@@ -29073,7 +29078,10 @@ fn execute_module_keys_generate_dispatch() {
 }
 
 #[test]
+#[serial_test::serial]
 fn execute_module_keys_rotate_dispatch() {
+    // Same arm, same provisioning route as the generate dispatch above.
+    let _managers = cfgd_core::test_helpers::NoHostManagers::pinned_missing();
     let out_dir = tempfile::tempdir().unwrap();
     let h = CliTestHarness::builder().build();
     let cli = h.cli_with_command(Command::Module {
@@ -39331,6 +39339,9 @@ fn provision_tool_answers_from_the_seam_without_reaching_a_manager() {
 #[test]
 #[serial_test::serial]
 fn provision_tool_installs_through_the_manager_the_tool_table_routes_to() {
+    // The registry below is narrowed to one manager behind a shim; this pins
+    // the host's own managers missing, so the fall-through reaches none of them.
+    let _managers = cfgd_core::test_helpers::NoHostManagers::pinned_missing();
     let shim = cfgd_core::test_helpers::ToolShim::install("CFGD_BREW_BIN", 0, "", "");
     let _seam = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_COSIGN_BIN", ABSENT_SEAM_PATH);
     let printer = test_printer();
@@ -39376,6 +39387,9 @@ fn provision_tool_reports_success_once_the_install_lands_the_binary() {
     // the miss this primes.
     let _paths = cfgd_core::test_helpers::CommandPathMemoTtlGuard::never_expires();
     let _avail = cfgd_core::test_helpers::AvailabilityMemoTtlGuard::always_expired();
+    // The registry below is narrowed to one manager behind a shim; this pins
+    // the host's own managers missing, so the fall-through reaches none of them.
+    let _managers = cfgd_core::test_helpers::NoHostManagers::pinned_missing();
     let probe = cfgd_core::test_helpers::ProbePath::containing(&[]);
     let shim = cfgd_core::test_helpers::ToolShim::install("CFGD_BREW_BIN", 0, "", "");
 
@@ -39409,6 +39423,9 @@ fn provision_tool_reports_success_once_the_install_lands_the_binary() {
 #[test]
 #[serial_test::serial]
 fn provision_tool_with_no_manager_names_the_routes_it_considered_and_spawns_nothing() {
+    // The registry handed over is empty; this pins the host's own managers
+    // missing as well, so no route out of this declaration reaches a real one.
+    let _managers = cfgd_core::test_helpers::NoHostManagers::pinned_missing();
     // The seam is process-global, so a sibling sweeping the managers would spawn
     // this shim and the log would carry a `tap` this call never made. What keeps
     // it out is the spawn side: every guarded spawn takes the shared read guard
@@ -40114,47 +40131,143 @@ fn require_tool_call_line(line: &str) -> bool {
 /// `every_function_that_can_reach_the_tool_provisioner_is_named_here`, so a new
 /// verb or wrapper fails that walk rather than sitting outside this one.
 const PROVISIONING_VERB_CALLS: &[ProvisioningVerb] = &[
-    ProvisioningVerb::always("check_prerequisites("),
-    ProvisioningVerb::always("cmd_init("),
-    ProvisioningVerb::always("cmd_module_keys_generate("),
-    ProvisioningVerb::always("cmd_module_keys_rotate("),
-    ProvisioningVerb::always("fix_missing_tools("),
-    ProvisioningVerb::always("provision_cosign("),
-    ProvisioningVerb::gated_on("cmd_doctor(", "true"),
-    ProvisioningVerb::gated_on("run_doctor(", "true"),
+    ProvisioningVerb::always("check_prerequisites"),
+    ProvisioningVerb::always("cmd_init"),
+    ProvisioningVerb::always("cmd_module_keys_generate"),
+    ProvisioningVerb::always("cmd_module_keys_rotate"),
+    ProvisioningVerb::always("fix_missing_tools"),
+    ProvisioningVerb::always("provision_cosign"),
+    ProvisioningVerb::always("provision_tool"),
+    ProvisioningVerb::gated_on("cmd_doctor", "true"),
+    ProvisioningVerb::gated_on("run_doctor", "true"),
+    ProvisioningVerb::dispatcher("execute"),
 ];
 
-/// One member of [`PROVISIONING_VERB_CALLS`]: the call a test line spells, and
-/// the second tell that line carries where the verb reaches an install only
-/// under a flag.
+/// One member of [`PROVISIONING_VERB_CALLS`]: the function a test line calls,
+/// and the second tell that claims the line only where the verb reaches an
+/// install under a flag or under a command variant.
 struct ProvisioningVerb {
     call: &'static str,
     /// `doctor` probes and installs nothing without `--fix`, so only a call
     /// passing `true` for it is in the population.
     flag: Option<&'static str>,
+    /// Whether this entry is the clap dispatcher, which reaches a provisioning
+    /// verb only through the command variants its own match arms hand to one.
+    /// Those variants are read off its body by
+    /// [`provisioning_dispatch_tells`], never listed here.
+    dispatcher: bool,
 }
 
 impl ProvisioningVerb {
     const fn always(call: &'static str) -> Self {
-        Self { call, flag: None }
+        Self {
+            call,
+            flag: None,
+            dispatcher: false,
+        }
     }
 
     const fn gated_on(call: &'static str, flag: &'static str) -> Self {
         Self {
             call,
             flag: Some(flag),
+            dispatcher: false,
         }
     }
 
-    /// The function this entry names, without the opening parenthesis.
+    const fn dispatcher(call: &'static str) -> Self {
+        Self {
+            call,
+            flag: None,
+            dispatcher: true,
+        }
+    }
+
+    /// The function this entry names.
     fn name(&self) -> &'static str {
-        self.call.trim_end_matches('(')
+        self.call
     }
 
     /// Whether `code` is a call this entry claims.
     fn matches(&self, code: &str) -> bool {
-        code.contains(self.call) && self.flag.is_none_or(|f| code.contains(f))
+        cfgd_core::test_helpers::calls_free_fn(code, self.call)
+            && self.flag.is_none_or(|f| code.contains(f))
     }
+}
+
+/// The command variants [`crate::cli::execute`] hands to a provisioning verb,
+/// each paired with the flag gate that verb's own roster entry carries.
+///
+/// A test driving the clap dispatcher names a variant rather than a verb, and
+/// all but four of that dispatcher's arms reach nothing that installs anything.
+/// Asking every caller of `execute` for a manager guard would put the guard on
+/// seventy tests that cannot install software; reading the arms says which four
+/// it belongs on. The variants are read off the dispatcher's own body, so an arm
+/// that starts calling a provisioning verb joins the population with it.
+fn provisioning_dispatch_tells() -> Vec<(String, Option<&'static str>)> {
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let body = cfgd_core::test_helpers::production_slice_of(&manifest.join("src/cli/mod.rs"));
+    let lines: Vec<&str> = body.lines().collect();
+    let open = lines
+        .iter()
+        .position(|l| l.trim_start().starts_with("pub fn execute("))
+        .expect("cli/mod.rs no longer declares `execute`");
+    // The span is read from a line INSIDE the body: `enclosing_fn_span` answers
+    // for the block a line sits in, and a signature line sits in the file.
+    let body = (open..lines.len())
+        .find(|&i| blank_string_literals(lines[i]).trim_end().ends_with('{'))
+        .expect("`execute` has no body");
+    let (start, end) =
+        enclosing_fn_span(&lines, body + 1).expect("`execute`'s body is not readable");
+
+    let mut tells: Vec<(String, Option<&'static str>)> = Vec::new();
+    for n in start..=end {
+        let code = blank_string_literals(lines[n]);
+        let Some(verb) = PROVISIONING_VERB_CALLS
+            .iter()
+            .find(|v| !v.dispatcher && cfgd_core::test_helpers::calls_free_fn(&code, v.call))
+        else {
+            continue;
+        };
+        let tell = (start..=n)
+            .rev()
+            .find_map(|m| variant_pattern(&blank_string_literals(lines[m])))
+            .expect("a dispatch arm reaching a provisioning verb names the variant it matches");
+        if !tells.iter().any(|(t, _)| *t == tell) {
+            tells.push((tell, verb.flag));
+        }
+    }
+    assert!(
+        !tells.is_empty(),
+        "no arm of `execute` reaches a provisioning verb, so the derivation read nothing"
+    );
+    tells
+}
+
+/// The `Type::Variant` this line opens a match arm on, if it carries one.
+///
+/// Both halves start on an uppercase letter, which is what separates a variant
+/// from the `module::function` path a call is written as.
+fn variant_pattern(code: &str) -> Option<String> {
+    let mut from = 0;
+    while let Some(at) = code[from..].find("::") {
+        let at = from + at;
+        let head_start = code[..at]
+            .rfind(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .map_or(0, |i| i + 1);
+        let tail = &code[at + 2..];
+        let tail_end = tail
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .unwrap_or(tail.len());
+        let (head, tail) = (&code[head_start..at], &tail[..tail_end]);
+        if head.starts_with(|c: char| c.is_ascii_uppercase())
+            && tail.starts_with(|c: char| c.is_ascii_uppercase())
+        {
+            return Some(format!("{head}::{tail}"));
+        }
+        from = at + 2;
+    }
+    None
 }
 
 /// No test reaches a real package manager through the tool provisioner.
@@ -40174,6 +40287,7 @@ impl ProvisioningVerb {
 #[test]
 fn no_test_reaches_a_real_package_manager_through_the_tool_provisioner() {
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let dispatch_tells = provisioning_dispatch_tells();
     let mut population = 0usize;
     let mut files_read = 0usize;
     let mut offenders = Vec::new();
@@ -40190,8 +40304,13 @@ fn no_test_reaches_a_real_package_manager_through_the_tool_provisioner() {
             // Blanking the literals is also what keeps this walk from finding
             // the needles it spells itself.
             let code = blank_string_literals(line);
-            let verb = PROVISIONING_VERB_CALLS.iter().any(|v| v.matches(&code));
-            if !verb {
+            let verb = PROVISIONING_VERB_CALLS
+                .iter()
+                .any(|v| !v.dispatcher && v.matches(&code));
+            let dispatches = PROVISIONING_VERB_CALLS
+                .iter()
+                .any(|v| v.dispatcher && v.matches(&code));
+            if !verb && !dispatches {
                 continue;
             }
             // The verb's own declaration spells its name too, so the population
@@ -40202,13 +40321,26 @@ fn no_test_reaches_a_real_package_manager_through_the_tool_provisioner() {
             else {
                 continue;
             };
-            if !judged.insert(name.clone()) {
-                continue;
-            }
             // The span opens on the declaration's own attributes, so the text
             // says whether a harness runs it.
             let text = enclosing_fn_text(&lines, n);
             if !text.contains("#[test]") {
+                continue;
+            }
+            // A dispatcher call reaches an install only under the command
+            // variants whose arms hand one to a verb, and the declaration names
+            // the variant it builds rather than the verb behind it. Judged
+            // before the population is deduplicated, so a declaration calling
+            // `execute` on some other variant is still read for a verb call of
+            // its own further down.
+            if !verb
+                && !dispatch_tells.iter().any(|(tell, flag)| {
+                    text.contains(tell.as_str()) && flag.is_none_or(|f| text.contains(f))
+                })
+            {
+                continue;
+            }
+            if !judged.insert(name.clone()) {
                 continue;
             }
             population += 1;
@@ -40252,8 +40384,11 @@ fn no_test_reaches_a_real_package_manager_through_the_tool_provisioner() {
 /// wrapper in the shape of `provision_cosign`, is invisible to the walk above
 /// and the next test driving it installs software on whoever runs the suite.
 /// So the roster is derived from the producer here: every function under `cli/`
-/// whose own body calls the provisioner, plus the local wrappers one level
-/// above those, which is the level a command sits at.
+/// whose own body calls the provisioner, and then every function calling one of
+/// those, folded until the set stops growing. A wrapper chain is as long as
+/// somebody writes it — `cmd_doctor` sits two hops out, behind `run_doctor` —
+/// and a derivation that stops at a fixed depth names exactly the verbs a hand
+/// list would have.
 ///
 /// The check is one-directional. A roster entry no derivation names widens the
 /// population the walk above judges, which costs a test nothing; a derived name
@@ -40272,13 +40407,15 @@ fn every_function_that_can_reach_the_tool_provisioner_is_named_here() {
     }
     assert!(!sources.is_empty(), "the walk read no sources at all");
 
-    let callers_of = |needle: &str| -> std::collections::BTreeSet<String> {
+    let callers_of = |name: &str| -> std::collections::BTreeSet<String> {
         let mut found = std::collections::BTreeSet::new();
         for body in &sources {
             let lines: Vec<&str> = body.lines().collect();
             for (n, line) in lines.iter().enumerate() {
                 let code = blank_string_literals(line);
-                if code.trim_start().starts_with("//") || !code.contains(needle) {
+                if code.trim_start().starts_with("//")
+                    || !cfgd_core::test_helpers::calls_free_fn(&code, name)
+                {
                     continue;
                 }
                 if let Some(name) = enclosing_fn_name(&lines, n) {
@@ -40289,17 +40426,26 @@ fn every_function_that_can_reach_the_tool_provisioner_is_named_here() {
         found
     };
 
-    let produces = callers_of("helpers::provision_tool(");
+    let produces = callers_of("provision_tool");
     assert!(
         !produces.is_empty(),
         "no function under cli/ calls the provisioner, so the derivation read nothing"
     );
     let mut derived = produces.clone();
-    for name in &produces {
-        derived.extend(callers_of(&format!("{name}(")));
+    let mut frontier = produces;
+    while !frontier.is_empty() {
+        let mut next = std::collections::BTreeSet::new();
+        for name in &frontier {
+            for caller in callers_of(name) {
+                if derived.insert(caller.clone()) {
+                    next.insert(caller);
+                }
+            }
+        }
+        frontier = next;
     }
     assert!(
-        derived.len() >= 7,
+        derived.len() >= 10,
         "the derivation names {} functions, fewer than this crate holds: {derived:?}",
         derived.len()
     );

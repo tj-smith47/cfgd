@@ -1453,6 +1453,29 @@ pub fn blank_string_literals(line: &str) -> String {
     String::from_utf8(out).unwrap_or_else(|_| line.to_string())
 }
 
+/// Whether `code` holds a call to the free function `name`.
+///
+/// A source-walking pin deriving a call graph asks this rather than searching
+/// for `name(`: a `.name(` is a method on some other type, and a longer
+/// identifier ending in `name` is a different function again, so a bare
+/// substring names callers that call nothing of the sort. A path-qualified
+/// call (`module::name(`) is a caller, and so is a bare one. Pass a line or a
+/// whole body that has already been through [`blank_string_literals`], or the
+/// walk reads a spelling inside a literal as a call.
+pub fn calls_free_fn(code: &str, name: &str) -> bool {
+    let needle = format!("{name}(");
+    let mut from = 0;
+    while let Some(at) = code[from..].find(&needle) {
+        let at = from + at;
+        let before = code[..at].chars().next_back();
+        if !before.is_some_and(|c| c == '.' || c.is_ascii_alphanumeric() || c == '_') {
+            return true;
+        }
+        from = at + needle.len();
+    }
+    false
+}
+
 /// A Rust source's logical lines: every `\`-continued string literal folded
 /// onto the line that opened it, paired with that opening line's 1-based
 /// number.
