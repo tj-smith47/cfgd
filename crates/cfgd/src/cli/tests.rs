@@ -32954,17 +32954,20 @@ fn every_two_root_walk_guards_each_root_it_reads() {
         ("cfgd/src/cli/tests.rs", 20),
         ("cfgd-core/src/output/tests/fences.rs", 2),
     ];
-    /// The two per-root counts that are not a const at all. A floor const is
-    /// read by its SHAPE instead of its name (below), so a walk counting
-    /// something other than files declares its floor per root without having
-    /// to be renamed first.
-    const PER_ROOT_FLOORS: [&str; 2] = ["per_root", "WALK_ROOTS"];
-    // An array-typed floor states one count per root, or per file; an
-    // aggregate `FLOOR_FILES: usize` states one for the whole walk and is
-    // exactly what this pin exists to refuse.
+    // A per-root floor is read by its SHAPE, never by the name of the const
+    // holding it: a name match exempts a walk for spelling `WALK_ROOTS` even
+    // where the const behind that name holds bare root names and the walk
+    // floors them in aggregate. The three shapes in use are an array-typed
+    // floor const, a root list carrying a count per entry, and a per-root
+    // accumulator pushed once per root and read back. An aggregate
+    // `FLOOR_FILES: usize` states one count for the whole walk and is exactly
+    // what this pin exists to refuse.
     let floors_per_root = |code: &str| {
-        code.lines()
-            .any(|l| l.contains("FLOOR") && l.contains(": ["))
+        code.lines().any(|l| {
+            (l.contains("FLOOR") && l.contains(": ["))
+                || (l.contains("WALK_ROOTS") && l.contains("&[(&str, usize)]"))
+                || (l.contains("per_root") && l.contains(".push("))
+        })
     };
 
     let segment = "src";
@@ -33048,10 +33051,7 @@ fn every_two_root_walk_guards_each_root_it_reads() {
                     .map(cfgd_core::test_helpers::code_line)
                     .collect::<Vec<_>>()
                     .join("\n");
-                if PER_ROOT_FLOORS.iter().any(|floor| code.contains(floor))
-                    || floors_per_root(&code)
-                    || body.contains(HATCH)
-                {
+                if floors_per_root(&code) || body.contains(HATCH) {
                     continue;
                 }
                 // `enclosing_fn_span` opens the span at the first row of the
@@ -39430,6 +39430,10 @@ fn every_manager_spawn_under_packages_inherits_the_bootstrapped_dirs() {
         ".status()",
         ".spawn()",
         "command_output_with_timeout(",
+        "command_output(",
+        "command_status(",
+        "spawn_child(",
+        "spawn_past_a_transient_refusal(",
     ];
     let is_fn_head = |line: &str| {
         let t = line.trim_start();
@@ -39438,6 +39442,7 @@ fn every_manager_spawn_under_packages_inherits_the_bootstrapped_dirs() {
             || t.starts_with("pub(") && t.contains(" fn ")
     };
     let mut offenders = Vec::new();
+    let mut judged = 0usize;
     for path in files
         .into_iter()
         .filter(|p| p.file_name().is_none_or(|n| n != "tests.rs"))
@@ -39449,6 +39454,7 @@ fn every_manager_spawn_under_packages_inherits_the_bootstrapped_dirs() {
             if line.trim_start().starts_with("//") || !spawns.iter().any(|s| line.contains(s)) {
                 continue;
             }
+            judged += 1;
             let head = (0..n).rev().find(|&i| is_fn_head(lines[i])).unwrap_or(0);
             let handed = lines[head..n]
                 .iter()
@@ -39459,6 +39465,12 @@ fn every_manager_spawn_under_packages_inherits_the_bootstrapped_dirs() {
             offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
         }
     }
+    assert!(
+        judged >= 5,
+        "the walk judged {judged} spawns under `packages/`, fewer than the directory holds: \
+         a spawn spelled a way the tells do not name is a manager spawned with no \
+         bootstrapped dirs"
+    );
     assert!(
         offenders.is_empty(),
         "a manager binary spawned without the bootstrapped dirs (route it through \
