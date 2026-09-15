@@ -49,19 +49,38 @@ const BUSY_PROGRAM_ATTEMPTS: u32 = 10;
 const BUSY_PROGRAM_FIRST_WAIT: std::time::Duration = std::time::Duration::from_millis(1);
 const BUSY_PROGRAM_MAX_WAIT: std::time::Duration = std::time::Duration::from_millis(32);
 
-/// Whether the OS refused this spawn because the program file is still open for
-/// writing somewhere else.
+/// Whether the OS refused this spawn for a reason that a sibling finishing its
+/// own work takes away.
 ///
-/// Unix names that refusal and nothing else shares the name (`ETXTBSY`).
-/// Windows has no equivalent kind: `CreateProcess` against a file another handle
-/// holds without sharing comes back as a sharing violation (raw os error 32),
-/// and the same race reached through a handle opened for exclusive access comes
-/// back as access denied, so both join the ladder there. Neither widens to Unix,
-/// where raw 32 is `EPIPE` and access denied is a permission fact that no wait
-/// changes.
-fn program_file_is_busy(e: &std::io::Error) -> bool {
+/// Two refusals qualify, and both are about what some OTHER thread of this
+/// process is holding at the instant of the `exec`.
+///
+/// The program file is still open for writing somewhere else: a `fork` between
+/// that file's open and close inherits the writable descriptor until the child
+/// `exec`s. Unix names that refusal and nothing else shares the name
+/// (`ETXTBSY`). Windows has no equivalent kind: `CreateProcess` against a file
+/// another handle holds without sharing comes back as a sharing violation (raw
+/// os error 32), and the same race reached through a handle opened for
+/// exclusive access comes back as access denied, so both join the ladder
+/// there. Neither widens to Unix, where raw 32 is `EPIPE` and access denied is
+/// a permission fact that no wait changes.
+///
+/// Or the descriptor table is full at this instant (`EMFILE`, and its
+/// system-wide sibling `ENFILE`): every spawn here takes three pipes plus the
+/// child's own descriptors, so concurrent spawns can crowd a low soft limit
+/// even though each one hands its descriptors back a moment later.
+/// [`raise_open_file_limit`] moves the limit itself; this keeps the spawn that
+/// arrives during the crowd from failing a run over it. Rust names no
+/// `ErrorKind` for either, so they are matched by errno.
+fn spawn_refusal_is_transient(e: &std::io::Error) -> bool {
     if e.kind() == std::io::ErrorKind::ExecutableFileBusy {
         return true;
+    }
+    #[cfg(unix)]
+    {
+        if matches!(e.raw_os_error(), Some(libc::EMFILE) | Some(libc::ENFILE)) {
+            return true;
+        }
     }
     #[cfg(windows)]
     {
@@ -75,31 +94,85 @@ fn program_file_is_busy(e: &std::io::Error) -> bool {
     false
 }
 
-/// Spawn `cmd`, giving a program file the OS reports as open for writing a few
+/// Raise this process's soft open-file limit toward its hard one, once.
+///
+/// macOS ships a 256-descriptor soft limit against a hard limit in the tens of
+/// thousands, and cfgd's own work is descriptor-hungry: every spawn takes three
+/// pipes, and lanes spawn concurrently. A soft limit nobody raised is what
+/// turns a perfectly ordinary eight-way filter-script run into
+/// `io error: Too many open files`.
+///
+/// Raising it is the process's own business — the limit is per-process, the
+/// hard limit is the administrator's statement of the ceiling, and nothing
+/// outside this process observes the change. `RLIM_INFINITY` as the hard limit
+/// does not mean the kernel will hand out that many (macOS caps a process at
+/// `kern.maxfilesperproc`), so the raise is clamped to a number comfortably
+/// under every such cap.
+///
+/// Best-effort and idempotent: a kernel that refuses leaves the limit where it
+/// was, and the spawn ladder still absorbs a momentary exhaustion. Called from
+/// the spawn seam rather than from each binary's `main`, so a test binary, a
+/// new binary and an embedding caller all get it without remembering to.
+pub fn raise_open_file_limit() {
+    static RAISED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    RAISED.get_or_init(|| {
+        #[cfg(unix)]
+        {
+            /// Well under macOS's `kern.maxfilesperproc` and Linux's
+            /// `nr_open`, and far past anything cfgd's own lanes need.
+            const WANT: libc::rlim_t = 8192;
+            // SAFETY: both calls take a pointer to a fully initialized
+            // `rlimit` this frame owns, and neither retains it.
+            unsafe {
+                let mut limit = std::mem::zeroed::<libc::rlimit>();
+                if libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) != 0 {
+                    return;
+                }
+                let ceiling = if limit.rlim_max == libc::RLIM_INFINITY {
+                    WANT
+                } else {
+                    limit.rlim_max.min(WANT)
+                };
+                if limit.rlim_cur >= ceiling {
+                    return;
+                }
+                limit.rlim_cur = ceiling;
+                libc::setrlimit(libc::RLIMIT_NOFILE, &limit);
+            }
+        }
+    });
+}
+
+/// Spawn `cmd`, giving a refusal another thread of this process caused a few
 /// more tries.
 ///
 /// Writing an executable and running it races every other thread in the
 /// process: a `fork` anywhere between the file's open and close inherits the
 /// writable descriptor until that child reaches its own `exec`, and an `exec` of
 /// that same file in this thread fails for as long as the descriptor lives
-/// (`ETXTBSY`). Cargo's own process builder retries for this reason.
-/// [`program_file_is_busy`] decides which refusals that covers on this host;
-/// every other error comes straight back, unretried.
+/// (`ETXTBSY`). Cargo's own process builder retries for this reason. The
+/// descriptor table filling up under concurrent spawns is the same shape of
+/// problem with the same answer. [`spawn_refusal_is_transient`] decides which
+/// refusals that covers on this host; every other error comes straight back,
+/// unretried.
 ///
 /// Which hosts refuse at all is a per-platform fact: Linux and the BSDs answer
 /// `ETXTBSY` while the descriptor lives, script and native binary alike, and
 /// Windows answers a sharing violation. macOS refuses neither shape, so the
-/// ladder there never spends a retry.
+/// ladder there spends a retry only on a crowded descriptor table.
 ///
-/// The spawn count travels beside the outcome so a test can state that the
-/// ladder really ran, a claim the spawned child alone cannot support.
-fn spawn_past_a_busy_program_file(
+/// This is the ONE spawn of a [`std::process::Command`] in the workspace: a
+/// path spawning for itself is a path the ladder and the limit raise above do
+/// not reach. The spawn count travels beside the outcome so a test can state
+/// that the ladder really ran, a claim the spawned child alone cannot support.
+pub fn spawn_past_a_transient_refusal(
     cmd: &mut std::process::Command,
 ) -> (std::io::Result<std::process::Child>, u32) {
+    raise_open_file_limit();
     let mut wait = BUSY_PROGRAM_FIRST_WAIT;
     for attempt in 1..BUSY_PROGRAM_ATTEMPTS {
         match cmd.spawn() {
-            Err(e) if program_file_is_busy(&e) => {
+            Err(e) if spawn_refusal_is_transient(&e) => {
                 std::thread::sleep(wait);
                 wait = (wait * 2).min(BUSY_PROGRAM_MAX_WAIT);
             }
@@ -107,6 +180,12 @@ fn spawn_past_a_busy_program_file(
         }
     }
     (cmd.spawn(), BUSY_PROGRAM_ATTEMPTS)
+}
+
+/// [`spawn_past_a_transient_refusal`] for a caller with no claim to make about
+/// how many attempts the ladder spent.
+pub fn spawn_child(cmd: &mut std::process::Command) -> std::io::Result<std::process::Child> {
+    spawn_past_a_transient_refusal(cmd).0
 }
 
 /// Run a [`std::process::Command`] with a timeout, surfacing whether the timeout fired.
@@ -149,7 +228,7 @@ pub fn command_output_with_timeout_outcome(
     cmd.stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
-    let (spawned, _attempts) = spawn_past_a_busy_program_file(cmd);
+    let (spawned, _attempts) = spawn_past_a_transient_refusal(cmd);
     let mut child = spawned?;
     let id = child.id();
 
@@ -1646,7 +1725,7 @@ mod tests {
                 .unwrap();
 
             let mut cmd = std::process::Command::new(&program);
-            let (spawned, attempts) = spawn_past_a_busy_program_file(&mut cmd);
+            let (spawned, attempts) = spawn_past_a_transient_refusal(&mut cmd);
             let status = spawned.expect("nothing refused the spawn").wait().unwrap();
             drop(writer);
 
@@ -1673,7 +1752,7 @@ mod tests {
                 drop(writer);
             });
             let mut cmd = std::process::Command::new(&program);
-            let (spawned, attempts) = spawn_past_a_busy_program_file(&mut cmd);
+            let (spawned, attempts) = spawn_past_a_transient_refusal(&mut cmd);
             let status = spawned
                 .expect("the ladder must wait the writer out")
                 .wait()
@@ -1702,12 +1781,12 @@ mod tests {
             std::io::Error::from(std::io::ErrorKind::NotFound),
         ] {
             assert!(
-                !program_file_is_busy(&refusal),
+                !spawn_refusal_is_transient(&refusal),
                 "{refusal:?} must come straight back"
             );
         }
         assert!(
-            program_file_is_busy(&std::io::Error::from(
+            spawn_refusal_is_transient(&std::io::Error::from(
                 std::io::ErrorKind::ExecutableFileBusy
             )),
             "the refusal the ladder exists for must be retried"
@@ -1727,12 +1806,12 @@ mod tests {
             std::io::Error::from(std::io::ErrorKind::ExecutableFileBusy),
         ] {
             assert!(
-                program_file_is_busy(&refusal),
+                spawn_refusal_is_transient(&refusal),
                 "{refusal:?} names a program file still being written"
             );
         }
         assert!(
-            !program_file_is_busy(&std::io::Error::from(std::io::ErrorKind::NotFound)),
+            !spawn_refusal_is_transient(&std::io::Error::from(std::io::ErrorKind::NotFound)),
             "a missing program is not a race"
         );
     }

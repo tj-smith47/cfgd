@@ -4409,6 +4409,104 @@ fn every_path_based_chmod_in_the_workspace_says_why_the_follow_is_safe() {
     );
 }
 
+/// Every production spawn of a child process goes through the one ladder.
+///
+/// A spawn reaching [`std::process::Command::spawn`] directly is a spawn no
+/// retry covers and no descriptor-limit raise precedes, and both matter for
+/// reasons the call site cannot see: another thread of this process can be
+/// holding the program file open (`ETXTBSY`), and concurrent spawns can crowd
+/// a soft descriptor limit a host shipped at 256 — which is what turned an
+/// eight-way filter-script test red on macOS and nowhere else.
+/// [`cfgd_core::spawn_child`](crate::spawn_child) is where both answers live,
+/// so a second spawn path is a second policy.
+#[test]
+fn every_production_spawn_in_the_workspace_goes_through_the_one_ladder() {
+    const HATCH: &str = "direct-spawn-ok:";
+    /// A `std::process::Command` spawn takes no argument; every `spawn(` that
+    /// does is a thread or a task, which this rule says nothing about.
+    const TELL: &str = ".spawn()";
+    /// The seam's own two spawns, which cannot route through themselves.
+    const SEAM: &str = "util/process.rs";
+    /// Every crate root the walk must still be reading, workspace-relative; a
+    /// renamed or moved one leaves its spawns judged by nobody.
+    const SPAWN_WALK_ROOTS: &[&str] = &[
+        "crates/cfgd-core/src",
+        "crates/cfgd-crd/src",
+        "crates/cfgd-csi/src",
+        "crates/cfgd-operator/src",
+        "crates/cfgd-schema/src",
+        "crates/cfgd/src",
+    ];
+
+    let root = crate::test_helpers::workspace_root();
+    let mut read_roots: Vec<String> = Vec::new();
+    let mut files = 0usize;
+    let mut seam_spawns = 0usize;
+    let mut offenders: Vec<String> = Vec::new();
+    for named in SPAWN_WALK_ROOTS {
+        let dir = root.join(named);
+        if !dir.is_dir() {
+            continue;
+        }
+        read_roots.push((*named).to_string());
+        for path in crate::test_helpers::rust_sources_under(&dir) {
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default()
+                .to_string();
+            if name == "tests.rs"
+                || name == "test_helpers.rs"
+                || path.components().any(|c| c.as_os_str() == "tests")
+            {
+                continue;
+            }
+            files += 1;
+            let production = crate::test_helpers::production_slice_of(&path);
+            let lines = crate::test_helpers::logical_source_lines(&production);
+            let is_seam = path.ends_with(SEAM);
+            for (i, (n, line)) in lines.iter().enumerate() {
+                if !crate::test_helpers::code_line(line).contains(TELL) {
+                    continue;
+                }
+                if is_seam {
+                    seam_spawns += 1;
+                    continue;
+                }
+                if lines[i.saturating_sub(1)..=i]
+                    .iter()
+                    .any(|(_, l)| l.contains(HATCH))
+                {
+                    continue;
+                }
+                offenders.push(format!("{}:{}: {}", path.display(), n, line.trim()));
+            }
+        }
+    }
+    let unread: Vec<&&str> = SPAWN_WALK_ROOTS
+        .iter()
+        .filter(|named| !read_roots.iter().any(|read| read == *named))
+        .collect();
+    assert!(
+        unread.is_empty(),
+        "the walk no longer reads {unread:?}; it read {read_roots:?}"
+    );
+    assert!(
+        files >= 390 && seam_spawns >= 2,
+        "the walk read {files} files and found {seam_spawns} spawns in the seam itself — \
+         too few to be the population, or the tell no longer names what a spawn looks like"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a child process is spawned through `cfgd_core::spawn_child` (or \
+         `spawn_past_a_transient_refusal`, which also states how many attempts the ladder \
+         spent), so every path gets the transient-refusal retry and the descriptor-limit \
+         raise; a path that genuinely must spawn for itself carries \
+         `// {HATCH} <why>`:\n{}",
+        offenders.join("\n")
+    );
+}
+
 /// A distinctness premise proves the numbers its fixture ASSERTS, never a
 /// second set written beside them.
 ///

@@ -124,11 +124,11 @@ fn spawn_and_pump<S>(
     let _spawn_guard = crate::test_helpers::path_env_read_guard();
 
     let start = Instant::now();
-    let mut child = cmd
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()?;
+    let mut child = crate::spawn_child(
+        cmd.stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped()),
+    )?;
 
     let mut sink = sink();
     let rx = spawn_readers(&mut child);

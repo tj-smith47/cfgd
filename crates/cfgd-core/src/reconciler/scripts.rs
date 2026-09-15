@@ -847,7 +847,7 @@ fn execute_script_inner(
             cmd.stderr(std::process::Stdio::inherit());
             // Spawn-then-wait rather than `status()`: identical semantics with
             // stdio already inherited, but it routes through the ETXTBSY retry.
-            let mut child = spawn_retry_on_busy(&mut cmd)?;
+            let mut child = crate::spawn_child(&mut cmd)?;
             let status = match explicit_timeout {
                 Some(timeout) => wait_interactive_with_timeout(&mut child, timeout, &run_label)?,
                 None => child.wait()?,
@@ -882,7 +882,7 @@ fn execute_script_inner(
     // (e.g. `shell: bash` on a FreeBSD base that ships only POSIX sh) or
     // because a `spec.env` PATH entry overwrote PATH. Name the real causes
     // instead of a bare os error 2.
-    let mut child = spawn_retry_on_busy(&mut cmd).map_err(|e| {
+    let mut child = crate::spawn_child(&mut cmd).map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
             CfgdError::Config(ConfigError::Invalid {
                 message: format!(
@@ -1081,30 +1081,6 @@ fn ensure_working_dir(run_str: &str, working_dir: &std::path::Path) -> Result<()
     }
 }
 
-/// Spawn a command, retrying briefly while the OS reports the executable busy.
-///
-/// A `fork` in any other thread duplicates every open write descriptor, so a
-/// script this process just finished writing can still be held open by an
-/// unrelated child at the moment it `exec`s — the kernel answers `ETXTBSY`. The window
-/// closes the instant the racing child execs (its descriptors are `CLOEXEC`),
-/// so a short bounded retry converges where a single attempt fails at random.
-/// Every other spawn error is returned untouched on the first attempt.
-fn spawn_retry_on_busy(cmd: &mut std::process::Command) -> std::io::Result<std::process::Child> {
-    const ATTEMPTS: u32 = 5;
-    let mut delay = std::time::Duration::from_millis(10);
-    let mut outcome = cmd.spawn();
-    for _ in 1..ATTEMPTS {
-        match &outcome {
-            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {}
-            _ => return outcome,
-        }
-        std::thread::sleep(delay);
-        delay *= 2;
-        outcome = cmd.spawn();
-    }
-    outcome
-}
-
 /// Result of running a script as a content filter (see [`run_filter_script`]).
 pub(crate) struct FilterScriptOutcome {
     /// Everything the script wrote to stdout — the new file content.
@@ -1188,7 +1164,7 @@ pub(crate) fn run_filter_script(
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
 
-    let mut child = spawn_retry_on_busy(&mut cmd)?;
+    let mut child = crate::spawn_child(&mut cmd)?;
 
     // Feed stdin from its own thread while stdout/stderr drain on theirs: a
     // filter whose output exceeds the pipe buffer would deadlock against a
