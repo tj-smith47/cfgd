@@ -3218,7 +3218,10 @@ pub(super) fn cmd_status(
     // verdict and the exit code in agreement instead of printing "No drift
     // detected" alongside exit 5.
     if let Some(mut registry) = registry {
-        ctx.resolve_manifest_packages(&mut resolved.merged.packages)?;
+        ctx.resolve_manifest_packages(
+            &mut resolved.merged.packages,
+            &mut resolved.merged.layer_sources,
+        )?;
         registry.set_system_config_dir(&config_dir);
         let cfgd_installed = cfgd_installed_packages(state)?;
         let pkg_cx = ctx.package_context()?;

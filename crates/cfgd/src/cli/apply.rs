@@ -231,7 +231,10 @@ pub fn run_apply(
     let module_cache = module_cache_dir(cli)?;
 
     // Resolve manifest files (Brewfile, package.json, etc.) into package lists
-    ctx.resolve_manifest_packages(&mut effective_resolved.merged.packages)?;
+    ctx.resolve_manifest_packages(
+        &mut effective_resolved.merged.packages,
+        &mut effective_resolved.merged.layer_sources,
+    )?;
 
     // `PhaseArg`'s base phase is clap-validated; a selector combined with
     // `--phase modules` is the one combination `resolve_phase_filter` still

@@ -581,6 +581,29 @@ impl PackagesSpec {
         names
     }
 
+    /// The manager names whose packages a declared manifest file yields.
+    ///
+    /// A `<manager>.file` is a declaration like any other list entry, so the
+    /// layer that wrote it owns every package the file contributes. One file
+    /// can feed several managers: a Brewfile carries taps, formulae and casks,
+    /// which are three registered managers.
+    pub fn manifest_manager_names(&self) -> Vec<&'static str> {
+        let mut names = Vec::new();
+        if self.brew.as_ref().is_some_and(|b| b.file.is_some()) {
+            names.extend(["brew", "brew-tap", "brew-cask"]);
+        }
+        if self.apt.as_ref().is_some_and(|a| a.file.is_some()) {
+            names.push("apt");
+        }
+        if self.npm.as_ref().is_some_and(|n| n.file.is_some()) {
+            names.push("npm");
+        }
+        if self.cargo.as_ref().is_some_and(|c| c.file.is_some()) {
+            names.push("cargo");
+        }
+        names
+    }
+
     /// Return all non-empty simple-list managers as `(name, packages)` pairs.
     pub fn non_empty_simple_lists(&self) -> Vec<(&str, &[String])> {
         let mut result = Vec::new();

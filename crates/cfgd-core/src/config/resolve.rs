@@ -203,6 +203,12 @@ pub struct LayerSources {
     /// A script's `run` string ([`cfgd_schema::ScriptEntry::run_str`]), the id
     /// its action records under.
     pub scripts: std::collections::HashMap<String, String>,
+    /// A manager name ([`PackagesSpec::manager_names`]) to the layer that
+    /// declared the `<manager>.file` manifest feeding it. The packages a
+    /// manifest yields are folded into the merged lists after both merges have
+    /// run, so the reader doing that fold is the only thing that can claim
+    /// them, and this is where it looks the delivering layer up.
+    pub manifests: std::collections::HashMap<String, String>,
 }
 
 impl LayerSources {
@@ -211,6 +217,10 @@ impl LayerSources {
     /// overwrites the declaration itself.
     pub fn claim(&mut self, source: &str, spec: &ProfileSpec) {
         if let Some(packages) = &spec.packages {
+            for manager in packages.manifest_manager_names() {
+                self.manifests
+                    .insert(manager.to_string(), source.to_string());
+            }
             for manager in packages.manager_names() {
                 for package in desired_packages_for_spec(&manager, packages) {
                     self.packages.insert(
@@ -269,6 +279,19 @@ impl LayerSources {
                 );
             }
             self.claim_system_keys(source, configurator, &key_path, inner);
+        }
+    }
+
+    /// The layer that declared the manifest feeding `manager`, or
+    /// [`LOCAL_LAYER`] when no layer declared one.
+    ///
+    /// The fold that merges a manifest's packages into a manager's list claims
+    /// each one under this, so a package that reaches the machine only through
+    /// a source-declared Brewfile records the source that delivered it.
+    pub fn manifest_layer(&self, manager: &str) -> &str {
+        match self.manifests.get(manager) {
+            Some(source) if !source.is_empty() => source,
+            _ => LOCAL_LAYER,
         }
     }
 

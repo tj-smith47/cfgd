@@ -4953,7 +4953,8 @@ fn a_cached_manifest_is_read_once_per_run() {
 
     let cache = ManifestCache::default();
     let mut first = apt_manifest_spec();
-    resolve_manifest_packages_cached(&mut first, dir.path(), &cache).unwrap();
+    resolve_manifest_packages_cached(&mut first, &mut LayerSources::default(), dir.path(), &cache)
+        .unwrap();
     assert_eq!(resolved_apt(first), vec!["git", "curl"]);
 
     // Rewritten to the same length with the same mtime restored: the file is
@@ -4969,7 +4970,13 @@ fn a_cached_manifest_is_read_once_per_run() {
         .unwrap();
 
     let mut second = apt_manifest_spec();
-    resolve_manifest_packages_cached(&mut second, dir.path(), &cache).unwrap();
+    resolve_manifest_packages_cached(
+        &mut second,
+        &mut LayerSources::default(),
+        dir.path(),
+        &cache,
+    )
+    .unwrap();
     assert_eq!(resolved_apt(second), vec!["git", "curl"]);
 }
 
@@ -4981,14 +4988,21 @@ fn a_changed_manifest_is_read_again() {
 
     let cache = ManifestCache::default();
     let mut first = apt_manifest_spec();
-    resolve_manifest_packages_cached(&mut first, dir.path(), &cache).unwrap();
+    resolve_manifest_packages_cached(&mut first, &mut LayerSources::default(), dir.path(), &cache)
+        .unwrap();
     assert_eq!(resolved_apt(first), vec!["git", "curl"]);
 
     // A lifecycle hook rewriting a manifest mid-run changes its length, so the
     // entry describing the old bytes is retired rather than merged.
     std::fs::write(&manifest, "ripgrep\n").unwrap();
     let mut second = apt_manifest_spec();
-    resolve_manifest_packages_cached(&mut second, dir.path(), &cache).unwrap();
+    resolve_manifest_packages_cached(
+        &mut second,
+        &mut LayerSources::default(),
+        dir.path(),
+        &cache,
+    )
+    .unwrap();
     assert_eq!(resolved_apt(second), vec!["ripgrep"]);
 }
 
@@ -6078,4 +6092,121 @@ fn both_pip_resolutions_read_the_one_fallback_list() {
             &body[..end]
         );
     }
+}
+
+/// A package a source-declared Brewfile names is recorded under that source.
+///
+/// The manifest fold runs after both merges, so the merge's own claim never saw
+/// the packages a `<manager>.file` contributes and every one of them recorded
+/// `local`: `cfgd source remove acme` then found none of them, and the formulae
+/// a subscription put on the machine stayed there with nothing able to name
+/// them. The claim now travels with the fold, keyed by the manager the file
+/// feeds, and `reconciler::apply::PackageLayers` reads it like any other.
+#[test]
+fn an_apply_records_a_brewfile_package_under_the_layer_that_declared_the_brewfile() {
+    use cfgd_core::config::{ProfileLayer, ProfileSpec, merge_layers};
+    use cfgd_core::providers::{PackageAction, ProviderRegistry};
+    use cfgd_core::reconciler::{ReconcileContext, Reconciler};
+
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("Brewfile"), "brew \"jq\"\n").unwrap();
+
+    let mut resolved = cfgd_core::test_helpers::make_empty_resolved();
+    resolved.layers.push(ProfileLayer {
+        source: "acme".to_string(),
+        profile_name: "acme/required".to_string(),
+        priority: 2000,
+        policy: cfgd_core::config::LayerPolicy::Required,
+        spec: ProfileSpec {
+            packages: Some(PackagesSpec {
+                brew: Some(cfgd_core::config::BrewSpec {
+                    file: Some("Brewfile".to_string()),
+                    formulae: vec!["ripgrep".to_string()],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+    });
+    resolved.merged = merge_layers(&resolved.layers);
+
+    resolve_manifest_packages_cached(
+        &mut resolved.merged.packages,
+        &mut resolved.merged.layer_sources,
+        dir.path(),
+        &ManifestCache::default(),
+    )
+    .unwrap();
+    let formulae = resolved
+        .merged
+        .packages
+        .brew
+        .as_ref()
+        .expect("the brew spec survives the merge")
+        .formulae
+        .clone();
+    assert!(
+        formulae.contains(&"jq".to_string()),
+        "the Brewfile's formula is folded in: {formulae:?}"
+    );
+
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(cfgd_core::test_helpers::MockPackageManager::new(
+        "brew",
+    )));
+    let state = cfgd_core::test_helpers::test_state();
+    let reconciler = Reconciler::new(&registry, &state);
+    let plan = reconciler
+        .plan(
+            &resolved,
+            Vec::new(),
+            vec![PackageAction::Install {
+                manager: "brew".to_string(),
+                packages: formulae,
+                // The action batches both formulae, so its own origin can name
+                // neither: the per-package answer is the claim's job.
+                origin: LOCAL_LAYER.to_string(),
+            }],
+            Vec::new(),
+            ReconcileContext::Apply,
+        )
+        .unwrap();
+    reconciler
+        .apply(
+            &plan,
+            &resolved,
+            dir.path(),
+            &cfgd_core::test_helpers::test_printer(),
+            None,
+            &[],
+            ReconcileContext::Apply,
+            false,
+            None,
+            &cfgd_core::AbortFlag::new(),
+        )
+        .unwrap();
+
+    let delivered: Vec<(String, String)> = state
+        .managed_resources_by_source("acme")
+        .unwrap()
+        .into_iter()
+        .map(|r| (r.resource_type, r.resource_id))
+        .collect();
+    for package in ["brew/jq", "brew/ripgrep"] {
+        assert!(
+            delivered.contains(&("package".to_string(), package.to_string())),
+            "{package} is recorded under the source that declared it: {delivered:?}"
+        );
+    }
+    let local: Vec<(String, String)> = state
+        .managed_resources_by_source(LOCAL_LAYER)
+        .unwrap()
+        .into_iter()
+        .map(|r| (r.resource_type, r.resource_id))
+        .collect();
+    assert!(
+        !local.iter().any(|(rtype, _)| rtype == "package"),
+        "no package the source declared is also claimed by the operator: {local:?}"
+    );
 }

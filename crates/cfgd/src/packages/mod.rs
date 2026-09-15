@@ -19,7 +19,7 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use cfgd_core::PathDisplayExt;
-use cfgd_core::config::{LOCAL_LAYER, MergedProfile, PackagesSpec};
+use cfgd_core::config::{LOCAL_LAYER, LayerSources, MergedProfile, PackagesSpec};
 use cfgd_core::effective::effective_desired_packages;
 use cfgd_core::errors::{ConfigError, PackageError, Result};
 use cfgd_core::modules::ResolvedModule;
@@ -994,16 +994,46 @@ impl ManifestCache {
 /// Resolve manifest files referenced in package specs and merge their contents
 /// into the inline package lists. Paths are relative to `config_dir`.
 ///
-/// Every parse is fresh. A caller that resolves manifests more than once in a
-/// run reaches [`resolve_manifest_packages_cached`] with the run's
-/// [`ManifestCache`] instead.
+/// Every parse is fresh, and the claims land in a throwaway [`LayerSources`].
+/// A caller that resolves manifests more than once in a run, or that records
+/// what it installs, reaches [`resolve_manifest_packages_cached`] with the
+/// run's [`ManifestCache`] and its own merged profile's claims instead.
 pub fn resolve_manifest_packages(packages: &mut PackagesSpec, config_dir: &Path) -> Result<()> {
-    resolve_manifest_packages_cached(packages, config_dir, &ManifestCache::default())
+    resolve_manifest_packages_cached(
+        packages,
+        &mut LayerSources::default(),
+        config_dir,
+        &ManifestCache::default(),
+    )
 }
 
-/// [`resolve_manifest_packages`], reading each manifest at most once per run.
+/// Fold the names one manifest yielded into `list`, claiming each under the
+/// layer that declared the manifest in the same pass.
+///
+/// A name some layer declared inline keeps the claim that layer already made:
+/// the merge saw the declaration, this fold only sees the file.
+fn merge_manifest_names(
+    list: &mut Vec<String>,
+    names: &[String],
+    manager: &str,
+    sources: &mut LayerSources,
+) {
+    let layer = sources.manifest_layer(manager).to_string();
+    for name in names {
+        sources
+            .packages
+            .entry(cfgd_core::state::package_resource_id(manager, name))
+            .or_insert_with(|| layer.clone());
+    }
+    cfgd_core::union_extend(list, names);
+}
+
+/// [`resolve_manifest_packages`], reading each manifest at most once per run
+/// and claiming every package it folds in under the layer that declared the
+/// manifest.
 pub fn resolve_manifest_packages_cached(
     packages: &mut PackagesSpec,
+    sources: &mut LayerSources,
     config_dir: &Path,
     cache: &ManifestCache,
 ) -> Result<()> {
@@ -1021,9 +1051,9 @@ pub fn resolve_manifest_packages_cached(
             for (list, names) in [("taps", &taps), ("formulae", &formulae), ("casks", &casks)] {
                 validate_merged_names(file, Some(list), names)?;
             }
-            cfgd_core::union_extend(&mut brew.taps, &taps);
-            cfgd_core::union_extend(&mut brew.formulae, &formulae);
-            cfgd_core::union_extend(&mut brew.casks, &casks);
+            merge_manifest_names(&mut brew.taps, &taps, "brew-tap", sources);
+            merge_manifest_names(&mut brew.formulae, &formulae, "brew", sources);
+            merge_manifest_names(&mut brew.casks, &casks, "brew-cask", sources);
         }
     }
 
@@ -1035,7 +1065,7 @@ pub fn resolve_manifest_packages_cached(
         if path.exists() {
             let pkgs = cache.names(&path, "apt", parse_apt_manifest)?;
             validate_merged_names(file, None, &pkgs)?;
-            cfgd_core::union_extend(&mut apt.packages, &pkgs);
+            merge_manifest_names(&mut apt.packages, &pkgs, "apt", sources);
         }
     }
 
@@ -1047,7 +1077,7 @@ pub fn resolve_manifest_packages_cached(
         if path.exists() {
             let pkgs = cache.names(&path, "npm", parse_npm_package_json)?;
             validate_merged_names(file, None, &pkgs)?;
-            cfgd_core::union_extend(&mut npm.global, &pkgs);
+            merge_manifest_names(&mut npm.global, &pkgs, "npm", sources);
         }
     }
 
@@ -1059,7 +1089,7 @@ pub fn resolve_manifest_packages_cached(
         if path.exists() {
             let pkgs = cache.names(&path, "cargo", parse_cargo_toml)?;
             validate_merged_names(file, None, &pkgs)?;
-            cfgd_core::union_extend(&mut cargo.packages, &pkgs);
+            merge_manifest_names(&mut cargo.packages, &pkgs, "cargo", sources);
         }
     }
 

@@ -101,7 +101,10 @@ pub fn cmd_verify(
             let composed_sources = desired.sources;
             let mut resolved = desired.resolved;
             let mods = desired.modules;
-            ctx.resolve_manifest_packages(&mut resolved.merged.packages)?;
+            ctx.resolve_manifest_packages(
+                &mut resolved.merged.packages,
+                &mut resolved.merged.layer_sources,
+            )?;
             let profile = profile_name.to_string();
             (resolved, mods, registry, composed_sources, Some(profile))
         };

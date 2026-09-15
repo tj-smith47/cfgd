@@ -278,7 +278,10 @@ fn collect_doctor_output(
 
     let resolved_packages = doctor_profile.as_ref().map(|resolved| {
         let mut packages = resolved.merged.packages.clone();
-        if let Err(e) = ctx.resolve_manifest_packages(&mut packages) {
+        // A throwaway claim set: `doctor` reports what is declared and records
+        // no row, so nothing reads the layer a manifest package arrived on.
+        let mut manifest_sources = cfgd_core::config::LayerSources::default();
+        if let Err(e) = ctx.resolve_manifest_packages(&mut packages, &mut manifest_sources) {
             // Manifest resolution failed (missing referenced file, unreadable
             // dir, parse error). Surface so the user knows the package report
             // below is computed from a partial set.

@@ -2,7 +2,7 @@ use std::cell::{Cell, OnceCell};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use cfgd_core::config::{CfgdConfig, PackagesSpec, ResolvedProfile};
+use cfgd_core::config::{CfgdConfig, LayerSources, PackagesSpec, ResolvedProfile};
 use cfgd_core::output::Printer;
 use cfgd_core::providers::ProviderRegistry;
 use cfgd_core::state::StateStore;
@@ -224,11 +224,16 @@ impl<'a> RunContext<'a> {
 
     /// Merge every manifest file `spec` references into its inline package
     /// lists, reading each file at most once per run.
+    ///
+    /// `sources` is the merged profile's own claims, extended in place with
+    /// one claim per folded package so a row recorded for a package that only
+    /// a source-declared Brewfile names still points at that source.
     pub(in crate::cli) fn resolve_manifest_packages(
         &self,
         spec: &mut PackagesSpec,
+        sources: &mut LayerSources,
     ) -> cfgd_core::errors::Result<()> {
-        packages::resolve_manifest_packages_cached(spec, &self.config_dir, &self.manifests)
+        packages::resolve_manifest_packages_cached(spec, sources, &self.config_dir, &self.manifests)
     }
 }
 

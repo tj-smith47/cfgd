@@ -130,7 +130,10 @@ pub fn cmd_diff(
     let mut resolved = desired.resolved;
     let resolved_modules = desired.modules;
 
-    ctx.resolve_manifest_packages(&mut resolved.merged.packages)?;
+    ctx.resolve_manifest_packages(
+        &mut resolved.merged.packages,
+        &mut resolved.merged.layer_sources,
+    )?;
     // The engine probes system configurators, some of which resolve
     // config-relative paths; `status`/`verify`/`plan`/`apply` all hand the
     // config dir over, and the one scan `diff` consumes must see the same

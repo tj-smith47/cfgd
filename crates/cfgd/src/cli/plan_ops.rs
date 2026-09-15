@@ -412,7 +412,7 @@ pub(in crate::cli) fn withheld_for_run(
         entry_owners,
     } = desired;
     let mut local = reconciler::local_profile(resolved);
-    ctx.resolve_manifest_packages(&mut local.packages)?;
+    ctx.resolve_manifest_packages(&mut local.packages, &mut local.layer_sources)?;
 
     let scope = if config_parsed {
         reconciler::DecisionScope::new(cfg.spec.sources.iter().map(|s| s.name.as_str()), &local)
