@@ -85,7 +85,7 @@ pub(super) const RENAMED_THEME_KEYS: &[(&str, &str)] = &[
 /// `spec.output.*` path that replaced it.
 ///
 /// Both spellings are read: the flat key still loads, folded into
-/// [`OutputConfig`] by [`fold_legacy_output`], and surfaces as a deprecation
+/// [`OutputConfig`] by `fold_legacy_output`, and surfaces as a deprecation
 /// naming its replacement. `legacy_output_key_lists_stay_consistent_with_the_config_schema`
 /// in `tests.rs` derives both structs' live field sets from their own
 /// `schemars` schemas and fails if an entry here is contradicted by either —

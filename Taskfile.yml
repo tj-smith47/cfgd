@@ -116,7 +116,7 @@ tasks:
       - cargo clippy --workspace --all-targets -- -D warnings
 
   doc:
-    desc: "CI's rustdoc gate: build the workspace docs denying every rustdoc lint (broken intra-doc links, bare URLs, unclosed HTML tags, ...). No local chain but `task push` runs it; it refuses to start with under 10 GB of memory available."
+    desc: "CI's rustdoc gate: build the workspace docs denying every rustdoc lint (broken intra-doc links, bare URLs, unclosed HTML tags, ...). `--document-private-items` renders private items but does not exempt them from `rustdoc::private_intra_doc_links`, which `-D warnings` denies: a `pub` item's doc comment naming a private one in brackets fails here. No local chain but `task push` runs it; it refuses to start with under 10 GB of memory available."
     deps: [_check:tmp-headroom, _check:mem-headroom]
     env:
       RUSTDOCFLAGS: '{{.RUSTDOC_DENY_WARNINGS}}'

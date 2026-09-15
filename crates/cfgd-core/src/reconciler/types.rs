@@ -495,7 +495,7 @@ impl Action {
     /// `cfgd source remove` looks a removed subscription's resources up by.
     /// An empty token and [`crate::config::LOCAL_LAYER`] both mean the
     /// operator's own config, exactly as
-    /// [`super::format::provenance_suffix`] reads them.
+    /// `super::format::provenance_suffix` reads them.
     ///
     /// The env surface and a manager node carry no token: a generated env file
     /// folds every layer into one file, and a bootstrapped manager is cfgd's

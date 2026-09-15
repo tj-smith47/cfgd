@@ -406,7 +406,7 @@ fn preset_syntax_theme(preset: &str) -> Option<&'static str> {
 ///
 /// A theme also carries the syntect theme a highlighted code block is painted
 /// with, so `Printer::syntax_highlight` paints in the preset the rest of the
-/// screen is drawn in ([`Theme::syntect_theme`]):
+/// screen is drawn in (`Theme::syntect_theme`):
 ///
 /// | Preset | syntect theme | Where it comes from |
 /// |---|---|---|
