@@ -4409,41 +4409,69 @@ fn every_path_based_chmod_in_the_workspace_says_why_the_follow_is_safe() {
     );
 }
 
-/// Every production spawn of a child process goes through the one ladder.
+/// Every production start of a child process goes through the one ladder.
 ///
-/// A spawn reaching [`std::process::Command::spawn`] directly is a spawn no
-/// retry covers and no descriptor-limit raise precedes, and both matter for
-/// reasons the call site cannot see: another thread of this process can be
-/// holding the program file open (`ETXTBSY`), and concurrent spawns can crowd
-/// a soft descriptor limit a host shipped at 256 — which is what turned an
-/// eight-way filter-script test red on macOS and nowhere else.
-/// [`cfgd_core::spawn_child`](crate::spawn_child) is where both answers live,
-/// so a second spawn path is a second policy.
+/// A child started through [`std::process::Command`] directly is one no retry
+/// covers and no descriptor-limit raise precedes, and both matter for reasons
+/// the call site cannot see: another thread of this process can be holding the
+/// program file open (`ETXTBSY`), and concurrent spawns can crowd a soft
+/// descriptor limit a host shipped at 256, which is what turned an eight-way
+/// filter-script test red on macOS and nowhere else.
+/// [`cfgd_core::spawn_child`](crate::spawn_child) and its two siblings
+/// ([`cfgd_core::command_output`](crate::command_output),
+/// [`cfgd_core::command_status`](crate::command_status)) are where both answers
+/// live, so a second start path is a second policy.
+///
+/// `std` offers three ways to start that child and all three are judged here.
+/// `status` is also the name of an HTTP response's own code, which starts
+/// nothing; such a line carries [`NOT_A_CHILD`] rather than the spawn hatch,
+/// because the two say different things about the same row.
 #[test]
 fn every_production_spawn_in_the_workspace_goes_through_the_one_ladder() {
     const HATCH: &str = "direct-spawn-ok:";
-    /// A `std::process::Command` spawn takes no argument; every `spawn(` that
-    /// does is a thread or a task, which this rule says nothing about.
-    const TELL: &str = ".spawn()";
-    /// The seam's own two spawns, which cannot route through themselves.
+    /// A line matching a tell that starts no child at all: an HTTP response's
+    /// `status`, which shares the method name and nothing else.
+    const NOT_A_CHILD: &str = "not-a-child-ok:";
+    /// The three ways a `std::process::Command` starts a child. A spawn takes
+    /// no argument; every `spawn(` that does is a thread or a task, which this
+    /// rule says nothing about.
+    const TELLS: &[&str] = &[".spawn()", ".output()", ".status()"];
+    /// The seam's own starts, which cannot route through themselves.
     const SEAM: &str = "util/process.rs";
     /// Every crate root the walk must still be reading, workspace-relative,
-    /// with the count each holds today; a renamed or moved one leaves its
-    /// spawns judged by nobody, and an aggregate floor is one tree's count plus
-    /// another's, which the biggest tree alone clears. At today's counts, so
-    /// deleting a file is free.
+    /// with a floor UNDER the count each holds today, so deleting a file is
+    /// free; an aggregate floor is one tree's count plus another's, which the
+    /// biggest tree alone clears. The two crates holding a couple of files each
+    /// floor at their count, because a root going empty is what the assertion
+    /// against `crates/` below defends.
     const SPAWN_WALK_ROOTS: &[(&str, usize)] = &[
-        ("crates/cfgd-core/src", 191),
+        ("crates/cfgd-core/src", 180),
         ("crates/cfgd-crd/src", 1),
-        ("crates/cfgd-csi/src", 8),
-        ("crates/cfgd-operator/src", 57),
+        ("crates/cfgd-csi/src", 7),
+        ("crates/cfgd-operator/src", 40),
         ("crates/cfgd-schema/src", 2),
-        ("crates/cfgd/src", 145),
+        ("crates/cfgd/src", 135),
     ];
 
     let root = crate::test_helpers::workspace_root();
+    let mut present: Vec<String> = std::fs::read_dir(root.join("crates"))
+        .expect("the workspace's crate directory is readable")
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.path().join("src").is_dir())
+        .map(|entry| format!("crates/{}/src", entry.file_name().to_string_lossy()))
+        .collect();
+    present.sort();
+    let named: Vec<String> = SPAWN_WALK_ROOTS
+        .iter()
+        .map(|(named, _)| (*named).to_string())
+        .collect();
+    assert_eq!(
+        present, named,
+        "a crate joined or left the workspace, so the starts in its tree are judged by nobody"
+    );
+
     let mut short_roots: Vec<String> = Vec::new();
-    let mut seam_spawns = 0usize;
+    let mut seam_starts = [0usize; 3];
     let mut offenders: Vec<String> = Vec::new();
     for (named, floor) in SPAWN_WALK_ROOTS {
         let dir = root.join(named);
@@ -4454,10 +4482,11 @@ fn every_production_spawn_in_the_workspace_goes_through_the_one_ladder() {
                 .and_then(|n| n.to_str())
                 .unwrap_or_default()
                 .to_string();
-            if name == "tests.rs"
-                || name == "test_helpers.rs"
-                || path.components().any(|c| c.as_os_str() == "tests")
-            {
+            // A file that IS test scaffolding carries no production slice of
+            // its own; the predicate is the one four sibling walks share.
+            let scaffolding =
+                name.starts_with("tests") || path.parent().is_some_and(|p| p.ends_with("tests"));
+            if scaffolding || name == "test_helpers.rs" {
                 continue;
             }
             files += 1;
@@ -4465,16 +4494,19 @@ fn every_production_spawn_in_the_workspace_goes_through_the_one_ladder() {
             let lines = crate::test_helpers::logical_source_lines(&production);
             let is_seam = path.ends_with(SEAM);
             for (i, (n, line)) in lines.iter().enumerate() {
-                if !crate::test_helpers::code_line(line).contains(TELL) {
+                let code = crate::test_helpers::code_line(line);
+                let Some(tell) = TELLS.iter().position(|tell| code.contains(tell)) else {
                     continue;
-                }
+                };
                 if is_seam {
-                    seam_spawns += 1;
+                    seam_starts[tell] += 1;
                     continue;
                 }
+                // Both markers are comments by construction, so they are read
+                // off the raw rows, on the tell's own line or the one above it.
                 if lines[i.saturating_sub(1)..=i]
                     .iter()
-                    .any(|(_, l)| l.contains(HATCH))
+                    .any(|(_, l)| l.contains(HATCH) || l.contains(NOT_A_CHILD))
                 {
                     continue;
                 }
@@ -4487,22 +4519,23 @@ fn every_production_spawn_in_the_workspace_goes_through_the_one_ladder() {
     }
     assert!(
         short_roots.is_empty(),
-        "a root the walk reports as read contributed less than it holds, so its spawns are \
+        "a root the walk reports as read contributed less than it holds, so the starts in it are \
          judged by nobody:\n{}",
         short_roots.join("\n")
     );
     assert!(
-        seam_spawns >= 2,
-        "the walk found {seam_spawns} spawns in the seam itself — the tell no longer names \
-         what a spawn looks like"
+        seam_starts.iter().all(|found| *found >= 1),
+        "the walk found {seam_starts:?} starts in the seam itself, one count per {TELLS:?}; a \
+         zero means that tell no longer names what starting a child looks like"
     );
     assert!(
         offenders.is_empty(),
-        "a child process is spawned through `cfgd_core::spawn_child` (or \
-         `spawn_past_a_transient_refusal`, which also states how many attempts the ladder \
-         spent), so every path gets the transient-refusal retry and the descriptor-limit \
-         raise; a path that genuinely must spawn for itself carries \
-         `// {HATCH} <why>`:\n{}",
+        "a child process is started through `cfgd_core::spawn_child`, `cfgd_core::command_output` \
+         or `cfgd_core::command_status` (or `spawn_past_a_transient_refusal`, which also states \
+         how many attempts the ladder spent), so every path gets the transient-refusal retry and \
+         the descriptor-limit raise; a path that genuinely must start a child for itself carries \
+         `// {HATCH} <why>`, and a row that starts no child at all carries \
+         `// {NOT_A_CHILD} <why>`:\n{}",
         offenders.join("\n")
     );
 }
