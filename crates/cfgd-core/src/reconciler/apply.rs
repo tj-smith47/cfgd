@@ -2471,13 +2471,30 @@ impl<'a> super::Reconciler<'a> {
                     self.state
                         .resolve_drift(apply_id, super::ENV_RC_RESOURCE_TYPE, &rid)?;
                 }
-                self.settle_env_items(apply_id, &rid, resolved, modules)?;
+                // Only the PRIMARY file's write says anything about the
+                // entries: it is the one file the per-item checks read and the
+                // one whose entries every dialect agrees on. A write of
+                // `environment.d` or the launchd plist answers nothing about
+                // whether an entry landed where it was verified.
+                if rid == to_posix_string(super::primary_env_file(&self.home)) {
+                    self.settle_env_items(apply_id, resolved, modules)?;
+                }
             }
             if let Some(module) =
                 super::format::module_files_description_module(&result.description)
             {
                 self.resolve_module_file_drift(apply_id, module, modules)?;
             }
+        }
+        // The item rows come from the DECLARED set, not from an action: a
+        // converged machine plans no env action at all, so an apply whose env
+        // surface already holds every entry recorded none of them and
+        // `cfgd source remove` could not find what a subscription had put on
+        // the machine. A run that saw the whole picture settles them here,
+        // whether or not it rewrote the file; a scoped run saw a partial one
+        // and settles nothing it never looked at.
+        if self.prune_rows {
+            self.settle_env_items(apply_id, resolved, modules)?;
         }
         Ok(())
     }
@@ -2532,8 +2549,7 @@ impl<'a> super::Reconciler<'a> {
     }
 
     /// Record one tracking row per declared env var and alias, and resolve the
-    /// per-item `env-var`/`alias` drift rows, that a successful write of the
-    /// PRIMARY managed env file settled.
+    /// per-item `env-var`/`alias` drift rows the apply settled.
     ///
     /// The env file, its rc line and the live session are artifacts cfgd writes
     /// whole out of every layer, so their rows record cfgd as the writer and
@@ -2553,20 +2569,16 @@ impl<'a> super::Reconciler<'a> {
     /// operand: the rows are resolved exactly as the file's own row is, so the
     /// stored `current` / `missing or changed` markers stay byte-exact.
     ///
-    /// Gated on the PRIMARY file because that is the only one the per-item
-    /// checks read and the only one whose entries every dialect agrees on; a
-    /// write of `environment.d` or the launchd plist says nothing about
-    /// whether the entry landed in the file that was verified.
+    /// Read off the DECLARED set rather than off an action, so a converged
+    /// machine — which plans no env action at all — records the same rows a
+    /// rewriting one does. The two callers are the primary file's own write
+    /// and the once-per-apply settle a whole-picture run closes on.
     fn settle_env_items(
         &self,
         apply_id: i64,
-        written: &str,
         resolved: &ResolvedProfile,
         modules: &[ResolvedModule],
     ) -> Result<()> {
-        if written != to_posix_string(super::primary_env_file(&self.home)) {
-            return Ok(());
-        }
         let (env, aliases, origins) = super::verify::merge_module_env_aliases(
             &resolved.merged.env,
             &resolved.merged.aliases,
@@ -2594,10 +2606,14 @@ impl<'a> super::Reconciler<'a> {
         }
         let env_names: Vec<String> = env.iter().map(|ev| ev.name.clone()).collect();
         let alias_names: Vec<String> = aliases.iter().map(|a| a.name.clone()).collect();
-        self.state
-            .prune_managed_resources_except(super::ENV_VAR_RESOURCE_TYPE, &env_names)?;
-        self.state
-            .prune_managed_resources_except(super::ALIAS_RESOURCE_TYPE, &alias_names)?;
+        // Retiring a row is a claim about the WHOLE desired set: an entry this
+        // run's scope never resolved is not an entry that left the config.
+        if self.prune_rows {
+            self.state
+                .prune_managed_resources_except(super::ENV_VAR_RESOURCE_TYPE, &env_names)?;
+            self.state
+                .prune_managed_resources_except(super::ALIAS_RESOURCE_TYPE, &alias_names)?;
+        }
         // One statement for the whole merged set: a per-entry resolve is its own
         // index seek and its own statement per declared env var and alias,
         // inside the apply transaction, where the set-based form seeks once.

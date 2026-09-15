@@ -246,6 +246,16 @@ pub struct Reconciler<'a> {
     /// entry this run delivered from one the machine arrived with
     /// ([`Self::delivered_by_this_run`]).
     provisioned_packages: std::cell::RefCell<Vec<(String, String)>>,
+    /// Whether this run may drop the `managed_resources` rows of entries no
+    /// layer declares any more, and settle the declared env items once for the
+    /// whole apply.
+    ///
+    /// Both are reconciliations of REMOVAL, and a removal can only be read off
+    /// a complete desired set. A run scoped by `--phase` / `--only` / `--skip`
+    /// or isolated to one module sees a partial picture, so an entry another
+    /// layer still declares would read as retired and lose its row. `true` for
+    /// every whole-picture caller, which is what leaves the default unchanged.
+    prune_rows: bool,
     /// What this run is scoped to, for the `applies` row it records.
     ///
     /// `None` falls back to the resolved profile's own name, which is what
@@ -278,6 +288,7 @@ impl<'a> Reconciler<'a> {
             unprovisioned: std::cell::RefCell::new(Vec::new()),
             provisioned: std::cell::RefCell::new(Vec::new()),
             provisioned_packages: std::cell::RefCell::new(Vec::new()),
+            prune_rows: true,
             recorded_scope: None,
         }
     }
@@ -306,6 +317,14 @@ impl<'a> Reconciler<'a> {
             return sidecar::backup_file(target).map(Some);
         }
         Ok(None)
+    }
+
+    /// Whether this run reconciles the REMOVAL half of the managed-resource
+    /// rows: see `Self::prune_rows`.
+    #[must_use]
+    pub fn pruning_managed_resources(mut self, yes: bool) -> Self {
+        self.prune_rows = yes;
+        self
     }
 
     /// Record `scope` as what this run was scoped to, in place of the resolved
@@ -391,6 +410,7 @@ impl<'a> Reconciler<'a> {
             unprovisioned: std::cell::RefCell::new(Vec::new()),
             provisioned: std::cell::RefCell::new(Vec::new()),
             provisioned_packages: std::cell::RefCell::new(Vec::new()),
+            prune_rows: true,
             recorded_scope: None,
         }
     }

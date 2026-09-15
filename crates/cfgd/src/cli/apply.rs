@@ -394,6 +394,10 @@ pub fn run_apply(
         .withholding_env_surface(exclusions.withholds_env_surface())
         .withholding_rows(&exclusions)
         .diffing_installed(&pkg_cx)
+        // The same completeness question the declarative package prune asks:
+        // a scoped run resolved a partial desired set, so an env var or alias
+        // another layer still declares must not read as retired.
+        .pruning_managed_resources(prune_eligible)
         // What the recorded apply says this run was scoped to. An isolated
         // module run resolved no profile, so it names the modules instead of
         // inheriting the placeholder `active_profile_name` falls back to; a run

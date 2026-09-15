@@ -31280,6 +31280,125 @@ fn an_apply_records_each_declared_env_entry_under_the_layer_that_declared_it() {
         vec![LOCAL_LAYER, "acme"],
         "the row names its contributors in fold order: {path_source}"
     );
+
+    // A second apply over the same home, with the surface the first one wrote
+    // already in place and the source's rows taken back out of the store —
+    // the state of a machine whose env file converged before anything recorded
+    // an item row for it, and of every host that applied under a cfgd that did
+    // not record them. The env engine plans no action for a converged file, so
+    // an apply reading its rows off its own write records nothing at all here
+    // and `cfgd source remove` can still find nothing the subscription put on
+    // the machine.
+    state
+        .remove_managed_resource(super::ENV_VAR_RESOURCE_TYPE, "ACME_HOME")
+        .unwrap();
+    state
+        .remove_managed_resource(super::ALIAS_RESOURCE_TYPE, "acmeup")
+        .unwrap();
+    let second = reconciler
+        .plan(&resolved, vec![], vec![], vec![], ReconcileContext::Apply)
+        .unwrap();
+    let result = reconciler
+        .apply(
+            &second,
+            &resolved,
+            tmp_home.path(),
+            &printer,
+            None,
+            &[],
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .unwrap();
+    assert_eq!(result.status, ApplyStatus::Success);
+    let acme = rows("acme");
+    let local = rows(LOCAL_LAYER);
+    assert!(
+        acme.contains(&entry(super::ENV_VAR_RESOURCE_TYPE, "ACME_HOME"))
+            && acme.contains(&entry(super::ALIAS_RESOURCE_TYPE, "acmeup"))
+            && local.contains(&entry(super::ENV_VAR_RESOURCE_TYPE, "LOCAL_EDITOR")),
+        "a converged apply dropped the rows the first one recorded: {acme:?} / {local:?}"
+    );
+    assert!(
+        !acme.contains(&entry(super::ENV_VAR_RESOURCE_TYPE, "RETIRED")),
+        "the retired row came back: {acme:?}"
+    );
+}
+
+/// A run scoped to part of the desired set leaves another layer's rows alone.
+///
+/// Retiring a row is a claim that nothing declares the entry any more, and
+/// only a run that resolved the WHOLE desired set can make it. An isolated
+/// `cfgd apply --module` resolves no profile at all, so every env var and
+/// alias every layer declares would read as retired and every subscription's
+/// rows would leave the store on a run that never looked at them.
+#[test]
+#[serial_test::serial]
+fn a_scoped_apply_leaves_another_layers_env_row_standing() {
+    let tmp_home = tempfile::tempdir().unwrap();
+    let _home = crate::with_test_home_guard(tmp_home.path());
+    let state = test_state();
+    let registry = ProviderRegistry::new();
+
+    state
+        .upsert_managed_resource(
+            super::ENV_VAR_RESOURCE_TYPE,
+            "ACME_HOME",
+            "acme",
+            None,
+            None,
+        )
+        .unwrap();
+    state
+        .upsert_managed_resource(super::ALIAS_RESOURCE_TYPE, "acmeup", "acme", None, None)
+        .unwrap();
+
+    // The desired set this run resolved: the operator's own layer alone, as an
+    // isolate sees it.
+    let mut resolved = make_empty_resolved();
+    resolved.layers[0].spec.env = vec![EnvVar {
+        name: "LOCAL_EDITOR".to_string(),
+        value: "nvim".to_string(),
+        platforms: vec![],
+    }];
+    resolved.merged = merge_layers(&resolved.layers);
+    resolved.merged.env_scope = EnvScope::Interactive;
+
+    let reconciler = Reconciler::new(&registry, &state).pruning_managed_resources(false);
+    let plan = reconciler
+        .plan(&resolved, vec![], vec![], vec![], ReconcileContext::Apply)
+        .unwrap();
+    let printer = test_printer();
+    let result = reconciler
+        .apply(
+            &plan,
+            &resolved,
+            tmp_home.path(),
+            &printer,
+            None,
+            &[],
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .unwrap();
+    assert_eq!(result.status, ApplyStatus::Success);
+
+    let acme: Vec<(String, String)> = state
+        .managed_resources_by_source("acme")
+        .unwrap()
+        .into_iter()
+        .map(|r| (r.resource_type, r.resource_id))
+        .collect();
+    let entry = |rtype: &str, id: &str| (rtype.to_string(), id.to_string());
+    assert!(
+        acme.contains(&entry(super::ENV_VAR_RESOURCE_TYPE, "ACME_HOME"))
+            && acme.contains(&entry(super::ALIAS_RESOURCE_TYPE, "acmeup")),
+        "a scoped apply retired a row for an entry it never resolved: {acme:?}"
+    );
 }
 
 /// A tracking row names the layer that delivered the resource, not `local`.
