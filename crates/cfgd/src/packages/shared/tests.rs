@@ -2640,15 +2640,21 @@ fn code_of(line: &str) -> String {
     }
 }
 
-/// The name a `*_cmd*` function declaration on this CODE line declares, if it
-/// declares one.
-fn command_factory_name(code: &str) -> Option<String> {
+/// The name a function declaration on this CODE line declares, if it declares
+/// one. A generic declaration (`fn foo<T>(`) is one.
+fn declared_fn_name(code: &str) -> Option<String> {
     let (_, rest) = code.split_once("fn ")?;
     let name: String = rest
         .chars()
         .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
         .collect();
-    (name.contains("_cmd") && rest[name.len()..].starts_with('(')).then_some(name)
+    (!name.is_empty() && rest[name.len()..].starts_with(['(', '<'])).then_some(name)
+}
+
+/// The name a `*_cmd*` function declaration on this CODE line declares, if it
+/// declares one.
+fn command_factory_name(code: &str) -> Option<String> {
+    declared_fn_name(code).filter(|name| name.contains("_cmd"))
 }
 
 /// The `*_cmd*` factories in one source whose body reads a `CFGD_<NAME>_BIN`
@@ -2725,7 +2731,7 @@ fn seam_reads_that_fall_through(src: &str) -> Vec<(String, usize)> {
         for (j, body) in code.iter().enumerate().skip(i) {
             let opens = body.matches('{').count() as i32;
             let closes = body.matches('}').count() as i32;
-            if j > i && depth > 0 && opens > 0 {
+            if j > i && depth > 0 && opens > 0 && opens_a_branch(body) {
                 branched = true;
             }
             if j > i && depth > 0 && body.contains("return ") {
@@ -2741,6 +2747,17 @@ fn seam_reads_that_fall_through(src: &str) -> Vec<(String, usize)> {
         }
     }
     offenders
+}
+
+/// Whether this CODE line opens a BRANCH rather than some other block.
+///
+/// A closure body inside a seam's block is not a second way out of it: what
+/// makes a seam read fall through is a CONDITION, so the tell is the keyword
+/// that opens one rather than the brace itself.
+fn opens_a_branch(code: &str) -> bool {
+    code.replace(['(', ')', '{', '}', '|', ','], " ")
+        .split_whitespace()
+        .any(|word| matches!(word, "if" | "else" | "match" | "while" | "for" | "loop"))
 }
 
 /// The name of the `fn` whose declaration most recently preceded line `at`.
@@ -2860,6 +2877,7 @@ fn every_manager_command_factory_spawns_the_path_its_resolver_chose() {
 fn the_seam_fall_through_walk_reads_each_shape_a_seam_read_arrives_in() {
     let answers_alone = "fn find_x() -> Option<PathBuf> {\n    if let Ok(c) = std::env::var(tool_seam_var(n)) {\n        let p = PathBuf::from(c);\n        return p.is_file().then_some(p);\n    }\n    None\n}\n";
     let answers_alone_over_several_lines = "fn dirs() -> Vec<String> {\n    if let Ok(s) = std::env::var(BREW_BIN_ENV) {\n        return Path::new(&s)\n            .parent()\n            .map(|d| vec![d])\n            .unwrap_or_default();\n    }\n    Vec::new()\n}\n";
+    let a_closure_inside_the_block = "fn dirs() -> Vec<String> {\n    if let Ok(s) = std::env::var(BREW_BIN_ENV) {\n        return Path::new(&s)\n            .parent()\n            .map(|d| {\n                vec![d.to_string()]\n            })\n            .unwrap_or_default();\n    }\n    Vec::new()\n}\n";
     let in_a_literal =
         "fn find_x() -> Option<PathBuf> {\n    let s = \"std::env::var(tool_seam_var(n)) {\";\n}\n";
     let in_a_comment =
@@ -2874,6 +2892,7 @@ fn the_seam_fall_through_walk_reads_each_shape_a_seam_read_arrives_in() {
             "an answer spanning several lines",
             answers_alone_over_several_lines,
         ),
+        ("a closure inside the block", a_closure_inside_the_block),
         ("a tell inside a literal", in_a_literal),
         ("a tell inside a comment", in_a_comment),
         ("a probe opening no block", a_probe_that_opens_no_block),
@@ -2981,6 +3000,117 @@ fn test_declarations(body: &str) -> Vec<(String, Vec<String>, Vec<String>)> {
     out
 }
 
+/// The type whose `impl` block still holds line `at`, if one does.
+fn impl_owner(code: &[String], at: usize) -> Option<String> {
+    (0..at).rev().find_map(|i| {
+        let head = code[i].trim_start();
+        if !head.starts_with("impl ") {
+            return None;
+        }
+        let depth: i32 = code[i..at]
+            .iter()
+            .map(|c| c.matches('{').count() as i32 - c.matches('}').count() as i32)
+            .sum();
+        if depth <= 0 {
+            return None;
+        }
+        // `impl Trait for Type {` and `impl Type {` both end on the type, and a
+        // generic argument is not part of the name a call site spells.
+        let subject = head.split('{').next()?.split_whitespace().last()?;
+        Some(
+            subject
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect(),
+        )
+    })
+}
+
+/// Every function declared in one source, as `(name, the type whose impl
+/// declares it, the declaration's own CODE)`.
+///
+/// The body is brace-balanced from the `fn` line, so a nested declaration is
+/// read as itself as well as inside its parent.
+fn fn_declarations(src: &str) -> Vec<(String, Option<String>, String)> {
+    let code: Vec<String> = src.lines().map(code_of).collect();
+    let mut out = Vec::new();
+    for (i, line) in code.iter().enumerate() {
+        let Some(name) = declared_fn_name(line) else {
+            continue;
+        };
+        let mut depth = 0i32;
+        let mut opened = false;
+        let mut end = i;
+        for (n, c) in code.iter().enumerate().skip(i) {
+            depth += c.matches('{').count() as i32 - c.matches('}').count() as i32;
+            opened |= depth > 0;
+            end = n;
+            if opened && depth <= 0 {
+                break;
+            }
+        }
+        out.push((name, impl_owner(&code, i), code[i..=end].join("\n")));
+    }
+    out
+}
+
+/// Whether this CODE reaches the function `name` declared in `owner`'s impl.
+///
+/// A free function is reached by a call; a method is reached by `.name(` on a
+/// value of its own type, which is why the owner has to be named as well — one
+/// `path_dirs` per manager, and only brew's reads this seam.
+fn reaches_fn(code: &str, name: &str, owner: Option<&String>) -> bool {
+    match owner {
+        None => cfgd_core::test_helpers::calls_free_fn(code, name),
+        Some(ty) => code.contains(&format!(".{name}(")) && code.contains(ty.as_str()),
+    }
+}
+
+/// Every function a test can read brew's path directories through, folded from
+/// the producer until the set stops growing.
+///
+/// A list of spellings is a list of what somebody remembered, and the reader
+/// that arrives by a third spelling is exactly the one the walk below exists to
+/// claim. So the set is derived: `brew_path_dirs` itself, every production
+/// function whose body reaches it, and so on. The fold follows the shape a call
+/// site spells, which is why a trait method carries the type it is declared on:
+/// `.path_dirs(` alone names every manager's, and only brew's reads this seam.
+fn brew_path_dir_readers() -> Vec<(String, Option<String>)> {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let sources: Vec<String> = cfgd_core::test_helpers::rust_sources_under(&root)
+        .into_iter()
+        // A `tests.rs` is a test region whole, carrying no `#[cfg(test)]` for
+        // the cut to read, and a test is not a route production takes.
+        .filter(|p| p.file_name().is_some_and(|n| n != "tests.rs"))
+        .map(|p| cfgd_core::test_helpers::production_slice_of(&p))
+        .collect();
+    assert!(!sources.is_empty(), "the derivation read no sources at all");
+    let declarations: Vec<(String, Option<String>, String)> = sources
+        .iter()
+        .flat_map(|src| fn_declarations(src))
+        .collect();
+
+    let mut derived = vec![("brew_path_dirs".to_string(), None)];
+    let mut frontier = derived.clone();
+    while !frontier.is_empty() {
+        let mut next: Vec<(String, Option<String>)> = Vec::new();
+        for (name, owner) in &frontier {
+            for (caller, caller_owner, body) in &declarations {
+                if caller == name || !reaches_fn(body, name, owner.as_ref()) {
+                    continue;
+                }
+                let entry = (caller.clone(), caller_owner.clone());
+                if !derived.contains(&entry) && !next.contains(&entry) {
+                    next.push(entry);
+                }
+            }
+        }
+        derived.extend(next.iter().cloned());
+        frontier = next;
+    }
+    derived
+}
+
 /// A test reading brew's path directories settles the seam and serializes.
 ///
 /// `CFGD_BREW_BIN` names where brew is, so `brew_path_dirs` answers from it
@@ -2990,43 +3120,53 @@ fn test_declarations(body: &str) -> Vec<(String, Vec<String>, Vec<String>)> {
 /// platform table has to clear the seam as well, or the shim's parent directory
 /// stands in for `/home/linuxbrew/.linuxbrew/{bin,sbin}`.
 ///
-/// `BrewManager::path_dirs` forwards to the same function, so a test driving the
-/// trait is in the population too.
+/// The population is every declaration reaching one of the functions
+/// [`brew_path_dir_readers`] derives, over this crate's whole `src` and its
+/// integration tests, so a reader outside `packages/` is claimed as well.
 #[test]
 fn every_test_reading_brews_path_dirs_settles_the_seam_and_serializes() {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/packages");
+    let crate_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let readers = brew_path_dir_readers();
+    assert!(
+        readers.len() >= 4,
+        "the derivation names {} functions reaching brew's path directories: {readers:?}",
+        readers.len()
+    );
     let mut offenders: Vec<String> = Vec::new();
-    let mut readers = 0usize;
-    for path in cfgd_core::test_helpers::rust_sources_under(&root) {
-        let body = cfgd_core::test_helpers::walked_file_body(&path);
-        for (name, attrs, decl) in test_declarations(&body) {
-            let text = decl.join("\n");
-            // The needles are judged on the CODE, so this walk spelling them as
-            // literals is not itself a reader; the seam is judged on the raw
-            // text, where the settling call names it as one.
-            let code = decl
-                .iter()
-                .map(|l| code_of(l))
-                .collect::<Vec<_>>()
-                .join("\n");
-            let direct = code.contains("brew_path_dirs(");
-            let through_trait = code.contains("BrewManager") && code.contains(".path_dirs(");
-            if !direct && !through_trait {
-                continue;
-            }
-            readers += 1;
-            let serialized = attrs
-                .iter()
-                .any(|a| a.trim() == "#[serial_test::serial]" || a.trim() == "#[serial]");
-            let settles = text.contains("CFGD_BREW_BIN");
-            if !serialized || !settles {
-                offenders.push(format!("{}: {name}", path.display()));
+    let mut reading = 0usize;
+    for root in [crate_dir.join("src"), crate_dir.join("tests")] {
+        for path in cfgd_core::test_helpers::rust_sources_under(&root) {
+            let body = cfgd_core::test_helpers::walked_file_body(&path);
+            for (name, attrs, decl) in test_declarations(&body) {
+                let text = decl.join("\n");
+                // The needles are judged on the CODE, so this walk spelling them
+                // as literals is not itself a reader; the seam is judged on the
+                // raw text, where the settling call names it as one.
+                let code = decl
+                    .iter()
+                    .map(|l| code_of(l))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if !readers
+                    .iter()
+                    .any(|(fn_name, owner)| reaches_fn(&code, fn_name, owner.as_ref()))
+                {
+                    continue;
+                }
+                reading += 1;
+                let serialized = attrs
+                    .iter()
+                    .any(|a| a.trim() == "#[serial_test::serial]" || a.trim() == "#[serial]");
+                let settles = text.contains("CFGD_BREW_BIN");
+                if !serialized || !settles {
+                    offenders.push(format!("{}: {name}", path.display()));
+                }
             }
         }
     }
     assert!(
-        readers >= 6,
-        "the walk found {readers} tests reading brew's path directories; it has \
+        reading >= 6,
+        "the walk found {reading} tests reading brew's path directories; it has \
          stopped seeing them"
     );
     assert!(
