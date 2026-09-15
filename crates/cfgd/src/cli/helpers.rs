@@ -1668,10 +1668,11 @@ pub(in crate::cli) fn sign_and_attest(
 /// An install puts a package manager to work on the host, which is the most
 /// expensive thing the verb does and the one thing it cannot take back, so a
 /// run that was always going to refuse must refuse first: `module keys rotate`
-/// asks whether there is a key to rotate, `init` asks whether git is already
-/// here, and `doctor --fix` provisions only the tools its own probes reported
-/// missing. A verb whose whole work IS the tool (`module keys generate`) has
-/// no such precondition and provisions straight away.
+/// asks whether there is a key to rotate, `init` settles where it would write
+/// and answers every refusal that destination earns, and `doctor --fix`
+/// provisions only the tools its own probes reported missing. A verb whose
+/// whole work IS the tool (`module keys generate`) has no such precondition and
+/// provisions straight away.
 pub(in crate::cli) fn provision_tool(
     printer: &Printer,
     registry: &cfgd_core::providers::ProviderRegistry,

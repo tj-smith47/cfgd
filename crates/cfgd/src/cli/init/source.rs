@@ -47,6 +47,33 @@ pub(crate) fn from_destination(config: &Path) -> Option<PathBuf> {
     (dir != cfgd_core::default_config_dir()).then(|| dir.to_path_buf())
 }
 
+/// Where a `--from` value will materialise, and every refusal that answer
+/// earns, decided before this run puts anything on the machine.
+///
+/// The half of [`resolve_from`] that needs no tool: a destination the run is
+/// going to refuse must be refused before the prerequisite check provisions
+/// git for a clone that will never happen. A caller that goes on to clone
+/// calls `resolve_from`, which asks this again and gets the same answer.
+pub(super) fn plan_from(from: &str, target: Option<&Path>) -> anyhow::Result<std::path::PathBuf> {
+    let from = &*cfgd_core::resolve_repo_reference(from);
+    if is_clonable_source(from) {
+        let dest = match target {
+            Some(path) => path.to_path_buf(),
+            None => cfgd_core::default_config_dir(),
+        };
+        refuse_occupied_default_destination(&dest)?;
+        return Ok(dest);
+    }
+    let path = cfgd_core::expand_tilde(Path::new(from));
+    if !path.exists() {
+        anyhow::bail!("Path does not exist: {}", path.posix());
+    }
+    if !path.join(cfgd_core::config::CONFIG_FILENAME).exists() {
+        anyhow::bail!("No cfgd.yaml found in {}", path.posix());
+    }
+    Ok(path)
+}
+
 /// Resolve a --from value to a config directory path.
 /// Git sources (URLs or local repos) are cloned to the target dir.
 /// Plain local paths are used directly (must contain cfgd.yaml).
@@ -57,12 +84,8 @@ pub(crate) fn resolve_from(
     printer: &Printer,
 ) -> anyhow::Result<std::path::PathBuf> {
     let from = &*cfgd_core::resolve_repo_reference(from);
+    let dest = plan_from(from, target)?;
     if is_clonable_source(from) {
-        let dest = match target {
-            Some(path) => path.to_path_buf(),
-            None => cfgd_core::default_config_dir(),
-        };
-        refuse_occupied_default_destination(&dest)?;
         if !dest.join(cfgd_core::config::CONFIG_FILENAME).exists() {
             std::fs::create_dir_all(&dest)?;
             clone_into(&dest, from, branch, printer)?;
@@ -79,17 +102,8 @@ pub(crate) fn resolve_from(
             }
             drop(row);
         }
-        Ok(dest)
-    } else {
-        let path = cfgd_core::expand_tilde(Path::new(from));
-        if !path.exists() {
-            anyhow::bail!("Path does not exist: {}", path.posix());
-        }
-        if !path.join(cfgd_core::config::CONFIG_FILENAME).exists() {
-            anyhow::bail!("No cfgd.yaml found in {}", path.posix());
-        }
-        Ok(path)
     }
+    Ok(dest)
 }
 
 /// What the default config directory was found to hold, worded for the refusal

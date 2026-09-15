@@ -4,7 +4,7 @@ use cfgd_core::PathDisplayExt;
 use cfgd_core::output::{Doc, Printer, Role};
 use serde::Serialize;
 
-use super::source::{clone_into, is_clonable_source, resolve_from};
+use super::source::{clone_into, is_clonable_source, plan_from, resolve_from};
 use super::*;
 
 // ─────────────────────────────────────────────────────
@@ -58,18 +58,6 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
     init_section.commit_header();
     let init_depth = printer.depth_inheritance();
 
-    if !check_prerequisites(printer) {
-        // git is a hard prerequisite: without it init scaffolds nothing, so it must exit
-        // non-zero rather than let a chained `cfgd init && cfgd apply` proceed on a false
-        // success. check_prerequisites has already printed the error and install hint, so
-        // exit directly instead of returning an Err that the CLI boundary would re-render.
-        let output = InitOutput {
-            target_dir: args.path.unwrap_or("").to_string(),
-        };
-        printer.emit(Doc::new().with_data(&output));
-        cfgd_core::exit::ExitCode::Error.exit();
-    }
-
     // 1. Determine target directory and whether --from did a fresh clone.
     // The `--from` value is resolved ONCE here — an existing path stays a path,
     // a GitHub `owner/repo` shorthand becomes a clone URL — so the clone below
@@ -82,46 +70,72 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
     // `Already initialized` one `resolve_from` prints; the closing row below
     // is for the run that scaffolded, not a restatement of the row above it.
     let destination_named_by_clone = from.as_deref().is_some_and(is_clonable_source);
-    let target_dir = if let Some(from) = from.as_deref() {
-        let explicit_path = args.path.map(|p| cfgd_core::expand_tilde(Path::new(p)));
-        // positional-destination-ok: `init` takes its destination as a positional
-        // argument, not off `--config`, so there is no `--config` to read it from.
-        resolve_from(from, explicit_path.as_deref(), args.branch, printer)?
-    } else {
-        match args.path {
+    let explicit_path = args.path.map(|p| cfgd_core::expand_tilde(Path::new(p)));
+    // Where this run would materialise, and every refusal that answer earns,
+    // settled before the prerequisite check below puts a package manager to
+    // work: an install is the one thing this verb cannot take back, and a run
+    // that was always going to refuse must refuse first.
+    // positional-destination-ok: `init` takes its destination as a positional
+    // argument, not off `--config`, so there is no `--config` to read it from.
+    let planned_dir = match from.as_deref() {
+        Some(from) => plan_from(from, explicit_path.as_deref())?,
+        None => match args.path {
             Some(p) => cfgd_core::expand_tilde(Path::new(p)),
             None => std::env::current_dir()?,
-        }
+        },
     };
 
-    // 2. Create directory if it doesn't exist
-    if !target_dir.exists() {
-        std::fs::create_dir_all(&target_dir)?;
-    }
-
-    // 3. Check if already initialized
+    // 2. Check if already initialized
     // When --from is used, resolve_from handles the "already initialized" case
     // and the clone creates cfgd.yaml — skip this check to reach the apply step
-    if target_dir.join(cfgd_core::config::CONFIG_FILENAME).exists() && !from_used {
+    if planned_dir
+        .join(cfgd_core::config::CONFIG_FILENAME)
+        .exists()
+        && !from_used
+    {
         let mut row = printer.status(
             Role::Info,
             format!(
                 "Already initialized at {}",
-                cfgd_core::fold_home_in_text(&target_dir.display_posix())
+                cfgd_core::fold_home_in_text(&planned_dir.display_posix())
             ),
         );
-        if let Some(detail) = super::source::checkout_detail(&target_dir) {
+        if let Some(detail) = super::source::checkout_detail(&planned_dir) {
             row = row.detail(detail);
         }
         drop(row);
         let output = InitOutput {
-            target_dir: cfgd_core::to_posix_string(&target_dir),
+            target_dir: cfgd_core::to_posix_string(&planned_dir),
         };
         printer.emit(Doc::new().with_data(&output));
         return Ok(());
     }
 
-    // 4. Clone or scaffold
+    // 3. Get the one tool the scaffold and the clone both need, now that every
+    // refusal this run could have earned is behind it.
+    if !check_prerequisites(printer) {
+        // git is a hard prerequisite: without it init scaffolds nothing, so it must exit
+        // non-zero rather than let a chained `cfgd init && cfgd apply` proceed on a false
+        // success. check_prerequisites has already printed the error and install hint, so
+        // exit directly instead of returning an Err that the CLI boundary would re-render.
+        let output = InitOutput {
+            target_dir: args.path.unwrap_or("").to_string(),
+        };
+        printer.emit(Doc::new().with_data(&output));
+        cfgd_core::exit::ExitCode::Error.exit();
+    }
+
+    let target_dir = match from.as_deref() {
+        // positional-destination-ok: `init` takes its destination as a positional
+        // argument, not off `--config`, so there is no `--config` to read it from.
+        Some(from) => resolve_from(from, explicit_path.as_deref(), args.branch, printer)?,
+        None => planned_dir,
+    };
+
+    // 4. Create the directory if it is not there, then clone or scaffold
+    if !target_dir.exists() {
+        std::fs::create_dir_all(&target_dir)?;
+    }
     // When --from is a git source, resolve_from already cloned it above.
     // Only clone here if resolve_from didn't handle it (non-git --from or no --from).
     // An existing cfgd.yaml means the target is already a config repo. The check above

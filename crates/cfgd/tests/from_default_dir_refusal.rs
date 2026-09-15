@@ -476,3 +476,59 @@ fn the_refusal_is_a_classified_error_with_its_two_ways_forward_as_commands() {
         "got: {payload}"
     );
 }
+
+/// An install is the one thing `cfgd init` cannot take back, so a run whose
+/// destination was always going to be refused refuses before it puts a package
+/// manager to work.
+///
+/// Driven as a real process because the prerequisite check ends the run by
+/// exiting rather than by returning: the ordering is only observable from
+/// outside. The child sees no `git` on its `PATH`, and every registered
+/// manager's seam names one shim, so an install this run decides to attempt is
+/// a line in that shim's log instead of a package on the host.
+#[test]
+fn init_from_refuses_an_occupied_default_dir_before_provisioning_git() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    source_repo(&src);
+    let home = tmp.path().join("home");
+    let dest = default_config_dir(&home);
+    std::fs::write(dest.join("cfgd.yaml"), "apiVersion: cfgd.io/v1alpha1\n").unwrap();
+
+    let shim_dir = tmp.path().join("managers");
+    std::fs::create_dir_all(&shim_dir).unwrap();
+    let shim = cfgd_core::test_helpers::write_tool_shim(
+        &shim_dir,
+        "manager",
+        &[cfgd_core::test_helpers::ShimArm::always("", "", 0)],
+    );
+    let argv_log = shim_dir.join("argv.log");
+
+    let mut cmd = Command::cargo_bin("cfgd").unwrap();
+    cmd.args(["init", "--from", &src.display().to_string()])
+        .env("HOME", &home)
+        .env("USERPROFILE", &home)
+        .env("XDG_CONFIG_HOME", home.join(".config"))
+        .env("CFGD_CACHE_DIR", home.join("cache"))
+        .env("CFGD_ALLOW_LOCAL_SOURCES", "1")
+        // git is the whole prerequisite `init` provisions, and an empty PATH is
+        // what takes it off the machine for this child alone.
+        .env("PATH", "");
+    for seam in cfgd_core::test_helpers::MANAGER_SEAMS {
+        cmd.env(seam, &shim);
+    }
+
+    cmd.assert().code(1).stderr(predicate::str::contains(
+        "Refusing to write into the default config directory",
+    ));
+
+    assert!(
+        !argv_log.exists(),
+        "the refusal came first, so no manager was asked for anything: {}",
+        std::fs::read_to_string(&argv_log).unwrap_or_default()
+    );
+    assert_eq!(
+        std::fs::read_to_string(dest.join("cfgd.yaml")).unwrap(),
+        "apiVersion: cfgd.io/v1alpha1\n"
+    );
+}
