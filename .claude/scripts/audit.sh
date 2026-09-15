@@ -424,6 +424,17 @@ audit_scan_files() {
     fi
 }
 
+# Whether a gate reading a FIXED population should run at all.
+#
+# The audit-tests driver points CFGD_AUDIT_PATH at one fixture and runs this
+# whole script once per fixture. A gate that cannot be scoped to that path
+# reports on the repository instead, which is the same answer for every
+# fixture and a full scan of the workspace each time. Skipping those is what
+# keeps a fixture suite proportional to the fixtures.
+gate_is_in_scope() {
+    [[ -z "${CFGD_AUDIT_PATH:-}" ]]
+}
+
 check_pattern() {
     local severity="$1"
     local label="$2"
@@ -574,6 +585,7 @@ check_pattern error \
     'use (console|indicatif|syntect)::' \
     'output/'
 
+if gate_is_in_scope; then
 log_section "User-Facing Advisories (config/module/source domains)"
 # tracing::info!/warn!/error! is invisible without RUST_LOG — an advisory routed
 # there is one the user never sees, and `info!` is the least visible of the
@@ -726,6 +738,7 @@ if [[ -n "$comment_voice_violations" ]]; then
 else
     log_ok "No session-narrative or self-citation comments"
 fi
+fi
 
 log_section "Controlled Shell Execution"
 # gateway/ allowed for SSH/GPG enrollment signature verification
@@ -758,12 +771,14 @@ check_pattern warn \
     '#[^!]\[allow\(dead_code\)' \
     ""
 
+if gate_is_in_scope; then
 log_section "Module Boundaries (cfgd-core)"
 check_core_boundary "providers"   "files:packages:secrets:sources:composition:reconciler:state:daemon"
 check_core_boundary "sources"     "files:packages:secrets:reconciler:providers"
 check_core_boundary "composition" "files:packages:secrets:reconciler:daemon:providers"
 check_core_boundary "modules"     "files:packages:secrets:reconciler:state:daemon:composition:sources"
 check_core_boundary "reconciler"  "files:packages:secrets"
+fi
 
 log_section "Dead Error Variants"
 # For each error enum in errors/ files, extract variant names and check if they're
@@ -1181,6 +1196,7 @@ else
     log_ok "No duplicated function definitions across files"
 fi
 
+if gate_is_in_scope; then
 log_section "Naming Convention — No kebab-case in serde or user-visible strings"
 # Detect any remaining kebab-case serde attributes (should all be camelCase now)
 serde_kebab=$(grep -rn 'rename_all = "kebab-case"\|rename_all = "lowercase"' "${SRC_ROOTS[@]}" --include='*.rs' 2>/dev/null | grep -v 'output/' || true)
@@ -1327,6 +1343,7 @@ if [[ -n "$effective_violations" ]]; then
 else
     log_ok "Read paths route desired state through cfgd_core::effective::*"
 fi
+fi
 
 log_section "DRY — Timestamp/Hash/Command Wrappers"
 # Detect local wrappers around shared lib.rs functions.
@@ -1410,6 +1427,7 @@ if unfenced=$(rg --type-add 'rust:*.txt' --type rust -n 'fill_available_versions
   echo "$unfenced"
 fi
 
+if gate_is_in_scope; then
 # 5. Structured-output coverage table — every cmd_* function in cli/ must
 #    appear in .claude/rules/structured-output-coverage.md's table.
 #    Only match file-scope definitions (no leading whitespace) to avoid
@@ -1522,6 +1540,7 @@ if [ -f "$rule_file" ]; then
 else
     log_error "Structured-output coverage table missing: $rule_file"
 fi
+fi
 # --- end output audit block -------------------------------------------------
 
 # --- Path-handling consolidation gates ---
@@ -1601,6 +1620,7 @@ if w4=$(rg --type rust -n '(tracing::(info|warn|error)!|anyhow!|bail!|printer\.(
   echo "$w4"
 fi
 
+if gate_is_in_scope; then
 log_section "Test-home-safe blocking dispatch (workspace)"
 # Raw `tokio::task::spawn_blocking` drops the test-home
 # thread-local on the worker thread, so any closure that resolves `~`/$HOME
@@ -2006,6 +2026,7 @@ else
         log_ok "Every e2e job with a Rust toolchain carries sccache + rust-cache under its own key"
     fi
 fi
+fi
 
 # --- One owner comparator ---
 # `Owner::sort_key` is the single rule for which owner precedes which, and it is
@@ -2034,6 +2055,7 @@ else
   log_ok "Owner::sort_key applied at exactly one site"
 fi
 
+if gate_is_in_scope; then
 # --- Every demo tape has a Taskfile target ---
 # A tape is recorded through `demo/scripts/record.sh <name>`, and the Taskfile
 # target wrapping it is the only thing that also runs the tape's font gate and
@@ -2395,6 +2417,7 @@ else
     cat "$guard_out"
 fi
 rm -f "$guard_out"
+fi
 
 # --- Summary ---
 printf "\n"
