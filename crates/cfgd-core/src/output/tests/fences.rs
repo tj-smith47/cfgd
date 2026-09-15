@@ -4367,26 +4367,34 @@ fn every_gc_failed_removal_pin_holds_its_payload_through_the_one_fixture() {
 ///
 /// The floor sits AT what the workspace holds rather than under it, so a call
 /// site cannot vanish inside a margin: a `>=` floor never trips on an addition,
-/// and the assertion prints the numbers it read. The roots are named as well as
-/// counted, for the reason [`crate::test_helpers::KNOWN_GOLDEN_ROOTS`] is named:
-/// a count survives a root renamed or moved out of `crates/` as long as some
-/// other crate appears to restore it.
+/// and the assertion prints the numbers it read. It is stated PER ROOT, because
+/// one number for the whole workspace is the biggest tree's count plus the
+/// rest: `crates/cfgd/src` could stop contributing entirely and `cfgd-core`
+/// alone would still clear it. The roots are named as well as counted, for the
+/// reason [`crate::test_helpers::KNOWN_GOLDEN_ROOTS`] is named: a count
+/// survives a root renamed or moved out of `crates/` as long as some other
+/// crate appears to restore it.
 #[test]
 fn every_path_based_chmod_in_the_workspace_says_why_the_follow_is_safe() {
-    /// Every crate root the walk must still be reading, workspace-relative.
-    const CHMOD_WALK_ROOTS: &[&str] = &[
-        "crates/cfgd-core/src",
-        "crates/cfgd-crd/src",
-        "crates/cfgd-csi/src",
-        "crates/cfgd-operator/src",
-        "crates/cfgd-schema/src",
-        "crates/cfgd/src",
+    /// Every crate root the walk must still be reading, workspace-relative,
+    /// with a floor under the production sources each holds today, so a tree
+    /// going dark fails on its own name rather than inside a total. The two
+    /// crates holding a couple of files each floor AT their count, because a
+    /// root going empty is what the assertion is for and a margin under two is
+    /// no margin.
+    const CHMOD_WALK_ROOTS: &[(&str, usize)] = &[
+        ("crates/cfgd-core/src", 170),
+        ("crates/cfgd-crd/src", 1),
+        ("crates/cfgd-csi/src", 7),
+        ("crates/cfgd-operator/src", 40),
+        ("crates/cfgd-schema/src", 2),
+        ("crates/cfgd/src", 130),
     ];
     let crates_dir = crate::test_helpers::workspace_root().join("crates");
     let population = crate::test_helpers::path_based_chmod_population(&crates_dir);
     let unread: Vec<&str> = CHMOD_WALK_ROOTS
         .iter()
-        .copied()
+        .map(|(named, _)| *named)
         .filter(|named| !population.roots.iter().any(|read| read == named))
         .collect();
     assert!(
@@ -4395,12 +4403,32 @@ fn every_path_based_chmod_in_the_workspace_says_why_the_follow_is_safe() {
          crate root leaves its chmods judged by nobody",
         population.roots
     );
+    // A root the walk never reported on reads as zero rather than as absent:
+    // a missing entry is the whole tree going dark, which is the state this
+    // floor exists to catch.
+    let short: Vec<(&str, usize, usize)> = CHMOD_WALK_ROOTS
+        .iter()
+        .map(|(named, floor)| {
+            let read = population
+                .per_root
+                .iter()
+                .find(|(root, ..)| root == named)
+                .map_or(0, |(_, files, _)| *files);
+            (*named, read, *floor)
+        })
+        .filter(|(_, read, floor)| read < floor)
+        .collect();
     assert!(
-        population.roots.len() >= 6 && population.files >= 391 && population.chmods >= 31,
-        "the walk read {} crate roots, {} files and {} chmods, too few to be the population",
-        population.roots.len(),
-        population.files,
-        population.chmods
+        short.is_empty() && population.roots.len() >= 6,
+        "a crate root contributed fewer production sources than it holds, so its \
+         chmods are judged by nobody: {short:?} of {:?}",
+        population.per_root
+    );
+    let chmods: usize = population.per_root.iter().map(|(.., n)| n).sum();
+    assert!(
+        chmods >= 31,
+        "the walk read {chmods} chmods across {:?}, too few to be the population",
+        population.per_root
     );
     assert!(
         population.offenders.is_empty(),

@@ -4835,7 +4835,8 @@ pub fn rust_sources_under(root: &Path) -> Vec<PathBuf> {
 /// second site and silently excuse it.
 ///
 /// What counts and what offends are deliberately different sets.
-/// [`ChmodPopulation::chmods`] counts EVERY chmod-shaped call the walk read,
+/// [`ChmodPopulation::per_root`]'s chmod count holds EVERY chmod-shaped call
+/// the walk read,
 /// no-follow ones included, because the follow-capable sites are the ones this
 /// rule drives to zero and flooring on those alone would turn a fully converted
 /// crate into a failure. Only the two path-based spellings can be misdirected,
@@ -4860,10 +4861,13 @@ pub struct ChmodPopulation {
     /// that happens to appear, and the walk then reads a narrower population in
     /// silence.
     pub roots: Vec<String>,
-    /// Production sources the walk read.
-    pub files: usize,
-    /// Chmod-shaped calls it read, no-follow ones included.
-    pub chmods: usize,
+    /// Per root, the production sources and the chmod-shaped calls it read,
+    /// in [`ChmodPopulation::roots`] order.
+    ///
+    /// One pair per root rather than two totals: an aggregate is one tree's
+    /// count plus another's, so the largest tree alone clears it and a root
+    /// that stops contributing altogether is judged by nobody.
+    pub per_root: Vec<(String, usize, usize)>,
     /// Path-based chmods with no `// follow-ok:` above them, `<rel>:<line>` first.
     pub offenders: Vec<String>,
 }
@@ -4901,8 +4905,7 @@ pub fn path_based_chmod_population(crates_dir: &Path) -> ChmodPopulation {
     ];
     let mut population = ChmodPopulation {
         roots: Vec::new(),
-        files: 0,
-        chmods: 0,
+        per_root: Vec::new(),
         offenders: Vec::new(),
     };
     let mut roots: Vec<std::path::PathBuf> = std::fs::read_dir(crates_dir)
@@ -4926,59 +4929,63 @@ pub fn path_based_chmod_population(crates_dir: &Path) -> ChmodPopulation {
         .iter()
         .map(|root| crate::to_posix_string(root.strip_prefix(&workspace).unwrap_or(root)))
         .collect();
-    for path in roots.iter().flat_map(|root| rust_sources_under(root)) {
-        let name = path.file_name().unwrap_or_default().to_string_lossy();
-        // Test scaffolding carries no `#[cfg(test)]` of its own for the slice
-        // to cut at, so it is named out here instead. `test_helpers.rs` is
-        // named out for the other reason: it ships as production and holds an
-        // inline test module the slice would cut at, leaving a fraction of the
-        // file behind.
-        if name.starts_with("tests")
-            || name == "test_helpers.rs"
-            || path.parent().is_some_and(|p| p.ends_with("tests"))
-        {
-            continue;
-        }
-        let body = production_slice_of(&path);
-        population.files += 1;
-        let relative = crate::to_posix_string(path.strip_prefix(&workspace).unwrap_or(&path));
-        let lines: Vec<&str> = body.lines().collect();
-        for (idx, line) in lines.iter().enumerate() {
-            if line.trim_start().starts_with("//") {
-                continue;
-            }
-            // A function DECLARATION carries the name of the primitive it is,
-            // not a call to it: `pub fn set_file_permissions(` is the chmod
-            // every judged site reaches, and asking it the question would ask
-            // the rule of itself.
-            if line.contains(" fn ") || line.trim_start().starts_with("fn ") {
-                continue;
-            }
-            if COUNTED
-                .iter()
-                .any(|tell| names_outside_a_literal(line, tell))
-            {
-                population.chmods += 1;
-            }
-            if !(names_outside_a_literal(line, "set_file_permissions(")
-                || names_outside_a_literal(line, "fs::set_permissions("))
+    for (root, relative_root) in roots.iter().zip(population.roots.clone()) {
+        let (mut files, mut chmods) = (0usize, 0usize);
+        for path in rust_sources_under(root) {
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            // Test scaffolding carries no `#[cfg(test)]` of its own for the slice
+            // to cut at, so it is named out here instead. `test_helpers.rs` is
+            // named out for the other reason: it ships as production and holds an
+            // inline test module the slice would cut at, leaving a fraction of the
+            // file behind.
+            if name.starts_with("tests")
+                || name == "test_helpers.rs"
+                || path.parent().is_some_and(|p| p.ends_with("tests"))
             {
                 continue;
             }
-            if lines[idx.saturating_sub(1)..=idx]
-                .iter()
-                .any(|l| l.contains("follow-ok:"))
-            {
-                continue;
-            }
-            population.offenders.push(format!(
-                "{relative}:{}: chmods a path that may be a symlink, take \
+            let body = production_slice_of(&path);
+            files += 1;
+            let relative = crate::to_posix_string(path.strip_prefix(&workspace).unwrap_or(&path));
+            let lines: Vec<&str> = body.lines().collect();
+            for (idx, line) in lines.iter().enumerate() {
+                if line.trim_start().starts_with("//") {
+                    continue;
+                }
+                // A function DECLARATION carries the name of the primitive it is,
+                // not a call to it: `pub fn set_file_permissions(` is the chmod
+                // every judged site reaches, and asking it the question would ask
+                // the rule of itself.
+                if line.contains(" fn ") || line.trim_start().starts_with("fn ") {
+                    continue;
+                }
+                if COUNTED
+                    .iter()
+                    .any(|tell| names_outside_a_literal(line, tell))
+                {
+                    chmods += 1;
+                }
+                if !(names_outside_a_literal(line, "set_file_permissions(")
+                    || names_outside_a_literal(line, "fs::set_permissions("))
+                {
+                    continue;
+                }
+                if lines[idx.saturating_sub(1)..=idx]
+                    .iter()
+                    .any(|l| l.contains("follow-ok:"))
+                {
+                    continue;
+                }
+                population.offenders.push(format!(
+                    "{relative}:{}: chmods a path that may be a symlink, take \
                  `set_file_permissions_nofollow` (or \
                  `widen_file_permissions_nofollow`), else mark it \
                  `// follow-ok: <the ownership fact that makes the follow safe>`",
-                idx + 1
-            ));
+                    idx + 1
+                ));
+            }
         }
+        population.per_root.push((relative_root, files, chmods));
     }
     population
 }
