@@ -223,6 +223,13 @@ jobs:
       - name: Install sccache
         uses: mozilla-actions/sccache-action@v0.0.11
 
+      # `task audit`'s kube gate resolves cfgd-csi's tree with `cargo tree
+      # --offline`, and this job compiles nothing, so nothing else ever puts the
+      # registry into the runner's cache: the gate reported a tree it could not
+      # resolve rather than a tree with no kube crate in it.
+      - name: Warm the registry cache
+        run: cargo fetch --locked
+
       - name: Run code audit
         run: task audit
 
