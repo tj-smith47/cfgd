@@ -541,13 +541,22 @@ pub(super) fn find_npm() -> Option<PathBuf> {
 /// Scan `<home>/.nvm/versions/node/*/bin/npm` and return the first match.
 /// Split out so tests can drive the directory scan against a tempdir without
 /// mutating `$HOME`.
+///
+/// Windows spells the shell-callable npm `npm.cmd`, and an install there
+/// carries no extensionless copy, so the scan asks for that name as well or it
+/// walks past the only npm the host has.
 pub(super) fn find_npm_in_nvm(home: &std::path::Path) -> Option<PathBuf> {
     let nvm_dir = home.join(".nvm/versions/node");
     let entries = std::fs::read_dir(&nvm_dir).ok()?;
     for entry in entries.flatten() {
-        let npm_path = entry.path().join("bin/npm");
+        let bin = entry.path().join("bin");
+        let npm_path = bin.join("npm");
         if npm_path.exists() {
             return Some(npm_path);
+        }
+        let shim = bin.join("npm.cmd");
+        if cfg!(windows) && shim.exists() {
+            return Some(shim);
         }
     }
     None
@@ -1219,6 +1228,43 @@ mod tests {
             find_npm(),
             Some(planted),
             "and a seam naming a file that IS there names exactly that file"
+        );
+    }
+
+    /// The nvm scan on Windows, where the home it scans is `USERPROFILE`'s.
+    ///
+    /// `find_npm` resolves `~` through `expand_tilde`, which reads the test
+    /// home, then `USERPROFILE`, then `HOME` — so a Windows host carrying an
+    /// nvm tree is scanned, where a direct `HOME` read walked past it. The file
+    /// planted is the one Windows can run: `npm.cmd`, an install there carrying
+    /// no extensionless copy.
+    #[cfg(windows)]
+    #[test]
+    #[serial_test::serial]
+    fn find_npm_scans_the_nvm_tree_under_userprofile_on_windows() {
+        // Declared first so it drops last, bracketing the empty-PATH window.
+        let _path_excl = cfgd_core::test_helpers::path_env_mutation_guard();
+        // The registry and the memo both outlive the window, so a sibling's
+        // resolution would answer for the npm this one has to not find.
+        let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+        let _paths = cfgd_core::test_helpers::CommandPathMemoTtlGuard::always_expired();
+        let _no_seam = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_NPM_BIN");
+        let _empty_path = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
+
+        let home = tempfile::tempdir().expect("tempdir");
+        let bin = home.path().join(".nvm/versions/node/v22.0.0/bin");
+        std::fs::create_dir_all(&bin).expect("plant the nvm tree");
+        let npm = bin.join("npm.cmd");
+        std::fs::write(&npm, b"@echo off\r\n").expect("plant npm.cmd");
+        let _profile = cfgd_core::test_helpers::EnvVarGuard::set(
+            "USERPROFILE",
+            home.path().to_str().expect("utf8 tempdir path"),
+        );
+
+        assert_eq!(
+            find_npm(),
+            Some(npm),
+            "the nvm scan reads the home `USERPROFILE` names"
         );
     }
 
