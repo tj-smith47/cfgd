@@ -68,7 +68,12 @@ fn parse_brew_versions_whitespace_only() {
 }
 
 #[test]
+#[serial_test::serial]
 fn brew_manager_name_and_bootstrap_plan() {
+    // `brew_path_dirs` answers from `CFGD_BREW_BIN` when it is set, so the
+    // platform arm this pins is only reachable with the seam clear; a sibling
+    // test's brew shim is a process-global that would answer in its place.
+    let _no_seam = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_BREW_BIN");
     let mgr = BrewManager;
     assert_eq!(mgr.name(), "brew");
     let planned = mgr.bootstrap_plan();
@@ -128,7 +133,12 @@ fn brew_tap_manager_available_version_is_none() {
 }
 
 #[test]
+#[serial_test::serial]
 fn brew_manager_path_dirs_returns_vec() {
+    // `brew_path_dirs` answers from `CFGD_BREW_BIN` when it is set, so the
+    // platform arm this pins is only reachable with the seam clear; a sibling
+    // test's brew shim is a process-global that would answer in its place.
+    let _no_seam = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_BREW_BIN");
     let mgr = BrewManager;
     let printer = cfgd_core::test_helpers::test_printer();
     let state = cfgd_core::test_helpers::test_state();
@@ -183,7 +193,12 @@ fn brew_manager_created_path_dirs_is_empty() {
 }
 
 #[test]
+#[serial_test::serial]
 fn brew_manager_path_dirs_non_empty_on_linux_macos() {
+    // `brew_path_dirs` answers from `CFGD_BREW_BIN` when it is set, so the
+    // platform arm this pins is only reachable with the seam clear; a sibling
+    // test's brew shim is a process-global that would answer in its place.
+    let _no_seam = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_BREW_BIN");
     // Homebrew exists only on Linux and macOS; brew_path_dirs() correctly
     // returns empty on other unices (e.g. FreeBSD), so scope the non-empty
     // assertion to the two platforms where brew is a real manager.

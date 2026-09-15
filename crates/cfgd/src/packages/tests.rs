@@ -4631,7 +4631,12 @@ fn cmd_builders_return_valid_commands() {
 // --- BrewManager::path_dirs called through trait ---
 
 #[test]
+#[serial_test::serial]
 fn brew_path_dirs_through_trait() {
+    // `brew_path_dirs` answers from `CFGD_BREW_BIN` when it is set, so the
+    // platform arm this pins is only reachable with the seam clear; a sibling
+    // test's brew shim is a process-global that would answer in its place.
+    let _no_seam = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_BREW_BIN");
     let printer = cfgd_core::test_helpers::test_printer();
     let state = cfgd_core::test_helpers::test_state();
     let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);

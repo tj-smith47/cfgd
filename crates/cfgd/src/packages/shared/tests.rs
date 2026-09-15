@@ -867,6 +867,9 @@ fn brew_path_returns_option() {
 #[serial_test::serial]
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn path_with_brew_adds_only_the_brew_directory_the_path_lacks() {
+    // `brew_path_dirs` answers from `CFGD_BREW_BIN` when it is set, and the
+    // expectation below is the platform pair, indexed by position.
+    let _no_seam = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_BREW_BIN");
     let dirs = brew_path_dirs();
     // Declared first so it drops last, bracketing the whole PATH window.
     let _path_excl = cfgd_core::test_helpers::path_env_mutation_guard();
@@ -885,6 +888,9 @@ fn path_with_brew_adds_only_the_brew_directory_the_path_lacks() {
 #[serial_test::serial]
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn path_with_brew_prepends_both_directories_past_a_lookalike_entry() {
+    // `brew_path_dirs` answers from `CFGD_BREW_BIN` when it is set, and the
+    // expectation below is the platform pair, indexed by position.
+    let _no_seam = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_BREW_BIN");
     let dirs = brew_path_dirs();
     let lookalike = format!("{}.bak", dirs[0]);
     // Declared first so it drops last, bracketing the whole PATH window.
@@ -1003,7 +1009,12 @@ fn resolve_tool_with_fallbacks_returns_none_when_nothing_resolves() {
 }
 
 #[test]
+#[serial_test::serial]
 fn brew_path_dirs_is_non_empty_on_linux_or_macos() {
+    // `brew_path_dirs` answers from `CFGD_BREW_BIN` when it is set, so the
+    // platform arm this pins is only reachable with the seam clear; a sibling
+    // test's brew shim is a process-global that would answer in its place.
+    let _no_seam = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_BREW_BIN");
     let dirs = brew_path_dirs();
     if cfg!(target_os = "linux") || cfg!(target_os = "macos") {
         assert!(!dirs.is_empty(), "expected brew dirs, got: {dirs:?}");
@@ -1087,7 +1098,12 @@ fn the_macos_brew_prefix_prefers_an_installed_brew_in_candidate_order() {
 
 #[cfg(target_os = "linux")]
 #[test]
+#[serial_test::serial]
 fn brew_path_dirs_linux_uses_linuxbrew_paths() {
+    // `brew_path_dirs` answers from `CFGD_BREW_BIN` when it is set, so the
+    // platform arm this pins is only reachable with the seam clear; a sibling
+    // test's brew shim is a process-global that would answer in its place.
+    let _no_seam = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_BREW_BIN");
     let dirs = brew_path_dirs();
     assert!(dirs.iter().any(|d| d.contains("linuxbrew")));
     assert!(dirs.iter().any(|d| d.ends_with("/bin")));
@@ -2925,4 +2941,98 @@ fn the_seam_read_walk_reads_a_tell_only_where_it_runs() {
             "{label} is a seam read"
         );
     }
+}
+
+/// Every declaration in this crate holding a `#[test]` attribute, as
+/// `(name, attribute lines, body lines)`, the body brace-balanced from its own
+/// `fn` line. Both slices are the RAW source, so a walk asking about a literal
+/// can still see one.
+fn test_declarations(body: &str) -> Vec<(String, Vec<String>, Vec<String>)> {
+    let raw: Vec<&str> = body.lines().collect();
+    let code: Vec<String> = raw.iter().map(|l| code_of(l)).collect();
+    let mut out = Vec::new();
+    for (i, line) in code.iter().enumerate() {
+        if line.trim() != "#[test]" && !line.trim().starts_with("#[tokio::test") {
+            continue;
+        }
+        let mut start = i;
+        while start > 0 && code[start - 1].trim_start().starts_with("#[") {
+            start -= 1;
+        }
+        let Some(open) = (i..code.len()).find(|n| code[*n].trim_start().starts_with("fn ")) else {
+            continue;
+        };
+        let name = enclosing_fn_name(&code, open).unwrap_or_else(|| "<unnamed>".to_string());
+        let mut depth = 0i32;
+        let mut end = open;
+        for (n, c) in code.iter().enumerate().skip(open) {
+            depth += c.matches('{').count() as i32 - c.matches('}').count() as i32;
+            if depth <= 0 && n > open {
+                end = n;
+                break;
+            }
+        }
+        out.push((
+            name,
+            raw[start..open].iter().map(|l| (*l).to_string()).collect(),
+            raw[open..=end].iter().map(|l| (*l).to_string()).collect(),
+        ));
+    }
+    out
+}
+
+/// A test reading brew's path directories settles the seam and serializes.
+///
+/// `CFGD_BREW_BIN` names where brew is, so `brew_path_dirs` answers from it
+/// alone when it is set and from the platform table otherwise. A test asserting
+/// either answer while a sibling installs a brew shim reads the sibling's
+/// answer: the two have to take the same lock, and the one asserting the
+/// platform table has to clear the seam as well, or the shim's parent directory
+/// stands in for `/home/linuxbrew/.linuxbrew/{bin,sbin}`.
+///
+/// `BrewManager::path_dirs` forwards to the same function, so a test driving the
+/// trait is in the population too.
+#[test]
+fn every_test_reading_brews_path_dirs_settles_the_seam_and_serializes() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/packages");
+    let mut offenders: Vec<String> = Vec::new();
+    let mut readers = 0usize;
+    for path in cfgd_core::test_helpers::rust_sources_under(&root) {
+        let body = cfgd_core::test_helpers::walked_file_body(&path);
+        for (name, attrs, decl) in test_declarations(&body) {
+            let text = decl.join("\n");
+            // The needles are judged on the CODE, so this walk spelling them as
+            // literals is not itself a reader; the seam is judged on the raw
+            // text, where the settling call names it as one.
+            let code = decl
+                .iter()
+                .map(|l| code_of(l))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let direct = code.contains("brew_path_dirs(");
+            let through_trait = code.contains("BrewManager") && code.contains(".path_dirs(");
+            if !direct && !through_trait {
+                continue;
+            }
+            readers += 1;
+            let serialized = attrs
+                .iter()
+                .any(|a| a.trim() == "#[serial_test::serial]" || a.trim() == "#[serial]");
+            let settles = text.contains("CFGD_BREW_BIN");
+            if !serialized || !settles {
+                offenders.push(format!("{}: {name}", path.display()));
+            }
+        }
+    }
+    assert!(
+        readers >= 6,
+        "the walk found {readers} tests reading brew's path directories; it has \
+         stopped seeing them"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a test reading brew's path directories names `CFGD_BREW_BIN` to settle the \
+         seam and carries `#[serial_test::serial]`:\n{}",
+        offenders.join("\n")
+    );
 }
