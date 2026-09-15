@@ -291,12 +291,40 @@ impl StateStore {
     /// ([`crate::reconciler::recorded_source_layers`]) — so the match is
     /// membership in that list rather than equality with the whole column, or
     /// a `PATH` a subscription extends beside the local profile would be
-    /// invisible to `cfgd source remove`. The filter runs over the fetched
-    /// rows because a list column has no index a `LIKE` could use safely: a
-    /// layer name is free text and would have to be escaped into the pattern.
+    /// invisible to `cfgd source remove`.
+    ///
+    /// SQLite narrows to the rows whose column carries the name at all, and
+    /// the membership question is still answered in Rust: `LIKE` matches a
+    /// substring, so `acme` would also claim a row recorded under `acme-dev`.
     pub fn managed_resources_by_source(&self, source_name: &str) -> Result<Vec<ManagedResource>> {
-        Ok(self
-            .managed_resources()?
+        // A layer name is free text and `%`, `_` and `\` are the pattern's own
+        // grammar, so each is escaped and the escape character is declared.
+        let pattern = format!(
+            "%{}%",
+            source_name
+                .replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_")
+        );
+        let mut stmt = self.conn.prepare(
+            "SELECT resource_type, resource_id, source, last_hash, last_applied \
+             FROM managed_resources \
+             WHERE source = ?1 OR source LIKE ?2 ESCAPE '\\' \
+             ORDER BY resource_type, resource_id",
+        )?;
+        let resources = stmt
+            .query_map(params![source_name, pattern], |row| {
+                Ok(ManagedResource {
+                    resource_type: row.get(0)?,
+                    resource_id: row.get(1)?,
+                    source: row.get(2)?,
+                    last_hash: row.get(3)?,
+                    last_applied: row.get(4)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        Ok(resources
             .into_iter()
             .filter(|r| crate::reconciler::recorded_source_layers(&r.source).contains(&source_name))
             .collect())

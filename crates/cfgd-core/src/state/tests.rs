@@ -1123,11 +1123,64 @@ fn managed_resources_by_source() {
         .upsert_managed_resource("package", "git-secrets", "acme", None, None)
         .unwrap();
 
+    // A row several layers built together names all of them, and belongs to
+    // each.
+    store
+        .upsert_managed_resource("env-var", "PATH", "local, acme", None, None)
+        .unwrap();
+    // A name that CONTAINS another layer's name, and one carrying the
+    // characters `LIKE` reads as its own wildcards.
+    store
+        .upsert_managed_resource("file", "/c", "acme-dev", None, None)
+        .unwrap();
+    store
+        .upsert_managed_resource("file", "/d", "ac%e_1", None, None)
+        .unwrap();
+    // A backslash is the escape character the pattern declares, so a name
+    // carrying one is the case an unescaped pattern loses outright.
+    store
+        .upsert_managed_resource("file", "/e", r"ac\me", None, None)
+        .unwrap();
+
     let acme_resources = store.managed_resources_by_source("acme").unwrap();
-    assert_eq!(acme_resources.len(), 2);
+    assert_eq!(
+        acme_resources
+            .iter()
+            .map(|r| r.resource_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["PATH", "/b", "git-secrets"],
+        "the shared row belongs to acme, and no row of a layer whose name merely \
+         contains `acme` does"
+    );
 
     let local_resources = store.managed_resources_by_source("local").unwrap();
-    assert_eq!(local_resources.len(), 1);
+    assert_eq!(
+        local_resources
+            .iter()
+            .map(|r| r.resource_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["PATH", "/a"]
+    );
+
+    let wildcards = store.managed_resources_by_source("ac%e_1").unwrap();
+    assert_eq!(
+        wildcards
+            .iter()
+            .map(|r| r.resource_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["/d"],
+        "the wildcards in the name are matched as the characters they are"
+    );
+
+    let escaped = store.managed_resources_by_source(r"ac\me").unwrap();
+    assert_eq!(
+        escaped
+            .iter()
+            .map(|r| r.resource_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["/e"],
+        "a name carrying the escape character still finds its own row"
+    );
 }
 
 #[test]
