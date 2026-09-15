@@ -16064,12 +16064,18 @@ fn no_env_file_fixture_hardcodes_the_primary_env_files_name_or_dialect() {
 fn no_check_error_fixture_spells_its_key_as_a_host_path() {
     let root = cfgd_core::test_helpers::workspace_root();
     let mut read = 0usize;
+    let mut per_root: Vec<(&str, usize, usize)> = Vec::new();
     let mut offenders = Vec::new();
-    for dir in [
-        "crates/cfgd/src",
-        "crates/cfgd/tests",
-        "crates/cfgd-core/src",
+    // Per root, with a floor under what each holds today: an aggregate is one
+    // tree's count plus the others', which the biggest alone clears. The
+    // integration tests hold no construction of their own and floor at zero,
+    // and are read anyway so a fixture moving there joins the walk.
+    for (dir, floor) in [
+        ("crates/cfgd/src", 10usize),
+        ("crates/cfgd/tests", 0),
+        ("crates/cfgd-core/src", 5),
     ] {
+        let before = read;
         for path in rust_sources_under(&root.join(dir)) {
             let body = cfgd_core::test_helpers::walked_file_body(&path);
             let lines: Vec<&str> = body.lines().collect();
@@ -16089,10 +16095,16 @@ fn no_check_error_fixture_spells_its_key_as_a_host_path() {
                 }
             }
         }
+        per_root.push((dir, read - before, floor));
     }
     assert!(
+        per_root.iter().all(|(_, found, floor)| found >= floor),
+        "a tree the walk reads contributed fewer check-error constructions than it holds, so \
+         the fixtures in it are judged by nobody: {per_root:?}"
+    );
+    assert!(
         read >= 10,
-        "the walk no longer reaches the check-error constructions — it read {read}"
+        "the walk no longer reaches the check-error constructions, it read {read}"
     );
     assert!(
         offenders.is_empty(),
@@ -16211,10 +16223,12 @@ fn every_golden_with_an_env_target_row_declares_the_host_that_produced_it() {
 fn every_daemon_log_marker_the_e2e_suites_grep_for_is_a_string_the_daemon_emits() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let mut sources = String::new();
+    let mut per_root: Vec<(String, usize)> = Vec::new();
     for dir in [
         root.join("crates/cfgd-core/src"),
         root.join("crates/cfgd/src"),
     ] {
+        let mut read = 0usize;
         for p in rust_sources_under(&dir) {
             if p.file_name().is_some_and(|n| n == "tests.rs")
                 || p.components().any(|c| c.as_os_str() == "tests")
@@ -16226,8 +16240,15 @@ fn every_daemon_log_marker_the_e2e_suites_grep_for_is_a_string_the_daemon_emits(
             });
             sources.push_str(&body);
             sources.push('\n');
+            read += 1;
         }
+        per_root.push((dir.display().to_string(), read));
     }
+    assert!(
+        per_root.iter().all(|(_, read)| *read >= 100),
+        "a tree the walk reads contributed almost nothing, so the markers spoken in it are \
+         judged by nobody: {per_root:?}"
+    );
     assert!(
         sources.contains("daemon: received SIGTERM"),
         "the daemon's own sources must be in the walked set"
@@ -32898,19 +32919,41 @@ fn no_tests_file_carries_a_cfg_test_attribute_of_its_own() {
 /// it over all of it. A walk whose second root legitimately contributes nothing
 /// says so instead, and is read anyway so a member moving there joins it.
 ///
+/// The population is every source of the workspace, not one file: a multi-root
+/// walk written in `fences.rs` is the same shape as one written here, and one
+/// of those was found by hand after passing everything that ran.
+///
 /// The roots a function names are read off `crates/`, so a crate joining the
-/// workspace joins the tell with it. Three spellings name one: a sibling root
-/// as a whole argument (`"../<crate>/src"`), a crate named in a root list
+/// workspace joins the tell with it. Four spellings name one: a sibling root as
+/// a whole argument (`"../<crate>/src"`), the same root spelled from the
+/// workspace (`"crates/<crate>/src"`), a crate named in a root list
 /// (`"<crate>"`), and this crate's own root (`join("src")`), which is the same
-/// root its own name gives — so a walk over `crates/cfgd/src/cli` alone names
+/// root its own name gives, so a walk over `crates/cfgd/src/cli` alone names
 /// one root twice and stays out. Every tell is composed rather than spelled,
 /// which is what keeps this walk out of the population it derives.
 #[test]
 fn every_two_root_walk_guards_each_root_it_reads() {
     const HATCH: &str = "// one-root-population-ok:";
-    /// Under today's 17, so retiring a walk is free, and far enough over half
-    /// that the tell going blind is not.
-    const FLOOR: usize = 16;
+    /// Every crate root the walk reads, with a floor under the sources each
+    /// holds today, so a tree going dark fails on its own name rather than
+    /// quietly contributing nothing.
+    const WALK_ROOTS: &[(&str, usize)] = &[
+        ("cfgd", 135),
+        ("cfgd-core", 180),
+        ("cfgd-crd", 1),
+        ("cfgd-csi", 7),
+        ("cfgd-operator", 50),
+        ("cfgd-schema", 2),
+    ];
+    /// Each file holding multi-root walks today, with a floor under the 25 and
+    /// the 2 they hold, so retiring one walk is free and a file dropping out of
+    /// the population fails on its own name. The second floors AT its count:
+    /// two is already the smallest number that can state the rule, and a file
+    /// that stops holding one at all is what this table is for.
+    const WALK_FILES: &[(&str, usize)] = &[
+        ("cfgd/src/cli/tests.rs", 20),
+        ("cfgd-core/src/output/tests/fences.rs", 2),
+    ];
     /// The two per-root counts that are not a const at all. A floor const is
     /// read by its SHAPE instead of its name (below), so a walk counting
     /// something other than files declares its floor per root without having
@@ -32919,85 +32962,131 @@ fn every_two_root_walk_guards_each_root_it_reads() {
     // An array-typed floor states one count per root, or per file; an
     // aggregate `FLOOR_FILES: usize` states one for the whole walk and is
     // exactly what this pin exists to refuse.
-    let floors_per_root = |body: &str| {
-        body.lines()
+    let floors_per_root = |code: &str| {
+        code.lines()
             .any(|l| l.contains("FLOOR") && l.contains(": ["))
     };
 
     let segment = "src";
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let own = manifest
-        .file_name()
-        .and_then(|n| n.to_str())
-        .expect("this crate's own directory is named")
-        .to_string();
-    let mut crates: Vec<String> = std::fs::read_dir(manifest.join(".."))
+    let crates_dir = manifest.join("..");
+    let mut crates: Vec<String> = std::fs::read_dir(&crates_dir)
         .expect("the workspace's crate directory is readable")
         .filter_map(|entry| entry.ok())
         .filter(|entry| entry.path().join(segment).is_dir())
         .map(|entry| entry.file_name().to_string_lossy().into_owned())
         .collect();
     crates.sort();
-    assert!(
-        crates.len() >= 5,
-        "the walk found {crates:?}, fewer crate roots than this workspace holds"
+    let named: Vec<String> = WALK_ROOTS.iter().map(|(k, _)| (*k).to_string()).collect();
+    assert_eq!(
+        crates, named,
+        "a crate joined or left the workspace, so the walks in its tree are judged by nobody"
     );
+    // `join("src")` names the root of the crate the FILE lives in, which is
+    // the same root that crate's own name gives, so a walk over one subtree of
+    // its own crate names one root twice and stays out.
     let own_tell = format!("join(\"{segment}\")");
-    let roots_named = |text: &str| {
+    let roots_named = |text: &str, own: &str| {
         let mut named: Vec<&str> = crates
             .iter()
             .filter(|krate| {
                 text.contains(&format!("\"../{krate}/{segment}\""))
+                    || text.contains(&format!("\"crates/{krate}/{segment}\""))
                     || text.contains(&format!("\"{krate}\""))
             })
             .map(String::as_str)
             .collect();
-        if text.contains(&own_tell) && !named.contains(&own.as_str()) {
-            named.push(&own);
+        if text.contains(&own_tell) && !named.contains(&own) {
+            named.push(own);
         }
         named.len()
     };
 
-    // The tells are string literals, so they are read off the raw rows: a
-    // literal-blanked line carries none of them. A root named in a comment
-    // joins the population, which is the safe direction — it asks for a count
-    // rather than dropping a walk that has one.
-    let src = cfgd_core::test_helpers::walked_file_body(&manifest.join("src/cli/tests.rs"));
-    let lines: Vec<&str> = src.lines().collect();
-    let mut spans: Vec<(usize, usize)> = Vec::new();
-    for (i, line) in lines.iter().enumerate() {
-        if roots_named(line) == 0 {
-            continue;
-        }
-        if let Some(span) = enclosing_fn_span(&lines, i)
-            && !spans.contains(&span)
-        {
-            spans.push(span);
-        }
-    }
-    let mut population = 0usize;
+    let mut per_file: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
     let mut offenders: Vec<String> = Vec::new();
-    for (start, end) in spans {
-        let body = lines[start..=end].join("\n");
-        if roots_named(&body) < 2 {
-            continue;
+    for (krate, floor) in WALK_ROOTS {
+        let mut read = 0usize;
+        for path in rust_sources_under(&crates_dir.join(krate).join(segment)) {
+            read += 1;
+            let src = cfgd_core::test_helpers::walked_file_body(&path);
+            let lines: Vec<&str> = src.lines().collect();
+            // The root tells are string literals, so they are read off the raw
+            // rows: a literal-blanked line carries none of them. A root named
+            // in a comment joins the population, which is the safe direction,
+            // since it asks for a count rather than dropping a walk that has
+            // one.
+            let mut spans: Vec<(usize, usize)> = Vec::new();
+            for (i, line) in lines.iter().enumerate() {
+                if roots_named(line, krate) == 0 {
+                    continue;
+                }
+                if let Some(span) = enclosing_fn_span(&lines, i)
+                    && !spans.contains(&span)
+                {
+                    spans.push(span);
+                }
+            }
+            let relative = format!("{krate}/{segment}/{}", {
+                let root = crates_dir.join(krate).join(segment);
+                path.strip_prefix(&root)
+                    .unwrap_or(&path)
+                    .display()
+                    .to_string()
+                    .replace('\\', "/")
+            });
+            for (start, end) in spans {
+                let body = lines[start..=end].join("\n");
+                if roots_named(&body, krate) < 2 {
+                    continue;
+                }
+                *per_file.entry(relative.clone()).or_default() += 1;
+                // The floor tells are code facts, so a comment or a string
+                // literal saying `per_root` answers nothing; the hatch is a
+                // comment by construction and stays on the raw rows.
+                let code: String = body
+                    .lines()
+                    .map(cfgd_core::test_helpers::code_line)
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if PER_ROOT_FLOORS.iter().any(|floor| code.contains(floor))
+                    || floors_per_root(&code)
+                    || body.contains(HATCH)
+                {
+                    continue;
+                }
+                // `enclosing_fn_span` opens the span at the first row of the
+                // statement, which is the first attribute, so the name is read
+                // off the first row inside the span that declares it.
+                let name = (start..=end)
+                    .find_map(|k| {
+                        cfgd_core::test_helpers::declared_fn_name(
+                            &cfgd_core::test_helpers::code_line(lines[k]),
+                        )
+                    })
+                    .unwrap_or_default();
+                offenders.push(format!("{relative}:{}: {name}", start + 1));
+            }
         }
-        population += 1;
-        if PER_ROOT_FLOORS.iter().any(|floor| body.contains(floor))
-            || floors_per_root(&body)
-            || body.contains(HATCH)
-        {
-            continue;
-        }
-        let name = cfgd_core::test_helpers::declared_fn_name(&cfgd_core::test_helpers::code_line(
-            lines[start],
-        ))
-        .unwrap_or_default();
-        offenders.push(format!("src/cli/tests.rs:{}: {name}", start + 1));
+        assert!(
+            read >= *floor,
+            "the walk read {read} of `{krate}`'s sources, fewer than it holds"
+        );
     }
+    let short: Vec<String> = WALK_FILES
+        .iter()
+        .filter(|(file, floor)| per_file.get(*file).copied().unwrap_or_default() < *floor)
+        .map(|(file, floor)| {
+            format!(
+                "{file} held {} multi-root walks, under its floor of {floor}",
+                per_file.get(*file).copied().unwrap_or_default()
+            )
+        })
+        .collect();
     assert!(
-        population >= FLOOR,
-        "the walk found {population} multi-root walks, fewer than this file holds"
+        short.is_empty(),
+        "a file the walk reports as read contributed less than it holds, so the walks in it are \
+         judged by nobody:\n{}",
+        short.join("\n")
     );
     assert!(
         offenders.is_empty(),
@@ -33092,7 +33181,18 @@ fn every_test_whose_plan_shape_a_host_tool_decides_plants_its_path() {
                 }
                 read += 1;
                 let text = lines[start..=end].join("\n");
-                if text.contains(GUARD) {
+                // Taking the guard is a code fact, so a string literal or a
+                // comment naming it answers nothing; the hatch below is a
+                // comment by construction and stays on the raw rows. A test
+                // reaching the guard INDIRECTLY, through a helper such as
+                // `install_named_path_shim_logged`, names no code of its own
+                // here and takes the hatch.
+                let code: String = lines[start..=end]
+                    .iter()
+                    .map(|l| cfgd_core::test_helpers::code_line(l))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if code.contains(GUARD) {
                     continue;
                 }
                 let hatch = text
@@ -34647,10 +34747,12 @@ fn every_bootstrap_failure_names_what_it_installed() {
 
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let mut files = Vec::new();
+    let mut per_root: Vec<(String, usize)> = Vec::new();
     for dir in [
         root.join("crates/cfgd-core/src"),
         root.join("crates/cfgd/src"),
     ] {
+        let before = files.len();
         for p in rust_sources_under(&dir) {
             if p.components().any(|c| c.as_os_str() == "tests")
                 || p.file_name().is_some_and(|n| n == "tests.rs")
@@ -34660,7 +34762,13 @@ fn every_bootstrap_failure_names_what_it_installed() {
             let production = cfgd_core::test_helpers::production_slice_of(&p);
             files.push((p, production));
         }
+        per_root.push((dir.display().to_string(), files.len() - before));
     }
+    assert!(
+        per_root.iter().all(|(_, read)| *read >= 100),
+        "a tree the walk reads contributed almost nothing, so the failures built in it are \
+         judged by nobody: {per_root:?}"
+    );
 
     let mut seen = 0usize;
     let mut offenders = Vec::new();
@@ -34797,11 +34905,13 @@ fn no_status_detail_trails_a_verdict_word_behind_its_counts() {
             .any(|n| ident.contains(n))
     };
     let mut seen = 0usize;
+    let mut per_root: Vec<(String, usize)> = Vec::new();
     let mut offenders = Vec::new();
     for dir in [
         root.join("crates/cfgd-core/src"),
         root.join("crates/cfgd/src"),
     ] {
+        let mut read = 0usize;
         for path in rust_sources_under(&dir) {
             if path.components().any(|c| c.as_os_str() == "tests")
                 || path.file_name().is_some_and(|n| n == "tests.rs")
@@ -34811,6 +34921,7 @@ fn no_status_detail_trails_a_verdict_word_behind_its_counts() {
             let body = std::fs::read_to_string(&path).unwrap_or_else(|e| {
                 panic!("{}: the walk must read every source: {e}", path.display())
             });
+            read += 1;
             let mut from = 0usize;
             while let Some(at) = body[from..].find(".detail(format!(\"") {
                 let open = from + at + ".detail(format!(\"".len();
@@ -34833,7 +34944,13 @@ fn no_status_detail_trails_a_verdict_word_behind_its_counts() {
                 }
             }
         }
+        per_root.push((dir.display().to_string(), read));
     }
+    assert!(
+        per_root.iter().all(|(_, read)| *read >= 100),
+        "a tree the walk reads contributed almost nothing, so the details built in it are \
+         judged by nobody: {per_root:?}"
+    );
     assert!(seen >= 10, "the walk found detail literals, found {seen}");
     assert!(
         offenders.is_empty(),
@@ -35498,16 +35615,24 @@ fn one_stored_literal_for_a_missing_package() {
     // lands. Dedicated test files are skipped — this test's own source
     // quotes the needle, and a fixture may seed a legacy literal on purpose.
     let mut files = Vec::new();
+    let mut per_root: Vec<(String, usize)> = Vec::new();
     for dir in [
         root.join("crates/cfgd-core/src"),
         root.join("crates/cfgd/src"),
     ] {
+        let before = files.len();
         files.extend(
             rust_sources_under(&dir)
                 .into_iter()
                 .filter(|p| p.file_name().is_none_or(|n| n != "tests.rs")),
         );
+        per_root.push((dir.display().to_string(), files.len() - before));
     }
+    assert!(
+        per_root.iter().all(|(_, read)| *read >= 100),
+        "a tree the walk reads contributed almost nothing, so the rows built in it are \
+         judged by nobody: {per_root:?}"
+    );
     let mut seen = 0usize;
     let mut offenders = Vec::new();
     for path in files {
@@ -35598,19 +35723,28 @@ fn one_stored_literal_for_a_missing_package() {
 fn every_empty_drift_verdict_states_whether_a_check_ran() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let mut carriers = Vec::new();
+    let mut per_root: Vec<(String, usize)> = Vec::new();
     for dir in [
         root.join("crates/cfgd-core/src"),
         root.join("crates/cfgd/src"),
     ] {
+        let mut read = 0usize;
         for path in rust_sources_under(&dir) {
             let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
                 panic!("{}: the walk must read every source: {e}", path.display())
             });
+            read += 1;
             if text.contains("No drift detected") || text.contains("No drift recorded") {
                 carriers.push(path);
             }
         }
+        per_root.push((dir.display().to_string(), read));
     }
+    assert!(
+        per_root.iter().all(|(_, read)| *read >= 100),
+        "a tree the walk reads contributed almost nothing, so a verdict rendered in it is \
+         judged by nobody: {per_root:?}"
+    );
     let allowed = |p: &std::path::Path| {
         let s = cfgd_core::to_posix_string(p);
         // The two production homes, plus test files asserting about them.
