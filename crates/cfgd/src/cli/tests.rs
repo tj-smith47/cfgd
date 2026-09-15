@@ -9446,6 +9446,10 @@ fn every_system_configurator_and_secret_provider_names_its_tool_or_says_why_not(
     const TRAITS: [&str; 3] = ["SystemConfigurator", "SecretBackend", "SecretProvider"];
     let cfgd = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut files = rust_sources_under(&cfgd.join("src"));
+    // one-root-population-ok: the three traits are declared in cfgd-core and
+    // implemented only in cfgd, so the core root contributes no impl and has no
+    // count of its own to floor; it is read so an impl that moves there joins
+    // the population.
     files.extend(rust_sources_under(&cfgd.join("../cfgd-core/src")));
     files.sort();
     let mut declared: Vec<String> = Vec::new();
@@ -32584,6 +32588,11 @@ fn reconciler_removal_methods() -> Vec<String> {
         .filter(|(_, body)| body.contains("self.prune_rows") && !body.contains("self.prune_rows ="))
         .map(|(name, _)| name.clone())
         .collect();
+    // Sorted first: `dedup` drops only CONSECUTIVE repeats, and the file list
+    // it was collected over is sorted by path, not by name, so two files
+    // declaring the same reader with a third name between them would both
+    // survive and meet the floor below with one method fewer than it claims.
+    derived.sort();
     derived.dedup();
     let mut frontier = derived.clone();
     while !frontier.is_empty() {
@@ -32625,15 +32634,17 @@ fn reconciler_removal_methods() -> Vec<String> {
 /// construction site's binding eventually reaches `Reconciler::apply` is a
 /// question about its callees, not about the statement, so every site answers
 /// instead and a site that removes nothing says so in its hatch, whose claim
-/// the walk then checks against the reconciler's own removal methods. Neither
-/// the setter's name nor the constructors' are spelled here.
+/// the walk then checks against the reconciler's own removal methods, over the
+/// binding's own function and over the call graph of the file it sits in.
+/// Neither the setter's name nor the constructors' are spelled here.
 ///
 /// Two file names are excluded. A `tests.rs` is a test region whole, so
 /// `production_slice_of` has no `#[cfg(test)]` to cut at and a fixture's own
 /// reconciler would be judged as production. `test_helpers.rs` is the shipped
-/// harness, which is not a route any command takes; it builds one reconciler,
-/// in `apply_with_filter`, and that site mirrors `cmd_apply`'s scope test
-/// directly rather than through this walk.
+/// harness, which is not a route any command takes; it builds three
+/// reconcilers (`plan`, `plan_with_actions`, `apply_with_filter`) and only the
+/// last reaches an apply, where it mirrors `cmd_apply`'s scope test directly
+/// rather than through this walk.
 #[test]
 fn every_reconciler_a_production_site_builds_says_which_picture_it_saw() {
     const HATCH: &str = "// whole-picture-ok:";
@@ -32722,12 +32733,35 @@ fn every_reconciler_a_production_site_builds_says_which_picture_it_saw() {
                     // The claim is about the binding's callees, so it is asked
                     // of the enclosing function against the flag's own readers.
                     let enclosing = enclosing_fn_text(&raw_lines, n.saturating_sub(1));
-                    let reached: Vec<&String> = removals
+                    let mut reached: Vec<String> = removals
                         .iter()
                         .filter(|m| {
                             cfgd_core::test_helpers::reaches_fn(&enclosing, m, Some("Reconciler"))
                         })
+                        .cloned()
                         .collect();
+                    // The reach the text alone misses is a helper in this same
+                    // file: a verb growing a `plan_and_apply` beside it removes
+                    // rows through a name its own body never spells. The file's
+                    // own call graph answers that, seeded with the flag's
+                    // readers, and a seed is not a reach of its own.
+                    let declarations = cfgd_core::test_helpers::fn_declarations(&production);
+                    let seeds: Vec<(String, Option<String>)> = removals
+                        .iter()
+                        .map(|m| (m.clone(), Some("Reconciler".to_string())))
+                        .collect();
+                    let reaching = cfgd_core::test_helpers::callers_reaching(&declarations, &seeds);
+                    let held = cfgd_core::test_helpers::declared_fn_name(
+                        &cfgd_core::test_helpers::code_line(
+                            enclosing.lines().next().unwrap_or_default(),
+                        ),
+                    );
+                    if let Some(name) = held.filter(|name| !removals.contains(name))
+                        && reaching.iter().any(|(caller, _)| *caller == name)
+                        && !reached.contains(&name)
+                    {
+                        reached.push(name);
+                    }
                     match reached.is_empty() {
                         true => answered += 1,
                         false => offenders.push(format!(
@@ -32770,21 +32804,65 @@ fn every_reconciler_a_production_site_builds_says_which_picture_it_saw() {
     );
 }
 
-/// No `tests.rs` declares itself a test region a second time.
+/// No file that IS test scaffolding declares itself a test region again.
 ///
-/// A `tests.rs` is included by its parent under `#[cfg(test)]`, so an attribute
-/// inside it is always true. Three population walks skip such a file on the
+/// Scaffolding is included by its parent under `#[cfg(test)]`, so an attribute
+/// inside it is always true. Four population walks skip such a file on the
 /// strength of that property, and `production_slice_of`'s per-file floor for
 /// any file where it is false collapses to the lines above the first one: the
 /// walk then reads a narrower tree than it reports and passes.
+///
+/// The class is "a file that IS scaffolding", not "a file named `tests.rs`",
+/// so the population is every crate of the workspace, judged by the predicate
+/// those four walks share. A `test_helpers.rs` is scaffolding that ALSO
+/// carries its own inline test module, so it is named out here exactly as it
+/// is named out there.
 #[test]
 fn no_tests_file_carries_a_cfg_test_attribute_of_its_own() {
-    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let mut read = 0usize;
+    /// Every crate of the workspace, each with the floor of scaffolding files
+    /// its own `src/` must yield. Per root, because an aggregate is one tree's
+    /// count plus another's and the larger tree alone clears it; the two
+    /// crates holding one file each floor AT their count, and `cfgd-schema`
+    /// holds none, which the assertion against `crates/` is what defends.
+    const WALK_ROOTS: &[(&str, usize)] = &[
+        ("cfgd", 26),
+        ("cfgd-core", 38),
+        ("cfgd-crd", 1),
+        ("cfgd-csi", 1),
+        ("cfgd-operator", 15),
+        ("cfgd-schema", 0),
+    ];
+
+    let crates_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let mut present: Vec<String> = std::fs::read_dir(&crates_dir)
+        .expect("the workspace's crate directory is readable")
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.path().join("src").is_dir())
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    present.sort();
+    let named: Vec<String> = WALK_ROOTS.iter().map(|(k, _)| (*k).to_string()).collect();
+    assert_eq!(
+        present, named,
+        "a crate joined or left the workspace, so the floors above cover a \
+         different set of trees than the walk reads"
+    );
+
     let mut offenders: Vec<String> = Vec::new();
-    for root in [manifest.join("src"), manifest.join("../cfgd-core/src")] {
-        for path in rust_sources_under(&root) {
-            if path.file_name().is_none_or(|n| n != "tests.rs") {
+    for (krate, floor) in WALK_ROOTS {
+        let mut read = 0usize;
+        for path in rust_sources_under(&crates_dir.join(krate).join("src")) {
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default()
+                .to_string();
+            // A file that IS test scaffolding carries no `#[cfg(test)]` for a
+            // production slice to cut at. `test_helpers.rs` is the one that
+            // holds an inline test module as well, so it is named out.
+            let scaffolding =
+                name.starts_with("tests") || path.parent().is_some_and(|p| p.ends_with("tests"));
+            if !scaffolding || name == "test_helpers.rs" {
                 continue;
             }
             read += 1;
@@ -32800,16 +32878,123 @@ fn no_tests_file_carries_a_cfg_test_attribute_of_its_own() {
                 }
             }
         }
+        assert!(
+            read >= *floor,
+            "the walk read {read} of `{krate}`'s test regions, fewer than it holds"
+        );
     }
-    assert!(
-        read >= 40,
-        "the walk read {read} test regions, fewer than the workspace holds"
-    );
     assert!(
         offenders.is_empty(),
         "a test region declares itself a second time, so every walk skipping it \
          on that property and every per-file floor below it is reading less than \
          it reports:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// Every walk reading more than one crate root reports a count per root.
+///
+/// An aggregate floor is one root's own count plus the other's, so the whole
+/// second tree can stop contributing and the totals still clear it: the walk
+/// then proves its rule over half the workspace while reporting that it proved
+/// it over all of it. A walk whose second root legitimately contributes nothing
+/// says so instead, and is read anyway so a member moving there joins it.
+///
+/// The roots a function names are read off `crates/`, so a crate joining the
+/// workspace joins the tell with it. Three spellings name one: a sibling root
+/// as a whole argument (`"../<crate>/src"`), a crate named in a root list
+/// (`"<crate>"`), and this crate's own root (`join("src")`), which is the same
+/// root its own name gives — so a walk over `crates/cfgd/src/cli` alone names
+/// one root twice and stays out. Every tell is composed rather than spelled,
+/// which is what keeps this walk out of the population it derives.
+#[test]
+fn every_two_root_walk_guards_each_root_it_reads() {
+    const HATCH: &str = "// one-root-population-ok:";
+    /// Under today's 17, so retiring a walk is free, and far enough over half
+    /// that the tell going blind is not.
+    const FLOOR: usize = 16;
+    /// The spellings a per-root count is written in, seeded from the walks that
+    /// already carry one. A floor spelled a new way joins this list; an
+    /// aggregate `FLOOR_FILES: usize` deliberately matches none of them.
+    const PER_ROOT_FLOORS: [&str; 3] = ["per_root", "FLOOR_FILES: [", "WALK_ROOTS"];
+
+    let segment = "src";
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let own = manifest
+        .file_name()
+        .and_then(|n| n.to_str())
+        .expect("this crate's own directory is named")
+        .to_string();
+    let mut crates: Vec<String> = std::fs::read_dir(manifest.join(".."))
+        .expect("the workspace's crate directory is readable")
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.path().join(segment).is_dir())
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    crates.sort();
+    assert!(
+        crates.len() >= 5,
+        "the walk found {crates:?}, fewer crate roots than this workspace holds"
+    );
+    let own_tell = format!("join(\"{segment}\")");
+    let roots_named = |text: &str| {
+        let mut named: Vec<&str> = crates
+            .iter()
+            .filter(|krate| {
+                text.contains(&format!("\"../{krate}/{segment}\""))
+                    || text.contains(&format!("\"{krate}\""))
+            })
+            .map(String::as_str)
+            .collect();
+        if text.contains(&own_tell) && !named.contains(&own.as_str()) {
+            named.push(&own);
+        }
+        named.len()
+    };
+
+    // The tells are string literals, so they are read off the raw rows: a
+    // literal-blanked line carries none of them. A root named in a comment
+    // joins the population, which is the safe direction — it asks for a count
+    // rather than dropping a walk that has one.
+    let src = cfgd_core::test_helpers::walked_file_body(&manifest.join("src/cli/tests.rs"));
+    let lines: Vec<&str> = src.lines().collect();
+    let mut spans: Vec<(usize, usize)> = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        if roots_named(line) == 0 {
+            continue;
+        }
+        if let Some(span) = enclosing_fn_span(&lines, i)
+            && !spans.contains(&span)
+        {
+            spans.push(span);
+        }
+    }
+    let mut population = 0usize;
+    let mut offenders: Vec<String> = Vec::new();
+    for (start, end) in spans {
+        let body = lines[start..=end].join("\n");
+        if roots_named(&body) < 2 {
+            continue;
+        }
+        population += 1;
+        if PER_ROOT_FLOORS.iter().any(|floor| body.contains(floor)) || body.contains(HATCH) {
+            continue;
+        }
+        let name = cfgd_core::test_helpers::declared_fn_name(&cfgd_core::test_helpers::code_line(
+            lines[start],
+        ))
+        .unwrap_or_default();
+        offenders.push(format!("src/cli/tests.rs:{}: {name}", start + 1));
+    }
+    assert!(
+        population >= FLOOR,
+        "the walk found {population} multi-root walks, fewer than this file holds"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a walk floored only in aggregate passes with a whole tree contributing \
+         nothing; each reports its own count per root, or carries \
+         `{HATCH} <why that root has no count of its own>`:\n{}",
         offenders.join("\n")
     );
 }
@@ -33119,30 +33304,48 @@ fn every_module_drift_id_names_the_file_it_stands_for() {
 /// are what a test SHOULD do.
 #[test]
 fn every_resolved_package_producer_routes_through_the_one_resolver() {
+    // Per root: the one resolver lives in `cfgd-core`, so a walk that stopped
+    // reading the binary crate's tree altogether would still find it and pass
+    // on an aggregate floor. Both counts sit far under today's, so a deletion
+    // does not trip them and a re-rooting does.
+    const FLOOR_FILES: [usize; 2] = [80, 90];
+
     let cfgd = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let mut files = rust_sources_under(&cfgd.join("src"));
-    files.extend(rust_sources_under(&cfgd.join("../cfgd-core/src")));
-    files.sort();
+    let roots = [cfgd.join("src"), cfgd.join("../cfgd-core/src")];
     let mut producers = Vec::new();
-    for path in files {
-        let name = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or_default();
-        if name == "tests.rs" || name == "test_helpers.rs" {
-            continue;
-        }
-        let production = cfgd_core::test_helpers::production_slice_of(&path);
-        for (i, line) in production.lines().enumerate() {
-            if line.contains("ResolvedPackage {") && !line.contains("pub struct ResolvedPackage") {
-                producers.push(format!(
-                    "{}:{}: {}",
-                    cfgd_core::to_posix_string(&path),
-                    i + 1,
-                    line.trim()
-                ));
+    for (r, root) in roots.iter().enumerate() {
+        let mut seen = 0usize;
+        let mut files = rust_sources_under(root);
+        files.sort();
+        for path in files {
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default();
+            if name == "tests.rs" || name == "test_helpers.rs" {
+                continue;
+            }
+            seen += 1;
+            let production = cfgd_core::test_helpers::production_slice_of(&path);
+            for (i, line) in production.lines().enumerate() {
+                if line.contains("ResolvedPackage {")
+                    && !line.contains("pub struct ResolvedPackage")
+                {
+                    producers.push(format!(
+                        "{}:{}: {}",
+                        cfgd_core::to_posix_string(&path),
+                        i + 1,
+                        line.trim()
+                    ));
+                }
             }
         }
+        assert!(
+            seen >= FLOOR_FILES[r],
+            "the walk read {seen} files under {} — under the floor, so it is \
+             looking at the wrong root",
+            root.display()
+        );
     }
     assert!(
         producers.iter().all(|p| p.contains("modules/resolve.rs")),
@@ -38345,6 +38548,13 @@ fn opens_a_serialized_span(line: &str, serializing: &std::collections::BTreeSet<
 /// the post-edit hook reads those on the way in.
 #[test]
 fn no_serialized_payload_slot_renders_a_path_with_the_host_separator() {
+    // Per root, because a serialized payload is composed in both crates: an
+    // aggregate file floor is the larger tree's own count, so the smaller one
+    // could stop being read entirely and the total still clear it. The span
+    // floor stays whole-walk — it answers whether the tell still finds the
+    // population, not which tree it found it in.
+    const FLOOR_FILES: [usize; 2] = [80, 90];
+
     let serializing = serializing_type_names();
     let roots = [
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
@@ -38353,8 +38563,9 @@ fn no_serialized_payload_slot_renders_a_path_with_the_host_separator() {
     let mut offenders: Vec<String> = Vec::new();
     let mut files = 0usize;
     let mut spans = 0usize;
-    for root in roots {
-        for path in rust_sources_under(&root) {
+    for (r, root) in roots.iter().enumerate() {
+        let before = files;
+        for path in rust_sources_under(root) {
             if path
                 .file_name()
                 .is_some_and(|n| n == "tests.rs" || n == "test_helpers.rs")
@@ -38392,6 +38603,13 @@ fn no_serialized_payload_slot_renders_a_path_with_the_host_separator() {
                 }
             }
         }
+        assert!(
+            files - before >= FLOOR_FILES[r],
+            "the walk read {} production sources under {} — under the floor, so it \
+             is looking at the wrong root",
+            files - before,
+            root.display()
+        );
     }
     assert!(
         offenders.is_empty(),
@@ -38399,10 +38617,6 @@ fn no_serialized_payload_slot_renders_a_path_with_the_host_separator() {
          `cfgd_core::to_posix_string` (or `to_posix_fs_key` for a stored key a restore \
          reopens), or says why this host's separators are right with `{NATIVE_HATCH} <why>`:\n{}",
         offenders.join("\n")
-    );
-    assert!(
-        files >= 200,
-        "the walk read {files} production sources; it is looking at the wrong root"
     );
     assert!(
         spans >= 500,
