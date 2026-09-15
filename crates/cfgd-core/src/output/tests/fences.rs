@@ -4427,28 +4427,27 @@ fn every_production_spawn_in_the_workspace_goes_through_the_one_ladder() {
     const TELL: &str = ".spawn()";
     /// The seam's own two spawns, which cannot route through themselves.
     const SEAM: &str = "util/process.rs";
-    /// Every crate root the walk must still be reading, workspace-relative; a
-    /// renamed or moved one leaves its spawns judged by nobody.
-    const SPAWN_WALK_ROOTS: &[&str] = &[
-        "crates/cfgd-core/src",
-        "crates/cfgd-crd/src",
-        "crates/cfgd-csi/src",
-        "crates/cfgd-operator/src",
-        "crates/cfgd-schema/src",
-        "crates/cfgd/src",
+    /// Every crate root the walk must still be reading, workspace-relative,
+    /// with the count each holds today; a renamed or moved one leaves its
+    /// spawns judged by nobody, and an aggregate floor is one tree's count plus
+    /// another's, which the biggest tree alone clears. At today's counts, so
+    /// deleting a file is free.
+    const SPAWN_WALK_ROOTS: &[(&str, usize)] = &[
+        ("crates/cfgd-core/src", 191),
+        ("crates/cfgd-crd/src", 1),
+        ("crates/cfgd-csi/src", 8),
+        ("crates/cfgd-operator/src", 57),
+        ("crates/cfgd-schema/src", 2),
+        ("crates/cfgd/src", 145),
     ];
 
     let root = crate::test_helpers::workspace_root();
-    let mut read_roots: Vec<String> = Vec::new();
-    let mut files = 0usize;
+    let mut short_roots: Vec<String> = Vec::new();
     let mut seam_spawns = 0usize;
     let mut offenders: Vec<String> = Vec::new();
-    for named in SPAWN_WALK_ROOTS {
+    for (named, floor) in SPAWN_WALK_ROOTS {
         let dir = root.join(named);
-        if !dir.is_dir() {
-            continue;
-        }
-        read_roots.push((*named).to_string());
+        let mut files = 0usize;
         for path in crate::test_helpers::rust_sources_under(&dir) {
             let name = path
                 .file_name()
@@ -4482,19 +4481,20 @@ fn every_production_spawn_in_the_workspace_goes_through_the_one_ladder() {
                 offenders.push(format!("{}:{}: {}", path.display(), n, line.trim()));
             }
         }
+        if files < *floor {
+            short_roots.push(format!("{named} read {files}, under its floor of {floor}"));
+        }
     }
-    let unread: Vec<&&str> = SPAWN_WALK_ROOTS
-        .iter()
-        .filter(|named| !read_roots.iter().any(|read| read == *named))
-        .collect();
     assert!(
-        unread.is_empty(),
-        "the walk no longer reads {unread:?}; it read {read_roots:?}"
+        short_roots.is_empty(),
+        "a root the walk reports as read contributed less than it holds, so its spawns are \
+         judged by nobody:\n{}",
+        short_roots.join("\n")
     );
     assert!(
-        files >= 390 && seam_spawns >= 2,
-        "the walk read {files} files and found {seam_spawns} spawns in the seam itself — \
-         too few to be the population, or the tell no longer names what a spawn looks like"
+        seam_spawns >= 2,
+        "the walk found {seam_spawns} spawns in the seam itself — the tell no longer names \
+         what a spawn looks like"
     );
     assert!(
         offenders.is_empty(),
