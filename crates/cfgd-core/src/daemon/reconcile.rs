@@ -555,6 +555,11 @@ fn reconcile_tick(
         .with_config_dir(&config_dir)
         .withholding_env_surface(pending_exclusions.withholds_env_surface())
         .withholding_rows(&pending_exclusions)
+        // A per-module tick narrows its plan to one module and probes nothing
+        // else, so it sees the same partial picture a `cfgd apply --module`
+        // does: it may neither retire another layer's row nor read the absence
+        // of an env action as the env file already holding every entry.
+        .pruning_managed_resources(module_filter.is_none())
         .diffing_installed(&pkg_cx);
 
     // ONE file manager per tick: the manager that planned is the manager the

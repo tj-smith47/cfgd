@@ -8063,6 +8063,7 @@ fn a_withheld_session_publish_leaves_no_env_session_row_while_its_siblings_recor
             ],
             &make_empty_resolved(),
             &[],
+            false,
         )
         .unwrap();
 
@@ -8141,6 +8142,7 @@ fn a_result_the_run_never_attempted_writes_no_row_and_heals_none() {
             }],
             &make_empty_resolved(),
             &[],
+            false,
         )
         .unwrap();
 
@@ -31398,6 +31400,233 @@ fn a_scoped_apply_leaves_another_layers_env_row_standing() {
         acme.contains(&entry(super::ENV_VAR_RESOURCE_TYPE, "ACME_HOME"))
             && acme.contains(&entry(super::ALIAS_RESOURCE_TYPE, "acmeup")),
         "a scoped apply retired a row for an entry it never resolved: {acme:?}"
+    );
+}
+
+/// The env entries this reconciler would record, one layer and one alias.
+///
+/// Shared by the three pins below, which differ only in what the run did with
+/// the surface those entries live in.
+#[cfg(test)]
+fn resolved_with_one_env_entry_and_alias() -> crate::config::ResolvedProfile {
+    let mut resolved = make_empty_resolved();
+    resolved.layers[0].spec.env = vec![EnvVar {
+        name: "LOCAL_EDITOR".to_string(),
+        value: "nvim".to_string(),
+        platforms: vec![],
+    }];
+    resolved.layers[0].spec.aliases = vec![ShellAlias {
+        name: "ll".to_string(),
+        command: "ls -la".to_string(),
+        platforms: vec![],
+    }];
+    resolved.merged = merge_layers(&resolved.layers);
+    // The live-session refresh this scope excludes would shell out at the
+    // session manager; the rows under test come from the file write.
+    resolved.merged.env_scope = EnvScope::Interactive;
+    resolved
+}
+
+/// The `env-var` and `alias` rows a check left standing, as the store holds them.
+#[cfg(test)]
+fn standing_entry_rows(state: &crate::state::StateStore) -> Vec<(String, String)> {
+    let mut rows: Vec<(String, String)> = state
+        .unresolved_drift()
+        .unwrap()
+        .into_iter()
+        .map(|e| (e.resource_type, e.resource_id))
+        .collect();
+    rows.sort();
+    rows
+}
+
+/// Record the per-item rows a check over an unconverged env surface leaves.
+#[cfg(test)]
+fn record_entry_drift(state: &crate::state::StateStore) {
+    state
+        .record_drift(
+            super::ENV_VAR_RESOURCE_TYPE,
+            "LOCAL_EDITOR",
+            Some("LOCAL_EDITOR=nvim"),
+            Some("missing or changed"),
+            "local",
+        )
+        .unwrap();
+    state
+        .record_drift(
+            super::ALIAS_RESOURCE_TYPE,
+            "ll",
+            Some("ll=ls -la"),
+            Some("missing or changed"),
+            "local",
+        )
+        .unwrap();
+}
+
+/// An apply whose env write failed converged nothing, so the entries' rows stand.
+///
+/// Resolving a `env-var` / `alias` row is a claim that the entry is in the file
+/// the per-item check reads. A failed write is the run finding out it is not,
+/// and the check that recorded the row is still the most accurate thing known
+/// about the machine — so `cfgd status` must keep reporting it rather than
+/// call the entries `Synced` off a write that errored.
+#[test]
+#[serial_test::serial]
+fn a_failed_primary_env_write_leaves_its_entry_rows_standing() {
+    let tmp_home = tempfile::tempdir().unwrap();
+    let _home = crate::with_test_home_guard(tmp_home.path());
+    let state = test_state();
+    let registry = ProviderRegistry::new();
+    record_entry_drift(&state);
+
+    // A directory where the file goes: the write fails on every platform, with
+    // nothing about the run's scope or its declared set changed.
+    std::fs::create_dir_all(super::primary_env_file(tmp_home.path())).unwrap();
+
+    let resolved = resolved_with_one_env_entry_and_alias();
+    let reconciler = Reconciler::new(&registry, &state);
+    let plan = reconciler
+        .plan(&resolved, vec![], vec![], vec![], ReconcileContext::Apply)
+        .unwrap();
+    let printer = test_printer();
+    let result = reconciler
+        .apply(
+            &plan,
+            &resolved,
+            tmp_home.path(),
+            &printer,
+            None,
+            &[],
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .unwrap();
+    assert_ne!(
+        result.status,
+        ApplyStatus::Success,
+        "the fixture no longer fails the primary env write"
+    );
+    assert_eq!(
+        standing_entry_rows(&state),
+        vec![
+            (super::ALIAS_RESOURCE_TYPE.to_string(), "ll".to_string()),
+            (
+                super::ENV_VAR_RESOURCE_TYPE.to_string(),
+                "LOCAL_EDITOR".to_string()
+            ),
+        ],
+        "an apply that could not write the file healed the entries' findings"
+    );
+}
+
+/// A converged apply resolves the entry rows; one withholding the surface does not.
+///
+/// The env engine plans no action for a file that already holds every declared
+/// entry, so the run that vouches for those entries is the one that looked at
+/// the whole desired set, ran to its end and found nothing to write. A run
+/// holding the surface back for a pending source decision reaches the same
+/// empty plan for the opposite reason — it declined to touch the file — and
+/// the two must not settle the same way.
+#[test]
+#[serial_test::serial]
+fn a_converged_apply_resolves_its_entry_rows_unless_it_withheld_the_surface() {
+    let tmp_home = tempfile::tempdir().unwrap();
+    let _home = crate::with_test_home_guard(tmp_home.path());
+    let state = test_state();
+    let registry = ProviderRegistry::new();
+    let resolved = resolved_with_one_env_entry_and_alias();
+    let printer = test_printer();
+
+    let apply = |reconciler: &Reconciler<'_>| {
+        let plan = reconciler
+            .plan(&resolved, vec![], vec![], vec![], ReconcileContext::Apply)
+            .unwrap();
+        let result = reconciler
+            .apply(
+                &plan,
+                &resolved,
+                tmp_home.path(),
+                &printer,
+                None,
+                &[],
+                ReconcileContext::Apply,
+                false,
+                None,
+                &crate::AbortFlag::new(),
+            )
+            .unwrap();
+        assert_eq!(result.status, ApplyStatus::Success);
+    };
+
+    // The first apply writes the surface; the second finds it converged.
+    apply(&Reconciler::new(&registry, &state));
+    record_entry_drift(&state);
+    apply(&Reconciler::new(&registry, &state));
+    assert!(
+        standing_entry_rows(&state).is_empty(),
+        "a whole-picture apply over a converged surface left its entries' findings open: {:?}",
+        standing_entry_rows(&state)
+    );
+
+    record_entry_drift(&state);
+    apply(&Reconciler::new(&registry, &state).withholding_env_surface(true));
+    assert_eq!(
+        standing_entry_rows(&state),
+        vec![
+            (super::ALIAS_RESOURCE_TYPE.to_string(), "ll".to_string()),
+            (
+                super::ENV_VAR_RESOURCE_TYPE.to_string(),
+                "LOCAL_EDITOR".to_string()
+            ),
+        ],
+        "a run that withheld the env surface healed findings about entries in it"
+    );
+}
+
+/// A signal-aborted apply makes no claim about entries it never reached.
+///
+/// Its results are a PREFIX of its plan, so the absence of an env action there
+/// is the abort rather than a converged file, and the same reading that heals
+/// a finished run's rows would heal these blind.
+#[test]
+#[serial_test::serial]
+fn an_aborted_apply_leaves_the_entry_rows_it_never_reached_standing() {
+    let tmp_home = tempfile::tempdir().unwrap();
+    let _home = crate::with_test_home_guard(tmp_home.path());
+    let state = test_state();
+    let registry = ProviderRegistry::new();
+    let resolved = resolved_with_one_env_entry_and_alias();
+    let reconciler = Reconciler::new(&registry, &state);
+    let apply_id = state
+        .record_apply("test", "hash", ApplyStatus::Aborted, None)
+        .unwrap();
+
+    record_entry_drift(&state);
+    reconciler
+        .record_managed_resources(apply_id, &[], &resolved, &[], true)
+        .unwrap();
+    assert_eq!(
+        standing_entry_rows(&state),
+        vec![
+            (super::ALIAS_RESOURCE_TYPE.to_string(), "ll".to_string()),
+            (
+                super::ENV_VAR_RESOURCE_TYPE.to_string(),
+                "LOCAL_EDITOR".to_string()
+            ),
+        ],
+        "an aborted apply healed findings about entries it never wrote"
+    );
+    // The same empty results from a run that reached its end: the file holds
+    // every entry, which is what makes this the converged reading.
+    reconciler
+        .record_managed_resources(apply_id, &[], &resolved, &[], false)
+        .unwrap();
+    assert!(
+        standing_entry_rows(&state).is_empty(),
+        "a finished run over a converged surface left its entries' findings open: {:?}",
+        standing_entry_rows(&state)
     );
 }
 

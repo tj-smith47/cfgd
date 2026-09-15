@@ -1867,7 +1867,7 @@ impl<'a> super::Reconciler<'a> {
         // for the actions that did run, then record an `Aborted` marker and
         // return the signal exit code. The lock releases via the caller's Drop.
         if let Some(code) = aborted_code {
-            self.record_managed_resources(apply_id, &results, resolved, module_actions)?;
+            self.record_managed_resources(apply_id, &results, resolved, module_actions, true)?;
             self.update_module_state(module_actions, Some(apply_id), &results)?;
             let result = ApplyResult {
                 action_results: results,
@@ -2266,6 +2266,7 @@ impl<'a> super::Reconciler<'a> {
                 &result.action_results,
                 resolved,
                 module_actions,
+                false,
             )?;
             // Update module state and file manifests for successfully applied modules
             self.update_module_state(module_actions, Some(apply_id), &result.action_results)?;
@@ -2326,22 +2327,35 @@ impl<'a> super::Reconciler<'a> {
     /// actions in `results`. Shared by the normal completion path and the
     /// cooperative-abort path, which both need state to reflect exactly the
     /// resources that actually changed.
+    ///
+    /// `aborted` is which of those two callers this is. A run a signal stopped
+    /// between actions holds a `results` that is a PREFIX of its plan, so the
+    /// absence of an action there says nothing about what the plan carried,
+    /// and the env entries below cannot read it as convergence.
     pub(super) fn record_managed_resources(
         &self,
         apply_id: i64,
         results: &[ActionResult],
         resolved: &ResolvedProfile,
         modules: &[ResolvedModule],
+        aborted: bool,
     ) -> Result<()> {
         let package_layers = PackageLayers::of(resolved, self.registry);
+        // Whether this run carried an action for the file the per-item
+        // `env-var`/`alias` checks read. A failed or withheld write counts:
+        // the plan named the surface and the run did not converge it, which
+        // is exactly when the entries' rows must stand.
+        let mut saw_primary_env_action = false;
         for result in results {
             if !result.success {
+                saw_primary_env_action |= self.targets_primary_env_file(&result.description);
                 continue;
             }
             // An action this host was never going to run put nothing on the
             // machine: it manages no resource and heals no finding. The plan
             // already priced it out of the header's total; the store must agree.
             if result.not_attempted.is_some() {
+                saw_primary_env_action |= self.targets_primary_env_file(&result.description);
                 continue;
             }
 
@@ -2476,8 +2490,10 @@ impl<'a> super::Reconciler<'a> {
                 // one whose entries every dialect agrees on. A write of
                 // `environment.d` or the launchd plist answers nothing about
                 // whether an entry landed where it was verified.
-                if rid == to_posix_string(super::primary_env_file(&self.home)) {
-                    self.settle_env_items(apply_id, resolved, modules)?;
+                if self.is_primary_env_file(&rid) {
+                    saw_primary_env_action = true;
+                    self.record_env_items(apply_id, resolved, modules)?;
+                    self.resolve_env_items(apply_id, resolved, modules)?;
                 }
             }
             if let Some(module) =
@@ -2490,13 +2506,37 @@ impl<'a> super::Reconciler<'a> {
         // converged machine plans no env action at all, so an apply whose env
         // surface already holds every entry recorded none of them and
         // `cfgd source remove` could not find what a subscription had put on
-        // the machine. A run that saw the whole picture settles them here,
+        // the machine. A run that saw the whole picture records them here,
         // whether or not it rewrote the file; a scoped run saw a partial one
-        // and settles nothing it never looked at.
+        // and records nothing it never looked at.
         if self.prune_rows {
-            self.settle_env_items(apply_id, resolved, modules)?;
+            self.record_env_items(apply_id, resolved, modules)?;
+            // Resolving is a claim about the MACHINE, which recording is not:
+            // it says the entries the per-item checks read are on it now. This
+            // run may make that claim only where it converged the primary env
+            // surface itself — the successful write above — or where it saw
+            // the whole picture, ran to its end with the surface in its remit
+            // and found no action to take, which is the file already holding
+            // every declared entry. A run cut short, one whose write failed
+            // and one that held the surface back all found out nothing.
+            if !aborted && !self.withhold_env_surface && !saw_primary_env_action {
+                self.resolve_env_items(apply_id, resolved, modules)?;
+            }
         }
         Ok(())
+    }
+
+    /// Whether `rid` names the primary env file — the one surface the per-item
+    /// `env-var` and `alias` checks read.
+    fn is_primary_env_file(&self, rid: &str) -> bool {
+        rid == to_posix_string(super::primary_env_file(&self.home))
+    }
+
+    /// Whether an action result names that surface, asked of a result the
+    /// recording loop turned away before it derived a resource id.
+    fn targets_primary_env_file(&self, description: &str) -> bool {
+        let (rtype, rid) = parse_resource_from_description(env_result_key(description));
+        rtype == ENV_RESOURCE_TYPE && self.is_primary_env_file(&rid)
     }
 
     /// Resolve the per-file `module` drift rows a successful file deployment
@@ -2548,8 +2588,42 @@ impl<'a> super::Reconciler<'a> {
         self.state.resolve_drift_keys(apply_id, &keys)
     }
 
-    /// Record one tracking row per declared env var and alias, and resolve the
-    /// per-item `env-var`/`alias` drift rows the apply settled.
+    /// The declared env vars and aliases, each with the layer that declared it.
+    ///
+    /// The one derivation both halves below read, so a row this apply records
+    /// and a row it resolves can never name two different sets.
+    fn declared_env_items(
+        &self,
+        resolved: &ResolvedProfile,
+        modules: &[ResolvedModule],
+    ) -> Vec<(&'static str, String, String)> {
+        let (env, aliases, origins) = super::verify::merge_module_env_aliases(
+            &resolved.merged.env,
+            &resolved.merged.aliases,
+            &resolved.merged.entry_owners,
+            modules,
+        );
+        let layers = EntryLayers::of(resolved, modules);
+        let mut items = Vec::with_capacity(env.len() + aliases.len());
+        for ev in &env {
+            items.push((
+                super::ENV_VAR_RESOURCE_TYPE,
+                ev.name.clone(),
+                layers.layer(origins.env_owner(&ev.name)),
+            ));
+        }
+        for alias in &aliases {
+            items.push((
+                super::ALIAS_RESOURCE_TYPE,
+                alias.name.clone(),
+                layers.layer(origins.alias_owner(&alias.name)),
+            ));
+        }
+        items
+    }
+
+    /// Record one tracking row per declared env var and alias, and retire the
+    /// rows of entries no layer declares any more.
     ///
     /// The env file, its rc line and the live session are artifacts cfgd writes
     /// whole out of every layer, so their rows record cfgd as the writer and
@@ -2560,6 +2634,38 @@ impl<'a> super::Reconciler<'a> {
     /// declared set is also what prunes: an entry no layer declares any more
     /// leaves the file on this very write, so its row leaves with it.
     ///
+    /// Read off the DECLARED set rather than off an action, so a converged
+    /// machine — which plans no env action at all — records the same rows a
+    /// rewriting one does. Both facts are answers about the CONFIG, which is
+    /// why this half runs wherever the run's scope resolved the whole of it.
+    fn record_env_items(
+        &self,
+        apply_id: i64,
+        resolved: &ResolvedProfile,
+        modules: &[ResolvedModule],
+    ) -> Result<()> {
+        let items = self.declared_env_items(resolved, modules);
+        for (rtype, name, layer) in &items {
+            self.state
+                .upsert_managed_resource(rtype, name, layer, None, Some(apply_id))?;
+        }
+        // Retiring a row is a claim about the WHOLE desired set: an entry this
+        // run's scope never resolved is not an entry that left the config.
+        if self.prune_rows {
+            for rtype in [super::ENV_VAR_RESOURCE_TYPE, super::ALIAS_RESOURCE_TYPE] {
+                let names: Vec<String> = items
+                    .iter()
+                    .filter(|(t, _, _)| *t == rtype)
+                    .map(|(_, name, _)| name.clone())
+                    .collect();
+                self.state.prune_managed_resources_except(rtype, &names)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Resolve the per-item `env-var`/`alias` drift rows this apply converged.
+    ///
     /// `verify_env_items` records a drift row per declared entry, keyed by the
     /// entry's own name, but the action that heals every one of them is a
     /// single `env:write:<path>` whose description parses to
@@ -2569,62 +2675,22 @@ impl<'a> super::Reconciler<'a> {
     /// operand: the rows are resolved exactly as the file's own row is, so the
     /// stored `current` / `missing or changed` markers stay byte-exact.
     ///
-    /// Read off the DECLARED set rather than off an action, so a converged
-    /// machine — which plans no env action at all — records the same rows a
-    /// rewriting one does. The two callers are the primary file's own write
-    /// and the once-per-apply settle a whole-picture run closes on.
-    fn settle_env_items(
+    /// Unlike its recording half this is a claim about the MACHINE — the
+    /// entries are in the file a check will read — so a caller makes it only
+    /// where this run converged that file or found it already converged.
+    fn resolve_env_items(
         &self,
         apply_id: i64,
         resolved: &ResolvedProfile,
         modules: &[ResolvedModule],
     ) -> Result<()> {
-        let (env, aliases, origins) = super::verify::merge_module_env_aliases(
-            &resolved.merged.env,
-            &resolved.merged.aliases,
-            &resolved.merged.entry_owners,
-            modules,
-        );
-        let layers = EntryLayers::of(resolved, modules);
-        for ev in &env {
-            self.state.upsert_managed_resource(
-                super::ENV_VAR_RESOURCE_TYPE,
-                &ev.name,
-                &layers.layer(origins.env_owner(&ev.name)),
-                None,
-                Some(apply_id),
-            )?;
-        }
-        for alias in &aliases {
-            self.state.upsert_managed_resource(
-                super::ALIAS_RESOURCE_TYPE,
-                &alias.name,
-                &layers.layer(origins.alias_owner(&alias.name)),
-                None,
-                Some(apply_id),
-            )?;
-        }
-        let env_names: Vec<String> = env.iter().map(|ev| ev.name.clone()).collect();
-        let alias_names: Vec<String> = aliases.iter().map(|a| a.name.clone()).collect();
-        // Retiring a row is a claim about the WHOLE desired set: an entry this
-        // run's scope never resolved is not an entry that left the config.
-        if self.prune_rows {
-            self.state
-                .prune_managed_resources_except(super::ENV_VAR_RESOURCE_TYPE, &env_names)?;
-            self.state
-                .prune_managed_resources_except(super::ALIAS_RESOURCE_TYPE, &alias_names)?;
-        }
         // One statement for the whole merged set: a per-entry resolve is its own
         // index seek and its own statement per declared env var and alias,
         // inside the apply transaction, where the set-based form seeks once.
-        let keys: Vec<(String, String)> = env_names
+        let keys: Vec<(String, String)> = self
+            .declared_env_items(resolved, modules)
             .into_iter()
-            .map(|name| (super::ENV_VAR_RESOURCE_TYPE.to_string(), name))
-            .chain(
-                alias_names
-                    .into_iter()
-                    .map(|name| (super::ALIAS_RESOURCE_TYPE.to_string(), name)),
-            )
+            .map(|(rtype, name, _)| (rtype.to_string(), name))
             .collect();
         self.state.resolve_drift_keys(apply_id, &keys)
     }

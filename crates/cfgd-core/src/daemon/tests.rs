@@ -13499,6 +13499,12 @@ spec:
     /// Driven through the real tick over a real config tree, so the
     /// `kept_rows` wiring (scope, exclusions, re-find) is what is pinned,
     /// not the predicate alone.
+    ///
+    /// The module declares a file as well as its env var, so the narrowed plan
+    /// carries one real action and the tick APPLIES. A module declaring env
+    /// alone narrows to an empty plan, the tick settles `NothingToDo` and the
+    /// row stands because nothing ran — which passes whatever the recording
+    /// path does with the entries.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_scoped_tick_keeps_an_owned_env_row_a_full_tick_heals() {
         let tmp = tempfile::TempDir::new().unwrap();
@@ -13517,9 +13523,15 @@ spec:
         .unwrap();
         let module_dir = tmp.path().join("modules").join("envmod");
         std::fs::create_dir_all(&module_dir).unwrap();
+        std::fs::write(module_dir.join("app.conf"), "from the module\n").unwrap();
+        // The target does not exist, so the narrowed plan carries its deploy.
+        let deploy_target = tmp.path().join("deploy").join("app.conf");
         std::fs::write(
             module_dir.join("module.yaml"),
-            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: envmod\nspec:\n  env:\n    - name: EDITOR\n      value: vim\n",
+            format!(
+                "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: envmod\nspec:\n  env:\n    - name: EDITOR\n      value: vim\n  files:\n    - source: app.conf\n      target: {}\n      strategy: Copy\n",
+                crate::to_posix_string(&deploy_target)
+            ),
         )
         .unwrap();
         let state_dir = tmp.path().join("state");
@@ -13575,6 +13587,10 @@ spec:
         };
 
         tick(Some("envmod")).await.unwrap();
+        assert!(
+            deploy_target.is_file(),
+            "the scoped tick applied nothing, so its narrowed plan was empty"
+        );
         assert_eq!(
             standing(),
             vec![("env-var".to_string(), "EDITOR".to_string())],
