@@ -879,6 +879,218 @@ mod tests {
         );
     }
 
+    /// A local git source named `acme` whose profile declares one env var and
+    /// one alias of its own, subscribed to by a config whose local `default`
+    /// profile declares a pair of its own. Returns the `Cli` and the path of
+    /// that local profile.
+    fn seed_source_declaring_entries(dir: &std::path::Path) -> (Cli, std::path::PathBuf) {
+        let repo_dir = dir.join("source-repo");
+        std::fs::create_dir_all(&repo_dir).expect("mk source repo");
+        for args in [
+            ["init", "-b", "master"].as_slice(),
+            ["config", "user.email", "test@example.com"].as_slice(),
+            ["config", "user.name", "Test"].as_slice(),
+        ] {
+            cfgd_core::git_cmd_local()
+                .args(args)
+                .current_dir(&repo_dir)
+                .output()
+                .expect("git");
+        }
+        std::fs::write(
+            repo_dir.join("cfgd-source.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: ConfigSource\nmetadata:\n  name: acme\nspec:\n  provides:\n    profiles:\n      - team\n",
+        )
+        .expect("write source manifest");
+        let source_profiles = repo_dir.join("profiles");
+        std::fs::create_dir_all(&source_profiles).expect("mk source profiles");
+        std::fs::write(
+            source_profiles.join("team.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: team\nspec:\n  env:\n    - name: ACME_HOME\n      value: /opt/acme\n  aliases:\n    - name: acmed\n      command: acme deploy\n",
+        )
+        .expect("write source profile");
+        for args in [["add", "."].as_slice(), ["commit", "-m", "init"].as_slice()] {
+            cfgd_core::git_cmd_local()
+                .args(args)
+                .current_dir(&repo_dir)
+                .output()
+                .expect("git");
+        }
+
+        let mut cli = cli_with_seeded_config(dir);
+        cli.cache_dir = Some(dir.join("cache"));
+        std::fs::write(
+            &cli.config,
+            format!(
+                "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n  sources:\n    - name: acme\n      origin:\n        type: Git\n        url: {}\n        branch: master\n      subscription:\n        profile: team\n",
+                cfgd_core::to_posix_string(&repo_dir)
+            ),
+        )
+        .expect("write config");
+
+        let profiles_dir = dir.join("profiles");
+        std::fs::create_dir_all(&profiles_dir).expect("mk profiles");
+        let local_profile = profiles_dir.join("default.yaml");
+        std::fs::write(
+            &local_profile,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  env:\n    - name: MY_EDITOR\n      value: vim\n  aliases:\n    - name: ll\n      command: ls -la\n",
+        )
+        .expect("write local profile");
+
+        let state = open_state_store(cli.state_dir.as_deref(), cli.scope()).expect("open state");
+        state
+            .upsert_config_source(&cfgd_core::state::ConfigSourceUpsert {
+                name: "acme",
+                origin_url: &cfgd_core::to_posix_string(&repo_dir),
+                origin_branch: "master",
+                last_commit: None,
+                source_version: None,
+                pinned_version: None,
+                last_commit_signed: None,
+            })
+            .expect("seed config_source");
+        for (rtype, id, owner) in [
+            (
+                cfgd_core::reconciler::ENV_VAR_RESOURCE_TYPE,
+                "ACME_HOME",
+                "acme",
+            ),
+            (cfgd_core::reconciler::ALIAS_RESOURCE_TYPE, "acmed", "acme"),
+            (
+                cfgd_core::reconciler::ENV_VAR_RESOURCE_TYPE,
+                "MY_EDITOR",
+                "local",
+            ),
+            (cfgd_core::reconciler::ALIAS_RESOURCE_TYPE, "ll", "local"),
+        ] {
+            state
+                .upsert_managed_resource(rtype, id, owner, None, None)
+                .expect("seed entry row");
+        }
+        drop(state);
+
+        (cli, local_profile)
+    }
+
+    /// Fetch the source into this run's own cache, so the Keep arm's cache-only
+    /// composition has the source's declarations to read.
+    fn prime_source_cache(cli: &Cli) {
+        let (printer, _cap) = Printer::for_test_doc();
+        let ctx = RunContext::new(cli, &printer);
+        let (cfg, _profile_name, local) = ctx.config_and_profile().expect("resolve local profile");
+        crate::cli::helpers::compose_with_sources(
+            &ctx,
+            cfg,
+            local,
+            &printer,
+            true,
+            composition::ConstraintMode::Enforce,
+        )
+        .expect("prime the source cache");
+    }
+
+    fn entry_names(doc: &cfgd_core::config::ProfileDocument) -> (Vec<String>, Vec<String>) {
+        (
+            doc.spec.env.iter().map(|e| e.name.clone()).collect(),
+            doc.spec.aliases.iter().map(|a| a.name.clone()).collect(),
+        )
+    }
+
+    fn recorded_ids(cli: &Cli, source: &str) -> Vec<String> {
+        let state = open_state_store(cli.state_dir.as_deref(), cli.scope()).expect("reopen state");
+        state
+            .managed_resources_by_source(source)
+            .expect("query by source")
+            .into_iter()
+            .map(|r| r.resource_id)
+            .collect()
+    }
+
+    /// Keep: the departing source's own env var and alias are written into the
+    /// local profile, so the next apply still has a declaration behind the rows
+    /// it re-owned, and the operator's own pair is untouched.
+    #[test]
+    #[serial_test::serial]
+    fn keep_all_copies_the_sources_entries_into_the_local_profile() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _allow = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let (cli, local_profile) = seed_source_declaring_entries(dir.path());
+        prime_source_cache(&cli);
+
+        let (printer, cap) = Printer::for_test_doc();
+        cmd_source_remove(&cli, &printer, "acme", true, false, false, false)
+            .expect("keep-all removal must succeed");
+        drop(printer);
+        assert_eq!(cap.json().expect("Doc")["disposition"], "kept");
+
+        let doc = config::load_profile(&local_profile).expect("reload local profile");
+        let (env, aliases) = entry_names(&doc);
+        assert!(
+            env.contains(&"ACME_HOME".to_string()),
+            "the source's env var must be copied into the local profile: {env:?}"
+        );
+        assert!(
+            aliases.contains(&"acmed".to_string()),
+            "the source's alias must be copied into the local profile: {aliases:?}"
+        );
+        assert!(
+            env.contains(&"MY_EDITOR".to_string()) && aliases.contains(&"ll".to_string()),
+            "the operator's own entries must survive the copy: {env:?} {aliases:?}"
+        );
+
+        assert!(
+            recorded_ids(&cli, "acme").is_empty(),
+            "no row may still be attributed to the removed source"
+        );
+        let local = recorded_ids(&cli, "local");
+        for id in ["ACME_HOME", "acmed", "MY_EDITOR", "ll"] {
+            assert!(
+                local.contains(&id.to_string()),
+                "{id} must read back under local management: {local:?}"
+            );
+        }
+    }
+
+    /// Remove: the source's rows leave the store and its declarations never
+    /// reach the local profile, while the entries the operator declared
+    /// themselves keep both their declaration and their row.
+    #[test]
+    fn remove_all_drops_the_sources_entry_rows_and_leaves_the_local_ones_standing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (cli, local_profile) = seed_source_declaring_entries(dir.path());
+
+        // No seeded prompt answer and no --yes: an entry row names nothing on
+        // disk, so this arm has nothing to stop and ask about.
+        let (printer, cap) = Printer::for_test_doc();
+        cmd_source_remove(&cli, &printer, "acme", false, true, false, false)
+            .expect("remove-all removal must succeed");
+        drop(printer);
+        assert_eq!(cap.json().expect("Doc")["disposition"], "purged");
+
+        let doc = config::load_profile(&local_profile).expect("reload local profile");
+        let (env, aliases) = entry_names(&doc);
+        assert!(
+            !env.contains(&"ACME_HOME".to_string()) && !aliases.contains(&"acmed".to_string()),
+            "a removed source's declarations must not be written into the local profile: {env:?} {aliases:?}"
+        );
+        assert!(
+            env.contains(&"MY_EDITOR".to_string()) && aliases.contains(&"ll".to_string()),
+            "the operator's own entries must be left alone: {env:?} {aliases:?}"
+        );
+
+        assert!(
+            recorded_ids(&cli, "acme").is_empty(),
+            "every row the removed source owned must leave the store"
+        );
+        let mut local = recorded_ids(&cli, "local");
+        local.sort();
+        assert_eq!(
+            local,
+            vec!["MY_EDITOR".to_string(), "ll".to_string()],
+            "the locally owned rows must still stand, and nothing else"
+        );
+    }
+
     #[test]
     fn remove_interactive_cancel_leaves_source_intact() {
         let dir = tempfile::tempdir().expect("tempdir");
