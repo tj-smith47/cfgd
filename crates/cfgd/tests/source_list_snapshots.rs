@@ -61,6 +61,8 @@ fn happy_entries() -> Vec<SourceListEntry> {
         require_signed_commits: Some(true),
         last_commit: Some("4b8857cd0f1e2a3b4c5d6e7f8091a2b3c4d5e6f7".into()),
         drift_count: None,
+        locked_ref: None,
+        locked_commit: None,
     }]
 }
 
@@ -91,6 +93,50 @@ fn source_list_happy_json() {
     printer.emit(build_source_list_doc(&entries, false, NOW));
     drop(printer);
     cap.assert_json_snapshot_in(Path::new(SNAPSHOT_ROOT), "source_list/happy.json");
+}
+
+/// The lockfile's pinned ref and commit reach the `-o json` payload.
+///
+/// `source show -o json` used to carry them inside a `state` object and no
+/// longer does, so this listing is where a consumer reads them; nothing renders
+/// them as a column, which is what keeps the table declared plus its one
+/// recorded status column.
+#[test]
+fn source_list_carries_the_pinned_ref_and_commit_on_the_wire() {
+    let (config_dir, state_dir) = source_test_config_with_source_setup(
+        "team-config",
+        "https://github.com/team/config",
+        "main",
+        100,
+    );
+    std::fs::write(
+        config_dir.path().join("sources.lock"),
+        "sources:\n  - name: team-config\n    url: https://github.com/team/config\n    \
+         resolvedRef: v2.1.0\n    resolvedCommit: \
+         9f3c1ab2c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9\n    lockedAt: \"2026-06-09T14:32:01Z\"\n",
+    )
+    .expect("write sources.lock");
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let (printer, cap) = Printer::for_test_doc();
+
+    cmd_source_list(&cli, &printer).unwrap();
+    drop(printer);
+
+    let payload = cap.json().expect("a json payload");
+    let row = &payload[0];
+    assert_eq!(row["name"], serde_json::json!("team-config"));
+    assert_eq!(row["lockedRef"], serde_json::json!("v2.1.0"));
+    assert_eq!(
+        row["lockedCommit"],
+        serde_json::json!("9f3c1ab2c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9"),
+        "the payload keeps the whole id"
+    );
+    let rendered = strip_ansi(&cap.human());
+    assert!(
+        !rendered.contains("v2.1.0"),
+        "no column renders the pin; the listing stays declared plus its one \
+         recorded status column:\n{rendered}"
+    );
 }
 
 #[test]

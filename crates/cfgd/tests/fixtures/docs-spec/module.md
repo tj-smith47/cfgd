@@ -207,6 +207,19 @@ based on `prefer` order and platform availability.
 | `deny` | list of string | No | `[]` | Package manager names that must not be used for this package, even if available. |
 | `platforms` | list of string | No | `[]` | Platform filter. When set, this entry is skipped on non-matching platforms. Values: OS (`linux`, `macos`), distro (`ubuntu`, `fedora`, `arch`), or architecture (`x86_64`, `aarch64`). Omit to match all platforms. |
 
+`name`, each `aliases` value, and each `prefer` / `deny` token are checked when the module is
+parsed. One is refused when it is empty, when it holds whitespace, when it begins with `-` (every
+manager reads a leading dash as an option rather than as a package), or when it holds one of `&`,
+`<`, `>`, `(`, `)`, `^`, `|`, `"`, `%`, `!`, or a line break: a package name becomes an argument
+on a manager's command line, and on Windows several managers are reached through a `cmd.exe`
+shim where those characters would start a second command. Ordinary packaging spellings are
+unaffected, including `@scope/pkg`, `foo@1.2`, `libfoo-dev:amd64`,
+`Microsoft.VisualStudio.2022.Community`, `foo[extra]`, `devel/py-pipx` and
+`github.com/x/y@latest`. A trailing version spec is judged as a version rather than as part of
+the name, so cfgd's own pin grammar (`tool@^14`, `tool@>=2.1`, `tool@v1.2.3`) still parses; the
+spec itself may hold only digits, identifiers and range operators. The cluster-side `Module`
+resource applies the same rule.
+
 **Example (cross-platform tool with manager aliases):**
 ```yaml
 packages:
@@ -278,7 +291,7 @@ same deployment strategies as profile files. Paths are resolved relative to the 
 | `strategy` | enum | No | Global `fileStrategy` | Deployment strategy for this file. Overrides the global default from `cfgd.yaml`. See [FileStrategy values](#filestrategy-values). |
 | `private` | bool | No | `false` | When `true`, the source file is local-only: automatically added to `.gitignore` and silently skipped on machines where it does not exist. |
 | `encryption` | object | No | | Encryption enforcement for this file. Has `backend` (`"sops"` or `"age"`) and `mode` (`InRepo` or `Always`, default `InRepo`). Rejected with `strategy: Patch`, which has no source to enforce it on. Same semantics as profile managed-file encryption — see the encryption fields in `docs/spec/profile.md`. |
-| `permissions` | string | No | | Octal permission mode to enforce on the deployed target file (e.g. `"755"`). Applied after deployment; ignored on Windows (NTFS uses inherited ACLs). |
+| `permissions` | string | No | | Octal permission mode to enforce on the deployed file (e.g. `"755"`). With `strategy: Symlink` the mode is set on the source file the link points at, which is what the link resolves to. Applied after deployment; ignored on Windows (NTFS uses inherited ACLs). |
 | `patch` | object | Only when `strategy: Patch` | | Structured merge or script configuration, used only when `strategy: Patch`. Has `format` (`Ini`/`Json`/`Yaml`/`Toml`, inferred from `target`'s extension when omitted), `ensure` (keys/values to deep-merge into the target), and `script` (a script that receives the target's current content on stdin and writes the new content to stdout). Exactly one of `ensure` or `script` must be set. See [FileStrategy values](#filestrategy-values). |
 
 **Example:**
@@ -335,7 +348,8 @@ over the profile's value.
 when it is non-empty and the current platform matches none of the tags, the entry is not part of
 this machine's desired state at all and appears on no surface. `cfgd module show` and
 `cfgd status <module>` list it anyway — they describe what the module declares — annotated
-`(platforms: macos)`.
+`(platforms: macos)`. Under `cfgd module show --resolved` the same entry reads
+`skipped (platform filter)`, which is what this host made of it.
 
 `PATH` is the one name whose surviving declarations **concatenate** rather than replace, so a
 common declaration and a gated one both reach the generated env file, in declaration order with

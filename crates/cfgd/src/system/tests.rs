@@ -865,3 +865,152 @@ fn read_command_output_multiline_output() {
     let output = read_command_output(Command::new("printf").arg("line1\nline2"));
     assert_eq!(output, "line1\nline2");
 }
+
+/// Every file a privileged configurator writes is classified by ONE question:
+/// does a non-root reader have to open it?
+///
+/// The walk derives the population from the producers rather than a hand list,
+/// so a writer added to this module cannot escape the question: each
+/// `atomic_write*` call under `crates/cfgd/src/system/` either reaches
+/// [`super::widen_world_readable`] inside its own function or carries a
+/// `// user-scope-ok: <why>` line saying whose file it is. A widen spelled at a
+/// call site instead of through the helper is the other half: a second literal
+/// mode is how `/etc/environment` came to have its administrator's mode
+/// clobbered while `/etc/profile.d/cfgd-env.sh` kept 0600.
+///
+/// Test modules are not in the population: a fixture writing into a tempdir
+/// answers to nobody's login shell, and neither is a COMMENT line: a doc
+/// sentence naming a writer is documentation, not a call site, and one reported
+/// as an offender or counted toward the floor is a walk lying in both
+/// directions. The floor sits AT what this module holds rather than under it, so
+/// a writer cannot vanish inside a margin.
+#[test]
+fn every_privileged_writer_says_whether_a_non_root_reader_opens_its_file() {
+    let system_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/system");
+    let mut offenders: Vec<String> = Vec::new();
+    let mut writers = 0usize;
+    let mut files = 0usize;
+    for path in cfgd_core::test_helpers::rust_sources_under(&system_dir) {
+        if path.file_name().is_some_and(|n| n == "tests.rs")
+            || path.parent().is_some_and(|p| p.ends_with("tests"))
+        {
+            continue;
+        }
+        let body = cfgd_core::test_helpers::production_slice_of(&path);
+        files += 1;
+        let rel = path
+            .strip_prefix(&system_dir)
+            .unwrap_or(&path)
+            .to_path_buf();
+        let rel = cfgd_core::to_posix_string(&rel);
+        let lines: Vec<&str> = body.lines().collect();
+        // A marker vouches for a write only from inside the same function, so
+        // the window is bounded by the function definitions around it: a widen
+        // in the next function over is not this writer's answer.
+        let fn_starts: Vec<usize> = lines
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| {
+                let t = l.trim_start();
+                t.starts_with("fn ") || t.contains(" fn ")
+            })
+            .map(|(i, _)| i)
+            .collect();
+        for (idx, line) in lines.iter().enumerate() {
+            if line.trim_start().starts_with("//") {
+                continue;
+            }
+            let where_ = format!("{rel}:{}", idx + 1);
+            // A literal mode passed to the permission setter is the widen the
+            // helper owns; a tightening mode (ssh keys) or a declared one (a
+            // certificate's `permissions:`) is a different decision.
+            if line.contains("set_file_permissions(") && line.contains("0o644") {
+                offenders.push(format!(
+                    "{where_}: spells its own 0o644 — call \
+                     `widen_world_readable(path)`, the ONE widen for this class"
+                ));
+            }
+            if !(line.contains("cfgd_core::atomic_write(")
+                || line.contains("cfgd_core::atomic_write_str("))
+            {
+                continue;
+            }
+            writers += 1;
+            // The two halves are scoped differently on purpose. A hatch is a
+            // claim about ONE file, so it must sit directly above its own write
+            // or a function holding two writes would answer for both with one
+            // line. A widen is a statement the function makes, and
+            // `systemd_unit.rs` makes it eight lines below its write inside an
+            // `else if let Err(e)` chain, so that half is read per function.
+            let hatched = lines[idx.saturating_sub(2)..idx]
+                .iter()
+                .any(|l| l.contains("user-scope-ok:"));
+            let lo = fn_starts
+                .iter()
+                .rev()
+                .find(|s| **s <= idx)
+                .copied()
+                .unwrap_or(0);
+            let hi = fn_starts
+                .iter()
+                .find(|s| **s > idx)
+                .copied()
+                .unwrap_or(lines.len());
+            if hatched || lines[lo..hi].join("\n").contains("widen_world_readable(") {
+                continue;
+            }
+            offenders.push(format!(
+                "{where_}: says nothing about who reads this file — widen it \
+                 through `widen_world_readable(path)` if a non-root reader must \
+                 open it, else mark it `// user-scope-ok: <why>`"
+            ));
+        }
+    }
+    assert!(
+        files >= 24 && writers >= 16,
+        "the walk read {files} files and {writers} writers, too few to be the population"
+    );
+    assert!(
+        offenders.is_empty(),
+        "every privileged writer states who reads its file:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// A symlink at the path is refused, and the file it points at keeps its mode.
+///
+/// This is the privilege boundary the widen crosses: `macos_write_env_sh` runs
+/// elevated inside a directory the invoking user owns, so the window between the
+/// write and the widen belongs to that user.
+#[test]
+#[cfg(unix)]
+fn the_widen_refuses_a_symlink_instead_of_chmodding_what_it_points_at() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let secret = dir.path().join("id_ed25519");
+    std::fs::write(&secret, "private").expect("write");
+    cfgd_core::set_file_permissions(&secret, 0o600).expect("chmod");
+    let link = dir.path().join("env.sh");
+    std::os::unix::fs::symlink(&secret, &link).expect("symlink");
+
+    let widened = super::widen_world_readable(&link);
+    assert!(
+        widened.is_err(),
+        "the widen must refuse a symlink, got {widened:?}"
+    );
+    let declared = cfgd_core::set_file_permissions_nofollow(&link, 0o644);
+    assert!(
+        declared.is_err(),
+        "a declared mode must refuse a symlink, got {declared:?}"
+    );
+    let mode = std::fs::metadata(&secret)
+        .expect("metadata")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(
+        mode, 0o600,
+        "the file the link points at must keep its mode"
+    );
+}

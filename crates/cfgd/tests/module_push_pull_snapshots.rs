@@ -149,9 +149,11 @@ fn module_push_pushed_human() {
     .expect("push must succeed against the mock registry");
     drop(printer);
 
-    let normalized = cfgd_core::normalize_snapshot_durations(&strip_ansi(&cap.human()))
-        .replace(&registry, "<REGISTRY>")
-        .replace(&dir_str, "<DIR>");
+    let normalized = cfgd_core::normalize_for_snapshot(
+        &cfgd_core::normalize_snapshot_durations(&strip_ansi(&cap.human())),
+        &[(dir.path(), "<DIR>")],
+    )
+    .replace(&registry, "<REGISTRY>");
     assert!(
         !normalized.contains("Digest "),
         "the digest is the push row's detail, never a kv row: {normalized}"

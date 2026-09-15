@@ -147,7 +147,7 @@ pub fn cmd_module_create(
         .map(|(basename, target)| config::ModuleFileEntry {
             patch: None,
             source: format!("files/{}", basename),
-            target: target.display().to_string(),
+            target: cfgd_core::to_posix_string(target),
             strategy: None,
             private: is_private,
             encryption: None,
@@ -239,7 +239,10 @@ pub fn cmd_module_create(
 
     // The heading above already names the module; a section respelling it
     // makes the reader check whether two subjects are in play.
-    let summary_sec = printer.section(format!("Created at {}", module_dir.posix()));
+    let summary_sec = printer.section(format!(
+        "Created at {}",
+        cfgd_core::fold_home_in_text(&module_dir.display_posix())
+    ));
     if !doc.spec.packages.is_empty() {
         summary_sec.kv(
             "Packages",
@@ -277,12 +280,13 @@ pub fn cmd_module_create(
         drain_config_deprecations(printer, &mut cfg);
         let mut registry = super::build_registry_with_config(Some(&cfg));
         registry.set_system_config_dir(&config_dir);
-        let store = super::open_state_store(cli.state_dir.as_deref(), cli.scope())?;
+        let ctx = crate::cli::RunContext::new(cli, printer);
+        let store = ctx.state()?;
 
         let platform = cfgd_core::platform::Platform::current();
         let mgr_map = registry.manager_map();
         let cache_base = module_cache_dir(cli)?;
-        let pkg_cx = cfgd_core::providers::PackageContext::new(printer, &store);
+        let pkg_cx = ctx.package_context()?;
         let mut resolved_modules = modules::resolve_modules(
             std::slice::from_ref(name),
             &config_dir,
@@ -298,9 +302,14 @@ pub fn cmd_module_create(
             merged: config::MergedProfile::default(),
         };
 
-        let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &store)
+        let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, store)
             .with_config_dir(&config_dir)
             .diffing_installed(&pkg_cx)
+            // The run is scoped to the one module named on the command line and
+            // resolved no profile, so it saw the same partial picture
+            // `cfgd apply --module` does: an entry another layer still declares
+            // is not an entry that left the config.
+            .pruning_managed_resources(false)
             // No profile was resolved, so the module this run is about is what
             // the recorded apply names. Left unset, the row stores an empty
             // scope and `cfgd status` shows no `Scope` until some later run
@@ -396,7 +405,7 @@ pub fn cmd_module_create(
                         .detail("run `cfgd apply` to apply later");
                     printer.emit(Doc::new().with_data(serde_json::json!({
                         "name": name,
-                        "path": module_dir.display().to_string(),
+                        "path": cfgd_core::to_posix_string(&module_dir),
                         "applied": false,
                     })));
                     return Ok(());
@@ -412,7 +421,7 @@ pub fn cmd_module_create(
 
     printer.emit(Doc::new().with_data(serde_json::json!({
         "name": name,
-        "path": module_dir.display().to_string(),
+        "path": cfgd_core::to_posix_string(&module_dir),
         "applied": applied,
     })));
 
@@ -569,6 +578,7 @@ pub fn cmd_module_update_local(
             let (source, _) = parse_file_spec(spec)?;
             let basename = source
                 .file_name()
+                // absolute-path-ok: a returned error names the path the caller typed
                 .ok_or_else(|| anyhow::anyhow!("Invalid file path: {}", source.posix()))?
                 .to_string_lossy()
                 .to_string();
@@ -595,7 +605,7 @@ pub fn cmd_module_update_local(
         doc.spec.files.push(config::ModuleFileEntry {
             patch: None,
             source: format!("files/{}", basename),
-            target: target.display().to_string(),
+            target: cfgd_core::to_posix_string(target),
             strategy: None,
             private: args.private,
             encryption: None,
@@ -603,19 +613,20 @@ pub fn cmd_module_update_local(
         });
         printer
             .status(Role::Ok, "Added file")
-            .qualifier(target.posix().to_string());
+            .qualifier(cfgd_core::fold_home_in_text(&target.display_posix()));
         changes += 1;
     }
 
     // Remove files
     for target in &remove_files {
         let expanded = cfgd_core::expand_tilde(&PathBuf::from(target));
-        let target_str = expanded.display().to_string();
+        // The two spellings are compared, so both fold.
+        let target_str = cfgd_core::to_posix_string(&expanded);
         let before = doc.spec.files.len();
         let mut removed_source = None;
         doc.spec.files.retain(|f| {
             let f_target = cfgd_core::expand_tilde(&PathBuf::from(&f.target));
-            if f_target.display().to_string() == target_str || f.target == *target {
+            if cfgd_core::to_posix_string(&f_target) == target_str || f.target == *target {
                 removed_source = Some(f.source.clone());
                 false
             } else {
@@ -802,6 +813,7 @@ pub fn cmd_module_edit(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Resu
             .into(),
             name,
             "not_found",
+            // absolute-path-ok: a human-facing error names the file as the filesystem does
             format!("Module '{}' not found at {}", name, module_yaml.posix()),
             serde_json::json!({ "path": cfgd_core::to_posix_string(&module_yaml) }),
         ));
@@ -844,7 +856,7 @@ pub fn cmd_module_edit(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Resu
                 .hint(super::success_next_step(super::Mutation::ModuleUpdated))
                 .with_data(serde_json::json!({
                     "name": name,
-                    "path": module_yaml.display().to_string(),
+                    "path": cfgd_core::to_posix_string(&module_yaml),
                     "valid": true,
                 })),
         );
@@ -854,7 +866,7 @@ pub fn cmd_module_edit(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Resu
                 .status(Role::Warn, "Saved with validation errors")
                 .with_data(serde_json::json!({
                     "name": name,
-                    "path": module_yaml.display().to_string(),
+                    "path": cfgd_core::to_posix_string(&module_yaml),
                     "valid": false,
                 })),
         );
@@ -892,6 +904,7 @@ pub fn cmd_module_delete(
             .into(),
             name,
             "not_found",
+            // absolute-path-ok: a human-facing error names the directory as the filesystem does
             format!("Module '{}' not found at {}", name, module_dir.posix()),
             serde_json::json!({ "path": cfgd_core::to_posix_string(&module_dir) }),
         ));
@@ -943,7 +956,13 @@ pub fn cmd_module_delete(
                     } else {
                         std::fs::remove_file(&target)?;
                     }
-                    purge_sec.status_simple(Role::Info, format!("Purged {}", target.posix()));
+                    purge_sec.status_simple(
+                        Role::Info,
+                        format!(
+                            "Purged {}",
+                            cfgd_core::fold_home_in_text(&target.display_posix())
+                        ),
+                    );
                     files_processed += 1;
                 }
             }
@@ -967,7 +986,13 @@ pub fn cmd_module_delete(
                     } else {
                         std::fs::copy(&source, &target)?;
                     }
-                    restore_sec.status_simple(Role::Info, format!("Restored {}", target.posix()));
+                    restore_sec.status_simple(
+                        Role::Info,
+                        format!(
+                            "Restored {}",
+                            cfgd_core::fold_home_in_text(&target.display_posix())
+                        ),
+                    );
                     files_processed += 1;
                 }
             }

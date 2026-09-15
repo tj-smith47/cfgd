@@ -96,32 +96,35 @@ spec:
   aliases:
     alias-name: command string
 
-  theme: string
-  # or:
-  theme:
-    name: string
-    overrides:
-      header: string
-      success: string
-      warning: string
-      error: string
-      info: string
-      muted: string
-      running: string
-      diffAdd: string
-      diffRemove: string
-      diffContext: string
-      accent: string
-      secondary: string
-      typeHint: string
-      iconOk: string
-      iconWarn: string
-      iconFail: string
-      iconPending: string
-      iconRunning: string
-      iconSkipped: string
-      iconArrow: string
-      iconInfo: string
+  output:
+    usageHints: bool
+    maskEnvValues: All | Secrets | None
+    theme: string
+    # or:
+    theme:
+      name: string
+      overrides:
+        header: string
+        success: string
+        warning: string
+        error: string
+        info: string
+        muted: string
+        running: string
+        diffAdd: string
+        diffRemove: string
+        diffContext: string
+        accent: string
+        secondary: string
+        typeHint: string
+        iconOk: string
+        iconWarn: string
+        iconFail: string
+        iconPending: string
+        iconRunning: string
+        iconSkipped: string
+        iconArrow: string
+        iconInfo: string
 
   ai:
     provider: string
@@ -178,7 +181,7 @@ spec:
 | `security` | object | No | | Source signature verification overrides. See [spec.security](#specsecurity). |
 | `fileStrategy` | enum | No | `Symlink` | Global default file deployment strategy. See [FileStrategy](#filestrategy-values). |
 | `aliases` | map | No | `{}` | CLI aliases: map of alias name to command string. |
-| `theme` | string or object | No | | Output theme name or detailed theme config. See [spec.theme](#spectheme). |
+| `output` | object | No | | How cfgd renders what it reports: theme, usage hints, env-value masking. See [spec.output](#specoutput). |
 | `ai` | object | No | | AI assistant configuration. See [spec.ai](#specai). |
 | `compliance` | object | No | | Continuous compliance snapshot settings. See [spec.compliance](#speccompliance). |
 | `update` | object | No | | Update policy for the cfgd binary and authored skills. See [spec.update](#specupdate). |
@@ -493,35 +496,65 @@ module file entries.
 
 ---
 
-### spec.theme
+### spec.output
+
+Controls how cfgd renders what it reports. Every key here has a per-invocation override
+that outranks the stored value.
+
+```yaml
+spec:
+  output:
+    theme: dracula
+    usageHints: true
+    maskEnvValues: All
+```
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `theme` | string or object | No | `default` | Output theme name or detailed theme config. See [spec.output.theme](#specoutputtheme). |
+| `usageHints` | bool | No | `true` | Whether closing `→` usage hints render. `--no-hints` / `CFGD_USAGE_HINTS` override for one invocation. |
+| `maskEnvValues` | enum | No | `All` | Which declared env values render masked: `All`, `Secrets` or `None`. See [MaskEnvValues values](#maskenvvalues-values). |
+
+`spec.theme` and `spec.usageHints` are the pre-`spec.output` spellings. cfgd still reads
+both and reports each as a deprecation naming its new path; the new key wins when both are
+set. Every writer (`cfgd config set`, `cfgd config unset`, `cfgd init`) writes the nested
+form and drops the flat key it read.
+
+---
+
+### spec.output.theme
 
 Controls the visual output style of all cfgd commands. Can be written as a bare theme name string
 or as an object with optional colour/icon overrides.
 
 **Shorthand (string):**
 ```yaml
-theme: dracula
+spec:
+  output:
+    theme: dracula
 ```
 
 **Full form:**
 ```yaml
-theme:
-  name: dracula
-  overrides:
-    success: "#50fa7b"
-    error: "#ff5555"
+spec:
+  output:
+    theme:
+      name: dracula
+      overrides:
+        success: "#50fa7b"
+        error: "#ff5555"
 ```
 
-#### spec.theme (object form)
+#### spec.output.theme (object form)
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `name` | string | No | `default` | Built-in theme name: `default`, `dracula`, `solarized-dark`, `solarized-light`, `nord`, `monokai`, `adventure-time`, `catppuccin-mocha`, `gruvbox-dark`, `tokyo-night`, `one-dark`, or `minimal`. |
-| `overrides` | object | No | | Per-colour/icon overrides. See [spec.theme.overrides](#specthemeoverrides). |
+| `overrides` | object | No | | Per-colour/icon overrides. See [spec.output.theme.overrides](#specoutputthemeoverrides). |
 
 ---
 
-### spec.theme.overrides
+### spec.output.theme.overrides
 
 All fields are optional CSS-style hex colour strings (e.g. `#ff5555`) or single-character icon
 strings. An omitted field inherits the value from the active theme.
@@ -550,6 +583,19 @@ strings. An omitted field inherits the value from the active theme.
 | `iconSkipped` | string | Icon character for skipped state. |
 | `iconArrow` | string | Icon character for directional arrows (e.g. plan output). |
 | `iconInfo` | string | Icon character for informational notices. Defaults to `◉`; pick a glyph your terminal font carries, or the line renders with a tofu box in the icon column. |
+
+---
+
+### MaskEnvValues values
+
+Used by `spec.output.maskEnvValues`. A masked value renders as `***` plus its last three
+characters; the stored value and `-o json` are untouched either way.
+
+| Value | Description |
+|-------|-------------|
+| `All` | Mask every declared env value on every surface that renders one. **(default)** |
+| `Secrets` | Mask only a value a declared secret exports: a name listed in any `spec.secrets[].envs` of the resolved chain. Every other value renders in full. |
+| `None` | Render every declared env value in full, as though `--show-values` had been passed. |
 
 ---
 

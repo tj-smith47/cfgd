@@ -254,7 +254,8 @@ Manage existing subscriptions:
 
 ```sh
 cfgd source list                                        # list subscribed sources
-cfgd source show acme-corp                              # details, policies, conflicts
+cfgd source show acme-corp                              # declared subscription, policies, conflicts
+cfgd source show acme-corp --show-values                # reveal a provided profile's env values
 cfgd source remove acme-corp                            # unsubscribe
 cfgd source update                                      # fetch latest from all sources
 ```
@@ -308,10 +309,12 @@ Policy
 ```
 
 Each provided profile is headed by the `profile:<name>` token an apply header uses, and
-its contents are the same inventory `cfgd profile show` renders. Env values are shown in
-full (secrets stay `${secret:...}` references), so you see what a subscription would put
-in your environment before you take it. A profile the manifest promises but the checkout
-does not carry is reported under its own token rather than rendered empty.
+its contents are the same declared inventory `cfgd profile show` renders. On `source add`
+the env values are shown in full (secrets stay `${secret:...}` references), because that
+screen is what you approve the subscription from; on `source show` they are masked like
+every other declared env value, and `--show-values` reveals them. A profile the manifest
+promises but the checkout does not carry is reported under its own token rather than
+rendered empty.
 
 The `Policy` rows read in one polarity (`Scripts Allowed  false`, never a mix of
 "allowed" and "blocked" phrasings). On `source show` they are the *effective* policy,
@@ -413,7 +416,7 @@ Plan
   Config   /home/you/.config/cfgd/cfgd.yaml
   Sources  acme-corp
   Profile  default
-  Phases   Prerequisites, Packages
+  Phases   Bootstrap, Packages
 
 Pending Decisions (1 item, not included in this plan)
   source:acme-corp
@@ -421,7 +424,7 @@ Pending Decisions (1 item, not included in this plan)
   → Answer each pending decision:
     $ cfgd decide [accept|reject] <resource>
 
-Phase: Prerequisites
+Phase: Bootstrap
   cfgd:managers
     - refresh brew index
 
@@ -473,7 +476,7 @@ Notifications fire once per new pending decision, not on every reconcile cycle (
 
 - **Source removed while decisions pending**: every decision belonging to that source is discarded, resolved ones included (source gone = items gone). Rows are dropped rather than rejected, because a source you no longer subscribe to must not go on withholding a file or package you later declare yourself; a row that outlives the sweep is inert anyway, since only a source listed in `spec.sources` can withhold anything. Re-subscribing asks again. The sweep runs only against the machine's own config: a run pointed at a foreign config (`--config`, `--config-dir`, or `CFGD_CONFIG` resolving away from the default config location for the run's scope) while the state directory stays at its default skips the sweep, because that config's subscription list describes a different machine. Ownership follows the resolved path, not the spelling, so naming the default config file explicitly (as the generated service units do) still sweeps; pass `--state-dir` alongside and any config sweeps the store it names.
 - **A decision names something you declare yourself**: a decision covers the *source's* offer of a resource, never your own declaration of it. If you declare `~/.zshrc` in your profile and a source offers a `~/.zshrc` too, declining the source's item leaves yours applying exactly as before. The two need not be spelled alike: `~/.zshrc` and `/home/you/.zshrc` are the same declaration, and a package you declare through a manifest file (`brew.file: Brewfile`, `cargo.file: Cargo.toml`) is as much yours as one you list inline.
-- **A source delivers packages under a custom manager whose name contains `.`**: decision paths are dot-notation (`packages.<manager>.<package>`), so a manager named `pip3.11` cannot round-trip into one and no decision row can ever be recorded for its items. cfgd fails closed rather than installing undecided: the source's packages under that manager are withheld from every run (plan, apply, and the daemon alike), and the run carries a warning naming the manager and the limitation, in the human header and in the `-o json` payload's `warnings`. `cfgd status` and the bare `cfgd decide` listing carry the same warning. Your own declarations under the same manager still apply. Rename the manager (e.g. `pip311`) to be asked about its items normally.
+- **A source delivers packages under a custom manager whose name contains `.`**: decision paths are dot-notation (`packages.<manager>.<package>`), so a manager named `pip3.11` cannot round-trip into one and no decision row can ever be recorded for its items. cfgd fails closed rather than installing undecided: the source's packages under that manager are withheld from every run (plan, apply, and the daemon alike), and the run carries a warning naming the manager and the limitation, in the human header and in the `-o json` payload's `warnings`. `cfgd status` and the bare `cfgd decide` listing carry the same warning. Your own declarations under the same manager still apply. A custom manager's command templates are a script surface, so until you set `subscription.allowScripts: true` (see [`noScripts`](#noscripts)) a machine-changing run (`plan`, `apply`, the daemon) refuses outright and a read-only one composes with a warning; with that opt-in in place, renaming the manager (e.g. `pip311`) gets you asked about its items normally.
 - **User manually installs a pending package**: the next run that plans packages (plan, apply, or a daemon tick) finds it in the enumeration the planner diffs against and auto-accepts the decision, **but only when the installed state satisfies the source's version spec**.
   - An item with no version spec is satisfied by any installed version (the common case). A spec announces itself with a range operator or a `v`-prefixed version (`tool@^14`, `tool@>=2.1`, `tool@v1.2.3`). A bare `v`-pin keeps semver caret semantics (`tool@v1.2.3` means `^1.2.3`, matching cargo/npm convention). Anything else after an `@` is part of the package's *name*: brew's `python@3.12` is a formula, never a `3.12` pin.
   - Satisfaction is judged against the version the manager's own listing reports. `tool@^14` with `14.2` installed auto-accepts, and the plan still converges the pin: accepting is consent to apply, not a skip. A mismatch stays Pending with the conflict annotated on the row (`installed 13.0, source wants ^14`); a manager whose listing reports no version stays Pending the same way (`installed (version unknown), source wants ^14`).
@@ -520,6 +523,7 @@ When `true` (the default), the source cannot deliver anything that executes code
 | Backup hooks | `spec.backups[].preBackup` / `postBackup` | `cfgd apply`, `cfgd backup run`, `cfgd backup restore`, the daemon's timer | composition time |
 | Patch filters | `spec.files.managed[].patch.script` (`strategy: Patch`) | every command that evaluates the file — including read-only `cfgd diff` / `status` / `verify` / `compliance` | composition time |
 | Module-body scripts | the same lifecycle hooks, `prefer: [script]` package installs, and `spec.files[].patch.script` on any module delivered via `provides.modules` | apply / reconcile / evaluation | module-load time |
+| Custom package managers | `spec.packages.custom[].{check,listInstalled,install,uninstall,update}` | every command that asks whether the manager is available, and every install or removal through it | composition time |
 
 How the block shows up depends on whether the command changes the machine:
 
@@ -705,27 +709,32 @@ sources:
     lockedAt: "2026-06-09T14:32:01Z"
 ```
 
-`cfgd source show acme-corp` surfaces the lockfile data in the State section:
+`cfgd source show acme-corp` renders what the subscription declares: the URL, the branch, the priority and the pin, then the manifest and the policy the source ships.
 
 ```
 Show source:acme-corp
-  URL            git@github.com:acme-corp/dev-config.git
-  Branch         master
-  Priority       500
-  Pin Version    ~2
-
-State
-  Status         Active
-  Last Sync      2h ago
-  Last Commit    9f3c1ab2c4d0
-  Locked Commit  9f3c1ab2c4d0
-  Locked Ref     v2.1.0
-  Signed         yes
+  URL                 git@github.com:acme-corp/dev-config.git
+  Branch              master
+  Priority            500
+  Accept Recommended  yes
+  Sync Interval       1h
+  Auto Apply          no
+  Pin Version         ~2
 ```
 
-When a source has been added but never synced, `source show` still surfaces the lockfile entry (with `Status: pending`) so you can confirm the intended SHA before the first apply.
+What the last fetch recorded (the status, the commit it landed on, whether that commit was signed, and how long ago it was) belongs to `cfgd source list` and `cfgd status`, which read the state store. `source show` opens none, so it reports nothing a fetch has to have happened for.
 
-`cfgd sync`, `cfgd source add`, and `cfgd source update` all record the fetch, so the `Last Sync` / `Last Commit` / `Signed` values above and the `Sources` table in `cfgd status` reflect whichever of the three last touched the source. `Last Sync` is rendered as an age (`2h ago`, `18d ago`, `never`); the ISO 8601 instant stays in `-o json` as `lastFetched`. `Signed` is `yes` / `no` for the commit that fetch landed on, and `-` when cfgd could not read the checkout to say.
+That split reaches the payload too: `source show -o json` no longer carries a `state` object or a `managedResources` array (both were present up to cfgd 0.10). `cfgd source list -o json` carries the recorded side of every subscription — `status`, `lastFetched`, `lastCommit`, `signed`, `version`, plus the `lockedRef` and `lockedCommit` this lockfile pins — and `cfgd status -o json` carries `managedResources[]`, whose `owner` field names the owner each row belongs to.
+
+```bash
+$ cfgd source list -o json | jq '.[] | select(.name == "acme-corp") | {lockedRef, lockedCommit}'
+{
+  "lockedRef": "v2.1.0",
+  "lockedCommit": "89abcdef0123456789abcdef0123456789abcdef"
+}
+```
+
+`cfgd sync`, `cfgd source add`, and `cfgd source update` all record the fetch, so the `Last Sync` / `Status` / `Signed` columns of `source list` and the `Sources` table in `cfgd status` reflect whichever of the three last touched the source. `Last Sync` is rendered as an age (`2h ago`, `18d ago`, `never`); the ISO 8601 instant stays in `-o json` as `lastFetched`. `Signed` is `yes` / `no` for the commit that fetch landed on, and `-` when cfgd could not read the checkout to say.
 
 **Committing the lockfile** to your config repo (alongside `cfgd.yaml`) is recommended: it guarantees that every machine applying the config checks out the identical commits, and `git diff sources.lock` shows exactly what a source update advanced to.
 
@@ -904,7 +913,7 @@ CFGD_ALLOW_LOCAL_SOURCES=1 cfgd plan    # verify the composed result
 
 | Threat | Mitigation |
 |---|---|
-| Arbitrary code execution | `noScripts: true` by default, covering lifecycle scripts, `spec.backups[]` hooks, `strategy: Patch` filter scripts, and delivered module bodies (see [`noScripts`](#noscripts)); scripts require explicit subscriber approval and every surface is named in a warning on any command that composes sources. Machine-changing commands abort; read-only commands warn and evaluate the barred patch filter as a blocked file rather than running it; a source-delivered module carrying a script is rejected at load time in every mode |
+| Arbitrary code execution | `noScripts: true` by default, covering lifecycle scripts, `spec.backups[]` hooks, `strategy: Patch` filter scripts, `spec.packages.custom[]` command templates, and delivered module bodies (see [`noScripts`](#noscripts)); scripts require explicit subscriber approval and every surface is named in a warning on any command that composes sources. Machine-changing commands abort; read-only commands warn and evaluate the barred patch filter as a blocked file rather than running it; a source-delivered module carrying a script is rejected at load time in every mode |
 | Secret exfiltration | Sources cannot access your SOPS/age keys or encrypted files |
 | Arbitrary path writes | Sources must declare `allowedTargetPaths`; enforced at composition level over `files.managed[].target` and `backups[].destination` (see [`allowedTargetPaths`](#allowedtargetpaths)) |
 | Template data leak | Source templates can only access source-provided env vars, not your personal env vars |

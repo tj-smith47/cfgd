@@ -24,7 +24,12 @@ use super::{Action, ModuleActionKind, Owner, Plan};
 /// The reason a target skipped for holding an unmanaged file reports, shared by
 /// the profile action's `Skip` reason and the module arm's status line so the
 /// two cannot describe the same decision differently.
-pub const UNMANAGED_SKIP_REASON: &str = "skipped: target exists as unmanaged file";
+///
+/// Says WHY the target was left alone and not that it was: the profile arm's
+/// row is composed as `skip <target>: <reason>` and the module arm's detail
+/// hangs under a `Role::Skipped` glyph, so both halves already spell the
+/// decision (`file_skip_reason_doubling_error` is the rule).
+pub const UNMANAGED_SKIP_REASON: &str = "target exists as unmanaged file";
 
 /// A conflict policy that has been SETTLED for one target.
 ///
@@ -362,7 +367,9 @@ pub fn sweep_unmanaged_file_targets(
                                             format!(
                                                 "module '{}': {}",
                                                 module_name,
-                                                file_target.posix()
+                                                crate::fold_home_in_text(
+                                                    &file_target.display_posix()
+                                                )
                                             ),
                                         )
                                         .detail(UNMANAGED_SKIP_REASON);

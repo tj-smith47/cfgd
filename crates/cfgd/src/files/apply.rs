@@ -324,8 +324,13 @@ fn apply_one_file_action(
                 })?;
             }
         }
-        FileAction::SetPermissions { target, mode, .. } => {
-            set_permissions(target, *mode)?;
+        FileAction::SetPermissions {
+            target,
+            mode,
+            chmod_path,
+            ..
+        } => {
+            set_permissions(chmod_path.as_deref().unwrap_or(target), *mode)?;
         }
         FileAction::Skip { .. } => {}
     }
@@ -438,8 +443,13 @@ fn probe_dir_writable(dir: &Path, target: &Path) -> Result<()> {
 }
 
 /// Set file permissions (Unix mode bits). No-op on Windows.
+///
+/// `path` is the planned action's `chmod_path` where it names one, else its
+/// `target`; the chmod itself never resolves a link, so whoever owns the
+/// target's directory cannot aim it at another file. See
+/// [`cfgd_core::providers::FileAction::SetPermissions::chmod_path`].
 pub(super) fn set_permissions(path: &Path, mode: u32) -> Result<()> {
-    cfgd_core::set_file_permissions(path, mode).map_err(|e| {
+    cfgd_core::set_file_permissions_nofollow(path, mode).map_err(|e| {
         if e.kind() == std::io::ErrorKind::PermissionDenied {
             FileError::PermissionDenied {
                 path: path.to_path_buf(),

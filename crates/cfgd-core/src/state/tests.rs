@@ -902,7 +902,7 @@ fn every_home_directory_unresolved_names_the_directory_it_could_not_place() {
 
 #[cfg(unix)]
 #[test]
-fn open_in_dir_readonly_dir_yields_directory_not_writable_naming_path() {
+fn open_in_dir_readonly_dir_yields_directory_not_writable_naming_path_as_non_root() {
     use std::os::unix::fs::PermissionsExt;
 
     // Skip under root: a 0o500 dir is still writable to uid 0, so the probe
@@ -1123,11 +1123,64 @@ fn managed_resources_by_source() {
         .upsert_managed_resource("package", "git-secrets", "acme", None, None)
         .unwrap();
 
+    // A row several layers built together names all of them, and belongs to
+    // each.
+    store
+        .upsert_managed_resource("env-var", "PATH", "local, acme", None, None)
+        .unwrap();
+    // A name that CONTAINS another layer's name, and one carrying the
+    // characters `LIKE` reads as its own wildcards.
+    store
+        .upsert_managed_resource("file", "/c", "acme-dev", None, None)
+        .unwrap();
+    store
+        .upsert_managed_resource("file", "/d", "ac%e_1", None, None)
+        .unwrap();
+    // A backslash is the escape character the pattern declares, so a name
+    // carrying one is the case an unescaped pattern loses outright.
+    store
+        .upsert_managed_resource("file", "/e", r"ac\me", None, None)
+        .unwrap();
+
     let acme_resources = store.managed_resources_by_source("acme").unwrap();
-    assert_eq!(acme_resources.len(), 2);
+    assert_eq!(
+        acme_resources
+            .iter()
+            .map(|r| r.resource_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["PATH", "/b", "git-secrets"],
+        "the shared row belongs to acme, and no row of a layer whose name merely \
+         contains `acme` does"
+    );
 
     let local_resources = store.managed_resources_by_source("local").unwrap();
-    assert_eq!(local_resources.len(), 1);
+    assert_eq!(
+        local_resources
+            .iter()
+            .map(|r| r.resource_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["PATH", "/a"]
+    );
+
+    let wildcards = store.managed_resources_by_source("ac%e_1").unwrap();
+    assert_eq!(
+        wildcards
+            .iter()
+            .map(|r| r.resource_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["/d"],
+        "the wildcards in the name are matched as the characters they are"
+    );
+
+    let escaped = store.managed_resources_by_source(r"ac\me").unwrap();
+    assert_eq!(
+        escaped
+            .iter()
+            .map(|r| r.resource_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["/e"],
+        "a name carrying the escape character still finds its own row"
+    );
 }
 
 #[test]
@@ -3275,18 +3328,18 @@ fn a_module_skip_row_from_a_pre_fix_daemon_is_resolved_and_its_tracking_row_drop
     // The pre-fix tick recorded `('module', '<name>:skip')` on every pass over
     // a module it skipped whole, plus a matching tracking row. Nothing mints,
     // heals or re-finds that shape now, so without the migration it stands
-    // forever. A `<name>:script` row is a real finding of the same type and
-    // must come through untouched, and so must a row whose own grammar merely
-    // ENDS in those five characters: the migration's predicate is
-    // `module_row_facet`'s, which judges the FIRST separator, so
-    // `mod:extra:skip` and `mod/path:skip` are not skip rows.
+    // forever. A per-file row is the live finding shape and must come through
+    // untouched, and so must a row whose own grammar merely ENDS in those five
+    // characters: the migration's predicate is `module_row_facet`'s, which
+    // judges the FIRST separator, so `mod:extra:skip` and `mod/path:skip` are
+    // not skip rows. The hook rows of the same shape are migration 27's.
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("state.db");
     {
         let store = StateStore::open(&path).unwrap();
         for rid in [
             "gated:skip",
-            "nvim:script",
+            "nvim/.vimrc",
             "mod:extra:skip",
             "mod/path:skip",
         ] {
@@ -3317,7 +3370,7 @@ fn a_module_skip_row_from_a_pre_fix_daemon_is_resolved_and_its_tracking_row_drop
         vec![
             ("module".to_string(), "mod/path:skip".to_string()),
             ("module".to_string(), "mod:extra:skip".to_string()),
-            ("module".to_string(), "nvim:script".to_string()),
+            ("module".to_string(), "nvim/.vimrc".to_string()),
             ("package".to_string(), "brew:skip".to_string()),
         ],
         "only the whole-module skip row resolves"
@@ -3335,9 +3388,95 @@ fn a_module_skip_row_from_a_pre_fix_daemon_is_resolved_and_its_tracking_row_drop
         vec![
             "mod/path:skip".to_string(),
             "mod:extra:skip".to_string(),
-            "nvim:script".to_string()
+            "nvim/.vimrc".to_string()
         ],
         "the skip row's tracking row is dropped and every sibling kept"
+    );
+}
+
+#[test]
+fn every_script_row_from_a_pre_fix_daemon_is_resolved_and_its_tracking_row_kept() {
+    // The pre-fix tick recorded a drift row for every script it planned, in
+    // both shapes: `('module', '<name>:script')` for a module's lifecycle hook
+    // and `('script', '<body>')` for a profile's own lifecycle step (older
+    // still, `('Running script', '<body>')`). A planned script is an act a run
+    // performs, so nothing mints either row now, no apply heals one and no CLI
+    // check re-finds one — `<name>:script` names no file and no check ever
+    // reads a script body — and without the migration an owner that declares
+    // only scripts reads Drifted forever. The tracking rows STAY: they record
+    // that this host ran the scripts, which is a fact about the machine.
+    //
+    // The module predicate is `module_row_facet`'s, so a row whose own grammar
+    // merely ends in those seven characters (`mod:extra:script`,
+    // `mod/path:script`) is not a hook row, and that clause is scoped to the
+    // `module` type — a `package` row reading `brew:script` stands.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    {
+        let store = StateStore::open(&path).unwrap();
+        for rid in [
+            "nvim:script",
+            "mod:extra:script",
+            "mod/path:script",
+            "nvim/.vimrc",
+        ] {
+            store
+                .record_drift("module", rid, None, None, "local")
+                .unwrap();
+            store
+                .upsert_managed_resource("module", rid, "local", None, None)
+                .unwrap();
+        }
+        for rtype in ["script", "Running script"] {
+            store
+                .record_drift(rtype, "echo hi", None, None, "local")
+                .unwrap();
+            store
+                .upsert_managed_resource(rtype, "echo hi", "local", None, None)
+                .unwrap();
+        }
+        store
+            .record_drift("package", "brew:script", None, None, "local")
+            .unwrap();
+        rewind_schema_version(&store, 27);
+    }
+
+    let store = StateStore::open(&path).unwrap();
+    let mut standing: Vec<(String, String)> = store
+        .unresolved_drift()
+        .unwrap()
+        .into_iter()
+        .map(|e| (e.resource_type, e.resource_id))
+        .collect();
+    standing.sort_unstable();
+    assert_eq!(
+        standing,
+        vec![
+            ("module".to_string(), "mod/path:script".to_string()),
+            ("module".to_string(), "mod:extra:script".to_string()),
+            ("module".to_string(), "nvim/.vimrc".to_string()),
+            ("package".to_string(), "brew:script".to_string()),
+        ],
+        "both script shapes resolve and nothing else does"
+    );
+    let mut tracked: Vec<String> = store
+        .managed_resources()
+        .unwrap()
+        .into_iter()
+        .map(|r| r.resource_id)
+        .collect();
+    tracked.sort_unstable();
+    assert_eq!(
+        tracked,
+        vec![
+            "echo hi".to_string(),
+            "echo hi".to_string(),
+            "mod/path:script".to_string(),
+            "mod:extra:script".to_string(),
+            "nvim/.vimrc".to_string(),
+            "nvim:script".to_string()
+        ],
+        "every tracking row survives, both scripts' included"
     );
 }
 
@@ -4518,9 +4657,7 @@ fn every_upsert_refreshes_its_own_timestamp() {
     let mut upserts = 0usize;
     let mut offenders = Vec::new();
     for path in files {
-        let Ok(body) = std::fs::read_to_string(&path) else {
-            continue;
-        };
+        let body = crate::test_helpers::walked_file_body(&path);
         let lines: Vec<&str> = body.lines().collect();
         for (at, _) in body.match_indices("ON CONFLICT") {
             upserts += 1;

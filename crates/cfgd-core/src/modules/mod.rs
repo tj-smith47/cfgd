@@ -31,8 +31,9 @@ pub use loader::{
     declared_modules_dir, load_module, load_modules, resolve_dependency_order, validate_module_name,
 };
 pub use lockfile::{
-    diff_module_specs, hash_module_contents, load_all_modules, load_locked_modules, load_lockfile,
-    load_source_modules, save_lockfile, verify_lockfile_integrity,
+    ChangedScript, SpecChange, diff_module_specs, hash_module_contents, load_all_modules,
+    load_locked_modules, load_lockfile, load_source_modules, save_lockfile,
+    verify_lockfile_integrity,
 };
 pub use registry::{
     FetchedRemoteModule, RegistryModule, RegistryRef, extract_registry_name,
@@ -44,7 +45,9 @@ pub use resolve::{
     resolve_package,
 };
 pub(crate) use resolve::{price_package, priceable_manager};
-pub use surfaces::{HookScripts, ModuleSurfaces};
+pub use surfaces::post_apply_change_body;
+pub use surfaces::post_apply_scripts_section;
+pub use surfaces::{DeclaredScript, HookScripts, ModuleSurfaces, scripts_section};
 
 // ---------------------------------------------------------------------------
 // Resolved types — output of module resolution
@@ -192,15 +195,16 @@ pub struct ResolvedModule {
 }
 
 impl ResolvedModule {
-    /// The six lifecycle hooks paired with the entries this module resolved
-    /// for them, in RUN order — the resolved-side mirror of
-    /// [`crate::config::ScriptSpec::hooks`], which is the ordering authority
-    /// both read from.
+    /// The lifecycle scripts this module resolved, gathered back into the shape
+    /// [`crate::config::ScriptSpec`] declares them in, so a surface reporting
+    /// them reads the hook names and their order off
+    /// [`crate::config::ScriptSpec::hooks`] — the one authority over both —
+    /// rather than a second table on this side.
     ///
-    /// Destructured for the same reason that one is: a seventh hook field does
-    /// not compile until it is listed here, so no surface reporting a module's
-    /// hooks can silently miss one.
-    pub fn script_hooks(&self) -> [(&'static str, &[crate::config::ScriptEntry]); 6] {
+    /// Destructured for the same reason that method is: a seventh resolved hook
+    /// field does not compile until it is carried across here, so no surface
+    /// reporting a module's hooks can silently miss one.
+    pub fn declared_scripts(&self) -> crate::config::ScriptSpec {
         let Self {
             pre_apply_scripts,
             post_apply_scripts,
@@ -220,14 +224,14 @@ impl ResolvedModule {
             platform_skip_reason: _,
             origin: _,
         } = self;
-        [
-            ("preApply", pre_apply_scripts),
-            ("postApply", post_apply_scripts),
-            ("preReconcile", pre_reconcile_scripts),
-            ("postReconcile", post_reconcile_scripts),
-            ("onDrift", on_drift_scripts),
-            ("onChange", on_change_scripts),
-        ]
+        crate::config::ScriptSpec {
+            pre_apply: pre_apply_scripts.clone(),
+            post_apply: post_apply_scripts.clone(),
+            pre_reconcile: pre_reconcile_scripts.clone(),
+            post_reconcile: post_reconcile_scripts.clone(),
+            on_drift: on_drift_scripts.clone(),
+            on_change: on_change_scripts.clone(),
+        }
     }
 
     /// Build a platform-skipped placeholder: identity (`name`, `dir`, `depends`)

@@ -28,7 +28,7 @@ impl<'a> super::Reconciler<'a> {
                 // alone would miss a module-contributed configurator key — the action
                 // plans but the apply silently no-ops (the original module-vs-profile
                 // coherence gap this branch closes).
-                let system = crate::effective::effective_system_map(profile, modules);
+                let (system, _) = crate::effective::effective_system_map(profile, modules);
                 if let Some(desired_value) = system.get(configurator.as_str()) {
                     // The caller settles this action's one `system:<name>.<key>`
                     // line and drains the sink under it, so the configurator's
@@ -51,6 +51,43 @@ impl<'a> super::Reconciler<'a> {
                     "system:{}",
                     super::system_resource_key(configurator, key)
                 ))
+            }
+            SystemAction::ConfigureAfterInstall {
+                configurator,
+                tool,
+                prerequisite_withheld,
+                ..
+            } => {
+                // Re-probed rather than trusted: the plan was read before this
+                // run's own Bootstrap phase installed the tool, and the
+                // availability sweep the registry ran then is stale by exactly
+                // that install.
+                let Some(sc) = self
+                    .registry
+                    .system_configurators()
+                    .iter()
+                    .find(|sc| sc.name() == configurator && sc.is_available())
+                else {
+                    // A run whose scope left the install out never tried, so it
+                    // reports what the plan already said rather than a failure
+                    // it did not observe. The row is priced as withheld either
+                    // way, off the same mark this reads.
+                    if *prerequisite_withheld {
+                        return Ok(format!("system:{configurator} (skipped)"));
+                    }
+                    return Err(crate::errors::SystemError::ConfiguratorUnavailable {
+                        configurator: configurator.clone(),
+                        tool: tool.clone(),
+                    }
+                    .into());
+                };
+                let (system, _) = crate::effective::effective_system_map(profile, modules);
+                let Some(desired) = system.get(configurator.as_str()) else {
+                    return Ok(format!("system:{}", configurator));
+                };
+                let cx = SystemContext::with_notes(printer, notes);
+                sc.apply(desired, &cx)?;
+                Ok(format!("system:{}", configurator))
             }
             SystemAction::Skip { configurator, .. } => {
                 Ok(format!("system:{} (skipped)", configurator))

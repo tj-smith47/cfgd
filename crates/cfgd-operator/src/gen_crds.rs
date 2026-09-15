@@ -1,6 +1,6 @@
 //! CRD YAML generation for the Helm chart.
 //!
-//! Sources the five CRD spec types from `cfgd-crd` (via the operator re-export)
+//! Sources the CRD spec types from `cfgd-crd` (via the operator re-export)
 //! and renders kube's `CustomResourceExt::crd()` output to YAML, injecting the
 //! `x-kubernetes-list-type` / CEL structural-merge annotations that schemars
 //! cannot express. [`render_all`] is the testable library entry point; the
@@ -9,7 +9,9 @@
 use kube::CustomResourceExt;
 use thiserror::Error;
 
-use crate::crds::{ClusterConfigPolicy, ConfigPolicy, DriftAlert, MachineConfig, Module};
+use crate::crds::{
+    BackupPolicy, ClusterConfigPolicy, ConfigPolicy, DriftAlert, MachineConfig, Module,
+};
 
 /// Failure rendering a CRD to YAML. Both arms are infallible in practice (the
 /// CRD shapes are derived, not user-supplied) but the rule against `expect` in
@@ -36,6 +38,9 @@ fn render_crd(mut crd: serde_json::Value, inject_cel: bool) -> Result<RenderedCr
         inject_cel_rules(&mut crd);
     }
     inject_smd_annotations(&mut crd);
+    if let Some(schema) = crd.pointer_mut("/spec/versions/0/schema/openAPIV3Schema") {
+        sanitize_structural(schema);
+    }
     let name = crd
         .pointer("/metadata/name")
         .and_then(serde_json::Value::as_str)
@@ -45,8 +50,9 @@ fn render_crd(mut crd: serde_json::Value, inject_cel: bool) -> Result<RenderedCr
     Ok(RenderedCrd { name, yaml })
 }
 
-/// Render all five CRDs, each as a [`RenderedCrd`], in the chart's canonical
-/// order (MachineConfig, ConfigPolicy, DriftAlert, ClusterConfigPolicy, Module).
+/// Render every CRD, each as a [`RenderedCrd`], in the chart's canonical order
+/// (MachineConfig, ConfigPolicy, DriftAlert, ClusterConfigPolicy, Module,
+/// BackupPolicy).
 pub fn render_each() -> Result<Vec<RenderedCrd>, GenCrdsError> {
     Ok(vec![
         // MachineConfig is the only kind carrying the hostname / files CEL rules.
@@ -55,10 +61,11 @@ pub fn render_each() -> Result<Vec<RenderedCrd>, GenCrdsError> {
         render_crd(serde_json::to_value(DriftAlert::crd())?, false)?,
         render_crd(serde_json::to_value(ClusterConfigPolicy::crd())?, false)?,
         render_crd(serde_json::to_value(Module::crd())?, false)?,
+        render_crd(serde_json::to_value(BackupPolicy::crd())?, false)?,
     ])
 }
 
-/// Render all five CRDs into a single `---\n`-joined YAML document — the exact
+/// Render every CRD into a single `---\n`-joined YAML document — the exact
 /// bytes the `cfgd-gen-crds` binary emits on stdout for the Helm chart.
 pub fn render_all() -> Result<String, GenCrdsError> {
     let docs = render_each()?;
@@ -68,6 +75,91 @@ pub fn render_all() -> Result<String, GenCrdsError> {
         .collect::<Vec<_>>()
         .join("---\n");
     Ok(joined)
+}
+
+/// Fold a schemars-derived schema into a Kubernetes STRUCTURAL schema.
+///
+/// The API server refuses a CRD whose schema is not structural, so two shapes
+/// schemars emits have to be folded away before the document is written:
+///
+/// - `additionalProperties: false`, which `#[serde(deny_unknown_fields)]`
+///   produces. Kubernetes rejects it wherever `properties` is also set, and
+///   the CRD's own pruning already drops unknown fields, so the constraint is
+///   redundant as well as illegal. A node left with no type by that removal
+///   settles as `type: object` — it asked for LESS than the default, so it
+///   must never fall through to the free-form marker below.
+/// - a schema node with no single OpenAPI type: the free-form `patch.ensure`
+///   arm, which carries no `type` at all, and the untagged `ScriptEntry`
+///   union, whose `anyOf` carries an empty arm the `type` schemars emits
+///   beside it contradicts. Those become
+///   `x-kubernetes-preserve-unknown-fields: true`, the API server's own
+///   spelling for "keep whatever is here and validate no further".
+///
+/// The walk descends only through the child positions that are themselves
+/// schemas (`properties`, `items`, `additionalProperties`, `patternProperties`)
+/// — the same positions the structural rules require a `type` at. A blind walk
+/// over every nested object would reach a `default: {}` literal or an
+/// `x-kubernetes-validations` rule and rewrite data that is not a schema.
+/// Whether a union node carries the tell of kube's own flattening: an arm that
+/// is the EMPTY schema, matching anything at all.
+///
+/// schemars renders an untagged enum as its object arm's own `type` and
+/// `properties` alongside an `anyOf` naming every arm, and that `type` is then
+/// a claim the union does not keep — `ScriptEntry`'s bare-string arm is not an
+/// object, so the API server rejects exactly the shorthand the local YAML
+/// documents. The empty arm is what says the union spans more than the type
+/// beside it; a union whose arms all agree on a type keeps the claim.
+fn union_flattens_over_an_untyped_arm(map: &serde_json::Map<String, serde_json::Value>) -> bool {
+    ["anyOf", "oneOf"].iter().any(|key| {
+        map.get(*key)
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|arms| {
+                arms.iter()
+                    .any(|arm| arm.as_object().is_some_and(serde_json::Map::is_empty))
+            })
+    })
+}
+
+fn sanitize_structural(schema: &mut serde_json::Value) {
+    let Some(map) = schema.as_object_mut() else {
+        return;
+    };
+    let denied_unknown = map.get("additionalProperties") == Some(&serde_json::Value::Bool(false));
+    if denied_unknown {
+        map.remove("additionalProperties");
+    }
+    if union_flattens_over_an_untyped_arm(map) {
+        map.remove("type");
+    }
+    if !map.contains_key("type") && !map.contains_key("$ref") && !map.contains_key("allOf") {
+        let settled = if denied_unknown {
+            // The node said "no field but the ones I list"; dropping that on
+            // the floor and marking it free-form inverts the author's
+            // intent. `type: object` restores it — the CRD's own pruning
+            // already removes every unlisted field.
+            ("type", serde_json::Value::String("object".to_string()))
+        } else {
+            (
+                "x-kubernetes-preserve-unknown-fields",
+                serde_json::Value::Bool(true),
+            )
+        };
+        map.insert(settled.0.to_string(), settled.1);
+    }
+    for key in ["properties", "patternProperties"] {
+        if let Some(children) = map.get_mut(key).and_then(serde_json::Value::as_object_mut) {
+            for child in children.values_mut() {
+                sanitize_structural(child);
+            }
+        }
+    }
+    for key in ["items", "additionalProperties"] {
+        if let Some(child) = map.get_mut(key)
+            && child.is_object()
+        {
+            sanitize_structural(child);
+        }
+    }
 }
 
 fn inject_smd_annotations(crd: &mut serde_json::Value) {
@@ -106,17 +198,79 @@ fn inject_smd_annotations(crd: &mut serde_json::Value) {
         refs["x-kubernetes-list-map-keys"] = serde_json::json!(["name"]);
     }
 
-    // files list: merge by map key — "path" for MachineConfig, "source" for Module
+    // Maps ONE writer reports whole. Granular (the default) would track ownership
+    // per key, so a key another writer left behind would survive the whole-map
+    // write and never be retired.
+    let atomic_maps = [
+        // The two maps a device reports whole at every check-in, against the
+        // ownership entries the released whole-status merge patch and a manual
+        // kubectl patch leave behind.
+        format!("{spec_base}/status/properties/packageVersions"),
+        format!("{spec_base}/status/properties/backupScheduleOwners"),
+        // The module file on disk is the whole declaration, and
+        // `cfgd module push --apply` sends it whole, so a key an earlier edit
+        // left behind must not outlive the push.
+        format!("{spec_base}/spec/properties/system"),
+        format!("{spec_base}/spec/properties/packages/items/properties/aliases"),
+    ];
+    for path in &atomic_maps {
+        if let Some(node) = crd.pointer_mut(path) {
+            node["x-kubernetes-map-type"] = serde_json::json!("atomic");
+        }
+    }
+
+    // A label selector is one leaf, matching upstream metav1.LabelSelector
+    // (+structType=atomic): two managers applying the same policy must never
+    // merge label keys into a selector neither of them wrote.
+    for selector in ["selector", "targetSelector", "namespaceSelector"] {
+        if let Some(node) = crd.pointer_mut(&format!("{spec_base}/spec/properties/{selector}")) {
+            node["x-kubernetes-map-type"] = serde_json::json!("atomic");
+        }
+    }
+
+    // User-authored settings, composed by whoever applies the object: per-key
+    // ownership is what someone editing one setting of a shared object expects,
+    // and saying so is what keeps the next map from defaulting into it silently.
+    let granular_maps = [
+        format!("{spec_base}/spec/properties/systemSettings"),
+        format!("{spec_base}/spec/properties/settings"),
+    ];
+    for path in &granular_maps {
+        if let Some(node) = crd.pointer_mut(path) {
+            node["x-kubernetes-map-type"] = serde_json::json!("granular");
+        }
+    }
+
+    // files list: merge by map key — "path" for MachineConfig, "target" for Module
     if let Some(files) = crd.pointer_mut(&format!("{spec_base}/spec/properties/files")) {
         files["x-kubernetes-list-type"] = serde_json::json!("map");
         // Determine map key from the items schema: Module files have "source"+"target",
         // MachineConfig files have "path"+"content"+"source"+"mode".
+        //
+        // A Module file is keyed by its TARGET, the one field every entry
+        // carries: a `strategy: Patch` entry rewrites the target in place and
+        // declares no source at all, so several of them in one module would
+        // collide on an empty `source` and the API server would refuse the
+        // whole resource.
         let has_path_property = files.pointer("/items/properties/path").is_some();
         if has_path_property {
             files["x-kubernetes-list-map-keys"] = serde_json::json!(["path"]);
         } else {
-            files["x-kubernetes-list-map-keys"] = serde_json::json!(["source"]);
+            files["x-kubernetes-list-map-keys"] = serde_json::json!(["target"]);
         }
+    }
+
+    // units lists (BackupPolicy only): the policy's own overrides merge by the
+    // unit name; the status carries one row per (machine, unit), so its key is
+    // the pair — several machines report the same unit name, and a map list
+    // whose keys repeat is refused by the API server outright.
+    if let Some(units) = crd.pointer_mut(&format!("{spec_base}/spec/properties/units")) {
+        units["x-kubernetes-list-type"] = serde_json::json!("map");
+        units["x-kubernetes-list-map-keys"] = serde_json::json!(["name"]);
+    }
+    if let Some(units) = crd.pointer_mut(&format!("{spec_base}/status/properties/units")) {
+        units["x-kubernetes-list-type"] = serde_json::json!("map");
+        units["x-kubernetes-list-map-keys"] = serde_json::json!(["hostname", "name"]);
     }
 
     // driftDetails list: merge by "field" key (DriftAlert only)
@@ -175,11 +329,23 @@ fn inject_cel_rules(crd: &mut serde_json::Value) {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::{inject_cel_rules, inject_smd_annotations, render_all};
     use serde_json::{Value, json};
 
+    /// How many CRD kinds the registry carries — the count every walk over the
+    /// rendered documents holds itself to, so a kind added to `cfgd-crd`
+    /// widens the walks instead of leaving them passing over a stale number.
+    fn registered_crd_kinds() -> usize {
+        cfgd_core::schema::KIND_REGISTRY
+            .iter()
+            .filter(|e| e.crd)
+            .count()
+    }
+
     #[test]
-    fn render_all_covers_all_five_crds() {
+    fn render_all_covers_every_crd() {
         let yaml = render_all().expect("render CRDs");
         for k in [
             "machineconfigs",
@@ -187,6 +353,7 @@ mod tests {
             "clusterconfigpolicies",
             "driftalerts",
             "modules",
+            "backuppolicies",
         ] {
             assert!(
                 yaml.contains(&format!("name: {k}.cfgd.io")),
@@ -198,8 +365,431 @@ mod tests {
     #[test]
     fn render_all_preserves_dashed_document_separator() {
         let yaml = render_all().expect("render CRDs");
-        // Five CRDs joined by `---\n` => exactly four separators.
-        assert_eq!(yaml.matches("---\n").count(), 4);
+        let docs = super::render_each().expect("render CRDs");
+        // N documents joined by `---\n` => exactly N-1 separators.
+        assert_eq!(yaml.matches("---\n").count(), docs.len() - 1);
+    }
+
+    /// Read a workspace file, panicking by name when it cannot be read.
+    ///
+    /// A roster this walk cannot read is a roster it cannot judge, and a walk
+    /// that skips what it cannot read is a walk that passes on an empty tree.
+    fn roster_file(relative: &str) -> String {
+        let path = cfgd_core::test_helpers::workspace_root().join(relative);
+        std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()))
+    }
+
+    /// The `["a", "b"]` inline list a chart RBAC or roster line ends on.
+    fn inline_list(line: &str, file: &str) -> BTreeSet<String> {
+        let open = line
+            .find('[')
+            .unwrap_or_else(|| panic!("{file}: no inline list on line: {line}"));
+        let close = line
+            .rfind(']')
+            .unwrap_or_else(|| panic!("{file}: unterminated inline list on line: {line}"));
+        line[open + 1..close]
+            .split(',')
+            .map(|item| item.trim().trim_matches('"').to_string())
+            .filter(|item| !item.is_empty())
+            .collect()
+    }
+
+    /// The three `cfgd.io` resource lists of a ClusterRole template, each with
+    /// its subresource suffix stripped, so all three answer the plural set.
+    ///
+    /// The chart templates are Helm, not YAML, so the rule is read off the raw
+    /// line rather than through a parser that would choke on `{{ … }}`.
+    fn cfgd_rbac_resource_sets(relative: &str) -> Vec<BTreeSet<String>> {
+        let body = roster_file(relative);
+        let mut sets = Vec::new();
+        let mut in_cfgd_rule = false;
+        for line in body.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("- apiGroups:") {
+                in_cfgd_rule = trimmed.contains("\"cfgd.io\"");
+                continue;
+            }
+            if in_cfgd_rule && trimmed.starts_with("resources:") {
+                sets.push(
+                    inline_list(trimmed, relative)
+                        .iter()
+                        .map(|r| {
+                            r.split('/')
+                                .next()
+                                .unwrap_or_else(|| panic!("{relative}: empty resource name"))
+                                .to_string()
+                        })
+                        .collect(),
+                );
+            }
+        }
+        assert_eq!(
+            sets.len(),
+            3,
+            "{relative} must carry three cfgd.io resource rules (CRUD, /status, /finalizers)"
+        );
+        sets
+    }
+
+    /// Every list the rendered schema caps states that cap in its own
+    /// description, counting each one it judged.
+    ///
+    /// The descriptions are user documentation and spell the number out, so a
+    /// changed ceiling would otherwise leave them promising a bound the API
+    /// server no longer enforces.
+    fn capped_lists_state_their_cap(node: &Value, file: &str, found: &mut usize) {
+        match node {
+            Value::Object(map) => {
+                if let Some(max) = map.get("maxItems").and_then(Value::as_u64) {
+                    let description = map
+                        .get("description")
+                        .and_then(Value::as_str)
+                        .unwrap_or_else(|| panic!("{file}: a capped list carries no description"));
+                    // The whole NUMBER, not a substring of one: a cap narrowed
+                    // from 50 to 5 leaves every description saying 50, and a
+                    // substring test reads that as the new cap being stated.
+                    let states_the_cap = description
+                        .split(|c: char| !c.is_ascii_digit())
+                        .any(|run| run.parse::<u64>().is_ok_and(|n| n == max));
+                    assert!(
+                        states_the_cap,
+                        "{file}: a capped list's description must state its own cap of {max}: \
+                         {description}"
+                    );
+                    *found += 1;
+                }
+                for value in map.values() {
+                    capped_lists_state_their_cap(value, file, found);
+                }
+            }
+            Value::Array(items) => {
+                for item in items {
+                    capped_lists_state_their_cap(item, file, found);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Every CRD kind the registry carries is rendered exactly once, and every
+    /// hand-maintained roster a kind must join names exactly what was rendered.
+    ///
+    /// Each roster is a list somebody edits by hand, and a kind missing from one
+    /// is silent everywhere else in the tree: `kubectl apply -k` installs only
+    /// what `kustomization.yaml` names, a kind absent from `webhook-config.yaml`
+    /// is admitted into a real cluster with no validation at all, and
+    /// `rbac_parity` proves only that the chart and the CSV agree — both can
+    /// lack the same kind together.
+    #[tokio::test]
+    async fn every_crd_kind_in_the_registry_is_rendered() {
+        let registered: BTreeSet<&str> = cfgd_core::schema::KIND_REGISTRY
+            .iter()
+            .filter(|e| e.crd)
+            .map(|e| e.kind)
+            .collect();
+        assert!(
+            registered.len() >= 6,
+            "the registry carries only {} CRD kinds, so this walk proves nothing",
+            registered.len()
+        );
+
+        let docs = super::render_each().expect("render CRDs");
+        let mut rendered: BTreeSet<String> = BTreeSet::new();
+        let mut plurals: BTreeSet<String> = BTreeSet::new();
+        let mut scopes: BTreeSet<(String, String)> = BTreeSet::new();
+        let mut capped = 0usize;
+        for doc in &docs {
+            let crd: Value = serde_yaml::from_str(&doc.yaml).expect("parse rendered CRD");
+            let kind = crd["spec"]["names"]["kind"]
+                .as_str()
+                .unwrap_or_else(|| panic!("{} declares no spec.names.kind", doc.name))
+                .to_string();
+            scopes.insert((
+                kind.clone(),
+                crd["spec"]["scope"]
+                    .as_str()
+                    .unwrap_or_else(|| panic!("{} declares no spec.scope", doc.name))
+                    .to_string(),
+            ));
+            assert!(
+                rendered.insert(kind.clone()),
+                "{kind} is rendered more than once"
+            );
+            capped_lists_state_their_cap(&crd, &doc.name, &mut capped);
+            let plural = doc
+                .name
+                .strip_suffix(".cfgd.io")
+                .unwrap_or_else(|| panic!("{} is not a cfgd.io CRD name", doc.name));
+            plurals.insert(plural.to_string());
+        }
+        assert_eq!(
+            rendered.iter().map(String::as_str).collect::<BTreeSet<_>>(),
+            registered,
+            "every CRD kind in the registry is rendered, and nothing else is"
+        );
+        assert!(
+            capped >= 3,
+            "only {capped} capped lists were judged, so the cap walk proves nothing"
+        );
+        // The webhook path a kind registers under is its own kind lowercased —
+        // the spelling `webhook/mod.rs` routes and `webhook-config.yaml` names.
+        let singulars: BTreeSet<String> = rendered.iter().map(|k| k.to_lowercase()).collect();
+        let crd_files: BTreeSet<String> = plurals.iter().map(|p| format!("{p}.yaml")).collect();
+        let crd_names: BTreeSet<String> = plurals.iter().map(|p| format!("{p}.cfgd.io")).collect();
+
+        let kustomization = "chart/cfgd/crds/kustomization.yaml";
+        let listed: BTreeSet<String> = serde_yaml::from_str::<Value>(&roster_file(kustomization))
+            .unwrap_or_else(|e| panic!("cannot parse {kustomization}: {e}"))
+            .get("resources")
+            .and_then(Value::as_array)
+            .unwrap_or_else(|| panic!("{kustomization} carries no resources list"))
+            .iter()
+            .map(|r| {
+                r.as_str()
+                    .unwrap_or_else(|| panic!("{kustomization} lists a non-string resource"))
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(
+            listed, crd_files,
+            "{kustomization} must list exactly the rendered CRDs — \
+             `kubectl apply -k` installs only what it names"
+        );
+
+        let csv = "ecosystem/olm/manifests/cfgd-operator.clusterserviceversion.yaml";
+        let csv_doc = serde_yaml::from_str::<Value>(&roster_file(csv))
+            .unwrap_or_else(|e| panic!("cannot parse {csv}: {e}"));
+        let owned = csv_doc["spec"]["customresourcedefinitions"]["owned"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{csv} carries no customresourcedefinitions.owned list"));
+        let owned_names: BTreeSet<String> = owned
+            .iter()
+            .map(|e| {
+                e["name"]
+                    .as_str()
+                    .unwrap_or_else(|| panic!("{csv}: an owned entry declares no name"))
+                    .to_string()
+            })
+            .collect();
+        let owned_kinds: BTreeSet<String> = owned
+            .iter()
+            .map(|e| {
+                e["kind"]
+                    .as_str()
+                    .unwrap_or_else(|| panic!("{csv}: an owned entry declares no kind"))
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(owned_names, crd_names, "{csv} owned: names every CRD");
+        assert_eq!(owned_kinds, rendered, "{csv} owned: names every CRD's kind");
+
+        // OLM installs the webhooks from the bundle rather than from the chart,
+        // so this list is the OLM path's `webhook-config.yaml` and omitting a
+        // kind admits it unvalidated there. The pod-mutating entry names no
+        // cfgd.io kind and is skipped.
+        let mut olm_hooked_singulars = BTreeSet::new();
+        let mut olm_hooked_plurals = BTreeSet::new();
+        for hook in csv_doc["spec"]["webhookdefinitions"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{csv} carries no webhookdefinitions list"))
+        {
+            if hook["type"].as_str() != Some("ValidatingAdmissionWebhook") {
+                continue;
+            }
+            let path = hook["webhookPath"]
+                .as_str()
+                .unwrap_or_else(|| panic!("{csv}: a webhook definition declares no webhookPath"));
+            let singular = path
+                .strip_prefix("/validate-")
+                .unwrap_or_else(|| panic!("{csv}: {path} is no validating webhook path"));
+            olm_hooked_singulars.insert(singular.to_string());
+            for rule in hook["rules"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{csv}: {path} declares no rules"))
+            {
+                for resource in rule["resources"]
+                    .as_array()
+                    .unwrap_or_else(|| panic!("{csv}: {path} declares no resources"))
+                {
+                    olm_hooked_plurals.insert(
+                        resource
+                            .as_str()
+                            .unwrap_or_else(|| panic!("{csv}: {path} names a non-string resource"))
+                            .to_string(),
+                    );
+                }
+            }
+        }
+        assert_eq!(
+            olm_hooked_singulars, singulars,
+            "{csv} webhookdefinitions: a kind it omits is admitted unvalidated on the OLM \
+             install path"
+        );
+        assert_eq!(
+            olm_hooked_plurals, plurals,
+            "{csv} webhookdefinitions: every kind's plural is under a validating rule"
+        );
+
+        let examples = csv_doc["metadata"]["annotations"]["alm-examples"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{csv} carries no alm-examples annotation"));
+        let example_kinds: BTreeSet<String> = serde_json::from_str::<Vec<Value>>(examples)
+            .unwrap_or_else(|e| panic!("cannot parse {csv} alm-examples: {e}"))
+            .iter()
+            .map(|e| {
+                e["kind"]
+                    .as_str()
+                    .unwrap_or_else(|| panic!("{csv}: an alm-examples entry declares no kind"))
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(
+            example_kinds, rendered,
+            "{csv} alm-examples: OLM's install form offers a sample of every kind"
+        );
+
+        let webhook_config = "chart/cfgd/templates/webhook-config.yaml";
+        let body = roster_file(webhook_config);
+        let mut hooked_singulars = BTreeSet::new();
+        let mut hooked_plurals = BTreeSet::new();
+        for line in body.lines() {
+            let Some(rest) = line.trim().strip_prefix("(dict \"singular\" ") else {
+                continue;
+            };
+            let mut quoted = rest.split('"').skip(1).step_by(2);
+            let singular = quoted
+                .next()
+                .unwrap_or_else(|| panic!("{webhook_config}: a dict entry names no singular"));
+            let plural = quoted
+                .nth(1)
+                .unwrap_or_else(|| panic!("{webhook_config}: a dict entry names no plural"));
+            hooked_singulars.insert(singular.to_string());
+            hooked_plurals.insert(plural.to_string());
+        }
+        assert_eq!(
+            hooked_singulars, singulars,
+            "{webhook_config} must register a validating webhook for every kind — \
+             a kind it omits is admitted with no validation at all"
+        );
+        assert_eq!(
+            hooked_plurals, plurals,
+            "{webhook_config} must name every kind's plural"
+        );
+
+        for rbac in [
+            "chart/cfgd/templates/rbac.yaml",
+            "chart/cfgd/templates/rbac-examples/platform-admin.yaml",
+        ] {
+            for resources in cfgd_rbac_resource_sets(rbac) {
+                assert_eq!(
+                    resources, plurals,
+                    "{rbac} must grant every cfgd.io resource, its /status and its /finalizers"
+                );
+            }
+        }
+
+        let taskfile = "Taskfile.yml";
+        let body = roster_file(taskfile);
+        let loop_line = body
+            .lines()
+            .map(str::trim)
+            .find(|l| l.starts_with("for f in ") && l.ends_with("; do"))
+            .unwrap_or_else(|| panic!("{taskfile}: gen:crds:check declares no file loop"));
+        let looped: BTreeSet<String> = loop_line
+            .trim_start_matches("for f in ")
+            .trim_end_matches("; do")
+            .split_whitespace()
+            .map(str::to_string)
+            .collect();
+        assert_eq!(
+            looped, plurals,
+            "{taskfile}: gen:crds:check must diff every rendered CRD copy"
+        );
+
+        // The isolation model a team reads before writing RBAC: a kind missing
+        // from it reads as a kind that does not exist, and a kind whose scope
+        // the table gets wrong sends the reader to write a Role where only a
+        // ClusterRole can grant it.
+        let tenancy = "docs/multi-tenancy.md";
+        let documented_scopes: BTreeSet<(String, String)> = roster_file(tenancy)
+            .lines()
+            .skip_while(|l| !l.trim().starts_with("## Namespace Isolation Model"))
+            .take_while(|l| !l.trim().starts_with("## RBAC"))
+            .filter_map(|l| {
+                let mut cells = l.trim().trim_matches('|').split('|').map(str::trim);
+                let kind = cells.next()?;
+                let scope = cells.next()?;
+                rendered
+                    .contains(kind)
+                    .then(|| (kind.to_string(), scope.to_string()))
+            })
+            .collect();
+        assert_eq!(
+            documented_scopes, scopes,
+            "{tenancy}'s isolation table must name every rendered kind at its rendered scope"
+        );
+
+        // The feature list a reader meets first: a kind it omits is a kind
+        // nobody looking at the repo's front page knows the operator serves.
+        let readme = "README.md";
+        let body = roster_file(readme);
+        let operator_line = body
+            .lines()
+            .find(|l| l.trim_start().starts_with("- [Kubernetes operator]"))
+            .unwrap_or_else(|| panic!("{readme}: no Kubernetes operator bullet"));
+        let listed: BTreeSet<String> = operator_line
+            .split("CRDs for ")
+            .nth(1)
+            .unwrap_or_else(|| panic!("{readme}: the operator bullet names no CRDs"))
+            .split(';')
+            .next()
+            .unwrap_or_default()
+            .split(',')
+            .map(|k| k.trim().to_string())
+            .filter(|k| !k.is_empty())
+            .collect();
+        assert_eq!(
+            listed, rendered,
+            "{readme}'s operator bullet must name every rendered CRD kind"
+        );
+
+        let connection = "chart/cfgd/templates/tests/test-connection.yaml";
+        let body = roster_file(connection);
+        let probed: BTreeSet<String> = body
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix("kubectl get crd "))
+            .filter_map(|l| l.split_whitespace().next())
+            .map(str::to_string)
+            .collect();
+        assert_eq!(
+            probed, crd_names,
+            "{connection} must check every CRD is established"
+        );
+
+        // Both rosters above name a path per kind; the server has to answer it.
+        // An unrouted path 404s at admission, and `failurePolicy: Fail` turns
+        // that into a blanket rejection of every write to the kind. The body is
+        // deliberately not a review: only the route's existence is under test.
+        let (router, _metrics) = crate::webhook::test_router::test_webhook_router();
+        for singular in &singulars {
+            let path = format!("/validate-{singular}");
+            let request = axum::http::Request::builder()
+                .method("POST")
+                .uri(&path)
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from("{}"))
+                .expect("request must build");
+            let status = tower::ServiceExt::oneshot(router.clone(), request)
+                .await
+                .expect("the webhook router answers")
+                .status();
+            assert_ne!(
+                status,
+                axum::http::StatusCode::NOT_FOUND,
+                "the webhook server serves no {path}, so every write to that kind is rejected"
+            );
+        }
     }
 
     /// Split a printer-column jsonPath into `(field, is_indexed)` segments,
@@ -245,6 +835,28 @@ mod tests {
             }
         }
         node.get("type").and_then(Value::as_str).map(str::to_string)
+    }
+
+    /// A BackupPolicy with no `spec.units` schedules nothing, so the rendered
+    /// schema names `units` under `required` and the API server refuses that
+    /// shape with no webhook in the path. `BackupPolicySpec::validate` still
+    /// refuses the EMPTY list, which a required field cannot judge.
+    #[test]
+    fn the_rendered_backup_policy_requires_the_units_it_schedules() {
+        let doc = super::render_each()
+            .expect("render CRDs")
+            .into_iter()
+            .find(|d| d.name == "backuppolicies.cfgd.io")
+            .expect("the BackupPolicy CRD is rendered");
+        let crd: Value = serde_yaml::from_str(&doc.yaml).expect("parse rendered CRD");
+        let required = crd
+            .pointer("/spec/versions/0/schema/openAPIV3Schema/properties/spec/required")
+            .and_then(Value::as_array)
+            .expect("the BackupPolicy spec states its required fields");
+        assert!(
+            required.iter().any(|f| f == "units"),
+            "the rendered spec must require `units`: {required:?}"
+        );
     }
 
     /// Walk every `additionalPrinterColumns` entry on every CRD and refuse any
@@ -320,6 +932,7 @@ mod tests {
                                         "requiredModules": {"items": {}},
                                         "debugModules": {"items": {}},
                                         "driftDetails": {"items": {}},
+                                        "units": {"items": {}},
                                         "env": {"items": {}},
                                         "depends": {"items": {}},
                                         "files": {
@@ -350,7 +963,8 @@ mod tests {
                                 },
                                 "status": {
                                     "properties": {
-                                        "conditions": {"items": {}}
+                                        "conditions": {"items": {}},
+                                        "units": {"items": {}}
                                     }
                                 }
                             }
@@ -408,6 +1022,27 @@ mod tests {
                 "{field} list-map-keys"
             );
         }
+
+        // units: the spec's by name, the status's by the (hostname, name) pair
+        // one machine's copy of a unit is identified by.
+        let spec_units = format!("{base}/spec/properties/units");
+        assert_eq!(
+            smd(&crd, &spec_units, "x-kubernetes-list-type"),
+            Some(json!("map"))
+        );
+        assert_eq!(
+            smd(&crd, &spec_units, "x-kubernetes-list-map-keys"),
+            Some(json!(["name"]))
+        );
+        let status_units = format!("{base}/status/properties/units");
+        assert_eq!(
+            smd(&crd, &status_units, "x-kubernetes-list-type"),
+            Some(json!("map"))
+        );
+        assert_eq!(
+            smd(&crd, &status_units, "x-kubernetes-list-map-keys"),
+            Some(json!(["hostname", "name"]))
+        );
 
         // driftDetails: map by "field"
         let drift = format!("{base}/spec/properties/driftDetails");
@@ -478,8 +1113,10 @@ mod tests {
     }
 
     #[test]
-    fn inject_smd_annotations_files_list_keys_by_source_when_items_lack_path_property() {
+    fn inject_smd_annotations_files_list_keys_by_target_when_items_lack_path_property() {
         // Module shape: items.properties has "source"+"target" but not "path".
+        // A `strategy: Patch` entry declares no source, so `target` is the one
+        // field every entry fills and the only safe server-side merge key.
         let mut crd = json!({
             "spec": {"versions": [{"schema": {"openAPIV3Schema": {"properties": {"spec": {
                 "properties": {
@@ -498,7 +1135,7 @@ mod tests {
         );
         assert_eq!(
             smd(&crd, files, "x-kubernetes-list-map-keys"),
-            Some(json!(["source"]))
+            Some(json!(["target"]))
         );
     }
 
@@ -543,6 +1180,428 @@ mod tests {
         assert!(
             crd.pointer(&format!("{base}/spec/properties/depends"))
                 .is_none()
+        );
+    }
+
+    /// Walk every rendered document for `additionalProperties: false`, which
+    /// `#[serde(deny_unknown_fields)]` on a shared value type can reintroduce
+    /// at any schemars upgrade. The API server refuses a CRD carrying it
+    /// beside `properties`, and a CRD that fails to install is not something
+    /// any unit test downstream of the render would notice.
+    #[test]
+    fn no_rendered_crd_carries_additional_properties_false() {
+        fn find_false(node: &Value, path: &str, hits: &mut Vec<String>) {
+            match node {
+                Value::Object(map) => {
+                    for (key, value) in map {
+                        if key == "additionalProperties" && value == &Value::Bool(false) {
+                            hits.push(path.to_string());
+                        }
+                        find_false(value, &format!("{path}.{key}"), hits);
+                    }
+                }
+                Value::Array(items) => {
+                    for (i, value) in items.iter().enumerate() {
+                        find_false(value, &format!("{path}[{i}]"), hits);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let docs = super::render_each().expect("render CRDs");
+        assert_eq!(
+            docs.len(),
+            registered_crd_kinds(),
+            "every CRD must be walked"
+        );
+        for doc in &docs {
+            let crd: Value = serde_yaml::from_str(&doc.yaml).expect("parse rendered CRD");
+            let mut hits = Vec::new();
+            find_false(&crd, "", &mut hits);
+            assert!(
+                hits.is_empty(),
+                "{} carries `additionalProperties: false` at {hits:?}; \
+                 the API server rejects it alongside `properties`",
+                doc.name
+            );
+        }
+    }
+
+    /// Every schema node the structural pass reaches, paired with its JSON
+    /// pointer — the same descent `sanitize_structural` makes, so a walk pin
+    /// judges exactly the nodes the pass judged and never a `default: {}`
+    /// literal that is not a schema at all.
+    fn schema_nodes<'a>(root: &'a Value, path: String, out: &mut Vec<(String, &'a Value)>) {
+        let Some(map) = root.as_object() else {
+            return;
+        };
+        out.push((path.clone(), root));
+        for key in ["properties", "patternProperties"] {
+            if let Some(children) = map.get(key).and_then(Value::as_object) {
+                for (name, child) in children {
+                    schema_nodes(child, format!("{path}/{key}/{name}"), out);
+                }
+            }
+        }
+        for key in ["items", "additionalProperties"] {
+            if let Some(child) = map.get(key)
+                && child.is_object()
+            {
+                schema_nodes(child, format!("{path}/{key}"), out);
+            }
+        }
+    }
+
+    /// Every rendered CRD, parsed once and paired with its name, so a test
+    /// reading several nodes renders and parses the set a single time.
+    fn rendered_crd_docs() -> Vec<(String, Value)> {
+        let docs = super::render_each().expect("render CRDs");
+        assert_eq!(
+            docs.len(),
+            registered_crd_kinds(),
+            "every CRD must be walked"
+        );
+        docs.iter()
+            .map(|doc| {
+                (
+                    doc.name.clone(),
+                    serde_yaml::from_str(&doc.yaml).expect("parse rendered CRD"),
+                )
+            })
+            .collect()
+    }
+
+    /// Every rendered schema node, over every rendered document.
+    fn every_rendered_schema_node() -> Vec<(String, Value)> {
+        let mut all = Vec::new();
+        for (name, crd) in rendered_crd_docs() {
+            let Some(root) = crd.pointer("/spec/versions/0/schema/openAPIV3Schema") else {
+                panic!("{name} carries no schema");
+            };
+            let mut nodes = Vec::new();
+            schema_nodes(root, name.clone(), &mut nodes);
+            all.extend(nodes.into_iter().map(|(p, v)| (p, v.clone())));
+        }
+        all
+    }
+
+    /// A typeless schema node is what the API server refuses a CRD for, so
+    /// every one the pass leaves behind carries the marker that makes it
+    /// legal. `patch.ensure` — the free-form mapping a user merges into their
+    /// own config file, whose keys no schema can enumerate — is the floor.
+    #[test]
+    fn every_typeless_rendered_node_is_marked_preserve_unknown_fields() {
+        let mut typeless = 0usize;
+        for (path, node) in every_rendered_schema_node() {
+            if node.get("type").is_some() || node.get("$ref").is_some() {
+                continue;
+            }
+            typeless += 1;
+            assert_eq!(
+                node.get("x-kubernetes-preserve-unknown-fields"),
+                Some(&json!(true)),
+                "{path} has no OpenAPI type and no preserve-unknown-fields marker: {node:?}"
+            );
+        }
+        assert!(
+            typeless > 0,
+            "no typeless node was walked, so the pin proves nothing"
+        );
+    }
+
+    /// A rendered map: keys a schema cannot enumerate, either typed
+    /// (`additionalProperties`) or free-form (`x-kubernetes-preserve-unknown-fields`).
+    /// The node must be an object, which is also what the API server demands
+    /// before it accepts a merge-type declaration at all. A typeless free-form
+    /// node such as `modules.spec.files[].patch.ensure` is outside the
+    /// population for that reason and loses nothing by it: server-side apply
+    /// DEDUCES the merge type of an untyped `x-kubernetes-preserve-unknown-fields`
+    /// node from the value it holds, maps granular and lists atomic, so such a
+    /// map keeps the granular semantics it would have declared.
+    fn is_rendered_map(node: &Value) -> bool {
+        node.get("type") == Some(&json!("object"))
+            && (node.get("additionalProperties").is_some()
+                || node.get("x-kubernetes-preserve-unknown-fields") == Some(&json!(true)))
+    }
+
+    /// A map's merge semantics are a decision, never a default: granular (the
+    /// default) lets a key another manager wrote outlive the writer that reports
+    /// the map whole, which is how a retired package version survived a
+    /// check-in. Every rendered map declares its type, or sits inside a node
+    /// already declared atomic, which is one leaf carrying everything under it.
+    #[test]
+    fn every_rendered_map_declares_its_merge_type() {
+        let nodes = every_rendered_schema_node();
+        let atomic: Vec<String> = nodes
+            .iter()
+            .filter(|(_, node)| node.get("x-kubernetes-map-type") == Some(&json!("atomic")))
+            .map(|(path, _)| format!("{path}/"))
+            .collect();
+        let mut checked = 0;
+        for (path, node) in &nodes {
+            if !is_rendered_map(node) {
+                continue;
+            }
+            checked += 1;
+            let declared = node.get("x-kubernetes-map-type").is_some()
+                || atomic.iter().any(|prefix| path.starts_with(prefix));
+            assert!(
+                declared,
+                "{path} is a rendered map with no x-kubernetes-map-type; declare atomic or granular"
+            );
+        }
+        assert!(
+            checked >= 10,
+            "the walk found {checked} rendered maps; the six CRDs carry ten"
+        );
+    }
+
+    /// The three label selectors render atomic, as upstream `metav1.LabelSelector`
+    /// does: a selector two managers merged label keys into matches what neither
+    /// of them wrote.
+    #[test]
+    fn every_policy_label_selector_renders_atomic() {
+        let docs = rendered_crd_docs();
+        for (crd_name, selector) in [
+            ("backuppolicies.cfgd.io", "selector"),
+            ("configpolicies.cfgd.io", "targetSelector"),
+            ("clusterconfigpolicies.cfgd.io", "namespaceSelector"),
+        ] {
+            let node = rendered_node(
+                &docs,
+                crd_name,
+                &format!(
+                    "/spec/versions/0/schema/openAPIV3Schema/properties/spec/properties/{selector}"
+                ),
+            );
+            assert_eq!(
+                node.get("x-kubernetes-map-type"),
+                Some(&json!("atomic")),
+                "{crd_name} spec.{selector} must be atomic: {node:?}"
+            );
+        }
+    }
+
+    /// The two Module maps `cfgd module push --apply` writes whole: atomic, so a
+    /// key an earlier edit left behind does not outlive the push.
+    #[test]
+    fn the_module_maps_a_push_writes_whole_render_atomic() {
+        let docs = rendered_crd_docs();
+        for pointer in [
+            "/spec/versions/0/schema/openAPIV3Schema/properties/spec/properties/system",
+            "/spec/versions/0/schema/openAPIV3Schema/properties/spec/properties/packages/items/properties/aliases",
+        ] {
+            let node = rendered_node(&docs, "modules.cfgd.io", pointer);
+            assert_eq!(
+                node.get("x-kubernetes-map-type"),
+                Some(&json!("atomic")),
+                "modules {pointer} must be atomic: {node:?}"
+            );
+        }
+    }
+
+    /// The user-authored settings maps render granular BY DECLARATION: per-key
+    /// ownership is what someone editing one setting of a shared object expects,
+    /// and the word is written down so the next reader does not read silence.
+    #[test]
+    fn the_user_authored_settings_maps_render_granular() {
+        let docs = rendered_crd_docs();
+        for (crd_name, map) in [
+            ("machineconfigs.cfgd.io", "systemSettings"),
+            ("configpolicies.cfgd.io", "settings"),
+            ("clusterconfigpolicies.cfgd.io", "settings"),
+        ] {
+            let node = rendered_node(
+                &docs,
+                crd_name,
+                &format!(
+                    "/spec/versions/0/schema/openAPIV3Schema/properties/spec/properties/{map}"
+                ),
+            );
+            assert_eq!(
+                node.get("x-kubernetes-map-type"),
+                Some(&json!("granular")),
+                "{crd_name} spec.{map} must be granular: {node:?}"
+            );
+        }
+    }
+
+    /// One node of one rendered CRD, read out of the set the caller rendered.
+    fn rendered_node(docs: &[(String, Value)], crd_name: &str, pointer: &str) -> Value {
+        let (_, crd) = docs
+            .iter()
+            .find(|(name, _)| name == crd_name)
+            .unwrap_or_else(|| panic!("{crd_name} is rendered"));
+        crd.pointer(pointer)
+            .unwrap_or_else(|| panic!("{crd_name} renders {pointer}"))
+            .clone()
+    }
+
+    /// The value behind that declaration for the two maps a device reports
+    /// whole: atomic, so the gateway's forced apply is a whole-map takeover.
+    #[test]
+    fn the_device_reported_machine_config_status_maps_render_atomic() {
+        let docs = rendered_crd_docs();
+        for map in ["packageVersions", "backupScheduleOwners"] {
+            let node = rendered_node(
+                &docs,
+                "machineconfigs.cfgd.io",
+                &format!(
+                    "/spec/versions/0/schema/openAPIV3Schema/properties/status/properties/{map}"
+                ),
+            );
+            assert_eq!(
+                node.get("x-kubernetes-map-type"),
+                Some(&json!("atomic")),
+                "status.{map} must be atomic: {node:?}"
+            );
+        }
+    }
+
+    /// The untagged `ScriptEntry` accepts a bare command string as readily as
+    /// the mapping form, and schemars renders the mapping arm's `type: object`
+    /// beside the `anyOf` naming both. Left alone, the API server enforces that
+    /// `type` and rejects every module whose hook is written the short way —
+    /// which is what `cfgd module push --apply` emits. The tell that a union
+    /// spans more than that type is an EMPTY arm; a union whose arms agree on
+    /// a type keeps its claim, so every node the pass untyped carries the tell.
+    #[test]
+    fn every_untyped_union_node_carries_the_empty_arm_that_untyped_it() {
+        let mut unions = 0usize;
+        for (path, node) in every_rendered_schema_node() {
+            let arms = ["anyOf", "oneOf"]
+                .iter()
+                .filter_map(|k| node.get(*k))
+                .filter_map(Value::as_array)
+                .flatten()
+                .collect::<Vec<_>>();
+            if arms.is_empty() || node.get("type").is_some() {
+                continue;
+            }
+            unions += 1;
+            assert!(
+                arms.iter()
+                    .any(|arm| arm.as_object().is_some_and(serde_json::Map::is_empty)),
+                "{path} was left untyped but no arm of its union is the empty schema: {node:?}"
+            );
+        }
+        assert!(unions > 0, "no untyped union was walked (ScriptEntry's)");
+    }
+
+    /// The Module CRD's hook lists are the union above, end to end.
+    #[test]
+    fn a_union_typed_schema_keeps_no_type_its_arms_contradict() {
+        let docs = super::render_each().expect("render CRDs");
+        let module = docs
+            .iter()
+            .find(|d| d.name == "modules.cfgd.io")
+            .expect("the Module CRD is rendered");
+        let crd: Value = serde_yaml::from_str(&module.yaml).expect("parse rendered CRD");
+
+        let hooks = crd
+            .pointer("/spec/versions/0/schema/openAPIV3Schema/properties/spec/properties/hooks/properties")
+            .and_then(Value::as_object)
+            .expect("the hooks schema is rendered");
+        assert_eq!(
+            hooks.len(),
+            6,
+            "every lifecycle hook is rendered: {hooks:?}"
+        );
+
+        for (hook, schema) in hooks {
+            let items = schema.get("items").expect("a hook list has items");
+            assert!(
+                items.get("anyOf").is_some(),
+                "{hook} items keep both arms of the union: {items:?}"
+            );
+            assert!(
+                items.get("type").is_none(),
+                "{hook} items must claim no single type, or the bare-string arm is refused: {items:?}"
+            );
+            assert_eq!(
+                items.get("x-kubernetes-preserve-unknown-fields"),
+                Some(&json!(true)),
+                "{hook} items must be marked preserve-unknown-fields: {items:?}"
+            );
+        }
+    }
+
+    /// A node that said "no field but the ones I list" must not come out of
+    /// the pass saying the opposite. `additionalProperties: false` is illegal
+    /// in a structural schema and has to go, but dropping it leaves the node
+    /// typeless, and the free-form marker would then invert the author's
+    /// intent — `type: object` keeps it, the CRD's own pruning doing the work
+    /// the removed constraint asked for.
+    #[test]
+    fn a_node_denying_unknown_fields_settles_as_an_object_not_as_free_form() {
+        let mut schema = json!({
+            "properties": {
+                "closed": { "additionalProperties": false },
+                "open": {}
+            }
+        });
+        super::sanitize_structural(&mut schema);
+
+        let closed = &schema["properties"]["closed"];
+        assert_eq!(
+            closed,
+            &json!({ "type": "object" }),
+            "a deny-unknown node settles as a pruned object: {closed:?}"
+        );
+        assert_eq!(
+            schema["properties"]["open"],
+            json!({ "x-kubernetes-preserve-unknown-fields": true }),
+            "a node that asked for nothing still becomes free-form"
+        );
+    }
+
+    /// The tell that a union spans more than the type rendered beside it is an
+    /// arm that is the EMPTY schema. A union whose arms all agree on a type
+    /// keeps its claim — stripping `type` there would hand the API server a
+    /// node it can enforce nothing about, and earn a free-form marker on a
+    /// shape the author fully described.
+    #[test]
+    fn a_union_whose_arms_agree_on_a_type_keeps_it_and_a_flattened_one_does_not() {
+        let mut schema = json!({
+            "properties": {
+                "typed_arms": {
+                    "type": "object",
+                    "anyOf": [
+                        { "type": "object", "properties": { "a": { "type": "string" } } },
+                        { "type": "object", "properties": { "b": { "type": "string" } } }
+                    ]
+                },
+                "flattened": {
+                    "type": "object",
+                    "anyOf": [{}, { "required": ["run"] }]
+                }
+            }
+        });
+        super::sanitize_structural(&mut schema);
+
+        let typed = &schema["properties"]["typed_arms"];
+        assert_eq!(
+            typed.get("type"),
+            Some(&json!("object")),
+            "a union whose arms agree on a type keeps the claim: {typed:?}"
+        );
+        assert_eq!(
+            typed.get("x-kubernetes-preserve-unknown-fields"),
+            None,
+            "a fully described union earns no free-form marker: {typed:?}"
+        );
+
+        let flattened = &schema["properties"]["flattened"];
+        assert_eq!(
+            flattened.get("type"),
+            None,
+            "an empty arm means the union spans more than the type beside it: {flattened:?}"
+        );
+        assert_eq!(
+            flattened.get("x-kubernetes-preserve-unknown-fields"),
+            Some(&json!(true)),
+            "the node the pass untyped has to carry the marker: {flattened:?}"
         );
     }
 

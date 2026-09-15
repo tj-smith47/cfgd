@@ -277,6 +277,7 @@ fn or_unavailable(value: &Option<String>) -> String {
 
 /// Build the `paths` human + structured `Doc` from a collected payload.
 pub fn build_paths_doc(output: &PathsOutput) -> Doc {
+    // name-row-ok: `cfgd` is the product's own name, lowercase everywhere.
     let mut doc = Doc::new().heading("cfgd Directories");
     // A scope the invocation named is not restated back at the reader; a
     // defaulted one is the only thing that says which family these roots are.

@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use super::*;
 use crate::config::ScriptEntry;
 use crate::output::Printer;
+use crate::test_helpers::hold_payload_unremovable;
 
 /// A backup spec with everything but `name`/`source` left at its default.
 fn spec(name: &str, source: &Path) -> BackupSpec {
@@ -136,10 +137,10 @@ impl Harness {
         let state_dir = self.state_dir();
         crate::with_test_home(&self.root, || {
             let unit = BackupUnit::new(spec, &config_dir, "workstation", &state_dir);
-            let mut items = Vec::new();
-            let record = run_backup(&unit, &self.store, &self.printer, &mut items)
+            let mut report = BackupRunReport::default();
+            let record = run_backup(&unit, &self.store, &self.printer, &mut report)
                 .expect("run must be recorded");
-            (record, items)
+            (record, report.items)
         })
     }
 
@@ -150,6 +151,24 @@ impl Harness {
         crate::with_test_home(&self.root, || {
             let unit = BackupUnit::new(spec, &config_dir, "workstation", &state_dir);
             list_snapshots(&unit, &self.store).expect("snapshot list")
+        })
+    }
+
+    /// Every orphaned row of `spec`, collected the way `cfgd backup gc` does:
+    /// one read of the rows, feeding the collector.
+    fn collect(&self, spec: &BackupSpec) -> CollectOutcome {
+        let config_dir = self.config_dir();
+        let state_dir = self.state_dir();
+        crate::with_test_home(&self.root, || {
+            let units = [BackupUnit::new(
+                spec,
+                &config_dir,
+                "workstation",
+                &state_dir,
+            )];
+            let scan = orphaned_snapshots(&self.store, &units);
+            scan.report_unreadable(&self.printer);
+            collect_orphans(&self.store, scan, &self.printer)
         })
     }
 
@@ -791,12 +810,17 @@ fn pruning_never_deletes_a_recorded_path_outside_the_destination() {
         std::fs::read(&victim).expect("victim readable"),
         b"not-a-snapshot"
     );
-    // The row is dropped so a stale entry cannot re-warn forever, but the file
-    // it named is left for the operator.
+    // The row is kept and re-classified: it is the only proof the payload was
+    // ever cfgd's, and `cfgd backup gc` is what clears both.
     let rows = h.store.backup_runs("db").expect("history");
+    let planted = rows
+        .iter()
+        .find(|r| r.id == planted.id)
+        .expect("the out-of-destination row was dropped");
+    assert_eq!(planted.status, BackupRunStatus::Orphaned);
     assert!(
-        !rows.iter().any(|r| r.id == planted.id),
-        "the out-of-destination row was kept: {rows:?}"
+        !planted.has_artifact(),
+        "an orphaned row is still offered as a restorable snapshot"
     );
 }
 
@@ -909,6 +933,330 @@ fn is_at_or_within_treats_equal_paths_as_contained() {
     assert!(is_at_or_within(Path::new("/home/u/Pictures/backups"), root));
     assert!(!is_at_or_within(Path::new("/home/u/Pictures-old"), root));
     assert!(!is_at_or_within(Path::new("/home/u"), root));
+}
+
+// ---------------------------------------------------------------------------
+// Garbage collection
+// ---------------------------------------------------------------------------
+
+/// Take one snapshot under `dest-a`, then move the unit's destination to
+/// `dest-b` and take another, which is the prune that re-classifies the first.
+/// Returns the first run's record and the path it wrote.
+fn orphan_by_moving_the_destination(h: &Harness, s: &mut BackupSpec) -> (BackupRunRecord, PathBuf) {
+    s.retention = 1;
+    s.destination = Some(h.root.join("dest-a"));
+    s.name_pattern = "snapshot-0".to_string();
+    let first = h.run(s);
+    let path = PathBuf::from(first.destination_path.clone().expect("artifact"));
+
+    s.destination = Some(h.root.join("dest-b"));
+    s.name_pattern = "snapshot-1".to_string();
+    h.run(s);
+    (first, path)
+}
+
+#[test]
+fn a_run_whose_destination_moved_is_marked_orphaned_not_dropped() {
+    let h = Harness::new();
+    let source = h.seed_file("data.db", b"payload");
+    let mut s = spec("db", &source);
+    let (first, orphan) = orphan_by_moving_the_destination(&h, &mut s);
+
+    let rows = h.store.backup_runs("db").expect("history");
+    let moved = rows
+        .iter()
+        .find(|r| r.id == first.id)
+        .expect("the row under the old destination was dropped");
+    assert_eq!(moved.status, BackupRunStatus::Orphaned);
+    assert!(
+        orphan.exists(),
+        "the prune deleted a snapshot outside the new destination"
+    );
+    assert!(
+        !moved.has_artifact(),
+        "an orphaned row is still offered as a restorable snapshot"
+    );
+    assert!(
+        h.snapshots_of(&s)
+            .iter()
+            .all(|snap| snap.run_id != first.id),
+        "an orphaned row is still listed as restorable"
+    );
+}
+
+#[test]
+fn gc_removes_only_what_a_row_recorded() {
+    let h = Harness::new();
+    let source = h.seed_file("data.db", b"payload");
+    let mut s = spec("db", &source);
+    let (first, orphan) = orphan_by_moving_the_destination(&h, &mut s);
+    // A file the operator left in the old destination. No row names it, and
+    // nothing here enumerates a directory, so it is not cfgd's to delete.
+    let stranger = h.root.join("dest-a").join("notes.txt");
+    std::fs::write(&stranger, b"mine").expect("write stranger");
+
+    let outcome = h.collect(&s);
+
+    assert_eq!(outcome.collected.len(), 1, "{outcome:?}");
+    assert!(outcome.failed.is_empty(), "{outcome:?}");
+    assert!(!orphan.exists(), "the recorded snapshot was not removed");
+    assert!(stranger.exists(), "gc deleted a path no row recorded");
+    assert!(
+        !h.store
+            .backup_runs("db")
+            .expect("history")
+            .iter()
+            .any(|r| r.id == first.id),
+        "the collected row survived its payload"
+    );
+}
+
+#[test]
+fn gc_on_a_vanished_path_settles_the_row_as_skipped() {
+    let h = Harness::new();
+    let source = h.seed_file("data.db", b"payload");
+    let mut s = spec("db", &source);
+    let (first, orphan) = orphan_by_moving_the_destination(&h, &mut s);
+    std::fs::remove_file(&orphan).expect("manual delete");
+
+    let outcome = h.collect(&s);
+
+    assert!(outcome.collected.is_empty(), "{outcome:?}");
+    assert_eq!(outcome.skipped.len(), 1, "{outcome:?}");
+    let tally = outcome.tally();
+    assert_eq!((tally.succeeded, tally.skipped, tally.failed), (0, 1, 0));
+    assert!(
+        !h.store
+            .backup_runs("db")
+            .expect("history")
+            .iter()
+            .any(|r| r.id == first.id),
+        "a row whose payload was already gone was left behind"
+    );
+}
+
+#[test]
+fn an_orphaned_row_takes_no_retention_slot() {
+    let h = Harness::new();
+    let source = h.seed_file("data.db", b"payload");
+    let mut s = spec("db", &source);
+    s.retention = 1;
+    s.destination = Some(h.root.join("dest-b"));
+    s.name_pattern = "snapshot-live".to_string();
+    h.run(&s);
+
+    // Recorded AFTER the live run, so `backup_runs`' newest-first order reaches
+    // it FIRST: a prune that let an orphan hold a retention slot would spend
+    // the unit's only slot here and evict the snapshot behind it. Planted older
+    // than the live row, the claim would pass on either implementation.
+    let stranded = h.root.join("dest-a").join("snapshot-old");
+    std::fs::create_dir_all(h.root.join("dest-a")).expect("old destination");
+    std::fs::write(&stranded, b"payload").expect("stranded snapshot");
+    let planted = h
+        .store
+        .record_backup_run(&BackupRunDraft {
+            name: "db".to_string(),
+            source: crate::to_posix_string(&source),
+            destination_path: Some(crate::to_posix_string(&stranded)),
+            size_bytes: Some(7),
+            status: BackupRunStatus::Success,
+            error: None,
+            started_at: "2026-01-01T00:00:00Z".to_string(),
+            finished_at: "2026-01-01T00:00:01Z".to_string(),
+        })
+        .expect("plant the row");
+
+    let config_dir = h.config_dir();
+    let state_dir = h.state_dir();
+    let newly_orphaned = crate::with_test_home(&h.root, || {
+        let unit = BackupUnit::new(&s, &config_dir, "workstation", &state_dir);
+        prune_retention(&h.store, &unit, &h.printer)
+    });
+    assert_eq!(newly_orphaned, 1);
+
+    let rows = h.store.backup_runs("db").expect("history");
+    // retention = 1: the one live snapshot, plus the orphaned row, which
+    // occupies no slot and is never re-marked.
+    assert_eq!(
+        rows.len(),
+        2,
+        "the orphaned row took a retention slot: {rows:?}"
+    );
+    assert_eq!(
+        rows.iter()
+            .filter(|r| r.status == BackupRunStatus::Orphaned)
+            .map(|r| r.id)
+            .collect::<Vec<_>>(),
+        vec![planted.id]
+    );
+    assert_eq!(snapshots(&h.root.join("dest-b")), vec!["snapshot-live"]);
+    assert!(
+        stranded.exists(),
+        "the orphaned snapshot was pruned from disk"
+    );
+}
+
+#[test]
+fn gc_leaves_a_row_whose_status_and_containment_disagree_standing() {
+    let h = Harness::new();
+    let source = h.seed_file("data.db", b"payload");
+    let mut s = spec("db", &source);
+    s.destination = Some(h.root.join("dest-a"));
+    let run = h.run(&s);
+    let held = PathBuf::from(run.destination_path.clone().expect("artifact"));
+
+    // The state a prune leaves behind when its corrective status write could
+    // not land: the row says orphaned while its payload is inside the
+    // destination in force.
+    h.store
+        .set_backup_run_status(run.id, BackupRunStatus::Orphaned)
+        .expect("mark the row");
+
+    let outcome = h.collect(&s);
+    assert!(
+        held.exists(),
+        "gc deleted a snapshot the destination in force still holds"
+    );
+    assert!(outcome.collected.is_empty(), "{outcome:?}");
+    assert!(outcome.skipped.is_empty(), "{outcome:?}");
+    assert!(outcome.failed.is_empty(), "{outcome:?}");
+    assert!(
+        h.store
+            .backup_runs("db")
+            .expect("history")
+            .iter()
+            .any(|r| r.id == run.id),
+        "gc dropped the row it should have left for the prune to correct"
+    );
+}
+
+#[test]
+fn a_destination_restored_to_its_old_path_un_orphans_the_rows_it_stranded() {
+    let h = Harness::new();
+    let source = h.seed_file("data.db", b"payload");
+    let mut s = spec("db", &source);
+    // Two slots, so the run under the restored destination cannot evict the
+    // row this test is about for being one snapshot too many.
+    s.retention = 2;
+
+    s.destination = Some(h.root.join("dest-a"));
+    s.name_pattern = "snapshot-0".to_string();
+    let first = h.run(&s);
+    let restored = PathBuf::from(first.destination_path.clone().expect("artifact"));
+
+    s.destination = Some(h.root.join("dest-b"));
+    s.name_pattern = "snapshot-1".to_string();
+    let away = h.run(&s);
+    assert_eq!(
+        h.store
+            .backup_runs("db")
+            .expect("history")
+            .iter()
+            .find(|r| r.id == first.id)
+            .expect("row")
+            .status,
+        BackupRunStatus::Orphaned,
+        "the move did not strand the first run"
+    );
+
+    s.destination = Some(h.root.join("dest-a"));
+    s.name_pattern = "snapshot-2".to_string();
+    h.run(&s);
+
+    let rows = h.store.backup_runs("db").expect("history");
+    let back = rows.iter().find(|r| r.id == first.id).expect("row");
+    assert_eq!(
+        back.status,
+        BackupRunStatus::Success,
+        "a snapshot inside the destination in force is still marked orphaned"
+    );
+    assert!(
+        h.snapshots_of(&s)
+            .iter()
+            .any(|snap| snap.run_id == first.id),
+        "an un-orphaned snapshot is still withheld from restore"
+    );
+
+    let outcome = h.collect(&s);
+    assert!(
+        restored.exists(),
+        "gc deleted a snapshot inside the destination in force"
+    );
+    // The run under `dest-b` is the one now outside, and the only one gc has
+    // any business collecting.
+    assert_eq!(
+        outcome
+            .collected
+            .iter()
+            .map(|c| c.path.as_str())
+            .collect::<Vec<_>>(),
+        vec![away.destination_path.as_deref().expect("artifact")],
+        "{outcome:?}"
+    );
+}
+
+#[test]
+fn gc_that_cannot_remove_a_payload_keeps_its_row() {
+    let h = Harness::new();
+    let source = h.seed_file("data.db", b"payload");
+    let mut s = spec("db", &source);
+    let (first, payload) = orphan_by_moving_the_destination(&h, &mut s);
+    let held = hold_payload_unremovable(&payload);
+
+    let outcome = h.collect(&s);
+
+    assert_eq!(outcome.failed.len(), 1, "{outcome:?}");
+    assert!(outcome.collected.is_empty(), "{outcome:?}");
+    assert!(
+        outcome.failed[0].error.is_some(),
+        "a failed removal carries no reason: {outcome:?}"
+    );
+    assert_eq!(outcome.tally().status, crate::state::ApplyStatus::Failed);
+    assert!(
+        h.store
+            .backup_runs("db")
+            .expect("history")
+            .iter()
+            .any(|r| r.id == first.id),
+        "a row was dropped while its payload was still there to collect"
+    );
+    assert!(
+        held.witness_survives(),
+        "gc removed what it could not remove"
+    );
+}
+
+#[test]
+fn gc_that_removes_one_payload_and_not_the_other_settles_partial() {
+    let h = Harness::new();
+    let source = h.seed_file("data.db", b"payload");
+    let mut s = spec("db", &source);
+    s.retention = 1;
+
+    s.destination = Some(h.root.join("dest-a"));
+    s.name_pattern = "snapshot-0".to_string();
+    let first = h.run(&s);
+    s.destination = Some(h.root.join("dest-c"));
+    s.name_pattern = "snapshot-1".to_string();
+    let second = h.run(&s);
+    s.destination = Some(h.root.join("dest-b"));
+    s.name_pattern = "snapshot-2".to_string();
+    h.run(&s);
+
+    let stranded = PathBuf::from(first.destination_path.clone().expect("artifact"));
+    let held = hold_payload_unremovable(&stranded);
+    let collectable = PathBuf::from(second.destination_path.clone().expect("artifact"));
+
+    let outcome = h.collect(&s);
+
+    assert_eq!(outcome.collected.len(), 1, "{outcome:?}");
+    assert_eq!(outcome.failed.len(), 1, "{outcome:?}");
+    assert_eq!(outcome.tally().status, crate::state::ApplyStatus::Partial);
+    assert!(!collectable.exists(), "the removable payload survived");
+    assert!(
+        held.witness_survives(),
+        "gc removed what it could not remove"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1317,7 +1665,7 @@ fn run_against_dir(
         let store = StateStore::open_in_dir(state_dir).expect("file-backed store");
         let (printer, _) = Printer::for_test();
         let unit = BackupUnit::new(spec, config_dir, "workstation", state_dir);
-        run_backup(&unit, &store, &printer, &mut Vec::new())
+        run_backup(&unit, &store, &printer, &mut BackupRunReport::default())
     })
 }
 
@@ -1340,7 +1688,7 @@ fn a_run_is_refused_while_the_unit_lock_is_held() {
     let state_dir = h.state_dir();
     let err = crate::with_test_home(&h.root, || {
         let unit = BackupUnit::new(&s, &config_dir, "workstation", &state_dir);
-        run_backup(&unit, &h.store, &h.printer, &mut Vec::new())
+        run_backup(&unit, &h.store, &h.printer, &mut BackupRunReport::default())
             .expect_err("a held unit lock must refuse the run")
     });
 

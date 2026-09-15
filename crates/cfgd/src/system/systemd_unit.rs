@@ -77,6 +77,7 @@ impl SystemdUnitConfigurator {
     }
 }
 
+// no-tool-ok: needs systemd running as pid 1, which installing the client package would not make true
 impl SystemConfigurator for SystemdUnitConfigurator {
     fn name(&self) -> &str {
         "systemdUnits"
@@ -208,9 +209,7 @@ impl SystemConfigurator for SystemdUnitConfigurator {
                                     cfgd_core::output::collapse_to_subject_line(&e)
                                 ),
                             );
-                        } else if let Err(e) = cfgd_core::set_file_permissions(dest_path, 0o644) {
-                            // systemd unit files are world-readable by convention; the
-                            // atomic_write tempfile lands 0600, so widen it explicitly.
+                        } else if let Err(e) = super::widen_world_readable(dest_path) {
                             cx.report(
                                 Role::Warn,
                                 format!(

@@ -1,14 +1,11 @@
 //! Snapshot tests for `cfgd source show`.
 //!
 //! Cases:
-//!   - `source_show/happy.{txt,json}` — populated source with state, managed
-//!     resources, and a manifest carrying locked/required/recommended policy
-//!     items (exercises every section + the nested Policy Summary subsections).
-//!   - `source_show/empty.txt` — minimal source (no state, no resources, no
-//!     manifest). Exercises `section_if_nonempty` skipping the Managed
-//!     Resources block and the absence of optional kvs.
-//!   - `source_show/locked_ref.txt` — State section with `lockedRef` and
-//!     `lockedCommit` kvs rendered (lines 67-73 in show.rs).
+//!   - `source_show/happy.{txt,json}` — populated source with a manifest
+//!     carrying locked/required/recommended policy items (exercises every
+//!     section + the nested Policy Summary subsections).
+//!   - `source_show/empty.txt` — minimal source (no manifest). Exercises
+//!     `section_if_nonempty` skipping the optional blocks.
 //!   - `source_show/locked_policy.txt` — Manifest with a non-empty `locked`
 //!     policy section (lines 114-123): verifies the Locked subsection renders.
 //!   - `source_show/all_package_managers.txt` — `append_policy_items` with
@@ -22,10 +19,7 @@
 use std::path::{Path, PathBuf};
 
 use cfgd::cli::error::render_cli_error;
-use cfgd::cli::output_types::{
-    SourceEncryptionOutput, SourcePolicyOutput, SourceResourceEntry, SourceShowOutput,
-    SourceStateInfo,
-};
+use cfgd::cli::output_types::{SourceEncryptionOutput, SourcePolicyOutput, SourceShowOutput};
 use cfgd::cli::source::show::{
     build_source_not_found_error, build_source_show_doc, effective_source_policy,
     source_manifest_output,
@@ -40,9 +34,6 @@ use pretty_assertions::assert_eq;
 
 const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
 
-/// Pinned so the humanized `Last Sync` row is a fixed string in every golden.
-const NOW: &str = "2026-06-01T14:00:00Z";
-
 fn happy_output() -> SourceShowOutput {
     SourceShowOutput {
         name: "team-config".into(),
@@ -54,29 +45,6 @@ fn happy_output() -> SourceShowOutput {
         sync_interval: "1h".into(),
         auto_apply: false,
         pin_version: Some("v1.2.3".into()),
-        state: Some(SourceStateInfo {
-            status: cfgd_core::state::SOURCE_STATUS_ACTIVE.into(),
-            last_fetched: Some("2026-05-14T10:00:00Z".into()),
-            last_commit: Some("deadbeef1234567890abcdef".into()),
-            signed: Some(true),
-            version: Some("3.1.0".into()),
-            locked_ref: None,
-            locked_commit: None,
-        }),
-        managed_resources: vec![
-            SourceResourceEntry {
-                resource_type: "package".into(),
-                resource_id: "brew/curl".into(),
-            },
-            SourceResourceEntry {
-                resource_type: "file".into(),
-                resource_id: "~/.bashrc".into(),
-            },
-            SourceResourceEntry {
-                resource_type: "env".into(),
-                resource_id: "EDITOR".into(),
-            },
-        ],
         modules: vec!["dev-tools".into(), "shell".into()],
         // `signed_commits_bypassed: true` and a real `encryption` block
         // exercise the two policy fields this golden previously never
@@ -187,8 +155,6 @@ fn empty_output() -> SourceShowOutput {
         sync_interval: "1h".into(),
         auto_apply: false,
         pin_version: None,
-        state: None,
-        managed_resources: Vec::new(),
         modules: Vec::new(),
         policy: None,
         manifest: None,
@@ -200,7 +166,12 @@ fn source_show_happy_human() {
     let output = happy_output();
     let manifest = happy_manifest();
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_source_show_doc(&output, Some(&manifest), None, NOW));
+    printer.emit(build_source_show_doc(
+        &output,
+        Some(&manifest),
+        None,
+        Default::default(),
+    ));
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "source_show/happy.txt");
 }
@@ -225,7 +196,7 @@ fn source_show_provided_profile_human() {
         &output,
         Some(&manifest),
         Some(dir.path()),
-        NOW,
+        Default::default(),
     ));
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "source_show/provided_profile.txt");
@@ -244,7 +215,7 @@ fn source_show_missing_profile_human() {
         &output,
         Some(&manifest),
         Some(dir.path()),
-        NOW,
+        Default::default(),
     ));
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "source_show/missing_profile.txt");
@@ -268,7 +239,7 @@ fn source_show_unloadable_profile_human() {
         &output,
         Some(&manifest),
         Some(dir.path()),
-        NOW,
+        Default::default(),
     ));
     drop(printer);
     let human = cap.human();
@@ -287,7 +258,12 @@ fn source_show_happy_json() {
     let output = happy_output();
     let manifest = happy_manifest();
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_source_show_doc(&output, Some(&manifest), None, NOW));
+    printer.emit(build_source_show_doc(
+        &output,
+        Some(&manifest),
+        None,
+        Default::default(),
+    ));
     drop(printer);
     let expected = serde_json::to_value(&output).unwrap();
     let actual = cap.json().expect("doc captured json");
@@ -305,7 +281,12 @@ fn source_show_lists_delivered_modules_human_and_json() {
     let output = happy_output();
     let manifest = happy_manifest();
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_source_show_doc(&output, Some(&manifest), None, NOW));
+    printer.emit(build_source_show_doc(
+        &output,
+        Some(&manifest),
+        None,
+        Default::default(),
+    ));
     drop(printer);
 
     let human = cap.human();
@@ -327,7 +308,12 @@ fn source_show_no_modules_omits_field() {
     // (serde skip_serializing_if) and renders no Modules section.
     let output = empty_output();
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_source_show_doc(&output, None, None, NOW));
+    printer.emit(build_source_show_doc(
+        &output,
+        None,
+        None,
+        Default::default(),
+    ));
     drop(printer);
 
     let human = cap.human();
@@ -346,7 +332,12 @@ fn source_show_no_modules_omits_field() {
 fn source_show_empty_human() {
     let output = empty_output();
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_source_show_doc(&output, None, None, NOW));
+    printer.emit(build_source_show_doc(
+        &output,
+        None,
+        None,
+        Default::default(),
+    ));
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "source_show/empty.txt");
 }
@@ -367,80 +358,6 @@ fn source_show_not_found_human() {
 // ---------------------------------------------------------------------------
 // locked_ref / locked_commit in State section (show.rs lines 67-73)
 // ---------------------------------------------------------------------------
-
-#[test]
-fn source_show_state_with_locked_ref_and_commit() {
-    // Exercises the `locked_ref` and `locked_commit` optional kv branches that
-    // fire when a sources.lock entry is present. The happy fixture above always
-    // passes `None` for both fields; this fixture provides real values.
-    let output = SourceShowOutput {
-        name: "pinned-source".into(),
-        url: "https://github.com/team/pinned".into(),
-        branch: "main".into(),
-        priority: 200,
-        accept_recommended: false,
-        profile: None,
-        sync_interval: "30m".into(),
-        auto_apply: false,
-        pin_version: Some("v2.0.0".into()),
-        state: Some(SourceStateInfo {
-            status: cfgd_core::state::SOURCE_STATUS_ACTIVE.into(),
-            last_fetched: Some("2026-06-01T12:00:00Z".into()),
-            last_commit: Some("aabbccddeeff00112233445566778899aabbccdd".into()),
-            signed: Some(false),
-            version: Some("2.0.0".into()),
-            locked_ref: Some("v2.0.0".into()),
-            locked_commit: Some("aabbccddeeff00112233445566778899aabbccdd".into()),
-        }),
-        managed_resources: Vec::new(),
-        modules: Vec::new(),
-        policy: None,
-        manifest: None,
-    };
-
-    let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_source_show_doc(&output, None, None, NOW));
-    drop(printer);
-
-    let human = cap.human();
-    assert!(
-        human.contains("Locked Ref"),
-        "Locked Ref kv must appear: {human}"
-    );
-    assert!(
-        human.contains("v2.0.0"),
-        "locked ref value must appear: {human}"
-    );
-    assert!(
-        human.contains("Locked Commit"),
-        "Locked Commit kv must appear: {human}"
-    );
-    // The two SHAs are there to be compared, so the rows sit adjacent and the
-    // fact ABOUT the checked-out commit follows the pair instead of splitting it.
-    let lines: Vec<&str> = human.lines().map(str::trim_start).collect();
-    let last = lines
-        .iter()
-        .position(|l| l.starts_with("Last Commit"))
-        .expect("Last Commit row");
-    assert!(
-        lines[last + 1].starts_with("Locked Commit"),
-        "Locked Commit must directly follow Last Commit: {human}"
-    );
-    let signed = lines
-        .iter()
-        .position(|l| l.starts_with("Signed"))
-        .expect("Signed row");
-    assert!(
-        signed > last + 1,
-        "Signed must follow the commit pair, never sit between it: {human}"
-    );
-    // Commit is truncated by `short_commit` (12 chars); check the prefix.
-    assert!(
-        human.contains("aabbccddeeff"),
-        "truncated locked commit must appear: {human}"
-    );
-    cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "source_show/locked_ref.txt");
-}
 
 // ---------------------------------------------------------------------------
 // Locked policy section (show.rs lines 114-123)
@@ -493,8 +410,6 @@ fn source_show_locked_policy_section_renders() {
         sync_interval: "1h".into(),
         auto_apply: false,
         pin_version: None,
-        state: None,
-        managed_resources: Vec::new(),
         modules: Vec::new(),
         // A manifest and a derived policy always travel together in
         // production, so the fixture derives one rather than leaving the
@@ -509,7 +424,12 @@ fn source_show_locked_policy_section_renders() {
     let manifest = manifest_with_locked_policy();
 
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_source_show_doc(&output, Some(&manifest), None, NOW));
+    printer.emit(build_source_show_doc(
+        &output,
+        Some(&manifest),
+        None,
+        Default::default(),
+    ));
     drop(printer);
 
     // "env:" and its qualifier now render in separate theme slots; strip SGR
@@ -601,8 +521,6 @@ fn source_show_all_package_manager_types_render() {
         sync_interval: "1h".into(),
         auto_apply: false,
         pin_version: None,
-        state: None,
-        managed_resources: Vec::new(),
         modules: Vec::new(),
         policy: Some(effective_source_policy(
             None,
@@ -614,7 +532,12 @@ fn source_show_all_package_manager_types_render() {
     let manifest = manifest_with_all_package_managers();
 
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_source_show_doc(&output, Some(&manifest), None, NOW));
+    printer.emit(build_source_show_doc(
+        &output,
+        Some(&manifest),
+        None,
+        Default::default(),
+    ));
     drop(printer);
 
     // Each manager label and its qualifier now render in separate theme

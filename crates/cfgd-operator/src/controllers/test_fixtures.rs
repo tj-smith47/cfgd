@@ -12,9 +12,9 @@ use k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference;
 use kube::api::ObjectMeta;
 
 use crate::crds::{
-    ClusterConfigPolicy, ClusterConfigPolicySpec, ConfigPolicy, ConfigPolicySpec, DriftAlert,
-    DriftAlertSpec, DriftDetail, DriftSeverity, MachineConfig, MachineConfigReference,
-    MachineConfigSpec, MachineConfigStatus,
+    BackupPolicy, BackupPolicySpec, BackupPolicyUnit, ClusterConfigPolicy, ClusterConfigPolicySpec,
+    ConfigPolicy, ConfigPolicySpec, DriftAlert, DriftAlertSpec, DriftDetail, DriftSeverity,
+    MachineConfig, MachineConfigReference, MachineConfigSpec, MachineConfigStatus,
 };
 
 pub(super) fn meta(name: &str, namespace: Option<&str>) -> ObjectMeta {
@@ -75,6 +75,7 @@ pub(super) fn machine_config_status_with_drift_detected() -> MachineConfigStatus
 
     MachineConfigStatus {
         last_reconciled: Some("2026-01-01T00:00:00Z".to_string()),
+        backup_schedule_owners: Default::default(),
         observed_generation: Some(1),
         conditions: vec![Condition {
             condition_type: "DriftDetected".to_string(),
@@ -127,6 +128,34 @@ pub(super) fn new_cluster_config_policy_with_spec(
         metadata: meta(name, None),
         spec,
         status: None,
+    }
+}
+
+/// A BackupPolicy carrying `units`. The controller registers no finalizer for
+/// one — it writes nothing outside its own status — so this is also how a
+/// policy looks on every reconcile after its first.
+pub(super) fn backup_policy(
+    name: &str,
+    namespace: &str,
+    units: Vec<BackupPolicyUnit>,
+) -> BackupPolicy {
+    BackupPolicy {
+        metadata: meta(name, Some(namespace)),
+        spec: BackupPolicySpec {
+            units,
+            ..Default::default()
+        },
+        status: None,
+    }
+}
+
+/// One `spec.units[]` entry, with the retention the policy leaves to the
+/// machine's own profile unless the caller sets it.
+pub(super) fn backup_unit(name: &str, schedule: &str) -> BackupPolicyUnit {
+    BackupPolicyUnit {
+        name: name.to_string(),
+        schedule: schedule.to_string(),
+        retention: None,
     }
 }
 

@@ -92,7 +92,7 @@ version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -103,7 +103,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
 dependencies = [
  "anstyle",
  "once_cell_polyfill",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -500,9 +500,9 @@ dependencies = [
 
 [[package]]
 name = "brontes"
-version = "0.7.1"
+version = "0.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ef0468b2cc2b931de7cdc14b680baa14cf02e3b83b281a03bbcd490ce0351eee"
+checksum = "490130acd954deb579f14696a6f5fcd815dea2473284214e312d3223f6b0763d"
 dependencies = [
  "async-trait",
  "clap",
@@ -580,6 +580,7 @@ dependencies = [
  "brontes",
  "cfgd-core",
  "cfgd-crd",
+ "cfgd-schema",
  "clap",
  "clap_complete",
  "clap_mangen",
@@ -621,7 +622,9 @@ dependencies = [
 name = "cfgd-core"
 version = "0.9.0"
 dependencies = [
+ "cfgd-core",
  "cfgd-crd",
+ "cfgd-schema",
  "chrono",
  "console",
  "croner",
@@ -672,6 +675,7 @@ dependencies = [
 name = "cfgd-crd"
 version = "0.6.0"
 dependencies = [
+ "cfgd-schema",
  "k8s-openapi",
  "kube",
  "schemars",
@@ -760,6 +764,18 @@ dependencies = [
  "tracing-opentelemetry",
  "tracing-subscriber",
  "uuid",
+]
+
+[[package]]
+name = "cfgd-schema"
+version = "0.1.0"
+dependencies = [
+ "croner",
+ "schemars",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "thiserror",
 ]
 
 [[package]]
@@ -1062,6 +1078,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "darling"
+version = "0.24.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ed17f5901b6630b993ca003def43f2f8ef4014fc13b047b57aad617ff32bc2ec"
+dependencies = [
+ "darling_core 0.24.1",
+ "darling_macro 0.24.1",
+]
+
+[[package]]
 name = "darling_core"
 version = "0.20.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1089,6 +1115,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "darling_core"
+version = "0.24.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6837e2cf7485aaae18f86181d2f0e9a7ed297a025e220aeabf63fdebd3a2ddff"
+dependencies = [
+ "ident_case",
+ "proc-macro2",
+ "quote",
+ "strsim",
+ "syn 3.0.1",
+]
+
+[[package]]
 name = "darling_macro"
 version = "0.20.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1108,6 +1147,17 @@ dependencies = [
  "darling_core 0.23.0",
  "quote",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "darling_macro"
+version = "0.24.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2ac7135c3ef02b2f7833bbeb1be5ba7f966dcde8a87c6b87f65a778d71a02785"
+dependencies = [
+ "darling_core 0.24.1",
+ "quote",
+ "syn 3.0.1",
 ]
 
 [[package]]
@@ -1284,7 +1334,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -2791,7 +2841,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -3724,9 +3774,9 @@ dependencies = [
 
 [[package]]
 name = "rmcp"
-version = "3.1.0"
+version = "3.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ad26b216c966e987e80e86daf784a455c039c43d98575ceed57b8faa259e5695"
+checksum = "42b6914fac0be956fe704a38239c3f44a9f841d1b06a5713d2f638065593f5b5"
 dependencies = [
  "async-trait",
  "base64 0.23.0",
@@ -3736,6 +3786,7 @@ dependencies = [
  "http",
  "http-body",
  "http-body-util",
+ "indexmap",
  "pastey",
  "pin-project-lite",
  "rand 0.10.1",
@@ -3755,15 +3806,15 @@ dependencies = [
 
 [[package]]
 name = "rmcp-macros"
-version = "3.1.0"
+version = "3.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "41bc748630c2be2a71b614c2f40d27bc0df0060696d224e1692c72345b7e0b79"
+checksum = "cdf1c49bd4d52014b94db0877410db273c2008f01628b0252a2e9460ad9b7fda"
 dependencies = [
- "darling 0.23.0",
+ "darling 0.24.1",
  "proc-macro2",
  "quote",
  "serde_json",
- "syn 2.0.117",
+ "syn 3.0.1",
 ]
 
 [[package]]
@@ -3819,9 +3870,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.43"
+version = "0.23.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0283386ce02abc0151e1761d08802dfe86c173b0b494af5cbc086574e453da06"
+checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
 dependencies = [
  "log",
  "once_cell",
@@ -3891,9 +3942,9 @@ checksum = "f87165f0995f63a9fbeea62b64d10b4d9d8e78ec6d7d51fb2125fda7bb36788f"
 
 [[package]]
 name = "rustls-webpki"
-version = "0.103.13"
+version = "0.103.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "61c429a8649f110dddef65e2a5ad240f747e85f7758a6bccc7e5777bd33f756e"
+checksum = "f3c3cf1d8b1e7d4927e2d154c3fcb02979afb9939629c62cd9048d4f07b60ac2"
 dependencies = [
  "ring",
  "rustls-pki-types",
@@ -4307,7 +4358,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a766e1110788c36f4fa1c2b71b387a7815aa65f88ce0229841826633d93723e"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -4476,7 +4527,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "230a1b821ccbd75b185820a1f1ff7b14d21da1e442e22c0863ea5f08771a8874"
 dependencies = [
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -4585,9 +4636,9 @@ dependencies = [
 
 [[package]]
 name = "tokio-rustls"
-version = "0.26.4"
+version = "0.26.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1729aa945f29d91ba541258c8df89027d5792d85a8841fb65e8bf0f4ede4ef61"
+checksum = "b0c85f2c3ef0b1cd58b36682f4b17aaa995f0e5db534d85692b4903abce21f67"
 dependencies = [
  "rustls",
  "tokio",
@@ -4969,7 +5020,7 @@ checksum = "f2f6fb2847f6742cd76af783a2a2c49e9375d0a111c7bef6f71cd9e738c72d6e"
 dependencies = [
  "memoffset",
  "tempfile",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]

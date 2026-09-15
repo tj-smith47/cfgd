@@ -489,6 +489,7 @@ pub(super) fn clone_repo(
 
     // Try git CLI first with live progress output.
     let mut cmd = crate::git_cmd_safe(Some(&git_src.repo_url), None);
+    // absolute-path-ok: git argv, not a display slot
     cmd.args(["clone", &git_src.repo_url, &dest.display().to_string()]);
 
     // Silent on success, like every other transfer cfgd narrates: the caller
@@ -565,6 +566,7 @@ pub(super) fn fetch_existing_repo(
 
     // Try git CLI first with live progress output.
     let mut cmd = crate::git_cmd_safe(Some(&git_src.repo_url), None);
+    // absolute-path-ok: git argv, not a display slot
     cmd.args(["-C", &repo_path.display().to_string(), "fetch", "origin"]);
 
     // Silent on success, for the reason the clone above is.

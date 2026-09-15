@@ -144,7 +144,7 @@ pub fn build_module(
         .arg(build_dir.path().join("Dockerfile"))
         .arg(build_dir.path());
 
-    let build_output = build_cmd.output().map_err(|e| OciError::BuildError {
+    let build_output = crate::command_output(&mut build_cmd).map_err(|e| OciError::BuildError {
         message: format!("{runtime} build failed: {e}"),
     })?;
 
@@ -162,12 +162,15 @@ pub fn build_module(
         message: format!("cannot create output dir: {e}"),
     })?;
 
-    let create_output = runtime_cmd(runtime)
-        .args(["create", "--name", &container_name, &tag])
-        .output()
-        .map_err(|e| OciError::BuildError {
-            message: format!("container create failed: {e}"),
-        })?;
+    let create_output = crate::command_output(runtime_cmd(runtime).args([
+        "create",
+        "--name",
+        &container_name,
+        &tag,
+    ]))
+    .map_err(|e| OciError::BuildError {
+        message: format!("container create failed: {e}"),
+    })?;
 
     if !create_output.status.success() {
         return Err(OciError::BuildError {
@@ -179,24 +182,19 @@ pub fn build_module(
     }
 
     // Copy /build directory out of the container
-    let cp_output = runtime_cmd(runtime)
-        .args([
-            "cp",
-            &format!("{container_name}:/build/."),
-            &output_dir.path().display().to_string(),
-        ])
-        .output()
-        .map_err(|e| OciError::BuildError {
-            message: format!("container cp failed: {e}"),
-        })?;
+    let cp_output = crate::command_output(runtime_cmd(runtime).args([
+        "cp",
+        &format!("{container_name}:/build/."),
+        &output_dir.path().display().to_string(),
+    ]))
+    .map_err(|e| OciError::BuildError {
+        message: format!("container cp failed: {e}"),
+    })?;
 
     // Cleanup container and image (best effort). Log failures at debug so
     // accumulated `cfgd-build-*` tags on the local runtime are traceable when
     // disk pressure surfaces later.
-    match runtime_cmd(runtime)
-        .args(["rm", "-f", &container_name])
-        .output()
-    {
+    match crate::command_output(runtime_cmd(runtime).args(["rm", "-f", &container_name])) {
         Ok(o) if !o.status.success() => tracing::debug!(
             container = %container_name,
             stderr = %crate::stderr_lossy_trimmed(&o),
@@ -209,7 +207,7 @@ pub fn build_module(
         ),
         _ => {}
     }
-    match runtime_cmd(runtime).args(["rmi", "-f", &tag]).output() {
+    match crate::command_output(runtime_cmd(runtime).args(["rmi", "-f", &tag])) {
         Ok(o) if !o.status.success() => tracing::debug!(
             tag = %tag,
             stderr = %crate::stderr_lossy_trimmed(&o),

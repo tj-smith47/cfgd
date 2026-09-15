@@ -4,15 +4,27 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+// Only the nvm arm probes for a tool by name, and that arm is compiled off
+// Windows.
+use cfgd_core::PathDisplayExt;
+#[cfg(not(windows))]
 use cfgd_core::command_available;
 use cfgd_core::errors::{PackageError, Result};
 use cfgd_core::output::Role;
 use cfgd_core::providers::{BootstrapPlan, PackageContext, PackageManager, PackageStateStore};
 
+#[cfg(not(windows))]
+use super::shared::detect_brew_system_method;
+#[cfg(windows)]
+use super::shared::detect_windows_method;
 use super::shared::{
-    MediatedArms, bootstrap_via_brew_then_system, brew_then_system_arms, detect_brew_system_method,
+    MediatedArms, bootstrap_via_brew_then_system, run_pkg_cmd_live, run_pkg_query, tool_cmd_at,
+    tool_seam_var,
+};
+// The nvm arm's own helpers, with the arm itself.
+#[cfg(not(windows))]
+use super::shared::{
     pkg_run, planned_method_failed, planned_method_unavailable, report_abandoned_step,
-    run_pkg_cmd_live, run_pkg_query, tool_cmd_with_resolver,
 };
 
 pub struct NpmManager;
@@ -23,10 +35,39 @@ pub struct NpmManager;
 /// planned `nvm` is a method nothing can run.
 const NPM_FALLBACK_METHOD: &str = "nvm";
 
+/// npm's own fallback arm: the nvm installer, and the tools it needs.
+///
+/// The installer's pipeline is fetched with curl and RUN by bash. FreeBSD's
+/// base system carries neither, so naming only curl would let the plan be
+/// approved and then die inside the install.
+///
+/// Compiled off Windows only, where a shell can run the installer: see
+/// [`NpmManager::bootstrap_plan_given`].
+#[cfg(not(windows))]
+pub(super) fn nvm_bootstrap_plan() -> BootstrapPlan {
+    BootstrapPlan::new(NPM_FALLBACK_METHOD).requiring(["curl", "bash"])
+}
+
 /// What a mediator installs to deliver npm. Read by `bootstrap` and by
 /// `mediated_packages`, so a batched provision asks apt for exactly the names
 /// the solo bootstrap does.
-const NPM_MEDIATED: MediatedArms = brew_then_system_arms("node", &["nodejs", "npm"]);
+const NPM_MEDIATED: MediatedArms = MediatedArms {
+    brew: Some("node"),
+    arms: &[
+        ("apt", &["nodejs", "npm"]),
+        ("dnf", &["nodejs", "npm"]),
+        ("yum", &["nodejs", "npm"]),
+        // openSUSE carries node per major version and has no unversioned
+        // `nodejs` package at all.
+        ("zypper", &["nodejs24", "npm24"]),
+        ("pacman", &["nodejs", "npm"]),
+        ("apk", &["nodejs", "npm"]),
+        ("pkg", &["www/npm"]),
+        ("winget", &["OpenJS.NodeJS.LTS"]),
+        ("chocolatey", &["nodejs-lts"]),
+        ("scoop", &["nodejs-lts"]),
+    ],
+};
 
 /// Where a global npm operation should point, resolved once per operation so
 /// install/uninstall/update/list all agree — see [`resolve_npm_prefix`].
@@ -272,12 +313,15 @@ impl Drop for TestElevatedGuard {
     }
 }
 
+// serial-group-ok: the pinning helper itself, named by the seam's own roster row;
+// the declarations that CALL it are the ones that must carry the group.
 #[cfg(all(test, unix))]
 fn with_test_elevated_guard(elevated: bool) -> TestElevatedGuard {
     let prev = TEST_ELEVATED_OVERRIDE.swap(i8::from(elevated), std::sync::atomic::Ordering::SeqCst);
     TestElevatedGuard { prev }
 }
 
+// serial-group-ok: forwards to the pinning helper above; its callers carry the group.
 #[cfg(all(test, unix))]
 fn with_test_elevated<F, R>(elevated: bool, f: F) -> R
 where
@@ -463,18 +507,18 @@ fn ensure_npm_fallback_prefix(prefix: &Path) -> Result<()> {
 
 /// Find npm binary, checking PATH and common nvm install locations.
 ///
-/// Not usable with the generic `resolve_tool_with_fallbacks` helper because the
-/// nvm path is a wildcard `~/.nvm/versions/node/*/bin/npm` that requires a
-/// directory scan rather than a fixed fallback list.
-///
-/// Honors the `CFGD_NPM_BIN` env-var seam for tests — when set and pointing
-/// at a real file, short-circuits the PATH + nvm scan.
+/// Not usable with the generic `resolve_tool_with_fallbacks` helper because
+/// the nvm path is a wildcard `~/.nvm/versions/node/*/bin/npm` that requires a
+/// directory scan rather than a fixed fallback list. It answers the seam under
+/// the same rule that helper does: a SET `CFGD_NPM_BIN` is the whole answer,
+/// the file it names being absent included. Falling through to `$PATH` and the
+/// nvm scan meant a seam could not say this host has no npm, and a test
+/// emptying `PATH` to mean "no manager here" then reached whatever node the
+/// runner's own `~/.nvm` holds.
 pub(super) fn find_npm() -> Option<PathBuf> {
-    if let Ok(custom) = std::env::var("CFGD_NPM_BIN") {
+    if let Ok(custom) = std::env::var(tool_seam_var("npm")) {
         let p = PathBuf::from(custom);
-        if p.is_file() {
-            return Some(p);
-        }
+        return p.is_file().then_some(p);
     }
     // The FULL resolved path, never the bare name: `command_path` searches the
     // bootstrapped-directory registry after `$PATH`, and a `Command::new("npm")`
@@ -483,20 +527,37 @@ pub(super) fn find_npm() -> Option<PathBuf> {
     if let Some(path) = cfgd_core::command_path("npm") {
         return Some(path);
     }
-    let home = std::env::var_os("HOME").map(PathBuf::from)?;
+    // `expand_tilde`, not a raw `HOME` read: it is the workspace's one home
+    // resolution and the only one a test home reaches, so a pin planting an
+    // nvm tree under its own home is answered by the same scan production
+    // runs. An unresolvable home leaves the `~` in place.
+    let home = cfgd_core::expand_tilde(Path::new("~"));
+    if home == Path::new("~") {
+        return None;
+    }
     find_npm_in_nvm(&home)
 }
 
 /// Scan `<home>/.nvm/versions/node/*/bin/npm` and return the first match.
 /// Split out so tests can drive the directory scan against a tempdir without
 /// mutating `$HOME`.
+///
+/// Windows spells the shell-callable npm `npm.cmd`, and npm's own package ships
+/// it beside the extensionless POSIX script rather than instead of it, so a
+/// Windows tree holds both and only the shim is a file `CreateProcess` can run.
+/// The result is spawned directly, so the runnable name is asked for first
+/// there; off Windows the extensionless script is the only one that runs.
 pub(super) fn find_npm_in_nvm(home: &std::path::Path) -> Option<PathBuf> {
+    let names: &[&str] = match cfg!(windows) {
+        true => &["npm.cmd", "npm"],
+        false => &["npm"],
+    };
     let nvm_dir = home.join(".nvm/versions/node");
     let entries = std::fs::read_dir(&nvm_dir).ok()?;
     for entry in entries.flatten() {
-        let npm_path = entry.path().join("bin/npm");
-        if npm_path.exists() {
-            return Some(npm_path);
+        let bin = entry.path().join("bin");
+        if let Some(found) = names.iter().map(|n| bin.join(n)).find(|p| p.exists()) {
+            return Some(found);
         }
     }
     None
@@ -507,7 +568,7 @@ pub(super) fn npm_available() -> bool {
 }
 
 pub(super) fn npm_cmd() -> Command {
-    tool_cmd_with_resolver("npm", find_npm)
+    tool_cmd_at("npm", find_npm())
 }
 
 /// Append `--prefix <dir>` to `cmd` only when the resolver chose the
@@ -610,10 +671,18 @@ impl PackageManager for NpmManager {
         // No declared PATH directory: npm's global bin lives under a prefix that
         // is only resolvable once node exists, which is what `path_dirs` reads
         // out of state after the install.
-        match detect_brew_system_method(NPM_FALLBACK_METHOD, delivered) {
-            NPM_FALLBACK_METHOD => {
-                Some(BootstrapPlan::new(NPM_FALLBACK_METHOD).requiring(["curl"]))
-            }
+        //
+        // nvm is a POSIX shell installer with no Windows build, so there is no
+        // arm of npm's own to decline toward on Windows: a host carrying none of
+        // winget, chocolatey or scoop is offered nothing, a method being binding
+        // at execution.
+        #[cfg(windows)]
+        {
+            detect_windows_method(&NPM_MEDIATED, delivered).map(BootstrapPlan::new)
+        }
+        #[cfg(not(windows))]
+        match detect_brew_system_method(&NPM_MEDIATED, NPM_FALLBACK_METHOD, delivered) {
+            NPM_FALLBACK_METHOD => Some(nvm_bootstrap_plan()),
             method => Some(BootstrapPlan::new(method)),
         }
     }
@@ -621,17 +690,13 @@ impl PackageManager for NpmManager {
     fn bootstrap(&self, cx: &PackageContext<'_>) -> Result<()> {
         // Returns false without probing anything when the plan named `nvm` —
         // npm's own fallback arm, which is the next thing below.
-        if bootstrap_via_brew_then_system(
-            cx,
-            "npm",
-            NPM_MEDIATED.brew.unwrap_or("node"),
-            NPM_MEDIATED.system,
-            NPM_FALLBACK_METHOD,
-        )? {
+        if bootstrap_via_brew_then_system(cx, "npm", &NPM_MEDIATED, NPM_FALLBACK_METHOD)? {
             return Ok(());
         }
 
-        // Fall back to nvm
+        // Fall back to nvm. The arm is absent on Windows, where nvm's installer
+        // cannot run, so the plan never names it there either.
+        #[cfg(not(windows))]
         if command_available("curl") {
             let result = pkg_run(
                 cx,
@@ -700,7 +765,7 @@ impl PackageManager for NpmManager {
                 "npm",
                 format!(
                     "no writable global prefix; installing into {}",
-                    prefix.display(), // native-ok: human-facing terminal notice, not a persisted key
+                    prefix.display_posix(),
                 ),
             );
         }
@@ -802,7 +867,6 @@ pub(super) fn parse_npm_list_versions(
 
 #[cfg(test)]
 mod tests {
-    use cfgd_core::command_available;
     use cfgd_core::providers::PackageManager;
     use cfgd_core::providers::PackageManagerExt;
 
@@ -936,39 +1000,72 @@ mod tests {
         assert_eq!(pkgs[0].version, "4.18.2");
     }
 
+    /// Every arm npm can be planned through, judged against npm's own table and
+    /// this host's own arm list rather than four manager names typed here: brew,
+    /// then each arm `NPM_MEDIATED` populates whose tool this host carries, then
+    /// npm's own nvm installer where there is a shell to run it.
     #[test]
-    fn npm_bootstrap_plan_follows_the_brew_system_nvm_cascade() {
-        // The cascade always has an arm — brew, a system manager, or nvm — so
-        // the plan itself is unconditional; whether the nvm arm's `curl` can be
-        // had is `feasible_bootstrap_plan`'s question.
-        let plan = NpmManager.bootstrap_plan();
-        assert!(plan.is_some());
-        if let Some(plan) = plan {
-            // The method names whichever arm of `bootstrap`'s cascade this host
-            // reaches; only the nvm fallback shells out to a tool of its own,
-            // and no arm creates a PATH dir the manager can name before node
-            // exists (`path_dirs` reads the resolved prefix out of state).
-            let can = |t: &str| command_available(t);
-            let expected_method = if brew_available() {
-                "brew"
-            } else if can("apt") {
-                "apt"
-            } else if can("dnf") {
-                "dnf"
-            } else {
-                "nvm"
-            };
-            assert_eq!(plan.method, expected_method);
-            assert_eq!(
-                plan.requires,
-                if expected_method == "nvm" {
-                    vec!["curl".to_string()]
-                } else {
-                    Vec::<String>::new()
-                }
+    fn npm_is_planned_through_the_first_arm_this_host_can_run() {
+        // The probes below assert what THIS host resolves, so hold the read
+        // guard: a sibling test empties PATH under the write guard.
+        let _path = cfgd_core::test_helpers::path_env_read_guard();
+        let planned = NpmManager.bootstrap_plan();
+        // Only the nvm fallback shells out to tools of its own, and no arm
+        // creates a PATH dir the manager can name before node exists
+        // (`path_dirs` reads the resolved prefix out of state). Whether the nvm
+        // arm's tools can be had is `feasible_bootstrap_plan`'s question.
+        let expected_method: Option<&str> = if brew_available() {
+            Some("brew")
+        } else {
+            super::super::shared::host_arms()
+                .iter()
+                .filter(|(method, _)| NPM_MEDIATED.system_packages_for(method).is_some())
+                .find(|(_, tool)| super::super::shared::system_tool_available(tool))
+                .map(|(method, _)| *method)
+                // nvm's installer needs a shell Windows has not got, so a
+                // Windows host no mediator reaches is offered no arm at all.
+                .or((!cfg!(windows)).then_some(NPM_FALLBACK_METHOD))
+        };
+        let Some(expected_method) = expected_method else {
+            assert!(
+                planned.is_none(),
+                "npm has no route on a Windows host no mediator reaches: {planned:?}"
             );
-            assert!(plan.creates_path_dirs.is_empty());
-        }
+            return;
+        };
+        let plan = planned.expect("the cascade reached an arm this host can run");
+        assert_eq!(plan.method, expected_method);
+        // The literal, not `nvm_bootstrap_plan().requires`: the plan IS that
+        // function's value, so reading it back here would compare the producer
+        // with itself and let the pair it declares shrink unnoticed. Naming
+        // only curl is how a plan was approved and then died inside an install
+        // on a FreeBSD host with no bash.
+        assert_eq!(
+            plan.requires,
+            if expected_method == NPM_FALLBACK_METHOD {
+                vec!["curl".to_string(), "bash".to_string()]
+            } else {
+                Vec::<String>::new()
+            }
+        );
+        assert!(plan.creates_path_dirs.is_empty());
+    }
+
+    /// The nvm arm's prerequisites, as the two names rather than as whatever
+    /// the arm currently declares. The installer's pipeline is fetched by curl
+    /// and RUN by bash, so naming only curl is how a plan was approved and then
+    /// died inside the install on a FreeBSD host carrying neither.
+    ///
+    /// Stated here as well as in the cascade pin above because the cascade
+    /// reaches this arm only on a host with no mediator at all, and a host with
+    /// apt would never run the comparison.
+    #[cfg(not(windows))]
+    #[test]
+    fn the_nvm_arm_requires_both_the_fetcher_and_the_shell_that_runs_it() {
+        assert_eq!(
+            nvm_bootstrap_plan().requires,
+            vec!["curl".to_string(), "bash".to_string()]
+        );
     }
 
     #[test]
@@ -1104,20 +1201,74 @@ mod tests {
         );
     }
 
+    /// The seam is the whole answer in both directions, as it is for brew:
+    /// a seam naming a file that is not there says this host has no npm, and
+    /// one naming a file that is there names exactly that file.
     #[test]
     #[serial_test::serial]
-    fn find_npm_ignores_cfgd_npm_bin_when_path_is_not_a_file() {
-        // A dangling CFGD_NPM_BIN must NOT be returned — find_npm falls through
-        // to PATH / nvm detection instead of handing back a path that ENOENTs.
-        let _g = cfgd_core::test_helpers::EnvVarGuard::set(
+    fn find_npm_answers_from_the_seam_in_both_directions() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        let _missing = cfgd_core::test_helpers::EnvVarGuard::set(
             "CFGD_NPM_BIN",
-            "/nonexistent/cfgd-npm-bin-not-a-file",
+            cfgd_core::test_helpers::ABSENT_SEAM_PATH,
         );
-        let found = find_npm();
-        assert_ne!(
-            found.as_deref(),
-            Some(std::path::Path::new("/nonexistent/cfgd-npm-bin-not-a-file")),
-            "a non-file CFGD_NPM_BIN must be ignored, not returned verbatim"
+        assert_eq!(
+            find_npm(),
+            None,
+            "a seam naming a file that is not there says this host has no npm"
+        );
+
+        cfgd_core::test_helpers::write_probe_tool(dir.path(), "npm");
+        let planted = cfgd_core::test_helpers::probe_tool_path(dir.path(), "npm");
+        let _present = cfgd_core::test_helpers::EnvVarGuard::set(
+            "CFGD_NPM_BIN",
+            planted.to_str().expect("probe path is valid UTF-8"),
+        );
+        assert_eq!(
+            find_npm(),
+            Some(planted),
+            "and a seam naming a file that IS there names exactly that file"
+        );
+    }
+
+    /// The nvm scan on Windows, where the home it scans is `USERPROFILE`'s.
+    ///
+    /// `find_npm` resolves `~` through `expand_tilde`, which reads the test
+    /// home, then `USERPROFILE`, then `HOME`, so a Windows host carrying an
+    /// nvm tree is scanned, where a direct `HOME` read walked past it. BOTH
+    /// files are planted, because npm's own package ships them side by side:
+    /// the extensionless POSIX script is not a file `CreateProcess` can run, so
+    /// a scan returning it is a hard spawn failure rather than a fallback.
+    #[cfg(windows)]
+    #[test]
+    #[serial_test::serial]
+    fn find_npm_scans_the_nvm_tree_under_userprofile_on_windows() {
+        // Declared first so it drops last, bracketing the empty-PATH window.
+        let _path_excl = cfgd_core::test_helpers::path_env_mutation_guard();
+        // The registry and the memo both outlive the window, so a sibling's
+        // resolution would answer for the npm this one has to not find.
+        let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+        let _paths = cfgd_core::test_helpers::CommandPathMemoTtlGuard::always_expired();
+        let _no_seam = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_NPM_BIN");
+        let _empty_path = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
+
+        let home = tempfile::tempdir().expect("tempdir");
+        let bin = home.path().join(".nvm/versions/node/v22.0.0/bin");
+        std::fs::create_dir_all(&bin).expect("plant the nvm tree");
+        let npm = bin.join("npm.cmd");
+        std::fs::write(&npm, b"@echo off\r\n").expect("plant npm.cmd");
+        std::fs::write(bin.join("npm"), b"#!/bin/sh\n").expect("plant the posix script");
+        let _profile = cfgd_core::test_helpers::EnvVarGuard::set(
+            "USERPROFILE",
+            home.path().to_str().expect("utf8 tempdir path"),
+        );
+
+        assert_eq!(
+            find_npm(),
+            Some(npm),
+            "the nvm scan reads the home `USERPROFILE` names, and returns the \
+             name Windows can run out of the pair npm ships"
         );
     }
 
@@ -1364,6 +1515,7 @@ mod tests {
             }
 
             fn argv_log(&self) -> String {
+                // absent-file-ok: a shim nothing ran wrote no log.
                 std::fs::read_to_string(&self.log_path).unwrap_or_default()
             }
         }
@@ -1797,11 +1949,18 @@ mod tests {
             );
         }
 
-        /// Point the seam env-var at a non-existent path so the spawned
-        /// `Command` fails with ENOENT, exercising the `CommandFailed` map_err
-        /// arm rather than a non-zero exit (which the shim handles differently).
-        fn install_unspawnable() -> EnvVarGuard {
-            EnvVarGuard::set(SHIM_ENV, "/nonexistent/cfgd-npm-shim-does-not-exist")
+        /// Point the seam env-var at a file nothing can execute, so the spawn
+        /// itself fails and exercises the `CommandFailed` map_err arm rather
+        /// than a non-zero exit (which the shim handles differently).
+        ///
+        /// The file has to exist: the resolution behind the factory declines a
+        /// seam naming nothing, and this host's own npm would answer instead.
+        fn install_unspawnable() -> (tempfile::TempDir, EnvVarGuard) {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let unspawnable = dir.path().join("npm");
+            std::fs::write(&unspawnable, "").expect("write the unspawnable file");
+            let guard = EnvVarGuard::set(SHIM_ENV, unspawnable.to_string_lossy().as_ref());
+            (dir, guard)
         }
 
         #[test]
@@ -1813,9 +1972,9 @@ mod tests {
             let printer = test_printer();
             let state = cfgd_core::test_helpers::test_state();
             let cx = PackageContext::new(&printer, &state);
-            let err = NpmManager
-                .installed_packages(&cx)
-                .expect_err("ENOENT spawn must surface as CommandFailed, not a panic");
+            let err = NpmManager.installed_packages(&cx).expect_err(
+                "a file nothing can execute must surface as CommandFailed, not a panic",
+            );
             assert!(
                 matches!(err, cfgd_core::errors::CfgdError::Package(
                     PackageError::CommandFailed { ref manager, .. }) if manager == "npm"),
@@ -1827,9 +1986,9 @@ mod tests {
         #[serial]
         fn npm_available_version_spawn_failure_maps_to_command_failed() {
             let _g = install_unspawnable();
-            let err = NpmManager
-                .available_version("typescript")
-                .expect_err("ENOENT spawn must surface as CommandFailed");
+            let err = NpmManager.available_version("typescript").expect_err(
+                "a file nothing can execute must surface as CommandFailed, not a panic",
+            );
             assert!(
                 matches!(err, cfgd_core::errors::CfgdError::Package(
                     PackageError::CommandFailed { ref manager, .. }) if manager == "npm"),
@@ -1846,9 +2005,9 @@ mod tests {
             let printer = test_printer();
             let state = cfgd_core::test_helpers::test_state();
             let cx = PackageContext::new(&printer, &state);
-            let err = NpmManager
-                .installed_packages_with_versions(&cx)
-                .expect_err("ENOENT spawn must surface as CommandFailed");
+            let err = NpmManager.installed_packages_with_versions(&cx).expect_err(
+                "a file nothing can execute must surface as CommandFailed, not a panic",
+            );
             assert!(
                 matches!(err, cfgd_core::errors::CfgdError::Package(
                     PackageError::CommandFailed { ref manager, .. }) if manager == "npm"),
@@ -1898,7 +2057,7 @@ mod tests {
             // The decision is driven directly via `resolve_npm_prefix_with`
             // with `is_writable` forced to `false`, so this runs for real at
             // any uid — a root process bypasses the real write-probe (see
-            // npm_prefix_is_writable_returns_false_for_unwritable_directory
+            // npm_prefix_is_writable_returns_false_for_unwritable_directory_as_non_root
             // for the one place that genuinely needs a root guard).
             let _clear = clear_npm_env_prefix();
             let rejected = tempfile::tempdir().expect("tempdir");
@@ -2310,7 +2469,7 @@ mod tests {
         }
 
         #[test]
-        fn npm_prefix_is_writable_returns_false_for_unwritable_directory() {
+        fn npm_prefix_is_writable_returns_false_for_unwritable_directory_as_non_root() {
             // The write-probe performs a real filesystem write, and root
             // bypasses Unix DAC permission checks entirely, so an unwritable
             // directory cannot be constructed under root. The ENOTDIR case
@@ -2507,14 +2666,17 @@ mod tests {
                 .lines()
                 .find(|l| l.contains("no writable global prefix"))
                 .expect("the fallback note is reported");
-            let prefix = home.path().join(".npm-global").display().to_string();
+            // The note settles through the sink, which folds the home
+            // directory, so an unfolded expectation matches nothing.
+            let prefix =
+                cfgd_core::fold_home_in_text(&home.path().join(".npm-global").display_posix());
             assert!(
                 note.contains(&prefix),
                 "the note must still say where the packages went: {note}"
             );
-            // The prefix is a random tempdir path, and any substring test would
-            // be answering about THAT rather than about the sentence: `add`
-            // turns up in a tempdir name roughly once in 100k runs.
+            // Read about the sentence rather than about the path inside it: a
+            // substring test over an unfolded tempdir name would answer about
+            // the name (`add` turns up in one roughly once in 100k runs).
             let sentence = note.replace(&prefix, "<prefix>");
             assert!(
                 !sentence.contains("PATH") && !sentence.contains("add"),

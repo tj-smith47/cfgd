@@ -1,0 +1,34 @@
+Module: dev-tools
+  Version       1.4.0
+  Dependencies  base
+  Directory     /etc/cfgd/modules/dev-tools
+  Source        remote
+  URL           git@example.com:cfgd/modules.git
+  Pinned Ref    v1.2.3
+
+Packages
+  ✓ ripgrep → 14.1.0 via brew
+  ◉ winget-only-tool, platforms: windows — skipped (platform filter)
+  ⚠ obscure-tool (prefer: nix), min: 1.0 — unresolved: no manager available on this platform
+
+Files
+  vimrc                     ~/.vimrc
+  git@example.com:org/dotfiles.git//tmux.conf (git)
+    ~/.tmux.conf
+
+Aliases
+  gs  git status
+  ll  ls -la
+
+Env
+  EDITOR    ***vim
+  GH_TOKEN  ***lue
+
+Scripts
+  preApply
+    mkdir -p ~/.config/dev-tools
+  postApply
+    echo 'post-apply hook ran'
+    systemctl --user daemon-reload
+  onDrift
+    notify-send 'dev-tools drifted'

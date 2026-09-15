@@ -93,6 +93,7 @@ pub struct GatewayConfig {
     pub port: u16,
     pub db_path: String,
     pub kube_client: Option<kube::Client>,
+    pub backup_policies: crate::controllers::BackupPolicyCache,
     pub retention_days: u32,
     pub metrics: Option<Metrics>,
 }
@@ -123,6 +124,7 @@ pub async fn start_gateway(config: GatewayConfig) -> Result<(), Box<dyn std::err
     let state = AppState {
         db,
         kube_client: config.kube_client,
+        backup_policies: config.backup_policies,
         event_tx,
         enrollment_method,
         metrics: config.metrics,
@@ -362,6 +364,7 @@ mod tests_start_gateway {
             port: 0,
             db_path: "/proc/cfgd-this-path-cannot-exist/gateway.db".to_string(),
             kube_client: None,
+            backup_policies: Default::default(),
             retention_days: 1,
             metrics: None,
         };
@@ -383,6 +386,7 @@ mod tests_start_gateway {
             port: 0,
             db_path: temp_db_path(&tmp),
             kube_client: None,
+            backup_policies: Default::default(),
             retention_days: 1,
             metrics: None,
         };
@@ -409,6 +413,7 @@ mod tests_start_gateway {
             port: 0,
             db_path: temp_db_path(&tmp),
             kube_client: None,
+            backup_policies: Default::default(),
             retention_days: 7,
             metrics: Some(metrics),
         };

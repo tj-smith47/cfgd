@@ -86,9 +86,10 @@ pub fn verify(
         // path vs binary) match like with like. Read before the claimed-key
         // skip below because the listing is the context's memo: the floor pass
         // above already asked this manager, so the question costs nothing here.
-        let ok = cx
-            .installed_for(*mgr)?
-            .contains(&mgr.package_identity(&ep.name));
+        let Some(listing) = listing_or_check_error(*mgr, cx, &mut check_errors) else {
+            continue;
+        };
+        let ok = listing.contains(&mgr.package_identity(&ep.name));
 
         // ONE identity per (manager, package), whichever origin declared it —
         // the same key every CLI live check mints, which is also why the floor
@@ -134,7 +135,7 @@ pub fn verify(
     // the recording and the scan stamp all still happen at the caller, and
     // the errored configurator contributes no system row — so its recorded
     // rows stand rather than being healed by a check that never ran.
-    let system = crate::effective::effective_system_map(&resolved.merged, modules);
+    let (system, _) = crate::effective::effective_system_map(&resolved.merged, modules);
     for sc in registry.available_system_configurators() {
         if let Some(desired) = system.get(sc.name()) {
             let drifts = match sc.diff(desired) {
@@ -216,6 +217,52 @@ pub struct SystemCheckError {
     pub error: String,
 }
 
+impl SystemCheckError {
+    /// The key as a rendered row subject: the home directory folded to `~/`,
+    /// because a key naming an env target or a managed file carries an absolute
+    /// path the surrounding rows all show folded. `key` itself stays the stored
+    /// spelling every payload serializes.
+    #[must_use]
+    pub fn subject(&self) -> String {
+        crate::fold_home_in_text(&self.key)
+    }
+}
+
+/// One manager's installed listing, or ONE erroring check standing for the
+/// whole manager.
+///
+/// A manager whose enumeration failed knows nothing about any package declared
+/// under it, so neither a presence verdict nor a floor verdict could be
+/// anything but invented: the failure IS the check's answer, and it travels as
+/// data the way a configurator's failed probe does. The key is the manager
+/// name, because the manager is what could not be read; every package under it
+/// contributes neither a finding nor a pass, so a recorded row for one of them
+/// stands rather than being healed by a check that never ran.
+///
+/// The `check_errors` list both package passes thread is also the memo: a
+/// manager already reported is not asked again, which matters because
+/// [`crate::providers::PackageContext::installed_for`] memoizes successes only
+/// and would otherwise re-shell once per package the manager declares.
+fn listing_or_check_error(
+    mgr: &dyn crate::providers::PackageManager,
+    cx: &crate::providers::PackageContext<'_>,
+    check_errors: &mut Vec<SystemCheckError>,
+) -> Option<std::sync::Arc<crate::providers::InstalledPackages>> {
+    if check_errors.iter().any(|ce| ce.key == mgr.name()) {
+        return None;
+    }
+    match cx.installed_for(mgr) {
+        Ok(listing) => Some(listing),
+        Err(e) => {
+            check_errors.push(SystemCheckError {
+                key: mgr.name().to_string(),
+                error: crate::output::collapse_to_subject_line(e),
+            });
+            None
+        }
+    }
+}
+
 /// Where a declared package's installed copy stands against the `minVersion`
 /// floor its declaration pins.
 ///
@@ -280,12 +327,7 @@ pub fn package_version_floor(
             ),
         };
     }
-    let identity = mgr.package_identity(package);
-    let Some(entry) = installed
-        .listed()
-        .iter()
-        .find(|p| mgr.listed_identity(&p.name) == identity)
-    else {
+    let Some(entry) = installed.entry_for(mgr, package) else {
         // Not in the listing: the presence pass owns this package's verdict,
         // and a floor cannot be judged against a copy that is not there.
         return VersionFloor::Met;
@@ -375,7 +417,9 @@ pub fn package_version_drift(
         let Some(mgr) = available.iter().find(|m| m.name() == ep.manager) else {
             continue;
         };
-        let installed = cx.installed_for(*mgr)?;
+        let Some(installed) = listing_or_check_error(*mgr, cx, &mut check_errors) else {
+            continue;
+        };
         match package_version_floor(*mgr, &installed, &ep.name, ep.min_version.as_deref()) {
             VersionFloor::Met => {}
             VersionFloor::Unreadable { detail } => check_errors.push(SystemCheckError {
@@ -515,7 +559,7 @@ pub fn env_verify_results(
                     .map(|content| content.contains(&line))
                     .unwrap_or(false);
                 results.push(VerifyResult {
-                    resource_type: "env-rc".to_string(),
+                    resource_type: super::ENV_RC_RESOURCE_TYPE.to_string(),
                     resource_id: to_posix_string(&rc_path),
                     matches: has_line,
                     expected: "source line present".to_string(),
@@ -660,7 +704,7 @@ fn verify_env_items_in(
         // declared line is a substring of the commented one.
         let matches = actual_lines.contains(line.as_str());
         results.push(VerifyResult {
-            resource_type: "env-var".to_string(),
+            resource_type: super::ENV_VAR_RESOURCE_TYPE.to_string(),
             resource_id: ev.name.clone(),
             matches,
             // Opaque markers, not the rendered line: the line is the user's own
@@ -685,7 +729,7 @@ fn verify_env_items_in(
         };
         let matches = actual_lines.contains(line.as_str());
         results.push(VerifyResult {
-            resource_type: "alias".to_string(),
+            resource_type: super::ALIAS_RESOURCE_TYPE.to_string(),
             resource_id: alias.name.clone(),
             matches,
             expected: "current".to_string(),
@@ -853,7 +897,7 @@ impl MergedEnvItems {
     pub fn declared_line(&self, resource_type: &str, resource_id: &str) -> Option<String> {
         let platform = EnvPlatform::current();
         match resource_type {
-            "env-var" => self
+            super::ENV_VAR_RESOURCE_TYPE => self
                 .env
                 .iter()
                 .find(|e| e.name == resource_id)
@@ -865,13 +909,30 @@ impl MergedEnvItems {
                         self.path.as_ref(),
                     )
                 }),
-            "alias" => self
+            super::ALIAS_RESOURCE_TYPE => self
                 .aliases
                 .iter()
                 .find(|a| a.name == resource_id)
                 .and_then(|a| super::env_files::primary_alias_line(a, platform, &self.origins)),
             _ => None,
         }
+    }
+
+    /// The env var this merge declares under `name`, as a caller COPYING the
+    /// declaration needs it rather than as a rendered line.
+    ///
+    /// `cfgd source remove`'s Keep arm re-owns a removed source's entry rows
+    /// to `local`, and an entry is regenerated from the declaration on every
+    /// apply, so keeping the row means writing the declaration into the local
+    /// profile. The merge is what holds it: a module's entries never reach the
+    /// profile's own `env` list.
+    pub fn declared_env(&self, name: &str) -> Option<&crate::config::EnvVar> {
+        self.env.iter().find(|e| e.name == name)
+    }
+
+    /// The same for an alias.
+    pub fn declared_alias(&self, name: &str) -> Option<&crate::config::ShellAlias> {
+        self.aliases.iter().find(|a| a.name == name)
     }
 }
 
@@ -892,10 +953,12 @@ fn deployed_env_item_line(
 ) -> std::io::Result<Option<String>> {
     let platform = EnvPlatform::current();
     let claims: Vec<String> = match resource_type {
-        "env-var" => super::env_files::env_var_line_prefix(resource_id, platform)
-            .into_iter()
-            .collect(),
-        "alias" => super::env_files::alias_line_prefixes(resource_id, platform),
+        super::ENV_VAR_RESOURCE_TYPE => {
+            super::env_files::env_var_line_prefix(resource_id, platform)
+                .into_iter()
+                .collect()
+        }
+        super::ALIAS_RESOURCE_TYPE => super::env_files::alias_line_prefixes(resource_id, platform),
         _ => return Ok(None),
     };
     let home = expand_tilde(std::path::Path::new("~"));

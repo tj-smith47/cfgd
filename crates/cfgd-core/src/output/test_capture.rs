@@ -138,13 +138,16 @@ fn build_test_printer(
 ) -> Printer {
     let sink: Arc<dyn Writer> = Arc::new(StringSink(buf));
     Printer {
+        // No capability probe runs here: a capture that renders escapes at all
+        // renders the same ones on a host with no `COLORTERM` as on one
+        // advertising 24-bit, or a test comparing bytes asserts about the
+        // developer's terminal.
         renderer: Arc::new(Renderer::new(theme.with_colors(colors), verbosity)),
         output_format: format,
         sink_stderr: sink.clone(),
         sink_stdout: sink,
         multi_progress: indicatif::MultiProgress::new(),
         syntax_set: syntect::parsing::SyntaxSet::load_defaults_newlines(),
-        theme_set: syntect::highlighting::ThemeSet::load_defaults(),
         test_doc_capture,
         prompt_queue,
         output_error: std::sync::atomic::AtomicBool::new(false),
@@ -159,6 +162,7 @@ fn build_test_printer(
         // styling, never because another thread flipped a process-global flag.
         colors,
         list_envelope: false,
+        mask_env_values: crate::config::MaskEnvValues::default(),
     }
 }
 
@@ -225,21 +229,29 @@ impl Printer {
         (p, buf)
     }
 
-    /// Like `for_test_with_theme` but also pins the output format, for a test
-    /// proving a structured payload is byte-identical across themes/presets —
-    /// `for_test_with_theme` alone always answers `Table`, so the JSON branch
-    /// a `-o json` command takes is unreachable through it.
+    /// Like `for_test_with_theme` but also pins the output format and the
+    /// colour decision, for a test proving a structured payload is
+    /// byte-identical across themes/presets — `for_test_with_theme` alone
+    /// always answers `Table`, so the JSON branch a `-o json` command takes is
+    /// unreachable through it.
+    ///
+    /// `colors` is the axis `-o yaml` needs: it is the one structured format
+    /// whose payload carries colour, so a claim about its highlighted bytes has
+    /// to be able to ask for them. Every other format refuses colour at
+    /// construction whatever is passed here.
     pub fn for_test_with_theme_and_format(
         theme: Theme,
         format: OutputFormat,
+        colors: bool,
     ) -> (Self, Arc<Mutex<String>>) {
         let buf = Arc::new(Mutex::new(String::new()));
+        let colors = colors && !format.refuses_color();
         let p = build_test_printer(
             buf.clone(),
             theme,
             Verbosity::Quiet,
             format,
-            false,
+            colors,
             None,
             None,
         );
@@ -444,7 +456,6 @@ impl Printer {
             sink_stdout: sink,
             multi_progress: multi,
             syntax_set: syntect::parsing::SyntaxSet::load_defaults_newlines(),
-            theme_set: syntect::highlighting::ThemeSet::load_defaults(),
             test_doc_capture: None,
             prompt_queue: None,
             output_error: std::sync::atomic::AtomicBool::new(false),
@@ -455,6 +466,7 @@ impl Printer {
             interactive_stdin: false,
             colors: false,
             list_envelope: false,
+            mask_env_values: crate::config::MaskEnvValues::default(),
         }
     }
 
@@ -715,6 +727,18 @@ mod tests {
                 .0
                 .colors(),
             "the one colour-ON capture constructor must actually carry colour"
+        );
+        assert!(
+            Printer::for_test_with_theme_and_format(Theme::default(), OutputFormat::Yaml, true)
+                .0
+                .colors(),
+            "`-o yaml` carries colour, so the format capture must be able to ask for it"
+        );
+        assert!(
+            !Printer::for_test_with_theme_and_format(Theme::default(), OutputFormat::Json, true)
+                .0
+                .colors(),
+            "a format whose payload is a machine contract refuses colour whatever a test asks for"
         );
     }
 

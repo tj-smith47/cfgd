@@ -135,8 +135,8 @@ fi
 begin_test "OP-CP-04: ConfigPolicy target selector"
 
 # Add a label to e2e-workstation-1 so targetSelector can match it
-kubectl label machineconfig e2e-workstation-1 -n "$E2E_NAMESPACE" \
-    cfgd.io/profile=dev-workstation --overwrite 2>/dev/null || true
+ensure_label machineconfig e2e-workstation-1 -n "$E2E_NAMESPACE" \
+    cfgd.io/profile=dev-workstation --overwrite
 
 kubectl apply -n "$E2E_NAMESPACE" -f - <<EOF
 apiVersion: cfgd.io/v1alpha1

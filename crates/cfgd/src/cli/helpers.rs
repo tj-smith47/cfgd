@@ -501,12 +501,17 @@ impl PackageRef {
 /// package literally called `brew.tap:charmbracelet/tap`, which installs
 /// nothing and is discovered only when the apply fails. The name keeps every
 /// colon after the first, so `apt:libc6:amd64` is the apt package `libc6:amd64`.
+///
+/// Both returns carry a name the config parser will judge on the next load, so
+/// the same grammar refuses it here: a setter that writes a name the parser
+/// then refuses leaves a document no command can read until it is hand-edited.
 pub(in crate::cli) fn parse_package_flag(
     s: &str,
     custom_managers: &[String],
     native: &str,
 ) -> anyhow::Result<PackageRef> {
     let Some((prefix, name)) = s.split_once(':') else {
+        validate_flag_package_name(s)?;
         return Ok(PackageRef {
             schema_path: None,
             slot: None,
@@ -519,6 +524,7 @@ pub(in crate::cli) fn parse_package_flag(
             "invalid package '--package {s}' — expected <manager>[.<list>]:<name> or a bare name"
         );
     }
+    validate_flag_package_name(name)?;
     if let Some(path) = cfgd_core::config::package_schema_path(prefix) {
         return Ok(PackageRef {
             schema_path: Some(path.path.to_string()),
@@ -542,6 +548,15 @@ pub(in crate::cli) fn parse_package_flag(
         custom_managers,
         native,
     ))
+}
+
+/// Judge a `--package` name against the grammar the config parser holds.
+///
+/// The removal direction takes the same check: a name the parser will not hold
+/// cannot be present to remove, and refusing both keeps one answer for what a
+/// package may be called.
+fn validate_flag_package_name(name: &str) -> anyhow::Result<()> {
+    cfgd_schema::validate_package_name("--package", name).map_err(|e| anyhow::anyhow!("{e}"))
 }
 
 /// The `--package` tokens that WOULD remove `name` from `packages`, for a bare
@@ -931,7 +946,7 @@ pub(in crate::cli) fn scan_profile_names(
                         Role::Warn,
                         format!(
                             "Profile file '{}' has metadata.name '{}'; using '{}'",
-                            found.path.display(), // native-ok: human warn message, not a key
+                            cfgd_core::fold_home_in_text(&found.path.display_posix()),
                             doc.metadata.name,
                             found.name
                         ),
@@ -945,7 +960,7 @@ pub(in crate::cli) fn scan_profile_names(
                 Role::Warn,
                 format!(
                     "Skipping profile '{}': {}",
-                    found.path.display(), // native-ok: human warn message, not a key
+                    cfgd_core::fold_home_in_text(&found.path.display_posix()),
                     cfgd_core::output::collapse_to_subject_line(&e)
                 ),
             ),
@@ -1008,13 +1023,14 @@ pub(in crate::cli) fn open_in_editor(path: &Path, printer: &Printer) -> anyhow::
         .or_else(|_| std::env::var("VISUAL"))
         .unwrap_or_else(|_| "vi".to_string());
 
-    let status = std::process::Command::new(&editor)
-        .arg(path)
-        .stdin(std::process::Stdio::inherit())
-        .stdout(std::process::Stdio::inherit())
-        .stderr(std::process::Stdio::inherit())
-        .status()
-        .map_err(|e| anyhow::anyhow!("Failed to open editor '{}': {}", editor, e))?;
+    let status = cfgd_core::command_status(
+        std::process::Command::new(&editor)
+            .arg(path)
+            .stdin(std::process::Stdio::inherit())
+            .stdout(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::inherit()),
+    )
+    .map_err(|e| anyhow::anyhow!("Failed to open editor '{}': {}", editor, e))?;
 
     if !status.success() {
         printer.status_simple(
@@ -1098,7 +1114,7 @@ pub(in crate::cli) fn no_config_error(_printer: &Printer, config_path: &Path) ->
             path: config_path.to_path_buf(),
         })
         .into(),
-        config_path.display().to_string(),
+        cfgd_core::to_posix_string(config_path),
         "no_config",
         format!("config file not found: {}", config_path.display_posix()),
         serde_json::json!({ "path": cfgd_core::to_posix_string(config_path) }),
@@ -1616,6 +1632,7 @@ pub(in crate::cli) fn sign_and_attest(
         cfgd_core::oci::attach_attestation(
             artifact,
             // native-ok: local predicate path for the co-located cosign subprocess
+            // absolute-path-ok: cosign opens the predicate, so it is handed the real path
             &pred_path.display().to_string(),
             key,
         )
@@ -1637,6 +1654,37 @@ pub(in crate::cli) fn sign_and_attest(
         signed: sign,
         attested,
     })
+}
+
+/// Get a tool a one-shot verb needs, through the managers this host already
+/// has, and answer why not when no manager packages it here.
+///
+/// The wrapper over [`cfgd_core::providers::provision_tool`] every verb outside
+/// a plan takes: those verbs hold no `PackageContext`, and the install records
+/// nothing about a package cfgd needed for itself, so it runs under the null
+/// store. `seam_env` is the tool's own `CFGD_*_BIN` override, `""` for a tool
+/// with none.
+///
+/// **Every precondition that can refuse the verb is checked BEFORE this call.**
+/// An install puts a package manager to work on the host, which is the most
+/// expensive thing the verb does and the one thing it cannot take back, so a
+/// run that was always going to refuse must refuse first: `module keys rotate`
+/// asks whether there is a key to rotate, `init` settles where it would write
+/// and answers every refusal that destination earns, and `doctor --fix`
+/// provisions only the tools its own probes reported missing. A verb whose
+/// whole work IS the tool (`module keys generate`) has no such precondition and
+/// provisions straight away.
+pub(in crate::cli) fn provision_tool(
+    printer: &Printer,
+    registry: &cfgd_core::providers::ProviderRegistry,
+    tool: &str,
+    seam_env: &str,
+) -> std::result::Result<(), String> {
+    let state = cfgd_core::providers::NoOpPackageState;
+    // own-context-ok: the verbs reaching here run outside a plan and hold no
+    // RunContext to borrow one from.
+    let cx = cfgd_core::providers::PackageContext::new(printer, &state);
+    cfgd_core::providers::provision_tool(tool, seam_env, registry, &cx)
 }
 
 pub(in crate::cli) use cfgd_core::short_commit;

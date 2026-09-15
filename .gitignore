@@ -79,6 +79,7 @@
 !.claude/hooks/validate-commands.sh
 !.claude/scripts/
 !.claude/scripts/audit.sh
+!.claude/scripts/commit-guard.sh
 !.claude/scripts/audit-tests/
 !.claude/scripts/audit-tests/**
 !.claude/scripts/publish-coverage.sh

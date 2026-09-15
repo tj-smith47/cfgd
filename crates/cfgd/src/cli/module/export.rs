@@ -136,7 +136,10 @@ pub(super) fn export_devcontainer(
     let mut install_content = install_lines.join("\n");
     install_content.push('\n');
     cfgd_core::atomic_write_str(&install_path, &install_content)?;
-    cfgd_core::set_file_permissions(&install_path, 0o755)?;
+    // No-follow: the export directory is wherever the caller pointed it, so an
+    // elevated export must not hand `0o755` to a link standing where the script
+    // was just written.
+    cfgd_core::set_file_permissions_nofollow(&install_path, 0o755)?;
 
     // Build devcontainer-feature.json
     let mut options = serde_json::Map::new();
@@ -183,15 +186,17 @@ pub(super) fn export_devcontainer(
     let feature_path = feature_dir.join("devcontainer-feature.json");
     cfgd_core::atomic_write_str(&feature_path, &feature_json)?;
 
+    // absolute-path-ok: an `-o json` field below, and the bullet folds its own copy
     let install_path_str = install_path.display_posix();
+    // absolute-path-ok: an `-o json` field below, and the bullet folds its own copy
     let feature_path_str = feature_path.display_posix();
     let out_sec = printer.section(format!(
         "Exported module '{}' as DevContainer Feature to {}",
         name,
-        feature_dir.posix()
+        cfgd_core::fold_home_in_text(&feature_dir.display_posix())
     ));
-    out_sec.bullet(install_path_str.clone());
-    out_sec.bullet(feature_path_str.clone());
+    out_sec.bullet(cfgd_core::fold_home_in_text(&install_path_str));
+    out_sec.bullet(cfgd_core::fold_home_in_text(&feature_path_str));
     drop(out_sec);
 
     printer.emit(
@@ -203,7 +208,7 @@ pub(super) fn export_devcontainer(
             .with_data(serde_json::json!({
                 "name": name,
                 "format": "devcontainer",
-                "outputDir": feature_dir.display().to_string(),
+                "outputDir": cfgd_core::to_posix_string(&feature_dir),
                 "installScript": install_path_str,
                 "featureJson": feature_path_str,
             })),

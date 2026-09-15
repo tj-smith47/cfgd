@@ -7,23 +7,26 @@ cfgd manages packages across 18 package managers (Homebrew manages taps, formula
 | Manager | Platforms | Config Key | What It Does |
 |---|---|---|---|
 | Homebrew | macOS, Linux | `brew` | Manages taps, formulae, and casks separately |
-| apt | Debian/Ubuntu | `apt` | `apt-get install` with sudo handling |
-| dnf | Fedora/RHEL 8+ | `dnf` | `dnf install` |
-| yum | RHEL 7/CentOS 7 | `yum` | `yum install` |
-| pacman | Arch/Manjaro | `pacman` | `pacman -S` |
-| apk | Alpine | `apk` | `apk add` |
-| zypper | OpenSUSE | `zypper` | `zypper install` |
-| pkg | FreeBSD | `pkg` | `pkg install` |
+| apt | Debian/Ubuntu | `apt` | `sudo apt-get install` |
+| dnf | Fedora/RHEL 8+ | `dnf` | `sudo dnf install` |
+| yum | RHEL 7/CentOS 7 | `yum` | `sudo yum install` |
+| pacman | Arch/Manjaro | `pacman` | `sudo pacman -S` |
+| apk | Alpine | `apk` | `sudo apk add` |
+| zypper | OpenSUSE | `zypper` | `sudo zypper install` |
+| pkg | FreeBSD | `pkg` | `sudo pkg install` |
 | Cargo | Any (with Rust) | `cargo` | `cargo install` |
 | npm | Any (with Node) | `npm` | `npm install -g` |
 | pipx | Any (with Python) | `pipx` | `pipx install` |
-| Snap | Linux (with snapd) | `snap` | `snap install` |
+| Snap | Linux (with snapd) | `snap` | `sudo snap install` |
 | Flatpak | Linux (with flatpak) | `flatpak` | `flatpak install` |
 | Nix | Any (with Nix) | `nix` | `nix profile install` |
 | Go | Any (with Go) | `go` | `go install` |
 | winget | Windows | `winget` | Windows Package Manager (Microsoft Store + winget repo) |
 | Chocolatey | Windows | `chocolatey` | Community package manager; cfgd bootstraps it automatically |
 | Scoop | Windows | `scoop` | User-directory installs; cfgd bootstraps it automatically |
+
+Every family whose command above opens on `sudo` leads every command it builds
+with it. cfgd drops the `sudo` when it already runs as root.
 
 Package managers that aren't installed on the current system are silently skipped. `cfgd apply --dry-run` shows which managers will be used and which packages will be installed or removed.
 
@@ -45,6 +48,15 @@ as installed:
    ACLs and is meaningless on Windows). A writable answer is used as-is.
 4. If the probe fails, cfgd falls back to `$HOME/.npm-global`, creating it if
    absent, and passes `--prefix $HOME/.npm-global` on the npm command line.
+
+The unprivileged arm is proven on a real host as well as in unit tests: CI's
+FreeBSD job runs `tests/real-host/freebsd-npm-prefix.sh` (the
+`task test:freebsd:npm-prefix` target) against the `www/npm` package, whose
+configured prefix is the root-owned `/usr/local`. The script itself needs root
+to install that package and create the test account, and it runs every `cfgd`
+invocation as the unprivileged user, asserting that a declared package's binary
+lands in `$HOME/.npm-global/bin` and that the generated env file puts that
+directory on `PATH`.
 
 The first time the fallback is used, `cfgd apply` prints a one-time notice
 naming the fallback prefix. Nothing is asked of you: `$HOME/.npm-global` is a
@@ -82,11 +94,11 @@ packages:
       - pynvim      # resolves through brew's prefix, same apply
 ```
 
-A manager that is not on the machine yet is provisioned in the `Prerequisites`
+A manager that is not on the machine yet is provisioned in the `Bootstrap`
 phase, which runs before any package work:
 
 ```
-Phase: Prerequisites
+Phase: Bootstrap
   cfgd:managers
     - refresh apt index
     - provision nix via nix installer
@@ -102,7 +114,7 @@ Managers one mediator delivers by an ordinary package install collapse onto a
 single node, and a single command:
 
 ```
-Phase: Prerequisites
+Phase: Bootstrap
   cfgd:managers
     ✓ provision npm, pipx via apt (12.4s)
 ```
@@ -110,7 +122,7 @@ Phase: Prerequisites
 is one `apt-get install nodejs npm pipx`, not two `apt-get` runs queued behind
 each other for the dpkg lock. The line names every manager the command
 delivers, and `--skip` / `--only` / `--phase` still address them one at a time
-(`--skip prerequisites.npm` leaves `provision pipx via apt` behind). Only a
+(`--skip bootstrap.npm` leaves `provision pipx via apt` behind). Only a
 plain install collapses: a manager that bootstraps through a vendor script
 (`brew` via the Homebrew installer, `npm` via `nvm`, `cargo` via `rustup`)
 keeps its own node and its own command. Provisions that stay separate but share
@@ -125,7 +137,7 @@ mediator while planning (that is the manager named on the line you read, and
 the lane the node is serialized on) and execution runs exactly that one:
 
 ```
-Phase: Prerequisites
+Phase: Bootstrap
   cfgd:managers
     ✗ provision npm via apt — apt could not install npm: exit code 100: E: Unable to locate package nodejs
 ```
@@ -140,6 +152,48 @@ For the same reason a manager is only planned through a mediator this host can
 actually run: on a machine with none of them, cfgd says the manager cannot be
 provisioned and why, instead of naming one and failing on it.
 
+These are the mediators each provisioned manager reaches for, and what each one
+installs. A cell naming a package is a route cfgd can drive; a cell naming a
+reason is an arm the manager declines.
+
+| Manager | brew | apt | dnf / yum | zypper | pacman | apk | FreeBSD `pkg` | winget | choco | scoop | Own installer |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| `npm` | `node` | `nodejs`, `npm` | `nodejs`, `npm` | `nodejs24`, `npm24` | `nodejs`, `npm` | `nodejs`, `npm` | `www/npm` | `OpenJS.NodeJS.LTS` | `nodejs-lts` | `nodejs-lts` | `nvm` (POSIX only) |
+| `pipx` | `pipx` | `pipx` | `pipx` (dnf only) | `python3-pipx` | `python-pipx` | `pipx` | `devel/py-pipx` | `Python.Python.3.13`, then `pip` | `pipx` | `pipx` | `pip` |
+| `go` | `go` | `golang` | `golang` | `go` | `go` | `go` | `lang/go` | `GoLang.Go` | `golang` | `go` | no own arm |
+| `cargo` | rustup instead | rustup instead | rustup instead | rustup instead | rustup instead | rustup instead | rustup instead | `Rustlang.Rustup` | `rustup.install` | `rustup` | `rustup` |
+| `flatpak` | Linux only | `flatpak` | `flatpak` | `flatpak` | `flatpak` | `flatpak` | Linux only | Linux only | Linux only | Linux only | no own arm |
+| `snap` | Linux only | `snapd` | `snapd` | `snapd` | AUR only | needs glibc | Linux only | Linux only | Linux only | Linux only | no own arm |
+| `brew` | installer only | installer only | installer only | installer only | installer only | installer only | installer only | no Windows build | no Windows build | no Windows build | Homebrew installer |
+| `nix` | installer only | installer only | installer only | installer only | installer only | installer only | installer only | WSL only | WSL only | WSL only | nix installer |
+
+A few cells need their reason spelled out:
+
+- `pipx` on yum: RHEL 7's repositories carry no pipx, and yum is the manager
+  only on releases that old. A yum host reaches pipx through the `pip` arm.
+- `pipx` on winget: winget publishes no pipx of its own, so the arm installs a
+  Python interpreter and the `pip` step behind it installs pipx with it. Two
+  commands, one arm: `winget install --id Python.Python.3.13 …` then
+  `pip install --user pipx`, which lands pipx in the user's own scripts
+  directory.
+- `cargo` everywhere but Windows: rustup's own installer is upstream's route on
+  every POSIX host, and rustup is what then installs a toolchain. On Windows
+  there is no `sh` for that installer, so the three Windows managers package
+  rustup itself and cfgd runs `rustup default stable` afterwards.
+- `snap` on pacman and apk: snapd reaches Arch through the AUR, which pacman
+  does not install from, and it is built against glibc, which Alpine does not
+  ship.
+- `brew` and `nix`: both install themselves from their own script, and neither
+  is packaged by any system manager.
+
+The FreeBSD column names PORT ORIGINS rather than package names. FreeBSD's
+Python and Node packages carry the flavour in their name (`py311-pipx`,
+`npm-node22`), so a bare `pipx` resolves to nothing and a flavoured name goes
+stale the moment the default flavour moves; an origin is version-free and
+`pkg install devel/py-pipx` always picks the current default.
+
+cfgd plans no arm it cannot run, so a declined cell is never named in a plan.
+
 The same directories reach lifecycle scripts (see
 [lifecycle-scripts.md](lifecycle-scripts.md)), the generated env file, and the
 environment of every package-manager command cfgd runs afterwards, so a
@@ -149,15 +203,85 @@ Your *current* shell is the one exception: it predates the env file, which is
 why `cfgd apply`, `cfgd init --apply*`, and `cfgd module create --apply` all end
 by naming the file to source.
 
+## Tools cfgd installs for you
+
+A manager's own installer is not the only thing cfgd shells out to. A system
+configurator drives a binary (`gsettings`, `xfconf-query`, `kwriteconfig6`), a
+secret backend drives another (`sops`, `age`), a module signature check drives
+`cosign`, and `cfgd init` needs `git` before it can clone anything. When one of
+those is missing, cfgd installs it rather than telling you to: the install is a
+prerequisite node in the `Bootstrap` phase, named in the plan like every other
+action, and the phase that needs the tool runs after it.
+
+```
+Phase: Bootstrap
+  cfgd:managers
+    ✓ refresh apt index (1.9s)
+    ✓ apt install libglib2.0-bin (gsettings) — required by system:gsettings (6.2s)
+
+Phase: System
+  ✓ set system:gsettings.org/gnome/desktop/interface/color-scheme: default → prefer-dark
+```
+
+`cfgd doctor --fix` does the same thing outside an apply, for the prerequisites
+`cfgd doctor` reports as missing.
+
+This is the table cfgd routes through. The manager is chosen in column order —
+this host's own system manager first, brew last — so a Linux machine running
+both apt and brew gets `apt install git`. An empty cell is a route cfgd
+declines, and the reasons follow the table.
+
+| Tool | apt | dnf | yum | zypper | pacman | apk | FreeBSD `pkg` | winget | choco | scoop | brew |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| `curl` | `curl` | `curl` | `curl` | `curl` | `curl` | `curl` | `ftp/curl` | — | — | — | `curl` |
+| `git` | `git` | `git` | `git` | `git` | `git` | `git` | `devel/git` | `Git.Git` | `git` | `git` | `git` |
+| `pip3`, `pip` | `python3-pip` | `python3-pip` | `python3-pip` | `python3-pip` | `python-pip` | `py3-pip` | `devel/py-pip` | `Python.Python.3.13` | `python` | `python` | `python` |
+| `bash` | `bash` | `bash` | `bash` | `bash` | `bash` | `bash` | `shells/bash` | — | — | — | `bash` |
+| `gpg` | `gnupg` | `gnupg2` | `gnupg2` | `gpg2` | `gnupg` | `gnupg` | `security/gnupg` | `GnuPG.GnuPG` | `gnupg` | `gpg` | `gnupg` |
+| `ssh-keygen` | `openssh-client` | `openssh-clients` | `openssh-clients` | `openssh-clients` | `openssh` | `openssh-keygen` | `security/openssh-portable` | — | — | — | — |
+| `gsettings` | `libglib2.0-bin` | `glib2` | `glib2` | `glib2-tools` | `glib2` | `glib` | `devel/glib20` | — | — | — | — |
+| `xfconf-query` | `xfconf` | `xfconf` | `xfconf` | `xfconf` | `xfconf` | `xfconf` | `x11/xfce4-conf` | — | — | — | — |
+| `kwriteconfig6` | `kde-cli-tools` | `kf6-kconfig` | `kf6-kconfig` | `kconfig` | `kconfig` | `kconfig` | `devel/kf6-kconfig` | — | — | — | — |
+| `sops` | `sops` | — | — | `sops` | `sops` | `sops` | `security/sops` | `Mozilla.SOPS` | `sops` | `sops` | `sops` |
+| `age` | `age` | `age` | `age` | `age` | `age` | `age` | `security/age` | `FiloSottile.age` | `age.portable` | — | `age` |
+| `cosign` | `cosign` | — | — | `cosign` | `cosign` | `cosign` | `security/cosign` | `Sigstore.Cosign` | — | `cosign` | `cosign` |
+| `op` | — | — | — | — | — | — | — | `AgileBits.1Password.CLI` | `1password-cli` | `1password-cli` | `1password-cli` |
+| `bw` | — | — | — | — | — | — | — | `Bitwarden.CLI` | `bitwarden-cli` | `bitwarden-cli` | `bitwarden-cli` |
+| `vault` | — | — | — | — | — | — | — | `Hashicorp.Vault` | `vault` | `vault` | `hashicorp/tap/vault` |
+| `lpass` | — | — | — | — | — | — | — | — | — | — | `lastpass-cli` |
+
+The declines:
+
+- `curl` and `ssh-keygen` on Windows and macOS: both ship with the operating
+  system, so there is nothing to install.
+- `bash` on the three Windows managers: the only cfgd path that needs a POSIX
+  shell is `nvm`, which does not run there at all.
+- `gsettings`, `xfconf-query` and `kwriteconfig6` on brew and on Windows: they
+  configure Linux desktops, and neither platform has one to configure.
+- `sops` and `cosign` on dnf and yum: Fedora and RHEL package neither.
+- `cosign` on chocolatey: the community package is unmaintained.
+- `age` on scoop: scoop carries it in the Extras bucket, which cfgd's scoop path
+  never adds.
+- `op`, `bw`, `vault` and `lpass` on every Unix system manager: each vendor
+  publishes a tarball or its own repository rather than a distribution package.
+- `lpass` on the three Windows managers: LastPass ships no Windows CLI.
+
+The FreeBSD column names PORT ORIGINS, for the same reason the mediator table
+above does.
+
+A tool no manager on this host packages is not silently skipped: the work that
+needed it says so, naming the managers that would have installed it, so you know
+which one to make available.
+
 ## Index refresh
 
 cfgd refreshes the package index of every manager that is already on the machine,
 has work in this run, and keeps a local index at all. The refresh is an action of
-its own in the `Prerequisites` phase, so it is named in the plan before it happens
+its own in the `Bootstrap` phase, so it is named in the plan before it happens
 and reported where it ran:
 
 ```
-Phase: Prerequisites
+Phase: Bootstrap
   cfgd:managers
     ✓ refresh apt index (1.0s)
       Hit:1 http://deb.debian.org/debian stable InRelease
@@ -183,7 +307,7 @@ that never ran.
 the family is refreshed once by `brew` rather than three times.
 
 Filters filter: a run that leaves the phase out (`--phase packages`) or drops one
-node from it (`--skip prerequisites.apt`) does not refresh that index behind your
+node from it (`--skip bootstrap.apt`) does not refresh that index behind your
 back. The refresh is the phase's, so excluding the phase excludes the refresh.
 
 The rule holds for anything else that narrows a run: a per-module daemon tick
@@ -198,7 +322,7 @@ A manager cfgd cannot provision on this host says so in the same phase, naming
 the cause rather than disappearing from the run:
 
 ```
-Phase: Prerequisites
+Phase: Bootstrap
   cfgd:managers
     ✗ cannot provision pipx — pip3 is missing and apt does not install it under that name
 ```
@@ -275,9 +399,12 @@ packages:
 ```
 
 Use the struct form when you need a manager's extra fields: brew `taps`/`casks`,
-a `file` manifest (Brewfile, package.json, Cargo.toml, apt list), flatpak `remote`,
-or snap `classic`. The struct form still rejects unknown keys, so a typo like
-`flatpak: {packges: [...]}` is reported loudly rather than silently dropped.
+a `file` manifest relative to the config root (Brewfile, package.json,
+Cargo.toml, apt list), flatpak `remote`, or snap `classic`. The struct form
+still rejects unknown keys, so a typo like `flatpak: {packges: [...]}` is
+reported loudly rather than silently dropped.
+
+cfgd grants a declared tap Homebrew's trust before adding it, because current Homebrew reads a tap's index while tapping and refuses a tap it has not been told to trust. The row that adds the tap says `trusted first`.
 
 ## Windows Package Managers
 
@@ -341,7 +468,7 @@ packages:
       snap: nvim
 ```
 
-cfgd picks the first available manager that satisfies the version constraint, using `aliases` to map package names where they differ.
+cfgd picks the first available manager that satisfies the version constraint, using `aliases` to map package names where they differ. A manager that cannot state what it offers is not a manager that failed the constraint: the entry resolves onto it anyway, with the floor carried to the live check below rather than ending the run.
 
 A `minVersion` is a standing declaration, not a one-time resolution check: every drift surface (`cfgd diff`, `cfgd status --scan`, `cfgd verify`, and each of their `--module` scoped forms) compares the version the manager reports INSTALLED against the floor, so a package that ages out of its constraint is drift rather than convergence. A manager that cannot state an installed version (apk, pacman, zypper and FreeBSD `pkg` list names only) makes that floor unanswerable: the surfaces report it as a check that could not run and exit `1`, never as clean. The same holds for a version stated in a form nothing can compare against (a `git-20240101` snapshot tag, say), and for the DECLARATION itself: a `minVersion` written in a form its manager cannot read (`>=1.2`, `1.2.x`) is reported as a check that could not run rather than as a package permanently below its floor. A leading `v` is not such a form: `minVersion: "v1.2.0"` is the same floor as `1.2.0`.
 
@@ -406,9 +533,9 @@ refresh node of its own:
 Plan
   Config   /home/you/.config/cfgd/cfgd.yaml
   Profile  pkgdemo
-  Phases   Prerequisites, Packages
+  Phases   Bootstrap, Packages
 
-Phase: Prerequisites
+Phase: Bootstrap
   cfgd:managers
     - refresh brew index
     - refresh toolbox index

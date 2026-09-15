@@ -15,6 +15,7 @@
     {
       "lastApplied": 1715680800,
       "lastHash": "hash1",
+      "owner": "cfgd:env",
       "resourceId": "/home/user/.cfgd.env",
       "resourceType": "env",
       "source": "local"
@@ -22,6 +23,7 @@
     {
       "lastApplied": 1715680800,
       "lastHash": "hash1",
+      "owner": "profile:default",
       "resourceId": "~/.bashrc",
       "resourceType": "file",
       "source": "local"
@@ -29,6 +31,7 @@
     {
       "lastApplied": 1715680800,
       "lastHash": "hash1",
+      "owner": "module:dev-tools",
       "resourceId": "dev-tools:files:12",
       "resourceType": "module",
       "source": "local"
@@ -36,6 +39,7 @@
     {
       "lastApplied": 1715680800,
       "lastHash": "hash1",
+      "owner": "module:dev-tools",
       "resourceId": "dev-tools:packages:gcc,cargo,git",
       "resourceType": "module",
       "source": "local"
@@ -43,6 +47,7 @@
     {
       "lastApplied": 1715680800,
       "lastHash": "hash1",
+      "owner": "module:dev-tools",
       "resourceId": "dev-tools:packages:neovim,age,fd",
       "resourceType": "module",
       "source": "local"
@@ -50,6 +55,7 @@
     {
       "lastApplied": 1715680800,
       "lastHash": "hash1",
+      "owner": "module:dev-tools",
       "resourceId": "dev-tools:script",
       "resourceType": "module",
       "source": "local"
@@ -57,6 +63,7 @@
     {
       "lastApplied": 1715680800,
       "lastHash": "hash1",
+      "owner": "profile:default",
       "resourceId": "brew/ripgrep",
       "resourceType": "package",
       "source": "local"
@@ -64,6 +71,7 @@
     {
       "lastApplied": 1715680800,
       "lastHash": "hash1",
+      "owner": "profile:default",
       "resourceId": "brew/bat",
       "resourceType": "package",
       "source": "local"

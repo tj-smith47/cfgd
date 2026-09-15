@@ -1,2 +1,5 @@
 Verify
+  Config   /etc/cfgd/cfgd.yaml
+  Profile  base
+
 ◉ No managed resources to verify

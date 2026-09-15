@@ -2,9 +2,9 @@
 
 cfgd releases are cut entirely by CI. **Never run `git tag` or
 `gh release create` by hand**: the Release workflow owns tag creation,
-crate publishing, artifact signing, and the post-publish master advance.
-A hand-cut tag desynchronizes the deferred-branch topology below and wedges
-the next real release.
+crate publishing and artifact signing. A hand-cut tag is not an ancestor of
+`master`, and the tag job refuses to cut a release on top of one (see
+"Release tag not on master" below).
 
 ## How a release happens
 
@@ -15,18 +15,18 @@ in this order:
 | Job | What it does |
 |---|---|
 | `preflight` | Validates every publisher secret up front (`release --preflight-secrets`); the bump-message guard culls the self-retriggered run |
-| `tag` | `anodizer tag --changelog --push-tags-only` — creates the bump commit + per-crate tags, pushes **only the tags** |
+| `tag` | `anodizer tag --changelog --push`: creates the bump commit + per-crate tags and pushes both to `master` in one atomic refspec push |
 | `determinism-check` | Reproducible-build shards per released crate (binary trio on linux/macos/windows, library crates linux-only) |
 | `publish-trio` | `cfgd` / `cfgd-csi` / `cfgd-operator` binary distributions in parallel. Runs before any crates.io publish: cargo's verify-release gate needs the GitHub releases + assets these legs create |
 | `dispatch-oidc` | crates.io publish: one serial `publish-oidc.yml` dispatch per released crate, in dependency order; rolls back tags + the trio's GitHub releases on cargo failure |
 | `rollback-trio` | Deletes this release's tags if any trio leg failed |
 | `helm-chart`, `crossplane-function` + `crossplane-push`, `olm-bundle` | Chart, xpkg, and OLM bundle images to ghcr.io |
-| `advance-master` | Fast-forwards `master` onto the bump commit (`gh api` PATCH, `force=false`) |
 
-Deferred-branch topology: until `advance-master` runs, the bump commit is
-reachable **only via the tags**; `master` does not move. A failed release
-therefore advances neither `master` nor a release; the tags are rolled back
-and the tree is untouched.
+The bump commit and the tags land together or not at all: a push that races
+an ordinary commit to `master` is rejected by the atomic push before anything
+is published, and a re-run recomputes the version against the new `master`.
+A failed publish leg rolls the tags back (`rollback-trio`, `dispatch-oidc`);
+the bump commit stays ordinary `master` history.
 
 ## Pre-release checklist
 
@@ -52,7 +52,8 @@ of the following hold:
 - [ ] Every publish leg (`publish-trio`, `dispatch-oidc`, `helm-chart`,
       `crossplane-push`, `olm-bundle`) is `success` or legitimately
       `skipped` for a partial-workspace release.
-- [ ] `advance-master` succeeded: `master` now points at the bump commit.
+- [ ] Every release tag points at a commit on `master` (the tag job's atomic
+      push landed the bump commit there).
 - [ ] Cosign verifies against a **downloaded** release asset (the release
       signs each `<archive>.sha256`, not the archive itself):
 
@@ -79,21 +80,18 @@ recipe: a temporary dispatch workflow that downloads the run's artifacts and
 republishes them (see `backfill-xpkg.yml` in git history around the v0.5.0
 crossplane backfill), then delete it.
 
-### Run cancelled after the tag job
+### Release tag not on master
 
-The bump commit exists and is reachable only via the freshly-pushed tags;
-`master` was never advanced. The next release then wedges on a
-non-fast-forward tag push. Reconcile by advancing master onto the tagged
-commit by hand:
+The tag job fails before running anodizer when the highest `vX.Y.Z` tag is
+not an ancestor of `master`. The atomic push cannot produce that state, so
+the tag was pushed outside the workflow; cutting forward would publish
+artifacts against history `master` does not contain. Reconcile by landing
+the tagged commit on `master`, then re-run the workflow:
 
 ```sh
 git fetch origin
 git push origin <tag-sha>:refs/heads/master
 ```
-
-(The same command is what `advance-master` prints when its fast-forward
-PATCH fails because master moved mid-release. In that case the release IS
-published; do not re-cut.)
 
 ### Trio leg failure
 

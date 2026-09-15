@@ -4,8 +4,9 @@
 //!   - `module_list/happy.{txt,json}` — populated entries + wide=false table
 //!   - `module_list/empty.txt`        — empty list (status + hint shape)
 //!   - `module_show/happy.{txt,json}` — populated module with remote lock,
-//!     state, packages (mix of Resolved/Skipped/Unresolved), files, env,
-//!     aliases, lifecycle scripts
+//!     declared packages, files, env, aliases, lifecycle scripts
+//!   - `module_show/resolved.txt`     — the same module under `--resolved`
+//!     (packages as Resolved/Skipped/Unresolved rows)
 //!   - `module_show/not_found.txt`    — error path (status + hint)
 //!
 //! Goldens live under `tests/output_snapshots/`. Regenerate with:
@@ -13,21 +14,20 @@
 
 use std::path::Path;
 
+use cfgd::cli::InventoryDetail;
 use cfgd::cli::error::render_cli_error;
 use cfgd::cli::module::list_show::{
     PackageDisplay, build_module_list_doc, build_module_not_found_error, build_module_show_doc,
 };
 use cfgd::cli::module::{ModuleListEntry, ModuleShowMetadata, ModuleShowOutput};
 use cfgd_core::config::{
-    EnvVar, ModuleFileEntry, ModuleLockEntry, ModuleSpec, ScriptEntry, ScriptSpec, ShellAlias,
+    EnvVar, ModuleFileEntry, ModuleLockEntry, ModulePackageEntry, ModuleSpec, ScriptCommand,
+    ScriptEntry, ScriptSpec, ShellAlias,
 };
-use cfgd_core::output::Printer;
-use cfgd_core::state::ModuleStateRecord;
+use cfgd_core::output::{Printer, ScriptsForm, Theme, Verbosity};
 use pretty_assertions::assert_eq;
 
-/// Two hours after the fixture's `installed_at`, so a rendered `Last Applied`
-/// age reads a fixed `2h ago` in the goldens below.
-const NOW: &str = "2026-05-14T12:00:00Z";
+mod common;
 
 const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
 
@@ -75,19 +75,27 @@ fn happy_show_output() -> ModuleShowOutput {
         directory: "/etc/cfgd/modules/dev-tools".into(),
         source: "remote".into(),
         depends: vec!["base".into()],
-        state: Some(ModuleStateRecord {
-            module_name: "dev-tools".into(),
-            installed_at: "2026-05-14T10:00:00Z".into(),
-            last_applied: Some(1_715_680_800),
-            packages_hash: "abc123def456".into(),
-            files_hash: "789ghi012jkl".into(),
-            git_sources: None,
-            status: cfgd_core::state::MODULE_STATUS_INSTALLED.into(),
-        }),
+        resolved: None,
         spec: ModuleSpec {
             depends: vec!["base".into()],
             platforms: vec![],
-            packages: vec![],
+            packages: vec![
+                ModulePackageEntry {
+                    name: "ripgrep".into(),
+                    ..ModulePackageEntry::default()
+                },
+                ModulePackageEntry {
+                    name: "winget-only-tool".into(),
+                    platforms: vec!["windows".into()],
+                    ..ModulePackageEntry::default()
+                },
+                ModulePackageEntry {
+                    name: "obscure-tool".into(),
+                    prefer: vec!["nix".into()],
+                    min_version: Some("1.0".into()),
+                    ..ModulePackageEntry::default()
+                },
+            ],
             files: vec![
                 ModuleFileEntry {
                     patch: None,
@@ -197,11 +205,8 @@ fn module_show_renders_every_declaring_hook_in_execution_order() {
     printer.emit(build_module_show_doc(
         &output,
         None,
-        &[],
-        false,
-        true,
+        InventoryDetail::default(),
         printer.arrow(),
-        NOW,
     ));
     drop(printer);
     let human = cap.human();
@@ -215,17 +220,159 @@ fn module_show_renders_every_declaring_hook_in_execution_order() {
     assert_eq!(
         rows,
         vec![
-            "preApply  — mkdir -p ~/.config/dev-tools",
-            "postApply — echo 'post-apply hook ran'",
-            "postApply — systemctl --user daemon-reload",
-            "onDrift   — notify-send 'dev-tools drifted'",
+            "preApply",
+            "mkdir -p ~/.config/dev-tools",
+            "postApply",
+            "echo 'post-apply hook ran'",
+            "systemctl --user daemon-reload",
+            "onDrift",
+            "notify-send 'dev-tools drifted'",
         ],
-        "every declaring hook, in execution order, as a bare declaration: {human}"
+        "every declaring hook, in execution order, each step under its own hook: {human}"
     );
     assert!(
         !rows.iter().any(|r| r.contains('◉') || r.contains('✓')),
         "a hook body has no check standing behind it and must not wear a verdict glyph: {rows:?}"
     );
+}
+
+/// A module whose `postApply` steps declare every knob the full Scripts form
+/// states above a body, plus one bare-string step, which states its position
+/// alone.
+fn knobbed_show_output() -> ModuleShowOutput {
+    let mut output = happy_show_output();
+    output.spec.scripts = Some(ScriptSpec {
+        pre_apply: vec![ScriptEntry::Simple("mkdir -p ~/.config/dev-tools".into())],
+        post_apply: vec![
+            ScriptEntry::Full(ScriptCommand {
+                // Terminated the way the YAML parser hands a block scalar
+                // over, so this golden carries the shape a declared body
+                // really has: a composer reading the terminator as a line of
+                // its own leaves a blank row behind the last one.
+                run:
+                    "if command -v pipx >/dev/null 2>&1; then\n  pipx install --force pynvim\nfi\n"
+                        .into(),
+                timeout: Some("120s".into()),
+                idle_timeout: None,
+                continue_on_error: Some(true),
+                ..ScriptCommand::default()
+            }),
+            ScriptEntry::Full(ScriptCommand {
+                run: "nvim --headless \"+Lazy! restore\" +qa!".into(),
+                timeout: Some("900s".into()),
+                idle_timeout: Some("30s".into()),
+                continue_on_error: Some(false),
+                ..ScriptCommand::default()
+            }),
+            ScriptEntry::Simple("echo done".into()),
+            ScriptEntry::Full(ScriptCommand {
+                run: "nvim --headless +UpdateRemotePlugins +qa".into(),
+                shell: cfgd_core::config::ScriptShell::Bash,
+                workdir: Some("~/.local/dev-tools".into()),
+                only_if: Some("command -v nvim".into()),
+                ..ScriptCommand::default()
+            }),
+            ScriptEntry::Full(ScriptCommand {
+                run: "echo \"press Enter\"; read".into(),
+                unless: Some("test -f ~/.cache/done".into()),
+                creates: Some("~/.cache/done".into()),
+                interactive: true,
+                ..ScriptCommand::default()
+            }),
+        ],
+        ..Default::default()
+    });
+    output
+}
+
+fn emit_knobbed_show(form: ScriptsForm, golden: &str) {
+    let output = knobbed_show_output();
+    let (printer, cap) = Printer::for_test_doc();
+    printer.emit(build_module_show_doc(
+        &output,
+        None,
+        InventoryDetail {
+            masking: cfgd::cli::EnvValueMasking::default(),
+            scripts: form,
+        },
+        printer.arrow(),
+    ));
+    drop(printer);
+    cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), golden);
+}
+
+/// The default form: one row per step carrying its first line, whatever knobs
+/// the step declares — they have no home in a one-line row.
+#[test]
+fn module_show_scripts_condensed_human() {
+    emit_knobbed_show(ScriptsForm::Condensed, "module_show/scripts_condensed.txt");
+}
+
+/// `-s` / `-a`: each step states its position and the knobs it declares, then
+/// its whole body. The bare-string step states its position alone, a declared
+/// `continueOnError: false` is the default, so no marker names it, and the two
+/// last steps state the interpreter, working directory and guards the upgrade
+/// screen reports a step as changed over.
+#[test]
+fn module_show_scripts_full_human() {
+    emit_knobbed_show(ScriptsForm::Full, "module_show/scripts_full.txt");
+}
+
+/// The bytes the approved pitch settled, from the real renderer: the Scripts
+/// heading, the bare hook name heading its steps, the first step's muted
+/// marker line and the first highlighted row of its body (panel 1, lines
+/// 63-66 of `pitch-nvim-out.txt`). Colour off, these four lines say nothing
+/// about the coat each span carries.
+#[test]
+fn module_show_scripts_full_renders_the_approved_dracula_bytes() {
+    let output = pitch_show_output();
+    let (printer, buf) = Printer::for_test_with_theme_colored(
+        Theme::preset("dracula").expect("dracula is a registered preset"),
+        Verbosity::Normal,
+    );
+    printer.emit(build_module_show_doc(
+        &output,
+        None,
+        InventoryDetail {
+            masking: cfgd::cli::EnvValueMasking::default(),
+            scripts: ScriptsForm::Full,
+        },
+        printer.arrow(),
+    ));
+    drop(printer);
+    // raw-capture-ok: the pitch's own bytes are the expectation — captured_text would strip exactly what this test compares
+    let out = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let rendered: Vec<&str> = out
+        .lines()
+        .skip_while(|l| !l.contains("Scripts"))
+        .take(4)
+        .collect();
+    assert_eq!(
+        rendered,
+        common::PITCH_SCRIPTS_LINES,
+        "the approved bytes: {out:?}"
+    );
+}
+
+/// The module the pitch was captured from, as far as those four lines reach:
+/// one `postApply` hook of seven steps whose first declares `timeout: 120s`
+/// and `continueOnError`. The six steps after it are what the first step's
+/// `1/7` marker counts against.
+fn pitch_show_output() -> ModuleShowOutput {
+    let mut output = happy_show_output();
+    let mut post_apply = vec![ScriptEntry::Full(ScriptCommand {
+        run: "if command -v pipx >/dev/null 2>&1; then\n  pipx install --force pynvim 2>&1 | tail -5 || true\nfi".into(),
+        timeout: Some("120s".into()),
+        idle_timeout: None,
+        continue_on_error: Some(true),
+        ..ScriptCommand::default()
+    })];
+    post_apply.extend((2..=7).map(|n| ScriptEntry::Simple(format!("echo step {n}"))));
+    output.spec.scripts = Some(ScriptSpec {
+        post_apply,
+        ..Default::default()
+    });
+    output
 }
 
 #[test]
@@ -267,16 +414,12 @@ fn module_list_empty_human() {
 fn module_show_happy_human() {
     let output = happy_show_output();
     let lock = happy_lock_entry();
-    let pkgs = happy_packages();
     let (printer, cap) = Printer::for_test_doc();
     printer.emit(build_module_show_doc(
         &output,
         Some(&lock),
-        &pkgs,
-        false,
-        true,
+        InventoryDetail::default(),
         printer.arrow(),
-        NOW,
     ));
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "module_show/happy.txt");
@@ -286,16 +429,12 @@ fn module_show_happy_human() {
 fn module_show_happy_json() {
     let output = happy_show_output();
     let lock = happy_lock_entry();
-    let pkgs = happy_packages();
     let (printer, cap) = Printer::for_test_doc();
     printer.emit(build_module_show_doc(
         &output,
         Some(&lock),
-        &pkgs,
-        false,
-        true,
+        InventoryDetail::default(),
         printer.arrow(),
-        NOW,
     ));
     drop(printer);
     let expected = serde_json::to_value(&output).unwrap();
@@ -305,6 +444,27 @@ fn module_show_happy_json() {
         "emit -o json must match serde_json::to_value(output)"
     );
     cap.assert_json_snapshot_in(Path::new(SNAPSHOT_ROOT), "module_show/happy.json");
+}
+
+/// `--resolved` renders what THIS host made of the declared entries: the
+/// manager that won, the version it offers, the entries the platform gate
+/// skipped and the ones no manager could satisfy. The default render above is
+/// the declaration those rows came from, and the two goldens sit beside each
+/// other so the difference between the classes is readable.
+#[test]
+fn module_show_resolved_renders_what_this_host_made_of_the_declaration() {
+    let mut output = happy_show_output();
+    output.resolved = Some(happy_packages());
+    let lock = happy_lock_entry();
+    let (printer, cap) = Printer::for_test_doc();
+    printer.emit(build_module_show_doc(
+        &output,
+        Some(&lock),
+        InventoryDetail::default(),
+        printer.arrow(),
+    ));
+    drop(printer);
+    cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "module_show/resolved.txt");
 }
 
 #[test]

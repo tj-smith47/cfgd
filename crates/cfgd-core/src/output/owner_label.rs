@@ -244,12 +244,7 @@ mod tests {
         assert!(owner_tokens("").is_none());
     }
 
-    /// Serial because `supports_truecolor()` reads `COLORTERM` / `NO_COLOR`,
-    /// and the composed render is compared against three slot renders taken
-    /// afterwards — a concurrent env mutation between the two would split the
-    /// comparison.
     #[test]
-    #[serial_test::serial]
     fn styled_paints_three_slots_and_strips_back_to_plain() {
         let theme = Theme::from_preset("dracula").with_colors(true);
         let label = OwnerLabel::new("profile", "work");

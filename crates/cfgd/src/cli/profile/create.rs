@@ -289,7 +289,13 @@ pub fn cmd_profile_create(
         &serde_yaml::to_string(&doc)?,
     )?;
 
-    let mut out = Doc::new().status(Role::Ok, format!("Created at {}", profile_path.posix()));
+    let mut out = Doc::new().status(
+        Role::Ok,
+        format!(
+            "Created at {}",
+            cfgd_core::fold_home_in_text(&profile_path.display_posix())
+        ),
+    );
     // One block, so the two rows share a key column.
     let mut rows = Vec::new();
     if !doc.spec.inherits.is_empty() {

@@ -235,6 +235,36 @@ pub(super) async fn reconcile_config_policy(
 
     Ok(Action::requeue(std::time::Duration::from_secs(60)))
 }
+/// Every version the device reported for `package`, whichever manager holds it.
+///
+/// A policy names a package the way a person does — `kubectl` — while the
+/// device reports it under the `<manager>/<package>` id
+/// `cfgd_core::state::package_resource_id` composes, because two managers may
+/// hold the same name at different versions. The ONE fold between the two
+/// spellings, so a version requirement cannot silently fail to find the version
+/// the machine reported. An exact key still wins on its own, which is what a row
+/// written before the manager qualified the key reads as.
+///
+/// Several managers holding one package answer with ALL of their versions, and
+/// the requirement must hold for every one: `PackageRef.version` is an arbitrary
+/// semver requirement, not a floor, so a `<2.0` pin satisfied by the 1.x copy
+/// while a 3.x copy sits beside it would call the machine compliant on exactly
+/// the package the policy exists to forbid. Empty means no manager reported the
+/// package at all.
+fn reported_package_versions<'a>(status: &'a MachineConfigStatus, package: &str) -> Vec<&'a str> {
+    if let Some(exact) = status.package_versions.get(package) {
+        return vec![exact.as_str()];
+    }
+    status
+        .package_versions
+        .iter()
+        .filter(|(id, _)| {
+            cfgd_core::state::split_package_resource_id(id).is_some_and(|(_, name)| name == package)
+        })
+        .map(|(_, version)| version.as_str())
+        .collect()
+}
+
 pub(super) fn validate_policy_compliance(
     spec: &MachineConfigSpec,
     status: Option<&MachineConfigStatus>,
@@ -252,14 +282,16 @@ pub(super) fn validate_policy_compliance(
             return false;
         }
         if let Some(req_str) = &pkg.version {
-            let installed_versions = status.map(|s| &s.package_versions);
-            match installed_versions.and_then(|pv| pv.get(&pkg.name)) {
-                Some(reported) => {
-                    if !version_satisfies(reported, req_str) {
+            let reported = status.map(|s| reported_package_versions(s, &pkg.name));
+            // A machine that reported no version for a pinned package is not
+            // compliant with the pin: nothing stands behind the claim.
+            match reported.as_deref() {
+                Some([]) | None => return false,
+                Some(versions) => {
+                    if !versions.iter().all(|v| version_satisfies(v, req_str)) {
                         return false;
                     }
                 }
-                None => return false,
             }
         }
     }

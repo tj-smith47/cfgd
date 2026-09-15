@@ -9,6 +9,6 @@ Variants
 
 Fields
   casks     <[]string> — Homebrew casks (GUI applications) to install.
-  file      <string>   — Path to a Brewfile to apply instead of (or alongside) `taps`, `formulae` and `casks`.
+  file      <string>   — Path to a Brewfile to apply instead of (or alongside) `taps`, `formulae` and `casks`. Relative to the config root.
   formulae  <[]string> — Homebrew formulae (CLI packages) to install.
   taps      <[]string> — Third-party taps to add before installing formulae/casks.

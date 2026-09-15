@@ -117,7 +117,13 @@ pub(crate) fn prompt_restore_backups(
                     std::fs::remove_file(target)?;
                 }
                 std::fs::rename(&backup_path, target)?;
-                printer.status_simple(Role::Ok, format!("Restored {}", target.posix()));
+                printer.status_simple(
+                    Role::Ok,
+                    format!(
+                        "Restored {}",
+                        cfgd_core::fold_home_in_text(&target.display_posix())
+                    ),
+                );
             }
         }
     }

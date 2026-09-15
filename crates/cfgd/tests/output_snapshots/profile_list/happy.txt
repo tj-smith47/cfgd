@@ -1,3 +1,5 @@
 Available Profiles
-✓ default (active)
-◉ work
+Profile  Active  Contents                   
+────────────────────────────────────────────
+default  yes     0 modules
+work     no      0 modules, inherits default

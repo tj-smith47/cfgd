@@ -43,7 +43,7 @@ pub(super) fn cmd_daemon(
     // re-resolves colour from the terminal, so `--no-color` reached the process
     // printer and nothing else and the daemon drew a fully coloured reconcile
     // tree into journald. It also re-resolves the theme from nothing, dropping
-    // the configured `spec.theme` on the way.
+    // the configured `spec.output.theme` on the way.
     let daemon_printer = std::sync::Arc::new(printer.at_verbosity(if cli.quiet {
         cfgd_core::output::Verbosity::Quiet
     } else if cli.verbose > 0 {
@@ -133,8 +133,11 @@ fn configured_source_catalog(
     let Ok(state) = open_state_store(cli.state_dir.as_deref(), cli.scope()) else {
         return (Vec::new(), declared);
     };
+    // declared-lock-ok: carried to the `-o json` payload's rows alone; the
+    // shared `Sources` table renders no lockfile cell.
+    let lock = cfgd_core::load_sources_lockfile(&config_dir(cli)).unwrap_or_default();
     (
-        super::source::list::configured_source_entries(&cfg, &state),
+        super::source::list::configured_source_entries(&cfg, &state, &lock),
         declared,
     )
 }
@@ -197,6 +200,7 @@ pub fn build_daemon_status_doc(
                     modules: &s.modules,
                     arrow,
                 });
+            // acronym-ok: PID is an acronym, which Title Case keeps capitalized.
             rows.push(KvPair::new("PID", s.pid.to_string()));
             // A measured duration, not a declared one: the intervals below
             // are the operator's own literals and stay verbatim.
@@ -298,6 +302,10 @@ fn daemon_source_row(
         // (see `SourceStatus::drift_count`), so the `Drift` column is dropped
         // rather than filled with the machine-wide total.
         drift_count: src.drift_count,
+        // The daemon reports no lockfile of its own; the catalog row carries
+        // what `sources.lock` pins.
+        locked_ref: declared.and_then(|e| e.locked_ref.clone()),
+        locked_commit: declared.and_then(|e| e.locked_commit.clone()),
     }
 }
 
@@ -605,6 +613,7 @@ mod tests {
             list_envelope: false,
             no_hints: false,
             theme: None,
+            mask_env_values: None,
             jsonpath: None,
             yes: false,
             state_dir: None,
@@ -1217,6 +1226,8 @@ mod tests {
             require_signed_commits: Some(true),
             last_commit: None,
             drift_count: None,
+            locked_ref: None,
+            locked_commit: None,
         };
         status.sources.push(cfgd_core::daemon::SourceStatus {
             name: "team".into(),
@@ -1296,6 +1307,8 @@ mod tests {
             require_signed_commits: None,
             last_commit: Some("0000000000000000000000000000000000000000".into()),
             drift_count: None,
+            locked_ref: None,
+            locked_commit: None,
         };
         let row = daemon_source_row(&status.sources[0], std::slice::from_ref(&stale));
         assert_eq!(

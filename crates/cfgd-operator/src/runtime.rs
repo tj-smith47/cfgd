@@ -11,6 +11,7 @@ use std::path::Path;
 use kube::Client;
 use uuid::Uuid;
 
+use crate::controllers::BackupPolicyCache;
 use crate::env;
 use crate::gateway::GatewayConfig;
 use crate::metrics;
@@ -60,12 +61,19 @@ pub fn webhook_certs_present(cert_dir: &Path) -> bool {
 /// Build a `GatewayConfig` from env + the passed-in `client` and `metrics`.
 /// Centralises the env-var → config mapping so the schema is testable and
 /// the main loop is reduced to wiring. `client` is `None` in standalone
-/// (off-cluster) mode and `Some(_)` in the normal cluster-backed path.
-pub fn build_gateway_config(client: Option<Client>, metrics: metrics::Metrics) -> GatewayConfig {
+/// (off-cluster) mode and `Some(_)` in the normal cluster-backed path, and
+/// `backup_policies` is the slot the controllers publish their BackupPolicy
+/// cache into: a standalone gateway holds an empty one and lists for itself.
+pub fn build_gateway_config(
+    client: Option<Client>,
+    backup_policies: BackupPolicyCache,
+    metrics: metrics::Metrics,
+) -> GatewayConfig {
     GatewayConfig {
         port: env::parse_port_env("DEVICE_GATEWAY_PORT", 8080),
         db_path: cfgd_core::env_or("CFGD_SERVER_DB_PATH", "/data/cfgd-gateway.db"),
         kube_client: client,
+        backup_policies,
         retention_days: env::parse_u32_env("CFGD_RETENTION_DAYS", 90),
         metrics: Some(metrics),
     }

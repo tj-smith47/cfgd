@@ -555,6 +555,11 @@ fn reconcile_tick(
         .with_config_dir(&config_dir)
         .withholding_env_surface(pending_exclusions.withholds_env_surface())
         .withholding_rows(&pending_exclusions)
+        // A per-module tick narrows its plan to one module and probes nothing
+        // else, so it sees the same partial picture a `cfgd apply --module`
+        // does: it may neither retire another layer's row nor read the absence
+        // of an env action as the env file already holding every entry.
+        .pruning_managed_resources(module_filter.is_none())
         .diffing_installed(&pkg_cx);
 
     // ONE file manager per tick: the manager that planned is the manager the
@@ -613,7 +618,7 @@ fn reconcile_tick(
     // just that one module's packages/files/scripts and avoids reaching into
     // unrelated profile state.
     if let Some(name) = module_filter {
-        narrow_to_module(&mut plan, name);
+        narrow_to_module(&mut plan, name, registry);
     }
 
     // A resource whose source change is still awaiting a decision is not the
@@ -681,12 +686,29 @@ fn reconcile_tick(
     } else {
         reconciler
     };
-    // The plan's own promise, which already excludes a module the host
-    // declined whole: that module probed nothing, so counting it would report
-    // divergence no apply can settle and wake the policy branch every interval
-    // for the life of the daemon. A refused file deploy IS counted here, as it
-    // is everywhere else — it is a finding the reader must act on.
-    let effective_total = plan.total_actions();
+    // Every action the plan holds, in the order the recording loop reads them.
+    let planned: Vec<&crate::reconciler::Action> =
+        plan.phases.iter().flat_map(|p| p.actions()).collect();
+    // The drift this tick found, counted one per ACTION that stands for a row
+    // the recording loop is about to write, through the one producer that loop
+    // reads: a module's five-file deploy is one resource in the sentence though
+    // it records a row per file. An action standing for no row at all is work
+    // the run is about to perform rather than divergence it observed, so a plan
+    // whose only actions are scripts reports no drift, records nothing, fires no
+    // onDrift hook and sends no notice. Priced from the plan's own action total
+    // instead, a module declaring only hooks reported a drifted resource every
+    // interval with an empty store beside the sentence.
+    // `action_counts_as_drift` carries the one action counted here that records
+    // nothing, a refused file deploy.
+    let drift_total = planned
+        .iter()
+        .filter(|a| crate::reconciler::action_counts_as_drift(a, registry))
+        .count();
+    // What an auto-applying tick runs, which is WORK rather than drift: the
+    // plan's own promise, already excluding every action this host declined.
+    // A module that declares only hooks has them performed under
+    // `driftPolicy: Auto` exactly as before, having found no drift at all.
+    let work_total = plan.total_actions();
 
     let timestamp = crate::utc_now_iso8601();
 
@@ -796,8 +818,8 @@ fn reconcile_tick(
 
     // A per-module tick probes ONE module, so beyond the re-find predicate it
     // may heal only rows attributable to that module by identity: every
-    // `module` row under its name — the per-file `<name>/<target>` rows and the
-    // `<name>:script` / `<name>:skip` spellings its own actions mint — plus the
+    // `module` row under its name — the per-file `<name>/<target>` rows its own
+    // actions mint, and any legacy spelling an older cfgd left there — plus the
     // per-package and per-shell rows its group carries. Everything else —
     // other modules', the machine-wide surfaces — stands for the next
     // profile-wide tick to judge.
@@ -842,7 +864,7 @@ fn reconcile_tick(
         }
     };
 
-    let outcome = if effective_total == 0 {
+    if drift_total == 0 {
         tracing::debug!("reconcile: no drift detected");
 
         // This reconcile is the ground-truth snapshot for everything it
@@ -850,7 +872,7 @@ fn reconcile_tick(
         // it cannot re-find under its own grammar or scope stands. The
         // in-memory count follows the store rather than assuming 0, so a
         // kept row still shows on `/status` and `/drift`.
-        if let Some(keep) = kept_rows(&[])
+        if let Some(keep) = kept_rows(&planned)
             && let Err(e) = store.resolve_drift_not_in(&keep)
         {
             tracing::warn!(error = %e, "reconcile: failed to resolve outstanding drift on clean tick");
@@ -859,11 +881,10 @@ fn reconcile_tick(
             let mut st = state.lock().await;
             st.drift_count = super::drift::current_drift_count(store).unwrap_or(0);
         });
-        Some("nothing to do".to_string())
     } else {
         tracing::info!(
             "reconcile: drift detected in {}",
-            crate::pluralize(effective_total, "resource")
+            crate::pluralize(drift_total, "resource")
         );
 
         // The plan's action set is the exact current drift set. Record each
@@ -873,29 +894,25 @@ fn reconcile_tick(
         // commit is its own WAL write every interval for the life of the
         // daemon. Per-row failures stay warnings — one refused row must not
         // roll back the rest of the snapshot.
-        let mut planned: Vec<&crate::reconciler::Action> =
-            Vec::with_capacity(plan.phases.iter().map(|p| p.action_count()).sum());
         if let Err(e) = store.in_transaction(|| {
             let mut current_drift: Vec<(String, String)> = Vec::new();
-            for phase in &plan.phases {
-                for action in phase.actions() {
-                    // The ONE producer both sides read: what this tick records
-                    // is exactly what an apply of the same action settles, and
-                    // an action this host was never going to run yields no row
-                    // at all — the header's total already excluded it.
-                    for row in crate::reconciler::action_drift_rows(action, registry) {
-                        if let Err(e) = store.record_drift(
-                            &row.resource_type,
-                            &row.resource_id,
-                            row.expected.as_deref(),
-                            row.actual.as_deref(),
-                            config::LOCAL_LAYER,
-                        ) {
-                            tracing::warn!(error = %e, "reconcile: failed to record drift");
-                        }
-                        current_drift.push(row.key());
+            for action in &planned {
+                // The ONE producer both sides read, and the one the sentence
+                // above was priced from: what this tick records is exactly
+                // what an apply of the same action settles, and an action
+                // this host was never going to run, or that stands for no
+                // finding, yields no row at all.
+                for row in crate::reconciler::action_drift_rows(action, registry) {
+                    if let Err(e) = store.record_drift(
+                        &row.resource_type,
+                        &row.resource_id,
+                        row.expected.as_deref(),
+                        row.actual.as_deref(),
+                        config::LOCAL_LAYER,
+                    ) {
+                        tracing::warn!(error = %e, "reconcile: failed to record drift");
                     }
-                    planned.push(action);
+                    current_drift.push(row.key());
                 }
             }
             // ...then resolve any still-unresolved rows NOT in the current
@@ -929,7 +946,8 @@ fn reconcile_tick(
         let drifted_modules: Vec<&crate::modules::ResolvedModule> = resolved_modules_ref
             .iter()
             .filter(|module| {
-                !module.on_drift_scripts.is_empty() && module_has_drift(&plan, &module.name)
+                !module.on_drift_scripts.is_empty()
+                    && module_has_drift(&plan, &module.name, registry)
             })
             .collect();
         // The column is derived from config before the first script runs: the
@@ -1066,13 +1084,28 @@ fn reconcile_tick(
                 st.drift_count = outstanding;
             });
         }
+    }
 
+    // Whether the tick has anything left to do, asked of the policy because
+    // the two answer to different facts: auto-apply performs the PLAN, so a
+    // scripts-only module's hooks run under it as they always have, while the
+    // reporting policies have nothing to report when the tick recorded no row.
+    let acts = match drift_policy {
+        config::DriftPolicy::Auto => work_total > 0,
+        config::DriftPolicy::NotifyOnly | config::DriftPolicy::Prompt => drift_total > 0,
+    };
+    let outcome = if !acts {
+        Some("nothing to do".to_string())
+    } else {
         // The rows every arm below prints above its own body: a tick reports
         // the same run skeleton `cfgd apply` does, so the two surfaces cannot
         // describe one machine differently. Built once, before the policy
         // branch, because an applying tick and a notify-only tick differ in
-        // what they do — never in what they are reconciling.
-        let trigger = format!("drift ({effective_total} resources)");
+        // what they do — never in what they are reconciling. A tick applying a
+        // plan it found no drift for names no trigger: the work is the
+        // interval's own, and `drift (0 resources)` would name a finding the
+        // store does not hold.
+        let trigger = (drift_total > 0).then(|| format!("drift ({drift_total} resources)"));
         let run_ctx = || crate::reconciler::RunContext {
             title: crate::reconciler::RunTitle::Reconcile,
             config_path: Some(config_path),
@@ -1080,7 +1113,7 @@ fn reconcile_tick(
             sources: &composed_sources,
             modules: &header_modules,
             profile_inherits: &profile_inherits,
-            trigger: Some(&trigger),
+            trigger: trigger.as_deref(),
             subject: None,
             unit_source: None,
         };
@@ -1088,7 +1121,7 @@ fn reconcile_tick(
         match drift_policy {
             config::DriftPolicy::Auto => {
                 tracing::debug!(
-                    actions = effective_total,
+                    actions = work_total,
                     "reconcile: drift policy is Auto — applying actions"
                 );
                 let run = crate::reconciler::ApplyRun::new(run_ctx(), &plan);
@@ -1213,7 +1246,11 @@ fn reconcile_tick(
                         // about how many actions succeeded. `outcome_counts` is
                         // silent about failures — the rollup gives them their
                         // own line — but a single-line log has no second line,
-                        // so it names them here or hides them entirely.
+                        // so it names them here or hides them entirely. That
+                        // failure clause is the ONLY one composed here: every
+                        // other outcome class, the after-plan work included,
+                        // reaches the journal through `outcome_counts`, so a
+                        // class the rollup gains is logged without an edit.
                         let tally = result.tally();
                         let counts = crate::reconciler::outcome_counts(&tally);
                         Some(match tally.failed {
@@ -1244,15 +1281,17 @@ fn reconcile_tick(
                 run.header(printer);
                 run.preview(printer);
                 // Every row the tree above printed is counted by some clause:
-                // the drifted ones, and the rest as skipped. A sentence naming
-                // fewer than the reader just saw is the drift.
-                let skipped = plan.listed_action_count().saturating_sub(effective_total);
+                // the drifted ones, and every other row the tree listed as
+                // skipped — which under this policy is what happens to each of
+                // them. A sentence naming fewer than the reader just saw is
+                // itself the defect.
+                let skipped = plan.listed_action_count().saturating_sub(drift_total);
                 let counted = if skipped == 0 {
-                    format!("{} drifted", crate::pluralize(effective_total, "action"))
+                    format!("{} drifted", crate::pluralize(drift_total, "action"))
                 } else {
                     format!(
                         "{} drifted, {} skipped",
-                        crate::pluralize(effective_total, "action"),
+                        crate::pluralize(drift_total, "action"),
                         skipped
                     )
                 };
@@ -1264,7 +1303,7 @@ fn reconcile_tick(
                         "cfgd: drift detected",
                         &format!(
                             "{} drifted from desired state. Run `cfgd apply` to reconcile.",
-                            crate::pluralize(effective_total, "resource")
+                            crate::pluralize(drift_total, "resource")
                         ),
                     );
                 }
@@ -1315,12 +1354,39 @@ fn reconcile_tick(
         return outcome;
     }
 
-    // Server check-in after reconciliation
-    let changed = try_server_checkin(cfg, resolved);
-    if changed {
+    // Server check-in after reconciliation. The tick is the machine's reporter:
+    // it has resolved the profile, the modules and the registry, so it can
+    // answer both of the questions only the device can — and it reports them as
+    // OBSERVED maps, which is what lets the gateway retire a package this
+    // machine uninstalled or a backup unit it stopped declaring.
+    let checkin = try_server_checkin(
+        cfg,
+        resolved,
+        crate::server_client::CheckinFacts {
+            package_versions: crate::compliance::declared_package_versions(
+                &resolved.merged,
+                resolved_modules_ref.as_slice(),
+                registry,
+                &pkg_cx,
+            ),
+            backup_schedule_owners: Some(crate::backup::declared_schedule_owners(
+                &resolved.merged.backups,
+            )),
+        },
+    );
+    if checkin.config_changed {
         tracing::info!(
             "reconcile: server reports config has changed — will reconcile on next tick"
         );
+    }
+    // Only an ANSWER is recorded, and only a changed answer re-arms the timers:
+    // the timer set was resolved before this tick ran, so a cadence the cluster
+    // just moved would otherwise wait for a restart.
+    if let Some(ref projections) = checkin.backup_schedules
+        && super::checkin::record_cluster_schedules_in(Some(&state_dir), projections)
+    {
+        rt.block_on(async { state.lock().await.backup_reresolve() })
+            .notify_one();
     }
 
     // Consume any pending server-pushed config (saved by CLI checkin or enrollment)
@@ -1357,7 +1423,11 @@ fn reconcile_tick(
 /// mid-run, which a manager already present never reaches. Narrowing by
 /// consumer rather than keeping the group whole is the same rule the planner
 /// mints by, so a tick for a module with no packages still plans nothing.
-pub(super) fn narrow_to_module(plan: &mut crate::reconciler::Plan, module: &str) {
+pub(super) fn narrow_to_module(
+    plan: &mut crate::reconciler::Plan,
+    module: &str,
+    registry: &crate::providers::ProviderRegistry,
+) {
     for phase in &mut plan.phases {
         phase.retain_groups(|owner| {
             (owner.kind == crate::reconciler::OwnerKind::Module && owner.name == module)
@@ -1369,35 +1439,44 @@ pub(super) fn narrow_to_module(plan: &mut crate::reconciler::Plan, module: &str)
     // phases too so drift recording and `reconciler.apply` only ever see the
     // filtered module's own work.
     plan.phases.retain(|p| !p.is_empty());
-    crate::reconciler::prune_to_surviving_consumers(plan);
+    crate::reconciler::prune_to_surviving_consumers(plan, registry);
 }
 
-/// Whether `plan` contains a non-Skip `Action::Module` targeting `module_name`.
+/// Whether `plan` holds an `Action::Module` for `module_name` that stands for
+/// drift.
 ///
-/// Mirrors the profile-level "fire on detected drift" rule scoped to one
-/// module's own actions: a `Skip` module action records no change, so it does
-/// not count as drift.
+/// The profile-level "fire on detected drift" rule scoped to one module's own
+/// actions, asked through the same
+/// [`crate::reconciler::action_counts_as_drift`] the tick's own count and its
+/// notification are priced by: a module whose planned actions record no row has
+/// no divergence for a hook to react to. That is why a module declaring only
+/// lifecycle scripts fires no `onDrift` hook — a hook is work the run performs,
+/// and a second hook announcing it would run every interval for the life of the
+/// module.
 ///
-/// A [`crate::reconciler::ModuleActionKind::FilesRefused`] is NOT excluded, so a
-/// module whose only planned action is the refusal counts as drifted and fires
-/// its `onDrift` hook every interval for as long as the refusal stands. That is
-/// the intended reading of both halves: the module's declared files are not on
-/// the machine and no tick will put them there until the source is encrypted (or
-/// its strategy stops demanding it), which is exactly the standing divergence
-/// the hook exists to announce — where a host-declined module is settled, not
-/// diverged. Every other surface prices the refusal the same way: the header
-/// counts it, both trees draw it, and the tick's closing sentence names it.
+/// A [`crate::reconciler::ModuleActionKind::FilesRefused`] DOES count, which is
+/// the one action here that records no row. The module's declared files are not
+/// on the machine and no tick will put them there until the source is encrypted
+/// (or its strategy stops demanding it), so the refusal is a standing
+/// divergence the hook exists to announce — where a host-declined module is
+/// settled rather than diverged. Every other surface prices the refusal the
+/// same way: the header counts it, both trees draw it, and the tick's closing
+/// sentence names it.
 ///
 /// The caller passes the plan the tick will act on, which the reconcile loop
 /// has already pruned of every resource awaiting a source decision. A module
 /// whose only drifting resource is excluded therefore reports no drift and
 /// fires no `onDrift` hook — deliberate: the hook exists to react to work the
 /// daemon is about to do, and an undecided resource is work it will not do.
-pub(crate) fn module_has_drift(plan: &crate::reconciler::Plan, module_name: &str) -> bool {
+pub(crate) fn module_has_drift(
+    plan: &crate::reconciler::Plan,
+    module_name: &str,
+    registry: &crate::providers::ProviderRegistry,
+) -> bool {
     use crate::reconciler::Action;
     plan.phases.iter().flat_map(|p| p.actions()).any(|a| {
         matches!(a, Action::Module(ma) if ma.module_name == module_name)
-            && !crate::reconciler::module_skipped_whole(a)
+            && crate::reconciler::action_counts_as_drift(a, registry)
     })
 }
 
@@ -1427,14 +1506,14 @@ pub(crate) fn module_has_drift(plan: &crate::reconciler::Plan, module_name: &str
 ///   installed. `provision:` / `refuse:` rows are the one shape the tick does
 ///   not mint per member — a cascade's node carries only its leader's id — so
 ///   they are re-found through the manager node that speaks for the manager.
-/// * `module` — every spelling under a module's name: the per-file
-///   `<module>/<target>` rows this tick mints itself through
-///   `module_file_spec_resource_id`, and the `<module>:packages:…` /
-///   `<module>:script` / `<module>:skip` ids its other kinds mint. All of them
-///   are the tick's own grammar, so identity governs — a row the plan still
-///   covers is in the current set before this predicate is consulted, and one
-///   it does not cover is a file or a surface the plan found converged. The
-///   exception is a module whose files the plan never probed
+/// * `module` — every spelling under a module's name. The per-file
+///   `<module>/<target>` rows are the only ones this tick mints, through
+///   `module_file_spec_resource_id`; a module's other kinds mint no drift row at
+///   all, so anything else under the type is a legacy id an older cfgd left in
+///   the store. The minted grammar is the tick's own, so identity governs — a
+///   row the plan still covers is in the current set before this predicate is
+///   consulted, and one it does not cover is a file or a surface the plan found
+///   converged. The exception is a module whose files the plan never probed
 ///   ([`crate::reconciler::module_files_unprobed`]): the host declined it whole,
 ///   or it refused the deploy before reading a target. Its rows are kept the way
 ///   the CLI keeps an unevaluated configurator's — a run that declined to look
@@ -1446,6 +1525,9 @@ pub(crate) fn module_has_drift(plan: &crate::reconciler::Plan, module_name: &str
 ///   registered tool that left the host, a platform gate), and every row
 ///   under it is kept — the tick's twin of the CLI's `evaluated_system`
 ///   discipline.
+/// * `script` — a row nothing mints any more. A script is an act no check ever
+///   looks at, so a tick meeting one is reading what an older cfgd recorded and
+///   resolves it; opening the store sweeps the rest (migration 27).
 /// * Every type the tick's own grammar mints resolves by row identity — a
 ///   standing daemon row is already in the current set before this predicate
 ///   is consulted.
@@ -1492,13 +1574,10 @@ pub(super) fn tick_cannot_refind(
         // A module whose files this tick never probed — the host declined it
         // whole, or it refused the deploy outright.
         //
-        // The keep is deliberately wider than the file rows it exists for: a
-        // refused module's `<mod>:script` row is kept too, once `hooks_now`
-        // (`reconciler/plan.rs`) elides the hooks because the module's package
-        // work converged while the refusal still stands. Nothing in that window
-        // vouches for the script's convergence, so healing it would be exactly
-        // the blind heal this predicate prevents — over-report, never
-        // under-report.
+        // The keep is by module NAME rather than by id shape, so a legacy row
+        // an older cfgd recorded under the same module is kept with its file
+        // rows. A run that declined to look proves nothing about what it did
+        // not read: over-report, never under-report.
         "module" => {
             let owner = crate::reconciler::module_row_owner(resource_id);
             planned.iter().any(|a| {
@@ -1522,7 +1601,13 @@ pub(super) fn tick_cannot_refind(
             _ => false,
         }),
         // script-literal-ok: resource TYPES, not manager names
-        "file" | "secret" | "script" | "env" | "env-rc" | "env-session" | "manager" => false,
+        "file"
+        | "secret"
+        | "script"
+        | crate::reconciler::ENV_RESOURCE_TYPE
+        | crate::reconciler::ENV_RC_RESOURCE_TYPE
+        | crate::reconciler::ENV_SESSION_RESOURCE_TYPE
+        | "manager" => false,
         _ => true,
     }
 }

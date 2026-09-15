@@ -495,7 +495,7 @@ fn module_delete_purge_removes_target_file() {
 
     // Build module YAML whose target uses the absolute path (no tilde needed —
     // expand_tilde is a no-op on already-absolute paths).
-    let target_str = target_path.display().to_string();
+    let target_str = cfgd_core::to_posix_string(&target_path);
     let module_yaml = format!(
         "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: purge-mod\nspec:\n  files:\n    - source: files/purge-target.cfg\n      target: {}\n",
         target_str

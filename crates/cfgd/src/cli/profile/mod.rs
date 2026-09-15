@@ -1,5 +1,7 @@
 use std::path::Path;
 
+use cfgd_core::PathDisplayExt;
+
 use super::*;
 
 // --- Submodule declarations ---
@@ -67,7 +69,7 @@ pub(super) fn profiles_inheriting(
             Role::Warn,
             format!(
                 "Skipping profile '{}': {}",
-                path.display(), // native-ok: human warn message, not a key
+                cfgd_core::fold_home_in_text(&path.display_posix()),
                 cfgd_core::output::collapse_to_subject_line(e)
             ),
         );

@@ -9,6 +9,16 @@ if [ -n "${CLI_ENV_LOADED:-}" ]; then return 0; fi
 CLI_ENV_LOADED=1
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Scratch directory (each domain file gets its own subdir). Claimed BEFORE
+# helpers.sh, which redirects $HOME into whatever scratch root is already set —
+# so a suite run on its own still owns, and removes, the root its home lives in.
+if [ -z "${CLI_SCRATCH:-}" ]; then
+    CLI_SCRATCH=$(mktemp -d)
+    trap 'rm -rf "$CLI_SCRATCH"' EXIT
+fi
+export CLI_SCRATCH
+
 source "$SCRIPT_DIR/../../common/helpers.sh"
 FIXTURES="$SCRIPT_DIR/../fixtures"
 
@@ -24,24 +34,13 @@ if [ -z "${CFGD:-}" ]; then
 fi
 export CFGD
 
-# Scratch directory (each domain file gets its own subdir)
-if [ -z "${CLI_SCRATCH:-}" ]; then
-    CLI_SCRATCH=$(mktemp -d)
-    trap 'rm -rf "$CLI_SCRATCH"' EXIT
-fi
-export CLI_SCRATCH
-
 # Per-file scratch (uses caller's filename to create unique subdir)
 CALLER="$(basename "${BASH_SOURCE[1]}" .sh)"
 SCRATCH="$CLI_SCRATCH/$CALLER"
 mkdir -p "$SCRATCH"
 
-# Git identity — use isolated config so tests never modify user's global gitconfig
-export GIT_CONFIG_GLOBAL="$CLI_SCRATCH/.gitconfig"
-if [ ! -f "$GIT_CONFIG_GLOBAL" ]; then
-    git config --file "$GIT_CONFIG_GLOBAL" user.name "cfgd-test"
-    git config --file "$GIT_CONFIG_GLOBAL" user.email "test@cfgd.io"
-fi
+# Git identity: common/scratch-home.sh writes $HOME/.gitconfig under the scratch
+# home, which is the one every suite runs under.
 
 # --- Helpers ---
 

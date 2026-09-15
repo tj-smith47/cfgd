@@ -95,7 +95,7 @@ fn write_config(dir: &Path, with_gpg_check: bool, tampered_file: bool) {
         std::fs::write(&target, "tampered\n").unwrap();
         spec.push_str(&format!(
             "  files:\n    managed:\n      - source: files/managed.txt\n        target: {}\n        strategy: Copy\n",
-            target.display()
+            cfgd_core::to_posix_string(&target)
         ));
     }
     let profile = format!(
@@ -209,6 +209,115 @@ fn an_erroring_check_outranks_real_drift_on_every_exit_code_surface() {
     }
 }
 
+/// A `pipx` stand-in whose listing fails the way a real one does when an
+/// installed venv has gone bad: the tool runs, and `pipx list --json` exits
+/// non-zero. Every other invocation succeeds, so the manager is available and
+/// only the question "what do you hold" is unanswerable.
+fn unlistable_pipx(dir: &Path) -> std::path::PathBuf {
+    write_tool_shim(
+        dir,
+        "pipx-unlistable",
+        &[
+            ShimArm {
+                matches: "list",
+                stdout: "",
+                stderr: "Error: '/opt/venvs/pynvim' has an invalid interpreter",
+                exit_code: 1,
+            },
+            ShimArm::always("", "", 0),
+        ],
+    )
+}
+
+/// A `cargo` stand-in holding nothing, so a package declared onto it is a
+/// plain missing-package finding beside the unlistable manager above.
+fn empty_cargo(dir: &Path) -> std::path::PathBuf {
+    write_tool_shim(dir, "cargo-empty", &[ShimArm::always("", "", 0)])
+}
+
+/// One module declaring a package under each of the two managers above.
+fn write_unlistable_manager_config(dir: &Path) {
+    let module_dir = dir.join("modules").join("mixed");
+    std::fs::create_dir_all(&module_dir).unwrap();
+    std::fs::write(
+        module_dir.join("module.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: mixed\nspec:\n  packages:\n    - name: demo\n      prefer: [pipx]\n    - name: demo-cargo\n      prefer: [cargo]\n",
+    )
+    .unwrap();
+    let profiles_dir = dir.join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(
+        profiles_dir.join("tiny.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: tiny\nspec:\n  modules:\n    - mixed\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("cfgd.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: tiny\n",
+    )
+    .unwrap();
+}
+
+/// A manager that cannot be listed is one row, and the run still reports
+/// everything else.
+///
+/// The listing failure used to leave the check through `?`: `cfgd verify` on a
+/// box whose `pipx list --json` exits 1 printed that one sentence, exited 1,
+/// and said nothing about any other manager, file or setting.
+#[test]
+fn a_manager_that_cannot_be_listed_is_one_row_on_every_exit_code_surface() {
+    let config_tmp = tempfile::tempdir().unwrap();
+    let home_tmp = tempfile::tempdir().unwrap();
+    write_unlistable_manager_config(config_tmp.path());
+    let pipx = unlistable_pipx(config_tmp.path());
+    let cargo = empty_cargo(config_tmp.path());
+
+    for args in EXIT_CODE_SURFACES {
+        let state_tmp = tempfile::tempdir().unwrap();
+        let mut cmd = Command::cargo_bin("cfgd").unwrap();
+        let out = cmd
+            .args(args)
+            .arg("--config")
+            .arg(config_tmp.path().join("cfgd.yaml"))
+            .arg("--state-dir")
+            .arg(state_tmp.path())
+            .env("HOME", home_tmp.path())
+            .env("USERPROFILE", home_tmp.path())
+            .env("CFGD_CACHE_DIR", home_tmp.path().join("cache"))
+            .env("CFGD_PIPX_BIN", &pipx)
+            .env("CFGD_CARGO_BIN", &cargo)
+            .output()
+            .unwrap();
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            out.status.code(),
+            Some(1),
+            "cfgd {args:?}: a manager that could not be listed outranks DriftDetected, got: {text}"
+        );
+        let rows: Vec<&str> = text
+            .lines()
+            .filter(|l| l.contains("error checking drift") && l.contains("pipx"))
+            .collect();
+        assert_eq!(
+            rows.len(),
+            1,
+            "cfgd {args:?}: the manager is one row however many passes met it, got: {text}"
+        );
+        assert!(
+            rows[0].contains("invalid interpreter"),
+            "cfgd {args:?}: the row carries what the manager said, got: {text}"
+        );
+        assert!(
+            text.contains("demo-cargo"),
+            "cfgd {args:?}: the healthy manager's finding still renders, got: {text}"
+        );
+    }
+}
+
 /// An `apk` stand-in: it OFFERS `demo` at 3.0.0 (so the declaration's
 /// `minVersion` resolves onto apk) while its installed listing carries no
 /// versions at all — apk's real listing format, which is why apk has no
@@ -295,6 +404,80 @@ fn a_pinned_package_whose_version_cannot_be_read_escalates_on_every_exit_code_su
             "cfgd {args:?}: the unanswerable version check renders as its own row, got: {text}"
         );
     }
+}
+
+/// The same versionless `apk` stand-in, minus any answer about what it
+/// OFFERS: `apk policy demo` prints nothing. A real manager answers this way
+/// whenever its index is unreachable, and `pipx` answers it always.
+fn offerless_apk(dir: &Path) -> std::path::PathBuf {
+    write_tool_shim(
+        dir,
+        "apk-offerless",
+        &[
+            ShimArm::on("list", "demo-3.0.0-r0 x86_64 {demo} (MIT) [installed]\n"),
+            ShimArm::always("", "", 0),
+        ],
+    )
+}
+
+/// A declared floor never costs the reader the whole run.
+///
+/// Resolution used to drop every candidate whose manager could not state what
+/// it offers, so a pinned package under such a manager ended every command at
+/// config resolution with one `cannot be resolved` sentence and nothing else.
+/// The floor travels to the live check instead, which reports it as a check
+/// that could not run, while `plan` gets on with the run.
+#[test]
+fn a_pinned_package_whose_manager_states_no_offer_still_resolves() {
+    let config_tmp = tempfile::tempdir().unwrap();
+    let home_tmp = tempfile::tempdir().unwrap();
+    write_pinned_package_config(config_tmp.path(), "apk");
+    let apk = offerless_apk(config_tmp.path());
+
+    let run = |args: &[&str]| {
+        let state_tmp = tempfile::tempdir().unwrap();
+        let mut cmd = Command::cargo_bin("cfgd").unwrap();
+        let out = cmd
+            .args(args)
+            .arg("--config")
+            .arg(config_tmp.path().join("cfgd.yaml"))
+            .arg("--state-dir")
+            .arg(state_tmp.path())
+            .env("HOME", home_tmp.path())
+            .env("USERPROFILE", home_tmp.path())
+            .env("CFGD_CACHE_DIR", home_tmp.path().join("cache"))
+            .env("CFGD_APK_BIN", &apk)
+            .output()
+            .unwrap();
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        (out.status.code(), text)
+    };
+
+    let (code, text) = run(&["verify", "--exit-code"]);
+    assert!(
+        !text.contains("cannot be resolved"),
+        "an unanswerable offer is not a resolution failure, got: {text}"
+    );
+    assert_eq!(
+        code,
+        Some(1),
+        "the floor nobody could judge is an erroring check, got: {text}"
+    );
+    assert!(
+        text.contains("apk:demo") && text.contains("error checking drift"),
+        "and it renders as its own row, got: {text}"
+    );
+
+    let (code, text) = run(&["plan"]);
+    assert!(
+        !text.contains("cannot be resolved"),
+        "`cfgd plan` renders a plan rather than aborting, got: {text}"
+    );
+    assert_eq!(code, Some(0), "and exits clean, got: {text}");
 }
 
 /// A `dnf`/`rpm` pair that OFFERS `demo` at 3.0.0 and reports 1.0.0 installed
@@ -786,7 +969,9 @@ fn a_row_the_scan_keeps_standing_is_rendered_and_priced_by_that_scan() {
     let state_tmp = tempfile::tempdir().unwrap();
     write_config(config_tmp.path(), false, false);
 
-    // Recorded exactly as a daemon tick records a planned script action.
+    // A legacy row an older daemon left: no tick records a `script` row any
+    // more, and this one is kept to prove a row the scan cannot re-find still
+    // renders and still prices.
     {
         let state = StateStore::open(&state_tmp.path().join("state.db")).unwrap();
         state

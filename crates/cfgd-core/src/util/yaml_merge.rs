@@ -60,14 +60,20 @@ pub fn merge_env(base: &mut Vec<config::EnvVar>, updates: &[config::EnvVar]) {
 /// the user asked for. So the surviving declarations concatenate.
 ///
 /// Each declaration splits on `separator` into the entries BEFORE its ambient
-/// `PATH` reference and the entries AFTER it; the fold keeps the two buckets in
-/// declaration order — base first, then overlay — and renders
-/// `before…:$PATH:after…`. The ambient reference is written once, in the
-/// spelling of the first declaration that named one, and is absent only when no
-/// declaration named one (that declaration is taken at its word, exactly as
-/// `fold_path_line` takes it). Duplicates drop on [`crate::normalize_path_entry`],
-/// first occurrence winning, because `$HOME/.cargo/bin` and `/home/x/.cargo/bin`
-/// are one directory written two ways.
+/// `PATH` reference and the entries AFTER it, and the fold renders
+/// `before…:$PATH:after…`. The two buckets fill in OPPOSITE layer orders,
+/// because that is what the shell chaining they stand in for does: run
+/// `export PATH=<base>:$PATH` and then `export PATH=<overlay>:$PATH` and the
+/// later prepend lands in FRONT, while `export PATH=$PATH:<base>` followed by
+/// `export PATH=$PATH:<overlay>` leaves the earlier append in front. So the
+/// prepend bucket takes the overlay's entries ahead of the base's and the
+/// append bucket keeps base first. The ambient reference is written once, in
+/// the spelling of the first declaration that named one, and is absent only
+/// when no declaration named one (that declaration is taken at its word,
+/// exactly as `fold_path_line` takes it). Duplicates drop on
+/// [`crate::normalize_path_entry`], the first occurrence in the RENDERED order
+/// winning, because `$HOME/.cargo/bin` and `/home/x/.cargo/bin` are one
+/// directory written two ways.
 ///
 /// The result is at most ONE `PATH` entry per merged env, which is what lets
 /// `fold_path_line` keep finding the declaration with a single lookup.
@@ -81,12 +87,10 @@ pub fn fold_env_layer(base: &mut Vec<config::EnvVar>, overlay: &[config::EnvVar]
     }
 
     let home = crate::expand_tilde(std::path::Path::new("~"));
-    let mut before: Vec<String> = Vec::new();
-    let mut after: Vec<String> = Vec::new();
-    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut inherited: Option<String> = None;
 
-    let mut absorb = |value: &str| {
+    let split_at_reference = |value: &str, inherited: &mut Option<String>| {
+        let (mut before, mut after): (Vec<String>, Vec<String>) = (Vec::new(), Vec::new());
         let mut past_ref = false;
         for segment in value.split(separator) {
             if segment.is_empty() {
@@ -97,26 +101,44 @@ pub fn fold_env_layer(base: &mut Vec<config::EnvVar>, overlay: &[config::EnvVar]
                 inherited.get_or_insert_with(|| segment.trim().to_string());
                 continue;
             }
-            if !seen.insert(crate::normalize_path_entry(segment, &home)) {
-                continue;
-            }
             if past_ref { &mut after } else { &mut before }.push(segment.trim().to_string());
         }
+        (before, after)
     };
 
     let existing = base.iter().position(|e| e.name == PATH_VAR);
-    if let Some(pos) = existing {
-        absorb(&base[pos].value);
-    }
-    for entry in &path_overlay {
-        absorb(&entry.value);
-    }
+    // The base is read first so the ambient reference keeps the spelling of the
+    // earliest declaration that named one.
+    let base_layer = existing.map(|pos| split_at_reference(&base[pos].value, &mut inherited));
+    let overlay_layers: Vec<(Vec<String>, Vec<String>)> = path_overlay
+        .iter()
+        .map(|entry| split_at_reference(&entry.value, &mut inherited))
+        .collect();
 
-    let mut parts = before;
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut parts: Vec<String> = Vec::new();
+    let take =
+        |parts: &mut Vec<String>, seen: &mut std::collections::HashSet<String>, segment: &str| {
+            if seen.insert(crate::normalize_path_entry(segment, &home)) {
+                parts.push(segment.to_string());
+            }
+        };
+    // A prepend puts the overlay's directories ahead of the base's, the way the
+    // later `PATH=<dir>:$PATH` of two chained declarations wins the lookup;
+    // within one layer the declarations keep the order they were written in.
+    for (before, _) in overlay_layers.iter().chain(base_layer.iter()) {
+        for segment in before {
+            take(&mut parts, &mut seen, segment);
+        }
+    }
     if let Some(reference) = inherited {
         parts.push(reference);
     }
-    parts.extend(after);
+    for (_, after) in base_layer.iter().chain(overlay_layers.iter()) {
+        for segment in after {
+            take(&mut parts, &mut seen, segment);
+        }
+    }
     // A gated `PATH` entry that survives is part of THIS host's state and its
     // tags have already done their work; the folded entry carries none, so no
     // later reader re-applies a gate to a value several declarations produced.

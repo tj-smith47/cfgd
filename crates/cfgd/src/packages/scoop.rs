@@ -9,7 +9,7 @@ use cfgd_core::providers::{BootstrapPlan, PackageContext, PackageInfo, PackageMa
 use super::shared::{
     canonical_ci_pkg_name, home_relative_dir, install_batch_then_per_package, parse_version_field,
     partition_already_installed, resolve_tool_with_fallbacks, run_pkg_cmd_live, run_pkg_query,
-    tool_cmd_with_resolver, upgrade_each,
+    tool_cmd_at, upgrade_each,
 };
 
 pub struct ScoopManager;
@@ -17,7 +17,7 @@ pub struct ScoopManager;
 /// Where the Scoop installer puts its shims — `SCOOP` when the user pins a root,
 /// otherwise the installer's default under the home directory. Windows-only,
 /// because the bootstrap is a PowerShell script that runs nowhere else.
-fn scoop_shims_dir() -> Option<std::path::PathBuf> {
+pub(super) fn scoop_shims_dir() -> Option<std::path::PathBuf> {
     if !cfg!(windows) {
         return None;
     }
@@ -30,11 +30,21 @@ fn scoop_shims_dir() -> Option<std::path::PathBuf> {
 /// Build a `Command` for scoop, resolved shim-aware. scoop ships on Windows only as
 /// `scoop.ps1`/`scoop.cmd` (never `scoop.exe`), so a bare `Command::new("scoop")`
 /// dies with "program not found" even though the tool is on `$PATH`. Routing through
-/// `tool_cmd_with_resolver` resolves the full shim path and invokes it via
+/// `tool_cmd_at` with the resolved full shim path invokes it via
 /// `powershell -File` / `cmd /c` on Windows (a plain PATH lookup on Unix). No
 /// fallbacks: scoop always lives in its shims dir on `$PATH`.
 fn scoop_cmd() -> Command {
-    tool_cmd_with_resolver("scoop", || resolve_tool_with_fallbacks("scoop", &[]))
+    tool_cmd_at("scoop", resolve_tool_with_fallbacks("scoop", &[]))
+}
+
+/// The spawn that installs `pkgs` through scoop. The ONE declaration of scoop's
+/// install verb, read by its own `install` and by the bootstrap arm that
+/// delivers a mediated manager, so a provision cannot spell the verb differently
+/// from an ordinary install.
+pub(super) fn install_cmd_for(pkgs: &[&str]) -> Command {
+    let mut cmd = scoop_cmd();
+    cmd.arg("install").args(pkgs);
+    cmd
 }
 
 /// Parse the set of installed app names from `scoop export` JSON. The document is
@@ -100,11 +110,24 @@ impl PackageManager for ScoopManager {
     }
 
     fn is_available(&self) -> bool {
-        cfgd_core::command_available("scoop")
+        // Through the seam, like every spawn in this file: a probe that read
+        // `$PATH` while the spawn read the seam reported a manager absent that
+        // a run could actually drive.
+        super::shared::system_tool_available("scoop")
     }
 
     fn bootstrap_plan_given(&self, _delivered: &dyn Fn(&str) -> bool) -> Option<BootstrapPlan> {
-        Some(BootstrapPlan::new("system").creating(scoop_shims_dir()))
+        // Windows only: the arm below is a PowerShell install script for a
+        // manager that exists on no other platform, and a plan's method is
+        // binding at execution.
+        #[cfg(windows)]
+        {
+            Some(BootstrapPlan::new("system").creating(scoop_shims_dir()))
+        }
+        #[cfg(not(windows))]
+        {
+            None
+        }
     }
 
     fn path_dirs(&self, _cx: &PackageContext<'_>) -> Vec<String> {
@@ -174,9 +197,8 @@ impl PackageManager for ScoopManager {
         // (scoop-install.ps1 iterates its $apps array); `scoop install` no-ops
         // on an app already held, so raising it takes `scoop update`.
         install_batch_then_per_package(cx, "scoop", &fresh, |pkgs| {
-            let mut cmd = scoop_cmd();
-            cmd.arg("install").args(pkgs);
-            cmd
+            let refs: Vec<&str> = pkgs.iter().map(|s| s.as_str()).collect();
+            install_cmd_for(&refs)
         })?;
         upgrade_each(cx, "scoop", &held, "scoop update", |pkg| {
             let mut cmd = scoop_cmd();
@@ -319,7 +341,11 @@ mod tests {
     fn scoop_manager_name_and_traits() {
         let mgr = ScoopManager;
         assert_eq!(mgr.name(), "scoop");
-        assert!(mgr.bootstrap_plan().is_some());
+        assert_eq!(
+            mgr.bootstrap_plan().is_some(),
+            cfg!(windows),
+            "scoop's installer is PowerShell for a Windows-only manager, so only Windows plans it"
+        );
     }
 
     #[test]
@@ -333,31 +359,42 @@ mod tests {
         assert_eq!(available, command_available("scoop"));
     }
 
+    /// `bootstrap` is a PowerShell install script for a manager no other
+    /// platform carries, so the plan exists on Windows alone and declares the
+    /// shims directory it creates there.
     #[test]
     fn scoop_bootstrap_plan_declares_the_shims_dir_on_windows() {
         let home = tempfile::tempdir().unwrap();
-        let plan = cfgd_core::with_test_home(home.path(), || ScoopManager.bootstrap_plan())
-            .expect("always planned");
+        let planned = cfgd_core::with_test_home(home.path(), || ScoopManager.bootstrap_plan());
+        if !cfg!(windows) {
+            assert!(
+                planned.is_none(),
+                "nothing off Windows can run scoop's installer: {planned:?}"
+            );
+            return;
+        }
+        let plan = planned.expect("Windows plans scoop's own installer");
         assert_eq!(plan.method, "system");
         assert!(plan.requires.is_empty());
-        // `bootstrap` is a PowerShell install script; the shims it creates only
-        // exist on the platform that can run it.
-        if cfg!(windows) {
-            assert!(
-                plan.creates_path_dirs.iter().all(|d| d.ends_with("/shims")),
-                "{:?}",
-                plan.creates_path_dirs
-            );
-        } else {
-            assert!(plan.creates_path_dirs.is_empty());
-        }
+        assert!(
+            plan.creates_path_dirs.iter().all(|d| d.ends_with("/shims")),
+            "{:?}",
+            plan.creates_path_dirs
+        );
     }
 
     #[test]
     fn scoop_path_dirs_matches_the_bootstrap_plans_declaration() {
+        if !cfg!(windows) {
+            // Off Windows there is no plan to agree with; `path_dirs` still
+            // answers for a host that carries scoop some other way.
+            return;
+        }
         let home = tempfile::tempdir().unwrap();
         cfgd_core::with_test_home(home.path(), || {
-            let plan = ScoopManager.bootstrap_plan().expect("always planned");
+            let plan = ScoopManager
+                .bootstrap_plan()
+                .expect("Windows plans scoop's own installer");
             let printer = cfgd_core::test_helpers::test_printer();
             let state = cfgd_core::test_helpers::test_state();
             let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
@@ -367,8 +404,8 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------------
-    // PackageManager trait impls via a fake scoop binary. scoop_cmd() honors the
-    // CFGD_SCOOP_BIN seam first (tool_cmd_with_resolver), so a ToolShim carries
+    // PackageManager trait impls via a fake scoop binary. scoop_cmd() spawns the
+    // path the CFGD_SCOOP_BIN seam resolved (tool_cmd_at), so a ToolShim carries
     // argv logging for spawn-count claims; the PATH-shim tests predate the seam
     // and stay on PATH manipulation.
     // ---------------------------------------------------------------------------
@@ -381,9 +418,8 @@ mod tests {
         };
         use serial_test::serial;
 
-        // Local wrapper: scoop is invoked by name via PATH, no env-var seam.
-        // Delegates to the shared helper so the shim-script body stays in
-        // one place across the package crate.
+        // Local wrapper around the shared helper, so the shim-script body stays
+        // in one place across the package crate.
         fn install_scoop_shim(
             exit_code: u8,
             stdout: &str,

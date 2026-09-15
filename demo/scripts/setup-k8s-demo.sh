@@ -36,6 +36,12 @@ export KUBECONFIG="$WORK_DIR/kubeconfig"
 # operator's webhook cannot serve TLS without it.
 CERT_MANAGER_VERSION="v1.16.2"
 
+# The gateway refuses every /api/v1/admin route unless CFGD_API_KEY is set on
+# the deployment, so the bring-up gives this throwaway install one and sends it
+# as the bearer on the single admin call it makes. The value never reaches the
+# recording: the token it mints is what the tape types.
+GW_ADMIN_KEY="demo-admin-key"
+
 log() { printf '\n==> %s\n' "$1"; }
 
 require() {
@@ -290,7 +296,9 @@ helm_install_attempt() {
         --set mutatingWebhook.enabled=true \
         --set mutatingWebhook.failurePolicy=Fail \
         --set agent.enabled=false \
-        --set deviceGateway.enabled=false \
+        --set deviceGateway.enabled=true \
+        --set deviceGateway.enrollmentMethod=token \
+        --set "deviceGateway.apiKey=${GW_ADMIN_KEY}" \
         --wait --timeout=300s
 }
 
@@ -301,6 +309,146 @@ prepare_namespace() {
     # Pins the tape's kubectl beats to the injection-enabled namespace without a
     # `-n demo` on every line, which would say nothing about what cfgd does.
     kubectl config set-context --current --namespace="$DEMO_NAMESPACE"
+}
+
+# The device gateway's address, filled in by expose_gateway and read by the
+# fixture the tape's enrollment beats type against.
+GW_URL=""
+
+# The backup beats run cfgd on the RECORDING HOST, so the gateway has to answer
+# from outside the cluster. A NodePort rather than a backgrounded
+# `kubectl port-forward`: kind's node is a container on docker's own `kind`
+# network, which this host routes to directly, so one address holds for the
+# whole take and the bring-up leaves no helper process for a killed recording
+# to strand.
+expose_gateway() {
+    log "Exposing the device gateway"
+    kubectl -n "$NAMESPACE" patch service cfgd-gateway \
+        -p '{"spec":{"type":"NodePort"}}' >/dev/null  # rc-ok: set -Eeuo ends the bring-up here
+    local port node_ip
+    port="$(kubectl -n "$NAMESPACE" get service cfgd-gateway \
+        -o jsonpath='{.spec.ports[0].nodePort}')"
+    node_ip="$(docker inspect -f '{{.NetworkSettings.Networks.kind.IPAddress}}' \
+        "${CLUSTER_NAME}-control-plane")"
+    if [ -z "$port" ] || [ -z "$node_ip" ]; then
+        echo "Could not resolve the gateway's NodePort address (port='$port' ip='$node_ip')." >&2
+        return 1
+    fi
+    GW_URL="http://${node_ip}:${port}"
+
+    # The Deployment being Available says the operator process is up, not that
+    # the gateway's own listener is accepting yet, so the readiness question is
+    # put to the API itself the same way wait_for_webhook_endpoint puts its
+    # question to the EndpointSlice.
+    local deadline=$((SECONDS + 120))
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        if curl -sf -o /dev/null -H "Authorization: Bearer ${GW_ADMIN_KEY}" \
+            "${GW_URL}/api/v1/admin/tokens"; then
+            echo "  gateway: $GW_URL"
+            return 0
+        fi
+        sleep 2
+    done
+    echo "The device gateway never answered at $GW_URL." >&2
+    return 1
+}
+
+# One bootstrap token, minted through the same admin endpoint the gateway E2E
+# suite uses (`POST /api/v1/admin/tokens`), authorized by the throwaway admin
+# key this install was given.
+mint_bootstrap_token() {
+    local fixture="$1" resp token
+    resp="$(curl -sf -X POST "${GW_URL}/api/v1/admin/tokens" \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer ${GW_ADMIN_KEY}" \
+        -d '{"username":"tj","team":"jarvispro","expiresIn":3600}')"
+    token="$(printf '%s' "$resp" | jq -r '.token // empty')"
+    if [ -z "$token" ]; then
+        echo "The gateway minted no bootstrap token (response: ${resp:-none})." >&2
+        return 1
+    fi
+    printf '%s' "$token" > "$fixture/bootstrap.token"
+    printf '%s' "$GW_URL" > "$fixture/gateway.url"
+}
+
+# The third fixture, for k8s.tape's closing act: the machine-side profile whose
+# backup unit a cluster policy re-schedules, and the two objects that do it.
+# The unit declares its OWN nightly cadence and hands the schedule to the
+# cluster (`scheduleOwner: Cluster`), which is what makes the policy's hourly
+# cadence a projection rather than a second opinion — `cfgd backup list` reads
+# `projected` in its Schedule Owner column once a check-in has carried it down.
+#
+# `spec.hostname` is the only key the gateway resolves a MachineConfig by, and
+# the device reports `gethostname(2)` — the same reading `uname -n` gives — so
+# the selector below is written from this host's own name rather than from a
+# name the fixture invents.
+write_projection_fixture() {
+    local fixture="$1"
+    mkdir -p "$fixture/profiles"
+
+    printf '%s\n' '# Notes' '' '- Buy milk' '- Pay rent' '- Ship the demo' \
+        > "$fixture/notes.md"
+
+    cat > "$fixture/cfgd.yaml" <<EOF
+apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: demo
+spec:
+  profile: demo
+  origin:
+    - type: Server
+      url: "${GW_URL}"
+EOF
+
+    cat > "$fixture/profiles/demo.yaml" <<EOF
+apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: demo
+spec:
+  backups:
+    - name: notes
+      source: ${fixture}/notes.md
+      schedule: "0 3 * * *"
+      retention: 3
+      scheduleOwner: Cluster
+EOF
+
+    # The object is named for the machine it describes, folded to the lowercase
+    # a k8s name allows. A fixed name would put a second hostname on camera
+    # beside the one `cfgd enroll` registers the device under.
+    local machine_name
+    machine_name="$(uname -n | tr '[:upper:]' '[:lower:]')"
+
+    cat > "$fixture/machine.yaml" <<EOF
+apiVersion: cfgd.io/v1alpha1
+kind: MachineConfig
+metadata:
+  name: ${machine_name}
+  namespace: ${DEMO_NAMESPACE}
+  labels:
+    cfgd.io/tier: workstation
+spec:
+  hostname: "$(uname -n)"
+  profile: demo
+EOF
+
+    cat > "$fixture/backup-policy.yaml" <<EOF
+apiVersion: cfgd.io/v1alpha1
+kind: BackupPolicy
+metadata:
+  name: hourly-notes
+  namespace: ${DEMO_NAMESPACE}
+spec:
+  selector:
+    matchLabels:
+      cfgd.io/tier: workstation
+  units:
+    - name: notes
+      schedule: "17 * * * *"
+      retention: 7
+EOF
 }
 
 # The second fixture, for connect.tape: a module whose Module resource carries
@@ -439,6 +587,8 @@ spec:
 EOF
 
     write_connect_fixture "$fixture"
+    write_projection_fixture "$fixture"
+    mint_bootstrap_token "$fixture"
 
     # The tape runs `cfgd` and `kubectl cfgd` from the freshly built tree, never
     # from whatever version happens to be on the recording host's PATH. Checked
@@ -463,6 +613,8 @@ up() {
     require cargo
     require cargo-zigbuild
     require cosign
+    require curl
+    require jq
 
     # A stage that fails half way leaves a kind cluster, a registry container
     # and a work dir standing; the caller's next run then starts from a state
@@ -478,6 +630,7 @@ up() {
     install_cert_manager
     install_chart
     prepare_namespace
+    expose_gateway
     write_fixture
 
     trap - ERR

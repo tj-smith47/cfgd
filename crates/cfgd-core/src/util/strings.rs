@@ -544,9 +544,10 @@ pub const ABSENT: &str = "-";
 /// count-carrying line — the apply/backup rollups, the daemon's notifications,
 /// the plan's totals — reads from here.
 ///
-/// English-regular nouns only (`action`, `check`, `file`, `resource`). A noun
-/// whose plural is not `+s` has no business being formatted by a rule this
-/// small; spell that one out at its call site.
+/// English-regular nouns only (`action`, `check`, `file`, `resource`,
+/// `alias`). A noun whose plural is neither `+s` nor the `-es` a sibilant
+/// ending calls for has no business being formatted by a rule this small;
+/// spell that one out at its call site.
 pub fn pluralize(count: usize, noun: &str) -> String {
     format!("{count} {}", plural_noun(count, noun))
 }
@@ -555,10 +556,22 @@ pub fn pluralize(count: usize, noun: &str) -> String {
 /// the things rather than counting them (`referenced by profiles: work, home`).
 pub fn plural_noun(count: usize, noun: &str) -> String {
     if count == 1 {
-        noun.to_string()
-    } else {
-        format!("{noun}s")
+        return noun.to_string();
     }
+    // The same `-es` a sibilant ending calls for in the verb below
+    // (`alias` -> `aliases`), read from the one predicate, so a bare `+ "s"`
+    // cannot render `aliass` on one surface and `aliases` on another.
+    if ends_in_sibilant(noun) {
+        return format!("{noun}es");
+    }
+    format!("{noun}s")
+}
+
+/// Whether a word ends in a sound that takes `-es` rather than `-s`.
+fn ends_in_sibilant(word: &str) -> bool {
+    ["s", "x", "z", "ch", "sh"]
+        .iter()
+        .any(|end| word.ends_with(end))
 }
 
 /// A regular verb in the form `count` calls for: `1 resource matches`,
@@ -577,10 +590,7 @@ pub fn agreeing_verb(count: usize, verb: &str) -> String {
     // bare `o` (`match` → `matches`, `go` → `goes`), `-ies` for a consonant
     // followed by `y` (`apply` → `applies`), `-s` otherwise. A bare `+ "s"`
     // renders `matchs`.
-    let sibilant = ["s", "x", "z", "ch", "sh"]
-        .iter()
-        .any(|end| verb.ends_with(end))
-        || (verb.ends_with('o') && !verb.ends_with("oo"));
+    let sibilant = ends_in_sibilant(verb) || (verb.ends_with('o') && !verb.ends_with("oo"));
     if sibilant {
         format!("{verb}es")
     } else if verb.ends_with('y')
@@ -712,9 +722,89 @@ pub fn is_package_presence_want(expected: &str) -> bool {
     matches!(expected, PACKAGE_WANT_INSTALLED | PACKAGE_WANT_ABSENT)
 }
 
+/// A URL as a report renders it: the same string with any userinfo removed.
+///
+/// A git remote may legitimately carry credentials in its authority
+/// (`https://user:ghp_xxx@github.com/acme/config.git`), and cfgd stores what
+/// the author declared. Every human surface naming a source, a registry or a
+/// module's origin renders that string, so the token reaches a terminal
+/// scrollback, a screen share and a pasted bug report. Stripping it is a
+/// display decision only: the stored value, the value cfgd clones from and the
+/// `-o json` payload all keep the URL byte-for-byte, because a consumer
+/// reading the payload may need to fetch with it.
+///
+/// The strip is deliberately textual rather than a URL parse. cfgd accepts
+/// shapes no parser agrees on — `git@github.com:acme/config.git` (scp-like, no
+/// scheme), a bare `owner/repo` shorthand, a local directory — and a parse that
+/// refuses one of those would have to fall back to rendering the raw string,
+/// which is the leak. The authority is the span between `://` and the first
+/// `/`, `?` or `#` after it; userinfo is whatever precedes the last `@` inside
+/// it. A string with no `://` is returned unchanged, so an scp-like remote
+/// keeps its `git@host` (a username, never a secret, and the only spelling
+/// that remote has).
+#[must_use]
+pub fn display_url(url: &str) -> String {
+    let Some(scheme_end) = url.find("://") else {
+        return url.to_string();
+    };
+    let authority_start = scheme_end + "://".len();
+    let authority_len = url[authority_start..]
+        .find(['/', '?', '#'])
+        .unwrap_or(url.len() - authority_start);
+    let authority = &url[authority_start..authority_start + authority_len];
+    let Some(at) = authority.rfind('@') else {
+        return url.to_string();
+    };
+    format!(
+        "{}{}",
+        &url[..authority_start],
+        &url[authority_start + at + 1..]
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn display_url_strips_userinfo_and_leaves_every_other_shape_alone() {
+        assert_eq!(
+            display_url("https://user:ghp_token@github.com/acme/config.git"),
+            "https://github.com/acme/config.git"
+        );
+        assert_eq!(
+            display_url("https://token@github.com/acme/config.git"),
+            "https://github.com/acme/config.git"
+        );
+        // No userinfo, and the path survives whole.
+        assert_eq!(
+            display_url("https://github.com/acme/config.git"),
+            "https://github.com/acme/config.git"
+        );
+        // An authority with no path at all still strips.
+        assert_eq!(
+            display_url("https://u:p@example.test"),
+            "https://example.test"
+        );
+        // A query or fragment ends the authority the same way a slash does.
+        assert_eq!(
+            display_url("https://u:p@example.test?ref=main"),
+            "https://example.test?ref=main"
+        );
+        // No scheme: an scp-like remote, a shorthand and a local path are
+        // returned verbatim, `git@host` included.
+        assert_eq!(
+            display_url("git@github.com:acme/config.git"),
+            "git@github.com:acme/config.git"
+        );
+        assert_eq!(display_url("acme/config"), "acme/config");
+        assert_eq!(display_url("/srv/config"), "/srv/config");
+        // An `@` in the PATH is not userinfo.
+        assert_eq!(
+            display_url("https://example.test/acme@2/config.git"),
+            "https://example.test/acme@2/config.git"
+        );
+    }
 
     #[test]
     fn canonical_bool_str_accepts_truthy_spellings() {
@@ -819,6 +909,22 @@ mod tests {
         assert_eq!(pluralize(22, "action"), "22 actions");
         assert_eq!(plural_noun(1, "profile"), "profile");
         assert_eq!(plural_noun(2, "profile"), "profiles");
+    }
+
+    /// A noun whose sound calls for `-es` gets it, or a status table renders
+    /// `2 aliass` beside the `2 files` on the row above.
+    #[test]
+    fn a_plural_noun_takes_the_ending_its_sound_calls_for() {
+        assert_eq!(plural_noun(2, "alias"), "aliases");
+        assert_eq!(plural_noun(1, "alias"), "alias");
+        assert_eq!(pluralize(2, "alias"), "2 aliases");
+        assert_eq!(plural_noun(2, "match"), "matches");
+        assert_eq!(plural_noun(2, "box"), "boxes");
+        assert_eq!(plural_noun(2, "dish"), "dishes");
+        // A regular noun keeps the bare `-s`, `o` included: the verb's own
+        // `go` -> `goes` rule is not a noun rule (`photo` -> `photos`).
+        assert_eq!(plural_noun(2, "env var"), "env vars");
+        assert_eq!(plural_noun(2, "photo"), "photos");
     }
 
     #[test]

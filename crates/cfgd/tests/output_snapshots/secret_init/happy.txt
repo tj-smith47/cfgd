@@ -1,5 +1,5 @@
 Secrets Initialized
-  Age key     <HOME>/.config/cfgd/age-key.txt
+  Age key     ~/.config/cfgd/age-key.txt
   .sops.yaml  <CONFIG_DIR>/.sops.yaml
 
 ✓ Set up secrets

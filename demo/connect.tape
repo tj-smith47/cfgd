@@ -40,7 +40,7 @@ Hide
 # `kubectl cfgd`, which resolves the same config) reads the recording
 # operator's own ~/.config/cfgd — dracula is the preset the rest of the set
 # lands on (`cfgd init --theme dracula`, hidden in four tapes and on camera in
-# init.tape; the sync fixture writes `spec.theme` straight into its cfgd.yaml),
+# init.tape; the sync fixture writes `spec.output.theme` straight into its cfgd.yaml),
 # so the whole set renders in one theme whatever the operator's config names.
 Type "export KUBECONFIG=$HOME/.cache/cfgd-debug/demo-k8s/kubeconfig PATH=$HOME/.cache/cfgd-debug/demo-k8s/bin:$PATH CFGD_THEME=dracula"
 Enter

@@ -91,17 +91,28 @@ are left in place; each file is written atomically and is independently valid.
 
 ```console
 $ cfgd skill list
-Installed skills (project scope)
-  ✓ claude-code/Module: ~/repo/.claude/skills/cfgd-module/SKILL.md (0.10.0)
-  ✓ codex/Module: ~/repo/AGENTS.md (0.10.0)
+Installed Skills
+  Scope  project
+
+Provider     Kind     Path                                        Version
+─────────────────────────────────────────────────────────────────────────
+claude-code  Module   ~/repo/.claude/skills/cfgd-module/SKILL.md  0.10.0
+codex        Profile  ~/repo/AGENTS.md                            0.10.0
 ```
 
 A skill rendered by an older cfgd is flagged stale (it carries a version stamp):
 
 ```console
-$ cfgd skill list -g
-Installed skills (user scope)
-  ⚠ claude-code/Module: ~/.claude/skills/cfgd-module/SKILL.md (0.3.5) — stale — run `cfgd skill update`
+$ cfgd skill list
+Installed Skills
+  Scope  project
+
+Provider     Kind     Path                                        Version
+─────────────────────────────────────────────────────────────────────────
+claude-code  Module   ~/repo/.claude/skills/cfgd-module/SKILL.md  0.3.5
+codex        Profile  ~/repo/AGENTS.md                            0.10.0
+
+→ 1 skill rendered by an older cfgd; run `cfgd skill update` to refresh it
 ```
 
 ### `remove`

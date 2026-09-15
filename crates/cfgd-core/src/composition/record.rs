@@ -12,7 +12,7 @@ pub(super) fn record_policy_conflicts(
     // Record file conflicts
     for file in &items.files {
         conflicts.push(ConflictResolution {
-            resource_id: file.target.to_string_lossy().to_string(),
+            resource_id: crate::to_posix_string(&file.target),
             resolution_type: resolution_type.clone(),
             winning_source: source_name.to_string(),
             details: format!(

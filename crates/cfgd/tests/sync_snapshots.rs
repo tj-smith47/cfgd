@@ -377,6 +377,8 @@ fn a_successful_sync_records_the_fetch_so_status_stops_saying_not_yet_fetched() 
         require_signed_commits: Some(false),
         last_commit: acme.last_commit.clone(),
         drift_count: None,
+        locked_ref: None,
+        locked_commit: None,
     }];
 
     // The record is what keeps `status` off the "not yet fetched" branch.

@@ -1,0 +1,5 @@
+Collect
+  Config   <CONFIG_DIR>/cfgd.yaml
+  Profile  withbackups
+
+✓ Nothing to do — everything is up to date

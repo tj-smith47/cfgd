@@ -580,8 +580,7 @@ impl<'a> super::Reconciler<'a> {
                 ))
             }
             EnvAction::InjectSourceLine { rc_path, line } => {
-                let existing = super::env_files::read_rc_baseline(rc_path)?;
-                let Some(content) = super::env_files::merge_source_line(&existing, line) else {
+                if !super::env_files::inject_rc_source_line(rc_path, line)? {
                     // Already present as the exact desired line — nothing to write.
                     return Ok(format!(
                         "env:{}:{}{}",
@@ -589,10 +588,7 @@ impl<'a> super::Reconciler<'a> {
                         crate::to_posix_string(rc_path),
                         super::apply::ENV_SKIPPED_SUFFIX
                     ));
-                };
-                super::env_files::guard_rc_write(rc_path, &existing)?;
-                crate::ensure_parent_dir(rc_path)?;
-                crate::atomic_write_resolved_str(rc_path, &content)?;
+                }
                 Ok(format!(
                     "env:{}:{}",
                     super::env_engine::ENV_VERB_INJECT,

@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use cfgd_schema::case_insensitive_enum;
+
 use super::source::default_true;
 
 // ---------------------------------------------------------------------------

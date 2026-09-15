@@ -130,7 +130,10 @@ pub fn cmd_diff(
     let mut resolved = desired.resolved;
     let resolved_modules = desired.modules;
 
-    ctx.resolve_manifest_packages(&mut resolved.merged.packages)?;
+    ctx.resolve_manifest_packages(
+        &mut resolved.merged.packages,
+        &mut resolved.merged.layer_sources,
+    )?;
     // The engine probes system configurators, some of which resolve
     // config-relative paths; `status`/`verify`/`plan`/`apply` all hand the
     // config dir over, and the one scan `diff` consumes must see the same
@@ -148,7 +151,7 @@ pub fn cmd_diff(
     // below is presentation over its report; the inline hunks are re-rendered
     // only for the entries the engine already found drifted.
     let report = {
-        let pkg_cx = cfgd_core::providers::PackageContext::new(printer, state);
+        let pkg_cx = ctx.package_context()?;
         super::live_drift::live_drift_results(
             config_dir,
             &resolved,
@@ -218,6 +221,7 @@ pub fn cmd_diff(
             // Target order, as `fm.diff` sorted: two runs finding the same
             // drift read the same, whatever the declaration order was.
             for managed in crate::files::CfgdFileManager::sorted_managed_specs(&resolved.merged) {
+                // absolute-path-ok: the recorded drift row id, matched against stored rows
                 let rid = cfgd_core::expand_tilde(&managed.target).display_posix();
                 if !drifted_ids.contains(rid.as_str()) {
                     continue;
@@ -382,7 +386,7 @@ pub fn cmd_diff(
                     break;
                 }
                 sys_group
-                    .status(Role::Warn, err.key.clone())
+                    .status(Role::Warn, err.subject())
                     .qualifier("error checking drift")
                     .detail(&err.error);
                 errors.next();
@@ -403,7 +407,7 @@ pub fn cmd_diff(
         }
         for err in errors {
             sys_group
-                .status(Role::Warn, err.key.clone())
+                .status(Role::Warn, err.subject())
                 .qualifier("error checking drift")
                 .detail(&err.error);
         }
@@ -411,31 +415,7 @@ pub fn cmd_diff(
         !sys_rows.is_empty()
     };
 
-    // Rows the walk above could not re-find (a bare legacy module id, a
-    // system key outside every configurator this scan evaluated, a check
-    // error's own key) — the store's own answer, kept unresolved by
-    // `live_drift_results` and rendered here through the same drift-row
-    // renderer every section above used, never a second wording.
-    let has_standing_drift = {
-        let sec = printer.section_or_collapse("Standing");
-        let _inherit = printer.depth_inheritance();
-        for e in &report.standing {
-            // Through the chooser, not the operand pair: a row recorded with
-            // no operands (an older daemon's, a module script row) has nothing
-            // to state, and rendering the absence words for it reads as a
-            // divergence the store never recorded.
-            sec.status(
-                Role::Warn,
-                cfgd_core::output::drift_item_subject(&e.resource_type, &e.resource_id),
-            )
-            .detail(cfgd_core::output::drift_cause(
-                &e.resource_type,
-                e.expected.as_deref().unwrap_or_default(),
-                e.actual.as_deref().unwrap_or_default(),
-            ));
-        }
-        !report.standing.is_empty()
-    };
+    let has_standing_drift = render_standing_section(printer, &report.standing);
     diff_payload.standing = report.standing;
 
     diff_payload.summary = DiffSummary {
@@ -488,7 +468,26 @@ pub(super) fn env_drift_ordered(
 /// A failed check outranks drift: `DriftDetected` tells a script the machine
 /// needs an apply, while a check that could not run means the answer is
 /// unknown, which is an error rather than a verdict.
-fn diff_exit_code(summary: &DiffSummary) -> Option<cfgd_core::exit::ExitCode> {
+/// Rows the walk could not re-find (a bare legacy module id, a system key
+/// outside every configurator this scan evaluated, a check error's own key) —
+/// the store's own answer, kept unresolved by `live_drift_results` and drawn
+/// here under the heading and role every surface pricing standing gives them.
+///
+/// Answers whether anything rendered, which is the flag `DiffSummary` prices.
+pub(super) fn render_standing_section(
+    printer: &Printer,
+    standing: &[cfgd_core::state::DriftEvent],
+) -> bool {
+    let sec = printer.section_or_collapse(super::live_drift::STANDING_SECTION);
+    let _inherit = printer.depth_inheritance();
+    for e in standing {
+        let (subject, cause) = super::live_drift::standing_row(e);
+        sec.status(Role::Warn, subject).detail(cause);
+    }
+    !standing.is_empty()
+}
+
+pub(super) fn diff_exit_code(summary: &DiffSummary) -> Option<cfgd_core::exit::ExitCode> {
     if summary.check_failed() {
         return Some(cfgd_core::exit::ExitCode::Error);
     }
@@ -611,7 +610,6 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
     )?;
 
     let state = ctx.state()?;
-    let pkg_cx = cfgd_core::providers::PackageContext::new(printer, state);
 
     let mut diff_payload = DiffOutput::default();
     // The scoped record's two halves (module doc in `live_drift`): every key
@@ -740,7 +738,7 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
                     diff_payload.packages.push(version_package_drift(row));
                 } else if let Some(err) = package_check_errors.iter().find(|e| e.key == id) {
                     group
-                        .status(Role::Warn, err.key.clone())
+                        .status(Role::Warn, err.subject())
                         .qualifier("error checking drift")
                         .detail(&err.error);
                 }
@@ -869,7 +867,7 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
             // probe that could not run is never read as clean; the path folds
             // to `~/` like every display slot, the payload keeps it absolute.
             env_sec
-                .status(Role::Warn, cfgd_core::fold_home_in_text(&err.key))
+                .status(Role::Warn, err.subject())
                 .qualifier("error checking drift")
                 .detail(&err.error);
             diff_payload.env_check_error = Some(err.error.clone());
@@ -988,7 +986,7 @@ pub(super) fn package_missing_drift(
 /// Render the package half of a drift report, one owner group per owner.
 ///
 /// `manager_actions` is the same `ManagerAction` planner output the
-/// Prerequisites phase runs (`reconciler::plan_managers`) — a missing manager
+/// Bootstrap phase runs (`reconciler::plan_managers`) — a missing manager
 /// this run would provision, or refuses to, is drift the same way a missing
 /// package is, and reads under `cfgd:managers` exactly as it would in the
 /// plan that fixes it. `RefreshIndex`/`Prerequisite` nodes are not drift (an
@@ -1142,7 +1140,7 @@ pub(super) fn print_package_drift(
         // and every structured consumer read.
         for err in check_errors {
             group
-                .status(Role::Warn, err.key.clone())
+                .status(Role::Warn, err.subject())
                 .qualifier("error checking drift")
                 .detail(&err.error);
         }
@@ -2696,12 +2694,12 @@ mod tests {
         let output = strip_ansi(&cap.human());
         assert!(
             output.contains("pipx: not installed")
-                && output.contains("can bootstrap via pip install pipx"),
+                && output.contains("can provision via pip install pipx"),
             "should show the bootstrap need and its method, got: {output}"
         );
         assert!(
             output.contains("snap: not installed")
-                && output.contains("cannot bootstrap: no available system manager"),
+                && output.contains("cannot provision: no available system manager"),
             "should show the refusal and its reason with a single separator \
              (the status renderer already supplies ' — ' before the detail), \
              got: {output}"
@@ -2837,11 +2835,13 @@ mod tests {
     // call re-ran the manager's listing, which is the ~13s scan; with it the
     // manager answers once however many packages are checked.
     #[test]
+    #[serial_test::serial(enumeration_memo)]
     fn package_missing_drift_asks_a_manager_once_for_every_package_it_owns() {
         // The count is a memo-hit claim, so the memo's age ceiling is pinned out
-        // of reach — unpinned it rests on the 30s wall clock. No serialization:
-        // nothing in this crate's test binary pins the ceiling to zero, and a
-        // longer ceiling can only let another test's entries live longer.
+        // of reach — unpinned it rests on the 30s wall clock. The group is the one
+        // every other pin of this ceiling joins: two pins alive at once restore
+        // each other's saved value, leaving the seam pinned for the rest of the
+        // binary with nothing going red where the second pin was written.
         let _ttl = cfgd_core::test_helpers::EnumerationMemoTtlGuard::never_expires();
         let enumerations = cfgd_core::test_helpers::measured_in_a_stable_generation(|| {
             let mgr = cfgd_core::test_helpers::MockPackageManager::new("npm")

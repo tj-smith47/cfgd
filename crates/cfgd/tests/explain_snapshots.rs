@@ -69,8 +69,8 @@ fn explain_index_json() {
     );
     assert_eq!(
         actual.as_array().map(|a| a.len()),
-        Some(10),
-        "explain index must list 10 schemas (9 registry kinds incl. Module CRD + TeamConfig), got: {actual}"
+        Some(11),
+        "explain index must list 11 schemas (10 registry kinds incl. Module CRD + TeamConfig), got: {actual}"
     );
     assert_json(&cap, "explain/index.json");
 }

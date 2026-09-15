@@ -90,7 +90,7 @@ fn module_keys_list_empty_human() {
         cfgd_core::test_helpers::EnvVarGuard::set("HOME", tmp.path().to_str().unwrap());
 
     let (printer, cap) = Printer::for_test_doc();
-    module::cmd_module_keys_list(&printer).unwrap();
+    module::cmd_module_keys_list(&printer, None).unwrap();
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
@@ -112,7 +112,7 @@ fn module_keys_list_empty_json() {
         cfgd_core::test_helpers::EnvVarGuard::set("HOME", tmp.path().to_str().unwrap());
 
     let (printer, cap) = Printer::for_test_doc();
-    module::cmd_module_keys_list(&printer).unwrap();
+    module::cmd_module_keys_list(&printer, None).unwrap();
     drop(printer);
 
     let json = cap.json().expect("doc captured json");
@@ -137,7 +137,8 @@ fn module_keys_generate_happy_human() {
     module::cmd_module_keys_generate(&printer, Some(dir_str)).unwrap();
     drop(printer);
 
-    let stripped = strip_ansi(&cap.human()).replace(dir_str, "<DIR>");
+    let stripped =
+        cfgd_core::normalize_for_snapshot(&strip_ansi(&cap.human()), &[(work.path(), "<DIR>")]);
     assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "module_keys_generate/happy.txt",
@@ -216,7 +217,10 @@ fn module_keys_rotate_happy_human() {
     module::cmd_module_keys_rotate(&printer, Some(dir_str), &[]).unwrap();
     drop(printer);
 
-    let stripped = mask_timestamp(&strip_ansi(&cap.human()).replace(dir_str, "<DIR>"));
+    let stripped = mask_timestamp(&cfgd_core::normalize_for_snapshot(
+        &strip_ansi(&cap.human()),
+        &[(dir, "<DIR>")],
+    ));
     assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "module_keys_rotate/happy.txt",
@@ -307,7 +311,10 @@ fn module_keys_rotate_bridge_one_blank_line() {
         "bridge has duplicate blank line:\n{combined}"
     );
 
-    let stripped = mask_timestamp(&strip_ansi(&combined).replace(dir_str, "<DIR>"));
+    let stripped = mask_timestamp(&cfgd_core::normalize_for_snapshot(
+        &strip_ansi(&combined),
+        &[(dir, "<DIR>")],
+    ));
     assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "module_keys_rotate/bridge.txt",

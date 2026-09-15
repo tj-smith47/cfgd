@@ -69,6 +69,41 @@ impl StateStore {
         Ok(())
     }
 
+    /// Drop every `resource_type` row whose `resource_id` is not in `declared`.
+    ///
+    /// [`Self::upsert_managed_resource`] never removes a row, so a per-entry
+    /// kind (an env var, an alias) would otherwise answer "every entry the
+    /// config has EVER declared" and `cfgd source remove` would offer to keep
+    /// a declaration nothing holds any more. Called from the apply that
+    /// rewrites the surface those entries live in, where the declared set is
+    /// in hand, so the rows mirror what the last apply wrote.
+    pub fn prune_managed_resources_except(
+        &self,
+        resource_type: &str,
+        declared: &[String],
+    ) -> Result<()> {
+        if declared.is_empty() {
+            self.conn.execute(
+                "DELETE FROM managed_resources WHERE resource_type = ?1",
+                params![resource_type],
+            )?;
+            return Ok(());
+        }
+        let placeholders = std::iter::repeat_n("?", declared.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        self.conn.execute(
+            &format!(
+                "DELETE FROM managed_resources
+                 WHERE resource_type = ? AND resource_id NOT IN ({placeholders})"
+            ),
+            rusqlite::params_from_iter(
+                std::iter::once(resource_type).chain(declared.iter().map(String::as_str)),
+            ),
+        )?;
+        Ok(())
+    }
+
     /// Upsert a package tracking row, persisting the manager's uninstall command.
     ///
     /// `resource_id` is [`package_resource_id`]'s composition — callers mint
@@ -249,15 +284,36 @@ impl StateStore {
         Ok(resources)
     }
 
-    /// Get managed resources from a specific source.
+    /// Every managed resource this layer contributed to.
+    ///
+    /// The `source` column holds one layer name or, for a resource several
+    /// layers built together, all of them
+    /// ([`crate::reconciler::recorded_source_layers`]) — so the match is
+    /// membership in that list rather than equality with the whole column, or
+    /// a `PATH` a subscription extends beside the local profile would be
+    /// invisible to `cfgd source remove`.
+    ///
+    /// SQLite narrows to the rows whose column carries the name at all, and
+    /// the membership question is still answered in Rust: `LIKE` matches a
+    /// substring, so `acme` would also claim a row recorded under `acme-dev`.
     pub fn managed_resources_by_source(&self, source_name: &str) -> Result<Vec<ManagedResource>> {
+        // A layer name is free text and `%`, `_` and `\` are the pattern's own
+        // grammar, so each is escaped and the escape character is declared.
+        let pattern = format!(
+            "%{}%",
+            source_name
+                .replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_")
+        );
         let mut stmt = self.conn.prepare(
-            "SELECT resource_type, resource_id, source, last_hash, last_applied
-                 FROM managed_resources WHERE source = ?1 ORDER BY resource_type, resource_id",
+            "SELECT resource_type, resource_id, source, last_hash, last_applied \
+             FROM managed_resources \
+             WHERE source = ?1 OR source LIKE ?2 ESCAPE '\\' \
+             ORDER BY resource_type, resource_id",
         )?;
-
         let resources = stmt
-            .query_map(params![source_name], |row| {
+            .query_map(params![source_name, pattern], |row| {
                 Ok(ManagedResource {
                     resource_type: row.get(0)?,
                     resource_id: row.get(1)?,
@@ -268,6 +324,9 @@ impl StateStore {
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
 
-        Ok(resources)
+        Ok(resources
+            .into_iter()
+            .filter(|r| crate::reconciler::recorded_source_layers(&r.source).contains(&source_name))
+            .collect())
     }
 }

@@ -125,6 +125,10 @@ impl SystemConfigurator for XfconfConfigurator {
         cfgd_core::command_available_with_seam(XFCONF_QUERY_BIN_ENV, "xfconf-query")
     }
 
+    fn required_tool(&self) -> Option<&'static str> {
+        Some("xfconf-query")
+    }
+
     fn current_state(&self) -> Result<serde_yaml::Value> {
         Ok(serde_yaml::Value::Mapping(serde_yaml::Mapping::new()))
     }
@@ -186,10 +190,10 @@ impl SystemConfigurator for XfconfConfigurator {
                     format!("xfconf-query -c {} -p {} -s {}", channel, property, val_str),
                 );
 
-                let output = xfconf_cmd()
-                    .args(["-c", channel, "-p", property, "-s", &val_str])
-                    .output()
-                    .map_err(cfgd_core::errors::CfgdError::Io)?;
+                let output = cfgd_core::command_output(
+                    xfconf_cmd().args(["-c", channel, "-p", property, "-s", &val_str]),
+                )
+                .map_err(cfgd_core::errors::CfgdError::Io)?;
 
                 if !output.status.success() {
                     // Property may not exist yet — retry with --create
@@ -198,20 +202,18 @@ impl SystemConfigurator for XfconfConfigurator {
                         serde_yaml::Value::Number(_) => "int",
                         _ => "string",
                     };
-                    let create_output = xfconf_cmd()
-                        .args([
-                            "-c",
-                            channel,
-                            "-p",
-                            property,
-                            "--create",
-                            "-t",
-                            xfconf_type,
-                            "-s",
-                            &val_str,
-                        ])
-                        .output()
-                        .map_err(cfgd_core::errors::CfgdError::Io)?;
+                    let create_output = cfgd_core::command_output(xfconf_cmd().args([
+                        "-c",
+                        channel,
+                        "-p",
+                        property,
+                        "--create",
+                        "-t",
+                        xfconf_type,
+                        "-s",
+                        &val_str,
+                    ]))
+                    .map_err(cfgd_core::errors::CfgdError::Io)?;
 
                     if !create_output.status.success() {
                         cx.report(

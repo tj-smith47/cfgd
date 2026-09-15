@@ -109,8 +109,40 @@ repository reference: `cfgd apply --from`, `cfgd plan --from`,
 
 `init` never writes over a config directory that already has a `cfgd.yaml`: it
 reports `Already initialized at <dir>` and neither clones nor re-scaffolds. With
-`--from`, the run continues to the `--apply` / `--apply-module` step against the
-existing config; `--name` / `--theme` are applied as overrides.
+`--from` and a named destination, the run continues to the `--apply` /
+`--apply-module` step against the existing config; `--name` / `--theme` are
+applied as overrides.
+
+With `--from` and **no** destination named, the config lands in the default
+config directory (`~/.config/cfgd`, or `$XDG_CONFIG_HOME/cfgd`), and cfgd
+refuses when that directory is already somebody's — it holds a `cfgd.yaml`, it
+is not empty, or it is a symlink:
+
+```
+✗ Refusing to write into the default config directory ~/.config/cfgd: it already holds a cfgd.yaml.
+
+→ Name a destination, or point --config at the config you want this run to use:
+  $ cfgd init <dir> --from <source>
+  $ cfgd apply --from <source> --config <dir>/cfgd.yaml
+```
+
+The refusal exits `1` and covers every verb that materialises a config from
+`--from`: `cfgd init`, `cfgd apply` and `cfgd plan`. `--config <dir>/cfgd.yaml`
+names the destination for the latter two, whether or not that file exists yet.
+The question is asked about the directory rather than the path: a `--config`
+that walks back into the default directory (`~/.config/cfgd/../cfgd/cfgd.yaml`)
+or names what it is a symlink to is refused under the same rule.
+
+Under `-o json` it carries the stable kind `config_dir_occupied`:
+
+```json
+{
+  "destination": "~/.config/cfgd",
+  "error": "config_dir_occupied",
+  "finding": "it already holds a cfgd.yaml",
+  "name": "~/.config/cfgd"
+}
+```
 
 See [bootstrap.md](bootstrap.md) for the full init flow.
 
@@ -119,25 +151,26 @@ See [bootstrap.md](bootstrap.md) for the full init flow.
 Apply the configuration plan.
 
 ```sh
-cfgd apply                          # apply with confirmation
-cfgd apply --dry-run                # preview without applying
-cfgd apply --yes                    # skip confirmation
-cfgd apply --phase packages         # single phase
-cfgd apply --phase modules          # every module-owned action, in every phase
-cfgd apply --phase prerequisites.managers  # one owner group within a phase
-cfgd apply --module nvim            # nvim + deps, isolated from the profile
-cfgd apply --module nvim --module tmux   # union of both, still isolated
-cfgd apply --module nvim --with-profile  # full profile PLUS nvim
-cfgd apply --only packages.brew     # dot-notation filter (the brew manager)
+cfgd apply                              # apply with confirmation
+cfgd apply --dry-run                    # preview without applying
+cfgd apply --yes                        # skip confirmation
+cfgd apply --phase packages             # single phase
+cfgd apply --phase modules              # every module-owned action, in every phase
+cfgd apply --phase bootstrap.managers   # one owner group within a phase
+cfgd apply --module nvim                # nvim + deps, isolated from the profile
+cfgd apply --module nvim --module tmux  # union of both, still isolated
+cfgd apply --module nvim --with-profile # full profile PLUS nvim
+cfgd apply --only packages.brew         # dot-notation filter (the brew manager)
 cfgd apply --only packages.module:nvim  # a module's package work
-cfgd apply --skip module:nvim       # one module, every phase
-cfgd apply --skip cfgd:managers     # every package-manager bootstrap
-cfgd apply --skip prerequisites.session  # skip the live-session broadcast
-cfgd apply --skip prerequisites.brew     # skip one manager (family-collapsed)
-cfgd apply --skip system.sysctl     # skip specific items
-cfgd apply --skip-scripts           # apply without running any hooks
-cfgd apply --yes --on-conflict backup    # copy every stranger aside, then write
-cfgd apply --yes --on-conflict fail      # refuse to touch a file cfgd never wrote
+cfgd apply --skip module:nvim           # one module, every phase
+cfgd apply --skip cfgd:managers         # every package-manager bootstrap
+cfgd apply --skip bootstrap.shell       # write the env file, touch no rc file
+cfgd apply --skip bootstrap.session     # skip the live-session broadcast
+cfgd apply --skip bootstrap.brew        # skip one manager (family-collapsed)
+cfgd apply --skip system.sysctl         # skip specific items
+cfgd apply --skip-scripts               # apply without running any hooks
+cfgd apply --yes --on-conflict backup   # copy every stranger aside, then write
+cfgd apply --yes --on-conflict fail     # refuse to touch a file cfgd never wrote
 ```
 
 | Flag | Description |
@@ -153,6 +186,39 @@ cfgd apply --yes --on-conflict fail      # refuse to touch a file cfgd never wro
 | `--context <ctx>` | `apply` (default) or `reconcile` — selects which hooks run |
 | `--shell <auto\|sh\|bash\|zsh\|pwsh\|cmd>` | Force every *inline* lifecycle script under this interpreter, overriding each entry's own `shell:`. File and shebang scripts are unaffected. For debugging a script that behaves differently under another shell |
 | `--on-conflict <ask\|backup\|overwrite\|skip\|fail>` | What to do with a managed target that already holds a file cfgd never wrote (default `ask`) |
+
+#### What the closing rollup accounts for
+
+The header's `Actions  N planned` row is what the plan promised, and the rollup's
+`succeeded` / `skipped` / `failed` counts partition exactly that number. Some work
+only the run can discover: a secret whose value resolved during the apply, the PATH
+directory a package manager reports once its install finished, an `onChange` hook
+whose condition is whether this very run changed anything. None of that is in the
+plan, so it is never folded into the promised count; it states itself after the
+planned classes, split the same three ways they are (changed the machine, changed
+nothing, failed), one line each at its own role.
+
+```console
+Phase: Change Hooks
+  profile:work
+    ✓ onChange: scripts/reload.sh (0.1s)
+
+✓ Apply complete — 1 action succeeded (0.4s wall)
+✓ 3 env surfaces converged after the plan
+∅ 1 env surface changed nothing after the plan
+✓ 1 onChange hook ran after the plan
+```
+
+The hooks themselves render in a `Change Hooks` group between the planned phases and
+the rollup, styled as a phase even though no plan holds them, each under the owner
+that declared it, the same way the daemon's `onDrift` hooks open a `Drift Hooks` group.
+
+`-o json` prices it the same way: `total` is the planned count, `succeeded`,
+`skipped` and `failed` partition it, `notAttempted` and `afterPlan` sit outside it.
+`afterPlan` is the whole class, and because that mode prints no rollup the split
+travels with it as `afterPlanSkipped` and `afterPlanFailed`; the remainder
+converged. Each of the three is absent on a run that had none of that outcome, so
+a clean apply carries no after-plan field at all.
 
 #### Unmanaged files at a managed target
 
@@ -225,8 +291,9 @@ cfgd plan                               # preview with default (apply) context
 cfgd plan --context reconcile           # preview what the daemon would run
 cfgd plan --module nvim                 # nvim + deps, isolated from the profile
 cfgd plan --module nvim --with-profile  # full profile PLUS nvim
-cfgd plan --phase prerequisites.managers  # one owner group within a phase
-cfgd plan --skip prerequisites.session  # skip the live-session broadcast
+cfgd plan --phase bootstrap.managers    # one owner group within a phase
+cfgd plan --skip bootstrap.shell        # write the env file, touch no rc file
+cfgd plan --skip bootstrap.session      # skip the live-session broadcast
 cfgd plan --skip-scripts                # exclude all script hooks
 cfgd plan -o json                       # structured plan output
 ```
@@ -260,9 +327,9 @@ Plan
   Sources  team
   Profile  work
   Modules  dev-tools, localmod
-  Phases   Prerequisites, Packages, Post-Scripts
+  Phases   Bootstrap, Packages, Post-Scripts
 
-Phase: Prerequisites
+Phase: Bootstrap
   cfgd:managers
     - refresh brew index
 
@@ -295,33 +362,36 @@ the `brew` package manager never collide:
 
 `--phase`/`--skip`/`--only` all accept the same dot-notation one level up,
 scoped to a single phase: `<phase>.<selector>`, where the selector is either
-an owner group (`managers`, `env`, `session`: the three `Prerequisites`
-always carries), a manager name (family-collapsed, so `prerequisites.brew`
+an owner group (`managers`, `env`, `shell`, `session`: the four `Bootstrap`
+always carries), a manager name (family-collapsed, so `bootstrap.brew`
 also covers `brew-tap`/`brew-cask`), or a prerequisite tool a registered
-manager's installer shells out to (`prerequisites.curl`). A selector is only valid on
-`prerequisites`: a group or manager name after any other phase errors,
+manager's installer shells out to (`bootstrap.curl`). A selector is only valid on
+`bootstrap`: a group or manager name after any other phase errors,
 naming the input and the legal shapes; `--phase packages.brew` errors
-pointing at `--phase prerequisites.brew` instead, since manager work lives in
-`Prerequisites`, not `Packages`:
+pointing at `--phase bootstrap.brew` instead, since manager work lives in
+`Bootstrap`, not `Packages`:
 
 | Pattern | Selects |
 |---|---|
-| `prerequisites.managers` | every provisioned/refreshed package manager, INCLUDING any prerequisite tool a manager's own installer depends on (equivalent to `cfgd:managers`, scoped to `Prerequisites`) |
-| `prerequisites.env` | the `~/.cfgd.env`/rc-file write group |
-| `prerequisites.session` | the live-session broadcast (`RefreshLiveSession`) |
-| `prerequisites.brew` | only the brew manager's own node — NOT a prerequisite tool brew's installer shells out to (e.g. `curl`), which is keyed on its own name (`prerequisites.curl`) rather than on whichever manager's installer happens to need it |
+| `bootstrap.managers` | every provisioned/refreshed package manager, INCLUDING any prerequisite tool a manager's own installer depends on (equivalent to `cfgd:managers`, scoped to `Bootstrap`) |
+| `bootstrap.env` | the env files cfgd writes whole (`~/.cfgd.env`, `~/.config/environment.d/cfgd.conf`, the macOS LaunchAgent) |
+| `bootstrap.shell` | the source lines cfgd plants in the shell rc files you own (`~/.bashrc`, `~/.zshenv`, `~/.profile`) |
+| `bootstrap.session` | the live-session broadcast (`RefreshLiveSession`) |
+| `bootstrap.brew` | only the brew manager's own node — NOT a prerequisite tool brew's installer shells out to (e.g. `curl`), which is keyed on its own name (`bootstrap.curl`) rather than on whichever manager's installer happens to need it |
 
 A manager name still selects exactly one manager when several share a node.
 Managers one mediator delivers by an ordinary package install collapse onto a
 single node (`provision npm, pipx via apt`; see
 [Package Managers](packages.md)), and every selector still addresses them one
-at a time: `--skip prerequisites.npm` leaves `provision pipx via apt` behind,
-and `--phase prerequisites.pipx` provisions `pipx` alone.
+at a time: `--skip bootstrap.npm` leaves `provision pipx via apt` behind,
+and `--phase bootstrap.pipx` provisions `pipx` alone.
 
 `modules` and `modules.<name>` still work and print a deprecation naming their
-replacement.
+replacement. So do the phase's earlier spellings, `prerequisites` and `env`:
+both still select `bootstrap`, on `--phase`, `--skip` and `--only` alike, and
+each says once per run that it is on the way out.
 
-Skipping a manager's **bootstrap** (`prerequisites.managers`, `prerequisites.brew`,
+Skipping a manager's **bootstrap** (`bootstrap.managers`, `bootstrap.brew`,
 `cfgd:managers`) leaves the package installs that needed it in the plan:
 `cfgd` cannot know whether you meant to drop those too, so it strands them,
 warns with `printer.alert(...)`, and prints the `--skip packages.<manager>`
@@ -334,13 +404,13 @@ package left), silently prunes that manager's now-purposeless bootstrap node
 instead: nothing in the plan needs it anymore, so there is nothing to warn
 about.
 
-**`--only` never prunes for lack of consumers.** `--only prerequisites.managers`
+**`--only` never prunes for lack of consumers.** `--only bootstrap.managers`
 (the recovery command the alert above prints) keeps every manager bootstrap
 node even though it drops every package install that used to justify them:
 an `--only` selector is explicit selection, and a node you named directly is
 its own justification. The consumer-prune described above applies to the
 `--skip` direction alone; `--only cfgd:managers` and `--only
-prerequisites.managers` both keep the full manager set with an empty
+bootstrap.managers` both keep the full manager set with an empty
 `Packages` phase, never an empty plan.
 
 The `-o json` payload carries the same axes the tree draws: a phase holds owner
@@ -386,7 +456,7 @@ A subset counts against the module's declared set (`5 already deployed`); a
 full deploy carries no count at all, its subject already stating how many it
 writes.
 
-A `Prerequisites` action carries a structured `manager` sub-object beside its
+A `Bootstrap` action carries a structured `manager` sub-object beside its
 `description`, so a consumer classifies a manager's state without parsing the
 sentence: `state` is `present` (an already-installed manager's index refresh),
 `provisioned` (a manager this run installs, `via` naming its bootstrap method),
@@ -398,9 +468,9 @@ decided, so `-o json` carries it rather than dropping it silently).
 resolving one-to-one against a sibling action's own `description`:
 
 ```jsonc
-// cfgd plan -o json  →  phases[] entry for Prerequisites
+// cfgd plan -o json  →  phases[] entry for Bootstrap
 {
-  "phase": "Prerequisites",
+  "phase": "Bootstrap",
   "groups": [
     {
       "owner": { "kind": "cfgd", "name": "managers" },
@@ -552,7 +622,7 @@ cfgd status -o json                         # full status as JSON
 cfgd status -o jsonpath='{.drift}'          # extract drift events
 cfgd status --module nvim                   # status for a single module (no profile required)
 cfgd status --module nvim -o wide           # itemized inventories instead of counts
-cfgd status --module nvim --show-values     # inventories with declared values (implies -o wide)
+cfgd status --module nvim --show-values     # inventories with declared env values (implies -o wide)
 cfgd status --scan                          # live scan of this machine right now
 cfgd status --scan --module nvim            # live scan of one module
 cfgd status --module nvim --exit-code       # live scan: exit 5 if the module has drifted
@@ -579,10 +649,12 @@ no scan is on record, `checked live now` after `--scan`), the freshest of the
 machine-wide scan stamp, the scoped scans' own stamps, and the recorded rows'
 timestamps, since a scoped scan stamps its own chain rather than moving the
 machine-wide stamp. A row reads `Synced` only where one of those checks
-covered that owner: an owner nothing has checked reads `Installed`, the
+covered that owner: an owner nothing has checked reads `Applied`, the
 record's own fact, so a verdict can never claim an answer no check produced.
-A scoped scan covers the modules it resolved and nothing else — `cfgd:env` and
-`profile:*` need a machine-wide check. Each unresolved recorded finding
+A scoped scan covers the modules it resolved and nothing else — `cfgd:env`,
+`cfgd:shell` and `profile:*` need a machine-wide check, and `cfgd:session`
+is reached by no check at all (nothing re-reads a live session's
+environment), so it reads `Applied` however recently you scanned. Each unresolved recorded finding
 nests under the health row of the owner it belongs to, stating its terse
 cause, and the owner's verdict flips to `Drifted` with the shortfall as its
 parenthetical:
@@ -624,7 +696,8 @@ machine was scanned — and stamps every module of the chain it resolved under
 `scopedScans` instead, which is what dates that module's own verdicts. It composes with `--module` (scanning that one module) and with
 `--exit-code`. `--exit-code` / `-e` implies `--scan` and additionally exits `5`
 when the scan found drift, or `1` when a check itself failed (a system
-configurator's probe, or a pinned package whose manager reports no version): the same split `cfgd diff --exit-code` and `cfgd verify --exit-code`
+configurator's probe, a pinned package whose manager reports no version, or a
+package manager that cannot list what it holds): the same split `cfgd diff --exit-code` and `cfgd verify --exit-code`
 report, since an unknown state outranks a known one (see
 [Exit Codes](#exit-codes)); `--scan` on its own never changes the exit code.
 A failed check is never silently dropped: the report renders it as its own
@@ -649,9 +722,10 @@ the same `{key, error}` entries the fleet payload uses for the same fact.
 The fleet report's `Managed Resources` table names an owner per row, in the same
 vocabulary the plan and apply trees head their groups with and `cfgd diff`
 reports drift under: `profile:<name>` for a resource the profile declared,
-`module:<name>` for one a module declared, and `cfgd:env` / `cfgd:session` for
-what cfgd manages on its own behalf (the generated env file and the rc source
-line; the live-session publish).
+`module:<name>` for one a module declared, and `cfgd:env` / `cfgd:shell` /
+`cfgd:session` for what cfgd manages on its own behalf (the env files cfgd
+writes whole; the source lines cfgd plants in rc files you own; the
+live-session publish).
 
 The rows are ordered by owner the way a plan or apply tree orders its groups:
 the profile first, then cfgd's own groups in the order they run, then the
@@ -664,18 +738,35 @@ Managed Resources
   file     profile:work      ~/.bashrc                          local
   package  profile:work      brew: bat, ripgrep                 local
   env      cfgd:env          /home/you/.cfgd.env                local
-  env      cfgd:session      session env                        local
+  rc       cfgd:shell        /home/you/.bashrc                  local
+  session  cfgd:session      live session                       local
   file     module:nvim       /home/you/.config/nvim (12 files)  local
 ```
+
+The `Source` column is a different fact from `Owner`: it names the layer the
+last apply recorded the row under, which is `local` for something you declared
+yourself and the source name for something a subscription delivered. It is the
+column `cfgd source remove` looks a subscription's resources up by, so
+removing a source can offer to keep them (they become `local`) or take them off
+the machine. `-o json` carries it as `source` on every `managedResources[]` row.
+
+A generated env file, its rc line and the live session are surfaces cfgd writes
+whole out of every layer, so those three rows record `local` whatever delivered
+the entries in them. The entries themselves are separate rows: each env var is
+an `env-var` row and each alias an `alias` row, named by the entry, recorded
+under the layer that declared it. A `PATH` entry several layers contributed to
+records all of them, comma-separated; `cfgd source remove` finds the row by any
+one of those names, and keeping it copies that source's own segments into your
+profile and leaves the rest named.
 
 The default module report is a summary: one count per declared surface, then
 what the scan found. `Status` leads the block. The report names no scope: you
 named the module on the command line, so restating it tells you only what you
 just typed; the scope the last run recorded stays in `-o json`. `Shell` is the total of
 the module's declared aliases and env vars, broken down one indented row per
-half; `Scripts` is the total, broken down one indented row per hook in the
-order the hooks run, so a module's `preApply` work is distinguishable from its
-`postApply` work without opening the module:
+half. Nothing checks a script after the run that executes it, so this report
+states nothing about a module's scripts; `cfgd module show` lists each hook and
+its steps:
 
 ```
 Status: nvim
@@ -686,9 +777,6 @@ Status: nvim
   Shell         6
     Aliases     3
     Env         3
-  Scripts       9
-    preApply    3
-    postApply   6
 
 Drift
   ⚠ module:nvim:files ~/.config/nvim/stylua.toml — content differs
@@ -715,8 +803,8 @@ the live check found; the payload's `lastScanAt` still names the recorded
 machine-wide stamp, because a single module's scan never writes one — it
 stamps its own chain under `scopedScans`.
 
-`-o json` carries the same breakdown as `scriptCounts`, an ARRAY in execution
-order rather than an object (a JSON object is a sorted map on the way out, and
+`-o json` carries the per-hook step counts as `scriptCounts`, an ARRAY in
+execution order rather than an object (a JSON object is a sorted map on the way out, and
 alphabetical is not the order the hooks run in). The `scripts` field beside it
 keeps the hook names it always carried:
 
@@ -742,10 +830,16 @@ section rather than reordering it by whatever the scan reached first.
 `✓ No drift detected` is claimed only after `--scan`; without one the row says
 nothing was checked.
 
+`cfgd status -s` / `--show-scripts` and `cfgd status -a` / `--show-all` are
+retired. Both spellings still parse, and a run that passes one is refused with
+the command that replaced it: `cfgd module show <module>` lists a module's
+hooks and their steps, and `cfgd status -o wide` renders the itemized
+inventories `--show-all` used to add.
+
 `-o wide` replaces the counts with the inventories, each row backed by a check
 carrying its own verdict, and drops the `Drift` section: every finding is
 already inline on the row for the thing it was found on. A row with no check
-behind it (a Scripts hook, or a Shell alias/env var without `--scan`) renders
+behind it (a Shell alias or env var without `--scan`) renders
 as a bare declaration instead — a name, never a verdict it never earned:
 
 ```
@@ -753,7 +847,7 @@ Status: nvim
   Status        Drifted
   Last Applied  3h ago
 
-Installed Packages
+Packages
   ✓ neovim  — brew
   ⚠ ripgrep — not installed (brew)
 
@@ -768,31 +862,36 @@ Shell
   Env
     ✓ EDITOR
     ✓ PAGER
-
-Scripts
-  preApply  — set -euo pipefail …
-  postApply — nvim --headless '+Lazy! sync' +qa
 ```
 
-Packages, files, aliases and env vars list alphabetically; scripts stay in
-execution order, because that order is the fact. No drift engine ever watches
-a hook body, so a Scripts row is always a bare declaration — name and
-condensed body, no verdict glyph — regardless of `--scan`. Aliases precede env vars
-wherever the pair is named — the counts, these inventories, `cfgd module
+Packages, files, aliases and env vars list alphabetically. Aliases precede env
+vars wherever the pair is named: the counts, these inventories, `cfgd module
 show`'s sections, the profile inventory `cfgd profile show`, `cfgd source show`
-and `cfgd source add` render, and `-o json`'s field order alike. `--show-values` renders the
-same inventories with each declared value (`EDITOR="nvim"`, quoted the way the
-generated env file writes it) and each script's whole body instead of its
-condensed first line, and implies `-o wide`.
+and `cfgd source add` render, and `-o json`'s field order alike.
+`--show-values` is the per-verb alias for the global `--mask-env-values none`
+(and conflicts with it). It renders the same inventories with each declared alias and env
+value beside its name, as the key/value rows `cfgd module show` lists them
+under the same two headings; a row a check found drifted keeps its warning
+glyph and its cause. This view lists no scripts either: `cfgd module show` is
+where a module's hooks and their bodies are read.
+
+A check that could not run renders on this view as a row under the section whose
+items it is about: a failed env probe under `Shell`, a `minVersion` the manager
+could not compare under `Packages`. Only the failed env probe withholds the
+Shell verdicts (every alias and env var then reads `not scanned`), since a floor
+nothing could read never looked at an alias.
 
 Without `--scan` nothing has asked a manager and nothing has read a file's
 content, so every package row and every present file reads `not scanned`
 (absence is still definite: a file the module deployed and that is gone reads
-`missing` either way). A package the module's own `platforms` gate rules out
-on this host reads `skipped (platform filter)` instead, the same words `cfgd
-module show` uses for it: nothing was ever going to install it, scan or no
-scan. `-o json` carries the same verdicts as `packageState[].state`
-(`installed`, `notInstalled`, `notScanned`, `platformSkipped`) and
+`missing` either way). A package row names the manager it resolves to in every
+state, the same one `cfgd module show` names, so two entries declaring one name
+under two managers are told apart. A package the module's own `platforms` gate
+rules out on this host reads `skipped (platform filter)` instead, with no
+manager named, the same words `cfgd module show` uses for it: nothing was ever
+going to install it, scan or no scan. `-o json` carries the same verdicts as
+`packageState[].state` (`installed`, `notInstalled`, `notScanned`,
+`platformSkipped`) and
 `deployedFiles[].state` (`deployed`, `drifted`, `missing`, `notScanned`), and
 is identical under every view: `-o wide` and `--show-values` change the human
 render only.
@@ -800,11 +899,11 @@ render only.
 The payload carries two words for the module itself. `status` is the token the
 state store holds (`installed`, `error`, or one of the no-record spellings).
 `state` is the verdict the human Status row shows, always present, one of
-`Synced`, `Installed`, `Drifted`, `Unknown`, `Failed`, `NotApplied`. `Drifted`
+`Synced`, `Applied`, `Drifted`, `Unknown`, `Failed`, `NotApplied`. `Drifted`
 needs a live scan: both words come from one derivation, so a `state` of
 `Drifted` always has the findings under `drift` to back it, and a `state` of
 `Unknown` always has the rows under `systemErrors` that say which check could
-not run. `Installed` is the module's recorded fact with no check behind it:
+not run. `Applied` is the module's recorded fact with no check behind it:
 neither `lastScanAt` nor a `scopedScans` entry for this module stands.
 
 `pendingDecisions` lists the same rows `cfgd decide` offers, including
@@ -886,8 +985,8 @@ Packages
     ⚠ brew: not installed — extra-tool
     ⚠ nix: not installed  — hello
   cfgd:managers
-    ⚠ pipx: not installed — can bootstrap via pip install pipx
-    ⚠ snap: not installed — cannot bootstrap: no available system manager
+    ⚠ pipx: not installed — can provision via pip install pipx
+    ⚠ snap: not installed — cannot provision: no available system manager
 
 Shell
   profile:work
@@ -963,11 +1062,12 @@ closing tally counts only the rows the report showed.
 
 `cfgd:managers` reports package **managers** the plan itself would provision or
 refuse: not something the profile declared missing, but something `apply` would
-still change. It draws from the same planner the `Prerequisites` phase uses (see
+still change. It draws from the same planner the `Bootstrap` phase uses (see
 [Reconciliation](reconciliation.md#phases)), so a manager never reads
 "converged" here while `apply` still has work to do on it. A manager `apply` can
-self-heal reads `not installed — can bootstrap via <method>`; one it cannot reads
-`not installed — cannot bootstrap: <reason>`.
+self-heal reads `not installed — can provision via <method>`; one it cannot reads
+`not installed — cannot provision: <reason>`. The verb is the plan's own — the
+`Bootstrap` phase provisions that manager — so the two surfaces name one act one way.
 
 A file's body renders directly under the line that names it, so a hunk reads with
 its target rather than above it.
@@ -994,7 +1094,7 @@ Every file entry also carries `unmanaged` (a bool): `true` when the target holds
 
 A managed file whose `source` cannot be found is reported as drift here and by `cfgd verify` / `cfgd status`: the desired content could not be determined, which is never the same as convergence.
 
-`packages[]` entries carry `manager`, `shape` (`missing` | `extra` | `outdated` | `provision` | `refused`), and `packages` (empty for the two manager-drift shapes). `shape: "outdated"` is a package the machine HOLDS whose installed version is below the `minVersion` its declaration pins; it adds `expected` (the declared floor) and `actual` (the version the manager reports). `shape: "provision"` matches the machine vocabulary `plan -o json`'s `Prerequisites` phase already uses for the same fact (`type: "provision"`); the mechanism itself still keeps the "bootstrap" word, in `bootstrapMethod` and in the human render above. A `provision` entry adds `bootstrapMethod`; a `refused` entry adds `reason` instead: the same fields [`cfgd doctor`](#cfgd-doctor)'s manager checks use, so a script reading either surface for "can this manager self-heal" reads one field name:
+`packages[]` entries carry `manager`, `shape` (`missing` | `extra` | `outdated` | `provision` | `refused`), and `packages` (empty for the two manager-drift shapes). `shape: "outdated"` is a package the machine HOLDS whose installed version is below the `minVersion` its declaration pins; it adds `expected` (the declared floor) and `actual` (the version the manager reports). `shape: "provision"` matches the machine vocabulary `plan -o json`'s `Bootstrap` phase already uses for the same fact (`type: "provision"`); the mechanism itself still keeps the "bootstrap" word, in `bootstrapMethod` and in the human render above. A `provision` entry adds `bootstrapMethod`; a `refused` entry adds `reason` instead: the same fields [`cfgd doctor`](#cfgd-doctor)'s manager checks use, so a script reading either surface for "can this manager self-heal" reads one field name:
 
 ```json
 {
@@ -1048,6 +1148,13 @@ own clause (`5 passed, 0 failed, 1 check could not run`). With `--exit-code`
 such a run exits `1` ahead of `5`: an unanswered check reads as "unknown",
 not "clean" (see [Exit Codes](#exit-codes)).
 
+A package manager that cannot list what it holds (`pipx list --json` exiting
+non-zero, an unreadable package database) is the same row, keyed by the
+manager: `pipx: error checking drift — pipx failed to list installed
+packages: ...`. Every package declared under that manager is left unanswered
+rather than reported missing, one row stands for the manager however many
+packages it holds, and every other manager's findings are reported as usual.
+
 ### `cfgd doctor`
 
 Check what cfgd needs in order to run on this machine: config validity, required tools, secret
@@ -1056,13 +1163,31 @@ and whether each configured source is cached.
 
 ```sh
 cfgd doctor -o json   # structured health report
+cfgd doctor --fix     # install the missing prerequisites, then report
 ```
 
+`--fix` installs the tools the report would otherwise call missing — today `git`
+and `sops` — through this host's own package manager, using the same routes an
+apply takes (see [packages.md](packages.md#tools-cfgd-installs-for-you)). It
+runs before the checks, so the rows below it report the machine as `--fix` left
+it. A tool no manager on this host packages is reported with the managers that
+would have installed it, and the run carries on.
+
 `doctor` reads prerequisites, not managed state. It does not compare your managed files, env
-vars, aliases or system settings against the machine, and it records nothing — use
-[`cfgd diff`](#cfgd-diff) or [`cfgd status`](#cfgd-status) for that. The one place it does look
-at the machine is package presence: a module's declared packages are queried through their
-manager so a missing prerequisite is named before an apply hits it.
+vars, aliases or system settings against the machine, it does not ask whether a declared
+package is installed, and it records nothing — use [`cfgd diff`](#cfgd-diff) or
+[`cfgd status`](#cfgd-status) for that. Each module gets one row naming the managers its
+declared packages resolve to on this host, and whether each one is here:
+
+```
+Modules
+  ✓ nvim — brew, npm available
+  ✗ jarvis — brew missing (14 packages route to it)
+```
+
+The `Package Managers` section reads the same resolution: a manager no `spec.packages` list
+names still counts as used when a module routes to it (`brew: available (used by 3 modules)`),
+and only a manager nothing reaches reads `(not used)`.
 
 Exits non-zero when the verdict fails (an invalid config, a config missing at an
 explicitly-given `--config`/`CFGD_CONFIG`/`--config-dir` path, an unresolvable module, or a
@@ -1291,6 +1416,14 @@ Docs        https://github.com/tj-smith47/cfgd/blob/v<version>/docs/spec/module.
 `<version>` is the running binary's, so the page a row opens documents the
 schema that binary just explained.
 
+`-o yaml` is the one structured format whose payload carries colour: the
+serialized YAML is syntax-highlighted in the printer's own theme when the colour
+decision is on, and written as plain bytes when it is off (`--color never`,
+`NO_COLOR`, `TERM=dumb`, or a stdout that is not a terminal). The bytes under the
+escapes are the same document either way, so a consumer piping the output to
+`yq` reads exactly what a reader sees on the terminal. `-o json`, `-o name` and
+the selector formats never carry an escape at all.
+
 Hyperlinks are detected from the terminal, never from a flag: iTerm2, WezTerm,
 VS Code's terminal, Ghostty, Hyper, Windows Terminal, kitty, Alacritty, Konsole,
 and any VTE-based terminal (GNOME Terminal, Tilix) from VTE 0.50 on. Inside `tmux`
@@ -1459,7 +1592,19 @@ List available profiles. Marks the active one.
 
 ### `cfgd profile show`
 
-Show the fully resolved profile (all inheritance layers merged).
+Show what the profile itself DECLARES: the profiles it inherits from named
+rather than folded, and its own aliases, env, packages, files, system settings
+and secrets with their platform annotations intact. Env values are masked by
+default; `--show-values` renders them in the clear.
+
+```sh
+cfgd profile show work                # what this profile declares
+cfgd profile show work --resolved     # the merged view, every layer folded in
+cfgd profile show work --show-values  # reveal full env values
+```
+
+`--resolved` renders the fully merged profile plus the `Layers` section naming
+what contributed to it.
 
 ### `cfgd profile switch <name>`
 
@@ -1597,27 +1742,67 @@ payload's `status` field carries the stored token instead (`installed`,
 
 ### `cfgd module show <name>`
 
-Show module details: packages, files, dependencies, resolved managers. Env variable values are masked by default (shows `***` with last 3 chars).
+Show what the module DECLARES: its packages, files, env, aliases and lifecycle
+scripts, conditions intact. A package renders every manager it names, its
+`prefer` order and its `minVersion`; a `platforms:`-gated entry renders with
+its platform annotation on every host. Env variable values are masked by
+default (`***` with the last 3 characters).
 
 ```sh
-cfgd module show my-tool                # env values masked
-cfgd module show my-tool --show-values  # reveal full env values
+cfgd module show my-tool                 # what the module declares
+cfgd module show my-tool --resolved      # what this host resolves it to
+cfgd module show my-tool --show-values   # reveal full env values
+cfgd module show my-tool --show-scripts  # each script's full body
+cfgd module show my-tool --show-all      # both
 ```
 
-The `Scripts` section lists every lifecycle hook the module declares, one row
-per entry labelled with its hook, in the order the hooks run. No drift engine
-ever watches a hook body, so every row is a bare declaration — hook name,
-`" — "`, condensed body — never a verdict glyph:
+`--resolved` re-renders the `Packages` section as what THIS host made of the
+declaration: the manager that won, the version it offers, the entries the
+platform gate skipped, and the ones no available manager can satisfy.
+
+```
+Packages
+  ✓ ripgrep → 14.1.0 via brew
+  ◉ winget-only-tool, platforms: windows — skipped (platform filter)
+  ⚠ obscure-tool (prefer: nix), min: 1.0 — unresolved: no manager available on this platform
+```
+
+What the machine and the state store say about the module (whether it is
+installed, when it was last applied, its recorded content hashes, its locked
+commit) belongs to `cfgd status <name>`, `cfgd module list` and `cfgd diff`.
+`module show` opens no state store and probes no manager unless `--resolved`
+asks it to.
+
+The `Scripts` section lists every lifecycle hook the module declares, in the
+order the hooks run, each step one row of its own. No drift engine ever watches
+a hook body, so every row is a bare declaration, never a verdict glyph:
 
 ```
 Scripts
-  preApply  — mkdir -p ~/.config/dev-tools
-  postApply — echo 'post-apply hook ran'
-  onDrift   — notify-send 'dev-tools drifted'
+  preApply
+    mkdir -p ~/.config/dev-tools
+  postApply
+    echo 'post-apply hook ran'
+    systemctl --user daemon-reload
+  onDrift
+    notify-send 'dev-tools drifted'
 ```
 
-`--show-values` renders each script's whole body instead of its condensed
-first line.
+`--show-scripts` / `-s` renders each step's whole body, highlighted, under a
+line stating the step's position and the knobs it declares; `--show-all` / `-a`
+adds the full env values `--show-values` reveals:
+
+```
+Scripts
+  postApply
+    1/2 · timeout 120s · continueOnError
+    if command -v pipx >/dev/null 2>&1; then
+      pipx install --force pynvim
+    fi
+
+    2/2
+    echo done
+```
 
 ### `cfgd module export <name>`
 
@@ -1709,6 +1894,12 @@ cfgd module upgrade tmux --yes               # skip confirmation
 cfgd module upgrade tmux --allow-unsigned    # allow unsigned modules
 ```
 
+The confirmation screen lists the spec changes, each one in full. A post-apply
+script that was added, removed or edited gets a row naming the change, with the
+whole step under it in the same form `cfgd module show --show-scripts` uses, so
+you approve the exact text that will run. An edited step reads as the old one
+removed and the new one added.
+
 ### `cfgd module search <query>`
 
 Search configured registries for modules matching a query.
@@ -1795,12 +1986,18 @@ Manage cosign signing keys for module artifacts.
 ```sh
 cfgd module keys generate --dir keys/          # new key pair
 cfgd module keys list                          # known signing keys
+cfgd module keys list --dir keys/              # only that directory
 cfgd module keys rotate --dir keys/ --artifacts ghcr.io/me/my-module:1.0.0
 ```
 
 `generate` writes a new cosign key pair (`-d`/`--dir`, default: current
 directory). `rotate` generates a new pair in place of the `cosign.key` in
 `--dir` and re-signs the artifacts named by `--artifacts` (repeatable).
+
+`list` takes the same `-d`/`--dir`: given one, that directory is the whole
+search; given none, the current directory and `~/.cfgd` are both probed. The
+`Private Key` column says whether the private half sits beside the public one,
+and `-o json` states it as `privateKeyPresent`.
 
 ## Source Commands
 
@@ -1872,10 +2069,36 @@ rather than a default, and carries `null` there on the wire.
 
 ### `cfgd source show <name>`
 
-Show source details, provided profiles, policy breakdown, conflicts, and the
-modules the source delivers (its manifest `provides.modules` allow-list). The
-delivered modules appear under a `Modules` section in human output and as a
-`modules` array in the structured (`-o json`/`-o yaml`) payload.
+Show what the subscription DECLARES: the source's URL, branch, priority and
+knobs, the profiles its manifest provides, the policy breakdown, conflicts, and
+the modules the source delivers (its manifest `provides.modules` allow-list).
+The delivered modules appear under a `Modules` section in human output and as a
+`modules` array in the structured (`-o json`/`-o yaml`) payload. A nested
+profile's env values are masked; `--show-values` renders them in the clear.
+
+What the state store remembers about the subscription (its fetch status, the
+commit it is at, when it last synced, and the resources it put on this machine)
+belongs to `cfgd source list` and `cfgd status`, which is why `source show`
+opens no state store.
+
+The payload follows the render. `source show -o json` carried a `state` object
+and a `managedResources` array up to cfgd 0.10; both are gone, and each fact
+they held is read elsewhere:
+
+| Dropped from `source show -o json` | Read it from |
+|---|---|
+| `state.status`, `state.lastFetched`, `state.lastCommit`, `state.signed`, `state.version` | `cfgd source list -o json` (`status`, `lastFetched`, `lastCommit`, `signed`, `version`), or `cfgd status -o json`'s `sources[]` |
+| `state.lockedRef`, `state.lockedCommit` | `cfgd source list -o json` (`lockedRef`, `lockedCommit`) |
+| `managedResources[]` | `cfgd status -o json`'s `managedResources[]`, filtered by `owner` |
+
+Each `managedResources[]` row carries an `owner` holding the token the human
+`Owner` column prints for it (`module:nvim`, `profile:work`, `cfgd:env`), so a
+consumer selects the rows one component owns:
+
+```bash
+cfgd source list -o json | jq '.[] | select(.name == "acme-corp") | {status, lastCommit, lockedRef, lockedCommit}'
+cfgd status -o json | jq '.managedResources[] | select(.owner == "module:nvim")'
+```
 
 A `Policy` section shows what is actually enforced on the source, so an
 operator can audit it without opening the manifest YAML: the manifest's
@@ -2072,7 +2295,7 @@ where unrecorded items could exist: with no config file, or a config with no
 
 ### `cfgd backup`
 
-Run, inspect, restore, or roll back the declarative backups a profile declares in
+Run, inspect, restore, roll back, or garbage-collect the declarative backups a profile declares in
 `spec.backups[]`.
 
 ```sh
@@ -2086,11 +2309,13 @@ cfgd backup restore notes-db --at 20260730T120000Z    # pick an older one
 cfgd backup restore notes-db --to /tmp/inspect --yes  # somewhere else, no prompt
 cfgd backup rollback                                  # what has a pre-restore copy beside it
 cfgd backup rollback notes-db --yes                   # put that copy back over the source
+cfgd backup gc                                        # remove the snapshots a destination change orphaned
+cfgd backup gc notes-db                               # only that unit's orphans
 cfgd --output json backup list
 ```
 
-An unknown name given to `cfgd backup run`, `backup list`, `backup restore`, or
-`backup rollback` is exit code `6`
+An unknown name given to `cfgd backup run`, `backup list`, `backup restore`, `backup rollback`, or
+`backup gc` is exit code `6`
 (see [Exit Codes](#exit-codes)) and lists every valid name; an unknown `--at` snapshot is exit `6`
 too and lists every available snapshot. A run that recorded a failure (a bad copy, or
 `postBackup` erroring after a good one) also exits nonzero.
@@ -2118,17 +2343,41 @@ with no copy beside its source is exit `6`, pointed at `cfgd backup list <name>`
 rather than at the restore that would create one. See
 [Rolling back a restore](backups.md#rolling-back-a-restore).
 
+`backup gc [name]` removes the snapshots a `destination:` change stranded: for each `backup_runs`
+record naming a path outside the unit's current destination, the recorded path, then the record.
+Only a path the state store recorded is ever removed (nothing enumerates a destination directory),
+so a file you left in an old destination by hand is untouched, and a `namePattern` change orphans
+nothing (retention counts records, not filenames). It exits `0` when everything it set out to
+collect was collected, including a run with nothing to collect, and `1` when a payload could not be
+removed; that record keeps its row so the next run retries it. A unit whose recorded history could
+not be read exits `1` as well, naming the unit in its own failed row and under `unreadable` in
+`-o json`, because nothing can say what that unit still holds. A record whose payload was already
+gone is a skip: the row is dropped and nothing on the machine changed. An orphaned record is not a
+restorable snapshot: `backup list --snapshots`, `backup restore` and `backup rollback` all pass
+over it. See [Garbage collection](backups.md#garbage-collection).
+
 A unit that is already running elsewhere (the daemon's timer, another `cfgd apply`) is refused
 rather than interleaved: `backup run` reports the holding process as a skip and exits `1`, while the
 other units it was asked to run still run. See
 [One run at a time](backups.md#run-semantics).
 
 Structured output (`-o json`) payload for `backup run`: an array of
-`{ name, status, clean, destinationPath?, error? }`, where `status` is `success`, `failed`, or
-`skipped` (the unit was already running). A refused unit does not add a second document to stdout:
-the payload is always one JSON value and the nonzero exit code carries the failure. For
+`{ name, status, clean, destinationPath?, error?, orphaned? }`, where `status` is `success`,
+`failed`, or `skipped` (the unit was already running). `orphaned` counts the recorded snapshots
+this run found outside the destination now in force and re-classified for
+[`cfgd backup gc`](backups.md#garbage-collection) to collect; it is absent on a run that stranded
+nothing, which is every run until a `destination` moves. A refused unit does not add a second
+document to stdout: the payload is always one JSON value and the nonzero exit code carries the
+failure. For
 `backup list`: an array of
-`{ name, source, schedule?, retention, snapshots?, lastRunStatus?, lastRunAt?, lastRunClean?, nextRunAt? }`.
+`{ name, source, schedule?, scheduleOwner, effectiveSchedule?, retention, effectiveRetention?, snapshots?, orphaned?, lastRunStatus?, lastRunAt?, lastRunClean?, nextRunAt? }`,
+where `scheduleOwner` is `cluster` or `local` (the layer the profile declared, whatever the
+cluster went on to project) and is present on every unit. The `Schedule Owner` column reads a
+third word, `projected`, for a `cluster` unit whose cadence a policy replaced.
+`effectiveSchedule` and `effectiveRetention` carry the value
+a cluster [`BackupPolicy`](backup-policy.md) projected, and each appears only when it DIFFERS
+from the declared one: the key's presence is the claim that the cluster changed this, so an answer
+restating what the profile already declared adds neither.
 For `backup list <name> --snapshots`: an array of `{ name, created, sizeBytes }`, newest first,
 where `name` is the snapshot's path relative to the backup's `destination`. A restore's safety
 copy is a sidecar beside the source, so it appears in neither list and is never the unit's
@@ -2145,6 +2394,13 @@ and on a decline
 reason. For `backup rollback` with no name: an array of `{ name, copy, created, sizeBytes }`,
 one per unit that has a copy beside its source, where `created` is the copy's modification time
 (a sidecar carries no record of its own).
+For `backup gc`: a single `{ collected, skipped, failed, unreadable? }`, the first three each an
+array of `{ name, path, sizeBytes, error? }`, where `name` is the unit, `path` the record's own
+`destinationPath`, and `error` is present only on a `failed` entry. `unreadable` is an array of the
+unit names whose recorded history could not be read; it is absent when every declared unit
+answered. `snapshots` and `orphaned` are
+counts the state store answered: absent means it could not be read, which is not a count of zero,
+and the `Orphaned` column is dropped from the human table when no unit has any.
 `nextRunAt` is the ISO 8601 UTC time the daemon's timer will next fire the unit, computed from the
 same `schedule` + last `finished_at` seeding the daemon uses; it is omitted for a schedule-less
 unit (the `Next Run` column renders `-`). See [Declarative Backups](backups.md#cli).
@@ -2303,6 +2559,27 @@ in sync.
 | `--api-key <key>` | Device API key (issued at enrollment) |
 | `--device-id <id>` | Device identifier to report as (default: derived from the enrollment credential) |
 
+The payload also carries what only this machine can answer: `packageVersions`, the installed
+version of each package the resolved profile declares (keyed `<manager>/<package>`, from the
+managers available here, never a full listing), and `backupScheduleOwners`, each declared backup
+unit's [`scheduleOwner`](backups.md#scheduleowner). Both reach the machine's `MachineConfig.status`
+in the cluster, each applied whole under its own field manager: a key this machine stopped
+reporting is retired there, and a machine holding none of what it declares sends the empty map
+that clears it. A machine that could not list one of the managers holding its declared
+packages withholds the whole map rather than sending a partial one the cluster would read as a
+retirement, and a map left out produces no write at all, so the versions the cluster holds
+survive it.
+
+The daemon's own periodic check-in reports the same two facts from the profile its tick resolved,
+authenticating as the device [`cfgd enroll`](#cfgd-enroll) registered.
+
+The gateway answers with the backup cadences a cluster [`BackupPolicy`](backup-policy.md) owns for
+this machine. They are recorded locally and decide when a cluster-owned unit is next due; a unit
+pinned `scheduleOwner: Local` ignores them, and nothing rewrites the profile on disk.
+[`cfgd backup list`](#cfgd-backup) shows the projected value. An answer that omits the cadences
+entirely is a gateway that could not read the cluster, and the machine keeps the set it already
+recorded rather than retiring it.
+
 ### `cfgd enroll`
 
 Enroll with a device gateway using token or key-based verification.
@@ -2429,7 +2706,7 @@ selector format's success shape and an error doc's shape rarely agree:
   ```
 
   `error` is a machine-readable kind (`not_found`, `registry_not_found`, `already_exists`,
-  `parse_failed`, `key_not_found`, `target_not_writable`, …), `name` identifies the subject
+  `parse_failed`, `key_not_found`, `target_not_writable`, `config_dir_occupied`, …), `name` identifies the subject
   (module / source / profile / registry / key), and any
   command-specific fields follow. `name` is present only when the failure has a subject to
   report: an empty subject is omitted from the payload rather than serialized as `""`. A

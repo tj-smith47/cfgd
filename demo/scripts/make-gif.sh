@@ -27,28 +27,14 @@ FRAMES=demo/.out/raw
 # demo/scripts/record.sh beside the frames; the tier boundary is read from it.
 LOG=demo/.out/init.log
 OUT=demo/cfgd-demo.gif
-# The head has to hold the opening typing AND the install's first real progress
-# lines, or the ramp starts while the viewer is still reading the first thing
-# cfgd printed. Measured on a take: ~10s of scripted beats (two typed commands
-# at 50ms, the 700ms pause before Enter, the 2s nvim glance), the container
-# start on top of it (unscripted, swings with the page cache), the plan tree at
-# ~12s, `refresh apt index` settling at ~15s and `provision brew` settling with
-# its version at ~26-28s. 29 ends on that settle. The margin for a cold
-# container start is not spent here but in the ease that follows: it climbs at
-# ~2x, so a brew row that settles a second or two late is still read at a pace
-# a viewer can keep. 32 held the margin in 1:1 seconds instead, and on a warm
-# take those seconds were a viewer waiting on a screen that had already
-# finished; 29 still felt late, so the head ends on the settle itself.
-HEAD=26
-# The tail begins at the apply's rollup line, so the whole payoff plays at 1:1:
-# the 6s summary read, `source ~/.cfgd.env`, nvim's start, the 1s settle, the
-# 7.5s hero hold, `:qa`, the screen restore, and the version line with its 2s
-# hold plus the closing breath. Measured off the log of a 236.9s take: the
-# rollup lands 23.9s from the end. 27 covers that plus nvim's own variable
-# start; the margin is paid as a few seconds of 1:1 install log before the
-# rollup, which is the right side to err on. Too small and the rollup or the
-# summary read falls into the compressed middle; too large and the ramp
-# decelerates onto a frozen install log, which is what 41 did.
+# 1:1 seconds at the start: the opening typing, the plan tree (~12s on a take)
+# and the apt index settling (~15s). Brew's own settle at ~26-28s rides the
+# ~2x ease that follows; holding it at 1:1 (32, 29, 26) each read as waiting.
+HEAD=20
+# 1:1 seconds at the end, from the apply's rollup line: the summary read, the
+# env source, nvim's start and hold, the quit and the version line. The tape's
+# beats sum to ~23s; the margin covers nvim's variable start and lands as a
+# few seconds of 1:1 install log before the rollup, the right side to err on.
 TAIL=27
 # Output seconds the plan-and-install region plays in: from HEAD to the moment
 # the apply opens its scripts phase, ease-in included. Phase headings, package

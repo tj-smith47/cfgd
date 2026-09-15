@@ -15,6 +15,7 @@ API group: `cfgd.io/v1alpha1`
 | `ClusterConfigPolicy` | Cluster | [spec](spec/clusterconfigpolicy.md) | Cluster-wide mandates across selected namespaces, plus module-provenance policy |
 | `DriftAlert` | Namespaced | [spec](spec/driftalert.md) | Drifted system settings reported by devices — severity, expected vs actual |
 | `Module` | Cluster | [spec](spec/module.md) | Reusable configuration bundle — packages, files, env, scripts; OCI-distributable |
+| `BackupPolicy` | Namespaced | [spec](backup-policy.md) | Fleet-wide backup schedules — overrides the cadence of units the machines already define |
 
 ### Installing the CRDs
 
@@ -76,7 +77,7 @@ spec:
 | `files` | list | File specs with `path`, optional `content`, `source`, and `mode` (default `0644`) |
 | `systemSettings` | map | System configurator settings |
 
-> `status.packageVersions` (reported installed versions, keyed by package name) is written by the operator, not set in `spec`.
+> `status.packageVersions` (reported installed versions, keyed `<manager>/<package>`) is written by the device gateway from what the machine reports, not set in `spec`. A `packages[].version` requirement is met only when every reported copy of that package satisfies it.
 
 ### ConfigPolicy
 
@@ -110,7 +111,7 @@ spec:
 | Field | Type | Description |
 |---|---|---|
 | `requiredModules` | list of ModuleRef | Modules that all matching MachineConfigs must reference (each with `name` and optional `required` flag) |
-| `packages` | list of PackageRef | Required packages (each with `name` and optional `version` constraint) |
+| `packages` | list of PackageRef | Required packages (each with `name` and optional `version` constraint). The constraint is judged against every copy the machine reports for that package, so a package two managers hold at different versions is compliant only when both satisfy it |
 | `settings` | map | Required system settings |
 | `targetSelector` | LabelSelector | Label selector (`matchLabels` / `matchExpressions`) — policy applies to MachineConfigs with matching labels |
 
@@ -135,6 +136,88 @@ spec:
       - ghcr.io/acme-corp
     allowUnsigned: false
 ```
+
+### Module
+
+A reusable configuration bundle, cluster-scoped so one registration serves every namespace. Its
+`spec` carries the same surface a local `module.yaml` declares: `cfgd module push --apply` builds
+the resource straight from the module directory, and every field an author wrote reaches the
+cluster. Full field reference for the local document: [spec/module.md](spec/module.md).
+
+```yaml
+apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: nvim
+spec:
+  ociArtifact: "ghcr.io/acme/nvim:v1"
+  platforms: [linux]
+  depends: [base]
+  packages:
+    - name: neovim
+      minVersion: "0.9"
+      prefer: [brew, apt]
+      aliases:
+        brew: neovim
+        apt: neovim
+  files:
+    - source: files/init.lua
+      target: ~/.config/nvim/init.lua
+      strategy: Copy
+      permissions: "644"
+    - target: ~/.gitconfig
+      strategy: Patch
+      patch:
+        format: Ini
+        ensure:
+          user:
+            name: Ada
+  env:
+    - name: EDITOR
+      value: nvim
+  aliases:
+    - name: vi
+      command: nvim
+  system:
+    shell:
+      defaultShell: zsh
+  hooks:
+    postApply:
+      - nvim --headless "+Lazy! sync" +qa
+  mountPolicy: Always
+```
+
+#### Module Fields
+
+| Field | Type | Description |
+|---|---|---|
+| `ociArtifact` | string | OCI reference the module's content is pulled from. Omitted, the module carries its content inline |
+| `signature` | object | `cosign` block (`publicKey`, `keyless`, `certificateIdentity`, `certificateOidcIssuer`) the artifact is verified against |
+| `mountPolicy` | `Always` \| `Debug` | How the module is exposed to pod containers (default `Always`) |
+| `platforms` | list of string | Platform tags gating the whole module on a machine reconciling it (OS, distro or arch; `macos` for macOS). Cluster-side, the pod webhook injects the module only when the list is empty or names `linux`. A skipped module is named on the pod's `cfgd.io/skipped-modules` annotation |
+| `depends` | list of string | Names of other `Module` resources applied first |
+| `packages` | list | Packages the module declares: `name`, per-manager name overrides in `aliases`, `minVersion`, a `prefer` manager order, a `deny` manager list, and per-entry `platforms` gates |
+| `files` | list | Files the module declares: `source`, `target`, `strategy`, `private`, `permissions`, an `encryption` block, and a `patch` block for `strategy: Patch` |
+| `env` | list | Environment variables: `name`, `value`, `append`, and per-entry `platforms` gates |
+| `aliases` | list | Shell aliases: `name`, `command`, and per-entry `platforms` gates |
+| `system` | map | System configurator settings, keyed by configurator name (`shell`, `sysctl`, `macosDefaults`, …) |
+| `scripts.postApply` | string | A script PATH inside the artifact, run by the mutating webhook in a pod init container |
+| `hooks` | object | The cfgd agent's lifecycle hooks (`preApply`, `postApply`, `preReconcile`, `postReconcile`, `onDrift`, `onChange`), each a list of inline command bodies |
+
+Who reads what: the cfgd agent reconciles `platforms`, `depends`, `packages`, `files`, `env`,
+`aliases`, `system` and `hooks` from the artifact it pulls onto its own machine; the CSI node
+plugin mounts the module's content into a pod; and the pod-mutating webhook reads `platforms`
+and `mountPolicy` to decide on that mount, plus `env` and `scripts.postApply` to build the init
+container.
+
+> `spec.scripts.postApply` and `spec.hooks.postApply` are different things and both may be set.
+> `scripts.postApply` is a relative path inside the artifact, joined into an init container
+> command by the pod-mutating webhook and run inside the pod. `hooks` is the agent's hook set:
+> inline command bodies, with their own `onlyIf` / `unless` / `creates` guards, `timeout` and
+> `shell`, run on a machine reconciling the module. Nothing in a pod runs a `hooks` body.
+
+> The four script-install knobs of a package entry (`script`, `onlyIf`, `unless`, `creates`) stay
+> off the CRD: they steer a shell install on a machine, and nothing cluster-side runs one.
 
 ### DriftAlert
 
@@ -161,6 +244,29 @@ spec:
       actual: "0"
 ```
 
+### BackupPolicy
+
+Sets the cadence of backup units the selected machines already define. The policy overrides a
+named unit's `schedule` and `retention`; the machine's own profile still defines what the unit
+is, and a unit pinned `scheduleOwner: Local` is reported without being scheduled. Full field
+reference and precedence table in [backup-policy.md](backup-policy.md).
+
+```yaml
+apiVersion: cfgd.io/v1alpha1
+kind: BackupPolicy
+metadata:
+  name: nightly-dotfiles
+  namespace: teams
+spec:
+  selector:
+    matchLabels:
+      cfgd.io/profile: workstation
+  units:
+    - name: dotfiles
+      schedule: "0 3 * * *"
+      retention: 14
+```
+
 ## Controllers
 
 The operator runs [kube-rs](https://kube.rs/) controllers that watch and reconcile each CRD type:
@@ -168,6 +274,7 @@ The operator runs [kube-rs](https://kube.rs/) controllers that watch and reconci
 - **MachineConfig controller**: validates specs, checks compliance against ConfigPolicy, tracks status conditions
 - **ConfigPolicy controller**: evaluates all MachineConfigs matching the target selector, reports compliant/non-compliant counts
 - **DriftAlert controller**: tracks acknowledgment and resolution state
+- **BackupPolicy controller**: projects each policy's backup schedules onto every MachineConfig its selector matches, reporting rather than overriding a unit the machine pins locally or reports an owner for that no layer spells. Reconciles every 60s, retries a failed reconcile after 30s
 
 ## Admission Webhook
 
@@ -237,6 +344,12 @@ kubectl exec demo-pod -- sh /cfgd-modules/tools/bin/hello.sh
 ```
 
 A `ConfigPolicy` or `ClusterConfigPolicy` can add modules the pod never asked for, through `requiredModules` (mounted) and `debugModules` (staged only). Label a pod `cfgd.io/skip-injection` to exempt it.
+
+A pod is a Linux container, so a module whose `spec.platforms` names no `linux` is injected into no pod at all: no CSI volume, no volumeMount, no env, no init container, whatever its `mountPolicy` says. The webhook names every module it skipped this way on the pod's `cfgd.io/skipped-modules` annotation, so a pod that asked for a module by name can say why it is not mounted:
+
+```sh
+kubectl get pod demo-pod -o jsonpath='{.metadata.annotations.cfgd\.io/skipped-modules}'
+```
 
 Two settings matter in production:
 
@@ -318,7 +431,45 @@ A check-in carries the device identity (id, hostname, OS, arch) and the hash of 
 desired system configuration. `cfgd checkin` adds a compliance summary when
 [`spec.compliance`](spec/config.md#speccompliance) is enabled, and posts any drifted **system
 settings** it finds to `/api/v1/devices/{id}/drift`. The daemon's own periodic check-in sends
-the identity and hash only.
+the identity and hash, and reports the same two device-only facts below; it authenticates with
+the credential `cfgd enroll` stored, and a machine holding none for that gateway logs the skip
+rather than posting anonymously.
+
+It also carries the two facts only the device can answer: `packageVersions`, the versions it
+holds for the packages it declares (keyed `<manager>/<package>`), and `backupScheduleOwners`,
+which layer owns each backup unit's schedule. A gateway holding a Kubernetes client writes each
+onto the `MachineConfig.status` whose `spec.hostname` matches the device, one server-side apply
+per map, each under its own field manager: `cfgd-operator/gateway/packages` owns
+`status.packageVersions` and `cfgd-operator/gateway/backups` owns `status.backupScheduleOwners`.
+The write is best-effort: a refused patch, an unreachable API server or a hostname no
+MachineConfig names is logged and the check-in still returns `200`, because the device's own
+reconcile does not depend on the cluster accepting a status. A standalone gateway holds no
+client and writes nothing. A map the device did not report is omitted from the body and produces
+no apply for its manager, so a fact the cluster already holds is never blanked by a device that
+could not observe it.
+
+A map the device DID report arrives whole, empty included, and the gateway applies it whole: a
+key the machine stopped reporting is retired, and a device that now holds none of what it
+declares clears the map. One field per manager is what makes that safe, because an apply also
+removes the fields its own manager stops naming: a single manager holding both maps would delete
+the map this check-in could not observe. Each apply is forced, since its manager is the sole
+writer of its one field and yielding to an ownership entry an older release left behind would
+strand the device's status. The status fields the controllers own are never disturbed, because
+neither gateway manager names them. Both maps are declared `x-kubernetes-map-type: atomic` in the
+CRD schema, so server-side apply treats each as one leaf and a check-in replaces the whole map,
+including keys an earlier operator version or a manual `kubectl patch` wrote. A Module's `system`
+map and each package's `aliases` map are declared atomic for the same reason, since
+`cfgd module push --apply` sends the module file on disk whole, and every policy selector
+(`BackupPolicy.spec.selector`, `ConfigPolicy.spec.targetSelector`,
+`ClusterConfigPolicy.spec.namespaceSelector`) is atomic to match upstream `metav1.LabelSelector`,
+so two managers cannot merge label keys into a selector neither of them wrote.
+
+The response answers with `backupSchedules`, the cadences a cluster
+[`BackupPolicy`](backup-policy.md) owns for that machine. The key is absent when the gateway
+could not read the cluster (a failed list, or a standalone gateway with no client), and present
+but empty when a read succeeded and no policy schedules that machine. The device replaces its
+whole recorded set from a present answer and keeps what it holds when the key is absent, so an
+outage never retires a fleet cadence.
 
 ```sh
 cfgd checkin --server-url https://cfgd.acme.com --api-key <key>

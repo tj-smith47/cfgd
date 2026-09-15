@@ -30,7 +30,7 @@ pub use push::{
 };
 pub use sign::{
     COSIGN_PREDICATE_TYPES, SignatureCheck, VerifyOptions, attach_attestation,
-    attestation_type_name, check_signature, generate_slsa_provenance, sign_artifact,
+    attestation_type_name, check_signature, generate_slsa_provenance, public_key_of, sign_artifact,
     verify_attestation, verify_signature,
 };
 

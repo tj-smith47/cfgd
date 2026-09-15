@@ -187,6 +187,7 @@ impl EnvironmentConfigurator {
         }
 
         cfgd_core::atomic_write_str(path, &output).map_err(cfgd_core::errors::CfgdError::Io)?;
+        super::widen_world_readable(path).map_err(cfgd_core::errors::CfgdError::Io)?;
         Ok(())
     }
 
@@ -219,6 +220,7 @@ impl EnvironmentConfigurator {
         }
 
         cfgd_core::atomic_write_str(path, &content).map_err(cfgd_core::errors::CfgdError::Io)?;
+        super::widen_world_readable(path).map_err(cfgd_core::errors::CfgdError::Io)?;
         Ok(())
     }
 
@@ -235,6 +237,33 @@ impl EnvironmentConfigurator {
     fn macos_current_vars() -> BTreeMap<String, String> {
         let env_sh = Self::macos_env_sh_path();
         Self::parse_export_file(&env_sh.to_string_lossy())
+    }
+
+    /// Load `~/.config/cfgd/env.sh` from the user's interactive rc, through the
+    /// env engine's own source-line writer.
+    ///
+    /// cfgd writes the file, so cfgd writes the line that loads it: an
+    /// instruction to paste one by hand leaves the machine unconverged until
+    /// somebody does, and the engine's merge is what keeps a second run from
+    /// appending a duplicate.
+    fn macos_inject_rc_source_line(cx: &SystemContext<'_>) {
+        let home = cfgd_core::expand_tilde(Path::new("~"));
+        let rc = cfgd_core::reconciler::interactive_rc_path(&home);
+        match cfgd_core::reconciler::inject_rc_source_line(
+            &rc,
+            cfgd_core::reconciler::MACOS_SYSTEM_ENV_SOURCE_LINE,
+        ) {
+            Ok(true) => cx.report(Role::Info, format!("Updated {}", rc.posix())),
+            Ok(false) => {}
+            Err(e) => cx.report(
+                Role::Warn,
+                format!(
+                    "Failed to write {}: {}",
+                    rc.posix(),
+                    cfgd_core::output::collapse_to_subject_line(&e)
+                ),
+            ),
+        }
     }
 
     /// Write `~/.config/cfgd/env.sh` — users source this from their shell rc.
@@ -261,6 +290,11 @@ impl EnvironmentConfigurator {
         }
 
         cfgd_core::atomic_write_str(&env_sh, &content).map_err(cfgd_core::errors::CfgdError::Io)?;
+        // This configurator runs privileged, and `default_config_dir()` resolves
+        // from the running process's HOME: under `sudo -E cfgd apply` the file
+        // lands root-owned in the invoking user's home, whose rc line then gets
+        // EACCES on its own `. ~/.config/cfgd/env.sh`.
+        super::widen_world_readable(&env_sh).map_err(cfgd_core::errors::CfgdError::Io)?;
         Ok(())
     }
 
@@ -280,10 +314,9 @@ impl EnvironmentConfigurator {
         if managed.is_empty() {
             // Unload (best-effort) then remove. `launchctl unload` no-ops/fails harmlessly on a
             // path that was never loaded or off-macOS; log and proceed to removal.
-            if let Err(e) = Command::new("launchctl")
-                .args(["unload", &plist_path.to_string_lossy()])
-                .output()
-            {
+            if let Err(e) = cfgd_core::command_output(
+                Command::new("launchctl").args(["unload", &plist_path.to_string_lossy()]),
+            ) {
                 tracing::debug!("launchctl unload (cleanup): {e}");
             }
             let _ = std::fs::remove_file(plist_path);
@@ -296,10 +329,9 @@ impl EnvironmentConfigurator {
 
         cfgd_core::atomic_write_str(plist_path, &plist)
             .map_err(cfgd_core::errors::CfgdError::Io)?;
-        // launchd loads a system daemon only if its plist is owned by root and not writable by
-        // group/other; 0644 is the conventional accepted mode (atomic_write_str defaults to 0600).
-        cfgd_core::set_file_permissions(plist_path, 0o644)
-            .map_err(cfgd_core::errors::CfgdError::Io)?;
+        // launchd loads a system daemon only if its plist is owned by root and
+        // readable; the write lands 0600.
+        super::widen_world_readable(plist_path).map_err(cfgd_core::errors::CfgdError::Io)?;
         Ok(())
     }
 
@@ -333,10 +365,9 @@ impl EnvironmentConfigurator {
         if !cfg!(windows) {
             return BTreeMap::new();
         }
-        let output = match Command::new("reg")
-            .args(["query", r"HKCU\Environment"])
-            .output()
-        {
+        let output = match cfgd_core::command_output(
+            Command::new("reg").args(["query", r"HKCU\Environment"]),
+        ) {
             Ok(o) if o.status.success() => o,
             _ => return BTreeMap::new(),
         };
@@ -353,6 +384,7 @@ impl EnvironmentConfigurator {
     }
 }
 
+// no-tool-ok: writes the env and rc files itself, so it drives no binary
 impl SystemConfigurator for EnvironmentConfigurator {
     fn name(&self) -> &str {
         "environment"
@@ -445,7 +477,7 @@ impl SystemConfigurator for EnvironmentConfigurator {
                         Role::Info,
                         format!("Updated {}", Self::macos_env_sh_path().posix()),
                     );
-                    cx.next_step("Add `. ~/.config/cfgd/env.sh` to your shell rc");
+                    Self::macos_inject_rc_source_line(cx);
                 }
                 Err(e) => {
                     cx.report(

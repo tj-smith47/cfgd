@@ -1,0 +1,14 @@
+module:nvim
+  Commit     c0ffee
+  Integrity  sha256:dec0
+  ⚠ Post-apply scripts (2) — these will execute on your machine:
+  postApply
+    1/2 · timeout 120s · continueOnError
+    set -eu
+    if ! command -v jq >/dev/null; then
+      echo "jq missing" >&2
+      exit 1
+    fi
+
+    2/2
+    jq --version\x0d

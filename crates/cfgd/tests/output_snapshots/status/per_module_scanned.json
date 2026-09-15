@@ -1,5 +1,6 @@
 {
   "aliases": 1,
+  "commit": "deadbeef1234567890abcdef1234567890abcdef",
   "depends": [
     "base"
   ],
@@ -47,11 +48,23 @@
       "resourceType": "module",
       "source": "local",
       "timestamp": "2026-05-14T12:00:02Z"
+    },
+    {
+      "actual": "missing or changed",
+      "expected": "current",
+      "id": 23,
+      "resolvedBy": null,
+      "resourceId": "PAGER",
+      "resourceType": "env-var",
+      "source": "local",
+      "timestamp": "2026-05-14T12:00:03Z"
     }
   ],
   "driftCheckedLive": true,
   "env": 2,
   "files": 12,
+  "filesHash": "789ghi012jkl",
+  "integrity": "sha256:cafef00d",
   "lastApplied": "2026-05-14T10:00:00Z",
   "name": "dev-tools",
   "packageState": [
@@ -67,6 +80,7 @@
     }
   ],
   "packages": 2,
+  "packagesHash": "abc123def456",
   "scriptCounts": [
     {
       "count": 1,

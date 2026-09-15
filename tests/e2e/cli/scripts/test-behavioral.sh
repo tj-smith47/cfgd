@@ -78,8 +78,9 @@ if [ -f "$TGT/.gitconfig" ] && [ -f "$TGT/.zshrc" ] && [ -f "$TGT/.gitconfig-wor
 else fail_test "INH01" "Missing inherited files"; fi
 
 begin_test "INH02: env override (child overrides parent)"
-# dev sets EDITOR=nvim over base's EDITOR=vim
-run $C profile show
+# dev sets EDITOR=nvim over base's EDITOR=vim. Env values mask by default, and
+# a masked nvim reads ***vim, which the parent's vim also matches.
+run $C profile show --show-values
 if assert_ok && assert_contains "$OUTPUT" "nvim"; then
     pass_test "INH02"
 else fail_test "INH02"; fi

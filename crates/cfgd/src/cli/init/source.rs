@@ -1,7 +1,7 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use cfgd_core::PathDisplayExt;
-use cfgd_core::output::{Printer, Role};
+use cfgd_core::output::{HintCommands, Printer, Role};
 
 /// Returns true if the value is a clonable source: a git URL, a `file://` URL,
 /// a repository directory named `<name>.git`, or a local directory that is a
@@ -31,6 +31,49 @@ pub(super) fn is_clonable_source(value: &str) -> bool {
     path.join(".git").exists()
 }
 
+/// The directory a `--from` run materialises into, read off the `--config` the
+/// caller gave: `None` when that is the default config directory, which
+/// [`resolve_from`] resolves for itself and then guards through
+/// [`refuse_occupied_default_destination`].
+///
+/// The path is absolutized first, so a relative `--config cfgd.yaml` names the
+/// working directory rather than an empty parent. Whether the file already
+/// exists is deliberately not part of the answer: reading an existing
+/// `--config` as "no destination given" is what sent a run pointed at a
+/// scratch directory into the invoking user's own config directory instead.
+pub(crate) fn from_destination(config: &Path) -> Option<PathBuf> {
+    let config = cfgd_core::absolutize_path(config);
+    let dir = config.parent()?;
+    (dir != cfgd_core::default_config_dir()).then(|| dir.to_path_buf())
+}
+
+/// Where a `--from` value will materialise, and every refusal that answer
+/// earns, decided before this run puts anything on the machine.
+///
+/// The half of [`resolve_from`] that needs no tool: a destination the run is
+/// going to refuse must be refused before the prerequisite check provisions
+/// git for a clone that will never happen. A caller that goes on to clone
+/// calls `resolve_from`, which asks this again and gets the same answer.
+pub(super) fn plan_from(from: &str, target: Option<&Path>) -> anyhow::Result<std::path::PathBuf> {
+    let from = &*cfgd_core::resolve_repo_reference(from);
+    if is_clonable_source(from) {
+        let dest = match target {
+            Some(path) => path.to_path_buf(),
+            None => cfgd_core::default_config_dir(),
+        };
+        refuse_occupied_default_destination(&dest)?;
+        return Ok(dest);
+    }
+    let path = cfgd_core::expand_tilde(Path::new(from));
+    if !path.exists() {
+        anyhow::bail!("Path does not exist: {}", path.posix());
+    }
+    if !path.join(cfgd_core::config::CONFIG_FILENAME).exists() {
+        anyhow::bail!("No cfgd.yaml found in {}", path.posix());
+    }
+    Ok(path)
+}
+
 /// Resolve a --from value to a config directory path.
 /// Git sources (URLs or local repos) are cloned to the target dir.
 /// Plain local paths are used directly (must contain cfgd.yaml).
@@ -41,34 +84,105 @@ pub(crate) fn resolve_from(
     printer: &Printer,
 ) -> anyhow::Result<std::path::PathBuf> {
     let from = &*cfgd_core::resolve_repo_reference(from);
+    let dest = plan_from(from, target)?;
     if is_clonable_source(from) {
-        let dest = target
-            .map(|p| p.to_path_buf())
-            .unwrap_or_else(cfgd_core::default_config_dir);
-        if !dest.join("cfgd.yaml").exists() {
+        if !dest.join(cfgd_core::config::CONFIG_FILENAME).exists() {
             std::fs::create_dir_all(&dest)?;
             clone_into(&dest, from, branch, printer)?;
         } else {
             let mut row = printer.status(
                 Role::Info,
-                format!("Already initialized at {}", dest.posix()),
+                format!(
+                    "Already initialized at {}",
+                    cfgd_core::fold_home_in_text(&dest.display_posix())
+                ),
             );
             if let Some(detail) = checkout_detail(&dest) {
                 row = row.detail(detail);
             }
             drop(row);
         }
-        Ok(dest)
-    } else {
-        let path = cfgd_core::expand_tilde(Path::new(from));
-        if !path.exists() {
-            anyhow::bail!("Path does not exist: {}", path.posix());
-        }
-        if !path.join("cfgd.yaml").exists() {
-            anyhow::bail!("No cfgd.yaml found in {}", path.posix());
-        }
-        Ok(path)
     }
+    Ok(dest)
+}
+
+/// What the default config directory was found to hold, worded for the refusal
+/// below, or `None` when it is free for this run to write into.
+///
+/// The three findings are ordered by what the reader has to act on first: a
+/// symlink is reported as a symlink even when it points at a config repository,
+/// because the directory that would be written is not the one the path names.
+fn occupied_default_destination(dest: &Path) -> Option<&'static str> {
+    if std::fs::symlink_metadata(dest).is_ok_and(|meta| meta.file_type().is_symlink()) {
+        return Some("it is a symlink");
+    }
+    if dest.join(cfgd_core::config::CONFIG_FILENAME).exists() {
+        return Some("it already holds a cfgd.yaml");
+    }
+    match std::fs::read_dir(dest) {
+        Ok(mut entries) => entries.next().map(|_| "it is not empty"),
+        // An unreadable directory is a directory this run cannot prove is
+        // free, and the whole point of the check is that the cost of being
+        // wrong is somebody's config repository.
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+        Err(_) => Some("it could not be read"),
+    }
+}
+
+/// Refuse to write a `--from` source into the default config directory when
+/// `dest` names it and it is already somebody's.
+///
+/// A verb that materialises a config from `--from` resolves a missing
+/// destination to [`cfgd_core::default_config_dir`], and the only guard there
+/// used to be a `cfgd.yaml` at the top of it: a directory holding a git
+/// checkout, a symlink into one, or anything else at all was cloned straight
+/// over. The `cfgd.yaml` arm was no guard either — it skipped the clone and
+/// handed the directory back, so `apply --from` went on to apply whatever
+/// config it found against the real machine.
+///
+/// The question is asked about the DIRECTORY, not about the string
+/// [`from_destination`] compared: [`cfgd_core::absolutize_path`] leaves `..` as
+/// a literal component, so `--config ~/.config/cfgd/../cfgd/cfgd.yaml` named
+/// the default directory under a spelling no string comparison matches, and a
+/// `--config` pointed at whatever the default directory is a symlink to named
+/// it under another.
+///
+/// Two answers, in this order. [`cfgd_core::lexically_normalized`] folds both
+/// spellings first, because a `..` walking back through a component that does
+/// not exist (`<default>/absent/../cfgd.yaml`) stats nothing, and
+/// [`cfgd_core::is_same_inode`] can only say "different" about a path it
+/// cannot open. The inode question then catches what the fold cannot: two
+/// genuinely different spellings of one directory, reached through a symlink.
+/// The occupancy probe then reads the DEFAULT directory, which is the
+/// directory the refusal is about: the fold is a comparison value, so where the
+/// match came from the inode it names a path that is not that directory, and
+/// probing it answered about the caller's spelling instead of about what the
+/// default holds. The message still names the path the caller wrote.
+fn refuse_occupied_default_destination(dest: &Path) -> anyhow::Result<()> {
+    let default = cfgd_core::default_config_dir();
+    let folded = cfgd_core::lexically_normalized(dest);
+    if folded != cfgd_core::lexically_normalized(&default)
+        && !cfgd_core::is_same_inode(dest, &default)
+    {
+        return Ok(());
+    }
+    let Some(finding) = occupied_default_destination(&default) else {
+        return Ok(());
+    };
+    let shown = cfgd_core::fold_home_in_text(&dest.display_posix());
+    Err(crate::cli::cli_error_with_hints(
+        shown.clone(),
+        "config_dir_occupied",
+        format!("Refusing to write into the default config directory {shown}: {finding}."),
+        serde_json::json!({ "destination": shown, "finding": finding }),
+        vec![HintCommands::new(
+            "Name a destination, or point --config at the config you want this run to use:",
+            [
+                "cfgd init <dir> --from <source>",
+                "cfgd apply --from <source> --config <dir>/cfgd.yaml",
+            ],
+        )],
+    ))
 }
 
 /// The origin URL and HEAD commit a checkout is really at.

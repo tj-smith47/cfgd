@@ -34,7 +34,7 @@ fn module_fixture(dir: &Path) -> std::path::PathBuf {
         module_dir.join("module.yaml"),
         format!(
             "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: dev\nspec:\n  files:\n    - source: app.conf\n      target: {}\n      strategy: Copy\n",
-            target.display()
+            cfgd_core::to_posix_string(&target)
         ),
     )
     .unwrap();

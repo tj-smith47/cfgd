@@ -26,16 +26,83 @@
         "profile_name": "workstation",
         "source": "local",
         "spec": {
-          "aliases": [],
+          "aliases": [
+            {
+              "command": "git status",
+              "name": "gs"
+            }
+          ],
           "backups": [],
-          "env": [],
-          "files": null,
-          "inherits": [],
-          "modules": [],
-          "packages": null,
+          "env": [
+            {
+              "name": "EDITOR",
+              "value": "nvim"
+            },
+            {
+              "name": "GH_TOKEN",
+              "value": "ghp_secret_token_value"
+            },
+            {
+              "name": "HOMEBREW_NO_ANALYTICS",
+              "platforms": [
+                "darwin"
+              ],
+              "value": "1"
+            }
+          ],
+          "files": {
+            "managed": [
+              {
+                "source": "bashrc",
+                "target": "/home/user/.bashrc"
+              }
+            ],
+            "permissions": {}
+          },
+          "inherits": [
+            "base"
+          ],
+          "modules": [
+            "dev-tools"
+          ],
+          "packages": {
+            "apk": [],
+            "apt": null,
+            "brew": {
+              "casks": [],
+              "file": null,
+              "formulae": [
+                "ripgrep"
+              ],
+              "taps": []
+            },
+            "cargo": null,
+            "chocolatey": [],
+            "custom": [],
+            "dnf": [],
+            "flatpak": null,
+            "go": [],
+            "nix": [],
+            "npm": null,
+            "pacman": [],
+            "pipx": [],
+            "pkg": [],
+            "scoop": [],
+            "snap": null,
+            "winget": [],
+            "yum": [],
+            "zypper": []
+          },
           "scripts": null,
-          "secrets": [],
-          "system": {}
+          "secrets": [
+            {
+              "source": "op://Personal/GitHub/token",
+              "target": "/home/user/.config/gh/token"
+            }
+          ],
+          "system": {
+            "shellAliases": "default"
+          }
         }
       }
     ],

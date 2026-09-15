@@ -18,15 +18,16 @@ Set Shell "bash"
 Set FontFamily "FiraCode Nerd Font Mono"
 Set FontSize 15
 Set Width 1320
-# 1320x820 at font size 15 measures 125x41. The grid is sized to the tallest
-# single render below — the closing `cfgd status -o wide`, 37 rows including
-# the line that typed it — plus four rows of headroom, because both
-# machine-wide renders are preceded by a clear and so never have to share the
-# frame with what came before them. The beats between the two clears do
-# accumulate past 41 rows and the earlier ones scroll away; each one has
-# already had its own hold by then, and every beat's own output is whole on
-# screen while it is the beat being read. A taller grid only pads the closing
-# frame with empty background.
+# 1320x820 at font size 15 measures 125x40, counted off the take's own frames
+# rather than from the pixel arithmetic, which lands a row high. The grid is
+# sized to the tallest single render below — the closing `cfgd status -o wide`,
+# 35 rows including the line that typed it — plus five rows of headroom,
+# because both machine-wide renders are preceded by a clear and so never have
+# to share the frame with what came before them. The beats between the two
+# clears do accumulate past 40 rows and the earlier ones scroll away; each
+# one has already had its own hold by then, and every beat's own output is
+# whole on screen while it is the beat being read. A taller grid only pads
+# the closing frame with empty background.
 Set Height 820
 Set TypingSpeed 50ms
 Set Padding 20
@@ -114,8 +115,8 @@ Sleep 1s
 Type "cfgd status --module nvim --scan"
 Enter
 Wait@60s /cfgd\$$/
-# 14 lines → 2.9s
-Sleep 2900ms
+# 15 lines → 3.0s
+Sleep 3s
 
 # Beat 3b: the whole machine, off the record the scan just wrote — no --scan,
 # so nothing is re-read from the filesystem or a package manager, and the
@@ -126,15 +127,15 @@ Enter
 Type "cfgd status"
 Enter
 Wait@60s /cfgd\$$/
-# 31 lines → 4.6s
-Sleep 4600ms
+# 32 lines → 4.7s
+Sleep 4700ms
 
 # Beat 4: the hunk. cfgd diff always runs the live scan — no --scan needed.
 Type "cfgd diff --module nvim"
 Enter
 Wait@60s /cfgd\$$/
-# 15 lines → 3.0s
-Sleep 3s
+# 14 lines → 2.9s
+Sleep 2900ms
 
 # Beat 5: heal it. `--phase files` scopes to the phase that owns the drifted
 # file — the nvim module's postApply hooks (plugin sync, go tool installs)
@@ -164,8 +165,8 @@ Enter
 Type "cfgd status -o wide"
 Enter
 Wait@60s /cfgd\$$/
-# 37 lines → 5.2s
-Sleep 5200ms
+# 34 lines → 4.9s
+Sleep 4900ms
 
 # Closing hold — the last beat's own hold already covers reading it; this is
 # only the breath before the loop snaps back.

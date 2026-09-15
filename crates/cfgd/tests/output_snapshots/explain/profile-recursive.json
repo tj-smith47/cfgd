@@ -250,6 +250,17 @@
           "type": "string"
         },
         {
+          "description": "Which layer owns this unit's schedule. `Cluster` (the default) lets a cluster `BackupPolicy` set or replace this unit's `schedule` and `retention`; `Local` pins the unit to the machine, so a policy reports it but projects no schedule onto it. Parsed case-insensitively.",
+          "enum": [
+            "Cluster",
+            "Local"
+          ],
+          "name": "scheduleOwner",
+          "required": false,
+          "type": "string",
+          "typeName": "ScheduleOwner"
+        },
+        {
           "description": "File or directory to snapshot. A leading `~` expands to the home directory. Must not contain, or sit inside, the resolved `destination` — a nested pair is rejected before any copy, with symlinks resolved on both sides. Its filename is what `{filename}` interpolates, so a source whose filename contains `:` (legal on Unix, a drive and data-stream separator on Windows) needs an explicit `namePattern` that leaves `{filename}` out.",
           "name": "source",
           "required": true,
@@ -481,7 +492,7 @@
             {
               "children": [
                 {
-                  "description": "Path to a package-list file to install from, one name per line.",
+                  "description": "Path to a package-list file to install from, one name per line. Relative to the config root.",
                   "name": "file",
                   "required": false,
                   "type": "string"
@@ -522,7 +533,7 @@
                   "type": "[]string"
                 },
                 {
-                  "description": "Path to a Brewfile to apply instead of (or alongside) `taps`, `formulae` and `casks`.",
+                  "description": "Path to a Brewfile to apply instead of (or alongside) `taps`, `formulae` and `casks`. Relative to the config root.",
                   "name": "file",
                   "required": false,
                   "type": "string"
@@ -563,7 +574,7 @@
             {
               "children": [
                 {
-                  "description": "Path to a `Cargo.toml` whose binaries to install instead of `packages`.",
+                  "description": "Path to a `Cargo.toml` whose binaries to install instead of `packages`. Relative to the config root.",
                   "name": "file",
                   "required": false,
                   "type": "string"
@@ -800,7 +811,7 @@
             {
               "children": [
                 {
-                  "description": "Path to a `package.json` to install dependencies from.",
+                  "description": "Path to a `package.json` to install dependencies from. Relative to the config root.",
                   "name": "file",
                   "required": false,
                   "type": "string"

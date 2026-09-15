@@ -21,7 +21,9 @@ wrote it. Add a modeline to the top of the file:
 # yaml-language-server: $schema=https://raw.githubusercontent.com/tj-smith47/cfgd/v<version>/schemas/cfgd-config.schema.json
 apiVersion: cfgd.io/v1alpha1
 kind: Config
-# ...
+metadata:
+  name: cfgd
+spec: {}
 ```
 
 Swap `<version>` for the cfgd release that wrote the file (`cfgd --version`), and
@@ -119,12 +121,28 @@ spec:
 | `spec.update.channel` | no | — | Release channel to track (e.g. `stable`, `prerelease`); unset uses cfgd's built-in default channel |
 | `spec.update.skills.policy` | no | `Inherit` | Authored-skill refresh policy: `Inherit` (follow `spec.update.policy`), `Auto`, `Prompt`, `Notify`, or `Manual` |
 | `spec.secrets.backend` | no | `sops` | `sops` or `age` (see [secrets.md](secrets.md) for when to use which) |
-| `spec.theme` | no | `default` | Theme name (string) or object with `name` + `overrides`. `--theme` / `CFGD_THEME` override the name for one invocation |
+| `spec.output.theme` | no | `default` | Theme name (string) or object with `name` + `overrides`. `--theme` / `CFGD_THEME` override the name for one invocation |
 | `spec.fileStrategy` | no | `Symlink` | `Symlink`, `Copy`, `Template`, or `Hardlink` (Windows: `Symlink` requires Developer Mode or elevation) |
 | `spec.aliases.<name>` | no | — | CLI command aliases (e.g. `add: "profile update --file"`) |
 | `spec.compliance` | no | — | Continuous compliance snapshot settings. Reports the effective desired state (profile + modules), and file checks are content-aware (see [spec/config.md](spec/config.md#speccompliance)) |
 | `spec.sources[].subscription.requireSignedCommits` | no | `false` | Demand a valid GPG or SSH signature on that source's HEAD commit. ORed with the source manifest's `constraints.requireSignedCommits`, so it only adds strictness (see [sources.md](sources.md#security-model)) |
-| `spec.usageHints` | no | `true` | Whether closing `→` usage hints render. `--no-hints` / `CFGD_USAGE_HINTS` override for one invocation (see [Global Flags](#global-flags)) |
+| `spec.output.usageHints` | no | `true` | Whether closing `→` usage hints render. `--no-hints` / `CFGD_USAGE_HINTS` override for one invocation (see [Global Flags](#global-flags)) |
+| `spec.output.maskEnvValues` | no | `All` | Which declared env values render masked: `All`, `Secrets` (only a name some `spec.secrets[].envs` exports) or `None`. `--mask-env-values` / `CFGD_MASK_ENV_VALUES` override for one invocation; `--show-values` is the per-verb alias for `None` |
+
+The three presentation keys live under `spec.output`:
+
+```yaml
+spec:
+  output:
+    theme: dracula
+    usageHints: true
+    maskEnvValues: All
+```
+
+`spec.theme` and `spec.usageHints` are the pre-`spec.output` spellings. cfgd still reads
+both and reports each as a deprecation naming its new path; the new key wins when both are
+set, and every writer (`cfgd config set`, `cfgd config unset`, `cfgd init`) writes the
+nested form and drops the flat key it read.
 
 All fields can be read and written programmatically via `cfgd config get <key>` and `cfgd config set <key> <value>`. See the [CLI reference](cli-reference.md) for details.
 
@@ -619,7 +637,9 @@ is computed from the target's *current* bytes:
 Declarative file/directory snapshots, including the `schedule` grammar (interval
 or cron) and the hook, retention and destination semantics, live in
 [Declarative Backups](backups.md); the field table is in the
-[Profile spec](spec/profile.md#specbackups).
+[Profile spec](spec/profile.md#specbackups). A unit is open to the cluster's
+[`BackupPolicy`](backup-policy.md) unless the profile pins it with
+`scheduleOwner: Local`.
 
 ## File locations
 
@@ -836,7 +856,7 @@ Run `cfgd paths` afterward to confirm the new locations.
 
 ## Linux
 
-On Linux, cfgd supports desktop environment-specific system configurators in addition to the cross-platform features:
+On Linux, cfgd supports desktop environment-specific system configurators in addition to the cross-platform features. A profile may still declare a configurator belonging to another platform: cfgd registers every configurator on every host, so the declaration is planned as a `System` skip naming the configurator and the reason, never reported as a key cfgd does not know.
 
 | Feature | Linux behavior |
 |---|---|
@@ -909,12 +929,13 @@ These flags work with any subcommand:
 | `--verbose` | `-v` | `CFGD_VERBOSE` | Show debug output (`-vv` = trace) |
 | `--quiet` | `-q` | `CFGD_QUIET` | Suppress all non-error output |
 | `--yes` | `-y` | `CFGD_YES` | Skip confirmation prompts (answer yes to every question). Accepted before or after the subcommand; what each command does under it is described on that command |
-| `--color <auto\|always\|never>` | | `CFGD_COLOR` | When to colorize terminal output. `auto` (default) follows the terminal, `NO_COLOR` and `TERM=dumb`; `always` colorizes even when stderr is not a terminal, for a pager that renders escapes (`less -R`) or a captured transcript; `never` disables it. Colour is never emitted under `-o json`/`yaml`/`name`/`jsonpath`/`template` whatever this says — an escape inside a payload string is corrupt data |
+| `--color <auto\|always\|never>` | | `CFGD_COLOR` | When to colorize terminal output. `auto` (default) follows the terminal, `NO_COLOR` and `TERM=dumb`; `always` colorizes even when stderr is not a terminal, for a pager that renders escapes (`less -R`) or a captured transcript; `never` disables it. Colour is never emitted under `-o json`/`name`/`jsonpath`/`template` whatever this says — an escape inside a payload string is corrupt data. `-o yaml` is the exception and follows this flag: its payload is syntax-highlighted when colour is on, and plain bytes under `never`, `NO_COLOR`, `TERM=dumb` or a non-terminal stdout |
 | `--no-color` | | `NO_COLOR` | Disable colored terminal output (alias for `--color never`) |
-| `--theme <name>` | | `CFGD_THEME` | Theme preset for this invocation. Replaces `spec.theme.name` only; `spec.theme.overrides` still apply on top. Unknown names are rejected at the flag with the preset list |
+| `--theme <name>` | | `CFGD_THEME` | Theme preset for this invocation. Replaces `spec.output.theme.name` only; `spec.output.theme.overrides` still apply on top. Unknown names are rejected at the flag with the preset list |
 | `--output <format>` | `-o` | | Output format: `table` (default), `wide`, `json`, `yaml`, `name`, `jsonpath=EXPR`, `template=TMPL`, `template-file=PATH` |
 | `--list-envelope` | | `CFGD_LIST_ENVELOPE` | Under `-o json`/`-o yaml`, wrap a top-level array in a KRM `List` envelope (`{apiVersion, kind: List, items}`) |
-| `--no-hints` | | `CFGD_USAGE_HINTS` | Suppress closing `→` usage hints for this invocation, dropping their leading blank line too. `--no-hints` outranks `CFGD_USAGE_HINTS`, which outranks `spec.usageHints`; all default to hints on. Note the polarity: the flag SUPPRESSES, the env var and config field name what stays ON (`CFGD_USAGE_HINTS=false` / `spec.usageHints: false` also suppress) |
+| `--no-hints` | | `CFGD_USAGE_HINTS` | Suppress closing `→` usage hints for this invocation, dropping their leading blank line too. `--no-hints` outranks `CFGD_USAGE_HINTS`, which outranks `spec.output.usageHints`; all default to hints on. Note the polarity: the flag SUPPRESSES, the env var and config field name what stays ON (`CFGD_USAGE_HINTS=false` / `spec.output.usageHints: false` also suppress) |
+| `--mask-env-values <all\|secrets\|none>` | | `CFGD_MASK_ENV_VALUES` | Which declared env values render masked. `all` (default) masks every value as `***` plus its last three characters; `secrets` masks only the values a declared secret exports (every name listed in a `spec.secrets[].envs` of the resolved chain) and renders the rest in full; `none` renders them all in full. The flag outranks `CFGD_MASK_ENV_VALUES`, which outranks `spec.output.maskEnvValues`. `--show-values` is the per-verb alias for `none` and conflicts with this flag |
 | `--scope <user\|system>` | | `CFGD_SCOPE` | Installation scope: `user` (default) or `system`. `system` switches all four directory roots to system/FHS defaults (`/etc/cfgd`, `/var/lib/cfgd`, …). See [System scope](configuration.md#system-scope). |
 | | | `CFGD_NO_UPDATE_CHECK` | Silence the automatic update check (see [Suppressing the automatic check](#suppressing-the-automatic-check)) |
 | | | `NO_UPDATE_NOTIFIER` | Same, via npm's `update-notifier` convention |

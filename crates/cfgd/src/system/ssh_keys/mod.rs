@@ -142,7 +142,10 @@ impl SshKeysConfigurator {
                 format!("Creating SSH directory: {}", dir.posix()),
             );
             fs::create_dir_all(dir)?;
-            cfgd_core::set_file_permissions(dir, 0o700)?;
+            // No-follow: this runs under the invoking user's HOME, which an
+            // elevated run does not own, so a swap between the create and the
+            // chmod would point 0700 at a directory root needs readable.
+            cfgd_core::set_file_permissions_nofollow(dir, 0o700)?;
         }
         Ok(())
     }
@@ -181,7 +184,7 @@ impl SshKeysConfigurator {
         // field is reserved for future secret-provider URI resolution.
         cmd.arg("-N").arg("");
 
-        let output = cmd.output().map_err(CfgdError::Io)?;
+        let output = cfgd_core::command_output(&mut cmd).map_err(CfgdError::Io)?;
 
         if !output.status.success() {
             return Err(CfgdError::Io(std::io::Error::other(format!(
@@ -205,7 +208,10 @@ impl SshKeysConfigurator {
                 path.posix()
             ),
         );
-        cfgd_core::set_file_permissions(path, mode)?;
+        // No-follow: the declared mode can be as wide as 0644, and the key path
+        // sits in a directory the invoking user owns, so following a symlink
+        // planted there would hand that mode to any file on the machine.
+        cfgd_core::set_file_permissions_nofollow(path, mode)?;
         Ok(())
     }
 }
@@ -217,6 +223,10 @@ impl SystemConfigurator for SshKeysConfigurator {
 
     fn is_available(&self) -> bool {
         cfgd_core::command_available("ssh-keygen")
+    }
+
+    fn required_tool(&self) -> Option<&'static str> {
+        Some("ssh-keygen")
     }
 
     fn current_state(&self) -> Result<serde_yaml::Value> {

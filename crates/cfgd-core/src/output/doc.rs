@@ -4,7 +4,7 @@ use serde::Serialize;
 
 use super::Role;
 use super::TitleLabel;
-use super::component::{CommandPair, Component, KvPair, StatusLabel};
+use super::component::{CommandPair, Component, KvPair, ScriptStep, ScriptsForm, StatusLabel};
 use super::renderer::Table;
 use super::{OwnerLabel, PaintedSubject, StatusTransition};
 
@@ -733,6 +733,22 @@ impl SectionBuilder {
             owner, /*keep_when_empty=*/ true,
         ));
         self.children.push(sb.into_component());
+        self
+    }
+
+    /// The script steps one lifecycle hook declares (see
+    /// [`Component::ScriptSteps`]). Reach it through
+    /// `cfgd_core::modules::scripts_section`, which is the one composer that
+    /// builds the steps.
+    pub fn script_steps(
+        mut self,
+        steps: impl IntoIterator<Item = ScriptStep>,
+        form: ScriptsForm,
+    ) -> Self {
+        self.children.push(Component::ScriptSteps {
+            steps: steps.into_iter().collect(),
+            form,
+        });
         self
     }
 

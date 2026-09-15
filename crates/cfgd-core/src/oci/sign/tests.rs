@@ -1002,7 +1002,8 @@ fn a_tls_registry_is_not_downgraded_for_cosign() {
 /// Every cosign subcommand cfgd spells resolves the artifact in its registry,
 /// so each one asks the same question about the scheme. A new one that forgets
 /// works against every TLS registry and fails only where the CSI driver and
-/// the operator are already configured to reach plain HTTP.
+/// the operator are already configured to reach plain HTTP. A subcommand that
+/// names no artifact at all says so with `// no-registry-ok: <why>`.
 #[test]
 fn every_cosign_subcommand_this_module_spells_declares_the_registry_scheme() {
     let source = include_str!("mod.rs");
@@ -1016,7 +1017,7 @@ fn every_cosign_subcommand_this_module_spells_declares_the_registry_scheme() {
             .map(|(_, rest)| rest.split('"').next().unwrap_or_default())
             .unwrap_or_default();
         assert!(
-            body.contains("apply_registry_scheme(&mut cmd"),
+            body.contains("apply_registry_scheme(&mut cmd") || body.contains("// no-registry-ok:"),
             "cosign {subcommand} reaches a registry but never declares its scheme"
         );
         checked += 1;

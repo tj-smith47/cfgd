@@ -10,23 +10,14 @@
   "modules": [
     {
       "error": null,
-      "name": "dotfiles",
-      "packages": [
+      "managers": [
         {
-          "installed": true,
-          "manager": "cargo",
-          "name": "bat",
-          "resolvedName": "bat",
-          "version": "0.24.0"
-        },
-        {
-          "installed": true,
-          "manager": "cargo",
-          "name": "ripgrep",
-          "resolvedName": "ripgrep",
-          "version": "14.1.0"
+          "available": true,
+          "name": "cargo",
+          "packageCount": 2
         }
       ],
+      "name": "dotfiles",
       "valid": true
     }
   ],
@@ -35,13 +26,15 @@
       "available": true,
       "canBootstrap": false,
       "declared": true,
-      "name": "cargo"
+      "name": "cargo",
+      "usedByModules": 1
     },
     {
       "available": true,
       "canBootstrap": false,
       "declared": false,
-      "name": "brew"
+      "name": "brew",
+      "usedByModules": 0
     }
   ],
   "profiles": [],

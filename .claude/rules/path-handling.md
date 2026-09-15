@@ -36,7 +36,11 @@ Anywhere a path crosses into a value that must agree across operating systems:
   `secret:decrypt:…`. These land in SQLite and are matched by exact string equality on
   every reconcile tick, so they take the unconditional `to_posix_string` fold —
   `posix()` is a `cfg(windows)` display adapter and folds nothing on a POSIX host
-- **state / lockfiles** — anything serialized to JSON, YAML, or SQLite
+- **state / lockfiles** — anything serialized to JSON, YAML, or SQLite, the `-o json`
+  payload of a command included (a consumer reads it on another host);
+  `no_serialized_payload_slot_renders_a_path_with_the_host_separator`
+  (`crates/cfgd/src/cli/tests.rs`) walks both crates for a native render inside a
+  `json!` literal or a literal of a type serde serializes
 - **snapshot goldens** — route the captured output through `normalize_for_snapshot`
 - **effective config** — `effective.rs` is host-agnostic; its rendered paths fold
 - **env-file / rc-file bodies** — content written into shell files consumed cross-OS
@@ -66,7 +70,8 @@ tracing::warn!("cannot read {}", path.display()); // native-ok: log line, not a 
 tracing::info!("daemon: health endpoint at {ipc_path}"); // native-ok: journal line, not a display slot
 ```
 
-The hook flags **newly-added** native renders only; the documented legacy baseline
+The hook flags **newly-added** native renders only, across `cfgd-core/src` and
+`cfgd/src` alike; the documented legacy baseline
 (`grep -rn '\.display()\|to_string_lossy()' crates/cfgd-core/src`) is swept
 separately. Never reintroduce a native render for a string that must match across
 OSes — reach for the helper above.

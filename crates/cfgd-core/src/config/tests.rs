@@ -164,6 +164,29 @@ fn parse_profile_yaml() {
 }
 
 #[test]
+fn backup_spec_schedule_owner_round_trips() {
+    let yaml = "\
+apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: base
+spec:
+  backups:
+    - name: notes
+      source: ~/notes
+      scheduleOwner: local
+";
+    let doc: ProfileDocument = serde_yaml::from_str(yaml).expect("profile parses");
+    assert_eq!(doc.spec.backups[0].schedule_owner, ScheduleOwner::Local);
+
+    let rendered = serde_yaml::to_string(&doc.spec.backups[0]).expect("serialize");
+    assert!(
+        rendered.contains("scheduleOwner: Local\n"),
+        "the pin survives a re-serialize: {rendered}"
+    );
+}
+
+#[test]
 fn merge_env_override() {
     let layer1 = ProfileLayer {
         source: "local".into(),
@@ -420,6 +443,42 @@ spec:
     assert_eq!(
         resolved.merged.packages.cargo.as_ref().unwrap().packages,
         vec!["bat", "exa"]
+    );
+}
+
+/// A profile whose declared step has nothing to run is refused while the
+/// profile is resolved, which is the only path a machine with no
+/// `spec.sources` ever takes: composition is skipped outright there, so a
+/// refusal living only in the compose engine would let a blank step reach an
+/// apply on every solo machine.
+#[test]
+fn a_profile_script_step_with_a_blank_run_is_refused_while_the_profile_resolves() {
+    let dir = tempfile::tempdir().unwrap();
+
+    std::fs::write(
+        dir.path().join("solo.yaml"),
+        r#"
+apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: solo
+spec:
+  scripts:
+    postApply:
+      - echo applied
+      - "   "
+"#,
+    )
+    .unwrap();
+
+    let err = resolve_profile("solo", dir.path())
+        .expect_err("a blank step must be refused as the profile resolves")
+        .to_string();
+    assert!(
+        err.contains("profile")
+            && err.contains("scripts.postApply[1]")
+            && err.contains("empty 'run'"),
+        "the refusal names the hook and the step it judged, got: {err}"
     );
 }
 
@@ -1211,7 +1270,8 @@ metadata:
   name: my-workstation
 spec:
   profile: work
-  theme: default
+  output:
+    theme: default
 "#;
     let config: CfgdConfig = serde_yaml::from_str(yaml).unwrap();
     assert!(config.spec.ai.is_none());
@@ -2338,6 +2398,162 @@ fn legacy_theme_key_lists_stay_consistent_with_theme_overrides_schema() {
     }
 }
 
+/// `LEGACY_OUTPUT_KEYS` is a hand-written table of dotted paths, not values
+/// read off either struct. This derives both live field sets from their own
+/// `schemars` schemas, so an entry stops matching the code the moment a flat
+/// key comes back onto `ConfigSpec` or a nested path moves off `OutputConfig`.
+#[test]
+fn legacy_output_key_lists_stay_consistent_with_the_config_schema() {
+    fn properties_of(schema: &serde_json::Value) -> std::collections::BTreeSet<&str> {
+        schema
+            .get("properties")
+            .and_then(|p| p.as_object())
+            .expect("schema carries a properties object")
+            .keys()
+            .map(String::as_str)
+            .collect()
+    }
+
+    let spec_schema = serde_json::to_value(schemars::schema_for!(super::ConfigSpec))
+        .expect("ConfigSpec schema serializes to a Value");
+    let spec_fields = properties_of(&spec_schema);
+    let output_schema = serde_json::to_value(schemars::schema_for!(super::OutputConfig))
+        .expect("OutputConfig schema serializes to a Value");
+    let output_fields = properties_of(&output_schema);
+
+    assert!(
+        spec_fields.contains("output"),
+        "every entry replaces a flat key with a `spec.output.*` path, but ConfigSpec \
+         has no `output` field"
+    );
+    for (old, new) in super::parse::LEGACY_OUTPUT_KEYS {
+        let flat = old
+            .strip_prefix("spec.")
+            .expect("a legacy output key is spec-rooted");
+        assert!(
+            !spec_fields.contains(flat),
+            "LEGACY_OUTPUT_KEYS calls '{old}' legacy, but ConfigSpec has a live field \
+             called '{flat}' — the flat key came back and the deprecation is a false alarm"
+        );
+        let nested = new
+            .strip_prefix("spec.output.")
+            .unwrap_or_else(|| panic!("'{new}' must name a key under spec.output"));
+        assert!(
+            output_fields.contains(nested),
+            "LEGACY_OUTPUT_KEYS points '{old}' at '{new}', but OutputConfig has no live \
+             field called '{nested}' — the rename target itself has moved"
+        );
+    }
+}
+
+/// A document still carrying the flat keys loads: each folds into
+/// `spec.output`, each is reported once as a deprecation naming its
+/// replacement, and each is listed for `cfgd doctor` to render as a row.
+#[test]
+fn a_flat_presentation_key_folds_into_the_output_block_and_deprecates() {
+    let yaml = r#"
+apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: legacy
+spec:
+  theme: dracula
+  usageHints: false
+"#;
+    let cfg = super::parse_config(yaml, std::path::Path::new("cfgd.yaml")).expect("parses");
+    assert_eq!(
+        cfg.spec.theme().map(|t| t.name.as_str()),
+        Some("dracula"),
+        "the flat theme must be readable at spec.output.theme"
+    );
+    assert_eq!(cfg.spec.usage_hints(), Some(false));
+    assert_eq!(
+        cfg.legacy_output_keys,
+        vec!["spec.theme".to_string(), "spec.usageHints".to_string()]
+    );
+    for (old, new) in super::parse::LEGACY_OUTPUT_KEYS {
+        let reported = cfg
+            .deprecations
+            .iter()
+            .find(|d| d.contains(old) && d.contains(new))
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected a deprecation naming {old} and {new}, got: {:?}",
+                    cfg.deprecations
+                )
+            });
+        // A deprecation tells the reader what to do now. A release it names no
+        // number for, and a "for now" the reader cannot date, are both a
+        // schedule cfgd does not keep.
+        for hedge in ["for now", "future release", "will be removed"] {
+            assert!(
+                !reported.contains(hedge),
+                "the deprecation for {old} dates itself against nothing: {reported}"
+            );
+        }
+        assert!(
+            reported.contains("Move the key"),
+            "the deprecation for {old} must say what to do: {reported}"
+        );
+    }
+}
+
+/// Both spellings written, the nested one wins and the flat one is reported as
+/// ignored rather than as a plain move.
+#[test]
+fn the_nested_presentation_key_wins_over_the_flat_one_it_duplicates() {
+    let yaml = r#"
+apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: both
+spec:
+  theme: dracula
+  output:
+    theme: nord
+"#;
+    let cfg = super::parse_config(yaml, std::path::Path::new("cfgd.yaml")).expect("parses");
+    assert_eq!(cfg.spec.theme().map(|t| t.name.as_str()), Some("nord"));
+    assert!(
+        cfg.deprecations
+            .iter()
+            .any(|d| d.contains("both set") && d.contains("spec.output.theme")),
+        "expected the both-set deprecation, got: {:?}",
+        cfg.deprecations
+    );
+}
+
+/// The nested block alone is the quiet path: nothing deprecated, nothing for
+/// `doctor` to report.
+#[test]
+fn the_nested_output_block_alone_reports_no_legacy_key() {
+    let yaml = r#"
+apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: modern
+spec:
+  output:
+    theme: nord
+    usageHints: false
+    maskEnvValues: none
+"#;
+    let cfg = super::parse_config(yaml, std::path::Path::new("cfgd.yaml")).expect("parses");
+    assert_eq!(cfg.spec.theme().map(|t| t.name.as_str()), Some("nord"));
+    assert_eq!(cfg.spec.usage_hints(), Some(false));
+    assert_eq!(
+        cfg.spec.mask_env_values(),
+        Some(super::MaskEnvValues::None),
+        "maskEnvValues has no flat spelling and reads only from the nested block"
+    );
+    assert!(cfg.legacy_output_keys.is_empty());
+    assert!(
+        cfg.deprecations.is_empty(),
+        "the nested block deprecates nothing, got: {:?}",
+        cfg.deprecations
+    );
+}
+
 /// Resolve the primary package list a bare-list form should populate, for a
 /// given manager field name, so the table test can assert both forms agree.
 fn primary_list_for(spec: &PackagesSpec, manager: &str) -> Vec<String> {
@@ -2875,7 +3091,7 @@ fn scan_profiles_tolerant_missing_dir_is_empty() {
 
 #[cfg(unix)]
 #[test]
-fn scan_profiles_tolerant_unreadable_dir_errors() {
+fn scan_profiles_tolerant_unreadable_dir_errors_as_non_root() {
     use std::os::unix::fs::PermissionsExt;
     if crate::is_root() {
         return; // root bypasses mode bits; the denial cannot be simulated

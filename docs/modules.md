@@ -96,7 +96,7 @@ Gating comes at three levels, each the same field with the same tag vocabulary:
 | Level | Field | Gated-out behavior |
 |-------|-------|--------------------|
 | Module | `spec.platforms` | The module is skipped whole, and shows as a **Skipped** action. |
-| Package | `spec.packages[].platforms` | The package is not installed; `cfgd module show` lists it as `skipped (platform filter)`. |
+| Package | `spec.packages[].platforms` | The package is not installed; `cfgd module show --resolved` lists it as `skipped (platform filter)`. |
 | Entry | `spec.env[].platforms`, `spec.aliases[].platforms` | The entry is absent from this machine's desired state entirely; the document surfaces annotate it `(platforms: macos)`. |
 
 Use `spec.platforms` for a wholly platform-specific module, the per-package
@@ -152,6 +152,8 @@ declarations fold together rather than replace one another); on Linux only the f
 | `onlyIf` | no | string | Idempotency guard for a `prefer: [script]` install: run only if this command exits zero. Ignored for manager-backed installs |
 | `unless` | no | string | Idempotency guard for a `prefer: [script]` install: run only if this command exits non-zero. Ignored for manager-backed installs |
 | `platforms` | no | list | Platform filter — skip on non-matching platforms. Values: OS (`linux`, `macos`), distro (`ubuntu`, `fedora`, `arch`), or arch (`x86_64`, `aarch64`) |
+
+An entry that resolves to `brew-tap` declares a Homebrew tap. cfgd grants a declared tap Homebrew's trust before adding it, because current Homebrew reads a tap's index while tapping and refuses a tap it has not been told to trust. The row that adds the tap says `trusted first`.
 
 ### File Entry Fields
 
@@ -263,18 +265,21 @@ The full resolution logic for each package entry:
    - If the candidate is `"script"`, the `script` field must be present (error if missing). Scripts are always considered "available," and version checks are skipped (the script manages its own versioning). See [Script Execution](#script-execution) below.
    - Otherwise, check that the manager is installed and available on this machine. If not, skip to the next candidate.
    - Resolve the package name: use `aliases[manager]` if present, otherwise fall back to `name`.
-   - If `minVersion` is specified, query the manager for the available version. If the package is not found or the version is below the minimum, skip this manager.
+   - If `minVersion` is specified, query the manager for the available version. A manager that offers a version below the minimum is skipped. A manager that cannot state what it offers at all (its index is unreachable, or the manager lists no available versions) has shown nothing about the floor, so the candidate stands: it resolves with no version, and the floor is carried to the live check, which reports it as a check that could not run.
    - If all checks pass, the manager is selected.
-4. **If no candidate satisfies:** cfgd collects all available managers and their versions, then presents an interactive prompt:
+4. **If no candidate satisfies:** resolution fails and the run stops, naming the package, its module and which of the two things happened. Either no manager for it is on this host at all:
    ```
-   Package 'neovim' (minVersion: 0.9) could not be resolved automatically.
-   Available options:
-     [ ] apt — neovim 0.6.1 (below minimum)
-     [ ] snap — nvim 0.10.2
-     [ ] brew — neovim 0.10.2 (not installed, can bootstrap)
-   Select managers to use, or skip:
+   ✗ package 'neovim' in module 'demo' cannot be resolved: no manager for it is available on this host, and none can be bootstrapped
    ```
-   You can select one or more, or skip the package (it will be recorded as skipped in the plan).
+   or every manager that could be asked proved it offers too old a copy:
+   ```
+   ✗ package 'neovim' in module 'demo' cannot be resolved: every available manager offers a version below the declared minVersion 99.0
+   ```
+   A manager that could not be asked successfully is neither of those, and never ends the run.
+   A candidate cfgd can bootstrap counts as satisfying: it resolves optimistically (no version can be queried before the manager itself exists), and `cfgd diff` names the route the bootstrap would take:
+   ```
+   ⚠ chocolatey: not installed — can provision via system
+   ```
 5. **When `prefer` has multiple entries and no `minVersion`:** the first available manager wins. No version check is needed.
 
 ### Version Comparison
@@ -573,7 +578,7 @@ holding managed state, modules among them:
 Component Health (checked 3m ago)
   ✓ profile:work — Synced (2 packages, 1 file)
   ✓ cfgd:env     — Synced (1 env file)
-  ✓ module:nvim  — Synced (3 packages, 12 files, 2 scripts)
+  ✓ module:nvim  — Synced (3 packages, 12 files)
   ○ module:git   — NotApplied
 ```
 
@@ -581,8 +586,9 @@ The heading's annotation dates the recorded drift verdicts: how long ago the
 machine was last checked, or `(drift never checked)` when no scan has ever
 run. A row only reads `Synced` where a check actually covered that owner — a
 machine-wide scan, or a scoped (`--module`) one that stamped that module. An
-owner nothing has checked reads `Installed` instead, the record's own fact. The counts are taken from the rows the `Managed Resources` table below
-paints rather than from any declaration, so a health line and the rows under
+owner nothing has checked reads `Applied` instead, the record's own fact. The
+counts are taken from the rows the `Managed Resources` table below paints
+rather than from any declaration, so a health line and the rows under
 it cannot disagree; a kind an owner holds none of is dropped rather than
 rendered as `0`, and an owner holding nothing reads its bare verdict. The
 verdict leads and the counts are its parenthetical: a `Failed` or `Drifted`
@@ -598,12 +604,13 @@ Each module is tracked independently. cfgd stores a hash of the resolved package
 - **File drift:** do deployed files still match the source content?
 - **Git source drift:** for modules with git file sources, have new commits appeared upstream since the last apply?
 
-A module reads as one of six states:
+A module reads as one of seven states:
 
 | State | Meaning | Where it can appear |
 |---|---|---|
 | `Synced` | converged, with every check behind it answered | any status surface where a check covers the module |
-| `Installed` | its last apply completed and no check has looked since | any status surface with no scan on record for the module |
+| `Applied` | its last apply completed and no check has looked since | any status surface with no scan on record for the module |
+| `Installed` | the module is on this machine, presence rather than convergence | `cfgd module list` |
 | `Drifted` | a live scan found a package missing or a file diverged | only `--scan` (and `--exit-code`, which implies it) |
 | `Unknown` | a check of its own could not run, so no verdict was reached | any surface reporting an erroring check |
 | `Failed` | its last apply had a failing action | any status surface |
@@ -617,9 +624,10 @@ The `-o json` payload's `status` field carries the stored token instead
 (`installed`, `error`, `not applied`).
 
 `cfgd status --module <name>` reports the declared counts and the drift a scan
-found; `-o wide` itemizes each surface instead, and `--show-values` adds the
-declared values and full script bodies (see
-[`cfgd status`](cli-reference.md#cfgd-status)).
+found; `-o wide` itemizes each surface instead and `--show-values` adds the
+declared env values (see [`cfgd status`](cli-reference.md#cfgd-status)). It
+states nothing about the module's scripts, because nothing checks a script after
+the run that executes it: `cfgd module show <name>` lists them.
 
 Module resources are first-class in compliance reporting, not profile-only. A module's files, packages, and system settings appear in every `cfgd compliance` surface (snapshot, export, diff, history), attributed to their module, and are counted into the compliance summary a device check-in reports: the same effective profile-plus-modules view that `cfgd verify` and `cfgd diff` use. Module file checks are content-aware: a deployed module file present on disk but whose bytes drifted from its source is reported as a violation.
 
@@ -632,9 +640,9 @@ Plan
   Config   ~/.config/cfgd/cfgd.yaml
   Profile  work
   Modules  nvim
-  Phases   Prerequisites, Packages, Files, Post-Scripts
+  Phases   Bootstrap, Packages, Files, Post-Scripts
 
-Phase: Prerequisites
+Phase: Bootstrap
   cfgd:managers
     - refresh apt index
     - refresh brew index
@@ -748,19 +756,22 @@ A source that delivers only modules (no profiles) is valid; see [Source-Delivere
 ## CLI Commands
 
 ```sh
-cfgd module list                    # list modules and their status
-cfgd module show nvim               # show details: packages, files, deps, resolved managers
-cfgd module show nvim --show-values # reveal full env variable values (masked by default)
-cfgd module create my-tool          # create a new local module
+cfgd module list                           # list modules and their status
+cfgd module show nvim                      # what the module declares: packages, files, env, scripts
+cfgd module show nvim --resolved           # what this host resolves the declaration to
+cfgd module show nvim --show-values        # reveal full env variable values (masked by default)
+cfgd module show nvim --show-scripts       # print each script's full body
+cfgd module show nvim --show-all           # both of the above
+cfgd module create my-tool                 # create a new local module
 cfgd module update nvim --package ripgrep  # modify a module
-cfgd module edit nvim               # open in $EDITOR
-cfgd module delete nvim             # restore adopted files, delete module
-cfgd module delete nvim --purge     # remove deployed target files, delete module
+cfgd module edit nvim                      # open in $EDITOR
+cfgd module delete nvim                    # restore adopted files, delete module
+cfgd module delete nvim --purge            # remove deployed target files, delete module
 ```
 
 The same discover → edit → preview → apply loop drives every authoring command:
 
-![the CLI authoring loop: explain a field, update the config, plan, apply](../demo/cfgd-author.gif)
+![the CLI authoring loop: show a module's declared inventory, explain a field, update the config, plan, apply](../demo/cfgd-author.gif)
 
 ### File Adoption
 
@@ -784,6 +795,27 @@ cfgd profile update --module community/tmux             # registry module, lates
 cfgd profile update --module community/tmux@tmux/v2.0   # registry module, pinned tag
 cfgd profile update --module https://github.com/jane/cfgd-tmux@v2.0   # git URL
 ```
+
+Before the prompt, cfgd prints what it is about to add: the commit and integrity hash, then the packages, files, aliases and environment variables the module declares. A module declaring post-apply scripts gets a warning row counting them, the hook name, and every step in full, in the same form `cfgd module show --show-scripts` uses: a line stating the step's position and the knobs it declares, then the body itself, highlighted.
+
+```
+module:nvim
+  Commit     c0ffee
+  Integrity  sha256:dec0
+  ⚠ Post-apply scripts (2) — these will execute on your machine:
+  postApply
+    1/2 · timeout 120s · continueOnError
+    set -eu
+    if ! command -v jq >/dev/null; then
+      echo "jq missing" >&2
+      exit 1
+    fi
+
+    2/2
+    jq --version\x0d
+```
+
+Nothing is shortened or re-indented, and a control character in a body shows as visible text (the `\x0d` above is a carriage return), so what you read is what will run.
 
 The remote-module install prompts for confirmation before writing the lockfile. In non-interactive contexts (CI, Dockerfiles, scripts, `-o json`) pass `-y` / `--yes` (or set `CFGD_YES`) to skip the prompt, and `--allow-unsigned` to install a module without a valid signature when `requireSignatures` is enabled:
 
@@ -847,6 +879,24 @@ cfgd init --from https://gitlab.example.com/jane/dotfiles.git --apply-module nvi
 
 Clones the repo, finds the module, resolves deps, detects platform, and applies only that module.
 
+## Modules in a Cluster
+
+`cfgd module push <dir> --artifact <ref> --apply` publishes the module to an OCI registry and
+registers it as a cluster-scoped `Module` resource in one step. The resource carries the same
+surface the local `module.yaml` declares: `platforms`, `depends`, `packages` (with `minVersion`,
+`prefer`, `deny`, per-manager name overrides in `aliases` and gating `platforms` tags), `files`
+(with `strategy`, `private`, `permissions`, `encryption` and a `patch` block), `env`, `aliases`,
+`system`, and the lifecycle hooks under `spec.hooks`. A module read back out of the cluster
+declares what its author wrote.
+
+One thing stays off the resource, because nothing cluster-side runs it: a package entry's four
+script-install knobs (`script`, `onlyIf`, `unless`, `creates`). They steer a shell install on a
+machine the agent is reconciling, and the cluster installs nothing.
+
+`spec.hooks` (the agent's inline hook bodies) is distinct from `spec.scripts.postApply`, which is
+a relative script path inside the artifact that the pod-mutating webhook runs in an init
+container. See [operator.md](operator.md#module) for the full CRD field table.
+
 ## Security
 
 ### Signature Verification
@@ -882,11 +932,12 @@ with [cosign](https://github.com/sigstore/cosign). cfgd uses two distinct trust 
   ```
   `--key` also accepts a KMS URI (`awskms://`, `azurekms://`, `gcpkms://`, `hashivault://`,
   `k8s://`) or a PKCS#11 URI (`pkcs11:token=...;object=...`, RFC 7512, HSM-backed keys); both
-  are passed straight through to cosign. cfgd cannot derive a public key from a sibling
-  `cosign.pub` file for these (there is no filesystem path to look next to), so `cfgd module push
-  --sign --key <kms-or-pkcs11-uri>` warns and leaves `spec.signature.cosign.publicKey` unset:
-  run `cosign public-key --key <uri>` and set it manually if the operator enforces
-  `disallowUnsigned`.
+  are passed straight through to cosign. There is no filesystem path to look for a sibling
+  `cosign.pub` beside, so `cfgd module push --sign --key <kms-or-pkcs11-uri>` asks cosign
+  itself (`cosign public-key --key <uri>`) and records the answer in
+  `spec.signature.cosign.publicKey`. If that call fails, because the host holds no
+  credentials for the key or the token is not plugged in, cfgd warns and leaves the field
+  unset, and the module fails the operator's `disallowUnsigned` check until it is set.
 - **Keyless (Fulcio/Rekor).** Omit `--key` to sign with a short-lived certificate from the public
   Sigstore infrastructure; the signature is recorded in the Rekor transparency log. Verify with
   certificate identity/issuer constraints:

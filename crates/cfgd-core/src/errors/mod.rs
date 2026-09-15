@@ -42,6 +42,9 @@ pub enum CfgdError {
     #[error(transparent)]
     Secret(#[from] SecretError),
 
+    #[error(transparent)]
+    System(#[from] SystemError),
+
     #[error("state error: {0}")]
     State(#[from] StateError),
 
@@ -91,6 +94,7 @@ impl CfgdError {
             Self::File(_) => "file",
             Self::Package(_) => "package",
             Self::Secret(_) => "secret",
+            Self::System(_) => "system",
             Self::State(_) => "state",
             Self::Daemon(_) => "daemon",
             Self::Source(_) => "source",
@@ -264,7 +268,7 @@ pub enum FileError {
 #[derive(Debug, thiserror::Error)]
 pub enum PackageError {
     // The manager IS registered, and two paths reach it: a `--phase packages`
-    // run that bypassed the `Prerequisites` phase, and an unfiltered run whose
+    // run that bypassed the `Bootstrap` phase, and an unfiltered run whose
     // provision node FAILED — the install is not a dependent of that node, so
     // it is still dispatched and still asks. Naming a filter is therefore a
     // guess, and it read as one ("or drop --phase" against a command line
@@ -272,7 +276,7 @@ pub enum PackageError {
     // provisioning, which is where the filtered run's recovery and the failed
     // run's reason both live.
     #[error(
-        "{manager} is not provisioned — provisioning is the Prerequisites phase's: `cfgd apply --phase prerequisites.managers`"
+        "{manager} is not provisioned — provisioning is the Bootstrap phase's: `cfgd apply --phase bootstrap.managers`"
     )]
     ManagerNotAvailable { manager: String },
 
@@ -302,7 +306,7 @@ pub enum PackageError {
 
     // The manager is not registered at all — no phase can provision a name
     // that does not exist, so this carries no phase-run guidance (unlike
-    // `ManagerNotAvailable`, whose recovery is always the `Prerequisites`
+    // `ManagerNotAvailable`, whose recovery is always the `Bootstrap`
     // phase).
     #[error("package manager '{manager}' not available")]
     ManagerNotFound { manager: String },
@@ -331,7 +335,7 @@ pub enum PackageError {
     #[error("{manager} lane ended without reporting — this action never ran to completion")]
     LaneLost { manager: String },
 
-    // A `Prerequisites` node whose dependency failed. It never ran: what it was
+    // A `Bootstrap` node whose dependency failed. It never ran: what it was
     // waiting to be handed does not exist, so running it anyway would be the
     // silent bootstrap that phase exists to replace. Named after the ROOT
     // failure rather than the nearest link, so the line points at what to fix.
@@ -341,7 +345,7 @@ pub enum PackageError {
 
 #[derive(Debug, thiserror::Error)]
 pub enum SecretError {
-    #[error("sops not found — install: https://github.com/getsops/sops#install")]
+    #[error("sops not found — run `cfgd doctor --fix` to install it")]
     SopsNotFound,
 
     #[error("sops encryption failed for {path}: {message}")]
@@ -571,6 +575,13 @@ pub enum BackupError {
         target: PathBuf,
         destination: PathBuf,
     },
+}
+
+/// A `SystemConfigurator` could not be driven.
+#[derive(Debug, thiserror::Error)]
+pub enum SystemError {
+    #[error("'{configurator}' is unavailable: {tool} is not on PATH")]
+    ConfiguratorUnavailable { configurator: String, tool: String },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -868,13 +879,11 @@ pub enum ModuleError {
         platforms: String,
     },
 
-    #[error(
-        "package '{package}' in module '{module}' cannot be resolved: no available manager satisfies the requirements (minVersion: {min_version})"
-    )]
+    #[error("package '{package}' in module '{module}' cannot be resolved: {reason}")]
     UnresolvablePackage {
         module: String,
         package: String,
-        min_version: String,
+        reason: String,
     },
 
     #[error("failed to fetch git source for module '{module}': {url}: {message}")]
@@ -1060,6 +1069,11 @@ mod tests {
                 "Secret",
                 None,
                 "every variant names sops, a provider, a path or a reference",
+            ),
+            (
+                "System",
+                None,
+                "the one variant names the configurator and the tool",
             ),
             (
                 "State",

@@ -141,7 +141,7 @@ fn scaffold_creates_structure() {
 
 #[cfg(unix)]
 #[test]
-fn scaffold_readonly_dir_yields_target_not_writable_with_path_and_hint() {
+fn scaffold_readonly_dir_yields_target_not_writable_with_path_and_hint_as_non_root() {
     use std::os::unix::fs::PermissionsExt;
 
     // Root bypasses mode bits; the 0o500 dir is writable to uid 0, so the probe
@@ -376,7 +376,7 @@ fn scaffold_includes_default_theme() {
 
     scaffold(dir.path(), Some("test"), None, &printer).unwrap();
     let cfg = config::load_config(&dir.path().join("cfgd.yaml")).unwrap();
-    assert_eq!(cfg.spec.theme.unwrap().name, "default");
+    assert_eq!(cfg.spec.theme().unwrap().name, "default");
 }
 
 #[test]
@@ -386,7 +386,7 @@ fn scaffold_with_custom_theme() {
 
     scaffold(dir.path(), Some("test"), Some("minimal"), &printer).unwrap();
     let cfg = config::load_config(&dir.path().join("cfgd.yaml")).unwrap();
-    assert_eq!(cfg.spec.theme.unwrap().name, "minimal");
+    assert_eq!(cfg.spec.theme().unwrap().name, "minimal");
 }
 
 #[test]
@@ -629,6 +629,12 @@ fn check_prerequisites_returns_true_when_git_available() {
     // tested, so nothing would notice it breaking.
     let _path_lock = cfgd_core::test_helpers::path_env_mutation_guard();
     let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+    let _paths = cfgd_core::test_helpers::CommandPathMemoTtlGuard::always_expired();
+    let _avail = cfgd_core::test_helpers::AvailabilityMemoTtlGuard::always_expired();
+    // A manager answers available from its own install prefix as well as from
+    // PATH, so the missing-git arm below would otherwise put this host's real
+    // package manager to work installing git.
+    let _managers = cfgd_core::test_helpers::NoHostManagers::pinned_missing();
 
     {
         let _probe = cfgd_core::test_helpers::ProbePath::containing(&["git"]);
@@ -2091,6 +2097,14 @@ fn ensure_dir_writable_nonexistent_path_returns_ok() {
 fn check_prerequisites_with_test_printer() {
     let _path_lock = cfgd_core::test_helpers::path_env_mutation_guard();
     let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+    // The memos outlive the empty-PATH window they were filled outside of, so
+    // a sibling's probe would answer "brew is available" here and cfgd would
+    // spawn it.
+    let _paths = cfgd_core::test_helpers::CommandPathMemoTtlGuard::always_expired();
+    let _avail = cfgd_core::test_helpers::AvailabilityMemoTtlGuard::always_expired();
+    // A manager answers available from its own install prefix as well as from
+    // PATH, so an emptied PATH alone would still leave one for cfgd to spawn.
+    let _managers = cfgd_core::test_helpers::NoHostManagers::pinned_missing();
 
     {
         let _probe = cfgd_core::test_helpers::ProbePath::containing(&["git"]);
@@ -2115,8 +2129,49 @@ fn check_prerequisites_with_test_printer() {
         "should show error when git is missing, got: {output}"
     );
     assert!(
-        output.contains("Install with `"),
-        "the install hint is the actionable half of the message: {output}"
+        output.contains("apt"),
+        "with no manager to install git the refusal names the ones that would have: \
+         {output}"
+    );
+}
+
+/// git missing at `cfgd init` is a machine cfgd can repair, so it installs it
+/// rather than ending on an install hint the reader has to carry out.
+///
+/// `init` names no other tool: its whole prerequisite is the git it clones and
+/// commits with.
+#[cfg(unix)]
+#[test]
+#[serial_test::serial]
+fn check_prerequisites_installs_git_through_the_tool_table() {
+    let _path_lock = cfgd_core::test_helpers::path_env_mutation_guard();
+    let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+    let _paths = cfgd_core::test_helpers::CommandPathMemoTtlGuard::always_expired();
+    let _avail = cfgd_core::test_helpers::AvailabilityMemoTtlGuard::always_expired();
+    // Every other manager is pinned missing first, so the shim below is the
+    // only thing on this host `provision_tool` can reach.
+    let _managers = cfgd_core::test_helpers::NoHostManagers::pinned_missing();
+    let shim = cfgd_core::test_helpers::ToolShim::install("CFGD_BREW_BIN", 0, "", "");
+    let _empty = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
+
+    let (printer, cap) = Printer::for_test_doc();
+    let result = check_prerequisites(&printer);
+    drop(printer);
+
+    let argv = shim.argv_log();
+    assert!(
+        argv.lines().any(|l| l == "install git"),
+        "brew is the one manager this host can reach, and the table names `git` as its \
+         package: {argv}"
+    );
+    let output = cap.human();
+    assert!(
+        !result,
+        "the shimmed install lands no binary, so the probe after it still fails: {output}"
+    );
+    assert!(
+        output.contains("still not on PATH after brew installed git"),
+        "and the refusal says the install ran and did not land it: {output}"
     );
 }
 
@@ -2413,20 +2468,16 @@ fn sign_with_ssh_does_not_hang_when_key_prompts_on_stdin() {
     // stdin (`cat`) stands in for the prompt: with stdin closed it returns at
     // EOF; without the fix it would block until the test timed out.
     let tmp = tempfile::tempdir().unwrap();
-    let bin_dir = tmp.path().join("fakebin");
-    std::fs::create_dir_all(&bin_dir).unwrap();
-    let fake = bin_dir.join("ssh-keygen");
+    let fake = tmp.path().join("ssh-keygen");
     std::fs::write(&fake, b"#!/bin/sh\ncat > /dev/null\nexit 1\n").unwrap();
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
-
-    let original_path = std::env::var_os("PATH").unwrap_or_default();
-    let mut path_entries: Vec<std::path::PathBuf> = vec![bin_dir.clone()];
-    path_entries.extend(std::env::split_paths(&original_path));
-    let new_path = std::env::join_paths(&path_entries).unwrap();
-    let _path_guard = cfgd_core::test_helpers::EnvVarGuard::set(
-        "PATH",
-        new_path.to_str().expect("PATH must be valid UTF-8"),
+    // The stand-in reads stdin to standing still, so it is reached through the
+    // seam rather than through `PATH`: the signing call runs on a worker
+    // thread, and the `PATH` window is exclusive to the thread that opened it.
+    let _seam = cfgd_core::test_helpers::EnvVarGuard::set(
+        "CFGD_SSH_KEYGEN_BIN",
+        fake.to_str().expect("shim path must be valid UTF-8"),
     );
 
     // Run the signing call on a worker thread and assert it returns promptly.
@@ -2554,30 +2605,19 @@ fn detect_ssh_key_ssh_agent_path_returns_disk_key_when_agent_has_identities() {
     // NOT contain "no identities", and a disk key exists → the agent-path
     // returns it. Uses a fake `ssh-add` script and a fake HOME with a key.
     let tmp = tempfile::tempdir().unwrap();
-    let bin_dir = tmp.path().join("fakebin");
-    std::fs::create_dir_all(&bin_dir).unwrap();
-    let fake_ssh_add = bin_dir.join("ssh-add");
-    std::fs::write(
-        &fake_ssh_add,
-        b"#!/bin/sh\necho '256 SHA256:fakekey alice@host (ED25519)'\nexit 0\n",
-    )
-    .unwrap();
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&fake_ssh_add, std::fs::Permissions::from_mode(0o755)).unwrap();
-
     let home_dir = tmp.path().join("home");
     let ssh_dir = home_dir.join(".ssh");
     std::fs::create_dir_all(&ssh_dir).unwrap();
     std::fs::write(ssh_dir.join("id_ed25519.pub"), b"ssh-ed25519 AAAA fake-key").unwrap();
     let _home_guard = cfgd_core::with_test_home_guard(&home_dir);
 
-    let original_path = std::env::var_os("PATH").unwrap_or_default();
-    let mut path_entries: Vec<std::path::PathBuf> = vec![bin_dir.clone()];
-    path_entries.extend(std::env::split_paths(&original_path));
-    let new_path = std::env::join_paths(&path_entries).unwrap();
-    let _path_guard = cfgd_core::test_helpers::EnvVarGuard::set(
-        "PATH",
-        new_path.to_str().expect("PATH must be valid UTF-8"),
+    // `ssh-add` is spawned by bare name with no seam, so the stand-in goes at
+    // the front of `PATH` through the helper that brackets that window.
+    let (_shim_dir, _shim) = cfgd_core::test_helpers::install_named_path_shim(
+        "ssh-add",
+        0,
+        "256 SHA256:fakekey alice@host (ED25519)",
+        "",
     );
 
     let (printer, cap) = Printer::for_test_doc();
@@ -3507,7 +3547,7 @@ fn cmd_init_from_git_applies_name_and_theme_overrides_together() {
         "metadata.name should be overridden to the --name value"
     );
     assert_eq!(
-        cfg.spec.theme.as_ref().map(|t| t.name.as_str()),
+        cfg.spec.theme().map(|t| t.name.as_str()),
         Some("dracula"),
         "spec.theme.name should be overridden to the --theme value"
     );

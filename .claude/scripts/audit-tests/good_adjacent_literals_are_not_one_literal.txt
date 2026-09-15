@@ -1,0 +1,18 @@
+# EXPECTED: NOT flagged — three per-manager command factories, each spelling two
+# short literals on one line. The text BETWEEN a line's two literals
+# (`", resolve_tool_with_fallbacks("`) is 30 characters, so an extractor whose
+# length floor is baked into the quote pattern rejects the real opening quote,
+# resumes at that literal's CLOSING quote, and reports the gap between two
+# literals as one repeated literal. Pairing the quotes before applying the floor
+# is what makes a match unable to span two literals.
+pub(super) fn choco_cmd() -> Command {
+    tool_cmd_at("choco", resolve_tool_with_fallbacks("choco", &[]))
+}
+
+pub(super) fn scoop_cmd() -> Command {
+    tool_cmd_at("scoop", resolve_tool_with_fallbacks("scoop", &[]))
+}
+
+pub(super) fn winget_cmd() -> Command {
+    tool_cmd_at("winget", resolve_tool_with_fallbacks("winget", &[]))
+}

@@ -77,7 +77,7 @@ fn every_variable_the_detection_reads_is_one_a_test_can_clear() {
     }
 
     let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/output/mod.rs");
-    let body = std::fs::read_to_string(&src).unwrap_or_default();
+    let body = crate::test_helpers::walked_file_body(&src);
 
     let mut scopes = Vec::new();
     let mut seen: Vec<String> = Vec::new();

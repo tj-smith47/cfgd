@@ -457,6 +457,7 @@ mod tests {
             }
         }
 
+        crate::test_helpers::install_tracing_journal();
         let buf = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
         let subscriber = tracing_subscriber::fmt()
             // unfolded-writer-ok: a test capture read back as a String, not a stream anyone is looking at

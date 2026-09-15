@@ -1,7 +1,8 @@
 use std::cell::{Cell, OnceCell};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use cfgd_core::config::{CfgdConfig, PackagesSpec, ResolvedProfile};
+use cfgd_core::config::{CfgdConfig, LayerSources, PackagesSpec, ResolvedProfile};
 use cfgd_core::output::Printer;
 use cfgd_core::providers::ProviderRegistry;
 use cfgd_core::state::StateStore;
@@ -143,6 +144,18 @@ impl<'a> RunContext<'a> {
         Ok((cfg, name, resolved))
     }
 
+    /// Every env var name a declared secret exports, across the profile chain
+    /// this run resolves — the set `MaskEnvValues::Secrets` masks by.
+    ///
+    /// `None` where the run could not resolve a chain at all, which a caller
+    /// reads as "say nothing", never as "no secrets": a `Secrets` run holding
+    /// no set masks every value rather than printing one it cannot vouch for.
+    pub(in crate::cli) fn secret_env_names(&self) -> Option<BTreeSet<String>> {
+        self.config_and_profile()
+            .ok()
+            .map(|(_, _, resolved)| resolved.secret_env_names())
+    }
+
     /// Best-effort name of the profile a module-only command runs under: the
     /// explicit `--profile`, else the config's active profile, else
     /// `"unknown"`.
@@ -211,11 +224,16 @@ impl<'a> RunContext<'a> {
 
     /// Merge every manifest file `spec` references into its inline package
     /// lists, reading each file at most once per run.
+    ///
+    /// `sources` is the merged profile's own claims, extended in place with
+    /// one claim per folded package so a row recorded for a package that only
+    /// a source-declared Brewfile names still points at that source.
     pub(in crate::cli) fn resolve_manifest_packages(
         &self,
         spec: &mut PackagesSpec,
+        sources: &mut LayerSources,
     ) -> cfgd_core::errors::Result<()> {
-        packages::resolve_manifest_packages_cached(spec, &self.config_dir, &self.manifests)
+        packages::resolve_manifest_packages_cached(spec, sources, &self.config_dir, &self.manifests)
     }
 }
 
@@ -240,6 +258,7 @@ mod tests {
             list_envelope: false,
             no_hints: false,
             theme: None,
+            mask_env_values: None,
             jsonpath: None,
             yes: false,
             state_dir: None,

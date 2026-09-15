@@ -106,6 +106,9 @@ impl reconciler::RunExecutor for ReconcilerExecutor<'_> {
     }
 }
 
+// no-header-ok: the run header is rendered once the plan is final, by
+// `reconciler::ApplyRun`, which builds the block through the one builder;
+// printing it here would state the same four facts twice.
 pub fn cmd_apply(
     cli: &Cli,
     printer: &cfgd_core::output::Printer,
@@ -161,21 +164,9 @@ pub fn run_apply(
     };
 
     // --from: clone from git source or use local path as config directory.
-    // When --config points to a non-default path, use its parent as the clone target
-    // so the cloned config ends up where the user expects.
     if let Some(from) = &args.from {
-        let cli_config_dir = cli.config.parent().map(|p| p.to_path_buf());
-        let default_dir = cfgd_core::default_config_dir();
-        let target = if let Some(ref dir) = cli_config_dir {
-            if *dir != default_dir && !cli.config.exists() {
-                Some(dir.as_path())
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-        init::resolve_from(from, target, "master", printer)?;
+        let target = init::from_destination(&cli.config);
+        init::resolve_from(from, target.as_deref(), "master", printer)?;
     }
 
     let dry_run = args.dry_run;
@@ -240,7 +231,10 @@ pub fn run_apply(
     let module_cache = module_cache_dir(cli)?;
 
     // Resolve manifest files (Brewfile, package.json, etc.) into package lists
-    ctx.resolve_manifest_packages(&mut effective_resolved.merged.packages)?;
+    ctx.resolve_manifest_packages(
+        &mut effective_resolved.merged.packages,
+        &mut effective_resolved.merged.layer_sources,
+    )?;
 
     // `PhaseArg`'s base phase is clap-validated; a selector combined with
     // `--phase modules` is the one combination `resolve_phase_filter` still
@@ -270,7 +264,7 @@ pub fn run_apply(
     // both run before a single action executes, so one enumeration per manager
     // answers both. Anything the apply itself installs or removes retires the
     // memo, so nothing downstream of an action can read a stale set.
-    let pkg_cx = cfgd_core::providers::PackageContext::new(printer, state);
+    let pkg_cx = ctx.package_context()?;
 
     // Dry-run mode needs no secret providers wired up — just plan files for display.
     // Apply mode wires up the full file manager with secret providers.
@@ -400,6 +394,10 @@ pub fn run_apply(
         .withholding_env_surface(exclusions.withholds_env_surface())
         .withholding_rows(&exclusions)
         .diffing_installed(&pkg_cx)
+        // The same completeness question the declarative package prune asks:
+        // a scoped run resolved a partial desired set, so an env var or alias
+        // another layer still declares must not read as retired.
+        .pruning_managed_resources(prune_eligible)
         // What the recorded apply says this run was scoped to. An isolated
         // module run resolved no profile, so it names the modules instead of
         // inheriting the placeholder `active_profile_name` falls back to; a run
@@ -562,7 +560,7 @@ pub fn run_apply(
             .map(|m| m.as_ref())
             .collect();
         gc_stale_package_tracking(state, &all_managers, &pkg_cx);
-        gc_orphaned_custom_packages(state, &registry, printer);
+        gc_orphaned_custom_packages(state, &registry, &pkg_cx);
     }
 
     // Whether this run's tree will DRAW anything, asked through the one
@@ -594,7 +592,12 @@ pub fn run_apply(
     // The units the run's `Backups` pseudo-phase will render. Built before the
     // run so the header's `Actions N planned` can count their hooks and
     // snapshots, which is the same enumeration the rollup reconciles against.
-    let backup_units: Vec<cfgd_core::backup::BackupUnit<'_>> = pending_backup_specs
+    let backup_projections = super::backup::recorded_projections(Some(state));
+    let projected_backup_specs: Vec<cfgd_core::config::BackupSpec> = pending_backup_specs
+        .iter()
+        .map(|spec| cfgd_core::backup::projected_spec(spec, &backup_projections))
+        .collect();
+    let backup_units: Vec<cfgd_core::backup::BackupUnit<'_>> = projected_backup_specs
         .iter()
         .map(|spec| {
             cfgd_core::backup::BackupUnit::new(spec, &config_dir, &backup_profile, &state_dir)
@@ -779,10 +782,15 @@ pub fn run_apply(
     let output = ApplyOutput {
         status: status.display_str().to_string(),
         apply_id: Some(result.apply_id),
+        // The PLANNED total, the same number the header printed: the three
+        // counts below partition it and `after_plan` sits outside it, so a
+        // consumer can reconcile the payload against the run it watched.
+        total: result.planned_total,
         succeeded: result.succeeded(),
         skipped: result.skipped(),
         failed: result.failed(),
         not_attempted: result.not_attempted().len(),
+        after_plan: AfterPlanCounts::of(&result),
         // `ApplyOutput.source_commits` is a `BTreeMap` so `-o json`/`-o yaml`
         // serialize its keys in a fixed order; `DesiredState.source_commits`
         // stays a `HashMap` internally since nothing else reads its
@@ -932,7 +940,7 @@ fn gc_stale_package_tracking(
 fn gc_orphaned_custom_packages(
     state: &cfgd_core::state::StateStore,
     registry: &cfgd_core::providers::ProviderRegistry,
-    printer: &cfgd_core::output::Printer,
+    cx: &cfgd_core::providers::PackageContext<'_>,
 ) {
     let known = registry.manager_names();
     let orphans = match state.orphaned_package_resources(&known) {
@@ -945,8 +953,7 @@ fn gc_orphaned_custom_packages(
     if orphans.is_empty() {
         return;
     }
-    let cx = cfgd_core::providers::PackageContext::new(printer, state);
-    for (mgr, pkg) in packages::prune_orphaned_packages(&orphans, &cx) {
+    for (mgr, pkg) in packages::prune_orphaned_packages(&orphans, cx) {
         let rid = cfgd_core::state::package_resource_id(&mgr, &pkg);
         if let Err(e) = state.remove_managed_resource("package", &rid) {
             tracing::warn!(resource = %rid, error = %e, "failed to GC orphaned package tracking row");

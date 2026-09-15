@@ -37,7 +37,7 @@ Providers and encryption backends combine freely: most secrets SOPS-encrypted in
 
 Secret references also work inside deployed file content with `${secret:ref}` syntax (see [Secret References](templates.md#secret-references)).
 
-`cfgd doctor` reports which provider CLIs are installed, along with sops/age key and `.sops.yaml` status.
+`cfgd doctor` reports which provider CLIs are installed, along with sops/age key and `.sops.yaml` status, and `cfgd doctor --fix` installs a missing sops. The provider CLIs stay yours to install: their rows read "optional", and asking cfgd to repair its prerequisites is not asking for four vendor CLIs. An apply that reaches a declared secret installs the backend it needs the same way `--fix` does, so sops is on the machine before the file is decrypted, and a declared provider reference installs that provider's CLI too.
 
 ## Configuration
 

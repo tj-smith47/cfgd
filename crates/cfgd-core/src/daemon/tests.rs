@@ -100,6 +100,23 @@ fn fresh_tick_cache() -> &'static super::tick_cache::TickCache {
     Box::leak(Box::new(super::tick_cache::TickCache::new()))
 }
 
+/// A device credential naming `server_url`, as enrolment stores one.
+///
+/// The daemon's check-in is an authenticated request — the gateway's own auth
+/// middleware refuses an anonymous one, and enforces that the bearer names the
+/// same device the body does — so a test driving one hands it the credential
+/// the machine enrolled with.
+fn test_credential(server_url: &str) -> crate::server_client::DeviceCredential {
+    crate::server_client::DeviceCredential {
+        server_url: server_url.to_string(),
+        device_id: "dev-1".to_string(),
+        api_key: "test-api-key".to_string(),
+        username: "user1".to_string(),
+        team: None,
+        enrolled_at: crate::utc_now_iso8601(),
+    }
+}
+
 fn quiet_reconcile_ctx<'a>(
     state: &'a Arc<Mutex<DaemonState>>,
     notifier: &'a Arc<Notifier>,
@@ -181,25 +198,62 @@ fn module_action(
     })
 }
 
+fn one_resolved_package(name: &str) -> crate::modules::ResolvedPackage {
+    crate::modules::ResolvedPackage {
+        canonical_name: name.to_string(),
+        resolved_name: name.to_string(),
+        manager: "cargo".to_string(),
+        manager_declared: false,
+        version: None,
+        script: None,
+        creates: None,
+        only_if: None,
+        unless: None,
+        min_version: None,
+    }
+}
+
+fn one_resolved_file() -> crate::modules::ResolvedFile {
+    crate::modules::ResolvedFile {
+        source: std::path::PathBuf::from("/src/file"),
+        target: std::path::PathBuf::from("/target/file"),
+        is_git_source: false,
+        strategy: None,
+        encryption: None,
+        permissions: None,
+        patch: None,
+    }
+}
+
 #[test]
 fn module_has_drift_true_for_install_packages_action() {
     let plan = module_drift_plan(module_action(
         "watched",
-        crate::reconciler::ModuleActionKind::InstallPackages { resolved: vec![] },
+        crate::reconciler::ModuleActionKind::InstallPackages {
+            resolved: vec![one_resolved_package("ripgrep")],
+        },
     ));
-    assert!(module_has_drift(&plan, "watched"));
+    assert!(module_has_drift(
+        &plan,
+        "watched",
+        &crate::providers::ProviderRegistry::new()
+    ));
 }
 
 #[test]
-fn module_has_drift_true_for_deploy_files_and_run_script_actions() {
+fn module_has_drift_true_for_deploy_files_and_false_for_a_run_script_action() {
     let files_plan = module_drift_plan(module_action(
         "watched",
         crate::reconciler::ModuleActionKind::DeployFiles {
-            files: vec![],
-            declared_total: 0,
+            files: vec![one_resolved_file()],
+            declared_total: 1,
         },
     ));
-    assert!(module_has_drift(&files_plan, "watched"));
+    assert!(module_has_drift(
+        &files_plan,
+        "watched",
+        &crate::providers::ProviderRegistry::new()
+    ));
 
     let script_plan = module_drift_plan(module_action(
         "watched",
@@ -208,7 +262,15 @@ fn module_has_drift_true_for_deploy_files_and_run_script_actions() {
             phase: crate::reconciler::ScriptPhase::PostApply,
         },
     ));
-    assert!(module_has_drift(&script_plan, "watched"));
+    assert!(
+        !module_has_drift(
+            &script_plan,
+            "watched",
+            &crate::providers::ProviderRegistry::new()
+        ),
+        "nothing checks a hook body, so a module whose only planned action is \
+         a hook stands for no drift and fires no onDrift script"
+    );
 }
 
 #[test]
@@ -219,16 +281,26 @@ fn module_has_drift_false_for_skip_action() {
             reason: "dependency not met".into(),
         },
     ));
-    assert!(!module_has_drift(&plan, "watched"));
+    assert!(!module_has_drift(
+        &plan,
+        "watched",
+        &crate::providers::ProviderRegistry::new()
+    ));
 }
 
 #[test]
 fn module_has_drift_false_for_other_module_action() {
     let plan = module_drift_plan(module_action(
         "other",
-        crate::reconciler::ModuleActionKind::InstallPackages { resolved: vec![] },
+        crate::reconciler::ModuleActionKind::InstallPackages {
+            resolved: vec![one_resolved_package("ripgrep")],
+        },
     ));
-    assert!(!module_has_drift(&plan, "watched"));
+    assert!(!module_has_drift(
+        &plan,
+        "watched",
+        &crate::providers::ProviderRegistry::new()
+    ));
 }
 
 #[test]
@@ -237,7 +309,11 @@ fn module_has_drift_false_for_empty_plan() {
         phases: Vec::new(),
         warnings: Vec::new(),
     };
-    assert!(!module_has_drift(&plan, "watched"));
+    assert!(!module_has_drift(
+        &plan,
+        "watched",
+        &crate::providers::ProviderRegistry::new()
+    ));
 }
 
 #[test]
@@ -301,15 +377,6 @@ fn systemd_unit_path() {
 }
 
 #[test]
-fn generate_device_id_is_stable() {
-    let id1 = generate_device_id().unwrap();
-    let id2 = generate_device_id().unwrap();
-    assert_eq!(id1, id2);
-    // SHA256 hex string is 64 characters
-    assert_eq!(id1.len(), 64);
-}
-
-#[test]
 fn compute_config_hash_is_deterministic() {
     use crate::config::{
         CargoSpec, LayerPolicy, MergedProfile, PackagesSpec, ProfileLayer, ProfileSpec,
@@ -361,7 +428,7 @@ fn find_server_url_returns_none_for_git_origin() {
             daemon: None,
             secrets: None,
             sources: vec![],
-            theme: None,
+            output: None,
             modules: None,
             security: None,
             aliases: std::collections::HashMap::new(),
@@ -369,9 +436,9 @@ fn find_server_url_returns_none_for_git_origin() {
             ai: None,
             compliance: None,
             update: None,
-            usage_hints: None,
         },
         deprecations: Vec::new(),
+        legacy_output_keys: Vec::new(),
     };
     assert!(find_server_url(&config).is_none());
 }
@@ -397,7 +464,7 @@ fn find_server_url_returns_url_for_server_origin() {
             daemon: None,
             secrets: None,
             sources: vec![],
-            theme: None,
+            output: None,
             modules: None,
             security: None,
             aliases: std::collections::HashMap::new(),
@@ -405,9 +472,9 @@ fn find_server_url_returns_url_for_server_origin() {
             ai: None,
             compliance: None,
             update: None,
-            usage_hints: None,
         },
         deprecations: Vec::new(),
+        legacy_output_keys: Vec::new(),
     };
     assert_eq!(
         find_server_url(&config),
@@ -415,6 +482,8 @@ fn find_server_url_returns_url_for_server_origin() {
     );
 }
 
+/// The daemon posts to the same endpoint `cfgd checkin` does, so its body is
+/// spelled the way the gateway's own `CheckinRequest` reads it: camelCase.
 #[test]
 fn checkin_payload_round_trips() {
     let payload = CheckinPayload {
@@ -423,24 +492,27 @@ fn checkin_payload_round_trips() {
         os: "linux".into(),
         arch: "x86_64".into(),
         config_hash: "deadbeef".into(),
+        package_versions: None,
+        backup_schedule_owners: None,
     };
     let json = serde_json::to_string(&payload).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(parsed["device_id"], "abc123");
+    assert_eq!(parsed["deviceId"], "abc123");
     assert_eq!(parsed["hostname"], "test-host");
     assert_eq!(parsed["os"], "linux");
     assert_eq!(parsed["arch"], "x86_64");
-    assert_eq!(parsed["config_hash"], "deadbeef");
-    // Exactly 5 fields
+    assert_eq!(parsed["configHash"], "deadbeef");
+    // Exactly 5 fields: a check-in that observed neither map sends the body a
+    // gateway that predates them already parses.
     assert_eq!(parsed.as_object().unwrap().len(), 5);
 }
 
 #[test]
 fn checkin_response_deserializes() {
-    let json = r#"{"status":"ok","config_changed":true,"config":null}"#;
+    let json = r#"{"status":"ok","configChanged":true,"desiredConfig":null}"#;
     let resp: CheckinServerResponse = serde_json::from_str(json).unwrap();
     assert!(resp.config_changed);
-    assert_eq!(resp._status, "ok");
+    assert_eq!(resp.status, "ok");
 }
 
 #[test]
@@ -1992,7 +2064,7 @@ fn a_per_module_tick_keeps_the_refresh_its_own_packages_read() {
     let mut plan = Plan {
         phases: vec![
             Phase::from_actions(
-                PhaseName::Prerequisites,
+                PhaseName::Bootstrap,
                 &Owner::profile("default"),
                 vec![
                     Action::Manager(ManagerAction::RefreshIndex {
@@ -2011,7 +2083,8 @@ fn a_per_module_tick_keeps_the_refresh_its_own_packages_read() {
         warnings: Vec::new(),
     };
 
-    super::reconcile::narrow_to_module(&mut plan, "cli-tools");
+    let registry = crate::providers::ProviderRegistry::new();
+    super::reconcile::narrow_to_module(&mut plan, "cli-tools", &registry);
 
     let nodes: Vec<String> = plan
         .phases
@@ -2033,12 +2106,13 @@ fn a_per_module_tick_keeps_the_refresh_its_own_packages_read() {
         Vec::<(String, Vec<String>)>::new(),
         "the module batch is a module action, not a bare install"
     );
+    let registry = crate::providers::ProviderRegistry::new();
     assert!(
-        module_has_drift(&plan, "cli-tools"),
+        module_has_drift(&plan, "cli-tools", &registry),
         "the module's own work survives the narrow"
     );
     assert!(
-        !module_has_drift(&plan, "web"),
+        !module_has_drift(&plan, "web", &registry),
         "the other module's work does not"
     );
 }
@@ -2055,7 +2129,7 @@ fn a_per_module_tick_for_a_module_with_no_packages_plans_no_refresh() {
     let mut plan = Plan {
         phases: vec![
             Phase::from_actions(
-                PhaseName::Prerequisites,
+                PhaseName::Bootstrap,
                 &Owner::profile("default"),
                 vec![Action::Manager(ManagerAction::RefreshIndex {
                     manager: "cargo".to_string(),
@@ -2076,7 +2150,8 @@ fn a_per_module_tick_for_a_module_with_no_packages_plans_no_refresh() {
         warnings: Vec::new(),
     };
 
-    super::reconcile::narrow_to_module(&mut plan, "docs");
+    let registry = crate::providers::ProviderRegistry::new();
+    super::reconcile::narrow_to_module(&mut plan, "docs", &registry);
 
     assert!(
         plan.phases
@@ -2101,7 +2176,7 @@ fn an_all_withheld_manager_is_withheld_with_its_packages() {
     let mut plan = Plan {
         phases: vec![
             Phase::from_actions(
-                PhaseName::Prerequisites,
+                PhaseName::Bootstrap,
                 &Owner::profile("default"),
                 vec![
                     Action::Manager(ManagerAction::RefreshIndex {
@@ -2187,8 +2262,9 @@ fn a_module_whose_only_package_awaits_a_decision_reports_no_drift() {
         })])],
         warnings: Vec::new(),
     };
+    let registry = crate::providers::ProviderRegistry::new();
     assert!(
-        !module_has_drift(&plan_before, "cli-tools"),
+        !module_has_drift(&plan_before, "cli-tools", &registry),
         "a Skip action was never drift to begin with"
     );
 
@@ -2198,7 +2274,7 @@ fn a_module_whose_only_package_awaits_a_decision_reports_no_drift() {
         warnings: Vec::new(),
     };
     assert!(plan.is_empty());
-    assert!(!module_has_drift(&plan, "cli-tools"));
+    assert!(!module_has_drift(&plan, "cli-tools", &registry));
 }
 
 #[test]
@@ -3067,6 +3143,7 @@ fn action_resource_info_file_set_permissions() {
         target: PathBuf::from("/home/user/.ssh/config"),
         mode: 0o600,
         origin: "local".into(),
+        chmod_path: None,
     });
     let (rtype, rid) = action_resource_info(&action);
     assert_eq!(rtype, "file");
@@ -3504,7 +3581,7 @@ fn find_server_url_picks_server_among_multiple_origins() {
             daemon: None,
             secrets: None,
             sources: vec![],
-            theme: None,
+            output: None,
             modules: None,
             security: None,
             aliases: std::collections::HashMap::new(),
@@ -3512,9 +3589,9 @@ fn find_server_url_picks_server_among_multiple_origins() {
             ai: None,
             compliance: None,
             update: None,
-            usage_hints: None,
         },
         deprecations: Vec::new(),
+        legacy_output_keys: Vec::new(),
     };
     assert_eq!(
         find_server_url(&config),
@@ -3537,7 +3614,7 @@ fn find_server_url_returns_none_for_empty_origins() {
             daemon: None,
             secrets: None,
             sources: vec![],
-            theme: None,
+            output: None,
             modules: None,
             security: None,
             aliases: std::collections::HashMap::new(),
@@ -3545,26 +3622,29 @@ fn find_server_url_returns_none_for_empty_origins() {
             ai: None,
             compliance: None,
             update: None,
-            usage_hints: None,
         },
         deprecations: Vec::new(),
+        legacy_output_keys: Vec::new(),
     };
     assert!(find_server_url(&config).is_none());
 }
 
 // --- CheckinServerResponse deserialization edge cases ---
 
+/// The key is `desiredConfig`, the spelling the gateway's own `CheckinResponse`
+/// serializes: a body read under any other name leaves a pushed configuration
+/// on the floor.
 #[test]
 fn checkin_response_with_config_payload() {
-    let json = r#"{"status":"ok","config_changed":true,"config":{"packages":["git"]}}"#;
+    let json = r#"{"status":"ok","configChanged":true,"desiredConfig":{"packages":["git"]}}"#;
     let resp: CheckinServerResponse = serde_json::from_str(json).unwrap();
     assert!(resp.config_changed);
-    assert!(resp._config.is_some());
+    assert!(resp.desired_config.is_some());
 }
 
 #[test]
 fn checkin_response_no_change() {
-    let json = r#"{"status":"ok","config_changed":false,"config":null}"#;
+    let json = r#"{"status":"ok","configChanged":false,"desiredConfig":null}"#;
     let resp: CheckinServerResponse = serde_json::from_str(json).unwrap();
     assert!(!resp.config_changed);
 }
@@ -4147,7 +4227,7 @@ fn find_server_url_picks_first_server_among_duplicates() {
             daemon: None,
             secrets: None,
             sources: vec![],
-            theme: None,
+            output: None,
             modules: None,
             security: None,
             aliases: std::collections::HashMap::new(),
@@ -4155,9 +4235,9 @@ fn find_server_url_picks_first_server_among_duplicates() {
             ai: None,
             compliance: None,
             update: None,
-            usage_hints: None,
         },
         deprecations: Vec::new(),
+        legacy_output_keys: Vec::new(),
     };
     assert_eq!(
         find_server_url(&config),
@@ -4362,9 +4442,7 @@ fn no_daemon_state_write_reaches_a_source_row_by_position() {
     };
     let mut offenders = Vec::new();
     for path in &files {
-        let Ok(body) = std::fs::read_to_string(path) else {
-            continue;
-        };
+        let body = crate::test_helpers::walked_file_body(path);
         let lines: Vec<&str> = body.lines().collect();
         for (n, line) in lines.iter().enumerate() {
             if !positional_write(line) {
@@ -4904,14 +4982,16 @@ fn checkin_payload_serializes_all_fields() {
         os: "linux".into(),
         arch: "aarch64".into(),
         config_hash: "abcd1234".into(),
+        package_versions: None,
+        backup_schedule_owners: None,
     };
 
     let json = serde_json::to_string(&payload).unwrap();
-    assert!(json.contains("\"device_id\""));
+    assert!(json.contains("\"deviceId\""));
     assert!(json.contains("\"hostname\""));
     assert!(json.contains("\"os\""));
     assert!(json.contains("\"arch\""));
-    assert!(json.contains("\"config_hash\""));
+    assert!(json.contains("\"configHash\""));
     assert!(json.contains("aarch64"));
 }
 
@@ -5056,19 +5136,6 @@ fn process_source_decisions_mixed_tiers_accept_recommended_notify_locked() {
     assert!(!withheld.contains("packages.cargo.bat"));
     // security-policy awaits the operator, so it is withheld
     assert!(withheld.contains("system.security-policy"));
-}
-
-// --- generate_device_id: always hex ---
-
-#[test]
-fn generate_device_id_hex_format() {
-    let id = generate_device_id().unwrap();
-    // Should be lowercase hex only
-    assert!(
-        id.chars().all(|c| c.is_ascii_hexdigit()),
-        "device ID should be hex: {}",
-        id
-    );
 }
 
 // --- declared_decision_paths: multiple files ---
@@ -6122,7 +6189,7 @@ fn server_checkin_mock_config_changed() {
         .mock("POST", "/api/v1/checkin")
         .with_status(200)
         .with_header("content-type", "application/json")
-        .with_body(r#"{"status":"ok","config_changed":true,"config":null}"#)
+        .with_body(r#"{"status":"ok","configChanged":true,"config":null}"#)
         .create();
 
     let resolved = ResolvedProfile {
@@ -6139,7 +6206,13 @@ fn server_checkin_mock_config_changed() {
         },
     };
 
-    let changed = server_checkin(&server.url(), &resolved);
+    let changed = server_checkin(
+        &server.url(),
+        &resolved,
+        Default::default(),
+        &test_credential(&server.url()),
+    )
+    .config_changed;
     assert!(changed, "server should report config changed");
     mock.assert();
 }
@@ -6157,7 +6230,7 @@ fn server_checkin_mock_no_change() {
         .mock("POST", "/api/v1/checkin")
         .with_status(200)
         .with_header("content-type", "application/json")
-        .with_body(r#"{"status":"ok","config_changed":false,"config":null}"#)
+        .with_body(r#"{"status":"ok","configChanged":false,"config":null}"#)
         .create();
 
     let resolved = ResolvedProfile {
@@ -6174,7 +6247,13 @@ fn server_checkin_mock_no_change() {
         },
     };
 
-    let changed = server_checkin(&server.url(), &resolved);
+    let changed = server_checkin(
+        &server.url(),
+        &resolved,
+        Default::default(),
+        &test_credential(&server.url()),
+    )
+    .config_changed;
     assert!(!changed, "server should report no change");
     mock.assert();
 }
@@ -6208,7 +6287,13 @@ fn server_checkin_mock_server_error() {
         },
     };
 
-    let changed = server_checkin(&server.url(), &resolved);
+    let changed = server_checkin(
+        &server.url(),
+        &resolved,
+        Default::default(),
+        &test_credential(&server.url()),
+    )
+    .config_changed;
     assert!(!changed, "server error should return false");
     mock.assert();
 }
@@ -6243,7 +6328,13 @@ fn server_checkin_mock_malformed_json() {
         },
     };
 
-    let changed = server_checkin(&server.url(), &resolved);
+    let changed = server_checkin(
+        &server.url(),
+        &resolved,
+        Default::default(),
+        &test_credential(&server.url()),
+    )
+    .config_changed;
     assert!(!changed, "malformed JSON should return false");
     mock.assert();
 }
@@ -6261,7 +6352,7 @@ fn server_checkin_mock_trailing_slash_url() {
         .mock("POST", "/api/v1/checkin")
         .with_status(200)
         .with_header("content-type", "application/json")
-        .with_body(r#"{"status":"ok","config_changed":false,"config":null}"#)
+        .with_body(r#"{"status":"ok","configChanged":false,"config":null}"#)
         .create();
 
     let resolved = ResolvedProfile {
@@ -6280,7 +6371,13 @@ fn server_checkin_mock_trailing_slash_url() {
 
     // URL with trailing slash should be trimmed
     let url_with_slash = format!("{}/", server.url());
-    let changed = server_checkin(&url_with_slash, &resolved);
+    let changed = server_checkin(
+        &url_with_slash,
+        &resolved,
+        Default::default(),
+        &test_credential(&server.url()),
+    )
+    .config_changed;
     assert!(!changed);
     mock.assert();
 }
@@ -6300,7 +6397,7 @@ fn server_checkin_mock_verifies_request_body() {
         .match_header("Content-Type", "application/json")
         .with_status(200)
         .with_header("content-type", "application/json")
-        .with_body(r#"{"status":"ok","config_changed":false,"config":null}"#)
+        .with_body(r#"{"status":"ok","configChanged":false,"config":null}"#)
         .create();
 
     let resolved = ResolvedProfile {
@@ -6323,7 +6420,13 @@ fn server_checkin_mock_verifies_request_body() {
         },
     };
 
-    let changed = server_checkin(&server.url(), &resolved);
+    let changed = server_checkin(
+        &server.url(),
+        &resolved,
+        Default::default(),
+        &test_credential(&server.url()),
+    )
+    .config_changed;
     assert!(!changed);
     // Verify the mock received the request with correct Content-Type
     mock.assert();
@@ -6352,7 +6455,7 @@ fn try_server_checkin_no_server_origin_returns_false() {
             daemon: None,
             secrets: None,
             sources: vec![],
-            theme: None,
+            output: None,
             modules: None,
             security: None,
             aliases: std::collections::HashMap::new(),
@@ -6360,9 +6463,9 @@ fn try_server_checkin_no_server_origin_returns_false() {
             ai: None,
             compliance: None,
             update: None,
-            usage_hints: None,
         },
         deprecations: Vec::new(),
+        legacy_output_keys: Vec::new(),
     };
     let resolved = ResolvedProfile {
         layers: vec![ProfileLayer {
@@ -6375,23 +6478,30 @@ fn try_server_checkin_no_server_origin_returns_false() {
         merged: MergedProfile::default(),
     };
 
-    let changed = try_server_checkin(&config, &resolved);
+    let changed = try_server_checkin(&config, &resolved, Default::default()).config_changed;
     assert!(!changed, "no server origin means no checkin");
 }
 
 // --- try_server_checkin: with mock server ---
 
+/// The origin resolves to a gateway this machine holds a credential for, so the
+/// check-in is made and authenticated from that credential.
 #[test]
 fn try_server_checkin_with_server_origin_calls_checkin() {
     use crate::config::*;
 
+    let tmp = tempfile::TempDir::new().unwrap();
+    let _home = crate::with_test_home_guard(tmp.path());
     let mut server = mockito::Server::new();
     let mock = server
         .mock("POST", "/api/v1/checkin")
+        .match_header("Authorization", "Bearer test-api-key")
         .with_status(200)
         .with_header("content-type", "application/json")
-        .with_body(r#"{"status":"ok","config_changed":true,"config":null}"#)
+        .with_body(r#"{"status":"ok","configChanged":true,"desiredConfig":null}"#)
         .create();
+    crate::server_client::save_credential(&test_credential(&server.url()))
+        .expect("store the device credential");
 
     let config = CfgdConfig {
         api_version: crate::API_VERSION.into(),
@@ -6411,7 +6521,7 @@ fn try_server_checkin_with_server_origin_calls_checkin() {
             daemon: None,
             secrets: None,
             sources: vec![],
-            theme: None,
+            output: None,
             modules: None,
             security: None,
             aliases: std::collections::HashMap::new(),
@@ -6419,9 +6529,9 @@ fn try_server_checkin_with_server_origin_calls_checkin() {
             ai: None,
             compliance: None,
             update: None,
-            usage_hints: None,
         },
         deprecations: Vec::new(),
+        legacy_output_keys: Vec::new(),
     };
     let resolved = ResolvedProfile {
         layers: vec![ProfileLayer {
@@ -6434,7 +6544,7 @@ fn try_server_checkin_with_server_origin_calls_checkin() {
         merged: MergedProfile::default(),
     };
 
-    let changed = try_server_checkin(&config, &resolved);
+    let changed = try_server_checkin(&config, &resolved, Default::default()).config_changed;
     assert!(changed, "server origin should trigger checkin");
     mock.assert();
 }
@@ -6932,11 +7042,11 @@ fn daemon_status_response_full_deserialization() {
 
 #[test]
 fn checkin_response_without_config_field() {
-    let json = r#"{"status":"ok","config_changed":false}"#;
+    let json = r#"{"status":"ok","configChanged":false}"#;
     let resp: CheckinServerResponse = serde_json::from_str(json).unwrap();
-    // _config is Option<Value>, so missing field deserializes as None
+    // desired_config is Option<Value>, so a missing field reads as None
     assert!(!resp.config_changed);
-    assert!(resp._config.is_none());
+    assert!(resp.desired_config.is_none());
 }
 
 // --- hash_resources: unicode content ---
@@ -8788,9 +8898,7 @@ fn every_error_only_arm_of_the_reconcile_tick_is_classified() {
 /// lacked, silently); only the tick that sees the pull does — and it counts
 /// the ONE file the pull moved, not the three the row covers.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[serial_test::serial(daemon_log)]
 async fn a_tick_that_refreshed_a_deployed_file_says_so_instead_of_reading_idle() {
-    reset_daemon_log();
     let tmp = tempfile::tempdir().unwrap();
     let _g = crate::with_test_home_guard(tmp.path());
     let state_dir = tmp.path().join("state");
@@ -8896,18 +9004,20 @@ async fn a_tick_that_refreshed_a_deployed_file_says_so_instead_of_reading_idle()
                 hooks: Arc<LinkHooks>,
                 sd: PathBuf,
                 cp: PathBuf| {
-        tokio::task::spawn_blocking(move || {
+        crate::spawn_blocking_with_test_home(move || {
             let printer = test_printer();
-            handle_reconcile(
-                &cp,
-                None,
-                quiet_reconcile_ctx(&st, &not, false, &*hooks, &sd, &printer),
-            );
+            capture_run_logs(|| {
+                handle_reconcile(
+                    &cp,
+                    None,
+                    quiet_reconcile_ctx(&st, &not, false, &*hooks, &sd, &printer),
+                );
+            })
         })
     };
 
     // An idle tick over the recorded bytes: nothing moved, nothing to say.
-    tick(
+    let idle = tick(
         Arc::clone(&state),
         Arc::clone(&notifier),
         Arc::clone(&hooks),
@@ -8916,7 +9026,6 @@ async fn a_tick_that_refreshed_a_deployed_file_says_so_instead_of_reading_idle()
     )
     .await
     .unwrap();
-    let idle = daemon_log();
     assert!(
         idle.contains("reconcile: complete — nothing to do") && !idle.contains("deployed file"),
         "a tick over the bytes the apply recorded has no refresh to report: {idle}"
@@ -8924,7 +9033,7 @@ async fn a_tick_that_refreshed_a_deployed_file_says_so_instead_of_reading_idle()
 
     // The pull lands another machine's edit through the link.
     *content.lock().await = b"landed by the pull";
-    tick(
+    let logs = tick(
         Arc::clone(&state),
         Arc::clone(&notifier),
         Arc::clone(&hooks),
@@ -8934,7 +9043,6 @@ async fn a_tick_that_refreshed_a_deployed_file_says_so_instead_of_reading_idle()
     .await
     .unwrap();
 
-    let logs = daemon_log();
     assert!(
         logs.contains(
             "reconcile: complete — nothing to do, 1 deployed file changed upstream, already live through its link"
@@ -9063,9 +9171,7 @@ async fn handle_reconcile_clean_tick_clears_outstanding_drift() {
 /// apply converged nothing. The policy is `Auto` here precisely so a regression
 /// runs the apply and writes the phantom row this asserts is absent.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[serial_test::serial(daemon_log)]
 async fn a_tick_over_a_platform_gated_module_records_no_drift_and_no_tracking_row() {
-    reset_daemon_log();
     let tmp = tempfile::tempdir().unwrap();
     let _g = crate::with_test_home_guard(tmp.path());
     let state_dir = tmp.path().join("state");
@@ -9142,18 +9248,22 @@ async fn a_tick_over_a_platform_gated_module_records_no_drift_and_no_tracking_ro
     let not = Arc::clone(&notifier);
     let sd = state_dir.clone();
     let cp = config_path.clone();
-    crate::spawn_blocking_with_test_home(move || {
+    // The capture is this thread's, so the sentence asserted below is this
+    // tick's own rather than whatever another declaration's tick logged to the
+    // shared capture while this one ran.
+    let logs = crate::spawn_blocking_with_test_home(move || {
         let printer = test_printer();
-        handle_reconcile(
-            &cp,
-            None,
-            quiet_reconcile_ctx(&st, &not, false, &GatedHooks, &sd, &printer),
-        );
+        capture_run_logs(|| {
+            handle_reconcile(
+                &cp,
+                None,
+                quiet_reconcile_ctx(&st, &not, false, &GatedHooks, &sd, &printer),
+            );
+        })
     })
     .await
     .unwrap();
 
-    let logs = daemon_log();
     assert!(
         logs.contains("reconcile: complete — nothing to do"),
         "a tick whose only planned action is a module skip converged nothing \
@@ -9198,11 +9308,9 @@ async fn a_tick_over_a_platform_gated_module_records_no_drift_and_no_tracking_ro
 /// files converged that cfgd explicitly refused to write. The refusal itself is
 /// counted, unlike the decline: it is work the reader must act on.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[serial_test::serial(daemon_log)]
 async fn a_tick_over_a_module_whose_files_it_refused_keeps_their_rows() {
     use crate::PathDisplayExt;
 
-    reset_daemon_log();
     let tmp = tempfile::tempdir().unwrap();
     let _g = crate::with_test_home_guard(tmp.path());
     let state_dir = tmp.path().join("state");
@@ -9292,18 +9400,19 @@ async fn a_tick_over_a_module_whose_files_it_refused_keeps_their_rows() {
     let not = Arc::clone(&notifier);
     let sd = state_dir.clone();
     let cp = config_path.clone();
-    crate::spawn_blocking_with_test_home(move || {
+    let logs = crate::spawn_blocking_with_test_home(move || {
         let printer = test_printer();
-        handle_reconcile(
-            &cp,
-            None,
-            quiet_reconcile_ctx(&st, &not, false, &RefusedHooks, &sd, &printer),
-        );
+        capture_run_logs(|| {
+            handle_reconcile(
+                &cp,
+                None,
+                quiet_reconcile_ctx(&st, &not, false, &RefusedHooks, &sd, &printer),
+            );
+        })
     })
     .await
     .unwrap();
 
-    let logs = daemon_log();
     assert!(
         logs.contains("drift detected in"),
         "the refusal is work the reader must act on, so the tick's sentence \
@@ -9785,7 +9894,7 @@ async fn handle_reconcile_runs_on_drift_scripts() {
     std::fs::create_dir_all(&state_dir).unwrap();
 
     let marker = tmp.path().join("on-drift-ran.marker");
-    let marker_str = marker.display().to_string();
+    let marker_str = crate::to_posix_string(&marker);
 
     let config_path = tmp.path().join("cfgd.yaml");
     std::fs::write(
@@ -9866,6 +9975,186 @@ async fn handle_reconcile_runs_on_drift_scripts() {
         marker.exists(),
         "onDrift script should have created marker file at {}",
         marker.display()
+    );
+}
+
+/// A module whose whole declaration is lifecycle hooks reports no drift, records
+/// no row, and fires no `onDrift` script.
+///
+/// Nothing checks a script body, so a planned hook is an act a run performs
+/// rather than divergence it found, and a tick prices the drift it reports from
+/// the rows it records rather than from the size of its plan.
+///
+/// The bug this ends: the count came from `plan.total_actions()`, so the one
+/// planned `postReconcile` hook read as a drifted resource. The journal said
+/// `drift detected in 1 resource` with an empty store beside it, the module's
+/// `onDrift` hooks fired on every interval, and under `NotifyOnly` no apply
+/// ever ran to settle anything.
+///
+/// The second tick is what keeps the first honest. The reporting policy finds
+/// no drift and leaves both witnesses alone; the auto-applying policy PERFORMS
+/// the hook, because auto-apply answers to work rather than to drift. That
+/// witness is the proof the plan held the hook all along, so the clean store
+/// above is an answer about the hook and not about an empty plan. The module
+/// declares no packages and no files, which is what keeps its `postReconcile`
+/// hook in the plan ([`crate::reconciler::Reconciler::plan`]) and makes the
+/// hook the only thing any row here could be about.
+///
+/// Each hook body is one quoted path to a [`crate::test_helpers::write_tool_shim`]
+/// stand-in, and its witness is the argv log that shim appends to. `ScriptShell::Auto`
+/// dispatches to `sh` on Unix and `cmd.exe` on Windows, and no ONE command line
+/// writes a file under both: a redirect to a POSIX path quoted for `sh` names a
+/// file `cmd.exe` refuses to open, so the witness silently never appeared there.
+/// The shim is the one shape both run, because `write_tool_shim` writes the
+/// host's own script kind. Each tick's journal is captured on the thread the
+/// tick runs on, so the sentence asserted here is this tick's own rather than
+/// whatever another declaration's tick wrote to the shared capture beside it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_tick_over_a_module_declaring_only_hooks_records_no_drift_row() {
+    let tmp = tempfile::tempdir().unwrap();
+    let _g = crate::with_test_home_guard(tmp.path());
+    let state_dir = tmp.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+
+    let hook_shim_dir = tmp.path().join("post-reconcile-shim");
+    let drift_shim_dir = tmp.path().join("on-drift-shim");
+    std::fs::create_dir_all(&hook_shim_dir).unwrap();
+    std::fs::create_dir_all(&drift_shim_dir).unwrap();
+    let hook_shim = crate::test_helpers::write_tool_shim(&hook_shim_dir, "post-reconcile", &[]);
+    let drift_shim = crate::test_helpers::write_tool_shim(&drift_shim_dir, "on-drift", &[]);
+    let hook_witness = hook_shim_dir.join("argv.log");
+    let drift_witness = drift_shim_dir.join("argv.log");
+
+    let notify_only = tmp.path().join("config.yaml");
+    std::fs::write(
+        &notify_only,
+        "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: test\nspec:\n  profile: default\n  daemon:\n    enabled: true\n    reconcile:\n      interval: 60s\n      autoApply: false\n      driftPolicy: NotifyOnly\n",
+    )
+    .unwrap();
+    let auto_applying = tmp.path().join("config-auto.yaml");
+    std::fs::write(
+        &auto_applying,
+        "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: test\nspec:\n  profile: default\n  daemon:\n    enabled: true\n    reconcile:\n      interval: 60s\n      autoApply: false\n      driftPolicy: Auto\n",
+    )
+    .unwrap();
+    let profiles_dir = tmp.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(
+        profiles_dir.join("default.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  modules:\n    - hooked\n",
+    )
+    .unwrap();
+    // No packages and no files: the hooks are the only thing this module can
+    // stand for, so a drift row recorded here could only be a hook's.
+    let mod_dir = tmp.path().join("modules").join("hooked");
+    std::fs::create_dir_all(&mod_dir).unwrap();
+    // The shim is named by its NATIVE path, double-quoted: `cmd.exe` reads a
+    // forward slash as the start of a switch, and both shells take a quoted
+    // program name. The YAML scalar is single-quoted for the same path, whose
+    // backslashes a double-quoted scalar would read as escapes.
+    std::fs::write(
+        mod_dir.join("module.yaml"),
+        format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: hooked\nspec:\n  scripts:\n    postReconcile:\n      - '\"{}\"'\n    onDrift:\n      - '\"{}\"'\n",
+            hook_shim.display(), // native-ok: a command line the host's own shell parses
+            drift_shim.display(), // native-ok: a command line the host's own shell parses
+        ),
+    )
+    .unwrap();
+
+    let state = Arc::new(Mutex::new(DaemonState::new()));
+    let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+    let store = StateStore::open_in_dir(&state_dir).unwrap();
+
+    let st = Arc::clone(&state);
+    let not = Arc::clone(&notifier);
+    let sd = state_dir.clone();
+    let cp = notify_only.clone();
+    let logs = crate::spawn_blocking_with_test_home(move || {
+        let printer = test_printer();
+        capture_run_logs(|| {
+            handle_reconcile(
+                &cp,
+                None,
+                quiet_reconcile_ctx(&st, &not, false, &EmptyPlanHooks, &sd, &printer),
+            );
+        })
+    })
+    .await
+    .unwrap();
+
+    assert!(
+        !logs.contains("drift detected in"),
+        "a hook is no finding, so the tick reports no drift: {logs}"
+    );
+    assert!(
+        logs.contains("nothing to do"),
+        "and closes on the no-drift outcome: {logs}"
+    );
+    assert!(
+        !drift_witness.exists(),
+        "a module with no drift fires no onDrift hook"
+    );
+    assert!(
+        !hook_witness.exists(),
+        "and a reporting policy applies nothing"
+    );
+    let standing: Vec<(String, String)> = store
+        .unresolved_drift()
+        .unwrap()
+        .into_iter()
+        .map(|e| (e.resource_type, e.resource_id))
+        .collect();
+    assert!(
+        standing.is_empty(),
+        "the tick records no drift row for a hook: {standing:?}"
+    );
+    assert_eq!(
+        state.lock().await.drift_count,
+        0,
+        "and the count the daemon reports reads clean"
+    );
+
+    let st = Arc::clone(&state);
+    let not = Arc::clone(&notifier);
+    let sd = state_dir.clone();
+    let cp = auto_applying.clone();
+    let applying_logs = crate::spawn_blocking_with_test_home(move || {
+        let printer = test_printer();
+        capture_run_logs(|| {
+            handle_reconcile(
+                &cp,
+                None,
+                quiet_reconcile_ctx(&st, &not, false, &EmptyPlanHooks, &sd, &printer),
+            );
+        })
+    })
+    .await
+    .unwrap();
+
+    assert!(
+        hook_witness.exists(),
+        "auto-apply runs the plan's work, hooks included, so the plan did hold \
+         the hook every assertion above is about"
+    );
+    assert!(
+        !drift_witness.exists(),
+        "and it still found no drift to react to"
+    );
+    let standing: Vec<(String, String)> = store
+        .unresolved_drift()
+        .unwrap()
+        .into_iter()
+        .map(|e| (e.resource_type, e.resource_id))
+        .collect();
+    assert!(
+        standing.is_empty(),
+        "the apply that ran the hook records nothing either: {standing:?}"
+    );
+    assert_eq!(state.lock().await.drift_count, 0);
+    assert!(
+        !applying_logs.contains("drift detected in"),
+        "neither tick reported drift: {applying_logs}"
     );
 }
 
@@ -10014,14 +10303,19 @@ async fn notify_only_tick_renders_both_on_drift_owners_above_the_reconcile_heade
         ),
     )
     .unwrap();
-    // The module's `postReconcile` script is what drifts — it is a planned
-    // module action, so `module_has_drift` fires the module's own hook.
+    // A declared file whose target does not exist is what drifts: the tick
+    // plans the deploy, records its row, and `module_has_drift` fires the
+    // module's own hook over it. A hook of the module's own would not — no
+    // check reads a script body, so a planned hook is no drift.
     let mod_dir = tmp.path().join("modules").join("nvim");
     std::fs::create_dir_all(&mod_dir).unwrap();
+    std::fs::write(mod_dir.join("init.lua"), "-- from the module\n").unwrap();
+    let target = tmp.path().join("deploy").join("init.lua");
     std::fs::write(
         mod_dir.join("module.yaml"),
         format!(
-            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: nvim\nspec:\n  scripts:\n    postReconcile:\n      - \"exit 0\"\n    onDrift:\n      - \"{module_hook}\"\n"
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: nvim\nspec:\n  files:\n    - source: init.lua\n      target: {}\n      strategy: Copy\n  scripts:\n    onDrift:\n      - \"{module_hook}\"\n",
+            crate::to_posix_string(&target)
         ),
     )
     .unwrap();
@@ -10402,7 +10696,7 @@ async fn auto_apply_tick_withholds_the_resources_awaiting_a_source_decision() {
 
     // What the tick REPORTED: one set — header, trigger and rollup all count
     // the pruned plan. Three, not two: the decided package and file, plus the
-    // `cfgd:managers` index refresh the Prerequisites phase plans for cargo.
+    // `cfgd:managers` index refresh the Bootstrap phase plans for cargo.
     let out = harness::captured_text(&buf);
     assert!(
         out.contains("Trigger  drift (3 resources)") && out.contains("Actions  3 planned"),
@@ -10456,19 +10750,27 @@ fn files_under(root: &Path) -> Vec<(PathBuf, String)> {
     let mut out = Vec::new();
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
+        let entries = std::fs::read_dir(&dir).unwrap_or_else(|e| {
+            panic!("{}: the walk must read every directory: {e}", dir.display())
+        });
+        for entry in entries {
+            let entry = entry.unwrap_or_else(|e| {
+                panic!("{}: the walk must read every entry: {e}", dir.display())
+            });
             let path = entry.path();
             match entry.file_type() {
                 Ok(ft) if ft.is_dir() => stack.push(path),
                 Ok(ft) if ft.is_file() => {
-                    if let Ok(body) = std::fs::read_to_string(&path) {
-                        out.push((path, body));
-                    }
+                    let body = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+                        panic!("{}: the walk must read every file: {e}", path.display())
+                    });
+                    out.push((path, body));
                 }
-                _ => {}
+                Ok(_) => {}
+                Err(e) => panic!(
+                    "{}: the walk must classify every entry: {e}",
+                    path.display()
+                ),
             }
         }
     }
@@ -11944,60 +12246,36 @@ fn build_webhook_payload_accepts_empty_strings() {
 // helpers directly.
 // ===========================================================================
 
-/// Process-global capture of the daemon's log stream, cleared per reader.
-///
-/// A running daemon's lifecycle lines are tracing events — the log IS its
-/// output — and it emits them from tokio worker threads, which the thread-local
-/// [`capture_run_logs`] below does not reach. `set_global_default` may be
-/// called once per process, so the capture is installed once and shared;
-/// [`reset_daemon_log`] clears it and every reader holds
-/// `#[serial_test::serial(daemon_log)]`, so no two of them read each other's
-/// lines.
-static DAEMON_LOG: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
-
-#[derive(Clone, Copy)]
-struct DaemonLogWriter;
-
-impl std::io::Write for DaemonLogWriter {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        DAEMON_LOG
-            .lock()
-            .expect("lock")
-            .push_str(&String::from_utf8_lossy(buf));
-        Ok(buf.len())
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
-impl tracing_subscriber::fmt::MakeWriter<'_> for DaemonLogWriter {
-    type Writer = Self;
-    fn make_writer(&self) -> Self::Writer {
-        *self
-    }
-}
-
-/// Install the global capture if it is not already installed, and empty it.
+/// Install the process-global journal if this process has none, and empty it.
+// serial-group-ok: clears the one process-global journal; every declaration reading it or starting a daemon holds the group.
 fn reset_daemon_log() {
-    static INSTALL: std::sync::Once = std::sync::Once::new();
-    INSTALL.call_once(|| {
-        let subscriber = tracing_subscriber::fmt()
-            // unfolded-writer-ok: a test capture read back as a String, not a stream anyone is looking at
-            .with_writer(DaemonLogWriter)
-            .with_max_level(tracing::Level::INFO)
-            .with_ansi(false)
-            .finish();
-        // Another test binary component may have claimed the slot; the capture
-        // is best-effort and its readers assert on what they find.
-        let _ = tracing::subscriber::set_global_default(subscriber);
-    });
-    DAEMON_LOG.lock().expect("lock").clear();
+    crate::test_helpers::reset_tracing_journal();
 }
 
 /// Everything the daemon has logged since the last [`reset_daemon_log`].
+///
+/// The thread-local [`capture_run_logs`] / [`capture_run_logs_async`] below is
+/// the capture every assertion about what a CALL logged reads. This journal is
+/// for the `run_daemon` loop tests alone: a running daemon emits its lifecycle
+/// lines from tokio tasks and watcher threads it owns, and a scoped dispatcher
+/// reaches none of them.
+///
+/// Its readers ask it only whether a line is there.
+/// [`crate::test_helpers::tracing_journal`] carries why an absence or a count is
+/// not this journal's to answer, and
+/// `no_reader_of_the_global_daemon_journal_asserts_an_absence` walks every
+/// crate's sources for one, the journal being reachable from all of them.
+///
+/// A line a reader takes as proof its OWN daemon reached a state is a third
+/// thing again, and containment is not enough for it: every declaration that
+/// STARTS a daemon joins the `tracing_dispatcher` group, because a sibling's
+/// daemon writes the same banner, and a reader that reads a stranger's banner as
+/// its own raises SIGTERM before its daemon installed a handler for it — the
+/// default disposition then kills the whole test process, which is how a full
+/// parallel run died mid-suite with no summary at all. `SERIAL_PINS` holds the
+/// row that walks for a daemon-starting declaration outside the group.
 fn daemon_log() -> String {
-    DAEMON_LOG.lock().expect("lock").clone()
+    crate::test_helpers::tracing_journal()
 }
 
 /// The ceiling every [`wait_for_daemon_log`] caller passes.
@@ -12036,10 +12314,24 @@ async fn wait_for_daemon_log(needle: &str, timeout: std::time::Duration) {
     }
 }
 
-/// Thread-local log capture: only events emitted on THIS thread inside `f`
-/// are seen. Sound because `run_scheduled_backups` is blocking and logs on
-/// the calling thread.
+/// Thread-local log capture: only events emitted on THIS thread inside `f` are
+/// seen, at `INFO` and above. Sound for any blocking subject that logs on the
+/// thread it was called on — a tick through `handle_reconcile`, a backup run
+/// through `run_scheduled_backups`. A subject that logs from a thread or task it
+/// spawns keeps none of this thread's dispatcher, which is why the `run_daemon`
+/// loop tests read [`daemon_log`] instead.
+///
+/// This is the capture every assertion about what a CALL logged reads, and it is
+/// the whole mechanism: the buffer belongs to one thread for the length of one
+/// closure, so a declaration whose only tracing reach is a capture joins no
+/// serial group. What it does need is the process-global journal installed
+/// first — [`crate::test_helpers::install_tracing_journal`] carries why, and
+/// `every_scoped_tracing_capture_installs_the_journal_under_it` walks every
+/// crate for a bind without it. The `tracing_dispatcher` group belongs to the
+/// journal alone: [`daemon_log`]'s readers and every declaration that starts a
+/// daemon.
 fn capture_run_logs<F: FnOnce()>(f: F) -> String {
+    crate::test_helpers::install_tracing_journal();
     let (subscriber, buf) = log_capture();
     tracing::subscriber::with_default(subscriber, f);
     captured_logs(&buf)
@@ -12051,6 +12343,7 @@ fn capture_run_logs<F: FnOnce()>(f: F) -> String {
 /// wherever that poll happens.
 async fn capture_run_logs_async<F: std::future::Future<Output = ()>>(fut: F) -> String {
     use tracing::instrument::WithSubscriber;
+    crate::test_helpers::install_tracing_journal();
     let (subscriber, buf) = log_capture();
     fut.with_subscriber(subscriber).await;
     captured_logs(&buf)
@@ -12093,6 +12386,164 @@ fn captured_logs(buf: &LogBuf) -> String {
     // raw-capture-ok: this buf is a tracing-log Arc<Mutex<Vec<u8>>>, not a Printer::for_test* text capture — captured_text doesn't type-check against it
     let bytes = buf.lock().expect("lock").clone();
     String::from_utf8(bytes).expect("utf8 logs")
+}
+
+/// How often `body` reads the process-global journal, and which of its lines
+/// assert an ABSENCE or a COUNT over what it read.
+///
+/// The tells are assembled here rather than spelled, so this file can hold the
+/// walk over itself without matching its own needles. A name bound from
+/// [`capture_run_logs`] carries the same spelling as one bound from
+/// [`daemon_log`], so the bindings are tracked per declaration and end where it
+/// does.
+///
+/// Both spellings of the read count: this file's own helper, and
+/// [`crate::test_helpers::tracing_journal`], which every other crate reaches the
+/// same journal through. The two installers carry that name as a prefix and
+/// write the journal rather than reading it, so they are not reads.
+fn global_journal_reads(body: &str) -> (usize, Vec<String>) {
+    let local = format!("daemon_log{}", "()");
+    let shared = format!("tracing_journal{}", "()");
+    let writers: Vec<String> = ["install_", "reset_"]
+        .iter()
+        .map(|prefix| format!("{prefix}{shared}"))
+        .collect();
+    let mut reads = 0usize;
+    let mut bound: Vec<String> = Vec::new();
+    let mut offenders = Vec::new();
+    for (n, line) in body.lines().enumerate() {
+        let code = line.trim_start();
+        if code.starts_with("//") {
+            continue;
+        }
+        if code.starts_with("fn ") || code.starts_with("async fn ") {
+            bound.clear();
+        }
+        if code.contains(&local)
+            || (code.contains(&shared) && !writers.iter().any(|w| code.contains(w)))
+        {
+            reads += 1;
+            if let Some(name) = code
+                .strip_prefix("let ")
+                .and_then(|rest| rest.split_once(" = "))
+                .map(|(name, _)| name.trim().trim_start_matches("mut ").trim().to_string())
+            {
+                bound.push(name);
+            }
+        }
+        // What turns a read into a question about what the journal does NOT
+        // hold: a containment negated or compared against `false`, a count over
+        // the lines read, a search answered with `is_none`.
+        let negated =
+            code.contains("assert!(!") || code.contains("false") || code.contains("is_none()");
+        let asserts_absence = |subject: &str| {
+            let over = |tail: &str| code.contains(&format!("{subject}{tail}"));
+            over(".matches(")
+                || (over(".contains") && negated)
+                || (over(".lines()") && code.contains("count()"))
+                || (over(".find(") && code.contains("is_none()"))
+        };
+        if asserts_absence(&local)
+            || asserts_absence(&shared)
+            || bound.iter().any(|name| asserts_absence(name))
+        {
+            offenders.push(format!("{}: {code}", n + 1));
+        }
+    }
+    (reads, offenders)
+}
+
+/// A negative assertion over the global journal is the offence, and one over a
+/// scoped capture is not, however alike the two lines read.
+// serial-group-ok: spells the journal read in a fixture string and touches no journal.
+#[test]
+fn the_journal_absence_scan_separates_the_global_buffer_from_a_scoped_capture() {
+    let (reads, offenders) = global_journal_reads(
+        "fn a() {\n    let logs = daemon_log();\n    assert!(!logs.contains(\"x\"));\n}\n\
+         fn b() {\n    let logs = capture_run_logs(|| ());\n    assert!(!logs.contains(\"x\"));\n}\n",
+    );
+    assert_eq!(reads, 1, "one declaration reads the global journal");
+    assert_eq!(
+        offenders.len(),
+        1,
+        "and only its absence is an offence: {offenders:?}"
+    );
+    assert!(
+        offenders[0].starts_with("3: "),
+        "named by line: {offenders:?}"
+    );
+
+    // Every other shape that asks what the journal does not hold, and the
+    // second spelling of the read, which a test in another crate writes.
+    for body in [
+        "fn c() {\n    let logs = daemon_log();\n    assert_eq!(logs.contains(\"x\"), false);\n}\n",
+        "fn d() {\n    let logs = daemon_log();\n    assert_eq!(logs.lines().count(), 2);\n}\n",
+        "fn e() {\n    let logs = daemon_log();\n    assert!(logs.find(\"x\").is_none());\n}\n",
+        "fn f() {\n    let logs = cfgd_core::test_helpers::tracing_journal();\n    \
+         assert!(!logs.contains(\"x\"));\n}\n",
+        "fn g() {\n    let mut logs = daemon_log();\n    assert!(!logs.contains(\"x\"));\n}\n",
+    ] {
+        let (reads, offenders) = global_journal_reads(body);
+        assert_eq!(reads, 1, "the read is seen in: {body}");
+        assert_eq!(offenders.len(), 1, "the absence is an offence in: {body}");
+    }
+
+    // Installing or emptying the journal is not reading it.
+    let (reads, offenders) = global_journal_reads(
+        "fn h() {\n    crate::test_helpers::reset_tracing_journal();\n    \
+         let logs = capture_run_logs(|| ());\n    assert!(!logs.contains(\"x\"));\n}\n",
+    );
+    assert_eq!(reads, 0, "neither installer reads the journal");
+    assert!(
+        offenders.is_empty(),
+        "scoped absence is allowed: {offenders:?}"
+    );
+}
+
+/// Every reader of the process-global journal asks only whether a line is there.
+///
+/// [`daemon_log`] carries the reasoning: the journal has no target filter, so
+/// every test in the binary writes into it and only containment survives a
+/// stranger's line. Every crate is read, not this file alone:
+/// [`crate::test_helpers::tracing_journal`] is public, so a test anywhere can
+/// reach the same buffer. An absence or a count read off it answers by whatever else
+/// the run scheduled beside it — two ticks in this file asserted one and failed
+/// for work they never did, which is what moved every other reader here onto
+/// [`capture_run_logs`]. A test asserting either scopes its own capture.
+#[test]
+fn no_reader_of_the_global_daemon_journal_asserts_an_absence() {
+    let crates_dir = crate::test_helpers::workspace_root().join("crates");
+    let mut reads = 0usize;
+    let mut files = 0usize;
+    let mut offenders: Vec<String> = Vec::new();
+    for path in crate::test_helpers::rust_sources_under(&crates_dir) {
+        files += 1;
+        let body = crate::test_helpers::walked_file_body(&path);
+        let (file_reads, file_offenders) = global_journal_reads(&body);
+        reads += file_reads;
+        let label = crate::to_posix_string(path.strip_prefix(&crates_dir).unwrap_or(&path));
+        offenders.extend(
+            file_offenders
+                .into_iter()
+                .map(|offender| format!("{label}:{offender}")),
+        );
+    }
+    assert!(
+        offenders.is_empty(),
+        "the process-global journal answers whether a line appeared and nothing \
+         else; an absence or a count belongs to a capture the test scopes itself \
+         with `capture_run_logs` / `capture_run_logs_async`:\n{}",
+        offenders.join("\n")
+    );
+    assert!(
+        files >= 500,
+        "the walk read {files} sources under {}; it is looking at the wrong root",
+        crates_dir.display()
+    );
+    assert!(
+        reads >= 8,
+        "the walk found {reads} reads of the global journal; it has gone blind to them"
+    );
 }
 
 mod harness {
@@ -12181,7 +12632,6 @@ mod harness {
         )
     }
 
-    #[allow(dead_code)]
     pub(super) struct TriggerSenders {
         pub file_tx: mpsc::Sender<PathBuf>,
         pub reconcile_tx: mpsc::Sender<()>,
@@ -12411,24 +12861,23 @@ spec:
     /// reader edits. The absolute path of a cache checkout names the same file
     /// in a directory nobody opened.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    #[serial_test::serial(daemon_log)]
     async fn a_watch_event_names_the_file_relative_to_the_config_dir() {
-        reset_daemon_log();
         let tmp = tempfile::TempDir::new().unwrap();
         let _g = crate::with_test_home_guard(tmp.path());
         let (ctx, _state, _buf) = make_test_ctx(&tmp, false, false, None);
         let path = tmp.path().join("modules/nvim/files/lua/config/options.lua");
-        runner::handle_file_change_tick(
-            &ctx,
-            &mut HashMap::new(),
-            &mut Default::default(),
-            StdDuration::from_millis(500),
-            path,
-        )
-        .await
-        .unwrap();
-
-        let logs = daemon_log();
+        let logs = super::capture_run_logs_async(async {
+            runner::handle_file_change_tick(
+                &ctx,
+                &mut HashMap::new(),
+                &mut Default::default(),
+                StdDuration::from_millis(500),
+                path,
+            )
+            .await
+            .unwrap();
+        })
+        .await;
         assert!(
             logs.contains("watch: config changed modules/nvim/files/lua/config/options.lua"),
             "got: {logs}"
@@ -12440,31 +12889,27 @@ spec:
     /// describe the pull `sync: pulled` already reported; repeating them turns
     /// one line into a screenful.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    #[serial_test::serial(daemon_log)]
     async fn a_watch_event_a_pull_explains_stays_off_the_info_stream() {
-        // A relative name no other test emits: `daemon_log` is a process-global
-        // capture and `serial(daemon_log)` excludes only the tests that READ
-        // it, so a sibling in the unnamed group logging the same relative path
-        // satisfied this needle and failed the assertion for work this test
-        // never did.
         const REL: &str = "modules/nvim/pull-echo-only.lua";
-        reset_daemon_log();
         let tmp = tempfile::TempDir::new().unwrap();
         let _g = crate::with_test_home_guard(tmp.path());
         let (ctx, _state, _buf) = make_test_ctx(&tmp, false, false, None);
         let mut echoes = runner::PullEchoes::default();
         echoes.note_pull(tmp.path());
-        runner::handle_file_change_tick(
-            &ctx,
-            &mut HashMap::new(),
-            &mut echoes,
-            StdDuration::from_millis(500),
-            tmp.path().join(REL),
-        )
-        .await
-        .unwrap();
-
-        let logs = daemon_log();
+        // The absence is the assertion, so the capture is this tick's own: the
+        // process-global journal carries every sibling's lines too.
+        let logs = super::capture_run_logs_async(async {
+            runner::handle_file_change_tick(
+                &ctx,
+                &mut HashMap::new(),
+                &mut echoes,
+                StdDuration::from_millis(500),
+                tmp.path().join(REL),
+            )
+            .await
+            .unwrap();
+        })
+        .await;
         assert!(
             !logs.contains(&format!("watch: config changed {REL}")),
             "a pull's own rewrite is folded into the pull: {logs}"
@@ -13054,6 +13499,12 @@ spec:
     /// Driven through the real tick over a real config tree, so the
     /// `kept_rows` wiring (scope, exclusions, re-find) is what is pinned,
     /// not the predicate alone.
+    ///
+    /// The module declares a file as well as its env var, so the narrowed plan
+    /// carries one real action and the tick APPLIES. A module declaring env
+    /// alone narrows to an empty plan, the tick settles `NothingToDo` and the
+    /// row stands because nothing ran, which passes whatever the recording
+    /// path does with the entries.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_scoped_tick_keeps_an_owned_env_row_a_full_tick_heals() {
         let tmp = tempfile::TempDir::new().unwrap();
@@ -13072,9 +13523,15 @@ spec:
         .unwrap();
         let module_dir = tmp.path().join("modules").join("envmod");
         std::fs::create_dir_all(&module_dir).unwrap();
+        std::fs::write(module_dir.join("app.conf"), "from the module\n").unwrap();
+        // The target does not exist, so the narrowed plan carries its deploy.
+        let deploy_target = tmp.path().join("deploy").join("app.conf");
         std::fs::write(
             module_dir.join("module.yaml"),
-            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: envmod\nspec:\n  env:\n    - name: EDITOR\n      value: vim\n",
+            format!(
+                "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: envmod\nspec:\n  env:\n    - name: EDITOR\n      value: vim\n  files:\n    - source: app.conf\n      target: {}\n      strategy: Copy\n",
+                crate::to_posix_string(&deploy_target)
+            ),
         )
         .unwrap();
         let state_dir = tmp.path().join("state");
@@ -13130,6 +13587,10 @@ spec:
         };
 
         tick(Some("envmod")).await.unwrap();
+        assert!(
+            deploy_target.is_file(),
+            "the scoped tick applied nothing, so its narrowed plan was empty"
+        );
         assert_eq!(
             standing(),
             vec![("env-var".to_string(), "EDITOR".to_string())],
@@ -13819,6 +14280,7 @@ spec:
     // ----- end-to-end loop tests (run_daemon_loop) -----
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial_test::serial(tracing_dispatcher)]
     async fn loop_exits_cleanly_on_shutdown() {
         let tmp = tempfile::TempDir::new().unwrap();
         let _g = crate::with_test_home_guard(tmp.path());
@@ -13844,8 +14306,10 @@ spec:
         assert!(result.is_ok());
     }
 
+    /// Reads the process-global journal: these lines come from tasks and watcher
+    /// threads the daemon owns, and a scoped capture reaches none of them.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    #[serial_test::serial(daemon_log)]
+    #[serial_test::serial(tracing_dispatcher)]
     async fn loop_processes_sighup_then_shuts_down() {
         reset_daemon_log();
         let tmp = tempfile::TempDir::new().unwrap();
@@ -13892,6 +14356,7 @@ spec:
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial_test::serial(tracing_dispatcher)]
     async fn loop_drains_reconcile_ticks_with_no_tasks() {
         let tmp = tempfile::TempDir::new().unwrap();
         let _g = crate::with_test_home_guard(tmp.path());
@@ -13925,6 +14390,7 @@ spec:
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial_test::serial(tracing_dispatcher)]
     async fn loop_drains_sync_ticks_with_no_tasks() {
         let tmp = tempfile::TempDir::new().unwrap();
         let _g = crate::with_test_home_guard(tmp.path());
@@ -13956,6 +14422,7 @@ spec:
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial_test::serial(tracing_dispatcher)]
     async fn loop_drains_compliance_ticks_when_disabled() {
         let tmp = tempfile::TempDir::new().unwrap();
         let _g = crate::with_test_home_guard(tmp.path());
@@ -14005,7 +14472,7 @@ spec:
     /// replaced completed in 0.3-1.2s on a dedicated Windows host and blew
     /// past 3s on a 2-vCPU hosted runner, where nextest schedules other tests
     /// against the same cores.
-    const LOOP_EXIT_BUDGET: StdDuration = StdDuration::from_secs(30);
+    pub(super) const LOOP_EXIT_BUDGET: StdDuration = StdDuration::from_secs(30);
 
     /// `DaemonHooks` that panics in `plan_files`. Used to drive
     /// `handle_reconcile_tick` into a `JoinError` so the loop's recovery
@@ -14138,6 +14605,7 @@ spec:
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[serial_test::serial]
+    #[serial_test::serial(tracing_dispatcher)]
     async fn select_loop_continues_after_reconcile_tick_panic() {
         let tmp = tempfile::TempDir::new().unwrap();
         let _g = crate::with_test_home_guard(tmp.path());
@@ -14178,6 +14646,7 @@ spec:
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[serial_test::serial]
+    #[serial_test::serial(tracing_dispatcher)]
     async fn select_loop_continues_after_compliance_panic() {
         let tmp = tempfile::TempDir::new().unwrap();
         let _g = crate::with_test_home_guard(tmp.path());
@@ -14237,6 +14706,7 @@ spec:
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[serial_test::serial]
+    #[serial_test::serial(tracing_dispatcher)]
     async fn select_loop_continues_after_sync_tick_error() {
         // A sync tick whose repo_path does not exist exercises the sync
         // handler's error path (git2 returns Err from `Repository::open`).
@@ -14289,6 +14759,7 @@ spec:
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[serial_test::serial]
+    #[serial_test::serial(tracing_dispatcher)]
     async fn select_loop_continues_after_version_check_tick() {
         // Version check runs via spawn_blocking on `handle_version_check`,
         // which reads/writes a small JSON cache under HOME (guarded to the
@@ -14331,6 +14802,7 @@ spec:
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[serial_test::serial]
+    #[serial_test::serial(tracing_dispatcher)]
     async fn select_loop_exits_on_shutdown_after_panicking_tick() {
         // Regression guard: shutdown must still drain cleanly after a tick
         // handler has panicked. Without the per-tick continue-on-error
@@ -16508,7 +16980,13 @@ spec: {}
             "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  profile: default\n",
         );
         // No profile YAML on disk → resolve_profile fails → function warns.
-        super::super::run_startup_checkin_blocking(&config_path, None, &cfg);
+        super::super::run_startup_checkin_blocking(
+            &config_path,
+            None,
+            &cfg,
+            None,
+            &tokio::sync::Notify::new(),
+        );
     }
 
     #[test]
@@ -16524,7 +17002,13 @@ spec: {}
         let cfg = parse_minimal_cfg(
             "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec: {}\n",
         );
-        super::super::run_startup_checkin_blocking(&config_path, None, &cfg);
+        super::super::run_startup_checkin_blocking(
+            &config_path,
+            None,
+            &cfg,
+            None,
+            &tokio::sync::Notify::new(),
+        );
     }
 
     #[test]
@@ -16550,7 +17034,13 @@ spec: {}
         let cfg = parse_minimal_cfg(
             "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  profile: default\n",
         );
-        super::super::run_startup_checkin_blocking(&config_path, None, &cfg);
+        super::super::run_startup_checkin_blocking(
+            &config_path,
+            None,
+            &cfg,
+            None,
+            &tokio::sync::Notify::new(),
+        );
     }
 
     // current_thread so the test_home thread-local installed below survives
@@ -16606,7 +17096,13 @@ spec: {}
 
         let expected_home = tmp.path().to_path_buf();
         let seen_home = crate::spawn_blocking_with_test_home(move || {
-            super::super::run_startup_checkin_blocking(&config_path, None, &cfg);
+            super::super::run_startup_checkin_blocking(
+                &config_path,
+                None,
+                &cfg,
+                None,
+                &tokio::sync::Notify::new(),
+            );
             crate::test_home_override()
         })
         .await
@@ -16796,8 +17292,10 @@ spec: {}
         }
     }
 
+    /// Reads the process-global journal: these lines come from tasks and watcher
+    /// threads the daemon owns, and a scoped capture reaches none of them.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    #[serial_test::serial(daemon_log)]
+    #[serial_test::serial(tracing_dispatcher)]
     async fn run_daemon_with_external_triggers_shuts_down_cleanly() {
         reset_daemon_log();
         let tmp = tempfile::TempDir::new().unwrap();
@@ -16848,6 +17346,7 @@ spec: {}
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial_test::serial(tracing_dispatcher)]
     async fn run_daemon_with_processes_reconcile_tick_via_external_trigger() {
         let tmp = tempfile::TempDir::new().unwrap();
         let _g = crate::with_test_home_guard(tmp.path());
@@ -16903,6 +17402,7 @@ spec: {}
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial_test::serial(tracing_dispatcher)]
     async fn run_daemon_with_processes_sync_tick_with_no_tasks() {
         let tmp = tempfile::TempDir::new().unwrap();
         let _g = crate::with_test_home_guard(tmp.path());
@@ -16934,8 +17434,10 @@ spec: {}
         assert!(result.is_ok(), "daemon Ok, got {:?}", result);
     }
 
+    /// Reads the process-global journal: these lines come from tasks and watcher
+    /// threads the daemon owns, and a scoped capture reaches none of them.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    #[serial_test::serial(daemon_log)]
+    #[serial_test::serial(tracing_dispatcher)]
     async fn run_daemon_with_processes_sighup_tick_and_reloads_intervals() {
         reset_daemon_log();
         let tmp = tempfile::TempDir::new().unwrap();
@@ -16997,6 +17499,7 @@ spec: {}
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial_test::serial(tracing_dispatcher)]
     async fn run_daemon_with_processes_file_change_tick_via_external_trigger() {
         // A file-change tick goes through the dispatch arm in run_daemon_loop
         // and lands in handle_file_change_tick → debounce::record_change.
@@ -17035,6 +17538,7 @@ spec: {}
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial_test::serial(tracing_dispatcher)]
     async fn run_daemon_with_processes_compliance_tick_via_external_trigger() {
         // Drive the compliance-tick arm of run_daemon_loop. Without a
         // `compliance` config block the handler runs but writes nothing to
@@ -17071,6 +17575,7 @@ spec: {}
 
     #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial_test::serial(tracing_dispatcher)]
     async fn run_daemon_with_health_server_enabled_binds_ipc_socket() {
         // `skip_health_server = false` exercises the health-server spawn
         // branch. The IPC socket should be created and reachable while the
@@ -17131,6 +17636,7 @@ spec: {}
 
     #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial_test::serial(tracing_dispatcher)]
     async fn run_daemon_with_errors_when_ipc_path_has_live_listener() {
         use std::os::unix::net::UnixListener as StdUnixListener;
         let tmp = tempfile::TempDir::new().unwrap();
@@ -17415,10 +17921,12 @@ spec: {}
     // shutdown signal is sent — the assertion is that the function progressed
     // past the trigger-setup block and ran the loop until forcibly aborted.
 
+    /// Reads the process-global journal: these lines come from tasks and watcher
+    /// threads the daemon owns, and a scoped capture reaches none of them.
     #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[serial_test::serial]
-    #[serial_test::serial(daemon_log)]
+    #[serial_test::serial(tracing_dispatcher)]
     async fn run_daemon_with_production_triggers_progresses_past_setup_then_shutsdown_on_sigterm() {
         reset_daemon_log();
         let tmp = tempfile::TempDir::new().unwrap();
@@ -17647,9 +18155,11 @@ spec: {}
     // hold both halves — nothing on the printer, the run's own account in the
     // journal.
 
+    /// Reads the process-global journal: these lines come from tasks and watcher
+    /// threads the daemon owns, and a scoped capture reaches none of them.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[serial_test::serial]
-    #[serial_test::serial(daemon_log)]
+    #[serial_test::serial(tracing_dispatcher)]
     async fn the_reconcile_loop_reports_through_the_journal_and_never_the_printer() {
         reset_daemon_log();
         let tmp = tempfile::TempDir::new().unwrap();
@@ -17709,9 +18219,11 @@ spec: {}
         }
     }
 
+    /// Reads the process-global journal: these lines come from tasks and watcher
+    /// threads the daemon owns, and a scoped capture reaches none of them.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[serial_test::serial]
-    #[serial_test::serial(daemon_log)]
+    #[serial_test::serial(tracing_dispatcher)]
     async fn a_drift_tick_leaves_the_printer_silent_and_names_the_change_in_the_journal() {
         reset_daemon_log();
         // A file-change tick walks handle_file_change_tick → drift recording →
@@ -18731,9 +19243,13 @@ async fn a_tick_renotifies_a_changed_source_and_stays_silent_on_an_unchanged_one
 //   - default umask 0022 leaving the socket world-readable
 //   - unbounded client read OOMing the CLI from a hijacked peer
 //
-// All tests mutate process-global env vars so they MUST be serial. The
-// EnvVarGuard / with_test_home_guard helpers restore prior state on drop
-// (even on panic) so a failed test cannot poison the next.
+// The five `resolve_default_ipc_path` tests and `query_daemon_status_caps_response_at_max_bytes`
+// mutate process-global env vars, so THOSE must be serial; the EnvVarGuard /
+// with_test_home_guard helpers restore prior state on drop (even on panic) so a failed test
+// cannot poison the next. The rest drive a tempdir and mutate no env var, so that rule demands
+// nothing of them: the unnamed `serial` on `bind_socket_sets_0600_permissions` and on
+// `ensure_owner_private_dir_refuses_a_parent_component_that_is_a_regular_file` is not its doing,
+// and the four tests after them carry none.
 
 mod ipc_socket_security {
     use super::*;
@@ -18870,25 +19386,26 @@ mod ipc_socket_security {
     }
 
     /// Drives `ensure_owner_private_dir` against a path whose parent component
-    /// is a regular file. `create_dir_all` then fails with ENOTDIR on every
-    /// unix regardless of uid, so the helper returns a HealthSocketError naming
-    /// the offending directory. Proves the helper does not silently continue
-    /// when the parent dir cannot be made owner-private.
+    /// is a regular file. The missing tail is made one component at a time with
+    /// `mkdir(2)`, which fails with ENOTDIR on every unix regardless of uid, so
+    /// the helper returns a HealthSocketError naming the offending directory.
+    /// Proves the helper does not silently continue when the parent dir cannot
+    /// be made owner-private.
     ///
     /// A file component is the portable way to force this: a `/proc/<x>` path
     /// is creation-hostile only on Linux (FreeBSD mounts no procfs by default,
     /// so root can mkdir under the `/proc` mountpoint and the negative path
     /// never fires). The test suite frequently runs as root in CI/devcontainers,
-    /// so the mode-check arm (`mode & 0o077 != 0`) cannot be exercised
-    /// end-to-end — root bypasses chmod, so the helper always succeeds in
+    /// so the mode-check arm (the `!is_owner_private_mode(mode)` refusal) cannot be
+    /// exercised end-to-end: root bypasses chmod, so the helper always succeeds in
     /// lowering 0o755 to 0o700 before the re-stat. The create-failure arm here
     /// is the negative path that fires deterministically regardless of uid; the
-    /// owner-private predicate itself is unit-tested in the sibling
-    /// `owner_private_predicate_rejects_world_readable_modes` test.
+    /// mask that arm would have used is pinned on its own predicate by the
+    /// sibling `is_owner_private_mode_rejects_any_group_or_other_bit`.
     #[cfg(unix)]
     #[test]
     #[serial_test::serial]
-    fn bind_socket_refuses_world_readable_parent_dir() {
+    fn ensure_owner_private_dir_refuses_a_parent_component_that_is_a_regular_file() {
         use crate::daemon::health_ipc::ensure_owner_private_dir;
         let tmp = tempfile::tempdir().unwrap();
         let not_a_dir = tmp.path().join("not-a-dir");
@@ -18897,24 +19414,468 @@ mod ipc_socket_security {
         let err = ensure_owner_private_dir(&bogus)
             .expect_err("expected refusal when parent dir cannot be made owner-private");
         let msg = format!("{err}");
+        // unfolded-path-ok: the create refusal is worded by `ensure_owner_private_dir` against the path it was handed, which the ancestor walk's folds never reach.
         assert!(
             msg.contains(&bogus.display().to_string()),
             "error must name the offending directory, got {msg:?}"
         );
     }
 
-    /// Pure unit test of the mode-check predicate `ensure_owner_private_dir`
-    /// uses to refuse world-readable parents. Pairs with the create-failure
-    /// test above to cover the second negative arm without relying on uid-0
-    /// chmod behaviour. Mirrors the `mode & 0o077 != 0` check.
+    /// A symlink standing where the socket's directory belongs is refused by the
+    /// leaf's own kind check, and the directory it points at keeps its mode.
+    ///
+    /// The leaf is the one component the helper MUTATES, which is where the
+    /// walk's admission of a link component stops: the daemon runs as root under
+    /// systemd while its runtime directory can sit under a HOME an unprivileged
+    /// user owns, and a path-based chmod there would hand `0o700` to whatever
+    /// that user pointed the link at, locking another user out of their own
+    /// directory. The refusal is a sentence this module words and not the
+    /// no-follow chmod's `ELOOP`, so an operator who symlinked the runtime
+    /// directory deliberately is told what cfgd will not do rather than handed a
+    /// kernel errno about a path the walk had just approved. It holds at any uid.
     #[cfg(unix)]
     #[test]
-    fn owner_private_predicate_rejects_world_readable_modes() {
-        assert_ne!(0o755 & 0o077, 0, "0o755 must trip the predicate");
-        assert_ne!(0o750 & 0o077, 0, "0o750 must trip the predicate");
-        assert_ne!(0o701 & 0o077, 0, "0o701 must trip the predicate");
-        assert_eq!(0o700 & 0o077, 0, "0o700 must pass the predicate");
-        assert_eq!(0o600 & 0o077, 0, "0o600 must pass the predicate");
+    fn the_socket_directory_refuses_a_symlink_instead_of_chmodding_what_it_points_at() {
+        use crate::daemon::health_ipc::ensure_owner_private_dir;
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let victim = tmp.path().join("victim");
+        std::fs::create_dir(&victim).unwrap();
+        crate::set_file_permissions(&victim, 0o755).unwrap();
+        let link = tmp.path().join("run");
+        std::os::unix::fs::symlink(&victim, &link).unwrap();
+
+        let err = ensure_owner_private_dir(&link)
+            .expect_err("a symlink standing in for the socket directory must be refused");
+        assert!(
+            format!("{err}").contains("is a symlink"),
+            "the refusal must name the leaf's link-ness rather than a chmod errno, got {err}"
+        );
+        let mode = std::fs::metadata(&victim).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o755,
+            "the directory the planted link points at must keep its own mode"
+        );
+    }
+
+    /// A socket directory another account owns is refused, mode 0700 or not, and
+    /// so is one whose ANCESTOR another account owns.
+    ///
+    /// 0700 is fully `rwx` to the directory's OWNER, so a root daemon whose
+    /// runtime directory resolves under an unprivileged user's session would
+    /// otherwise accept a directory that user can write, and the socket chmod
+    /// below it is path-based. The same capability sits one component out: every
+    /// operation after the refusal names the socket by path, so an account owning
+    /// any ancestor can rename the directory root created and leave a link of its
+    /// own in that component's place. The second arm therefore asserts the
+    /// refusal names the OFFENDING COMPONENT and not the leaf, which passes both
+    /// of the leaf's own checks.
+    ///
+    /// Arranging a foreign owner needs the power to `chown`, so every arm here
+    /// runs as root and the pin proves nothing at any other uid. That is what
+    /// its name carries: arms like these sharing a pin with ones that do run
+    /// unprivileged report a single green line for both, and a reader of the run
+    /// cannot tell which half it executed. The accepting arm is `health_ipc`'s
+    /// own `ensure_owner_private_dir_creates_with_mode_700`, which holds at any
+    /// uid.
+    ///
+    /// The refusals name a component of the path the WALK judges, which it folds
+    /// every link out of as it descends, so the fixture is rooted on
+    /// [`crate::test_helpers::folded_temp_root`]: a host whose `$TMPDIR` is
+    /// reached through a link would otherwise be compared against a prefix the
+    /// walk has already recomposed.
+    #[cfg(unix)]
+    #[test]
+    fn the_socket_directory_refuses_an_owner_that_is_not_this_process_as_root() {
+        use crate::daemon::health_ipc::ensure_owner_private_dir;
+        use std::os::unix::fs::PermissionsExt;
+
+        if !crate::is_root() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let root = crate::test_helpers::folded_temp_root(tmp.path());
+        let theirs = root.join("theirs");
+        std::fs::create_dir(&theirs).unwrap();
+        std::os::unix::fs::chown(&theirs, Some(1), Some(1)).unwrap();
+        let err = ensure_owner_private_dir(&theirs)
+            .expect_err("a directory owned by another uid must be refused");
+        assert!(
+            format!("{err}").contains("owned by uid 1"),
+            "the refusal must name the owner it found, got {err}"
+        );
+
+        let outer = root.join("outer");
+        let inner = outer.join("inner");
+        std::fs::create_dir_all(&inner).unwrap();
+        std::os::unix::fs::chown(&outer, Some(1), Some(1)).unwrap();
+        let err = ensure_owner_private_dir(&inner)
+            .expect_err("a path whose ancestor another uid owns must be refused");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains(&outer.display().to_string()) && !msg.contains("inner"),
+            "the refusal must name the offending component rather than the leaf, got {msg}"
+        );
+
+        let victim = root.join("victim-tree");
+        let standing = victim.join("standing");
+        std::fs::create_dir_all(&standing).unwrap();
+        crate::set_file_permissions(&standing, 0o755).unwrap();
+        let aimed = root.join("aimed");
+        std::fs::create_dir(&aimed).unwrap();
+        std::os::unix::fs::symlink(&victim, aimed.join("link")).unwrap();
+        std::os::unix::fs::chown(&aimed, Some(1), Some(1)).unwrap();
+
+        let err = ensure_owner_private_dir(&aimed.join("link").join("standing"))
+            .expect_err("a path aimed through an ancestor another uid owns must be refused");
+        assert!(
+            format!("{err}").contains(&aimed.display().to_string()),
+            "the refusal must name the component that other uid owns, got {err}"
+        );
+        let mode = std::fs::metadata(&standing).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o755,
+            "the directory the planted link aims at must keep its own mode"
+        );
+
+        let err = ensure_owner_private_dir(&aimed.join("link").join("fresh"))
+            .expect_err("a path aimed through an ancestor another uid owns must be refused");
+        assert!(
+            format!("{err}").contains(&aimed.display().to_string()),
+            "the refusal must name the component that other uid owns, got {err}"
+        );
+        assert!(
+            !victim.join("fresh").exists(),
+            "the refusal must create nothing inside the directory the link aims at"
+        );
+    }
+
+    /// A link standing in a path component is walked THROUGH rather than judged
+    /// on its own mode, and the verdict comes from what it points at.
+    ///
+    /// A symlink's own mode bits are never consulted by the kernel and differ by
+    /// operating system: Linux stores 0o777 on every symlink, macOS 0o755. Asked
+    /// the writability question, a Linux link is refused and a macOS one
+    /// admitted, so this pin is what keeps the two hosts deciding the same way.
+    /// It is also the only arm that reaches the walk's link branch at all, which
+    /// is why the relative-target fold is asserted here beside the absolute one.
+    ///
+    /// Both trees sit under the sticky temporary root the walk admits by its
+    /// writability rule, which is the shape every fixture of this module builds
+    /// in. Both arms hold at any uid; the escaping arm, which needs the power to
+    /// `chown`, is the sibling
+    /// `the_socket_directory_refuses_a_link_component_aimed_at_another_owner_as_root`.
+    #[cfg(unix)]
+    #[test]
+    fn the_socket_directory_walks_through_a_link_component_rather_than_judging_its_mode() {
+        use crate::daemon::health_ipc::ensure_owner_private_dir;
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        let link = tmp.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        ensure_owner_private_dir(&link.join("cfgd"))
+            .expect("a link component inside a directory this euid owns must be admitted");
+        let mode = std::fs::metadata(real.join("cfgd"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(
+            mode, 0o700,
+            "the leaf created through the link must be owner-private, got {mode:o}"
+        );
+
+        let nested = tmp.path().join("nested");
+        std::fs::create_dir(&nested).unwrap();
+        let relative = nested.join("up");
+        std::os::unix::fs::symlink("../real", &relative).unwrap();
+        ensure_owner_private_dir(&relative.join("via-relative"))
+            .expect("a relative link target must fold against the prefix already judged");
+        assert!(
+            real.join("via-relative").is_dir(),
+            "a relative target must resolve to the directory it names"
+        );
+    }
+
+    /// A link component aimed at a directory another account owns is refused by
+    /// the rule that names the escape, and the refusal names the link that
+    /// composed the path it is judging.
+    ///
+    /// The ownership rule is reached here on a component the walk folded TO
+    /// rather than one the operator wrote, and this is the only arm of the module
+    /// where it is: every ownership refusal its sibling
+    /// `the_socket_directory_refuses_an_owner_that_is_not_this_process_as_root`
+    /// raises lands on the first pass, where there is no fold to name. The
+    /// sentence therefore states the offending component, the uid found there,
+    /// the uid it was measured against and the fold that put it in the path, and
+    /// asserting it whole is what pins those four in their order. A
+    /// `contains("owned by uid 1")` alone stays green with the provenance dropped
+    /// or a different link named in it, which leaves an operator a component they
+    /// never wrote and nothing pointing at the link that produced it.
+    ///
+    /// Arranging a foreign owner needs the power to `chown`, so this pin runs as
+    /// root and proves nothing at any other uid, which is what its name carries.
+    /// The admissions it was split out of hold at any uid in
+    /// `the_socket_directory_walks_through_a_link_component_rather_than_judging_its_mode`.
+    ///
+    /// Rooted on [`crate::test_helpers::folded_temp_root`]: the expectation is a
+    /// string the walk composed, and on a host whose `$TMPDIR` is reached through
+    /// a link the walk has folded that link out before it reaches the planted
+    /// one, so a clause built from the tempdir's own path names a prefix the walk
+    /// cannot produce.
+    #[cfg(unix)]
+    #[test]
+    fn the_socket_directory_refuses_a_link_component_aimed_at_another_owner_as_root() {
+        use crate::daemon::health_ipc::ensure_owner_private_dir;
+
+        if !crate::is_root() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let root = crate::test_helpers::folded_temp_root(tmp.path());
+        let theirs = root.join("theirs");
+        std::fs::create_dir(&theirs).unwrap();
+        std::os::unix::fs::chown(&theirs, Some(1), Some(1)).unwrap();
+        let escapes = root.join("escapes");
+        std::fs::create_dir(&escapes).unwrap();
+        let planted = escapes.join("out");
+        std::os::unix::fs::symlink(&theirs, &planted).unwrap();
+
+        let err = ensure_owner_private_dir(&planted.join("cfgd"))
+            .expect_err("a link into a directory another uid owns must be refused");
+        // The guard above settles the euid, so the uid the refusal measured
+        // against is spelled rather than read back from the process.
+        let expected = format!(
+            "path component {} is owned by uid 1 rather than uid 0 or root \
+             (composed from the link {} -> {})",
+            theirs.display(),
+            planted.display(),
+            theirs.display()
+        );
+        assert!(
+            format!("{err}").contains(&expected),
+            "the refusal must name the component, both uids and the fold that composed the \
+             path, in that order; wanted {expected}, got {err}"
+        );
+    }
+
+    /// Drives `is_owner_private_mode`, the mask `ensure_owner_private_dir`
+    /// refuses a non-owner-private parent with, over the modes a host can
+    /// actually present.
+    ///
+    /// The predicate is the only surface this mask is observable on: the arm
+    /// that reads it stays unentered end to end because under the uid 0 the
+    /// suite frequently runs as, the chmod always lowers 0o755 to 0o700 before
+    /// the re-stat, and the sibling
+    /// `ensure_owner_private_dir_refuses_a_parent_component_that_is_a_regular_file`
+    /// is the negative arm that does fire at any uid. Asserting the mask
+    /// arithmetic inline instead would pin Rust's `&` operator and stay green
+    /// if the mask in `health_ipc` changed.
+    #[cfg(unix)]
+    #[test]
+    fn is_owner_private_mode_rejects_any_group_or_other_bit() {
+        use crate::daemon::health_ipc::is_owner_private_mode;
+        assert!(!is_owner_private_mode(0o755), "0o755 must be refused");
+        assert!(!is_owner_private_mode(0o750), "0o750 must be refused");
+        assert!(!is_owner_private_mode(0o701), "0o701 must be refused");
+        assert!(is_owner_private_mode(0o700), "0o700 must be accepted");
+        assert!(is_owner_private_mode(0o600), "0o600 must be accepted");
+    }
+
+    /// Walks `health_ipc.rs`'s production region for an exported item carrying
+    /// no `///` run of its own.
+    ///
+    /// The guard for a defect class nothing else in the tree can see: an item
+    /// inserted between an existing item's doc comment and the item itself, with
+    /// no separator, silently re-attaches that whole doc to the newcomer and
+    /// leaves its subject undocumented.
+    /// `cargo fmt` and clippy both accept the result, `#[warn(missing_docs)]`
+    /// does not reach `pub(crate)`, and rendering the docs is not available on
+    /// this host, so the victim's emptiness is the only mechanically readable
+    /// tell.
+    ///
+    /// The ceiling: it catches the swallow only while the victim is left with NO
+    /// doc at all. A newcomer inserted with a doc of its own ABOVE the victim's,
+    /// where the victim keeps a second run below, passes here, because the two
+    /// runs are indistinguishable from one item's multi-paragraph doc once they
+    /// are adjacent. Judging that shape needs a model of which paragraph
+    /// describes which item, which no byte-level walk holds.
+    ///
+    /// Top-level items only: an associated item inside an `impl` is documented
+    /// with its type, and indentation is what separates the two populations.
+    #[test]
+    fn every_exported_item_in_health_ipc_carries_its_own_doc_run() {
+        let path = crate::test_helpers::workspace_root()
+            .join("crates")
+            .join("cfgd-core")
+            .join("src")
+            .join("daemon")
+            .join("health_ipc.rs");
+        let body = crate::test_helpers::production_slice_of(&path);
+        let lines: Vec<&str> = body.lines().collect();
+        let mut judged = Vec::new();
+        let mut undocumented = Vec::new();
+        for (i, line) in lines.iter().enumerate() {
+            if !line.starts_with("pub(crate) ") && !line.starts_with("pub ") {
+                continue;
+            }
+            judged.push(format!("{}: {}", i + 1, line));
+            // The item's own `#[cfg]` / attribute block sits between its doc and
+            // its signature, so the run is looked for above the block rather
+            // than immediately above the signature.
+            let mut above = i;
+            while above > 0 && lines[above - 1].starts_with("#[") {
+                above -= 1;
+            }
+            if above == 0 || !lines[above - 1].starts_with("///") {
+                undocumented.push(format!("{}: {}", i + 1, line));
+            }
+        }
+        assert!(
+            judged.len() >= 9,
+            "the walk judged {} exported items, fewer than the 9 this file carried when the \
+             walk was written, so it is reading less than it claims:\n{}",
+            judged.len(),
+            judged.join("\n")
+        );
+        // The offenders open the message so a red probe's one-line panic reason
+        // names them: a list after a long sentence is cut off before it.
+        assert!(
+            undocumented.is_empty(),
+            "{}: exported from health_ipc.rs with no `///` run of its own, so a doc comment \
+             above it has been absorbed by an item inserted beneath it",
+            undocumented.join("; ")
+        );
+    }
+
+    /// Walks every pin that compares a rendered path against a refusal from
+    /// `ensure_owner_private_dir`, for one whose expectation is built from a
+    /// fixture root the ancestor walk has already folded.
+    ///
+    /// That walk resolves each symlink it crosses and recomposes the path under
+    /// the target, so every refusal it raises past its first pass names a string
+    /// the operator never typed. `$TMPDIR` is itself reached through a symlink on
+    /// macOS, where `/var` is a link to `private/var`, so a pin building its
+    /// expectation out of `tempfile::tempdir()`'s own path compares against a
+    /// prefix carrying no `/private` and fails there while passing on Linux. Two
+    /// of these pins did exactly that, and no Linux run could see it.
+    ///
+    /// Two remedies, and which one applies is a judgment the pin records rather
+    /// than one this walk can make: a pin asserting a path the walk FOLDED
+    /// rebases its fixture on [`crate::test_helpers::folded_temp_root`], while a
+    /// pin asserting a path as `ensure_owner_private_dir` was HANDED it keeps
+    /// comparing against the unfolded path and says so with
+    /// `// unfolded-path-ok: <why>`.
+    ///
+    /// The ceiling: all three tells are read over the whole function, so a pin
+    /// holding assertions of both kinds counts as answered by either one. The
+    /// population is small enough that the hatch's own sentence is the real
+    /// check, and a pin needing both answers at once is better split in two.
+    #[cfg(unix)]
+    #[test]
+    fn every_socket_path_refusal_pin_builds_its_expectation_from_the_folded_root() {
+        // This walk's own body spells every tell it looks for, so it is not a
+        // member of the population it judges.
+        const THIS_WALK: &str =
+            "every_socket_path_refusal_pin_builds_its_expectation_from_the_folded_root";
+
+        // `ensure_owner_private_dir` is `pub(crate)` inside a private module, so
+        // any source under `daemon/` can pin it today and a wider re-export would
+        // widen that: the population is every source of this crate rather than the
+        // two files that happen to hold a pin, or a pin in a third one goes
+        // unjudged with both floors below still green.
+        let dir = crate::test_helpers::workspace_root()
+            .join("crates")
+            .join("cfgd-core")
+            .join("src");
+        let sources = crate::test_helpers::rust_sources_under(&dir);
+        let mut candidates: Vec<String> = Vec::new();
+        let mut judged: Vec<String> = Vec::new();
+        let mut offenders: Vec<String> = Vec::new();
+        for path in sources {
+            let source = path
+                .strip_prefix(&dir)
+                .unwrap_or(path.as_path())
+                .display()
+                .to_string();
+            let body = crate::test_helpers::walked_file_body(&path);
+            let lines = crate::test_helpers::logical_source_lines(&body);
+            let mut i = 0;
+            while i < lines.len() {
+                let text = lines[i].1.as_str();
+                let bare = text.trim_start();
+                if !bare.starts_with("fn ") && !bare.starts_with("async fn ") {
+                    i += 1;
+                    continue;
+                }
+                // The extent is taken to the closing brace at the declaration's
+                // own indentation rather than to the next declaration: the doc
+                // comment of the NEXT pin sits between the two, and reading it as
+                // part of this one would let a neighbour's remedy answer for it.
+                let close = format!("{}}}", &text[..text.len() - bare.len()]);
+                let mut end = i + 1;
+                while end < lines.len() && lines[end].1 != close {
+                    end += 1;
+                }
+                let name = bare
+                    .trim_start_matches("async ")
+                    .trim_start_matches("fn ")
+                    .split('(')
+                    .next()
+                    .unwrap_or("")
+                    .to_string();
+                let fn_lines: Vec<&str> = lines[i..end].iter().map(|(_, l)| l.as_str()).collect();
+                let whole = fn_lines.join("\n");
+                let reads_a_refusal =
+                    whole.contains("ensure_owner_private_dir(") && whole.contains("expect_err");
+                if name != THIS_WALK && reads_a_refusal {
+                    let at = format!("{source}:{}: {name}", lines[i].0);
+                    candidates.push(at.clone());
+                    // A path reaches an expectation rendered, so a `contains(`
+                    // and a `display()` anywhere in the function is the tell that
+                    // this pin's verdict turns on the path the message carries.
+                    // Read over the function rather than one line because a pin
+                    // asserting a whole composed sentence builds it in a
+                    // `format!` spanning several, which no single line holds.
+                    if whole.contains("contains(") && whole.contains("display()") {
+                        judged.push(at.clone());
+                        if !whole.contains("folded_temp_root")
+                            && !whole.contains("unfolded-path-ok")
+                        {
+                            offenders.push(at);
+                        }
+                    }
+                }
+                i = end + 1;
+            }
+        }
+        assert!(
+            candidates.len() >= 10,
+            "the walk found {} pins reading a refusal from this helper, fewer than the 10 it was \
+             written against, so it is reading less than it claims:\n{}",
+            candidates.len(),
+            candidates.join("\n")
+        );
+        assert!(
+            judged.len() >= 8,
+            "the walk judged {} pins comparing a rendered path against a refusal, fewer than the \
+             8 it was written against, so it is reading less than it claims:\n{}",
+            judged.len(),
+            judged.join("\n")
+        );
+        assert!(
+            offenders.is_empty(),
+            "{}: compares a rendered path against a refusal from this helper's ancestor walk \
+             without rebasing its fixture on `folded_temp_root`, so it asserts a prefix the walk \
+             has already folded away; rebase it, or state why the path it asserts is the one the \
+             helper was handed with `// unfolded-path-ok: <why>`",
+            offenders.join("; ")
+        );
     }
 
     /// Drives `query_daemon_status` against a fake server that streams more
@@ -19784,6 +20745,7 @@ mod tests_run_daemon_wrapper {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial(tracing_dispatcher)]
     async fn run_daemon_with_invalid_config_returns_err_early() {
         let printer = Arc::new(test_printer());
         let hooks: Arc<dyn DaemonHooks> = Arc::new(StubHooks2);
@@ -19815,8 +20777,9 @@ mod tests_run_daemon_wrapper {
 // ===========================================================================
 
 mod backup_timers {
-    use super::harness::{make_test_ctx, make_triggers, pre_loop, sighup_ctx};
+    use super::harness::{LOOP_EXIT_BUDGET, make_test_ctx, make_triggers, pre_loop, sighup_ctx};
     use super::*;
+    use crate::backup::ScheduleProjections;
     use crate::daemon::backup::{
         BackupTask, BackupTimers, DegradedReason, ResolvedBackupTasks, build_backup_tasks,
         reload_backup_tasks, resolve_backup_tasks,
@@ -19840,6 +20803,7 @@ mod backup_timers {
             "workstation",
             now,
             None,
+            &Default::default(),
         )
         .expect("schedule should install a timer")
     }
@@ -19968,6 +20932,841 @@ mod backup_timers {
         );
     }
 
+    // ----- the cluster-owned projection -----
+
+    fn projection(unit: &str, schedule: &str, retention: Option<u32>) -> ScheduleProjections {
+        ScheduleProjections::from([(
+            unit.to_string(),
+            crate::backup::BackupScheduleProjection {
+                schedule: schedule.to_string(),
+                retention,
+            },
+        )])
+    }
+
+    /// A unit left open to the cluster (`scheduleOwner: Cluster`, the default)
+    /// arms on the cadence and retention the check-in projected, not on the
+    /// one its own profile declares.
+    #[test]
+    fn a_cluster_owned_unit_is_seeded_from_the_check_in_projection() {
+        let declared = spec("db", Path::new("/tmp/a"), Some("1h"));
+        let task = BackupTask::new(
+            &declared,
+            "workstation",
+            Instant::now(),
+            None,
+            &projection("db", "0 3 * * *", Some(3)),
+        )
+        .expect("the projected schedule installs a timer");
+        assert_eq!(
+            task.spec.schedule.as_deref(),
+            Some("0 3 * * *"),
+            "the cluster's cadence is the one the timer arms on"
+        );
+        assert_eq!(
+            task.spec.retention, 3,
+            "the cluster's retention is what the fire prunes to"
+        );
+        assert_eq!(
+            declared.schedule.as_deref(),
+            Some("1h"),
+            "the declared spec is never rewritten by a projection"
+        );
+    }
+
+    /// A unit the machine pinned `scheduleOwner: Local` ignores a projection
+    /// that arrives for it: the pin is the machine's refusal.
+    #[test]
+    fn a_locally_pinned_unit_ignores_the_projection() {
+        let mut declared = spec("db", Path::new("/tmp/a"), Some("1h"));
+        declared.schedule_owner = config::ScheduleOwner::Local;
+        let task = BackupTask::new(
+            &declared,
+            "workstation",
+            Instant::now(),
+            None,
+            &projection("db", "0 3 * * *", Some(3)),
+        )
+        .expect("the declared schedule installs a timer");
+        assert_eq!(task.spec.schedule.as_deref(), Some("1h"));
+        assert_eq!(task.spec.retention, declared.retention);
+    }
+
+    /// A projection is runtime state: recording one and rebuilding the timers
+    /// from it never touches the profile YAML on disk.
+    #[test]
+    fn the_projection_never_reaches_the_profile_on_disk() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let profile_path = dir.path().join("profiles").join("default.yaml");
+        std::fs::create_dir_all(profile_path.parent().expect("parent")).expect("profiles dir");
+        let body = concat!(
+            "apiVersion: cfgd.io/v1alpha1\n",
+            "kind: Profile\n",
+            "metadata:\n  name: default\n",
+            "spec:\n  backups:\n    - name: db\n      source: /tmp/a\n      schedule: \"1h\"\n",
+        );
+        std::fs::write(&profile_path, body).expect("write profile");
+
+        let store = crate::state::StateStore::open_in_dir(dir.path()).expect("state store");
+        crate::backup::record_cluster_schedules(&store, &projection("db", "0 3 * * *", Some(3)));
+
+        let projections = store
+            .cluster_backup_schedules()
+            .expect("the recorded projection reads back");
+        let tasks = build_backup_tasks(
+            &[spec("db", Path::new("/tmp/a"), Some("1h"))],
+            "workstation",
+            Instant::now(),
+            &no_history,
+            &projections,
+        );
+        assert_eq!(tasks[0].spec.schedule.as_deref(), Some("0 3 * * *"));
+        assert_eq!(
+            std::fs::read_to_string(&profile_path).expect("re-read profile"),
+            body,
+            "the profile on disk is byte-identical after a projection is applied"
+        );
+    }
+
+    /// A check-in REPLACES the whole set, so a unit a policy stopped
+    /// scheduling falls back to the cadence its own profile declares rather
+    /// than running on a projection nothing renews.
+    #[test]
+    fn a_check_in_replaces_every_projection_it_did_not_renew() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = crate::state::StateStore::open_in_dir(dir.path()).expect("state store");
+        crate::backup::record_cluster_schedules(&store, &projection("db", "0 3 * * *", Some(3)));
+        crate::backup::record_cluster_schedules(&store, &ScheduleProjections::new());
+        assert!(
+            store
+                .cluster_backup_schedules()
+                .expect("read back")
+                .is_empty(),
+            "a check-in that projects nothing clears what the last one projected"
+        );
+    }
+
+    /// The timer set is resolved once per process on a healthy daemon, and the
+    /// startup check-in lands after that — so a projection recorded later must
+    /// re-arm it, or the machine keeps firing on the cadence the cluster
+    /// replaced until someone restarts the daemon.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_projection_recorded_after_the_timers_were_armed_re_resolves_them() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let source = tmp.path().join("data.db");
+        std::fs::write(&source, b"payload").unwrap();
+        let (mut ctx, _state, _buf) = make_test_ctx(&tmp, false, false, None);
+        ctx.config_path = write_config_with_backups(
+            &tmp,
+            &format!(
+                "    - name: db\n      source: {}\n      schedule: \"6h\"\n",
+                crate::to_posix_string(&source)
+            ),
+        );
+
+        // The set as startup armed it: no projection had been answered yet.
+        let mut set = timers(vec![task("db", &source, "6h", Instant::now())]);
+
+        let changed = crate::daemon::checkin::record_cluster_schedules_in(
+            Some(tmp.path()),
+            &projection("db", "0 3 * * *", Some(3)),
+        );
+        assert!(changed, "a projection nothing had recorded is a change");
+        set.schedule_retry(Instant::now());
+        assert!(
+            !set.is_degraded(),
+            "a set due to be re-read is not a set missing anything"
+        );
+
+        runner::handle_backup_tick(&ctx, &mut set).await.unwrap();
+        assert_eq!(
+            set.tasks()[0].spec.schedule.as_deref(),
+            Some("0 3 * * *"),
+            "the re-resolved set arms on the cadence the check-in answered"
+        );
+        assert_eq!(set.tasks()[0].spec.retention, 3);
+    }
+
+    /// The running loop is what turns a recorded projection into a re-armed
+    /// timer set: the check-in raises the state's own notify, and the loop's
+    /// own arm re-resolves. Driving `schedule_retry` by hand proves the timer
+    /// half alone, so this pin drives the loop and lets nothing between the
+    /// notify and the re-resolution go untested.
+    ///
+    /// It waits on the process-global journal: the line comes from a task the
+    /// daemon owns, and a scoped capture reaches none of them.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial_test::serial(tracing_dispatcher)]
+    async fn a_running_loop_re_resolves_its_timers_when_the_projection_is_raised() {
+        reset_daemon_log();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let source = tmp.path().join("data.db");
+        std::fs::write(&source, b"payload").unwrap();
+        let (mut ctx, state, _buf) = make_test_ctx(&tmp, false, false, None);
+        ctx.config_path = write_config_with_backups(
+            &tmp,
+            &format!(
+                "    - name: db\n      source: {}\n      schedule: \"6h\"\n",
+                crate::to_posix_string(&source)
+            ),
+        );
+        let (triggers, senders) = make_triggers();
+        let handle = tokio::spawn(runner::run_daemon_loop(
+            ctx,
+            triggers,
+            Vec::new(),
+            Vec::new(),
+            crate::daemon::BackupTimers::empty(),
+            Arc::new(AtomicU64::new(300)),
+            Arc::new(AtomicU64::new(300)),
+        ));
+
+        // What a check-in that answered a changed projection does, and nothing
+        // more: the loop owns every step after it.
+        state.lock().await.backup_reresolve().notify_one();
+        wait_for_daemon_log(
+            "backup schedules restored: 1 scheduled",
+            DAEMON_LOG_WAIT_CEILING,
+        )
+        .await;
+
+        senders.shutdown_tx.send(()).unwrap();
+        tokio::time::timeout(LOOP_EXIT_BUDGET, handle)
+            .await
+            .expect("loop did not exit after shutdown")
+            .expect("join error")
+            .expect("loop returned Err");
+    }
+
+    /// Re-arming on every check-in would re-resolve the whole profile once per
+    /// tick, so the answer that re-arms is specifically a CHANGED one.
+    #[test]
+    fn a_check_in_answering_the_projection_already_recorded_changes_nothing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let answer = projection("db", "0 3 * * *", Some(3));
+        assert!(crate::daemon::checkin::record_cluster_schedules_in(
+            Some(dir.path()),
+            &answer
+        ));
+        assert!(
+            !crate::daemon::checkin::record_cluster_schedules_in(Some(dir.path()), &answer),
+            "the same answer twice is one change, not two"
+        );
+    }
+
+    /// A gateway that could not be reached ANSWERED nothing, and nothing is
+    /// what a lost round-trip may retire: the recorded set is the cluster's
+    /// last word until the cluster speaks again.
+    #[test]
+    fn a_check_in_that_never_got_an_answer_keeps_the_recorded_projection() {
+        use crate::config::*;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _home = crate::with_test_home_guard(tmp.path());
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("POST", "/api/v1/checkin")
+            .with_status(500)
+            .with_body("gateway is restarting")
+            .create();
+        crate::server_client::save_credential(&test_credential(&server.url()))
+            .expect("store the device credential");
+
+        let store = StateStore::open_in_dir(tmp.path()).expect("state store");
+        crate::backup::record_cluster_schedules(&store, &projection("db", "0 3 * * *", Some(3)));
+
+        let config = CfgdConfig {
+            api_version: crate::API_VERSION.into(),
+            kind: "Config".into(),
+            metadata: ConfigMetadata {
+                name: "test".into(),
+            },
+            spec: ConfigSpec {
+                profile: Some("default".into()),
+                origin: vec![OriginSpec {
+                    origin_type: OriginType::Server,
+                    url: server.url(),
+                    branch: "main".into(),
+                    auth: None,
+                    ssh_strict_host_key_checking: Default::default(),
+                }],
+                ..Default::default()
+            },
+            deprecations: Vec::new(),
+            legacy_output_keys: Vec::new(),
+        };
+        let resolved = ResolvedProfile {
+            layers: vec![ProfileLayer {
+                source: "local".into(),
+                profile_name: "test".into(),
+                priority: 1000,
+                policy: LayerPolicy::Local,
+                spec: ProfileSpec::default(),
+            }],
+            merged: MergedProfile::default(),
+        };
+
+        let outcome = try_server_checkin(&config, &resolved, Default::default());
+        mock.assert();
+        assert!(
+            outcome.backup_schedules.is_none(),
+            "a check-in that got no answer projects nothing"
+        );
+        assert_eq!(
+            store
+                .cluster_backup_schedules()
+                .expect("read back")
+                .get("db")
+                .map(|p| p.schedule.as_str()),
+            Some("0 3 * * *"),
+            "an unreachable gateway must not delete the cadences the cluster owns"
+        );
+    }
+
+    /// A configured origin this machine holds no enrolment for is a skip, not
+    /// an anonymous post: the mock must see NO request at all. An
+    /// unauthenticated body would be refused, and a gateway logging refusals
+    /// from a machine that never enrolled is the operator's problem to be told
+    /// about, not to discover.
+    #[test]
+    fn a_configured_origin_with_no_stored_credential_posts_nothing() {
+        use crate::config::*;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _home = crate::with_test_home_guard(tmp.path());
+        let mut server = mockito::Server::new();
+        // Any check-in at all fails this pin: the mock expects zero.
+        let mock = server
+            .mock("POST", "/api/v1/checkin")
+            .expect(0)
+            .with_status(200)
+            .create();
+
+        let config = CfgdConfig {
+            api_version: crate::API_VERSION.into(),
+            kind: "Config".into(),
+            metadata: ConfigMetadata {
+                name: "test".into(),
+            },
+            spec: ConfigSpec {
+                profile: Some("default".into()),
+                origin: vec![OriginSpec {
+                    origin_type: OriginType::Server,
+                    url: server.url(),
+                    branch: "main".into(),
+                    auth: None,
+                    ssh_strict_host_key_checking: Default::default(),
+                }],
+                ..Default::default()
+            },
+            deprecations: Vec::new(),
+            legacy_output_keys: Vec::new(),
+        };
+        let resolved = ResolvedProfile {
+            layers: vec![ProfileLayer {
+                source: "local".into(),
+                profile_name: "test".into(),
+                priority: 1000,
+                policy: LayerPolicy::Local,
+                spec: ProfileSpec::default(),
+            }],
+            merged: MergedProfile::default(),
+        };
+
+        let outcome = try_server_checkin(&config, &resolved, Default::default());
+        mock.assert();
+        assert!(
+            !outcome.config_changed,
+            "a check-in that never happened reports no change"
+        );
+        assert!(
+            outcome.backup_schedules.is_none(),
+            "a check-in that never happened answers no projection"
+        );
+    }
+
+    /// A gateway that could not read the cluster answers with no projection at
+    /// all, and no projection is nothing to record: the same rule as a lost
+    /// round-trip, one hop up. A `200` is not by itself an answer about what
+    /// the cluster owns.
+    #[test]
+    fn a_check_in_answered_without_a_projection_keeps_the_recorded_one() {
+        use crate::config::*;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _home = crate::with_test_home_guard(tmp.path());
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("POST", "/api/v1/checkin")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"status":"ok","configChanged":false,"desiredConfig":null}"#)
+            .create();
+        crate::server_client::save_credential(&test_credential(&server.url()))
+            .expect("store the device credential");
+
+        let store = StateStore::open_in_dir(tmp.path()).expect("state store");
+        crate::backup::record_cluster_schedules(&store, &projection("db", "0 3 * * *", Some(3)));
+
+        let config = CfgdConfig {
+            api_version: crate::API_VERSION.into(),
+            kind: "Config".into(),
+            metadata: ConfigMetadata {
+                name: "test".into(),
+            },
+            spec: ConfigSpec {
+                profile: Some("default".into()),
+                origin: vec![OriginSpec {
+                    origin_type: OriginType::Server,
+                    url: server.url(),
+                    branch: "main".into(),
+                    auth: None,
+                    ssh_strict_host_key_checking: Default::default(),
+                }],
+                ..Default::default()
+            },
+            deprecations: Vec::new(),
+            legacy_output_keys: Vec::new(),
+        };
+        let resolved = ResolvedProfile {
+            layers: vec![ProfileLayer {
+                source: "local".into(),
+                profile_name: "test".into(),
+                priority: 1000,
+                policy: LayerPolicy::Local,
+                spec: ProfileSpec::default(),
+            }],
+            merged: MergedProfile::default(),
+        };
+
+        let outcome = try_server_checkin(&config, &resolved, Default::default());
+        mock.assert();
+        assert!(
+            outcome.backup_schedules.is_none(),
+            "an answer carrying no projection projects nothing"
+        );
+        assert_eq!(
+            store
+                .cluster_backup_schedules()
+                .expect("read back")
+                .get("db")
+                .map(|p| p.schedule.as_str()),
+            Some("0 3 * * *"),
+            "a gateway that could not read the cluster must not retire what it owns"
+        );
+    }
+
+    /// The retire path still works: an answer that CARRIES the projection,
+    /// empty included, is a read that succeeded and replaces the whole set.
+    #[test]
+    fn a_check_in_answered_with_an_empty_projection_clears_the_recorded_one() {
+        use crate::config::*;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _home = crate::with_test_home_guard(tmp.path());
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("POST", "/api/v1/checkin")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"status":"ok","configChanged":false,"backupSchedules":{}}"#)
+            .create();
+        crate::server_client::save_credential(&test_credential(&server.url()))
+            .expect("store the device credential");
+
+        let store = StateStore::open_in_dir(tmp.path()).expect("state store");
+        crate::backup::record_cluster_schedules(&store, &projection("db", "0 3 * * *", Some(3)));
+
+        let config = CfgdConfig {
+            api_version: crate::API_VERSION.into(),
+            kind: "Config".into(),
+            metadata: ConfigMetadata {
+                name: "test".into(),
+            },
+            spec: ConfigSpec {
+                profile: Some("default".into()),
+                origin: vec![OriginSpec {
+                    origin_type: OriginType::Server,
+                    url: server.url(),
+                    branch: "main".into(),
+                    auth: None,
+                    ssh_strict_host_key_checking: Default::default(),
+                }],
+                ..Default::default()
+            },
+            deprecations: Vec::new(),
+            legacy_output_keys: Vec::new(),
+        };
+        let resolved = ResolvedProfile {
+            layers: vec![ProfileLayer {
+                source: "local".into(),
+                profile_name: "test".into(),
+                priority: 1000,
+                policy: LayerPolicy::Local,
+                spec: ProfileSpec::default(),
+            }],
+            merged: MergedProfile::default(),
+        };
+
+        let outcome = try_server_checkin(&config, &resolved, Default::default());
+        mock.assert();
+        assert_eq!(
+            outcome.backup_schedules,
+            Some(Default::default()),
+            "an empty projection is an answer the machine acts on"
+        );
+        crate::daemon::checkin::record_cluster_schedules_in(
+            Some(tmp.path()),
+            outcome
+                .backup_schedules
+                .as_ref()
+                .expect("the answer carried a projection"),
+        );
+        assert!(
+            store
+                .cluster_backup_schedules()
+                .expect("read back")
+                .is_empty(),
+            "a cluster that stopped scheduling a unit retires its cadence"
+        );
+    }
+
+    // ----- the check-in -> record -> re-arm hop, on both paths -----
+
+    /// A config whose only origin is `url`'s device gateway, over a profile
+    /// declaring `profile_spec`.
+    fn write_gateway_config(
+        tmp: &tempfile::TempDir,
+        url: &str,
+        profile_spec: &str,
+    ) -> std::path::PathBuf {
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            format!(
+                "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  \
+                 profile: default\n  origin:\n    - type: Server\n      url: {url}\n      \
+                 branch: main\n"
+            ),
+        )
+        .expect("write the config");
+        std::fs::create_dir_all(tmp.path().join("profiles")).expect("create the profiles dir");
+        std::fs::write(
+            tmp.path().join("profiles").join("default.yaml"),
+            format!(
+                "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\n\
+                 {profile_spec}"
+            ),
+        )
+        .expect("write the profile");
+        config_path
+    }
+
+    /// One default reconcile tick, driven the way the daemon's own loop drives
+    /// it.
+    async fn run_default_tick(ctx: &DaemonLoopContext) {
+        let mut tasks = vec![ReconcileTask {
+            entity: "__default__".to_string(),
+            interval: StdDuration::from_secs(60),
+            auto_apply: false,
+            drift_policy: config::DriftPolicy::NotifyOnly,
+            last_reconciled: None,
+        }];
+        runner::handle_reconcile_tick(ctx, &mut tasks)
+            .await
+            .expect("the tick ran");
+    }
+
+    /// Whether a re-resolve permit is standing on `notify`.
+    ///
+    /// A `Notify` with no waiter stores one permit, and `notify_one` runs
+    /// inside the check-in path, which has returned by the time either caller
+    /// asks — so the permit is a settled fact, and the zero budget below reads
+    /// it rather than racing it. The positive direction still passes the
+    /// suite's own hang ceiling.
+    async fn reresolve_permit_stands(notify: &tokio::sync::Notify, budget: StdDuration) -> bool {
+        tokio::time::timeout(budget, notify.notified())
+            .await
+            .is_ok()
+    }
+
+    /// [`reresolve_permit_stands`] for the startup path, which is blocking and
+    /// so has no runtime of its own to read the permit under.
+    fn reresolve_permit_stands_blocking(notify: &tokio::sync::Notify, budget: StdDuration) -> bool {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .expect("a runtime to read the permit under")
+            .block_on(reresolve_permit_stands(notify, budget))
+    }
+
+    /// The cadence a gateway answers with is recorded under the TICK's own
+    /// state dir, and the answer re-arms the timers the tick is already running
+    /// under: the set was resolved before this tick ran, so a cadence the
+    /// cluster just moved would otherwise wait for a restart.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_tick_records_the_answered_cadence_and_rearms_the_timers() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _home = crate::with_test_home_guard(tmp.path());
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/api/v1/checkin")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"status":"ok","configChanged":false,"backupSchedules":{"db":{"schedule":"0 3 * * *","retention":3}}}"#,
+            )
+            .create_async()
+            .await;
+        crate::server_client::save_credential(&test_credential(&server.url()))
+            .expect("store the device credential");
+
+        let (mut ctx, state, _buf) = make_test_ctx(&tmp, false, false, None);
+        ctx.config_path = write_gateway_config(&tmp, &server.url(), "spec: {}\n");
+        run_default_tick(&ctx).await;
+        mock.assert_async().await;
+
+        let store = StateStore::open_in_dir(tmp.path()).expect("state store");
+        assert_eq!(
+            store
+                .cluster_backup_schedules()
+                .expect("read back")
+                .get("db")
+                .map(|p| p.schedule.as_str()),
+            Some("0 3 * * *"),
+            "the tick records the cadence under the state dir it ran with"
+        );
+        let notify = state.lock().await.backup_reresolve();
+        assert!(
+            reresolve_permit_stands(&notify, DAEMON_LOG_WAIT_CEILING).await,
+            "a changed answer re-arms the backup timers"
+        );
+    }
+
+    /// A gateway that could not read the cluster answers with no projection,
+    /// and no projection is nothing to record: the cadence already recorded
+    /// stands and nothing is re-armed.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_tick_answered_without_a_projection_keeps_the_recorded_cadence() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _home = crate::with_test_home_guard(tmp.path());
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/api/v1/checkin")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"status":"ok","configChanged":false}"#)
+            .create_async()
+            .await;
+        crate::server_client::save_credential(&test_credential(&server.url()))
+            .expect("store the device credential");
+
+        let store = StateStore::open_in_dir(tmp.path()).expect("state store");
+        crate::backup::record_cluster_schedules(&store, &projection("db", "0 3 * * *", Some(3)));
+
+        let (mut ctx, state, _buf) = make_test_ctx(&tmp, false, false, None);
+        ctx.config_path = write_gateway_config(&tmp, &server.url(), "spec: {}\n");
+        run_default_tick(&ctx).await;
+        mock.assert_async().await;
+
+        assert_eq!(
+            store
+                .cluster_backup_schedules()
+                .expect("read back")
+                .get("db")
+                .map(|p| p.schedule.as_str()),
+            Some("0 3 * * *"),
+            "a gateway that said nothing must not retire what the cluster owns"
+        );
+        let notify = state.lock().await.backup_reresolve();
+        assert!(
+            !reresolve_permit_stands(&notify, StdDuration::ZERO).await,
+            "nothing was recorded, so nothing is re-armed"
+        );
+    }
+
+    /// The startup check-in takes the same hop: it runs before the timer set is
+    /// resolved for the first time, and the cadences it brings back are what
+    /// that set is armed from.
+    #[test]
+    fn a_startup_check_in_records_the_answered_cadence_and_rearms_the_timers() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _home = crate::with_test_home_guard(tmp.path());
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("POST", "/api/v1/checkin")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"status":"ok","configChanged":false,"backupSchedules":{"db":{"schedule":"0 3 * * *","retention":3}}}"#,
+            )
+            .create();
+        crate::server_client::save_credential(&test_credential(&server.url()))
+            .expect("store the device credential");
+
+        let config_path = write_gateway_config(&tmp, &server.url(), "spec: {}\n");
+        let cfg = config::load_config(&config_path).expect("load the config");
+        let notify = tokio::sync::Notify::new();
+        run_startup_checkin_blocking(&config_path, None, &cfg, Some(tmp.path()), &notify);
+        mock.assert();
+
+        let store = StateStore::open_in_dir(tmp.path()).expect("state store");
+        assert_eq!(
+            store
+                .cluster_backup_schedules()
+                .expect("read back")
+                .get("db")
+                .map(|p| p.schedule.as_str()),
+            Some("0 3 * * *"),
+            "the startup check-in records the cadence under the state dir it was given"
+        );
+        assert!(
+            reresolve_permit_stands_blocking(&notify, DAEMON_LOG_WAIT_CEILING),
+            "a changed answer re-arms the backup timers"
+        );
+    }
+
+    /// And the same refusal on the startup path: an answer carrying no
+    /// projection leaves the recorded set where it is.
+    #[test]
+    fn a_startup_check_in_answered_without_a_projection_keeps_the_recorded_cadence() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _home = crate::with_test_home_guard(tmp.path());
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("POST", "/api/v1/checkin")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"status":"ok","configChanged":false}"#)
+            .create();
+        crate::server_client::save_credential(&test_credential(&server.url()))
+            .expect("store the device credential");
+
+        let store = StateStore::open_in_dir(tmp.path()).expect("state store");
+        crate::backup::record_cluster_schedules(&store, &projection("db", "0 3 * * *", Some(3)));
+
+        let config_path = write_gateway_config(&tmp, &server.url(), "spec: {}\n");
+        let cfg = config::load_config(&config_path).expect("load the config");
+        let notify = tokio::sync::Notify::new();
+        run_startup_checkin_blocking(&config_path, None, &cfg, Some(tmp.path()), &notify);
+        mock.assert();
+
+        assert_eq!(
+            store
+                .cluster_backup_schedules()
+                .expect("read back")
+                .get("db")
+                .map(|p| p.schedule.as_str()),
+            Some("0 3 * * *"),
+            "a gateway that said nothing must not retire what the cluster owns"
+        );
+        assert!(
+            !reresolve_permit_stands_blocking(&notify, StdDuration::ZERO),
+            "nothing was recorded, so nothing is re-armed"
+        );
+    }
+
+    /// A daemon whose one available manager holds a package the profile
+    /// declares and cannot be listed.
+    struct UnlistableManagerHooks;
+
+    impl crate::daemon::DaemonHooks for UnlistableManagerHooks {
+        fn build_registry(&self, _: &config::CfgdConfig) -> crate::providers::ProviderRegistry {
+            let mut registry = crate::providers::ProviderRegistry::new();
+            registry.add_package_manager(Box::new(
+                crate::providers::StubPackageManager::new("pipx")
+                    .with_installed_error("pipx list: database is locked"),
+            ));
+            registry
+        }
+
+        fn plan_files(
+            &self,
+            _: &Path,
+            _: &config::ResolvedProfile,
+        ) -> crate::errors::Result<Vec<crate::providers::FileAction>> {
+            Ok(vec![])
+        }
+
+        fn plan_packages(
+            &self,
+            _: &config::MergedProfile,
+            _: &[&dyn crate::providers::PackageManager],
+            _: &std::collections::HashSet<String>,
+            _: &crate::providers::PackageContext<'_>,
+        ) -> crate::errors::Result<Vec<crate::providers::PackageAction>> {
+            Ok(vec![])
+        }
+
+        fn extend_registry_custom_managers(
+            &self,
+            _: &mut crate::providers::ProviderRegistry,
+            _: &config::PackagesSpec,
+        ) {
+        }
+
+        fn expand_tilde(&self, path: &Path) -> std::path::PathBuf {
+            crate::expand_tilde(path)
+        }
+    }
+
+    /// The daemon's periodic check-in withholds the whole version map when a
+    /// manager holding declared packages could not be listed: the key is absent
+    /// from the body, so the gateway's packages field manager writes nothing
+    /// and the versions the cluster holds survive. The map the tick DID observe
+    /// still travels.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_tick_whose_manager_cannot_be_listed_sends_no_package_versions() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _home = crate::with_test_home_guard(tmp.path());
+        let mut server = mockito::Server::new_async().await;
+        let posted: Arc<std::sync::Mutex<Option<serde_json::Value>>> = Arc::default();
+        let captured = Arc::clone(&posted);
+        let mock = server
+            .mock("POST", "/api/v1/checkin")
+            .match_request(move |req| {
+                if let Ok(raw) = req.body()
+                    && let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(raw)
+                {
+                    *captured.lock().expect("the capture slot") = Some(parsed);
+                }
+                true
+            })
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"status":"ok","configChanged":false}"#)
+            .create_async()
+            .await;
+        crate::server_client::save_credential(&test_credential(&server.url()))
+            .expect("store the device credential");
+
+        let (mut ctx, _state, _buf) = make_test_ctx(&tmp, false, false, None);
+        ctx.config_path = write_gateway_config(
+            &tmp,
+            &server.url(),
+            "spec:\n  packages:\n    pipx:\n      - ripgrep\n",
+        );
+        ctx.hooks = Arc::new(UnlistableManagerHooks);
+        run_default_tick(&ctx).await;
+        mock.assert_async().await;
+
+        let body = posted
+            .lock()
+            .expect("the capture slot")
+            .clone()
+            .expect("the tick posted a check-in");
+        assert!(
+            body.get("packageVersions").is_none(),
+            "a manager holding declared packages that could not be listed withholds the whole map: {body}"
+        );
+        assert!(
+            body.get("backupScheduleOwners").is_some(),
+            "the map the tick did observe is still reported: {body}"
+        );
+    }
+
     // ----- task-set construction -----
 
     #[test]
@@ -19977,7 +21776,8 @@ mod backup_timers {
             spec("scheduled", Path::new("/tmp/a"), Some("1h")),
             spec("apply-time", Path::new("/tmp/b"), None),
         ];
-        let tasks = build_backup_tasks(&specs, "workstation", now, &no_history);
+        let tasks =
+            build_backup_tasks(&specs, "workstation", now, &no_history, &Default::default());
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].spec.name, "scheduled");
         assert_eq!(tasks[0].profile_name, "workstation");
@@ -19986,7 +21786,16 @@ mod backup_timers {
     #[test]
     fn an_unparseable_schedule_installs_no_timer() {
         let specs = vec![spec("broken", Path::new("/tmp/a"), Some("every tuesday"))];
-        assert!(build_backup_tasks(&specs, "workstation", Instant::now(), &no_history).is_empty());
+        assert!(
+            build_backup_tasks(
+                &specs,
+                "workstation",
+                Instant::now(),
+                &no_history,
+                &Default::default()
+            )
+            .is_empty()
+        );
     }
 
     #[test]
@@ -20220,7 +22029,8 @@ mod backup_timers {
 
         let past = Instant::now() - StdDuration::from_secs(5);
         let mut set = timers(vec![
-            BackupTask::new(&s, "workstation", past, None).expect("schedule installs a timer"),
+            BackupTask::new(&s, "workstation", past, None, &Default::default())
+                .expect("schedule installs a timer"),
         ]);
         runner::handle_backup_tick(&ctx, &mut set).await.unwrap();
 
@@ -20254,6 +22064,7 @@ mod backup_timers {
     // ----- the loop's timer branch -----
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial_test::serial(tracing_dispatcher)]
     async fn the_loop_fires_a_backup_timer_without_any_external_trigger() {
         let tmp = tempfile::TempDir::new().unwrap();
         let _g = crate::with_test_home_guard(tmp.path());
@@ -20318,6 +22129,7 @@ mod backup_timers {
             "workstation",
             now,
             Some(&finished_secs_ago(1800)),
+            &Default::default(),
         )
         .expect("timer installs");
         // Half the period has already elapsed, so only half is left — NOT a
@@ -20334,6 +22146,7 @@ mod backup_timers {
             "workstation",
             now,
             Some(&finished_secs_ago(7200)),
+            &Default::default(),
         )
         .expect("timer installs");
         assert!(
@@ -20350,6 +22163,7 @@ mod backup_timers {
             "workstation",
             now,
             None,
+            &Default::default(),
         )
         .expect("timer installs");
         assert_fires_near(t.next_fire(), now + StdDuration::from_secs(3600));
@@ -20364,6 +22178,7 @@ mod backup_timers {
             "workstation",
             now,
             Some(&future),
+            &Default::default(),
         )
         .expect("timer installs");
         // A stepped-back clock or a state dir carried over from another machine
@@ -20379,6 +22194,7 @@ mod backup_timers {
             "workstation",
             now,
             Some("not-a-timestamp"),
+            &Default::default(),
         )
         .expect("timer installs");
         assert_fires_near(t.next_fire(), now + StdDuration::from_secs(3600));
@@ -20392,6 +22208,7 @@ mod backup_timers {
             "workstation",
             now,
             Some(&finished_secs_ago(86_400 * 7)),
+            &Default::default(),
         )
         .expect("timer installs");
         let unseeded = BackupTask::new(
@@ -20399,6 +22216,7 @@ mod backup_timers {
             "workstation",
             now,
             None,
+            &Default::default(),
         )
         .expect("timer installs");
         // Cron occurrences are absolute wall-clock times: the next 3am is the
@@ -22035,36 +23853,43 @@ mod log_dialect {
         (tmp, config_path, state_dir)
     }
 
-    async fn run_tick(config_path: &Path, state_dir: &Path, module_filter: Option<&'static str>) {
+    /// Run one tick and answer with the journal that tick alone wrote.
+    async fn run_tick(
+        config_path: &Path,
+        state_dir: &Path,
+        module_filter: Option<&'static str>,
+    ) -> String {
         let state = Arc::new(Mutex::new(DaemonState::new()));
         let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
         let sd = state_dir.to_path_buf();
         let cp = config_path.to_path_buf();
         crate::spawn_blocking_with_test_home(move || {
             let printer = test_printer();
-            handle_reconcile(
-                &cp,
-                None,
-                ReconcileCtx {
-                    state: &state,
-                    notifier: &notifier,
-                    notify_on_drift: false,
-                    hooks: &NoopHooks,
-                    state_dir_override: Some(&sd),
-                    explicit_state_dir: true,
-                    cache_dir_override: None,
-                    printer: &printer,
-                    module_filter,
-                    auto_apply_override: Some(true),
-                    drift_policy_override: Some(config::DriftPolicy::Auto),
-                    scope: crate::Scope::User,
-                    abort: never_abort(),
-                    cache: fresh_tick_cache(),
-                },
-            );
+            super::capture_run_logs(|| {
+                handle_reconcile(
+                    &cp,
+                    None,
+                    ReconcileCtx {
+                        state: &state,
+                        notifier: &notifier,
+                        notify_on_drift: false,
+                        hooks: &NoopHooks,
+                        state_dir_override: Some(&sd),
+                        explicit_state_dir: true,
+                        cache_dir_override: None,
+                        printer: &printer,
+                        module_filter,
+                        auto_apply_override: Some(true),
+                        drift_policy_override: Some(config::DriftPolicy::Auto),
+                        scope: crate::Scope::User,
+                        abort: never_abort(),
+                        cache: fresh_tick_cache(),
+                    },
+                );
+            })
         })
         .await
-        .unwrap();
+        .unwrap()
     }
 
     /// A tick that ran and found nothing still says so. Four heartbeats and no
@@ -22073,14 +23898,10 @@ mod log_dialect {
     /// the start went to `debug!`.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[serial_test::serial]
-    #[serial_test::serial(daemon_log)]
     async fn a_tick_with_nothing_to_do_logs_its_completion() {
-        reset_daemon_log();
         let (tmp, config_path, state_dir) = min_fixture();
         let _home = crate::with_test_home_guard(tmp.path());
-        run_tick(&config_path, &state_dir, None).await;
-
-        let logs = daemon_log();
+        let logs = run_tick(&config_path, &state_dir, None).await;
         assert!(
             logs.contains("reconcile: complete — nothing to do"),
             "got: {logs}"
@@ -22097,9 +23918,7 @@ mod log_dialect {
     /// two surfaces came to describe one tick differently.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[serial_test::serial]
-    #[serial_test::serial(daemon_log)]
     async fn an_applying_tick_logs_the_counts_its_rollup_shows() {
-        reset_daemon_log();
         let (tmp, config_path, state_dir) = min_fixture();
         let _home = crate::with_test_home_guard(tmp.path());
         std::fs::write(
@@ -22120,9 +23939,7 @@ mod log_dialect {
         )
         .unwrap();
 
-        run_tick(&config_path, &state_dir, None).await;
-
-        let logs = daemon_log();
+        let logs = run_tick(&config_path, &state_dir, None).await;
         assert!(
             logs.contains("reconcile: complete — 1 action succeeded"),
             "got: {logs}"
@@ -22133,18 +23950,67 @@ mod log_dialect {
         );
     }
 
+    /// The log line accounts for work the tick's plan could not name too: an
+    /// `onChange` hook fires on whether this very tick changed anything. Folded
+    /// into `succeeded` it reported two actions for a plan of one, on the one
+    /// line a reader of the journal keeps.
+    ///
+    /// Two declared MODULES against one hook, so the line's two counts differ
+    /// and a class clause built from the planned success count renders a number
+    /// this assertion rejects; the plural and singular forms are exercised
+    /// together. Two files of one module would not do it: a module's files are
+    /// one `DeployFiles` action whatever their number.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[cfg(unix)]
+    #[serial_test::serial]
+    async fn an_applying_tick_logs_the_work_its_plan_could_not_name() {
+        let (tmp, config_path, state_dir) = min_fixture();
+        let _home = crate::with_test_home_guard(tmp.path());
+        std::fs::write(
+            tmp.path().join("profiles").join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  scripts:\n    onChange:\n      - \"true\"\n  modules:\n    - mymod\n    - othermod\n",
+        )
+        .unwrap();
+        for (module, source, target) in [
+            ("mymod", "app.conf", tmp.path().join("app.conf")),
+            ("othermod", "other.conf", tmp.path().join("other.conf")),
+        ] {
+            let module_dir = tmp.path().join("modules").join(module);
+            std::fs::create_dir_all(&module_dir).unwrap();
+            std::fs::write(module_dir.join(source), format!("from {module}\n")).unwrap();
+            std::fs::write(
+                module_dir.join("module.yaml"),
+                format!(
+                    "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: {module}\nspec:\n  files:\n    - source: {source}\n      target: {}\n      strategy: Copy\n",
+                    crate::to_posix_string(&target)
+                ),
+            )
+            .unwrap();
+        }
+
+        // The asserted sentence is built from the slots the premise proved
+        // distinct, so it cannot carry a number that premise never saw.
+        let slots = [
+            ("actions succeeded", 2),
+            ("onChange hooks after the plan", 1),
+        ];
+        crate::test_helpers::assert_slots_discriminate(&slots);
+        let logs = run_tick(&config_path, &state_dir, None).await;
+        let expected = format!(
+            "reconcile: complete — {} actions succeeded, {} onChange hook ran after the plan",
+            slots[0].1, slots[1].1
+        );
+        assert!(logs.contains(&expected), "want {expected:?}, got: {logs}");
+    }
+
     /// A per-module tick names its module: both cadences write to one log, and
     /// a bare completion cannot say which of them converged.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[serial_test::serial]
-    #[serial_test::serial(daemon_log)]
     async fn a_per_module_tick_names_the_module_it_converged() {
-        reset_daemon_log();
         let (tmp, config_path, state_dir) = min_fixture();
         let _home = crate::with_test_home_guard(tmp.path());
-        run_tick(&config_path, &state_dir, Some("nvim")).await;
-
-        let logs = daemon_log();
+        let logs = run_tick(&config_path, &state_dir, Some("nvim")).await;
         assert!(
             logs.contains("reconcile: complete — module nvim: nothing to do"),
             "got: {logs}"
@@ -22155,9 +24021,7 @@ mod log_dialect {
     /// source, stops mid-thought and then repeats itself in a second grammar.
     /// The sentence carries the source and both ends of the move.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    #[serial_test::serial(daemon_log)]
     async fn a_pull_names_the_source_and_both_ends_of_the_move() {
-        reset_daemon_log();
         let tmp = tempfile::TempDir::new().unwrap();
         let bare_dir = tmp.path().join("bare.git");
         let work_dir = tmp.path().join("work");
@@ -22214,14 +24078,16 @@ mod log_dialect {
         };
 
         let state = Arc::new(Mutex::new(DaemonState::new()));
-        assert!(handle_sync(&work_dir, true, false, "local", &state, false, false).await);
+        let logs = super::capture_run_logs_async(async {
+            assert!(handle_sync(&work_dir, true, false, "local", &state, false, false).await);
+        })
+        .await;
 
         let expected = format!(
             "sync: pulled source local {} → {}",
             crate::short_commit(&from.to_string()),
             crate::short_commit(&to.to_string())
         );
-        let logs = daemon_log();
         assert!(logs.contains(&expected), "want {expected:?}, got: {logs}");
         assert!(
             !logs.contains("from="),
@@ -22247,7 +24113,7 @@ fn every_counted_clause_names_the_unit_it_counts() {
     let body = std::fs::read_to_string(&path).expect("the reconcile tick is checked out");
     // binding → the nouns it is honestly counted in.
     let classified: &[(&str, &[&str])] = &[
-        ("effective_total", &["action", "resource"]),
+        ("drift_total", &["action", "resource"]),
         ("succeeded", &["action"]),
         ("moved", &["deployed file"]),
     ];

@@ -1,0 +1,28 @@
+Status
+  Config   /etc/cfgd/cfgd.yaml
+  Profile  default
+
+Last Apply
+  Result   Success
+  Summary  12 actions applied
+  Profile  default
+  Age      5m
+
+Component Health (checked 5m ago)
+  ✓ profile:default — Synced (3 aliases, 5 env vars)
+  ✓ cfgd:env        — Synced (1 env file)
+  ✓ cfgd:shell      — Synced (1 rc line)
+
+Managed Resources
+  Type     Owner            Resource              Method  Source            
+  ──────────────────────────────────────────────────────────────────────────
+  alias    profile:default  gs                    -       local
+  alias    profile:default  k                     -       team-config
+  alias    profile:default  ll                    -       local
+  env var  profile:default  ACME_REGISTRY         -       team-config
+  env var  profile:default  EDITOR                -       local
+  env var  profile:default  LANG                  -       local
+  env var  profile:default  PAGER                 -       local
+  env var  profile:default  PATH                  -       local, team-config
+  env      cfgd:env         /home/user/.cfgd.env  write   local
+  rc       cfgd:shell       /home/user/.bashrc    inject  local

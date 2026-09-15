@@ -1,0 +1,33 @@
+Module: dev-tools
+  Version       1.4.0
+  Dependencies  base
+  Directory     /etc/cfgd/modules/dev-tools
+  Source        local
+
+Packages
+  ripgrep
+  winget-only-tool — platforms: windows
+  obscure-tool     — prefer: nix, min: 1.0
+
+Files
+  vimrc                     ~/.vimrc
+  git@example.com:org/dotfiles.git//tmux.conf (git)
+    ~/.tmux.conf
+
+Aliases
+  gs  git status
+  ll  ls -la
+
+Env
+  EDITOR    ***vim
+  GH_TOKEN  ***lue
+
+Scripts
+  preApply
+    mkdir -p ~/.config/dev-tools
+  postApply
+    if command -v pipx >/dev/null 2>&1; then …
+    nvim --headless "+Lazy! restore" +qa!
+    echo done
+    nvim --headless +UpdateRemotePlugins +qa
+    echo "press Enter"; read

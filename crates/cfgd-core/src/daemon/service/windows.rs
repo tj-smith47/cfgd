@@ -101,21 +101,19 @@ pub(crate) fn install_windows_service(
     }
 
     // sc.exe requires key= and value as separate arguments
-    let output = std::process::Command::new("sc.exe")
-        .args([
-            "create",
-            "cfgd",
-            "binPath=",
-            &bin_args,
-            "start=",
-            "auto",
-            "DisplayName=",
-            "cfgd Configuration Manager",
-        ])
-        .output()
-        .map_err(|e| DaemonError::ServiceInstallFailed {
-            message: format!("sc.exe create failed: {}", e),
-        })?;
+    let output = crate::command_output(std::process::Command::new("sc.exe").args([
+        "create",
+        "cfgd",
+        "binPath=",
+        &bin_args,
+        "start=",
+        "auto",
+        "DisplayName=",
+        "cfgd Configuration Manager",
+    ]))
+    .map_err(|e| DaemonError::ServiceInstallFailed {
+        message: format!("sc.exe create failed: {}", e),
+    })?;
 
     if !output.status.success() {
         return Err(DaemonError::ServiceInstallFailed {
@@ -128,14 +126,11 @@ pub(crate) fn install_windows_service(
     }
 
     // Set service description
-    if let Err(e) = std::process::Command::new("sc.exe")
-        .args([
-            "description",
-            "cfgd",
-            "Declarative machine configuration management daemon",
-        ])
-        .output()
-    {
+    if let Err(e) = crate::command_output(std::process::Command::new("sc.exe").args([
+        "description",
+        "cfgd",
+        "Declarative machine configuration management daemon",
+    ])) {
         tracing::warn!(error = %e, "daemon: failed to set the Windows Service description");
     }
 
@@ -163,9 +158,7 @@ pub(crate) fn install_windows_service(
 /// claiming success, so `cfgd daemon install` reports the real state.
 #[cfg(windows)]
 pub(crate) fn start_windows_service() -> Result<bool> {
-    let _ = std::process::Command::new("sc.exe")
-        .args(["start", "cfgd"])
-        .output()
+    let _ = crate::command_output(std::process::Command::new("sc.exe").args(["start", "cfgd"]))
         .map_err(
             |e| tracing::warn!(error = %e, "daemon: failed to issue sc start for the cfgd service"),
         );
@@ -188,9 +181,7 @@ pub(crate) fn start_windows_service() -> Result<bool> {
 /// True when `sc query cfgd` reports the service is RUNNING.
 #[cfg(windows)]
 fn windows_service_is_running() -> bool {
-    std::process::Command::new("sc.exe")
-        .args(["query", "cfgd"])
-        .output()
+    crate::command_output(std::process::Command::new("sc.exe").args(["query", "cfgd"]))
         .ok()
         .map(|o| crate::stdout_lossy_trimmed(&o).contains("RUNNING"))
         .unwrap_or(false)
@@ -211,36 +202,32 @@ fn register_event_source() {
     let key = r"HKLM\SYSTEM\CurrentControlSet\Services\EventLog\Application\cfgd";
     let msg_file = r"%SystemRoot%\System32\EventCreate.exe";
 
-    let _ = std::process::Command::new("reg.exe")
-        .args([
-            "add",
-            key,
-            "/v",
-            "EventMessageFile",
-            "/t",
-            "REG_EXPAND_SZ",
-            "/d",
-            msg_file,
-            "/f",
-        ])
-        .output();
+    let _ = crate::command_output(std::process::Command::new("reg.exe").args([
+        "add",
+        key,
+        "/v",
+        "EventMessageFile",
+        "/t",
+        "REG_EXPAND_SZ",
+        "/d",
+        msg_file,
+        "/f",
+    ]));
 
     // TypesSupported = 0x7 → ERROR | WARNING | INFORMATION (the three the
     // Layer emits). Higher bits would cover audit success/failure if those
     // are ever surfaced.
-    let _ = std::process::Command::new("reg.exe")
-        .args([
-            "add",
-            key,
-            "/v",
-            "TypesSupported",
-            "/t",
-            "REG_DWORD",
-            "/d",
-            "0x7",
-            "/f",
-        ])
-        .output();
+    let _ = crate::command_output(std::process::Command::new("reg.exe").args([
+        "add",
+        key,
+        "/v",
+        "TypesSupported",
+        "/t",
+        "REG_DWORD",
+        "/d",
+        "0x7",
+        "/f",
+    ]));
 }
 
 /// Uninstall cfgd Windows Service via sc.exe.
@@ -253,19 +240,17 @@ pub(crate) fn uninstall_windows_service() -> Result<()> {
         return Ok(());
     }
     // Stop service first (best-effort — may not be running)
-    if let Err(e) = std::process::Command::new("sc.exe")
-        .args(["stop", "cfgd"])
-        .output()
+    if let Err(e) =
+        crate::command_output(std::process::Command::new("sc.exe").args(["stop", "cfgd"]))
     {
         tracing::debug!(error = %e, "daemon: sc.exe stop (pre-uninstall)");
     }
 
-    let output = std::process::Command::new("sc.exe")
-        .args(["delete", "cfgd"])
-        .output()
-        .map_err(|e| DaemonError::ServiceInstallFailed {
-            message: format!("sc.exe delete failed: {}", e),
-        })?;
+    let output =
+        crate::command_output(std::process::Command::new("sc.exe").args(["delete", "cfgd"]))
+            .map_err(|e| DaemonError::ServiceInstallFailed {
+                message: format!("sc.exe delete failed: {}", e),
+            })?;
 
     if !output.status.success() {
         let stdout = crate::stdout_lossy_trimmed(&output);
@@ -283,13 +268,11 @@ pub(crate) fn uninstall_windows_service() -> Result<()> {
 
     // Best-effort: drop the Event Log source registration. Idempotent —
     // `reg delete` on a non-existent key returns non-zero but causes no harm.
-    let _ = std::process::Command::new("reg.exe")
-        .args([
-            "delete",
-            r"HKLM\SYSTEM\CurrentControlSet\Services\EventLog\Application\cfgd",
-            "/f",
-        ])
-        .output();
+    let _ = crate::command_output(std::process::Command::new("reg.exe").args([
+        "delete",
+        r"HKLM\SYSTEM\CurrentControlSet\Services\EventLog\Application\cfgd",
+        "/f",
+    ]));
 
     tracing::info!("daemon: removed Windows Service cfgd");
     Ok(())

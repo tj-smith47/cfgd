@@ -33,8 +33,8 @@ fn partial_failure_config(dir: &Path) {
 
     let profile = format!(
         "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: tiny\nspec:\n  inherits: []\n  modules: []\n  files:\n    managed:\n      - source: files/hello.txt\n        target: {}\n        strategy: Copy\n      - source: files/world.txt\n        target: {}\n        strategy: Copy\n",
-        target_ok.display(),
-        target_fail.display(),
+        cfgd_core::to_posix_string(&target_ok),
+        cfgd_core::to_posix_string(&target_fail),
     );
     let profiles_dir = dir.join("profiles");
     std::fs::create_dir_all(&profiles_dir).unwrap();
@@ -58,7 +58,7 @@ fn total_failure_config(dir: &Path) {
 
     let profile = format!(
         "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: tiny\nspec:\n  inherits: []\n  modules: []\n  files:\n    managed:\n      - source: files/world.txt\n        target: {}\n        strategy: Copy\n",
-        target_fail.display(),
+        cfgd_core::to_posix_string(&target_fail),
     );
     let profiles_dir = dir.join("profiles");
     std::fs::create_dir_all(&profiles_dir).unwrap();
@@ -77,7 +77,7 @@ fn success_config(dir: &Path) {
     let target = dir.join("out").join("hello.txt");
     let profile = format!(
         "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: tiny\nspec:\n  inherits: []\n  modules: []\n  files:\n    managed:\n      - source: files/hello.txt\n        target: {}\n        strategy: Copy\n",
-        target.display(),
+        cfgd_core::to_posix_string(&target),
     );
     let profiles_dir = dir.join("profiles");
     std::fs::create_dir_all(&profiles_dir).unwrap();

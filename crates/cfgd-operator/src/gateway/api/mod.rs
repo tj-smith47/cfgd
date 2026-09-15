@@ -16,6 +16,12 @@ use subtle::ConstantTimeEq;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::BroadcastStream;
 
+// The per-IP enrollment budget (5 up front, 5/min) is shared with the device's
+// own 429 retry ladder: a hand copy on either side lets a client give up while
+// the quota it is waiting for is still refilling. `/api/v1/enroll/info` is
+// read-only and deliberately outside the limited group.
+use cfgd_core::{ENROLL_RATE_LIMIT_BURST, ENROLL_RATE_LIMIT_PER_MIN};
+
 use super::db::{FleetEvent, ServerDb};
 use super::errors::GatewayError;
 use crate::metrics::Metrics;
@@ -84,6 +90,9 @@ impl EnrollmentMethod {
 pub struct AppState {
     pub db: ServerDb,
     pub kube_client: Option<kube::Client>,
+    /// The BackupPolicy watch cache the controllers publish, empty in a
+    /// standalone gateway; a check-in reads it before listing for itself.
+    pub backup_policies: crate::controllers::BackupPolicyCache,
     pub event_tx: tokio::sync::broadcast::Sender<FleetEvent>,
     pub enrollment_method: EnrollmentMethod,
     pub metrics: Option<Metrics>,
@@ -112,6 +121,16 @@ pub struct CheckinRequest {
     pub config_hash: String,
     #[serde(default)]
     pub compliance_summary: Option<serde_json::Value>,
+    /// Installed versions of the packages the device DECLARES, keyed
+    /// `<manager>/<package>`. Absent when the device did not observe them,
+    /// which is what a device that predates the field sends; an observed map
+    /// arrives whole, empty included.
+    #[serde(default)]
+    pub package_versions: Option<std::collections::BTreeMap<String, String>>,
+    /// Which layer owns each declared backup unit's schedule on the device,
+    /// as `ScheduleOwner::label` spells it. Absent on the same terms.
+    #[serde(default)]
+    pub backup_schedule_owners: Option<std::collections::BTreeMap<String, String>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -121,6 +140,17 @@ pub struct CheckinResponse {
     pub config_changed: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub desired_config: Option<serde_json::Value>,
+    /// The cadences a cluster `BackupPolicy` owns for this device's machine,
+    /// keyed by unit name.
+    ///
+    /// Absent when the gateway could not read the cluster: a failed list, or a
+    /// standalone gateway that holds no client at all. Present and empty when a
+    /// read succeeded and nothing schedules this machine, which is the answer
+    /// that retires the cadences it last held. The device replaces its whole
+    /// recorded set from this field, so the two cases cannot share a spelling.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backup_schedules:
+        Option<std::collections::BTreeMap<String, cfgd_core::backup::BackupScheduleProjection>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -341,14 +371,6 @@ pub fn router(state: SharedState) -> Router<SharedState> {
         .merge(enrollment_info_route)
 }
 
-/// Per-IP rate-limit budget for unauthenticated enrollment WRITE endpoints
-/// (`/api/v1/enroll`, `/api/v1/enroll/challenge`, `/api/v1/enroll/verify`).
-/// Tuned for legitimate operator flow (a handful of attempts during
-/// enrollment) while making brute-force/oracle probes infeasible.
-///
-/// `/api/v1/enroll/info` is read-only and is NOT subject to this limit.
-pub(crate) const ENROLL_RATE_LIMIT_BURST: u32 = 5;
-pub(crate) const ENROLL_RATE_LIMIT_PER_MIN: u32 = 5;
 // Length bounds for device-supplied identifiers. These are enforced on
 // every enrollment / checkin entry point — they defend against log
 // injection (unbounded strings in structured logs), URL traversal (when a

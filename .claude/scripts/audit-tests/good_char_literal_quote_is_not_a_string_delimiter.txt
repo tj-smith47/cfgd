@@ -1,0 +1,18 @@
+# EXPECTED: NOT flagged. A char literal holding a bare quote is not a string
+# delimiter. An extractor that pairs quotes without consuming the char literal
+# first reads that quote as an opening one and reports the 40-plus characters
+# running to the next literal as one repeat. Consuming the char literal leaves
+# one genuine string literal on the line, under the gate's 32-character floor.
+# The shape is live in the scanned corpus: crates/cfgd-core/src/daemon/service/
+# systemd.rs spells the same replace pair.
+fn first() -> String {
+    value.replace('"', escape_for_the_named_dialect_here(HTML, "&quot;"))
+}
+
+fn second() -> String {
+    value.replace('"', escape_for_the_named_dialect_here(HTML, "&quot;"))
+}
+
+fn third() -> String {
+    value.replace('"', escape_for_the_named_dialect_here(HTML, "&quot;"))
+}

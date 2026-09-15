@@ -54,6 +54,15 @@ tasks:
       - sh: '[ "$(uname)" != "Linux" ] || [ "$(stat -f -c %T /tmp 2>/dev/null)" != "tmpfs" ] || [ "$(df --output=pcent /tmp | tail -1 | tr -dc 0-9)" -lt 50 ]'
         msg: "/tmp is over 50% full — cargo will OOM under tmpfs RAM pressure. Run `du -sh /tmp/*/ | sort -hr | head` to find offenders and clean them. Write all scratch / debug / download files to `/opt/repos/.det-debug/` or `~/.cache/`, NEVER `/tmp`."
 
+  _check:mem-headroom:
+    internal: true
+    desc: "Precondition: rustdoc over this workspace peaks near 10 GB; refuse to start it with less available, so it fails here instead of the kernel killing whatever else is largest."
+    preconditions:
+      # MemAvailable is in kB; 10 GB = 10485760 kB. Only Linux exposes /proc/meminfo;
+      # the macOS and Windows runners are never short of it for this step.
+      - sh: '[ "$(uname)" != "Linux" ] || [ "$(grep MemAvailable /proc/meminfo | tr -dc 0-9)" -ge 10485760 ]'
+        msg: "Under 10 GB of memory available: rustdoc for this workspace peaks near 10 GB and the kernel OOM-kills the largest process on the host. `task doc` is CI's gate and `task push`'s; run it there, or free the memory first."
+
   # --- Build ---
 
   build:
@@ -83,11 +92,10 @@ tasks:
   # --- Quality ---
 
   check:
-    desc: Run all quality checks (fmt:check, clippy, doc, test, audit)
+    desc: Run all quality checks (fmt:check, clippy, test, audit); the rustdoc gate runs in CI and ahead of `task push`
     cmds:
       - task: fmt:check
       - task: clippy
-      - task: doc
       - task: test
       - task: audit
 
@@ -108,8 +116,8 @@ tasks:
       - cargo clippy --workspace --all-targets -- -D warnings
 
   doc:
-    desc: Build rustdoc for the workspace, denying every rustdoc lint (broken intra-doc links, bare URLs, unclosed HTML tags, ...)
-    deps: [_check:tmp-headroom]
+    desc: "CI's rustdoc gate: build the workspace docs denying every rustdoc lint (broken intra-doc links, bare URLs, unclosed HTML tags, ...). `--document-private-items` renders private items but does not exempt them from `rustdoc::private_intra_doc_links`, which `-D warnings` denies: a `pub` item's doc comment naming a private one in brackets fails here. No local chain but `task push` runs it; it refuses to start with under 10 GB of memory available."
+    deps: [_check:tmp-headroom, _check:mem-headroom]
     env:
       RUSTDOCFLAGS: '{{.RUSTDOC_DENY_WARNINGS}}'
       # The cfgd and cfgd-operator rustdocs each peak near 10 GB; two in flight on a
@@ -181,6 +189,21 @@ tasks:
             ssh {{.HOST}} 'shutdown -p now' || true
           fi
 
+  test:freebsd:npm-prefix:
+    desc: "Real-host proof of the unprivileged npm global-prefix fallback (FreeBSD only, needs root). BIN overrides the cfgd binary under test."
+    vars:
+      BIN: '{{.BIN | default "target/debug/cfgd"}}'
+    cmds:
+      - cmd: |
+          # No RUNNER_OS inside the vmactions guest, so discriminate on uname
+          # like `test:ci` does. Every other host has a writable npm prefix or
+          # no `www/npm` at all, so there is nothing for the check to observe.
+          if [ "$(uname -s)" != "FreeBSD" ]; then
+            echo "==> skipping test:freebsd:npm-prefix: FreeBSD only (uname -s is $(uname -s))"
+            exit 0
+          fi
+          sh tests/real-host/freebsd-npm-prefix.sh '{{.BIN}}'
+
   test:threads:
     desc: "Thread-model leg: plain `cargo test` (not nextest) at a high thread count, run by `task ci` and CI's dedicated ubuntu-only job."
     deps: [_check:tmp-headroom]
@@ -200,13 +223,25 @@ tasks:
     vars:
       CRATE: '{{index .MATCH 0}}'
     cmds:
-      # Plain `cargo test -p <crate>` never builds cfgd-core's fake-cosign
-      # shim binary (nextest targets do it implicitly); cosign tests need it.
-      # The shim declares required-features = test-helpers, and `--bins`
-      # silently SKIPS bins with unmet required-features — the feature flag
-      # is what makes this line produce the shim at all.
-      - cargo build -p cfgd-core --bins --features cfgd-core/test-helpers
-      - cargo test -p {{.CRATE}} --features cfgd-core/test-helpers {{.CLI_ARGS}}
+      - |
+        # cfgd-crd and cfgd-schema depend on no other cfgd crate, so naming
+        # cfgd-core's feature while testing one of them is an error rather than
+        # a no-op, and neither needs a binary cfgd-core builds. The question is
+        # asked of the manifest, which is what decides whether the feature path
+        # resolves at all.
+        if [ "{{.CRATE}}" = cfgd-core ] || grep -qE \
+            '^[[:space:]]*cfgd-core[[:space:]]*=|^\[(dev-|build-)?dependencies\.cfgd-core\]' \
+            crates/{{.CRATE}}/Cargo.toml; then
+          # Plain `cargo test -p <crate>` never builds cfgd-core's fake-cosign
+          # shim binary (nextest targets do it implicitly); cosign tests need it.
+          # The shim declares required-features = test-helpers, and `--bins`
+          # silently SKIPS bins with unmet required-features, so the feature
+          # flag is what makes this line produce the shim at all.
+          cargo build -p cfgd-core --bins --features cfgd-core/test-helpers
+          cargo test -p {{.CRATE}} --features cfgd-core/test-helpers {{.CLI_ARGS}}
+        else
+          cargo test -p {{.CRATE}} {{.CLI_ARGS}}
+        fi
 
   audit:
     desc: Run project-specific code quality audit
@@ -225,12 +260,13 @@ tasks:
     desc: Verify every first-party image the chart renders by default names the version its crate has released, or the one the release cut from this commit publishes (CI drift guard).
     cmds:
       # The chart's three components version independently (agent = appVersion,
-      # operator/csi = their own crate versions). The agent pin is swept by
-      # anodizer's version_files at tag time; the operator and CSI pins are kept
-      # by hand, so on a release branch each must already name the version the
-      # release cut from this commit publishes (`anodizer tag --dry-run`), and
-      # off one it may run ahead of the released version, which the release
-      # branch's own run then checks exactly. Anything else is asked of ghcr.
+      # operator/csi = their own crate versions). All three pins are swept by
+      # anodizer's version_files at tag time, so each must name its crate's
+      # current version. The `hand` branch below is for a pin no crate enrolls:
+      # on a release branch it must already name the version the release cut
+      # from this commit publishes (`anodizer tag --dry-run`), and off one it
+      # may run ahead of the released version, which the release branch's own
+      # run then checks exactly. Anything else is asked of ghcr.
       - cmd: |
           set -e
           predicted=$(${ANODIZER_BIN:-anodizer} tag --dry-run 2>/dev/null | sed -n 's/^anodizer-output versions=//p')
@@ -277,7 +313,7 @@ tasks:
           trap 'rm -rf "$tmp"' EXIT
           cargo run -q -p cfgd-operator --bin cfgd-gen-crds -- --out-dir "$tmp"
           cargo run -q -p cfgd-operator --bin cfgd-gen-crds > "$tmp/crds.yaml"
-          for f in machineconfigs configpolicies clusterconfigpolicies driftalerts modules; do
+          for f in machineconfigs configpolicies clusterconfigpolicies driftalerts modules backuppolicies; do
             for tree in chart/cfgd/crds ecosystem/olm/manifests; do
               if ! diff -u "$tree/$f.yaml" "$tmp/$f.yaml"; then
                 echo ""
@@ -450,7 +486,7 @@ tasks:
       - task: fmt
 
   lint:
-    desc: Local pre-commit check (tidy, clippy, audit, build, snapshot dry-run); the rustdoc gate runs in `task ci` and CI, not here
+    desc: Local pre-commit check (tidy, clippy, audit, build, snapshot dry-run); the rustdoc gate runs in CI and ahead of `task push`, never here
     cmds:
       - task: tidy
       - task: clippy
@@ -459,7 +495,7 @@ tasks:
       - task: snapshot
 
   commit:
-    desc: "Lint (regenerates artifacts), re-stage only the user's intended files, then commit. Usage: stage with `git add` first, then `task commit -- -m 'msg'`."
+    desc: "Lint (regenerates artifacts), re-stage only the user's intended files, then commit. A breaking signal (a `!` subject marker, a `BREAKING CHANGE` footer or `#major`) on a crate below 1.0 is refused unless BREAKING_CHANGE_APPROVED=1, which only the user sets. Usage: stage with `git add` first, then `task commit -- -m 'msg'`."
     preconditions:
       - sh: test -n "$(git diff --cached --name-only)"
         msg: "Nothing staged. Stage files with `git add <path>` before running task commit."
@@ -474,18 +510,18 @@ tasks:
         vars:
           STAGED_LIST: "{{.STAGED_PRE}}"
           MODIFIED_LIST: "{{.MODIFIED_PRE}}"
-      - git commit {{.CLI_ARGS}}
+      - .claude/scripts/commit-guard.sh {{.CLI_ARGS}}
 
   commit:quick:
-    desc: "Lightweight commit: commit already-staged files WITHOUT the lint/snapshot chain. Use only when the full `task commit` is blocked by an issue unrelated to the staged change AND the code gates (fmt/clippy/test/audit) were run manually. Usage: `git add <paths>` first, then `task commit:quick -- -F msg.txt` (or `-- -m 'msg'`)."
+    desc: "Lightweight commit: commit already-staged files WITHOUT the lint/snapshot chain. Use only when the full `task commit` is blocked by an issue unrelated to the staged change AND the code gates (fmt/clippy/test/audit) were run manually. A breaking signal (a `!` subject marker, a `BREAKING CHANGE` footer or `#major`) on a crate below 1.0 is refused unless BREAKING_CHANGE_APPROVED=1, which only the user sets. Usage: `git add <paths>` first, then `task commit:quick -- -F msg.txt` (or `-- -m 'msg'`)."
     preconditions:
       - sh: test -n "$(git diff --cached --name-only)"
         msg: "Nothing staged. Stage files with `git add <path>` before running task commit:quick."
     cmds:
-      - git commit {{.CLI_ARGS}}
+      - .claude/scripts/commit-guard.sh {{.CLI_ARGS}}
 
   commit:local:
-    desc: "Like `task commit`, but runs the snapshot dry-run with a locally-built anodizer instead of the installed one. Use during a coordinated anodizer+cfgd bump when the installed anodizer predates the .anodizer.yaml schema (e.g. new v0.10 fields the released binary rejects). Build it first (`cargo build --release -p anodizer` in the anodizer repo). Override the path with ANODIZER_LOCAL=... . Usage: `git add` first, then `task commit:local -- -m 'msg'`."
+    desc: "Like `task commit`, but runs the snapshot dry-run with a locally-built anodizer instead of the installed one. Use during a coordinated anodizer+cfgd bump when the installed anodizer predates the .anodizer.yaml schema (e.g. new v0.10 fields the released binary rejects). Build it first (`cargo build --release -p anodizer` in the anodizer repo). Override the path with ANODIZER_LOCAL=... . A breaking signal (a `!` subject marker, a `BREAKING CHANGE` footer or `#major`) on a crate below 1.0 is refused unless BREAKING_CHANGE_APPROVED=1, which only the user sets. Usage: `git add` first, then `task commit:local -- -m 'msg'`."
     vars:
       ANODIZER_LOCAL: '{{.ANODIZER_LOCAL | default "/opt/repos/anodizer/target/release/anodizer"}}'
     preconditions:
@@ -531,22 +567,24 @@ tasks:
       - cargo check --target x86_64-pc-windows-gnu -p cfgd-core -p cfgd
 
   push:
-    desc: "Coverage-gated push. Usage: task push [-- <git push args>] (defaults to origin master)."
+    desc: "Rustdoc- and coverage-gated push. Usage: task push [-- <git push args>] (defaults to origin master)."
     preconditions:
       # Uncommitted changes must not ride along on a push decision — gate the
       # coverage run and the push on a clean tree.
       - sh: git diff --quiet && git diff --cached --quiet
         msg: "Working tree is dirty — commit your changes before task push."
     cmds:
+      # The rustdoc gate is otherwise CI's alone; a push is the one local step
+      # that should not learn about a broken doc link from CI.
+      - task: doc
       - task: coverage:gate
       - git push {{.CLI_ARGS | default "origin master"}}
 
   ci:
-    desc: Run all CI checks (everything except cross-platform builds)
+    desc: Run all CI checks (everything except cross-platform builds and the rustdoc gate, which CI and `task push` run)
     cmds:
       - task: fmt:check
       - task: clippy
-      - task: doc
       - task: schema:check
       - task: gen:crds:check
       - task: version-files:check

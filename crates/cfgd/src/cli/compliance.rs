@@ -38,7 +38,10 @@ pub(super) fn collect_and_store_compliance_snapshot<'a>(
     let mut resolved = desired.resolved;
     let resolved_modules = desired.modules;
 
-    ctx.resolve_manifest_packages(&mut resolved.merged.packages)?;
+    ctx.resolve_manifest_packages(
+        &mut resolved.merged.packages,
+        &mut resolved.merged.layer_sources,
+    )?;
     registry.file_manager = Some(Box::new(build_compliance_file_manager(
         config_dir,
         &resolved,
@@ -147,6 +150,8 @@ pub(super) fn cmd_compliance_snapshot(cli: &Cli, printer: &Printer) -> anyhow::R
 }
 
 /// Export snapshot to the configured export path and emit a compliance summary Doc.
+// no-header-ok: this verb writes a file and reports the path; the snapshot
+// verb beside it is the one that reports on a resolved configuration.
 pub(super) fn cmd_compliance_export(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     let ctx = RunContext::new(cli, printer);
     let (cfg, snapshot) = collect_and_store_compliance_snapshot(&ctx)?;
@@ -616,6 +621,7 @@ mod tests {
             list_envelope: false,
             no_hints: false,
             theme: None,
+            mask_env_values: None,
             jsonpath: None,
             yes: false,
             state_dir: Some(state_dir.to_path_buf()),

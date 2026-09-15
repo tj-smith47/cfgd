@@ -316,6 +316,24 @@ fn wrap_list_envelope(items: serde_json::Value) -> serde_json::Value {
     })
 }
 
+/// The exact bytes `-o yaml` puts on stdout for `doc`, with no trailing newline.
+///
+/// Split out of [`emit_structured`] so `Printer::emit` can hand the same bytes
+/// to the syntax highlighter when its colour decision is on: the highlighted and
+/// the plain render must be one document, differing only in the escapes around
+/// it.
+pub(crate) fn yaml_payload(doc: &Doc, list_envelope: bool) -> String {
+    let mut v = doc.data_or_self_json();
+    if list_envelope && v.is_array() {
+        v = wrap_list_envelope(v);
+    }
+    let yaml = serde_yaml::to_string(&v).unwrap_or_default();
+    yaml.strip_prefix("---\n")
+        .unwrap_or(&yaml)
+        .trim_end()
+        .to_string()
+}
+
 /// Route a `Doc` to `sink_stdout` per `format`. Returns `true` when the format
 /// was handled (structured); returns `false` for `Table | Wide` so the caller
 /// can fall back to the human renderer.
@@ -367,13 +385,7 @@ pub(crate) fn emit_structured(
             true
         }
         OutputFormat::Yaml => {
-            let mut v = doc.data_or_self_json();
-            if list_envelope && v.is_array() {
-                v = wrap_list_envelope(v);
-            }
-            let yaml = serde_yaml::to_string(&v).unwrap_or_default();
-            let trimmed = yaml.strip_prefix("---\n").unwrap_or(&yaml);
-            sink_stdout.write_line(trimmed.trim_end());
+            sink_stdout.write_line(&yaml_payload(doc, list_envelope));
             true
         }
         OutputFormat::Name => {

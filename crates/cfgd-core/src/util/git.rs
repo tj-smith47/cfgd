@@ -166,6 +166,8 @@ pub fn cosign_cmd() -> std::process::Command {
 /// Delegates to [`crate::require_tool_with_seam`] to share the env-var-override logic
 /// with every other shimmable tool in cfgd-core.
 pub fn require_cosign() -> std::result::Result<(), String> {
+    // provision-route: cfgd module keys generate and cfgd module keys rotate
+    // install cosign before they sign.
     super::process::require_tool_with_seam(COSIGN_BIN_ENV, "cosign", None)
 }
 
@@ -194,7 +196,7 @@ pub fn detect_default_branch(repo_dir: &std::path::Path) -> Option<String> {
         "refs/remotes/origin/HEAD",
     ])
     .stdout(std::process::Stdio::piped());
-    if let Ok(output) = cmd.output()
+    if let Ok(output) = crate::command_output(&mut cmd)
         && output.status.success()
     {
         let raw = stdout_lossy_trimmed(&output);
@@ -207,7 +209,7 @@ pub fn detect_default_branch(repo_dir: &std::path::Path) -> Option<String> {
     let mut cmd = git_cmd_safe(None, None);
     cmd.args(["-C", &dir, "symbolic-ref", "--short", "HEAD"])
         .stdout(std::process::Stdio::piped());
-    if let Ok(output) = cmd.output()
+    if let Ok(output) = crate::command_output(&mut cmd)
         && output.status.success()
     {
         let branch = stdout_lossy_trimmed(&output);
@@ -228,7 +230,7 @@ fn git_output_cwd(args: &[&str]) -> Option<String> {
     #[cfg(any(test, feature = "test-helpers"))]
     let _path_guard = crate::test_helpers::path_env_read_guard();
 
-    let output = git_cmd_local().args(args).output().ok()?;
+    let output = crate::command_output(git_cmd_local().args(args)).ok()?;
     if output.status.success() {
         Some(stdout_lossy_trimmed(&output))
     } else {
@@ -414,10 +416,12 @@ mod tests {
     fn no_revision_verb_argv_spells_end_of_options() {
         let mut offenders = Vec::new();
         let mut seen = 0usize;
-        for path in workspace_rust_files() {
-            let Ok(body) = std::fs::read_to_string(&path) else {
-                continue;
-            };
+        for path in crate::test_helpers::rust_sources_under(
+            &crate::test_helpers::workspace_root().join("crates"),
+        ) {
+            let body = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+                panic!("{}: the walk must read every source: {e}", path.display())
+            });
             // Prose says the words on purpose — the rule is documented where it
             // is enforced, and a comment spawns no process.
             let code = body
@@ -535,32 +539,6 @@ mod tests {
             revision_verb_argvs("PullStage::Checkout => \"checkout\",").is_empty(),
             "a verb WORD spawns nothing and is left alone"
         );
-    }
-
-    /// Every `.rs` file under every crate's `src/`.
-    fn workspace_rust_files() -> Vec<std::path::PathBuf> {
-        let mut out = Vec::new();
-        let mut stack = vec![
-            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("..")
-                .join("..")
-                .join("crates"),
-        ];
-        while let Some(dir) = stack.pop() {
-            let Ok(entries) = std::fs::read_dir(&dir) else {
-                continue;
-            };
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    stack.push(path);
-                } else if path.extension().is_some_and(|e| e == "rs") {
-                    out.push(path);
-                }
-            }
-        }
-        assert!(!out.is_empty(), "found no sources under crates/");
-        out
     }
 
     /// Saves and restores the `CFGD_COSIGN_BIN` env var so tests stay isolated

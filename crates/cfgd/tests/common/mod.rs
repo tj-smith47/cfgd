@@ -35,7 +35,7 @@ pub fn tiny_profile_setup() -> (tempfile::TempDir, tempfile::TempDir, PathBuf) {
     let target = config_dir.path().join("out").join("hello.txt");
     let profile = format!(
         "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: tiny\nspec:\n  inherits: []\n  modules: []\n  files:\n    managed:\n      - source: files/hello.txt\n        target: {}\n        strategy: Copy\n",
-        target.display()
+        cfgd_core::to_posix_string(&target)
     );
     let profiles_dir = config_dir.path().join("profiles");
     std::fs::create_dir_all(&profiles_dir).unwrap();
@@ -44,6 +44,76 @@ pub fn tiny_profile_setup() -> (tempfile::TempDir, tempfile::TempDir, PathBuf) {
     let config = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: tiny\n";
     std::fs::write(config_dir.path().join("cfgd.yaml"), config).unwrap();
 
+    (config_dir, state_dir, target)
+}
+
+/// A tempdir-backed profile whose THREE file deploys trigger FOUR `onChange`
+/// hooks: three PLANNED actions, and four items of work the plan could not name,
+/// because a hook's condition is whether anything in this very run changed.
+///
+/// The second target is pre-created holding bytes cfgd never wrote, so that one
+/// deploy settles as a conflict skip under `--on-conflict skip` while the other
+/// two create their targets: `total` 3, `succeeded` 2, `skipped` 1, `failed` 0,
+/// `afterPlan` 4. Those are the smallest numbers that differ pairwise — with no
+/// failing action the partition forces `total == succeeded + skipped` — and the
+/// consumer asserts the premise rather than reciting it, through
+/// `cfgd_core::test_helpers::assert_slots_discriminate`. Each hook carries its
+/// own argument so the report shows four rows rather than one four times.
+///
+/// Returns `(config_dir, state_dir, [first target, second target, third target])`.
+pub fn profile_with_on_change_hook_setup() -> (tempfile::TempDir, tempfile::TempDir, [PathBuf; 3]) {
+    let (config_dir, state_dir, target) = tiny_profile_setup();
+    std::fs::write(config_dir.path().join("files").join("second.txt"), "second").unwrap();
+    std::fs::write(config_dir.path().join("files").join("third.txt"), "third").unwrap();
+    let second = config_dir.path().join("out").join("second.txt");
+    let third = config_dir.path().join("out").join("third.txt");
+    // Pre-created holding bytes cfgd never wrote: the deploy is planned (the
+    // content differs) and then settles as a skip under `--on-conflict skip`,
+    // which is what keeps `total` and `succeeded` from being the same number.
+    std::fs::create_dir_all(second.parent().unwrap()).unwrap();
+    std::fs::write(&second, "a stranger wrote this").unwrap();
+    let profile = format!(
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: tiny\nspec:\n  inherits: []\n  modules: []\n  scripts:\n    onChange:\n      - \"true 1\"\n      - \"true 2\"\n      - \"true 3\"\n      - \"true 4\"\n  files:\n    managed:\n      - source: files/hello.txt\n        target: {}\n        strategy: Copy\n      - source: files/second.txt\n        target: {}\n        strategy: Copy\n      - source: files/third.txt\n        target: {}\n        strategy: Copy\n",
+        cfgd_core::to_posix_string(&target),
+        cfgd_core::to_posix_string(&second),
+        cfgd_core::to_posix_string(&third)
+    );
+    std::fs::write(
+        config_dir.path().join("profiles").join("tiny.yaml"),
+        &profile,
+    )
+    .unwrap();
+    (config_dir, state_dir, [target, second, third])
+}
+
+/// A tempdir-backed profile whose `onChange` hooks are declared by TWO owners:
+/// the profile itself, and a module whose own planned work changed this run.
+///
+/// The module declares a `postApply` script as the work that changes, which is
+/// what makes it eligible: the hook loop admits a module only when a result
+/// whose description carries that module's own `module:<name>:` prefix changed,
+/// so a module that declares a hook and does nothing opens no group.
+///
+/// Returns `(config_dir, state_dir, target)`.
+pub fn profile_and_module_with_on_change_hooks_setup()
+-> (tempfile::TempDir, tempfile::TempDir, PathBuf) {
+    let (config_dir, state_dir, target) = tiny_profile_setup();
+    let module_dir = config_dir.path().join("modules").join("hooked");
+    std::fs::create_dir_all(&module_dir).unwrap();
+    std::fs::write(
+        module_dir.join("module.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: hooked\nspec:\n  scripts:\n    postApply:\n      - \"true applied\"\n    onChange:\n      - \"true module\"\n",
+    )
+    .unwrap();
+    let profile = format!(
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: tiny\nspec:\n  inherits: []\n  modules:\n    - hooked\n  scripts:\n    onChange:\n      - \"true profile\"\n  files:\n    managed:\n      - source: files/hello.txt\n        target: {}\n        strategy: Copy\n",
+        cfgd_core::to_posix_string(&target)
+    );
+    std::fs::write(
+        config_dir.path().join("profiles").join("tiny.yaml"),
+        &profile,
+    )
+    .unwrap();
     (config_dir, state_dir, target)
 }
 
@@ -89,7 +159,7 @@ pub fn profile_with_module_dependency_setup() -> (tempfile::TempDir, tempfile::T
 }
 
 /// Build a tempdir-backed profile whose plan carries every shape the phase
-/// tree renders: a `Prerequisites` manager node, a `Packages` install, and a
+/// tree renders: a `Bootstrap` manager node, a `Packages` install, and a
 /// serially-applied file write.
 ///
 /// The caller must have a `CFGD_BREW_BIN` shim installed, which is what makes
@@ -109,7 +179,7 @@ pub fn profile_with_packages_setup() -> (tempfile::TempDir, tempfile::TempDir, P
     let target = config_dir.path().join("out").join("hello.txt");
     let profile = format!(
         "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: tiny\nspec:\n  inherits: []\n  modules: []\n  packages:\n    brew:\n      formulae:\n        - ripgrep\n  files:\n    managed:\n      - source: files/hello.txt\n        target: {}\n        strategy: Copy\n",
-        target.display()
+        cfgd_core::to_posix_string(&target)
     );
     let profiles_dir = config_dir.path().join("profiles");
     std::fs::create_dir_all(&profiles_dir).unwrap();
@@ -149,8 +219,8 @@ pub fn profile_with_one_failure_setup() -> (tempfile::TempDir, tempfile::TempDir
 
     let profile = format!(
         "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: tiny\nspec:\n  inherits: []\n  modules: []\n  files:\n    managed:\n      - source: files/hello.txt\n        target: {}\n        strategy: Copy\n      - source: files/world.txt\n        target: {}\n        strategy: Copy\n",
-        target_ok.display(),
-        target_fail.display(),
+        cfgd_core::to_posix_string(&target_ok),
+        cfgd_core::to_posix_string(&target_fail),
     );
     let profiles_dir = config_dir.path().join("profiles");
     std::fs::create_dir_all(&profiles_dir).unwrap();
@@ -178,6 +248,7 @@ pub fn cli_for(config_dir: &std::path::Path, state_dir: &std::path::Path) -> Cli
         list_envelope: false,
         no_hints: false,
         theme: None,
+        mask_env_values: None,
         jsonpath: None,
         yes: false,
         state_dir: Some(state_dir.to_path_buf()),
@@ -192,6 +263,8 @@ pub fn cli_for(config_dir: &std::path::Path, state_dir: &std::path::Path) -> Cli
             scan: false,
             exit_code: false,
             show_values: false,
+            show_scripts: false,
+            show_all: false,
         }),
     }
 }
@@ -345,9 +418,12 @@ pub fn backup_list_profile_setup() -> (tempfile::TempDir, tempfile::TempDir) {
 
 /// Write the shared `withbackups` profile (a schedule-less `docs` and a cron
 /// `weekly`) declaring `source` for both, plus the `cfgd.yaml` selecting it.
+///
+/// `weekly` pins `scheduleOwner: Local` so the listing goldens drive both arms
+/// of the field through the real command, config to cell to payload.
 fn write_backup_profile(config_dir: &tempfile::TempDir, source: &str) {
     let profile = format!(
-        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: withbackups\nspec:\n  inherits: []\n  modules: []\n  backups:\n    - name: docs\n      source: {source}\n      retention: 3\n    - name: weekly\n      source: {source}\n      schedule: \"0 3 * * *\"\n      retention: 3\n",
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: withbackups\nspec:\n  inherits: []\n  modules: []\n  backups:\n    - name: docs\n      source: {source}\n      retention: 3\n    - name: weekly\n      source: {source}\n      schedule: \"0 3 * * *\"\n      scheduleOwner: Local\n      retention: 3\n",
     );
     let profiles_dir = config_dir.path().join("profiles");
     std::fs::create_dir_all(&profiles_dir).unwrap();
@@ -375,8 +451,8 @@ pub fn backup_profile_with_one_failure_setup() -> (tempfile::TempDir, tempfile::
 
     let profile = format!(
         "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: withbackups\nspec:\n  inherits: []\n  modules: []\n  backups:\n    - name: broken\n      source: {}\n      retention: 3\n    - name: ok\n      source: {}\n      retention: 3\n",
-        broken_source.display(),
-        ok_source.display(),
+        cfgd_core::to_posix_string(&broken_source),
+        cfgd_core::to_posix_string(&ok_source),
     );
     let profiles_dir = config_dir.path().join("profiles");
     std::fs::create_dir_all(&profiles_dir).unwrap();
@@ -413,8 +489,8 @@ pub fn single_failed_file_and_broken_backup_setup() -> (tempfile::TempDir, tempf
 
     let profile = format!(
         "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: tiny\nspec:\n  inherits: []\n  modules: []\n  files:\n    managed:\n      - source: files/hello.txt\n        target: {}\n        strategy: Copy\n  backups:\n    - name: broken\n      source: {}\n      retention: 3\n",
-        target_fail.display(),
-        broken_source.display(),
+        cfgd_core::to_posix_string(&target_fail),
+        cfgd_core::to_posix_string(&broken_source),
     );
     let profiles_dir = config_dir.path().join("profiles");
     std::fs::create_dir_all(&profiles_dir).unwrap();
@@ -696,7 +772,7 @@ pub fn rollback_state_with_created_files_setup()
         .collect();
     for (index, path) in created.iter().enumerate() {
         state
-            .store_absent_backup(apply_id_2, &path.display().to_string())
+            .store_absent_backup(apply_id_2, &cfgd_core::to_posix_fs_key(path))
             .unwrap();
         let jid = state
             .journal_begin(
@@ -704,7 +780,7 @@ pub fn rollback_state_with_created_files_setup()
                 index,
                 "files",
                 "file",
-                &format!("file:create:{}", path.display()),
+                &format!("file:create:{}", cfgd_core::to_posix_string(path)),
                 None,
             )
             .unwrap();
@@ -727,7 +803,7 @@ pub fn rollback_state_with_backups_setup() -> (tempfile::TempDir, tempfile::Temp
     let state_dir = tempfile::tempdir().unwrap();
 
     let target = workspace.path().join("config.txt");
-    let file_path = target.display().to_string();
+    let file_path = cfgd_core::to_posix_fs_key(&target);
 
     std::fs::create_dir_all(state_dir.path()).unwrap();
     let state = StateStore::open(&state_dir.path().join("state.db")).unwrap();
@@ -736,7 +812,7 @@ pub fn rollback_state_with_backups_setup() -> (tempfile::TempDir, tempfile::Temp
     let apply_id_1 = state
         .record_apply("test", "hash1", ApplyStatus::Success, None)
         .unwrap();
-    let resource_id_1 = format!("file:create:{}", target.display());
+    let resource_id_1 = format!("file:create:{}", cfgd_core::to_posix_string(&target));
     let jid1 = state
         .journal_begin(apply_id_1, 0, "files", "file", &resource_id_1, None)
         .unwrap();
@@ -748,7 +824,7 @@ pub fn rollback_state_with_backups_setup() -> (tempfile::TempDir, tempfile::Temp
     let apply_id_2 = state
         .record_apply("test", "hash2", ApplyStatus::Success, None)
         .unwrap();
-    let resource_id_2 = format!("file:update:{}", target.display());
+    let resource_id_2 = format!("file:update:{}", cfgd_core::to_posix_string(&target));
     state
         .store_file_backup(apply_id_2, &file_path, &file_state)
         .unwrap();
@@ -1485,7 +1561,7 @@ pub fn config_test_setup() -> (tempfile::TempDir, tempfile::TempDir) {
     std::fs::create_dir_all(config_dir.path().join("profiles")).unwrap();
     std::fs::write(
         config_dir.path().join("cfgd.yaml"),
-        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n  theme:\n    name: monokai\n",
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n  output:\n    theme:\n      name: monokai\n",
     )
     .unwrap();
     std::fs::write(
@@ -1594,3 +1670,72 @@ pub fn assert_nests_under(output: &str, header: &str, needle: &str) {
          (header indent {header_indent}, settle indent {settled_indent}): {output}"
     );
 }
+
+/// Write a one-unit `withbackups` profile whose `docs` backup snapshots
+/// `source` into `destination`, plus the `cfgd.yaml` selecting it. Rewriting it
+/// with a second `destination` is how a test moves a unit the way an operator
+/// editing their config does.
+pub fn write_gc_profile(
+    config_dir: &std::path::Path,
+    source: &std::path::Path,
+    destination: &std::path::Path,
+) {
+    let profile = format!(
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: withbackups\nspec:\n  inherits: []\n  modules: []\n  backups:\n    - name: docs\n      source: {}\n      destination: {}\n      retention: 3\n",
+        cfgd_core::to_posix_string(source),
+        cfgd_core::to_posix_string(destination),
+    );
+    let profiles_dir = config_dir.join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(profiles_dir.join("withbackups.yaml"), &profile).unwrap();
+    std::fs::write(
+        config_dir.join("cfgd.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: withbackups\n",
+    )
+    .unwrap();
+}
+
+/// Snapshot `docs` under `old`, then move the unit's `destination:` to `new`
+/// and snapshot again — the prune that discovers the stranded payload and marks
+/// its row `orphaned`. Returns the path the first run wrote and what the second
+/// run printed, which is where the closing `cfgd backup gc` hint lands.
+pub fn strand_a_snapshot(
+    config_dir: &std::path::Path,
+    state_dir: &std::path::Path,
+    source: &std::path::Path,
+) -> (PathBuf, String) {
+    let old = state_dir.join("old-backups");
+    write_gc_profile(config_dir, source, &old);
+    let cli = cli_for(config_dir, state_dir);
+    let (printer, _cap) = cfgd_core::output::Printer::for_test_doc();
+    cfgd::cli::backup::cmd_backup_run(&cli, &printer, Some("docs")).unwrap();
+    drop(printer);
+
+    let stranded = std::fs::read_dir(&old)
+        .expect("the first destination must exist after a run")
+        .map(|e| e.expect("entry").path())
+        .next()
+        .expect("the first run wrote a snapshot");
+
+    write_gc_profile(config_dir, source, &state_dir.join("new-backups"));
+    let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
+    cfgd::cli::backup::cmd_backup_run(&cli, &printer, Some("docs")).unwrap();
+    drop(printer);
+    (stranded, cfgd_core::output::strip_ansi(&cap.human()))
+}
+
+/// The four lines of the approved pitch both verbs are held to (panel 1, lines
+/// 63-66), byte for byte less one zero-width span: the pitch's body line
+/// closes on `\x1b[38;2;248;248;242m` before its reset, which is syntect
+/// styling the line's own newline. The renderer highlights each line without
+/// its terminator, so it emits no escape for a span holding no text.
+///
+/// Compared against by `module_show_scripts_full_renders_the_approved_dracula_bytes`
+/// (`module_show_snapshots.rs`), the one verb that lists a module's scripts, so
+/// its render cannot drift from the pitch.
+pub const PITCH_SCRIPTS_LINES: [&str; 4] = [
+    "\x1b[38;2;189;147;249mScripts\x1b[0m",
+    "  \x1b[38;2;255;121;198mpostApply\x1b[0m",
+    "    \x1b[38;2;98;114;164m1/7 \u{b7} timeout 120s \u{b7} continueOnError\x1b[0m",
+    "    \x1b[38;2;255;121;198mif\x1b[38;2;248;248;242m \x1b[38;2;139;233;253mcommand\x1b[38;2;248;248;242m \x1b[38;2;255;184;108m-\x1b[38;2;255;184;108mv\x1b[38;2;248;248;242m pipx \x1b[38;2;255;121;198m>\x1b[38;2;248;248;242m/dev/null \x1b[38;2;189;147;249m2\x1b[38;2;255;121;198m>&\x1b[38;2;189;147;249m1\x1b[38;2;255;121;198m;\x1b[38;2;248;248;242m \x1b[38;2;255;121;198mthen\x1b[0m",
+];

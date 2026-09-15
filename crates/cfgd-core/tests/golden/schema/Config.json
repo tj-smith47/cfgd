@@ -249,6 +249,18 @@
           },
           "type": "array"
         },
+        "output": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/OutputConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "How cfgd renders what it reports: theme, usage hints, and which declared env values are masked. Omitted, every default applies."
+        },
         "profile": {
           "default": null,
           "description": "Name of the active `ProfileSpec` to reconcile against.",
@@ -289,18 +301,6 @@
           },
           "type": "array"
         },
-        "theme": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/ThemeConfig"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Colours and glyphs cfgd renders with: a named preset (`default`, `dracula`, `solarized-dark`, `solarized-light`, `nord`, `monokai`, `adventure-time`, `catppuccin-mocha`, `gruvbox-dark`, `tokyo-night`, `one-dark`, `minimal`) plus per-slot overrides. Omitted, the `default` preset applies."
-        },
         "update": {
           "anyOf": [
             {
@@ -312,14 +312,6 @@
           ],
           "default": null,
           "description": "Update policy for the cfgd binary and authored skills."
-        },
-        "usageHints": {
-          "default": null,
-          "description": "Whether closing `→` usage hints render. Omitted, hints render.",
-          "type": [
-            "boolean",
-            "null"
-          ]
         }
       },
       "type": "object"
@@ -393,6 +385,26 @@
         {
           "const": "Prompt",
           "description": "Future: notify with actionable prompt.",
+          "type": "string"
+        }
+      ]
+    },
+    "MaskEnvValues": {
+      "description": "Which declared env values cfgd masks on the surfaces that render one (`module show`, `profile show`, `source show`, `status <module>`). A masked value renders as `***` plus its last three characters; the stored value and `-o json` are untouched either way.",
+      "oneOf": [
+        {
+          "const": "All",
+          "description": "Mask every declared value. The default.",
+          "type": "string"
+        },
+        {
+          "const": "Secrets",
+          "description": "Mask only a value a declared secret exports: a name listed in any `spec.secrets[].envs` of the resolved chain. Every other value renders in full.",
+          "type": "string"
+        },
+        {
+          "const": "None",
+          "description": "Mask nothing: every declared value renders in full, as though `--show-values` had been passed to every verb that takes it.",
           "type": "string"
         }
       ]
@@ -542,6 +554,45 @@
         "Server"
       ],
       "type": "string"
+    },
+    "OutputConfig": {
+      "additionalProperties": false,
+      "description": "`spec.output`: how cfgd renders what it reports. ```yaml spec: output: theme: dracula usageHints: true maskEnvValues: All ``` Each key has a per-invocation override (`--theme` / `CFGD_THEME`, `--no-hints` / `CFGD_USAGE_HINTS`, `--mask-env-values` / `CFGD_MASK_ENV_VALUES`) that outranks what is stored here.",
+      "properties": {
+        "maskEnvValues": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/MaskEnvValues"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Which declared env values cfgd hides where it renders one. Omitted, every value is masked."
+        },
+        "theme": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ThemeConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Colours and glyphs cfgd renders with: a named preset (`default`, `dracula`, `solarized-dark`, `solarized-light`, `nord`, `monokai`, `adventure-time`, `catppuccin-mocha`, `gruvbox-dark`, `tokyo-night`, `one-dark`, `minimal`) plus per-slot overrides. Omitted, the `default` preset applies."
+        },
+        "usageHints": {
+          "default": null,
+          "description": "Whether closing `→` usage hints render. Omitted, hints render.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
     },
     "PolicyAction": {
       "description": "An `AutoApplyPolicyConfig` decision: `Notify` (record, don't act), `Accept` (apply automatically), `Reject` (never apply), or `Ignore` (skip entirely).",
@@ -932,7 +983,7 @@
       "type": "object"
     },
     "ThemeConfig": {
-      "description": "`spec.theme`: the active output preset and any per-color/icon overrides. Accepts either a bare string (the preset name) or a mapping: ```yaml theme: dracula # or theme: name: dracula overrides: header: \"#ff0000\" iconOk: \"Y\" ```",
+      "description": "`spec.output.theme`: the active output preset and any per-color/icon overrides. Accepts either a bare string (the preset name) or a mapping: ```yaml spec: output: theme: dracula # or theme: name: dracula overrides: header: \"#ff0000\" iconOk: \"Y\" ```",
       "properties": {
         "name": {
           "default": "default",

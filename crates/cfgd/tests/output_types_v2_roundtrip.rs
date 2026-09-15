@@ -41,6 +41,7 @@ fn doctor_output_roundtrips_through_emit() {
             name: Some("test-host".into()),
             profile: Some("base".into()),
             error: None,
+            legacy_output_keys: Vec::new(),
             state: DoctorConfigState::Valid,
         },
         git: true,
@@ -62,12 +63,14 @@ fn doctor_output_roundtrips_through_emit() {
             declared: true,
             can_bootstrap: false,
             bootstrap_method: None,
+            used_by_modules: 0,
         }],
         modules: vec![DoctorModuleCheck {
             name: "base".into(),
             valid: true,
             error: None,
-            packages: Vec::new(),
+            managers: Vec::new(),
+            unresolved: Vec::new(),
         }],
         system_configurators: vec![DoctorConfiguratorCheck {
             name: "shell".into(),

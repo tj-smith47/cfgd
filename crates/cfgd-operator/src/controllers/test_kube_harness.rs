@@ -74,6 +74,7 @@ pub(crate) fn empty_stores() -> ControllerStores {
     ControllerStores {
         machine_configs: seeded_store(vec![]),
         config_policies: seeded_store(vec![]),
+        backup_policies: seeded_store(vec![]),
         cluster_config_policies: seeded_store(vec![]),
         modules: seeded_store(vec![]),
         drift_alerts: seeded_store(vec![]),

@@ -45,7 +45,7 @@ fn no_drift_setup() -> (tempfile::TempDir, tempfile::TempDir, PathBuf) {
 
     let profile = format!(
         "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: tiny\nspec:\n  inherits: []\n  modules: []\n  files:\n    managed:\n      - source: files/hello.txt\n        target: {}\n        strategy: Copy\n",
-        target.display()
+        cfgd_core::to_posix_string(&target)
     );
     let profiles_dir = config_dir.path().join("profiles");
     std::fs::create_dir_all(&profiles_dir).unwrap();
@@ -123,7 +123,7 @@ fn file_drift_setup() -> (tempfile::TempDir, tempfile::TempDir, PathBuf) {
     let target = config_dir.path().join("out").join("hello.txt");
     let profile = format!(
         "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: tiny\nspec:\n  inherits: []\n  modules: []\n  files:\n    managed:\n      - source: files/hello.txt\n        target: {}\n        strategy: Copy\n",
-        target.display()
+        cfgd_core::to_posix_string(&target)
     );
     let profiles_dir = config_dir.path().join("profiles");
     std::fs::create_dir_all(&profiles_dir).unwrap();
@@ -152,7 +152,7 @@ fn package_drift_setup() -> (tempfile::TempDir, tempfile::TempDir, PathBuf) {
 
     let profile = format!(
         "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: tiny\nspec:\n  inherits: []\n  modules: []\n  files:\n    managed:\n      - source: files/hello.txt\n        target: {}\n        strategy: Copy\n  packages:\n    custom:\n      - name: drift-mgr\n        check: \"true\"\n        listInstalled: \"true\"\n        install: \"true\"\n        uninstall: \"true\"\n        packages:\n          - drifted-pkg\n",
-        target.display()
+        cfgd_core::to_posix_string(&target)
     );
     let profiles_dir = config_dir.path().join("profiles");
     std::fs::create_dir_all(&profiles_dir).unwrap();
@@ -188,7 +188,7 @@ fn module_only_setup() -> (tempfile::TempDir, tempfile::TempDir) {
     let module_target = config_dir.path().join("mod-out").join("conf");
     let module_yaml = format!(
         "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: diff-mod\nspec:\n  packages: []\n  files:\n    - source: conf\n      target: {}\n",
-        module_target.display()
+        cfgd_core::to_posix_string(&module_target)
     );
     std::fs::write(module_dir.join("module.yaml"), module_yaml).unwrap();
 

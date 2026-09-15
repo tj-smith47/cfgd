@@ -3,10 +3,11 @@
 //! [`KIND_REGISTRY`] is the single source of truth for every cfgd resource kind
 //! — both the local YAML document kinds (`Module`, `Profile`, `ConfigSource`,
 //! `Config`) and the cluster-side CRD kinds delivered by the [`cfgd_crd`] crate
-//! (`MachineConfig`, `ConfigPolicy`, `ClusterConfigPolicy`, `DriftAlert`, and the
-//! CRD `Module`). Each [`KindEntry`] carries a `schema_fn` that returns the
-//! kind's `schemars`-derived [`schemars::Schema`], so `explain`, `validate`, and
-//! the skill installer all read schemas from one place and can never drift apart.
+//! (`MachineConfig`, `ConfigPolicy`, `ClusterConfigPolicy`, `DriftAlert`,
+//! `BackupPolicy`, and the CRD `Module`). Each [`KindEntry`] carries a
+//! `schema_fn` that returns the kind's `schemars`-derived [`schemars::Schema`],
+//! so `explain`, `validate`, and the skill installer all read schemas from one
+//! place and can never drift apart.
 //!
 //! The CRD half of the registry is compiled behind the default-on `crd` Cargo
 //! feature. Consumers that never touch Kubernetes resources (notably the CSI
@@ -236,6 +237,20 @@ fn validate_local<D: serde::de::DeserializeOwned>(yaml: &str) -> Result<(), Vec<
     Ok(())
 }
 
+/// Validate a root `cfgd.yaml` through the loader itself rather than the typed
+/// deserialize every other local document takes.
+///
+/// `parse_config` reads a legacy flat key (`spec.theme`, `spec.usageHints`)
+/// and folds it into `spec.output`, which `CfgdConfig`'s own
+/// `deny_unknown_fields` deserialize refuses — so a document cfgd loads every
+/// day would otherwise fail the validator that exists to say whether cfgd can
+/// load it.
+fn validate_root_config(yaml: &str) -> Result<(), Vec<String>> {
+    crate::config::parse_config(yaml, std::path::Path::new(crate::config::CONFIG_FILENAME))
+        .map_err(|e| vec![e.to_string()])?;
+    Ok(())
+}
+
 /// Validate a CRD document by deserializing its `spec` into `S`, then running
 /// `S`'s cross-field [`cfgd_crd::Validatable::validate`]. CRD specs intentionally
 /// omit `deny_unknown_fields` (schemars maps that to `additionalProperties:
@@ -295,11 +310,11 @@ pub static KIND_REGISTRY: &[KindEntry] = &[
         kind: "Config",
         api_version: crate::API_VERSION,
         location: "cfgd.yaml",
-        description: "The root cfgd configuration: active profile, sources, daemon, theme.",
+        description: "The root cfgd configuration: active profile, sources, daemon, output.",
         crd: false,
         docs: "docs/spec/config.md#fields",
         schema_fn: || schema_for!(crate::config::CfgdConfig),
-        validate_fn: validate_local::<crate::config::CfgdConfig>,
+        validate_fn: validate_root_config,
     },
     #[cfg(feature = "crd")]
     KindEntry {
@@ -355,6 +370,17 @@ pub static KIND_REGISTRY: &[KindEntry] = &[
         docs: "docs/operator.md#pod-module-injection",
         schema_fn: || schema_for!(cfgd_crd::ModuleSpec),
         validate_fn: validate_crd_spec::<cfgd_crd::ModuleSpec>,
+    },
+    #[cfg(feature = "crd")]
+    KindEntry {
+        kind: "BackupPolicy",
+        api_version: crate::API_VERSION,
+        location: "BackupPolicy CRD",
+        description: "Fleet-wide backup schedules projected onto selected machines.",
+        crd: true,
+        docs: "docs/backup-policy.md#fields",
+        schema_fn: || schema_for!(cfgd_crd::BackupPolicySpec),
+        validate_fn: validate_crd_spec::<cfgd_crd::BackupPolicySpec>,
     },
 ];
 
@@ -1102,9 +1128,38 @@ mod tests {
             "ConfigPolicy",
             "ClusterConfigPolicy",
             "DriftAlert",
+            "BackupPolicy",
         ] {
             assert!(kinds.contains(&k), "missing {k}");
         }
+    }
+
+    /// The cluster half of the backup surface reaches `explain`, `validate` and
+    /// the golden-schema gate through the same registry entry every other CRD
+    /// kind does — the CRD `Module` is the only kind whose `kind` string is
+    /// shared with a local document, so this one resolves on `kind` alone.
+    #[test]
+    fn backup_policy_is_registered_as_a_crd_kind() {
+        let entry = KIND_REGISTRY
+            .iter()
+            .find(|e| e.kind == "BackupPolicy")
+            .expect("BackupPolicy is a registered kind");
+        assert!(entry.crd, "BackupPolicy is a cluster-side kind");
+        assert_eq!(entry.location, "BackupPolicy CRD");
+        assert_eq!(entry.docs, "docs/backup-policy.md#fields");
+        let tree = entry.field_tree();
+        let fields: Vec<&str> = tree.iter().map(|f| f.name.as_str()).collect();
+        assert!(
+            fields.contains(&"units") && fields.contains(&"selector"),
+            "the entry reflects BackupPolicySpec: {fields:?}"
+        );
+        assert!(
+            (entry.validate_fn)(
+                "apiVersion: cfgd.io/v1alpha1\nkind: BackupPolicy\nspec:\n  units:\n    - name: dotfiles\n      schedule: \"\"\n"
+            )
+            .is_err(),
+            "the entry validates through BackupPolicySpec's own cross-field rules"
+        );
     }
 
     /// The KRM envelope (`apiVersion`/`kind`/`metadata`/`status`) is stripped

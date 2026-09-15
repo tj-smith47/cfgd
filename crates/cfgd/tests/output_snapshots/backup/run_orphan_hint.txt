@@ -1,0 +1,11 @@
+Backup: docs
+  Config   <CONFIG_DIR>/cfgd.yaml
+  Profile  withbackups
+  Source   <CONFIG_DIR>/data/notes.txt
+  Actions  1 planned
+
+backup:docs
+  ✓ snapshot notes.txt.<TIMESTAMP> — 12 B
+  → run `cfgd backup gc docs` to remove the snapshot left outside the destination <STATE_DIR>/new-backups by a destination change
+
+✓ Backup complete — 1 action succeeded (XXs wall)

@@ -21,6 +21,10 @@ impl SecretProvider for BitwardenProvider {
         command_available_with_seam(BW_BIN_ENV, "bw")
     }
 
+    fn required_tool(&self) -> Option<&'static str> {
+        Some("bw")
+    }
+
     fn resolve(&self, reference: &str) -> Result<SecretString> {
         // reference format: "folder/item" or "folder/item/field"
         // Use `bw get` to retrieve the item

@@ -5,11 +5,12 @@ Plan
   Config   <CONFIG_DIR>/cfgd.yaml
   Sources  acme (profile default)
   Profile  default
-  Phases   Prerequisites
+  Phases   Bootstrap
 
-Phase: Prerequisites
+Phase: Bootstrap
   cfgd:env
     - write ~/.cfgd.env                 — 1 var
+  cfgd:shell
     - inject source line into ~/.bashrc
 
 ◉ 2 actions planned

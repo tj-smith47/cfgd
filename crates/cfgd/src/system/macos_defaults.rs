@@ -17,6 +17,7 @@ fn defaults_cmd() -> std::process::Command {
 /// MacosDefaultsConfigurator — reads/writes macOS `defaults` domains.
 pub struct MacosDefaultsConfigurator;
 
+// no-tool-ok: available on macOS alone, and no install makes another platform macOS
 impl SystemConfigurator for MacosDefaultsConfigurator {
     fn name(&self) -> &str {
         "macosDefaults"
@@ -99,12 +100,13 @@ impl SystemConfigurator for MacosDefaultsConfigurator {
                     ),
                 );
 
-                let output = defaults_cmd()
-                    .args(["write", domain, key_str])
-                    .arg(format!("-{}", value_type))
-                    .arg(&value_str)
-                    .output()
-                    .map_err(cfgd_core::errors::CfgdError::Io)?;
+                let output = cfgd_core::command_output(
+                    defaults_cmd()
+                        .args(["write", domain, key_str])
+                        .arg(format!("-{}", value_type))
+                        .arg(&value_str),
+                )
+                .map_err(cfgd_core::errors::CfgdError::Io)?;
 
                 if !output.status.success() {
                     cx.report(

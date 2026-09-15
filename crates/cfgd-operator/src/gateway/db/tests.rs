@@ -1083,6 +1083,7 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CaptureWriter {
 // convert callers to `#[tokio::test]` or wrap the open in `spawn_blocking` —
 // that would hop the work off-thread and silently drop the captured logs.
 fn capture_warn_logs<F: FnOnce()>(f: F) -> String {
+    cfgd_core::test_helpers::install_tracing_journal();
     let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let writer = CaptureWriter(buf.clone());
     let subscriber = tracing_subscriber::fmt()

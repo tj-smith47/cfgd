@@ -8,19 +8,6 @@ Show source:team-config
   Auto Apply          no
   Pin Version         v1.2.3
 
-State
-  Status       Active
-  Last Sync    18d ago
-  Last Commit  deadbeef1234
-  Signed       yes
-
-Managed Resources
-  Type     Resource 
-  ──────────────────
-  package  brew/curl
-  file     ~/.bashrc
-  env      EDITOR
-
 Modules
   ◉ dev-tools
   ◉ shell

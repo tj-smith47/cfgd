@@ -17,7 +17,8 @@
 use std::path::Path;
 
 use crate::config::{
-    ManagedFileSpec, MergedProfile, PackageClaim, SystemSettings, desired_packages_for_spec,
+    LOCAL_LAYER, LayerSources, ManagedFileSpec, MergedProfile, PackageClaim, SystemSettings,
+    desired_packages_for_spec,
 };
 use crate::modules::ResolvedModule;
 use crate::to_posix_string;
@@ -105,17 +106,34 @@ pub struct EffectiveFile {
 /// machine changed, plus that snapshot's `-o json` and its `compliance diff`
 /// pairing. A hashed map re-seeds per instance, so two collections in one process
 /// would shuffle a machine that never changed.
-pub fn effective_system_map(profile: &MergedProfile, modules: &[ResolvedModule]) -> SystemSettings {
+///
+/// The returned [`LayerSources`] is the profile's own, with every key a module
+/// folds in claimed under [`ResolvedModule::origin`] — the layer that delivered
+/// the module, which its file and package rows already record under. The claim
+/// runs in the same pass as the fold and in the same order, so a module
+/// overriding a layer's leaf takes the claim exactly as it takes the value, and
+/// nothing walks the modules a second time to answer the same question. A module
+/// with no origin is consumer-local and claims [`LOCAL_LAYER`].
+pub fn effective_system_map(
+    profile: &MergedProfile,
+    modules: &[ResolvedModule],
+) -> (SystemSettings, LayerSources) {
     let mut system: SystemSettings = profile.system.clone();
+    let mut sources = profile.layer_sources.clone();
     for module in modules {
+        let origin = module.origin.as_deref().unwrap_or(LOCAL_LAYER);
         for (key, value) in &module.system {
             crate::deep_merge_yaml(
                 system.entry(key.clone()).or_insert(serde_yaml::Value::Null),
                 value,
             );
+            // A block withheld whole records under the configurator alone, as
+            // the merge's own claim spells it.
+            sources.system.insert(key.clone(), origin.to_string());
+            sources.claim_system_keys(origin, key, "", value);
         }
     }
-    system
+    (system, sources)
 }
 
 /// The stricter of two declared floors: `None` loses to `Some`, and between two
@@ -400,6 +418,7 @@ mod tests {
             scripts: crate::config::ScriptSpec::default(),
             backups: Vec::new(),
             entry_owners: crate::config::EntryOwners::default(),
+            layer_sources: crate::config::LayerSources::default(),
         }
     }
 
@@ -476,7 +495,7 @@ mod tests {
         let mut profile = empty_profile();
         profile.system.insert("shell".into(), yaml("default: zsh"));
 
-        let map = effective_system_map(&profile, &[]);
+        let (map, _) = effective_system_map(&profile, &[]);
 
         assert_eq!(map.get("shell"), Some(&yaml("default: zsh")));
     }
@@ -487,7 +506,7 @@ mod tests {
         let mut m = module("dev");
         m.system.insert("sysctl".into(), yaml("vm.swappiness: 10"));
 
-        let map = effective_system_map(&profile, &[m]);
+        let (map, _) = effective_system_map(&profile, &[m]);
 
         assert_eq!(map.get("sysctl"), Some(&yaml("vm.swappiness: 10")));
     }
@@ -501,7 +520,7 @@ mod tests {
         let mut m = module("dev");
         m.system.insert("shell".into(), yaml("default: zsh"));
 
-        let map = effective_system_map(&profile, &[m]);
+        let (map, _) = effective_system_map(&profile, &[m]);
 
         // Module wins at the overlapping leaf; non-overlapping profile leaf survives.
         assert_eq!(
@@ -519,7 +538,7 @@ mod tests {
         let mut b = module("b");
         b.system.insert("shell".into(), yaml("default: fish"));
 
-        let map = effective_system_map(&profile, &[a, b]);
+        let (map, _) = effective_system_map(&profile, &[a, b]);
 
         // Three-way ordering: profile < module a < module b. The later module
         // wins at the overlapping leaf; the earlier module's non-overlapping

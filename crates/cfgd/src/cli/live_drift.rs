@@ -37,6 +37,46 @@ use cfgd_core::reconciler::{Action, ManagerAction, VerifyResult};
 use crate::files::{CfgdFileManager, module_patch_binding};
 use crate::packages;
 
+/// The heading every surface that prices standing drift renders those rows
+/// under. A standing row is one the run's own scope owns but could not
+/// re-examine, so it is the STORE's answer rather than this run's: listed
+/// among the live rows it reads as something the check just found.
+pub const STANDING_SECTION: &str = "Standing";
+
+/// One standing row's `(subject, cause)`, so `diff`, `verify` and both
+/// `status` surfaces cannot word the store's own answer three different ways.
+///
+/// The cause comes from the chooser rather than the operand pair: a row
+/// recorded with no operands (an older daemon's, a module script row) has
+/// nothing to state, and rendering the absence words for it reads as a
+/// divergence the store never recorded.
+pub fn standing_row(e: &cfgd_core::state::DriftEvent) -> (String, String) {
+    (
+        cfgd_core::output::drift_item_subject(&e.resource_type, &e.resource_id),
+        cfgd_core::output::drift_cause(
+            &e.resource_type,
+            e.expected.as_deref().unwrap_or_default(),
+            e.actual.as_deref().unwrap_or_default(),
+        ),
+    )
+}
+
+/// The `Standing` section as a buffered [`cfgd_core::output::Doc`] block,
+/// rendered after the live rows and at [`cfgd_core::output::Role::Warn`]: the
+/// rows state what the record still holds, not what this run found. Empty
+/// input renders nothing.
+pub fn standing_section(
+    doc: cfgd_core::output::Doc,
+    standing: &[cfgd_core::state::DriftEvent],
+) -> cfgd_core::output::Doc {
+    doc.section_if_nonempty(STANDING_SECTION, standing, |s, rows| {
+        rows.iter().fold(s, |s, e| {
+            let (subject, cause) = standing_row(e);
+            s.status_with(cfgd_core::output::Role::Warn, subject, |f| f.detail(cause))
+        })
+    })
+}
+
 /// The ONE shaping of a live [`VerifyResult`] into a recorded-shape
 /// [`cfgd_core::state::DriftEvent`], for a caller (`cmd_status`,
 /// `cmd_status_module`'s two drift loops) that must fold a live-scan finding
@@ -109,14 +149,23 @@ fn record_finding(state: &cfgd_core::state::StateStore, r: &VerifyResult) {
 
 /// The resource types a full CLI live check evaluates end to end, and so the
 /// ONLY types its complement-resolve may clear. Everything else in
-/// `drift_events` — the daemon's `secret`, `script`, `env-session` and
-/// `manager` rows, any class a future writer mints — is a finding nothing in
+/// `drift_events` — the daemon's `secret`,
+/// [`cfgd_core::reconciler::ENV_SESSION_RESOURCE_TYPE`] and `manager` rows, the
+/// `script` rows an older cfgd left behind, any class a future writer mints —
+/// is a finding nothing in
 /// this check re-examined, and stands for its own writer to settle. Also the
 /// vocabulary `cli/tests.rs`'s rendered-label walk skips: a `(type, id)`
 /// tuple pushed into a checked/findings vector is a wire key, never a
 /// rendered label.
 pub(in crate::cli) const FULL_CHECK_RESOLVABLE_TYPES: &[&str] = &[
-    "file", "module", "package", "system", "env", "env-rc", "env-var", "alias",
+    "file",
+    "module",
+    "package",
+    "system",
+    cfgd_core::reconciler::ENV_RESOURCE_TYPE,
+    cfgd_core::reconciler::ENV_RC_RESOURCE_TYPE,
+    "env-var",
+    "alias",
 ];
 
 /// Whether a recorded row is one THIS full check could not have re-found, so
@@ -153,9 +202,9 @@ fn full_check_cannot_refind(
         // Every module row this check can answer for is a per-file
         // `<module>/<target>`, classified by the FIRST separator through the
         // one reader the daemon attributes rows with — a tail may carry a `/`
-        // of its own. The other spellings under the type name a module's own
-        // action (`<module>:script`, `<module>:skip`), which no live file
-        // check re-examines.
+        // of its own. A faceted spelling (`<module>:script`, `<module>:skip`)
+        // is a legacy id no producer mints any more, and no live file check
+        // re-examines one.
         // legacy-id-ok: a BARE `<module>` is the whole-module row a tick
         // recorded before per-file rows became the one grammar; that nothing
         // mints one now is what `every_module_drift_id_names_the_file_it_stands_for`
@@ -348,8 +397,8 @@ pub(super) struct ScopedStanding {
 /// Returns every recorded row attributable to `chain` that `checked` did not
 /// cover — a finding this run's own scope owns but never got to re-examine,
 /// because its type or grammar sits outside what THIS check evaluates (a
-/// module's bare legacy id, a `:script`/`:skip` action row, a package this
-/// chain declares but the scan excluded from `checked`). A caller presenting
+/// module's bare or faceted legacy id, a package this chain declares but the
+/// scan excluded from `checked`). A caller presenting
 /// the scan renders and prices them beside its findings, exactly as the
 /// full-machine walk's own [`record_full_scan_findings`] does with its
 /// keep-set — the type is never special-cased here, only asked of the one
@@ -600,6 +649,23 @@ impl LiveDriftReport {
     }
 }
 
+/// Fold more erroring checks into a list, keyed by subject.
+///
+/// Two passes can fail on the same manager for the same reason — the package
+/// plan and the declared-floor pass both ask it what it holds — and the reader
+/// is owed the fact once. First writer wins: the passes run in a fixed order,
+/// so the surviving detail is the one the earlier pass read.
+pub(super) fn extend_check_errors(
+    into: &mut Vec<super::output_types::SystemCheckError>,
+    more: impl IntoIterator<Item = super::output_types::SystemCheckError>,
+) {
+    for err in more {
+        if !into.iter().any(|held| held.key == err.key) {
+            into.push(err);
+        }
+    }
+}
+
 /// Non-matching live verify results across every category the live scan covers
 /// (profile files, module files, packages, system, declared env vars and
 /// aliases). This is a FULL-machine check, so it also writes the record the
@@ -703,8 +769,16 @@ fn live_drift_results_inner(
         .iter()
         .map(|m| m.as_ref())
         .collect();
-    let pkg_actions =
-        packages::plan_packages(&resolved.merged, modules, &all_managers, cfgd_installed, cx)?;
+    // A manager whose listing fails is one erroring check under Packages, not
+    // the end of the scan: the plan below is the check, so aborting it took
+    // every other manager's finding down with it.
+    let (pkg_actions, mut package_check_errors) = packages::plan_packages_checked(
+        &resolved.merged,
+        modules,
+        &all_managers,
+        cfgd_installed,
+        cx,
+    )?;
     for action in &pkg_actions {
         drift.extend(package_action_drift(action, registry));
     }
@@ -722,9 +796,10 @@ fn live_drift_results_inner(
         modules,
         Some(&registry.manager_map()),
     );
-    let (version_drift, package_check_errors) =
+    let (version_drift, version_check_errors) =
         cfgd_core::reconciler::package_version_drift(&effective, registry, cx)?;
     drift.extend(version_drift);
+    extend_check_errors(&mut package_check_errors, version_check_errors);
 
     // Managers: a manager the plan would provision or refuse is itself drift —
     // the same signal `diff`'s `cfgd:managers` group renders, from the same
@@ -746,7 +821,7 @@ fn live_drift_results_inner(
     sp.set_message("Scanning: system");
     let mut check_errors: Vec<super::output_types::SystemCheckError> = Vec::new();
     let mut evaluated_system: Vec<String> = Vec::new();
-    let system = cfgd_core::effective::effective_system_map(&resolved.merged, modules);
+    let (system, _) = cfgd_core::effective::effective_system_map(&resolved.merged, modules);
     for configurator in &registry.available_system_configurators() {
         if let Some(desired) = system.get(configurator.name()) {
             match configurator.diff(desired) {
@@ -898,8 +973,10 @@ pub(in crate::cli) struct ManagerDriftPhrase {
     /// What the manager's state IS, with no subject — the `diff` line prepends
     /// `<manager>: ` and the `actual` string stands alone.
     pub(in crate::cli) state: &'static str,
-    /// What can be done about it: `can bootstrap via <method>`, or
-    /// `cannot bootstrap: <reason>`.
+    /// What can be done about it: `can provision via <method>`, or
+    /// `cannot provision: <reason>` — the verb the plan's own bullet spends
+    /// on the very action this row is reporting the absence of, so one fact
+    /// is not named two ways across two commands.
     pub(in crate::cli) detail: String,
 }
 
@@ -913,11 +990,11 @@ pub(in crate::cli) fn manager_drift_phrase(action: &ManagerAction) -> Option<Man
         ManagerAction::RefreshIndex { .. } | ManagerAction::Prerequisite { .. } => None,
         ManagerAction::Provision { via, .. } => Some(ManagerDriftPhrase {
             state: cfgd_core::Absence::NotInstalled.as_str(),
-            detail: format!("can bootstrap via {via}"),
+            detail: format!("can provision via {via}"),
         }),
         ManagerAction::Refuse { reason, .. } => Some(ManagerDriftPhrase {
             state: cfgd_core::Absence::NotInstalled.as_str(),
-            detail: format!("cannot bootstrap: {reason}"),
+            detail: format!("cannot provision: {reason}"),
         }),
     }
 }
@@ -965,22 +1042,31 @@ pub(super) fn manager_verify_results(
     modules: &[ResolvedModule],
     cfgd_installed: &std::collections::HashSet<String>,
     cx: &cfgd_core::providers::PackageContext<'_>,
-) -> anyhow::Result<Vec<VerifyResult>> {
+) -> anyhow::Result<(
+    Vec<VerifyResult>,
+    Vec<super::output_types::SystemCheckError>,
+)> {
     let all_managers: Vec<&dyn cfgd_core::providers::PackageManager> = registry
         .package_managers()
         .iter()
         .map(|m| m.as_ref())
         .collect();
-    let pkg_actions =
-        packages::plan_packages(&resolved.merged, modules, &all_managers, cfgd_installed, cx)?;
-    Ok(manager_drift_actions(cfgd_core::reconciler::plan_managers(
+    let (pkg_actions, check_errors) = packages::plan_packages_checked(
+        &resolved.merged,
+        modules,
+        &all_managers,
+        cfgd_installed,
+        cx,
+    )?;
+    let results = manager_drift_actions(cfgd_core::reconciler::plan_managers(
         registry,
         &pkg_actions,
         &[],
     ))
     .iter()
     .flat_map(manager_action_drift)
-    .collect())
+    .collect();
+    Ok((results, check_errors))
 }
 
 #[cfg(test)]
@@ -1018,8 +1104,9 @@ mod tests {
             (
                 "module",
                 "`resolve_module_file_drift`, per DECLARED file of the deployed \
-                 module; a module skipped whole mints none and heals none, \
-                 having probed nothing",
+                 module; the three module kinds that mint nothing heal nothing — \
+                 a module skipped whole and a refused deploy probed nothing, and \
+                 a lifecycle hook is an act no check looks at",
             ),
             (
                 "package",
@@ -2203,13 +2290,15 @@ mod tests {
             .find(|r| r.resource_type == "package" && r.resource_id == "provision:npm")
             .unwrap_or_else(|| panic!("a provisionable manager must register as drift: {drift:?}"));
         assert_eq!(
-            manager_row.actual, "not installed (can bootstrap via pip install npm-bootstrap)",
+            manager_row.actual, "not installed (can provision via pip install npm-bootstrap)",
             "must name the method `diff` would show, got: {manager_row:?}"
         );
     }
 
     #[test]
     fn live_drift_results_includes_a_refused_manager() {
+        // host-tool-ok: the prerequisite is a sentinel name no manager packages and
+        // no machine carries, so no host's PATH can satisfy the cascade.
         // A manager the plan cannot self-heal (no path to its prerequisite
         // tool) must still register as drift, distinguishable from the
         // provisionable case by its reason rather than being silently dropped.
@@ -2247,7 +2336,7 @@ mod tests {
             .find(|r| r.resource_type == "package" && r.resource_id == "refuse:npm")
             .unwrap_or_else(|| panic!("a refused manager must register as drift too: {drift:?}"));
         assert!(
-            manager_row.actual.contains("cannot bootstrap")
+            manager_row.actual.contains("cannot provision")
                 && manager_row.actual.contains("a-tool-nothing-provides"),
             "must name why, distinct from the provisionable wording, got: {manager_row:?}"
         );
@@ -2266,11 +2355,13 @@ mod tests {
     // for every package in them; given a context per half — which is what
     // `cmd_verify` built before — the same manager is enumerated twice.
     #[test]
+    #[serial_test::serial(enumeration_memo)]
     fn both_halves_of_verify_share_one_enumeration_per_manager() {
         // The count is a memo-hit claim, so the memo's age ceiling is pinned out
-        // of reach — unpinned it rests on the 30s wall clock. No serialization:
-        // nothing in this crate's test binary pins the ceiling to zero, and a
-        // longer ceiling can only let another test's entries live longer.
+        // of reach — unpinned it rests on the 30s wall clock. The group is the one
+        // every other pin of this ceiling joins: two pins alive at once restore
+        // each other's saved value, leaving the seam pinned for the rest of the
+        // binary with nothing going red where the second pin was written.
         let _ttl = cfgd_core::test_helpers::EnumerationMemoTtlGuard::never_expires();
         let enumerations = cfgd_core::test_helpers::measured_in_a_stable_generation(|| {
             let mgr = cfgd_core::test_helpers::MockPackageManager::new("npm")
@@ -2322,7 +2413,7 @@ mod tests {
         let state = cfgd_core::state::StateStore::open_in_memory().unwrap();
         let cx = cfgd_core::providers::PackageContext::new(&printer, &state);
 
-        let results = manager_verify_results(
+        let (results, _) = manager_verify_results(
             &resolved,
             &registry,
             &modules,
@@ -2341,13 +2432,15 @@ mod tests {
             "must fail verify — this is what flips exit code 5"
         );
         assert_eq!(
-            row.actual, "not installed (can bootstrap via pip install npm-bootstrap)",
+            row.actual, "not installed (can provision via pip install npm-bootstrap)",
             "must name the method, same as diff/status, got: {row:?}"
         );
     }
 
     #[test]
     fn manager_verify_results_flags_a_refused_manager_as_drift() {
+        // host-tool-ok: the prerequisite is a sentinel name no manager packages and
+        // no machine carries, so no host's PATH can satisfy the cascade.
         let resolved = resolved_no_files();
         let mut registry = ProviderRegistry::new();
         registry.add_package_manager(Box::new(
@@ -2361,7 +2454,7 @@ mod tests {
         let state = cfgd_core::state::StateStore::open_in_memory().unwrap();
         let cx = cfgd_core::providers::PackageContext::new(&printer, &state);
 
-        let results = manager_verify_results(
+        let (results, _) = manager_verify_results(
             &resolved,
             &registry,
             &modules,
@@ -2381,7 +2474,7 @@ mod tests {
         );
         assert!(
             row.actual
-                .contains("cannot bootstrap: a-tool-nothing-provides"),
+                .contains("cannot provision: a-tool-nothing-provides"),
             "must name the refusal reason, got: {row:?}"
         );
     }
@@ -2389,7 +2482,7 @@ mod tests {
     /// One unprovisionable manager, read on both surfaces that report it.
     ///
     /// `diff` renders a status line and `verify`/`status --scan` a `VerifyResult`,
-    /// and the two used to word the same fact differently (`cannot bootstrap:
+    /// and the two used to word the same fact differently (`cannot provision:
     /// <reason>` against `not installed (cannot bootstrap — <reason>)`), so a
     /// reader matching a verify row against the diff explaining it met two
     /// spellings of one refusal. Captured from the real renders rather than

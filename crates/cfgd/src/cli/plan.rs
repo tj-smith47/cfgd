@@ -1,5 +1,8 @@
 use super::*;
 
+// no-header-ok: same as apply — `reconciler::ApplyRun` renders the header
+// once the plan is final, so the profile label is carried down rather than
+// printed here.
 pub fn cmd_plan(
     cli: &Cli,
     printer: &cfgd_core::output::Printer,
@@ -19,18 +22,8 @@ pub fn cmd_plan(
 
     // --from: mirror cmd_apply so `plan` can be pointed at a git source or local path.
     if let Some(from) = &args.from {
-        let cli_config_dir = cli.config.parent().map(|p| p.to_path_buf());
-        let default_dir = cfgd_core::default_config_dir();
-        let target = if let Some(ref dir) = cli_config_dir {
-            if *dir != default_dir && !cli.config.exists() {
-                Some(dir.as_path())
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-        init::resolve_from(from, target, "master", printer)?;
+        let target = init::from_destination(&cli.config);
+        init::resolve_from(from, target.as_deref(), "master", printer)?;
     }
 
     let config_dir = config_dir(cli);
@@ -79,7 +72,10 @@ pub fn cmd_plan(
     registry.set_system_config_dir(&config_dir);
 
     // Resolve manifest files (Brewfile, package.json, etc.) into package lists
-    ctx.resolve_manifest_packages(&mut effective_resolved.merged.packages)?;
+    ctx.resolve_manifest_packages(
+        &mut effective_resolved.merged.packages,
+        &mut effective_resolved.merged.layer_sources,
+    )?;
 
     // `PhaseArg`'s base phase is clap-validated; a selector combined with
     // `--phase modules` is the one combination `resolve_phase_filter` still
@@ -98,7 +94,7 @@ pub fn cmd_plan(
     // diffs against it, and `Reconciler::plan` diffs a module's declared
     // packages against the same enumeration, so a converged host asks each
     // manager once rather than once per surface.
-    let pkg_cx = cfgd_core::providers::PackageContext::new(printer, state);
+    let pkg_cx = ctx.package_context()?;
 
     // An isolate names its own modules on the command line, so its row renders
     // only what the resolution ADDED to them.
@@ -108,6 +104,8 @@ pub fn cmd_plan(
     };
     // recorded-scope-ok: a plan writes no `applies` row, so it has no scope
     // column to fill
+    // whole-picture-ok: a plan records and retires no managed-resource row at
+    // all, so it never reads the removal half the flag gates
     let reconciler = Reconciler::new(&registry, state)
         .with_config_dir(&config_dir)
         .diffing_installed(&pkg_cx);

@@ -317,28 +317,22 @@ mod tests {
         assert_eq!(refresh_session_env(&[]), SessionRefresh::default());
     }
 
-    /// A `/bin/sh` stand-in for a session manager: appends its argv to `log` and
-    /// exits with `code`, so a test can assert on what would have been sent to
-    /// the real session without a session being involved.
-    #[cfg(unix)]
-    fn session_shim(dir: &std::path::Path, name: &str, log: &std::path::Path, code: i32) -> String {
-        let bin = dir.join(name);
-        let body = format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> {log}\necho 'shim said no'\nexit {code}\n",
-            log = log.display()
-        );
-        std::fs::write(&bin, body).unwrap();
-        crate::set_file_permissions(&bin, 0o755).unwrap();
-        bin.to_string_lossy().into_owned()
-    }
-
     #[cfg(unix)]
     #[test]
     #[serial_test::serial]
     fn launchctl_setenv_sends_the_pair_through_the_seam() {
         let tmp = tempfile::tempdir().unwrap();
         let log = tmp.path().join("argv.log");
-        let shim = session_shim(tmp.path(), "launchctl", &log, 0);
+        let shim = crate::test_helpers::write_tool_shim(
+            tmp.path(),
+            "launchctl",
+            &[crate::test_helpers::ShimArm::always(
+                "shim said no\n",
+                "",
+                0,
+            )],
+        );
+        let shim = shim.to_string_lossy().into_owned();
         let _seam = crate::test_helpers::EnvVarGuard::set(LAUNCHCTL_BIN_ENV, &shim);
 
         assert_eq!(launchctl_setenv("EDITOR", "nvim"), SessionSet::Applied);
@@ -353,8 +347,16 @@ mod tests {
     #[serial_test::serial]
     fn windows_setx_failure_returns_the_tools_own_diagnostic() {
         let tmp = tempfile::tempdir().unwrap();
-        let log = tmp.path().join("argv.log");
-        let shim = session_shim(tmp.path(), "setx", &log, 1);
+        let shim = crate::test_helpers::write_tool_shim(
+            tmp.path(),
+            "setx",
+            &[crate::test_helpers::ShimArm::always(
+                "shim said no\n",
+                "",
+                1,
+            )],
+        );
+        let shim = shim.to_string_lossy().into_owned();
         let _seam = crate::test_helpers::EnvVarGuard::set(SETX_BIN_ENV, &shim);
 
         let failure = windows_setx("EDITOR", "nvim")

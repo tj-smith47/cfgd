@@ -131,8 +131,13 @@ fn module_search_bridge_one_blank_line() {
 
     let mut stripped = strip_ansi(&combined);
     stripped = stripped.replace(&reg_url, "<REG_URL>");
-    stripped = stripped.replace(&src.display().to_string(), "<REG_SRC>");
-    stripped = stripped.replace(&src_root.path().display().to_string(), "<REG_ROOT>");
+    stripped = cfgd_core::normalize_for_snapshot(
+        &stripped,
+        &[
+            (src.as_path(), "<REG_SRC>"),
+            (src_root.path(), "<REG_ROOT>"),
+        ],
+    );
     assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "module_search/bridge.txt",
@@ -160,8 +165,13 @@ fn search_happy_human() {
     // Normalize variable paths so the golden is host-stable.
     let mut stripped = strip_ansi(&cap.human());
     stripped = stripped.replace(&reg_url, "<REG_URL>");
-    stripped = stripped.replace(&src.display().to_string(), "<REG_SRC>");
-    stripped = stripped.replace(&src_root.path().display().to_string(), "<REG_ROOT>");
+    stripped = cfgd_core::normalize_for_snapshot(
+        &stripped,
+        &[
+            (src.as_path(), "<REG_SRC>"),
+            (src_root.path(), "<REG_ROOT>"),
+        ],
+    );
     assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "module_search/happy.txt",

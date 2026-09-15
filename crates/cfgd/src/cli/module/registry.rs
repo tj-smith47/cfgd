@@ -438,16 +438,7 @@ pub fn cmd_module_upgrade(
 
     // Show diff
     let changes = modules::diff_module_specs(&old_module, &new_module, printer.arrow());
-    {
-        let changes_sec = printer.section("Changes");
-        for (role, change) in &changes {
-            // A diff entry embeds the unmodified body of whatever changed — a
-            // multi-line script, or an env value carrying a newline — so it
-            // goes through the same full-fidelity renderer as the add-time
-            // review rather than being condensed at the moment of approval.
-            review_entry(&changes_sec, Some(*role), "", change);
-        }
-    }
+    print_spec_changes(printer, &changes);
 
     // Check for signature on new ref
     super::enforce_signature_policy(
@@ -500,21 +491,55 @@ pub fn cmd_module_upgrade(
     Ok(())
 }
 
-/// True when `body` has a second non-empty logical line — the shared gate
-/// for rendering a review-surface entry (an upgrade diff line, a post-apply
-/// script) as a multi-line `code_block()` instead of a single `bullet()`.
+/// The `Changes` section of a module upgrade's pre-approval review: one row per
+/// change, each carrying the role's own add/remove/change glyph.
+///
+/// A row naming a post-apply script states the change alone, and the script's
+/// body renders under it through the Scripts composer, in the same shape the
+/// add-time review and `cfgd module show --show-scripts` give it: the marker
+/// line, then the whole body highlighted and nothing condensed. Every other
+/// change states itself on its own row (or as a code block, for a declared
+/// value carrying a newline).
+pub(super) fn print_spec_changes(printer: &Printer, changes: &[modules::SpecChange]) {
+    let changes_sec = printer.section("Changes");
+    for change in changes {
+        match &change.script {
+            Some(script) => {
+                changes_sec.status_simple(change.role, change.subject.clone());
+                cfgd_core::modules::post_apply_change_body(
+                    &changes_sec,
+                    &script.entry,
+                    script.position,
+                    script.total,
+                );
+            }
+            None => review_entry(&changes_sec, Some(change.role), &change.subject),
+        }
+    }
+}
+
+/// True when `body` has a second non-empty logical line — the gate for
+/// rendering a review entry (an alias command, an env value, an upgrade diff
+/// row) as a multi-line `code_block()` instead of a single `bullet()`.
 /// Deciding on LINE COUNT alone (rather than raw `contains('\n')`) is
-/// necessary because a `run: |` YAML block-scalar's trailing newline
-/// survives `run_str()` even for a single logical line of script — a raw
-/// `contains('\n')` check would flip that single line into a code block in
-/// one review surface while `bullet()`-rendering it in the other.
+/// necessary because a YAML block scalar's trailing newline survives into the
+/// declared value even for a single logical line: a raw `contains('\n')` check
+/// flips such a value into a code block on one surface while the identical
+/// value renders as a bullet on another.
 pub(super) fn has_second_non_empty_line(body: &str) -> bool {
     let mut non_empty = body.lines().filter(|l| !l.trim().is_empty());
     non_empty.next();
     non_empty.next().is_some()
 }
 
-/// Render one review-surface entry in full, each line carrying `prefix`.
+/// Render one review entry in full: an alias command, an env value, or an
+/// upgrade diff row that names no script.
+///
+/// No script body reaches here. Both approval screens hand their bodies to the
+/// Scripts composer: the add-time review through
+/// `cfgd_core::modules::post_apply_scripts_section`, a changed step on the
+/// upgrade diff through `post_apply_change_body`, each rendering the marker and
+/// the highlighted body `cfgd module show --show-scripts` renders.
 ///
 /// `bullet()` cannot carry a body containing `\n` (the `write_line`
 /// debug_assert), and this is the pre-install security review of a remote
@@ -545,21 +570,21 @@ pub(super) fn has_second_non_empty_line(body: &str) -> bool {
 /// `status_simple` instead of a plain `bullet`. `None` keeps the bare bullet
 /// (a caller with nothing to mark, e.g. a fresh `add`'s env/alias listing). A
 /// multi-line body always renders as a `code_block`, which carries no
-/// per-line icon — the caller spells "added"/"removed" into that body's own
-/// label instead of relying on `role` to convey it there.
-fn review_entry(section: &SectionGuard<'_>, role: Option<Role>, prefix: &str, body: &str) {
+/// per-line icon, so a caller whose entry can be several lines long spells
+/// "added"/"removed" into the text rather than relying on `role` to carry it.
+fn review_entry(section: &SectionGuard<'_>, role: Option<Role>, body: &str) {
     // Split by hand rather than with `lines()`, which silently drops a `\r`
     // sitting before a `\n` — on a surface whose contract is "this is exactly
     // what will be written", a byte may not disappear just because it happens
     // to be invisible in that position.
     let raw = body.strip_suffix('\n').unwrap_or(body).split('\n');
-    let decorate = |l: &str| format!("{prefix}{}", cfgd_core::escape_control_chars(l));
     if has_second_non_empty_line(body) {
-        section.code_block(raw.map(decorate));
+        section.code_block(raw.map(cfgd_core::escape_control_chars));
     } else if let Some(line) = raw.into_iter().find(|l| !l.trim().is_empty()) {
+        let line = cfgd_core::escape_control_chars(line);
         match role {
-            Some(role) => section.status_simple(role, decorate(line)),
-            None => section.bullet(decorate(line)),
+            Some(role) => section.status_simple(role, line),
+            None => section.bullet(line),
         };
     }
 }
@@ -644,7 +669,6 @@ pub(super) fn print_module_review_summary(
             review_entry(
                 &alias_sec,
                 None,
-                "",
                 &format!("{}={}", alias.name, alias.command),
             );
         }
@@ -653,7 +677,7 @@ pub(super) fn print_module_review_summary(
     if !module.spec.env.is_empty() {
         let env_sec = mod_sec.section("Environment");
         for ev in &module.spec.env {
-            review_entry(&env_sec, None, "", &format!("{}={}", ev.name, ev.value));
+            review_entry(&env_sec, None, &format!("{}={}", ev.name, ev.value));
         }
     }
 
@@ -666,17 +690,12 @@ pub(super) fn print_module_review_summary(
                 format!("Post-apply scripts ({})", scripts.post_apply.len()),
             )
             .detail("these will execute on your machine:");
-        let scripts_sec = mod_sec.section("Post-apply");
-        for script in &scripts.post_apply {
-            let body = script.run_str();
-            if body.trim().is_empty() {
-                // The count in the warning above already promised this entry,
-                // so rendering nothing would leave it unaccounted for.
-                scripts_sec.bullet("(empty script)");
-            } else {
-                review_entry(&scripts_sec, None, "$ ", body);
-            }
-        }
+        // The same render `cfgd module show --show-scripts` gives these steps: the
+        // hook heading, each step's knobs, then its whole body highlighted. A
+        // reader who inspected the module before approving it sees one shape,
+        // and the composer escapes every body for this screen's sake, so the
+        // bytes on it are the bytes that will run.
+        cfgd_core::modules::post_apply_scripts_section(&mod_sec, scripts);
     }
 }
 
@@ -727,6 +746,9 @@ pub fn cmd_module_search(cli: &Cli, printer: &Printer, query: &str) -> anyhow::R
         .map(|m| &m.registries[..])
         .unwrap_or(&[]);
     if registries.is_empty() {
+        // The same element type a found listing serializes, so one payload shape
+        // answers both outcomes.
+        let no_results: Vec<super::ModuleSearchResult> = Vec::new();
         printer.emit(
             Doc::new()
                 // heading-first-ok: an early return with nothing to search and
@@ -735,7 +757,7 @@ pub fn cmd_module_search(cli: &Cli, printer: &Printer, query: &str) -> anyhow::R
                 .heading_title("Search Modules", query)
                 .status(Role::Info, NO_REGISTRIES_MSG)
                 .hint_commands("Add a registry:", &["cfgd module registry add <git-url>"])
-                .with_data(serde_json::json!([])),
+                .with_data(&no_results),
         );
         return Ok(());
     }
@@ -1159,12 +1181,15 @@ pub fn cmd_module_registry_rename(
 }
 
 pub fn cmd_module_registry_list(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
+    // An empty listing serializes the same element type a populated one does, so a
+    // consumer reading the payload sees one shape whether or not a registry exists.
+    let no_registries: Vec<super::RegistryListEntry> = Vec::new();
     if !cli.config.exists() {
         printer.emit(
             Doc::new()
                 .heading("Module Registries")
                 .status(Role::Info, "No config found")
-                .with_data(serde_json::json!([])),
+                .with_data(&no_registries),
         );
         return Ok(());
     }
@@ -1183,7 +1208,7 @@ pub fn cmd_module_registry_list(cli: &Cli, printer: &Printer) -> anyhow::Result<
                 .heading("Module Registries")
                 .status(Role::Info, NO_REGISTRIES_MSG)
                 .hint_commands("Add one:", &["cfgd module registry add <git-url>"])
-                .with_data(serde_json::json!([])),
+                .with_data(&no_registries),
         );
         return Ok(());
     }
@@ -1196,9 +1221,10 @@ pub fn cmd_module_registry_list(cli: &Cli, printer: &Printer) -> anyhow::Result<
         })
         .collect();
 
+    // acronym-ok: URL is an acronym, which Title Case keeps capitalized.
     let mut t = cfgd_core::output::renderer::Table::new(["Name", "URL"]);
     for e in &entries {
-        t = t.row([e.name.clone(), e.url.clone()]);
+        t = t.row([e.name.clone(), cfgd_core::display_url(&e.url)]);
     }
 
     printer.emit(

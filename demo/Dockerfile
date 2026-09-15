@@ -19,10 +19,14 @@ RUN userdel -r ubuntu
 # git/curl/ca-certificates (the tape's HTTPS clone), build-essential/
 # procps/file (Homebrew's own documented Linux prerequisites), gnupg (the
 # source-trust tape's `git log --format=%G?` signature check, and the key
-# generation + `git commit -S` that satisfies it). nvim is deliberately
-# absent — the demo's first beat is `nvim` failing with "command not
-# found" — and none of these packages pull in Ubuntu's command-not-found
-# handler, so that failure stays the plain bash message.
+# generation + `git commit -S` that satisfies it), less (author.tape pages
+# `cfgd module show`, whose render is twice the recorded terminal's height;
+# ubuntu:24.04 ships only util-linux's `more`, which counts a coloured
+# render's SGR escapes as printable width and so breaks every highlighted
+# script body at the wrong column). nvim is deliberately absent — the demo's
+# first beat is `nvim` failing with "command not found" — and none of these
+# packages pull in Ubuntu's command-not-found handler, so that failure stays
+# the plain bash message.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
        sudo \
@@ -33,6 +37,7 @@ RUN apt-get update \
        procps \
        file \
        gnupg \
+       less \
     && rm -rf /var/lib/apt/lists/*
 
 # glibc has shipped the portable `C.utf8` locale (no `locales` package or

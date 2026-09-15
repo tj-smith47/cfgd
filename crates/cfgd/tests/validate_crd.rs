@@ -4,7 +4,7 @@
 //! both reach the same `cfgd_crd::*Spec::validate()` impls, so a cross-field
 //! violation rejected at admission is rejected identically at the CLI. These
 //! tests pin that convergence (CLI-path errors == webhook-path errors) and
-//! confirm minimal valid documents for all five CRD kinds still pass.
+//! confirm minimal valid documents for every CRD kind still pass.
 //!
 //! In-process Doc-capture style (matching `validate_cli.rs`): the rejection
 //! test drives `cmd_machineconfig_validate` against a ground-truth fixture
@@ -27,6 +27,7 @@ const VALID_CLUSTERCONFIGPOLICY: &str =
 const VALID_DRIFTALERT: &str = "apiVersion: cfgd.io/v1alpha1\nkind: DriftAlert\nmetadata:\n  name: da\nspec:\n  deviceId: dev-1\n  machineConfigRef:\n    name: mc\n  severity: High\n";
 const VALID_MODULE_CRD: &str =
     "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: m\nspec: {}\n";
+const VALID_BACKUPPOLICY: &str = "apiVersion: cfgd.io/v1alpha1\nkind: BackupPolicy\nmetadata:\n  name: bp\nspec:\n  units:\n    - name: dotfiles\n      schedule: \"0 3 * * *\"\n";
 
 /// Ground-truth guard: the committed bad-path fixture must equal the producer's
 /// current serialization, so a drift in `MachineConfigSpec`'s fields fails loudly
@@ -166,6 +167,23 @@ fn cli_path_errors_match_webhook_path_for_every_crd_kind() {
         ..Default::default()
     };
 
+    // BackupPolicy: one unit named twice, so no schedule answers for it.
+    let backuppolicy_spec = cfgd_crd::BackupPolicySpec {
+        units: vec![
+            cfgd_crd::BackupPolicyUnit {
+                name: "dotfiles".to_string(),
+                schedule: "0 3 * * *".to_string(),
+                retention: None,
+            },
+            cfgd_crd::BackupPolicyUnit {
+                name: "dotfiles".to_string(),
+                schedule: "6h".to_string(),
+                retention: None,
+            },
+        ],
+        ..Default::default()
+    };
+
     // DriftAlert: empty deviceId + empty machineConfigRef.name.
     let driftalert_spec = cfgd_crd::DriftAlertSpec {
         device_id: String::new(),
@@ -220,6 +238,16 @@ fn cli_path_errors_match_webhook_path_for_every_crd_kind() {
                 .validate()
                 .expect_err("rejecting DriftAlert spec"),
         ),
+        (
+            "BackupPolicy",
+            doc_for(
+                "BackupPolicy",
+                serde_json::to_value(&backuppolicy_spec).expect("to value"),
+            ),
+            backuppolicy_spec
+                .validate()
+                .expect_err("rejecting BackupPolicy spec"),
+        ),
     ];
 
     for (kind, doc, webhook_errors) in document_cases {
@@ -254,13 +282,14 @@ fn cli_path_errors_match_webhook_path_for_every_crd_kind() {
 }
 
 #[test]
-fn valid_crd_documents_pass_for_all_five_kinds() {
+fn valid_crd_documents_pass_for_every_kind() {
     for (label, doc) in [
         ("MachineConfig", VALID_MACHINECONFIG),
         ("ConfigPolicy", VALID_CONFIGPOLICY),
         ("ClusterConfigPolicy", VALID_CLUSTERCONFIGPOLICY),
         ("DriftAlert", VALID_DRIFTALERT),
         ("Module", VALID_MODULE_CRD),
+        ("BackupPolicy", VALID_BACKUPPOLICY),
     ] {
         let result = validate_document(doc);
         assert!(

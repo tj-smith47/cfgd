@@ -122,16 +122,30 @@ jobs:
     runs-on: arc-cfgd
     needs: [setup]
     timeout-minutes: 20
+    # test-oci.sh drives a real cfgd binary, so this job cargo-builds the
+    # release cfgd through ensure_cfgd_binary instead of riding the setup job's
+    # images — the same compile-cache layering, because a cold build is what the
+    # budget cannot absorb.
     env:
       CFGD_E2E_SETUP_DONE: "1"
       IMAGE_TAG: ${{ needs.setup.outputs.image-tag }}
       E2E_NAMESPACE: cfgd-e2e-${{ github.run_id }}-op
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: "sccache"
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@v0.0.11
+
+      - name: Restore cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: e2e-operator
 
       - name: Install go-task
         uses: go-task/setup-task@v2
@@ -145,16 +159,30 @@ jobs:
     runs-on: arc-cfgd
     needs: [setup]
     timeout-minutes: 25
+    # setup-fullstack-env.sh drives a real cfgd binary, so this job cargo-builds
+    # the release cfgd through ensure_cfgd_binary instead of riding the setup
+    # job's images — the same compile-cache layering, because a cold build is
+    # what the budget cannot absorb.
     env:
       CFGD_E2E_SETUP_DONE: "1"
       IMAGE_TAG: ${{ needs.setup.outputs.image-tag }}
       E2E_NAMESPACE: cfgd-e2e-${{ github.run_id }}-full
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: "sccache"
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@v0.0.11
+
+      - name: Restore cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: e2e-full-stack
 
       - name: Install go-task
         uses: go-task/setup-task@v2
@@ -176,15 +204,29 @@ jobs:
     runs-on: arc-cfgd
     needs: [setup]
     timeout-minutes: 20
+    # run-crossplane-tests.sh renders the CRDs with `cargo run --release --bin
+    # cfgd-gen-crds`, so this job compiles the workspace instead of riding the
+    # setup job's images — the same compile-cache layering, because a cold build
+    # is what the budget cannot absorb.
     env:
       CFGD_E2E_SETUP_DONE: "1"
       IMAGE_TAG: ${{ needs.setup.outputs.image-tag }}
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: "sccache"
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@v0.0.11
+
+      - name: Restore cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: e2e-crossplane
 
       - name: Install go-task
         uses: go-task/setup-task@v2
@@ -198,13 +240,30 @@ jobs:
     runs-on: arc-cfgd
     needs: [setup]
     timeout-minutes: 25
+    # test-device-projection.sh drives a real cfgd binary against the gateway, so
+    # this job cargo-builds the release cfgd through ensure_cfgd_binary instead of
+    # riding the setup job's images — the same compile-cache layering, because a
+    # cold build is what the budget cannot absorb.
     env:
       CFGD_E2E_SETUP_DONE: "1"
       IMAGE_TAG: ${{ needs.setup.outputs.image-tag }}
       E2E_NAMESPACE: cfgd-e2e-${{ github.run_id }}-gateway
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: "sccache"
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@v0.0.11
+
+      - name: Restore cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: e2e-gateway
 
       - name: Install go-task
         uses: go-task/setup-task@v2
