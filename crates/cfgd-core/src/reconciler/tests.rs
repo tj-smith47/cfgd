@@ -31407,7 +31407,6 @@ fn a_scoped_apply_leaves_another_layers_env_row_standing() {
 ///
 /// Shared by the three pins below, which differ only in what the run did with
 /// the surface those entries live in.
-#[cfg(test)]
 fn resolved_with_one_env_entry_and_alias() -> crate::config::ResolvedProfile {
     let mut resolved = make_empty_resolved();
     resolved.layers[0].spec.env = vec![EnvVar {
@@ -31428,7 +31427,6 @@ fn resolved_with_one_env_entry_and_alias() -> crate::config::ResolvedProfile {
 }
 
 /// The `env-var` and `alias` rows a check left standing, as the store holds them.
-#[cfg(test)]
 fn standing_entry_rows(state: &crate::state::StateStore) -> Vec<(String, String)> {
     let mut rows: Vec<(String, String)> = state
         .unresolved_drift()
@@ -31441,7 +31439,6 @@ fn standing_entry_rows(state: &crate::state::StateStore) -> Vec<(String, String)
 }
 
 /// Record the per-item rows a check over an unconverged env surface leaves.
-#[cfg(test)]
 fn record_entry_drift(state: &crate::state::StateStore) {
     state
         .record_drift(
