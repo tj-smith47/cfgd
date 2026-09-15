@@ -1561,11 +1561,60 @@ pub fn fn_declarations(src: &str) -> Vec<(String, Option<String>, String)> {
 /// `path_dirs` per manager, and only one of them reads a given seam. A
 /// derivation asking [`calls_free_fn`] alone stops at the first wrapper written
 /// as a method, and everything reaching the seam through it is never derived.
+///
+/// The owner is matched by MENTION, not by resolving the receiver's type, so
+/// the method arm errs toward claiming a reach: a body calling `.name(` on some
+/// other value while naming the type anywhere reads as a caller. Every consumer
+/// must therefore be a superset check, where an extra name costs a wider
+/// population rather than a missed one.
 pub fn reaches_fn(code: &str, name: &str, owner: Option<&str>) -> bool {
     match owner {
         None => calls_free_fn(code, name),
         Some(ty) => code.contains(&format!(".{name}(")) && code.contains(ty),
     }
+}
+
+/// Every declaration reaching one of `seeds`, folded until the set stops
+/// growing, as `(name, the type whose impl declares it)`.
+///
+/// A call graph a walk derives is as long as somebody writes it, so a fold that
+/// stops at a fixed depth names exactly the functions a hand list would have.
+/// The seeds are included in the result: a seed is itself a member of the set
+/// its callers join.
+///
+/// The self-call skip compares the whole `(name, owner)` pair, because two
+/// distinct functions sharing a bare name would otherwise collapse and a
+/// genuine edge between them be dropped.
+pub fn callers_reaching(
+    declarations: &[(String, Option<String>, String)],
+    seeds: &[(String, Option<String>)],
+) -> Vec<(String, Option<String>)> {
+    let mut derived: Vec<(String, Option<String>)> = Vec::new();
+    for seed in seeds {
+        if !derived.contains(seed) {
+            derived.push(seed.clone());
+        }
+    }
+    let mut frontier = derived.clone();
+    while !frontier.is_empty() {
+        let mut next: Vec<(String, Option<String>)> = Vec::new();
+        for (name, owner) in &frontier {
+            for (caller, caller_owner, body) in declarations {
+                if (caller, caller_owner) == (name, owner)
+                    || !reaches_fn(body, name, owner.as_deref())
+                {
+                    continue;
+                }
+                let entry = (caller.clone(), caller_owner.clone());
+                if !derived.contains(&entry) && !next.contains(&entry) {
+                    next.push(entry);
+                }
+            }
+        }
+        derived.extend(next.iter().cloned());
+        frontier = next;
+    }
+    derived
 }
 
 /// A Rust source's logical lines: every `\`-continued string literal folded
@@ -4428,7 +4477,13 @@ impl ReconcilerTestHarness {
         printer: &Printer,
         phase_filter: Option<&crate::reconciler::PhaseFilter>,
     ) -> crate::errors::Result<crate::reconciler::ApplyResult> {
-        let reconciler = crate::reconciler::Reconciler::new(&self.registry, &self.state);
+        let reconciler = crate::reconciler::Reconciler::new(&self.registry, &self.state)
+            // What `cmd_apply` computes from its own scope: a filtered run saw
+            // a partial desired set, so retiring a row nothing declares any
+            // more is a claim it cannot make. A harness pruning where the real
+            // verb does not leaves every fixture below it asserting a
+            // semantic production never has.
+            .pruning_managed_resources(phase_filter.is_none());
         reconciler.apply(
             plan,
             &self.resolved,
