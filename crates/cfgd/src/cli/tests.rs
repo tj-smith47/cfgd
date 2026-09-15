@@ -40268,6 +40268,10 @@ const PROVISIONING_VERB_CALLS: &[ProvisioningVerb] = &[
     ProvisioningVerb::always("cmd_module_keys_generate"),
     ProvisioningVerb::always("cmd_module_keys_rotate"),
     ProvisioningVerb::always("fix_missing_tools"),
+    // The binary's own entry point, which reaches the dispatcher below it. No
+    // test in this crate can call it, so it widens the population by nothing;
+    // it is here because the derivation names it and the roster is a superset.
+    ProvisioningVerb::always("main"),
     ProvisioningVerb::always("provision_cosign"),
     ProvisioningVerb::always("provision_tool"),
     ProvisioningVerb::gated_on("cmd_doctor", "true"),
@@ -40508,6 +40512,76 @@ fn no_test_reaches_a_real_package_manager_through_the_tool_provisioner() {
     );
 }
 
+/// Every declaration reaching `provision_tool`, folded until the set stops
+/// growing, as `(name, the type whose impl declares it)`.
+///
+/// Taken as an argument rather than read from disk, so the fold itself can be
+/// driven against a source holding the shape the real tree does not carry
+/// today: a wrapper written as a METHOD. A fold following free calls alone
+/// stops at such a wrapper and never names the verb reaching the provisioner
+/// through it.
+fn provisioning_reach(
+    declarations: &[(String, Option<String>, String)],
+) -> Vec<(String, Option<String>)> {
+    let mut derived: Vec<(String, Option<String>)> = Vec::new();
+    let mut frontier: Vec<(String, Option<String>)> = Vec::new();
+    for (name, owner, body) in declarations {
+        // The crate's own `provision_tool` wrapper calls the core one, so it is
+        // seeded by its own body like every other caller: the two are one bare
+        // name and a self-call is what the fold below skips, not this.
+        if !cfgd_core::test_helpers::reaches_fn(body, "provision_tool", None) {
+            continue;
+        }
+        let entry = (name.clone(), owner.clone());
+        if !frontier.contains(&entry) {
+            frontier.push(entry);
+        }
+    }
+    derived.extend(frontier.iter().cloned());
+    while !frontier.is_empty() {
+        let mut next: Vec<(String, Option<String>)> = Vec::new();
+        for (name, owner) in &frontier {
+            for (caller, caller_owner, body) in declarations {
+                if caller == name
+                    || !cfgd_core::test_helpers::reaches_fn(body, name, owner.as_deref())
+                {
+                    continue;
+                }
+                let entry = (caller.clone(), caller_owner.clone());
+                if !derived.contains(&entry) && !next.contains(&entry) {
+                    next.push(entry);
+                }
+            }
+        }
+        derived.extend(next.iter().cloned());
+        frontier = next;
+    }
+    derived
+}
+
+/// The fold follows a wrapper written as a method.
+///
+/// The crate holds no such wrapper today, so the real walk below cannot say
+/// whether the fold would follow one; this drives the same fold over a source
+/// that does. `verb` reaches the provisioner only through `Tool::wrap`, so a
+/// fold asking after free calls alone names `wrap` and stops.
+#[test]
+fn the_provisioning_fixpoint_follows_a_wrapper_written_as_a_method() {
+    let src = "impl Tool {\n    \
+               fn wrap(&self) -> bool {\n        \
+               provision_tool(\"cosign\")\n    }\n}\n\n\
+               fn verb(t: &Tool) -> bool {\n    t.wrap()\n}\n";
+    let derived = provisioning_reach(&cfgd_core::test_helpers::fn_declarations(src));
+    assert!(
+        derived.contains(&("wrap".to_string(), Some("Tool".to_string()))),
+        "the method calling the provisioner is the fold's seed: {derived:?}"
+    );
+    assert!(
+        derived.contains(&("verb".to_string(), None)),
+        "a verb reaching the provisioner through a method wrapper is derived: {derived:?}"
+    );
+}
+
 /// Every function a command reaches the tool provisioner through is named in
 /// [`PROVISIONING_VERB_CALLS`].
 ///
@@ -40515,12 +40589,18 @@ fn no_test_reaches_a_real_package_manager_through_the_tool_provisioner() {
 /// hand-written one covers the verbs somebody remembered: a new verb, or a new
 /// wrapper in the shape of `provision_cosign`, is invisible to the walk above
 /// and the next test driving it installs software on whoever runs the suite.
-/// So the roster is derived from the producer here: every function under `cli/`
-/// whose own body calls the provisioner, and then every function calling one of
-/// those, folded until the set stops growing. A wrapper chain is as long as
-/// somebody writes it (`cmd_doctor` sits two hops out, behind `run_doctor`),
-/// and a derivation that stops at a fixed depth names exactly the verbs a hand
-/// list would have.
+/// So the roster is derived from the producer here: every function in this
+/// crate whose own body reaches the provisioner, and then every function
+/// reaching one of those, folded until the set stops growing. A wrapper chain
+/// is as long as somebody writes it (`cmd_doctor` sits two hops out, behind
+/// `run_doctor`), and a derivation that stops at a fixed depth names exactly
+/// the verbs a hand list would have.
+///
+/// The fold follows the shape a call site spells, so a wrapper written as a
+/// method carries the type it is declared on: a derivation asking only after
+/// free calls stops at that wrapper and never names what reaches the
+/// provisioner through it. The root is the whole of `src`, because a
+/// provisioning route outside `cli/` reaches the same installer.
 ///
 /// The check is one-directional. A roster entry no derivation names widens the
 /// population the walk above judges, which costs a test nothing; a derived name
@@ -40528,62 +40608,35 @@ fn no_test_reaches_a_real_package_manager_through_the_tool_provisioner() {
 #[test]
 fn every_function_that_can_reach_the_tool_provisioner_is_named_here() {
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let mut sources: Vec<String> = Vec::new();
-    for path in rust_sources_under(&manifest.join("src").join("cli")) {
+    let mut declarations: Vec<(String, Option<String>, String)> = Vec::new();
+    for path in rust_sources_under(&manifest.join("src")) {
         // A `tests.rs` is a test region whole, carrying no `#[cfg(test)]` for
         // the cut to read, and its helpers are nobody's production route.
         if path.file_name().is_some_and(|n| n == "tests.rs") {
             continue;
         }
-        sources.push(cfgd_core::test_helpers::production_slice_of(&path));
+        let production = cfgd_core::test_helpers::production_slice_of(&path);
+        declarations.extend(cfgd_core::test_helpers::fn_declarations(&production));
     }
-    assert!(!sources.is_empty(), "the walk read no sources at all");
-
-    let callers_of = |name: &str| -> std::collections::BTreeSet<String> {
-        let mut found = std::collections::BTreeSet::new();
-        for body in &sources {
-            let lines: Vec<&str> = body.lines().collect();
-            for (n, line) in lines.iter().enumerate() {
-                let code = blank_string_literals(line);
-                if code.trim_start().starts_with("//")
-                    || !cfgd_core::test_helpers::calls_free_fn(&code, name)
-                {
-                    continue;
-                }
-                if let Some(name) = enclosing_fn_name(&lines, n) {
-                    found.insert(name);
-                }
-            }
-        }
-        found
-    };
-
-    let produces = callers_of("provision_tool");
     assert!(
-        !produces.is_empty(),
-        "no function under cli/ calls the provisioner, so the derivation read nothing"
+        !declarations.is_empty(),
+        "the walk read no declarations at all"
     );
-    let mut derived = produces.clone();
-    let mut frontier = produces;
-    while !frontier.is_empty() {
-        let mut next = std::collections::BTreeSet::new();
-        for name in &frontier {
-            for caller in callers_of(name) {
-                if derived.insert(caller.clone()) {
-                    next.insert(caller);
-                }
-            }
-        }
-        frontier = next;
-    }
+
+    let derived = provisioning_reach(&declarations);
     assert!(
-        derived.len() >= 10,
+        !derived.is_empty(),
+        "no function in this crate calls the provisioner, so the derivation read nothing"
+    );
+    assert!(
+        derived.len() >= 11,
         "the derivation names {} functions, fewer than this crate holds: {derived:?}",
         derived.len()
     );
 
     let missing: Vec<&String> = derived
         .iter()
+        .map(|(name, _)| name)
         .filter(|name| {
             !PROVISIONING_VERB_CALLS
                 .iter()

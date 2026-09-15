@@ -1476,6 +1476,98 @@ pub fn calls_free_fn(code: &str, name: &str) -> bool {
     false
 }
 
+/// One source line as CODE: every literal body blanked and any trailing `//`
+/// comment cut, so a tell inside a string or a comment is not read as one.
+///
+/// The blanking is byte-for-byte, so a position found on the result indexes the
+/// raw line exactly.
+pub fn code_line(line: &str) -> String {
+    let blanked = blank_string_literals(line);
+    match blanked.find("//") {
+        Some(at) => blanked[..at].to_string(),
+        None => blanked,
+    }
+}
+
+/// The name a function declaration on this CODE line declares, if it declares
+/// one. A generic declaration (`fn foo<T>(`) is one.
+pub fn declared_fn_name(code: &str) -> Option<String> {
+    let (_, rest) = code.split_once("fn ")?;
+    let name: String = rest
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+        .collect();
+    (!name.is_empty() && rest[name.len()..].starts_with(['(', '<'])).then_some(name)
+}
+
+/// The type whose `impl` block still holds line `at`, if one does.
+pub fn impl_owner(code: &[String], at: usize) -> Option<String> {
+    (0..at).rev().find_map(|i| {
+        let head = code[i].trim_start();
+        if !head.starts_with("impl ") {
+            return None;
+        }
+        let depth: i32 = code[i..at]
+            .iter()
+            .map(|c| c.matches('{').count() as i32 - c.matches('}').count() as i32)
+            .sum();
+        if depth <= 0 {
+            return None;
+        }
+        // `impl Trait for Type {` and `impl Type {` both end on the type, and a
+        // generic argument is not part of the name a call site spells.
+        let subject = head.split('{').next()?.split_whitespace().last()?;
+        Some(
+            subject
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect(),
+        )
+    })
+}
+
+/// Every function declared in one source, as `(name, the type whose impl
+/// declares it, the declaration's own CODE)`.
+///
+/// The body is brace-balanced from the `fn` line, so a nested declaration is
+/// read as itself as well as inside its parent.
+pub fn fn_declarations(src: &str) -> Vec<(String, Option<String>, String)> {
+    let code: Vec<String> = src.lines().map(code_line).collect();
+    let mut out = Vec::new();
+    for (i, line) in code.iter().enumerate() {
+        let Some(name) = declared_fn_name(line) else {
+            continue;
+        };
+        let mut depth = 0i32;
+        let mut opened = false;
+        let mut end = i;
+        for (n, c) in code.iter().enumerate().skip(i) {
+            depth += c.matches('{').count() as i32 - c.matches('}').count() as i32;
+            opened |= depth > 0;
+            end = n;
+            if opened && depth <= 0 {
+                break;
+            }
+        }
+        out.push((name, impl_owner(&code, i), code[i..=end].join("\n")));
+    }
+    out
+}
+
+/// Whether this CODE reaches the function `name` declared in `owner`'s impl.
+///
+/// A free function is reached by a call; a method is reached by `.name(` on a
+/// value of its own type, which is why the owner has to be named as well: one
+/// `path_dirs` per manager, and only one of them reads a given seam. A
+/// derivation asking [`calls_free_fn`] alone stops at the first wrapper written
+/// as a method, and everything reaching the seam through it is never derived.
+pub fn reaches_fn(code: &str, name: &str, owner: Option<&str>) -> bool {
+    match owner {
+        None => calls_free_fn(code, name),
+        Some(ty) => code.contains(&format!(".{name}(")) && code.contains(ty),
+    }
+}
+
 /// A Rust source's logical lines: every `\`-continued string literal folded
 /// onto the line that opened it, paired with that opening line's 1-based
 /// number.

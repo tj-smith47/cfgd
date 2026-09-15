@@ -7,6 +7,9 @@ use cfgd_core::output::Printer;
 use cfgd_core::providers::{NoteSink, PackageContext};
 #[cfg(unix)]
 use cfgd_core::test_helpers::NullPackageState;
+use cfgd_core::test_helpers::{
+    code_line as code_of, declared_fn_name, fn_declarations, reaches_fn,
+};
 
 use super::*;
 
@@ -2630,27 +2633,6 @@ fn a_manager_with_no_freebsd_port_never_reaches_the_pkg_arm() {
     );
 }
 
-/// One source line as CODE: every literal body blanked and any trailing `//`
-/// comment cut, so a tell inside a string or a comment is not read as one.
-fn code_of(line: &str) -> String {
-    let blanked = cfgd_core::test_helpers::blank_string_literals(line);
-    match blanked.find("//") {
-        Some(at) => blanked[..at].to_string(),
-        None => blanked,
-    }
-}
-
-/// The name a function declaration on this CODE line declares, if it declares
-/// one. A generic declaration (`fn foo<T>(`) is one.
-fn declared_fn_name(code: &str) -> Option<String> {
-    let (_, rest) = code.split_once("fn ")?;
-    let name: String = rest
-        .chars()
-        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
-        .collect();
-    (!name.is_empty() && rest[name.len()..].starts_with(['(', '<'])).then_some(name)
-}
-
 /// The name a `*_cmd*` function declaration on this CODE line declares, if it
 /// declares one.
 fn command_factory_name(code: &str) -> Option<String> {
@@ -3000,72 +2982,6 @@ fn test_declarations(body: &str) -> Vec<(String, Vec<String>, Vec<String>)> {
     out
 }
 
-/// The type whose `impl` block still holds line `at`, if one does.
-fn impl_owner(code: &[String], at: usize) -> Option<String> {
-    (0..at).rev().find_map(|i| {
-        let head = code[i].trim_start();
-        if !head.starts_with("impl ") {
-            return None;
-        }
-        let depth: i32 = code[i..at]
-            .iter()
-            .map(|c| c.matches('{').count() as i32 - c.matches('}').count() as i32)
-            .sum();
-        if depth <= 0 {
-            return None;
-        }
-        // `impl Trait for Type {` and `impl Type {` both end on the type, and a
-        // generic argument is not part of the name a call site spells.
-        let subject = head.split('{').next()?.split_whitespace().last()?;
-        Some(
-            subject
-                .chars()
-                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
-                .collect(),
-        )
-    })
-}
-
-/// Every function declared in one source, as `(name, the type whose impl
-/// declares it, the declaration's own CODE)`.
-///
-/// The body is brace-balanced from the `fn` line, so a nested declaration is
-/// read as itself as well as inside its parent.
-fn fn_declarations(src: &str) -> Vec<(String, Option<String>, String)> {
-    let code: Vec<String> = src.lines().map(code_of).collect();
-    let mut out = Vec::new();
-    for (i, line) in code.iter().enumerate() {
-        let Some(name) = declared_fn_name(line) else {
-            continue;
-        };
-        let mut depth = 0i32;
-        let mut opened = false;
-        let mut end = i;
-        for (n, c) in code.iter().enumerate().skip(i) {
-            depth += c.matches('{').count() as i32 - c.matches('}').count() as i32;
-            opened |= depth > 0;
-            end = n;
-            if opened && depth <= 0 {
-                break;
-            }
-        }
-        out.push((name, impl_owner(&code, i), code[i..=end].join("\n")));
-    }
-    out
-}
-
-/// Whether this CODE reaches the function `name` declared in `owner`'s impl.
-///
-/// A free function is reached by a call; a method is reached by `.name(` on a
-/// value of its own type, which is why the owner has to be named as well: one
-/// `path_dirs` per manager, and only brew's reads this seam.
-fn reaches_fn(code: &str, name: &str, owner: Option<&String>) -> bool {
-    match owner {
-        None => cfgd_core::test_helpers::calls_free_fn(code, name),
-        Some(ty) => code.contains(&format!(".{name}(")) && code.contains(ty.as_str()),
-    }
-}
-
 /// Every function a test can read brew's path directories through, folded from
 /// the producer until the set stops growing.
 ///
@@ -3096,7 +3012,7 @@ fn brew_path_dir_readers() -> Vec<(String, Option<String>)> {
         let mut next: Vec<(String, Option<String>)> = Vec::new();
         for (name, owner) in &frontier {
             for (caller, caller_owner, body) in &declarations {
-                if caller == name || !reaches_fn(body, name, owner.as_ref()) {
+                if caller == name || !reaches_fn(body, name, owner.as_deref()) {
                     continue;
                 }
                 let entry = (caller.clone(), caller_owner.clone());
@@ -3149,7 +3065,7 @@ fn every_test_reading_brews_path_dirs_settles_the_seam_and_serializes() {
                     .join("\n");
                 if !readers
                     .iter()
-                    .any(|(fn_name, owner)| reaches_fn(&code, fn_name, owner.as_ref()))
+                    .any(|(fn_name, owner)| reaches_fn(&code, fn_name, owner.as_deref()))
                 {
                     continue;
                 }
