@@ -164,7 +164,7 @@ fn raise_soft_nofile_toward(want: libc::rlim_t) {
 /// that same file in this thread fails for as long as the descriptor lives
 /// (`ETXTBSY`). Cargo's own process builder retries for this reason. The
 /// descriptor table filling up under concurrent spawns is the same shape of
-/// problem with the same answer. [`spawn_refusal_is_transient`] decides which
+/// problem with the same answer. `spawn_refusal_is_transient` decides which
 /// refusals that covers on this host; every other error comes straight back,
 /// unretried.
 ///
