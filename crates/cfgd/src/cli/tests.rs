@@ -40236,6 +40236,47 @@ fn no_registered_manager_is_reachable_under_the_no_host_managers_guard() {
     );
 }
 
+/// The same claim on a host that HAS a manager where no `PATH` can see it.
+///
+/// npm resolves through `~/.nvm/versions/node/*/bin/npm` as well as `$PATH`,
+/// and the GitHub-hosted `ubuntu-latest` and `macos-latest` runners both carry
+/// one — so the guard's promise held on this box only because `/root/.nvm` is
+/// not there. The home here is the test's own, planted with the same tree nvm
+/// builds, so the claim is made on a host that really holds npm.
+#[test]
+#[serial_test::serial]
+fn no_registered_manager_is_reachable_under_the_guard_on_a_host_holding_an_nvm_npm() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let nvm_bin = home.path().join(".nvm/versions/node/v0/bin");
+    std::fs::create_dir_all(&nvm_bin).expect("plant the nvm tree");
+    cfgd_core::test_helpers::write_probe_tool(&nvm_bin, "npm");
+    let _home = cfgd_core::with_test_home_guard(home.path());
+    assert!(
+        cfgd_core::expand_tilde(std::path::Path::new("~")) == home.path(),
+        "the planted home is the one cfgd resolves"
+    );
+
+    let _path_lock = cfgd_core::test_helpers::path_env_mutation_guard();
+    let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+    let _paths = cfgd_core::test_helpers::CommandPathMemoTtlGuard::always_expired();
+    let _avail = cfgd_core::test_helpers::AvailabilityMemoTtlGuard::always_expired();
+    let _managers = cfgd_core::test_helpers::NoHostManagers::pinned_missing();
+    let _empty = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
+
+    let registry = super::build_registry();
+    let reachable: Vec<&str> = registry
+        .package_managers()
+        .iter()
+        .filter(|pm| pm.is_available())
+        .map(|pm| pm.name())
+        .collect();
+    assert!(
+        reachable.is_empty(),
+        "a manager answers available from an install prefix no seam holds back, so a \
+         test holding the guard can still install software on this host: {reachable:?}"
+    );
+}
+
 /// So every call site says which of the two it is. `// provision-route: <cfgd
 /// command>` names the command that installs the tool, and
 /// `// no-provision-route-ok: <why>` states why no command can.

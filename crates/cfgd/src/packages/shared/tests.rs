@@ -2679,6 +2679,66 @@ fn unhatched_seam_reading_factories(src: &str) -> Vec<(String, usize)> {
     offenders
 }
 
+/// The hand-rolled `CFGD_<NAME>_BIN` reads in one source whose seam does NOT
+/// answer alone, as `(name, 1-based line)`.
+///
+/// A resolver that cannot use [`resolve_tool_with_fallbacks`] reads the seam
+/// itself, and the shape that read has to take is an unconditional answer: one
+/// block, no branch inside it, a `return`. The shape that broke `find_npm` is
+/// the opposite one — a `p.is_file()` test inside the block, so a seam naming
+/// an absent file fell through to `$PATH` and to whatever `~/.nvm` the host
+/// holds, and no test could say "this host has no npm".
+///
+/// The population is the seam reads that OPEN a block of their own. A read
+/// whose answer is the whole expression (`std::env::var(..).is_ok()` inside a
+/// larger condition) has nothing to fall through to.
+fn seam_reads_that_fall_through(src: &str) -> Vec<(String, usize)> {
+    let lines: Vec<&str> = src.lines().collect();
+    let code: Vec<String> = lines.iter().map(|l| code_of(l)).collect();
+    let mut offenders = Vec::new();
+    for (i, line_code) in code.iter().enumerate() {
+        let reads_a_seam = line_code.contains("std::env::var(")
+            && (line_code.contains("tool_seam_var(") || line_code.contains("_BIN_ENV"));
+        if !reads_a_seam || !line_code.trim_end().ends_with('{') {
+            continue;
+        }
+        let owner = enclosing_fn_name(&code, i).unwrap_or_else(|| "<unknown>".to_string());
+        let mut depth = 0i32;
+        let mut branched = false;
+        let mut returns = false;
+        for (j, body) in code.iter().enumerate().skip(i) {
+            let opens = body.matches('{').count() as i32;
+            let closes = body.matches('}').count() as i32;
+            if j > i && depth > 0 && opens > 0 {
+                branched = true;
+            }
+            if j > i && depth > 0 && body.contains("return ") {
+                returns = true;
+            }
+            depth += opens - closes;
+            if depth <= 0 {
+                break;
+            }
+        }
+        if branched || !returns {
+            offenders.push((owner, i + 1));
+        }
+    }
+    offenders
+}
+
+/// The name of the `fn` whose declaration most recently preceded line `at`.
+fn enclosing_fn_name(code: &[String], at: usize) -> Option<String> {
+    code[..=at].iter().rev().find_map(|line| {
+        let (_, rest) = line.split_once("fn ")?;
+        let name: String = rest
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect();
+        (!name.is_empty() && rest[name.len()..].starts_with('(')).then_some(name)
+    })
+}
+
 /// A manager's command factory spawns the path its resolver chose.
 ///
 /// A factory reading `CFGD_<NAME>_BIN` for itself judges the seam under a
@@ -2692,8 +2752,11 @@ fn every_manager_command_factory_spawns_the_path_its_resolver_chose() {
     // another.
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/packages");
     let mut offenders: Vec<String> = Vec::new();
+    let mut fallthroughs: Vec<String> = Vec::new();
+    let mut literal_seams: Vec<String> = Vec::new();
     let mut hatched: Vec<String> = Vec::new();
     let mut factories = 0usize;
+    let mut seam_reads = 0usize;
     for path in cfgd_core::test_helpers::rust_sources_under(&root) {
         // A `tests.rs` is a whole test region declared from its parent, so it
         // carries no `#[cfg(test)]` of its own for the cut to find.
@@ -2714,6 +2777,29 @@ fn every_manager_command_factory_spawns_the_path_its_resolver_chose() {
         for (name, line) in unhatched_seam_reading_factories(&src) {
             offenders.push(format!("{}:{line}: {name}", path.display()));
         }
+        // The resolvers are the second half of the population: a factory may
+        // not read the seam at all, and a resolver that does must answer from
+        // it alone.
+        for (name, line) in seam_reads_that_fall_through(&src) {
+            fallthroughs.push(format!("{}:{line}: {name}", path.display()));
+        }
+        for (n, line) in src.lines().enumerate() {
+            // Judged on the RAW line: a literal is blanked with every other
+            // string, so a seam named as one would read as no seam read at all
+            // and the walk above would never reach it.
+            if line.contains("std::env::var(\"CFGD_") {
+                literal_seams.push(format!("{}:{}", path.display(), n + 1));
+            }
+        }
+        seam_reads += src
+            .lines()
+            .filter(|l| {
+                let c = code_of(l);
+                c.contains("std::env::var(")
+                    && (c.contains("tool_seam_var(") || c.contains("_BIN_ENV"))
+                    && c.trim_end().ends_with('{')
+            })
+            .count();
     }
     assert!(
         factories >= 12,
@@ -2732,6 +2818,66 @@ fn every_manager_command_factory_spawns_the_path_its_resolver_chose() {
          with `// seam-read-ok: <why>`:\n{}",
         offenders.join("\n")
     );
+    assert!(
+        seam_reads >= 5,
+        "the walk read {seam_reads} hand-rolled seam reads, fewer than this crate holds"
+    );
+    assert!(
+        literal_seams.is_empty(),
+        "a tool seam is named through `tool_seam_var(<name>)` or its `*_BIN_ENV` const, \
+         never as a literal — a literal is blanked with every other string, so the \
+         fall-through rule below cannot see the read:\n{}",
+        literal_seams.join("\n")
+    );
+    assert!(
+        fallthroughs.is_empty(),
+        "a SET `CFGD_<NAME>_BIN` is the whole answer, the file it names being absent \
+         included: the seam's block branches on nothing and returns. A read that falls \
+         through cannot say this host has no tool, which is what every fixture pinning \
+         a manager missing needs it to say:\n{}",
+        fallthroughs.join("\n")
+    );
+}
+
+/// The fall-through rule reads each shape a seam read arrives in.
+#[test]
+fn the_seam_fall_through_walk_reads_each_shape_a_seam_read_arrives_in() {
+    let answers_alone = "fn find_x() -> Option<PathBuf> {\n    if let Ok(c) = std::env::var(tool_seam_var(n)) {\n        let p = PathBuf::from(c);\n        return p.is_file().then_some(p);\n    }\n    None\n}\n";
+    let answers_alone_over_several_lines = "fn dirs() -> Vec<String> {\n    if let Ok(s) = std::env::var(BREW_BIN_ENV) {\n        return Path::new(&s)\n            .parent()\n            .map(|d| vec![d])\n            .unwrap_or_default();\n    }\n    Vec::new()\n}\n";
+    let in_a_literal =
+        "fn find_x() -> Option<PathBuf> {\n    let s = \"std::env::var(tool_seam_var(n)) {\";\n}\n";
+    let in_a_comment =
+        "fn find_x() -> Option<PathBuf> {\n    // std::env::var(BREW_BIN_ENV) {\n}\n";
+    let a_probe_that_opens_no_block = "fn strip(c: &[&str]) -> bool {\n    if let Some(t) = c.get(1)\n        && std::env::var(tool_seam_var(t)).is_ok()\n    {\n        return true;\n    }\n    false\n}\n";
+    let branches_inside = "fn find_x() -> Option<PathBuf> {\n    if let Ok(c) = std::env::var(tool_seam_var(n)) {\n        let p = PathBuf::from(c);\n        if p.is_file() {\n            return Some(p);\n        }\n    }\n    None\n}\n";
+    let returns_nothing = "fn find_x() -> Option<PathBuf> {\n    if let Ok(c) = std::env::var(BREW_BIN_ENV) {\n        seen(c);\n    }\n    None\n}\n";
+
+    for (label, src) in [
+        ("a seam that answers alone", answers_alone),
+        (
+            "an answer spanning several lines",
+            answers_alone_over_several_lines,
+        ),
+        ("a tell inside a literal", in_a_literal),
+        ("a tell inside a comment", in_a_comment),
+        ("a probe opening no block", a_probe_that_opens_no_block),
+    ] {
+        assert!(
+            seam_reads_that_fall_through(src).is_empty(),
+            "{label} does not fall through: {:?}",
+            seam_reads_that_fall_through(src)
+        );
+    }
+    for (label, src) in [
+        ("a branch inside the seam block", branches_inside),
+        ("a seam block that answers nothing", returns_nothing),
+    ] {
+        assert_eq!(
+            seam_reads_that_fall_through(src),
+            vec![("find_x".to_string(), 2)],
+            "{label} falls through"
+        );
+    }
 }
 
 /// The walk reads a seam tell only where it runs: inside a string literal and

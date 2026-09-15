@@ -19,6 +19,7 @@ use super::shared::detect_brew_system_method;
 use super::shared::detect_windows_method;
 use super::shared::{
     MediatedArms, bootstrap_via_brew_then_system, run_pkg_cmd_live, run_pkg_query, tool_cmd_at,
+    tool_seam_var,
 };
 // The nvm arm's own helpers, with the arm itself.
 #[cfg(not(windows))]
@@ -506,18 +507,18 @@ fn ensure_npm_fallback_prefix(prefix: &Path) -> Result<()> {
 
 /// Find npm binary, checking PATH and common nvm install locations.
 ///
-/// Not usable with the generic `resolve_tool_with_fallbacks` helper because the
-/// nvm path is a wildcard `~/.nvm/versions/node/*/bin/npm` that requires a
-/// directory scan rather than a fixed fallback list.
-///
-/// Honors the `CFGD_NPM_BIN` env-var seam for tests — when set and pointing
-/// at a real file, short-circuits the PATH + nvm scan.
+/// Not usable with the generic `resolve_tool_with_fallbacks` helper because
+/// the nvm path is a wildcard `~/.nvm/versions/node/*/bin/npm` that requires a
+/// directory scan rather than a fixed fallback list. It answers the seam under
+/// the same rule that helper does: a SET `CFGD_NPM_BIN` is the whole answer,
+/// the file it names being absent included. Falling through to `$PATH` and the
+/// nvm scan meant a seam could not say this host has no npm, and a test
+/// emptying `PATH` to mean "no manager here" then reached whatever node the
+/// runner's own `~/.nvm` holds.
 pub(super) fn find_npm() -> Option<PathBuf> {
-    if let Ok(custom) = std::env::var("CFGD_NPM_BIN") {
+    if let Ok(custom) = std::env::var(tool_seam_var("npm")) {
         let p = PathBuf::from(custom);
-        if p.is_file() {
-            return Some(p);
-        }
+        return p.is_file().then_some(p);
     }
     // The FULL resolved path, never the bare name: `command_path` searches the
     // bootstrapped-directory registry after `$PATH`, and a `Command::new("npm")`
@@ -526,7 +527,14 @@ pub(super) fn find_npm() -> Option<PathBuf> {
     if let Some(path) = cfgd_core::command_path("npm") {
         return Some(path);
     }
-    let home = std::env::var_os("HOME").map(PathBuf::from)?;
+    // `expand_tilde`, not a raw `HOME` read: it is the workspace's one home
+    // resolution and the only one a test home reaches, so a pin planting an
+    // nvm tree under its own home is answered by the same scan production
+    // runs. An unresolvable home leaves the `~` in place.
+    let home = cfgd_core::expand_tilde(Path::new("~"));
+    if home == Path::new("~") {
+        return None;
+    }
     find_npm_in_nvm(&home)
 }
 
@@ -1183,20 +1191,34 @@ mod tests {
         );
     }
 
+    /// The seam is the whole answer in both directions, as it is for brew:
+    /// a seam naming a file that is not there says this host has no npm, and
+    /// one naming a file that is there names exactly that file.
     #[test]
     #[serial_test::serial]
-    fn find_npm_ignores_cfgd_npm_bin_when_path_is_not_a_file() {
-        // A dangling CFGD_NPM_BIN must NOT be returned — find_npm falls through
-        // to PATH / nvm detection instead of handing back a path that ENOENTs.
-        let _g = cfgd_core::test_helpers::EnvVarGuard::set(
+    fn find_npm_answers_from_the_seam_in_both_directions() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        let _missing = cfgd_core::test_helpers::EnvVarGuard::set(
             "CFGD_NPM_BIN",
-            "/nonexistent/cfgd-npm-bin-not-a-file",
+            cfgd_core::test_helpers::ABSENT_SEAM_PATH,
         );
-        let found = find_npm();
-        assert_ne!(
-            found.as_deref(),
-            Some(std::path::Path::new("/nonexistent/cfgd-npm-bin-not-a-file")),
-            "a non-file CFGD_NPM_BIN must be ignored, not returned verbatim"
+        assert_eq!(
+            find_npm(),
+            None,
+            "a seam naming a file that is not there says this host has no npm"
+        );
+
+        cfgd_core::test_helpers::write_probe_tool(dir.path(), "npm");
+        let planted = cfgd_core::test_helpers::probe_tool_path(dir.path(), "npm");
+        let _present = cfgd_core::test_helpers::EnvVarGuard::set(
+            "CFGD_NPM_BIN",
+            planted.to_str().expect("probe path is valid UTF-8"),
+        );
+        assert_eq!(
+            find_npm(),
+            Some(planted),
+            "and a seam naming a file that IS there names exactly that file"
         );
     }
 
