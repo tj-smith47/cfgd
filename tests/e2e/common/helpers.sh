@@ -464,6 +464,60 @@ assert_exit_code() {
     return 1
 }
 
+# Whether cfgd would find brew here, asking the same three questions
+# brew_available() asks in crates/cfgd/src/packages/shared/mod.rs: the
+# CFGD_BREW_BIN seam, then PATH, then the prefixes the installer uses. A brew
+# that is installed but not exported still counts, so `command -v brew` alone
+# answers this wrong.
+cfgd_finds_brew() {
+    if [ -n "${CFGD_BREW_BIN:-}" ]; then
+        [ -f "$CFGD_BREW_BIN" ]
+        return
+    fi
+    if command -v brew > /dev/null 2>&1; then
+        return 0
+    fi
+    for candidate in /home/linuxbrew/.linuxbrew/bin/brew /opt/homebrew/bin/brew /usr/local/bin/brew; do
+        if [ -f "$candidate" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Whether any manager on this host packages a secret backend's CLI. The op, bw
+# and vault entries of INSTALLABLE_TOOLS (crates/cfgd-core/src/providers/mod.rs)
+# name brew, winget, chocolatey and scoop and decline every Linux distribution
+# manager, because no distribution packages those CLIs.
+secret_cli_install_route_available() {
+    if cfgd_finds_brew; then
+        return 0
+    fi
+    for manager in winget choco scoop; do
+        if command -v "$manager" > /dev/null 2>&1; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+# What a plan says about a declared secret whose backend CLI is missing. Which
+# of the two rows cfgd writes is the host's decision, not a choice: with a
+# manager that packages the CLI, the planner adds the install and names the
+# backend that asked for it; with none, it cannot install anything, so it
+# writes the skip row saying the provider is out of reach and why.
+assert_missing_secret_cli() {
+    local output="$1"
+    local provider="$2"
+    local tool="$3"
+    if secret_cli_install_route_available; then
+        assert_contains "$output" "required by secret:$provider"
+    else
+        assert_contains "$output" "provider '$provider' not available" &&
+            assert_contains "$output" "$tool is not installed"
+    fi
+}
+
 # --- Test lifecycle ---
 
 begin_test() {

@@ -73,9 +73,14 @@ fi
 
 # --- Secret backend detection tests (SEC06-SEC10) ---
 
-# A backend whose CLI is missing is no longer reported as unavailable: cfgd
-# plans the install that provides it, and the row says which secret backend
-# asked for it. SEC06-SEC08 assert that reason clause.
+# A backend whose CLI is missing gets one of two rows, and the host decides
+# which. Where a manager packages the CLI, cfgd plans the install and the row
+# names the backend that asked for it. Where no manager does, cfgd can install
+# nothing, so it writes the skip row naming the provider and the missing tool.
+# op, bw and vault are packaged only by brew, winget, chocolatey and scoop, so
+# a Linux host with none of them is always in the second branch, and a
+# developer box carrying linuxbrew is in the first. assert_missing_secret_cli
+# asks which branch the host is in and assigns the matching expectation.
 begin_test "SEC06: 1Password backend, op not installed"
 if command -v op > /dev/null 2>&1; then
     skip_test "SEC06" "op CLI is installed, cannot test missing provider"
@@ -103,7 +108,7 @@ spec:
       target: $SEC06_TGT/test-secret
 YAML
     run --config "$SEC06_CFG/cfgd.yaml" --state-dir "$SEC06_STATE" --no-color apply --dry-run
-    if assert_ok && assert_contains "$OUTPUT" "1password" && assert_contains "$OUTPUT" "required by secret:1password"; then
+    if assert_ok && assert_contains "$OUTPUT" "1password" && assert_missing_secret_cli "$OUTPUT" "1password" "op"; then
         pass_test "SEC06"
     else fail_test "SEC06"; fi
 fi
@@ -135,7 +140,7 @@ spec:
       target: $SEC07_TGT/test-secret
 YAML
     run --config "$SEC07_CFG/cfgd.yaml" --state-dir "$SEC07_STATE" --no-color apply --dry-run
-    if assert_ok && assert_contains "$OUTPUT" "bitwarden" && assert_contains "$OUTPUT" "required by secret:bitwarden"; then
+    if assert_ok && assert_contains "$OUTPUT" "bitwarden" && assert_missing_secret_cli "$OUTPUT" "bitwarden" "bw"; then
         pass_test "SEC07"
     else fail_test "SEC07"; fi
 fi
@@ -167,7 +172,7 @@ spec:
       target: $SEC08_TGT/test-secret
 YAML
     run --config "$SEC08_CFG/cfgd.yaml" --state-dir "$SEC08_STATE" --no-color apply --dry-run
-    if assert_ok && assert_contains "$OUTPUT" "vault" && assert_contains "$OUTPUT" "required by secret:vault"; then
+    if assert_ok && assert_contains "$OUTPUT" "vault" && assert_missing_secret_cli "$OUTPUT" "vault" "vault"; then
         pass_test "SEC08"
     else fail_test "SEC08"; fi
 fi
