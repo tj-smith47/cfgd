@@ -36646,42 +36646,55 @@ fn every_run_under_a_resolved_profile_names_its_sources_and_modules() {
 #[test]
 fn no_journal_line_folds_the_home_directory() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let mut files = rust_sources_under(&root.join("src"));
-    files.extend(rust_sources_under(&root.join("../cfgd-core/src")));
-    files.sort();
+    let roots = [root.join("src"), root.join("../cfgd-core/src")];
     let mut journal_lines = 0usize;
     let mut hatched = 0usize;
     let mut offenders = Vec::new();
-    for path in files {
-        if path.file_name().is_none_or(|n| n == "tests.rs")
-            || path.components().any(|c| c.as_os_str() == "tests")
-        {
-            continue;
-        }
-        let body = floored_production_body(&path);
-        let lines: Vec<&str> = body.lines().collect();
-        for (n, line) in lines.iter().enumerate() {
-            let code = line.trim_start();
-            if code.starts_with("//") || !code.contains("tracing::") {
+    // Per root as well as in aggregate: either crate alone clears the
+    // aggregate floor, so a whole tree could stop contributing and the walk
+    // would still report a population it no longer reads.
+    let mut per_root: Vec<(String, usize)> = Vec::new();
+    for walk_root in &roots {
+        let before = journal_lines;
+        let mut files = rust_sources_under(walk_root);
+        files.sort();
+        for path in files {
+            if path.file_name().is_none_or(|n| n == "tests.rs")
+                || path.components().any(|c| c.as_os_str() == "tests")
+            {
                 continue;
             }
-            journal_lines += 1;
-            // The whole macro invocation, however rustfmt broke it.
-            let end = (n..lines.len())
-                .find(|&i| lines[i].trim_end().ends_with(';'))
-                .unwrap_or(n);
-            let stmt = lines[n..=end].join("\n");
-            if stmt.contains("native-ok:") {
-                hatched += 1;
-            }
-            if stmt.contains("fold_home_in_text(") {
-                offenders.push(format!("{}:{}: {}", path.display(), n + 1, code.trim()));
+            let body = floored_production_body(&path);
+            let lines: Vec<&str> = body.lines().collect();
+            for (n, line) in lines.iter().enumerate() {
+                let code = line.trim_start();
+                if code.starts_with("//") || !code.contains("tracing::") {
+                    continue;
+                }
+                journal_lines += 1;
+                // The whole macro invocation, however rustfmt broke it.
+                let end = (n..lines.len())
+                    .find(|&i| lines[i].trim_end().ends_with(';'))
+                    .unwrap_or(n);
+                let stmt = lines[n..=end].join("\n");
+                if stmt.contains("native-ok:") {
+                    hatched += 1;
+                }
+                if stmt.contains("fold_home_in_text(") {
+                    offenders.push(format!("{}:{}: {}", path.display(), n + 1, code.trim()));
+                }
             }
         }
+        per_root.push((walk_root.display().to_string(), journal_lines - before));
     }
     assert!(
+        per_root.iter().all(|(_, n)| *n > 0),
+        "a root contributed no journal line, so the walk is reading the wrong \
+         tree: {per_root:?}"
+    );
+    assert!(
         journal_lines >= 50 && hatched >= 1,
-        "the walk no longer reaches the journal lines — it found {journal_lines}, {hatched} hatched"
+        "the walk no longer reaches the journal lines: it found {journal_lines}, {hatched} hatched"
     );
     assert!(
         offenders.is_empty(),
@@ -40915,7 +40928,12 @@ fn every_require_tool_call_site_names_the_command_that_provisions_the_tool() {
     let roots = [manifest.join("src"), manifest.join("../cfgd-core/src")];
     let mut sites = 0usize;
     let mut offenders = Vec::new();
+    // Per root as well as in aggregate: the cfgd crate holds three of these
+    // calls and the floor is five, so the whole crate could stop contributing
+    // and the total would still clear it.
+    let mut per_root: Vec<(String, usize)> = Vec::new();
     for root in &roots {
+        let before = sites;
         for path in rust_sources_under(root) {
             let name = path
                 .file_name()
@@ -40937,7 +40955,13 @@ fn every_require_tool_call_site_names_the_command_that_provisions_the_tool() {
                 offenders.push(format!("{}:{offender}", path.display()));
             }
         }
+        per_root.push((root.display().to_string(), sites - before));
     }
+    assert!(
+        per_root.iter().all(|(_, n)| *n > 0),
+        "a root contributed no call site, so the walk is reading the wrong \
+         tree: {per_root:?}"
+    );
     assert!(
         sites >= 5,
         "the walk no longer reaches the call sites it judges: it found {sites}"
