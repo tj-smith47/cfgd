@@ -40107,13 +40107,52 @@ fn require_tool_call_line(line: &str) -> bool {
 /// A verb that can reach [`cfgd_core::providers::provision_tool`], as a test
 /// calls it.
 ///
-/// A doctor run is in the population only under `--fix`: the report itself
-/// probes and installs nothing.
-const PROVISIONING_VERB_CALLS: &[&str] = &[
-    "cmd_module_keys_generate(",
-    "cmd_module_keys_rotate(",
-    "check_prerequisites(",
+/// Derived from the producer by
+/// `every_function_that_can_reach_the_tool_provisioner_is_named_here`, so a new
+/// verb or wrapper fails that walk rather than sitting outside this one.
+const PROVISIONING_VERB_CALLS: &[ProvisioningVerb] = &[
+    ProvisioningVerb::always("check_prerequisites("),
+    ProvisioningVerb::always("cmd_init("),
+    ProvisioningVerb::always("cmd_module_keys_generate("),
+    ProvisioningVerb::always("cmd_module_keys_rotate("),
+    ProvisioningVerb::always("fix_missing_tools("),
+    ProvisioningVerb::always("provision_cosign("),
+    ProvisioningVerb::gated_on("cmd_doctor(", "true"),
+    ProvisioningVerb::gated_on("run_doctor(", "true"),
 ];
+
+/// One member of [`PROVISIONING_VERB_CALLS`]: the call a test line spells, and
+/// the second tell that line carries where the verb reaches an install only
+/// under a flag.
+struct ProvisioningVerb {
+    call: &'static str,
+    /// `doctor` probes and installs nothing without `--fix`, so only a call
+    /// passing `true` for it is in the population.
+    flag: Option<&'static str>,
+}
+
+impl ProvisioningVerb {
+    const fn always(call: &'static str) -> Self {
+        Self { call, flag: None }
+    }
+
+    const fn gated_on(call: &'static str, flag: &'static str) -> Self {
+        Self {
+            call,
+            flag: Some(flag),
+        }
+    }
+
+    /// The function this entry names, without the opening parenthesis.
+    fn name(&self) -> &'static str {
+        self.call.trim_end_matches('(')
+    }
+
+    /// Whether `code` is a call this entry claims.
+    fn matches(&self, code: &str) -> bool {
+        code.contains(self.call) && self.flag.is_none_or(|f| code.contains(f))
+    }
+}
 
 /// No test reaches a real package manager through the tool provisioner.
 ///
@@ -40148,9 +40187,7 @@ fn no_test_reaches_a_real_package_manager_through_the_tool_provisioner() {
             // Blanking the literals is also what keeps this walk from finding
             // the needles it spells itself.
             let code = blank_string_literals(line);
-            let verb = PROVISIONING_VERB_CALLS.iter().any(|v| code.contains(v))
-                || ((code.contains("run_doctor(") || code.contains("cmd_doctor("))
-                    && code.contains("true"));
+            let verb = PROVISIONING_VERB_CALLS.iter().any(|v| v.matches(&code));
             if !verb {
                 continue;
             }
@@ -40201,6 +40238,81 @@ fn no_test_reaches_a_real_package_manager_through_the_tool_provisioner() {
          manager missing with `NoHostManagers::pinned_missing()`, or plant the tool's own \
          seam:\n  {}",
         offenders.join("\n  ")
+    );
+}
+
+/// Every function a command reaches the tool provisioner through is named in
+/// [`PROVISIONING_VERB_CALLS`].
+///
+/// That roster is what stands between a test and a real `apt install`, and a
+/// hand-written one covers the verbs somebody remembered: a new verb, or a new
+/// wrapper in the shape of `provision_cosign`, is invisible to the walk above
+/// and the next test driving it installs software on whoever runs the suite.
+/// So the roster is derived from the producer here: every function under `cli/`
+/// whose own body calls the provisioner, plus the local wrappers one level
+/// above those, which is the level a command sits at.
+///
+/// The check is one-directional. A roster entry no derivation names widens the
+/// population the walk above judges, which costs a test nothing; a derived name
+/// missing from the roster is a hole in it.
+#[test]
+fn every_function_that_can_reach_the_tool_provisioner_is_named_here() {
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut sources: Vec<String> = Vec::new();
+    for path in rust_sources_under(&manifest.join("src").join("cli")) {
+        // A `tests.rs` is a test region whole, carrying no `#[cfg(test)]` for
+        // the cut to read, and its helpers are nobody's production route.
+        if path.file_name().is_some_and(|n| n == "tests.rs") {
+            continue;
+        }
+        sources.push(cfgd_core::test_helpers::production_slice_of(&path));
+    }
+    assert!(!sources.is_empty(), "the walk read no sources at all");
+
+    let callers_of = |needle: &str| -> std::collections::BTreeSet<String> {
+        let mut found = std::collections::BTreeSet::new();
+        for body in &sources {
+            let lines: Vec<&str> = body.lines().collect();
+            for (n, line) in lines.iter().enumerate() {
+                let code = blank_string_literals(line);
+                if code.trim_start().starts_with("//") || !code.contains(needle) {
+                    continue;
+                }
+                if let Some(name) = enclosing_fn_name(&lines, n) {
+                    found.insert(name);
+                }
+            }
+        }
+        found
+    };
+
+    let produces = callers_of("helpers::provision_tool(");
+    assert!(
+        !produces.is_empty(),
+        "no function under cli/ calls the provisioner, so the derivation read nothing"
+    );
+    let mut derived = produces.clone();
+    for name in &produces {
+        derived.extend(callers_of(&format!("{name}(")));
+    }
+    assert!(
+        derived.len() >= 7,
+        "the derivation names {} functions, fewer than this crate holds: {derived:?}",
+        derived.len()
+    );
+
+    let missing: Vec<&String> = derived
+        .iter()
+        .filter(|name| {
+            !PROVISIONING_VERB_CALLS
+                .iter()
+                .any(|v| v.name() == name.as_str())
+        })
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "these functions reach `provision_tool` and are not in PROVISIONING_VERB_CALLS, \
+         so a test driving one can install software on this host:\n  {missing:?}"
     );
 }
 
