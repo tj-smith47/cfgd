@@ -3057,7 +3057,7 @@ fn fn_declarations(src: &str) -> Vec<(String, Option<String>, String)> {
 /// Whether this CODE reaches the function `name` declared in `owner`'s impl.
 ///
 /// A free function is reached by a call; a method is reached by `.name(` on a
-/// value of its own type, which is why the owner has to be named as well — one
+/// value of its own type, which is why the owner has to be named as well: one
 /// `path_dirs` per manager, and only brew's reads this seam.
 fn reaches_fn(code: &str, name: &str, owner: Option<&String>) -> bool {
     match owner {

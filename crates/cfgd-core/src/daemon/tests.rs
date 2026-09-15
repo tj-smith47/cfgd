@@ -13503,7 +13503,7 @@ spec:
     /// The module declares a file as well as its env var, so the narrowed plan
     /// carries one real action and the tick APPLIES. A module declaring env
     /// alone narrows to an empty plan, the tick settles `NothingToDo` and the
-    /// row stands because nothing ran — which passes whatever the recording
+    /// row stands because nothing ran, which passes whatever the recording
     /// path does with the entries.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_scoped_tick_keeps_an_owned_env_row_a_full_tick_heals() {

@@ -1234,7 +1234,7 @@ mod tests {
     /// The nvm scan on Windows, where the home it scans is `USERPROFILE`'s.
     ///
     /// `find_npm` resolves `~` through `expand_tilde`, which reads the test
-    /// home, then `USERPROFILE`, then `HOME` — so a Windows host carrying an
+    /// home, then `USERPROFILE`, then `HOME`, so a Windows host carrying an
     /// nvm tree is scanned, where a direct `HOME` read walked past it. The file
     /// planted is the one Windows can run: `npm.cmd`, an install there carrying
     /// no extensionless copy.

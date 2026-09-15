@@ -31468,7 +31468,7 @@ fn record_entry_drift(state: &crate::state::StateStore) {
 /// Resolving a `env-var` / `alias` row is a claim that the entry is in the file
 /// the per-item check reads. A failed write is the run finding out it is not,
 /// and the check that recorded the row is still the most accurate thing known
-/// about the machine — so `cfgd status` must keep reporting it rather than
+/// about the machine, so `cfgd status` must keep reporting it rather than
 /// call the entries `Synced` off a write that errored.
 #[test]
 #[serial_test::serial]
@@ -31527,7 +31527,7 @@ fn a_failed_primary_env_write_leaves_its_entry_rows_standing() {
 /// entry, so the run that vouches for those entries is the one that looked at
 /// the whole desired set, ran to its end and found nothing to write. A run
 /// holding the surface back for a pending source decision reaches the same
-/// empty plan for the opposite reason — it declined to touch the file — and
+/// empty plan for the opposite reason (it declined to touch the file), and
 /// the two must not settle the same way.
 #[test]
 #[serial_test::serial]

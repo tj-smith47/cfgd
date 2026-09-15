@@ -2514,7 +2514,7 @@ impl<'a> super::Reconciler<'a> {
             // Resolving is a claim about the MACHINE, which recording is not:
             // it says the entries the per-item checks read are on it now. This
             // run may make that claim only where it converged the primary env
-            // surface itself — the successful write above — or where it saw
+            // surface itself (the successful write above), or where it saw
             // the whole picture, ran to its end with the surface in its remit
             // and found no action to take, which is the file already holding
             // every declared entry. A run cut short, one whose write failed
@@ -2526,7 +2526,7 @@ impl<'a> super::Reconciler<'a> {
         Ok(())
     }
 
-    /// Whether `rid` names the primary env file — the one surface the per-item
+    /// Whether `rid` names the primary env file, the one surface the per-item
     /// `env-var` and `alias` checks read.
     fn is_primary_env_file(&self, rid: &str) -> bool {
         rid == to_posix_string(super::primary_env_file(&self.home))
@@ -2635,7 +2635,7 @@ impl<'a> super::Reconciler<'a> {
     /// leaves the file on this very write, so its row leaves with it.
     ///
     /// Read off the DECLARED set rather than off an action, so a converged
-    /// machine — which plans no env action at all — records the same rows a
+    /// machine (which plans no env action at all) records the same rows a
     /// rewriting one does. Both facts are answers about the CONFIG, which is
     /// why this half runs wherever the run's scope resolved the whole of it.
     fn record_env_items(
@@ -2675,8 +2675,8 @@ impl<'a> super::Reconciler<'a> {
     /// operand: the rows are resolved exactly as the file's own row is, so the
     /// stored `current` / `missing or changed` markers stay byte-exact.
     ///
-    /// Unlike its recording half this is a claim about the MACHINE — the
-    /// entries are in the file a check will read — so a caller makes it only
+    /// Unlike its recording half this is a claim about the MACHINE: the
+    /// entries are in the file a check will read, so a caller makes it only
     /// where this run converged that file or found it already converged.
     fn resolve_env_items(
         &self,

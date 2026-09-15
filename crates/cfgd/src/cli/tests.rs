@@ -40386,7 +40386,7 @@ fn no_test_reaches_a_real_package_manager_through_the_tool_provisioner() {
 /// So the roster is derived from the producer here: every function under `cli/`
 /// whose own body calls the provisioner, and then every function calling one of
 /// those, folded until the set stops growing. A wrapper chain is as long as
-/// somebody writes it — `cmd_doctor` sits two hops out, behind `run_doctor` —
+/// somebody writes it (`cmd_doctor` sits two hops out, behind `run_doctor`),
 /// and a derivation that stops at a fixed depth names exactly the verbs a hand
 /// list would have.
 ///
