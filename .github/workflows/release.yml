@@ -76,6 +76,16 @@ jobs:
         uses: tj-smith47/anodizer-action@v1
         with:
           version: ${{ env.ANODIZER_VERSION }}
+          # Preflight probes PATH for every tool the pipeline needs, so a job
+          # that installs none fails on the first one ubuntu-latest lacks. It
+          # runs no stage, so `anodizer tools` reports nothing for
+          # `auto-install:` to act on and the list is named here instead: every
+          # REQUIRED entry `anodizer tools` prints that the runner does not
+          # already carry (cargo, docker, git, gpg and ssh it does). The
+          # recommended entries (bash, cargo-zigbuild, dpkg-deb, gh,
+          # nix-instantiate, rpm, ruby, zig) stay out: a failed advisory probe
+          # warns and leaves the gate green.
+          install: 'alejandra,cosign,makeself,nfpm,rpmbuild,syft,upx,xmllint'
           docker-registry: 'ghcr.io'
           docker-password: ${{ secrets.GITHUB_TOKEN }}
           gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
