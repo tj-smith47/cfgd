@@ -3907,6 +3907,8 @@ fn every_manager_with_a_brew_arm_plans_via_the_brew_this_run_delivers() {
 
 #[test]
 fn every_bootstrap_plan_declares_usable_tools_and_dirs() {
+    // host-tool-ok: every plan's feasibility is asserted against the same probe it
+    // is derived from, so the comparison holds on a host carrying any of the tools.
     // One gate over the whole registry, so a manager added later cannot declare
     // a prerequisite nothing can install or a PATH entry nothing can resolve.
     // The read guard brackets BOTH probe passes: `feasible == obtainable`

@@ -2297,6 +2297,8 @@ mod tests {
 
     #[test]
     fn live_drift_results_includes_a_refused_manager() {
+        // host-tool-ok: the prerequisite is a sentinel name no manager packages and
+        // no machine carries, so no host's PATH can satisfy the cascade.
         // A manager the plan cannot self-heal (no path to its prerequisite
         // tool) must still register as drift, distinguishable from the
         // provisionable case by its reason rather than being silently dropped.
@@ -2437,6 +2439,8 @@ mod tests {
 
     #[test]
     fn manager_verify_results_flags_a_refused_manager_as_drift() {
+        // host-tool-ok: the prerequisite is a sentinel name no manager packages and
+        // no machine carries, so no host's PATH can satisfy the cascade.
         let resolved = resolved_no_files();
         let mut registry = ProviderRegistry::new();
         registry.add_package_manager(Box::new(

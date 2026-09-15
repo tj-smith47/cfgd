@@ -3295,6 +3295,8 @@ mod tests {
 
     #[test]
     fn bootstrap_plan_builder_folds_declared_dirs_to_posix() {
+        // host-tool-ok: the assertions read the built plan's own fields; nothing
+        // here asks the machine whether `curl` is on it.
         let plan = BootstrapPlan::new("rustup")
             .requiring(["curl"])
             .creating([std::path::PathBuf::from("/opt/x").join("bin")]);

@@ -1875,6 +1875,8 @@ mod tests {
 
     #[test]
     fn a_missing_tool_no_manager_packages_is_refused_with_the_cause_named() {
+        // host-tool-ok: `ABSENT_TOOL` is a sentinel name no manager packages and no
+        // machine carries, so no host's PATH can unblock the cascade.
         let actions = plan_actions(
             installs(&["npm"]),
             vec![
@@ -1906,7 +1908,17 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn a_missing_tool_whose_installers_are_all_unavailable_names_every_one_of_them() {
+        // `op` is a tool a developer's own machine may well carry, and the
+        // planner asks the machine whether a required tool is already here
+        // before it plans an install for it. On a host holding `op` the
+        // cascade is never blocked, so the refusal this asserts needs the
+        // absence planted rather than assumed.
+        let _path_lock = crate::test_helpers::path_env_mutation_guard();
+        let _dirs = crate::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+        let _path = crate::test_helpers::EnvVarGuard::set("PATH", "");
+
         let actions = plan_actions(
             installs(&["npm"]),
             vec![
@@ -2599,6 +2611,8 @@ mod tests {
 
     #[test]
     fn a_missing_prerequisite_with_no_system_manager_fails_the_manager_by_name() {
+        // host-tool-ok: `ABSENT_TOOL` is a sentinel name no manager packages and no
+        // machine carries, so no host's PATH can unblock the cascade.
         let actions = plan_actions(
             installs(&["npm"]),
             vec![

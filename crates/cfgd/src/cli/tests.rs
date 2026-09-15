@@ -32913,10 +32913,18 @@ fn every_two_root_walk_guards_each_root_it_reads() {
     /// Under today's 17, so retiring a walk is free, and far enough over half
     /// that the tell going blind is not.
     const FLOOR: usize = 16;
-    /// The spellings a per-root count is written in, seeded from the walks that
-    /// already carry one. A floor spelled a new way joins this list; an
-    /// aggregate `FLOOR_FILES: usize` deliberately matches none of them.
-    const PER_ROOT_FLOORS: [&str; 3] = ["per_root", "FLOOR_FILES: [", "WALK_ROOTS"];
+    /// The two per-root counts that are not a const at all. A floor const is
+    /// read by its SHAPE instead of its name (below), so a walk counting
+    /// something other than files declares its floor per root without having
+    /// to be renamed first.
+    const PER_ROOT_FLOORS: [&str; 2] = ["per_root", "WALK_ROOTS"];
+    // An array-typed floor states one count per root, or per file; an
+    // aggregate `FLOOR_FILES: usize` states one for the whole walk and is
+    // exactly what this pin exists to refuse.
+    let floors_per_root = |body: &str| {
+        body.lines()
+            .any(|l| l.contains("FLOOR") && l.contains(": ["))
+    };
 
     let segment = "src";
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -32977,7 +32985,10 @@ fn every_two_root_walk_guards_each_root_it_reads() {
             continue;
         }
         population += 1;
-        if PER_ROOT_FLOORS.iter().any(|floor| body.contains(floor)) || body.contains(HATCH) {
+        if PER_ROOT_FLOORS.iter().any(|floor| body.contains(floor))
+            || floors_per_root(&body)
+            || body.contains(HATCH)
+        {
             continue;
         }
         let name = cfgd_core::test_helpers::declared_fn_name(&cfgd_core::test_helpers::code_line(
@@ -32995,6 +33006,129 @@ fn every_two_root_walk_guards_each_root_it_reads() {
         "a walk floored only in aggregate passes with a whole tree contributing \
          nothing; each reports its own count per root, or carries \
          `{HATCH} <why that root has no count of its own>`:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// Every test whose expectation the host's own tools can decide plants the
+/// `PATH` it reads.
+///
+/// The planner asks the MACHINE whether a tool a cascade requires is already
+/// here before it plans an install for it, and a provider holding no registry
+/// answers "could this host obtain it" off `PATH` as well. So a test asserting
+/// a refusal, a route or a plan shape over a REAL tool name states a fact about
+/// the box it ran on: it passes where the tool is absent and fails where it is
+/// present. That is how the refusal pin over `op`, the 1Password CLI, shipped
+/// green on every Linux box and red on a Mac that carries it.
+///
+/// The population is every `#[test]` declaration in either crate that names one
+/// of those seams, or hands a mock manager a prerequisite list of its own. Each
+/// plants its own `PATH` under the mutation guard, or says why no tool this
+/// host carries can move its expectation.
+#[test]
+fn every_test_whose_plan_shape_a_host_tool_decides_plants_its_path() {
+    const HATCH: &str = "// host-tool-ok:";
+    /// The guard a test takes to own the process `PATH` for its own length; a
+    /// test planting an absence without it races every other thread's spawn.
+    const GUARD: &str = "path_env_mutation_guard";
+    /// The seams whose answer this host's own tools decide: the two predicates
+    /// that probe `PATH`, the reason composed from the table they read, and the
+    /// prerequisite list a mock manager's bootstrap plan carries — which the
+    /// planner then judges against the machine.
+    const TELLS: [&str; 5] = [
+        "prerequisite_obtainable(",
+        "host_tool_route(",
+        "tool_route_managers(",
+        "tool_unobtainable_reason(",
+        ".requiring(",
+    ];
+    /// Per root, because an aggregate is one tree's count plus the other's and
+    /// the larger tree alone clears it. Under today's counts, so retiring one
+    /// of these tests is free.
+    const FLOOR_TESTS: [usize; 2] = [9, 8];
+
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let roots = [manifest.join("src"), manifest.join("../cfgd-core/src")];
+    let mut offenders: Vec<String> = Vec::new();
+    for (r, root) in roots.iter().enumerate() {
+        let mut read = 0usize;
+        for path in rust_sources_under(root) {
+            let body = cfgd_core::test_helpers::walked_file_body(&path);
+            let lines: Vec<&str> = body.lines().collect();
+            let mut spans: Vec<(usize, usize)> = Vec::new();
+            for (i, line) in lines.iter().enumerate() {
+                // The tells are code, so a mention inside a string or a comment
+                // is not one; the hatch is a comment by construction and is
+                // read off the raw rows below.
+                let code = cfgd_core::test_helpers::code_line(line);
+                if !TELLS.iter().any(|tell| code.contains(tell)) {
+                    continue;
+                }
+                if let Some(span) = enclosing_fn_span(&lines, i)
+                    && !spans.contains(&span)
+                {
+                    spans.push(span);
+                }
+            }
+            for (start, end) in spans {
+                // A production `BootstrapPlan` names its own prerequisites and
+                // answers to no `PATH`; only a DECLARATION the harness runs is
+                // in the population, so the attribute block is what decides
+                // membership. `enclosing_fn_span` opens the span at the first
+                // row of the statement, which is the first attribute, so the
+                // block is the head of the span rather than the rows above it.
+                let signature = (start..=end)
+                    .find(|k| {
+                        cfgd_core::test_helpers::blank_string_literals(lines[*k])
+                            .replace(['(', ')'], " ")
+                            .split_whitespace()
+                            .any(|word| word == "fn")
+                    })
+                    .unwrap_or(start);
+                let attributes: Vec<&str> = lines[start..signature].to_vec();
+                if !attributes
+                    .iter()
+                    .any(|l| l.trim() == "#[test]" || l.trim() == "#[tokio::test]")
+                {
+                    continue;
+                }
+                read += 1;
+                let text = lines[start..=end].join("\n");
+                if text.contains(GUARD) {
+                    continue;
+                }
+                let hatch = text
+                    .lines()
+                    .chain(attributes.iter().copied())
+                    .find_map(|l| l.split_once(HATCH));
+                let name = cfgd_core::test_helpers::declared_fn_name(
+                    &cfgd_core::test_helpers::code_line(lines[signature]),
+                )
+                .unwrap_or_default();
+                match hatch {
+                    Some((_, why)) if !why.trim().is_empty() => continue,
+                    Some(_) => offenders.push(format!(
+                        "{}:{}: {name}: `{HATCH}` carries no reason",
+                        path.display(),
+                        start + 1
+                    )),
+                    None => offenders.push(format!("{}:{}: {name}", path.display(), start + 1)),
+                }
+            }
+        }
+        assert!(
+            read >= FLOOR_TESTS[r],
+            "the walk read {read} host-tool tests under {} — under the floor, so it is \
+             looking at the wrong root",
+            root.display()
+        );
+    }
+    assert!(
+        offenders.is_empty(),
+        "a test asserting a refusal, a route or a plan shape over a tool name passes or \
+         fails by what the machine it ran on happens to carry; each plants its own `PATH` \
+         through `{GUARD}`, or carries `{HATCH} <why no tool this host holds can move the \
+         expectation>`:\n{}",
         offenders.join("\n")
     );
 }

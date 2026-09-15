@@ -685,6 +685,8 @@ mod tests {
 
     #[test]
     fn nix_bootstrap_plan_names_curl_and_the_default_profile_bin() {
+        // host-tool-ok: the feasibility row compares the plan's own answer against
+        // the same `curl` probe, so the two agree whatever this host carries.
         // Both sides read `PATH`; without the guard a concurrent test's
         // `PATH` mutation can land between them and they disagree.
         let _path = cfgd_core::test_helpers::path_env_read_guard();
