@@ -32531,10 +32531,91 @@ fn pruning_setter_name() -> String {
         .expect("the write to `prune_rows` sits in a named function")
 }
 
+/// Every constructor writing the removal flag's default, read off the builder.
+///
+/// The default is `true`, so a site built through ANY constructor claims the
+/// whole picture until it says otherwise; a walk anchored on one of them is
+/// blind to the next one somebody adds beside it.
+fn reconciler_constructors() -> Vec<String> {
+    let src = cfgd_core::test_helpers::production_slice_of(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../cfgd-core/src/reconciler/mod.rs"),
+    );
+    let ctors: Vec<String> = cfgd_core::test_helpers::fn_declarations(&src)
+        .into_iter()
+        .filter(|(_, _, body)| body.contains("prune_rows:"))
+        .map(|(name, _, _)| name)
+        .collect();
+    assert!(
+        ctors.len() >= 2,
+        "the builder writes the removal flag's default from {ctors:?}, \
+         which is fewer constructors than it declares"
+    );
+    ctors
+}
+
+/// Every `Reconciler` method whose own call tree reads the removal flag.
+///
+/// A hatch below is a claim about what the binding it marks REACHES, so the
+/// walk asks the call graph rather than taking the marker's word, and the names
+/// it asks after come from the flag's own readers: the methods reading
+/// `self.prune_rows`, then every method reaching one of those through a
+/// self-call. A method that learns to record joins the set on its own, and the
+/// hatch that said it records nothing turns red.
+fn reconciler_removal_methods() -> Vec<String> {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../cfgd-core/src/reconciler");
+    let mut declarations: Vec<(String, String)> = Vec::new();
+    for path in rust_sources_under(&root) {
+        // A `tests.rs` carries no `#[cfg(test)]` for the cut to read, and a
+        // test is not a route the reconciler takes.
+        if path.file_name().is_some_and(|n| n == "tests.rs") {
+            continue;
+        }
+        let production = cfgd_core::test_helpers::production_slice_of(&path);
+        declarations.extend(
+            cfgd_core::test_helpers::fn_declarations(&production)
+                .into_iter()
+                .map(|(name, _, body)| (name, body)),
+        );
+    }
+    // The setter WRITES the field; every other reader is a removal it gates.
+    let mut derived: Vec<String> = declarations
+        .iter()
+        .filter(|(_, body)| body.contains("self.prune_rows") && !body.contains("self.prune_rows ="))
+        .map(|(name, _)| name.clone())
+        .collect();
+    derived.dedup();
+    let mut frontier = derived.clone();
+    while !frontier.is_empty() {
+        let mut next: Vec<String> = Vec::new();
+        // A sibling method reaches these through `self.`, which no receiver
+        // type is spelled on, so the fold reads that shape rather than
+        // `reaches_fn`'s method arm.
+        for name in &frontier {
+            let needle = format!("self.{name}(");
+            for (caller, body) in &declarations {
+                if caller == name || !body.contains(&needle) {
+                    continue;
+                }
+                if !derived.contains(caller) && !next.contains(caller) {
+                    next.push(caller.clone());
+                }
+            }
+        }
+        derived.extend(next.iter().cloned());
+        frontier = next;
+    }
+    assert!(
+        derived.len() >= 3,
+        "the removal flag is read by {derived:?}, fewer methods than the reconciler holds"
+    );
+    derived
+}
+
 /// Every production site building a `Reconciler` says which picture it saw.
 ///
 /// Retiring a `managed_resources` row is a claim about the WHOLE desired set,
-/// and the field behind it defaults to `true` — so a verb built by copying a
+/// and the field behind it defaults to `true`, so a verb built by copying a
 /// neighbour applies module-scoped while claiming the whole picture, and
 /// deletes every tracking row the scope it ran under never resolved. That is
 /// how `cfgd init --apply-module` and `cfgd module create --apply` came to
@@ -32543,45 +32624,69 @@ fn pruning_setter_name() -> String {
 /// The population is deliberately wider than "reaches an apply": whether a
 /// construction site's binding eventually reaches `Reconciler::apply` is a
 /// question about its callees, not about the statement, so every site answers
-/// instead and a site that records no row at all says so in its hatch. The
-/// setter's name is read off the builder, never spelled here.
+/// instead and a site that removes nothing says so in its hatch, whose claim
+/// the walk then checks against the reconciler's own removal methods. Neither
+/// the setter's name nor the constructors' are spelled here.
+///
+/// Two file names are excluded. A `tests.rs` is a test region whole, so
+/// `production_slice_of` has no `#[cfg(test)]` to cut at and a fixture's own
+/// reconciler would be judged as production. `test_helpers.rs` is the shipped
+/// harness, which is not a route any command takes; it builds one reconciler,
+/// in `apply_with_filter`, and that site mirrors `cmd_apply`'s scope test
+/// directly rather than through this walk.
 #[test]
 fn every_reconciler_a_production_site_builds_says_which_picture_it_saw() {
     const HATCH: &str = "// whole-picture-ok:";
-    const ANCHOR: &str = "Reconciler::new(";
-    // Under today's counts (7 sites in 6 files), so a deletion does not trip
-    // them, and a root resolving nowhere or at the wrong tree does.
     const FLOOR_SITES: usize = 6;
     const FLOOR_FILES: usize = 5;
 
     let setter = pruning_setter_name();
     let call = format!("{setter}(");
+    let anchors: Vec<String> = reconciler_constructors()
+        .into_iter()
+        .map(|ctor| format!("Reconciler::{ctor}("))
+        .collect();
+    let removals = reconciler_removal_methods();
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let roots = [manifest.join("src"), manifest.join("../cfgd-core/src")];
+    // The two crates are NAMED and their roots resolved under `crates/`, so a
+    // crate renamed out from under the walk fails by name rather than quietly
+    // contributing nothing.
+    let roots: Vec<std::path::PathBuf> = ["cfgd", "cfgd-core"]
+        .iter()
+        .map(|krate| {
+            let root = manifest.join("..").join(krate).join("src");
+            assert!(
+                root.is_dir(),
+                "the walk's root `{krate}` is no longer a crate of this workspace"
+            );
+            root
+        })
+        .collect();
     let mut offenders: Vec<String> = Vec::new();
     let mut answered = 0usize;
     let mut files: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     let mut sites = 0usize;
+    // Per root, because the aggregate floor is today's first root's own count:
+    // the whole second tree could stop contributing and the totals would still
+    // clear it.
+    let mut per_root: Vec<(String, usize)> = Vec::new();
     for root in &roots {
+        let before = sites;
         for path in rust_sources_under(root) {
             let name = path
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or_default()
                 .to_string();
-            // A `tests.rs` is a test region whole, carrying no `#[cfg(test)]`
-            // for the cut to read, and a harness is nobody's production route.
             if name == "tests.rs" || name == "test_helpers.rs" {
                 continue;
             }
             let production = cfgd_core::test_helpers::production_slice_of(&path);
+            let raw_lines: Vec<&str> = production.lines().collect();
             let lines = cfgd_core::test_helpers::logical_source_lines(&production);
-            let code_at = |k: usize| -> String {
-                let raw: &str = &lines[k].1;
-                blank_string_literals(raw.split("//").next().unwrap_or(raw))
-            };
+            let code_at = |k: usize| cfgd_core::test_helpers::code_line(&lines[k].1);
             for (i, (n, line)) in lines.iter().enumerate() {
-                if !code_at(i).contains(ANCHOR) {
+                if !anchors.iter().any(|a| code_at(i).contains(a)) {
                     continue;
                 }
                 sites += 1;
@@ -32591,20 +32696,47 @@ fn every_reconciler_a_production_site_builds_says_which_picture_it_saw() {
                 let end = (i..lines.len())
                     .find(|k| code_at(*k).trim_end().ends_with(';'))
                     .unwrap_or(i);
-                let chain: String = lines[i..=end]
+                // The setter is CODE, or a comment naming it answers the rule;
+                // the hatch is a comment by construction, so it reads the raw
+                // rows.
+                let code_chain: String = (i..=end).map(code_at).collect::<Vec<_>>().join("\n");
+                let raw_chain: Vec<&str> = lines[i..=end].iter().map(|(_, l)| l.as_str()).collect();
+                let comment_block: Vec<&str> = lines[..i]
                     .iter()
+                    .rev()
+                    .take_while(|(_, l)| l.trim_start().starts_with("//"))
                     .map(|(_, l)| l.as_str())
-                    .collect::<Vec<_>>()
-                    .join("\n");
+                    .collect();
                 // The reason may be too long for one line, so the whole comment
                 // block above the head is read, as well as the chain itself.
-                let hatched = chain.contains(HATCH)
-                    || lines[..i]
+                let hatch = raw_chain
+                    .iter()
+                    .chain(comment_block.iter())
+                    .find_map(|l| l.split_once(HATCH));
+                if let Some((_, why)) = hatch {
+                    let where_ = format!("{}:{n}", path.display());
+                    if why.trim().is_empty() {
+                        offenders.push(format!("{where_}: `{HATCH}` carries no reason"));
+                        continue;
+                    }
+                    // The claim is about the binding's callees, so it is asked
+                    // of the enclosing function against the flag's own readers.
+                    let enclosing = enclosing_fn_text(&raw_lines, n.saturating_sub(1));
+                    let reached: Vec<&String> = removals
                         .iter()
-                        .rev()
-                        .take_while(|(_, l)| l.trim_start().starts_with("//"))
-                        .any(|(_, l)| l.contains(HATCH));
-                match chain.contains(&call) || hatched {
+                        .filter(|m| {
+                            cfgd_core::test_helpers::reaches_fn(&enclosing, m, Some("Reconciler"))
+                        })
+                        .collect();
+                    match reached.is_empty() {
+                        true => answered += 1,
+                        false => offenders.push(format!(
+                            "{where_}: hatched out of the rule, and reaches {reached:?}"
+                        )),
+                    }
+                    continue;
+                }
+                match code_chain.contains(&call) {
                     true => answered += 1,
                     false => {
                         offenders.push(format!("{}:{n}: {}", path.display(), line.trim()));
@@ -32612,23 +32744,73 @@ fn every_reconciler_a_production_site_builds_says_which_picture_it_saw() {
                 }
             }
         }
+        per_root.push((root.display().to_string(), sites - before));
     }
     assert!(
+        per_root.iter().all(|(_, n)| *n > 0),
+        "a root contributed no construction site, so the walk is reading the \
+         wrong tree: {per_root:?}"
+    );
+    assert!(
         sites >= FLOOR_SITES && files.len() >= FLOOR_FILES,
-        "the walk found {sites} construction sites in {} files, under the floor, \
-         so it is reading the wrong tree",
+        "the walk found {sites} construction sites in {} files, under the floor",
         files.len()
+    );
+    assert_eq!(
+        answered + offenders.len(),
+        sites,
+        "every site the walk counted took one of the arms that judge it"
     );
     assert!(
         offenders.is_empty(),
         "a run that saw a PARTIAL desired set deletes the tracking rows of every \
          entry its scope never resolved; each site names `{setter}` or carries \
-         `{HATCH} <why>`:\n{}",
+         `{HATCH} <why>` over a binding that removes nothing:\n{}",
         offenders.join("\n")
     );
-    assert_eq!(
-        answered, sites,
-        "every site the walk counted is one it judged"
+}
+
+/// No `tests.rs` declares itself a test region a second time.
+///
+/// A `tests.rs` is included by its parent under `#[cfg(test)]`, so an attribute
+/// inside it is always true. Three population walks skip such a file on the
+/// strength of that property, and `production_slice_of`'s per-file floor for
+/// any file where it is false collapses to the lines above the first one: the
+/// walk then reads a narrower tree than it reports and passes.
+#[test]
+fn no_tests_file_carries_a_cfg_test_attribute_of_its_own() {
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut read = 0usize;
+    let mut offenders: Vec<String> = Vec::new();
+    for root in [manifest.join("src"), manifest.join("../cfgd-core/src")] {
+        for path in rust_sources_under(&root) {
+            if path.file_name().is_none_or(|n| n != "tests.rs") {
+                continue;
+            }
+            read += 1;
+            let body = cfgd_core::test_helpers::walked_file_body(&path);
+            for (n, line) in body.lines().enumerate() {
+                // The needle spelled in a walk's own source is a literal, and
+                // the property is stated in comments all over this tree, so
+                // both are blanked before the line is judged.
+                let code = cfgd_core::test_helpers::code_line(line);
+                let head = code.trim_start();
+                if head.starts_with("#[cfg(test)]") || head.starts_with("#[cfg(all(test") {
+                    offenders.push(format!("{}:{}", path.display(), n + 1));
+                }
+            }
+        }
+    }
+    assert!(
+        read >= 40,
+        "the walk read {read} test regions, fewer than the workspace holds"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a test region declares itself a second time, so every walk skipping it \
+         on that property and every per-file floor below it is reading less than \
+         it reports:\n{}",
+        offenders.join("\n")
     );
 }
 
@@ -40523,40 +40705,15 @@ fn no_test_reaches_a_real_package_manager_through_the_tool_provisioner() {
 fn provisioning_reach(
     declarations: &[(String, Option<String>, String)],
 ) -> Vec<(String, Option<String>)> {
-    let mut derived: Vec<(String, Option<String>)> = Vec::new();
-    let mut frontier: Vec<(String, Option<String>)> = Vec::new();
-    for (name, owner, body) in declarations {
+    let seeds: Vec<(String, Option<String>)> = declarations
+        .iter()
         // The crate's own `provision_tool` wrapper calls the core one, so it is
         // seeded by its own body like every other caller: the two are one bare
-        // name and a self-call is what the fold below skips, not this.
-        if !cfgd_core::test_helpers::reaches_fn(body, "provision_tool", None) {
-            continue;
-        }
-        let entry = (name.clone(), owner.clone());
-        if !frontier.contains(&entry) {
-            frontier.push(entry);
-        }
-    }
-    derived.extend(frontier.iter().cloned());
-    while !frontier.is_empty() {
-        let mut next: Vec<(String, Option<String>)> = Vec::new();
-        for (name, owner) in &frontier {
-            for (caller, caller_owner, body) in declarations {
-                if caller == name
-                    || !cfgd_core::test_helpers::reaches_fn(body, name, owner.as_deref())
-                {
-                    continue;
-                }
-                let entry = (caller.clone(), caller_owner.clone());
-                if !derived.contains(&entry) && !next.contains(&entry) {
-                    next.push(entry);
-                }
-            }
-        }
-        derived.extend(next.iter().cloned());
-        frontier = next;
-    }
-    derived
+        // name and a self-call is what the fold skips, not this.
+        .filter(|(_, _, body)| cfgd_core::test_helpers::reaches_fn(body, "provision_tool", None))
+        .map(|(name, owner, _)| (name.clone(), owner.clone()))
+        .collect();
+    cfgd_core::test_helpers::callers_reaching(declarations, &seeds)
 }
 
 /// The fold follows a wrapper written as a method.
@@ -40579,6 +40736,30 @@ fn the_provisioning_fixpoint_follows_a_wrapper_written_as_a_method() {
     assert!(
         derived.contains(&("verb".to_string(), None)),
         "a verb reaching the provisioner through a method wrapper is derived: {derived:?}"
+    );
+}
+
+/// The fold keeps two functions that share a bare name apart.
+///
+/// A crate may declare a free `hop` and a `Tool::hop`; a fold whose self-call
+/// skip compares bare names collapses the two, so the edge from the method to
+/// the free function is dropped and everything above the method goes underived.
+/// That is the direction a superset check cannot absorb: the roster loses a
+/// verb rather than gaining one.
+#[test]
+fn the_call_graph_fold_keeps_two_functions_that_share_a_name_apart() {
+    let src = "fn hop() -> bool {\n    provision_tool(\"cosign\")\n}\n\n\
+               impl Tool {\n    fn hop(&self) -> bool {\n        hop()\n    }\n}\n\n\
+               fn verb(t: &Tool) -> bool {\n    t.hop()\n}\n";
+    let declarations = cfgd_core::test_helpers::fn_declarations(src);
+    let derived = provisioning_reach(&declarations);
+    assert!(
+        derived.contains(&("hop".to_string(), Some("Tool".to_string()))),
+        "the method sharing the seed's bare name is a caller of it: {derived:?}"
+    );
+    assert!(
+        derived.contains(&("verb".to_string(), None)),
+        "a verb reaching the provisioner through that method is derived: {derived:?}"
     );
 }
 
@@ -40611,7 +40792,9 @@ fn every_function_that_can_reach_the_tool_provisioner_is_named_here() {
     let mut declarations: Vec<(String, Option<String>, String)> = Vec::new();
     for path in rust_sources_under(&manifest.join("src")) {
         // A `tests.rs` is a test region whole, carrying no `#[cfg(test)]` for
-        // the cut to read, and its helpers are nobody's production route.
+        // the cut to read (held by
+        // `no_tests_file_carries_a_cfg_test_attribute_of_its_own`), and its
+        // helpers are nobody's production route.
         if path.file_name().is_some_and(|n| n == "tests.rs") {
             continue;
         }

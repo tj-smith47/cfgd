@@ -425,11 +425,13 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
 
             // recorded-scope-ok: this arm resolved a real profile, so the
             // recorded scope is the profile name the reconciler already reads
-            // whole-picture-ok: this arm resolved a real profile and named no
-            // module, so the desired set it saw is the whole one
             let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &store)
                 .with_config_dir(&target_dir)
-                .diffing_installed(&pkg_cx);
+                .diffing_installed(&pkg_cx)
+                // This arm resolved a real profile and named no module, so the
+                // desired set it saw is the whole machine's: a row nothing
+                // declares any more is a row that left the config.
+                .pruning_managed_resources(true);
             // Survivor-gated pricing: only a package this plan will surface is
             // asked for the version its install action renders and persists.
             reconciler.fill_planned_versions(&mut resolved_modules, &registry.manager_map());
