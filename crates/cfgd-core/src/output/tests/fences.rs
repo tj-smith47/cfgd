@@ -2405,6 +2405,7 @@ const SERIAL_PINS: &[(&str, &str, &str, usize)] = &[
         "daemon_log()",
         1,
     ),
+    ("lower_soft_nofile(", "", "raise_soft_nofile_toward(", 2),
     (
         "runner::run_daemon_loop(",
         "tracing_dispatcher",

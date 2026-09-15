@@ -117,30 +117,42 @@ pub fn raise_open_file_limit() {
     static RAISED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
     RAISED.get_or_init(|| {
         #[cfg(unix)]
-        {
-            /// Well under macOS's `kern.maxfilesperproc` and Linux's
-            /// `nr_open`, and far past anything cfgd's own lanes need.
-            const WANT: libc::rlim_t = 8192;
-            // SAFETY: both calls take a pointer to a fully initialized
-            // `rlimit` this frame owns, and neither retains it.
-            unsafe {
-                let mut limit = std::mem::zeroed::<libc::rlimit>();
-                if libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) != 0 {
-                    return;
-                }
-                let ceiling = if limit.rlim_max == libc::RLIM_INFINITY {
-                    WANT
-                } else {
-                    limit.rlim_max.min(WANT)
-                };
-                if limit.rlim_cur >= ceiling {
-                    return;
-                }
-                limit.rlim_cur = ceiling;
-                libc::setrlimit(libc::RLIMIT_NOFILE, &limit);
-            }
-        }
+        raise_soft_nofile_toward(NOFILE_WANT);
     });
+}
+
+/// Well under macOS's `kern.maxfilesperproc` and Linux's `nr_open`, and far
+/// past anything cfgd's own lanes need.
+#[cfg(unix)]
+const NOFILE_WANT: libc::rlim_t = 8192;
+
+/// The raise itself, outside the once-guard [`raise_open_file_limit`] wraps it
+/// in.
+///
+/// Split out because a guarded call answers nothing about whether the raise
+/// works: whoever spawned first in this process consumed the one call, and
+/// `cargo` hands a test binary a soft limit already at the hard one, so the
+/// wrapper is a no-op by the time anything can watch it.
+#[cfg(unix)]
+fn raise_soft_nofile_toward(want: libc::rlim_t) {
+    // SAFETY: both calls take a pointer to a fully initialized `rlimit` this
+    // frame owns, and neither retains it.
+    unsafe {
+        let mut limit = std::mem::zeroed::<libc::rlimit>();
+        if libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) != 0 {
+            return;
+        }
+        let ceiling = if limit.rlim_max == libc::RLIM_INFINITY {
+            want
+        } else {
+            limit.rlim_max.min(want)
+        };
+        if limit.rlim_cur >= ceiling {
+            return;
+        }
+        limit.rlim_cur = ceiling;
+        libc::setrlimit(libc::RLIMIT_NOFILE, &limit);
+    }
 }
 
 /// Spawn `cmd`, giving a refusal another thread of this process caused a few
@@ -1834,18 +1846,32 @@ mod tests {
         }
     }
 
-    /// The raise moves the soft limit to the ceiling it names, and a host whose
-    /// soft limit already sits at or above that ceiling keeps it.
+    /// The raise moves the soft limit to the ceiling it names.
     ///
-    /// Every ordinary runner starts well under it (Linux at 1024, macOS at
-    /// 256), so this is the check that the spawn seam's own call does anything
-    /// at all. An unreadable limit fails the test rather than passing it: the
-    /// claim is about a number, and no number was read.
+    /// The condition is CREATED here rather than inherited: `cargo` raises its
+    /// own soft limit to the hard one and the test binary inherits it, so a
+    /// runner never starts under the ceiling and an assertion about a limit
+    /// the test found holds whether or not the raise does anything. So the pin
+    /// lowers the soft limit itself, calls the raise, reads the limit back and
+    /// restores what it found before asserting anything. It calls the body
+    /// rather than [`raise_open_file_limit`] for the second reason the same
+    /// claim used to be empty: the wrapper's one call is usually spent by
+    /// whichever test spawned first.
+    ///
+    /// The lowered window is process-global, so the pin takes the unnamed
+    /// serial lock, and it lowers to half the ceiling rather than to a host
+    /// default: a sibling thread opening a file during the window must not be
+    /// refused, and half the ceiling is both far past anything a test binary
+    /// holds open and far under the number the raise must reach.
+    ///
+    /// An unreadable limit fails the test rather than passing it: the claim is
+    /// about a number, and no number was read.
     #[cfg(unix)]
     #[test]
+    #[serial_test::serial]
     fn the_soft_descriptor_limit_is_raised_toward_its_hard_one() {
-        // SAFETY: both calls take a pointer to a fully initialized `rlimit`
-        // this frame owns, and neither retains it.
+        // SAFETY: every call takes a pointer to a fully initialized `rlimit`
+        // this frame owns, and none retains it.
         let read = || unsafe {
             let mut limit = std::mem::zeroed::<libc::rlimit>();
             assert_eq!(
@@ -1856,24 +1882,36 @@ mod tests {
             limit
         };
         let before = read();
-        raise_open_file_limit();
-        let after = read();
-        assert!(
-            after.rlim_cur >= before.rlim_cur,
-            "the raise left the soft limit at {}, under the {} it started from",
-            after.rlim_cur,
-            before.rlim_cur
-        );
         let ceiling = if before.rlim_max == libc::RLIM_INFINITY {
-            8192
+            NOFILE_WANT
         } else {
-            before.rlim_max.min(8192)
+            before.rlim_max.min(NOFILE_WANT)
         };
+        let lower_soft_nofile = |soft: libc::rlim_t| unsafe {
+            let limit = libc::rlimit {
+                rlim_cur: soft,
+                rlim_max: before.rlim_max,
+            };
+            assert_eq!(
+                libc::setrlimit(libc::RLIMIT_NOFILE, &limit),
+                0,
+                "the pin must be able to put the soft limit where it wants it"
+            );
+        };
+        lower_soft_nofile(ceiling / 2);
+        raise_soft_nofile_toward(NOFILE_WANT);
+        let after = read();
+        lower_soft_nofile(before.rlim_cur);
         assert!(
             after.rlim_cur >= ceiling,
             "the raise left the soft limit at {}, under the {ceiling} its hard limit of {} allows",
             after.rlim_cur,
             before.rlim_max
+        );
+        assert_eq!(
+            read().rlim_cur,
+            before.rlim_cur,
+            "the pin must leave the descriptor limit where it found it"
         );
     }
 
