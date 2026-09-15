@@ -1191,9 +1191,16 @@ pub struct ManagedResourceDetail {
 /// split out here, so the table can say whose each resource is and can render
 /// one row per manager rather than one per package.
 ///
+/// A declared env var and a declared alias each record their own row, so a
+/// machine declaring twenty of them would otherwise push every other resource
+/// off the screen. They fold the same way a module's files do: one row per
+/// owner and kind naming the count, or the entry itself where an owner
+/// declared exactly one.
+///
 /// `-o wide` is the fleet table at full granularity: a module's `files:<n>`
-/// aggregate blows up into one row per manifest file, and the Method column
-/// fills — a deployed file's resolved strategy in
+/// aggregate blows up into one row per manifest file, every declared entry gets
+/// its own row back, and the Method column fills — a deployed file's resolved
+/// strategy in
 /// [`cfgd_core::config::FileStrategy::method_label`]'s words, an env surface's
 /// own verb from [`cfgd_core::reconciler::recorded_env_method`]. On the
 /// default table every Method cell stays [`NO_DETAIL`], and the shared
@@ -1215,6 +1222,11 @@ fn managed_resource_rows(
     // derivation of it.
     let mut own_packages: std::collections::BTreeMap<(&str, &str, &str), Vec<&str>> =
         std::collections::BTreeMap::new();
+    // The declared env vars and aliases of one owner, keyed the same way and
+    // for the same reason: two layers declaring entries are two facts, and a
+    // merged row would file both under whichever source sorted first.
+    let mut own_entries: std::collections::BTreeMap<(&str, &str, &str), Vec<&str>> =
+        std::collections::BTreeMap::new();
 
     for r in items {
         if records_a_script(&r.resource_type, &r.resource_id) {
@@ -1228,6 +1240,17 @@ fn managed_resource_rows(
             continue;
         }
         let Some((module, rest)) = module_id_parts(&r.resource_type, &r.resource_id) else {
+            if !detail.wide && cfgd_core::reconciler::records_an_env_item(&r.resource_type) {
+                own_entries
+                    .entry((
+                        r.owner.as_str(),
+                        r.resource_type.as_str(),
+                        r.source.as_str(),
+                    ))
+                    .or_default()
+                    .push(r.resource_id.as_str());
+                continue;
+            }
             let resource = if is_session_env_row(r) {
                 session_env_resource()
             } else {
@@ -1306,6 +1329,20 @@ fn managed_resource_rows(
             display_type("package").to_string(),
             owner.to_string(),
             format!("{manager}: {}", packages.join(", ")),
+            NO_DETAIL.to_string(),
+            source.to_string(),
+        ]);
+    }
+    for ((owner, kind, source), mut entries) in own_entries {
+        entries.sort_unstable();
+        let resource = match entries.as_slice() {
+            [only] => (*only).to_string(),
+            many => cfgd_core::pluralize(many.len(), display_type(kind)),
+        };
+        rows.push([
+            display_type(kind).to_string(),
+            owner.to_string(),
+            resource,
             NO_DETAIL.to_string(),
             source.to_string(),
         ]);
@@ -2358,6 +2395,8 @@ fn display_type(kind: &str) -> &str {
         "package" | "packages" => "package",
         ENV_RC_RESOURCE_TYPE => "rc",
         ENV_SESSION_RESOURCE_TYPE => "session",
+        cfgd_core::reconciler::ENV_VAR_RESOURCE_TYPE => "env var",
+        cfgd_core::reconciler::ALIAS_RESOURCE_TYPE => "alias",
         other => other,
     }
 }
@@ -6664,17 +6703,21 @@ mod tests {
     /// The Type words `display_type` FOLDS a recorded token onto — its match
     /// arms read off this file, so the walk above sees a kind added there.
     fn folded_type_column_words() -> Vec<String> {
-        // cfgd's own env groups name their arms through consts, but their
-        // WORDS are literals in the same body; neither belongs to a module,
-        // so both are dropped here rather than by spelling.
-        let cfgd_owned = [
+        // Four arms name their token through a const, but their WORDS are
+        // literals in the same body. None of the four belongs to a module:
+        // cfgd writes its own env surfaces, and a declared env var or alias
+        // belongs to the layer that declared it. All four are dropped here
+        // rather than by spelling.
+        let not_module_owned = [
             display_type(ENV_RC_RESOURCE_TYPE),
             display_type(ENV_SESSION_RESOURCE_TYPE),
+            display_type(cfgd_core::reconciler::ENV_VAR_RESOURCE_TYPE),
+            display_type(cfgd_core::reconciler::ALIAS_RESOURCE_TYPE),
         ];
         let mut words: Vec<String> = string_literals(&production_fn_body("fn display_type("))
             .into_iter()
             .map(|token| display_type(&token).to_string())
-            .filter(|word| !cfgd_owned.contains(&word.as_str()))
+            .filter(|word| !not_module_owned.contains(&word.as_str()))
             .collect();
         words.sort();
         words.dedup();

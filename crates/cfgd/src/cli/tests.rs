@@ -16116,7 +16116,10 @@ fn no_check_error_fixture_spells_its_key_as_a_host_path() {
 /// A `~/.cfgd.env` mentioned in a HINT or a table cell is not an env-target
 /// row — those paths are fixture literals the test wrote itself — which is
 /// why the vocabulary below is the action subjects `reconciler::format`
-/// builds, not the file names.
+/// builds, not the file names. An action subject names its verb first and its
+/// file after it, so the generated name has to follow `write ` on the line: a
+/// listing whose Method column trails the file it describes states the same
+/// two words in the other order and is no action row.
 #[test]
 fn every_golden_with_an_env_target_row_declares_the_host_that_produced_it() {
     /// (golden, the test source that produced it, that test's name); both
@@ -16151,9 +16154,9 @@ fn every_golden_with_an_env_target_row_declares_the_host_that_produced_it() {
         let text = walked_file_body(&path);
         let carries = text.lines().any(|line| {
             ROW_MARKERS.iter().any(|m| match *m {
-                "write " => {
-                    line.contains("write ") && GENERATED_FILES.iter().any(|f| line.contains(f))
-                }
+                "write " => line.split_once("write ").is_some_and(|(_, operand)| {
+                    GENERATED_FILES.iter().any(|f| operand.contains(f))
+                }),
                 other => line.contains(other),
             })
         });

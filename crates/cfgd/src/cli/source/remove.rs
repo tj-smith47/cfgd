@@ -37,8 +37,7 @@ fn hand_modified_files(resources: &[cfgd_core::state::ManagedResource]) -> Vec<S
 /// Whether this recorded row names a single declared env var or alias rather
 /// than something on disk.
 fn is_entry_row(r: &cfgd_core::state::ManagedResource) -> bool {
-    r.resource_type == cfgd_core::reconciler::ENV_VAR_RESOURCE_TYPE
-        || r.resource_type == cfgd_core::reconciler::ALIAS_RESOURCE_TYPE
+    cfgd_core::reconciler::records_an_env_item(&r.resource_type)
 }
 
 /// The layer list a kept row records under: the departing source gone from it,

@@ -25,10 +25,11 @@
 use std::path::Path;
 
 use cfgd::cli::status::{
-    ManagedResourceRow, ModuleDeclared, ModuleDrift, ModuleFilePresence, ModuleFileStatus,
-    ModulePackagePresence, ModulePackageStatus, ModuleStatus, ModuleStatusEntry, ModuleStatusView,
-    SURFACE_ENV, SURFACE_FILES, SURFACE_PACKAGES, StatusOutput, build_fleet_status_doc,
-    build_module_status_doc, build_module_status_not_found_doc, managed_resource_payload,
+    ManagedResourceDetail, ManagedResourceRow, ModuleDeclared, ModuleDrift, ModuleFilePresence,
+    ModuleFileStatus, ModulePackagePresence, ModulePackageStatus, ModuleStatus, ModuleStatusEntry,
+    ModuleStatusView, SURFACE_ENV, SURFACE_FILES, SURFACE_PACKAGES, StatusOutput,
+    build_fleet_status_doc, build_module_status_doc, build_module_status_not_found_doc,
+    managed_resource_payload,
 };
 use cfgd_core::config::{EnvVar, ShellAlias};
 use cfgd_core::modules::{DeclaredScript, HookScripts, ModuleSurfaces};
@@ -149,6 +150,51 @@ fn clean_output() -> StatusOutput {
         scoped_scans: Default::default(),
         system_errors: Vec::new(),
         standing: Vec::new(),
+    }
+}
+
+/// A host whose profile declares env vars and aliases from two layers, plus a
+/// `PATH` both of them contribute to.
+///
+/// Each declared entry records its own row, so this is the shape that decides
+/// whether the Managed Resources table stays readable: the plain table folds
+/// an owner's entries of one kind and one recorded layer list into a single
+/// row, and `-o wide` gives every entry its row back.
+fn env_entry_resources() -> Vec<ManagedResourceRow> {
+    managed_resource_payload(
+        [
+            ("env-var", "EDITOR", "local"),
+            ("env-var", "PAGER", "local"),
+            ("env-var", "LANG", "local"),
+            // Both layers add directories to it, so the row records both.
+            ("env-var", "PATH", "local, team-config"),
+            ("env-var", "ACME_REGISTRY", "team-config"),
+            ("alias", "gs", "local"),
+            ("alias", "ll", "local"),
+            ("alias", "k", "team-config"),
+            // The surfaces the entries above are written into, so the table
+            // shows the folded entries beside the files that carry them.
+            ("env", "/home/user/.cfgd.env", "local"),
+            ("env", "/home/user/.bashrc", "local"),
+        ]
+        .into_iter()
+        .map(|(resource_type, resource_id, source)| ManagedResource {
+            resource_type: resource_type.into(),
+            resource_id: resource_id.into(),
+            source: source.into(),
+            last_hash: Some("hash1".into()),
+            last_applied: Some(1_715_680_800),
+        })
+        .collect(),
+        Some("default"),
+    )
+}
+
+fn env_entry_output() -> StatusOutput {
+    StatusOutput {
+        modules: Vec::new(),
+        managed_resources: env_entry_resources(),
+        ..clean_output()
     }
 }
 
@@ -641,6 +687,55 @@ fn status_clean_json() {
         "emit -o json must match serde_json::to_value(output)"
     );
     cap.assert_json_snapshot_in(Path::new(SNAPSHOT_ROOT), "status/clean.json");
+}
+
+/// The plain table: an owner's declared entries of one kind and one recorded
+/// layer list fold into a single row naming the count, and an owner declaring
+/// exactly one of a kind gets that entry named instead of a count of one.
+#[test]
+fn status_env_entries_human() {
+    emit_fleet(
+        &env_entry_output(),
+        &Default::default(),
+        "status/env_entries.txt",
+    );
+}
+
+/// `-o wide`: every declared entry gets its own row back, with the verb its
+/// surface was written under in the Method column.
+#[test]
+fn status_env_entries_wide_human() {
+    emit_fleet(
+        &env_entry_output(),
+        &cfgd::cli::status::ManagedResourceDetail {
+            wide: true,
+            ..Default::default()
+        },
+        "status/env_entries_wide.txt",
+    );
+}
+
+/// Render one fleet status doc against the fixture header every golden here
+/// shares.
+fn emit_fleet(output: &StatusOutput, resources: &ManagedResourceDetail, golden: &str) {
+    let (printer, cap) = Printer::for_test_doc();
+    printer.emit(build_fleet_status_doc(
+        output,
+        &cfgd_core::output::ConfigHeader {
+            config_path: Some(Path::new("/etc/cfgd/cfgd.yaml")),
+            sources: &[],
+            profile: Some("default"),
+            profile_inherits: &[],
+            modules: &header_modules(output),
+            arrow: printer.arrow(),
+        },
+        &[],
+        NOW,
+        &Default::default(),
+        resources,
+    ));
+    drop(printer);
+    cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), golden);
 }
 
 #[test]

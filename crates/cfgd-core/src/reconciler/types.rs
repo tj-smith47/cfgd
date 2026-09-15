@@ -267,6 +267,19 @@ pub const ENV_SESSION_RESOURCE_TYPE: &str = "env-session";
 pub const ENV_VAR_RESOURCE_TYPE: &str = "env-var";
 pub const ALIAS_RESOURCE_TYPE: &str = "alias";
 
+/// Whether a recorded `resource_type` names ONE declared env var or alias
+/// rather than a surface, a file or a package.
+///
+/// Two surfaces ask it and must agree: `cfgd source remove` lists what a
+/// subscription put on the machine and copies those declarations into the
+/// local profile, and `cfgd status` folds an owner's entries into a single
+/// table row. A third spelling is how the two came to classify one row two
+/// ways.
+#[must_use]
+pub fn records_an_env_item(resource_type: &str) -> bool {
+    resource_type == ENV_VAR_RESOURCE_TYPE || resource_type == ALIAS_RESOURCE_TYPE
+}
+
 fn refresh_id(manager: &str) -> String {
     format!("refresh:{manager}")
 }
