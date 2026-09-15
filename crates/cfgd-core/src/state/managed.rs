@@ -284,25 +284,21 @@ impl StateStore {
         Ok(resources)
     }
 
-    /// Get managed resources from a specific source.
+    /// Every managed resource this layer contributed to.
+    ///
+    /// The `source` column holds one layer name or, for a resource several
+    /// layers built together, all of them
+    /// ([`crate::reconciler::recorded_source_layers`]) — so the match is
+    /// membership in that list rather than equality with the whole column, or
+    /// a `PATH` a subscription extends beside the local profile would be
+    /// invisible to `cfgd source remove`. The filter runs over the fetched
+    /// rows because a list column has no index a `LIKE` could use safely: a
+    /// layer name is free text and would have to be escaped into the pattern.
     pub fn managed_resources_by_source(&self, source_name: &str) -> Result<Vec<ManagedResource>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT resource_type, resource_id, source, last_hash, last_applied
-                 FROM managed_resources WHERE source = ?1 ORDER BY resource_type, resource_id",
-        )?;
-
-        let resources = stmt
-            .query_map(params![source_name], |row| {
-                Ok(ManagedResource {
-                    resource_type: row.get(0)?,
-                    resource_id: row.get(1)?,
-                    source: row.get(2)?,
-                    last_hash: row.get(3)?,
-                    last_applied: row.get(4)?,
-                })
-            })?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-
-        Ok(resources)
+        Ok(self
+            .managed_resources()?
+            .into_iter()
+            .filter(|r| crate::reconciler::recorded_source_layers(&r.source).contains(&source_name))
+            .collect())
     }
 }

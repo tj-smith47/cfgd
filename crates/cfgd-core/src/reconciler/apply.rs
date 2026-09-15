@@ -1090,10 +1090,11 @@ impl<'r> PackageLayers<'r> {
 /// alias as an owner TOKEN, while `managed_resources.source` holds the layer
 /// NAME every other row records under, so the two vocabularies are joined here
 /// once per apply instead of at each entry. A `PATH` entry carries every token
-/// that contributed to it, and one layer claims it only when they all resolve
-/// to that layer: the value on the machine is cfgd's fold of several
-/// declarations, and no single subscription can hand back what the others put
-/// there.
+/// that contributed to it, and the row names every layer behind those tokens,
+/// joined by [`Owner::TOKEN_SEPARATOR`] in fold order: the merge knows each
+/// contributor, so each of them is recorded, and `cfgd source remove` finds
+/// its own segments in the row through
+/// [`crate::reconciler::recorded_source_layers`].
 struct EntryLayers {
     by_token: std::collections::HashMap<String, String>,
 }
@@ -1118,21 +1119,23 @@ impl EntryLayers {
         Self { by_token }
     }
 
-    /// The layer to record an entry under, given the owner token or tokens its
-    /// claim carries.
-    fn layer(&self, owner: Option<&str>) -> &str {
-        let mut claimed: Option<&str> = None;
+    /// The layer or layers to record an entry under, given the owner token or
+    /// tokens its claim carries, in fold order and without repeats.
+    fn layer(&self, owner: Option<&str>) -> String {
+        let mut claimed: Vec<&str> = Vec::new();
         for token in owner.unwrap_or_default().split_whitespace() {
             let source = match self.by_token.get(token) {
                 Some(source) if !source.is_empty() => source.as_str(),
                 _ => LOCAL_LAYER,
             };
-            match claimed {
-                Some(prior) if prior != source => return LOCAL_LAYER,
-                _ => claimed = Some(source),
+            if !claimed.contains(&source) {
+                claimed.push(source);
             }
         }
-        claimed.unwrap_or(LOCAL_LAYER)
+        if claimed.is_empty() {
+            return LOCAL_LAYER.to_string();
+        }
+        claimed.join(Owner::TOKEN_SEPARATOR)
     }
 }
 
@@ -2575,7 +2578,7 @@ impl<'a> super::Reconciler<'a> {
             self.state.upsert_managed_resource(
                 super::ENV_VAR_RESOURCE_TYPE,
                 &ev.name,
-                layers.layer(origins.env_owner(&ev.name)),
+                &layers.layer(origins.env_owner(&ev.name)),
                 None,
                 Some(apply_id),
             )?;
@@ -2584,7 +2587,7 @@ impl<'a> super::Reconciler<'a> {
             self.state.upsert_managed_resource(
                 super::ALIAS_RESOURCE_TYPE,
                 &alias.name,
-                layers.layer(origins.alias_owner(&alias.name)),
+                &layers.layer(origins.alias_owner(&alias.name)),
                 None,
                 Some(apply_id),
             )?;

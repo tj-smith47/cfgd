@@ -755,7 +755,9 @@ whole out of every layer, so those three rows record `local` whatever delivered
 the entries in them. The entries themselves are separate rows: each env var is
 an `env-var` row and each alias an `alias` row, named by the entry, recorded
 under the layer that declared it. A `PATH` entry several layers contributed to
-records `local`, because the value is cfgd's fold of all of them.
+records all of them, comma-separated; `cfgd source remove` finds the row by any
+one of those names, and keeping it copies that source's own segments into your
+profile and leaves the rest named.
 
 The default module report is a summary: one count per declared surface, then
 what the scan found. `Status` leads the block. The report names no scope: you

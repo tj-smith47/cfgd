@@ -954,6 +954,25 @@ impl Owner {
     }
 }
 
+/// The layer names a recorded `managed_resources.source` carries.
+///
+/// A row records every layer that contributed to the resource, joined by
+/// [`Owner::TOKEN_SEPARATOR`], because an entry several layers built together
+/// (a `PATH` each of them extends) belongs to all of them: a column naming one
+/// of those layers hides the resource from every other subscription that put
+/// something in it. One contributor is the common case and reads back as
+/// itself.
+///
+/// The ONE reading of that column, beside the separator its writers join with,
+/// so `cfgd source remove` and the apply cannot disagree about where one layer
+/// name ends.
+pub fn recorded_source_layers(recorded: &str) -> Vec<&str> {
+    recorded
+        .split(Owner::TOKEN_SEPARATOR)
+        .filter(|layer| !layer.is_empty())
+        .collect()
+}
+
 /// One owner's slice of a phase. Never empty — an owner with no actions in a
 /// phase produces no group.
 #[derive(Debug, Serialize)]

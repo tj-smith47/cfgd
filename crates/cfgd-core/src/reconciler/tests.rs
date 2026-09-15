@@ -31147,22 +31147,36 @@ fn an_apply_records_each_declared_env_entry_under_the_layer_that_declared_it() {
         .unwrap();
 
     let mut resolved = make_empty_resolved();
-    resolved.layers[0].spec.env = vec![EnvVar {
-        name: "LOCAL_EDITOR".to_string(),
-        value: "nvim".to_string(),
-        platforms: vec![],
-    }];
+    resolved.layers[0].spec.env = vec![
+        EnvVar {
+            name: "LOCAL_EDITOR".to_string(),
+            value: "nvim".to_string(),
+            platforms: vec![],
+        },
+        EnvVar {
+            name: "PATH".to_string(),
+            value: "/home/me/bin:$PATH".to_string(),
+            platforms: vec![],
+        },
+    ];
     resolved.layers.push(ProfileLayer {
         source: "acme".to_string(),
         profile_name: "acme/team".to_string(),
         priority: 2000,
         policy: LayerPolicy::Required,
         spec: ProfileSpec {
-            env: vec![EnvVar {
-                name: "ACME_HOME".to_string(),
-                value: "/opt/acme".to_string(),
-                platforms: vec![],
-            }],
+            env: vec![
+                EnvVar {
+                    name: "ACME_HOME".to_string(),
+                    value: "/opt/acme".to_string(),
+                    platforms: vec![],
+                },
+                EnvVar {
+                    name: "PATH".to_string(),
+                    value: "/opt/acme/bin:$PATH".to_string(),
+                    platforms: vec![],
+                },
+            ],
             aliases: vec![ShellAlias {
                 name: "acmeup".to_string(),
                 command: "acme update".to_string(),
@@ -31240,6 +31254,31 @@ fn an_apply_records_each_declared_env_entry_under_the_layer_that_declared_it() {
             .iter()
             .any(|(rtype, _)| rtype == super::ENV_RESOURCE_TYPE),
         "a whole env surface is claimed by one layer that fed it: {acme:?}"
+    );
+
+    // `PATH`'s declarations concatenate, so both layers are still contributing
+    // to the value on the machine and the row names both of them. Either name
+    // finds the row, so neither subscription's segments are invisible to the
+    // remove prompt.
+    assert!(
+        acme.contains(&entry(super::ENV_VAR_RESOURCE_TYPE, "PATH")),
+        "the source extends PATH and cannot find its own row: {acme:?}"
+    );
+    assert!(
+        local.contains(&entry(super::ENV_VAR_RESOURCE_TYPE, "PATH")),
+        "the operator extends PATH and cannot find their own row: {local:?}"
+    );
+    let path_source = state
+        .managed_resources()
+        .unwrap()
+        .into_iter()
+        .find(|r| r.resource_type == super::ENV_VAR_RESOURCE_TYPE && r.resource_id == "PATH")
+        .map(|r| r.source)
+        .unwrap();
+    assert_eq!(
+        super::recorded_source_layers(&path_source),
+        vec![LOCAL_LAYER, "acme"],
+        "the row names its contributors in fold order: {path_source}"
     );
 }
 

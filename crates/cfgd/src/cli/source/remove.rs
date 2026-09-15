@@ -41,6 +41,51 @@ fn is_entry_row(r: &cfgd_core::state::ManagedResource) -> bool {
         || r.resource_type == cfgd_core::reconciler::ALIAS_RESOURCE_TYPE
 }
 
+/// The layer list a kept row records under: the departing source gone from it,
+/// and `local` in its place.
+///
+/// The Keep arm copies the departing source's own declarations into the local
+/// profile, so the local layer is what carries them from here; every other
+/// layer that contributed to the resource is still contributing and stays
+/// named. A row one layer built reads `local`, exactly as a re-owned file or
+/// package row does.
+fn kept_source(recorded: &str, departing: &str) -> String {
+    let mut layers: Vec<&str> = cfgd_core::reconciler::recorded_source_layers(recorded)
+        .into_iter()
+        .filter(|layer| *layer != departing)
+        .collect();
+    if !layers.contains(&LOCAL_LAYER) {
+        layers.insert(0, LOCAL_LAYER);
+    }
+    layers.join(cfgd_core::reconciler::Owner::TOKEN_SEPARATOR)
+}
+
+/// What the departing source itself declares, folded across its own layers and
+/// the modules it delivered, in the merge's order.
+///
+/// The composed merge holds the value that SURVIVED, which for `PATH` is
+/// cfgd's fold of every layer's segments around the ambient reference. Copying
+/// that into the local profile would write another subscription's directories
+/// into the operator's own file, so the Keep arm copies what this source
+/// declared and nothing else.
+fn declared_by_source(
+    resolved: &cfgd_core::config::ResolvedProfile,
+    modules: &[cfgd_core::modules::ResolvedModule],
+    name: &str,
+) -> (Vec<cfgd_core::config::EnvVar>, Vec<config::ShellAlias>) {
+    let mut env: Vec<cfgd_core::config::EnvVar> = Vec::new();
+    let mut aliases: Vec<config::ShellAlias> = Vec::new();
+    for layer in resolved.layers.iter().filter(|l| l.source == name) {
+        cfgd_core::merge_env(&mut env, &layer.spec.env);
+        cfgd_core::merge_aliases(&mut aliases, &layer.spec.aliases);
+    }
+    for module in modules.iter().filter(|m| m.origin.as_deref() == Some(name)) {
+        cfgd_core::merge_env(&mut env, &module.env);
+        cfgd_core::merge_aliases(&mut aliases, &module.aliases);
+    }
+    (env, aliases)
+}
+
 /// Copy every env var and alias the departing source declared into the local
 /// profile, so the Keep arm keeps what it says it keeps.
 ///
@@ -48,9 +93,10 @@ fn is_entry_row(r: &cfgd_core::state::ManagedResource) -> bool {
 /// there whatever the config says next. An env entry is not: the generated env
 /// file is rewritten from the declaration on every apply, so a row moved to
 /// `local` with no local declaration behind it names an entry the next apply
-/// deletes. The value is read off the composed merge, which is where a module's
-/// entries live too, and written through the same `merge_env` / `merge_aliases`
-/// and `rewrite_user_yaml` the profile setters write with.
+/// deletes. The source's OWN declaration is what is copied
+/// ([`declared_by_source`]), falling back to the composed merge for an entry
+/// its layers no longer spell, and it is written through the same `merge_env`
+/// / `merge_aliases` and `rewrite_user_yaml` the profile setters write with.
 ///
 /// Composed from the source cache with no fetch and in `Report` mode: the
 /// command is reading what the source declared, not gating on it, and a source
@@ -58,6 +104,7 @@ fn is_entry_row(r: &cfgd_core::state::ManagedResource) -> bool {
 fn keep_entry_declarations(
     cli: &Cli,
     printer: &Printer,
+    name: &str,
     rows: &[cfgd_core::state::ManagedResource],
 ) -> anyhow::Result<usize> {
     if !rows.iter().any(is_entry_row) {
@@ -83,6 +130,7 @@ fn keep_entry_declarations(
         &desired.modules,
         &[],
     );
+    let (own_env, own_aliases) = declared_by_source(&desired.resolved, &desired.modules, name);
 
     let profiles_dir = ctx.config_dir().join("profiles");
     let profile_path = cfgd_core::config::find_profile_path(&profiles_dir, profile_name)
@@ -91,14 +139,18 @@ fn keep_entry_declarations(
     let mut copied = 0usize;
     for r in rows {
         let declared = match r.resource_type.as_str() {
-            cfgd_core::reconciler::ENV_VAR_RESOURCE_TYPE => items
-                .declared_env(&r.resource_id)
+            cfgd_core::reconciler::ENV_VAR_RESOURCE_TYPE => own_env
+                .iter()
+                .find(|ev| ev.name == r.resource_id)
+                .or_else(|| items.declared_env(&r.resource_id))
                 .map(|ev| cfgd_core::merge_env(&mut doc.spec.env, std::slice::from_ref(ev))),
-            cfgd_core::reconciler::ALIAS_RESOURCE_TYPE => {
-                items.declared_alias(&r.resource_id).map(|alias| {
+            cfgd_core::reconciler::ALIAS_RESOURCE_TYPE => own_aliases
+                .iter()
+                .find(|a| a.name == r.resource_id)
+                .or_else(|| items.declared_alias(&r.resource_id))
+                .map(|alias| {
                     cfgd_core::merge_aliases(&mut doc.spec.aliases, std::slice::from_ref(alias))
-                })
-            }
+                }),
             _ => None,
         };
         if declared.is_some() {
@@ -237,7 +289,7 @@ pub(super) fn run_source_remove(
                 state.upsert_managed_resource(
                     &r.resource_type,
                     &r.resource_id,
-                    LOCAL_LAYER,
+                    &kept_source(&r.source, name),
                     r.last_hash.as_deref(),
                     r.last_applied,
                 )?;
@@ -252,7 +304,7 @@ pub(super) fn run_source_remove(
             state.upsert_managed_resource(
                 &r.resource_type,
                 &r.resource_id,
-                LOCAL_LAYER,
+                &kept_source(&r.source, name),
                 r.last_hash.as_deref(),
                 r.last_applied,
             )?;
@@ -266,7 +318,7 @@ pub(super) fn run_source_remove(
     }
 
     if disposition == "kept" {
-        let copied = keep_entry_declarations(cli, printer, &resources)?;
+        let copied = keep_entry_declarations(cli, printer, name, &resources)?;
         if copied > 0 {
             printer.status(
                 Role::Ok,
