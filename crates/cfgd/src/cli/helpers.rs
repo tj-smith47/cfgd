@@ -1023,13 +1023,14 @@ pub(in crate::cli) fn open_in_editor(path: &Path, printer: &Printer) -> anyhow::
         .or_else(|_| std::env::var("VISUAL"))
         .unwrap_or_else(|_| "vi".to_string());
 
-    let status = std::process::Command::new(&editor)
-        .arg(path)
-        .stdin(std::process::Stdio::inherit())
-        .stdout(std::process::Stdio::inherit())
-        .stderr(std::process::Stdio::inherit())
-        .status()
-        .map_err(|e| anyhow::anyhow!("Failed to open editor '{}': {}", editor, e))?;
+    let status = cfgd_core::command_status(
+        std::process::Command::new(&editor)
+            .arg(path)
+            .stdin(std::process::Stdio::inherit())
+            .stdout(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::inherit()),
+    )
+    .map_err(|e| anyhow::anyhow!("Failed to open editor '{}': {}", editor, e))?;
 
     if !status.success() {
         printer.status_simple(

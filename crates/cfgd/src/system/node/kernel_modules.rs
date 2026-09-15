@@ -34,8 +34,7 @@ impl KernelModuleConfigurator {
             });
         }
 
-        Command::new("lsmod")
-            .output()
+        cfgd_core::command_output(&mut Command::new("lsmod"))
             .ok()
             .map(|o| {
                 String::from_utf8_lossy(&o.stdout)
@@ -46,9 +45,7 @@ impl KernelModuleConfigurator {
     }
 
     fn load_module(module: &str) -> Result<()> {
-        let output = Command::new("modprobe")
-            .arg(module)
-            .output()
+        let output = cfgd_core::command_output(Command::new("modprobe").arg(module))
             .map_err(CfgdError::Io)?;
 
         if !output.status.success() {
@@ -96,12 +93,13 @@ impl SystemConfigurator for KernelModuleConfigurator {
 
     fn is_available(&self) -> bool {
         Path::new("/proc/modules").exists()
-            || Command::new("lsmod")
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false)
+            || cfgd_core::command_status(
+                Command::new("lsmod")
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null()),
+            )
+            .map(|s| s.success())
+            .unwrap_or(false)
     }
 
     fn current_state(&self) -> Result<serde_yaml::Value> {

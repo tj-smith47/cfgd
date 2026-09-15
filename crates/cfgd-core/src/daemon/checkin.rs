@@ -134,6 +134,7 @@ pub(crate) fn server_checkin(
         .send(body.as_str())
     {
         Ok(mut response) => {
+            // not-a-child-ok: an HTTP response's own status code, which starts no process
             let status = response.status().as_u16();
             match response.body_mut().read_to_string() {
                 Ok(resp_body) => match serde_json::from_str::<CheckinServerResponse>(&resp_body) {

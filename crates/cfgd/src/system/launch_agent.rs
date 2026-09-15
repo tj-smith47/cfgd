@@ -107,17 +107,16 @@ impl SystemConfigurator for LaunchAgentConfigurator {
             cfgd_core::atomic_write_str(&plist_path, &plist_content)?;
 
             // Unload existing agent (best-effort — may not be loaded yet)
-            if let Err(e) = Command::new("launchctl")
-                .args(["unload", &plist_path.display().to_string()])
-                .output()
-            {
+            if let Err(e) = cfgd_core::command_output(
+                Command::new("launchctl").args(["unload", &plist_path.display().to_string()]),
+            ) {
                 tracing::debug!("launchctl unload (pre-load cleanup): {e}");
             }
 
-            let output = Command::new("launchctl")
-                .args(["load", &plist_path.display().to_string()])
-                .output()
-                .map_err(cfgd_core::errors::CfgdError::Io)?;
+            let output = cfgd_core::command_output(
+                Command::new("launchctl").args(["load", &plist_path.display().to_string()]),
+            )
+            .map_err(cfgd_core::errors::CfgdError::Io)?;
 
             if !output.status.success() {
                 cx.report(

@@ -90,14 +90,16 @@ impl WindowsServiceConfigurator {
         if !cfg!(windows) {
             return None;
         }
-        let query_output = Command::new("sc.exe").args(["query", name]).output().ok()?;
+        let query_output =
+            cfgd_core::command_output(Command::new("sc.exe").args(["query", name])).ok()?;
         if !query_output.status.success() {
             return None;
         }
         let stdout = String::from_utf8_lossy(&query_output.stdout);
         let state = parse_sc_state(&stdout)?;
 
-        let qc_output = Command::new("sc.exe").args(["qc", name]).output().ok()?;
+        let qc_output =
+            cfgd_core::command_output(Command::new("sc.exe").args(["qc", name])).ok()?;
         let qc_stdout = String::from_utf8_lossy(&qc_output.stdout);
         let start_type = parse_sc_start_type(&qc_stdout).unwrap_or_default();
         let binary_path = parse_sc_config_value(&qc_stdout, "BINARY_PATH_NAME").unwrap_or_default();
@@ -336,9 +338,7 @@ impl SystemConfigurator for WindowsServiceConfigurator {
                             ),
                         );
                     }
-                    let output = Command::new("sc.exe")
-                        .args(&args)
-                        .output()
+                    let output = cfgd_core::command_output(Command::new("sc.exe").args(&args))
                         .map_err(cfgd_core::errors::CfgdError::Io)?;
                     if output.status.success() {
                         cx.report(Role::Info, format!("Created service {}", entry.name));
@@ -357,9 +357,7 @@ impl SystemConfigurator for WindowsServiceConfigurator {
                 entry.display_name.as_deref(),
                 entry.start_type.as_deref(),
             ) {
-                let output = Command::new("sc.exe")
-                    .args(&config_args)
-                    .output()
+                let output = cfgd_core::command_output(Command::new("sc.exe").args(&config_args))
                     .map_err(cfgd_core::errors::CfgdError::Io)?;
                 if !output.status.success() {
                     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -383,10 +381,10 @@ impl SystemConfigurator for WindowsServiceConfigurator {
                 let current_state = Self::query_service(&entry.name).map(|r| r.state);
                 match desired_state.as_str() {
                     "running" if current_state.as_deref() != Some("running") => {
-                        let output = Command::new("sc.exe")
-                            .args(["start", &entry.name])
-                            .output()
-                            .map_err(cfgd_core::errors::CfgdError::Io)?;
+                        let output = cfgd_core::command_output(
+                            Command::new("sc.exe").args(["start", &entry.name]),
+                        )
+                        .map_err(cfgd_core::errors::CfgdError::Io)?;
                         if output.status.success() {
                             cx.report(Role::Info, format!("Started service {}", entry.name));
                         } else {
@@ -398,10 +396,10 @@ impl SystemConfigurator for WindowsServiceConfigurator {
                         }
                     }
                     "stopped" if current_state.as_deref() != Some("stopped") => {
-                        let output = Command::new("sc.exe")
-                            .args(["stop", &entry.name])
-                            .output()
-                            .map_err(cfgd_core::errors::CfgdError::Io)?;
+                        let output = cfgd_core::command_output(
+                            Command::new("sc.exe").args(["stop", &entry.name]),
+                        )
+                        .map_err(cfgd_core::errors::CfgdError::Io)?;
                         if output.status.success() {
                             cx.report(Role::Info, format!("Stopped service {}", entry.name));
                         } else {

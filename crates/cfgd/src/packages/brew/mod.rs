@@ -401,20 +401,18 @@ impl PackageManager for BrewManager {
 
         if cfg!(target_os = "linux") && cfgd_core::is_root() {
             // Linuxbrew-as-root: create linuxbrew user, install as that user
-            let user_status = Command::new("useradd")
-                .args([
-                    "--system",
-                    "--create-home",
-                    "--shell",
-                    "/bin/bash",
-                    "linuxbrew",
-                ])
-                // own-path-ok: useradd is the host's, not a manager this run bootstraps
-                .status()
-                .map_err(|e| PackageError::BootstrapFailed {
-                    manager: "brew".into(),
-                    message: format!("failed to create linuxbrew user: {}", e),
-                })?;
+            // own-path-ok: useradd is the host's, not a manager this run bootstraps
+            let user_status = cfgd_core::command_status(Command::new("useradd").args([
+                "--system",
+                "--create-home",
+                "--shell",
+                "/bin/bash",
+                "linuxbrew",
+            ]))
+            .map_err(|e| PackageError::BootstrapFailed {
+                manager: "brew".into(),
+                message: format!("failed to create linuxbrew user: {}", e),
+            })?;
             // Exit code 9 = user already exists, which is fine
             if !user_status.success() && user_status.code() != Some(9) {
                 return Err(PackageError::BootstrapFailed {

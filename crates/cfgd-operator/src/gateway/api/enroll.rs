@@ -376,23 +376,24 @@ pub(super) fn verify_ssh_signature(
             }
         };
 
-        let result = std::process::Command::new("ssh-keygen")
-            .args([
-                "-Y",
-                "verify",
-                "-f",
-                &signers_path.to_string_lossy(),
-                "-I",
-                &key.username,
-                "-n",
-                "cfgd-enroll",
-                "-s",
-                &sig_path.to_string_lossy(),
-            ])
-            .stdin(data_file)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
+        let result = cfgd_core::command_status(
+            std::process::Command::new("ssh-keygen")
+                .args([
+                    "-Y",
+                    "verify",
+                    "-f",
+                    &signers_path.to_string_lossy(),
+                    "-I",
+                    &key.username,
+                    "-n",
+                    "cfgd-enroll",
+                    "-s",
+                    &sig_path.to_string_lossy(),
+                ])
+                .stdin(data_file)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null()),
+        );
 
         match result {
             Ok(status) if status.success() => {
@@ -472,17 +473,18 @@ pub(super) fn verify_gpg_signature(
         // Import the public key. Capture stderr so the debug log is actionable
         // when an import fails (missing key material, bad permissions, unknown
         // packet version, etc.) instead of discarding the underlying gpg error.
-        let import = std::process::Command::new("gpg")
-            .args([
-                "--homedir",
-                &gpg_home.to_string_lossy(),
-                "--batch",
-                "--yes",
-                "--import",
-                &key_path.to_string_lossy(),
-            ])
-            .stdout(std::process::Stdio::null())
-            .output();
+        let import = cfgd_core::command_output(
+            std::process::Command::new("gpg")
+                .args([
+                    "--homedir",
+                    &gpg_home.to_string_lossy(),
+                    "--batch",
+                    "--yes",
+                    "--import",
+                    &key_path.to_string_lossy(),
+                ])
+                .stdout(std::process::Stdio::null()),
+        );
 
         match import {
             Ok(o) if o.status.success() => {}
@@ -508,18 +510,19 @@ pub(super) fn verify_gpg_signature(
         // Verify the signature against THIS iteration's single-key keyring.
         // Success here means the signature verifies under exactly `key`,
         // so the `fingerprint = %key.fingerprint` logged below is truthful.
-        let verify = std::process::Command::new("gpg")
-            .args([
-                "--homedir",
-                &gpg_home.to_string_lossy(),
-                "--batch",
-                "--verify",
-                &sig_path.to_string_lossy(),
-                &data_path.to_string_lossy(),
-            ])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
+        let verify = cfgd_core::command_status(
+            std::process::Command::new("gpg")
+                .args([
+                    "--homedir",
+                    &gpg_home.to_string_lossy(),
+                    "--batch",
+                    "--verify",
+                    &sig_path.to_string_lossy(),
+                    &data_path.to_string_lossy(),
+                ])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null()),
+        );
 
         match verify {
             Ok(status) if status.success() => {

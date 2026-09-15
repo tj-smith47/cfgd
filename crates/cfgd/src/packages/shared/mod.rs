@@ -1291,13 +1291,14 @@ pub(super) fn brew_cmd() -> Command {
 
 /// Detect the user who owns the brew installation.
 fn brew_owner() -> Option<String> {
-    let output = Command::new("stat")
-        .args(["-c", "%U", LINUXBREW_PATH])
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        // own-path-ok: stat is coreutils, not a manager this run could have bootstrapped
-        .output()
-        .ok()?;
+    // own-path-ok: stat is coreutils, not a manager this run could have bootstrapped
+    let output = cfgd_core::command_output(
+        Command::new("stat")
+            .args(["-c", "%U", LINUXBREW_PATH])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null()),
+    )
+    .ok()?;
     let owner = cfgd_core::stdout_lossy_trimmed(&output);
     if owner.is_empty() || owner == "root" {
         None

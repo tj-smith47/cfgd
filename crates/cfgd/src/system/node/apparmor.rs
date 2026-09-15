@@ -41,9 +41,7 @@ impl AppArmorConfigurator {
                 .any(|line| line.split_whitespace().next().is_some_and(|n| n == name));
         }
 
-        Command::new("aa-status")
-            .arg("--json")
-            .output()
+        cfgd_core::command_output(Command::new("aa-status").arg("--json"))
             .ok()
             .map(|o| {
                 let stdout = String::from_utf8_lossy(&o.stdout);
@@ -56,10 +54,7 @@ impl AppArmorConfigurator {
     }
 
     fn load_profile(path: &Path) -> Result<()> {
-        let output = Command::new("apparmor_parser")
-            .arg("-r")
-            .arg(path)
-            .output()
+        let output = cfgd_core::command_output(Command::new("apparmor_parser").arg("-r").arg(path))
             .map_err(CfgdError::Io)?;
 
         if !output.status.success() {

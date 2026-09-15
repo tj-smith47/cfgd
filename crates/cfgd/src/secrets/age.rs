@@ -65,18 +65,19 @@ impl SecretBackend for AgeBackend {
                 .unwrap_or_else(|| "age".to_string()),
         );
 
-        let output = tool_cmd(AGE_BIN_ENV, "age")
-            .arg("--encrypt")
-            .arg("--recipient")
-            .arg(&recipient)
-            .arg("--output")
-            .arg(&output_path)
-            .arg(path)
-            .output()
-            .map_err(|e| SecretError::EncryptionFailed {
-                path: path.to_path_buf(),
-                message: format!("failed to run age: {}", e),
-            })?;
+        let output = cfgd_core::command_output(
+            tool_cmd(AGE_BIN_ENV, "age")
+                .arg("--encrypt")
+                .arg("--recipient")
+                .arg(&recipient)
+                .arg("--output")
+                .arg(&output_path)
+                .arg(path),
+        )
+        .map_err(|e| SecretError::EncryptionFailed {
+            path: path.to_path_buf(),
+            message: format!("failed to run age: {}", e),
+        })?;
 
         if !output.status.success() {
             return Err(SecretError::EncryptionFailed {
@@ -96,16 +97,17 @@ impl SecretBackend for AgeBackend {
     }
 
     fn decrypt_file(&self, path: &Path) -> Result<SecretString> {
-        let output = tool_cmd(AGE_BIN_ENV, "age")
-            .arg("--decrypt")
-            .arg("--identity")
-            .arg(&self.key_path)
-            .arg(path)
-            .output()
-            .map_err(|e| SecretError::DecryptionFailed {
-                path: path.to_path_buf(),
-                message: format!("failed to run age: {}", e),
-            })?;
+        let output = cfgd_core::command_output(
+            tool_cmd(AGE_BIN_ENV, "age")
+                .arg("--decrypt")
+                .arg("--identity")
+                .arg(&self.key_path)
+                .arg(path),
+        )
+        .map_err(|e| SecretError::DecryptionFailed {
+            path: path.to_path_buf(),
+            message: format!("failed to run age: {}", e),
+        })?;
 
         if !output.status.success() {
             return Err(SecretError::DecryptionFailed {
@@ -161,17 +163,18 @@ impl SecretBackend for AgeBackend {
         let parsed = shell_split_editor(&editor);
         let editor_cmd = parsed.first().map(|s| s.as_str()).unwrap_or("vi");
         let editor_args: Vec<&str> = parsed.iter().skip(1).map(|s| s.as_str()).collect();
-        let status = std::process::Command::new(editor_cmd)
-            .args(&editor_args)
-            .arg(&temp_file)
-            .stdin(std::process::Stdio::inherit())
-            .stdout(std::process::Stdio::inherit())
-            .stderr(std::process::Stdio::inherit())
-            .status()
-            .map_err(|e| SecretError::EncryptionFailed {
-                path: path.to_path_buf(),
-                message: format!("failed to open editor '{}': {}", editor, e),
-            })?;
+        let status = cfgd_core::command_status(
+            std::process::Command::new(editor_cmd)
+                .args(&editor_args)
+                .arg(&temp_file)
+                .stdin(std::process::Stdio::inherit())
+                .stdout(std::process::Stdio::inherit())
+                .stderr(std::process::Stdio::inherit()),
+        )
+        .map_err(|e| SecretError::EncryptionFailed {
+            path: path.to_path_buf(),
+            message: format!("failed to open editor '{}': {}", editor, e),
+        })?;
 
         if !status.success() {
             return Err(SecretError::EncryptionFailed {

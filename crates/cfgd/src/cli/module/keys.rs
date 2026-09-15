@@ -33,16 +33,17 @@ pub fn cmd_module_keys_generate(printer: &Printer, output_dir: Option<&str>) -> 
     } else {
         std::process::Stdio::inherit()
     };
-    let status = cfgd_core::cosign_cmd()
-        .args(["generate-key-pair"])
-        .current_dir(dir)
-        .stdin(stdin_cfg)
-        .stdout(std::process::Stdio::inherit())
-        // Override the default piped stderr: interactive key-pair generation
-        // prompts the user and inherits the real terminal.
-        .stderr(std::process::Stdio::inherit())
-        .status()
-        .map_err(|e| anyhow::anyhow!("failed to run cosign: {e}"))?;
+    let status = cfgd_core::command_status(
+        cfgd_core::cosign_cmd()
+            .args(["generate-key-pair"])
+            .current_dir(dir)
+            .stdin(stdin_cfg)
+            .stdout(std::process::Stdio::inherit())
+            // Override the default piped stderr: interactive key-pair generation
+            // prompts the user and inherits the real terminal.
+            .stderr(std::process::Stdio::inherit()),
+    )
+    .map_err(|e| anyhow::anyhow!("failed to run cosign: {e}"))?;
 
     if !status.success() {
         return Err(crate::cli::cli_error(
@@ -213,16 +214,17 @@ pub fn cmd_module_keys_rotate(
     }
 
     // Generate new key pair
-    let status = cfgd_core::cosign_cmd()
-        .args(["generate-key-pair"])
-        .current_dir(key_dir)
-        .stdin(std::process::Stdio::inherit())
-        .stdout(std::process::Stdio::inherit())
-        // Override the default piped stderr: interactive key-pair generation
-        // prompts the user and inherits the real terminal.
-        .stderr(std::process::Stdio::inherit())
-        .status()
-        .map_err(|e| anyhow::anyhow!("failed to run cosign: {e}"))?;
+    let status = cfgd_core::command_status(
+        cfgd_core::cosign_cmd()
+            .args(["generate-key-pair"])
+            .current_dir(key_dir)
+            .stdin(std::process::Stdio::inherit())
+            .stdout(std::process::Stdio::inherit())
+            // Override the default piped stderr: interactive key-pair generation
+            // prompts the user and inherits the real terminal.
+            .stderr(std::process::Stdio::inherit()),
+    )
+    .map_err(|e| anyhow::anyhow!("failed to run cosign: {e}"))?;
 
     if !status.success() {
         let mut restore_failures: Vec<String> = Vec::new();

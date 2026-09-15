@@ -298,7 +298,7 @@ pub fn cmd_generate(cli: &Cli, printer: &Printer, args: &GenerateArgs) -> anyhow
             for g in &generated {
                 add_cmd.arg(g.path.as_os_str());
             }
-            let add_out = add_cmd.output()?;
+            let add_out = cfgd_core::command_output(&mut add_cmd)?;
             if !add_out.status.success() {
                 printer.status_simple(
                     Role::Warn,
@@ -308,14 +308,13 @@ pub fn cmd_generate(cli: &Cli, printer: &Printer, args: &GenerateArgs) -> anyhow
                     ),
                 );
             } else {
-                let commit_out = cfgd_core::git_cmd_local()
-                    .current_dir(&repo_root)
-                    .args([
+                let commit_out = cfgd_core::command_output(
+                    cfgd_core::git_cmd_local().current_dir(&repo_root).args([
                         "commit",
                         "-m",
                         "feat: add AI-generated configuration profiles and modules",
-                    ])
-                    .output()?;
+                    ]),
+                )?;
                 if commit_out.status.success() {
                     committed = true;
                     printer.status_simple(Role::Ok, "Committed changes");

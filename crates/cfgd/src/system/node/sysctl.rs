@@ -53,11 +53,12 @@ impl SysctlConfigurator {
 
     fn write_sysctl(key: &str, value: &str) -> Result<()> {
         Self::validate_sysctl_key(key)?;
-        let output = Command::new("sysctl")
-            .arg("-w")
-            .arg(format!("{}={}", key, value))
-            .output()
-            .map_err(CfgdError::Io)?;
+        let output = cfgd_core::command_output(
+            Command::new("sysctl")
+                .arg("-w")
+                .arg(format!("{}={}", key, value)),
+        )
+        .map_err(CfgdError::Io)?;
 
         if !output.status.success() {
             return Err(CfgdError::Io(std::io::Error::other(format!(

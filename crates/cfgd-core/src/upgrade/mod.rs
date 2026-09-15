@@ -569,14 +569,14 @@ fn run_cosign_verify_blob(
     if let Some(cert) = cert_path {
         cmd.arg(format!("--certificate={}", cert.display()));
     }
-    let output = cmd
-        .arg(format!("--certificate-oidc-issuer={COSIGN_OIDC_ISSUER}"))
-        .arg(format!(
-            "--certificate-identity-regexp={COSIGN_IDENTITY_REGEXP}"
-        ))
-        .arg("--")
-        .arg(checksums_path)
-        .output();
+    let output = crate::command_output(
+        cmd.arg(format!("--certificate-oidc-issuer={COSIGN_OIDC_ISSUER}"))
+            .arg(format!(
+                "--certificate-identity-regexp={COSIGN_IDENTITY_REGEXP}"
+            ))
+            .arg("--")
+            .arg(checksums_path),
+    );
 
     match output {
         Ok(o) if o.status.success() => Ok(()),

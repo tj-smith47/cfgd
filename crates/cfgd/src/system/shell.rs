@@ -191,11 +191,9 @@ impl SystemConfigurator for ShellConfigurator {
                 format!("Setting default shell to {}", desired_shell),
             );
 
-            let output = Command::new("chsh")
-                .arg("-s")
-                .arg(desired_shell)
-                .output()
-                .map_err(cfgd_core::errors::CfgdError::Io)?;
+            let output =
+                cfgd_core::command_output(Command::new("chsh").arg("-s").arg(desired_shell))
+                    .map_err(cfgd_core::errors::CfgdError::Io)?;
 
             if !output.status.success() {
                 cx.report(

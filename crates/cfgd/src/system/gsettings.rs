@@ -163,10 +163,13 @@ impl SystemConfigurator for GsettingsConfigurator {
                     format!("gsettings set {} {} {}", schema, key_str, gsettings_val),
                 );
 
-                let output = gsettings_cmd()
-                    .args(["set", schema, key_str, &gsettings_val])
-                    .output()
-                    .map_err(cfgd_core::errors::CfgdError::Io)?;
+                let output = cfgd_core::command_output(gsettings_cmd().args([
+                    "set",
+                    schema,
+                    key_str,
+                    &gsettings_val,
+                ]))
+                .map_err(cfgd_core::errors::CfgdError::Io)?;
 
                 if !output.status.success() {
                     cx.report(

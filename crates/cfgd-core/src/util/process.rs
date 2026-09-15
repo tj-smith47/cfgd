@@ -161,17 +161,31 @@ pub fn raise_open_file_limit() {
 /// Windows answers a sharing violation. macOS refuses neither shape, so the
 /// ladder there spends a retry only on a crowded descriptor table.
 ///
-/// This is the ONE spawn of a [`std::process::Command`] in the workspace: a
-/// path spawning for itself is a path the ladder and the limit raise above do
-/// not reach. The spawn count travels beside the outcome so a test can state
-/// that the ladder really ran, a claim the spawned child alone cannot support.
+/// This and its two siblings ([`command_output`], [`command_status`]) are the
+/// ONE start of a [`std::process::Command`]'s child in the workspace, one per
+/// way `std` offers: a path calling `spawn`, `output` or `status` for itself is
+/// a path the ladder and the limit raise above do not reach. The spawn count
+/// travels beside the outcome so a test can state that the ladder really ran, a
+/// claim the spawned child alone cannot support.
 pub fn spawn_past_a_transient_refusal(
     cmd: &mut std::process::Command,
 ) -> (std::io::Result<std::process::Child>, u32) {
+    past_a_transient_refusal(|| cmd.spawn())
+}
+
+/// The ladder itself, over whichever of the three ways a
+/// [`std::process::Command`] starts a child the caller asked for.
+///
+/// One body, so the retry set, the wait ladder and the descriptor-limit raise
+/// cannot differ between spawning for a handle, for the captured output, or
+/// for the exit status alone.
+fn past_a_transient_refusal<T>(
+    mut start: impl FnMut() -> std::io::Result<T>,
+) -> (std::io::Result<T>, u32) {
     raise_open_file_limit();
     let mut wait = BUSY_PROGRAM_FIRST_WAIT;
     for attempt in 1..BUSY_PROGRAM_ATTEMPTS {
-        match cmd.spawn() {
+        match start() {
             Err(e) if spawn_refusal_is_transient(&e) => {
                 std::thread::sleep(wait);
                 wait = (wait * 2).min(BUSY_PROGRAM_MAX_WAIT);
@@ -179,13 +193,34 @@ pub fn spawn_past_a_transient_refusal(
             outcome => return (outcome, attempt),
         }
     }
-    (cmd.spawn(), BUSY_PROGRAM_ATTEMPTS)
+    (start(), BUSY_PROGRAM_ATTEMPTS)
 }
 
 /// [`spawn_past_a_transient_refusal`] for a caller with no claim to make about
 /// how many attempts the ladder spent.
 pub fn spawn_child(cmd: &mut std::process::Command) -> std::io::Result<std::process::Child> {
     spawn_past_a_transient_refusal(cmd).0
+}
+
+/// [`spawn_child`] for a caller that wants the child run to completion and its
+/// output captured.
+///
+/// [`std::process::Command::output`] spawns a child of its own, so a call site
+/// reaching it directly is outside the ladder and the limit raise exactly as a
+/// bare `spawn` would be.
+pub fn command_output(cmd: &mut std::process::Command) -> std::io::Result<std::process::Output> {
+    past_a_transient_refusal(|| cmd.output()).0
+}
+
+/// [`spawn_child`] for a caller that wants only the child's exit status, its
+/// output going wherever the command's own stdio says.
+///
+/// [`std::process::Command::status`] spawns a child of its own, so the same
+/// reasoning as [`command_output`] applies.
+pub fn command_status(
+    cmd: &mut std::process::Command,
+) -> std::io::Result<std::process::ExitStatus> {
+    past_a_transient_refusal(|| cmd.status()).0
 }
 
 /// Run a [`std::process::Command`] with a timeout, surfacing whether the timeout fired.
@@ -1768,13 +1803,15 @@ mod tests {
         }
     }
 
-    /// Only the host's own busy-program refusals reach the retry ladder: a
-    /// broken pipe carries raw os error 32 on Unix, which is Windows' sharing
+    /// Only a refusal some other thread of this process takes away reaches the
+    /// retry ladder: the program file still open for writing (`ETXTBSY`) and a
+    /// descriptor table full at this instant (`EMFILE`, `ENFILE`). A broken
+    /// pipe carries raw os error 32 on Unix, which is Windows' sharing
     /// violation number and nothing to wait out here, and a permission refusal
     /// is a fact no wait changes.
     #[cfg(unix)]
     #[test]
-    fn a_unix_spawn_refusal_that_is_not_etxtbsy_leaves_the_ladder() {
+    fn a_unix_spawn_refusal_no_sibling_takes_away_leaves_the_ladder() {
         for refusal in [
             std::io::Error::from_raw_os_error(32),
             std::io::Error::from(std::io::ErrorKind::PermissionDenied),
@@ -1785,11 +1822,58 @@ mod tests {
                 "{refusal:?} must come straight back"
             );
         }
+        for refusal in [
+            std::io::Error::from(std::io::ErrorKind::ExecutableFileBusy),
+            std::io::Error::from_raw_os_error(libc::EMFILE),
+            std::io::Error::from_raw_os_error(libc::ENFILE),
+        ] {
+            assert!(
+                spawn_refusal_is_transient(&refusal),
+                "{refusal:?} is a refusal a sibling takes away, so the ladder must wait it out"
+            );
+        }
+    }
+
+    /// The raise moves the soft limit to the ceiling it names, and a host whose
+    /// soft limit already sits at or above that ceiling keeps it.
+    ///
+    /// Every ordinary runner starts well under it (Linux at 1024, macOS at
+    /// 256), so this is the check that the spawn seam's own call does anything
+    /// at all. An unreadable limit fails the test rather than passing it: the
+    /// claim is about a number, and no number was read.
+    #[cfg(unix)]
+    #[test]
+    fn the_soft_descriptor_limit_is_raised_toward_its_hard_one() {
+        // SAFETY: both calls take a pointer to a fully initialized `rlimit`
+        // this frame owns, and neither retains it.
+        let read = || unsafe {
+            let mut limit = std::mem::zeroed::<libc::rlimit>();
+            assert_eq!(
+                libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit),
+                0,
+                "the descriptor limit must be readable for this claim to mean anything"
+            );
+            limit
+        };
+        let before = read();
+        raise_open_file_limit();
+        let after = read();
         assert!(
-            spawn_refusal_is_transient(&std::io::Error::from(
-                std::io::ErrorKind::ExecutableFileBusy
-            )),
-            "the refusal the ladder exists for must be retried"
+            after.rlim_cur >= before.rlim_cur,
+            "the raise left the soft limit at {}, under the {} it started from",
+            after.rlim_cur,
+            before.rlim_cur
+        );
+        let ceiling = if before.rlim_max == libc::RLIM_INFINITY {
+            8192
+        } else {
+            before.rlim_max.min(8192)
+        };
+        assert!(
+            after.rlim_cur >= ceiling,
+            "the raise left the soft limit at {}, under the {ceiling} its hard limit of {} allows",
+            after.rlim_cur,
+            before.rlim_max
         );
     }
 

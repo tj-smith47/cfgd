@@ -184,7 +184,7 @@ impl SshKeysConfigurator {
         // field is reserved for future secret-provider URI resolution.
         cmd.arg("-N").arg("");
 
-        let output = cmd.output().map_err(CfgdError::Io)?;
+        let output = cfgd_core::command_output(&mut cmd).map_err(CfgdError::Io)?;
 
         if !output.status.success() {
             return Err(CfgdError::Io(std::io::Error::other(format!(

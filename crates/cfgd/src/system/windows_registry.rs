@@ -125,12 +125,10 @@ impl WindowsRegistryConfigurator {
             "REG_SZ"
         };
 
-        let output = cfgd_core::reg_cmd()
-            .args([
-                "add", key_path, "/v", value_name, "/t", reg_type, "/d", value, "/f",
-            ])
-            .output()
-            .map_err(cfgd_core::errors::CfgdError::Io)?;
+        let output = cfgd_core::command_output(cfgd_core::reg_cmd().args([
+            "add", key_path, "/v", value_name, "/t", reg_type, "/d", value, "/f",
+        ]))
+        .map_err(cfgd_core::errors::CfgdError::Io)?;
 
         if !output.status.success() {
             cx.report(

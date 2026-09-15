@@ -321,10 +321,10 @@ impl SystemConfigurator for KdeConfigConfigurator {
                         args.extend_from_slice(&["--type", t]);
                     }
                     args.push(&val_str);
-                    let output = cfgd_core::tool_cmd(KWRITECONFIG_BIN_ENV, write_cmd)
-                        .args(&args)
-                        .output()
-                        .map_err(cfgd_core::errors::CfgdError::Io)?;
+                    let output = cfgd_core::command_output(
+                        cfgd_core::tool_cmd(KWRITECONFIG_BIN_ENV, write_cmd).args(&args),
+                    )
+                    .map_err(cfgd_core::errors::CfgdError::Io)?;
 
                     if !output.status.success() {
                         cx.report(

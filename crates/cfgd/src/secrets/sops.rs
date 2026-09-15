@@ -71,13 +71,13 @@ impl SecretBackend for SopsBackend {
     }
 
     fn encrypt_file(&self, path: &Path) -> Result<()> {
-        let output = self
-            .sops_encrypt_command()
-            .arg("--encrypt")
-            .arg("--in-place")
-            .arg(path)
-            .output()
-            .map_err(|_| SecretError::SopsNotFound)?;
+        let output = cfgd_core::command_output(
+            self.sops_encrypt_command()
+                .arg("--encrypt")
+                .arg("--in-place")
+                .arg(path),
+        )
+        .map_err(|_| SecretError::SopsNotFound)?;
 
         if !output.status.success() {
             return Err(SecretError::EncryptionFailed {
@@ -91,11 +91,7 @@ impl SecretBackend for SopsBackend {
     }
 
     fn decrypt_file(&self, path: &Path) -> Result<SecretString> {
-        let output = self
-            .sops_command()
-            .arg("--decrypt")
-            .arg(path)
-            .output()
+        let output = cfgd_core::command_output(self.sops_command().arg("--decrypt").arg(path))
             .map_err(|_| SecretError::SopsNotFound)?;
 
         if !output.status.success() {
@@ -114,14 +110,14 @@ impl SecretBackend for SopsBackend {
     }
 
     fn edit_file(&self, path: &Path) -> Result<()> {
-        let status = self
-            .sops_command()
-            .arg(path)
-            .stdin(std::process::Stdio::inherit())
-            .stdout(std::process::Stdio::inherit())
-            .stderr(std::process::Stdio::inherit())
-            .status()
-            .map_err(|_| SecretError::SopsNotFound)?;
+        let status = cfgd_core::command_status(
+            self.sops_command()
+                .arg(path)
+                .stdin(std::process::Stdio::inherit())
+                .stdout(std::process::Stdio::inherit())
+                .stderr(std::process::Stdio::inherit()),
+        )
+        .map_err(|_| SecretError::SopsNotFound)?;
 
         // sops exits with code 200 when the editor didn't change the file
         // (e.g., EDITOR=true). Treat this as a no-op success.

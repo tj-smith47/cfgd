@@ -196,7 +196,7 @@ pub fn detect_default_branch(repo_dir: &std::path::Path) -> Option<String> {
         "refs/remotes/origin/HEAD",
     ])
     .stdout(std::process::Stdio::piped());
-    if let Ok(output) = cmd.output()
+    if let Ok(output) = crate::command_output(&mut cmd)
         && output.status.success()
     {
         let raw = stdout_lossy_trimmed(&output);
@@ -209,7 +209,7 @@ pub fn detect_default_branch(repo_dir: &std::path::Path) -> Option<String> {
     let mut cmd = git_cmd_safe(None, None);
     cmd.args(["-C", &dir, "symbolic-ref", "--short", "HEAD"])
         .stdout(std::process::Stdio::piped());
-    if let Ok(output) = cmd.output()
+    if let Ok(output) = crate::command_output(&mut cmd)
         && output.status.success()
     {
         let branch = stdout_lossy_trimmed(&output);
@@ -230,7 +230,7 @@ fn git_output_cwd(args: &[&str]) -> Option<String> {
     #[cfg(any(test, feature = "test-helpers"))]
     let _path_guard = crate::test_helpers::path_env_read_guard();
 
-    let output = git_cmd_local().args(args).output().ok()?;
+    let output = crate::command_output(git_cmd_local().args(args)).ok()?;
     if output.status.success() {
         Some(stdout_lossy_trimmed(&output))
     } else {

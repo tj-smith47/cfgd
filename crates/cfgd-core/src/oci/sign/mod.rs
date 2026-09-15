@@ -47,7 +47,7 @@ pub fn sign_artifact(artifact_ref: &str, key_path: Option<&str>) -> Result<(), O
     apply_registry_scheme(&mut cmd, artifact_ref);
     cmd.arg(artifact_ref);
 
-    let output = cmd.output().map_err(|e| OciError::SigningError {
+    let output = crate::command_output(&mut cmd).map_err(|e| OciError::SigningError {
         message: format!("failed to run cosign: {e}"),
     })?;
 
@@ -164,7 +164,7 @@ pub fn verify_signature(artifact_ref: &str, opts: &VerifyOptions<'_>) -> Result<
     apply_registry_scheme(&mut cmd, artifact_ref);
     cmd.arg(artifact_ref);
 
-    let output = cmd.output().map_err(|e| OciError::VerificationFailed {
+    let output = crate::command_output(&mut cmd).map_err(|e| OciError::VerificationFailed {
         reference: artifact_ref.to_string(),
         message: format!("failed to run cosign: {e}"),
     })?;
@@ -312,7 +312,7 @@ pub fn attach_attestation(
         .arg("slsaprovenance1")
         .arg(artifact_ref);
 
-    let output = cmd.output().map_err(|e| OciError::AttestationError {
+    let output = crate::command_output(&mut cmd).map_err(|e| OciError::AttestationError {
         message: format!("failed to run cosign attest: {e}"),
     })?;
 
@@ -386,7 +386,7 @@ pub fn verify_attestation(
     apply_registry_scheme(&mut cmd, artifact_ref);
     cmd.arg("--type").arg(predicate_type).arg(artifact_ref);
 
-    let output = cmd.output().map_err(|e| OciError::AttestationError {
+    let output = crate::command_output(&mut cmd).map_err(|e| OciError::AttestationError {
         message: format!("failed to run cosign verify-attestation: {e}"),
     })?;
 

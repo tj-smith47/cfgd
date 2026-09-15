@@ -12,12 +12,13 @@ use std::process::{Command, Stdio};
 /// Run `kubectl` with `args`, inheriting stdio. Returns the exit code the
 /// process produced. Errors only on spawn failure (kubectl not on PATH, etc).
 pub fn run_inherit(args: &[&str]) -> std::io::Result<i32> {
-    let status = Command::new("kubectl")
-        .args(args)
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .status()?;
+    let status = cfgd_core::command_status(
+        Command::new("kubectl")
+            .args(args)
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit()),
+    )?;
     Ok(status.code().unwrap_or(1))
 }
 
@@ -31,12 +32,13 @@ pub fn run_argv_inherit(argv: &[String]) -> std::io::Result<i32> {
             "empty argv",
         ));
     }
-    let status = Command::new(&argv[0])
-        .args(&argv[1..])
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .status()?;
+    let status = cfgd_core::command_status(
+        Command::new(&argv[0])
+            .args(&argv[1..])
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit()),
+    )?;
     Ok(status.code().unwrap_or(1))
 }
 

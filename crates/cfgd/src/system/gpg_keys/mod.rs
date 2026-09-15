@@ -229,10 +229,13 @@ fn required_capabilities(usage: &str) -> Vec<char> {
 /// Exit code 2 from gpg means no keys matched — treated as an empty result.
 /// Any other non-zero exit code is an error.
 fn query_keys_for_email(email: &str) -> Result<Vec<KeyringEntry>> {
-    let output = gpg_cmd()
-        .args(["--list-keys", "--with-colons", "--with-fingerprint", email])
-        .output()
-        .map_err(CfgdError::Io)?;
+    let output = cfgd_core::command_output(gpg_cmd().args([
+        "--list-keys",
+        "--with-colons",
+        "--with-fingerprint",
+        email,
+    ]))
+    .map_err(CfgdError::Io)?;
 
     match output.status.code() {
         Some(0) => {} // success — continue to parse

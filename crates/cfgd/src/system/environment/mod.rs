@@ -314,10 +314,9 @@ impl EnvironmentConfigurator {
         if managed.is_empty() {
             // Unload (best-effort) then remove. `launchctl unload` no-ops/fails harmlessly on a
             // path that was never loaded or off-macOS; log and proceed to removal.
-            if let Err(e) = Command::new("launchctl")
-                .args(["unload", &plist_path.to_string_lossy()])
-                .output()
-            {
+            if let Err(e) = cfgd_core::command_output(
+                Command::new("launchctl").args(["unload", &plist_path.to_string_lossy()]),
+            ) {
                 tracing::debug!("launchctl unload (cleanup): {e}");
             }
             let _ = std::fs::remove_file(plist_path);
@@ -366,10 +365,9 @@ impl EnvironmentConfigurator {
         if !cfg!(windows) {
             return BTreeMap::new();
         }
-        let output = match Command::new("reg")
-            .args(["query", r"HKCU\Environment"])
-            .output()
-        {
+        let output = match cfgd_core::command_output(
+            Command::new("reg").args(["query", r"HKCU\Environment"]),
+        ) {
             Ok(o) if o.status.success() => o,
             _ => return BTreeMap::new(),
         };

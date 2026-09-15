@@ -845,8 +845,10 @@ fn execute_script_inner(
             cmd.stdin(std::process::Stdio::inherit());
             cmd.stdout(std::process::Stdio::inherit());
             cmd.stderr(std::process::Stdio::inherit());
-            // Spawn-then-wait rather than `status()`: identical semantics with
-            // stdio already inherited, but it routes through the ETXTBSY retry.
+            // Spawn-then-wait rather than `command_status`: the timeout arm
+            // below needs the child handle. Both route through the one ladder
+            // (a held program file, a full descriptor table) and the
+            // descriptor-limit raise.
             let mut child = crate::spawn_child(&mut cmd)?;
             let status = match explicit_timeout {
                 Some(timeout) => wait_interactive_with_timeout(&mut child, timeout, &run_label)?,

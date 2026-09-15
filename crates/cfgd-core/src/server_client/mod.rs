@@ -350,6 +350,7 @@ impl ServerClient {
                 .send(body_json)
             {
                 Ok(mut resp) => {
+                    // not-a-child-ok: an HTTP response's own status code, which starts no process
                     let status = resp.status().as_u16();
                     // Read off the response before the body is consumed.
                     let advised = resp

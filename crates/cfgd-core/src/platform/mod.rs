@@ -268,7 +268,7 @@ fn read_macos_version() -> Option<String> {
 }
 
 fn read_command_output(cmd: &str, args: &[&str]) -> Result<String, std::io::Error> {
-    let output = std::process::Command::new(cmd).args(args).output()?;
+    let output = crate::command_output(std::process::Command::new(cmd).args(args))?;
     if output.status.success() {
         Ok(crate::stdout_lossy_trimmed(&output))
     } else {
