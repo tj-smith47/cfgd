@@ -2774,7 +2774,8 @@ fn every_manager_command_factory_spawns_the_path_its_resolver_chose() {
     let mut seam_reads = 0usize;
     for path in cfgd_core::test_helpers::rust_sources_under(&root) {
         // A `tests.rs` is a whole test region declared from its parent, so it
-        // carries no `#[cfg(test)]` of its own for the cut to find.
+        // carries no `#[cfg(test)]` of its own for the cut to find (held by
+        // `cli::tests::no_tests_file_carries_a_cfg_test_attribute_of_its_own`).
         if path.file_name().is_some_and(|f| f == "tests.rs") {
             continue;
         }
@@ -2996,7 +2997,9 @@ fn brew_path_dir_readers() -> Vec<(String, Option<String>)> {
     let sources: Vec<String> = cfgd_core::test_helpers::rust_sources_under(&root)
         .into_iter()
         // A `tests.rs` is a test region whole, carrying no `#[cfg(test)]` for
-        // the cut to read, and a test is not a route production takes.
+        // the cut to read (held by
+        // `cli::tests::no_tests_file_carries_a_cfg_test_attribute_of_its_own`),
+        // and a test is not a route production takes.
         .filter(|p| p.file_name().is_some_and(|n| n != "tests.rs"))
         .map(|p| cfgd_core::test_helpers::production_slice_of(&p))
         .collect();
@@ -3006,25 +3009,10 @@ fn brew_path_dir_readers() -> Vec<(String, Option<String>)> {
         .flat_map(|src| fn_declarations(src))
         .collect();
 
-    let mut derived = vec![("brew_path_dirs".to_string(), None)];
-    let mut frontier = derived.clone();
-    while !frontier.is_empty() {
-        let mut next: Vec<(String, Option<String>)> = Vec::new();
-        for (name, owner) in &frontier {
-            for (caller, caller_owner, body) in &declarations {
-                if caller == name || !reaches_fn(body, name, owner.as_deref()) {
-                    continue;
-                }
-                let entry = (caller.clone(), caller_owner.clone());
-                if !derived.contains(&entry) && !next.contains(&entry) {
-                    next.push(entry);
-                }
-            }
-        }
-        derived.extend(next.iter().cloned());
-        frontier = next;
-    }
-    derived
+    cfgd_core::test_helpers::callers_reaching(
+        &declarations,
+        &[("brew_path_dirs".to_string(), None)],
+    )
 }
 
 /// A test reading brew's path directories settles the seam and serializes.

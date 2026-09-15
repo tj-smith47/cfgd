@@ -1045,7 +1045,6 @@ fn cmd_generate_scan_only_with_plugin_manager() {
 // returns a text-only response (no tool_use) so the loop breaks after
 // one iteration.
 
-#[cfg(test)]
 mod cmd_generate_mockito {
     use super::super::*;
     use cfgd_core::test_helpers::EnvVarGuard;
