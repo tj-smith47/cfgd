@@ -69,6 +69,41 @@ impl StateStore {
         Ok(())
     }
 
+    /// Drop every `resource_type` row whose `resource_id` is not in `declared`.
+    ///
+    /// [`Self::upsert_managed_resource`] never removes a row, so a per-entry
+    /// kind (an env var, an alias) would otherwise answer "every entry the
+    /// config has EVER declared" and `cfgd source remove` would offer to keep
+    /// a declaration nothing holds any more. Called from the apply that
+    /// rewrites the surface those entries live in, where the declared set is
+    /// in hand, so the rows mirror what the last apply wrote.
+    pub fn prune_managed_resources_except(
+        &self,
+        resource_type: &str,
+        declared: &[String],
+    ) -> Result<()> {
+        if declared.is_empty() {
+            self.conn.execute(
+                "DELETE FROM managed_resources WHERE resource_type = ?1",
+                params![resource_type],
+            )?;
+            return Ok(());
+        }
+        let placeholders = std::iter::repeat_n("?", declared.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        self.conn.execute(
+            &format!(
+                "DELETE FROM managed_resources
+                 WHERE resource_type = ? AND resource_id NOT IN ({placeholders})"
+            ),
+            rusqlite::params_from_iter(
+                std::iter::once(resource_type).chain(declared.iter().map(String::as_str)),
+            ),
+        )?;
+        Ok(())
+    }
+
     /// Upsert a package tracking row, persisting the manager's uninstall command.
     ///
     /// `resource_id` is [`package_resource_id`]'s composition — callers mint

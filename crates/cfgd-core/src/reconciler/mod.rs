@@ -89,9 +89,9 @@ pub use run::{
 pub(crate) use sidecar::is_stamped_sidecar_name;
 pub use sidecar::{CFGD_BACKUP_SUFFIX, SidecarOutcome, backup_file, cfgd_backup_path};
 pub use types::{
-    Action, ActionResult, AfterPlan, AfterPlanOutcome, AfterPlanState, ApplyResult,
-    CFGD_GROUP_ORDER, DeclaredProvision, DriftRow, ENV_GROUP, ENV_RC_RESOURCE_TYPE,
-    ENV_RESOURCE_TYPE, ENV_SESSION_RESOURCE_TYPE, EnvAction, MANAGERS_GROUP,
+    ALIAS_RESOURCE_TYPE, Action, ActionResult, AfterPlan, AfterPlanOutcome, AfterPlanState,
+    ApplyResult, CFGD_GROUP_ORDER, DeclaredProvision, DriftRow, ENV_GROUP, ENV_RC_RESOURCE_TYPE,
+    ENV_RESOURCE_TYPE, ENV_SESSION_RESOURCE_TYPE, ENV_VAR_RESOURCE_TYPE, EnvAction, MANAGERS_GROUP,
     MODULE_FACET_FILES_REFUSED, ManagerAction, ModuleAction, ModuleActionKind, Owner, OwnerGroup,
     OwnerKind, PREREQUISITE_NOT_IN_RUN, Phase, PhaseFilter, PhaseName, Plan, ReconcileContext,
     RollbackResult, SESSION_GROUP, SHELL_GROUP, ScriptAction, ScriptPhase, SystemAction, Tier,

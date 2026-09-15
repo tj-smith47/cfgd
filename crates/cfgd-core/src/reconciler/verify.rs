@@ -704,7 +704,7 @@ fn verify_env_items_in(
         // declared line is a substring of the commented one.
         let matches = actual_lines.contains(line.as_str());
         results.push(VerifyResult {
-            resource_type: "env-var".to_string(),
+            resource_type: super::ENV_VAR_RESOURCE_TYPE.to_string(),
             resource_id: ev.name.clone(),
             matches,
             // Opaque markers, not the rendered line: the line is the user's own
@@ -729,7 +729,7 @@ fn verify_env_items_in(
         };
         let matches = actual_lines.contains(line.as_str());
         results.push(VerifyResult {
-            resource_type: "alias".to_string(),
+            resource_type: super::ALIAS_RESOURCE_TYPE.to_string(),
             resource_id: alias.name.clone(),
             matches,
             expected: "current".to_string(),
@@ -897,7 +897,7 @@ impl MergedEnvItems {
     pub fn declared_line(&self, resource_type: &str, resource_id: &str) -> Option<String> {
         let platform = EnvPlatform::current();
         match resource_type {
-            "env-var" => self
+            super::ENV_VAR_RESOURCE_TYPE => self
                 .env
                 .iter()
                 .find(|e| e.name == resource_id)
@@ -909,13 +909,30 @@ impl MergedEnvItems {
                         self.path.as_ref(),
                     )
                 }),
-            "alias" => self
+            super::ALIAS_RESOURCE_TYPE => self
                 .aliases
                 .iter()
                 .find(|a| a.name == resource_id)
                 .and_then(|a| super::env_files::primary_alias_line(a, platform, &self.origins)),
             _ => None,
         }
+    }
+
+    /// The env var this merge declares under `name`, as a caller COPYING the
+    /// declaration needs it rather than as a rendered line.
+    ///
+    /// `cfgd source remove`'s Keep arm re-owns a removed source's entry rows
+    /// to `local`, and an entry is regenerated from the declaration on every
+    /// apply, so keeping the row means writing the declaration into the local
+    /// profile. The merge is what holds it: a module's entries never reach the
+    /// profile's own `env` list.
+    pub fn declared_env(&self, name: &str) -> Option<&crate::config::EnvVar> {
+        self.env.iter().find(|e| e.name == name)
+    }
+
+    /// The same for an alias.
+    pub fn declared_alias(&self, name: &str) -> Option<&crate::config::ShellAlias> {
+        self.aliases.iter().find(|a| a.name == name)
     }
 }
 
@@ -936,10 +953,12 @@ fn deployed_env_item_line(
 ) -> std::io::Result<Option<String>> {
     let platform = EnvPlatform::current();
     let claims: Vec<String> = match resource_type {
-        "env-var" => super::env_files::env_var_line_prefix(resource_id, platform)
-            .into_iter()
-            .collect(),
-        "alias" => super::env_files::alias_line_prefixes(resource_id, platform),
+        super::ENV_VAR_RESOURCE_TYPE => {
+            super::env_files::env_var_line_prefix(resource_id, platform)
+                .into_iter()
+                .collect()
+        }
+        super::ALIAS_RESOURCE_TYPE => super::env_files::alias_line_prefixes(resource_id, platform),
         _ => return Ok(None),
     };
     let home = expand_tilde(std::path::Path::new("~"));

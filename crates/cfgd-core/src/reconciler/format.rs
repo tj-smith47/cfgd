@@ -1214,8 +1214,8 @@ pub fn row_attributable_to_module(
     match resource_type {
         "module" => module_row_owner(resource_id) == module,
         "package" => scope.packages.contains(resource_id),
-        "env-var" => scope.env_vars.contains(resource_id),
-        "alias" => scope.aliases.contains(resource_id),
+        super::ENV_VAR_RESOURCE_TYPE => scope.env_vars.contains(resource_id),
+        super::ALIAS_RESOURCE_TYPE => scope.aliases.contains(resource_id),
         _ => false,
     }
 }

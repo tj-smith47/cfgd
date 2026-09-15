@@ -254,6 +254,19 @@ pub const ENV_RESOURCE_TYPE: &str = "env";
 pub const ENV_RC_RESOURCE_TYPE: &str = "env-rc";
 pub const ENV_SESSION_RESOURCE_TYPE: &str = "env-session";
 
+/// The `resource_type` of ONE declared env var, and of one declared alias.
+///
+/// The env surfaces above are artifacts cfgd writes whole out of every layer,
+/// so their rows record cfgd as the writer and can name no delivering layer.
+/// The entries INSIDE them each come from one declaration, so each is its own
+/// row under the layer that declared it, which is what lets
+/// `cfgd source remove` list the vars and aliases a subscription put on the
+/// machine. Both spellings were already the per-item drift grammar
+/// ([`crate::reconciler::env_item_verify_results`]); named here so the
+/// tracking row and the drift row cannot drift apart.
+pub const ENV_VAR_RESOURCE_TYPE: &str = "env-var";
+pub const ALIAS_RESOURCE_TYPE: &str = "alias";
+
 fn refresh_id(manager: &str) -> String {
     format!("refresh:{manager}")
 }

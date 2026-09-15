@@ -31122,6 +31122,127 @@ fn a_shortfall_this_runs_provisions_delivered_is_worded_as_delivered() {
     ));
 }
 
+/// Each env var and alias the merged profile declares is its own tracking row,
+/// under the layer that declared it, and a row for an entry nothing declares
+/// any more leaves with the line.
+///
+/// The env file, its rc line and the live session are surfaces cfgd writes
+/// whole out of every layer, so those three rows name cfgd as the writer and
+/// can name no delivering layer. That left every env var and alias a
+/// subscription declared invisible to `cfgd source remove`, which finds what a
+/// source put on this machine by `managed_resources.source` alone — so the
+/// Keep / Remove prompt never listed one and neither answer could reach it.
+#[test]
+#[serial_test::serial]
+fn an_apply_records_each_declared_env_entry_under_the_layer_that_declared_it() {
+    let tmp_home = tempfile::tempdir().unwrap();
+    let _home = crate::with_test_home_guard(tmp_home.path());
+    let state = test_state();
+    let registry = ProviderRegistry::new();
+
+    // A row for an entry no layer declares any more: the rewrite that drops
+    // its line from the file is what drops the row.
+    state
+        .upsert_managed_resource(super::ENV_VAR_RESOURCE_TYPE, "RETIRED", "acme", None, None)
+        .unwrap();
+
+    let mut resolved = make_empty_resolved();
+    resolved.layers[0].spec.env = vec![EnvVar {
+        name: "LOCAL_EDITOR".to_string(),
+        value: "nvim".to_string(),
+        platforms: vec![],
+    }];
+    resolved.layers.push(ProfileLayer {
+        source: "acme".to_string(),
+        profile_name: "acme/team".to_string(),
+        priority: 2000,
+        policy: LayerPolicy::Required,
+        spec: ProfileSpec {
+            env: vec![EnvVar {
+                name: "ACME_HOME".to_string(),
+                value: "/opt/acme".to_string(),
+                platforms: vec![],
+            }],
+            aliases: vec![ShellAlias {
+                name: "acmeup".to_string(),
+                command: "acme update".to_string(),
+                platforms: vec![],
+            }],
+            ..Default::default()
+        },
+    });
+    // The merge is what claims the declaring layer, so the pin reads the same
+    // merged profile a resolve would hand the reconciler.
+    resolved.merged = merge_layers(&resolved.layers);
+    // The rows come from the file write, and the live-session refresh this
+    // scope excludes would otherwise shell out at the session manager.
+    resolved.merged.env_scope = EnvScope::Interactive;
+
+    let reconciler = Reconciler::new(&registry, &state);
+    let plan = reconciler
+        .plan(&resolved, vec![], vec![], vec![], ReconcileContext::Apply)
+        .unwrap();
+    let printer = test_printer();
+    let result = reconciler
+        .apply(
+            &plan,
+            &resolved,
+            tmp_home.path(),
+            &printer,
+            None,
+            &[],
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .unwrap();
+    assert_eq!(result.status, ApplyStatus::Success);
+
+    let rows = |source: &str| -> Vec<(String, String)> {
+        state
+            .managed_resources_by_source(source)
+            .unwrap()
+            .into_iter()
+            .map(|r| (r.resource_type, r.resource_id))
+            .collect()
+    };
+    let acme = rows("acme");
+    let local = rows(LOCAL_LAYER);
+    let entry = |rtype: &str, id: &str| (rtype.to_string(), id.to_string());
+
+    assert!(
+        acme.contains(&entry(super::ENV_VAR_RESOURCE_TYPE, "ACME_HOME")),
+        "the source's env var is not recorded under it: {acme:?}"
+    );
+    assert!(
+        acme.contains(&entry(super::ALIAS_RESOURCE_TYPE, "acmeup")),
+        "the source's alias is not recorded under it: {acme:?}"
+    );
+    assert!(
+        local.contains(&entry(super::ENV_VAR_RESOURCE_TYPE, "LOCAL_EDITOR")),
+        "the operator's own env var is not recorded under local: {local:?}"
+    );
+    assert!(
+        !acme.contains(&entry(super::ENV_VAR_RESOURCE_TYPE, "RETIRED")),
+        "a row for an entry no layer declares any more survived the rewrite: {acme:?}"
+    );
+    // The file itself is cfgd's composition of every layer, so its row stays
+    // the writer's however many layers fed it.
+    assert!(
+        local
+            .iter()
+            .any(|(rtype, _)| rtype == super::ENV_RESOURCE_TYPE),
+        "the generated env file records no row under its writer: {local:?}"
+    );
+    assert!(
+        !acme
+            .iter()
+            .any(|(rtype, _)| rtype == super::ENV_RESOURCE_TYPE),
+        "a whole env surface is claimed by one layer that fed it: {acme:?}"
+    );
+}
+
 /// A tracking row names the layer that delivered the resource, not `local`.
 ///
 /// `cfgd source remove <name>` looks up what a subscription put on the machine

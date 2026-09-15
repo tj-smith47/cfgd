@@ -34,6 +34,83 @@ fn hand_modified_files(resources: &[cfgd_core::state::ManagedResource]) -> Vec<S
         .collect()
 }
 
+/// Whether this recorded row names a single declared env var or alias rather
+/// than something on disk.
+fn is_entry_row(r: &cfgd_core::state::ManagedResource) -> bool {
+    r.resource_type == cfgd_core::reconciler::ENV_VAR_RESOURCE_TYPE
+        || r.resource_type == cfgd_core::reconciler::ALIAS_RESOURCE_TYPE
+}
+
+/// Copy every env var and alias the departing source declared into the local
+/// profile, so the Keep arm keeps what it says it keeps.
+///
+/// Every other resource a Keep arm re-owns is already on the machine and stays
+/// there whatever the config says next. An env entry is not: the generated env
+/// file is rewritten from the declaration on every apply, so a row moved to
+/// `local` with no local declaration behind it names an entry the next apply
+/// deletes. The value is read off the composed merge, which is where a module's
+/// entries live too, and written through the same `merge_env` / `merge_aliases`
+/// and `rewrite_user_yaml` the profile setters write with.
+///
+/// Composed from the source cache with no fetch and in `Report` mode: the
+/// command is reading what the source declared, not gating on it, and a source
+/// on its way out must not be able to refuse its own removal.
+fn keep_entry_declarations(
+    cli: &Cli,
+    printer: &Printer,
+    rows: &[cfgd_core::state::ManagedResource],
+) -> anyhow::Result<usize> {
+    if !rows.iter().any(is_entry_row) {
+        return Ok(0);
+    }
+    let quiet = printer.at_verbosity(cfgd_core::output::Verbosity::Quiet);
+    let ctx = RunContext::new(cli, &quiet);
+    let (cfg, profile_name, local_resolved) = ctx.config_and_profile()?;
+    let desired = resolve_desired_state(
+        &ctx,
+        cfg,
+        local_resolved,
+        &[],
+        false,
+        &quiet,
+        false,
+        composition::ConstraintMode::Report,
+    )?;
+    let items = cfgd_core::reconciler::MergedEnvItems::new(
+        &desired.resolved.merged.env,
+        &desired.resolved.merged.aliases,
+        &desired.resolved.merged.entry_owners,
+        &desired.modules,
+        &[],
+    );
+
+    let profiles_dir = ctx.config_dir().join("profiles");
+    let profile_path = cfgd_core::config::find_profile_path(&profiles_dir, profile_name)
+        .map_err(|e| crate::cli::profile::profile_lookup_error(e, profile_name))?;
+    let mut doc = config::load_profile(&profile_path)?;
+    let mut copied = 0usize;
+    for r in rows {
+        let declared = match r.resource_type.as_str() {
+            cfgd_core::reconciler::ENV_VAR_RESOURCE_TYPE => items
+                .declared_env(&r.resource_id)
+                .map(|ev| cfgd_core::merge_env(&mut doc.spec.env, std::slice::from_ref(ev))),
+            cfgd_core::reconciler::ALIAS_RESOURCE_TYPE => {
+                items.declared_alias(&r.resource_id).map(|alias| {
+                    cfgd_core::merge_aliases(&mut doc.spec.aliases, std::slice::from_ref(alias))
+                })
+            }
+            _ => None,
+        };
+        if declared.is_some() {
+            copied += 1;
+        }
+    }
+    if copied > 0 {
+        crate::cli::helpers::rewrite_user_yaml(&profile_path, &doc)?;
+    }
+    Ok(copied)
+}
+
 /// The one shape both abort paths report, so a cancel reads the same to a
 /// `-o json` consumer whichever prompt produced it.
 fn cancelled_doc(name: &str, managed_count: usize) -> Doc {
@@ -46,6 +123,9 @@ fn cancelled_doc(name: &str, managed_count: usize) -> Doc {
         }))
 }
 
+// no-header-ok: this verb removes a subscription and reports what happened to
+// the rows it owned; the composition its Keep arm reads is a lookup of one
+// declaration, not a configuration this report measures anything against.
 pub fn cmd_source_remove(
     cli: &Cli,
     printer: &Printer,
@@ -185,6 +265,19 @@ pub(super) fn run_source_remove(
         managed_count = 0;
     }
 
+    if disposition == "kept" {
+        let copied = keep_entry_declarations(cli, printer, &resources)?;
+        if copied > 0 {
+            printer.status(
+                Role::Ok,
+                format!(
+                    "Copied {} into the local profile",
+                    cfgd_core::pluralize(copied, "declared entry")
+                ),
+            );
+        }
+    }
+
     // Purged resources must be deleted from state, not merely relabeled —
     // otherwise the rows linger orphaned under the now-removed source name
     // (their `source` column still points at a config_source that no longer
@@ -222,6 +315,21 @@ pub(super) fn run_source_remove(
         }
         for r in &resources {
             state.remove_managed_resource(&r.resource_type, &r.resource_id)?;
+        }
+        let entries = resources.iter().filter(|r| is_entry_row(r)).count();
+        if entries > 0 {
+            // Nothing to undeploy: an env var or alias exists only as a line
+            // the generator writes, so dropping the declaration is the whole
+            // removal and the next apply rewrites the surfaces without it.
+            printer
+                .status(
+                    Role::Ok,
+                    format!(
+                        "Dropped {}",
+                        cfgd_core::pluralize(entries, "declared entry")
+                    ),
+                )
+                .detail("the next apply rewrites the env files without them");
         }
     }
 

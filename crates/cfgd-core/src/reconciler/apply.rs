@@ -1084,6 +1084,58 @@ impl<'r> PackageLayers<'r> {
     }
 }
 
+/// The layer source each owner token an env entry carries records under.
+///
+/// [`crate::config::EntryOwners`] answers which layer declared an env var or
+/// alias as an owner TOKEN, while `managed_resources.source` holds the layer
+/// NAME every other row records under, so the two vocabularies are joined here
+/// once per apply instead of at each entry. A `PATH` entry carries every token
+/// that contributed to it, and one layer claims it only when they all resolve
+/// to that layer: the value on the machine is cfgd's fold of several
+/// declarations, and no single subscription can hand back what the others put
+/// there.
+struct EntryLayers {
+    by_token: std::collections::HashMap<String, String>,
+}
+
+impl EntryLayers {
+    fn of(resolved: &ResolvedProfile, modules: &[ResolvedModule]) -> Self {
+        let mut by_token = std::collections::HashMap::new();
+        for layer in &resolved.layers {
+            by_token.insert(layer.owner_token(), layer.source.clone());
+        }
+        // In the env engine's own order, so a module claiming over a layer's
+        // entry is answered by the module's origin exactly as its value wins.
+        for module in modules {
+            by_token.insert(
+                Owner::module(&module.name).token(),
+                module
+                    .origin
+                    .clone()
+                    .unwrap_or_else(|| LOCAL_LAYER.to_string()),
+            );
+        }
+        Self { by_token }
+    }
+
+    /// The layer to record an entry under, given the owner token or tokens its
+    /// claim carries.
+    fn layer(&self, owner: Option<&str>) -> &str {
+        let mut claimed: Option<&str> = None;
+        for token in owner.unwrap_or_default().split_whitespace() {
+            let source = match self.by_token.get(token) {
+                Some(source) if !source.is_empty() => source.as_str(),
+                _ => LOCAL_LAYER,
+            };
+            match claimed {
+                Some(prior) if prior != source => return LOCAL_LAYER,
+                _ => claimed = Some(source),
+            }
+        }
+        claimed.unwrap_or(LOCAL_LAYER)
+    }
+}
+
 /// The `managed_resources.source` value one settled action's row records.
 ///
 /// `cfgd source remove <name>` finds what a subscription put on the machine by
@@ -2416,7 +2468,7 @@ impl<'a> super::Reconciler<'a> {
                     self.state
                         .resolve_drift(apply_id, super::ENV_RC_RESOURCE_TYPE, &rid)?;
                 }
-                self.resolve_env_item_drift(apply_id, &rid, resolved, modules)?;
+                self.settle_env_items(apply_id, &rid, resolved, modules)?;
             }
             if let Some(module) =
                 super::format::module_files_description_module(&result.description)
@@ -2476,10 +2528,20 @@ impl<'a> super::Reconciler<'a> {
         self.state.resolve_drift_keys(apply_id, &keys)
     }
 
-    /// Resolve the per-item `env-var`/`alias` drift rows a successful write of
-    /// the PRIMARY managed env file converged.
+    /// Record one tracking row per declared env var and alias, and resolve the
+    /// per-item `env-var`/`alias` drift rows, that a successful write of the
+    /// PRIMARY managed env file settled.
     ///
-    /// `verify_env_items` records one row per declared entry, keyed by the
+    /// The env file, its rc line and the live session are artifacts cfgd writes
+    /// whole out of every layer, so their rows record cfgd as the writer and
+    /// can name no delivering layer. The ENTRIES in them each come from one
+    /// declaration, so each is its own row under the layer that declared it:
+    /// without them a subscription's env vars and aliases were invisible to
+    /// `cfgd source remove`, which reads `managed_resources.source` alone. The
+    /// declared set is also what prunes: an entry no layer declares any more
+    /// leaves the file on this very write, so its row leaves with it.
+    ///
+    /// `verify_env_items` records a drift row per declared entry, keyed by the
     /// entry's own name, but the action that heals every one of them is a
     /// single `env:write:<path>` whose description parses to
     /// `("env", <path>)` — so the file's own row resolved and the item rows
@@ -2489,9 +2551,10 @@ impl<'a> super::Reconciler<'a> {
     /// stored `current` / `missing or changed` markers stay byte-exact.
     ///
     /// Gated on the PRIMARY file because that is the only one the per-item
-    /// checks read; a write of `environment.d` or the launchd plist says
-    /// nothing about whether the entry landed in the file that was verified.
-    fn resolve_env_item_drift(
+    /// checks read and the only one whose entries every dialect agrees on; a
+    /// write of `environment.d` or the launchd plist says nothing about
+    /// whether the entry landed in the file that was verified.
+    fn settle_env_items(
         &self,
         apply_id: i64,
         written: &str,
@@ -2501,22 +2564,47 @@ impl<'a> super::Reconciler<'a> {
         if written != to_posix_string(super::primary_env_file(&self.home)) {
             return Ok(());
         }
-        let (env, aliases, _) = super::verify::merge_module_env_aliases(
+        let (env, aliases, origins) = super::verify::merge_module_env_aliases(
             &resolved.merged.env,
             &resolved.merged.aliases,
             &resolved.merged.entry_owners,
             modules,
         );
+        let layers = EntryLayers::of(resolved, modules);
+        for ev in &env {
+            self.state.upsert_managed_resource(
+                super::ENV_VAR_RESOURCE_TYPE,
+                &ev.name,
+                layers.layer(origins.env_owner(&ev.name)),
+                None,
+                Some(apply_id),
+            )?;
+        }
+        for alias in &aliases {
+            self.state.upsert_managed_resource(
+                super::ALIAS_RESOURCE_TYPE,
+                &alias.name,
+                layers.layer(origins.alias_owner(&alias.name)),
+                None,
+                Some(apply_id),
+            )?;
+        }
+        let env_names: Vec<String> = env.iter().map(|ev| ev.name.clone()).collect();
+        let alias_names: Vec<String> = aliases.iter().map(|a| a.name.clone()).collect();
+        self.state
+            .prune_managed_resources_except(super::ENV_VAR_RESOURCE_TYPE, &env_names)?;
+        self.state
+            .prune_managed_resources_except(super::ALIAS_RESOURCE_TYPE, &alias_names)?;
         // One statement for the whole merged set: a per-entry resolve is its own
         // index seek and its own statement per declared env var and alias,
         // inside the apply transaction, where the set-based form seeks once.
-        let keys: Vec<(String, String)> = env
-            .iter()
-            .map(|ev| ("env-var".to_string(), ev.name.clone()))
+        let keys: Vec<(String, String)> = env_names
+            .into_iter()
+            .map(|name| (super::ENV_VAR_RESOURCE_TYPE.to_string(), name))
             .chain(
-                aliases
-                    .iter()
-                    .map(|alias| ("alias".to_string(), alias.name.clone())),
+                alias_names
+                    .into_iter()
+                    .map(|name| (super::ALIAS_RESOURCE_TYPE.to_string(), name)),
             )
             .collect();
         self.state.resolve_drift_keys(apply_id, &keys)

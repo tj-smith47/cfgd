@@ -295,9 +295,14 @@ impl EnvOrigins {
 
     /// The owner token of an env var, unwrapped — for the one line whose
     /// comment names TWO producers and so cannot be composed from a rendered
-    /// comment.
-    fn env_owner(&self, name: &str) -> Option<&str> {
+    /// comment, and for the tracking row an apply records the entry under.
+    pub(super) fn env_owner(&self, name: &str) -> Option<&str> {
         self.0.env.get(name).map(String::as_str)
+    }
+
+    /// The same for an alias.
+    pub(super) fn alias_owner(&self, name: &str) -> Option<&str> {
+        self.0.aliases.get(name).map(String::as_str)
     }
 
     /// The same for an alias line.

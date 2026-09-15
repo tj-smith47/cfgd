@@ -16654,9 +16654,11 @@ const RESULT_LINE_VERBS: &[&str] = &[
     "Checked",
     "Cloned",
     "Committed",
+    "Copied",
     "Created",
     "Decrypted",
     "Deleted",
+    "Dropped",
     "Edited",
     "Encrypted",
     "Enrolled",
@@ -29685,6 +29687,174 @@ fn plan_args() -> PlanArgs {
     }
 }
 
+/// A config source declaring one env var and one alias, subscribed to by a
+/// local profile that declares neither.
+///
+/// `envScope: Interactive` keeps the run off the live-session manager, which a
+/// test host has no shim for; the rows under test come from the file write.
+struct SourceEnvFixture {
+    h: CliTestHarness,
+    _remote: cfgd_core::test_helpers::BareGitRepo,
+    _home: cfgd_core::TestHomeGuard,
+    _staging: tempfile::TempDir,
+    _allow_local: cfgd_core::test_helpers::EnvVarGuard,
+}
+
+impl SourceEnvFixture {
+    fn build() -> Self {
+        let allow_local =
+            cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let staging = tempfile::tempdir().unwrap();
+        let home = cfgd_core::with_test_home_guard(staging.path());
+        let remote = cfgd_core::test_helpers::BareGitRepo::builder()
+            .commit(
+                "acme source",
+                &[
+                    (
+                        "cfgd-source.yaml",
+                        "apiVersion: cfgd.io/v1alpha1\nkind: ConfigSource\nmetadata:\n  name: acme\nspec:\n  provides:\n    profiles:\n      - team\n",
+                    ),
+                    (
+                        "profiles/team.yaml",
+                        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: team\nspec:\n  envScope: Interactive\n  env:\n    - name: ACME_HOME\n      value: /opt/acme\n  aliases:\n    - name: acmeup\n      command: acme update\n",
+                    ),
+                ],
+            )
+            .build();
+        let config = format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: sourced\n  sources:\n    - name: acme\n      origin:\n        type: Git\n        url: {}\n        branch: {}\n      subscription:\n        profile: team\n",
+            remote.url(),
+            remote.head_branch(),
+        );
+        let h = CliTestHarness::builder()
+            .config(&config)
+            .profile(
+                "sourced",
+                "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: sourced\nspec:\n  envScope: Interactive\n  inherits: []\n  modules: []\n",
+            )
+            .build();
+        Self {
+            h,
+            _remote: remote,
+            _home: home,
+            _staging: staging,
+            _allow_local: allow_local,
+        }
+    }
+
+    fn apply(&self) {
+        super::apply::cmd_apply(&self.h.cli(), self.h.printer(), &apply_args(false)).unwrap();
+    }
+
+    /// The `(type, id)` pairs recorded under `source` right now.
+    fn rows(&self, source: &str) -> Vec<(String, String)> {
+        StateStore::open(&self.h.state_path().join("state.db"))
+            .unwrap()
+            .managed_resources_by_source(source)
+            .unwrap()
+            .into_iter()
+            .map(|r| (r.resource_type, r.resource_id))
+            .collect()
+    }
+
+    fn env_file_holds(&self, needle: &str) -> bool {
+        let path = cfgd_core::reconciler::primary_env_file(self._staging.path());
+        std::fs::read_to_string(path).is_ok_and(|body| body.contains(needle))
+    }
+}
+
+fn entry_row(rtype: &str, id: &str) -> (String, String) {
+    (rtype.to_string(), id.to_string())
+}
+
+/// The Remove arm of `cfgd source remove` needs no file action for an entry:
+/// dropping the declaration is the whole removal, and the next apply rewrites
+/// the env file without it and prunes the row with the line.
+#[test]
+#[serial_test::serial]
+fn removing_a_source_and_its_entries_drops_them_from_the_env_file_on_the_next_apply() {
+    let fx = SourceEnvFixture::build();
+    fx.apply();
+    assert!(
+        fx.rows("acme").contains(&entry_row(
+            cfgd_core::reconciler::ENV_VAR_RESOURCE_TYPE,
+            "ACME_HOME"
+        )),
+        "the source's env var is not recorded under it: {:?}",
+        fx.rows("acme")
+    );
+    assert!(fx.env_file_holds("ACME_HOME"));
+
+    super::source::cmd_source_remove(
+        &fx.h.cli(),
+        fx.h.printer(),
+        "acme",
+        false,
+        true,
+        true,
+        false,
+    )
+    .unwrap();
+    fx.apply();
+
+    assert!(
+        !fx.env_file_holds("ACME_HOME"),
+        "the env file still holds a var no layer declares any more"
+    );
+    assert!(
+        !fx.rows(cfgd_core::config::LOCAL_LAYER).contains(&entry_row(
+            cfgd_core::reconciler::ENV_VAR_RESOURCE_TYPE,
+            "ACME_HOME"
+        )),
+        "a row survived the entry it named"
+    );
+}
+
+/// The Keep arm copies the declaration into the local profile, or keeping the
+/// row would be a lie: an entry is regenerated from the declaration on every
+/// apply, so a row re-owned to `local` with nothing declaring it names an entry
+/// the next apply deletes.
+#[test]
+#[serial_test::serial]
+fn keeping_a_removed_sources_entries_leaves_them_declared_locally() {
+    let fx = SourceEnvFixture::build();
+    fx.apply();
+
+    super::source::cmd_source_remove(
+        &fx.h.cli(),
+        fx.h.printer(),
+        "acme",
+        true,
+        false,
+        true,
+        false,
+    )
+    .unwrap();
+    let profile =
+        std::fs::read_to_string(fx.h.config_path().join("profiles").join("sourced.yaml")).unwrap();
+    assert!(
+        profile.contains("ACME_HOME") && profile.contains("acmeup"),
+        "the kept declarations are not in the local profile:\n{profile}"
+    );
+
+    fx.apply();
+    assert!(
+        fx.env_file_holds("ACME_HOME"),
+        "a kept entry left the env file on the next apply"
+    );
+    let local = fx.rows(cfgd_core::config::LOCAL_LAYER);
+    assert!(
+        local.contains(&entry_row(
+            cfgd_core::reconciler::ENV_VAR_RESOURCE_TYPE,
+            "ACME_HOME"
+        )) && local.contains(&entry_row(
+            cfgd_core::reconciler::ALIAS_RESOURCE_TYPE,
+            "acmeup"
+        )),
+        "the kept entries are not recorded under local: {local:?}"
+    );
+}
+
 /// `--yes`; the confirm path has its own test below.
 fn apply_args(dry_run: bool) -> ApplyArgs {
     ApplyArgs {
@@ -31936,8 +32106,15 @@ fn every_merged_env_view_is_built_once_per_command() {
     // Each production construction, by file and count: `cmd_status` and
     // `cmd_status_module`, `cmd_verify`, and `cmd_diff`'s full-machine env
     // path plus `cmd_diff_module`'s scoped Shell section — two commands in
-    // one file, one build each.
-    const EXPECTED: [(&str, usize); 3] = [("status.rs", 2), ("verify.rs", 1), ("diff.rs", 2)];
+    // one file, one build each. `remove.rs` is the one non-reporting member:
+    // `cfgd source remove`'s Keep arm reads the declaration behind each entry
+    // row it re-owns, once for the whole removal.
+    const EXPECTED: [(&str, usize); 4] = [
+        ("status.rs", 2),
+        ("verify.rs", 1),
+        ("diff.rs", 2),
+        ("remove.rs", 1),
+    ];
     const LOOPY: [&str; 8] = [
         "for ", "while ", "loop {", ".map(", ".iter(", ".retain(", ".filter(", "|",
     ];
@@ -35071,6 +35248,7 @@ const HEADER_HATCHED: &[&str] = &[
     "list_show.rs:cmd_module_list",
     "plan.rs:cmd_plan",
     "pull.rs:cmd_pull",
+    "remove.rs:cmd_source_remove",
     "status.rs:cmd_status_module",
 ];
 

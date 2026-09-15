@@ -2125,8 +2125,8 @@ impl DecisionExclusions {
             },
             // The env surface is withheld as a unit, so every per-item and
             // per-file spelling under it is a row the tick did not judge.
-            "env-var"
-            | "alias"
+            super::ENV_VAR_RESOURCE_TYPE
+            | super::ALIAS_RESOURCE_TYPE
             | ENV_RESOURCE_TYPE
             | ENV_RC_RESOURCE_TYPE
             | ENV_SESSION_RESOURCE_TYPE => self.withholds_env_surface(),

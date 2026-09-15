@@ -750,9 +750,12 @@ column `cfgd source remove` looks a subscription's resources up by, so
 removing a source can offer to keep them (they become `local`) or take them off
 the machine. `-o json` carries it as `source` on every `managedResources[]` row.
 
-Some rows read `local` whatever delivered them. A generated env file, its rc
-line and the live session fold every layer into one surface, so no single
-source can claim them.
+A generated env file, its rc line and the live session are surfaces cfgd writes
+whole out of every layer, so those three rows record `local` whatever delivered
+the entries in them. The entries themselves are separate rows: each env var is
+an `env-var` row and each alias an `alias` row, named by the entry, recorded
+under the layer that declared it. A `PATH` entry several layers contributed to
+records `local`, because the value is cfgd's fold of all of them.
 
 The default module report is a summary: one count per declared surface, then
 what the scan found. `Status` leads the block. The report names no scope: you
