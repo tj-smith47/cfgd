@@ -32583,18 +32583,16 @@ fn reconciler_removal_methods() -> Vec<String> {
         );
     }
     // The setter WRITES the field; every other reader is a removal it gates.
-    let mut derived: Vec<String> = declarations
+    // A set, because the names are read back by membership alone and the
+    // collection they come from is ordered by path: two files declaring the
+    // same reader would otherwise both survive and meet the floor below with
+    // one method fewer than it claims.
+    let mut derived: std::collections::BTreeSet<String> = declarations
         .iter()
         .filter(|(_, body)| body.contains("self.prune_rows") && !body.contains("self.prune_rows ="))
         .map(|(name, _)| name.clone())
         .collect();
-    // Sorted first: `dedup` drops only CONSECUTIVE repeats, and the file list
-    // it was collected over is sorted by path, not by name, so two files
-    // declaring the same reader with a third name between them would both
-    // survive and meet the floor below with one method fewer than it claims.
-    derived.sort();
-    derived.dedup();
-    let mut frontier = derived.clone();
+    let mut frontier: Vec<String> = derived.iter().cloned().collect();
     while !frontier.is_empty() {
         let mut next: Vec<String> = Vec::new();
         // A sibling method reaches these through `self.`, which no receiver
@@ -32618,7 +32616,7 @@ fn reconciler_removal_methods() -> Vec<String> {
         derived.len() >= 3,
         "the removal flag is read by {derived:?}, fewer methods than the reconciler holds"
     );
-    derived
+    derived.into_iter().collect()
 }
 
 /// Every production site building a `Reconciler` says which picture it saw.
