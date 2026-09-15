@@ -104,6 +104,8 @@ pub fn cmd_plan(
     };
     // recorded-scope-ok: a plan writes no `applies` row, so it has no scope
     // column to fill
+    // whole-picture-ok: a plan records and retires no managed-resource row at
+    // all, so it never reads the removal half the flag gates
     let reconciler = Reconciler::new(&registry, state)
         .with_config_dir(&config_dir)
         .diffing_installed(&pkg_cx);

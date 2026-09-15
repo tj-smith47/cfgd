@@ -271,6 +271,11 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
             let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &store)
                 .with_config_dir(&target_dir)
                 .diffing_installed(&pkg_cx)
+                // The run is scoped to the modules named on the command line
+                // and resolved no profile, so it saw the same partial picture
+                // `cfgd apply --module` does: an entry another layer still
+                // declares is not an entry that left the config.
+                .pruning_managed_resources(false)
                 // No profile was resolved, so the modules named on the command
                 // line are what the recorded apply was scoped to. Left unset,
                 // the row stores an empty scope and `cfgd status` shows no
@@ -420,6 +425,8 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
 
             // recorded-scope-ok: this arm resolved a real profile, so the
             // recorded scope is the profile name the reconciler already reads
+            // whole-picture-ok: this arm resolved a real profile and named no
+            // module, so the desired set it saw is the whole one
             let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &store)
                 .with_config_dir(&target_dir)
                 .diffing_installed(&pkg_cx);

@@ -305,6 +305,11 @@ pub fn cmd_module_create(
         let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, store)
             .with_config_dir(&config_dir)
             .diffing_installed(&pkg_cx)
+            // The run is scoped to the one module named on the command line and
+            // resolved no profile, so it saw the same partial picture
+            // `cfgd apply --module` does: an entry another layer still declares
+            // is not an entry that left the config.
+            .pruning_managed_resources(false)
             // No profile was resolved, so the module this run is about is what
             // the recorded apply names. Left unset, the row stores an empty
             // scope and `cfgd status` shows no `Scope` until some later run

@@ -3319,6 +3319,129 @@ fn cmd_module_create_with_apply_and_yes_drives_full_apply_sequence() {
     );
 }
 
+/// `cfgd module create --apply` leaves alone the rows its scope never resolved.
+///
+/// The run resolves no profile at all — its desired set is the module the
+/// command line named plus whatever that module depends on — so both halves of
+/// the removal claim are ones it cannot make. Left at the builder's `true`
+/// default it retired every `env-var` and `alias` row on the machine, which is
+/// what `cfgd source remove` reads to find what a subscription put there, and
+/// it resolved the standing findings of the entries it never checked.
+///
+/// Two runs, because the second half only shows on a converged env surface: the
+/// first creates the module whose entries the file then holds, and the second
+/// depends on it, so its plan carries a package install and no env write at
+/// all — which is the state the trailing resolve arm answers in.
+#[test]
+#[serial_test::serial]
+fn module_create_apply_keeps_the_rows_its_scope_never_resolved() {
+    let _pm_guard =
+        crate::cli::registry::PackageManagerFactoryGuard::hermetic_native_quoting_versions();
+    let dir = setup_config_dir();
+    let _home = cfgd_core::with_test_home_guard(dir.path());
+    let cli = super::Cli {
+        state_dir: Some(dir.path().join("state")),
+        ..test_cli(dir.path())
+    };
+    std::fs::write(
+        dir.path().join("cfgd.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n",
+    )
+    .unwrap();
+
+    let create = |args: &super::ModuleCreateArgs| {
+        let (printer, _buf) =
+            cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+        cmd_module_create(&cli, &printer, args).expect("create-with-apply must succeed");
+    };
+
+    // The module whose entries the env surface then holds.
+    let mut base = make_module_create_args("scoped-base-mod");
+    base.apply = true;
+    base.yes = true;
+    base.description = Some("base".to_string());
+    base.env = vec!["QP6_SCOPED_VAR=1".to_string()];
+    base.aliases = vec!["qp6scoped=echo scoped".to_string()];
+    base.packages = vec!["qp6-base-tool".to_string()];
+    create(&base);
+
+    // Another layer's entries, recorded and standing, plus a finding for each
+    // entry the second run DOES declare: the run converges neither.
+    let foreign = [
+        (
+            cfgd_core::reconciler::ENV_VAR_RESOURCE_TYPE,
+            "QP6_ACME_HOME",
+        ),
+        (cfgd_core::reconciler::ALIAS_RESOURCE_TYPE, "qp6acmeup"),
+    ];
+    let declared = [
+        (
+            cfgd_core::reconciler::ENV_VAR_RESOURCE_TYPE,
+            "QP6_SCOPED_VAR",
+        ),
+        (cfgd_core::reconciler::ALIAS_RESOURCE_TYPE, "qp6scoped"),
+    ];
+    {
+        let state = crate::cli::open_state_store(cli.state_dir.as_deref(), cli.scope())
+            .expect("open state");
+        for (rtype, id) in foreign {
+            state
+                .upsert_managed_resource(rtype, id, "acme", None, None)
+                .expect("seed tracking row");
+        }
+        for (rtype, id) in foreign.iter().chain(declared.iter()) {
+            state
+                .record_drift(
+                    rtype,
+                    id,
+                    Some("declared"),
+                    Some("missing or changed"),
+                    "acme",
+                )
+                .expect("seed drift row");
+        }
+    }
+
+    // The scoped run: it depends on the base module, so the base module's
+    // entries are in its declared set and the env surface is already converged.
+    let mut scoped = make_module_create_args("scoped-create-mod");
+    scoped.apply = true;
+    scoped.yes = true;
+    scoped.description = Some("scoped".to_string());
+    scoped.depends = vec!["scoped-base-mod".to_string()];
+    scoped.packages = vec!["qp6-scoped-tool".to_string()];
+    create(&scoped);
+
+    let state =
+        crate::cli::open_state_store(cli.state_dir.as_deref(), cli.scope()).expect("reopen state");
+    let tracked: Vec<(String, String)> = state
+        .managed_resources_by_source("acme")
+        .expect("read tracking rows")
+        .into_iter()
+        .map(|r| (r.resource_type, r.resource_id))
+        .collect();
+    let standing: Vec<(String, String)> = state
+        .unresolved_drift()
+        .expect("read drift rows")
+        .into_iter()
+        .map(|e| (e.resource_type, e.resource_id))
+        .collect();
+    for (rtype, id) in foreign {
+        assert!(
+            tracked.contains(&(rtype.to_string(), id.to_string())),
+            "a module-scoped apply retired the tracking row of an entry it never \
+             resolved: {tracked:?}"
+        );
+    }
+    for (rtype, id) in foreign.iter().chain(declared.iter()) {
+        assert!(
+            standing.contains(&(rtype.to_string(), (*id).to_string())),
+            "a module-scoped apply resolved the finding of an entry it never \
+             checked: {standing:?}"
+        );
+    }
+}
+
 #[test]
 #[serial_test::serial]
 fn cmd_module_create_apply_prices_the_package_it_installs() {

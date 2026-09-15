@@ -99,6 +99,8 @@ pub fn cmd_rollback(
     let registry = ProviderRegistry::new();
     // recorded-scope-ok: a rollback restores a recorded file set and writes no
     // `applies` row of its own
+    // whole-picture-ok: a rollback restores a recorded file set and records or
+    // retires no managed-resource row
     let reconciler = Reconciler::new(&registry, &state);
     // A rollback restores a file set, so it reports under the phase name file
     // work carries everywhere else in cfgd.

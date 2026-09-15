@@ -32500,6 +32500,138 @@ fn no_production_site_outside_format_rs_splits_a_module_id() {
     );
 }
 
+/// The setter the reconciler's removal half is switched through, read off the
+/// builder itself.
+///
+/// The walk below judges every construction site by this name, so a rename of
+/// the setter travels to it instead of leaving the walk asking after a method
+/// nothing spells any more.
+fn pruning_setter_name() -> String {
+    let src = cfgd_core::test_helpers::production_slice_of(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../cfgd-core/src/reconciler/mod.rs"),
+    );
+    let lines: Vec<&str> = src.lines().collect();
+    let at = lines
+        .iter()
+        .position(|l| l.contains("self.prune_rows ="))
+        .expect("the builder writes `prune_rows` from a setter of its own");
+    lines[..at]
+        .iter()
+        .rev()
+        .find_map(|l| {
+            let code = blank_string_literals(l);
+            let (_, rest) = code.split_once("fn ")?;
+            let name: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect();
+            (!name.is_empty() && rest[name.len()..].starts_with('(')).then_some(name)
+        })
+        .expect("the write to `prune_rows` sits in a named function")
+}
+
+/// Every production site building a `Reconciler` says which picture it saw.
+///
+/// Retiring a `managed_resources` row is a claim about the WHOLE desired set,
+/// and the field behind it defaults to `true` — so a verb built by copying a
+/// neighbour applies module-scoped while claiming the whole picture, and
+/// deletes every tracking row the scope it ran under never resolved. That is
+/// how `cfgd init --apply-module` and `cfgd module create --apply` came to
+/// delete every `alias` row on the machine.
+///
+/// The population is deliberately wider than "reaches an apply": whether a
+/// construction site's binding eventually reaches `Reconciler::apply` is a
+/// question about its callees, not about the statement, so every site answers
+/// instead and a site that records no row at all says so in its hatch. The
+/// setter's name is read off the builder, never spelled here.
+#[test]
+fn every_reconciler_a_production_site_builds_says_which_picture_it_saw() {
+    const HATCH: &str = "// whole-picture-ok:";
+    const ANCHOR: &str = "Reconciler::new(";
+    // Under today's counts (7 sites in 6 files), so a deletion does not trip
+    // them, and a root resolving nowhere or at the wrong tree does.
+    const FLOOR_SITES: usize = 6;
+    const FLOOR_FILES: usize = 5;
+
+    let setter = pruning_setter_name();
+    let call = format!("{setter}(");
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let roots = [manifest.join("src"), manifest.join("../cfgd-core/src")];
+    let mut offenders: Vec<String> = Vec::new();
+    let mut answered = 0usize;
+    let mut files: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut sites = 0usize;
+    for root in &roots {
+        for path in rust_sources_under(root) {
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default()
+                .to_string();
+            // A `tests.rs` is a test region whole, carrying no `#[cfg(test)]`
+            // for the cut to read, and a harness is nobody's production route.
+            if name == "tests.rs" || name == "test_helpers.rs" {
+                continue;
+            }
+            let production = cfgd_core::test_helpers::production_slice_of(&path);
+            let lines = cfgd_core::test_helpers::logical_source_lines(&production);
+            let code_at = |k: usize| -> String {
+                let raw: &str = &lines[k].1;
+                blank_string_literals(raw.split("//").next().unwrap_or(raw))
+            };
+            for (i, (n, line)) in lines.iter().enumerate() {
+                if !code_at(i).contains(ANCHOR) {
+                    continue;
+                }
+                sites += 1;
+                files.insert(path.display().to_string());
+                // The builder chain is the whole statement: the setter can be
+                // named on any of its rows.
+                let end = (i..lines.len())
+                    .find(|k| code_at(*k).trim_end().ends_with(';'))
+                    .unwrap_or(i);
+                let chain: String = lines[i..=end]
+                    .iter()
+                    .map(|(_, l)| l.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                // The reason may be too long for one line, so the whole comment
+                // block above the head is read, as well as the chain itself.
+                let hatched = chain.contains(HATCH)
+                    || lines[..i]
+                        .iter()
+                        .rev()
+                        .take_while(|(_, l)| l.trim_start().starts_with("//"))
+                        .any(|(_, l)| l.contains(HATCH));
+                match chain.contains(&call) || hatched {
+                    true => answered += 1,
+                    false => {
+                        offenders.push(format!("{}:{n}: {}", path.display(), line.trim()));
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        sites >= FLOOR_SITES && files.len() >= FLOOR_FILES,
+        "the walk found {sites} construction sites in {} files, under the floor, \
+         so it is reading the wrong tree",
+        files.len()
+    );
+    assert!(
+        offenders.is_empty(),
+        "a run that saw a PARTIAL desired set deletes the tracking rows of every \
+         entry its scope never resolved; each site names `{setter}` or carries \
+         `{HATCH} <why>`:\n{}",
+        offenders.join("\n")
+    );
+    assert_eq!(
+        answered, sites,
+        "every site the walk counted is one it judged"
+    );
+}
+
 /// No CLI slot chooses a drift row's cause by hand.
 ///
 /// The verbose form states both operands and the terse one names the kind of
