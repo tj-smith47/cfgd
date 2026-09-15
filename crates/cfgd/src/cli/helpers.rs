@@ -1663,6 +1663,15 @@ pub(in crate::cli) fn sign_and_attest(
 /// nothing about a package cfgd needed for itself, so it runs under the null
 /// store. `seam_env` is the tool's own `CFGD_*_BIN` override, `""` for a tool
 /// with none.
+///
+/// **Every precondition that can refuse the verb is checked BEFORE this call.**
+/// An install puts a package manager to work on the host, which is the most
+/// expensive thing the verb does and the one thing it cannot take back, so a
+/// run that was always going to refuse must refuse first: `module keys rotate`
+/// asks whether there is a key to rotate, `init` asks whether git is already
+/// here, and `doctor --fix` provisions only the tools its own probes reported
+/// missing. A verb whose whole work IS the tool (`module keys generate`) has
+/// no such precondition and provisions straight away.
 pub(in crate::cli) fn provision_tool(
     printer: &Printer,
     registry: &cfgd_core::providers::ProviderRegistry,

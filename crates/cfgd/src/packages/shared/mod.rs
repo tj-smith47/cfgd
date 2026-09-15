@@ -31,18 +31,22 @@ pub(super) fn canonical_ci_pkg_name(name: &str) -> String {
     name.to_ascii_lowercase()
 }
 
-/// Locate a package-manager binary. First checks the `CFGD_<NAME>_BIN` env-var
-/// seam (tests inject a ToolShim path here); then `$PATH` via
-/// `command_available`; on miss, walks each entry in `fallbacks` and returns
-/// the first that exists. Returns `None` if nothing is found — matches the
-/// `find_X() -> Option<PathBuf>` shape that cargo/pipx/go managers had
-/// open-coded.
+/// Locate a package-manager binary: the `CFGD_<NAME>_BIN` seam, then `$PATH`,
+/// then the first entry of `fallbacks` that exists. `None` when nothing is
+/// found, matching the `find_X() -> Option<PathBuf>` shape the cargo, pipx and
+/// go managers had open-coded.
+///
+/// A SET seam answers alone, the file it names being absent included, the same
+/// rule [`cfgd_core::command_available_with_seam`] and [`brew_available`] hold
+/// to. The fallbacks are absolute paths a manager keeps its toolchain at
+/// (`/usr/local/go/bin/go`), so a seam that fell through to them when the file
+/// it names is absent is a seam that cannot say this host has no go — and a
+/// test emptying `PATH` to mean "no manager here" then puts the host's real
+/// toolchain to work.
 pub(super) fn resolve_tool_with_fallbacks(name: &str, fallbacks: &[PathBuf]) -> Option<PathBuf> {
     if let Ok(custom) = std::env::var(tool_seam_var(name)) {
         let p = PathBuf::from(custom);
-        if p.is_file() {
-            return Some(p);
-        }
+        return p.is_file().then_some(p);
     }
     if let Some(p) = cfgd_core::command_path(name) {
         return Some(p);
@@ -1150,7 +1154,17 @@ pub(super) fn parse_pip_python_version(banner: &str) -> Option<String> {
 /// Return the brew bin/sbin directories for the current platform.
 /// Mirrors `BrewManager::path_dirs`; kept here so `path_with_brew` doesn't need
 /// to depend on the brew submodule.
+///
+/// The seam answers alone, as it does for [`brew_available`]: it names where
+/// brew IS, so the directories brew puts binaries in are read off the same
+/// statement rather than off a prefix the seam contradicts.
 pub(super) fn brew_path_dirs() -> Vec<String> {
+    if let Ok(seam) = std::env::var(BREW_BIN_ENV) {
+        return std::path::Path::new(&seam)
+            .parent()
+            .map(|dir| vec![cfgd_core::to_posix_string(dir)])
+            .unwrap_or_default();
+    }
     if cfg!(target_os = "linux") {
         vec![
             "/home/linuxbrew/.linuxbrew/bin".to_string(),

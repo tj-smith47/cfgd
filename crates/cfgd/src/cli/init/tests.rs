@@ -629,6 +629,12 @@ fn check_prerequisites_returns_true_when_git_available() {
     // tested, so nothing would notice it breaking.
     let _path_lock = cfgd_core::test_helpers::path_env_mutation_guard();
     let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+    let _paths = cfgd_core::test_helpers::CommandPathMemoTtlGuard::always_expired();
+    let _avail = cfgd_core::test_helpers::AvailabilityMemoTtlGuard::always_expired();
+    // A manager answers available from its own install prefix as well as from
+    // PATH, so the missing-git arm below would otherwise put this host's real
+    // package manager to work installing git.
+    let _managers = cfgd_core::test_helpers::NoHostManagers::pinned_missing();
 
     {
         let _probe = cfgd_core::test_helpers::ProbePath::containing(&["git"]);
@@ -2096,12 +2102,9 @@ fn check_prerequisites_with_test_printer() {
     // spawn it.
     let _paths = cfgd_core::test_helpers::CommandPathMemoTtlGuard::always_expired();
     let _avail = cfgd_core::test_helpers::AvailabilityMemoTtlGuard::always_expired();
-    // Homebrew answers available from its install prefix, not from PATH, so an
-    // emptied PATH alone would still leave a manager for cfgd to spawn.
-    let _brew = cfgd_core::test_helpers::EnvVarGuard::set(
-        "CFGD_BREW_BIN",
-        "/nonexistent/cfgd-no-brew-here",
-    );
+    // A manager answers available from its own install prefix as well as from
+    // PATH, so an emptied PATH alone would still leave one for cfgd to spawn.
+    let _managers = cfgd_core::test_helpers::NoHostManagers::pinned_missing();
 
     {
         let _probe = cfgd_core::test_helpers::ProbePath::containing(&["git"]);
@@ -2145,6 +2148,9 @@ fn check_prerequisites_installs_git_through_the_tool_table() {
     let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
     let _paths = cfgd_core::test_helpers::CommandPathMemoTtlGuard::always_expired();
     let _avail = cfgd_core::test_helpers::AvailabilityMemoTtlGuard::always_expired();
+    // Every other manager is pinned missing first, so the shim below is the
+    // only thing on this host `provision_tool` can reach.
+    let _managers = cfgd_core::test_helpers::NoHostManagers::pinned_missing();
     let shim = cfgd_core::test_helpers::ToolShim::install("CFGD_BREW_BIN", 0, "", "");
     let _empty = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
 

@@ -3155,6 +3155,82 @@ impl Drop for GitRefreshWindowGuard {
 // process-global.
 // ---------------------------------------------------------------------------
 
+/// The path every seam [`NoHostManagers`] pins is aimed at: a file no host has.
+///
+/// A seam naming a missing file is what makes a manager answer "not here"
+/// rather than falling through to the host, so the same string is what every
+/// per-test seam pin aims at too.
+pub const ABSENT_SEAM_PATH: &str = "/nonexistent/cfgd-tool-that-is-not-here";
+
+/// Every `CFGD_*_BIN` seam a registered package manager answers its own
+/// availability from.
+///
+/// Held here rather than in the `cfgd` crate because the guard below is what
+/// tests take, and the two crates compile separately. The roster is kept
+/// honest from the other side by
+/// `no_registered_manager_is_reachable_under_the_no_host_managers_guard`,
+/// which asks the real registry whether any manager is still reachable under
+/// the guard: a manager added with a seam missing from this list fails that
+/// pin on every host rather than quietly spawning a real install.
+pub const MANAGER_SEAMS: &[&str] = &[
+    "CFGD_APK_BIN",
+    "CFGD_APT_CACHE_BIN",
+    "CFGD_APT_GET_BIN",
+    "CFGD_BREW_BIN",
+    "CFGD_BREW_CASK_BIN",
+    "CFGD_CARGO_BIN",
+    "CFGD_CHOCO_BIN",
+    "CFGD_DNF_BIN",
+    "CFGD_DPKG_QUERY_BIN",
+    "CFGD_FLATPAK_BIN",
+    "CFGD_GO_BIN",
+    "CFGD_NIX_BIN",
+    "CFGD_NIX_ENV_BIN",
+    "CFGD_NPM_BIN",
+    "CFGD_PACMAN_BIN",
+    "CFGD_PIP3_BIN",
+    "CFGD_PIP_BIN",
+    "CFGD_PIPX_BIN",
+    "CFGD_PKG_BIN",
+    "CFGD_RPM_BIN",
+    "CFGD_RUSTUP_BIN",
+    "CFGD_SCOOP_BIN",
+    "CFGD_SNAP_BIN",
+    "CFGD_WINGET_BIN",
+    "CFGD_YUM_BIN",
+    "CFGD_ZYPPER_BIN",
+];
+
+/// Put every package manager out of this host's reach for the guard's
+/// lifetime, so a test emptying `PATH` to mean "no tool" really has none.
+///
+/// An emptied `PATH` is not that statement on its own: a manager answers from
+/// its own install prefix as well (Homebrew from `/opt/homebrew` on macOS and
+/// `/home/linuxbrew` on Linux), so a verb that provisions a tool would reach a
+/// real `brew install` on the test runner. A seam naming a missing file is the
+/// one answer that carries on every host, so each of [`MANAGER_SEAMS`] is
+/// pinned at [`ABSENT_SEAM_PATH`].
+///
+/// Pair with `#[serial_test::serial]` and declare it inside the window
+/// [`path_env_mutation_guard`] holds, beside the memo pins the emptied `PATH`
+/// needs ([`CommandPathMemoTtlGuard`], [`AvailabilityMemoTtlGuard`]): a memo
+/// filled before the window answers from what the host had.
+pub struct NoHostManagers {
+    _seams: Vec<EnvVarGuard>,
+}
+
+impl NoHostManagers {
+    /// Pin every seam of [`MANAGER_SEAMS`] at [`ABSENT_SEAM_PATH`].
+    pub fn pinned_missing() -> Self {
+        Self {
+            _seams: MANAGER_SEAMS
+                .iter()
+                .map(|seam| EnvVarGuard::set(seam, ABSENT_SEAM_PATH))
+                .collect(),
+        }
+    }
+}
+
 /// RAII guard that captures the prior value of an env var and restores it on
 /// drop (or removes the var if no prior value existed). Use in tests that
 /// mutate process-global env state.

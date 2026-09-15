@@ -1824,6 +1824,7 @@ const ENV_MUTATORS: &[&str] = &[
     "install_named_path_shim",
     "with_test_env_var",
     "ToolShim::install",
+    "NoHostManagers::pinned_missing",
     "CosignTestShim::install",
     "CosignTestShim::builder",
     "env::set_var",

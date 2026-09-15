@@ -2048,12 +2048,9 @@ fn cmd_module_keys_generate_no_cosign_fails() {
     let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
     let _paths = cfgd_core::test_helpers::CommandPathMemoTtlGuard::always_expired();
     let _avail = cfgd_core::test_helpers::AvailabilityMemoTtlGuard::always_expired();
-    // Homebrew answers available from its install prefix, not from PATH, so an
-    // emptied PATH alone would still leave a manager for cfgd to spawn.
-    let _brew = cfgd_core::test_helpers::EnvVarGuard::set(
-        "CFGD_BREW_BIN",
-        "/nonexistent/cfgd-no-brew-here",
-    );
+    // A manager answers available from its own install prefix as well as from
+    // PATH, so an emptied PATH alone would still leave one for cfgd to spawn.
+    let _managers = cfgd_core::test_helpers::NoHostManagers::pinned_missing();
     let _g = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_COSIGN_BIN");
     let _path = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
     let printer = make_printer();
@@ -4646,16 +4643,19 @@ fn cmd_module_keys_rotate_no_cosign_fails() {
     let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
     let _paths = cfgd_core::test_helpers::CommandPathMemoTtlGuard::always_expired();
     let _avail = cfgd_core::test_helpers::AvailabilityMemoTtlGuard::always_expired();
-    // Homebrew answers available from its install prefix, not from PATH, so an
-    // emptied PATH alone would still leave a manager for cfgd to spawn.
-    let _brew = cfgd_core::test_helpers::EnvVarGuard::set(
-        "CFGD_BREW_BIN",
-        "/nonexistent/cfgd-no-brew-here",
-    );
+    // A manager answers available from its own install prefix as well as from
+    // PATH, so an emptied PATH alone would still leave one for cfgd to spawn.
+    let _managers = cfgd_core::test_helpers::NoHostManagers::pinned_missing();
     let _g = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_COSIGN_BIN");
     let _path = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
+    // The key the verb would rotate: its absence is a precondition that
+    // refuses ahead of the install, so a pin about the missing TOOL has to get
+    // past it first.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("cosign.key"), b"old-priv").unwrap();
     let printer = make_printer();
-    let err = cmd_module_keys_rotate(&printer, None, &[]).unwrap_err();
+    let err =
+        cmd_module_keys_rotate(&printer, Some(dir.path().to_str().unwrap()), &[]).unwrap_err();
     assert!(
         err.to_string()
             .contains(&cfgd_core::providers::tool_unobtainable_reason("cosign")),
@@ -5028,13 +5028,30 @@ mod keys_with_fake_cosign {
         );
     }
 
+    /// A rotate with no key to rotate refuses before it provisions anything.
+    ///
+    /// The install is the most expensive thing the verb does and the one thing
+    /// it cannot take back, so a run that was always going to refuse must
+    /// refuse first; before the reorder this verb ran a real `apt install
+    /// cosign` on every CI runner to reach an error it already had.
     #[test]
+    #[serial]
     fn cmd_module_keys_rotate_fails_when_no_existing_private_key() {
-        // No shim needed — the missing-key check fires before cosign is
-        // ever invoked. CFGD_COSIGN_BIN is not set; require_tool_with_seam
-        // falls through to require_tool, which finds the real cosign on
-        // PATH (or surfaces "cosign not found" if missing). Either way,
-        // the precondition error wins.
+        let _path_lock = cfgd_core::test_helpers::path_env_mutation_guard();
+        let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+        let _paths = cfgd_core::test_helpers::CommandPathMemoTtlGuard::always_expired();
+        let _avail = cfgd_core::test_helpers::AvailabilityMemoTtlGuard::always_expired();
+        // No manager of this host is reachable, and the one that would be
+        // logs every argv: the claim is that NOTHING was spawned to get a tool
+        // the verb never needed.
+        let _managers = cfgd_core::test_helpers::NoHostManagers::pinned_missing();
+        let shim = cfgd_core::test_helpers::ToolShim::install("CFGD_BREW_BIN", 0, "", "");
+        let _seam = cfgd_core::test_helpers::EnvVarGuard::set(
+            "CFGD_COSIGN_BIN",
+            cfgd_core::test_helpers::ABSENT_SEAM_PATH,
+        );
+        let _empty = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
+
         let work = tempfile::tempdir().expect("workdir");
         let dir_str = work.path().to_str().unwrap();
 
@@ -5042,13 +5059,14 @@ mod keys_with_fake_cosign {
         let err = cmd_module_keys_rotate(&printer, Some(dir_str), &[])
             .expect_err("missing cosign.key → Err");
         let msg = err.to_string();
-        // require_tool_with_seam might fail first if cosign is missing
-        // on PATH (no env var, no real binary). Accept either error path
-        // here; the rotate-without-key precondition is the one that matters
-        // most, but both are valid early-failures.
         assert!(
-            msg.contains("No existing cosign.key") || msg.contains("cosign not found"),
-            "expected missing-key or cosign-not-installed error: {msg}"
+            msg.contains("No existing cosign.key"),
+            "the precondition is what refuses, not the missing tool: {msg}"
+        );
+        assert_eq!(
+            shim.argv_log(),
+            "",
+            "and no manager was put to work for a run that was always going to refuse"
         );
     }
 

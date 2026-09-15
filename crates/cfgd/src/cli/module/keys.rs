@@ -154,19 +154,14 @@ pub fn cmd_module_keys_rotate(
     dir: Option<&str>,
     artifacts: &[String],
 ) -> anyhow::Result<()> {
-    if let Err(msg) = provision_cosign(printer) {
-        return Err(crate::cli::cli_error(
-            "cosign",
-            "tool_missing",
-            msg,
-            serde_json::json!({}),
-        ));
-    }
-
     let key_dir = dir.unwrap_or(".");
     let old_key = Path::new(key_dir).join("cosign.key");
     let old_pub = Path::new(key_dir).join("cosign.pub");
 
+    // Ahead of the install: a rotate with no key to rotate does no work
+    // whatever cosign this host has, so putting a package manager to work
+    // first spends an install on a run that was always going to refuse. See
+    // `crate::cli::helpers::provision_tool`.
     if !old_key.exists() {
         return Err(crate::cli::cli_error(
             key_dir,
@@ -176,6 +171,15 @@ pub fn cmd_module_keys_rotate(
                 key_dir
             ),
             serde_json::json!({ "dir": key_dir }),
+        ));
+    }
+
+    if let Err(msg) = provision_cosign(printer) {
+        return Err(crate::cli::cli_error(
+            "cosign",
+            "tool_missing",
+            msg,
+            serde_json::json!({}),
         ));
     }
 
@@ -395,7 +399,11 @@ mod tests {
     #[test]
     #[serial]
     fn generate_cosign_missing_returns_error_meta() {
-        let _g = EnvVarGuard::set("CFGD_COSIGN_BIN", "/nonexistent/cosign");
+        // A seam at a path that is not there sends the verb to a package
+        // manager, so every manager is pinned missing too: without it this pin
+        // installs cosign on whoever runs the suite.
+        let _managers = cfgd_core::test_helpers::NoHostManagers::pinned_missing();
+        let _g = EnvVarGuard::set("CFGD_COSIGN_BIN", cfgd_core::test_helpers::ABSENT_SEAM_PATH);
         let (printer, _cap) = Printer::for_test_doc();
         let err = cmd_module_keys_generate(&printer, None).unwrap_err();
         assert!(
@@ -668,7 +676,10 @@ mod tests {
         // Drives the rotate-path tool_missing branch: when
         // require_tool_with_seam reports cosign is missing, rotate must return
         // a tool_missing CliErrorMeta and bail BEFORE attempting any rename.
-        let _g = EnvVarGuard::set("CFGD_COSIGN_BIN", "/nonexistent/cosign");
+        // Every manager is pinned missing, or the absent seam sends the verb to
+        // this host's own package manager to go and get cosign.
+        let _managers = cfgd_core::test_helpers::NoHostManagers::pinned_missing();
+        let _g = EnvVarGuard::set("CFGD_COSIGN_BIN", cfgd_core::test_helpers::ABSENT_SEAM_PATH);
         let tmp = tempfile::tempdir().expect("tempdir");
         let dir_str = tmp.path().to_str().expect("utf8 path");
         // Write a key so the not-found check doesn't short-circuit first.

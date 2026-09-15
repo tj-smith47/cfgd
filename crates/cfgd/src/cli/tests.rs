@@ -20923,12 +20923,9 @@ fn cmd_module_keys_generate_no_cosign_fails() {
     let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
     let _paths = cfgd_core::test_helpers::CommandPathMemoTtlGuard::always_expired();
     let _avail = cfgd_core::test_helpers::AvailabilityMemoTtlGuard::always_expired();
-    // Homebrew answers available from its install prefix, not from PATH, so an
-    // emptied PATH alone would still leave a manager for cfgd to spawn.
-    let _brew = cfgd_core::test_helpers::EnvVarGuard::set(
-        "CFGD_BREW_BIN",
-        "/nonexistent/cfgd-no-brew-here",
-    );
+    // A manager answers available from its own install prefix as well as from
+    // PATH, so an emptied PATH alone would still leave one for cfgd to spawn.
+    let _managers = cfgd_core::test_helpers::NoHostManagers::pinned_missing();
     let _g = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_COSIGN_BIN");
     let _path = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
     let printer = test_printer();
@@ -20953,17 +20950,19 @@ fn cmd_module_keys_rotate_no_cosign_fails() {
     let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
     let _paths = cfgd_core::test_helpers::CommandPathMemoTtlGuard::always_expired();
     let _avail = cfgd_core::test_helpers::AvailabilityMemoTtlGuard::always_expired();
-    // Homebrew answers available from its install prefix, not from PATH, so an
-    // emptied PATH alone would still leave a manager for cfgd to spawn.
-    let _brew = cfgd_core::test_helpers::EnvVarGuard::set(
-        "CFGD_BREW_BIN",
-        "/nonexistent/cfgd-no-brew-here",
-    );
+    // A manager answers available from its own install prefix as well as from
+    // PATH, so an emptied PATH alone would still leave one for cfgd to spawn.
+    let _managers = cfgd_core::test_helpers::NoHostManagers::pinned_missing();
     let _g = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_COSIGN_BIN");
     let _path = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
     let printer = test_printer();
 
-    let result = module::cmd_module_keys_rotate(&printer, None, &[]);
+    // The key the verb would rotate: its absence refuses ahead of the install,
+    // so a pin about the missing TOOL has to get past that precondition first.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("cosign.key"), b"old-priv").unwrap();
+
+    let result = module::cmd_module_keys_rotate(&printer, Some(dir.path().to_str().unwrap()), &[]);
     let err = result
         .expect_err("no cosign and no manager to get it")
         .to_string();
@@ -39304,7 +39303,7 @@ fn brew_only_registry() -> cfgd_core::providers::ProviderRegistry {
 
 /// The path of a file that is certainly not there, for a tool seam that has to
 /// report its tool missing.
-const ABSENT_SEAM_PATH: &str = "/nonexistent/cfgd-tool-that-is-not-here";
+const ABSENT_SEAM_PATH: &str = cfgd_core::test_helpers::ABSENT_SEAM_PATH;
 
 #[test]
 #[serial_test::serial]
@@ -39460,6 +39459,9 @@ fn doctor_fix_installs_every_missing_tool_through_the_tool_table() {
     // a sibling's probe would answer "apt is available" here.
     let _paths = cfgd_core::test_helpers::CommandPathMemoTtlGuard::always_expired();
     let _avail = cfgd_core::test_helpers::AvailabilityMemoTtlGuard::always_expired();
+    // Every other manager is pinned missing first, so the shim below is the
+    // only thing on this host `provision_tool` can reach.
+    let _managers = cfgd_core::test_helpers::NoHostManagers::pinned_missing();
     let shim = cfgd_core::test_helpers::ToolShim::install("CFGD_BREW_BIN", 0, "", "");
     let _sops = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_SOPS_BIN", ABSENT_SEAM_PATH);
     let _empty = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
@@ -39497,6 +39499,9 @@ fn doctor_without_fix_installs_nothing() {
     let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
     let _paths = cfgd_core::test_helpers::CommandPathMemoTtlGuard::always_expired();
     let _avail = cfgd_core::test_helpers::AvailabilityMemoTtlGuard::always_expired();
+    // Every other manager is pinned missing first, so the shim below is the
+    // only thing on this host `provision_tool` can reach.
+    let _managers = cfgd_core::test_helpers::NoHostManagers::pinned_missing();
     let shim = cfgd_core::test_helpers::ToolShim::install("CFGD_BREW_BIN", 0, "", "");
     let _sops = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_SOPS_BIN", ABSENT_SEAM_PATH);
     let _empty = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
@@ -40099,6 +40104,138 @@ fn require_tool_call_line(line: &str) -> bool {
 /// could have converged on its own is left half-configured until somebody
 /// finishes it by hand.
 ///
+/// A verb that can reach [`cfgd_core::providers::provision_tool`], as a test
+/// calls it.
+///
+/// A doctor run is in the population only under `--fix`: the report itself
+/// probes and installs nothing.
+const PROVISIONING_VERB_CALLS: &[&str] = &[
+    "cmd_module_keys_generate(",
+    "cmd_module_keys_rotate(",
+    "check_prerequisites(",
+];
+
+/// No test reaches a real package manager through the tool provisioner.
+///
+/// `provision_tool` falls through to the first manager this host has and runs
+/// its install, so a test whose subject can reach it installs software on
+/// whoever runs the suite: `cmd_module_keys_rotate` ran `apt install cosign` on
+/// every CI runner, and on a developer box it is that person's own machine.
+/// Emptying `PATH` is not enough on its own, because a manager answers
+/// available from its own install prefix as well.
+///
+/// So a declaration in this population holds one of two things: every manager
+/// seam pinned at a path that is not there
+/// ([`cfgd_core::test_helpers::NoHostManagers`]), or the tool's own seam
+/// pointing at something it planted, which `provision_tool` answers from before
+/// any manager is consulted.
+#[test]
+fn no_test_reaches_a_real_package_manager_through_the_tool_provisioner() {
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut population = 0usize;
+    let mut files_read = 0usize;
+    let mut offenders = Vec::new();
+
+    for path in rust_sources_under(&manifest.join("src")) {
+        let body = walked_file_body(&path);
+        if !body.contains("#[test]") {
+            continue;
+        }
+        files_read += 1;
+        let lines: Vec<&str> = body.lines().collect();
+        let mut judged: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for (n, line) in lines.iter().enumerate() {
+            // Blanking the literals is also what keeps this walk from finding
+            // the needles it spells itself.
+            let code = blank_string_literals(line);
+            let verb = PROVISIONING_VERB_CALLS.iter().any(|v| code.contains(v))
+                || ((code.contains("run_doctor(") || code.contains("cmd_doctor("))
+                    && code.contains("true"));
+            if !verb {
+                continue;
+            }
+            // The verb's own declaration spells its name too, so the population
+            // is cut to lines sitting INSIDE a function, which a top-level
+            // declaration's own signature line does not.
+            let (Some(name), Some(_)) =
+                (enclosing_fn_name(&lines, n), enclosing_fn_span(&lines, n))
+            else {
+                continue;
+            };
+            if !judged.insert(name.clone()) {
+                continue;
+            }
+            // The span opens on the declaration's own attributes, so the text
+            // says whether a harness runs it.
+            let text = enclosing_fn_text(&lines, n);
+            if !text.contains("#[test]") {
+                continue;
+            }
+            population += 1;
+            let no_managers = text.contains("NoHostManagers::pinned_missing");
+            // A seam is planted only while it names something that is there: a
+            // seam at a path that is not there falls through to the managers,
+            // which is the whole reason this walk exists. A URL carrying the
+            // same word is not a seam.
+            let absent_seam = text.lines().any(|l| {
+                l.contains("ABSENT_SEAM_PATH") || (l.contains("/nonexistent") && !l.contains("://"))
+            });
+            let planted_seam = (text.contains("CFGD_COSIGN_BIN")
+                || text.contains("CosignTestShim"))
+                && !absent_seam;
+            if !no_managers && !planted_seam {
+                offenders.push(format!("{}: {name}", path.display()));
+            }
+        }
+    }
+
+    assert!(files_read > 0, "the walk read no sources at all");
+    assert!(
+        population >= 10,
+        "the walk found {population} declarations reaching a provisioning verb, \
+         which is fewer than the workspace holds"
+    );
+    assert!(
+        offenders.is_empty(),
+        "these tests can put this host's own package manager to work; pin every \
+         manager missing with `NoHostManagers::pinned_missing()`, or plant the tool's own \
+         seam:\n  {}",
+        offenders.join("\n  ")
+    );
+}
+
+/// Nothing this host runs is reachable while [`NoHostManagers`] is held.
+///
+/// The guard's claim is about the manager REGISTRY, not about the seams it
+/// writes, so it is asked of the registry itself: a manager cfgd gains, or one
+/// whose seam is renamed, fails here rather than in whatever suite next installs
+/// a package on the person running it.
+///
+/// [`NoHostManagers`]: cfgd_core::test_helpers::NoHostManagers
+#[test]
+#[serial_test::serial]
+fn no_registered_manager_is_reachable_under_the_no_host_managers_guard() {
+    let _path_lock = cfgd_core::test_helpers::path_env_mutation_guard();
+    let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+    let _paths = cfgd_core::test_helpers::CommandPathMemoTtlGuard::always_expired();
+    let _avail = cfgd_core::test_helpers::AvailabilityMemoTtlGuard::always_expired();
+    let _managers = cfgd_core::test_helpers::NoHostManagers::pinned_missing();
+    let _empty = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
+
+    let registry = super::build_registry();
+    let reachable: Vec<&str> = registry
+        .package_managers()
+        .iter()
+        .filter(|pm| pm.is_available())
+        .map(|pm| pm.name())
+        .collect();
+    assert!(
+        reachable.is_empty(),
+        "these managers answer available with every seam pinned missing, so a test \
+         holding the guard can still install software on this host: {reachable:?}"
+    );
+}
+
 /// So every call site says which of the two it is. `// provision-route: <cfgd
 /// command>` names the command that installs the tool, and
 /// `// no-provision-route-ok: <why>` states why no command can.
