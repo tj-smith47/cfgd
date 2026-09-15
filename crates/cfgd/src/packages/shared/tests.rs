@@ -802,13 +802,36 @@ fn run_pkg_cmd_command_not_found_maps_to_command_failed() {
     );
 }
 
+/// The seam answers `brew_available` alone, in both directions.
+///
+/// A seam naming a file that is not there is how a test says this host has no
+/// brew, and it is the only way: brew answers available from its own install
+/// prefix as well as from `PATH`, so an emptied `PATH` leaves it reachable and
+/// whatever the test meant to prove missing gets installed for real.
 #[test]
 #[serial_test::serial]
-fn brew_available_returns_bool() {
-    // Exercises brew_available() production function. Serial-gated because
-    // brew_shim tests in packages::brew::tests mutate CFGD_BREW_BIN.
-    let _available = brew_available();
-    // Just verifying it runs without panic
+fn brew_available_answers_from_the_seam_in_both_directions() {
+    let dir = tempfile::tempdir().expect("tempdir");
+
+    let _missing = cfgd_core::test_helpers::EnvVarGuard::set(
+        "CFGD_BREW_BIN",
+        cfgd_core::test_helpers::ABSENT_SEAM_PATH,
+    );
+    assert!(
+        !brew_available(),
+        "a seam naming a file that is not there says this host has no brew"
+    );
+
+    cfgd_core::test_helpers::write_probe_tool(dir.path(), "brew");
+    let planted = cfgd_core::test_helpers::probe_tool_path(dir.path(), "brew");
+    let _present = cfgd_core::test_helpers::EnvVarGuard::set(
+        "CFGD_BREW_BIN",
+        planted.to_str().expect("probe path is valid UTF-8"),
+    );
+    assert!(
+        brew_available(),
+        "and a seam naming a file that IS there says it has one"
+    );
 }
 
 #[test]

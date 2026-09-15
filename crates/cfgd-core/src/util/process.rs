@@ -86,6 +86,11 @@ fn program_file_is_busy(e: &std::io::Error) -> bool {
 /// [`program_file_is_busy`] decides which refusals that covers on this host;
 /// every other error comes straight back, unretried.
 ///
+/// Which hosts refuse at all is a per-platform fact: Linux and the BSDs answer
+/// `ETXTBSY` while the descriptor lives, script and native binary alike, and
+/// Windows answers a sharing violation. macOS refuses neither shape, so the
+/// ladder there never spends a retry.
+///
 /// The spawn count travels beside the outcome so a test can state that the
 /// ladder really ran, a claim the spawned child alone cannot support.
 fn spawn_past_a_busy_program_file(
@@ -1611,9 +1616,15 @@ mod tests {
         );
     }
 
-    // A writable descriptor on the program file is what makes the exec fail
-    // with ETXTBSY, so the probe holds one open to prove the refusal is real,
-    // and the attempt count is what says the ladder waited it out.
+    /// A program file held open for writing: each platform's real answer, and
+    /// what the ladder does about it.
+    ///
+    /// Linux refuses the exec with `ETXTBSY` for as long as the writable
+    /// descriptor lives, so the probe holds one open and the attempt count is
+    /// what says the ladder waited it out. macOS execs the file as it stands,
+    /// so the first attempt is the one that spawns; that arm is asserted rather
+    /// than skipped, because a macOS answer that changed would otherwise leave
+    /// the ladder's behaviour there unstated.
     #[cfg(unix)]
     #[test]
     fn a_program_file_held_open_for_writing_is_spawned_once_the_writer_closes() {
@@ -1626,32 +1637,56 @@ mod tests {
             .open(&program)
             .unwrap();
 
-        let refused = std::process::Command::new(&program)
-            .spawn()
-            .expect_err("a program file open for writing cannot be executed");
-        assert_eq!(refused.kind(), std::io::ErrorKind::ExecutableFileBusy);
+        #[cfg(target_os = "macos")]
+        {
+            std::process::Command::new(&program)
+                .spawn()
+                .expect("macOS execs a program file that is open for writing")
+                .wait()
+                .unwrap();
 
-        let releasing = std::thread::spawn(move || {
-            // The release has to land while the ladder is already retrying, and
-            // 20ms sits well inside its ~160ms budget.
-            // sleep-ok: a spawn attempt publishes no observable to wait on
-            std::thread::sleep(std::time::Duration::from_millis(20));
+            let mut cmd = std::process::Command::new(&program);
+            let (spawned, attempts) = spawn_past_a_busy_program_file(&mut cmd);
+            let status = spawned.expect("nothing refused the spawn").wait().unwrap();
             drop(writer);
-        });
-        let mut cmd = std::process::Command::new(&program);
-        let (spawned, attempts) = spawn_past_a_busy_program_file(&mut cmd);
-        let status = spawned
-            .expect("the ladder must wait the writer out")
-            .wait()
-            .unwrap();
-        releasing.join().unwrap();
 
-        assert!(status.success());
-        assert!(
-            attempts >= 2,
-            "the first spawn was refused, so the child came from a retry; \
+            assert!(status.success());
+            assert_eq!(
+                attempts, 1,
+                "nothing was refused, so nothing was retried; {attempts} attempt(s) \
+                 means macOS began answering ETXTBSY"
+            );
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            let refused = std::process::Command::new(&program)
+                .spawn()
+                .expect_err("a program file open for writing cannot be executed");
+            assert_eq!(refused.kind(), std::io::ErrorKind::ExecutableFileBusy);
+
+            let releasing = std::thread::spawn(move || {
+                // The release has to land while the ladder is already retrying, and
+                // 20ms sits well inside its ~160ms budget.
+                // sleep-ok: a spawn attempt publishes no observable to wait on
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                drop(writer);
+            });
+            let mut cmd = std::process::Command::new(&program);
+            let (spawned, attempts) = spawn_past_a_busy_program_file(&mut cmd);
+            let status = spawned
+                .expect("the ladder must wait the writer out")
+                .wait()
+                .unwrap();
+            releasing.join().unwrap();
+
+            assert!(status.success());
+            assert!(
+                attempts >= 2,
+                "the first spawn was refused, so the child came from a retry; \
              {attempts} attempt(s) means the ladder was never exercised"
-        );
+            );
+        }
     }
 
     /// Only the host's own busy-program refusals reach the retry ladder: a
