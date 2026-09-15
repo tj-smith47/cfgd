@@ -70,6 +70,40 @@ if [[ -n "$WARNINGS" ]]; then
     echo -e "$WARNINGS"
 fi
 
+# --- comment wording: no em dash in a Rust comment ---------------------------
+# An em dash is the one punctuation this repo's prose rules refuse outright, and
+# a comment is where it keeps arriving. Only the comment PART of a line is
+# judged, so a string literal cfgd prints an em dash from (the closing line of a
+# run) is untouched.
+#
+# Enforced on the DELTA, not the baseline: only newly-added comment lines trip
+# this, so a file already holding an em dash can still be edited and the
+# existing ones stay a separate sweep.
+if [ -n "$FILE" ] && [ -f "$FILE" ]; then
+    case "$FILE" in
+        *.rs)
+            GITDIR=$(dirname "$FILE")
+            if git -C "$GITDIR" ls-files --error-unmatch "$FILE" >/dev/null 2>&1; then
+                ADDED=$(git -C "$GITDIR" diff -U0 HEAD -- "$FILE" 2>/dev/null | grep -E '^\+[^+]' || true)
+            else
+                ADDED=$(cat "$FILE")
+            fi
+            EMDASH=$(printf '%s\n' "$ADDED" \
+                       | awk '/\/\// { c = substr($0, index($0, "//")); if (c ~ /—/) print }' \
+                       || true)
+            if [ -n "$EMDASH" ]; then
+                echo
+                echo "EM DASH IN A COMMENT in $FILE"
+                echo "  A comment states the fact in plain punctuation: a colon, a comma,"
+                echo "  parentheses, or a second sentence. Never an em dash."
+                echo "$EMDASH"
+                exit 2
+            fi
+            ;;
+    esac
+fi
+# --- end comment-wording block -----------------------------------------------
+
 # --- output banned patterns -------------------------------------------------
 # Mirrors .claude/scripts/audit.sh rules but per-file (fast).
 # Runs AFTER the CRITICAL/WARNINGS block above so its `exit 2` still wins.
