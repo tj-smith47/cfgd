@@ -4664,7 +4664,9 @@ fn no_walk_silently_drops_a_file_it_enumerated() {
         files += 1;
         let body = walked_file_body(&path);
         let lines: Vec<&str> = body.lines().collect();
-        // Scaffolding carries no `#[cfg(test)]` to cut at and is judged whole;
+        // Scaffolding is judged whole: a `tests.rs` carries no `#[cfg(test)]`
+        // to cut at, and a `test_helpers.rs` carries one whose region is a
+        // fraction of the file;
         // every other file is judged from its first one on, the anchor
         // `production_slice` reads from the other side, so the production
         // carve-out falls out of the REGION and a walk written in an inline test

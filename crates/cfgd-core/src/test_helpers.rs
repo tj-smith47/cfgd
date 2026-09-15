@@ -4928,8 +4928,11 @@ pub fn path_based_chmod_population(crates_dir: &Path) -> ChmodPopulation {
         .collect();
     for path in roots.iter().flat_map(|root| rust_sources_under(root)) {
         let name = path.file_name().unwrap_or_default().to_string_lossy();
-        // A file that IS test scaffolding carries no `#[cfg(test)]` of its own
-        // for the slice to cut at, so it is named out here instead.
+        // Test scaffolding carries no `#[cfg(test)]` of its own for the slice
+        // to cut at, so it is named out here instead. `test_helpers.rs` is
+        // named out for the other reason: it ships as production and holds an
+        // inline test module the slice would cut at, leaving a fraction of the
+        // file behind.
         if name.starts_with("tests")
             || name == "test_helpers.rs"
             || path.parent().is_some_and(|p| p.ends_with("tests"))

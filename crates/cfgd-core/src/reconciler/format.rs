@@ -1602,9 +1602,11 @@ mod tests {
         {
             let relative = crate::to_posix_string(path.strip_prefix(&workspace).unwrap_or(&path));
             let name = relative.rsplit('/').next().unwrap_or(&relative);
-            // A file that IS test scaffolding carries no `#[cfg(test)]` for the
-            // slice to cut at, so it is named out rather than read as
-            // production.
+            // Test scaffolding carries no `#[cfg(test)]` for the slice to cut
+            // at, so it is named out rather than read as production.
+            // `test_helpers.rs` is named out for the other reason: it ships as
+            // production and holds an inline test module the slice would cut at,
+            // leaving a fraction of the file behind.
             if name.starts_with("tests")
                 || name == "test_helpers.rs"
                 || relative.contains("/tests/")
