@@ -542,21 +542,22 @@ pub(super) fn find_npm() -> Option<PathBuf> {
 /// Split out so tests can drive the directory scan against a tempdir without
 /// mutating `$HOME`.
 ///
-/// Windows spells the shell-callable npm `npm.cmd`, and an install there
-/// carries no extensionless copy, so the scan asks for that name as well or it
-/// walks past the only npm the host has.
+/// Windows spells the shell-callable npm `npm.cmd`, and npm's own package ships
+/// it beside the extensionless POSIX script rather than instead of it, so a
+/// Windows tree holds both and only the shim is a file `CreateProcess` can run.
+/// The result is spawned directly, so the runnable name is asked for first
+/// there; off Windows the extensionless script is the only one that runs.
 pub(super) fn find_npm_in_nvm(home: &std::path::Path) -> Option<PathBuf> {
+    let names: &[&str] = match cfg!(windows) {
+        true => &["npm.cmd", "npm"],
+        false => &["npm"],
+    };
     let nvm_dir = home.join(".nvm/versions/node");
     let entries = std::fs::read_dir(&nvm_dir).ok()?;
     for entry in entries.flatten() {
         let bin = entry.path().join("bin");
-        let npm_path = bin.join("npm");
-        if npm_path.exists() {
-            return Some(npm_path);
-        }
-        let shim = bin.join("npm.cmd");
-        if cfg!(windows) && shim.exists() {
-            return Some(shim);
+        if let Some(found) = names.iter().map(|n| bin.join(n)).find(|p| p.exists()) {
+            return Some(found);
         }
     }
     None
@@ -1235,9 +1236,10 @@ mod tests {
     ///
     /// `find_npm` resolves `~` through `expand_tilde`, which reads the test
     /// home, then `USERPROFILE`, then `HOME`, so a Windows host carrying an
-    /// nvm tree is scanned, where a direct `HOME` read walked past it. The file
-    /// planted is the one Windows can run: `npm.cmd`, an install there carrying
-    /// no extensionless copy.
+    /// nvm tree is scanned, where a direct `HOME` read walked past it. BOTH
+    /// files are planted, because npm's own package ships them side by side:
+    /// the extensionless POSIX script is not a file `CreateProcess` can run, so
+    /// a scan returning it is a hard spawn failure rather than a fallback.
     #[cfg(windows)]
     #[test]
     #[serial_test::serial]
@@ -1256,6 +1258,7 @@ mod tests {
         std::fs::create_dir_all(&bin).expect("plant the nvm tree");
         let npm = bin.join("npm.cmd");
         std::fs::write(&npm, b"@echo off\r\n").expect("plant npm.cmd");
+        std::fs::write(bin.join("npm"), b"#!/bin/sh\n").expect("plant the posix script");
         let _profile = cfgd_core::test_helpers::EnvVarGuard::set(
             "USERPROFILE",
             home.path().to_str().expect("utf8 tempdir path"),
@@ -1264,7 +1267,8 @@ mod tests {
         assert_eq!(
             find_npm(),
             Some(npm),
-            "the nvm scan reads the home `USERPROFILE` names"
+            "the nvm scan reads the home `USERPROFILE` names, and returns the \
+             name Windows can run out of the pair npm ships"
         );
     }
 
