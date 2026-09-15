@@ -33120,7 +33120,7 @@ fn every_test_whose_plan_shape_a_host_tool_decides_plants_its_path() {
     const GUARD: &str = "path_env_mutation_guard";
     /// The seams whose answer this host's own tools decide: the two predicates
     /// that probe `PATH`, the reason composed from the table they read, and the
-    /// prerequisite list a mock manager's bootstrap plan carries — which the
+    /// prerequisite list a mock manager's bootstrap plan carries, which the
     /// planner then judges against the machine.
     const TELLS: [&str; 5] = [
         "prerequisite_obtainable(",
@@ -33216,7 +33216,7 @@ fn every_test_whose_plan_shape_a_host_tool_decides_plants_its_path() {
         }
         assert!(
             read >= FLOOR_TESTS[r],
-            "the walk read {read} host-tool tests under {} — under the floor, so it is \
+            "the walk read {read} host-tool tests under {}, under the floor, so it is \
              looking at the wrong root",
             root.display()
         );
@@ -33376,7 +33376,7 @@ fn no_core_production_site_compares_a_manager_name_to_a_bare_script_literal() {
         }
         assert!(
             seen >= FLOOR_FILES[r],
-            "the walk read {seen} files under {} — under the floor, so it is \
+            "the walk read {seen} files under {}, under the floor, so it is \
              looking at the wrong root",
             root.display()
         );
@@ -33503,7 +33503,7 @@ fn every_module_drift_id_names_the_file_it_stands_for() {
         }
         assert!(
             seen >= FLOOR_FILES[r],
-            "the walk read {seen} files under {} — under the floor, so it is \
+            "the walk read {seen} files under {}, under the floor, so it is \
              looking at the wrong root",
             root.display()
         );
@@ -33574,7 +33574,7 @@ fn every_resolved_package_producer_routes_through_the_one_resolver() {
         }
         assert!(
             seen >= FLOOR_FILES[r],
-            "the walk read {seen} files under {} — under the floor, so it is \
+            "the walk read {seen} files under {}, under the floor, so it is \
              looking at the wrong root",
             root.display()
         );
@@ -37219,7 +37219,7 @@ fn no_production_slot_hardcodes_the_arrow_glyph() {
         }
         assert!(
             seen >= FLOOR_FILES[r],
-            "the walk read {seen} files under {} — under the floor, so it is \
+            "the walk read {seen} files under {}, under the floor, so it is \
              looking at the wrong root",
             walk_root.display()
         );
@@ -37317,7 +37317,7 @@ fn no_production_site_hand_rolls_the_v_strip_or_the_owner_token_split() {
         }
         assert!(
             seen >= FLOOR_FILES[r],
-            "the walk read {seen} files under {} — under the floor, so it is \
+            "the walk read {seen} files under {}, under the floor, so it is \
              looking at the wrong root",
             root.display()
         );
@@ -37391,7 +37391,7 @@ fn no_production_site_joins_the_module_cache_segment_by_hand() {
         }
         assert!(
             seen >= FLOOR_FILES[r],
-            "the walk read {seen} files under {} — under the floor, so it is \
+            "the walk read {seen} files under {}, under the floor, so it is \
              looking at the wrong root",
             root.display()
         );
@@ -37458,7 +37458,7 @@ fn every_recorded_origin_names_the_layer_that_delivered_it() {
         }
         assert!(
             seen >= FLOOR_FILES[r],
-            "the walk read {seen} files under {} — under the floor, so it is \
+            "the walk read {seen} files under {}, under the floor, so it is \
              looking at the wrong root",
             root.display()
         );
@@ -37669,7 +37669,7 @@ fn no_serialized_payload_field_is_built_from_a_themed_arrow() {
         }
         assert!(
             seen >= FLOOR_FILES[r],
-            "the walk read {seen} files under {} — under the floor, so it is \
+            "the walk read {seen} files under {}, under the floor, so it is \
              looking at the wrong root",
             root.display()
         );
@@ -38817,8 +38817,8 @@ fn no_serialized_payload_slot_renders_a_path_with_the_host_separator() {
     // Per root, because a serialized payload is composed in both crates: an
     // aggregate file floor is the larger tree's own count, so the smaller one
     // could stop being read entirely and the total still clear it. The span
-    // floor stays whole-walk — it answers whether the tell still finds the
-    // population, not which tree it found it in.
+    // floor stays whole-walk, since it answers whether the tell still finds
+    // the population rather than which tree it found it in.
     const FLOOR_FILES: [usize; 2] = [80, 90];
 
     let serializing = serializing_type_names();
@@ -38871,7 +38871,7 @@ fn no_serialized_payload_slot_renders_a_path_with_the_host_separator() {
         }
         assert!(
             files - before >= FLOOR_FILES[r],
-            "the walk read {} production sources under {} — under the floor, so it \
+            "the walk read {} production sources under {}, under the floor, so it \
              is looking at the wrong root",
             files - before,
             root.display()
@@ -43155,7 +43155,7 @@ fn every_scripts_inventory_a_surface_renders_comes_from_the_one_composer() {
         }
         assert!(
             seen >= FLOOR_FILES[r],
-            "the walk read {seen} files under {} — under the floor, so it is looking at the \
+            "the walk read {seen} files under {}, under the floor, so it is looking at the \
              wrong root",
             walk_root.display()
         );
@@ -43331,7 +43331,7 @@ fn every_hook_table_a_production_site_builds_reads_the_one_hook_set() {
         }
         assert!(
             seen >= *floor,
-            "the walk read {seen} files under {} — under the floor, so it is looking at the \
+            "the walk read {seen} files under {}, under the floor, so it is looking at the \
              wrong root",
             walk_root.display()
         );

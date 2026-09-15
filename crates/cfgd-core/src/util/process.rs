@@ -102,7 +102,7 @@ fn spawn_refusal_is_transient(e: &std::io::Error) -> bool {
 /// turns a perfectly ordinary eight-way filter-script run into
 /// `io error: Too many open files`.
 ///
-/// Raising it is the process's own business — the limit is per-process, the
+/// Raising it is the process's own business: the limit is per-process, the
 /// hard limit is the administrator's statement of the ceiling, and nothing
 /// outside this process observes the change. `RLIM_INFINITY` as the hard limit
 /// does not mean the kernel will hand out that many (macOS caps a process at
