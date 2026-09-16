@@ -1,27 +1,27 @@
-# Pinned (not `latest`): the demo depends on this distro's glibc (2.39, the
-# floor above which Homebrew stops installing its own copy) and on apt's Ruby
-# (3.2, above solargraph's 3.1 floor). A floating tag can land a point release
+# Pinned (not `latest`): the demo depends on this distro's glibc (2.43, above
+# the 2.39 floor past which Homebrew stops installing its own copy) and on
+# apt's Ruby (3.3, above solargraph's 3.1 floor). A floating tag can land a point release
 # that regresses either, and the resulting take fails halfway through the
 # recording rather than at the start of it. Nothing here tracks Homebrew's
 # formula index, which a pin would go stale against — this image ships none of
 # Homebrew at all; cfgd bootstraps it live during the recorded apply.
-FROM ubuntu:24.04
+FROM ubuntu:26.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# ubuntu:24.04 ships a default `ubuntu` user at uid 1000 / gid 1000, which
+# ubuntu:26.04 ships a default `ubuntu` user at uid 1000 / gid 1000, which
 # collides with the uid this image needs `tj` to hold — WORKDIR, the final
 # COPY --chown, and USER all name that account. Remove it before creating tj.
 RUN userdel -r ubuntu
 
-# None of this ships in a bare ubuntu:24.04, and each entry maps to one
+# None of this ships in a bare ubuntu:26.04, and each entry maps to one
 # requirement: sudo (cfgd's apt provider shells out to `sudo apt-get`),
 # git/curl/ca-certificates (the tape's HTTPS clone), build-essential/
 # procps/file (Homebrew's own documented Linux prerequisites), gnupg (the
 # source-trust tape's `git log --format=%G?` signature check, and the key
 # generation + `git commit -S` that satisfies it), less (author.tape pages
 # `cfgd module show`, whose render is twice the recorded terminal's height;
-# ubuntu:24.04 ships only util-linux's `more`, which counts a coloured
+# ubuntu:26.04 ships only util-linux's `more`, which counts a coloured
 # render's SGR escapes as printable width and so breaks every highlighted
 # script body at the wrong column). nvim is deliberately absent — the demo's
 # first beat is `nvim` failing with "command not found" — and none of these
@@ -41,7 +41,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # glibc has shipped the portable `C.utf8` locale (no `locales` package or
-# localedef needed to generate it) since 2.35, well below this image's 2.39 —
+# localedef needed to generate it) since 2.35, well below this image's 2.43 —
 # enough UTF-8 encoding for LazyVim's Nerd Font glyphs and brew's output.
 ENV LANG=C.utf8 \
     LANGUAGE=C.utf8 \
@@ -87,11 +87,12 @@ ENV COLORTERM=truecolor
 # use for. Staged at demo/bin/cfgd before `docker build` runs (see
 # .dockerignore — target/ itself never enters the build context).
 #
-# Built for x86_64-unknown-linux-musl, not the default gnu target: this
-# image's glibc (Ubuntu 24.04, 2.39) is older than the build host's (Ubuntu
-# 26.04, 2.43), and a dynamically-linked gnu binary refuses to run against a
-# libc older than the one it was linked against. The musl build is
-# statically linked with no glibc dependency at all — the same artifact
+# Built for x86_64-unknown-linux-musl, not the default gnu target: a
+# dynamically-linked gnu binary refuses to run against a libc older than the
+# one it was linked against, so a gnu build would tie this image's glibc to
+# the build host's (they match today, at 2.43, and diverge the moment either
+# side bumps). The musl build is statically linked with no glibc dependency
+# at all — the same artifact
 # cfgd's own release pipeline already ships in every deb/rpm/apk package
 # (.anodizer.yaml build id `cfgd-musl`) for exactly this reason.
 #
