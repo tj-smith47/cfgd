@@ -123,13 +123,13 @@ jobs:
       trio: ${{ steps.trio.outputs.list }}
       # Determinism matrix: one entry per released crate with the OS shards
       # it needs — the binary trio across all three OSes, the library crates
-      # (cfgd-schema / cfgd-crd / cfgd-core) linux-only (their preserved dist is source
-      # packaging, OS-independent, but publish-only still requires one).
+      # (cfgd-schema / cfgd-crd / cfgd-core) linux-only (their preserved dist is
+      # source packaging, OS-independent, but publish-only still requires one).
       det_matrix: ${{ steps.trio.outputs.det }}
       # Released crates in crates.io dependency order, space-separated, for
       # dispatch-oidc's per-crate SERIAL cargo publish (cfgd-schema → cfgd-crd →
-      # cfgd-core → cfgd → cfgd-operator → cfgd-csi ∩ released). One crate per dispatch
-      # keeps anodizer's per-crate publish-only loop single-crate, so an
+      # cfgd-core → cfgd → cfgd-operator → cfgd-csi ∩ released). One crate per
+      # dispatch keeps anodizer's per-crate publish-only loop single-crate, so an
       # earlier binstall crate's in-tree Cargo.toml write can never dirty a
       # sibling's clean-tree guard (the v0.6.0 tree-leak blocker).
       publish_order: ${{ steps.trio.outputs.publish }}

@@ -26,7 +26,7 @@ single-source-of-truth wiring.
 
 - crates.io publishing for ALL crates runs once, in the dispatched
   `publish-oidc.yml` (`--publishers cargo`, topo-ordered — see the OIDC bullet
-  below); the crd/core libraries have no other publish target, so they have no
+  below); the schema/crd/core libraries have no other publish target, so they have no
   `publish-crate.yml` leg at all. The binary trio's `publish-crate.yml` calls
   are a matrix (`--skip cargo`, rollback left false) covering only their
   binary distribution — and they run FIRST, ahead of `dispatch-oidc`:
@@ -43,9 +43,9 @@ single-source-of-truth wiring.
   `dispatch-oidc`, and `dispatch-oidc`'s in-job rollback runs only after every
   trio leg has settled, so neither races the other. helm/crossplane/olm gate on
   BOTH `publish-trio` and `dispatch-oidc` success (cargo is no longer transitive
-  via trio). crates.io dep ordering (`cfgd-schema → cfgd-crd → cfgd-core → trio`) is
-  load-bearing and enforced INSIDE anodizer's workspace topo-sort, not the job
-  graph.
+  via trio). crates.io dep ordering (`cfgd-schema → cfgd-crd → cfgd-core →
+  trio`) is load-bearing and enforced INSIDE anodizer's workspace topo-sort,
+  not the job graph.
 - Determinism lanes come from the tag job's `det_matrix` output: trio
   crates shard across all three OSes, library crates linux-only (via
   determinism-shards' `os-labels` input). Publish legs restore their
@@ -69,9 +69,9 @@ single-source-of-truth wiring.
   would re-inherit the caller's `workflow_run` event and re-taint the claim),
   polls it to a verdict, and rolls the tags + the trio's GitHub releases back on
   cargo failure. anodizer topo-sorts the workspace, so one `--publishers cargo`
-  call publishes all six crates in `cfgd-schema → cfgd-crd → cfgd-core → trio` dependency
-  order — the trio's
-  `publish-crate.yml` legs run `--skip cargo` (the exact complement). The
+  call publishes all six crates in `cfgd-schema → cfgd-crd → cfgd-core →
+  trio` dependency order — the trio's `publish-crate.yml` legs run
+  `--skip cargo` (the exact complement). The
   Trusted-Publisher configs on crates.io therefore name `publish-oidc.yml` (the
   file that runs cargo publish), NOT `release.yml`.
 - Atomic release topology: the tag step runs `tag --changelog --push`, which
@@ -162,24 +162,25 @@ single-source-of-truth wiring.
   swept at tag time too, by anchored `version_files` entries whose `match`
   scopes each rewrite to its own crate's line, so each must equal its crate's
   current version and exist on ghcr. A pin the release cut from the checked
-  commit publishes is never asked of ghcr, because that release is still
-  building while CI runs it: either `anodizer tag --dry-run` predicts the
+  commit publishes is asked of ghcr first and forgiven an absence while that
+  release is still building: either `anodizer tag --dry-run` predicts the
   version (the commit is about to be tagged), or the crate's own release tag,
-  composed from its `tag_template` in `.anodizer.yaml`, already exists: on
-  this commit for anodizer's bump commit, behind it for a commit pushed while
-  that release still builds (runs 35131202311 and 35136058425 failed all
-  three pins as MISSING on those two shapes, minutes before the release
-  pushed the images; a release that fails to push its image is red on its
-  own workflow). The guard keeps its hand-maintained branch for a pin no
-  crate enrolls: on a release branch such a pin must equal the predicted
-  version, which is why the guard as an existence check could never pass a
-  pin bump (run 34063783806); off a release branch it may run ahead of the
-  released version, which the release branch's own run then checks exactly.
-  Both guards are registry/anodizer
-  questions rather than Rust ones; they sit in the one job that holds the
-  tools they need (`task`, anodizer on PATH from the action step, docker,
-  helm, yq, jq), and that job checks out with `fetch-depth: 0` because the
-  prediction walks the tags.
+  composed from its `tag_template` in `.anodizer.yaml`, exists and its tagged
+  commit is under two hours old (anodizer's bump commit, or a commit pushed
+  while that release still builds; runs 35131202311 and 35136058425 failed
+  all three pins as MISSING on those two shapes, minutes before the release
+  pushed the images). The window is what keeps ghcr the authority afterwards:
+  a tag survives a cancelled or failed image push (rollback carries
+  `!cancelled()`, and run 35130988198 left all six tags standing), so a tag
+  alone can never vouch for an image. The guard keeps its hand-maintained
+  branch for a pin no crate enrolls: on a release branch such a pin must
+  equal the predicted version, which is why the guard as an existence check
+  could never pass a pin bump (run 34063783806); off a release branch it may
+  run ahead of the released version, which the release branch's own run then
+  checks exactly. Both guards are registry/anodizer questions rather than
+  Rust ones; they sit in the one job that holds the tools they need (`task`,
+  anodizer on PATH from the action step, docker, helm, yq, jq), and that job
+  checks out with `fetch-depth: 0` because the prediction walks the tags.
 - The `rustdoc` job runs `task doc` (`cargo doc --workspace --no-deps
   --document-private-items --all-features` under `RUSTDOCFLAGS="-D warnings"`,
   the flag spelled once as the Taskfile's `RUSTDOC_DENY_WARNINGS` var) as its

@@ -262,17 +262,21 @@ tasks:
       # The chart's three components version independently (agent = appVersion,
       # operator/csi = their own crate versions). All three pins are swept by
       # anodizer's version_files at tag time, so each must name its crate's
-      # current version. A pin the release cut from THIS commit publishes is
-      # never asked of ghcr, because that release is still building when CI
-      # runs: the release either has yet to be tagged (`anodizer tag --dry-run`
-      # predicts it) or is already tagged (the crate's own release tag exists,
-      # on this commit for anodizer's bump commit or behind it for every commit
-      # pushed while that release still builds; a release that fails to push
-      # its image is red on its own workflow). The
-      # `hand` branch below is for a pin no crate enrolls: on a release branch
-      # it must already name the predicted version, and off one it may run
-      # ahead of the released version, which the release branch's own run then
-      # checks exactly. Anything else is asked of ghcr.
+      # current version. Each pin is asked of ghcr, with two exceptions for a
+      # pin the release cut from THIS commit publishes, since that release is
+      # still building when CI runs: the release has yet to be tagged
+      # (`anodizer tag --dry-run` predicts the pin), or it was tagged within
+      # the last two hours (the crate's own release tag exists and its tagged
+      # commit is that recent: anodizer's bump commit itself, or a commit pushed
+      # while that release still builds). The bound keeps the tag arm from
+      # answering every later run, where the pin, the crate version and the
+      # tag agree by construction and only ghcr can say whether the image was
+      # ever pushed. `git tag -l` reads local tags, which `git fetch` never
+      # prunes, so a local run inside the window can pass a tag a rollback
+      # deleted on origin; CI clones fresh. The `hand` branch below is for a
+      # pin no crate enrolls: on a release branch it must already name the
+      # predicted version, and off one it may run ahead of the released
+      # version, which the release branch's own run then checks exactly.
       - cmd: |
           set -e
           predicted=$(${ANODIZER_BIN:-anodizer} tag --dry-run 2>/dev/null | sed -n 's/^anodizer-output versions=//p')
@@ -292,10 +296,11 @@ tasks:
             release_tag=$(jq -rn --argjson t "$templates" --arg c "$crate" --arg v "$tag" '$t[$c] // empty | sub("\\{\\{ *Version *\\}\\}"; $v)')
             if [ "$tag" = "$expected" ] && [ "$tag" = "$next" ]; then
               echo "OK       $ref (published by the release cut from this commit)"
-            elif [ "$tag" = "$expected" ] && [ -n "$release_tag" ] && printf '%s\n' "$tagged" | grep -qxF "$release_tag"; then
-              echo "OK       $ref (published by the release tagged $release_tag)"
             elif [ "$tag" = "$expected" ] && docker manifest inspect "$ref" >/dev/null 2>&1; then
               echo "OK       $ref"
+            elif [ "$tag" = "$expected" ] && [ -n "$release_tag" ] && printf '%s\n' "$tagged" | grep -qxF "$release_tag" \
+                && [ "$(git log -1 --format=%ct "$release_tag" 2>/dev/null || echo 0)" -gt "$(( $(date -u +%s) - 7200 ))" ]; then
+              echo "OK       $ref (the release tagged $release_tag is still pushing its image)"
             elif [ "$tag" = "$expected" ]; then
               echo "MISSING  $ref"; failed=1
             elif [ "$hand" = true ] && [ "$on_release" = 0 ] && [ "$(printf '%s\n%s\n' "$now" "$tag" | sort -V | tail -1)" = "$tag" ]; then
