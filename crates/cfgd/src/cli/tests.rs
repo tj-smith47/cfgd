@@ -30006,6 +30006,85 @@ fn plan_preview_says_what_a_withheld_decision_would_put_on_the_machine() {
         1,
         "the instruction is ONE hint under the block, never a per-row suffix:\n{output}"
     );
+    assert_closes_on_decisions_hint(&output, "cfgd plan");
+}
+
+/// Where the decisions instruction LANDS, read off a real render: flush left,
+/// a blank line above it, and nothing but its own `$` command lines after it.
+///
+/// The source-level pin says which function emits the hint; it cannot see a
+/// caller that keeps printing afterwards, which is exactly how the hint came to
+/// sit in the middle of an apply report with a whole `Caveats` section still to
+/// come.
+fn assert_closes_on_decisions_hint(output: &str, surface: &str) {
+    let head = format!("→ {}", cfgd_core::reconciler::MSG_ANSWER_DECISIONS);
+    let lines: Vec<&str> = output.lines().collect();
+    let at = lines
+        .iter()
+        .position(|l| *l == head)
+        .unwrap_or_else(|| panic!("{surface} closes on `{head}`, flush left:\n{output}"));
+    // Consecutive hints are ONE group under a single blank line, so the blank
+    // is looked for above the group rather than above this hint.
+    let mut top = at;
+    while top > 0 {
+        let above = lines[top - 1].trim_start();
+        if above.starts_with("→ ") || above.starts_with("$ ") {
+            top -= 1;
+        } else {
+            break;
+        }
+    }
+    assert!(
+        top > 0 && lines[top - 1].trim().is_empty(),
+        "{surface}'s closing hints open on a blank line:\n{output}"
+    );
+    // Its own `$ ` payload is part of the hint; anything else below it is the
+    // surface still talking after its last word.
+    assert!(
+        lines[at + 1..]
+            .iter()
+            .all(|l| l.trim().is_empty() || l.trim_start().starts_with("$ ")),
+        "{surface} renders nothing after its closing hint:\n{output}"
+    );
+}
+
+/// The same position on the surface the source-level pin cannot reach: an
+/// executing apply, whose caller keeps printing after the run's own rollup.
+/// The decisions hint belongs after all of it, or it closes nothing.
+#[test]
+#[serial_test::serial]
+fn apply_closes_on_the_decisions_hint_after_its_caveats() {
+    let f = decision_fixture_shaped(DecisionShape {
+        // The env write is what earns this run a caveat: `print_caveats` adds
+        // the re-source reminder for the file the apply just wrote, and prints
+        // it after the run has finished reporting on itself. `Interactive`
+        // keeps the run off the live-session manager a test host has no shim
+        // for.
+        extra_profile_spec: "  envScope: Interactive
+  env:
+    - name: ACME_HOME
+      value: /opt/acme
+",
+        ..Default::default()
+    });
+    f.with_pending_decision();
+
+    super::apply::cmd_apply(&f.h.cli(), f.h.printer(), &apply_args(false)).unwrap();
+    let output = cfgd_core::output::strip_ansi(&f.h.output());
+
+    let caveat = output
+        .lines()
+        .position(|l| l.starts_with("→ Run `source "))
+        .unwrap_or_else(|| panic!("the fixture earns a caveat of its own:\n{output}"));
+    let hint = output
+        .lines()
+        .position(|l| l == format!("→ {}", cfgd_core::reconciler::MSG_ANSWER_DECISIONS))
+        .unwrap_or_else(|| panic!("the apply renders the decisions hint:\n{output}"));
+    assert!(
+        caveat < hint,
+        "the caveat the caller prints comes BEFORE the run's closing hint:\n{output}"
+    );
+    assert_closes_on_decisions_hint(&output, "cfgd apply");
 }
 
 #[test]
@@ -30957,8 +31036,8 @@ fn a_foreign_config_plan_names_the_truth_instead_of_a_decide_that_will_refuse() 
         "no instruction naming a command that will refuse:\n{output}"
     );
     assert!(
-        output.contains("machine's own config"),
-        "the suffix says where the item CAN be decided:\n{output}"
+        output.contains("Not yet recorded") && output.contains("$ cfgd sync"),
+        "the instruction names the command that records the item instead:\n{output}"
     );
 }
 
@@ -34181,13 +34260,32 @@ fn every_decisions_hint_closes_the_surface_not_its_section() {
         let lines: Vec<&str> = body.lines().collect();
         let composer = fn_body(&lines, func)
             .unwrap_or_else(|| panic!("{}: `{func}` is still declared", path.display()));
-        if composer.contains("section.hint(") || composer.contains("sub.hint(") {
+        // The receiver spellings a section builder is bound to in these
+        // composers (`|s|`, `|s, rows|`), plus the hint chained straight onto
+        // the expression that built the rows.
+        const SECTION_RECEIVERS: &[&str] = &["section.hint(", "sub.hint(", "s.hint(", ").hint("];
+        if let Some(tell) = SECTION_RECEIVERS.iter().find(|t| composer.contains(**t)) {
             offenders.push(format!(
-                "{}: `{func}` addresses the decisions hint to a section — it closes the \
-                 surface, so it belongs to the document (`doc.hint(` / `.hint(` on the \
-                 `Doc` being returned) or to the run's own `render_withheld_hints`",
+                "{}: `{func}` addresses the decisions hint to a section (`{tell}`) — it \
+                 closes the surface, so it belongs to the document (`doc.hint(` / `.hint(` \
+                 on the `Doc` being returned) or to the run's own `render_withheld_hints`",
                 path.display()
             ));
+        }
+        // Stronger than the receiver spelling, which a rename escapes: the
+        // hint's own line must lie outside every section closure the composer
+        // opens, whatever the builder inside it is called.
+        for (start, end) in section_argument_spans(&composer) {
+            for sym in SYMBOLS {
+                if composer[start..end].contains(sym) {
+                    offenders.push(format!(
+                        "{}: `{func}` emits `{sym}` inside a `.section(` closure — the \
+                         instruction closes the surface, so it renders after the section, \
+                         on the document itself",
+                        path.display()
+                    ));
+                }
+            }
         }
         assert!(
             seen.contains(*func),
@@ -34215,9 +34313,60 @@ fn every_decisions_hint_closes_the_surface_not_its_section() {
     }
     assert!(
         offenders.is_empty(),
-        "a decisions section closes on its instruction from inside, on every surface:\n{}",
+        "a decisions instruction closes the surface, never the section it names:\n{}",
         offenders.join("\n")
     );
+}
+
+/// The argument span of every `.section(` / `.section_if_nonempty(` call in
+/// `code`: from the `(` that opens the call to the `)` that closes it, closure
+/// body and all, so a caller can ask whether a line lies inside one.
+///
+/// Nested sections nest their spans; the outer span covers the inner, which is
+/// what the caller wants — a hint inside either is inside a section.
+fn section_argument_spans(code: &str) -> Vec<(usize, usize)> {
+    // Parens inside a string literal or a comment are not the code's; both are
+    // blanked to spaces so every offset still indexes `code` itself.
+    let scan: String = code
+        .lines()
+        .map(|line| {
+            let blanked = cfgd_core::test_helpers::blank_string_literals(line);
+            match blanked.find("//") {
+                Some(at) => format!("{}{}", &blanked[..at], " ".repeat(blanked.len() - at)),
+                None => blanked,
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let code = scan.as_str();
+    let bytes = code.as_bytes();
+    let mut spans = Vec::new();
+    for tell in [".section(", ".section_if_nonempty("] {
+        let mut from = 0usize;
+        while let Some(rel) = code[from..].find(tell) {
+            let open = from + rel + tell.len() - 1;
+            let mut depth = 0i32;
+            let mut close = None;
+            for (i, b) in bytes.iter().enumerate().skip(open) {
+                match b {
+                    b'(' => depth += 1,
+                    b')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            close = Some(i);
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if let Some(close) = close {
+                spans.push((open, close));
+            }
+            from = open + 1;
+        }
+    }
+    spans
 }
 
 /// The call's argument text: from the `(` that follows `at` on line `n` to
@@ -34341,7 +34490,9 @@ fn is_composed_call(arg: &str) -> bool {
 /// daemon-less machine never runs, leaving the reader to type the command the
 /// tool had declined to name. Every other hint in the take named
 /// its command in backticks; the walk holds the whole `crates/cfgd/src/cli/`
-/// population to that shape.
+/// population to that shape, and the reconciler's with it — a run composes its
+/// own closing hints (`ApplyRun::withheld_hints`), so a hint built there is
+/// the same class as one built beside the verb that prints it.
 ///
 /// A hint whose text is built elsewhere (`answer_decisions_hint`,
 /// `success_next_step`, an error's remediation lines) is out of class
@@ -34354,53 +34505,85 @@ fn is_composed_call(arg: &str) -> bool {
 /// `every_hint_command_block_line_comes_from_the_one_composer` holds those.
 #[test]
 fn every_closing_hint_names_a_command() {
-    let sources = cli_production_sources();
+    let cli = cli_production_sources();
+    // The reconciler's own hint texts. It holds none the walk can read today
+    // (every one is composed), so it is floored on the sources it must still
+    // be reading rather than on a count of nothing.
+    let core: Vec<(std::path::PathBuf, String)> = core_production_sources()
+        .into_iter()
+        .filter(|(p, _)| p.components().any(|c| c.as_os_str() == "reconciler"))
+        .collect();
+    assert!(
+        core.len() >= 20,
+        "the reconciler tree stopped contributing sources — it read {}",
+        core.len()
+    );
+    let trees = [("cli", cli), ("reconciler", core)];
+    let sources: Vec<(std::path::PathBuf, String)> = trees
+        .iter()
+        .flat_map(|(_, files)| files.iter().cloned())
+        .collect();
     let consts = str_consts(&sources);
-    let mut checked = 0usize;
+    let mut per_root: Vec<(&str, usize)> = Vec::new();
     let mut offenders = Vec::new();
-    for (path, body) in &sources {
-        let lines: Vec<&str> = body.lines().collect();
-        for (n, line) in lines.iter().enumerate() {
-            let trimmed = line.trim_start();
-            if trimmed.starts_with("//")
-                || line.contains("fn hint(")
-                || line.contains("fn next_step(")
-            {
-                continue;
-            }
-            // Judged by the block walk instead, and NOT counted here: a floor
-            // that counts what it never asserted on can be met by hints this
-            // walk no longer reaches.
-            if line.contains(".hint_commands(") {
-                continue;
-            }
-            let Some(at) = line.find(".hint(").or_else(|| line.find("next_step(")) else {
-                continue;
-            };
-            let arg = call_argument(&lines, n, at);
-            // A hint COMPOSED by another function is that function's class,
-            // pinned by its own producer; the operand it takes here (a command
-            // name, a subject) is not the hint's text.
-            if is_composed_call(&arg) {
-                continue;
-            }
-            let text = first_string_literal(&arg).or_else(|| {
-                let ident = arg.trim().rsplit("::").next().unwrap_or_default().trim();
-                consts.get(ident).cloned()
-            });
-            let Some(text) = text else {
-                continue;
-            };
-            checked += 1;
-            if text.matches('`').count() < 2 && !label_hatched(&lines, n, "// hint-ok:") {
-                offenders.push(format!("{}:{}: {}", path.display(), n + 1, text));
+    for (tree, files) in &trees {
+        let mut checked = 0usize;
+        for (path, body) in files {
+            let lines: Vec<&str> = body.lines().collect();
+            for (n, line) in lines.iter().enumerate() {
+                let trimmed = line.trim_start();
+                if trimmed.starts_with("//")
+                    || line.contains("fn hint(")
+                    || line.contains("fn next_step(")
+                {
+                    continue;
+                }
+                // Judged by the block walk instead, and NOT counted here: a floor
+                // that counts what it never asserted on can be met by hints this
+                // walk no longer reaches.
+                if line.contains(".hint_commands(") {
+                    continue;
+                }
+                let Some(at) = line.find(".hint(").or_else(|| line.find("next_step(")) else {
+                    continue;
+                };
+                let arg = call_argument(&lines, n, at);
+                // A hint COMPOSED by another function is that function's class,
+                // pinned by its own producer; the operand it takes here (a command
+                // name, a subject) is not the hint's text.
+                if is_composed_call(&arg) {
+                    continue;
+                }
+                let text = first_string_literal(&arg).or_else(|| {
+                    let ident = arg.trim().rsplit("::").next().unwrap_or_default().trim();
+                    consts.get(ident).cloned()
+                });
+                let Some(text) = text else {
+                    continue;
+                };
+                checked += 1;
+                if text.matches('`').count() < 2 && !label_hatched(&lines, n, "// hint-ok:") {
+                    offenders.push(format!("{}:{}: {}", path.display(), n + 1, text));
+                }
             }
         }
+        per_root.push((tree, checked));
     }
-    assert!(
-        checked >= 23,
-        "the walk no longer reaches the hints it exists to hold — it found {checked}"
-    );
+    // One floor per tree, never an aggregate: the reconciler tree holds no
+    // hint text of its own today, and floored together the CLI tree could go
+    // dark behind a count the other one met.
+    for (tree, floor) in [("cli", 23usize), ("reconciler", 0)] {
+        let found = per_root
+            .iter()
+            .find(|(t, _)| *t == tree)
+            .map(|(_, c)| *c)
+            .unwrap_or_else(|| panic!("the {tree} tree was walked"));
+        assert!(
+            found >= floor,
+            "the walk no longer reaches the hints it exists to hold in {tree} — it found \
+             {found}"
+        );
+    }
     assert!(
         offenders.is_empty(),
         "a closing hint names the command the reader runs next, in backticks:\n{}",

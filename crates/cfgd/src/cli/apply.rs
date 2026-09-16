@@ -496,6 +496,13 @@ pub fn run_apply(
             .with_withheld(&withheld)
             .decisions_answerable(owns_the_store)
             .preview_only();
+        // Preview orphaned custom-manager packages a real apply would prune
+        // (read-only — execute nothing here). Same gating + query as the apply
+        // path so the preview matches the action. Above the preview, because
+        // the preview's last word is its closing hint.
+        if prune_eligible {
+            preview_orphaned_custom_packages(state, &registry, printer);
+        }
         display_plan_preview(
             &run,
             &plan,
@@ -517,12 +524,6 @@ pub fn run_apply(
                 withheld: &withheld,
             },
         );
-        // Preview orphaned custom-manager packages a real apply would prune
-        // (read-only — execute nothing here). Same gating + query as the apply
-        // path so the preview matches the action.
-        if prune_eligible {
-            preview_orphaned_custom_packages(state, &registry, printer);
-        }
         return Ok(ApplyOutcome::success());
     }
 
@@ -691,6 +692,7 @@ pub fn run_apply(
         reconciler::RunDisposition::Applied { result, backups } => (result, backups),
         reconciler::RunDisposition::Declined => {
             printer.status_simple(Role::Info, "Aborted");
+            run.render_withheld_hints(printer);
             printer.emit(Doc::new().with_data(ApplyOutput::aborted()));
             return Ok(ApplyOutcome::success());
         }
@@ -722,6 +724,7 @@ pub fn run_apply(
         // An aborted run can still have completed the Env phase, so the user's
         // shell is just as stale as after a full apply.
         print_caveats(&result, printer);
+        run.render_withheld_hints(printer);
         return Ok(ApplyOutcome {
             status: result.status,
             aborted_code: Some(code),
@@ -730,6 +733,10 @@ pub fn run_apply(
 
     let mut status = result.status.clone();
     print_caveats(&result, printer);
+    // The run's own last word, after the `Caveats` section the caller prints:
+    // a closing hint closes the SURFACE, and only the caller knows where the
+    // surface ends.
+    run.render_withheld_hints(printer);
 
     // Link source commits to this apply for provenance tracking
     if !source_commits.is_empty() {

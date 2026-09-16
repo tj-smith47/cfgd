@@ -740,8 +740,11 @@ impl<'a> ApplyRun<'a> {
             // and keep the instruction everywhere.
             let unrecorded = withheld.pending.iter().any(|d| d.id == 0);
             hints.push(if unrecorded && !self.decide_answerable {
-                "Not yet recorded — answer from the machine's own config, or pass --state-dir"
-                    .into()
+                crate::output::HintCommands::new(
+                    "Not yet recorded — the fetch that composed them records their rows, \
+                     or point this run at the store that already holds them:",
+                    ["cfgd sync", "cfgd apply --state-dir <dir>"],
+                )
             } else {
                 super::answer_decisions_hint(withheld.pending.len())
             });
@@ -752,8 +755,11 @@ impl<'a> ApplyRun<'a> {
         hints
     }
 
-    /// [`Self::withheld_hints`] emitted at the surface's own depth. Every
-    /// surface that renders this run calls it once, after its verdict.
+    /// [`Self::withheld_hints`] emitted at the surface's own depth.
+    ///
+    /// The CALLER owns the call, and makes it last: a run's own `execute`
+    /// returns while its caller still has caveats to print, so a hint emitted
+    /// from inside would land above a whole section again.
     pub fn render_withheld_hints(&self, printer: &Printer) {
         for hint in self.withheld_hints() {
             printer.hint(hint);
@@ -776,22 +782,6 @@ impl<'a> ApplyRun<'a> {
     /// work) → execute → `Backups` pseudo-phase → rollup. Never exits, and
     /// never prompts on [`Confirm::Skip`].
     pub fn execute(
-        &self,
-        printer: &Printer,
-        confirm: Confirm,
-        exec: &mut dyn RunExecutor,
-    ) -> Result<RunDisposition> {
-        let disposition = self.execute_body(printer, confirm, exec);
-        // Last, whatever the run had to say about itself: the decisions that
-        // pruned it are the reader's next move, and a run that failed outright
-        // has a different one.
-        if disposition.is_ok() {
-            self.render_withheld_hints(printer);
-        }
-        disposition
-    }
-
-    fn execute_body(
         &self,
         printer: &Printer,
         confirm: Confirm,
