@@ -1,10 +1,10 @@
 Apply
   Config   <CONFIG_DIR>/cfgd.yaml
   Profile  tiny
-  Phases   Prerequisites, Packages, Files
+  Phases   Bootstrap, Packages, Files
   Actions  3 planned
 
-Phase: Prerequisites
+Phase: Bootstrap
   cfgd:managers
     ✓ refresh brew index (XXs)
 

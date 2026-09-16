@@ -205,6 +205,13 @@ impl SystemConfigurator for KdeConfigConfigurator {
             || cfgd_core::command_available("kwriteconfig5")
     }
 
+    fn required_tool(&self) -> Option<&'static str> {
+        // The v6 binary alone: a host with neither copy gets the current
+        // generation installed, and one already holding v5 answers available
+        // above and is never routed here.
+        Some("kwriteconfig6")
+    }
+
     fn current_state(&self) -> Result<serde_yaml::Value> {
         Ok(serde_yaml::Value::Mapping(serde_yaml::Mapping::new()))
     }
@@ -314,10 +321,10 @@ impl SystemConfigurator for KdeConfigConfigurator {
                         args.extend_from_slice(&["--type", t]);
                     }
                     args.push(&val_str);
-                    let output = cfgd_core::tool_cmd(KWRITECONFIG_BIN_ENV, write_cmd)
-                        .args(&args)
-                        .output()
-                        .map_err(cfgd_core::errors::CfgdError::Io)?;
+                    let output = cfgd_core::command_output(
+                        cfgd_core::tool_cmd(KWRITECONFIG_BIN_ENV, write_cmd).args(&args),
+                    )
+                    .map_err(cfgd_core::errors::CfgdError::Io)?;
 
                     if !output.status.success() {
                         cx.report(

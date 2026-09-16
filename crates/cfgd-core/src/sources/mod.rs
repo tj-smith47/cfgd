@@ -18,12 +18,34 @@ use std::path::{Path, PathBuf};
 use git2::{FetchOptions, RemoteCallbacks, Repository};
 use semver::{Version, VersionReq};
 
+use crate::PathDisplayExt;
 use crate::config::{
     ConfigSourceDocument, OriginSpec, OriginType, ProfileDocument, ResolvedProfile, SourceSpec,
     parse_config_source,
 };
 use crate::errors::{Result, SourceError};
 use crate::output::{Printer, Role};
+
+/// Tighten a cache directory cfgd just created to owner-only, reporting a refusal.
+///
+/// The chmod goes through [`crate::set_file_permissions_nofollow`]: `cfgd sync`
+/// can be run elevated, the source cache sits under a HOME the invoking user
+/// owns, and a path-based chmod there lands on whatever a link they planted in
+/// the window resolves to. A refusal is a fact about the machine (something
+/// replaced the directory cfgd created one statement ago), so it is reported
+/// rather than dropped, while the load itself continues: the mode is defence in
+/// depth, and failing the fetch over it would strand a usable checkout.
+fn restrict_cache_dir_to_owner(dir: &Path, printer: &Printer) {
+    if let Err(e) = crate::set_file_permissions_nofollow(dir, 0o700) {
+        printer.status_simple(
+            Role::Warn,
+            crate::fold_home_in_text(&format!(
+                "Could not restrict {} to owner-only access: {e}",
+                dir.posix()
+            )),
+        );
+    }
+}
 
 pub(crate) const SOURCE_MANIFEST_FILE: &str = "cfgd-source.yaml";
 const PROFILES_DIR: &str = "profiles";
@@ -468,7 +490,7 @@ impl SourceManager {
             message: format!("cannot create cache dir: {e}"),
         })?;
         if created_cache_root {
-            let _ = crate::set_file_permissions(&self.cache_dir, 0o700);
+            restrict_cache_dir_to_owner(&self.cache_dir, printer);
         }
 
         self.load_source_locked(spec, printer)
@@ -804,6 +826,7 @@ impl SourceManager {
         );
         cmd.args([
             "-C",
+            // absolute-path-ok: git argv, not a display slot
             &source_dir.display().to_string(),
             "fetch",
             "origin",
@@ -902,6 +925,7 @@ impl SourceManager {
             &spec.origin.branch,
             "--end-of-options",
             &spec.origin.url,
+            // absolute-path-ok: the clone destination in git argv, not a display slot
             &source_dir.display().to_string(),
         ]);
 
@@ -913,7 +937,7 @@ impl SourceManager {
         let cli_result = printer.run_silent(&mut cmd, &label);
         if matches!(&cli_result, Ok(output) if output.status.success()) {
             // Restrict cloned directory to owner-only access
-            let _ = crate::set_file_permissions(source_dir, 0o700);
+            restrict_cache_dir_to_owner(source_dir, printer);
             return Ok(());
         }
 
@@ -955,7 +979,7 @@ impl SourceManager {
         clone_result?;
 
         // Restrict cloned directory to owner-only access
-        let _ = crate::set_file_permissions(source_dir, 0o700);
+        restrict_cache_dir_to_owner(source_dir, printer);
 
         Ok(())
     }
@@ -1045,7 +1069,7 @@ impl SourceManager {
             }
             .into());
         }
-        let _ = crate::set_file_permissions(source_dir, 0o700);
+        restrict_cache_dir_to_owner(source_dir, printer);
 
         // Shallow-first/stepped-deepen/unbounded fetch of the pinned commit, then
         // detached checkout. `fetch_ref_with_fallback` inserts `--end-of-options`.
@@ -2065,6 +2089,7 @@ pub fn git_clone_with_fallback(
             return Err(format!(
                 // native-ok: human-facing error message
                 "Cannot inspect clone destination {}: {e}",
+                // absolute-path-ok: a human-facing error names the directory as the filesystem does
                 target.display()
             ));
         }
@@ -2073,12 +2098,14 @@ pub fn git_clone_with_fallback(
         return Err(format!(
             // native-ok: human-facing error message
             "Refusing to clone {url} into {}: directory is not empty",
+            // absolute-path-ok: a human-facing error names the directory as the filesystem does
             target.display()
         ));
     }
 
     // Try git CLI first with live progress output.
     let mut cmd = crate::git_cmd_safe(Some(url), None);
+    // absolute-path-ok: the clone destination in git argv, not a display slot
     let target_arg = target.display().to_string();
     let mut args = vec!["clone"];
     // Depth is a transfer-size guard for remotes, the same split the libgit2

@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use crate::config::{
     EnvVar, LOCAL_LAYER, ProfileLayer, ResolvedProfile, validate_backup_specs,
-    validate_managed_file_specs, validate_secret_specs,
+    validate_managed_file_specs, validate_package_specs, validate_secret_specs,
 };
 use crate::errors::{CfgdError, CompositionError, Result};
 
@@ -131,7 +131,10 @@ pub fn compose(
     // Validate secrets from all sources (catches invalid specs from ConfigSources)
     validate_secret_specs(&merged.secrets)?;
     validate_managed_file_specs(&merged.files.managed)?;
+    validate_package_specs(&merged.packages)?;
     validate_backup_specs(&merged.backups)?;
+    cfgd_schema::validate_script_bodies("profile", &merged.scripts)
+        .map_err(|e| crate::errors::ConfigError::Invalid { message: e.0 })?;
 
     Ok(CompositionResult {
         resolved: ResolvedProfile {

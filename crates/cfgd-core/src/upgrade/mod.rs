@@ -569,14 +569,14 @@ fn run_cosign_verify_blob(
     if let Some(cert) = cert_path {
         cmd.arg(format!("--certificate={}", cert.display()));
     }
-    let output = cmd
-        .arg(format!("--certificate-oidc-issuer={COSIGN_OIDC_ISSUER}"))
-        .arg(format!(
-            "--certificate-identity-regexp={COSIGN_IDENTITY_REGEXP}"
-        ))
-        .arg("--")
-        .arg(checksums_path)
-        .output();
+    let output = crate::command_output(
+        cmd.arg(format!("--certificate-oidc-issuer={COSIGN_OIDC_ISSUER}"))
+            .arg(format!(
+                "--certificate-identity-regexp={COSIGN_IDENTITY_REGEXP}"
+            ))
+            .arg("--")
+            .arg(checksums_path),
+    );
 
     match output {
         Ok(o) if o.status.success() => Ok(()),
@@ -655,6 +655,7 @@ fn download_to_file(
 
     tmp.persist(dest)
         .map_err(|e| UpgradeError::DownloadFailed {
+            // absolute-path-ok: a human-facing error names the file as the filesystem does
             message: format!("rename to {}: {}", dest.posix(), e.error),
         })?;
 
@@ -904,9 +905,12 @@ pub(crate) fn download_and_install_to(
         .into());
     }
 
-    // Make it executable (no-op on Windows)
-    crate::set_file_permissions(&new_binary, 0o755).map_err(|e| UpgradeError::InstallFailed {
-        message: format!("set permissions: {}", e),
+    // Make it executable (no-op on Windows). No-follow: `sudo cfgd upgrade`
+    // would otherwise hand `0o755` to whatever a link standing here resolves to.
+    crate::set_file_permissions_nofollow(&new_binary, 0o755).map_err(|e| {
+        UpgradeError::InstallFailed {
+            message: format!("set permissions: {}", e),
+        }
     })?;
 
     // Install new binary over old.

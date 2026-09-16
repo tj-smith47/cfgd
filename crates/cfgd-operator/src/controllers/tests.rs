@@ -3361,7 +3361,7 @@ mod tests_run {
     //! block on watcher streams forever, so the test wraps it in
     //! `tokio::time::timeout` to cover the setup + builder code (lines 151–246)
     //! without waiting for the joined futures to complete.
-    use super::super::run;
+    use super::super::{BackupPolicyCache, run};
     use crate::controllers::test_kube_harness::MockKubeHarness;
     use std::time::Duration;
 
@@ -3372,7 +3372,11 @@ mod tests_run {
         let metrics = ctx.metrics.clone();
         drop(harness);
 
-        let outcome = tokio::time::timeout(Duration::from_millis(250), run(client, metrics)).await;
+        let outcome = tokio::time::timeout(
+            Duration::from_millis(250),
+            run(client, metrics, BackupPolicyCache::default()),
+        )
+        .await;
 
         assert!(
             outcome.is_err(),
@@ -3392,7 +3396,11 @@ mod tests_run {
         let metrics = ctx.metrics.clone();
         drop(harness);
 
-        let outcome = tokio::time::timeout(Duration::from_millis(250), run(client, metrics)).await;
+        let outcome = tokio::time::timeout(
+            Duration::from_millis(250),
+            run(client, metrics, BackupPolicyCache::default()),
+        )
+        .await;
         assert!(outcome.is_err());
     }
 }

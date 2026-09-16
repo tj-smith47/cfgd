@@ -147,6 +147,7 @@ pub(super) fn authenticated_request(
         message: format!("{e}"),
     })?;
 
+    // not-a-child-ok: an HTTP response's own status code, which starts no process
     let status = resp.status().as_u16();
     if (200..300).contains(&status) {
         return Ok(resp);
@@ -182,6 +183,7 @@ pub(super) fn authenticated_request(
             message: format!("{e}"),
         })?;
 
+        // not-a-child-ok: an HTTP response's own status code, which starts no process
         let status2 = resp2.status().as_u16();
         if (200..300).contains(&status2) {
             return Ok(resp2);
@@ -380,6 +382,7 @@ pub(super) fn ensure_blob_present(
         );
         if let Ok(resp) =
             authenticated_request(agent, "POST", &mount_url, auth_dst, None, None, Some(&[]))
+            // not-a-child-ok: an HTTP response's own status code, which starts no process
             && resp.status().as_u16() == 201
         {
             tracing::debug!(digest = %digest, "base blob mounted from source repo");

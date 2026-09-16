@@ -9,7 +9,7 @@ Tools
   ✓ git: found
 
 Secrets
-  ⚠ sops: not found — required for secrets (https://github.com/getsops/sops#install)
+  ⚠ sops: not found — required for secrets; run `cfgd doctor --fix` to install it
   ✓ age key: /home/test/.config/sops/age/keys.txt
   ✓ .sops.yaml: /home/test/.config/cfgd/.sops.yaml
   ✓ Provider 1password: available
@@ -17,13 +17,11 @@ Secrets
 
 Package Managers
   ✓ cargo: available (declared in config)
-  ◉ brew: available (not used in config)
+  ◉ brew: available (not used)
   ⚠ rustup: not found — can auto-bootstrap via curl
 
 Modules
-  dotfiles
-    ✓ bat 0.24.0 (cargo, bat)
-    ✓ ripgrep 14.1.0 (cargo, ripgrep)
+  ✓ dotfiles — cargo available
 
 Installation
   ✓ State store: accessible

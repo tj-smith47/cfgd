@@ -25,6 +25,11 @@ use super::env_files::{
 /// exists only in bash/zsh/csh. `.` is equivalent in bash and zsh, so one line
 /// loads correctly across every shell cfgd injects into.
 const UNIX_SOURCE_LINE: &str = "[ -f ~/.cfgd.env ] && . ~/.cfgd.env";
+/// The loader line for the macOS `environment` configurator's own managed
+/// file, composed here beside every other one so the two writers cannot spell
+/// the guard differently.
+pub const MACOS_SYSTEM_ENV_SOURCE_LINE: &str =
+    "[ -f ~/.config/cfgd/env.sh ] && . ~/.config/cfgd/env.sh";
 const PS_SOURCE_LINE: &str = ". ~/.cfgd-env.ps1";
 
 /// LaunchAgent label for the *user-scope* (`spec.env`) plist. Deliberately
@@ -290,9 +295,14 @@ impl EnvOrigins {
 
     /// The owner token of an env var, unwrapped — for the one line whose
     /// comment names TWO producers and so cannot be composed from a rendered
-    /// comment.
-    fn env_owner(&self, name: &str) -> Option<&str> {
+    /// comment, and for the tracking row an apply records the entry under.
+    pub(super) fn env_owner(&self, name: &str) -> Option<&str> {
         self.0.env.get(name).map(String::as_str)
+    }
+
+    /// The same for an alias.
+    pub(super) fn alias_owner(&self, name: &str) -> Option<&str> {
+        self.0.aliases.get(name).map(String::as_str)
     }
 
     /// The same for an alias line.
@@ -696,6 +706,103 @@ pub fn recorded_env_method(resource_id: &str) -> &'static str {
 pub const ENV_VERB_WRITE: &str = "write";
 pub const ENV_VERB_INJECT: &str = "inject";
 
+/// Every path segment a generated env surface occupies on some host, derived
+/// by driving `env_targets` over every platform, probe shape and scope.
+///
+/// [`recorded_env_method`] answers the write-vs-inject question off a target's
+/// file name, so a display surface can be tempted to answer it the same way —
+/// and the names such a surface would test against are exactly the ones the
+/// target builders spell. Derived here rather than listed beside the walk that
+/// hunts them, so a dialect this engine gains or renames reaches that walk with
+/// it; each target contributes its file name, plus the parent directory whose
+/// `.d` suffix is what gives the file its dialect.
+#[cfg(any(test, feature = "test-helpers"))]
+#[must_use]
+pub fn env_target_basenames() -> Vec<String> {
+    let hosts = [
+        (EnvPlatform::Linux, Path::new("/home/tj")),
+        (EnvPlatform::MacOs, Path::new("/Users/tj")),
+        (EnvPlatform::FreeBsd, Path::new("/home/tj")),
+        (EnvPlatform::Windows, Path::new("C:/Users/tj")),
+    ];
+    // The two bash login shapes, each with the rest of the host's dialects
+    // present, so no arm is gated off in both passes.
+    let probes = [
+        EnvHostProbe {
+            shell: "/bin/zsh".to_string(),
+            fish_present: true,
+            bash_profile_exists: true,
+            bash_login_exists: false,
+            git_bash_present: true,
+            zsh_present: true,
+        },
+        EnvHostProbe {
+            shell: "/bin/bash".to_string(),
+            fish_present: true,
+            bash_profile_exists: false,
+            bash_login_exists: true,
+            git_bash_present: true,
+            zsh_present: true,
+        },
+    ];
+
+    let mut names = std::collections::BTreeSet::new();
+    for (platform, home) in hosts {
+        let env = vec![
+            EnvVar {
+                name: "PATH".to_string(),
+                value: format!("$HOME/.cargo/bin{}$PATH", path_separator(platform)),
+                platforms: vec![],
+            },
+            EnvVar {
+                name: "EDITOR".to_string(),
+                value: "nvim".to_string(),
+                platforms: vec![],
+            },
+        ];
+        let aliases = vec![ShellAlias {
+            name: "ll".to_string(),
+            command: "ls -al".to_string(),
+            platforms: vec![],
+        }];
+        let path_dirs = vec![ManagerPathDir::new(
+            "cargo",
+            format!("{}/.cargo/bin", crate::to_posix_string(home)),
+        )];
+        let origins = EnvOrigins::default();
+        for probe in &probes {
+            for scope in [EnvScope::All, EnvScope::Login, EnvScope::Interactive] {
+                for target in env_targets(
+                    EnvContent::new(&env, &aliases, &path_dirs, &origins),
+                    scope,
+                    home,
+                    probe,
+                    platform,
+                ) {
+                    let path = match &target {
+                        EnvTarget::ManagedFile { path, .. } => path.clone(),
+                        EnvTarget::SourceLine { rc_path, .. } => rc_path.clone(),
+                        // The live session names an act, not a file.
+                        EnvTarget::LiveSession { .. } => continue,
+                    };
+                    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                        names.insert(name.to_string());
+                    }
+                    if let Some(dir) = path
+                        .parent()
+                        .and_then(|p| p.file_name())
+                        .and_then(|n| n.to_str())
+                        .filter(|n| n.ends_with(".d"))
+                    {
+                        names.insert(dir.to_string());
+                    }
+                }
+            }
+        }
+    }
+    names.into_iter().collect()
+}
+
 fn unix_targets(
     content: EnvContent<'_>,
     scope: EnvScope,
@@ -718,11 +825,7 @@ fn unix_targets(
         content: generate_env_file_content(env, aliases, posix_path.as_ref(), origins),
         rendered: RenderedCounts::of(env, aliases, posix_path.is_some()),
     });
-    let interactive_rc = if probe.shell.contains("zsh") {
-        home.join(".zshrc")
-    } else {
-        home.join(".bashrc")
-    };
+    let interactive_rc = interactive_rc_for(&probe.shell, home);
     out.push(EnvTarget::SourceLine {
         rc_path: interactive_rc,
         line: UNIX_SOURCE_LINE.to_string(),
@@ -796,6 +899,23 @@ fn unix_targets(
                 });
             }
         }
+    }
+}
+
+/// The interactive rc file this host's login shell reads.
+///
+/// The ONE answer both writers of a cfgd loader line take: the env engine's own
+/// source line and the macOS `environment` configurator's, which would
+/// otherwise land in a file the engine never keeps current.
+pub fn interactive_rc_path(home: &Path) -> PathBuf {
+    interactive_rc_for(&EnvHostProbe::detect(home).shell, home)
+}
+
+fn interactive_rc_for(shell: &str, home: &Path) -> PathBuf {
+    if shell.contains("zsh") {
+        home.join(".zshrc")
+    } else {
+        home.join(".bashrc")
     }
 }
 
@@ -960,6 +1080,9 @@ pub fn launchd_env_plist(label: &str, vars: &BTreeMap<String, String>) -> String
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::reconciler::types::{
+        Action, ENV_GROUP, EnvAction, Owner, SESSION_GROUP, SHELL_GROUP, owner_of,
+    };
 
     fn probe() -> EnvHostProbe {
         EnvHostProbe {
@@ -1251,6 +1374,13 @@ mod tests {
     /// target the builders really push, on every platform, under two probe
     /// shapes (bash_profile and bash_login hosts), so a new member lands here
     /// before its status row can claim the wrong verb.
+    ///
+    /// The OWNER half rides the same walk, because it is the same question
+    /// asked of the action rather than of the recorded id: the ACTION each
+    /// target becomes (`env.rs`'s builder) is passed to
+    /// [`crate::reconciler::owner_of`], and a target's verb and its owner
+    /// group have to agree or the Managed Resources table lists a row under a
+    /// group whose tree never printed it.
     #[test]
     fn every_env_target_classifies_under_the_verb_that_produced_it() {
         let cases = [
@@ -1279,6 +1409,10 @@ mod tests {
         ];
         let mut writes = 0;
         let mut injects = 0;
+        let mut sessions = 0;
+        // Any profile: `owner_of` falls back to it only for the actions this
+        // walk never builds, so a cfgd answer here is a cfgd answer.
+        let declaring = Owner::profile("work");
         for (platform, home) in cases {
             for probe in &probes {
                 let separator = path_separator(platform);
@@ -1298,29 +1432,72 @@ mod tests {
                         // The recorded id is `to_posix_string(path)` for both verbs
                         // (`format_action_description`'s env arms), so the walk
                         // folds the same way before asking.
-                        let (id, expected) = match &target {
-                            EnvTarget::ManagedFile { path, .. } => {
+                        // The action the planner really builds from this
+                        // target, so the owner half is asked of the same value
+                        // `Phase::from_actions` groups on.
+                        let (id, expected, action) = match target {
+                            EnvTarget::ManagedFile {
+                                path,
+                                content,
+                                rendered,
+                            } => {
                                 writes += 1;
-                                (crate::to_posix_string(path), ENV_VERB_WRITE)
+                                (
+                                    crate::to_posix_string(&path),
+                                    ENV_VERB_WRITE,
+                                    Action::Env(EnvAction::WriteEnvFile {
+                                        path,
+                                        content,
+                                        vars: rendered.vars,
+                                        aliases: rendered.aliases,
+                                    }),
+                                )
                             }
-                            EnvTarget::SourceLine { rc_path, .. } => {
+                            EnvTarget::SourceLine { rc_path, line } => {
                                 injects += 1;
-                                (crate::to_posix_string(rc_path), ENV_VERB_INJECT)
+                                (
+                                    crate::to_posix_string(&rc_path),
+                                    ENV_VERB_INJECT,
+                                    Action::Env(EnvAction::InjectSourceLine { rc_path, line }),
+                                )
                             }
-                            EnvTarget::LiveSession { .. } => continue,
+                            EnvTarget::LiveSession { vars } => {
+                                sessions += 1;
+                                assert_eq!(
+                                    owner_of(
+                                        &Action::Env(EnvAction::RefreshLiveSession { vars }),
+                                        &declaring
+                                    )
+                                    .token(),
+                                    Owner::cfgd(SESSION_GROUP).token(),
+                                    "the live-session broadcast is the session group's"
+                                );
+                                continue;
+                            }
                         };
                         assert_eq!(
                             recorded_env_method(&id),
                             expected,
                             "{id} classifies under the verb that produced it"
                         );
+                        let group = if expected == ENV_VERB_WRITE {
+                            ENV_GROUP
+                        } else {
+                            SHELL_GROUP
+                        };
+                        assert_eq!(
+                            owner_of(&action, &declaring).token(),
+                            Owner::cfgd(group).token(),
+                            "{id} is owned by the group its verb belongs to"
+                        );
                     }
                 }
             }
         }
         assert!(
-            writes >= 6 && injects >= 6,
-            "the walk no longer reaches both verbs' members ({writes} writes, {injects} injects)"
+            writes >= 6 && injects >= 6 && sessions >= 1,
+            "the walk no longer reaches every verb's members \
+             ({writes} writes, {injects} injects, {sessions} sessions)"
         );
     }
 

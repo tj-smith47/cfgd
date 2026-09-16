@@ -1,6 +1,6 @@
 //! Snapshot tests for `cfgd status`.
 //!
-//! Five cases:
+//! Seven cases:
 //!   - `status/clean.{txt,json}` — fleet status with a clean last-apply, no
 //!     drift, no pending decisions, all modules installed. Exercises the
 //!     Last Apply + No-drift + Modules + Managed Resources path.
@@ -17,7 +17,7 @@
 //!   - `status/per_module_wide.txt` — `-o wide`: inventories in place of the
 //!     counts, each finding inline on its own row, no Drift section.
 //!   - `status/per_module_show_values.txt` — `--show-values`: the same
-//!     inventories carrying declared values and whole script bodies.
+//!     inventories carrying the declared values in full.
 //!
 //! Goldens live under `tests/output_snapshots/status/`. Regenerate with:
 //!     INSTA_UPDATE=always cargo test -p cfgd --test status_snapshots
@@ -25,13 +25,14 @@
 use std::path::Path;
 
 use cfgd::cli::status::{
-    ModuleDeclared, ModuleDrift, ModuleFilePresence, ModuleFileStatus, ModulePackagePresence,
-    ModulePackageStatus, ModuleStatus, ModuleStatusEntry, ModuleStatusView, SURFACE_FILES,
-    SURFACE_PACKAGES, StatusOutput, build_fleet_status_doc, build_module_status_doc,
-    build_module_status_not_found_doc,
+    ManagedResourceDetail, ManagedResourceRow, ModuleDeclared, ModuleDrift, ModuleFilePresence,
+    ModuleFileStatus, ModulePackagePresence, ModulePackageStatus, ModuleStatus, ModuleStatusEntry,
+    ModuleStatusView, SURFACE_ENV, SURFACE_FILES, SURFACE_PACKAGES, StatusOutput,
+    build_fleet_status_doc, build_module_status_doc, build_module_status_not_found_doc,
+    managed_resource_payload,
 };
 use cfgd_core::config::{EnvVar, ShellAlias};
-use cfgd_core::modules::{HookScripts, ModuleSurfaces};
+use cfgd_core::modules::{DeclaredScript, HookScripts, ModuleSurfaces};
 use cfgd_core::output::Printer;
 use cfgd_core::state::{
     ApplyRecord, ApplyStatus, ConfigSourceRecord, DriftEvent, ManagedResource, PendingDecision,
@@ -49,7 +50,7 @@ const NOW: &str = "2026-05-14T10:05:00Z";
 /// What the `dev-tools` module's own rows render from: the recorded id says
 /// how many files and which packages, and this is what the live resolution
 /// adds — where the files land, which manager installs each package, and the
-/// hooks the module declares.
+/// hook count `-o json` carries.
 fn dev_tools_declared() -> ModuleDeclared {
     let surfaces = declared_surfaces(18, 12);
     ModuleDeclared {
@@ -72,7 +73,6 @@ fn dev_tools_declared() -> ModuleDeclared {
             )
         })
         .collect(),
-        script_summary: surfaces.script_summary(),
         scripts: surfaces.script_total(),
     }
 }
@@ -82,26 +82,29 @@ fn dev_tools_declared() -> ModuleDeclared {
 /// recorded as the planner grouped them, one row per manager), and the
 /// per-package rows a profile-level install writes, which the table groups
 /// back into one row per manager.
-fn managed_resources() -> Vec<ManagedResource> {
-    [
-        ("env", "/home/user/.cfgd.env"),
-        ("file", "~/.bashrc"),
-        ("module", "dev-tools:files:12"),
-        ("module", "dev-tools:packages:gcc,cargo,git"),
-        ("module", "dev-tools:packages:neovim,age,fd"),
-        ("module", "dev-tools:script"),
-        ("package", "brew/ripgrep"),
-        ("package", "brew/bat"),
-    ]
-    .into_iter()
-    .map(|(resource_type, resource_id)| ManagedResource {
-        resource_type: resource_type.into(),
-        resource_id: resource_id.into(),
-        source: "local".into(),
-        last_hash: Some("hash1".into()),
-        last_applied: Some(1_715_680_800),
-    })
-    .collect()
+fn managed_resources() -> Vec<ManagedResourceRow> {
+    managed_resource_payload(
+        [
+            ("env", "/home/user/.cfgd.env"),
+            ("file", "~/.bashrc"),
+            ("module", "dev-tools:files:12"),
+            ("module", "dev-tools:packages:gcc,cargo,git"),
+            ("module", "dev-tools:packages:neovim,age,fd"),
+            ("module", "dev-tools:script"),
+            ("package", "brew/ripgrep"),
+            ("package", "brew/bat"),
+        ]
+        .into_iter()
+        .map(|(resource_type, resource_id)| ManagedResource {
+            resource_type: resource_type.into(),
+            resource_id: resource_id.into(),
+            source: "local".into(),
+            last_hash: Some("hash1".into()),
+            last_applied: Some(1_715_680_800),
+        })
+        .collect(),
+        Some("default"),
+    )
 }
 
 fn clean_output() -> StatusOutput {
@@ -147,6 +150,51 @@ fn clean_output() -> StatusOutput {
         scoped_scans: Default::default(),
         system_errors: Vec::new(),
         standing: Vec::new(),
+    }
+}
+
+/// A host whose profile declares env vars and aliases from two layers, plus a
+/// `PATH` both of them contribute to.
+///
+/// Each declared entry records its own row, so this is the shape that decides
+/// whether the Managed Resources table stays readable: the plain table folds
+/// an owner's entries of one kind and one recorded layer list into a single
+/// row, and `-o wide` gives every entry its row back.
+fn env_entry_resources() -> Vec<ManagedResourceRow> {
+    managed_resource_payload(
+        [
+            ("env-var", "EDITOR", "local"),
+            ("env-var", "PAGER", "local"),
+            ("env-var", "LANG", "local"),
+            // Both layers add directories to it, so the row records both.
+            ("env-var", "PATH", "local, team-config"),
+            ("env-var", "ACME_REGISTRY", "team-config"),
+            ("alias", "gs", "local"),
+            ("alias", "ll", "local"),
+            ("alias", "k", "team-config"),
+            // The surfaces the entries above are written into, so the table
+            // shows the folded entries beside the files that carry them.
+            ("env", "/home/user/.cfgd.env", "local"),
+            ("env", "/home/user/.bashrc", "local"),
+        ]
+        .into_iter()
+        .map(|(resource_type, resource_id, source)| ManagedResource {
+            resource_type: resource_type.into(),
+            resource_id: resource_id.into(),
+            source: source.into(),
+            last_hash: Some("hash1".into()),
+            last_applied: Some(1_715_680_800),
+        })
+        .collect(),
+        Some("default"),
+    )
+}
+
+fn env_entry_output() -> StatusOutput {
+    StatusOutput {
+        modules: Vec::new(),
+        managed_resources: env_entry_resources(),
+        ..clean_output()
     }
 }
 
@@ -245,10 +293,34 @@ fn drift_output() -> StatusOutput {
     }
 }
 
-/// The env, aliases and lifecycle hooks the fixture modules declare. Two
-/// hooks, declared out of run order on purpose: the Scripts row and the wide
-/// Scripts section both report `preApply` before `postApply` because that is
-/// the order they run in, never the order they were written.
+/// One declared script step for the fixtures below: the body plus whichever of
+/// the three timing knobs the step sets, which is what the full Scripts form
+/// states above it. The remaining knobs are spelled out rather than defaulted,
+/// so a knob added to `DeclaredScript` reaches this fixture as a compile error.
+fn declared_step(
+    body: &str,
+    timeout: Option<&str>,
+    idle_timeout: Option<&str>,
+    continue_on_error: bool,
+) -> DeclaredScript {
+    DeclaredScript {
+        body: body.into(),
+        timeout: timeout.map(Into::into),
+        idle_timeout: idle_timeout.map(Into::into),
+        continue_on_error,
+        shell: None,
+        workdir: None,
+        only_if: None,
+        unless: None,
+        creates: None,
+        interactive: false,
+    }
+}
+
+/// The env, aliases and lifecycle hooks the fixture modules declare: two hooks
+/// in run order, `preApply` carrying one bare step that declares no knob, and
+/// `postApply` two steps that do, so the Scripts section renders both a
+/// position-only marker and a marker stating knobs.
 fn declared_surfaces(packages: usize, files: usize) -> ModuleSurfaces {
     ModuleSurfaces {
         packages,
@@ -273,13 +345,33 @@ fn declared_surfaces(packages: usize, files: usize) -> ModuleSurfaces {
         scripts: vec![
             HookScripts {
                 hook: "preApply",
-                bodies: vec!["set -euo pipefail\nmkdir -p ~/.config/nvim".into()],
+                // A bare-string step: it declares no knob, so its marker
+                // states its position alone. Terminated the way the YAML
+                // parser hands a block scalar over, so the goldens carry the
+                // shape a declared body really has.
+                steps: vec![declared_step(
+                    "set -euo pipefail\nmkdir -p ~/.config/nvim\n",
+                    None,
+                    None,
+                    false,
+                )],
             },
             HookScripts {
                 hook: "postApply",
-                bodies: vec![
-                    "nvim --headless '+Lazy! sync' +qa".into(),
-                    "echo done".into(),
+                steps: vec![
+                    declared_step(
+                        "nvim --headless '+Lazy! sync' +qa",
+                        Some("900s"),
+                        Some("30s"),
+                        true,
+                    ),
+                    // The LAST declared body of the report, and a terminated
+                    // multi-line one: the stray row a terminator-as-a-line
+                    // composer leaves behind sits beside the blank the
+                    // closing hint arms for itself, which is the doubling
+                    // `every_golden_separates_sibling_blocks_with_one_blank_line`
+                    // refuses.
+                    declared_step("echo done\nexit 0\n", Some("120s"), None, false),
                 ],
             },
         ],
@@ -305,6 +397,13 @@ fn per_module_output() -> ModuleStatus {
         depends: vec!["base".into()],
         status: "installed".into(),
         last_applied: Some("2026-05-14T10:00:00Z".into()),
+        // The four facts only the state store and the lockfile hold: the two
+        // digests that apply wrote, and the commit and integrity the lockfile
+        // pinned this remote module to.
+        packages_hash: Some("abc123def456".into()),
+        files_hash: Some("789ghi012jkl".into()),
+        commit: Some("deadbeef1234567890abcdef1234567890abcdef".into()),
+        integrity: Some("sha256:cafef00d".into()),
         scope: None,
         package_state: vec![
             ModulePackageStatus {
@@ -356,6 +455,13 @@ fn per_module_scanned_output() -> ModuleStatus {
         depends: vec!["base".into()],
         status: "installed".into(),
         last_applied: Some("2026-05-14T10:00:00Z".into()),
+        // The four facts only the state store and the lockfile hold: the two
+        // digests that apply wrote, and the commit and integrity the lockfile
+        // pinned this remote module to.
+        packages_hash: Some("abc123def456".into()),
+        files_hash: Some("789ghi012jkl".into()),
+        commit: Some("deadbeef1234567890abcdef1234567890abcdef".into()),
+        integrity: Some("sha256:cafef00d".into()),
         scope: None,
         package_state: vec![
             ModulePackageStatus {
@@ -442,6 +548,28 @@ fn per_module_scanned_output() -> ModuleStatus {
                 surface: SURFACE_FILES,
                 item: "/home/user/.config/nvim/init.lua".into(),
             },
+            // A shell item the scan found drifted: under `--show-values` its
+            // row keeps the warning shape and its cause while its clean
+            // siblings render as key/value pairs, so the golden carries both
+            // shapes side by side. The operands are the markers
+            // `env_item_verify_results` stores.
+            ModuleDrift {
+                event: DriftEvent {
+                    id: 23,
+                    timestamp: "2026-05-14T12:00:03Z".into(),
+                    resource_type: "env-var".into(),
+                    resource_id: "PAGER".into(),
+                    expected: Some("current".into()),
+                    actual: Some("missing or changed".into()),
+                    resolved_by: None,
+                    source: "local".into(),
+                    want: None,
+                    have: None,
+                },
+                owner: "dev-tools".into(),
+                surface: SURFACE_ENV,
+                item: "PAGER".into(),
+            },
         ],
         drift_checked_live: true,
         system_errors: Vec::new(),
@@ -490,6 +618,8 @@ fn declared_sources() -> Vec<cfgd::cli::output_types::SourceListEntry> {
         require_signed_commits: Some(true),
         last_commit: Some("abc1234567890def".into()),
         drift_count: None,
+        locked_ref: None,
+        locked_commit: None,
     }]
 }
 
@@ -557,6 +687,55 @@ fn status_clean_json() {
         "emit -o json must match serde_json::to_value(output)"
     );
     cap.assert_json_snapshot_in(Path::new(SNAPSHOT_ROOT), "status/clean.json");
+}
+
+/// The plain table: an owner's declared entries of one kind and one recorded
+/// layer list fold into a single row naming the count, and an owner declaring
+/// exactly one of a kind gets that entry named instead of a count of one.
+#[test]
+fn status_env_entries_human() {
+    emit_fleet(
+        &env_entry_output(),
+        &Default::default(),
+        "status/env_entries.txt",
+    );
+}
+
+/// `-o wide`: every declared entry gets its own row back, with the verb its
+/// surface was written under in the Method column.
+#[test]
+fn status_env_entries_wide_human() {
+    emit_fleet(
+        &env_entry_output(),
+        &cfgd::cli::status::ManagedResourceDetail {
+            wide: true,
+            ..Default::default()
+        },
+        "status/env_entries_wide.txt",
+    );
+}
+
+/// Render one fleet status doc against the fixture header every golden here
+/// shares.
+fn emit_fleet(output: &StatusOutput, resources: &ManagedResourceDetail, golden: &str) {
+    let (printer, cap) = Printer::for_test_doc();
+    printer.emit(build_fleet_status_doc(
+        output,
+        &cfgd_core::output::ConfigHeader {
+            config_path: Some(Path::new("/etc/cfgd/cfgd.yaml")),
+            sources: &[],
+            profile: Some("default"),
+            profile_inherits: &[],
+            modules: &header_modules(output),
+            arrow: printer.arrow(),
+        },
+        &[],
+        NOW,
+        &Default::default(),
+        resources,
+    ));
+    drop(printer);
+    cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), golden);
 }
 
 #[test]
@@ -657,18 +836,22 @@ fn status_per_module_clean_human() {
 fn status_per_module_wide_human() {
     emit_module(
         &per_module_scanned_output(),
-        ModuleStatusView::Inventory { show_values: false },
+        ModuleStatusView::Inventory {
+            masking: cfgd::cli::EnvValueMasking::default(),
+        },
         "status/per_module_wide.txt",
     );
 }
 
 /// `--show-values`: the same inventories with the declared value beside each
-/// name and each script's whole body in place of its condensed label.
+/// name.
 #[test]
 fn status_per_module_show_values_human() {
     emit_module(
         &per_module_scanned_output(),
-        ModuleStatusView::Inventory { show_values: true },
+        ModuleStatusView::Inventory {
+            masking: cfgd::cli::EnvValueMasking::revealing(),
+        },
         "status/per_module_show_values.txt",
     );
 }
@@ -702,11 +885,11 @@ fn status_per_module_scanned_json() {
     cap.assert_json_snapshot_in(Path::new(SNAPSHOT_ROOT), "status/per_module_scanned.json");
 }
 
-/// The Scripts group is a TOTAL with one indented row per declaring hook, in
-/// execution order — a single `6 postApply` line hid every other hook behind
-/// the one that happened to declare most.
+/// The compact view states no fact about the module's scripts: a script is
+/// declared and then run, and nothing checks one afterwards. `cfgd module
+/// show` is where a reader sees them; `-o json` keeps the tally.
 #[test]
-fn status_per_module_scripts_row_breaks_down_per_hook() {
+fn status_per_module_compact_states_nothing_about_scripts() {
     let (printer, cap) = Printer::for_test_doc();
     printer.emit(build_module_status_doc(
         &per_module_output(),
@@ -715,19 +898,14 @@ fn status_per_module_scripts_row_breaks_down_per_hook() {
     ));
     drop(printer);
     let human = cap.human();
-    let rows: Vec<&str> = human
-        .lines()
-        .skip_while(|l| !l.trim_start().starts_with("Scripts"))
-        .take(3)
-        .collect();
+    assert!(
+        !human.contains("Scripts") && !human.contains("postApply"),
+        "no script row on the compact report: {human}"
+    );
     assert_eq!(
-        rows,
-        vec![
-            "  Scripts       3",
-            "    preApply    1",
-            "    postApply   2",
-        ],
-        "Scripts is a total with a per-hook breakdown under it: {human}"
+        cap.json().expect("doc captured json")["scriptCounts"],
+        serde_json::json!([{"hook": "preApply", "count": 1}, {"hook": "postApply", "count": 2}]),
+        "the tally a structured consumer reads is unchanged"
     );
 }
 
@@ -758,6 +936,68 @@ fn status_per_module_json_carries_script_counts() {
         json["scriptCounts"],
         serde_json::json!([{"hook": "preApply", "count": 1}, {"hook": "postApply", "count": 2}])
     );
+}
+
+/// The four recorded facts behind a module's last apply reach both halves of
+/// `cfgd status <module>`: the human rows carry the commit in the short form
+/// every human slot naming one uses, `-o json` carries every value whole, and
+/// a module whose record holds none of them renders no row at all rather than
+/// four empty ones.
+#[test]
+fn status_per_module_renders_and_serializes_its_recorded_facts() {
+    let output = per_module_output();
+    let (printer, cap) = Printer::for_test_doc();
+    printer.emit(build_module_status_doc(
+        &output,
+        ModuleStatusView::Compact,
+        NOW,
+    ));
+    drop(printer);
+    let human = cap.human();
+    for row in [
+        "Packages Hash  abc123def456",
+        "Files Hash     789ghi012jkl",
+        "Commit         deadbeef1234",
+        "Integrity      sha256:cafef00d",
+    ] {
+        assert!(human.contains(row), "missing row {row:?}: {human}");
+    }
+    assert!(
+        !human.contains("deadbeef1234567890"),
+        "the commit row renders short: {human}"
+    );
+    let json = cap.json().expect("doc captured json");
+    assert_eq!(json["packagesHash"], "abc123def456");
+    assert_eq!(json["filesHash"], "789ghi012jkl");
+    assert_eq!(json["commit"], "deadbeef1234567890abcdef1234567890abcdef");
+    assert_eq!(json["integrity"], "sha256:cafef00d");
+
+    let mut bare = per_module_output();
+    bare.packages_hash = None;
+    bare.files_hash = None;
+    bare.commit = None;
+    bare.integrity = None;
+    let (printer, cap) = Printer::for_test_doc();
+    printer.emit(build_module_status_doc(
+        &bare,
+        ModuleStatusView::Compact,
+        NOW,
+    ));
+    drop(printer);
+    let human = cap.human();
+    for key in ["Packages Hash", "Files Hash", "Commit", "Integrity"] {
+        assert!(
+            !human.contains(key),
+            "a record holding no {key} renders no row: {human}"
+        );
+    }
+    let json = cap.json().expect("doc captured json");
+    for key in ["packagesHash", "filesHash", "commit", "integrity"] {
+        assert!(
+            json.get(key).is_none(),
+            "{key} must stay off the wire: {json}"
+        );
+    }
 }
 
 #[test]

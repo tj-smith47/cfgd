@@ -4,7 +4,7 @@ use cfgd_core::PathDisplayExt;
 use cfgd_core::output::{Doc, Printer, Role};
 use serde::Serialize;
 
-use super::source::{clone_into, is_clonable_source, resolve_from};
+use super::source::{clone_into, is_clonable_source, plan_from, resolve_from};
 use super::*;
 
 // ─────────────────────────────────────────────────────
@@ -47,6 +47,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
     // through a bound `SectionGuard`.
     // heading-first-ok: the clone paints its own live window beneath the
     // committed header, so this frame reports the wait it opened
+    // name-row-ok: `cfgd` is the product's own name, lowercase everywhere.
     let init_section = printer.section("Initialize cfgd");
     // The clone below runs inside a live output window, which paints beneath
     // the last committed line — a heading still deferred to its first status
@@ -56,18 +57,6 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
     // under it rather than over the title
     init_section.commit_header();
     let init_depth = printer.depth_inheritance();
-
-    if !check_prerequisites(printer) {
-        // git is a hard prerequisite: without it init scaffolds nothing, so it must exit
-        // non-zero rather than let a chained `cfgd init && cfgd apply` proceed on a false
-        // success. check_prerequisites has already printed the error and install hint, so
-        // exit directly instead of returning an Err that the CLI boundary would re-render.
-        let output = InitOutput {
-            target_dir: args.path.unwrap_or("").to_string(),
-        };
-        printer.emit(Doc::new().with_data(&output));
-        cfgd_core::exit::ExitCode::Error.exit();
-    }
 
     // 1. Determine target directory and whether --from did a fresh clone.
     // The `--from` value is resolved ONCE here — an existing path stays a path,
@@ -81,41 +70,72 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
     // `Already initialized` one `resolve_from` prints; the closing row below
     // is for the run that scaffolded, not a restatement of the row above it.
     let destination_named_by_clone = from.as_deref().is_some_and(is_clonable_source);
-    let target_dir = if let Some(from) = from.as_deref() {
-        let explicit_path = args.path.map(|p| cfgd_core::expand_tilde(Path::new(p)));
-        resolve_from(from, explicit_path.as_deref(), args.branch, printer)?
-    } else {
-        match args.path {
+    let explicit_path = args.path.map(|p| cfgd_core::expand_tilde(Path::new(p)));
+    // Where this run would materialise, and every refusal that answer earns,
+    // settled before the prerequisite check below puts a package manager to
+    // work: an install is the one thing this verb cannot take back, and a run
+    // that was always going to refuse must refuse first.
+    // positional-destination-ok: `init` takes its destination as a positional
+    // argument, not off `--config`, so there is no `--config` to read it from.
+    let planned_dir = match from.as_deref() {
+        Some(from) => plan_from(from, explicit_path.as_deref())?,
+        None => match args.path {
             Some(p) => cfgd_core::expand_tilde(Path::new(p)),
             None => std::env::current_dir()?,
-        }
+        },
     };
 
-    // 2. Create directory if it doesn't exist
-    if !target_dir.exists() {
-        std::fs::create_dir_all(&target_dir)?;
-    }
-
-    // 3. Check if already initialized
+    // 2. Check if already initialized
     // When --from is used, resolve_from handles the "already initialized" case
     // and the clone creates cfgd.yaml — skip this check to reach the apply step
-    if target_dir.join(cfgd_core::config::CONFIG_FILENAME).exists() && !from_used {
+    if planned_dir
+        .join(cfgd_core::config::CONFIG_FILENAME)
+        .exists()
+        && !from_used
+    {
         let mut row = printer.status(
             Role::Info,
-            format!("Already initialized at {}", target_dir.posix()),
+            format!(
+                "Already initialized at {}",
+                cfgd_core::fold_home_in_text(&planned_dir.display_posix())
+            ),
         );
-        if let Some(detail) = super::source::checkout_detail(&target_dir) {
+        if let Some(detail) = super::source::checkout_detail(&planned_dir) {
             row = row.detail(detail);
         }
         drop(row);
         let output = InitOutput {
-            target_dir: target_dir.display().to_string(),
+            target_dir: cfgd_core::to_posix_string(&planned_dir),
         };
         printer.emit(Doc::new().with_data(&output));
         return Ok(());
     }
 
-    // 4. Clone or scaffold
+    // 3. Get the one tool the scaffold and the clone both need, now that every
+    // refusal this run could have earned is behind it.
+    if !check_prerequisites(printer) {
+        // git is a hard prerequisite: without it init scaffolds nothing, so it must exit
+        // non-zero rather than let a chained `cfgd init && cfgd apply` proceed on a false
+        // success. check_prerequisites has already printed the error and install hint, so
+        // exit directly instead of returning an Err that the CLI boundary would re-render.
+        let output = InitOutput {
+            target_dir: args.path.unwrap_or("").to_string(),
+        };
+        printer.emit(Doc::new().with_data(&output));
+        cfgd_core::exit::ExitCode::Error.exit();
+    }
+
+    let target_dir = match from.as_deref() {
+        // positional-destination-ok: `init` takes its destination as a positional
+        // argument, not off `--config`, so there is no `--config` to read it from.
+        Some(from) => resolve_from(from, explicit_path.as_deref(), args.branch, printer)?,
+        None => planned_dir,
+    };
+
+    // 4. Create the directory if it is not there, then clone or scaffold
+    if !target_dir.exists() {
+        std::fs::create_dir_all(&target_dir)?;
+    }
     // When --from is a git source, resolve_from already cloned it above.
     // Only clone here if resolve_from didn't handle it (non-git --from or no --from).
     // An existing cfgd.yaml means the target is already a config repo. The check above
@@ -167,7 +187,13 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
     }
 
     if !destination_named_by_clone {
-        printer.status_simple(Role::Ok, format!("Initialized at {}", target_dir.posix()));
+        printer.status_simple(
+            Role::Ok,
+            format!(
+                "Initialized at {}",
+                cfgd_core::fold_home_in_text(&target_dir.display_posix())
+            ),
+        );
     }
 
     // Close the section explicitly, here, rather than letting it fall out of
@@ -228,6 +254,9 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
 
             let platform = cfgd_core::platform::Platform::current();
             let mgr_map = registry.manager_map();
+            // own-context-ok: `cmd_init` takes no `&Cli`, so there is no
+            // `RunContext` to ask for the run's context; this arm builds
+            // exactly one.
             let pkg_cx = cfgd_core::providers::PackageContext::new(printer, &store);
             let mut resolved_modules = modules::resolve_modules(
                 args.apply_modules,
@@ -242,6 +271,11 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
             let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &store)
                 .with_config_dir(&target_dir)
                 .diffing_installed(&pkg_cx)
+                // The run is scoped to the modules named on the command line
+                // and resolved no profile, so it saw the same partial picture
+                // `cfgd apply --module` does: an entry another layer still
+                // declares is not an entry that left the config.
+                .pruning_managed_resources(false)
                 // No profile was resolved, so the modules named on the command
                 // line are what the recorded apply was scoped to. Left unset,
                 // the row stores an empty scope and `cfgd status` shows no
@@ -332,6 +366,9 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                 }
             }
 
+            // own-context-ok: `cmd_init` takes no `&Cli`, so there is no
+            // `RunContext` to ask for the run's context; this arm builds
+            // exactly one.
             let pkg_cx = cfgd_core::providers::PackageContext::new(printer, &store);
             let cache_base = module_cache_dir_for(args.cache_dir, args.scope)?;
             let mut resolved_modules = if !module_names.is_empty() {
@@ -390,7 +427,11 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
             // recorded scope is the profile name the reconciler already reads
             let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &store)
                 .with_config_dir(&target_dir)
-                .diffing_installed(&pkg_cx);
+                .diffing_installed(&pkg_cx)
+                // This arm resolved a real profile and named no module, so the
+                // desired set it saw is the whole machine's: a row nothing
+                // declares any more is a row that left the config.
+                .pruning_managed_resources(true);
             // Survivor-gated pricing: only a package this plan will surface is
             // asked for the version its install action renders and persists.
             reconciler.fill_planned_versions(&mut resolved_modules, &registry.manager_map());
@@ -480,7 +521,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
     // The "Next Steps" section is suppressed whenever an apply ran — the
     // apply branch already produced its own report.
     let output = InitOutput {
-        target_dir: target_dir.display().to_string(),
+        target_dir: cfgd_core::to_posix_string(&target_dir),
     };
     let doc = if !should_apply {
         Doc::new()
@@ -523,7 +564,8 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
 /// here prevents a new flag from silently regressing on the clone path (the
 /// way `--name` once did).
 ///
-/// The override set is exactly `{name → metadata.name, theme → spec.theme}`.
+/// The override set is exactly
+/// `{name → metadata.name, theme → spec.output.theme}`.
 /// Every other `Init` flag is intentionally absent: `apply` / `apply_profile`
 /// / `apply_module` / `dry_run` / `yes` / `install_daemon` are behavioral and
 /// run identically on both the clone and scaffold paths; `branch` / `from` /
@@ -546,10 +588,12 @@ fn apply_clone_overrides(
         cfg.metadata.name = name.to_string();
     }
     if let Some(theme) = theme {
-        cfg.spec.theme = Some(config::ThemeConfig {
+        let mut output = cfg.spec.output.take().unwrap_or_default();
+        output.theme = Some(config::ThemeConfig {
             name: theme.to_string(),
             overrides: config::ThemeOverrides::default(),
         });
+        cfg.spec.output = Some(output);
     }
     crate::cli::helpers::rewrite_user_yaml(config_path, &cfg)?;
     Ok(())
@@ -874,7 +918,8 @@ kind: Config
 metadata:
   name: {config_name}
 spec:
-  theme: {theme_value}
+  output:
+    theme: {theme_value}
   fileStrategy: Symlink
   aliases:
     add: "profile update --file"
@@ -974,19 +1019,28 @@ pub(crate) fn regenerate_workflow(config_dir: &Path, printer: &Printer) -> anyho
 }
 
 pub(super) fn check_prerequisites(printer: &Printer) -> bool {
-    if !cfgd_core::command_available("git") {
-        printer
-            .status(Role::Fail, "Git is not installed")
-            .detail("cfgd requires git");
-        if cfg!(target_os = "macos") {
-            printer.hint("Install with `xcode-select --install`");
-        } else {
-            // install-verb-ok: advice for a human, not an install cfgd emits
-            printer.hint("Install with `sudo apt install git` (or your package manager)");
-        }
-        return false;
+    if cfgd_core::command_available("git") {
+        return true;
     }
-    true
+    let registry = crate::cli::build_registry();
+    match crate::cli::helpers::provision_tool(printer, &registry, "git", "") {
+        Ok(()) => {
+            printer.status_simple(Role::Ok, "Installed git");
+            true
+        }
+        Err(reason) => {
+            printer
+                .status(Role::Fail, "Git is not installed")
+                .detail(reason);
+            // The one route left when no manager cfgd drives is here: the
+            // Command Line Tools installer is macOS's own, and cfgd cannot
+            // drive its GUI prompt.
+            if cfg!(target_os = "macos") {
+                printer.hint("Install with `xcode-select --install`");
+            }
+            false
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1058,7 +1112,7 @@ mod tests {
     // ─── apply_clone_overrides — theme override ───────────────────
 
     #[test]
-    fn apply_clone_overrides_theme_override_mutates_spec_theme() {
+    fn apply_clone_overrides_theme_override_mutates_the_nested_output_theme() {
         let dir = tempfile::tempdir().unwrap();
         let config_path = write_minimal_config(dir.path());
 
@@ -1067,11 +1121,11 @@ mod tests {
         let cfg = config::load_config(&config_path).unwrap();
         let theme = cfg
             .spec
-            .theme
-            .expect("spec.theme must be set after override");
+            .theme()
+            .expect("spec.output.theme must be set after override");
         assert_eq!(
             theme.name, "catppuccin",
-            "spec.theme.name must equal the supplied --theme override"
+            "spec.output.theme.name must equal the supplied --theme override"
         );
     }
 
@@ -1086,7 +1140,7 @@ mod tests {
 
         let cfg = config::load_config(&config_path).unwrap();
         assert_eq!(cfg.metadata.name, "my-machine");
-        let theme = cfg.spec.theme.expect("spec.theme must be set");
+        let theme = cfg.spec.theme().expect("spec.output.theme must be set");
         assert_eq!(theme.name, "minimal");
     }
 }

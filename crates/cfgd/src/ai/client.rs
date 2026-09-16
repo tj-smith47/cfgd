@@ -135,6 +135,7 @@ impl AnthropicClient {
                 }
             })?;
 
+        // not-a-child-ok: an HTTP response's own status code, which starts no process
         let status = response.status();
         if !status.is_success() {
             let code = status.as_u16();

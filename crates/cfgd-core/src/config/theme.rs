@@ -1,17 +1,20 @@
 use serde::{Deserialize, Serialize};
 
-/// `spec.theme`: the active output preset and any per-color/icon overrides.
+/// `spec.output.theme`: the active output preset and any per-color/icon
+/// overrides.
 ///
 /// Accepts either a bare string (the preset name) or a mapping:
 ///
 /// ```yaml
-/// theme: dracula
-/// # or
-/// theme:
-///   name: dracula
-///   overrides:
-///     header: "#ff0000"
-///     iconOk: "Y"
+/// spec:
+///   output:
+///     theme: dracula
+///     # or
+///     theme:
+///       name: dracula
+///       overrides:
+///         header: "#ff0000"
+///         iconOk: "Y"
 /// ```
 #[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]

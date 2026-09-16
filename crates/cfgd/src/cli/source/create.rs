@@ -119,7 +119,10 @@ pub fn cmd_source_create(
 
     let mut doc = Doc::new().status(
         Role::Ok,
-        format!("Created cfgd-source.yaml at {}", source_path.posix()),
+        format!(
+            "Created cfgd-source.yaml at {}",
+            cfgd_core::fold_home_in_text(&source_path.display_posix())
+        ),
     );
     if !profile_names.is_empty() {
         doc = doc.status(

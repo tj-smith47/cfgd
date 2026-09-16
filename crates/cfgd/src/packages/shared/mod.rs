@@ -31,18 +31,22 @@ pub(super) fn canonical_ci_pkg_name(name: &str) -> String {
     name.to_ascii_lowercase()
 }
 
-/// Locate a package-manager binary. First checks the `CFGD_<NAME>_BIN` env-var
-/// seam (tests inject a ToolShim path here); then `$PATH` via
-/// `command_available`; on miss, walks each entry in `fallbacks` and returns
-/// the first that exists. Returns `None` if nothing is found — matches the
-/// `find_X() -> Option<PathBuf>` shape that cargo/pipx/go managers had
-/// open-coded.
+/// Locate a package-manager binary: the `CFGD_<NAME>_BIN` seam, then `$PATH`,
+/// then the first entry of `fallbacks` that exists. `None` when nothing is
+/// found, matching the `find_X() -> Option<PathBuf>` shape the cargo, pipx and
+/// go managers had open-coded.
+///
+/// A SET seam answers alone, the file it names being absent included, the same
+/// rule [`cfgd_core::command_available_with_seam`] and [`brew_available`] hold
+/// to. The fallbacks are absolute paths a manager keeps its toolchain at
+/// (`/usr/local/go/bin/go`), so a seam that fell through to them when the file
+/// it names is absent is a seam that cannot say this host has no go — and a
+/// test emptying `PATH` to mean "no manager here" then puts the host's real
+/// toolchain to work.
 pub(super) fn resolve_tool_with_fallbacks(name: &str, fallbacks: &[PathBuf]) -> Option<PathBuf> {
     if let Ok(custom) = std::env::var(tool_seam_var(name)) {
         let p = PathBuf::from(custom);
-        if p.is_file() {
-            return Some(p);
-        }
+        return p.is_file().then_some(p);
     }
     if let Some(p) = cfgd_core::command_path(name) {
         return Some(p);
@@ -62,7 +66,7 @@ pub(super) fn resolve_tool_with_fallbacks(name: &str, fallbacks: &[PathBuf]) -> 
 /// fall back to the bare name so the caller surfaces the normal "not found" error.
 ///
 /// Pure and platform-neutral so it is unit-testable off Windows; the Windows-only
-/// wiring lives in [`build_pkg_command`].
+/// wiring lives in [`tool_cmd_at`].
 #[cfg(any(windows, test))]
 pub(super) fn windows_pkg_argv(name: &str, resolved: Option<&std::path::Path>) -> Vec<String> {
     let Some(path) = resolved else {
@@ -82,20 +86,30 @@ pub(super) fn windows_pkg_argv(name: &str, resolved: Option<&std::path::Path>) -
             "-File".into(),
             p,
         ],
-        // Pass the shim path UNQUOTED: Rust wraps a space-bearing argv token in quotes
-        // itself, and cmd.exe's "exactly two quotes around an executable file" rule then
-        // preserves them. Quoting here instead would get the inner quotes backslash-escaped
-        // and reach cmd.exe malformed.
-        Some("cmd") | Some("bat") => vec!["cmd".into(), "/c".into(), p],
+        // Pass the shim path UNQUOTED and behind `call`: Rust wraps a space-bearing
+        // argv token in quotes itself, but cmd.exe keeps those quotes only under its
+        // "the first token after /c opens with a quote, carries exactly two of them
+        // and none of &<>()@^| between them" rule, which `C:\Program Files (x86)\…`
+        // fails outright. `call` takes that first position instead, leaving the
+        // quoted path alone, and propagates the shim's own exit code.
+        Some("cmd") | Some("bat") => vec!["cmd".into(), "/c".into(), "call".into(), p],
         _ => vec![p],
     }
 }
 
-/// Build a base `Command` for a package-manager binary, resolving it to a full
-/// path so a Windows script shim (`.ps1`/`.cmd`) is invoked correctly rather than
-/// dying with "program not found" (see `windows_pkg_argv`). On non-Windows this
-/// is just `Command::new(<resolved-or-name>)`.
-fn build_pkg_command(name: &str, resolved: Option<PathBuf>) -> Command {
+/// Build a base `Command` for a package-manager binary at the path its resolver
+/// already answered with, falling back to the bare name when the resolver found
+/// nothing so the caller surfaces the normal "not found" error.
+///
+/// The resolver reads the `CFGD_<NAME>_BIN` seam itself and judges the file it
+/// names, which is why this factory reads no seam of its own: a second read
+/// under a weaker standard would spawn a path the resolver had already declined
+/// while the run reported the tool the resolver did choose.
+///
+/// A Windows script shim (`.ps1`/`.cmd`) is invoked through its interpreter
+/// rather than dying with "program not found" (see `windows_pkg_argv`). On
+/// non-Windows this is just `Command::new(<resolved-or-name>)`.
+pub(super) fn tool_cmd_at(name: &str, resolved: Option<PathBuf>) -> Command {
     #[cfg(windows)]
     {
         let argv = windows_pkg_argv(name, resolved.as_deref());
@@ -109,23 +123,6 @@ fn build_pkg_command(name: &str, resolved: Option<PathBuf>) -> Command {
     {
         Command::new(resolved.unwrap_or_else(|| PathBuf::from(name)))
     }
-}
-
-/// Build a `Command` for `name`, using `resolver` for the binary path and
-/// falling back to a plain `Command::new(name)` when `resolver` returns `None`.
-/// Honors the `CFGD_<NAME>_BIN` env-var seam first, short-circuiting the
-/// resolver entirely (tests don't want resolver-side filesystem checks
-/// running). On Windows the resolved path is invoked shim-aware so `.cmd`/`.ps1`
-/// managers (scoop, npm) actually run. Mirrors the `X_cmd()` pattern that
-/// cargo/pipx/go had open-coded.
-pub(super) fn tool_cmd_with_resolver<F>(name: &str, resolver: F) -> Command
-where
-    F: FnOnce() -> Option<PathBuf>,
-{
-    if let Ok(custom) = std::env::var(tool_seam_var(name)) {
-        return Command::new(custom);
-    }
-    build_pkg_command(name, resolver())
 }
 
 /// The leading self-tag a manager stamps on its own advisory lines, stripped
@@ -747,10 +744,14 @@ const LINUXBREW_PATH: &str = "/home/linuxbrew/.linuxbrew/bin/brew";
 const BREW_BIN_ENV: &str = "CFGD_BREW_BIN";
 
 /// Check if brew is available, including linuxbrew fallback on Linux.
-/// Honors `CFGD_BREW_BIN` for tests.
+///
+/// A set `CFGD_BREW_BIN` answers alone, missing file included, matching
+/// [`cfgd_core::command_available_with_seam`]: a seam that fell through to the
+/// host when the file it names is absent is a seam that cannot say this host
+/// has no brew, which is exactly what a cascade test needs to say.
 pub(super) fn brew_available() -> bool {
-    if std::env::var(BREW_BIN_ENV).is_ok_and(|v| std::path::Path::new(&v).is_file()) {
-        return true;
+    if let Ok(seam) = std::env::var(BREW_BIN_ENV) {
+        return std::path::Path::new(&seam).is_file();
     }
     if command_available("brew") {
         return true;
@@ -776,18 +777,69 @@ pub(super) fn brew_available() -> bool {
 /// probes exactly the command that will run it. That pairing is what makes a
 /// planned method safe to treat as binding: a plan can only name a mediator
 /// execution can spawn.
-type SystemArm = (&'static str, &'static str);
+pub(super) type SystemArm = (&'static str, &'static str);
 
-/// The system arms of [`bootstrap_via_brew_then_system`].
-const BREW_SYSTEM_ARMS: &[SystemArm] = &[("apt", "apt-get"), ("dnf", "dnf")];
+/// The arms a mediated bootstrap reaches on a Unix host, in the order it tries
+/// them. One table rather than a per-cascade one: which mediators a manager
+/// offers is the manager's own declaration, so a cascade that reached fewer of
+/// them only hid an arm its mediator had already named.
+const SYSTEM_MANAGER_ARMS: &[SystemArm] = &[
+    ("apt", "apt-get"),
+    ("dnf", "dnf"),
+    ("yum", "yum"),
+    ("zypper", "zypper"),
+    ("pacman", "pacman"),
+    ("apk", "apk"),
+    ("pkg", "pkg"),
+];
 
-/// The arms of [`bootstrap_via_system_manager`], which reaches one manager more
-/// than the brew cascade does.
-const SYSTEM_MANAGER_ARMS: &[SystemArm] =
-    &[("apt", "apt-get"), ("dnf", "dnf"), ("zypper", "zypper")];
+/// The arms a mediated bootstrap reaches on Windows, in the order it tries
+/// them. winget leads because it ships with Windows 10 and 11, so it is the one
+/// a host carries with nothing installed first.
+const WINDOWS_MANAGER_ARMS: &[SystemArm] = &[
+    ("winget", "winget"),
+    ("chocolatey", "choco"),
+    ("scoop", "scoop"),
+];
+
+/// What one mediator installs through one arm: the arm's plan method paired
+/// with the package names that arm installs.
+///
+/// Per arm rather than one list for every Linux family because one piece of
+/// software is spelled differently per repository: node is `nodejs` on Debian
+/// and `nodejs24` on openSUSE, and pipx is `python-pipx` on Arch. An EMPTY list
+/// is how a mediator declines an arm, and a declined arm says why beside its
+/// declaration.
+type ArmPackages = (&'static str, &'static [&'static str]);
+
+/// The arms a mediated bootstrap reaches on THIS host: the Windows three there,
+/// the Unix families everywhere else.
+///
+/// Read by every detector and by the cascade's fall-through walk, so a plan
+/// built here and the install that runs it consider the same mediators. The
+/// PLANNED path deliberately looks in both tables instead (see [`arm_tool`]):
+/// a method is binding, and a plan that named an arm answers for it rather
+/// than being re-judged against the host's table.
+pub(super) fn host_arms() -> &'static [SystemArm] {
+    if cfg!(windows) {
+        WINDOWS_MANAGER_ARMS
+    } else {
+        SYSTEM_MANAGER_ARMS
+    }
+}
+
+/// The command an arm spawns, whichever table holds it, or `None` for a method
+/// no arm names.
+pub(super) fn arm_tool(method: &str) -> Option<&'static str> {
+    SYSTEM_MANAGER_ARMS
+        .iter()
+        .chain(WINDOWS_MANAGER_ARMS)
+        .find(|(arm, _)| *arm == method)
+        .map(|(_, tool)| *tool)
+}
 
 /// One manager's mediated bootstrap: the packages a mediating manager installs
-/// to deliver it, per mediator family.
+/// to deliver it, per arm.
 ///
 /// Declared once per manager and read twice — by its `bootstrap`, which hands
 /// these lists to the cascade helpers below, and by its
@@ -798,14 +850,51 @@ const SYSTEM_MANAGER_ARMS: &[SystemArm] =
 pub(super) struct MediatedArms {
     /// The brew formula, or `None` for a manager with no brew arm.
     pub(super) brew: Option<&'static str>,
-    /// The package names the system arms install.
-    pub(super) system: &'static [&'static str],
-    /// Which system arms deliver it — the same table the manager's own
-    /// bootstrap cascade walks.
-    pub(super) system_arms: &'static [SystemArm],
+    /// One entry per arm this manager was asked about, keyed by plan method.
+    /// The `pkg` entry names FreeBSD port ORIGINS (`devel/py-pipx`): the ports
+    /// tree spells Python packages with a flavour prefix (`py311-pipx`) that no
+    /// generic name resolves, while an origin is flavour-free and keeps naming
+    /// the right port as the default flavour moves.
+    pub(super) arms: &'static [ArmPackages],
 }
 
 impl MediatedArms {
+    /// The packages the arm `method` installs for this manager, or `None` when
+    /// this manager offers that arm nothing to install.
+    ///
+    /// The one place a mediator becomes a package list, so the cascade that
+    /// RUNS an arm and the batch that asks the same mediator for names cannot
+    /// answer differently. An empty list is how a manager declines an arm: no
+    /// FreeBSD port means no `pkg` arm, not a `pkg install` of the Linux names.
+    pub(super) fn system_packages_for(&self, method: &str) -> Option<&'static [&'static str]> {
+        self.arms
+            .iter()
+            .find(|(arm, _)| *arm == method)
+            .map(|(_, pkgs)| *pkgs)
+            .filter(|pkgs| !pkgs.is_empty())
+    }
+
+    /// The arms this manager actually offers ON THIS HOST, as prose an error
+    /// names (`apt, dnf, or pkg`). Read off [`host_arms`] through
+    /// [`Self::system_packages_for`], so a failure sentence cannot claim a
+    /// mediator the cascade never tried.
+    ///
+    /// `None` for a manager that offers this host no arm at all, so no caller
+    /// can compose a sentence that trails off after `via `.
+    pub(super) fn offered_arm_names(&self) -> Option<String> {
+        let offered: Vec<&str> = host_arms()
+            .iter()
+            .filter(|(method, _)| self.system_packages_for(method).is_some())
+            .map(|(method, _)| *method)
+            .collect();
+        match offered.split_last() {
+            None => None,
+            Some((last, [])) => Some((*last).to_string()),
+            Some((last, [first])) => Some(format!("{first} or {last}")),
+            Some((last, rest)) => Some(format!("{}, or {last}", rest.join(", "))),
+        }
+    }
+
     /// The packages `via` installs for this manager, or `None` when `via` is
     /// not a mediator these arms describe. Answered on `via`'s FAMILY, so
     /// `brew-cask` reads as brew — the same collapse the provision lane makes.
@@ -814,35 +903,8 @@ impl MediatedArms {
         if family == "brew" {
             return self.brew.map(|pkg| vec![pkg.to_string()]);
         }
-        self.system_arms
-            .iter()
-            .any(|(arm, _)| *arm == family)
-            .then(|| self.system.iter().map(|p| (*p).to_string()).collect())
-    }
-}
-
-/// The arms of a manager whose bootstrap runs [`bootstrap_via_brew_then_system`].
-pub(super) const fn brew_then_system_arms(
-    brew: &'static str,
-    system: &'static [&'static str],
-) -> MediatedArms {
-    MediatedArms {
-        brew: Some(brew),
-        system,
-        system_arms: BREW_SYSTEM_ARMS,
-    }
-}
-
-/// The arms of a manager whose bootstrap runs [`bootstrap_via_system_manager`],
-/// optionally after a brew arm of its own.
-pub(super) const fn system_manager_arms(
-    brew: Option<&'static str>,
-    system: &'static [&'static str],
-) -> MediatedArms {
-    MediatedArms {
-        brew,
-        system,
-        system_arms: SYSTEM_MANAGER_ARMS,
+        self.system_packages_for(family)
+            .map(|pkgs| pkgs.iter().map(|p| (*p).to_string()).collect())
     }
 }
 
@@ -853,8 +915,13 @@ pub(super) const fn system_manager_arms(
 /// this family reads the plan being built the same way; a system manager is
 /// never provisioned today, which makes the first half a no-op for these arms
 /// and keeps it from being a second rule when one is.
-fn detect_system_arm(arms: &[SystemArm], delivered: &dyn Fn(&str) -> bool) -> Option<&'static str> {
-    arms.iter()
+fn detect_system_arm(
+    arms: &MediatedArms,
+    delivered: &dyn Fn(&str) -> bool,
+) -> Option<&'static str> {
+    host_arms()
+        .iter()
+        .filter(|(method, _)| arms.system_packages_for(method).is_some())
         .find(|(method, tool)| delivered(method) || system_tool_available(tool))
         .map(|(method, _)| *method)
 }
@@ -875,10 +942,11 @@ fn detect_system_arm(arms: &[SystemArm], delivered: &dyn Fn(&str) -> bool) -> Op
 /// `pip`) — the same string it hands the cascade — because a method naming
 /// neither this cascade nor that arm is a provision nothing can run.
 pub(super) fn detect_brew_system_method(
+    arms: &MediatedArms,
     fallback: &'static str,
     delivered: &dyn Fn(&str) -> bool,
 ) -> &'static str {
-    detect_brew_or_system_method(BREW_SYSTEM_ARMS, delivered).unwrap_or(fallback)
+    detect_brew_or_system_method(arms, delivered).unwrap_or(fallback)
 }
 
 /// The mediator a brew-then-system bootstrap can actually run on this host, or
@@ -889,10 +957,13 @@ pub(super) fn detect_brew_system_method(
 /// degrade into a cascade that tried something else, and under a binding plan
 /// it would be a guaranteed failure instead.
 pub(super) fn detect_brew_or_system_method(
-    arms: &[SystemArm],
+    arms: &MediatedArms,
     delivered: &dyn Fn(&str) -> bool,
 ) -> Option<&'static str> {
-    if delivered("brew") || brew_available() {
+    // brew has no Windows build, so a brew arm is not a route there whatever a
+    // run claims to deliver: naming it would bind the execution to a mediator
+    // `bootstrap_brew_arm` then refuses for being unavailable.
+    if arms.brew.is_some() && !cfg!(windows) && (delivered("brew") || brew_available()) {
         return Some("brew");
     }
     detect_system_arm(arms, delivered)
@@ -903,14 +974,27 @@ pub(super) fn detect_brew_or_system_method(
 /// method through it. Binding on execution for the same reason
 /// [`detect_brew_system_method`] is.
 #[cfg(target_os = "linux")]
-pub(super) fn detect_system_method(delivered: &dyn Fn(&str) -> bool) -> Option<&'static str> {
-    detect_system_arm(SYSTEM_MANAGER_ARMS, delivered)
+pub(super) fn detect_system_method(
+    arms: &MediatedArms,
+    delivered: &dyn Fn(&str) -> bool,
+) -> Option<&'static str> {
+    detect_system_arm(arms, delivered)
 }
 
-/// Every mediator a `go` bootstrap can run: brew, then the full system cascade
-/// (`bootstrap_via_system_manager`, which reaches zypper as well).
-pub(super) fn detect_go_bootstrap_method(delivered: &dyn Fn(&str) -> bool) -> Option<&'static str> {
-    detect_brew_or_system_method(SYSTEM_MANAGER_ARMS, delivered)
+/// Which of winget, chocolatey and scoop can run here, or `None` when none of
+/// them is present. Windows-only, like the arms it reads. Binding on execution
+/// for the same reason [`detect_brew_system_method`] is.
+///
+/// The counterpart of [`detect_system_method`] for the managers whose own
+/// bootstrap arm is POSIX-only: naming that arm on Windows would schedule a
+/// provision the apply could only fail, so a manager with no Windows mediator
+/// present offers no plan at all.
+#[cfg(windows)]
+pub(super) fn detect_windows_method(
+    arms: &MediatedArms,
+    delivered: &dyn Fn(&str) -> bool,
+) -> Option<&'static str> {
+    detect_system_arm(arms, delivered)
 }
 
 /// The plan named a mediator that cannot deliver on this host any more.
@@ -923,6 +1007,39 @@ pub(super) fn planned_method_unavailable(manager: &str, method: &str) -> Package
         manager: manager.into(),
         message: format!(
             "the plan installs {manager} via {method}, which is not available on this host; re-run to re-plan"
+        ),
+    }
+}
+
+/// The plan named a mediator that is on this host but does not package the tool.
+///
+/// Told apart from [`planned_method_unavailable`] because the reader's next move
+/// differs: a mediator that is absent may be installed and the plan re-run, while
+/// one that does not carry the package will answer the same way forever, so
+/// "re-run to re-plan" would send the reader in a circle.
+pub(super) fn planned_method_declined(manager: &str, method: &str) -> PackageError {
+    PackageError::BootstrapFailed {
+        manager: manager.into(),
+        message: format!("the plan installs {manager} via {method}, which does not package it"),
+    }
+}
+
+/// The mediator the plan named did its half, and the tool behind it failed.
+///
+/// Told apart from [`planned_method_failed`] because the failing party is not
+/// the mediator: winget installs the interpreter it packages and pip is what
+/// then installs pipx, so naming winget would send the reader to check a tool
+/// that worked. `step` is that second tool, and `detail` is what it said.
+pub(super) fn planned_step_failed(
+    manager: &str,
+    method: &str,
+    step: &str,
+    detail: &str,
+) -> PackageError {
+    PackageError::BootstrapFailed {
+        manager: manager.into(),
+        message: format!(
+            "{method} installed its part, but {step} could not finish installing {manager}: {detail}"
         ),
     }
 }
@@ -1011,7 +1128,12 @@ fn pip_python_version(pip_tool: &str) -> Option<String> {
     if let Some(cached) = VERSION.get() {
         return Some(cached.clone());
     }
-    let mut cmd = tool_cmd_with_resolver(pip_tool, || resolve_tool_with_fallbacks(pip_tool, &[]));
+    // The route's own `find_pip` reads the same list: a pip only one of the two
+    // can see makes the plan promise a directory the run never records.
+    let mut cmd = tool_cmd_at(
+        pip_tool,
+        resolve_tool_with_fallbacks(pip_tool, &super::pipx::pip_fallbacks()),
+    );
     cmd.arg("--version");
     hand_child_bootstrapped_path(&mut cmd);
     let out = cfgd_core::command_output_with_timeout(&mut cmd, cfgd_core::COMMAND_TIMEOUT).ok()?;
@@ -1032,7 +1154,17 @@ pub(super) fn parse_pip_python_version(banner: &str) -> Option<String> {
 /// Return the brew bin/sbin directories for the current platform.
 /// Mirrors `BrewManager::path_dirs`; kept here so `path_with_brew` doesn't need
 /// to depend on the brew submodule.
+///
+/// The seam answers alone, as it does for [`brew_available`]: it names where
+/// brew IS, so the directories brew puts binaries in are read off the same
+/// statement rather than off a prefix the seam contradicts.
 pub(super) fn brew_path_dirs() -> Vec<String> {
+    if let Ok(seam) = std::env::var(BREW_BIN_ENV) {
+        return std::path::Path::new(&seam)
+            .parent()
+            .map(|dir| vec![cfgd_core::to_posix_string(dir)])
+            .unwrap_or_default();
+    }
     if cfg!(target_os = "linux") {
         vec![
             "/home/linuxbrew/.linuxbrew/bin".to_string(),
@@ -1126,6 +1258,8 @@ pub(super) fn brew_path() -> Option<&'static str> {
 /// Honors `CFGD_BREW_BIN` for tests: when set, short-circuits all detection
 /// and runs the shim directly. The shim is responsible for any sudo / PATH
 /// setup the test cares about.
+// seam-read-ok: brew's seam answers alone, missing file included, so this
+// factory and `brew_available` judge it under the one standard.
 pub(super) fn brew_cmd() -> Command {
     if let Ok(custom) = std::env::var(BREW_BIN_ENV) {
         return Command::new(custom);
@@ -1157,13 +1291,14 @@ pub(super) fn brew_cmd() -> Command {
 
 /// Detect the user who owns the brew installation.
 fn brew_owner() -> Option<String> {
-    let output = Command::new("stat")
-        .args(["-c", "%U", LINUXBREW_PATH])
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        // own-path-ok: stat is coreutils, not a manager this run could have bootstrapped
-        .output()
-        .ok()?;
+    // own-path-ok: stat is coreutils, not a manager this run could have bootstrapped
+    let output = cfgd_core::command_output(
+        Command::new("stat")
+            .args(["-c", "%U", LINUXBREW_PATH])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null()),
+    )
+    .ok()?;
     let owner = cfgd_core::stdout_lossy_trimmed(&output);
     if owner.is_empty() || owner == "root" {
         None
@@ -1228,16 +1363,21 @@ fn bootstrap_system_arms(
     cx: &PackageContext<'_>,
     manager_name: &str,
     subject: &str,
-    pkgs: &[&str],
-    arms: &[SystemArm],
+    arms: &MediatedArms,
     fallback_method: Option<&str>,
 ) -> Result<bool> {
     if let Some(method) = cx.planned_method() {
         if fallback_method == Some(method) {
             return Ok(false);
         }
-        let Some((_, tool)) = arms.iter().find(|(arm, _)| *arm == method) else {
+        // Looked up across both tables rather than this host's: the plan named
+        // the arm and the apply answers for that arm, so a method is refused
+        // for being unavailable, never for belonging to another platform.
+        let Some(tool) = arm_tool(method) else {
             return Err(planned_method_unavailable(manager_name, method).into());
+        };
+        let Some(pkgs) = arms.system_packages_for(method) else {
+            return Err(planned_method_declined(manager_name, method).into());
         };
         if !system_tool_available(tool) {
             return Err(planned_method_unavailable(manager_name, method).into());
@@ -1250,7 +1390,10 @@ fn bootstrap_system_arms(
         };
     }
 
-    for (method, tool) in arms {
+    for (method, tool) in host_arms() {
+        let Some(pkgs) = arms.system_packages_for(method) else {
+            continue;
+        };
         if system_tool_available(tool) {
             let result = run_system_install(cx, manager_name, subject, pkgs, method, tool)?;
             if result.status.success() {
@@ -1267,13 +1410,42 @@ fn bootstrap_system_arms(
 /// hosts that lack the real binary (see `require_tool_with_seam`'s pairing
 /// note), or the probe answers from `$PATH` while the spawn answers from the
 /// seam.
-fn system_tool_available(tool: &str) -> bool {
+pub(super) fn system_tool_available(tool: &str) -> bool {
     cfgd_core::command_available_with_seam(&tool_seam_var(tool), tool)
 }
 
-/// Run one system arm's install. The window's label names the COMMAND that is
-/// running (`apt-get`), while a failure names the METHOD (`apt`) — the manager
-/// the plan line, the concurrency lane and every other binding failure use.
+/// The spawns one arm needs to install `pkgs`, each composed from that arm's
+/// own manager's install declaration.
+///
+/// Nothing here spells an install verb: the family table owns how apt, pacman
+/// and apk install, and each Windows manager owns its own argv, so a mediated
+/// bootstrap cannot spell a verb differently from an ordinary install of the
+/// same package. A Windows arm carries no `sudo` either, which is why it is
+/// built from the manager's own factory rather than from [`sudo_cmd_with_seam`].
+///
+/// winget takes one id per spawn, so an arm naming several ids there yields
+/// several commands; everything else installs a whole list at once. `None` for
+/// a method no manager here can spell.
+fn arm_install_commands(method: &str, pkgs: &[&str]) -> Option<Vec<Command>> {
+    match method {
+        "winget" => Some(
+            pkgs.iter()
+                .map(|p| super::winget::install_cmd_for(p))
+                .collect(),
+        ),
+        "chocolatey" => Some(vec![super::choco::install_cmd_for(pkgs)]),
+        "scoop" => Some(vec![super::scoop::install_cmd_for(pkgs)]),
+        _ => super::simple::family_install_command(method, pkgs).map(|cmd| vec![cmd]),
+    }
+}
+
+/// Run one arm's install. The window's label names the COMMAND that is running
+/// (`apt-get`), while a failure names the METHOD (`apt`), the manager the plan
+/// line, the concurrency lane and every other binding failure name.
+///
+/// Several spawns settle as the FIRST failure, or as the last success: an arm
+/// whose manager takes one package per spawn has installed nothing useful once
+/// one of them fails.
 fn run_system_install(
     cx: &PackageContext<'_>,
     manager_name: &str,
@@ -1282,43 +1454,56 @@ fn run_system_install(
     method: &str,
     tool: &str,
 ) -> Result<CommandOutput> {
-    pkg_run(
-        cx,
-        sudo_cmd_with_seam(tool).args(["install", "-y"]).args(pkgs),
-        format!("Installing {} via {}", subject, tool),
-    )
-    .map_err(|e| {
-        PackageError::BootstrapFailed {
-            manager: manager_name.into(),
-            message: format!("{} install failed: {}", method, e),
+    let fail = |message: String| PackageError::BootstrapFailed {
+        manager: manager_name.into(),
+        message,
+    };
+    let cmds = arm_install_commands(method, pkgs)
+        .filter(|cmds| !cmds.is_empty())
+        .ok_or_else(|| fail(format!("{method} declares no way to install {subject}")))?;
+    let mut last = None;
+    for mut cmd in cmds {
+        let result = pkg_run(cx, &mut cmd, format!("Installing {} via {}", subject, tool))
+            .map_err(|e| fail(format!("{} install failed: {}", method, e)))?;
+        let failed = !result.status.success();
+        last = Some(result);
+        if failed {
+            break;
         }
-        .into()
-    })
+    }
+    last.ok_or_else(|| fail(format!("{method} declares no way to install {subject}")).into())
 }
 
-/// Try to install a package via common system package managers (apt, then dnf, then zypper).
+/// Try to install a manager through this host's own package managers, in
+/// [`host_arms`] order, less the arms the caller's table declines.
 /// Returns `Ok(())` on first success, or a `BootstrapFailed` error if all attempts fail.
 ///
 /// There is no fallback arm past this one: a caller reaching here has nothing
 /// else to try, so a planned method these arms cannot run fails naming itself.
+///
+/// The sentence names the mediators THIS manager offers, read off its own arms:
+/// a manager with no FreeBSD port never tried `pkg`, and telling its reader it
+/// did sends them looking for a failure that never happened.
 pub(super) fn bootstrap_via_system_manager(
     cx: &PackageContext<'_>,
-    target_pkg: &str,
+    arms: &MediatedArms,
     manager_name: &str,
 ) -> Result<()> {
-    if bootstrap_system_arms(
-        cx,
-        manager_name,
-        target_pkg,
-        &[target_pkg],
-        SYSTEM_MANAGER_ARMS,
-        None,
-    )? {
+    if bootstrap_system_arms(cx, manager_name, manager_name, arms, None)? {
         return Ok(());
     }
+    let message = match arms.offered_arm_names() {
+        Some(names) => format!("failed to install {manager_name} via {names}"),
+        // Unreachable: every manager whose bootstrap reaches here declares a
+        // non-empty system list. Worded rather than unwrapped so an arms table
+        // that one day declares none says something true — and what would be
+        // empty is the manager's own table, not the set of mediators the host
+        // carries.
+        None => format!("failed to install {manager_name}: it names no mediator to install it"),
+    };
     Err(PackageError::BootstrapFailed {
         manager: manager_name.into(),
-        message: format!("failed to install {} via apt, dnf, or zypper", target_pkg),
+        message,
     }
     .into())
 }
@@ -1336,21 +1521,15 @@ pub(super) fn bootstrap_via_system_manager(
 pub(super) fn bootstrap_via_brew_then_system(
     cx: &PackageContext<'_>,
     manager_name: &str,
-    brew_pkg: &str,
-    system_pkgs: &[&str],
+    arms: &MediatedArms,
     fallback_method: &str,
 ) -> Result<bool> {
-    if bootstrap_brew_arm(cx, manager_name, brew_pkg)? {
+    if let Some(brew_pkg) = arms.brew
+        && bootstrap_brew_arm(cx, manager_name, brew_pkg)?
+    {
         return Ok(true);
     }
-    bootstrap_system_arms(
-        cx,
-        manager_name,
-        manager_name,
-        system_pkgs,
-        BREW_SYSTEM_ARMS,
-        Some(fallback_method),
-    )
+    bootstrap_system_arms(cx, manager_name, manager_name, arms, Some(fallback_method))
 }
 
 /// Run a `sh -c <script>` install pipeline and surface non-zero exits as
@@ -1435,12 +1614,16 @@ pub(super) fn sudo_cmd(program: &str) -> Command {
     }
 }
 
-/// Build a Command for `program`, honoring the `CFGD_<NAME>_BIN` env-var seam
-/// the same way [`tool_cmd_with_resolver`] does, but for tools that normally
-/// require `sudo`. When the seam is set, returns a direct
+/// Build a Command for `program`, reading the `CFGD_<NAME>_BIN` env-var seam
+/// itself, unlike [`tool_cmd_at`], which spawns the path its caller's resolver
+/// already judged. For tools that normally require `sudo`.
+///
+/// When the seam is set, returns a direct
 /// `Command::new(<seam path>)` (skipping the sudo wrapper entirely — the test
 /// shim already runs as the test user). When the seam is unset, falls back
 /// to [`sudo_cmd`].
+// seam-read-ok: this factory IS the seam reader for a tool no resolver answers
+// for, the sudo wrapper being what a resolved path would have to replace.
 pub(super) fn sudo_cmd_with_seam(program: &str) -> Command {
     if let Ok(custom) = std::env::var(tool_seam_var(program)) {
         let p = PathBuf::from(custom);

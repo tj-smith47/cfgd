@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::PathDisplayExt;
-use crate::config::{LOCAL_LAYER, MergedProfile, ResolvedProfile, ScriptSpec};
+use crate::config::{LOCAL_LAYER, MergedProfile, ResolvedProfile};
 use crate::errors::Result;
 use crate::expand_tilde;
 use crate::modules::ResolvedModule;
@@ -103,7 +103,7 @@ impl<'a> super::Reconciler<'a> {
     /// instead of standing silent until the whole tree is ready. `observe` fires
     /// at real computation boundaries, in COMPUTATION order rather than render
     /// order — the two differ because the phases are not independent: no bucket
-    /// is final until module work has been routed into it, `Prerequisites` is
+    /// is final until module work has been routed into it, `Bootstrap` is
     /// planned from the package work that survived dedup, and the caller hands
     /// `file_actions` in already computed. Two phases therefore never fire.
     /// `Files` fires for the conflict sweep that hashes every declared source,
@@ -154,7 +154,7 @@ impl<'a> super::Reconciler<'a> {
 
         observe(PhaseName::PreScripts);
         let (pre_script_actions, post_script_actions) =
-            self.plan_scripts(&resolved.merged.scripts, context);
+            self.plan_scripts(&resolved.merged, context);
 
         // Module work is attributed to the phase whose KIND it is, so a
         // module's packages sit beside the profile's in `Packages` rather than
@@ -180,24 +180,29 @@ impl<'a> super::Reconciler<'a> {
         // installs only once.
         let profile_packages = Self::filter_profile_packages(pkg_actions, &claimed);
 
-        // Prerequisites: the managers that create binaries, then the env file
+        // Bootstrap: the managers that create binaries, then the env file
         // that publishes where they live, then the live-session broadcast. It
         // is planned from the package work that SURVIVED dedup and filtering,
         // because a manager whose every install was claimed elsewhere has no
         // consumer left in this run and must not mint a node — a converged
         // host plans nothing, which is what keeps a daemon tick from running
         // `apt update` on every interval.
-        observe(PhaseName::Prerequisites);
+        observe(PhaseName::Bootstrap);
         // Read once, from the resolution that already applied every `prefer`
         // and `aliases` the module wrote, and BEFORE the elision below drops
         // the entries those routes were minted from.
         let declared_routes = super::managers::declared_manager_routes(&module_routed);
+        // The `System` and `Secrets` phases are planned further down but run
+        // after this one, so the tools they need are collected here and
+        // installed as prerequisites of the same run.
+        let deferred_tools = self.deferred_tools(&resolved.merged, &module_actions);
         let mut manager_actions = super::managers::plan_managers_with_routes(
             self.registry,
             &profile_packages,
             &module_routed,
             &declared_routes,
             &[],
+            &deferred_tools,
         );
         // A tool this plan's own cascade provisions as a MANAGER is already
         // the run's statement about that tool; a bare module entry naming it
@@ -215,6 +220,7 @@ impl<'a> super::Reconciler<'a> {
                 &module_routed,
                 &declared_routes,
                 &relied_on,
+                &deferred_tools,
             );
         }
 
@@ -287,7 +293,7 @@ impl<'a> super::Reconciler<'a> {
             // where they live, `cfgd:session` broadcasts. `Owner::sort_key`
             // orders the groups; the concatenation order here is irrelevant.
             (
-                PhaseName::Prerequisites,
+                PhaseName::Bootstrap,
                 manager_actions.into_iter().chain(env_actions).collect(),
             ),
             (PhaseName::Packages, package_actions),
@@ -382,12 +388,113 @@ impl<'a> super::Reconciler<'a> {
         Ok(())
     }
 
+    /// The tools a consumer outside the manager graph needs on this machine,
+    /// each paired with the token naming that consumer.
+    ///
+    /// A system configurator and a secret backend are both "unavailable" for a
+    /// reason a package manager can fix, and both run in a phase the plan
+    /// reaches after `Bootstrap`. Naming them here is what lets one
+    /// `cfgd apply` install `gsettings` and then set the settings that
+    /// configurator owns, instead of reporting a skip a second run would have
+    /// to clear.
+    pub(super) fn deferred_tools(
+        &self,
+        profile: &MergedProfile,
+        modules: &[ResolvedModule],
+    ) -> Vec<(String, String)> {
+        let mut tools: Vec<(String, String)> =
+            crate::effective::effective_system_map(profile, modules)
+                .0
+                .keys()
+                .filter_map(|key| {
+                    self.configurator_tool_to_install(key)
+                        .map(|tool| (tool.to_string(), format!("system:{key}")))
+                })
+                .collect();
+
+        // Only for a secret the backend would actually decrypt: a profile whose
+        // every secret is a provider reference gives sops nothing to do, and
+        // installing it would be a package nothing in the run consumes.
+        if profile.secrets.iter().any(|s| {
+            s.target.is_some() && crate::providers::parse_secret_reference(&s.source).is_none()
+        }) && let Some((tool, consumer)) = self.secret_backend_tool()
+        {
+            tools.push((tool.to_string(), consumer));
+        }
+        for secret in &profile.secrets {
+            if let Some((provider, _)) = crate::providers::parse_secret_reference(&secret.source)
+                && let Some((tool, consumer)) = self.secret_provider_tool(provider)
+            {
+                tools.push((tool.to_string(), consumer));
+            }
+        }
+        tools.sort();
+        tools.dedup();
+        tools
+    }
+
+    /// The tool a registered-but-unavailable configurator needs, when this run
+    /// can actually install it.
+    ///
+    /// `None` for a configurator that is available, for a key nothing
+    /// registers, for one whose unavailability no package can fix (it declares
+    /// no tool) and for one whose tool no registered manager packages — each of
+    /// which keeps the skip row the planner already writes.
+    pub(super) fn configurator_tool_to_install(&self, key: &str) -> Option<&'static str> {
+        let sc = self
+            .registry
+            .system_configurators()
+            .iter()
+            .find(|c| c.name() == key)?;
+        if sc.is_available() {
+            return None;
+        }
+        let tool = sc.required_tool()?;
+        super::managers::registry_tool_route(self.registry, tool).map(|_| tool)
+    }
+
+    /// The same answer for the secret backend, with the token a prerequisite
+    /// node names it by.
+    fn secret_backend_tool(&self) -> Option<(&'static str, String)> {
+        let backend = self.registry.secret_backend.as_ref()?;
+        if backend.is_available() {
+            return None;
+        }
+        let tool = backend.required_tool()?;
+        super::managers::registry_tool_route(self.registry, tool)
+            .map(|_| (tool, format!("secret:{}", backend.name())))
+    }
+
+    /// The same answer for one secret provider.
+    fn secret_provider_tool(&self, provider: &str) -> Option<(&'static str, String)> {
+        let p = self
+            .registry
+            .secret_providers
+            .iter()
+            .find(|p| p.name() == provider)?;
+        if p.is_available() {
+            return None;
+        }
+        let tool = p.required_tool()?;
+        super::managers::registry_tool_route(self.registry, tool)
+            .map(|_| (tool, format!("secret:{provider}")))
+    }
+
+    /// Why a declared secret's provider or backend is out of reach, naming the
+    /// managers that would have installed its tool.
+    fn secret_tool_unobtainable(&self, tool: Option<&'static str>) -> String {
+        match tool {
+            Some(tool) => format!(" — {}", crate::providers::tool_unobtainable_reason(tool)),
+            None => String::new(),
+        }
+    }
+
     pub(super) fn plan_system(
         &self,
         profile: &MergedProfile,
         modules: &[ResolvedModule],
     ) -> Result<Vec<Action>> {
-        let system = crate::effective::effective_system_map(profile, modules);
+        let (system, layer_sources) = crate::effective::effective_system_map(profile, modules);
 
         let mut actions = Vec::new();
 
@@ -403,12 +510,15 @@ impl<'a> super::Reconciler<'a> {
                         configurator.name(),
                         &drift.key,
                     );
+                    let rid = super::format::system_resource_key(configurator.name(), &drift.key);
                     actions.push(Action::System(SystemAction::SetValue {
                         configurator: configurator.name().to_string(),
                         key: drift.key,
                         desired: drift.expected,
                         current: drift.actual,
-                        origin: LOCAL_LAYER.to_string(),
+                        origin: layer_sources
+                            .recording_layer("system", &rid, LOCAL_LAYER)
+                            .to_string(),
                     }));
                 }
             }
@@ -422,20 +532,48 @@ impl<'a> super::Reconciler<'a> {
             if available.iter().any(|c| c.name() == key) {
                 continue;
             }
+            // Unavailable only because its tool is missing, and this run can
+            // install it: the `Bootstrap` phase ahead of us schedules the
+            // install, so the settings are configured in this run rather than
+            // skipped until the next one. The desired set is read at execute
+            // time, `diff` being unrunnable while the tool is absent.
+            if let Some(tool) = self.configurator_tool_to_install(key) {
+                actions.push(Action::System(SystemAction::ConfigureAfterInstall {
+                    configurator: key.clone(),
+                    tool: tool.to_string(),
+                    origin: layer_sources
+                        .recording_layer("system", key, LOCAL_LAYER)
+                        .to_string(),
+                    prerequisite_withheld: false,
+                }));
+                continue;
+            }
             let registered = self
                 .registry
                 .system_configurators()
                 .iter()
                 .any(|c| c.name() == key);
             let reason = if registered {
-                format!("'{}' is not available on this host", key)
+                let tool = self
+                    .registry
+                    .system_configurators()
+                    .iter()
+                    .find(|c| c.name() == key)
+                    .and_then(|c| c.required_tool());
+                format!(
+                    "'{}' is not available on this host{}",
+                    key,
+                    self.secret_tool_unobtainable(tool)
+                )
             } else {
                 format!("no configurator registered for '{}'", key)
             };
             actions.push(Action::System(SystemAction::Skip {
                 configurator: key.clone(),
                 reason,
-                origin: LOCAL_LAYER.to_string(),
+                origin: layer_sources
+                    .recording_layer("system", key, LOCAL_LAYER)
+                    .to_string(),
                 unknown: !registered,
             }));
         }
@@ -446,15 +584,28 @@ impl<'a> super::Reconciler<'a> {
     pub(super) fn plan_secrets(&self, profile: &MergedProfile) -> Vec<Action> {
         let mut actions = Vec::new();
 
+        // "Will this run be able to decrypt", not "can it right now": a
+        // backend whose tool the `Bootstrap` phase is installing is usable by
+        // the time `Secrets` runs, and planning the skip instead would leave
+        // the file undecrypted for a run that has everything it needs.
+        let backend_tool = self.secret_backend_tool();
         let has_backend = self
             .registry
             .secret_backend
             .as_ref()
             .map(|b| b.is_available())
-            .unwrap_or(false);
+            .unwrap_or(false)
+            || backend_tool.is_some();
 
         for secret in &profile.secrets {
             let has_envs = secret.envs.as_ref().is_some_and(|e| !e.is_empty());
+            // One declaration, one layer: the merge deduplicates a secret by
+            // `source`, so every action this entry mints records under the same
+            // layer whichever arm below builds it.
+            let origin = profile
+                .layer_sources
+                .recording_layer("secret", &secret.source, LOCAL_LAYER)
+                .to_string();
 
             // Check if it's a provider reference
             if let Some((provider_name, reference)) =
@@ -464,7 +615,8 @@ impl<'a> super::Reconciler<'a> {
                     .registry
                     .secret_providers
                     .iter()
-                    .any(|p| p.name() == provider_name && p.is_available());
+                    .any(|p| p.name() == provider_name && p.is_available())
+                    || self.secret_provider_tool(provider_name).is_some();
 
                 if available {
                     // File-targeting action when a target path is set
@@ -474,7 +626,7 @@ impl<'a> super::Reconciler<'a> {
                             reference: reference.to_string(),
                             target: crate::expand_tilde(target),
                             template: secret.template.clone(),
-                            origin: LOCAL_LAYER.to_string(),
+                            origin: origin.clone(),
                         }));
                     }
 
@@ -485,7 +637,7 @@ impl<'a> super::Reconciler<'a> {
                             reference: reference.to_string(),
                             envs: secret.envs.clone().unwrap_or_default(),
                             template: secret.template.clone(),
-                            origin: LOCAL_LAYER.to_string(),
+                            origin: origin.clone(),
                         }));
                     }
 
@@ -494,14 +646,24 @@ impl<'a> super::Reconciler<'a> {
                         actions.push(Action::Secret(SecretAction::Skip {
                             source: secret.source.clone(),
                             reason: "no target or envs specified".to_string(),
-                            origin: LOCAL_LAYER.to_string(),
+                            origin: origin.clone(),
                         }));
                     }
                 } else {
+                    let tool = self
+                        .registry
+                        .secret_providers
+                        .iter()
+                        .find(|p| p.name() == provider_name)
+                        .and_then(|p| p.required_tool());
                     actions.push(Action::Secret(SecretAction::Skip {
                         source: secret.source.clone(),
-                        reason: format!("provider '{}' not available", provider_name),
-                        origin: LOCAL_LAYER.to_string(),
+                        reason: format!(
+                            "provider '{}' not available{}",
+                            provider_name,
+                            self.secret_tool_unobtainable(tool)
+                        ),
+                        origin: origin.clone(),
                     }));
                 }
             } else if secret.target.is_some() && has_backend {
@@ -521,14 +683,14 @@ impl<'a> super::Reconciler<'a> {
                         .map(crate::expand_tilde)
                         .unwrap_or_default(),
                     backend: backend_name,
-                    origin: LOCAL_LAYER.to_string(),
+                    origin: origin.clone(),
                 }));
 
                 if has_envs {
                     actions.push(Action::Secret(SecretAction::Skip {
                         source: secret.source.clone(),
                         reason: "env injection requires a secret provider reference; SOPS file targets cannot inject env vars".to_string(),
-                        origin: LOCAL_LAYER.to_string(),
+                        origin: origin.clone(),
                     }));
                 }
             } else if secret.target.is_none() && has_envs && !has_backend {
@@ -537,13 +699,21 @@ impl<'a> super::Reconciler<'a> {
                 actions.push(Action::Secret(SecretAction::Skip {
                     source: secret.source.clone(),
                     reason: "env injection requires a secret provider reference (e.g. 1password://, vault://)".to_string(),
-                    origin: LOCAL_LAYER.to_string(),
+                    origin: origin.clone(),
                 }));
             } else if !has_backend {
+                let tool = self
+                    .registry
+                    .secret_backend
+                    .as_ref()
+                    .and_then(|b| b.required_tool());
                 actions.push(Action::Secret(SecretAction::Skip {
                     source: secret.source.clone(),
-                    reason: "no secret backend available".to_string(),
-                    origin: LOCAL_LAYER.to_string(),
+                    reason: format!(
+                        "no secret backend available{}",
+                        self.secret_tool_unobtainable(tool)
+                    ),
+                    origin: origin.clone(),
                 }));
             }
         }
@@ -553,9 +723,10 @@ impl<'a> super::Reconciler<'a> {
 
     fn plan_scripts(
         &self,
-        scripts: &ScriptSpec,
+        profile: &MergedProfile,
         context: ReconcileContext,
     ) -> (Vec<Action>, Vec<Action>) {
+        let scripts = &profile.scripts;
         let (pre_entries, pre_phase, post_entries, post_phase) = match context {
             ReconcileContext::Apply => (
                 &scripts.pre_apply,
@@ -571,13 +742,22 @@ impl<'a> super::Reconciler<'a> {
             ),
         };
 
+        // The action's own id is its `run` string, which is also the key the
+        // merge claimed the declaring layer under.
+        let layer_of = |entry: &crate::config::ScriptEntry| {
+            profile
+                .layer_sources
+                .recording_layer("script", entry.run_str(), LOCAL_LAYER)
+                .to_string()
+        };
+
         let pre_actions = pre_entries
             .iter()
             .map(|entry| {
                 Action::Script(ScriptAction::Run {
                     entry: entry.clone(),
                     phase: pre_phase.clone(),
-                    origin: LOCAL_LAYER.to_string(),
+                    origin: layer_of(entry),
                 })
             })
             .collect();
@@ -588,7 +768,7 @@ impl<'a> super::Reconciler<'a> {
                 Action::Script(ScriptAction::Run {
                     entry: entry.clone(),
                     phase: post_phase.clone(),
-                    origin: LOCAL_LAYER.to_string(),
+                    origin: layer_of(entry),
                 })
             })
             .collect();
@@ -1120,7 +1300,7 @@ impl<'a> super::Reconciler<'a> {
     /// execute-time re-read in `PackageExec::install_module_packages` all
     /// read, so a package can never be planned-but-unpriced,
     /// priced-but-elided, or installed by the `Packages` phase after the
-    /// `Prerequisites` phase already landed it.
+    /// `Bootstrap` phase already landed it.
     ///
     /// The provisioned arm is the in-run twin of the resolver's own rule
     /// (`modules::resolve_package`): a bare entry is satisfied by whichever

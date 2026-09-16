@@ -246,38 +246,6 @@ impl<'x> PackageExec<'x> {
         self.record_path_dirs(pm.name(), dirs, PathDirRecord::Created);
     }
 
-    /// Make an install's resolvable directories reachable to the REST OF THIS
-    /// PROCESS, without persisting anything.
-    ///
-    /// [`PackageManager::path_dirs`] answers where a manager's binaries live
-    /// however they got there, and normally only reaches the process registry
-    /// through [`Self::record_bootstrap`], which fires when the manager's OWN
-    /// bootstrap runs THIS run. A manager already available on a prior run, or
-    /// baked into an image, never bootstraps — so a binary this run's install
-    /// just landed in that directory (pipx, nvim, ...) is still unresolvable to
-    /// the very next action or postApply script naming it, even though the
-    /// manager reported the install successful seconds earlier.
-    ///
-    /// This closes that gap at the PROCESS level only: it registers the
-    /// directories for [`crate::command_path`] resolution and deliberately
-    /// mints no [`BootstrapRecord`] — the directory is the manager's own to
-    /// have always had, not something cfgd created, so nothing about it
-    /// belongs in the generated env file. [`Self::record_created_path_dirs`]
-    /// (`PackageManager::created_path_dirs`) is the only path to that surface,
-    /// and answers separately for whatever a manager genuinely made itself.
-    fn register_install_path_dirs(&self, pm: &dyn PackageManager) {
-        let cx = self.cx();
-        let dirs: Vec<String> = pm
-            .path_dirs(&cx)
-            .iter()
-            .map(|dir| crate::to_posix_string(std::path::Path::new(dir)))
-            .collect();
-        if dirs.is_empty() {
-            return;
-        }
-        crate::register_bootstrapped_path_dirs(&dirs);
-    }
-
     /// Install through `pm` and record whatever that install created, whichever
     /// way it went.
     ///
@@ -293,12 +261,7 @@ impl<'x> PackageExec<'x> {
         packages: &[String],
         cx: &PackageContext<'_>,
     ) -> Result<()> {
-        let result = pm.install(packages, cx);
-        // An install can land a binary in a directory that was already on
-        // `PATH` — the whole point of `apt install curl` — which registers no
-        // new directory and so would leave a memoized "not found" standing.
-        crate::invalidate_command_resolution();
-        self.register_install_path_dirs(pm);
+        let result = crate::providers::install_tool_packages(pm, packages, cx);
         self.record_created_path_dirs(pm);
         result
     }
@@ -384,7 +347,7 @@ impl<'x> PackageExec<'x> {
     /// cannot run — distinguishing "never registered" from "registered but
     /// not currently available", since only the latter names a recovery: a
     /// name typo has none, while an unprovisioned manager's fix is always
-    /// the `Prerequisites` phase this run's filter skipped.
+    /// the `Bootstrap` phase this run's filter skipped.
     fn package_manager_missing_error(&self, manager: &str) -> crate::errors::CfgdError {
         let registered = self
             .registry
@@ -444,7 +407,7 @@ impl<'x> PackageExec<'x> {
     /// asked.
     ///
     /// The planner elided every entry the manager already carried, but it did so
-    /// before the `Prerequisites` phase ran, and that phase installs packages:
+    /// before the `Bootstrap` phase ran, and that phase installs packages:
     /// `apt install npm pipx` provisions two managers and lands two apt packages
     /// a module is free to declare as well. Re-reading the machine is what keeps
     /// the two phases from installing one package twice — the truth, rather than
@@ -721,10 +684,10 @@ impl<'x> PackageExec<'x> {
                 }
             }
             ManagerAction::Prerequisite {
-                tool, installer, ..
+                package, installer, ..
             } => {
                 let pm = lookup(installer)?;
-                self.install_recording_created(pm.as_ref(), std::slice::from_ref(tool), &cx)?;
+                self.install_recording_created(pm.as_ref(), std::slice::from_ref(package), &cx)?;
             }
             // Nothing to run: the node IS the refusal. It fails rather than
             // succeeding at nothing, because the packages that named this
@@ -777,7 +740,7 @@ impl<'x> PackageExec<'x> {
         // A manager-backed install counts as changed only for the entries the
         // machine still lacks. The planner dropped everything the manager
         // reported installed (`Reconciler::diffing_installed`), but it did so
-        // BEFORE the `Prerequisites` phase ran, and that phase installs
+        // BEFORE the `Bootstrap` phase ran, and that phase installs
         // packages — `apt install npm pipx` provisions two managers and lands
         // two apt packages this module may declare itself. The set is re-read
         // below; an action left with nothing to install ran and changed

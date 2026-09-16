@@ -329,10 +329,15 @@ fn project_scope_install_leaves_no_lock_file_in_project_dir() {
 /// Recursively collect every regular file under `root` (test helper).
 fn walk_files(root: &std::path::Path) -> Vec<std::path::PathBuf> {
     let mut out = Vec::new();
-    let Ok(rd) = std::fs::read_dir(root) else {
-        return out;
-    };
-    for entry in rd.flatten() {
+    let rd = std::fs::read_dir(root).unwrap_or_else(|e| {
+        panic!(
+            "{}: the walk must read every directory: {e}",
+            root.display()
+        )
+    });
+    for entry in rd {
+        let entry = entry
+            .unwrap_or_else(|e| panic!("{}: the walk must read every entry: {e}", root.display()));
         let p = entry.path();
         if p.is_dir() {
             out.extend(walk_files(&p));

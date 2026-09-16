@@ -1,0 +1,26 @@
+Apply
+  Config   <CONFIG_DIR>/cfgd.yaml
+  Profile  tiny
+  Modules  hooked
+  Phases   Files, Post-Scripts
+  Actions  2 planned
+
+Phase: Files
+  profile:tiny
+    ✓ create <TARGET> (XXs)
+
+Phase: Post-Scripts
+  module:hooked
+    ◐ postApply: true applied
+    ✓ postApply: true applied (XXs)
+
+Phase: Change Hooks
+  profile:tiny
+    ◐ onChange: true profile
+    ✓ onChange: true profile (XXs)
+  module:hooked
+    ◐ onChange: true module
+    ✓ onChange: true module (XXs)
+
+✓ Apply complete — 2 actions succeeded (XXs wall)
+✓ 2 onChange hooks ran after the plan

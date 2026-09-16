@@ -46,6 +46,23 @@ jobs:
       - name: Check formatting
         run: task fmt:check
 
+  # Rustdoc is the longest single step in this workflow, so it gets its own
+  # job and starts with the first wave instead of queueing behind clippy.
+  rustdoc:
+    name: Rustdoc
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Rust toolchain
+        uses: ./.github/actions/setup-rust
+        with:
+          task-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Rustdoc
+        run: task doc
+
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
@@ -61,9 +78,6 @@ jobs:
 
       - name: Clippy
         run: task clippy
-
-      - name: Rustdoc
-        run: task doc
 
       - name: Schema drift guard
         run: task schema:check
@@ -148,7 +162,11 @@ jobs:
           # rustc compiling cfgd-core's test crate was SIGKILLed on the default
           # guest memory (run 34063783806); the 16 GB runner can spare 10.
           mem: 10240
-          usesh: "true"
+          # Nothing on the runner reads guest files after the run, and the
+          # default copy-back rsyncs the guest's whole `target/` tree home: the
+          # connection died 3.3 GB in (run 34556958882) and failed the job on
+          # work that had already passed.
+          copyback: "false"
           prepare: |
             # vmactions flips the image to the `latest` branch, which dropped
             # devel/task. Flip it back in place rather than shadowing the repo
@@ -161,11 +179,24 @@ jobs:
             # ordinary userland tooling, so the minor-version gate is noise.
             export IGNORE_OSVERSION=yes
             pkg update -f
-            pkg install -y rustup-init git task nextest gmake perl5
+            # npm is the subject of the real-host prefix check in `run:`, and
+            # it must come from pkg here: IGNORE_OSVERSION is not exported into
+            # that shell, so a pkg install attempted there is rejected.
+            pkg install -y rustup-init git task nextest gmake perl5 npm
             rustup-init -y --default-toolchain stable --profile minimal
           run: |
+            # The guest script's shell flags are the action's, not GitHub's, so
+            # the abort is stated here: without it a failing test leg is followed
+            # by a passing build and the whole job reports green.
+            set -e
             . "$HOME/.cargo/env"
             task test:ci
+            # The npm prefix fallback's unit pins inject both elevation and the
+            # write-probe, so only a real host proves it: a non-root user, the
+            # real www/npm whose configured prefix is the root-owned
+            # /usr/local, and npm honouring the --prefix cfgd passes.
+            cargo build --bin cfgd
+            task test:freebsd:npm-prefix BIN=target/debug/cfgd
 
   audit:
     name: Code Audit
@@ -185,6 +216,19 @@ jobs:
 
       - name: Install ripgrep
         run: sudo apt-get update && sudo apt-get install -y ripgrep
+
+      # This job compiles nothing, but `RUSTC_WRAPPER` is set for the whole
+      # workflow, so even `task audit`'s `cargo tree` needs the wrapper binary
+      # on PATH or cargo cannot so much as ask rustc for its version.
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@v0.0.11
+
+      # `task audit`'s kube gate resolves cfgd-csi's tree with `cargo tree
+      # --offline`, and this job compiles nothing, so nothing else ever puts the
+      # registry into the runner's cache: the gate reported a tree it could not
+      # resolve rather than a tree with no kube crate in it.
+      - name: Warm the registry cache
+        run: cargo fetch --locked
 
       - name: Run code audit
         run: task audit
@@ -259,13 +303,20 @@ jobs:
         with:
           tool: cargo-audit
 
+      # Same reason as the audit job above: no compilation here, but the
+      # workflow-wide wrapper has to exist for any cargo subcommand that
+      # consults rustc.
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@v0.0.11
+
       - name: Audit dependencies
         run: cargo audit
 
+  # Runs on every PR so the floor blocks the change that breaches it instead
+  # of breaking master after the merge; only the master run publishes the badge.
   coverage:
     name: Coverage
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/master'
     permissions:
       # publish-coverage.sh pushes the badge update to the badges branch.
       contents: write
@@ -293,7 +344,12 @@ jobs:
         with:
           tool: cargo-llvm-cov,cargo-nextest
 
+      - name: Run coverage
+        if: github.ref != 'refs/heads/master'
+        run: task coverage:check
+
       - name: Run coverage and update badge
+        if: github.ref == 'refs/heads/master'
         run: task coverage:publish
 
       # Preserved so a floor failure can be diffed per-file against a local
@@ -327,9 +383,11 @@ jobs:
       - name: Package all crates
         run: task package
 
+  # The only job that proves .anodizer.yaml still parses and plans, so it runs
+  # on every PR as well as master: gated to master it could only fail after the
+  # merge that broke the release pipeline.
   snapshot:
     name: Snapshot (dry-run)
-    if: github.ref == 'refs/heads/master'
     needs: [test]
     runs-on: ubuntu-latest
     steps:

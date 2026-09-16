@@ -409,7 +409,7 @@ pub struct Renderer {
     pub(crate) inherit_guards: AtomicUsize,
     /// Whether [`Self::render_hint`] emits anything. Settled once by
     /// `Printer::with_hints_enabled` (from `--no-hints` / `CFGD_USAGE_HINTS` /
-    /// `spec.usageHints`) and then read by every renderer sharing this
+    /// `spec.output.usageHints`) and then read by every renderer sharing this
     /// printer's decision — `SectionGuard` and `Doc` rendering hold their own
     /// `Arc<Renderer>` clone rather than asking the `Printer`, so the flag has
     /// to live here, at the one seam every hint producer already reaches.
@@ -862,6 +862,12 @@ impl Emitting<'_> {
         self.state.top_heading_scope = false;
         let prefix = indent_prefix(depth);
         for line in lines {
+            // An indented blank row is trailing whitespace with nothing under
+            // it, the same reason `render_paragraph` leaves its own bare.
+            if line.is_empty() {
+                self.out.push(String::new());
+                continue;
+            }
             self.out.push(format!("{prefix}{line}"));
         }
         self.mark_top_level_group(TopGroup::CodeBlock);
@@ -1257,7 +1263,7 @@ impl Renderer {
     /// `Doc` with no `with_data` serializes its `Component::Hint` text into the
     /// Doc-derived payload, which keeps the absolute path a script can `cat`.
     ///
-    /// Also the ONE seam `spec.usageHints: false` / `CFGD_USAGE_HINTS=false` /
+    /// Also the ONE seam `spec.output.usageHints: false` / `CFGD_USAGE_HINTS=false` /
     /// `--no-hints` suppresses through: the early return below fires before
     /// `open_top_group` arms the leading blank line a hint would otherwise
     /// own, so turning hints off drops both the hint AND its blank line

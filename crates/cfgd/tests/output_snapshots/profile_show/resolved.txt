@@ -1,0 +1,37 @@
+Profile: workstation
+  Config    /etc/cfgd/cfgd.yaml
+  Inherits  base
+
+Layers
+  base         source=local priority=1000
+  workstation  source=local priority=1000
+
+Aliases
+  gs  git status
+  ll  ls -lah
+
+Env
+  EDITOR  ***vim
+  LANG    ***F-8
+
+Packages
+  brew taps      homebrew/cask-fonts
+  brew formulae  ripgrep, fd
+  brew casks     firefox
+  apt            curl, jq
+  cargo          cargo-edit
+  pipx           black, ruff
+
+Files
+  bashrc     /home/user/.bashrc
+  gitconfig  /home/user/.gitconfig
+
+System
+  macosDefaults  (configured)
+  shellAliases   (configured)
+
+Secrets
+  op://Personal/GitHub/token
+    /home/user/.config/gh/token
+  op://Personal/AWS/access-key
+    envs: AWS_ACCESS_KEY_ID

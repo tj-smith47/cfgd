@@ -41,8 +41,8 @@ spec:
       keyless: true
 EOF
 
-        kubectl create namespace "$OCI01_NS" 2>/dev/null || true
-        kubectl label namespace "$OCI01_NS" cfgd.io/inject-modules=true --overwrite 2>/dev/null
+        ensure_namespace "$OCI01_NS"
+        ensure_label namespace "$OCI01_NS" cfgd.io/inject-modules=true --overwrite
 
         sleep 3
 
@@ -170,8 +170,8 @@ spec:
 EOF
         fi
 
-        kubectl create namespace "$OCI02_NS" 2>/dev/null || true
-        kubectl label namespace "$OCI02_NS" cfgd.io/inject-modules=true --overwrite 2>/dev/null
+        ensure_namespace "$OCI02_NS"
+        ensure_label namespace "$OCI02_NS" cfgd.io/inject-modules=true --overwrite
 
         sleep 3
 
@@ -411,8 +411,8 @@ spec:
       keyless: true
 EOF
 
-        kubectl create namespace "$OCI05_NS" 2>/dev/null || true
-        kubectl label namespace "$OCI05_NS" cfgd.io/inject-modules=true --overwrite 2>/dev/null
+        ensure_namespace "$OCI05_NS"
+        ensure_label namespace "$OCI05_NS" cfgd.io/inject-modules=true --overwrite
 
         sleep 3
 
@@ -491,8 +491,8 @@ spec:
       keyless: true
 EOF
 
-        kubectl create namespace "$OCI06_NS" 2>/dev/null || true
-        kubectl label namespace "$OCI06_NS" cfgd.io/inject-modules=true --overwrite 2>/dev/null
+        ensure_namespace "$OCI06_NS"
+        ensure_label namespace "$OCI06_NS" cfgd.io/inject-modules=true --overwrite
 
         # Wait for registry-credentials to be replicated by Reflector
         echo "  Waiting for registry-credentials in namespace..."

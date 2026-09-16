@@ -305,8 +305,10 @@ fn module_upgrade_no_change_human_json() {
     module::cmd_module_upgrade(&cli, &printer, "upmod", Some("v1.0.0"), true, true).unwrap();
     drop(printer);
 
-    let mut stripped =
-        strip_ansi(&cap.human()).replace(&config_dir.path().display().to_string(), "<CONFIG_DIR>");
+    let mut stripped = cfgd_core::normalize_for_snapshot(
+        &strip_ansi(&cap.human()),
+        &[(config_dir.path(), "<CONFIG_DIR>")],
+    );
     stripped = mask_commit_sha(&stripped);
     assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
@@ -345,8 +347,10 @@ fn module_upgrade_cancelled_human() {
     module::cmd_module_upgrade(&cli, &printer, "upmod", Some("v1.1.0"), false, true).unwrap();
     drop(printer);
 
-    let mut stripped =
-        strip_ansi(&cap.human()).replace(&config_dir.path().display().to_string(), "<CONFIG_DIR>");
+    let mut stripped = cfgd_core::normalize_for_snapshot(
+        &strip_ansi(&cap.human()),
+        &[(config_dir.path(), "<CONFIG_DIR>")],
+    );
     stripped = mask_commit_sha(&stripped);
     stripped = mask_integrity(&stripped);
     assert_snapshot!(
@@ -381,8 +385,10 @@ fn module_upgrade_happy_human_json() {
     module::cmd_module_upgrade(&cli, &printer, "upmod", Some("v1.1.0"), true, true).unwrap();
     drop(printer);
 
-    let mut stripped =
-        strip_ansi(&cap.human()).replace(&config_dir.path().display().to_string(), "<CONFIG_DIR>");
+    let mut stripped = cfgd_core::normalize_for_snapshot(
+        &strip_ansi(&cap.human()),
+        &[(config_dir.path(), "<CONFIG_DIR>")],
+    );
     stripped = mask_commit_sha(&stripped);
     stripped = mask_integrity(&stripped);
     assert_snapshot!(
@@ -455,8 +461,10 @@ fn module_upgrade_shows_real_spec_diff_human() {
     module::cmd_module_upgrade(&cli, &printer, "diffmod", Some("v1.1.0"), false, true).unwrap();
     drop(printer);
 
-    let mut stripped =
-        strip_ansi(&cap.human()).replace(&config_dir.path().display().to_string(), "<CONFIG_DIR>");
+    let mut stripped = cfgd_core::normalize_for_snapshot(
+        &strip_ansi(&cap.human()),
+        &[(config_dir.path(), "<CONFIG_DIR>")],
+    );
     stripped = mask_commit_sha(&stripped);
     stripped = mask_integrity(&stripped);
     assert_snapshot!(

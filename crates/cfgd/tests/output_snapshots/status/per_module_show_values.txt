@@ -1,8 +1,12 @@
 Status: dev-tools
-  Status        Drifted
-  Last Applied  5m ago
+  Status         Drifted
+  Last Applied   5m ago
+  Packages Hash  abc123def456
+  Files Hash     789ghi012jkl
+  Commit         deadbeef1234
+  Integrity      sha256:cafef00d
 
-Installed Packages
+Packages
   ✓ neovim  — brew
   ⚠ ripgrep — not installed (brew)
 
@@ -13,15 +17,9 @@ Deployed Files
 
 Shell
   Aliases
-    ✓ gs="git status --short"
+    gs  git status --short
   Env
-    ✓ EDITOR="nvim"
-    ✓ PAGER="less -R"
-
-Scripts
-  preApply  — set -euo pipefail
-              mkdir -p ~/.config/nvim
-  postApply — nvim --headless '+Lazy! sync' +qa
-  postApply — echo done
+    EDITOR  nvim
+    ⚠ PAGER — missing
 
 → Run `cfgd apply --module dev-tools` to reconcile

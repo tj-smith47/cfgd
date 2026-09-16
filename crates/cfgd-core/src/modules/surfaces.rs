@@ -1,14 +1,285 @@
 //! What a module DECLARES, tallied once per report.
 
-use crate::config::{EnvVar, ModuleSpec, ShellAlias};
+use crate::config::{EnvVar, ModuleSpec, ScriptCommand, ScriptEntry, ScriptSpec, ShellAlias};
+use crate::output::{Doc, ScriptStep, ScriptsForm, SectionGuard};
 
-/// One lifecycle hook and the script bodies declared under it.
+/// One lifecycle hook and the script steps declared under it.
 #[derive(Debug, Clone)]
 pub struct HookScripts {
     /// The hook name as the YAML spells it (`preApply`).
     pub hook: &'static str,
-    /// Each entry's `run` body, in declaration order — the order they run in.
-    pub bodies: Vec<String>,
+    /// Each entry, in declaration order — the order they run in.
+    pub steps: Vec<DeclaredScript>,
+}
+
+/// One declared script entry: its body and the execution knobs it sets.
+///
+/// The knobs travel with the body because the full Scripts render states them
+/// above it, and a surface holding only bodies would have to read the spec a
+/// second time to find them.
+#[derive(Debug, Clone)]
+pub struct DeclaredScript {
+    /// The `run` body, verbatim.
+    pub body: String,
+    /// `timeout`, as the YAML spells the duration (`120s`) — never reformatted,
+    /// so the marker states the value the author wrote.
+    pub timeout: Option<String>,
+    /// `idleTimeout`, spelled the same way.
+    pub idle_timeout: Option<String>,
+    /// Whether the step declares `continueOnError: true`. A declared `false`
+    /// is the default, and a marker naming it would read as a knob in force.
+    pub continue_on_error: bool,
+    /// `shell`, as the YAML spells it (`bash`). `None` for the platform
+    /// default, which is a step declaring no interpreter.
+    pub shell: Option<&'static str>,
+    /// `workdir`, as the YAML spells it.
+    pub workdir: Option<String>,
+    /// `onlyIf`, the command whose zero exit lets the step run.
+    pub only_if: Option<String>,
+    /// `unless`, the command whose zero exit holds the step back.
+    pub unless: Option<String>,
+    /// `creates`, the path whose existence holds the step back.
+    pub creates: Option<String>,
+    /// Whether the step declares `interactive: true`, which runs it attached
+    /// to the terminal.
+    pub interactive: bool,
+}
+
+impl DeclaredScript {
+    fn of(entry: &ScriptEntry) -> Self {
+        match entry {
+            ScriptEntry::Simple(body) => Self {
+                body: body.clone(),
+                timeout: None,
+                idle_timeout: None,
+                continue_on_error: false,
+                shell: None,
+                workdir: None,
+                only_if: None,
+                unless: None,
+                creates: None,
+                interactive: false,
+            },
+            ScriptEntry::Full(cmd) => {
+                // Destructured, so a knob added to `ScriptCommand` does not
+                // compile until it is carried here.
+                let ScriptCommand {
+                    run,
+                    timeout,
+                    idle_timeout,
+                    continue_on_error,
+                    shell,
+                    only_if,
+                    unless,
+                    creates,
+                    interactive,
+                    workdir,
+                } = cmd;
+                Self {
+                    body: run.clone(),
+                    timeout: timeout.clone(),
+                    idle_timeout: idle_timeout.clone(),
+                    continue_on_error: continue_on_error.unwrap_or(false),
+                    shell: (*shell != crate::config::ScriptShell::Auto).then(|| shell.as_str()),
+                    workdir: workdir.clone(),
+                    only_if: only_if.clone(),
+                    unless: unless.clone(),
+                    creates: creates.clone(),
+                    interactive: *interactive,
+                }
+            }
+        }
+    }
+
+    /// The muted line above this step's body: its position among its hook's
+    /// steps, then one clause per knob it declares.
+    ///
+    /// Every knob `ScriptCommand` carries states itself here, because the
+    /// module-upgrade screen reports a step as changed when any of them moved:
+    /// a knob that stayed silent would render a removal and an addition whose
+    /// blocks read identically. Two mechanisms hold that: [`DeclaredScript::of`]
+    /// destructures `ScriptCommand` exhaustively, so a knob added to it does not
+    /// compile until it is carried across, and
+    /// `a_marker_states_one_clause_for_every_knob_a_step_declares` destructures
+    /// [`DeclaredScript`] in turn, so a carried knob does not compile until it
+    /// is asserted to have a clause here. A knob left at its default renders no
+    /// clause, so the line names what the author wrote and nothing else.
+    ///
+    /// A command or path clause carries its bytes as the body does: escaped,
+    /// because the operator approves what will run, and a home directory folded
+    /// to `~` as every other display slot folds it. The escape covers `\n` as
+    /// well, this being one line.
+    fn marker(&self, position: usize, total: usize) -> String {
+        let escaped = |value: &str| crate::escape_control_chars(value);
+        let path = |value: &str| crate::fold_home_in_text(&escaped(value));
+        let mut clauses = vec![format!("{position}/{total}")];
+        if let Some(timeout) = &self.timeout {
+            clauses.push(format!("timeout {timeout}"));
+        }
+        if let Some(idle) = &self.idle_timeout {
+            clauses.push(format!("idleTimeout {idle}"));
+        }
+        if self.continue_on_error {
+            clauses.push("continueOnError".to_string());
+        }
+        if let Some(shell) = self.shell {
+            clauses.push(format!("shell {shell}"));
+        }
+        if let Some(workdir) = &self.workdir {
+            clauses.push(format!("workdir {}", path(workdir)));
+        }
+        if let Some(only_if) = &self.only_if {
+            clauses.push(format!("onlyIf {}", escaped(only_if)));
+        }
+        if let Some(unless) = &self.unless {
+            clauses.push(format!("unless {}", escaped(unless)));
+        }
+        if let Some(creates) = &self.creates {
+            clauses.push(format!("creates {}", path(creates)));
+        }
+        if self.interactive {
+            clauses.push("interactive".to_string());
+        }
+        clauses.join(&format!(" {MARKER_SEPARATOR} "))
+    }
+}
+
+/// What joins the clauses of a step's marker line.
+const MARKER_SEPARATOR: &str = "\u{b7}";
+
+/// The name of the section every surface lists a module's declared scripts
+/// under.
+const SCRIPTS_SECTION: &str = "Scripts";
+
+/// The ONE render of the scripts a module declares, for every human surface
+/// that shows them: `cfgd module show` and `cfgd status --module`.
+///
+/// One nested section per declaring hook, in execution order, because that
+/// order is the fact a reader needs. Under [`ScriptsForm::Condensed`] each
+/// step is one row carrying its first line; under [`ScriptsForm::Full`] each
+/// step states the knobs it declares and then its whole body, highlighted. The renderer owns every coat, indent and blank
+/// line (see [`Component::ScriptSteps`]), so two surfaces cannot render one
+/// module's scripts as two different shapes.
+///
+/// Returns the doc untouched when the module declares no script: an empty
+/// Scripts section would say the module has hooks that do nothing.
+///
+/// [`Component::ScriptSteps`]: crate::output::Component::ScriptSteps
+pub fn scripts_section(doc: Doc, scripts: &[HookScripts], form: ScriptsForm) -> Doc {
+    if scripts.is_empty() {
+        return doc;
+    }
+    doc.section(SCRIPTS_SECTION, |section| {
+        scripts.iter().fold(section, |section, hook| {
+            section.subsection(hook.hook, |sub| {
+                sub.script_steps(hook_steps(hook, form), form)
+            })
+        })
+    })
+}
+
+/// Every hook that declares something, with its steps, in the order
+/// [`ScriptSpec::hooks`] reports — the one place the hook set is enumerated, so
+/// neither tally constructor spells a hook name or an order of its own.
+fn hook_inventory(scripts: &ScriptSpec) -> Vec<HookScripts> {
+    scripts
+        .hooks()
+        .into_iter()
+        .filter(|(_, entries)| !entries.is_empty())
+        .map(|(hook, entries)| HookScripts {
+            hook,
+            steps: entries.iter().map(DeclaredScript::of).collect(),
+        })
+        .collect()
+}
+
+/// The step rows one hook's entries render as, each numbered by its place in
+/// the hook: the ONE producer read by both shapes of the Scripts render, so a
+/// surface holding a `SectionGuard` and one building a [`Doc`] cannot word a
+/// marker or cut a body differently.
+///
+/// A full body is escaped here rather than left to the renderer's own per-line
+/// escaping: the renderer splits on `\n`, which drops a `\r` sitting in front
+/// of one, and the module-approval screen this feeds promises the operator the
+/// exact bytes that will run. Escaped first, the `\r` is already the visible
+/// text `\x0d` and nothing can swallow it. The renderer's escaping then finds
+/// no control character left to act on, so the two agree. A condensed body is
+/// cut to a one-line label whose budget is counted in columns, so it keeps the
+/// renderer's escaping and is not widened here.
+fn hook_steps(hook: &HookScripts, form: ScriptsForm) -> Vec<ScriptStep> {
+    let total = hook.steps.len();
+    hook.steps
+        .iter()
+        .enumerate()
+        .map(|(index, step)| step_row(step, index + 1, total, form))
+        .collect()
+}
+
+/// One step as a renderable row, with its position stated by the caller: a
+/// surface rendering a single step out of its hook (an upgrade diff) states the
+/// position that step holds in the spec it came from, so its marker reads the
+/// same as on the screen the whole module is approved on.
+fn step_row(step: &DeclaredScript, position: usize, total: usize, form: ScriptsForm) -> ScriptStep {
+    match form {
+        ScriptsForm::Full => ScriptStep {
+            marker: Some(step.marker(position, total)),
+            body: crate::escape_control_chars_except_newline(&step.body),
+        },
+        ScriptsForm::Condensed => ScriptStep {
+            marker: None,
+            body: crate::output::condense_script_label(&step.body),
+        },
+    }
+}
+
+/// The post-apply steps a module declares, in the full form, under a section a
+/// Printer-driven surface has already opened: the pre-install review of a
+/// remote module, where an operator approves what an apply will run on their
+/// machine.
+///
+/// The same hook heading and the same marker-then-body steps
+/// [`scripts_section`] renders, through the one step producer both read, so the
+/// screen a module is approved on and the one it is inspected on cannot show
+/// one body two ways. No `Scripts` heading above the hook: the caller's own
+/// warning row already says what follows and how much of it.
+///
+/// Renders nothing when the module declares no post-apply step. The hook name
+/// comes from [`ScriptSpec::hooks`], so it is spelled the way the YAML spells
+/// it and in one place.
+pub fn post_apply_scripts_section(section: &SectionGuard<'_>, scripts: &ScriptSpec) {
+    let Some((name, entries)) = scripts
+        .hooks()
+        .into_iter()
+        .find(|(name, entries)| *name == cfgd_schema::POST_APPLY_HOOK && !entries.is_empty())
+    else {
+        return;
+    };
+    let hook = HookScripts {
+        hook: name,
+        steps: entries.iter().map(DeclaredScript::of).collect(),
+    };
+    let sub = section.section(hook.hook);
+    sub.script_steps(hook_steps(&hook, ScriptsForm::Full), ScriptsForm::Full);
+}
+
+/// One post-apply script an upgrade would add or remove, under the row that
+/// named the change: the marker stating the step's position and knobs, then its
+/// whole body highlighted, the same step [`post_apply_scripts_section`] shows.
+///
+/// The change itself is the caller's row, so nothing here names the hook or the
+/// direction of the change: a reader sees one body in one shape whether they
+/// inspected the module, approved it, or approved an upgrade to it.
+pub fn post_apply_change_body(
+    section: &SectionGuard<'_>,
+    entry: &ScriptEntry,
+    position: usize,
+    total: usize,
+) {
+    let step = DeclaredScript::of(entry);
+    section.nested_script_steps(
+        [step_row(&step, position, total, ScriptsForm::Full)],
+        ScriptsForm::Full,
+    );
 }
 
 /// The declared surfaces of one module: the counts a summary line reports and
@@ -41,16 +312,7 @@ impl ModuleSurfaces {
             scripts: spec
                 .scripts
                 .as_ref()
-                .map(|s| {
-                    s.hooks()
-                        .into_iter()
-                        .filter(|(_, entries)| !entries.is_empty())
-                        .map(|(hook, entries)| HookScripts {
-                            hook,
-                            bodies: entries.iter().map(|e| e.run_str().to_string()).collect(),
-                        })
-                        .collect()
-                })
+                .map(hook_inventory)
                 .unwrap_or_default(),
             system: spec.system.keys().cloned().collect(),
             depends: spec.depends.clone(),
@@ -70,63 +332,26 @@ impl ModuleSurfaces {
             files: module.files.len(),
             env: module.env.clone(),
             aliases: module.aliases.clone(),
-            scripts: module
-                .script_hooks()
-                .into_iter()
-                .filter(|(_, entries)| !entries.is_empty())
-                .map(|(hook, entries)| HookScripts {
-                    hook,
-                    bodies: entries.iter().map(|e| e.run_str().to_string()).collect(),
-                })
-                .collect(),
+            scripts: hook_inventory(&module.declared_scripts()),
             system: module.system.keys().cloned().collect(),
             depends: module.depends.clone(),
         }
     }
 
-    /// The per-hook script tally a summary row renders: `preApply (3 scripts),
-    /// postApply (6 scripts)`, in execution order. `None` when the module
-    /// declares no scripts at all, so the row is left out rather than reading
-    /// empty.
-    ///
-    /// Subject first, count parenthesised: the row this lands in sits beside a
-    /// module's file row (`/home/tj/.config/nvim (6 files)`), and a resource
-    /// cell that led with its count would read as a different kind of fact than
-    /// its neighbour.
-    pub fn script_summary(&self) -> Option<String> {
-        if self.scripts.is_empty() {
-            return None;
-        }
-        Some(
-            self.scripts
-                .iter()
-                .map(|h| {
-                    format!(
-                        "{} ({})",
-                        h.hook,
-                        crate::pluralize(h.bodies.len(), "script")
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join(", "),
-        )
-    }
-
     /// The per-hook script counts, in execution order — the breakdown rows a
     /// report renders beneath its total, and the `scriptCounts` payload field.
-    /// Empty when the module declares no scripts, the same condition
-    /// [`Self::script_summary`] answers `None` to.
+    /// Empty when the module declares no scripts.
     pub fn script_counts(&self) -> Vec<(String, usize)> {
         self.scripts
             .iter()
-            .map(|h| (h.hook.to_string(), h.bodies.len()))
+            .map(|h| (h.hook.to_string(), h.steps.len()))
             .collect()
     }
 
     /// How many script entries the module declares across every hook — the
     /// total the per-hook breakdown sums to.
     pub fn script_total(&self) -> usize {
-        self.scripts.iter().map(|h| h.bodies.len()).sum()
+        self.scripts.iter().map(|h| h.steps.len()).sum()
     }
 
     /// The names of the hooks that declare something, in execution order.
@@ -138,7 +363,7 @@ impl ModuleSurfaces {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{ScriptEntry, ScriptSpec};
+    use crate::config::{ScriptCommand, ScriptEntry, ScriptSpec};
 
     fn spec_with_scripts(scripts: ScriptSpec) -> ModuleSpec {
         ModuleSpec {
@@ -148,9 +373,9 @@ mod tests {
     }
 
     #[test]
-    fn script_summary_counts_each_hook_in_execution_order() {
+    fn the_hook_tally_is_read_in_execution_order() {
         let surfaces = ModuleSurfaces::of(&spec_with_scripts(ScriptSpec {
-            // Declared out of order on purpose: the summary reports the order
+            // Declared out of order on purpose: the tally reports the order
             // the hooks RUN in, not the order the YAML happened to list them.
             post_apply: vec![
                 ScriptEntry::Simple("a".into()),
@@ -160,8 +385,8 @@ mod tests {
             ..Default::default()
         }));
         assert_eq!(
-            surfaces.script_summary().as_deref(),
-            Some("preApply (1 script), postApply (2 scripts)")
+            surfaces.script_counts(),
+            vec![("preApply".to_string(), 1), ("postApply".to_string(), 2)]
         );
         assert_eq!(surfaces.hook_names(), vec!["preApply", "postApply"]);
     }
@@ -198,15 +423,15 @@ mod tests {
         let surfaces = ModuleSurfaces::of_resolved(&resolved);
         for hook in &surfaces.scripts {
             assert!(
-                hook.bodies.iter().all(|b| b == hook.hook),
+                hook.steps.iter().all(|s| s.body == hook.hook),
                 "hook {} was tallied from another hook's entries: {:?}",
                 hook.hook,
-                hook.bodies
+                hook.steps
             );
         }
         assert_eq!(
-            surfaces.script_summary(),
-            ModuleSurfaces::of(&spec).script_summary(),
+            surfaces.script_counts(),
+            ModuleSurfaces::of(&spec).script_counts(),
             "one module, one tally, whichever side it is read from"
         );
     }
@@ -231,25 +456,103 @@ mod tests {
         // list above: summing `script_counts` restates the implementation and
         // would pass whatever both sides drifted to together.
         assert_eq!(surfaces.script_total(), 3);
+    }
+
+    /// Every knob a step declares reaches the marker as one clause, in the
+    /// order the line states them.
+    ///
+    /// The destructure is the mechanism: a field carried across from
+    /// `ScriptCommand` but never given a clause in `marker` compiles perfectly
+    /// well, so a knob added to [`DeclaredScript`] without a clause and an
+    /// expectation here fails to build instead of rendering nothing.
+    #[test]
+    fn a_marker_states_one_clause_for_every_knob_a_step_declares() {
+        let step = DeclaredScript::of(&ScriptEntry::Full(ScriptCommand {
+            run: "echo hi".into(),
+            timeout: Some("900s".into()),
+            idle_timeout: Some("30s".into()),
+            continue_on_error: Some(true),
+            shell: crate::config::ScriptShell::Bash,
+            only_if: Some("test -x /usr/bin/rg".into()),
+            unless: Some("test -e /opt/app/done".into()),
+            creates: Some("/opt/app/bin".into()),
+            interactive: true,
+            workdir: Some("/opt/app".into()),
+        }));
+        let DeclaredScript {
+            body,
+            timeout,
+            idle_timeout,
+            continue_on_error,
+            shell,
+            workdir,
+            only_if,
+            unless,
+            creates,
+            interactive,
+        } = &step;
+        let declared = |knob: &Option<String>| knob.clone().expect("the fixture declares it");
+        assert!(
+            *continue_on_error && *interactive,
+            "the fixture declares both flag knobs, or their clauses go unasserted"
+        );
+        let expected = [
+            "1/3".to_string(),
+            format!("timeout {}", declared(timeout)),
+            format!("idleTimeout {}", declared(idle_timeout)),
+            "continueOnError".to_string(),
+            format!("shell {}", shell.expect("the fixture declares a shell")),
+            format!("workdir {}", declared(workdir)),
+            format!("onlyIf {}", declared(only_if)),
+            format!("unless {}", declared(unless)),
+            format!("creates {}", declared(creates)),
+            "interactive".to_string(),
+        ];
+        let marker = step.marker(1, 3);
         assert_eq!(
-            surfaces.script_summary().as_deref(),
-            Some("preApply (1 script), postApply (2 scripts)")
+            marker,
+            expected.join(&format!(" {MARKER_SEPARATOR} ")),
+            "one clause per declared knob, position first"
+        );
+        assert!(
+            !marker.contains(body.as_str()),
+            "the body is the block under the marker, not a clause in it: {marker:?}"
+        );
+    }
+
+    /// The marker's two text policies, neither of which a golden built from
+    /// ordinary values can show: a path under the home directory reads as `~/`,
+    /// and a control character in a guard command renders visibly rather than
+    /// reaching the terminal.
+    #[test]
+    fn a_marker_folds_the_home_directory_and_escapes_a_control_character() {
+        let home = tempfile::tempdir().expect("temp home");
+        let _home_guard = crate::with_test_home_guard(home.path());
+        let step = DeclaredScript::of(&ScriptEntry::Full(ScriptCommand {
+            run: "true".into(),
+            workdir: Some(format!("{}/x", crate::to_posix_string(home.path()))),
+            only_if: Some("test -d a\rb".into()),
+            ..Default::default()
+        }));
+        assert_eq!(
+            step.marker(1, 1),
+            format!("1/1 {MARKER_SEPARATOR} workdir ~/x {MARKER_SEPARATOR} onlyIf test -d a\\x0db")
         );
     }
 
     #[test]
-    fn a_module_with_no_scripts_has_no_summary() {
+    fn a_module_with_no_scripts_declares_no_hooks() {
         assert!(
             ModuleSurfaces::of(&ModuleSpec::default())
-                .script_summary()
-                .is_none()
+                .script_counts()
+                .is_empty()
         );
         // An empty hook is not a declared hook — it opens no phase and has
         // nothing to report.
         assert!(
             ModuleSurfaces::of(&spec_with_scripts(ScriptSpec::default()))
-                .script_summary()
-                .is_none()
+                .script_counts()
+                .is_empty()
         );
     }
 }

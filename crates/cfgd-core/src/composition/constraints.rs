@@ -12,14 +12,7 @@ pub fn script_surfaces(spec: &ProfileSpec) -> Vec<String> {
     let mut surfaces = Vec::new();
 
     if let Some(ref scripts) = spec.scripts {
-        for (label, entries) in [
-            ("preApply", &scripts.pre_apply),
-            ("postApply", &scripts.post_apply),
-            ("preReconcile", &scripts.pre_reconcile),
-            ("postReconcile", &scripts.post_reconcile),
-            ("onChange", &scripts.on_change),
-            ("onDrift", &scripts.on_drift),
-        ] {
+        for (label, entries) in scripts.hooks() {
             if !entries.is_empty() {
                 surfaces.push(format!("a {label} script"));
             }
@@ -46,6 +39,18 @@ pub fn script_surfaces(spec: &ProfileSpec) -> Vec<String> {
             {
                 surfaces.push(format!("a patch script for {}", managed.target.posix()));
             }
+        }
+    }
+
+    // A custom manager's five command templates are free-form shell, run
+    // through `sh -c` / `cmd.exe /C` the moment cfgd asks whether the manager
+    // is available. They sit inside `spec.packages`, which is otherwise data.
+    if let Some(ref packages) = spec.packages {
+        for custom in &packages.custom {
+            surfaces.push(format!(
+                "a command template on custom package manager '{}'",
+                custom.name
+            ));
         }
     }
 

@@ -63,8 +63,11 @@ BEFORE_TS="$MC_STATUS"
 sleep 2
 
 # Update the spec
+MC02_PATCH_RC=0
 kubectl patch machineconfig e2e-workstation-1 -n "$E2E_NAMESPACE" --type=merge \
-    -p '{"spec":{"packages":[{"name":"vim"},{"name":"git"},{"name":"curl"},{"name":"ripgrep"}]}}' 2>/dev/null
+    -p '{"spec":{"packages":[{"name":"vim"},{"name":"git"},{"name":"curl"},{"name":"ripgrep"}]}}' \
+    > /dev/null 2>&1 || MC02_PATCH_RC=$?
+echo "  Spec patch rc: $MC02_PATCH_RC"
 
 # Wait for new reconciliation — poll until timestamp changes
 echo "  Waiting for re-reconciliation..."
@@ -82,10 +85,10 @@ done
 echo "  Before: $BEFORE_TS"
 echo "  After:  ${AFTER_TS:-unchanged}"
 
-if [ -n "$AFTER_TS" ] && [ "$AFTER_TS" != "$BEFORE_TS" ]; then
+if [ "$MC02_PATCH_RC" -eq 0 ] && [ -n "$AFTER_TS" ] && [ "$AFTER_TS" != "$BEFORE_TS" ]; then
     pass_test "OP-MC-02"
 else
-    fail_test "OP-MC-02" "Controller did not re-reconcile after spec update"
+    fail_test "OP-MC-02" "Controller did not re-reconcile after spec update (patch rc=${MC02_PATCH_RC})"
 fi
 
 # =================================================================
@@ -253,7 +256,7 @@ sleep 5
 # Delete the MachineConfig — DriftAlert becomes orphaned
 # Remove finalizers first in case controller added them
 kubectl patch machineconfig "e2e-ephemeral-mc-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" \
-    --type=json -p='[{"op":"replace","path":"/metadata/finalizers","value":[]}]' 2>/dev/null || true
+    --type=json -p='[{"op":"replace","path":"/metadata/finalizers","value":[]}]' 2>/dev/null || true # rc-ok: clearing finalizers is best-effort; OP-ERR-03 asserts only that the operator survives the orphaned alert
 kubectl delete machineconfig "e2e-ephemeral-mc-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" --wait=false --ignore-not-found 2>/dev/null || true
 
 # Wait for MC to actually be gone
@@ -300,7 +303,7 @@ RESTARTS_BEFORE=$(kubectl get pods -n cfgd-system -l app=cfgd-operator \
 
 # Create and immediately delete a MachineConfig to race the controller
 for i in $(seq 1 5); do
-    kubectl apply -n "$E2E_NAMESPACE" -f - <<EOF 2>/dev/null || true
+    kubectl apply -n "$E2E_NAMESPACE" -f - <<EOF 2>/dev/null || true # rc-ok: the rapid create/delete race asserts only that the operator does not crash
 apiVersion: cfgd.io/v1alpha1
 kind: MachineConfig
 metadata:

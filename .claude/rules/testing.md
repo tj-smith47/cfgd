@@ -44,6 +44,35 @@ raw `tokio::task::spawn_blocking` anywhere in workspace production code unless
 the call line (or the line above it) carries
 `// spawn-blocking-ok: <why the closure resolves no home paths>`.
 
+## No test run reaches the real config directory
+
+The shell suites under `tests/e2e/*/scripts/` run the real binary as the
+invoking user, so every path cfgd resolves from `$HOME` or `$XDG_*` is that
+user's own. `tests/e2e/common/scratch-home.sh` is the ONE redirect: it exports
+`HOME`, `USERPROFILE` and all four `XDG_*` directories into the run's scratch
+root, asserts the redirect took before anything else reads `$HOME`, and passes
+through only the seams a suite genuinely needs out of the real home
+(`CARGO_HOME`, `RUSTUP_HOME`, `KUBECONFIG`, `DOCKER_CONFIG`, the three
+`HELM_*`). It also fingerprints the real config directory at source time;
+`assert_real_config_dir_unchanged` re-reads it and every `run-all.sh` fails the
+whole run when it moved. `helpers.sh` sources it, so every suite reaches it, and
+`every_e2e_suite_runs_under_the_one_scratch_home` (`crates/cfgd/src/cli/tests.rs`)
+walks every `tests/e2e/*/scripts/run-all.sh` for both halves, so a new suite
+directory trips over the rule.
+
+The binary answers for its own half: a verb that materialises a config from
+`--from` refuses to write into a default config directory that already holds a
+`cfgd.yaml`, is not empty, or is a symlink
+(`crates/cfgd/tests/from_default_dir_refusal.rs`). The question is asked about
+the DIRECTORY — `is_same_inode` against `default_config_dir()` — so a `--config`
+that walks back into it through `..` or names what it is a symlink to is
+refused under the same rule, and every `--from` verb reads its destination
+through `init::from_destination`
+(`every_from_verb_takes_its_destination_from_from_destination`). Both halves exist because
+neither one was enough: an e2e `apply --from` pointed at a scratch `--config`
+cloned its fixture into a developer's `~/.config/cfgd`, and `secret` wrote an
+age key beside it.
+
 ## A test never inherits its terminal shape from the ambient one
 
 `cargo test` from a pipe and `script -qec "cargo test" /dev/null` (a real pty)
@@ -61,8 +90,12 @@ Colour is decided ONCE, per `Printer`, at construction, and folded into its them
 (`Theme::with_colors`), so a capture buffer cannot be styled by construction rather
 than merely stripped by convention. Production supplies the decision as a
 `ColorChoice` (`Auto` resolves `console`'s detection minus
-`output::printer::colors_must_be_disabled(&format)`; `--no-color` passes `Never`);
-every capture constructor supplies `false`. No PRODUCTION code writes `console`'s colour
+`output::printer::colors_must_be_disabled(&format)`; `--no-color` passes `Never`).
+That veto covers only the formats whose payload is a machine contract
+(`OutputFormat::refuses_color`): `-o yaml` is highlighted under the ordinary
+decision and asks STDOUT rather than stderr, because the payload is the only
+thing colour reaches there. Every capture constructor supplies `false` except
+`for_test_with_theme_colored` and `for_test_with_theme_and_format(.., colors)`. No PRODUCTION code writes `console`'s colour
 flags, so nothing a run does can change what a printer already decided. Tests write them
 through exactly one guard — `output::printer::ColorGlobalOn`, which restores the prior
 values on drop including on unwind — and only to reproduce the flags being ON as the
@@ -84,6 +117,15 @@ an unserialized write in a live-threaded harness undefined behaviour rather than
 a flake; `every_test_mutating_the_process_environment_serializes_itself` walks
 for one, and `// serial-ok: <why>` hatches a mutation that cannot race (a
 per-child `Command::env(…)` handoff is not one of them and is never matched).
+
+Two serial attributes on one declaration are two locks, taken in the order they
+are written, so every declaration writes that order the same way: the unnamed
+lock first, named groups alphabetically. The other order holds one lock while it
+waits for the other against a sibling doing the reverse, and both tests hang with
+no timeout to fire;
+`every_declaration_taking_two_serial_locks_takes_them_in_one_order`
+(`output/tests/fences.rs`) walks every crate for an inverted pair and has no
+hatch.
 
 Colour off means NO escapes — attributes included. `ThemedStyle::apply_to` is the ONE
 gate a styled span becomes bytes through, and a printer whose `ColorChoice` resolved
@@ -111,6 +153,35 @@ hand-edited.
 Verify both ways before calling a test suite green; a suite only ever observed one way is
 how all of this shipped.
 
+## A scoped tracing capture installs the process-global journal under it
+
+`tracing` caches one `Interest` per callsite for the whole process and computes it
+from what the thread that first reaches the callsite can see. While a single
+dispatcher is registered, a callsite first reached from a thread holding no
+subscriber at all caches `never`, and every later event there is dropped until an
+unrelated registration rebuilds the cache — including the event a capture on
+another thread is waiting for, which reads back empty. So a test binding a scoped
+subscriber (`tracing::subscriber::with_default`, `WithSubscriber`) calls
+`cfgd_core::test_helpers::install_tracing_journal()` first, and
+`every_scoped_tracing_capture_installs_the_journal_under_it`
+(`output/tests/fences.rs`) walks every crate for a bind with no installer above
+it.
+
+The journal that installer leaves behind is also what the daemon's `run_daemon`
+loop tests read: those lines come from tokio tasks and watcher threads the daemon
+owns, which a scoped dispatcher never reaches. A reader of it asks only whether a
+line APPEARED — it carries no target filter, so every event any test in the binary
+emits reaches it, and an absence or a count answers by whatever else the run
+scheduled. A line read as proof that the reader's OWN subject reached a state
+needs more than containment: every declaration that starts a daemon joins the
+`tracing_dispatcher` group, because a sibling's daemon writes the same startup
+banner.
+
+That group belongs to the journal alone. A scoped capture holds one thread's
+buffer for the length of one closure, so a test whose only tracing reach is a
+capture carries no serial attribute: what keeps its verdict independent of what
+another thread registered is the journal installed under it, not a lock.
+
 ## A fail-without-fix probe never mutates the shared working tree
 
 Proving a test fails without its fix means breaking the production code and watching
@@ -137,8 +208,10 @@ CARGO_TARGET_DIR=~/.cache/cfgd-debug/probe-target \
 ```
 
 The evidence is identical and no other reader can see the mutation. Scratch goes under
-`~/.cache/`, never `/tmp`, and the probe tree AND its target dir are deleted as soon as
-the probe's red run is captured — never left standing for a later probe to reuse.
+`~/.cache/`, never `/tmp`, and the probe TREE is deleted as soon as the probe's red run is
+captured, so nothing later reads a tree still carrying a deliberate defect. The shared
+target dir (`~/.cache/cfgd-debug/red-target`) is retained: a fresh tree is copied per
+probe, so what a kept target dir changes is rebuild cost, never what a probe measures.
 
 ## Fixture versions: use the 9.9.x sentinel range
 
@@ -158,3 +231,22 @@ Tests that DO assert against real `CARGO_PKG_VERSION` (e.g.
 `upgrade_check_up_to_date_human` exercising `cmd_upgrade`) keep their
 snapshots tracking the real version — those are correctly coupled.
 The sentinel rule applies only to test-body literal fixtures.
+
+## A pin that runs at one uid says so in its name
+
+A test whose first statement returns early on `cfgd_core::is_root()` executes nothing
+at the other uid, and its green line is indistinguishable from a pin that ran. The name
+carries which half executed, with a mechanical suffix read off the gate:
+
+| First statement | Suffix |
+|---|---|
+| `if !is_root() { return; }` | `_as_root` |
+| `if is_root() { return; }` | `_as_non_root` |
+| `if !(cfg!(target_os = "linux") && is_root()) { return; }` | `_as_linux_root` |
+| `if cfg!(target_os = "linux") && is_root() { return; }` | `_as_non_linux_root` |
+
+A pin that asserts in both arms (`if is_root() { assert A } else { assert B }`) takes no
+suffix: every run executes it. The suffix also binds the other way, so a name claiming a
+uid must open on that gate. `every_pin_that_runs_at_one_uid_says_so_in_its_name`
+(`output/tests/fences.rs`) walks every crate in both directions and floors each suffix
+at the count the workspace holds.

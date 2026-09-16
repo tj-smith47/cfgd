@@ -46,8 +46,13 @@ pub struct ModuleShowOutput {
     pub directory: String,
     pub source: String,
     pub depends: Vec<String>,
-    pub state: Option<cfgd_core::state::ModuleStateRecord>,
     pub spec: cfgd_core::config::ModuleSpec,
+    /// What this host resolves the declared packages to, present only under
+    /// `--resolved`. The declared entries above are the default payload: this
+    /// surface renders the module's document, and the resolution is one host's
+    /// reading of it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolved: Option<Vec<list_show::PackageDisplay>>,
 }
 
 /// Failure modes of [`load_module_document`], distinguished so callers can emit
@@ -223,7 +228,7 @@ mod build;
 mod crud;
 mod export;
 mod io;
-mod keys;
+pub(in crate::cli) mod keys;
 pub mod list_show;
 mod push_pull;
 mod registry;

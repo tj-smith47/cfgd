@@ -20,6 +20,7 @@ pub(crate) fn test_state() -> (SharedState, tempfile::TempDir) {
         AppState {
             db,
             kube_client: None,
+            backup_policies: Default::default(),
             event_tx,
             enrollment_method: EnrollmentMethod::Token,
             metrics: None,
@@ -27,6 +28,17 @@ pub(crate) fn test_state() -> (SharedState, tempfile::TempDir) {
         },
         tmp,
     )
+}
+
+/// The same, holding a kube client the caller supplies — the shape a gateway
+/// deployed inside a cluster runs in, where a check-in reaches Kubernetes.
+///
+/// Pair it with `controllers::test_kube_harness::MockKubeHarness`, whose
+/// context carries the client the harness drives.
+pub(crate) fn test_state_with_kube(client: kube::Client) -> (SharedState, tempfile::TempDir) {
+    let (mut state, tmp) = test_state();
+    state.kube_client = Some(client);
+    (state, tmp)
 }
 
 /// Build a fresh `ServerDb` backed by a tempdir SQLite file.

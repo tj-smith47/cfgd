@@ -3,8 +3,6 @@
 use std::collections::HashMap;
 use std::fs;
 
-use serde::Deserialize;
-
 /// Detected operating system.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Os {
@@ -191,62 +189,37 @@ pub fn applicable_here<'a, T: PlatformGated>(
     entries.iter().filter(move |e| e.applies_to(platform))
 }
 
-/// Reject a `platforms:` tag no host can ever match.
-///
-/// [`Platform::matches_any`] compares tags verbatim, so a misspelled one
-/// silently matches nothing: on a whole module that is at least a visible
-/// Skip action, but on one env var it is a variable that quietly never
-/// appears. Every tag cfgd emits is lowercase `[a-z0-9_]`, and the four
-/// families of near-miss spelling (`darwin`, `win`, `amd64`, `arm64`) are
-/// named against their canonical token rather than merely refused.
-///
-/// Anything else lowercase is accepted: a distro or arch cfgd does not name is
-/// still a legitimate tag for another host ([`Arch::Other`] carries its
-/// target's own spelling).
-pub fn validate_platform_tag(tag: &str) -> std::result::Result<(), String> {
-    let canonical = |t: &str| match t {
-        "darwin" | "osx" | "mac" => Some("macos"),
-        "win" | "win32" | "win64" => Some("windows"),
-        "x64" | "amd64" => Some("x86_64"),
-        "arm64" => Some("aarch64"),
-        _ => None,
-    };
-    let lower = tag.to_ascii_lowercase();
-    if let Some(canon) = canonical(&lower) {
-        return Err(format!(
-            "platform tag '{tag}' is not a platform: tags are matched exactly; use '{canon}'"
-        ));
-    }
-    if tag.is_empty()
-        || !tag
-            .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
-    {
-        return Err(format!(
-            "platform tag '{tag}' is not a platform: tags are matched exactly and every tag cfgd \
-             knows is lowercase letters, digits and underscores (for example 'macos', 'ubuntu', 'x86_64')"
-        ));
-    }
-    Ok(())
-}
+// Both live in `cfgd-schema` so the Module CRD validates a tag by the same
+// rule the local parser refuses one by; re-exported here because every
+// `platforms:` field names the serde hook through this module's path.
+pub use cfgd_schema::{deserialize_platform_tags, validate_platform_tag};
 
-/// The serde hook every `platforms:` field is deserialized through, so a tag
-/// no host can match is refused where it is written rather than at the machine
-/// it silently skipped.
-pub fn deserialize_platform_tags<'de, D>(
-    deserializer: D,
-) -> std::result::Result<Vec<String>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let tags = Vec::<String>::deserialize(deserializer)?;
-    for tag in &tags {
-        validate_platform_tag(tag).map_err(serde::de::Error::custom)?;
-    }
-    Ok(tags)
+/// Whether a single `platforms:` tag admits a Linux machine.
+///
+/// A pod is a Linux container, and at admission time the webhook knows nothing
+/// else about the node it will land on: not the distribution, not the
+/// architecture. So every tag in the Linux family admits — `linux` itself,
+/// each distribution whose [`Distro::os`] is [`Os::Linux`], and each
+/// architecture cfgd names — while `macos`, `windows` and `freebsd` exclude.
+/// Reading the enums' own spellings is what keeps a distribution added later
+/// from needing a second list here.
+///
+/// The consequence to state where a reader sees it: an `x86_64` tag admits on
+/// an arm64 node too, because nothing in an admission request carries the
+/// node's architecture.
+pub fn tag_admits_linux(tag: &str) -> bool {
+    tag == Os::Linux.as_str()
+        || Distro::ALL
+            .iter()
+            .any(|d| d.os() == Some(Os::Linux) && d.as_str() == tag)
+        || Arch::NAMED.iter().any(|a| a.as_str() == tag)
 }
 
 impl Os {
+    /// Every operating system cfgd detects, for a reader that must judge a
+    /// whole vocabulary rather than one value.
+    pub const ALL: &'static [Os] = &[Os::Linux, Os::MacOS, Os::FreeBSD, Os::Windows];
+
     pub fn as_str(&self) -> &str {
         match self {
             Os::Linux => "linux",
@@ -258,6 +231,46 @@ impl Os {
 }
 
 impl Distro {
+    /// Every distribution cfgd detects, for a reader that must judge a whole
+    /// vocabulary rather than one value.
+    pub const ALL: &'static [Distro] = &[
+        Distro::Ubuntu,
+        Distro::Debian,
+        Distro::Fedora,
+        Distro::RHEL,
+        Distro::CentOS,
+        Distro::Arch,
+        Distro::Manjaro,
+        Distro::Alpine,
+        Distro::OpenSUSE,
+        Distro::FreeBSD,
+        Distro::MacOS,
+        Distro::Windows,
+        Distro::Unknown,
+    ];
+
+    /// The operating system this distribution runs on, or `None` for
+    /// [`Distro::Unknown`], which is what a machine whose `/etc/os-release`
+    /// named nothing cfgd recognises reports: the name says nothing about the
+    /// kernel under it, so nothing may be concluded from it either.
+    pub fn os(&self) -> Option<Os> {
+        match self {
+            Distro::Ubuntu
+            | Distro::Debian
+            | Distro::Fedora
+            | Distro::RHEL
+            | Distro::CentOS
+            | Distro::Arch
+            | Distro::Manjaro
+            | Distro::Alpine
+            | Distro::OpenSUSE => Some(Os::Linux),
+            Distro::FreeBSD => Some(Os::FreeBSD),
+            Distro::MacOS => Some(Os::MacOS),
+            Distro::Windows => Some(Os::Windows),
+            Distro::Unknown => None,
+        }
+    }
+
     pub fn as_str(&self) -> &str {
         match self {
             Distro::Ubuntu => "ubuntu",
@@ -278,6 +291,10 @@ impl Distro {
 }
 
 impl Arch {
+    /// Every architecture cfgd names in its own vocabulary. [`Arch::Other`]
+    /// carries whatever the host reported and belongs to no fixed list.
+    pub const NAMED: &'static [Arch] = &[Arch::X86_64, Arch::Aarch64];
+
     pub fn as_str(&self) -> &str {
         match self {
             Arch::X86_64 => "x86_64",
@@ -320,7 +337,7 @@ fn read_macos_version() -> Option<String> {
 }
 
 fn read_command_output(cmd: &str, args: &[&str]) -> Result<String, std::io::Error> {
-    let output = std::process::Command::new(cmd).args(args).output()?;
+    let output = crate::command_output(std::process::Command::new(cmd).args(args))?;
     if output.status.success() {
         Ok(crate::stdout_lossy_trimmed(&output))
     } else {

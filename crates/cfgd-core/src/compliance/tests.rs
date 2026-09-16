@@ -1862,3 +1862,70 @@ fn a_fixed_snapshot_hashes_to_a_pinned_digest() {
     later.timestamp = "2099-12-31T23:59:59Z".into();
     assert_eq!(snapshot_content_hash(&later).unwrap().1, hash);
 }
+
+// -----------------------------------------------------------------------
+// declared_package_versions
+// -----------------------------------------------------------------------
+
+/// A registry with one manager that cannot list and one that can, both holding
+/// packages this profile declares.
+fn one_broken_one_healthy_registry() -> crate::providers::ProviderRegistry {
+    use crate::providers::{ProviderRegistry, StubPackageManager};
+
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(
+        StubPackageManager::new("pipx").with_installed_error("pipx list: database is locked"),
+    ));
+    registry.add_package_manager(Box::new(
+        StubPackageManager::new("go").with_installed_at("gopls", "0.15.3"),
+    ));
+    registry
+}
+
+/// A manager holding declared packages that could not be listed withholds the
+/// WHOLE map, healthy siblings included. The gateway reads what it is sent as
+/// an observation of everything this machine declares and retires every key the
+/// body leaves out, so a partial map would flip the broken manager's every
+/// version pin to non-compliant until it answers again.
+#[test]
+fn a_manager_that_cannot_be_listed_withholds_the_whole_declared_version_map() {
+    use crate::config::MergedProfile;
+
+    let mut profile = MergedProfile::default();
+    profile.packages.pipx = vec!["ripgrep".into()];
+    profile.packages.go = vec!["gopls".into()];
+
+    let printer = crate::test_helpers::test_printer();
+    let state = crate::test_helpers::test_state();
+    let cx = crate::providers::PackageContext::new(&printer, &state);
+
+    assert!(
+        declared_package_versions(&profile, &[], &one_broken_one_healthy_registry(), &cx).is_none(),
+        "a map one manager could not contribute to was not observed whole"
+    );
+}
+
+/// The same broken manager holding NONE of what this profile declares is never
+/// consulted, so it cannot withhold anything: the map the healthy manager
+/// observed is reported.
+#[test]
+fn a_broken_manager_holding_no_declared_package_withholds_nothing() {
+    use crate::config::MergedProfile;
+
+    let mut profile = MergedProfile::default();
+    profile.packages.go = vec!["gopls".into()];
+
+    let printer = crate::test_helpers::test_printer();
+    let state = crate::test_helpers::test_state();
+    let cx = crate::providers::PackageContext::new(&printer, &state);
+
+    let reported =
+        declared_package_versions(&profile, &[], &one_broken_one_healthy_registry(), &cx)
+            .expect("every manager holding a declared package answered");
+    assert_eq!(
+        reported.get(&crate::state::package_resource_id("go", "gopls")),
+        Some(&"0.15.3".to_string()),
+        "the healthy manager's rows are reported: {reported:?}"
+    );
+    assert_eq!(reported.len(), 1, "and nothing else is: {reported:?}");
+}

@@ -23,6 +23,7 @@ use cfgd_core::providers::{SystemConfigurator, SystemContext, SystemDrift};
 /// ```
 pub struct CertificateConfigurator;
 
+// no-tool-ok: writes into the Linux trust store directories itself and drives no binary
 impl SystemConfigurator for CertificateConfigurator {
     fn name(&self) -> &str {
         "certificates"
@@ -144,6 +145,8 @@ impl SystemConfigurator for CertificateConfigurator {
                                     desired_mode, path_str, name
                                 ),
                             );
+                            // These paths are the operator's own declarations.
+                            // follow-ok: the mode is for the file a trust-store link points at.
                             cfgd_core::set_file_permissions(path, desired_mode)?;
                         }
                     } else {

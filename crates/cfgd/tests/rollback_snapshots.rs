@@ -45,10 +45,10 @@ fn rollback_happy_human() {
     .unwrap();
     drop(printer);
 
-    let normalized = cap
-        .human()
-        .replace(&target.display().to_string(), "<TARGET>");
-    let stripped = strip_ansi(&normalized);
+    let stripped = cfgd_core::normalize_for_snapshot(
+        &strip_ansi(&cap.human()),
+        &[(target.as_path(), "<TARGET>")],
+    );
     assert_snapshot!(Path::new(SNAPSHOT_ROOT), "rollback/happy.txt", &stripped);
 }
 
@@ -75,11 +75,15 @@ fn rollback_removed_files_human() {
     for path in &created {
         assert!(!path.exists(), "{} must be removed", path.display());
     }
-    let mut normalized = cap.human();
-    for (index, path) in created.iter().enumerate() {
-        normalized = normalized.replace(&path.display().to_string(), &format!("<TARGET{index}>"));
-    }
-    let stripped = strip_ansi(&normalized);
+    let labels: Vec<String> = (0..created.len())
+        .map(|index| format!("<TARGET{index}>"))
+        .collect();
+    let subs: Vec<(&Path, &str)> = created
+        .iter()
+        .map(|path| path.as_path())
+        .zip(labels.iter().map(String::as_str))
+        .collect();
+    let stripped = cfgd_core::normalize_for_snapshot(&strip_ansi(&cap.human()), &subs);
     assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "rollback/removed_files.txt",
@@ -160,8 +164,8 @@ fn rollback_accept_human() {
     drop(printer);
 
     let raw = buf.lock().unwrap().clone();
-    let normalized = raw.replace(&target.display().to_string(), "<TARGET>");
-    let stripped = strip_ansi(&normalized);
+    let stripped =
+        cfgd_core::normalize_for_snapshot(&strip_ansi(&raw), &[(target.as_path(), "<TARGET>")]);
     assert_snapshot!(Path::new(SNAPSHOT_ROOT), "rollback/accept.txt", &stripped);
 }
 
@@ -188,8 +192,8 @@ fn rollback_aborted_human() {
     drop(printer);
 
     let raw = buf.lock().unwrap().clone();
-    let normalized = raw.replace(&target.display().to_string(), "<TARGET>");
-    let stripped = strip_ansi(&normalized);
+    let stripped =
+        cfgd_core::normalize_for_snapshot(&strip_ansi(&raw), &[(target.as_path(), "<TARGET>")]);
     assert_snapshot!(Path::new(SNAPSHOT_ROOT), "rollback/aborted.txt", &stripped);
 }
 

@@ -32,77 +32,90 @@ pub fn cmd_verify(
     let config_dir = ctx.config_dir();
     let state = ctx.state()?;
 
-    let (resolved, resolved_modules, mut registry) = if let Some(mod_name) = module_filter {
-        let resolved = empty_resolved_profile(&[mod_name.to_string()], &ctx.active_profile_name());
-        let registry = build_registry();
-        let platform = Platform::current();
-        let mgr_map = registry.manager_map();
-        let cache_base = module_cache_dir(cli)?;
-        let pkg_cx = ctx.package_context()?;
-        let mods = match modules::resolve_modules(
-            &[mod_name.to_string()],
-            config_dir,
-            &cache_base,
-            &[],
-            platform,
-            &mgr_map,
-            Some(&pkg_cx),
-            printer,
-        ) {
-            Ok(mods) => mods,
-            // "not found" is reserved for a genuinely unknown module name and
-            // degrades to the same empty-results "No managed resources to
-            // verify" render the rest of this function already produces for
-            // it; any other resolution failure (e.g. a dependency cycle among
-            // local modules) must surface as the error it is, not read as a
-            // miss. This call passes an empty `source_roots`, so
-            // `ScriptsNotAllowed` can never originate here — that constraint
-            // is enforced only where a source's own module roots are
-            // resolved (`resolve_desired_state`).
-            Err(e)
-                if matches!(
-                    &e,
-                    cfgd_core::errors::CfgdError::Module(
-                        cfgd_core::errors::ModuleError::NotFound { .. }
-                    )
-                ) =>
-            {
-                Vec::new()
-            }
-            Err(e) => return Err(e.into()),
+    // The configuration this report was measured against, named through the
+    // one header builder. A `--module` run resolves no profile, so it carries
+    // the isolate's shape: the config's DECLARED subscriptions, no `Profile`
+    // row, and a `Modules` row stating only what the resolution added.
+    let (resolved, resolved_modules, mut registry, composed_sources, header_profile) =
+        if let Some(mod_name) = module_filter {
+            let resolved =
+                empty_resolved_profile(&[mod_name.to_string()], &ctx.active_profile_name());
+            let registry = build_registry();
+            let platform = Platform::current();
+            let mgr_map = registry.manager_map();
+            let cache_base = module_cache_dir(cli)?;
+            let pkg_cx = ctx.package_context()?;
+            let mods = match modules::resolve_modules(
+                &[mod_name.to_string()],
+                config_dir,
+                &cache_base,
+                &[],
+                platform,
+                &mgr_map,
+                Some(&pkg_cx),
+                printer,
+            ) {
+                Ok(mods) => mods,
+                // "not found" is reserved for a genuinely unknown module name and
+                // degrades to the same empty-results "No managed resources to
+                // verify" render the rest of this function already produces for
+                // it; any other resolution failure (e.g. a dependency cycle among
+                // local modules) must surface as the error it is, not read as a
+                // miss. This call passes an empty `source_roots`, so
+                // `ScriptsNotAllowed` can never originate here — that constraint
+                // is enforced only where a source's own module roots are
+                // resolved (`resolve_desired_state`).
+                Err(e)
+                    if matches!(
+                        &e,
+                        cfgd_core::errors::CfgdError::Module(
+                            cfgd_core::errors::ModuleError::NotFound { .. }
+                        )
+                    ) =>
+                {
+                    Vec::new()
+                }
+                Err(e) => return Err(e.into()),
+            };
+            let declared =
+                cfgd_core::reconciler::ComposedSource::from_declared(&ctx.config()?.spec.sources);
+            (resolved, mods, registry, declared, None)
+        } else {
+            let (cfg, profile_name, local_resolved) = ctx.config_and_profile()?;
+            // Compose with sources (cache-only — read paths stay offline) and resolve
+            // the effective module set through the one shared resolver, so `verify`
+            // checks the same source-composed desired state that `apply` writes.
+            let mut desired = resolve_desired_state(
+                &ctx,
+                cfg,
+                local_resolved,
+                &[],
+                false,
+                printer,
+                false,
+                composition::ConstraintMode::Report,
+            )?;
+            // Taken before the other fields, because a partial move out of
+            // `desired` would block the `&mut self` this accessor needs.
+            let registry = desired.take_registry(cfg);
+            let composed_sources = desired.sources;
+            let mut resolved = desired.resolved;
+            let mods = desired.modules;
+            ctx.resolve_manifest_packages(
+                &mut resolved.merged.packages,
+                &mut resolved.merged.layer_sources,
+            )?;
+            let profile = profile_name.to_string();
+            (resolved, mods, registry, composed_sources, Some(profile))
         };
-        (resolved, mods, registry)
-    } else {
-        let (cfg, _profile_name, local_resolved) = ctx.config_and_profile()?;
-        // Compose with sources (cache-only — read paths stay offline) and resolve
-        // the effective module set through the one shared resolver, so `verify`
-        // checks the same source-composed desired state that `apply` writes.
-        let mut desired = resolve_desired_state(
-            &ctx,
-            cfg,
-            local_resolved,
-            &[],
-            false,
-            printer,
-            false,
-            composition::ConstraintMode::Report,
-        )?;
-        // Taken before the other fields, because a partial move out of
-        // `desired` would block the `&mut self` this accessor needs.
-        let registry = desired.take_registry(cfg);
-        let mut resolved = desired.resolved;
-        let mods = desired.modules;
-        ctx.resolve_manifest_packages(&mut resolved.merged.packages)?;
-        (resolved, mods, registry)
-    };
     registry.set_system_config_dir(config_dir);
     let module_cache = module_cache_dir(cli)?;
 
-    // ONE context for both halves of the run: the reconciler's package check
-    // and the manager-drift plan below both diff against installed state, and
-    // sharing the context is what makes that one enumeration per manager for
-    // the whole command instead of one per half.
-    let pkg_cx = cfgd_core::providers::PackageContext::new(printer, state);
+    // The run's own context, so every half reads one enumeration per manager:
+    // the reconciler's package check and the manager-drift plan below both diff
+    // against installed state, and a `--module` run resolved its chain against
+    // the same listing above.
+    let pkg_cx = ctx.package_context()?;
     // One spinner across all four passes, renamed per pass: they run back to
     // back with no output of their own, and a package enumeration inside the
     // first can take seconds.
@@ -122,6 +135,7 @@ pub fn cmd_verify(
                 module_filter.is_none(),
             )?;
             let mut results = report.results;
+            let mut check_errors = report.check_errors;
             // The reconciler cannot reach the file manager (crate boundary), so it no
             // longer checks managed files. Fold in content-aware file results here so a
             // file whose bytes drifted out-of-band fails verification and drives
@@ -165,15 +179,22 @@ pub fn cmd_verify(
             if module_filter.is_none() {
                 sp.set_message("Verifying: package managers");
                 let cfgd_installed = cfgd_installed_packages(state)?;
-                results.extend(super::live_drift::manager_verify_results(
-                    &resolved,
-                    &registry,
-                    &resolved_modules,
-                    &cfgd_installed,
-                    &pkg_cx,
-                )?);
+                // The manager half plans packages, so it meets the same
+                // unlistable manager the reconciler's package half already
+                // reported; the fold keys on the manager so the reader is told
+                // once.
+                let (manager_results, manager_check_errors) =
+                    super::live_drift::manager_verify_results(
+                        &resolved,
+                        &registry,
+                        &resolved_modules,
+                        &cfgd_installed,
+                        &pkg_cx,
+                    )?;
+                results.extend(manager_results);
+                super::live_drift::extend_check_errors(&mut check_errors, manager_check_errors);
             }
-            Ok((results, report.check_errors))
+            Ok((results, check_errors))
         })?;
     // `reconciler::verify` is pure compute — this seam is where its results
     // become recorded rows, from the producer literals, BEFORE the display
@@ -273,20 +294,40 @@ pub fn cmd_verify(
         system_errors: check_errors,
         standing,
     };
-    printer.emit(build_verify_doc(&output, module_filter));
+    let header_modules = match module_filter {
+        Some(_) => cfgd_core::output::HeaderModule::of_isolate(&resolved_modules),
+        None => cfgd_core::output::HeaderModule::of_resolved(&resolved_modules),
+    };
+    printer.emit(build_verify_doc(
+        &output,
+        module_filter,
+        &cfgd_core::output::ConfigHeader {
+            config_path: Some(&cli.config),
+            sources: &composed_sources,
+            profile: header_profile.as_deref(),
+            profile_inherits: &resolved.inherits_chain(),
+            modules: &header_modules,
+            arrow: printer.arrow(),
+        },
+    ));
 
-    if exit_code {
-        // A check that could not run means the answer is unknown, which
-        // outranks a known drift verdict — the same split `diff --exit-code`
-        // and `status --exit-code` report.
-        if !output.system_errors.is_empty() {
-            cfgd_core::exit::ExitCode::Error.exit();
-        }
-        if output.any_drift() {
-            cfgd_core::exit::ExitCode::DriftDetected.exit();
-        }
+    if exit_code && let Some(code) = verify_exit_code(&output) {
+        code.exit();
     }
     Ok(())
+}
+
+/// What `verify --exit-code` exits with, the twin of `diff_exit_code`: a check
+/// that could not run means the answer is unknown, which outranks a known
+/// drift verdict — the same split `diff --exit-code` and `status --exit-code`
+/// report. `None` is a clean run.
+pub(super) fn verify_exit_code(output: &VerifyOutput) -> Option<cfgd_core::exit::ExitCode> {
+    if output.check_failed() {
+        return Some(cfgd_core::exit::ExitCode::Error);
+    }
+    output
+        .any_drift()
+        .then_some(cfgd_core::exit::ExitCode::DriftDetected)
 }
 
 impl VerifyOutput {
@@ -298,6 +339,13 @@ impl VerifyOutput {
     pub fn any_drift(&self) -> bool {
         self.fail_count > 0 || !self.standing.is_empty()
     }
+
+    /// Whether a check this run meant to make could not run: the answer is
+    /// unknown rather than clean, which outranks any drift `any_drift` found.
+    /// `DiffSummary`'s twin, so the two verbs' gates read the same.
+    pub fn check_failed(&self) -> bool {
+        !self.system_errors.is_empty()
+    }
 }
 
 /// Pure builder: verify Doc from a collected `VerifyOutput`. Used by the live
@@ -305,8 +353,19 @@ impl VerifyOutput {
 ///
 /// `module` is the `--module` filter the run carried, so a report that failed
 /// closes on a next step scoped the way the report was.
-pub fn build_verify_doc(output: &VerifyOutput, module: Option<&str>) -> Doc {
-    let mut doc = Doc::new().heading("Verify");
+///
+/// `header` names the configuration the run reported against, through the ONE
+/// header builder every such surface opens on: a verdict about a machine is
+/// unreadable without the config, sources, profile and modules it was measured
+/// against, which `diff` and `status` had been the only drift surfaces to say.
+pub fn build_verify_doc(
+    output: &VerifyOutput,
+    module: Option<&str>,
+    header: &cfgd_core::output::ConfigHeader<'_>,
+) -> Doc {
+    let mut doc = Doc::new()
+        .heading("Verify")
+        .kv_rows(cfgd_core::output::config_header_rows(header));
 
     // drift-chain-ok: whether the report has anything at all to RENDER, not
     // whether the run stands on drift — `any_drift` is that question.
@@ -318,43 +377,38 @@ pub fn build_verify_doc(output: &VerifyOutput, module: Option<&str>) -> Doc {
     // No env-file-freshness suppression here, unlike the two drift REPORTS:
     // `verify` is a ledger whose closing line counts its own rows, so a row
     // hidden from the list is a row the tally still charges for.
-    doc = doc.section("Resources", |s| {
-        let s = output.results.iter().fold(s, |s, r| {
-            let subject = cfgd_core::output::drift_item_subject(&r.resource_type, &r.resource_id);
-            let (expected, actual) =
-                cfgd_core::output::drift_operands(&r.resource_type, &r.expected, &r.actual);
-            if r.matches {
-                s.status_with(Role::Ok, subject, |sf| sf.detail(expected))
-            } else {
-                s.status_with(Role::Fail, subject, |sf| sf.drift(&expected, &actual))
-            }
-        });
-        // A check that could not run is a row of its own, after the answered
-        // ones — the same composition `diff` and `status --scan` render, so
-        // one failure reads identically on all three surfaces.
-        let s = output.system_errors.iter().fold(s, |s, err| {
-            s.status_with(Role::Warn, err.key.clone(), |sf| {
-                sf.qualifier("error checking drift").detail(&err.error)
+    //
+    // A run whose only rows are STANDING checked no resource, so the section
+    // naming what it checked leaves no trace.
+    if !output.results.is_empty() || !output.system_errors.is_empty() {
+        doc = doc.section("Resources", |s| {
+            let s = output.results.iter().fold(s, |s, r| {
+                let subject =
+                    cfgd_core::output::drift_item_subject(&r.resource_type, &r.resource_id);
+                let (expected, actual) =
+                    cfgd_core::output::drift_operands(&r.resource_type, &r.expected, &r.actual);
+                if r.matches {
+                    s.status_with(Role::Ok, subject, |sf| sf.detail(expected))
+                } else {
+                    s.status_with(Role::Fail, subject, |sf| sf.drift(&expected, &actual))
+                }
+            });
+            // A check that could not run is a row of its own, after the answered
+            // ones — the same composition `diff` and `status --scan` render, so
+            // one failure reads identically on all three surfaces.
+            output.system_errors.iter().fold(s, |s, err| {
+                s.status_with(Role::Warn, err.subject(), |sf| {
+                    sf.qualifier("error checking drift").detail(&err.error)
+                })
             })
         });
-        // Rows this run's own scope owns but did not re-check — the store's
-        // own answer, through the same drift-row renderer the findings
-        // above used, never a second wording.
-        output.standing.iter().fold(s, |s, e| {
-            let subject = cfgd_core::output::drift_item_subject(&e.resource_type, &e.resource_id);
-            // Through the chooser, not the operand pair: a row recorded with
-            // no operands has nothing to state, and rendering the absence
-            // words for it reads as a divergence the store never recorded.
-            let cause = cfgd_core::output::drift_cause(
-                &e.resource_type,
-                e.expected.as_deref().unwrap_or_default(),
-                e.actual.as_deref().unwrap_or_default(),
-            );
-            s.status_with(Role::Fail, subject, |sf| sf.detail(cause))
-        })
-    });
+    }
+    // Rows this run's own scope owns but did not re-check are the STORE's
+    // answer, not this run's: they render after the live rows, under their own
+    // heading and at the role `diff` and both `status` surfaces give them.
+    doc = super::live_drift::standing_section(doc, &output.standing);
 
-    let has_drift = output.any_drift() || !output.system_errors.is_empty();
+    let has_drift = output.any_drift() || output.check_failed();
     doc = if !has_drift {
         doc.status(
             // verdict-row-ok: a match verdict, not an act cfgd performed
@@ -396,6 +450,7 @@ pub fn build_verify_doc(output: &VerifyOutput, module: Option<&str>) -> Doc {
 mod tests {
     use super::*;
 
+    use super::test_support::verify_doc_for_test;
     use serial_test::serial;
 
     /// `cfgd verify --module <name>` against a local module set carrying a
@@ -1010,7 +1065,7 @@ mod tests {
             system_errors: Vec::new(),
             standing: Vec::new(),
         };
-        printer.emit(build_verify_doc(&output, None));
+        printer.emit(verify_doc_for_test(&output, None, printer.arrow()));
         drop(printer);
         let human = cap.human();
         assert!(
@@ -1038,7 +1093,7 @@ mod tests {
             system_errors: Vec::new(),
             standing: Vec::new(),
         };
-        printer.emit(build_verify_doc(&output, None));
+        printer.emit(verify_doc_for_test(&output, None, printer.arrow()));
         drop(printer);
         let human = cap.human();
         assert!(
@@ -1082,7 +1137,7 @@ mod tests {
             }],
             standing: Vec::new(),
         };
-        printer.emit(build_verify_doc(&output, None));
+        printer.emit(verify_doc_for_test(&output, None, printer.arrow()));
         drop(printer);
         let human = cap.human();
         assert!(
@@ -1099,5 +1154,31 @@ mod tests {
             human.contains("1 passed, 0 failed, 1 check could not run"),
             "the tally names the unanswered check as its own clause, got: {human}"
         );
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::*;
+
+    /// A `verify` Doc with a bare header block, for a fixture whose subject is
+    /// the report's rows rather than the configuration behind them.
+    pub(crate) fn verify_doc_for_test(
+        output: &VerifyOutput,
+        module: Option<&str>,
+        arrow: &str,
+    ) -> Doc {
+        build_verify_doc(
+            output,
+            module,
+            &cfgd_core::output::ConfigHeader {
+                config_path: None,
+                sources: &[],
+                profile: None,
+                profile_inherits: &[],
+                modules: &[],
+                arrow,
+            },
+        )
     }
 }

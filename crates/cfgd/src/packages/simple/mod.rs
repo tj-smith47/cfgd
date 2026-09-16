@@ -401,6 +401,22 @@ pub(super) fn simple_manager(name: &str) -> Option<SimpleManager> {
     })
 }
 
+/// The spawn that installs `pkgs` through the `name` family, composed from that
+/// family's own [`SimpleManager::install_cmd`] declaration.
+///
+/// The one way a mediated bootstrap installs through a Unix family, so pacman's
+/// `-S --noconfirm` and apk's `add` are spelled where the family declares them
+/// and a provision cannot reach for a verb the family does not use. `None` for a
+/// name no family here holds.
+pub(super) fn family_install_command(name: &str, pkgs: &[&str]) -> Option<Command> {
+    let mgr = simple_manager(name)?;
+    let effective = strip_sudo_for_exec(mgr.install_cmd);
+    let (prog, args) = effective.split_first()?;
+    let mut cmd = cmd_with_seam(prog);
+    cmd.args(args).args(pkgs);
+    Some(cmd)
+}
+
 pub(super) fn apt_manager() -> SimpleManager {
     SimpleManager {
         mgr_name: "apt",
@@ -468,10 +484,10 @@ pub(super) fn apk_manager() -> SimpleManager {
     SimpleManager {
         mgr_name: "apk",
         list_cmd: &["apk", "list", "--installed", "--quiet"],
-        install_cmd: &["apk", "add"],
-        uninstall_cmd: &["apk", "del"],
-        update_cmd: Some(&["apk", "update"]),
-        upgrade_cmd: Some(&["apk", "upgrade"]),
+        install_cmd: &["sudo", "apk", "add"],
+        uninstall_cmd: &["sudo", "apk", "del"],
+        update_cmd: Some(&["sudo", "apk", "update"]),
+        upgrade_cmd: Some(&["sudo", "apk", "upgrade"]),
         raise_verb: "upgrade",
         ignore_update_exit: false,
         parse_list: parse_apk_lines,
@@ -532,9 +548,9 @@ pub(super) fn pkg_manager() -> SimpleManager {
     SimpleManager {
         mgr_name: "pkg",
         list_cmd: &["pkg", "info", "-q"],
-        install_cmd: &["pkg", "install", "-y"],
-        uninstall_cmd: &["pkg", "remove", "-y"],
-        update_cmd: Some(&["pkg", "update"]),
+        install_cmd: &["sudo", "pkg", "install", "-y"],
+        uninstall_cmd: &["sudo", "pkg", "remove", "-y"],
+        update_cmd: Some(&["sudo", "pkg", "update"]),
         upgrade_cmd: None,
         raise_verb: "install",
         ignore_update_exit: false,

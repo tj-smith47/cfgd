@@ -3,6 +3,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use cfgd_schema::case_insensitive_enum;
+
 use super::source::default_sync_interval;
 
 /// `spec.sync`: automatic push/pull settings for the daemon's git sync loop.

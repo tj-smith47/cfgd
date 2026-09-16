@@ -12,12 +12,13 @@ use std::process::{Command, Stdio};
 /// Run `kubectl` with `args`, inheriting stdio. Returns the exit code the
 /// process produced. Errors only on spawn failure (kubectl not on PATH, etc).
 pub fn run_inherit(args: &[&str]) -> std::io::Result<i32> {
-    let status = Command::new("kubectl")
-        .args(args)
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .status()?;
+    let status = cfgd_core::command_status(
+        Command::new("kubectl")
+            .args(args)
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit()),
+    )?;
     Ok(status.code().unwrap_or(1))
 }
 
@@ -31,12 +32,13 @@ pub fn run_argv_inherit(argv: &[String]) -> std::io::Result<i32> {
             "empty argv",
         ));
     }
-    let status = Command::new(&argv[0])
-        .args(&argv[1..])
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .status()?;
+    let status = cfgd_core::command_status(
+        Command::new(&argv[0])
+            .args(&argv[1..])
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit()),
+    )?;
     Ok(status.code().unwrap_or(1))
 }
 
@@ -69,12 +71,13 @@ fn feed_stdin(child: &mut std::process::Child, stdin_data: &str) -> std::io::Res
 /// Inner of [`run_with_stdin`] parameterized on the binary so the success path
 /// is testable (drive it through `/usr/bin/cat`) without kubectl on PATH.
 fn run_with_stdin_at(bin: &str, args: &[&str], stdin_data: &str) -> std::io::Result<i32> {
-    let mut child = Command::new(bin)
-        .args(args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .spawn()?;
+    let mut child = cfgd_core::spawn_child(
+        Command::new(bin)
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit()),
+    )?;
     feed_stdin(&mut child, stdin_data)?;
     let status = child.wait()?;
     Ok(status.code().unwrap_or(1))
@@ -97,12 +100,13 @@ fn run_with_stdin_capture_stdout_at(
     args: &[&str],
     stdin_data: &str,
 ) -> std::io::Result<(i32, String)> {
-    let mut child = Command::new(bin)
-        .args(args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()?;
+    let mut child = cfgd_core::spawn_child(
+        Command::new(bin)
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit()),
+    )?;
     feed_stdin(&mut child, stdin_data)?;
     let out = child.wait_with_output()?;
     let code = out.status.code().unwrap_or(1);

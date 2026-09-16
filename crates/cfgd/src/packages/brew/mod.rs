@@ -79,11 +79,11 @@ fn is_missing_trust_subcommand(message: &str) -> bool {
 }
 
 impl BrewTapManager {
-    // Current brew ignores formulae, casks and commands from a tap the user
-    // has not trusted (`brew trust --tap` records the grant in trust.json,
-    // non-interactively — the command takes no confirmation), so a tap cfgd
-    // adds is only usable once trusted. A real trust failure leaves the tap's
-    // formulae uninstallable, which fails the install it belongs to.
+    // Homebrew reads a tap's index while tapping it and refuses a tap it has
+    // not been told to trust, so the grant has to exist BEFORE `brew tap`
+    // runs. `brew trust --tap` records the name in trust.json without the tap
+    // being present, and takes no confirmation. A real trust failure leaves
+    // the tap's formulae uninstallable, which fails the install it belongs to.
     fn trust_tap(&self, tap: &str) -> Result<()> {
         match run_pkg_cmd_msg(
             "brew-tap",
@@ -183,6 +183,13 @@ impl PackageManager for BrewTapManager {
         cx: &cfgd_core::providers::PackageContext<'_>,
     ) -> Result<()> {
         for tap in taps {
+            // Trust precedes the tap because current brew reads the tap's
+            // index as it adds it and refuses an untrusted name, so a grant
+            // recorded afterwards is never reached. An older brew has no gate
+            // and no `trust` subcommand at all, which `trust_tap` tolerates,
+            // so this one order is correct on every brew and no version probe
+            // is needed.
+            self.trust_tap(tap)?;
             let label = format!("brew tap {}", tap);
             run_pkg_cmd_live(
                 cx,
@@ -191,7 +198,6 @@ impl PackageManager for BrewTapManager {
                 &label,
                 "install",
             )?;
-            self.trust_tap(tap)?;
         }
         Ok(())
     }
@@ -372,11 +378,21 @@ impl PackageManager for BrewManager {
         // `curl` is named, not gated on: the installer needs it, but brew has
         // always offered to provision itself regardless, and narrowing that here
         // would drop the manager instead of reporting the missing tool.
-        Some(
-            BootstrapPlan::new("homebrew installer")
-                .requiring(["curl"])
-                .creating(brew_path_dirs()),
-        )
+        //
+        // `None` on Windows: the installer is a bash script and Homebrew has no
+        // Windows build to install.
+        #[cfg(windows)]
+        {
+            None
+        }
+        #[cfg(not(windows))]
+        {
+            Some(
+                BootstrapPlan::new("homebrew installer")
+                    .requiring(["curl"])
+                    .creating(brew_path_dirs()),
+            )
+        }
     }
 
     // bootstrap-arm-ok: one installer script, run as the linuxbrew user when root
@@ -385,20 +401,18 @@ impl PackageManager for BrewManager {
 
         if cfg!(target_os = "linux") && cfgd_core::is_root() {
             // Linuxbrew-as-root: create linuxbrew user, install as that user
-            let user_status = Command::new("useradd")
-                .args([
-                    "--system",
-                    "--create-home",
-                    "--shell",
-                    "/bin/bash",
-                    "linuxbrew",
-                ])
-                // own-path-ok: useradd is the host's, not a manager this run bootstraps
-                .status()
-                .map_err(|e| PackageError::BootstrapFailed {
-                    manager: "brew".into(),
-                    message: format!("failed to create linuxbrew user: {}", e),
-                })?;
+            // own-path-ok: useradd is the host's, not a manager this run bootstraps
+            let user_status = cfgd_core::command_status(Command::new("useradd").args([
+                "--system",
+                "--create-home",
+                "--shell",
+                "/bin/bash",
+                "linuxbrew",
+            ]))
+            .map_err(|e| PackageError::BootstrapFailed {
+                manager: "brew".into(),
+                message: format!("failed to create linuxbrew user: {}", e),
+            })?;
             // Exit code 9 = user already exists, which is fine
             if !user_status.success() && user_status.code() != Some(9) {
                 return Err(PackageError::BootstrapFailed {

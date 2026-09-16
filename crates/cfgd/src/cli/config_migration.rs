@@ -62,14 +62,17 @@ pub fn maybe_migrate_macos_config(
     let home = PathBuf::from(std::env::var_os("HOME")?);
     let (legacy, native) = cfgd_core::macos_legacy_config_migration(&home)?;
 
-    let move_opt = format!("Move it to {}", native.posix());
+    let move_opt = format!(
+        "Move it to {}",
+        cfgd_core::fold_home_in_text(&native.display_posix())
+    );
     let keep_opt = "Keep it at ~/.config (set XDG_CONFIG_HOME in your shell config)".to_string();
     let options = vec![move_opt.clone(), keep_opt];
     let message = format!(
         "Your cfgd config is at {}, but the native macOS location is now {}. \
          How would you like to proceed?",
-        legacy.posix(),
-        native.posix(),
+        cfgd_core::fold_home_in_text(&legacy.display_posix()),
+        cfgd_core::fold_home_in_text(&native.display_posix()),
     );
 
     // `prompt_select` self-rejects non-TTY / structured output; treat any such
@@ -93,7 +96,13 @@ pub fn maybe_migrate_macos_config(
 fn migrate_move(printer: &Printer, legacy: &Path, native: &Path) -> Option<PathBuf> {
     match cfgd_core::move_dir(legacy, native) {
         Ok(()) => {
-            printer.status_simple(Role::Ok, format!("Moved config to {}", native.posix()));
+            printer.status_simple(
+                Role::Ok,
+                format!(
+                    "Moved config to {}",
+                    cfgd_core::fold_home_in_text(&native.display_posix())
+                ),
+            );
             Some(native.to_path_buf())
         }
         Err(e) => {
@@ -102,7 +111,7 @@ fn migrate_move(printer: &Printer, legacy: &Path, native: &Path) -> Option<PathB
                 format!(
                     "Could not move config ({}); continuing from {}",
                     collapse_to_subject_line(&e),
-                    legacy.posix()
+                    cfgd_core::fold_home_in_text(&legacy.display_posix())
                 ),
             );
             None
@@ -122,9 +131,13 @@ fn keep_at_dotconfig(printer: &Printer, home: &Path) {
         std::env::set_var("XDG_CONFIG_HOME", &xdg);
     }
     match persist_xdg_pin(home) {
-        Ok(Some(rc)) => {
-            printer.status_simple(Role::Ok, format!("Set XDG_CONFIG_HOME in {}", rc.posix()))
-        }
+        Ok(Some(rc)) => printer.status_simple(
+            Role::Ok,
+            format!(
+                "Set XDG_CONFIG_HOME in {}",
+                cfgd_core::fold_home_in_text(&rc.display_posix())
+            ),
+        ),
         Ok(None) => printer.note(
             "Set XDG_CONFIG_HOME for this session; add \
              `export XDG_CONFIG_HOME=\"$HOME/.config\"` to your shell config to persist it.",
@@ -193,6 +206,7 @@ fn persist_xdg_pin(home: &Path) -> std::io::Result<Option<PathBuf>> {
 /// Mirrors the login/all-scope targeting in `reconciler::env_engine`; a direct
 /// export is written rather than routing through `~/.cfgd.env` (which the env
 /// engine regenerates wholesale from `spec.env`, and would clobber here).
+// basename-ok: writes an rc file, classifies no recorded row
 fn xdg_rc_target(home: &Path, shell_name: Option<&str>) -> XdgRcTarget {
     match shell_name {
         Some(s) if s.contains("zsh") => XdgRcTarget::PosixExport(home.join(".zshenv")),
@@ -265,7 +279,10 @@ fn migrate_legacy_data_dirs_at(
     match cfgd_core::state::migrate_state_db(legacy, new_state) {
         Ok(true) => printer.status_simple(
             Role::Info,
-            format!("Migrated state database to {}", new_state.posix()),
+            format!(
+                "Migrated state database to {}",
+                cfgd_core::fold_home_in_text(&new_state.display_posix())
+            ),
         ),
         Ok(false) => {}
         Err(e) => printer.status_simple(
@@ -290,7 +307,20 @@ fn migrate_legacy_data_dirs_at(
         .join(cfgd_core::server_client::DEVICE_CREDENTIAL_FILENAME)
         .exists()
     {
-        let _ = cfgd_core::set_file_permissions(new_state, 0o700);
+        // No-follow: the state dir sits under a HOME the invoking user owns, so
+        // a path-based chmod here lands on whatever a link they put in its place
+        // resolves to once the migration runs under `sudo`. A refusal is
+        // reported rather than dropped, because something replaced the directory
+        // the credential was just moved into.
+        if let Err(e) = cfgd_core::set_file_permissions_nofollow(new_state, 0o700) {
+            printer.status_simple(
+                Role::Warn,
+                cfgd_core::fold_home_in_text(&format!(
+                    "Could not restrict {} to owner-only access: {e}",
+                    new_state.posix()
+                )),
+            );
+        }
     }
 
     let legacy_sources = legacy.join("sources");
@@ -298,7 +328,10 @@ fn migrate_legacy_data_dirs_at(
         match cfgd_core::move_dir(&legacy_sources, new_sources) {
             Ok(()) => printer.status_simple(
                 Role::Info,
-                format!("Migrated sources cache to {}", new_sources.posix()),
+                format!(
+                    "Migrated sources cache to {}",
+                    cfgd_core::fold_home_in_text(&new_sources.display_posix())
+                ),
             ),
             Err(e) => printer.status_simple(
                 Role::Warn,
@@ -336,7 +369,13 @@ fn migrate_state_file(printer: &Printer, legacy: &Path, new_state: &Path, name: 
         return;
     }
     match cfgd_core::move_file(&src, &dst) {
-        Ok(()) => printer.status_simple(Role::Info, format!("Migrated {name} to {}", dst.posix())),
+        Ok(()) => printer.status_simple(
+            Role::Info,
+            format!(
+                "Migrated {name} to {}",
+                cfgd_core::fold_home_in_text(&dst.display_posix())
+            ),
+        ),
         Err(e) => printer.status_simple(
             Role::Warn,
             format!(
@@ -705,7 +744,12 @@ mod tests {
         // The success line reads as a full sentence ending in the new state path,
         // not merely a substring — the human-facing status shape is load-bearing.
         let out = cfgd_core::test_helpers::captured_text(&buf);
-        let expected = format!("Migrated state database to {}", new_state.posix());
+        // The slot folds the home directory, and a Windows temp dir lies under
+        // the home, so an unfolded expectation matches nothing there.
+        let expected = format!(
+            "Migrated state database to {}",
+            cfgd_core::fold_home_in_text(&new_state.display_posix())
+        );
         let matched = out.lines().any(|l| l.trim_end().ends_with(&expected));
         assert!(
             matched,

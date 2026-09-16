@@ -784,11 +784,7 @@ mod tests {
     /// calls) paints `theme.secondary`, not `theme.header` — the two must read
     /// apart from each other, or a reader cannot tell a subsection's heading
     /// from the section that owns it.
-    // Serial: `supports_truecolor()` reads COLORTERM / NO_COLOR, and the
-    // rendered line is compared against a slot render taken separately —
-    // a concurrent env mutation between the two splits the comparison.
     #[test]
-    #[serial_test::serial]
     fn nested_section_header_uses_secondary_not_header() {
         use crate::output::Theme;
 
@@ -827,11 +823,7 @@ mod tests {
     /// regardless of how many subsections it later opens — the depth check
     /// reads the SECTION's own `header_depth`, not some global "has a
     /// subsection already opened" flag.
-    // Serial: `supports_truecolor()` reads COLORTERM / NO_COLOR, and the
-    // rendered line is compared against a slot render taken separately —
-    // a concurrent env mutation between the two splits the comparison.
     #[test]
-    #[serial_test::serial]
     fn top_level_section_header_stays_theme_header_even_after_a_subsection_closes() {
         use crate::output::Theme;
 
@@ -865,7 +857,7 @@ mod alignment_group_tests {
     use super::super::{NarrowSink, Renderer, StatusFields, StringSink};
     use crate::output::{Role, Theme, Verbosity};
 
-    /// The three `cfgd:env` rows an apply settles under `Phase: Prerequisites`
+    /// The three `cfgd:env` rows an apply settles under `Phase: Bootstrap`
     /// — the set the broken column was measured on, one long subject with a
     /// short detail between two short subjects with long details.
     const ROWS: &[(Role, &str, &str)] = &[
@@ -886,7 +878,7 @@ mod alignment_group_tests {
         let buf = Arc::new(Mutex::new(String::new()));
         let sink = NarrowSink(StringSink(buf.clone()), cols);
         let r = Renderer::new(Theme::default(), Verbosity::Normal);
-        r.render_section_open("Phase: Prerequisites", true);
+        r.render_section_open("Phase: Bootstrap", true);
         r.render_section_open("cfgd:env", true);
         for (role, subject, detail) in ROWS {
             r.render_status(

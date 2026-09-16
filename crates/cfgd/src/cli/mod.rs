@@ -390,10 +390,16 @@ impl PreviewScope<'_> {
             parts.push(format!("--phase {phase}"));
         }
         for path in self.only {
-            parts.push(format!("--only {path}"));
+            parts.push(format!(
+                "--only {}",
+                plan_ops::current_pattern_spelling(path)
+            ));
         }
         for path in self.skip {
-            parts.push(format!("--skip {path}"));
+            parts.push(format!(
+                "--skip {}",
+                plan_ops::current_pattern_spelling(path)
+            ));
         }
         if self.skip_scripts {
             parts.push("--skip-scripts".to_string());
@@ -437,6 +443,147 @@ fn paired_flag(set: bool, unset: bool) -> Option<bool> {
     }
 }
 
+/// The ONE help string every `--resolved` flag reads.
+///
+/// The flag is per verb rather than global — it changes WHAT a read verb
+/// renders, not how — so the wording has to come from one place or two verbs
+/// describe the same switch differently.
+/// `every_resolved_and_show_values_flag_reads_one_help` walks clap for a
+/// second wording.
+pub const RESOLVED_HELP: &str = "Render what this host resolves the declaration to";
+
+/// The ONE help string every `--show-values` flag reads. A declared env value
+/// is masked on every surface that renders one, and this flag is the single
+/// spelling of the unmask.
+pub const SHOW_VALUES_HELP: &str = "Show full env variable values (default: masked)";
+
+/// Which declared env values THIS run renders masked, and the names it needs
+/// to answer that per value.
+///
+/// [`cfgd_core::config::MaskEnvValues`] alone cannot answer for
+/// [`MaskEnvValues::Secrets`](cfgd_core::config::MaskEnvValues::Secrets): that
+/// word names a SET of env vars — every name any `spec.secrets[].envs` of the
+/// resolved chain exports — which only a command that has resolved its
+/// configuration holds. So the policy travels from the printer and the set is
+/// attached later, by the command, through [`Self::with_secret_envs`].
+///
+/// A `Secrets` run whose command could not resolve a chain masks everything:
+/// the set it would have had to consult is the only thing that could have said
+/// a value is safe to print, and a resolution that failed says nothing.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct EnvValueMasking<'a> {
+    policy: cfgd_core::config::MaskEnvValues,
+    secret_envs: Option<&'a std::collections::BTreeSet<String>>,
+}
+
+impl<'a> EnvValueMasking<'a> {
+    /// The run's policy, with no secret names resolved yet.
+    #[must_use]
+    pub fn of(policy: cfgd_core::config::MaskEnvValues) -> Self {
+        Self {
+            policy,
+            secret_envs: None,
+        }
+    }
+
+    /// Mask nothing: what `--show-values` and `--show-all` ask for.
+    #[must_use]
+    pub fn revealing() -> Self {
+        Self::of(cfgd_core::config::MaskEnvValues::None)
+    }
+
+    /// The same policy with the run's declared secret env names in hand.
+    #[must_use]
+    pub fn with_secret_envs(self, names: &'a std::collections::BTreeSet<String>) -> Self {
+        Self {
+            secret_envs: Some(names),
+            ..self
+        }
+    }
+
+    /// Whether the value beside `name` renders masked.
+    #[must_use]
+    pub fn masks(&self, name: &str) -> bool {
+        match self.policy {
+            cfgd_core::config::MaskEnvValues::All => true,
+            cfgd_core::config::MaskEnvValues::None => false,
+            cfgd_core::config::MaskEnvValues::Secrets => {
+                self.secret_envs.is_none_or(|names| names.contains(name))
+            }
+        }
+    }
+
+    /// Whether EVERY value masks whatever its name, which is what lets a
+    /// surface skip resolving the secret names at all — and what decides
+    /// whether `cfgd status <module>` itemizes its declared inventories.
+    #[must_use]
+    pub fn masks_every_value(&self) -> bool {
+        self.policy.masks()
+    }
+
+    /// Whether this run still has to resolve the secret names before it can
+    /// answer [`Self::masks`] for real.
+    #[must_use]
+    pub fn wants_secret_envs(&self) -> bool {
+        self.policy.masks_only_secrets() && self.secret_envs.is_none()
+    }
+}
+
+/// What an invocation asked a module's inventories to reveal: which declared
+/// env values render in full, and the form its declared scripts render in.
+///
+/// `cfgd module show` reads its three flags through `of`; the default is the
+/// view an invocation that passed none of them asks for.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct InventoryDetail<'a> {
+    /// Which declared env values render masked.
+    pub masking: EnvValueMasking<'a>,
+    /// The form the `Scripts` section takes.
+    pub scripts: cfgd_core::output::ScriptsForm,
+}
+
+impl<'a> InventoryDetail<'a> {
+    /// The view the `--show-values` / `--show-scripts` / `--show-all` trio asks
+    /// for; `--show-all` is each of the other two.
+    pub fn of(masking: EnvValueMasking<'a>, scripts: bool, all: bool) -> Self {
+        Self {
+            masking: if all {
+                EnvValueMasking::revealing()
+            } else {
+                masking
+            },
+            scripts: if scripts || all {
+                cfgd_core::output::ScriptsForm::Full
+            } else {
+                cfgd_core::output::ScriptsForm::Condensed
+            },
+        }
+    }
+
+    /// The same view with the run's declared secret env names in hand.
+    #[must_use]
+    pub fn with_secret_envs(self, names: &'a std::collections::BTreeSet<String>) -> Self {
+        Self {
+            masking: self.masking.with_secret_envs(names),
+            ..self
+        }
+    }
+}
+
+/// The masking one read verb runs under: the run-wide policy the printer
+/// carries, unless the verb's own `--show-values` asked for every value.
+#[must_use]
+pub fn env_value_masking(
+    printer: &cfgd_core::output::Printer,
+    show_values: bool,
+) -> EnvValueMasking<'static> {
+    if show_values {
+        EnvValueMasking::revealing()
+    } else {
+        EnvValueMasking::of(printer.mask_env_values())
+    }
+}
+
 pub fn default_config_file() -> PathBuf {
     cfgd_core::default_config_dir().join(cfgd_core::config::CONFIG_FILENAME)
 }
@@ -473,6 +620,7 @@ fn is_value_taking_flag(flag: &str) -> bool {
             | "--scope"
             | "--theme"
             | "--color"
+            | "--mask-env-values"
     )
 }
 
@@ -493,6 +641,7 @@ fn is_value_taking_flag_inline(arg: &str) -> bool {
         "--scope=",
         "--theme=",
         "--color=",
+        "--mask-env-values=",
     ];
     PREFIXES.iter().any(|p| arg.starts_with(p))
 }
@@ -632,7 +781,7 @@ pub fn resolve_color_choice(no_color: bool, color: ColorWhen) -> cfgd_core::outp
     }
 }
 
-/// Read the `spec.theme` block every entry point builds its printer from.
+/// Read the `spec.output.theme` block every entry point builds its printer from.
 ///
 /// Best-effort by design: a missing, unreadable or malformed config falls back
 /// to the default theme rather than failing, because a printer has to exist
@@ -657,7 +806,7 @@ pub fn resolve_theme_config(
         .exists()
         .then(|| cfgd_core::config::load_config(config_path).ok())
         .flatten()
-        .and_then(|c| c.spec.theme);
+        .and_then(|c| c.spec.theme().cloned());
     match preset {
         None => stored,
         Some(name) => {
@@ -699,8 +848,38 @@ pub fn resolve_hints_enabled(config_path: &Path, no_hints_flag: bool) -> bool {
         .exists()
         .then(|| cfgd_core::config::load_config(config_path).ok())
         .flatten()
-        .and_then(|c| c.spec.usage_hints);
+        .and_then(|c| c.spec.usage_hints());
     stored.unwrap_or(true)
+}
+
+/// Resolve which declared env values this run renders masked, folding
+/// `--mask-env-values`, `CFGD_MASK_ENV_VALUES` and `spec.output.maskEnvValues`
+/// into the one decision the printer carries
+/// (`Printer::with_mask_env_values`). Precedence: the flag beats the env var
+/// beats the config field beats the default (every value masked).
+///
+/// `CFGD_MASK_ENV_VALUES` is bound to the flag through clap's own `env`, so a
+/// word neither spelling accepts is a usage error before this runs.
+///
+/// Best-effort by design, mirroring [`resolve_theme_config`]: a missing,
+/// unreadable or malformed config masks rather than failing, which is also the
+/// safe direction — a config cfgd cannot read never reveals a value.
+pub fn resolve_mask_env_values(
+    config_path: &Path,
+    flag: Option<&str>,
+) -> cfgd_core::config::MaskEnvValues {
+    use std::str::FromStr;
+    if let Some(raw) = flag
+        && let Ok(mode) = cfgd_core::config::MaskEnvValues::from_str(raw)
+    {
+        return mode;
+    }
+    config_path
+        .exists()
+        .then(|| cfgd_core::config::load_config(config_path).ok())
+        .flatten()
+        .and_then(|c| c.spec.mask_env_values())
+        .unwrap_or_default()
 }
 
 #[derive(Debug, Clone)]
@@ -822,7 +1001,7 @@ pub struct Cli {
     )]
     pub color: ColorWhen,
 
-    /// Theme preset for this invocation (overrides spec.theme.name; spec.theme.overrides still apply)
+    /// Theme preset for this invocation (overrides spec.output.theme.name; its overrides still apply)
     #[arg(
         long,
         global = true,
@@ -831,6 +1010,20 @@ pub struct Cli {
         value_parser = clap::builder::PossibleValuesParser::new(cfgd_core::output::Theme::PRESET_NAMES)
     )]
     pub theme: Option<String>,
+
+    /// Which declared env values render masked: all (the default), secrets
+    /// (only a value a declared secret exports) or none.
+    /// `spec.output.maskEnvValues` does the same thing persistently; this flag
+    /// wins over it, and a verb's own `--show-values` is the per-verb spelling
+    /// of `none`.
+    #[arg(
+        long = "mask-env-values",
+        global = true,
+        value_name = "MODE",
+        env = "CFGD_MASK_ENV_VALUES",
+        value_parser = clap::builder::PossibleValuesParser::new(["all", "secrets", "none"])
+    )]
+    pub mask_env_values: Option<String>,
 
     /// Output format: table, wide, json, yaml, name, jsonpath=EXPR, template=TMPL, template-file=PATH
     #[arg(long, short = 'o', global = true, default_value = "table")]
@@ -920,8 +1113,8 @@ pub struct ApplyArgs {
     #[arg(long)]
     pub dry_run: bool,
     /// Apply only a specific phase, optionally scoped to `<phase>.<selector>`
-    /// (an owner group — `prerequisites.managers` — or a manager name —
-    /// `prerequisites.brew`). Phases: pre-scripts, prerequisites, modules,
+    /// (an owner group — `bootstrap.managers` — or a manager name —
+    /// `bootstrap.brew`). Phases: pre-scripts, bootstrap, modules,
     /// packages, system, files, secrets, post-scripts
     #[arg(long, value_parser = PhaseArgValueParser)]
     pub phase: Option<PhaseArg>,
@@ -988,8 +1181,8 @@ pub struct PlanArgs {
     #[arg(long)]
     pub from: Option<String>,
     /// Plan only a specific phase, optionally scoped to `<phase>.<selector>`
-    /// (an owner group — `prerequisites.managers` — or a manager name —
-    /// `prerequisites.brew`). Phases: pre-scripts, prerequisites, modules,
+    /// (an owner group — `bootstrap.managers` — or a manager name —
+    /// `bootstrap.brew`). Phases: pre-scripts, bootstrap, modules,
     /// packages, system, files, secrets, post-scripts
     #[arg(long, value_parser = PhaseArgValueParser)]
     pub phase: Option<PhaseArg>,
@@ -1086,19 +1279,19 @@ pub enum Command {
 
     /// Apply the configuration (use --dry-run to preview without applying)
     #[command(
-        long_about = "Apply the active profile to this machine.\n\n--from accepts any git URL, a local path, or the GitHub shorthand `owner/repo`.\n\n--phase and --skip take a dotted `<phase>[.<selector>]` path: the whole phase,\none owner group within it, or one manager (family-collapsed, e.g. `brew` also\ncovers `brew-tap`/`brew-cask`).\n\n--module resolves and applies ONLY the named module(s) and their dependencies,\nisolated from the active profile — repeat it for several modules. Add\n--with-profile to apply the full profile PLUS the named module(s) instead.\n--only module:<name>/--skip module:<name> filter an ALREADY-composed plan by\nowner and never resolve a module of their own — pair with --module to bring an\nout-of-profile module into scope first.\n\n--on-conflict decides what happens when a managed target already holds a file\ncfgd has never written: ask (default — prompts, or backs up when nothing can be\nasked), backup, overwrite, skip, fail. A target that already holds exactly the\ndesired bytes is left alone under every policy.\n\nExamples:\n  cfgd apply\n  cfgd apply --dry-run\n  cfgd apply --phase packages --yes\n  cfgd apply --phase prerequisites.managers --yes                # one owner group\n  cfgd apply --skip prerequisites.session                        # skip the broadcast half\n  cfgd apply --skip prerequisites.brew                            # skip one manager\n  cfgd apply --module nettools                                    # nettools + deps, isolated\n  cfgd apply --module nettools --module lpass-tools               # several modules\n  cfgd apply --module nettools --with-profile                     # full profile PLUS nettools\n  cfgd apply --yes --on-conflict backup                          # copy each conflict aside\n  cfgd apply --yes --on-conflict fail                            # refuse to touch strangers\n  cfgd apply --from acme/cfgd-config --yes                       # GitHub shorthand\n  cfgd apply --from https://gitlab.example.com/acme/config.git --yes\n  cfgd apply --context reconcile"
+        long_about = "Apply the active profile to this machine.\n\n--from accepts any git URL, a local path, or the GitHub shorthand `owner/repo`.\n\n--phase and --skip take a dotted `<phase>[.<selector>]` path: the whole phase,\none owner group within it, or one manager (family-collapsed, e.g. `brew` also\ncovers `brew-tap`/`brew-cask`).\n\n--module resolves and applies ONLY the named module(s) and their dependencies,\nisolated from the active profile — repeat it for several modules. Add\n--with-profile to apply the full profile PLUS the named module(s) instead.\n--only module:<name>/--skip module:<name> filter an ALREADY-composed plan by\nowner and never resolve a module of their own — pair with --module to bring an\nout-of-profile module into scope first.\n\n--on-conflict decides what happens when a managed target already holds a file\ncfgd has never written: ask (default — prompts, or backs up when nothing can be\nasked), backup, overwrite, skip, fail. A target that already holds exactly the\ndesired bytes is left alone under every policy.\n\nExamples:\n  cfgd apply\n  cfgd apply --dry-run\n  cfgd apply --phase packages --yes\n  cfgd apply --phase bootstrap.managers --yes                    # one owner group\n  cfgd apply --skip bootstrap.session                            # skip the broadcast half\n  cfgd apply --skip bootstrap.shell                              # env file only, no rc line\n  cfgd apply --skip bootstrap.brew                               # skip one manager\n  cfgd apply --module nettools                                   # nettools + deps, isolated\n  cfgd apply --module nettools --module lpass-tools              # several modules\n  cfgd apply --module nettools --with-profile                    # full profile PLUS nettools\n  cfgd apply --yes --on-conflict backup                          # copy each conflict aside\n  cfgd apply --yes --on-conflict fail                            # refuse to touch strangers\n  cfgd apply --from acme/cfgd-config --yes                       # GitHub shorthand\n  cfgd apply --from https://gitlab.example.com/acme/config.git --yes\n  cfgd apply --context reconcile"
     )]
     Apply(ApplyArgs),
 
     /// Preview the reconciliation plan without applying
     #[command(
-        long_about = "Render the reconciliation plan without applying it.\n\n--from accepts any git URL, a local path, or the GitHub shorthand `owner/repo`.\n\n--phase and --skip take a dotted `<phase>[.<selector>]` path: the whole phase,\none owner group within it, or one manager (family-collapsed, e.g. `brew` also\ncovers `brew-tap`/`brew-cask`).\n\n--module resolves and previews ONLY the named module(s) and their dependencies,\nisolated from the active profile — repeat it for several modules. Add\n--with-profile to preview the full profile PLUS the named module(s) instead.\n\nExamples:\n  cfgd plan\n  cfgd plan --phase system\n  cfgd plan --phase prerequisites.managers                       # one owner group\n  cfgd plan --skip prerequisites.session                         # skip the broadcast half\n  cfgd plan --module nettools                                     # nettools + deps, isolated\n  cfgd plan --module nettools --with-profile                     # full profile PLUS nettools\n  cfgd plan --from acme/cfgd-config                              # GitHub shorthand\n  cfgd plan --from https://gitlab.example.com/acme/config.git\n  cfgd plan --skip packages.brew --only files"
+        long_about = "Render the reconciliation plan without applying it.\n\n--from accepts any git URL, a local path, or the GitHub shorthand `owner/repo`.\n\n--phase and --skip take a dotted `<phase>[.<selector>]` path: the whole phase,\none owner group within it, or one manager (family-collapsed, e.g. `brew` also\ncovers `brew-tap`/`brew-cask`).\n\n--module resolves and previews ONLY the named module(s) and their dependencies,\nisolated from the active profile — repeat it for several modules. Add\n--with-profile to preview the full profile PLUS the named module(s) instead.\n\nExamples:\n  cfgd plan\n  cfgd plan --phase system\n  cfgd plan --phase bootstrap.managers                           # one owner group\n  cfgd plan --skip bootstrap.session                             # skip the broadcast half\n  cfgd plan --skip bootstrap.shell                               # env file only, no rc line\n  cfgd plan --module nettools                                    # nettools + deps, isolated\n  cfgd plan --module nettools --with-profile                     # full profile PLUS nettools\n  cfgd plan --from acme/cfgd-config                              # GitHub shorthand\n  cfgd plan --from https://gitlab.example.com/acme/config.git\n  cfgd plan --skip packages.brew --only files"
     )]
     Plan(PlanArgs),
 
     /// Show configuration status and drift
     #[command(
-        long_about = "Show apply status, drift, and pending decisions.\n\nThe display reflects recorded drift (from the daemon or a prior verify/diff/status --scan).\n--scan instead performs a live, read-only drift scan of this machine right now and\nfolds its findings into the display. --exit-code implies --scan (so CI gating works\neven on a host with no daemon and no prior scan) and additionally exits:\n  0  no drift detected\n  1  runtime error\n  5  drift detected\n\n--module shows one module: counts plus the drift a scan found. `-o wide` replaces\nthose counts with the itemized inventories (packages, files, env, aliases, scripts),\neach row carrying its own verdict. --show-values renders those same inventories with\nthe declared values (and each script's full body), so it implies `-o wide`.\n\nExamples:\n  cfgd status\n  cfgd status --module nettools\n  cfgd status --module nettools -o wide\n  cfgd status --module nettools --show-values\n  cfgd status --scan\n  cfgd status --scan --module nettools\n  cfgd status --exit-code"
+        long_about = "Show apply status, drift, and pending decisions.\n\nThe display reflects recorded drift (from the daemon or a prior verify/diff/status --scan).\n--scan instead performs a live, read-only drift scan of this machine right now and\nfolds its findings into the display. --exit-code implies --scan (so CI gating works\neven on a host with no daemon and no prior scan) and additionally exits:\n  0  no drift detected\n  1  runtime error\n  5  drift detected\n\n--module shows one module: counts plus the drift a scan found. `-o wide` replaces\nthose counts with the itemized inventories (packages, files, env, aliases), each row\ncarrying its own verdict. --show-values renders those same inventories with the\ndeclared env values, and implies `-o wide`. Nothing checks a module's script after the\nrun that executes it, so `cfgd module show` lists them and this command does not.\n\nExamples:\n  cfgd status\n  cfgd status --module nettools\n  cfgd status --module nettools -o wide\n  cfgd status --module nettools --show-values\n  cfgd status --scan\n  cfgd status --scan --module nettools\n  cfgd status --exit-code"
     )]
     Status {
         /// Show status for a specific module (no profile required)
@@ -1110,9 +1303,14 @@ pub enum Command {
         /// Exit 5 when drift is detected (for CI gating); implies --scan
         #[arg(long = "exit-code", short = 'e')]
         exit_code: bool,
-        /// With --module: itemize the inventories and show declared values and full script bodies (implies -o wide)
-        #[arg(long)]
+        #[arg(long, help = SHOW_VALUES_HELP, conflicts_with = "mask_env_values")]
         show_values: bool,
+        /// Retired: `cfgd status` no longer lists scripts.
+        #[arg(short = 's', long = "show-scripts", hide = true)]
+        show_scripts: bool,
+        /// Retired: the itemized view is `-o wide`.
+        #[arg(short = 'a', long = "show-all", hide = true)]
+        show_all: bool,
     },
 
     /// Show detailed diffs
@@ -1193,9 +1391,13 @@ pub enum Command {
 
     /// Check system health and dependencies
     #[command(
-        long_about = "Diagnose environment prerequisites, tool versions, and config validity.\n\nChecks what cfgd needs in order to run here: config validity, required tools, secret backends, declared package managers, module resolution, profile layout, and cfgd's own state store. It does not compare your managed files, env vars or system settings against the machine — run `cfgd diff` or `cfgd status` for that.\n\nExamples:\n  cfgd doctor\n  cfgd --output json doctor"
+        long_about = "Diagnose environment prerequisites, tool versions, and config validity.\n\nChecks what cfgd needs in order to run here: config validity, required tools, secret backends, declared package managers, module resolution, profile layout, and cfgd's own state store. It does not compare your managed files, env vars or system settings against the machine — run `cfgd diff` or `cfgd status` for that.\n\nWith --fix, every required tool a check reports missing is installed through the package manager this host already has, and the report then states what is there afterwards.\n\nExamples:\n  cfgd doctor\n  cfgd doctor --fix\n  cfgd --output json doctor"
     )]
-    Doctor,
+    Doctor {
+        /// Install every required tool a check reports missing
+        #[arg(long)]
+        fix: bool,
+    },
 
     /// Show the directory roots cfgd reads and writes
     #[command(
@@ -1223,7 +1425,7 @@ pub enum Command {
 
     /// Run declarative backups (`spec.backups[]`)
     #[command(
-        long_about = "Run, inspect, restore, or roll back declarative backups declared in `spec.backups[]`.\n\nA schedule-less backup (no `schedule`) also runs automatically during `cfgd apply`, after the reconciler's file/package/module phases (skipped in --dry-run). A scheduled backup runs on the daemon's timer, and on demand via this command.\n\n`backup restore` overlays a snapshot back onto the backup's source, leaving a safety copy of the current contents beside it first (skipped when --to points outside the source). `backup rollback` puts that safety copy back.\n\nExamples:\n  cfgd backup run\n  cfgd backup run notes-db\n  cfgd backup list\n  cfgd backup list notes-db --snapshots\n  cfgd backup restore notes-db\n  cfgd backup restore notes-db --at 20260730T120000Z\n  cfgd backup restore notes-db --to /tmp/inspect --yes\n  cfgd backup rollback\n  cfgd backup rollback notes-db --yes\n  cfgd --output json backup list"
+        long_about = "Run, inspect, restore, or roll back declarative backups declared in `spec.backups[]`.\n\nA schedule-less backup (no `schedule`) also runs automatically during `cfgd apply`, after the reconciler's file/package/module phases (skipped in --dry-run). A scheduled backup runs on the daemon's timer, and on demand via this command.\n\n`backup restore` overlays a snapshot back onto the backup's source, leaving a safety copy of the current contents beside it first (skipped when --to points outside the source). `backup rollback` puts that safety copy back.\n\nExamples:\n  cfgd backup run\n  cfgd backup run notes-db\n  cfgd backup list\n  cfgd backup list notes-db --snapshots\n  cfgd backup restore notes-db\n  cfgd backup restore notes-db --at 20260730T120000Z\n  cfgd backup restore notes-db --to /tmp/inspect --yes\n  cfgd backup rollback\n  cfgd backup rollback notes-db --yes\n  cfgd backup gc\n  cfgd backup gc notes-db\n  cfgd --output json backup list"
     )]
     Backup {
         #[command(subcommand)]
@@ -1601,6 +1803,8 @@ pub enum SourceCommand {
     Show {
         /// Source name
         name: String,
+        #[arg(long, help = SHOW_VALUES_HELP, conflicts_with = "mask_env_values")]
+        show_values: bool,
     },
 
     /// Remove a source subscription
@@ -1750,6 +1954,15 @@ pub enum BackupCommand {
         /// Skip the confirmation prompt
         #[arg(from_global)]
         yes: bool,
+    },
+
+    /// Remove the snapshots a destination change orphaned
+    #[command(
+        long_about = "Remove the snapshots a `destination:` change left behind.\n\nWhen a backup's `destination:` moves, the snapshots already written under the old\ndirectory fall outside the unit's retention: nothing prunes them, because pruning\nonly ever deletes what is inside the current destination. The next `cfgd backup\nrun` marks each such recorded run `Orphaned` and `cfgd backup gc` collects it —\nremoving the path the state store recorded, then the record itself.\n\nOnly a path cfgd recorded is ever removed. The old destination is never listed, so\nanything you put there yourself is not cfgd's to find and is left alone. A change\nto `namePattern` orphans nothing: retention counts recorded runs, not names, so\nthe old-named snapshots stay inside the destination and age out normally.\n\nWith no name, every backup declared in the active profile is collected.\n\nExamples:\n  cfgd backup gc\n  cfgd backup gc notes-db\n  cfgd --output json backup gc"
+    )]
+    Gc {
+        /// Backup name (default: collect every backup declared in the active profile)
+        name: Option<String>,
     },
 
     /// Put a backup's pre-restore copy back over its source
@@ -2000,10 +2213,14 @@ pub enum ProfileCommand {
         /// Profile name
         name: String,
     },
-    /// Show the resolved profile
+    /// Show what a profile declares: its inherits chain and its own spec
     Show {
         /// Profile name (default: active profile)
         name: Option<String>,
+        #[arg(long, help = RESOLVED_HELP)]
+        resolved: bool,
+        #[arg(long, help = SHOW_VALUES_HELP, conflicts_with = "mask_env_values")]
+        show_values: bool,
     },
     /// Create a new profile
     Create(Box<ProfileCreateArgs>),
@@ -2135,13 +2352,20 @@ pub enum ModuleCommand {
     /// List available modules and their status
     #[command(alias = "ls")]
     List,
-    /// Show module details: packages, files, deps, resolved managers
+    /// Show what a module declares: packages, files, env, aliases, scripts
     Show {
         /// Module name
         name: String,
-        /// Show full env variable values (default: masked)
-        #[arg(long)]
+        #[arg(long, help = RESOLVED_HELP)]
+        resolved: bool,
+        #[arg(long, help = SHOW_VALUES_HELP, conflicts_with = "mask_env_values")]
         show_values: bool,
+        /// Show each script's full body (default: its first line)
+        #[arg(long = "show-scripts", short = 's')]
+        show_scripts: bool,
+        /// Both --show-values and --show-scripts
+        #[arg(long = "show-all", short = 'a')]
+        show_all: bool,
     },
     /// Create a new local module
     Create(Box<ModuleCreateArgs>),
@@ -2292,7 +2516,11 @@ pub enum ModuleKeysCommand {
     },
     /// List known signing keys
     #[command(alias = "ls")]
-    List,
+    List {
+        /// Directory to look in (default: the current directory and ~/.cfgd)
+        #[arg(long, short)]
+        dir: Option<String>,
+    },
     /// Rotate signing keys: generate a new pair and re-sign specified artifacts
     Rotate {
         /// Directory containing the current cosign.key to replace
@@ -2470,10 +2698,15 @@ pub enum SourceOverrideAction {
 #[derive(Clone, Copy, Debug, clap::ValueEnum)]
 pub enum ApplyPhase {
     PreScripts,
+    /// Everything the rest of the run consumes: the package managers
+    /// themselves, the generated env file that publishes where their binaries
+    /// live, and the live session broadcast.
+    Bootstrap,
+    /// Deprecated spelling of `bootstrap`.
+    #[value(name = "prerequisites", hide = true)]
     Prerequisites,
-    /// The pre-merge spelling of `prerequisites`, from before the phase also
-    /// provisioned package managers. Still selects that phase, and says once
-    /// per run that it is on the way out.
+    /// Deprecated spelling of `bootstrap`, from before the phase also
+    /// provisioned package managers.
     #[value(name = "env", hide = true)]
     Env,
     Modules,
@@ -2489,6 +2722,7 @@ impl ApplyPhase {
     pub fn as_str(self) -> &'static str {
         match self {
             ApplyPhase::PreScripts => "pre-scripts",
+            ApplyPhase::Bootstrap => "bootstrap",
             ApplyPhase::Prerequisites => "prerequisites",
             ApplyPhase::Env => "env",
             ApplyPhase::Modules => "modules",
@@ -2502,8 +2736,8 @@ impl ApplyPhase {
 }
 
 /// Clap value type for `--phase`'s dotted grammar:
-/// `<phase>[.<selector>]`, e.g. `prerequisites`, `prerequisites.managers`,
-/// `prerequisites.brew`. Not a `ValueEnum` because the selector half is open
+/// `<phase>[.<selector>]`, e.g. `bootstrap`, `bootstrap.managers`,
+/// `bootstrap.brew`. Not a `ValueEnum` because the selector half is open
 /// (any owner-group name or any registered manager name); [`ApplyPhase`]
 /// still gates the phase half to the closed, typo-checked vocabulary.
 #[derive(Clone, Debug)]
@@ -2528,14 +2762,16 @@ impl std::fmt::Display for PhaseArg {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // Rendered back through clap's own vocabulary, so a `--phase` a hint
         // re-states re-parses by construction rather than through a second
-        // table kept by hand. The retired spelling renders as the phase it
-        // selects: re-emitting `env` would hand the reader a command that
-        // prints a deprecation on its way to doing what `prerequisites` does.
+        // table kept by hand. A retired spelling renders as the phase it
+        // selects: re-emitting it would hand the reader a command that prints
+        // a deprecation on its way to doing what `bootstrap` does.
         let name = match self.phase {
-            ApplyPhase::Env => "prerequisites".to_string(),
+            ApplyPhase::Env | ApplyPhase::Prerequisites => {
+                PhaseName::Bootstrap.as_str().to_string()
+            }
             phase => <ApplyPhase as clap::ValueEnum>::to_possible_value(&phase)
                 .map(|pv| pv.get_name().to_string())
-                .unwrap_or_else(|| "prerequisites".to_string()),
+                .unwrap_or_default(),
         };
         write!(f, "{name}")?;
         match &self.selector {
@@ -2634,7 +2870,9 @@ fn apply_phase_to_filter(p: ApplyPhase) -> PhaseFilter {
     match p {
         ApplyPhase::Modules => PhaseFilter::ModuleOwners,
         ApplyPhase::PreScripts => PhaseFilter::Phase(PhaseName::PreScripts),
-        ApplyPhase::Prerequisites | ApplyPhase::Env => PhaseFilter::Phase(PhaseName::Prerequisites),
+        ApplyPhase::Bootstrap | ApplyPhase::Prerequisites | ApplyPhase::Env => {
+            PhaseFilter::Phase(PhaseName::Bootstrap)
+        }
         ApplyPhase::Packages => PhaseFilter::Phase(PhaseName::Packages),
         ApplyPhase::System => PhaseFilter::Phase(PhaseName::System),
         ApplyPhase::Files => PhaseFilter::Phase(PhaseName::Files),
@@ -2665,11 +2903,19 @@ fn resolve_phase_filter(
     let Some(PhaseArg { phase, selector }) = phase else {
         return Ok(None);
     };
-    if matches!(phase, ApplyPhase::Env) {
-        printer.deprecation(
-            "`--phase env` is deprecated: that phase now provisions package managers as well \
-             as writing the env file. Use `--phase prerequisites`.",
-        );
+    // Keyed on clap's own name for the variant, and worded from the one table
+    // `--skip`/`--only` reads, so a token cannot be deprecated on one flag and
+    // silently accepted — or explained differently — on another.
+    let possible = <ApplyPhase as clap::ValueEnum>::to_possible_value(&phase);
+    let token = possible
+        .as_ref()
+        .map(clap::builder::PossibleValue::get_name)
+        .unwrap_or_default();
+    if let Some(reason) = plan_ops::legacy_phase_reason(token) {
+        printer.deprecation(format!(
+            "`--phase {token}` is deprecated: {reason}. Use `--phase {}`.",
+            PhaseName::Bootstrap.as_str()
+        ));
     }
     let base = apply_phase_to_filter(phase);
     let Some(selector) = selector else {
@@ -2682,19 +2928,16 @@ fn resolve_phase_filter(
              `--module {selector}` instead."
         );
     };
-    if name != PhaseName::Prerequisites {
-        let phase_label = <ApplyPhase as clap::ValueEnum>::to_possible_value(&phase)
-            .map(|pv| pv.get_name().to_string())
-            .unwrap_or_default();
+    if name != PhaseName::Bootstrap {
         if name == PhaseName::Packages {
             anyhow::bail!(
                 "`--phase packages.{selector}` is not valid: package manager work lives in \
-                 `prerequisites`, not `packages`. Use `--phase prerequisites.{selector}` instead."
+                 `bootstrap`, not `packages`. Use `--phase bootstrap.{selector}` instead."
             );
         }
         anyhow::bail!(
-            "`--phase {phase_label}.{selector}` is not valid: `{phase_label}` has no dotted \
-             selector grammar. Selectors are only valid on `--phase prerequisites`."
+            "`--phase {token}.{selector}` is not valid: `{token}` has no dotted \
+             selector grammar. Selectors are only valid on `--phase bootstrap`."
         );
     }
     let mut legal: Vec<String> = reconciler::CFGD_GROUP_ORDER
@@ -2703,12 +2946,12 @@ fn resolve_phase_filter(
         .collect();
     // The planner's own vocabulary, not a second one derived here: a
     // prerequisite node is keyed on its TOOL, so a list of manager names alone
-    // refused `--phase prerequisites.curl` while `--skip prerequisites.curl`
+    // refused `--phase bootstrap.curl` while `--skip bootstrap.curl`
     // accepted it and the matcher was written to serve both.
     legal.extend(reconciler::prerequisite_selectors(registry));
     if !legal.contains(&selector) {
         anyhow::bail!(
-            "unknown selector '{selector}' for `--phase prerequisites`: legal values are {}",
+            "unknown selector '{selector}' for `--phase bootstrap`: legal values are {}",
             legal.join(", ")
         );
     }
@@ -2799,14 +3042,25 @@ pub fn execute(
             scan,
             exit_code,
             show_values,
-        } => status::cmd_status(
-            cli,
-            printer,
-            module.as_deref(),
-            *exit_code,
-            *scan,
-            *show_values,
-        ),
+            show_scripts,
+            show_all,
+        } => match status::retired_status_flags(*show_scripts, *show_all) {
+            Some(flag) => Err(status::retired_status_flag_error(flag)),
+            None => status::cmd_status(
+                cli,
+                printer,
+                module.as_deref(),
+                status::StatusRun {
+                    exit_code: *exit_code,
+                    scan: *scan,
+                    mask_env_values: if *show_values {
+                        cfgd_core::config::MaskEnvValues::None
+                    } else {
+                        printer.mask_env_values()
+                    },
+                },
+            ),
+        },
         Command::Diff { module, exit_code } => {
             diff::cmd_diff(cli, printer, module.as_deref(), *exit_code)
         }
@@ -2821,9 +3075,17 @@ pub fn execute(
             verify::cmd_verify(cli, printer, module.as_deref(), *exit_code)
         }
         Command::Profile { command } => match command {
-            ProfileCommand::Show { name } => {
-                profile::cmd_profile_show(cli, printer, name.as_deref())
-            }
+            ProfileCommand::Show {
+                name,
+                resolved,
+                show_values,
+            } => profile::cmd_profile_show(
+                cli,
+                printer,
+                name.as_deref(),
+                *resolved,
+                InventoryDetail::of(env_value_masking(printer, *show_values), false, false),
+            ),
             ProfileCommand::List => profile::cmd_profile_list(cli, printer),
             ProfileCommand::Switch { name } => profile::cmd_profile_switch(cli, name, printer),
             ProfileCommand::Create(args) => profile::cmd_profile_create(cli, printer, args),
@@ -2845,7 +3107,7 @@ pub fn execute(
                 yes,
             } => profile::cmd_profile_migrate(cli, printer, name.as_deref(), *all, *dry_run, *yes),
         },
-        Command::Doctor => doctor::cmd_doctor(cli, printer),
+        Command::Doctor { fix } => doctor::cmd_doctor(cli, printer, *fix),
         Command::Paths => paths::cmd_paths(cli, printer, dir_sources),
         Command::Init {
             path,
@@ -2883,9 +3145,23 @@ pub fn execute(
         ),
         Command::Module { command } => match command {
             ModuleCommand::List => module::cmd_module_list(cli, printer),
-            ModuleCommand::Show { name, show_values } => {
-                module::cmd_module_show(cli, printer, name, *show_values)
-            }
+            ModuleCommand::Show {
+                name,
+                resolved,
+                show_values,
+                show_scripts,
+                show_all,
+            } => module::cmd_module_show(
+                cli,
+                printer,
+                name,
+                InventoryDetail::of(
+                    env_value_masking(printer, *show_values),
+                    *show_scripts,
+                    *show_all,
+                ),
+                *resolved,
+            ),
             ModuleCommand::Create(args) => module::cmd_module_create(cli, printer, args),
             ModuleCommand::Update(args) => module::cmd_module_update_local(cli, printer, args),
             ModuleCommand::Edit { name } => module::cmd_module_edit(cli, printer, name),
@@ -2987,7 +3263,9 @@ pub fn execute(
                 ModuleKeysCommand::Generate { dir } => {
                     module::cmd_module_keys_generate(printer, dir.as_deref())
                 }
-                ModuleKeysCommand::List => module::cmd_module_keys_list(printer),
+                ModuleKeysCommand::List { dir } => {
+                    module::cmd_module_keys_list(printer, dir.as_deref())
+                }
                 ModuleKeysCommand::Rotate { dir, artifacts } => {
                     module::cmd_module_keys_rotate(printer, dir.as_deref(), artifacts)
                 }
@@ -3009,7 +3287,12 @@ pub fn execute(
                 source::cmd_source_priority(cli, printer, name, *value)
             }
             SourceCommand::List => source::cmd_source_list(cli, printer),
-            SourceCommand::Show { name } => source::cmd_source_show(cli, printer, name),
+            SourceCommand::Show { name, show_values } => source::cmd_source_show(
+                cli,
+                printer,
+                name,
+                InventoryDetail::of(env_value_masking(printer, *show_values), false, false),
+            ),
             SourceCommand::Remove {
                 name,
                 keep_all,
@@ -3084,6 +3367,7 @@ pub fn execute(
             BackupCommand::Rollback { name, yes } => {
                 backup::cmd_backup_rollback(cli, printer, name.as_deref(), *yes)
             }
+            BackupCommand::Gc { name } => backup::cmd_backup_gc(cli, printer, name.as_deref()),
         },
         Command::Explain {
             resource,

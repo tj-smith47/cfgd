@@ -10,8 +10,8 @@ echo "=== kubectl Plugin Tests ==="
 begin_test "FS-PLUGIN-01: kubectl cfgd inject"
 
 # Create a test deployment
-kubectl create namespace "e2e-plugin-test-${E2E_RUN_ID}" 2>/dev/null || true
-kubectl label namespace "e2e-plugin-test-${E2E_RUN_ID}" "$E2E_RUN_LABEL" --overwrite 2>/dev/null
+ensure_namespace "e2e-plugin-test-${E2E_RUN_ID}"
+kubectl label namespace "e2e-plugin-test-${E2E_RUN_ID}" "$E2E_RUN_LABEL" --overwrite 2>/dev/null || true # rc-ok: the run tag the janitor ages leaked namespaces out by; no case asserts on it
 kubectl apply -n "e2e-plugin-test-${E2E_RUN_ID}" -f - <<EOF
 apiVersion: apps/v1
 kind: Deployment

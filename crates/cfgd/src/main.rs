@@ -300,6 +300,10 @@ fn main() -> anyhow::Result<()> {
     let theme_config =
         cli::resolve_theme_config(std::path::Path::new(&cli.config), cli.theme.as_deref());
     let hints_enabled = cli::resolve_hints_enabled(std::path::Path::new(&cli.config), cli.no_hints);
+    let mask_env_values = cli::resolve_mask_env_values(
+        std::path::Path::new(&cli.config),
+        cli.mask_env_values.as_deref(),
+    );
     let printer = cfgd_core::output::Printer::with_theme_config(
         verbosity,
         theme_config.as_ref(),
@@ -307,7 +311,8 @@ fn main() -> anyhow::Result<()> {
         color_choice,
     )
     .with_list_envelope(cli.list_envelope)
-    .with_hints_enabled(hints_enabled);
+    .with_hints_enabled(hints_enabled)
+    .with_mask_env_values(mask_env_values);
     tracing_writer.attach(&printer);
 
     if jsonpath_deprecated {

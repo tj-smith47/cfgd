@@ -7,6 +7,9 @@ use cfgd_core::output::Printer;
 use cfgd_core::providers::{NoteSink, PackageContext};
 #[cfg(unix)]
 use cfgd_core::test_helpers::NullPackageState;
+use cfgd_core::test_helpers::{
+    code_line as code_of, declared_fn_name, fn_declarations, reaches_fn,
+};
 
 use super::*;
 
@@ -630,12 +633,20 @@ fn sudo_cmd_builds_correct_command_structure() {
 }
 
 #[test]
-fn sudo_cmd_non_root_has_program_as_first_arg() {
+fn sudo_cmd_hands_the_program_to_sudo_off_root_and_runs_it_bare_under_root() {
     let cmd = sudo_cmd("dnf");
-    if !cfgd_core::is_root() {
-        let args: Vec<&std::ffi::OsStr> = cmd.get_args().collect();
-        assert!(!args.is_empty(), "sudo_cmd should pass program name as arg");
-        assert_eq!(args[0], "dnf");
+    let args: Vec<&std::ffi::OsStr> = cmd.get_args().collect();
+    if cfgd_core::is_root() {
+        // Root runs the program itself, so nothing is left for an argument slot
+        // to carry; an arg here would be a sudo-shaped argv aimed at dnf.
+        assert_eq!(cmd.get_program(), "dnf");
+        assert!(
+            args.is_empty(),
+            "as root, sudo_cmd must add no args, got: {args:?}"
+        );
+    } else {
+        assert_eq!(cmd.get_program(), "sudo");
+        assert_eq!(args, ["dnf"], "off root, the program is sudo's first arg");
     }
 }
 
@@ -794,13 +805,36 @@ fn run_pkg_cmd_command_not_found_maps_to_command_failed() {
     );
 }
 
+/// The seam answers `brew_available` alone, in both directions.
+///
+/// A seam naming a file that is not there is how a test says this host has no
+/// brew, and it is the only way: brew answers available from its own install
+/// prefix as well as from `PATH`, so an emptied `PATH` leaves it reachable and
+/// whatever the test meant to prove missing gets installed for real.
 #[test]
 #[serial_test::serial]
-fn brew_available_returns_bool() {
-    // Exercises brew_available() production function. Serial-gated because
-    // brew_shim tests in packages::brew::tests mutate CFGD_BREW_BIN.
-    let _available = brew_available();
-    // Just verifying it runs without panic
+fn brew_available_answers_from_the_seam_in_both_directions() {
+    let dir = tempfile::tempdir().expect("tempdir");
+
+    let _missing = cfgd_core::test_helpers::EnvVarGuard::set(
+        "CFGD_BREW_BIN",
+        cfgd_core::test_helpers::ABSENT_SEAM_PATH,
+    );
+    assert!(
+        !brew_available(),
+        "a seam naming a file that is not there says this host has no brew"
+    );
+
+    cfgd_core::test_helpers::write_probe_tool(dir.path(), "brew");
+    let planted = cfgd_core::test_helpers::probe_tool_path(dir.path(), "brew");
+    let _present = cfgd_core::test_helpers::EnvVarGuard::set(
+        "CFGD_BREW_BIN",
+        planted.to_str().expect("probe path is valid UTF-8"),
+    );
+    assert!(
+        brew_available(),
+        "and a seam naming a file that IS there says it has one"
+    );
 }
 
 #[test]
@@ -836,6 +870,9 @@ fn brew_path_returns_option() {
 #[serial_test::serial]
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn path_with_brew_adds_only_the_brew_directory_the_path_lacks() {
+    // `brew_path_dirs` answers from `CFGD_BREW_BIN` when it is set, and the
+    // expectation below is the platform pair, indexed by position.
+    let _no_seam = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_BREW_BIN");
     let dirs = brew_path_dirs();
     // Declared first so it drops last, bracketing the whole PATH window.
     let _path_excl = cfgd_core::test_helpers::path_env_mutation_guard();
@@ -854,6 +891,9 @@ fn path_with_brew_adds_only_the_brew_directory_the_path_lacks() {
 #[serial_test::serial]
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn path_with_brew_prepends_both_directories_past_a_lookalike_entry() {
+    // `brew_path_dirs` answers from `CFGD_BREW_BIN` when it is set, and the
+    // expectation below is the platform pair, indexed by position.
+    let _no_seam = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_BREW_BIN");
     let dirs = brew_path_dirs();
     let lookalike = format!("{}.bak", dirs[0]);
     // Declared first so it drops last, bracketing the whole PATH window.
@@ -972,7 +1012,12 @@ fn resolve_tool_with_fallbacks_returns_none_when_nothing_resolves() {
 }
 
 #[test]
+#[serial_test::serial]
 fn brew_path_dirs_is_non_empty_on_linux_or_macos() {
+    // `brew_path_dirs` answers from `CFGD_BREW_BIN` when it is set, so the
+    // platform arm this pins is only reachable with the seam clear; a sibling
+    // test's brew shim is a process-global that would answer in its place.
+    let _no_seam = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_BREW_BIN");
     let dirs = brew_path_dirs();
     if cfg!(target_os = "linux") || cfg!(target_os = "macos") {
         assert!(!dirs.is_empty(), "expected brew dirs, got: {dirs:?}");
@@ -1056,7 +1101,12 @@ fn the_macos_brew_prefix_prefers_an_installed_brew_in_candidate_order() {
 
 #[cfg(target_os = "linux")]
 #[test]
+#[serial_test::serial]
 fn brew_path_dirs_linux_uses_linuxbrew_paths() {
+    // `brew_path_dirs` answers from `CFGD_BREW_BIN` when it is set, so the
+    // platform arm this pins is only reachable with the seam clear; a sibling
+    // test's brew shim is a process-global that would answer in its place.
+    let _no_seam = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_BREW_BIN");
     let dirs = brew_path_dirs();
     assert!(dirs.iter().any(|d| d.contains("linuxbrew")));
     assert!(dirs.iter().any(|d| d.ends_with("/bin")));
@@ -1461,7 +1511,7 @@ fn bootstrap_via_system_manager_succeeds_with_apt_get_shim() {
     let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let result = bootstrap_via_system_manager(
         &cfgd_core::test_helpers::test_bootstrap_context(&printer),
-        "snapd",
+        &TEST_SYSTEM_MEDIATED,
         "snap",
     );
     assert!(result.is_ok(), "expected Ok when apt-get shim exits 0");
@@ -1500,7 +1550,7 @@ fn bootstrap_via_system_manager_fails_when_all_managers_absent() {
     let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let result = bootstrap_via_system_manager(
         &cfgd_core::test_helpers::test_bootstrap_context(&printer),
-        "snapd",
+        &TEST_SYSTEM_MEDIATED,
         "snap",
     );
     assert!(
@@ -1508,9 +1558,134 @@ fn bootstrap_via_system_manager_fails_when_all_managers_absent() {
         "expected BootstrapFailed when no package manager is available"
     );
     let err_str = result.unwrap_err().to_string();
+    for offered in ["apt", "dnf", "zypper"] {
+        assert!(
+            err_str.contains(offered),
+            "the sentence names every mediator this manager offers, {offered} included: {err_str}"
+        );
+    }
+    // snap declares no FreeBSD port, so `pkg` was never tried and naming it
+    // would send the reader after a failure that never happened.
     assert!(
-        err_str.contains("apt") || err_str.contains("dnf") || err_str.contains("zypper"),
-        "error should mention managers, got: {err_str}"
+        !err_str.contains("pkg"),
+        "the sentence names no arm this manager declines: {err_str}"
+    );
+}
+
+/// A set `CFGD_BREW_BIN` is the whole answer, missing file included: a seam
+/// that fell back to the host when its file is absent could never say this host
+/// has no brew, and three cascade pins depend on being able to say exactly that.
+///
+/// The fall-through half is asked of a probe `PATH` carrying a `brew`, so the
+/// two answers differ by the seam alone: read off a brew-free host, a seam that
+/// wrongly fell through would answer `false` for the host's own reason and the
+/// pin would pass on a defect. `ProbePath` plants a Unix executable, so that
+/// half asks only where one can be planted; the seam's own answer is the same
+/// question on every platform and is asked on all of them.
+#[test]
+#[serial_test::serial]
+fn a_set_brew_seam_answers_alone() {
+    let _path_lock = cfgd_core::test_helpers::path_env_mutation_guard();
+    let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+    let _memo = cfgd_core::test_helpers::CommandPathMemoTtlGuard::always_expired();
+    #[cfg(unix)]
+    let _probe = cfgd_core::test_helpers::ProbePath::containing(&["brew"]);
+
+    let seam = cfgd_core::test_helpers::EnvVarGuard::set(
+        "CFGD_BREW_BIN",
+        "/nonexistent/cfgd-no-brew-on-this-host",
+    );
+    assert!(
+        !brew_available(),
+        "a seam naming no file says this host has no brew, whatever PATH carries"
+    );
+    drop(seam);
+
+    #[cfg(unix)]
+    {
+        let _unset = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_BREW_BIN");
+        assert!(
+            brew_available(),
+            "with no seam the question falls through to the host, which is carrying a brew"
+        );
+    }
+}
+
+/// Every system arm seamed to a path holding nothing, so no arm can run and
+/// `bootstrap_via_system_manager` reaches its own failure sentence. The seams
+/// answer authoritatively, so the host's own apt/dnf/zypper/pkg are never
+/// spawned.
+#[cfg(unix)]
+fn refusal_with_no_system_tool(arms: &MediatedArms, manager_name: &str) -> String {
+    let held: Vec<_> = [
+        ("apt-get", "CFGD_APT_GET_BIN"),
+        ("dnf", "CFGD_DNF_BIN"),
+        ("zypper", "CFGD_ZYPPER_BIN"),
+        ("pkg", "CFGD_PKG_BIN"),
+    ]
+    .iter()
+    .map(|(tool, var)| {
+        // The guard takes a `&'static str`, so the name is spelled out and
+        // checked against the composer rather than derived at the call site.
+        assert_eq!(
+            &super::tool_seam_var(tool),
+            var,
+            "the seam this pin sets is the one the arm reads"
+        );
+        cfgd_core::test_helpers::EnvVarGuard::set(var, "/nonexistent/cfgd-no-system-tool")
+    })
+    .collect();
+    let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let err = bootstrap_via_system_manager(
+        &cfgd_core::test_helpers::test_bootstrap_context(&printer),
+        arms,
+        manager_name,
+    )
+    .expect_err("no arm could run, so the bootstrap fails");
+    drop(held);
+    err.to_string()
+}
+
+/// The other direction of the same sentence: a manager that DOES declare a
+/// FreeBSD port has `pkg` named among its arms, so the omission above is read
+/// off the manager rather than written into the wording. Asserted on the
+/// rendered error rather than on the composer, the sentence a reader gets being
+/// what the pin is for.
+#[cfg(unix)]
+#[test]
+#[serial_test::serial]
+fn the_failure_sentence_names_the_pkg_arm_of_a_manager_that_declares_a_port() {
+    let ported = MediatedArms {
+        brew: None,
+        arms: &[
+            ("apt", &["golang"]),
+            ("dnf", &["golang"]),
+            ("zypper", &["golang"]),
+            ("pkg", &["lang/go"]),
+        ],
+    };
+    let err = refusal_with_no_system_tool(&ported, "go");
+    for offered in ["apt", "dnf", "zypper", "pkg"] {
+        assert!(
+            err.contains(offered),
+            "the sentence names every mediator this manager offers, {offered} included: {err}"
+        );
+    }
+
+    let armless = refusal_with_no_system_tool(
+        &MediatedArms {
+            brew: None,
+            arms: &[],
+        },
+        "go",
+    );
+    assert!(
+        armless.contains("names no mediator to install it"),
+        "a manager offering no arm at all says its own table is empty, not the host's: {armless}"
+    );
+    assert!(
+        !armless.contains(" via "),
+        "a manager offering no arm composes no sentence to trail off: {armless}"
     );
 }
 
@@ -1528,8 +1703,7 @@ fn bootstrap_via_brew_then_system_succeeds_via_brew_shim() {
     let result = bootstrap_via_brew_then_system(
         &cfgd_core::test_helpers::test_bootstrap_context(&printer),
         "test-mgr",
-        "ripgrep",
-        &["ripgrep"],
+        &TEST_MEDIATED,
         "test-mgr-own-arm",
     );
     assert!(
@@ -1565,8 +1739,7 @@ fn bootstrap_via_brew_then_system_falls_back_when_brew_fails_and_no_system_manag
     let result = bootstrap_via_brew_then_system(
         &cfgd_core::test_helpers::test_bootstrap_context(&printer),
         "test-mgr",
-        "ripgrep",
-        &["ripgrep"],
+        &TEST_MEDIATED,
         "test-mgr-own-arm",
     );
     assert!(
@@ -1626,7 +1799,7 @@ fn bootstrap_via_system_manager_continues_on_nonzero_exit_then_fails() {
     let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let result = bootstrap_via_system_manager(
         &cfgd_core::test_helpers::test_bootstrap_context(&printer),
-        "snapd",
+        &TEST_SYSTEM_MEDIATED,
         "snap",
     );
     assert!(
@@ -1672,8 +1845,7 @@ fn bootstrap_via_brew_then_system_uses_apt_get_fallback_when_brew_absent() {
     let result = bootstrap_via_brew_then_system(
         &cfgd_core::test_helpers::test_bootstrap_context(&printer),
         "test-mgr",
-        "ripgrep",
-        &["ripgrep"],
+        &TEST_MEDIATED,
         "test-mgr-own-arm",
     );
     assert!(
@@ -1764,16 +1936,31 @@ fn windows_pkg_argv_ps1_shim_runs_via_powershell_file() {
     );
 }
 
+/// The shim path never sits first after `/c`, where cmd.exe's own quote rule
+/// would strip the quotes Rust puts around `C:\Program Files (x86)\scoop.cmd`
+/// and run `C:\Program`.
 #[test]
 fn windows_pkg_argv_cmd_shim_runs_via_cmd_slash_c() {
     let argv = windows_pkg_argv("npm", Some(std::path::Path::new("C:/Program/npm.cmd")));
     assert_eq!(
         argv,
-        vec!["cmd".to_string(), "/c".into(), "C:/Program/npm.cmd".into()]
+        vec![
+            "cmd".to_string(),
+            "/c".into(),
+            "call".into(),
+            "C:/Program/npm.cmd".into()
+        ]
     );
     let bat = windows_pkg_argv("tool", Some(std::path::Path::new("C:/bin/tool.bat")));
-    assert_eq!(bat[0], "cmd");
-    assert_eq!(bat[1], "/c");
+    assert_eq!(
+        bat,
+        vec![
+            "cmd".to_string(),
+            "/c".into(),
+            "call".into(),
+            "C:/bin/tool.bat".into()
+        ]
+    );
 }
 
 #[test]
@@ -1857,6 +2044,30 @@ fn bootstrap_via_shell_script_returns_err_when_exit_nonzero() {
     );
 }
 
+/// A stand-in manager's mediated arms for the cascade helpers: a brew formula,
+/// the Linux package names, and a FreeBSD port origin.
+#[cfg(unix)]
+const TEST_MEDIATED: MediatedArms = MediatedArms {
+    brew: Some("ripgrep"),
+    arms: &[
+        ("apt", &["ripgrep"]),
+        ("dnf", &["ripgrep"]),
+        ("pkg", &["textproc/ripgrep"]),
+    ],
+};
+
+/// A manager with no brew arm and no FreeBSD port — snap's real shape.
+#[cfg(unix)]
+const TEST_SYSTEM_MEDIATED: MediatedArms = MediatedArms {
+    brew: None,
+    arms: &[
+        ("apt", &["snapd"]),
+        ("dnf", &["snapd"]),
+        ("zypper", &["snapd"]),
+        ("pkg", &[]),
+    ],
+};
+
 /// The apt shim reaches the cascade through `sudo_cmd_with_seam`'s
 /// `CFGD_APT_GET_BIN` seam rather than through `PATH`, so an unprivileged test
 /// never routes a real `sudo apt-get install` at the host.
@@ -1876,8 +2087,7 @@ fn a_provision_planned_via_apt_never_reaches_brew_even_when_brew_is_available() 
     let installed = bootstrap_via_brew_then_system(
         &cfgd_core::test_helpers::test_bootstrap_context(&printer).for_provision("apt"),
         "test-mgr",
-        "ripgrep",
-        &["ripgrep"],
+        &TEST_MEDIATED,
         "test-mgr-own-arm",
     )
     .expect("the planned apt arm exits 0");
@@ -1916,8 +2126,7 @@ fn a_provision_planned_via_a_vanished_mediator_fails_naming_it_instead_of_substi
     let err = bootstrap_via_brew_then_system(
         &cfgd_core::test_helpers::test_bootstrap_context(&printer).for_provision("apt"),
         "test-mgr",
-        "ripgrep",
-        &["ripgrep"],
+        &TEST_MEDIATED,
         "test-mgr-own-arm",
     )
     .expect_err("a planned method that cannot run fails the provision");
@@ -1951,8 +2160,7 @@ fn a_planned_method_that_fails_is_reported_as_that_method_failing() {
     let err = bootstrap_via_brew_then_system(
         &cfgd_core::test_helpers::test_bootstrap_context(&printer).for_provision("apt"),
         "test-mgr",
-        "ripgrep",
-        &["ripgrep"],
+        &TEST_MEDIATED,
         "test-mgr-own-arm",
     )
     .expect_err("a failed planned method ends the provision");
@@ -1983,8 +2191,7 @@ fn a_provision_planned_via_a_managers_own_fallback_skips_the_shared_cascade_enti
     let installed = bootstrap_via_brew_then_system(
         &cfgd_core::test_helpers::test_bootstrap_context(&printer).for_provision("nvm"),
         "npm",
-        "node",
-        &["nodejs", "npm"],
+        &TEST_MEDIATED,
         "nvm",
     )
     .expect("declining is not an error");
@@ -2020,8 +2227,7 @@ fn an_unplanned_bootstrap_still_cascades_brew_then_system() {
     let installed = bootstrap_via_brew_then_system(
         &cfgd_core::test_helpers::test_bootstrap_context(&printer),
         "test-mgr",
-        "ripgrep",
-        &["ripgrep"],
+        &TEST_MEDIATED,
         "test-mgr-own-arm",
     )
     .expect("the apt fallback exits 0");
@@ -2119,8 +2325,7 @@ fn a_planned_method_neither_this_cascade_nor_the_caller_can_run_fails_instead_of
     let err = bootstrap_via_brew_then_system(
         &cfgd_core::test_helpers::test_bootstrap_context(&printer).for_provision("zypper"),
         "npm",
-        "node",
-        &["nodejs", "npm"],
+        &TEST_MEDIATED,
         "nvm",
     )
     .expect_err("a method this cascade cannot run must not be deferred to the nvm arm");
@@ -2248,29 +2453,20 @@ fn command_failure_reason_is_the_only_place_a_managers_stderr_becomes_a_message(
     ];
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/packages");
     let mut offenders: Vec<String> = Vec::new();
-    let mut stack = vec![root];
-    while let Some(dir) = stack.pop() {
-        for entry in std::fs::read_dir(&dir).expect("packages tree is readable") {
-            let path = entry.expect("readable entry").path();
-            if path.is_dir() {
-                stack.push(path);
+    for path in cfgd_core::test_helpers::rust_sources_under(&root) {
+        if path.file_name().is_some_and(|f| f == "tests.rs") {
+            continue;
+        }
+        let body = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("{}: the walk must read every source: {e}", path.display()));
+        for (n, line) in body.lines().enumerate() {
+            if !line.contains(".stderr") {
                 continue;
             }
-            if path.extension().and_then(|e| e.to_str()) != Some("rs")
-                || path.file_name().and_then(|f| f.to_str()) == Some("tests.rs")
-            {
+            if hatched.iter().any(|(shape, _)| line.contains(shape)) {
                 continue;
             }
-            let body = std::fs::read_to_string(&path).expect("readable source");
-            for (n, line) in body.lines().enumerate() {
-                if !line.contains(".stderr") {
-                    continue;
-                }
-                if hatched.iter().any(|(shape, _)| line.contains(shape)) {
-                    continue;
-                }
-                offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
-            }
+            offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
         }
     }
     assert!(
@@ -2372,4 +2568,515 @@ fn upgrade_each_spawns_the_built_command_once_per_held_package() {
     let argv = _shim.argv_log();
     assert!(argv.contains("ripgrep"), "argv must name ripgrep: {argv}");
     assert!(argv.contains("fd"), "argv must name fd: {argv}");
+}
+
+/// The `pkg` arm installs the PORT ORIGIN, not the Linux package name: a
+/// FreeBSD host resolving `ripgrep` and one resolving `textproc/ripgrep` are
+/// not asking the ports tree the same question.
+#[cfg(unix)]
+#[test]
+#[serial_test::serial]
+fn a_provision_planned_via_pkg_installs_the_port_origin() {
+    let brew = cfgd_core::test_helpers::ToolShim::install("CFGD_BREW_BIN", 0, "brew ran\n", "");
+    let pkg = cfgd_core::test_helpers::ToolShim::install("CFGD_PKG_BIN", 0, "pkg: done\n", "");
+    let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+
+    let installed = bootstrap_via_brew_then_system(
+        &cfgd_core::test_helpers::test_bootstrap_context(&printer).for_provision("pkg"),
+        "test-mgr",
+        &TEST_MEDIATED,
+        "test-mgr-own-arm",
+    )
+    .expect("the planned pkg arm exits 0");
+
+    assert!(installed, "the planned method installed the manager");
+    assert!(
+        pkg.argv_log().contains("install -y textproc/ripgrep"),
+        "the pkg arm installs the port origin: {}",
+        pkg.argv_log()
+    );
+    assert_eq!(
+        brew.invocation_count(),
+        0,
+        "the plan said pkg; brew must not run even though it is available: {}",
+        brew.argv_log()
+    );
+}
+
+/// An empty `pkg` list is how a manager declines the FreeBSD arm. Declining is
+/// not "install the Linux names through pkg": those names resolve to different
+/// ports or to nothing at all.
+#[cfg(unix)]
+#[test]
+#[serial_test::serial]
+fn a_manager_with_no_freebsd_port_never_reaches_the_pkg_arm() {
+    let pkg = cfgd_core::test_helpers::ToolShim::install("CFGD_PKG_BIN", 0, "pkg: done\n", "");
+    let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+
+    let err = bootstrap_via_system_manager(
+        &cfgd_core::test_helpers::test_bootstrap_context(&printer).for_provision("pkg"),
+        &TEST_SYSTEM_MEDIATED,
+        "snap",
+    )
+    .expect_err("a manager with no port must not be installed through pkg");
+
+    let msg = err.to_string();
+    assert!(
+        msg.contains("pkg") && msg.contains("snap"),
+        "the error names the planned method and the manager: {msg}"
+    );
+    assert_eq!(
+        pkg.invocation_count(),
+        0,
+        "pkg never ran: {}",
+        pkg.argv_log()
+    );
+}
+
+/// The name a `*_cmd*` function declaration on this CODE line declares, if it
+/// declares one.
+fn command_factory_name(code: &str) -> Option<String> {
+    declared_fn_name(code).filter(|name| name.contains("_cmd"))
+}
+
+/// The `*_cmd*` factories in one source whose body reads a `CFGD_<NAME>_BIN`
+/// seam with no `// seam-read-ok:` hatch above them, as `(name, 1-based line)`.
+///
+/// Split out from the walk so the three shapes a tell arrives in (inside a
+/// literal, inside a comment, and as real code after a statement) can be fed
+/// to it directly.
+fn unhatched_seam_reading_factories(src: &str) -> Vec<(String, usize)> {
+    const TELLS: [&str; 3] = ["std::env::var(", "tool_seam_var(", "tool_cmd("];
+    let lines: Vec<&str> = src.lines().collect();
+    let code: Vec<String> = lines.iter().map(|l| code_of(l)).collect();
+    let mut offenders = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        let Some(name) = command_factory_name(&code[i]) else {
+            continue;
+        };
+        // The whole comment block above the head, so a reason too long for one
+        // line still hatches the factory it was written for.
+        let hatched = line.contains("// seam-read-ok:")
+            || lines[..i]
+                .iter()
+                .rev()
+                .take_while(|l| l.trim_start().starts_with("//"))
+                .any(|l| l.contains("// seam-read-ok:"));
+        if hatched {
+            continue;
+        }
+        let mut depth = 0i32;
+        let mut opened = false;
+        for body_code in &code[i..] {
+            depth += body_code.matches('{').count() as i32;
+            depth -= body_code.matches('}').count() as i32;
+            opened |= depth > 0;
+            if TELLS.iter().any(|t| body_code.contains(t)) {
+                offenders.push((name.clone(), i + 1));
+                break;
+            }
+            if opened && depth <= 0 {
+                break;
+            }
+        }
+    }
+    offenders
+}
+
+/// The hand-rolled `CFGD_<NAME>_BIN` reads in one source whose seam does NOT
+/// answer alone, as `(name, 1-based line)`.
+///
+/// A resolver that cannot use [`resolve_tool_with_fallbacks`] reads the seam
+/// itself, and the shape that read has to take is an unconditional answer: one
+/// block, no branch inside it, a `return`. The shape that broke `find_npm` is
+/// the opposite one — a `p.is_file()` test inside the block, so a seam naming
+/// an absent file fell through to `$PATH` and to whatever `~/.nvm` the host
+/// holds, and no test could say "this host has no npm".
+///
+/// The population is the seam reads that OPEN a block of their own. A read
+/// whose answer is the whole expression (`std::env::var(..).is_ok()` inside a
+/// larger condition) has nothing to fall through to.
+fn seam_reads_that_fall_through(src: &str) -> Vec<(String, usize)> {
+    let lines: Vec<&str> = src.lines().collect();
+    let code: Vec<String> = lines.iter().map(|l| code_of(l)).collect();
+    let mut offenders = Vec::new();
+    for (i, line_code) in code.iter().enumerate() {
+        let reads_a_seam = line_code.contains("std::env::var(")
+            && (line_code.contains("tool_seam_var(") || line_code.contains("_BIN_ENV"));
+        if !reads_a_seam || !line_code.trim_end().ends_with('{') {
+            continue;
+        }
+        let owner = enclosing_fn_name(&code, i).unwrap_or_else(|| "<unknown>".to_string());
+        let mut depth = 0i32;
+        let mut branched = false;
+        let mut returns = false;
+        for (j, body) in code.iter().enumerate().skip(i) {
+            let opens = body.matches('{').count() as i32;
+            let closes = body.matches('}').count() as i32;
+            if j > i && depth > 0 && opens > 0 && opens_a_branch(body) {
+                branched = true;
+            }
+            if j > i && depth > 0 && body.contains("return ") {
+                returns = true;
+            }
+            depth += opens - closes;
+            if depth <= 0 {
+                break;
+            }
+        }
+        if branched || !returns {
+            offenders.push((owner, i + 1));
+        }
+    }
+    offenders
+}
+
+/// Whether this CODE line opens a BRANCH rather than some other block.
+///
+/// A closure body inside a seam's block is not a second way out of it: what
+/// makes a seam read fall through is a CONDITION, so the tell is the keyword
+/// that opens one rather than the brace itself.
+fn opens_a_branch(code: &str) -> bool {
+    code.replace(['(', ')', '{', '}', '|', ','], " ")
+        .split_whitespace()
+        .any(|word| matches!(word, "if" | "else" | "match" | "while" | "for" | "loop"))
+}
+
+/// The name of the `fn` whose declaration most recently preceded line `at`.
+fn enclosing_fn_name(code: &[String], at: usize) -> Option<String> {
+    code[..=at].iter().rev().find_map(|line| {
+        let (_, rest) = line.split_once("fn ")?;
+        let name: String = rest
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect();
+        (!name.is_empty() && rest[name.len()..].starts_with('(')).then_some(name)
+    })
+}
+
+/// A manager's command factory spawns the path its resolver chose.
+///
+/// A factory reading `CFGD_<NAME>_BIN` for itself judges the seam under a
+/// weaker standard than the resolver already did, so it can spawn a path the
+/// resolver declined while the run reports the tool the resolver picked. The
+/// two factories that are their own resolver carry the hatch and say why.
+#[test]
+fn every_manager_command_factory_spawns_the_path_its_resolver_chose() {
+    // This crate's own manifest dir: the sources under test are compiled from
+    // it, so the walk cannot read one tree while the binary was built from
+    // another.
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/packages");
+    let mut offenders: Vec<String> = Vec::new();
+    let mut fallthroughs: Vec<String> = Vec::new();
+    let mut literal_seams: Vec<String> = Vec::new();
+    let mut hatched: Vec<String> = Vec::new();
+    let mut factories = 0usize;
+    let mut seam_reads = 0usize;
+    for path in cfgd_core::test_helpers::rust_sources_under(&root) {
+        // A `tests.rs` is a whole test region declared from its parent, so it
+        // carries no `#[cfg(test)]` of its own for the cut to find (held by
+        // `cli::tests::no_tests_file_carries_a_cfg_test_attribute_of_its_own`).
+        if path.file_name().is_some_and(|f| f == "tests.rs") {
+            continue;
+        }
+        let src = cfgd_core::test_helpers::production_slice_of(&path);
+        let code: Vec<String> = src.lines().map(code_of).collect();
+        factories += code
+            .iter()
+            .filter(|c| command_factory_name(c).is_some())
+            .count();
+        for line in src.lines() {
+            if line.contains("// seam-read-ok:") {
+                hatched.push(path.display().to_string());
+            }
+        }
+        for (name, line) in unhatched_seam_reading_factories(&src) {
+            offenders.push(format!("{}:{line}: {name}", path.display()));
+        }
+        // The resolvers are the second half of the population: a factory may
+        // not read the seam at all, and a resolver that does must answer from
+        // it alone.
+        for (name, line) in seam_reads_that_fall_through(&src) {
+            fallthroughs.push(format!("{}:{line}: {name}", path.display()));
+        }
+        for (n, line) in src.lines().enumerate() {
+            // Judged on the RAW line: a literal is blanked with every other
+            // string, so a seam named as one would read as no seam read at all
+            // and the walk above would never reach it.
+            if line.contains("std::env::var(\"CFGD_") {
+                literal_seams.push(format!("{}:{}", path.display(), n + 1));
+            }
+        }
+        seam_reads += src
+            .lines()
+            .filter(|l| {
+                let c = code_of(l);
+                c.contains("std::env::var(")
+                    && (c.contains("tool_seam_var(") || c.contains("_BIN_ENV"))
+                    && c.trim_end().ends_with('{')
+            })
+            .count();
+    }
+    assert!(
+        factories >= 12,
+        "the walk read {factories} command factories, fewer than this crate holds"
+    );
+    assert_eq!(
+        hatched.len(),
+        2,
+        "`brew_cmd` and `sudo_cmd_with_seam` are the two factories that are their \
+         own resolver; a third needs its reason read here: {hatched:?}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a command factory spawns the path its resolver already judged, so it reads \
+         no `CFGD_<NAME>_BIN` seam of its own; hatch a factory that IS the resolver \
+         with `// seam-read-ok: <why>`:\n{}",
+        offenders.join("\n")
+    );
+    assert!(
+        seam_reads >= 5,
+        "the walk read {seam_reads} hand-rolled seam reads, fewer than this crate holds"
+    );
+    assert!(
+        literal_seams.is_empty(),
+        "a tool seam is named through `tool_seam_var(<name>)` or its `*_BIN_ENV` const, \
+         never as a literal — a literal is blanked with every other string, so the \
+         fall-through rule below cannot see the read:\n{}",
+        literal_seams.join("\n")
+    );
+    assert!(
+        fallthroughs.is_empty(),
+        "a SET `CFGD_<NAME>_BIN` is the whole answer, the file it names being absent \
+         included: the seam's block branches on nothing and returns. A read that falls \
+         through cannot say this host has no tool, which is what every fixture pinning \
+         a manager missing needs it to say:\n{}",
+        fallthroughs.join("\n")
+    );
+}
+
+/// The fall-through rule reads each shape a seam read arrives in.
+#[test]
+fn the_seam_fall_through_walk_reads_each_shape_a_seam_read_arrives_in() {
+    let answers_alone = "fn find_x() -> Option<PathBuf> {\n    if let Ok(c) = std::env::var(tool_seam_var(n)) {\n        let p = PathBuf::from(c);\n        return p.is_file().then_some(p);\n    }\n    None\n}\n";
+    let answers_alone_over_several_lines = "fn dirs() -> Vec<String> {\n    if let Ok(s) = std::env::var(BREW_BIN_ENV) {\n        return Path::new(&s)\n            .parent()\n            .map(|d| vec![d])\n            .unwrap_or_default();\n    }\n    Vec::new()\n}\n";
+    let a_closure_inside_the_block = "fn dirs() -> Vec<String> {\n    if let Ok(s) = std::env::var(BREW_BIN_ENV) {\n        return Path::new(&s)\n            .parent()\n            .map(|d| {\n                vec![d.to_string()]\n            })\n            .unwrap_or_default();\n    }\n    Vec::new()\n}\n";
+    let in_a_literal =
+        "fn find_x() -> Option<PathBuf> {\n    let s = \"std::env::var(tool_seam_var(n)) {\";\n}\n";
+    let in_a_comment =
+        "fn find_x() -> Option<PathBuf> {\n    // std::env::var(BREW_BIN_ENV) {\n}\n";
+    let a_probe_that_opens_no_block = "fn strip(c: &[&str]) -> bool {\n    if let Some(t) = c.get(1)\n        && std::env::var(tool_seam_var(t)).is_ok()\n    {\n        return true;\n    }\n    false\n}\n";
+    let branches_inside = "fn find_x() -> Option<PathBuf> {\n    if let Ok(c) = std::env::var(tool_seam_var(n)) {\n        let p = PathBuf::from(c);\n        if p.is_file() {\n            return Some(p);\n        }\n    }\n    None\n}\n";
+    let returns_nothing = "fn find_x() -> Option<PathBuf> {\n    if let Ok(c) = std::env::var(BREW_BIN_ENV) {\n        seen(c);\n    }\n    None\n}\n";
+
+    for (label, src) in [
+        ("a seam that answers alone", answers_alone),
+        (
+            "an answer spanning several lines",
+            answers_alone_over_several_lines,
+        ),
+        ("a closure inside the block", a_closure_inside_the_block),
+        ("a tell inside a literal", in_a_literal),
+        ("a tell inside a comment", in_a_comment),
+        ("a probe opening no block", a_probe_that_opens_no_block),
+    ] {
+        assert!(
+            seam_reads_that_fall_through(src).is_empty(),
+            "{label} does not fall through: {:?}",
+            seam_reads_that_fall_through(src)
+        );
+    }
+    for (label, src) in [
+        ("a branch inside the seam block", branches_inside),
+        ("a seam block that answers nothing", returns_nothing),
+    ] {
+        assert_eq!(
+            seam_reads_that_fall_through(src),
+            vec![("find_x".to_string(), 2)],
+            "{label} falls through"
+        );
+    }
+}
+
+/// The walk reads a seam tell only where it runs: inside a string literal and
+/// inside a comment it is text, after a statement it is a read.
+#[test]
+fn the_seam_read_walk_reads_a_tell_only_where_it_runs() {
+    let in_a_literal = "fn quiet_cmd() -> Command {\n    let s = \"std::env::var(\";\n}\n";
+    let in_a_comment =
+        "fn quiet_cmd() -> Command {\n    // std::env::var(FOO) is not read here\n}\n";
+    let after_a_statement =
+        "fn loud_cmd() -> Command {\n    let n = 1;\n    std::env::var(n);\n}\n";
+    let hatched = "// seam-read-ok: it is its own resolver\nfn loud_cmd() -> Command {\n    tool_seam_var(n);\n}\n";
+    let hatched_over_two_lines = "/// what it does\n// seam-read-ok: it is its own\n// resolver\nfn loud_cmd() -> Command {\n    tool_seam_var(n);\n}\n";
+    let past_the_body = "fn quiet_cmd() -> Command {\n    Command::new(\"x\")\n}\n\nfn other() {\n    std::env::var(n);\n}\n";
+    // `tool_cmd_at` takes the path its resolver already chose and reads no
+    // seam, so the generic factory's name must not be found inside it.
+    let resolved_factory = "fn quiet_cmd() -> Command {\n    tool_cmd_at(name, resolved)\n}\n";
+    let generic_factory =
+        "fn loud_cmd() -> Command {\n    tool_cmd(APT_GET_BIN_ENV, \"apt-get\")\n}\n";
+
+    for (label, src) in [
+        ("a literal", in_a_literal),
+        ("a comment", in_a_comment),
+        ("a hatched factory", hatched),
+        ("a hatch spanning two lines", hatched_over_two_lines),
+        ("a sibling below the body", past_the_body),
+        (
+            "a factory taking an already-resolved path",
+            resolved_factory,
+        ),
+    ] {
+        assert!(
+            unhatched_seam_reading_factories(src).is_empty(),
+            "{label} is no seam read: {:?}",
+            unhatched_seam_reading_factories(src)
+        );
+    }
+    for (label, src) in [
+        ("a statement", after_a_statement),
+        ("the generic seam factory", generic_factory),
+    ] {
+        assert_eq!(
+            unhatched_seam_reading_factories(src),
+            vec![("loud_cmd".to_string(), 1)],
+            "{label} is a seam read"
+        );
+    }
+}
+
+/// Every declaration in this crate holding a `#[test]` attribute, as
+/// `(name, attribute lines, body lines)`, the body brace-balanced from its own
+/// `fn` line. Both slices are the RAW source, so a walk asking about a literal
+/// can still see one.
+fn test_declarations(body: &str) -> Vec<(String, Vec<String>, Vec<String>)> {
+    let raw: Vec<&str> = body.lines().collect();
+    let code: Vec<String> = raw.iter().map(|l| code_of(l)).collect();
+    let mut out = Vec::new();
+    for (i, line) in code.iter().enumerate() {
+        if line.trim() != "#[test]" && !line.trim().starts_with("#[tokio::test") {
+            continue;
+        }
+        let mut start = i;
+        while start > 0 && code[start - 1].trim_start().starts_with("#[") {
+            start -= 1;
+        }
+        let Some(open) = (i..code.len()).find(|n| code[*n].trim_start().starts_with("fn ")) else {
+            continue;
+        };
+        let name = enclosing_fn_name(&code, open).unwrap_or_else(|| "<unnamed>".to_string());
+        let mut depth = 0i32;
+        let mut end = open;
+        for (n, c) in code.iter().enumerate().skip(open) {
+            depth += c.matches('{').count() as i32 - c.matches('}').count() as i32;
+            if depth <= 0 && n > open {
+                end = n;
+                break;
+            }
+        }
+        out.push((
+            name,
+            raw[start..open].iter().map(|l| (*l).to_string()).collect(),
+            raw[open..=end].iter().map(|l| (*l).to_string()).collect(),
+        ));
+    }
+    out
+}
+
+/// Every function a test can read brew's path directories through, folded from
+/// the producer until the set stops growing.
+///
+/// A list of spellings is a list of what somebody remembered, and the reader
+/// that arrives by a third spelling is exactly the one the walk below exists to
+/// claim. So the set is derived: `brew_path_dirs` itself, every production
+/// function whose body reaches it, and so on. The fold follows the shape a call
+/// site spells, which is why a trait method carries the type it is declared on:
+/// `.path_dirs(` alone names every manager's, and only brew's reads this seam.
+fn brew_path_dir_readers() -> Vec<(String, Option<String>)> {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let sources: Vec<String> = cfgd_core::test_helpers::rust_sources_under(&root)
+        .into_iter()
+        // A `tests.rs` is a test region whole, carrying no `#[cfg(test)]` for
+        // the cut to read (held by
+        // `cli::tests::no_tests_file_carries_a_cfg_test_attribute_of_its_own`),
+        // and a test is not a route production takes.
+        .filter(|p| p.file_name().is_some_and(|n| n != "tests.rs"))
+        .map(|p| cfgd_core::test_helpers::production_slice_of(&p))
+        .collect();
+    assert!(!sources.is_empty(), "the derivation read no sources at all");
+    let declarations: Vec<(String, Option<String>, String)> = sources
+        .iter()
+        .flat_map(|src| fn_declarations(src))
+        .collect();
+
+    cfgd_core::test_helpers::callers_reaching(
+        &declarations,
+        &[("brew_path_dirs".to_string(), None)],
+    )
+}
+
+/// A test reading brew's path directories settles the seam and serializes.
+///
+/// `CFGD_BREW_BIN` names where brew is, so `brew_path_dirs` answers from it
+/// alone when it is set and from the platform table otherwise. A test asserting
+/// either answer while a sibling installs a brew shim reads the sibling's
+/// answer: the two have to take the same lock, and the one asserting the
+/// platform table has to clear the seam as well, or the shim's parent directory
+/// stands in for `/home/linuxbrew/.linuxbrew/{bin,sbin}`.
+///
+/// The population is every declaration reaching one of the functions
+/// [`brew_path_dir_readers`] derives, over this crate's whole `src` and its
+/// integration tests, so a reader outside `packages/` is claimed as well.
+#[test]
+fn every_test_reading_brews_path_dirs_settles_the_seam_and_serializes() {
+    let crate_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let readers = brew_path_dir_readers();
+    assert!(
+        readers.len() >= 4,
+        "the derivation names {} functions reaching brew's path directories: {readers:?}",
+        readers.len()
+    );
+    let mut offenders: Vec<String> = Vec::new();
+    let mut reading = 0usize;
+    for root in [crate_dir.join("src"), crate_dir.join("tests")] {
+        for path in cfgd_core::test_helpers::rust_sources_under(&root) {
+            let body = cfgd_core::test_helpers::walked_file_body(&path);
+            for (name, attrs, decl) in test_declarations(&body) {
+                let text = decl.join("\n");
+                // The needles are judged on the CODE, so this walk spelling them
+                // as literals is not itself a reader; the seam is judged on the
+                // raw text, where the settling call names it as one.
+                let code = decl
+                    .iter()
+                    .map(|l| code_of(l))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if !readers
+                    .iter()
+                    .any(|(fn_name, owner)| reaches_fn(&code, fn_name, owner.as_deref()))
+                {
+                    continue;
+                }
+                reading += 1;
+                let serialized = attrs
+                    .iter()
+                    .any(|a| a.trim() == "#[serial_test::serial]" || a.trim() == "#[serial]");
+                let settles = text.contains("CFGD_BREW_BIN");
+                if !serialized || !settles {
+                    offenders.push(format!("{}: {name}", path.display()));
+                }
+            }
+        }
+    }
+    assert!(
+        reading >= 6,
+        "the walk found {reading} tests reading brew's path directories; it has \
+         stopped seeing them"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a test reading brew's path directories names `CFGD_BREW_BIN` to settle the \
+         seam and carries `#[serial_test::serial]`:\n{}",
+        offenders.join("\n")
+    );
 }

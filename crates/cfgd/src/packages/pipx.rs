@@ -9,10 +9,11 @@ use cfgd_core::errors::{PackageError, Result};
 use cfgd_core::providers::{BootstrapPlan, PackageManager};
 
 use super::shared::{
-    MediatedArms, bootstrap_via_brew_then_system, brew_then_system_arms, detect_brew_system_method,
-    partition_already_installed, pip_user_scripts_dir, pkg_run, planned_method_failed,
-    planned_method_unavailable, resolve_tool_with_fallbacks, run_pkg_cmd, run_pkg_cmd_live,
-    run_pkg_query, tool_cmd_with_resolver, upgrade_each,
+    MediatedArms, bootstrap_via_brew_then_system, bootstrap_via_system_manager,
+    command_failure_reason, detect_brew_system_method, partition_already_installed,
+    pip_user_scripts_dir, pkg_run, planned_method_failed, planned_method_unavailable,
+    planned_step_failed, resolve_tool_with_fallbacks, run_pkg_cmd, run_pkg_cmd_live, run_pkg_query,
+    tool_cmd_at, tool_seam_var, upgrade_each,
 };
 
 pub struct PipxManager;
@@ -23,7 +24,40 @@ pub struct PipxManager;
 const PIPX_FALLBACK_METHOD: &str = "pip";
 
 /// What a mediator installs to deliver pipx — same role as npm's table.
-const PIPX_MEDIATED: MediatedArms = brew_then_system_arms("pipx", &["pipx"]);
+const PIPX_MEDIATED: MediatedArms = MediatedArms {
+    brew: Some("pipx"),
+    arms: &[
+        ("apt", &["pipx"]),
+        ("dnf", &["pipx"]),
+        // no-driven-route-ok: RHEL 7's repositories carry no pipx at all, and
+        // yum is the manager only on releases that old.
+        ("yum", &[]),
+        // openSUSE ships a binary RPM per Python flavour; the `python3-` name is
+        // the capability that resolves to the default flavour.
+        ("zypper", &["python3-pipx"]),
+        ("pacman", &["python-pipx"]),
+        ("apk", &["pipx"]),
+        ("pkg", &["devel/py-pipx"]),
+        // winget publishes no pipx of its own, so this arm delivers the
+        // interpreter and the `pip` arm below is what then installs pipx with
+        // it. The same two-step shape cargo's winget arm takes for rustup.
+        ("winget", &["Python.Python.3.13"]),
+        ("chocolatey", &["pipx"]),
+        ("scoop", &["pipx"]),
+    ],
+};
+
+/// The one winget arm whose package is not pipx, named so the bootstrap and the
+/// plan agree on which arm needs the pip step behind it.
+const PIPX_WINGET_METHOD: &str = "winget";
+
+/// The arm this run installs pipx through: the method the plan bound, or the
+/// cascade's own answer for a caller outside a plan (`cfgd doctor`).
+fn pipx_method<'a>(cx: &'a cfgd_core::providers::PackageContext<'_>) -> &'a str {
+    cx.planned_method().unwrap_or_else(|| {
+        detect_brew_system_method(&PIPX_MEDIATED, PIPX_FALLBACK_METHOD, &|_| false)
+    })
+}
 
 fn pipx_fallbacks() -> Vec<PathBuf> {
     let mut fallbacks: Vec<PathBuf> = std::env::var_os("HOME")
@@ -70,25 +104,177 @@ pub(super) fn pipx_available() -> bool {
     find_pipx().is_some()
 }
 
-// The tool the pip fallback would run: whichever of pip3/pip is present,
+// The names the pip fallback looks for, most likely first. A CPython install on
+// Windows writes `pip.exe` into its Scripts directory and no `pip3` alias, while
+// a Linux distribution ships `pip3` and often reserves `pip` for Python 2.
+fn pip_tool_order() -> [&'static str; 2] {
+    if cfg!(windows) {
+        ["pip", "pip3"]
+    } else {
+        ["pip3", "pip"]
+    }
+}
+
+// The tool the pip fallback would run: whichever of the two above is present,
 // else the preferred name. Shared by `bootstrap_plan` and `path_dirs` so
 // both always name the same interpreter.
 fn pipx_pip_tool() -> &'static str {
-    ["pip3", "pip"]
+    let order = pip_tool_order();
+    order
         .into_iter()
         .find(|t| command_available(t))
-        .unwrap_or("pip3")
+        .unwrap_or(order[0])
 }
 
-// Single source for the pip fallback's user-scripts dir, so
-// `bootstrap_plan`'s declaration and `path_dirs`'s recording can never
-// drift apart.
+/// How this run reaches pip: the program to spawn, the arguments that come
+/// before pip's own, and the name a message calls it by.
+///
+/// The Windows `py` launcher is the one route that is not a pip of its own, so
+/// it carries the `-m pip` that makes it one.
+struct PipRoute {
+    program: PathBuf,
+    leading: &'static [&'static str],
+    tool: &'static str,
+}
+
+impl PipRoute {
+    fn direct(tool: &'static str, program: PathBuf) -> Self {
+        PipRoute {
+            program,
+            leading: &[],
+            tool,
+        }
+    }
+
+    fn launcher(program: PathBuf) -> Self {
+        PipRoute {
+            program,
+            leading: &["-m", "pip"],
+            tool: "py -m pip",
+        }
+    }
+
+    /// The directory holding the interpreter's own console scripts, which is
+    /// where this pip was found. `None` for the launcher, which lives with
+    /// Windows rather than with any interpreter.
+    fn tools_dir(&self) -> Option<&std::path::Path> {
+        if self.leading.is_empty() {
+            self.program.parent()
+        } else {
+            None
+        }
+    }
+
+    fn command(&self) -> Command {
+        // The seam and the fallbacks were judged once, while this route was
+        // resolved; asking again would spawn a pip the resolution declined.
+        let mut cmd = tool_cmd_at("pip", Some(self.program.clone()));
+        cmd.args(self.leading);
+        cmd
+    }
+}
+
+/// Where this run's pip is, or `None` when the machine has none.
+///
+/// The seam answers ahead of every probe: the name walk below would otherwise
+/// resolve the host's own pip before a test's planted one was ever reached.
+/// After that it is `$PATH` and the directories a bootstrap registered, then the
+/// places a Windows Python install leaves pip without touching either.
+fn find_pip() -> Option<PipRoute> {
+    if let Some(planted) = seam_pip() {
+        return Some(planted);
+    }
+    let fallbacks = pip_fallbacks();
+    pip_tool_order()
+        .into_iter()
+        .find_map(|tool| {
+            resolve_tool_with_fallbacks(tool, &fallbacks).map(|path| PipRoute::direct(tool, path))
+        })
+        .or_else(|| {
+            cfg!(windows)
+                .then(windows_py_launcher)
+                .flatten()
+                .map(PipRoute::launcher)
+        })
+}
+
+/// The pip a `CFGD_PIP_BIN` or `CFGD_PIP3_BIN` seam names, in the order this
+/// host prefers the two tools, or `None` when neither seam names a file.
+///
+/// Both seams are read ahead of every host probe, so a reader who nominated a
+/// pip3 gets that one rather than whichever `pip` happens to be on `$PATH`; a
+/// seam naming no file is not a pip and the walk behind this answers instead.
+/// What the seam decides is BINDING: the route runs the pip it names, and a
+/// non-zero exit is that pip's failure rather than a reason to resolve a second
+/// one.
+fn seam_pip() -> Option<PipRoute> {
+    pip_tool_order().into_iter().find_map(|tool| {
+        let planted = PathBuf::from(std::env::var(tool_seam_var(tool)).ok()?);
+        planted.is_file().then(|| PipRoute::direct(tool, planted))
+    })
+}
+
+/// Where a pip this machine holds can be found off `$PATH`. Read by the two
+/// resolutions the two-step route makes: the one that runs pip, and the one
+/// that asks which interpreter it belongs to.
+pub(super) fn pip_fallbacks() -> Vec<PathBuf> {
+    if cfg!(windows) {
+        windows_pip_candidates()
+    } else {
+        Vec::new()
+    }
+}
+
+/// Every `pip.exe` a Windows Python install could have left under
+/// `%LOCALAPPDATA%\Programs\Python`, which is where the winget and Microsoft
+/// Store interpreters land.
+///
+/// The tree is READ rather than composed: the directory carries the
+/// interpreter's own minor version, and the arm that just installed it edits the
+/// user's `PATH` in the registry, which this process cannot see.
+pub(super) fn windows_pip_candidates() -> Vec<PathBuf> {
+    let Some(root) =
+        std::env::var_os("LOCALAPPDATA").map(|a| PathBuf::from(a).join("Programs").join("Python"))
+    else {
+        return Vec::new();
+    };
+    let Ok(entries) = std::fs::read_dir(&root) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .map(|e| e.path().join("Scripts").join("pip.exe"))
+        .collect()
+}
+
+/// The `py` launcher the Python installer puts beside Windows itself, the one
+/// route to pip that does not depend on which minor was installed or on where
+/// its `Scripts` directory ended up.
+pub(super) fn windows_py_launcher() -> Option<PathBuf> {
+    let root = std::env::var_os("SystemRoot").unwrap_or_else(|| r"C:\Windows".into());
+    let launcher = PathBuf::from(root).join("py.exe");
+    launcher.is_file().then_some(launcher)
+}
+
+// The predicted half of the pip fallback's user-scripts dir: `bootstrap_plan`
+// declares this and nothing else, because the install has not run yet.
+// `path_dirs` reads it too and may additionally observe where an installed
+// pipx landed, which nothing can predict.
 fn pipx_pip_scripts_dir() -> Option<PathBuf> {
     pip_user_scripts_dir(pipx_pip_tool())
 }
 
+/// Where the pipx a pip step installed actually landed, for the route that
+/// names no interpreter directory of its own.
+pub(super) fn installed_pipx_scripts_dir() -> Option<PathBuf> {
+    windows_user_pipx_candidates()
+        .into_iter()
+        .find(|p| p.is_file())
+        .and_then(|p| p.parent().map(std::path::Path::to_path_buf))
+}
+
 pub(super) fn pipx_cmd() -> Command {
-    tool_cmd_with_resolver("pipx", find_pipx)
+    tool_cmd_at("pipx", find_pipx())
 }
 
 impl PackageManager for PipxManager {
@@ -109,7 +295,7 @@ impl PackageManager for PipxManager {
     }
 
     fn bootstrap_plan_given(&self, delivered: &dyn Fn(&str) -> bool) -> Option<BootstrapPlan> {
-        match detect_brew_system_method(PIPX_FALLBACK_METHOD, delivered) {
+        match detect_brew_system_method(&PIPX_MEDIATED, PIPX_FALLBACK_METHOD, delivered) {
             // Only the pip fallback installs into the user's own tree; brew and
             // the system managers land pipx on the system PATH.
             // The tool the pip arm would run: whichever is present, else the
@@ -117,11 +303,22 @@ impl PackageManager for PipxManager {
             // planner say WHY pipx cannot be provisioned instead of dropping it
             // — `pip3` is not installable under that name from any system
             // manager, so `feasible_bootstrap_plan` still answers `None`.
+            // every-platform-ok: the pip arm spawns `pip3`/`pip` itself with no
+            // shell in between, and every mediated arm is named only because
+            // the probe above found its mediator on this host.
             "pip" => Some(
                 BootstrapPlan::new("pip")
                     .requiring([pipx_pip_tool()])
                     .creating(pipx_pip_scripts_dir()),
             ),
+            // The winget arm installs a Python interpreter, not pipx, so the
+            // run does not end there: the pip step behind it lands pipx in the
+            // user's own scripts directory, which is the directory this plan
+            // promises. It names no required tool because the arm itself
+            // delivers the `pip` that step runs.
+            PIPX_WINGET_METHOD => {
+                Some(BootstrapPlan::new(PIPX_WINGET_METHOD).creating(pipx_pip_scripts_dir()))
+            }
             method => Some(BootstrapPlan::new(method)),
         }
     }
@@ -133,11 +330,13 @@ impl PackageManager for PipxManager {
         // between the two calls is enough. A context carrying no planned method
         // belongs to a caller outside a plan (`cfgd doctor`, a direct caller),
         // which has no decision to read and resolves the cascade as before.
-        let method = cx
-            .planned_method()
-            .unwrap_or_else(|| detect_brew_system_method(PIPX_FALLBACK_METHOD, &|_| false));
-        match method {
-            "pip" => pipx_pip_scripts_dir()
+        match pipx_method(cx) {
+            // The winget arm joins the pip arm here: winget delivers the
+            // interpreter and pip puts pipx in the user's scripts directory.
+            PIPX_FALLBACK_METHOD | PIPX_WINGET_METHOD => pipx_pip_scripts_dir()
+                // The launcher route names no interpreter directory, so the
+                // installed pipx is what says where the scripts landed.
+                .or_else(|| cfg!(windows).then(installed_pipx_scripts_dir).flatten())
                 .into_iter()
                 .map(cfgd_core::to_posix_string)
                 .collect(),
@@ -148,26 +347,31 @@ impl PackageManager for PipxManager {
     }
 
     fn bootstrap(&self, cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
-        // Returns false without probing anything when the plan named `pip` —
-        // pipx's own fallback arm, which is the next thing below.
-        if bootstrap_via_brew_then_system(
-            cx,
-            "pipx",
-            PIPX_MEDIATED.brew.unwrap_or("pipx"),
-            PIPX_MEDIATED.system,
-            PIPX_FALLBACK_METHOD,
-        )? {
+        if pipx_method(cx) == PIPX_WINGET_METHOD {
+            bootstrap_via_system_manager(cx, &PIPX_MEDIATED, "pipx")?;
+            // The interpreter winget just installed put `pip` on the machine,
+            // and the pip step below resolves it through the memoized
+            // `command_path`, which still holds the miss from before the arm ran.
+            cfgd_core::invalidate_command_resolution();
+        } else if bootstrap_via_brew_then_system(cx, "pipx", &PIPX_MEDIATED, PIPX_FALLBACK_METHOD)?
+        {
+            // Returns false without probing anything when the plan named `pip`,
+            // pipx's own fallback arm, which is the next thing below.
             return Ok(());
         }
 
         // Fall back to pip. Resolved to a full path rather than spawned by bare
-        // name: `command_path` searches the directories cfgd bootstrapped this
-        // run as well as `$PATH`, and a bare-name spawn searches only `$PATH`.
-        let Some((pip_cmd, pip_path)) = ["pip3", "pip"]
-            .into_iter()
-            .find_map(|tool| cfgd_core::command_path(tool).map(|path| (tool, path)))
-        else {
+        // name: the winget arm above leaves an interpreter whose directory a
+        // Windows installer adds to the user's registry `PATH`, which this
+        // process cannot see, so a bare-name spawn would miss what just landed.
+        let Some(pip) = find_pip() else {
             return Err(match cx.planned_method() {
+                Some(PIPX_WINGET_METHOD) => planned_step_failed(
+                    "pipx",
+                    PIPX_WINGET_METHOD,
+                    "pip",
+                    "it is on neither PATH nor any directory the interpreter creates",
+                ),
                 Some(method) => planned_method_unavailable("pipx", method),
                 None => PackageError::BootstrapFailed {
                     manager: "pipx".into(),
@@ -176,23 +380,39 @@ impl PackageManager for PipxManager {
             }
             .into());
         };
+        // The interpreter's own scripts directory, so the rest of this run
+        // resolves the pip it holds and, once the install below lands, the pipx
+        // beside it. `command_path` searches what a bootstrap registered as well
+        // as `$PATH`.
+        if let Some(dir) = pip.tools_dir() {
+            cfgd_core::register_bootstrapped_path_dirs(&[cfgd_core::to_posix_string(dir)]);
+        }
 
-        let label = format!("Installing pipx via {}", pip_cmd);
+        let label = format!("Installing pipx via {}", pip.tool);
         let result = pkg_run(
             cx,
-            Command::new(pip_path).args(["install", "--user", "pipx"]),
+            pip.command().args(["install", "--user", "pipx"]),
             &label,
         )
         .map_err(|e| PackageError::BootstrapFailed {
             manager: "pipx".into(),
-            message: format!("{} install failed: {}", pip_cmd, e),
+            message: format!("{} install failed: {}", pip.tool, e),
         })?;
         if !result.status.success() {
             return Err(match cx.planned_method() {
+                // The mediator delivered the interpreter it packages; pip is
+                // what then failed, so the refusal names pip rather than sending
+                // the reader to check a winget that worked.
+                Some(PIPX_WINGET_METHOD) => planned_step_failed(
+                    "pipx",
+                    PIPX_WINGET_METHOD,
+                    pip.tool,
+                    &command_failure_reason(&result),
+                ),
                 Some(method) => planned_method_failed("pipx", method, &result),
                 None => PackageError::BootstrapFailed {
                     manager: "pipx".into(),
-                    message: format!("{} install --user pipx failed", pip_cmd),
+                    message: format!("{} install --user pipx failed", pip.tool),
                 },
             }
             .into());
@@ -340,7 +560,6 @@ pub(super) fn parse_pipx_list_versions(
 
 #[cfg(test)]
 mod tests {
-    use cfgd_core::command_available;
     use cfgd_core::providers::PackageManager;
     use cfgd_core::providers::PackageManagerExt;
 
@@ -521,10 +740,14 @@ mod tests {
         assert_eq!(pkgs[0].version, "24.1.1");
     }
 
+    /// Every arm pipx can be planned through, judged against pipx's own
+    /// declaration rather than a list of manager names typed here: the arms
+    /// `PIPX_MEDIATED` populates for this host's own manager table, plus brew,
+    /// plus the pip arm that answers when none of them is present.
     #[test]
-    fn pipx_bootstrap_plan_follows_the_brew_system_pip_cascade() {
+    fn pipx_is_planned_only_through_an_arm_this_host_can_run() {
         // The probes below assert what THIS host resolves, so hold the read
-        // guard — a sibling test empties PATH under the write guard.
+        // guard: a sibling test empties PATH under the write guard.
         let _path = cfgd_core::test_helpers::path_env_read_guard();
         // The plan always exists: the cascade's pip fallback names the tool it
         // would need even when no pip is present, so the planner can say WHY
@@ -533,37 +756,117 @@ mod tests {
         let plan = PipxManager
             .bootstrap_plan()
             .expect("pipx plans on every host via the pip fallback");
-        // A host with no brew and no system arm (FreeBSD CI) lands on the pip
-        // fallback. The system probes are the production arms' probe binaries
-        // (`apt-get`, not `apt` — BREW_SYSTEM_ARMS).
-        if !brew_available() && !command_available("apt-get") && !command_available("dnf") {
-            assert_eq!(plan.method, "pip");
-        }
-        // Only `bootstrap`'s pip fallback installs into the user's own tree
-        // (`pip install --user`); brew and the system managers put pipx on
-        // the system PATH, so they declare no directory. The user tree is
-        // not the same directory on every platform — Windows sends console
-        // scripts to CPython's `nt_user` scheme under roaming AppData.
-        if plan.method == "pip" {
-            assert_eq!(plan.requires.len(), 1);
-            assert!(["pip3", "pip"].contains(&plan.requires[0].as_str()));
-            let is_user_scripts_dir = |d: &String| {
-                if cfg!(windows) {
-                    d.contains("/Python/Python") && d.ends_with("/Scripts")
-                } else {
-                    d.ends_with("/.local/bin")
-                }
-            };
-            assert!(
-                plan.creates_path_dirs.iter().all(is_user_scripts_dir),
-                "{:?}",
-                plan.creates_path_dirs
+        let mediators: Vec<&str> = super::super::shared::host_arms()
+            .iter()
+            .filter(|(method, _)| PIPX_MEDIATED.system_packages_for(method).is_some())
+            .filter(|(_, tool)| super::super::shared::system_tool_available(tool))
+            .map(|(method, _)| *method)
+            .collect();
+        // The user tree is not the same directory on every platform: Windows
+        // sends console scripts to CPython's `nt_user` scheme under roaming
+        // AppData.
+        let is_user_scripts_dir = |d: &String| {
+            if cfg!(windows) {
+                d.contains("/Python/Python") && d.ends_with("/Scripts")
+            } else {
+                d.ends_with("/.local/bin")
+            }
+        };
+        if !brew_available() && mediators.is_empty() {
+            assert_eq!(
+                plan.method, PIPX_FALLBACK_METHOD,
+                "no mediator on this host packages pipx, so the pip arm is the only route left"
             );
-        } else {
-            assert!(["brew", "apt", "dnf"].contains(&plan.method.as_str()));
-            assert!(plan.requires.is_empty());
-            assert!(plan.creates_path_dirs.is_empty());
         }
+        match plan.method.as_str() {
+            // Only the pip arm installs into the user's own tree
+            // (`pip install --user`), and it is the one arm that names the tool
+            // it spawns.
+            PIPX_FALLBACK_METHOD => {
+                // The names, not `pipx_pip_tool()`: the plan IS that function's
+                // value, so reading it back here would compare the producer
+                // with itself and let the arm name a tool no pip is called.
+                assert_eq!(plan.requires.len(), 1, "{:?}", plan.requires);
+                assert!(
+                    ["pip3", "pip"].contains(&plan.requires[0].as_str()),
+                    "the pip arm names the interpreter's own pip: {:?}",
+                    plan.requires
+                );
+                assert!(
+                    plan.creates_path_dirs.iter().all(is_user_scripts_dir),
+                    "{:?}",
+                    plan.creates_path_dirs
+                );
+            }
+            // winget publishes no pipx, so its arm delivers the interpreter and
+            // the pip step behind it lands pipx in that same user tree.
+            PIPX_WINGET_METHOD => {
+                assert!(
+                    mediators.contains(&PIPX_WINGET_METHOD),
+                    "winget was planned on a host whose own probe does not find it"
+                );
+                assert!(plan.requires.is_empty());
+                assert!(
+                    plan.creates_path_dirs.iter().all(is_user_scripts_dir),
+                    "{:?}",
+                    plan.creates_path_dirs
+                );
+            }
+            // brew and every other mediator land pipx on the system PATH, so
+            // they declare no directory and name no tool of their own.
+            method => {
+                assert!(
+                    method == "brew" || mediators.contains(&method),
+                    "pipx was planned through {method}, which this host cannot run"
+                );
+                assert!(plan.requires.is_empty());
+                assert!(plan.creates_path_dirs.is_empty());
+            }
+        }
+    }
+
+    /// Every mediator this host could answer with, seamed to a path holding
+    /// nothing, so the cascade falls to the pip arm and the declaration under
+    /// test is the one this manager makes on its own.
+    fn no_mediator_answers() -> Vec<cfgd_core::test_helpers::EnvVarGuard> {
+        let mut held: Vec<_> = super::super::shared::host_arms()
+            .iter()
+            .map(|(_, tool)| {
+                let var: &'static str =
+                    Box::leak(super::super::shared::tool_seam_var(tool).into_boxed_str());
+                cfgd_core::test_helpers::EnvVarGuard::set(var, "/nonexistent/cfgd-no-system-tool")
+            })
+            .collect();
+        held.push(cfgd_core::test_helpers::EnvVarGuard::set(
+            "CFGD_BREW_BIN",
+            "/nonexistent/cfgd-no-brew-on-this-host",
+        ));
+        held
+    }
+
+    /// The pip arm's prerequisite, as the names pip actually goes by rather
+    /// than as whatever the arm currently declares: a plan naming a tool no pip
+    /// is called would be approved and then die looking for it.
+    ///
+    /// Driven with every mediator seamed to a file that is not there, because
+    /// the cascade reaches this arm only where no mediator answers, and a host
+    /// carrying brew or apt would never run the comparison.
+    #[test]
+    #[serial_test::serial]
+    fn the_pip_arm_requires_a_tool_pip_is_actually_called() {
+        // Every mediator declines through its own seam, so no `PATH` window is
+        // open when the Windows arm of this declaration spawns `pip --version`.
+        let _no_mediator = no_mediator_answers();
+        let plan = PipxManager
+            .bootstrap_plan()
+            .expect("the pip arm is the route left when no mediator answers");
+        assert_eq!(plan.method, PIPX_FALLBACK_METHOD, "{plan:?}");
+        assert_eq!(plan.requires.len(), 1, "{:?}", plan.requires);
+        assert!(
+            ["pip3", "pip"].contains(&plan.requires[0].as_str()),
+            "the pip arm names the interpreter's own pip: {:?}",
+            plan.requires
+        );
     }
 
     /// One host, two planned methods, two answers: `path_dirs` reads the
@@ -596,11 +899,75 @@ mod tests {
         }
     }
 
+    /// The launcher route still names the directory its plan promised.
+    ///
+    /// `py -m pip` belongs to no interpreter directory of its own, so nothing
+    /// registers one and the version probe that usually names the scripts
+    /// directory has no pip to ask. The pipx the step installed is then the only
+    /// thing left that says where the scripts landed, and without it the user's
+    /// shell never sees the pipx this run installed.
     #[test]
+    #[serial_test::serial]
+    fn the_launcher_route_names_the_directory_the_installed_pipx_sits_in() {
+        let appdata = tempfile::tempdir().unwrap();
+        let scripts = appdata
+            .path()
+            .join("Python")
+            .join("Python313")
+            .join("Scripts");
+        std::fs::create_dir_all(&scripts).unwrap();
+        std::fs::write(scripts.join("pipx.exe"), "").unwrap();
+
+        let _appdata_guard = cfgd_core::test_helpers::EnvVarGuard::set(
+            "APPDATA",
+            appdata.path().to_string_lossy().as_ref(),
+        );
+        assert_eq!(
+            installed_pipx_scripts_dir().as_deref(),
+            Some(scripts.as_path()),
+            "the installed pipx is what names the directory the route promised"
+        );
+
+        // The recording half runs on Windows alone, because that is where the
+        // observation is wired in; a Windows host running this also carries an
+        // interpreter that can name a directory before the fallback is reached,
+        // so only the count is stable there.
+        #[cfg(windows)]
+        {
+            let printer = cfgd_core::test_helpers::test_printer();
+            let state = cfgd_core::test_helpers::test_state();
+            let cx = cfgd_core::test_helpers::test_package_context(&printer, &state)
+                .for_provision(PIPX_WINGET_METHOD);
+            let dirs = PipxManager.path_dirs(&cx);
+            assert_eq!(
+                dirs.len(),
+                1,
+                "the route must name the scripts directory it promised: {dirs:?}"
+            );
+        }
+    }
+
+    /// Nothing installed can be observed, so the recording is the declaration.
+    ///
+    /// Driven down the pip arm, the one arm that declares a directory at all: a
+    /// host carrying brew or apt would otherwise compare one empty list against
+    /// another and never read either producer.
+    #[test]
+    #[serial_test::serial]
     fn pipx_path_dirs_matches_the_bootstrap_plans_declaration() {
+        let _no_appdata = cfgd_core::test_helpers::EnvVarGuard::unset("APPDATA");
+        let _no_mediator = no_mediator_answers();
         let plan = PipxManager
             .bootstrap_plan()
             .expect("pipx always declares a bootstrap plan");
+        // The Windows arm has no `APPDATA` to name a directory with, by
+        // construction of this fixture, so only unix can compare two real
+        // answers.
+        #[cfg(unix)]
+        assert!(
+            !plan.creates_path_dirs.is_empty(),
+            "the pip arm declares a directory, or this comparison reads neither producer"
+        );
         let printer = cfgd_core::test_helpers::test_printer();
         let state = cfgd_core::test_helpers::test_state();
         let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
@@ -730,9 +1097,186 @@ mod tests {
         assert!(windows_user_pipx_candidates().is_empty());
     }
 
+    /// A winget or Microsoft Store interpreter lands under
+    /// `%LOCALAPPDATA%\Programs\Python`, and the minor in that path belongs to
+    /// whichever one was installed, so the tree is read rather than composed.
+    #[test]
+    #[serial_test::serial]
+    fn windows_pip_candidates_come_from_the_programs_python_tree() {
+        let local = tempfile::tempdir().unwrap();
+        let scripts = local
+            .path()
+            .join("Programs")
+            .join("Python")
+            .join("Python313")
+            .join("Scripts");
+        std::fs::create_dir_all(&scripts).unwrap();
+        let _guard = cfgd_core::test_helpers::EnvVarGuard::set(
+            "LOCALAPPDATA",
+            local.path().to_string_lossy().as_ref(),
+        );
+
+        assert_eq!(
+            windows_pip_candidates(),
+            vec![scripts.join("pip.exe")],
+            "the pip an installed interpreter carries must be findable off PATH"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn windows_pip_candidates_are_empty_without_a_programs_python_tree() {
+        let local = tempfile::tempdir().unwrap();
+        let _guard = cfgd_core::test_helpers::EnvVarGuard::set(
+            "LOCALAPPDATA",
+            local.path().to_string_lossy().as_ref(),
+        );
+
+        assert!(windows_pip_candidates().is_empty());
+    }
+
+    /// A directory named like Windows on a host that is not Windows is no
+    /// route to pip: `%SystemRoot%` defaults to a relative path off Windows, so
+    /// a repository or working directory holding one would otherwise answer.
+    #[cfg(not(windows))]
+    #[test]
+    #[serial_test::serial]
+    fn the_launcher_is_no_route_to_pip_off_windows() {
+        let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+        let _memo = cfgd_core::test_helpers::CommandPathMemoTtlGuard::always_expired();
+        let _path_excl = cfgd_core::test_helpers::path_env_mutation_guard();
+        let _path = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
+        let _seam = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_PIP_BIN");
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("py.exe"), "").unwrap();
+        let _sysroot = cfgd_core::test_helpers::EnvVarGuard::set(
+            "SystemRoot",
+            root.path().to_string_lossy().as_ref(),
+        );
+
+        assert!(
+            find_pip().is_none(),
+            "a launcher only Windows runs is not a route on this host"
+        );
+    }
+
+    /// The route spawns the pip it resolved.
+    ///
+    /// The resolution reads the `CFGD_PIP_BIN` seam and declines one naming no
+    /// file; a factory that read the seam again under a weaker standard would
+    /// spawn that missing path while the run reported the pip3 it chose.
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn the_route_spawns_the_pip_it_resolved() {
+        const ABSENT: &str = "/nonexistent/cfgd-no-pip-on-this-host";
+        let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+        let _memo = cfgd_core::test_helpers::CommandPathMemoTtlGuard::always_expired();
+        let _path_excl = cfgd_core::test_helpers::path_env_mutation_guard();
+        let _probe = cfgd_core::test_helpers::ProbePath::containing(&["pip3"]);
+        let _seam = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_PIP_BIN", ABSENT);
+
+        let route = find_pip().expect("the probe path carries a pip3");
+        assert_eq!(route.tool, "pip3", "a seam naming no file is not a pip");
+        assert_ne!(
+            route.command().get_program(),
+            std::ffi::OsStr::new(ABSENT),
+            "the route spawns the pip it resolved, not the seam it declined"
+        );
+    }
+
+    /// A pip a seam names outranks one the host carries under the other name.
+    ///
+    /// The two names are walked in the order this host prefers them, and the
+    /// walk's own resolver reads only the seam belonging to the name it is on.
+    /// So the seam of the name that comes SECOND used to lose to whatever the
+    /// host had under the first, and a reader who nominated a pip watched cfgd
+    /// install with another one.
+    #[test]
+    #[serial_test::serial]
+    fn a_pip_a_seam_names_outranks_a_host_pip_of_the_other_name() {
+        let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+        let _memo = cfgd_core::test_helpers::CommandPathMemoTtlGuard::always_expired();
+        let [preferred, other] = pip_tool_order();
+
+        let planted = tempfile::tempdir().unwrap();
+        let nominated = cfgd_core::test_helpers::write_probe_tool(planted.path(), other);
+        let host = tempfile::tempdir().unwrap();
+        cfgd_core::test_helpers::write_probe_tool(host.path(), preferred);
+
+        let _path_excl = cfgd_core::test_helpers::path_env_mutation_guard();
+        let _path = cfgd_core::test_helpers::EnvVarGuard::set(
+            "PATH",
+            host.path().to_str().expect("utf-8 tempdir"),
+        );
+        let preferred_var: &'static str =
+            Box::leak(super::tool_seam_var(preferred).into_boxed_str());
+        let other_var: &'static str = Box::leak(super::tool_seam_var(other).into_boxed_str());
+        let _preferred_seam = cfgd_core::test_helpers::EnvVarGuard::unset(preferred_var);
+        let _other_seam = cfgd_core::test_helpers::EnvVarGuard::set(
+            other_var,
+            nominated.to_str().expect("utf-8 tempdir"),
+        );
+
+        let route = find_pip().expect("both names are resolvable here");
+        assert_eq!(
+            route.tool, other,
+            "the seam decides which pip the route runs"
+        );
+        assert_eq!(
+            route.command().get_program(),
+            nominated.as_os_str(),
+            "and it spawns the file the seam named"
+        );
+    }
+
+    /// The launcher is the route that survives not knowing which minor was
+    /// installed, and it is a route only when it is really there.
+    #[test]
+    #[serial_test::serial]
+    fn the_py_launcher_is_read_from_the_windows_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let _guard = cfgd_core::test_helpers::EnvVarGuard::set(
+            "SystemRoot",
+            root.path().to_string_lossy().as_ref(),
+        );
+        assert_eq!(
+            windows_py_launcher(),
+            None,
+            "a Windows directory with no launcher in it is no route to pip"
+        );
+
+        let launcher = root.path().join("py.exe");
+        std::fs::write(&launcher, "").unwrap();
+        assert_eq!(windows_py_launcher(), Some(launcher));
+    }
+
+    /// The launcher is not a pip of its own, so the route that goes through it
+    /// runs pip as a module and says so in the name a refusal prints. A route
+    /// that dropped those leading arguments would ask `py` to install pipx and
+    /// pass every other pin in this file.
+    #[test]
+    #[serial_test::serial]
+    fn the_launcher_route_runs_pip_as_a_module() {
+        // The composition is the subject, so no planted pip may answer for it.
+        let _seam = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_PIP_BIN");
+        let route = PipRoute::launcher(PathBuf::from("py.exe"));
+        let args: Vec<String> = route
+            .command()
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(args, ["-m", "pip"], "the launcher is not a pip of its own");
+        assert_eq!(route.tool, "py -m pip");
+        assert!(
+            route.tools_dir().is_none(),
+            "the launcher lives with Windows, not with an interpreter"
+        );
+    }
+
     // ---------------------------------------------------------------------
     // PackageManager-impl tests via CFGD_PIPX_BIN ToolShim. The seam is
-    // honored automatically by `tool_cmd_with_resolver` / `find_pipx`.
+    // honored automatically by `find_pipx`.
     // ---------------------------------------------------------------------
 
     #[cfg(unix)]

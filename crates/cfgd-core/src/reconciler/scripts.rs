@@ -210,6 +210,7 @@ pub(crate) fn build_script_env(ctx: &ScriptEnvContext<'_>) -> Vec<(String, Strin
     let mut env = vec![
         (
             "CFGD_CONFIG_DIR".to_string(),
+            // absolute-path-ok: an env var the script itself reads, not a display slot
             ctx.config_dir.display().to_string(),
         ),
         ("CFGD_PROFILE".to_string(), ctx.profile_name.to_string()),
@@ -229,6 +230,7 @@ pub(crate) fn build_script_env(ctx: &ScriptEnvContext<'_>) -> Vec<(String, Strin
         env.push(("CFGD_MODULE_NAME".to_string(), name.to_string()));
     }
     if let Some(dir) = ctx.module_dir {
+        // absolute-path-ok: an env var the script itself reads, not a display slot
         env.push(("CFGD_MODULE_DIR".to_string(), dir.display().to_string()));
     }
     prepend_bootstrapped_path_dirs(&mut env, ctx.path_dirs);
@@ -668,7 +670,7 @@ fn execute_script_inner(
                     Role::Skipped,
                     Some(&format!(
                         "creates path already exists: {}",
-                        resolved_creates.posix()
+                        crate::fold_home_in_text(&resolved_creates.display_posix())
                     )),
                 );
                 return Ok((resource_desc, false, None));
@@ -766,6 +768,7 @@ fn execute_script_inner(
                 return Err(CfgdError::Config(ConfigError::Invalid {
                     message: format!(
                         "shell field cannot be set on file-shebang scripts — set the shebang line inside '{}' itself",
+                        // absolute-path-ok: a human-facing error names the script as the filesystem does
                         resolved.posix(),
                     ),
                 }));
@@ -786,6 +789,7 @@ fn execute_script_inner(
                 return Err(CfgdError::Config(ConfigError::Invalid {
                     message: format!(
                         "script '{}' exists but is not executable ({})",
+                        // absolute-path-ok: a human-facing error names the script as the filesystem does
                         resolved.posix(),
                         hint,
                     ),
@@ -841,9 +845,11 @@ fn execute_script_inner(
             cmd.stdin(std::process::Stdio::inherit());
             cmd.stdout(std::process::Stdio::inherit());
             cmd.stderr(std::process::Stdio::inherit());
-            // Spawn-then-wait rather than `status()`: identical semantics with
-            // stdio already inherited, but it routes through the ETXTBSY retry.
-            let mut child = spawn_retry_on_busy(&mut cmd)?;
+            // Spawn-then-wait rather than `command_status`: the timeout arm
+            // below needs the child handle. Both route through the one ladder
+            // (a held program file, a full descriptor table) and the
+            // descriptor-limit raise.
+            let mut child = crate::spawn_child(&mut cmd)?;
             let status = match explicit_timeout {
                 Some(timeout) => wait_interactive_with_timeout(&mut child, timeout, &run_label)?,
                 None => child.wait()?,
@@ -878,7 +884,7 @@ fn execute_script_inner(
     // (e.g. `shell: bash` on a FreeBSD base that ships only POSIX sh) or
     // because a `spec.env` PATH entry overwrote PATH. Name the real causes
     // instead of a bare os error 2.
-    let mut child = spawn_retry_on_busy(&mut cmd).map_err(|e| {
+    let mut child = crate::spawn_child(&mut cmd).map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
             CfgdError::Config(ConfigError::Invalid {
                 message: format!(
@@ -1057,45 +1063,24 @@ fn ensure_working_dir(run_str: &str, working_dir: &std::path::Path) -> Result<()
                 "script '{}' cannot run: working directory is not a directory ({}): {}",
                 run_str,
                 kind,
+                // absolute-path-ok: a human-facing error names the directory as the filesystem does
                 working_dir.posix()
             )))
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(invalid(format!(
             "script '{}' cannot run: working directory does not exist: {}",
             run_str,
+            // absolute-path-ok: a human-facing error names the directory as the filesystem does
             working_dir.posix()
         ))),
         Err(e) => Err(invalid(format!(
             "script '{}' cannot run: working directory inaccessible ({}): {}",
             run_str,
             e,
+            // absolute-path-ok: a human-facing error names the directory as the filesystem does
             working_dir.posix()
         ))),
     }
-}
-
-/// Spawn a command, retrying briefly while the OS reports the executable busy.
-///
-/// A `fork` in any other thread duplicates every open write descriptor, so a
-/// script this process just finished writing can still be held open by an
-/// unrelated child at the moment it `exec`s — the kernel answers `ETXTBSY`. The window
-/// closes the instant the racing child execs (its descriptors are `CLOEXEC`),
-/// so a short bounded retry converges where a single attempt fails at random.
-/// Every other spawn error is returned untouched on the first attempt.
-fn spawn_retry_on_busy(cmd: &mut std::process::Command) -> std::io::Result<std::process::Child> {
-    const ATTEMPTS: u32 = 5;
-    let mut delay = std::time::Duration::from_millis(10);
-    let mut outcome = cmd.spawn();
-    for _ in 1..ATTEMPTS {
-        match &outcome {
-            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {}
-            _ => return outcome,
-        }
-        std::thread::sleep(delay);
-        delay *= 2;
-        outcome = cmd.spawn();
-    }
-    outcome
 }
 
 /// Result of running a script as a content filter (see [`run_filter_script`]).
@@ -1152,6 +1137,7 @@ pub(crate) fn run_filter_script(
                 return Err(CfgdError::Config(ConfigError::Invalid {
                     message: format!(
                         "patch script '{}' exists but is not executable ({})",
+                        // absolute-path-ok: a human-facing error names the script as the filesystem does
                         resolved.posix(),
                         hint,
                     ),
@@ -1180,7 +1166,7 @@ pub(crate) fn run_filter_script(
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
 
-    let mut child = spawn_retry_on_busy(&mut cmd)?;
+    let mut child = crate::spawn_child(&mut cmd)?;
 
     // Feed stdin from its own thread while stdout/stderr drain on theirs: a
     // filter whose output exceeds the pipe buffer would deadlock against a
@@ -1300,6 +1286,7 @@ fn build_inline_command(
             let cmd_str = match cfgd_env_path {
                 Some(p) => format!(
                     "shopt -s expand_aliases; source \"{}\" 2>/dev/null; {}",
+                    // absolute-path-ok: the shell command the child runs, not a display slot
                     p.display(),
                     run_str,
                 ),
@@ -1313,6 +1300,7 @@ fn build_inline_command(
             let cmd_str = match cfgd_env_path {
                 Some(p) => format!(
                     "setopt aliases; source \"{}\" 2>/dev/null; {}",
+                    // absolute-path-ok: the shell command the child runs, not a display slot
                     p.display(),
                     run_str,
                 ),

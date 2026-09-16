@@ -1,5 +1,6 @@
 Pending Decisions (1 item)
   source:solo-source
     ◉ Required file/bashrc
-  → Answer each pending decision:
-    $ cfgd decide [accept|reject] <resource>
+
+→ Answer each pending decision:
+  $ cfgd decide [accept|reject] <resource>

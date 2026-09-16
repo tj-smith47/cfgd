@@ -41,6 +41,12 @@ tag:
   # no-op, so autotag won't mint a spurious patch bump after a stable crate's
   # chore touch. A dep bump that should ship uses a `fix(deps):` subject.
   default_bump: none
+  # A 1.0.0 is the user's call, never an inferred one: while a crate is still at
+  # 0.y.z an inferred breaking change (`<type>!:` / `BREAKING CHANGE`) bumps the
+  # minor. An explicit `#major` token still wins, and the demotion is inert once
+  # a real tag reaches 1.x. `.claude/scripts/commit-guard.sh` refuses the
+  # breaking spelling on the commit side for the same reason.
+  bump_minor_pre_major: true
   # Scan the full commit range between the last tag and HEAD (per crate path)
   # so a release-worthy `fix:` / `feat:` / `BREAKING CHANGE` commit further
   # back in the range still triggers the bump even if the most recent commit
@@ -167,6 +173,25 @@ after:
 
 # Independent workspaces for per-component release cadences.
 workspaces:
+  # --- cfgd-schema: shared config value types (crates.io only) ---
+  # Publishes ahead of cfgd-crd and cfgd-core: both depend on it, so the sparse
+  # index must carry its pinned version before either of them publishes.
+  - name: cfgd-schema
+    skip:
+      - announce
+    crates:
+      - name: cfgd-schema
+        path: crates/cfgd-schema
+        tag_template: "schema-v{{ Version }}"
+        version_sync:
+          enabled: true
+          mode: cargo
+        # A pure library with zero bin targets, so it produces no binary
+        # release artifact (mirrors cfgd-crd and cfgd-core).
+        builds:
+          - id: cfgd-schema
+            skip: true
+
   # --- cfgd-crd: CRD spec types + schemars (crates.io only) ---
   # Publishes ahead of cfgd-core: cfgd-core's `crd` feature depends on cfgd-crd,
   # so the sparse index must carry the pinned cfgd-crd version before cfgd-core
@@ -178,6 +203,7 @@ workspaces:
       - name: cfgd-crd
         path: crates/cfgd-crd
         tag_template: "crd-v{{ Version }}"
+        depends_on: [cfgd-schema]
         version_sync:
           enabled: true
           mode: cargo
@@ -197,7 +223,12 @@ workspaces:
       - name: cfgd-core
         path: crates/cfgd-core
         tag_template: "core-v{{ Version }}"
-        depends_on: [cfgd-crd]
+        # cfgd-schema is stated alongside cfgd-crd rather than left to travel
+        # through it: cfgd-crd is an OPTIONAL dependency here (the default `crd`
+        # feature), so a feature-gate change would silently take the only edge
+        # to cfgd-schema with it, while the dependency on cfgd-schema itself is
+        # unconditional.
+        depends_on: [cfgd-crd, cfgd-schema]
         version_sync:
           enabled: true
           mode: cargo
@@ -236,6 +267,10 @@ workspaces:
         # links installation.md instead of carrying its own download URL, so it
         # holds no version literal and enrolment could only ever report
         # "nothing rewritten". Re-enroll it if it ever names a version again.
+        #
+        # docs/installation.md also carries four anchored regions from the
+        # operator and CSI crates; those claim their lines first and this sweep
+        # takes the rest, so the two may bump differently in one release.
         version_files:
           - docs/installation.md
           - docs/skill.md
@@ -324,9 +359,6 @@ workspaces:
           name_template: "{{ ProjectName }} {{ Tag }}"
           header: |
             ## What's new in {{ .Tag }}
-          footer: |
-            ---
-            Released with [anodizer](https://github.com/tj-smith47/anodizer)
           include_meta: true
           # Attach the apk-signing public key alongside the signed apk(s).
           # anodizer-action's `apk-private-key` input derives the pub key
@@ -730,14 +762,25 @@ workspaces:
         version_sync:
           enabled: true
           mode: cargo
-        # No version_files: the operator's two literals (its image pin in
-        # chart/cfgd/values.yaml and its line in the `kubectl cfgd version`
-        # sample in docs/installation.md) are maintained by hand. anodizer's
-        # sweep is a whole-file literal replace and it refuses a file enrolled
-        # by crates with different bumps (run 34057560579): the sample shares
-        # its file with the cfgd crate's sweep, and the chart's operator and
-        # CSI pins share one literal in one file. `task chart:tags:check`
-        # guards the pins by asking the registry for the image they render.
+        # Each entry carries a `match` anchor because docs/installation.md is
+        # also swept whole-file by the cfgd crate, and the operator and CSI
+        # image pins in chart/cfgd/values.yaml once held the same literal. A
+        # `match` scopes each rewrite to its own regions, so neither crate can
+        # rewrite the other's lines. anodizer takes the author's word
+        # that two anchors are disjoint (version_plan.rs short-circuits its
+        # refusals for an anchor pair), so the chart anchor ends at its own
+        # block's `tag:` and spans only the comment lines in between: reorder a
+        # block to put `tag:` first and the anchor matches nothing, which
+        # `check version-files` fails on in the audit job.
+        # `task chart:tags:check` still asks the registry for the image each
+        # pin renders.
+        version_files:
+          - path: docs/installation.md
+            match: 'Operator\s+{version}'
+          - path: docs/installation.md
+            match: '"operator": "{version}"'
+          - path: chart/cfgd/values.yaml
+            match: 'repository: ghcr\.io/tj-smith47/cfgd-operator\n(?:\s*#[^\n]*\n)*\s*tag: "{version}"'
         builds:
           - binary: cfgd-operator
             features: []
@@ -787,9 +830,6 @@ workspaces:
           name_template: "{{ ProjectName }} {{ Tag }}"
           header: |
             ## What's new in {{ .Tag }} (operator)
-          footer: |
-            ---
-            Released with [anodizer](https://github.com/tj-smith47/anodizer)
           include_meta: true
         # Inherits `publish.cargo: { index_timeout: 600 }` from defaults
         # (the operator opts in to crates.io publishing through the same slot).
@@ -804,8 +844,15 @@ workspaces:
         version_sync:
           enabled: true
           mode: cargo
-        # No version_files, for the operator's reason above: the CSI image
-        # pin and the sample's CSI line are maintained by hand.
+        # Anchored for the operator's reason above: one file shared with two
+        # other crates, and two image pins that once held the same literal.
+        version_files:
+          - path: docs/installation.md
+            match: 'CSI\s+{version}'
+          - path: docs/installation.md
+            match: '"csi": "{version}"'
+          - path: chart/cfgd/values.yaml
+            match: 'repository: ghcr\.io/tj-smith47/cfgd-csi\n(?:\s*#[^\n]*\n)*\s*tag: "{version}"'
         builds:
           - binary: cfgd-csi
             features: []
@@ -855,9 +902,6 @@ workspaces:
           name_template: "{{ ProjectName }} {{ Tag }}"
           header: |
             ## What's new in {{ .Tag }} (CSI node plugin)
-          footer: |
-            ---
-            Released with [anodizer](https://github.com/tj-smith47/anodizer)
           include_meta: true
         # Inherits `publish.cargo: { index_timeout: 600 }` from defaults
         # (the CSI node plugin opts in to crates.io publishing through the
@@ -969,8 +1013,6 @@ changelog:
       order: 2
     - title: Others
       order: 999
-  footer: |
-    _Generated by anodizer._
 
 # SLSA build-provenance. `subjects` mode (the default) writes
 # dist/attestation-subjects.json — the derived {name, sha256} set over every
@@ -1219,10 +1261,18 @@ partial:
   by: os
 
 nightly:
-  name_template: "{{ ProjectName }}-nightly"
-  tag_name: nightly
+  # The retention sweep lists prior nightlies by release NAME, so this must
+  # render the same string every night. `release.name_template` renders
+  # "cfgd {{ Tag }}", and a nightly's tag carries its short commit, which would
+  # make every night's name unique and leave every past nightly unreachable.
+  # The three tracks share the name; the sweep scopes them apart by tag family.
+  name_template: "{{ ProjectName }} nightly"
   publish_release: true
   keep_single_release: true
+  # The release workflow pushes its bump commit straight to master, so on most
+  # nights master still sits at the last release commit and a nightly would
+  # re-cut three releases whose changelog is empty.
+  skip_if_no_changes: true
 
 # Local/CI snapshot version naming (never released). States the snapshot
 # scheme explicitly so artifacts carry the short commit for identification:

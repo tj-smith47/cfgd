@@ -34,12 +34,10 @@ pub(super) fn run_provider_cmd(
     hint: &str,
     reference: &str,
 ) -> Result<SecretString> {
-    let output = cmd
-        .output()
-        .map_err(|_| SecretError::ProviderNotAvailable {
-            provider: provider.to_string(),
-            hint: hint.to_string(),
-        })?;
+    let output = cfgd_core::command_output(cmd).map_err(|_| SecretError::ProviderNotAvailable {
+        provider: provider.to_string(),
+        hint: hint.to_string(),
+    })?;
     if !output.status.success() {
         return Err(SecretError::UnresolvableRef {
             reference: format!(
@@ -202,17 +200,18 @@ pub fn init_age_key(config_dir: &Path) -> Result<PathBuf> {
     let key_path = cfgd_config_dir.join("age-key.txt");
 
     if !key_path.exists() {
-        let output = std::process::Command::new("age-keygen")
-            .arg("-o")
-            .arg(&key_path)
-            .output()
-            .map_err(|e| SecretError::EncryptionFailed {
-                path: key_path.clone(),
-                message: format!(
-                    "failed to run age-keygen (install age: https://github.com/FiloSottile/age): {}",
-                    e
-                ),
-            })?;
+        let output = cfgd_core::command_output(
+            std::process::Command::new("age-keygen")
+                .arg("-o")
+                .arg(&key_path),
+        )
+        .map_err(|e| SecretError::EncryptionFailed {
+            path: key_path.clone(),
+            message: format!(
+                "failed to run age-keygen (install age: https://github.com/FiloSottile/age): {}",
+                e
+            ),
+        })?;
 
         if !output.status.success() {
             return Err(SecretError::EncryptionFailed {
@@ -225,8 +224,10 @@ pub fn init_age_key(config_dir: &Path) -> Result<PathBuf> {
             .into());
         }
 
-        // Set restrictive permissions on the key file
-        cfgd_core::set_file_permissions(&key_path, 0o600).map_err(|e| {
+        // Set restrictive permissions on the key file. No-follow: `age-keygen`
+        // wrote the key into a config dir the invoking user owns, and an elevated
+        // run must not tighten whatever a link planted at that name points at.
+        cfgd_core::set_file_permissions_nofollow(&key_path, 0o600).map_err(|e| {
             SecretError::EncryptionFailed {
                 path: key_path.clone(),
                 message: format!("failed to set key permissions: {}", e),
@@ -275,7 +276,8 @@ pub fn check_secrets_health(
     config_dir: &Path,
     age_key_override: Option<&Path>,
 ) -> SecretsHealthCheck {
-    let sops_output = std::process::Command::new("sops").arg("--version").output();
+    let sops_output =
+        cfgd_core::command_output(cfgd_core::tool_cmd(sops::SOPS_BIN_ENV, "sops").arg("--version"));
 
     let (sops_available, sops_version) = match sops_output {
         Ok(output) if output.status.success() => {

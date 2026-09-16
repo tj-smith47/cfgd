@@ -2,7 +2,8 @@
 //! active OutputFormat, and the writers for stderr (status output) +
 //! stdout (structured/data output). Sinks: `sink_stderr` for status,
 //! `sink_stdout` for `data_line`, `multi_progress` for spinners and progress
-//! bars, `syntax_set` / `theme_set` for `syntax_highlight`. The
+//! bars, `syntax_set` for `syntax_highlight` (whose palette comes from the
+//! renderer's own `Theme`). The
 //! `test_doc_capture` and `prompt_queue` fields are populated by test
 //! helpers (gated on the `test-helpers` feature).
 
@@ -51,7 +52,6 @@ pub struct Printer {
     pub(crate) sink_stdout: Arc<dyn Writer>,
     pub(crate) multi_progress: indicatif::MultiProgress,
     pub(crate) syntax_set: syntect::parsing::SyntaxSet,
-    pub(crate) theme_set: syntect::highlighting::ThemeSet,
     /// Set under `test-helpers` when `for_test_doc` is used.
     pub(crate) test_doc_capture: Option<DocCapture>,
     /// Set under `test-helpers` when prompt responses are seeded.
@@ -91,6 +91,13 @@ pub struct Printer {
     /// (`{apiVersion, kind: List, items}`). Off by default — bare arrays stay
     /// byte-identical. Never affects projecting formats (name/jsonpath/template).
     pub(crate) list_envelope: bool,
+    /// Which declared env values this run renders masked, resolved ONCE from
+    /// `--mask-env-values` / `CFGD_MASK_ENV_VALUES` / `spec.output.maskEnvValues`
+    /// (`cli::resolve_mask_env_values`). Held here because the printer is the
+    /// one object every verb receives, so no verb re-reads the config to learn
+    /// what the run already decided; a per-verb `--show-values` unmasks that
+    /// verb's own surface on top of it.
+    pub(crate) mask_env_values: crate::config::MaskEnvValues,
 }
 
 /// How a `Printer` under construction decides whether it may emit colour.
@@ -126,14 +133,25 @@ impl ColorChoice {
             // (the stdout answer) styles `cfgd apply 2> log` into the log file
             // and strips `cfgd apply | tee log` on a live terminal — both
             // backwards.
+            //
+            // `-o yaml` is the exception, and asks STDOUT: its payload is the
+            // only thing a colour decision can reach, and that payload goes to
+            // stdout. Asking stderr there would highlight `cfgd status -o yaml
+            // > out.yaml` into the file whenever the terminal happened to be
+            // the error channel.
             Self::Auto => {
-                console::colors_enabled_stderr() && !colors_must_be_disabled(output_format)
+                let channel = if matches!(output_format, OutputFormat::Yaml) {
+                    console::colors_enabled()
+                } else {
+                    console::colors_enabled_stderr()
+                };
+                channel && !colors_must_be_disabled(output_format)
             }
             // An explicit request outranks `NO_COLOR` / `TERM=dumb` (the
             // convention is a default, not a veto) but never outranks the
-            // structured-output gate: an escape inside a JSON string field is
+            // machine-contract gate: an escape inside a JSON string field is
             // corrupt data, not a styling preference.
-            Self::Always => !output_format.is_structured(),
+            Self::Always => !output_format.refuses_color(),
             Self::Never => false,
         }
     }
@@ -141,36 +159,41 @@ impl ColorChoice {
 
 /// Whether a `Printer` for `output_format` must refuse colour outright.
 ///
-/// Honors `NO_COLOR` / `TERM=dumb`, and additionally disables colour under
-/// structured output (Json / Yaml / Template / Jsonpath / Name) so a role-styled
-/// emission cannot leak ANSI escapes into payload string fields — the contract is
-/// enforced at construction, not by every caller remembering to wrap with
-/// `with_data`.
+/// Honors `NO_COLOR` / `TERM=dumb`, and additionally disables colour under the
+/// formats whose payload is a machine contract (Json / Template / Jsonpath /
+/// Name) so a role-styled emission cannot leak ANSI escapes into payload string
+/// fields — the contract is enforced at construction, not by every caller
+/// remembering to wrap with `with_data`. `-o yaml` is not one of them
+/// ([`OutputFormat::refuses_color`]): its payload is syntax-highlighted when
+/// this decision comes back false.
 ///
 /// Split out of [`ColorChoice::resolve`] so the decision is testable without
 /// reading `console`'s colour flags at all.
 pub(crate) fn colors_must_be_disabled(output_format: &OutputFormat) -> bool {
     std::env::var_os("NO_COLOR").is_some()
         || std::env::var_os("TERM").is_some_and(|t| t == "dumb")
-        || output_format.is_structured()
+        || output_format.refuses_color()
 }
 
-/// Stamp OSC 8 hyperlinks onto `theme` iff colour resolved on and the terminal
-/// is a known emitter. Read by the two PRODUCTION constructors only: a capture
-/// never detects, so no golden can pick up an escape from the developer's own
-/// terminal. `build` re-applies the same `colors`, and `with_colors` withdraws
-/// the stamp with the colour, so the two cannot end up disagreeing.
-fn stamp_hyperlinks(theme: Theme, colors: bool) -> Theme {
-    // Colour off already settles the answer, so the terminal is never asked:
-    // the probe reads several environment variables on every construction, and
-    // `with_hyperlinks` would discard what it learned. `-o json`, `NO_COLOR`
-    // and a piped stdout are the common case, not the rare one.
+/// Stamp what THIS terminal can show onto `theme` iff colour resolved on: OSC 8
+/// hyperlinks where it is a known emitter, and 24-bit foregrounds where it
+/// advertises them. The two PRODUCTION constructors are the only callers, so
+/// nothing a capture renders can pick up a capability from the developer's own
+/// terminal. `build` re-applies the same `colors`, which withdraws the hyperlink
+/// stamp with the colour and leaves the depth alone, so the three cannot end up
+/// disagreeing.
+fn stamp_terminal_capabilities(theme: Theme, colors: bool) -> Theme {
+    // Colour off already settles both answers, so the terminal is never asked:
+    // each probe reads several environment variables on every construction, and
+    // a colourless theme emits neither escape. `-o json`, `NO_COLOR` and a piped
+    // stdout are the common case, not the rare one.
     if !colors {
         return theme.with_colors(false);
     }
     theme
         .with_colors(true)
         .with_hyperlinks(super::terminal_supports_hyperlinks())
+        .with_truecolor(super::theme::supports_truecolor())
 }
 
 /// The depth an action row renders at in a report: under its phase's section
@@ -211,13 +234,13 @@ impl Printer {
         let colors = colors.resolve(&output_format);
         Self::build(
             verbosity,
-            stamp_hyperlinks(theme, colors),
+            stamp_terminal_capabilities(theme, colors),
             output_format,
             colors,
         )
     }
 
-    /// Production constructor for a printer built from the user's `spec.theme`
+    /// Production constructor for a printer built from the user's `spec.output.theme`
     /// block: the preset it names AND the per-slot `overrides` it declares.
     ///
     /// Separate from [`Printer::with_format`] because the override pass has to
@@ -235,7 +258,7 @@ impl Printer {
         let colors = colors.resolve(&output_format);
         Self::build(
             verbosity,
-            stamp_hyperlinks(theme, colors),
+            stamp_terminal_capabilities(theme, colors),
             output_format,
             colors,
         )
@@ -272,7 +295,6 @@ impl Printer {
             sink_stdout: Arc::new(Term::stdout()),
             multi_progress,
             syntax_set: syntect::parsing::SyntaxSet::load_defaults_newlines(),
-            theme_set: syntect::highlighting::ThemeSet::load_defaults(),
             test_doc_capture: None,
             prompt_queue: None,
             output_error: AtomicBool::new(false),
@@ -280,6 +302,7 @@ impl Printer {
             interactive_stdin: super::prompts::stdin_is_terminal(),
             colors,
             list_envelope: false,
+            mask_env_values: crate::config::MaskEnvValues::default(),
         }
     }
 
@@ -287,7 +310,7 @@ impl Printer {
     /// output format, and the List-envelope setting.
     ///
     /// The process printer is built from the config that existed at startup, so
-    /// on a fresh machine `cfgd init --theme dracula` would write `spec.theme`
+    /// on a fresh machine `cfgd init --theme dracula` would write `spec.output.theme`
     /// and then render its own run in the default theme — the one command whose
     /// output cannot show the theme it just chose. Re-theming after the config
     /// is written closes that gap.
@@ -307,7 +330,7 @@ impl Printer {
     }
 
     /// A copy of this printer at `verbosity`, inheriting the theme (preset plus
-    /// `spec.theme.overrides`) and every ambient terminal decision and test
+    /// `spec.output.theme.overrides`) and every ambient terminal decision and test
     /// channel from `self` — see `Printer::build_derived`.
     ///
     /// The one way to mint the quiet sink a command hands to a library call, and
@@ -381,7 +404,6 @@ impl Printer {
             sink_stdout: self.sink_stdout.clone(),
             multi_progress: self.multi_progress.clone(),
             syntax_set: syntect::parsing::SyntaxSet::load_defaults_newlines(),
-            theme_set: syntect::highlighting::ThemeSet::load_defaults(),
             test_doc_capture: self.test_doc_capture.clone(),
             prompt_queue: self.prompt_queue.clone(),
             output_error: AtomicBool::new(false),
@@ -389,6 +411,7 @@ impl Printer {
             interactive_stdin: self.interactive_stdin,
             colors: self.colors,
             list_envelope: self.list_envelope,
+            mask_env_values: self.mask_env_values,
         }
     }
 
@@ -403,7 +426,7 @@ impl Printer {
     /// Enable or disable closing `→` usage hints for this printer's lifetime.
     /// Builder-style, mirroring [`Self::with_list_envelope`]; on by default.
     /// Wired from `cli::resolve_hints_enabled` (`--no-hints` /
-    /// `CFGD_USAGE_HINTS` / `spec.usageHints`).
+    /// `CFGD_USAGE_HINTS` / `spec.output.usageHints`).
     ///
     /// The decision lives on the `Renderer` rather than on `Printer` itself:
     /// `SectionGuard` and `Doc` rendering hold their own `Arc<Renderer>`
@@ -412,6 +435,27 @@ impl Printer {
     pub fn with_hints_enabled(self, enabled: bool) -> Self {
         self.renderer.set_hints_enabled(enabled);
         self
+    }
+
+    /// Set which declared env values this printer's run renders masked.
+    /// Builder-style, mirroring [`Self::with_list_envelope`]; masks everything
+    /// by default. Wired from `cli::resolve_mask_env_values`.
+    pub fn with_mask_env_values(mut self, mask: crate::config::MaskEnvValues) -> Self {
+        self.mask_env_values = mask;
+        self
+    }
+
+    /// Whether a declared env value renders masked on this run's surfaces.
+    /// A verb whose own `--show-values` was passed unmasks regardless.
+    pub fn masks_env_values(&self) -> bool {
+        self.mask_env_values.masks()
+    }
+
+    /// This run's masking policy itself, for a surface that renders one NAMED
+    /// value at a time and so has to ask about that name rather than about
+    /// every value at once (`cli::EnvValueMasking`).
+    pub fn mask_env_values(&self) -> crate::config::MaskEnvValues {
+        self.mask_env_values
     }
 
     pub fn verbosity(&self) -> Verbosity {
@@ -1033,7 +1077,12 @@ impl Printer {
     /// Used by tests; production code should call `emit`, which routes by
     /// `OutputFormat` and falls back to this for human formats.
     pub fn render(&self, doc: super::doc::Doc) {
-        super::render_doc::render_doc(&self.renderer, self.sink_stderr.as_ref(), &doc);
+        super::render_doc::render_doc(
+            &self.renderer,
+            self.sink_stderr.as_ref(),
+            &doc,
+            &self.syntax_set,
+        );
     }
 
     /// Routed emit: structured formats go to stdout as JSON/YAML/etc.; Table/Wide
@@ -1044,6 +1093,21 @@ impl Printer {
         if let Some(cap) = &self.test_doc_capture {
             let json = doc.data_or_self_json();
             *cap.doc_json.lock().unwrap_or_else(|e| e.into_inner()) = Some(json);
+        }
+        // `-o yaml`'s payload is the one structured format that carries colour,
+        // so it is the one that leaves through the highlighter rather than
+        // through the raw writer. The bytes under the escapes are the same
+        // `yaml_payload` the plain path writes; with the decision off nothing
+        // is highlighted and the raw arm below writes them verbatim.
+        if self.colors && matches!(self.output_format, OutputFormat::Yaml) {
+            let yaml = super::structured::yaml_payload(&doc, self.list_envelope);
+            for line in self
+                .renderer
+                .highlight_lines(&yaml, "yaml", &self.syntax_set)
+            {
+                self.sink_stdout.write_line(&line);
+            }
+            return;
         }
         let handled = super::structured::emit_structured(
             self.sink_stdout.as_ref(),
@@ -1475,7 +1539,63 @@ mod tests {
         );
     }
 
-    /// `spec.theme.overrides` is a documented field, and until the process
+    /// The terminal's colour DEPTH is probed where a production printer is
+    /// built and nowhere else, so a theme any other caller builds renders its
+    /// full triples whatever the host advertises — a capture comparing bytes
+    /// cannot pick up the developer's own `COLORTERM`.
+    #[test]
+    #[serial]
+    fn only_a_production_printer_reads_the_terminals_colour_depth() {
+        let _no_color = EnvVarGuard::unset("NO_COLOR");
+        let _term = EnvVarGuard::set("TERM", "xterm-256color");
+
+        let unset = EnvVarGuard::unset("COLORTERM");
+        let quantizing = Printer::with_format(
+            Verbosity::Normal,
+            Some("dracula"),
+            OutputFormat::Table,
+            ColorChoice::Always,
+        );
+        assert!(
+            !quantizing.renderer.theme.truecolor(),
+            "a production printer on a terminal advertising no 24-bit support quantizes"
+        );
+        assert!(
+            Theme::from_preset("dracula").with_colors(true).truecolor(),
+            "a theme built outside a production printer keeps its full depth"
+        );
+
+        drop(unset);
+        let _ct = EnvVarGuard::set("COLORTERM", "truecolor");
+        let full = Printer::with_format(
+            Verbosity::Normal,
+            Some("dracula"),
+            OutputFormat::Table,
+            ColorChoice::Always,
+        );
+        assert!(
+            full.renderer.theme.truecolor(),
+            "a terminal advertising 24-bit support gets the full triple"
+        );
+    }
+
+    /// The masking decision is settled once, at construction, and every
+    /// derived printer carries it: a verb handed a quiet sink or a re-themed
+    /// copy must not fall back to masking a run asked to reveal.
+    #[test]
+    fn derived_printers_inherit_the_env_masking_decision() {
+        let revealing = Printer::silent().with_mask_env_values(crate::config::MaskEnvValues::None);
+        assert!(!revealing.masks_env_values());
+        assert!(!revealing.at_verbosity(Verbosity::Quiet).masks_env_values());
+        assert!(!revealing.rethemed("dracula").masks_env_values());
+
+        // The other direction too, so this cannot pass with the field pinned.
+        let masking = Printer::silent();
+        assert!(masking.masks_env_values(), "masking is the default");
+        assert!(masking.at_verbosity(Verbosity::Quiet).masks_env_values());
+    }
+
+    /// `spec.output.theme.overrides` is a documented field, and until the process
     /// printer was built from the whole block it was inert: `main` passed only
     /// `theme.name`, so `Theme::from_config` was reachable from nothing but its
     /// own tests and every declared override was silently dropped.
@@ -1561,6 +1681,12 @@ mod tests {
         assert!(!p.is_structured());
     }
 
+    /// The four formats whose payload is a machine contract carry no escape at
+    /// any terminal. `-o yaml` is not among them: its bytes are a document a
+    /// person reads as often as a script parses, so it follows the ordinary
+    /// colour decision — which is what
+    /// `a_yaml_payload_is_highlighted_when_the_colour_decision_is_on_and_plain_when_it_is_off`
+    /// renders both sides of.
     #[test]
     #[serial]
     fn structured_output_disables_colors() {
@@ -1570,7 +1696,6 @@ mod tests {
 
         for fmt in [
             OutputFormat::Json,
-            OutputFormat::Yaml,
             OutputFormat::Name,
             OutputFormat::Jsonpath("{.foo}".into()),
             OutputFormat::Template("{{ . }}".into()),
@@ -1580,6 +1705,10 @@ mod tests {
                 "colors should be disabled for {fmt:?}"
             );
         }
+        assert!(
+            !colors_must_be_disabled(&OutputFormat::Yaml),
+            "-o yaml takes the ordinary colour decision rather than the veto"
+        );
     }
 
     #[test]
@@ -1769,7 +1898,7 @@ mod tests {
         assert_eq!(parsed, payload, "default emit must keep the bare array");
     }
 
-    /// `spec.usageHints: false` / `CFGD_USAGE_HINTS=false` / `--no-hints`
+    /// `spec.output.usageHints: false` / `CFGD_USAGE_HINTS=false` / `--no-hints`
     /// resolve to `Printer::with_hints_enabled(false)`, which must suppress
     /// BOTH the hint text AND its leading blank line — a bare blank left
     /// behind would be a visible artifact of a feature that is supposed to
@@ -2701,6 +2830,85 @@ mod tests {
         assert!(
             diagnostics.contains("Checking packages"),
             "the failing step went unreported: {diagnostics:?}"
+        );
+    }
+
+    /// `-o yaml` renders the SAME document as the plain path, wearing escapes.
+    ///
+    /// The two arms are one payload: a reader piping the bytes to `yq` and a
+    /// reader looking at them on a terminal must be reading the same YAML, so
+    /// the coloured capture is asserted to strip back to the plain one rather
+    /// than merely to contain escapes.
+    #[test]
+    fn a_yaml_payload_is_highlighted_when_the_colour_decision_is_on_and_plain_when_it_is_off() {
+        let payload = serde_json::json!({"name": "nvim", "packages": ["neovim"]});
+        let render = |colors: bool| {
+            let (printer, buf) = Printer::for_test_with_theme_and_format(
+                super::super::Theme::from_preset("dracula"),
+                OutputFormat::Yaml,
+                colors,
+            );
+            printer.emit(super::super::doc::Doc::new().with_data(payload.clone()));
+            // raw-capture-ok: the escapes ARE this test's subject, and `captured_text` strips exactly them
+            buf.lock().unwrap().clone()
+        };
+        let plain = render(false);
+        let colored = render(true);
+        assert!(
+            !plain.contains('\u{1b}'),
+            "a colourless `-o yaml` run puts plain bytes on stdout: {plain:?}"
+        );
+        assert!(
+            colored.contains('\u{1b}'),
+            "a coloured `-o yaml` run highlights its payload: {colored:?}"
+        );
+        assert_eq!(
+            console::strip_ansi_codes(&colored),
+            plain,
+            "the highlighted payload must strip back to the plain one byte for byte"
+        );
+        assert!(
+            plain.contains("name: nvim"),
+            "the payload is the YAML: {plain:?}"
+        );
+    }
+
+    /// The colour veto covers the machine-contract formats and NOT `-o yaml`.
+    ///
+    /// The environment is pinned because the veto reads `NO_COLOR` / `TERM`:
+    /// left ambient, the YAML half would pass or fail by how the suite was
+    /// started rather than by what the format says.
+    #[test]
+    #[serial]
+    fn the_colour_veto_names_the_machine_contract_formats_and_leaves_yaml_out() {
+        let _no_color = crate::test_helpers::EnvVarGuard::unset("NO_COLOR");
+        let _term = crate::test_helpers::EnvVarGuard::set("TERM", "xterm-256color");
+        assert!(
+            !colors_must_be_disabled(&OutputFormat::Yaml),
+            "`-o yaml` follows the ordinary colour decision"
+        );
+        for refusing in [
+            OutputFormat::Json,
+            OutputFormat::Name,
+            OutputFormat::Jsonpath("{.x}".into()),
+            OutputFormat::Template("{{.x}}".into()),
+        ] {
+            assert!(
+                colors_must_be_disabled(&refusing),
+                "{refusing:?} must refuse colour outright"
+            );
+        }
+        assert!(
+            ColorChoice::Always.resolve(&OutputFormat::Yaml),
+            "`--color always -o yaml` highlights"
+        );
+        assert!(
+            !ColorChoice::Always.resolve(&OutputFormat::Json),
+            "`--color always -o json` still refuses: an escape in a JSON field is corrupt data"
+        );
+        assert!(
+            !ColorChoice::Never.resolve(&OutputFormat::Yaml),
+            "`--color never -o yaml` puts plain bytes on stdout"
         );
     }
 }

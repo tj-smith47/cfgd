@@ -20,7 +20,10 @@ use crate::errors::Result;
 use crate::state::{PendingDecision, StateStore};
 use crate::to_posix_string;
 
-use super::{Action, Plan, SystemAction, action_resource_info};
+use super::{
+    Action, ENV_RC_RESOURCE_TYPE, ENV_RESOURCE_TYPE, ENV_SESSION_RESOURCE_TYPE, Plan, SystemAction,
+    action_resource_info,
+};
 
 /// Every resource a merged profile declares, in decision vocabulary.
 ///
@@ -1191,20 +1194,13 @@ fn installed_reason(version: &Option<String>) -> String {
 
 /// The version requirement a package entry embeds, when it embeds one.
 ///
-/// The grammar is deliberately narrow, because `@` is also a legal NAME
-/// character (brew's `python@3.12`, npm's `@scope/name`): the trailing segment
-/// counts as a spec only when it announces itself with a range operator
-/// (`^14`, `>=2.1`, `~1.4`, `*`) or a `v`-prefixed version (`v1.2.3`), and
-/// parses as a semver requirement after the `v` is stripped. Anything else is
-/// part of the package's name and carries no satisfaction semantics.
+/// The announcement test is [`cfgd_schema::announces_version_spec`], shared
+/// with the package-name gate so the two cannot disagree about where a name
+/// ends; what this adds is that the segment parses as a semver requirement
+/// after the `v` is stripped.
 fn embedded_version_spec(entry: &str) -> Option<String> {
     let (name, raw) = entry.rsplit_once('@')?;
-    if name.is_empty() || raw.is_empty() {
-        return None;
-    }
-    let looks_like_spec = raw.starts_with(['^', '~', '>', '<', '=', '*'])
-        || (raw.starts_with(['v', 'V']) && raw[1..].starts_with(|c: char| c.is_ascii_digit()));
-    if !looks_like_spec {
+    if name.is_empty() || !cfgd_schema::announces_version_spec(raw) {
         return None;
     }
     let normalized = crate::declared_floor_version(raw);
@@ -2129,7 +2125,11 @@ impl DecisionExclusions {
             },
             // The env surface is withheld as a unit, so every per-item and
             // per-file spelling under it is a row the tick did not judge.
-            "env-var" | "alias" | "env" | "env-rc" | "env-session" => self.withholds_env_surface(),
+            super::ENV_VAR_RESOURCE_TYPE
+            | super::ALIAS_RESOURCE_TYPE
+            | ENV_RESOURCE_TYPE
+            | ENV_RC_RESOURCE_TYPE
+            | ENV_SESSION_RESOURCE_TYPE => self.withholds_env_surface(),
             _ => false,
         }
     }
@@ -2202,7 +2202,7 @@ pub fn withhold_from_plan(
     // A manager node exists to serve the installs below it. Withholding the
     // last of them withholds the refresh with them, before the count is taken,
     // so the header never names a number the run disagrees with.
-    super::managers::prune_to_surviving_consumers(plan);
+    super::managers::prune_to_surviving_consumers(plan, registry);
     let after_ids: HashSet<(String, String)> = plan_rows(plan).into_iter().collect();
     let mut resource_ids: Vec<(String, String)> = before_ids
         .into_iter()
@@ -2330,11 +2330,9 @@ mod outranked_tests {
         let core = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let cli = core.join("../../cfgd/src");
         let mut offenders = Vec::new();
-        let mut files = Vec::new();
-        for root in [core, cli] {
-            rust_files(&root, &mut files);
-        }
-        assert!(files.len() > 100, "the walk reached {} files", files.len());
+        let mut files = crate::test_helpers::rust_sources_under(&core);
+        files.extend(crate::test_helpers::rust_sources_under(&cli));
+        let mut scanned = 0usize;
         for path in files {
             if path.file_name().is_some_and(|n| n == "pending.rs")
                 || path.file_name().is_some_and(|n| n == "tests.rs")
@@ -2342,9 +2340,10 @@ mod outranked_tests {
             {
                 continue;
             }
-            let Ok(body) = std::fs::read_to_string(&path) else {
-                continue;
-            };
+            scanned += 1;
+            let body = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+                panic!("{}: the walk must read every source: {e}", path.display())
+            });
             for (n, line) in body.lines().enumerate() {
                 let code = line.trim_start();
                 if code.starts_with("//") {
@@ -2355,6 +2354,7 @@ mod outranked_tests {
                 }
             }
         }
+        assert!(scanned > 100, "the walk scanned {scanned} files");
         assert!(
             offenders.is_empty(),
             "a decisions section title composes through `pending_decisions_title` / \
@@ -2370,20 +2370,6 @@ mod outranked_tests {
             declined_decisions_title(2, DecisionsTitleScope::Listing),
             "Declined Decisions (2 items)"
         );
-    }
-
-    fn rust_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                rust_files(&path, out);
-            } else if path.extension().is_some_and(|e| e == "rs") {
-                out.push(path);
-            }
-        }
     }
 
     /// Every kind `decision_resource_content` recognizes is classified by

@@ -149,9 +149,10 @@ jobs:
           #
           # A nightly's product is the single rolling prerelease `nightly:`
           # configures — every other publisher belongs to a real release, and
-          # preflight validates the secrets of whatever is selected, so an
-          # unscoped run demands CHOCOLATEY_API_KEY/AUR_SSH_KEY that a nightly
-          # has no business holding. `--publishers` is a whitelist rather than a
+          # the merge leg's preflight validates and probes the credentials of
+          # whatever is selected, so an unscoped run demands
+          # CHOCOLATEY_API_KEY/AUR_SSH_KEY that a nightly has no business
+          # holding. `--publishers` is a whitelist rather than a
           # `--skip` denylist so adding a publisher to .anodizer.yaml later
           # cannot silently widen the nightly's blast radius. `--skip` covers
           # announce, a STAGE the whitelist cannot reach: a nightly that mailed

@@ -7,6 +7,9 @@ set -euo pipefail
 E2E_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO_ROOT="$(cd "$E2E_ROOT/../.." && pwd)"
 
+# Before anything below reads $HOME, a registry credential or a tool config.
+source "$E2E_ROOT/common/scratch-home.sh"
+
 CFGD_NAMESPACE="${CFGD_NAMESPACE:-cfgd-system}"
 
 PASS_COUNT=0
@@ -54,7 +57,7 @@ start_heartbeat() {
         trap - EXIT
         while true; do
             kubectl annotate namespace -l "$E2E_RUN_LABEL" \
-                "cfgd.io/heartbeat=$(date -u +%s)" --overwrite >/dev/null 2>&1 || true
+                "cfgd.io/heartbeat=$(date -u +%s)" --overwrite >/dev/null 2>&1 || true # rc-ok: background heartbeat; a missed annotation is retried on the next interval
             sleep "$HEARTBEAT_INTERVAL_SECONDS"
         done
     ) &
@@ -101,6 +104,39 @@ cp_to_pod() {
 
 # --- Namespace & cleanup helpers ---
 
+# Label a resource, and fail the caller when the label does not take.
+#
+# A label is what a later selector matches on — an injection webhook's
+# namespace label, a policy's targetSelector. `kubectl label … || true` reads
+# the same whether the label landed or the API server refused, and a case
+# asserting the ABSENCE of an effect (FS-CSI-05: the pod must not run;
+# FS-CSI-09: no mount is left behind) then passes because nothing was ever
+# injected. The rc is read here so a caller can put it in its verdict.
+ensure_label() {
+  local rc=0
+  kubectl label "$@" >/dev/null 2>&1 || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "FAIL: could not label: kubectl label $* (rc=$rc)" >&2
+    return 1
+  fi
+}
+
+# Ensure a namespace exists, and fail the case when it genuinely cannot.
+#
+# `kubectl create namespace X || true` reads the same either way: the namespace
+# was already there from an earlier run, or the API server refused and every
+# resource the case creates into it is about to fail with nothing saying why.
+# The rc is captured and re-checked with a `get`, so only the second one stops
+# the case.
+ensure_namespace() {
+  local ns="$1" rc=0
+  kubectl create namespace "$ns" >/dev/null 2>&1 || rc=$?
+  if [ "$rc" -ne 0 ] && ! kubectl get namespace "$ns" >/dev/null 2>&1; then
+    echo "FAIL: namespace $ns could not be created (rc=$rc)" >&2
+    return 1
+  fi
+}
+
 create_e2e_namespace() {
     if ! kubectl get namespace "$E2E_NAMESPACE" > /dev/null 2>&1; then
         kubectl create namespace "$E2E_NAMESPACE"
@@ -146,6 +182,13 @@ cleanup_e2e() {
     for kind in module clusterconfigpolicy; do
         kubectl delete "$kind" -l "$E2E_JOB_LABEL" --ignore-not-found 2>/dev/null || true
     done
+
+    # Last: the scratch root holds this run's $HOME, and every kubectl above
+    # resolves its discovery cache under it. Removed here when scratch-home.sh
+    # made the root, rather than by a suite that owns its own removal.
+    if [ -n "${E2E_SCRATCH_OWNED:-}" ]; then
+        rm -rf "$E2E_SCRATCH_OWNED"
+    fi
 }
 
 # --- K8s helpers ---
@@ -331,14 +374,29 @@ wait_for_service_endpoints() {
 
 # --- Build helpers ---
 
-# Ensure the cfgd binary is built (idempotent). Sets CFGD_BIN.
+# Ensure the cfgd binary is built (idempotent). Sets CFGD_BIN, and returns
+# non-zero when there is no binary to set it to.
+#
+# The build's stderr is kept and its status is read: a CI job that compiles cfgd
+# here has nothing else to report a cargo failure, and a discarded one surfaces
+# cases later as an opaque `rc=127` from whichever case runs the binary first.
 ensure_cfgd_binary() {
-    if [ ! -f "$REPO_ROOT/target/release/cfgd" ]; then
-        echo "  Building cfgd..."
-        cargo build --release --manifest-path "$REPO_ROOT/Cargo.toml" --bin cfgd 2>/dev/null
-    fi
     CFGD_BIN="$REPO_ROOT/target/release/cfgd"
     export CFGD_BIN
+
+    if [ -x "$CFGD_BIN" ]; then
+        return 0
+    fi
+
+    echo "  Building cfgd..."
+    if ! cargo build --release --manifest-path "$REPO_ROOT/Cargo.toml" --bin cfgd; then
+        echo "  ERROR: cargo build --release --bin cfgd failed"
+        return 1
+    fi
+    if [ ! -x "$CFGD_BIN" ]; then
+        echo "  ERROR: no executable at $CFGD_BIN after a successful build"
+        return 1
+    fi
 }
 
 # --- Assertion helpers ---
@@ -404,6 +462,60 @@ assert_exit_code() {
     fi
     echo "  ASSERT FAILED: expected exit code $expected, got $actual"
     return 1
+}
+
+# Whether cfgd would find brew here, asking the same three questions
+# brew_available() asks in crates/cfgd/src/packages/shared/mod.rs: the
+# CFGD_BREW_BIN seam, then PATH, then the prefixes the installer uses. A brew
+# that is installed but not exported still counts, so `command -v brew` alone
+# answers this wrong.
+cfgd_finds_brew() {
+    if [ -n "${CFGD_BREW_BIN:-}" ]; then
+        [ -f "$CFGD_BREW_BIN" ]
+        return
+    fi
+    if command -v brew > /dev/null 2>&1; then
+        return 0
+    fi
+    for candidate in /home/linuxbrew/.linuxbrew/bin/brew /opt/homebrew/bin/brew /usr/local/bin/brew; do
+        if [ -f "$candidate" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Whether any manager on this host packages a secret backend's CLI. The op, bw
+# and vault entries of INSTALLABLE_TOOLS (crates/cfgd-core/src/providers/mod.rs)
+# name brew, winget, chocolatey and scoop and decline every Linux distribution
+# manager, because no distribution packages those CLIs.
+secret_cli_install_route_available() {
+    if cfgd_finds_brew; then
+        return 0
+    fi
+    for manager in winget choco scoop; do
+        if command -v "$manager" > /dev/null 2>&1; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+# What a plan says about a declared secret whose backend CLI is missing. Which
+# of the two rows cfgd writes is the host's decision, not a choice: with a
+# manager that packages the CLI, the planner adds the install and names the
+# backend that asked for it; with none, it cannot install anything, so it
+# writes the skip row saying the provider is out of reach and why.
+assert_missing_secret_cli() {
+    local output="$1"
+    local provider="$2"
+    local tool="$3"
+    if secret_cli_install_route_available; then
+        assert_contains "$output" "required by secret:$provider"
+    else
+        assert_contains "$output" "provider '$provider' not available" &&
+            assert_contains "$output" "$tool is not installed"
+    fi
 }
 
 # --- Test lifecycle ---

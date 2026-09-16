@@ -1,4 +1,6 @@
+use std::collections::HashMap;
 use std::fmt::{self, Display};
+use std::sync::OnceLock;
 
 use console::{Color, Style};
 
@@ -33,9 +35,9 @@ const ICON_INFO: &str = "◉";
 /// Single style slot held by `Theme`. Wraps `console::Style` (used for the
 /// 256-color fallback path and for non-color attributes like bold/dim) and
 /// optionally carries an `(r, g, b)` triple for high-fidelity rendering on
-/// truecolor-capable terminals. The decision between truecolor and 256-color
-/// is taken at render time inside `apply_to`, so existing call sites are
-/// unaffected by the upgrade.
+/// truecolor-capable terminals. Which of the two depths a slot renders in is
+/// stamped by [`Self::with_truecolor`], once per theme, so one render cannot
+/// mix depths.
 #[derive(Debug, Clone, Default)]
 pub struct ThemedStyle {
     /// `console::Style` carrying attrs and (when no `rgb` is present) the
@@ -55,6 +57,15 @@ pub struct ThemedStyle {
     /// that forgets to stamp renders UNSTYLED — that fails a positive assertion
     /// loudly, where the opposite default makes a negative one pass vacuously.
     colors: bool,
+    /// Whether this style quantizes its `rgb` triple into the nearest 256-colour
+    /// slot instead of emitting the 24-bit foreground. A style renders its full
+    /// triple unless the terminal probe at a PRODUCTION printer's construction
+    /// says the host cannot show it, so a theme built anywhere else spells the
+    /// same bytes on every host. Never re-derived while rendering: the syntax
+    /// highlighter writes its own foreground runs, and a depth answered per span
+    /// let one screen carry 24-bit highlighting beside 256-colour headings on a
+    /// host whose `COLORTERM` the two readers disagreed about.
+    ansi256: bool,
     /// Whether this style has been given an actual foreground colour (a
     /// truecolor hex or a named `console::Color`), independent of `colors`
     /// (which says only whether emitting it is currently allowed). Backs the
@@ -121,10 +132,10 @@ impl ThemedStyle {
         Self::default()
     }
 
-    /// Build a style from a `#rrggbb` hex string. On terminals that advertise
-    /// truecolor support (`COLORTERM=truecolor|24bit`), `apply_to` emits the
-    /// exact 24-bit color. Otherwise the color is quantized to the nearest
-    /// ANSI 256-color slot for compatibility.
+    /// Build a style from a `#rrggbb` hex string. `apply_to` emits the exact
+    /// 24-bit color unless the theme was stamped for a terminal that advertises
+    /// no truecolor support, where the color is quantized to the nearest ANSI
+    /// 256-color slot for compatibility.
     pub fn from_hex(hex: &str) -> Self {
         match parse_hex_rgb(hex) {
             Some((r, g, b)) => Self {
@@ -132,6 +143,7 @@ impl ThemedStyle {
                 rgb: Some((r, g, b)),
                 attrs: AttrSet::default(),
                 colors: false,
+                ansi256: false,
                 has_color: true,
             },
             None => Self::default(),
@@ -146,6 +158,7 @@ impl ThemedStyle {
             rgb: None,
             attrs: AttrSet::default(),
             colors: false,
+            ansi256: false,
             has_color: true,
         }
     }
@@ -228,6 +241,14 @@ impl ThemedStyle {
         self
     }
 
+    /// Stamp the depth this style's `rgb` triple renders in: the full 24-bit
+    /// foreground, or the nearest 256-colour slot. Independent of the colour
+    /// stamp, so the two can arrive in either order.
+    pub fn with_truecolor(mut self, enabled: bool) -> Self {
+        self.ansi256 = !enabled;
+        self
+    }
+
     fn with_attrs(mut self, attrs: AttrSet) -> Self {
         // The mirror of `bold()`'s own check, for the order `bold()` cannot
         // see: `recolor`/`apply_color` build a freshly-coloured style
@@ -266,7 +287,7 @@ impl ThemedStyle {
     ///   attrs included. An attribute IS styling: a stream the printer decided
     ///   against carries no SGR, so `--color never` output is byte-identical
     ///   whatever `--theme` names.
-    /// - `supports_truecolor()` is true AND an RGB triple is present → emit
+    /// - the stamped depth is 24-bit AND an RGB triple is present → emit
     ///   `\x1b[<attrs>;38;2;R;G;Bm{text}\x1b[0m`.
     /// - Otherwise → delegate to `console::Style::apply_to`, which yields
     ///   the 256-color fallback path (existing behavior).
@@ -298,7 +319,7 @@ impl<D: Display> Display for StyledText<'_, D> {
         }
 
         if let Some((r, g, b)) = self.style.rgb
-            && supports_truecolor()
+            && !self.style.ansi256
         {
             if !attrs.has_attrs() {
                 return write!(f, "\x1b[38;2;{r};{g};{b}m{}\x1b[0m", self.text);
@@ -310,10 +331,90 @@ impl<D: Display> Display for StyledText<'_, D> {
     }
 }
 
+/// The syntect theme a preset highlights a code block with. A built-in comes
+/// from `ThemeSet::load_defaults()`; every other preset bundles the upstream
+/// `.tmTheme` under `output/tmthemes/` (see the `THIRD_PARTY.md` beside them).
+const SYNTAX_THEME_DEFAULT: &str = "base16-ocean.dark";
+const SYNTAX_THEME_BUILTINS: &[&str] = &[
+    SYNTAX_THEME_DEFAULT,
+    "Solarized (dark)",
+    "Solarized (light)",
+];
+const SYNTAX_THEME_BUNDLED: &[(&str, &str)] = &[
+    ("dracula", include_str!("tmthemes/dracula.tmTheme")),
+    ("nord", include_str!("tmthemes/nord.tmTheme")),
+    ("monokai", include_str!("tmthemes/monokai-extended.tmTheme")),
+    (
+        "gruvbox-dark",
+        include_str!("tmthemes/gruvbox-dark.tmTheme"),
+    ),
+    ("tokyo-night", include_str!("tmthemes/tokyo-night.tmTheme")),
+    ("one-dark", include_str!("tmthemes/one-dark.tmTheme")),
+    (
+        "catppuccin-mocha",
+        include_str!("tmthemes/catppuccin-mocha.tmTheme"),
+    ),
+];
+
+/// Parsing a `.tmTheme` is plist work, and a long `cfgd module show` prints
+/// several bodies, so the whole set is parsed once and borrowed from then on.
+static SYNTAX_THEMES: OnceLock<HashMap<&'static str, syntect::highlighting::Theme>> =
+    OnceLock::new();
+
+fn syntax_themes() -> &'static HashMap<&'static str, syntect::highlighting::Theme> {
+    SYNTAX_THEMES.get_or_init(|| {
+        let mut parsed = HashMap::new();
+        let mut defaults = syntect::highlighting::ThemeSet::load_defaults();
+        for name in SYNTAX_THEME_BUILTINS {
+            if let Some(theme) = defaults.themes.remove(*name) {
+                parsed.insert(*name, theme);
+            }
+        }
+        for (name, body) in SYNTAX_THEME_BUNDLED {
+            // An asset that does not parse leaves its preset with no syntect
+            // theme, so the body renders plain and the command it was printed
+            // under still succeeds.
+            if let Ok(theme) =
+                syntect::highlighting::ThemeSet::load_from_reader(&mut std::io::Cursor::new(*body))
+            {
+                parsed.insert(*name, theme);
+            }
+        }
+        parsed
+    })
+}
+
+fn preset_syntax_theme(preset: &str) -> Option<&'static str> {
+    match preset {
+        // The one preset that spends no colour of its own: a highlighted body
+        // would be the only coloured thing on its screen.
+        "minimal" => None,
+        "solarized-dark" => Some("Solarized (dark)"),
+        "solarized-light" => Some("Solarized (light)"),
+        name => SYNTAX_THEME_BUNDLED
+            .iter()
+            .find(|(key, _)| *key == name)
+            .map(|(key, _)| *key)
+            .or(Some(SYNTAX_THEME_DEFAULT)),
+    }
+}
+
 /// `Clone` so a printer derived from another (`Printer::at_verbosity`) inherits
 /// the theme it was actually rendering with — presets, config overrides and the
 /// colour stamp together — instead of rebuilding a preset from a name and
-/// silently dropping `spec.theme.overrides`.
+/// silently dropping `spec.output.theme.overrides`.
+///
+/// A theme also carries the syntect theme a highlighted code block is painted
+/// with, so `Printer::syntax_highlight` paints in the preset the rest of the
+/// screen is drawn in (`Theme::syntect_theme`):
+///
+/// | Preset | syntect theme | Where it comes from |
+/// |---|---|---|
+/// | `default`, `adventure-time` | `base16-ocean.dark` | syntect built-in |
+/// | `solarized-dark` | `Solarized (dark)` | syntect built-in |
+/// | `solarized-light` | `Solarized (light)` | syntect built-in |
+/// | `dracula`, `nord`, `monokai`, `gruvbox-dark`, `tokyo-night`, `one-dark`, `catppuccin-mocha` | the preset's own palette | bundled `.tmTheme` |
+/// | `minimal` | none | the body renders plain |
 #[derive(Clone)]
 pub struct Theme {
     /// Whether this theme's styles may emit colour, stamped by
@@ -328,6 +429,18 @@ pub struct Theme {
     /// `colors` is — a preset cannot be assembled with the slots and the
     /// decision disagreeing.
     hyperlinks: bool,
+    /// Whether this theme's styles, and the syntax highlighter rendering under
+    /// it, quantize a 24-bit foreground into a 256-colour slot. Stamped by
+    /// [`Theme::with_truecolor`] from the terminal a PRODUCTION printer was
+    /// built against, and readable through [`Theme::truecolor`] because the
+    /// highlighter writes its own escapes and has to take the same answer the
+    /// style slots took.
+    ansi256: bool,
+    /// Which entry of the syntect registry a code block is highlighted with,
+    /// stamped by [`Theme::preset`] and read through [`Theme::syntect_theme`].
+    /// `None` renders the block plain. Private for the same reason the two
+    /// stamps above are: the choice belongs to the preset, not to a caller.
+    syntax_theme: Option<&'static str>,
 
     // Style slots (14)
     /// Style for an action subject at the deepest level of the run tree.
@@ -379,6 +492,8 @@ impl Default for Theme {
         Self {
             colors: false,
             hyperlinks: false,
+            ansi256: false,
+            syntax_theme: Some(SYNTAX_THEME_DEFAULT),
             // No palette foreground exists to spend here, and the terminal's
             // own default is the fall-through this slot exists to avoid — so
             // the subject keeps its role style.
@@ -447,6 +562,37 @@ impl Theme {
         self.colors
     }
 
+    /// Stamp the colour depth every span under this theme renders in. A theme
+    /// renders its full triples until a terminal probe downgrades it, which the
+    /// two production constructors do and nothing else does: a golden comparing
+    /// bytes then says the same thing on a host whose `COLORTERM` is unset as on
+    /// one that advertises 24-bit.
+    pub fn with_truecolor(mut self, enabled: bool) -> Self {
+        self.ansi256 = !enabled;
+        self.primary = self.primary.map(|s| s.with_truecolor(enabled));
+        self.header = self.header.with_truecolor(enabled);
+        self.success = self.success.with_truecolor(enabled);
+        self.warning = self.warning.with_truecolor(enabled);
+        self.error = self.error.with_truecolor(enabled);
+        self.info = self.info.with_truecolor(enabled);
+        self.muted = self.muted.with_truecolor(enabled);
+        self.running = self.running.with_truecolor(enabled);
+        self.diff_add = self.diff_add.with_truecolor(enabled);
+        self.diff_remove = self.diff_remove.with_truecolor(enabled);
+        self.diff_context = self.diff_context.with_truecolor(enabled);
+        self.accent = self.accent.with_truecolor(enabled);
+        self.secondary = self.secondary.with_truecolor(enabled);
+        self.type_hint = self.type_hint.with_truecolor(enabled);
+        self
+    }
+
+    /// Whether a span under this theme emits a 24-bit foreground. Read by the
+    /// syntax highlighter, whose escapes syntect writes rather than the style
+    /// gate, so both halves of one render land in one depth.
+    pub fn truecolor(&self) -> bool {
+        !self.ansi256
+    }
+
     /// Stamp whether a linked value may emit an OSC 8 hyperlink. Only the
     /// production printer stamps `true`, and only when colour is on and the
     /// terminal is a known OSC 8 emitter ([`super::terminal_supports_hyperlinks`]);
@@ -467,6 +613,15 @@ impl Theme {
     /// ASCII `->`, so a preset override applies uniformly.
     pub fn arrow(&self) -> &str {
         &self.icon_arrow
+    }
+
+    /// The syntect theme a code block rendered under this theme is highlighted
+    /// with, or `None` for a preset that renders one plain (`minimal`). The ONE
+    /// answer to that question: a renderer never picks a syntect theme by name,
+    /// or a themed run highlights in somebody else's palette. See the table on
+    /// [`Theme`] for the preset mapping.
+    pub(crate) fn syntect_theme(&self) -> Option<&'static syntect::highlighting::Theme> {
+        syntax_themes().get(self.syntax_theme?)
     }
 
     /// Every preset name [`Theme::preset`] answers, in the order `--help`
@@ -491,7 +646,7 @@ impl Theme {
     /// The preset called `name`, or `None` for a name not in
     /// [`Theme::PRESET_NAMES`].
     pub fn preset(name: &str) -> Option<Self> {
-        Some(match name {
+        let mut theme = match name {
             "default" => Self::default(),
             "dracula" => Self::dracula(),
             "solarized-dark" => Self::solarized_dark(),
@@ -505,7 +660,11 @@ impl Theme {
             "one-dark" => Self::one_dark(),
             "minimal" => Self::minimal(),
             _ => return None,
-        })
+        };
+        // Stamped at the one site every preset passes through: a preset body
+        // carrying `..Self::default()` would silently inherit the default's.
+        theme.syntax_theme = preset_syntax_theme(name);
+        Some(theme)
     }
 
     /// [`Theme::preset`] for a name read out of a config file, where an
@@ -888,6 +1047,8 @@ impl Theme {
         Self {
             colors: false,
             hyperlinks: false,
+            ansi256: false,
+            syntax_theme: None,
             // minimal spends no colour at all.
             primary: None,
             header: ThemedStyle::plain().bold(),
@@ -925,7 +1086,12 @@ impl Theme {
 /// the convention used by `bat`, `delta`, `git diff --color`, `lsd`, `eza`,
 /// and friends. Honors `NO_COLOR` so the signal can't override an explicit
 /// opt-out.
-pub fn supports_truecolor() -> bool {
+///
+/// Visible to `output/` alone, and called from one place inside it: the two
+/// production printer constructors stamp the answer onto their theme, and a
+/// caller reaching the environment for itself is how one screen came to carry
+/// two depths.
+pub(super) fn supports_truecolor() -> bool {
     if std::env::var_os("NO_COLOR").is_some() {
         return false;
     }
@@ -1019,11 +1185,13 @@ fn apply_color(style: &mut ThemedStyle, hex: &str) {
         // The colour decision belongs to the printer, not to the palette an
         // override names, so it survives the slot being rebuilt.
         let colors = style.colors;
+        let ansi256 = style.ansi256;
         *style = ThemedStyle {
             inner: Style::new().fg(Color::Color256(ansi256_from_rgb(r, g, b))),
             rgb: Some((r, g, b)),
             attrs: AttrSet::default(),
             colors: false,
+            ansi256,
             has_color: true,
         }
         .with_attrs(attrs)
@@ -1129,6 +1297,35 @@ mod tests {
         }
     }
 
+    /// A preset whose `.tmTheme` failed to parse, or whose registry key nothing
+    /// answers, highlights a script body in plain text while the rest of the
+    /// screen is painted — so every preset either resolves a usable syntect
+    /// theme or is the one that renders a body plain on purpose.
+    #[test]
+    fn every_preset_resolves_the_syntect_theme_it_names() {
+        for name in Theme::PRESET_NAMES {
+            let Some(theme) = Theme::preset(name) else {
+                panic!("{name} has no preset arm");
+            };
+            if *name == "minimal" {
+                assert!(
+                    theme.syntect_theme().is_none(),
+                    "minimal spends no colour, so it highlights nothing"
+                );
+                continue;
+            }
+            let resolved = theme
+                .syntect_theme()
+                .unwrap_or_else(|| panic!("{name} resolved no syntect theme"));
+            // A theme that parsed but carries no scope rules paints every token
+            // the same, which is the plain render with escapes added.
+            assert!(
+                !resolved.scopes.is_empty(),
+                "{name} resolved a syntect theme with no scope rules"
+            );
+        }
+    }
+
     /// One glyph, one meaning — across every preset, not just the default.
     ///
     /// Two roles sharing a glyph makes the icon column unreadable, and the
@@ -1217,10 +1414,7 @@ mod tests {
     }
 
     #[test]
-    #[serial]
-    fn hex_style_emits_truecolor_escape_when_supported() {
-        let _no_color = EnvVarGuard::unset("NO_COLOR");
-        let _ct = EnvVarGuard::set("COLORTERM", "truecolor");
+    fn hex_style_emits_its_truecolor_escape_by_default() {
         let style = ThemedStyle::from_hex("#bd93f9").with_colors(true);
         let out = style.apply_to("hi").to_string();
         assert_eq!(out, "\x1b[38;2;189;147;249mhi\x1b[0m", "got: {out:?}");
@@ -1240,21 +1434,17 @@ mod tests {
     }
 
     #[test]
-    #[serial]
     fn hex_style_with_bold_emits_truecolor_with_attr() {
-        let _no_color = EnvVarGuard::unset("NO_COLOR");
-        let _ct = EnvVarGuard::set("COLORTERM", "truecolor");
         let style = colored_then_bolded("#bd93f9").with_colors(true);
         let out = style.apply_to("hi").to_string();
         assert_eq!(out, "\x1b[1;38;2;189;147;249mhi\x1b[0m", "got: {out:?}");
     }
 
     #[test]
-    #[serial]
-    fn hex_style_falls_back_to_256_when_no_truecolor() {
-        let _no_color = EnvVarGuard::unset("NO_COLOR");
-        let _ct = EnvVarGuard::unset("COLORTERM");
-        let style = ThemedStyle::from_hex("#bd93f9").with_colors(true);
+    fn hex_style_quantizes_to_256_when_the_depth_is_stamped_off() {
+        let style = ThemedStyle::from_hex("#bd93f9")
+            .with_colors(true)
+            .with_truecolor(false);
         let out = style.apply_to("hi").to_string();
         // Output must contain the 256-color SGR for the quantized slot.
         let (r, g, b) = (0xbd, 0x93, 0xf9);
@@ -1262,11 +1452,11 @@ mod tests {
         let needle = format!("38;5;{expected_slot}");
         assert!(
             out.contains(&needle),
-            "expected fallback to contain {needle:?}, got: {out:?}"
+            "expected the quantized slot {needle:?}, got: {out:?}"
         );
         assert!(
             !out.contains("38;2;"),
-            "must not emit truecolor SGR in fallback: {out:?}"
+            "must not emit a truecolor SGR once the depth is stamped off: {out:?}"
         );
     }
 

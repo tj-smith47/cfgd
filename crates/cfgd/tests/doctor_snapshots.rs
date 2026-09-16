@@ -14,7 +14,7 @@ use cfgd::cli::doctor::{
 };
 use cfgd::cli::output_types::{
     DoctorConfigCheck, DoctorConfigState, DoctorConfiguratorCheck, DoctorManagerCheck,
-    DoctorModuleCheck, DoctorModulePackageCheck, DoctorOutput, DoctorProviderCheck,
+    DoctorModuleCheck, DoctorModuleManagerRoute, DoctorOutput, DoctorProviderCheck,
     DoctorSecretsCheck,
 };
 use cfgd_core::output::Printer;
@@ -29,6 +29,7 @@ fn happy_fixture() -> (DoctorOutput, DoctorExtras) {
             name: Some("test-host".into()),
             profile: Some("default".into()),
             error: None,
+            legacy_output_keys: Vec::new(),
             state: DoctorConfigState::Valid,
         },
         git: true,
@@ -57,6 +58,7 @@ fn happy_fixture() -> (DoctorOutput, DoctorExtras) {
                 declared: true,
                 can_bootstrap: false,
                 bootstrap_method: None,
+                used_by_modules: 1,
             },
             DoctorManagerCheck {
                 name: "brew".into(),
@@ -64,32 +66,19 @@ fn happy_fixture() -> (DoctorOutput, DoctorExtras) {
                 declared: false,
                 can_bootstrap: false,
                 bootstrap_method: None,
+                used_by_modules: 0,
             },
         ],
         modules: vec![DoctorModuleCheck {
             name: "dotfiles".into(),
             valid: true,
             error: None,
-            packages: vec![
-                DoctorModulePackageCheck {
-                    name: "bat".into(),
-                    resolved_name: "bat".into(),
-                    manager: "cargo".into(),
-                    installed: true,
-                    version: Some("0.24.0".into()),
-                    skip_reason: None,
-                    error: None,
-                },
-                DoctorModulePackageCheck {
-                    name: "ripgrep".into(),
-                    resolved_name: "ripgrep".into(),
-                    manager: "cargo".into(),
-                    installed: true,
-                    version: Some("14.1.0".into()),
-                    skip_reason: None,
-                    error: None,
-                },
-            ],
+            managers: vec![DoctorModuleManagerRoute {
+                name: "cargo".into(),
+                available: true,
+                package_count: 2,
+            }],
+            unresolved: vec![],
         }],
         system_configurators: vec![DoctorConfiguratorCheck {
             name: "shell".into(),
@@ -125,6 +114,7 @@ fn one_warn_fixture() -> (DoctorOutput, DoctorExtras) {
         declared: true,
         can_bootstrap: true,
         bootstrap_method: Some("curl".into()),
+        used_by_modules: 0,
     });
     extras.config_sources = vec![DoctorConfigSource {
         name: "team-base".into(),
@@ -136,16 +126,12 @@ fn one_warn_fixture() -> (DoctorOutput, DoctorExtras) {
 fn one_fail_fixture() -> (DoctorOutput, DoctorExtras) {
     let (mut output, extras) = happy_fixture();
     output.git = false;
-    // A declared module package that isn't installed should drive the overall
-    // failure summary, not just `git: not found`.
-    output.modules[0].packages.push(DoctorModulePackageCheck {
-        name: "fd".into(),
-        resolved_name: "fd-find".into(),
-        manager: "cargo".into(),
-        installed: false,
-        version: None,
-        skip_reason: None,
-        error: None,
+    // A module whose packages route to a manager this host does not have
+    // should drive the overall failure summary, not just `git: not found`.
+    output.modules[0].managers.push(DoctorModuleManagerRoute {
+        name: "brew".into(),
+        available: false,
+        package_count: 3,
     });
     (output, extras)
 }
@@ -158,6 +144,7 @@ fn bare_fixture() -> (DoctorOutput, DoctorExtras) {
             name: Some("test-host".into()),
             profile: Some("default".into()),
             error: None,
+            legacy_output_keys: Vec::new(),
             state: DoctorConfigState::Valid,
         },
         git: true,
@@ -216,6 +203,38 @@ fn doctor_happy_json() {
         "doctor -o json must serialize exactly DoctorOutput (regression anchor)"
     );
     cap.assert_json_snapshot_in(Path::new(SNAPSHOT_ROOT), "doctor/happy.json");
+}
+
+/// A document still carrying a pre-`spec.output` flat key gets one Warn row
+/// per key, naming the nested key that replaced it and the command that
+/// writes it. A migrated document renders none of them.
+#[test]
+fn doctor_reports_each_legacy_presentation_key_as_a_warn_row() {
+    let (mut output, extras) = happy_fixture();
+    output.config.legacy_output_keys = vec!["spec.theme".into(), "spec.usageHints".into()];
+    let (printer, cap) = Printer::for_test_doc();
+    printer.emit(build_doctor_doc(&output, &extras));
+    drop(printer);
+    let human = cap.human();
+    for (old, new) in cfgd_core::config::LEGACY_OUTPUT_KEYS {
+        assert!(
+            human.contains(old) && human.contains(new),
+            "expected a row naming {old} and {new}, got:\n{human}"
+        );
+    }
+    assert!(
+        human.contains("cfgd config set output.theme"),
+        "the row must name the command that writes the new key, got:\n{human}"
+    );
+
+    let (clean, extras) = happy_fixture();
+    let (printer, cap) = Printer::for_test_doc();
+    printer.emit(build_doctor_doc(&clean, &extras));
+    drop(printer);
+    assert!(
+        !cap.human().contains("spec.theme"),
+        "a migrated document names no legacy key"
+    );
 }
 
 #[test]

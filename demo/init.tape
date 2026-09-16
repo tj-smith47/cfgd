@@ -6,14 +6,11 @@
 # h264 is 4:2:0, and the chroma smear on thin coloured glyphs would be baked in
 # before the GIF's palette pass ever ran.
 # Dwell rule, applied to every visible beat below: a hold is 1.5s plus 0.1s per
-# line the beat printed, clamped to [2s, 6s]; the one payoff beat (the settled
-# LazyVim dashboard, the thing one command produced) gets +1.5s on top; a beat
-# whose output is a single line holds 2s; a typed line that prints nothing
-# holds 1s, and a full screen of content takes the ceiling. A reader needs time
-# in proportion to what landed on screen, so each Sleep below carries the line
-# count it was computed from, measured off a real render rather than guessed.
-# The settle before the hero hold is not a dwell — it waits for the tree's
-# scan — and the closing hold reads nothing and stays 2s.
+# line the beat printed, clamped to [2s, 6s]; a beat whose output is a single
+# line holds 2s; a typed line that prints nothing holds 1s, and a full screen
+# of content takes the ceiling. The hero dashboard holds 5s: it is one image,
+# not lines to read. The settle before it is not a dwell — it waits for the
+# tree's scan — and the closing hold reads nothing and stays 2s.
 Output "demo/.out/raw/"
 
 Require docker
@@ -131,11 +128,12 @@ Wait+Screen@20s /Cargo\.toml/
 # (measured: the panel covers the dashboard for ~7s, longer than any settle
 # worth paying for).
 Sleep 1s
-# The hero frames: LazyVim with the repo tree, no toasts left on top of it. A
-# full editor screen → the rule's 6s ceiling, +1.5s as this tape's payoff beat.
-Sleep 7500ms
+# The hero frames: LazyVim with the repo tree, no toasts left on top of it.
+Sleep 5s
 
+# Held so the typed quit reads before it fires.
 Type ":qa"
+Sleep 1s
 Enter
 # Quitting the alt screen sometimes restores a blank primary screen, which
 # would leave the loop ending on black; the version line both refills the
@@ -153,15 +151,6 @@ Sleep 2s
 # only the breath before the loop snaps back.
 Sleep 2s
 
-# The ffmpeg pass that builds the GIF plays a head and a tail at 1:1 and
-# decimates everything between them in two tiers, split where the apply opens
-# its scripts phase. Two spans must land inside the 1:1 ends: the opening
-# typing plus the install's first settled progress rows (brew's version at
-# ~25.5s measured, under a 26s head) and everything from the apply's rollup
-# line onward — the 6s summary read, the env source, nvim's start, the 1s
-# settle, the 7.5s hero hold, the quit, the version beat and the closing
-# breath (23.9s measured, under a 27s tail). Only the install between them is
-# compressed. Lengthen a
-# beat here and the matching head/tail second in demo/scripts/make-gif.sh
-# moves with it, or the ramp eats footage that has to play at real speed. The
-# tier boundary needs no such care: it is read off the take.
+# demo/scripts/make-gif.sh plays a head and a tail at 1:1 and compresses the
+# install between them; HEAD and TAIL there are sized off this tape's beats, so
+# a beat lengthened here moves the matching knob there.

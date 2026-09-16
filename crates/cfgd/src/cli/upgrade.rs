@@ -26,7 +26,12 @@ fn upgraded_doc(
 ) -> Doc {
     let mut doc = Doc::new()
         .status(Role::Ok, format!("Upgraded to {version}"))
-        .kv("Installed to", installed_path);
+        // Folded here rather than at either caller, so the row and the
+        // `installedPath` payload beside it cannot disagree about the spelling.
+        .kv(
+            "Installed to",
+            cfgd_core::fold_home_in_text(&installed_path),
+        );
     if daemon_terminated {
         doc = doc.kv("Daemon", "terminated to pick up the new binary");
     }
@@ -226,6 +231,7 @@ pub fn cmd_upgrade(
 
     printer.emit(upgraded_doc(
         &check.latest.to_string(),
+        // absolute-path-ok: `upgraded_doc` folds the row it renders
         report.installed_path.display_posix(),
         applied.daemon_terminated,
         [
@@ -434,6 +440,7 @@ fn apply_startup_update(
             let report = &applied.report;
             printer.emit(upgraded_doc(
                 &check.latest.to_string(),
+                // absolute-path-ok: `upgraded_doc` folds the row it renders
                 report.installed_path.display_posix(),
                 applied.daemon_terminated,
                 [
@@ -501,6 +508,7 @@ mod tests {
         );
         // Everything above the test module: this module's own calls must not
         // stand in for the install paths' calls.
+        // unfloored-slice-ok: one compiled-in body, not a walk over files
         let production = cfgd_core::test_helpers::production_slice(source);
         assert_eq!(
             production.matches("printer.emit(upgraded_doc(").count(),
@@ -564,6 +572,7 @@ mod tests {
     #[test]
     fn the_installed_path_payload_takes_the_fs_key_fold() {
         let source = include_str!("upgrade.rs");
+        // unfloored-slice-ok: one compiled-in body, not a walk over files
         let production = cfgd_core::test_helpers::production_slice(source);
         // Split so this test's own literals are not what it counts.
         let unconditional = format!("to_posix_{}", "string(");

@@ -47,13 +47,14 @@ fn plan_for_name(
 }
 
 fn in_git_work_tree(dir: &Path) -> bool {
-    cfgd_core::git_cmd_local()
-        .arg("-C")
-        .arg(dir)
-        .args(["rev-parse", "--is-inside-work-tree"])
-        .output()
-        .map(|o| o.status.success() && cfgd_core::stdout_lossy_trimmed(&o) == "true")
-        .unwrap_or(false)
+    cfgd_core::command_output(
+        cfgd_core::git_cmd_local()
+            .arg("-C")
+            .arg(dir)
+            .args(["rev-parse", "--is-inside-work-tree"]),
+    )
+    .map(|o| o.status.success() && cfgd_core::stdout_lossy_trimmed(&o) == "true")
+    .unwrap_or(false)
 }
 
 enum GitMvOutcome {
@@ -70,25 +71,26 @@ enum GitMvOutcome {
 /// `git mv` inside `work_dir`, distinguishing "git declined because the file
 /// isn't tracked" from "git should have worked and didn't".
 fn git_mv(work_dir: &Path, from: &Path, to: &Path) -> GitMvOutcome {
-    let tracked = cfgd_core::git_cmd_local()
-        .arg("-C")
-        .arg(work_dir)
-        .args(["ls-files", "--error-unmatch"])
-        .arg(from)
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
+    let tracked = cfgd_core::command_output(
+        cfgd_core::git_cmd_local()
+            .arg("-C")
+            .arg(work_dir)
+            .args(["ls-files", "--error-unmatch"])
+            .arg(from),
+    )
+    .map(|o| o.status.success())
+    .unwrap_or(false);
     if !tracked {
         return GitMvOutcome::NotApplicable;
     }
-    match cfgd_core::git_cmd_local()
-        .arg("-C")
-        .arg(work_dir)
-        .arg("mv")
-        .arg(from)
-        .arg(to)
-        .output()
-    {
+    match cfgd_core::command_output(
+        cfgd_core::git_cmd_local()
+            .arg("-C")
+            .arg(work_dir)
+            .arg("mv")
+            .arg(from)
+            .arg(to),
+    ) {
         Ok(o) if o.status.success() => GitMvOutcome::Moved,
         Ok(o) => GitMvOutcome::Failed(cfgd_core::stderr_lossy_trimmed(&o)),
         Err(e) => GitMvOutcome::Failed(e.to_string()),
@@ -184,9 +186,9 @@ pub(crate) fn run_profile_migrate(
                         Role::Pending,
                         format!(
                             "Would move {} {} {}",
-                            from.posix(),
+                            cfgd_core::fold_home_in_text(&from.display_posix()),
                             printer.arrow(),
-                            to.posix()
+                            cfgd_core::fold_home_in_text(&to.display_posix())
                         ),
                     );
                     records.push(MigrationRecord {
@@ -268,7 +270,12 @@ pub(crate) fn run_profile_migrate(
                     Ok(()) => {
                         printer.status_simple(
                             Role::Ok,
-                            format!("Migrated '{}' {} {}", name, printer.arrow(), to.posix()),
+                            format!(
+                                "Migrated '{}' {} {}",
+                                name,
+                                printer.arrow(),
+                                cfgd_core::fold_home_in_text(&to.display_posix())
+                            ),
                         );
                         records.push(MigrationRecord {
                             name: name.clone(),
@@ -398,7 +405,7 @@ fn execute_move(
                         Role::Warn,
                         format!(
                             "`git mv` failed for {} ({})",
-                            from.posix(),
+                            cfgd_core::fold_home_in_text(&from.display_posix()),
                             cfgd_core::output::collapse_to_subject_line(&stderr),
                         ),
                     )

@@ -22,6 +22,7 @@ path = "src/main.rs"
 
 [dependencies]
 cfgd-core = { path = "../cfgd-core", version = "0.9.0" }
+cfgd-schema = { path = "../cfgd-schema", version = "0.1.0" }
 clap = { version = "4", features = ["derive", "env"] }
 clap_complete = "4"
 clap_mangen = "0.3"
@@ -51,7 +52,7 @@ kube = { version = "4.0", features = ["client", "derive", "runtime", "rustls-tls
 rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"] }
 k8s-openapi = { version = "0.28", features = ["latest"] }
 schemars = "1.2"
-brontes = "0.7.1"
+brontes = "0.7.2"
 # Typed CRD construction (build_module_crd_json): the compiler enforces field
 # coverage over cfgd_crd::ModuleSpec at the `--apply` call site. Also backs the
 # CRD-construction tests' use of cfgd_crd::check_unsigned_policy, the real

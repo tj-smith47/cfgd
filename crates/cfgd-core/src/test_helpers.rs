@@ -368,6 +368,8 @@ impl SecretProvider for MockSecretProvider {
 pub struct MockSystemConfigurator {
     pub configurator_name: String,
     pub available: bool,
+    /// The binary this configurator drives, as `required_tool()` answers it.
+    pub required_tool: Option<&'static str>,
     pub apply_calls: Mutex<Vec<serde_yaml::Value>>,
     pub drift: Mutex<Vec<SystemDrift>>,
     pub fail_apply: Mutex<bool>,
@@ -379,6 +381,7 @@ impl MockSystemConfigurator {
         Self {
             configurator_name: name.to_string(),
             available: true,
+            required_tool: None,
             apply_calls: Mutex::new(Vec::new()),
             drift: Mutex::new(Vec::new()),
             fail_apply: Mutex::new(false),
@@ -388,6 +391,18 @@ impl MockSystemConfigurator {
 
     pub fn unavailable(mut self) -> Self {
         self.available = false;
+        self
+    }
+
+    /// Declare the binary this configurator drives.
+    ///
+    /// The planner installs a registered-but-unavailable configurator's tool in
+    /// `Bootstrap` and configures the setting in the same run, and that path is
+    /// otherwise reachable only through a real configurator whose registration
+    /// is gated to one operating system. A fixture naming a tool here proves the
+    /// planner on every host.
+    pub fn requiring_tool(mut self, tool: &'static str) -> Self {
+        self.required_tool = Some(tool);
         self
     }
 
@@ -413,6 +428,10 @@ impl SystemConfigurator for MockSystemConfigurator {
 
     fn is_available(&self) -> bool {
         self.available
+    }
+
+    fn required_tool(&self) -> Option<&'static str> {
+        self.required_tool
     }
 
     fn current_state(&self) -> crate::errors::Result<serde_yaml::Value> {
@@ -639,6 +658,35 @@ pub fn file_url(path: &Path) -> String {
     crate::to_file_url(path)
 }
 
+/// A fixture root as code that FOLDS symlinks will judge it.
+///
+/// `std::env::temp_dir()` is itself reached through a symlink on macOS, where
+/// `/var` is a link to `private/var` and `$TMPDIR` lives under it, so the first
+/// link any ancestor walk meets under `tempfile::tempdir()` is that one and every
+/// path it goes on to compose carries a `/private` prefix. A fixture building its
+/// expectation out of the tempdir's own path is then comparing against a prefix
+/// the code under test cannot produce. Rebase the whole fixture on this root once
+/// and build every directory, link and expectation from it.
+///
+/// For the root only. A path that IS a symlink must not be passed: resolving it
+/// answers where it points, which is not what a fold of its own ancestors
+/// composes. A test asserting a path as the operator GAVE it keeps comparing
+/// against the unfolded path, that being the string its subject renders.
+///
+/// Unix only, and gated rather than documented: on Windows `canonicalize`
+/// answers with a `\\?\` verbatim path, which no expectation rendered through
+/// `display()` matches, so a fold there would hand every caller a root its own
+/// subject can never produce.
+#[cfg(unix)]
+pub fn folded_temp_root(root: &Path) -> PathBuf {
+    std::fs::canonicalize(root).unwrap_or_else(|e| {
+        panic!(
+            "{}: a fixture root must exist before it can be folded: {e}",
+            root.display()
+        )
+    })
+}
+
 /// Shared snapshot-golden assertion for output snapshot tests.
 ///
 /// `base.join(name)` is the golden file. With `INSTA_UPDATE=always` (or when
@@ -700,6 +748,37 @@ macro_rules! assert_snapshot_golden {
             env!("CARGO_PKG_VERSION"),
         )
     };
+}
+
+/// Fail when two of the slots a fixture asserts hold one value.
+///
+/// A fixture whose asserted counts are meant to tell its slots APART proves
+/// nothing about which slot holds which the moment two of them coincide: a
+/// producer that swapped `succeeded` and `skipped`, or wired a class count to
+/// its sibling's, renders exactly the numbers the assertion expects. Carrying
+/// that premise as a sentence in a doc comment is what let four fixtures claim
+/// a distinctness their own numbers refuted, so the premise runs here instead
+/// and the doc comment points at this call.
+///
+/// Pass every slot whose value a producer could read for another, with the name
+/// a reader of the failure would recognize. A ZERO slot is left out: its clause
+/// either renders nothing or renders `0`, so two of them are no coincidence,
+/// and only a value a wrong wiring could return in another slot's place is a
+/// hole.
+pub fn assert_slots_discriminate(slots: &[(&str, usize)]) {
+    assert!(
+        slots.len() >= 2,
+        "a distinctness premise needs two slots to tell apart, got {slots:?}"
+    );
+    for (index, (name, value)) in slots.iter().enumerate() {
+        for (other, other_value) in &slots[index + 1..] {
+            assert_ne!(
+                value, other_value,
+                "`{name}` and `{other}` both hold {value}, so a producer reading \
+                 one for the other renders the number this fixture expects: {slots:?}"
+            );
+        }
+    }
 }
 
 /// Initialize a minimal git repository at `dir` with an initial commit.
@@ -1120,6 +1199,107 @@ impl BareGitRepo {
 }
 
 // ---------------------------------------------------------------------------
+// Tracing journal
+// ---------------------------------------------------------------------------
+
+/// Everything this process has logged at `INFO` or above since the last
+/// [`reset_tracing_journal`], as the process-global subscriber formatted it.
+static TRACING_JOURNAL: Mutex<String> = Mutex::new(String::new());
+
+/// The size the journal is trimmed back to once it grows past it, oldest lines
+/// first. A reader asks about the lines its own subject just wrote, and most
+/// binaries installing the journal never empty it, so an uncapped static holds
+/// every event a whole suite emitted.
+const TRACING_JOURNAL_CEILING: usize = 8 * 1024 * 1024;
+
+#[derive(Clone, Copy)]
+struct TracingJournalWriter;
+
+impl std::io::Write for TracingJournalWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let mut held = TRACING_JOURNAL.lock().unwrap_or_else(|e| e.into_inner());
+        held.push_str(&String::from_utf8_lossy(buf));
+        if held.len() > TRACING_JOURNAL_CEILING {
+            // Cut at a newline so no reader sees half a line; the index a
+            // `\n` match reports is a char boundary whatever the line holds.
+            let kept = held
+                .match_indices('\n')
+                .find(|(at, _)| *at >= TRACING_JOURNAL_CEILING / 2)
+                .map(|(at, _)| held[at + 1..].to_string())
+                .unwrap_or_default();
+            *held = kept;
+        }
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl tracing_subscriber::fmt::MakeWriter<'_> for TracingJournalWriter {
+    type Writer = Self;
+    fn make_writer(&self) -> Self::Writer {
+        *self
+    }
+}
+
+/// Install the process-global `INFO` subscriber every scoped tracing capture
+/// needs under it, once per process.
+///
+/// A capture that binds a subscriber to its own thread
+/// (`tracing::subscriber::with_default`, `WithSubscriber`) calls this FIRST, and
+/// `every_scoped_tracing_capture_installs_the_journal_under_it` walks the
+/// workspace for one that does not. `tracing` caches one `Interest` per callsite
+/// for the whole process and computes it from what the REGISTERING thread can
+/// see: while a single dispatcher is registered, a callsite first reached from a
+/// thread holding no subscriber at all caches `never`, and every later event
+/// there is dropped until an unrelated registration rebuilds the cache. The
+/// event dropped that way is the one a scoped capture on another thread is
+/// waiting for, and the capture comes back empty — which is how
+/// `a_due_retry_over_a_backup_less_profile_does_not_claim_a_restoration` failed
+/// on an empty journal under a full parallel run. A global subscriber that
+/// outlives every capture is what keeps a thread from ever seeing none.
+///
+/// Best-effort: a process that has already set a global default of its own keeps
+/// it, and [`tracing_journal`] then reports whatever that subscriber left.
+pub fn install_tracing_journal() {
+    static INSTALL: std::sync::Once = std::sync::Once::new();
+    INSTALL.call_once(|| {
+        let subscriber = tracing_subscriber::fmt()
+            // unfolded-writer-ok: a test capture read back as a String, not a stream anyone is looking at
+            .with_writer(TracingJournalWriter)
+            .with_max_level(tracing::Level::INFO)
+            .with_ansi(false)
+            .finish();
+        let _ = tracing::subscriber::set_global_default(subscriber);
+    });
+}
+
+/// Everything this process has logged at `INFO` or above since the last
+/// [`reset_tracing_journal`].
+///
+/// A reader asks only whether a line APPEARED. The journal carries no target
+/// filter, so every event any test in the binary emits reaches it: containment
+/// only grows when a stranger writes, while an absence or a count answers by
+/// whatever else the run happened to schedule. A test asserting either scopes a
+/// capture of its own.
+pub fn tracing_journal() -> String {
+    TRACING_JOURNAL
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+
+/// Install the journal and empty it.
+pub fn reset_tracing_journal() {
+    install_tracing_journal();
+    TRACING_JOURNAL
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
+}
+
+// ---------------------------------------------------------------------------
 // Printer helper
 // ---------------------------------------------------------------------------
 
@@ -1183,6 +1363,258 @@ pub fn captured_text(buf: &std::sync::Arc<std::sync::Mutex<String>>) -> String {
 /// refusing. Discarding the buffer keeps the surface identical (Quiet, Table).
 pub fn test_printer() -> crate::output::Printer {
     crate::output::Printer::for_test().0
+}
+
+/// Blank the bodies of string, byte and char literals on one line,
+/// byte-for-byte (each literal-interior byte becomes a space, quotes stay),
+/// so byte positions found on the blanked line index the raw line exactly.
+/// Handles `"…"` with escapes, `r"…"`/`r#"…"#` raw strings, the byte forms
+/// `b'x'` and `b"…"` through those same two arms, and char literals,
+/// discriminated from lifetimes by requiring the char shape itself, one
+/// escape or exactly one char, never closing-quote proximity, which would
+/// blank the paren in `<'a>('x')`. Line-scoped by construction: a literal
+/// that spans lines has only its first line blanked, and its interior lines
+/// are read as code — the same bound every walk reading this already lives
+/// with.
+pub fn blank_string_literals(line: &str) -> String {
+    let bytes = line.as_bytes();
+    let mut out = bytes.to_vec();
+    let is_ident = |b: u8| b == b'_' || b.is_ascii_alphanumeric();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'"' => {
+                let mut j = i + 1;
+                while j < bytes.len() && bytes[j] != b'"' {
+                    if bytes[j] == b'\\' && j + 1 < bytes.len() {
+                        out[j] = b' ';
+                        out[j + 1] = b' ';
+                        j += 2;
+                    } else {
+                        out[j] = b' ';
+                        j += 1;
+                    }
+                }
+                i = j + 1;
+            }
+            b'r' if i == 0 || !is_ident(bytes[i - 1]) => {
+                let mut hashes = 0;
+                let mut j = i + 1;
+                while j < bytes.len() && bytes[j] == b'#' {
+                    hashes += 1;
+                    j += 1;
+                }
+                if j < bytes.len() && bytes[j] == b'"' {
+                    let mut k = j + 1;
+                    while k < bytes.len() {
+                        if bytes[k] == b'"'
+                            && bytes[k + 1..].len() >= hashes
+                            && bytes[k + 1..k + 1 + hashes].iter().all(|&b| b == b'#')
+                        {
+                            break;
+                        }
+                        out[k] = b' ';
+                        k += 1;
+                    }
+                    i = (k + 1 + hashes).min(bytes.len());
+                } else {
+                    i += 1;
+                }
+            }
+            b'\'' => {
+                // A char literal's body is one escape or exactly one char —
+                // a single ASCII byte, or 2-4 non-ASCII bytes — and a
+                // lifetime never closes. Requiring that shape (not mere
+                // closing-quote proximity) keeps `<'a>('x')` from blanking
+                // the paren between two quotes. Escapes scan a bounded
+                // window so `'\u{2764}'` still blanks.
+                let close = if bytes.get(i + 1) == Some(&b'\\') {
+                    (i + 3..bytes.len().min(i + 13)).find(|&k| bytes[k] == b'\'')
+                } else {
+                    (i + 2..bytes.len().min(i + 6))
+                        .find(|&k| bytes[k] == b'\'')
+                        .filter(|&k| k == i + 2 || bytes[i + 1..k].iter().all(|&b| b >= 0x80))
+                };
+                match close {
+                    Some(k) => {
+                        for b in &mut out[i + 1..k] {
+                            *b = b' ';
+                        }
+                        i = k + 1;
+                    }
+                    None => i += 1,
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    // Every replaced byte is ASCII space and quote/escape bytes are ASCII, so
+    // the buffer is valid UTF-8 by construction.
+    String::from_utf8(out).unwrap_or_else(|_| line.to_string())
+}
+
+/// Whether `code` holds a call to the free function `name`.
+///
+/// A source-walking pin deriving a call graph asks this rather than searching
+/// for `name(`: a `.name(` is a method on some other type, and a longer
+/// identifier ending in `name` is a different function again, so a bare
+/// substring names callers that call nothing of the sort. A path-qualified
+/// call (`module::name(`) is a caller, and so is a bare one. Pass a line or a
+/// whole body that has already been through [`blank_string_literals`], or the
+/// walk reads a spelling inside a literal as a call.
+pub fn calls_free_fn(code: &str, name: &str) -> bool {
+    let needle = format!("{name}(");
+    let mut from = 0;
+    while let Some(at) = code[from..].find(&needle) {
+        let at = from + at;
+        let before = code[..at].chars().next_back();
+        if !before.is_some_and(|c| c == '.' || c.is_ascii_alphanumeric() || c == '_') {
+            return true;
+        }
+        from = at + needle.len();
+    }
+    false
+}
+
+/// One source line as CODE: every literal body blanked and any trailing `//`
+/// comment cut, so a tell inside a string or a comment is not read as one.
+///
+/// The blanking is byte-for-byte, so a position found on the result indexes the
+/// raw line exactly.
+pub fn code_line(line: &str) -> String {
+    let blanked = blank_string_literals(line);
+    match blanked.find("//") {
+        Some(at) => blanked[..at].to_string(),
+        None => blanked,
+    }
+}
+
+/// The name a function declaration on this CODE line declares, if it declares
+/// one. A generic declaration (`fn foo<T>(`) is one.
+pub fn declared_fn_name(code: &str) -> Option<String> {
+    let (_, rest) = code.split_once("fn ")?;
+    let name: String = rest
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+        .collect();
+    (!name.is_empty() && rest[name.len()..].starts_with(['(', '<'])).then_some(name)
+}
+
+/// The type whose `impl` block still holds line `at`, if one does.
+pub fn impl_owner(code: &[String], at: usize) -> Option<String> {
+    (0..at).rev().find_map(|i| {
+        let head = code[i].trim_start();
+        if !head.starts_with("impl ") {
+            return None;
+        }
+        let depth: i32 = code[i..at]
+            .iter()
+            .map(|c| c.matches('{').count() as i32 - c.matches('}').count() as i32)
+            .sum();
+        if depth <= 0 {
+            return None;
+        }
+        // `impl Trait for Type {` and `impl Type {` both end on the type, and a
+        // generic argument is not part of the name a call site spells.
+        let subject = head.split('{').next()?.split_whitespace().last()?;
+        Some(
+            subject
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect(),
+        )
+    })
+}
+
+/// Every function declared in one source, as `(name, the type whose impl
+/// declares it, the declaration's own CODE)`.
+///
+/// The body is brace-balanced from the `fn` line, so a nested declaration is
+/// read as itself as well as inside its parent.
+pub fn fn_declarations(src: &str) -> Vec<(String, Option<String>, String)> {
+    let code: Vec<String> = src.lines().map(code_line).collect();
+    let mut out = Vec::new();
+    for (i, line) in code.iter().enumerate() {
+        let Some(name) = declared_fn_name(line) else {
+            continue;
+        };
+        let mut depth = 0i32;
+        let mut opened = false;
+        let mut end = i;
+        for (n, c) in code.iter().enumerate().skip(i) {
+            depth += c.matches('{').count() as i32 - c.matches('}').count() as i32;
+            opened |= depth > 0;
+            end = n;
+            if opened && depth <= 0 {
+                break;
+            }
+        }
+        out.push((name, impl_owner(&code, i), code[i..=end].join("\n")));
+    }
+    out
+}
+
+/// Whether this CODE reaches the function `name` declared in `owner`'s impl.
+///
+/// A free function is reached by a call; a method is reached by `.name(` on a
+/// value of its own type, which is why the owner has to be named as well: one
+/// `path_dirs` per manager, and only one of them reads a given seam. A
+/// derivation asking [`calls_free_fn`] alone stops at the first wrapper written
+/// as a method, and everything reaching the seam through it is never derived.
+///
+/// The owner is matched by MENTION, not by resolving the receiver's type, so
+/// the method arm errs toward claiming a reach: a body calling `.name(` on some
+/// other value while naming the type anywhere reads as a caller. Every consumer
+/// must therefore be a superset check, where an extra name costs a wider
+/// population rather than a missed one.
+pub fn reaches_fn(code: &str, name: &str, owner: Option<&str>) -> bool {
+    match owner {
+        None => calls_free_fn(code, name),
+        Some(ty) => code.contains(&format!(".{name}(")) && code.contains(ty),
+    }
+}
+
+/// Every declaration reaching one of `seeds`, folded until the set stops
+/// growing, as `(name, the type whose impl declares it)`.
+///
+/// A call graph a walk derives is as long as somebody writes it, so a fold that
+/// stops at a fixed depth names exactly the functions a hand list would have.
+/// The seeds are included in the result: a seed is itself a member of the set
+/// its callers join.
+///
+/// The self-call skip compares the whole `(name, owner)` pair, because two
+/// distinct functions sharing a bare name would otherwise collapse and a
+/// genuine edge between them be dropped.
+pub fn callers_reaching(
+    declarations: &[(String, Option<String>, String)],
+    seeds: &[(String, Option<String>)],
+) -> Vec<(String, Option<String>)> {
+    let mut derived: Vec<(String, Option<String>)> = Vec::new();
+    for seed in seeds {
+        if !derived.contains(seed) {
+            derived.push(seed.clone());
+        }
+    }
+    let mut frontier = derived.clone();
+    while !frontier.is_empty() {
+        let mut next: Vec<(String, Option<String>)> = Vec::new();
+        for (name, owner) in &frontier {
+            for (caller, caller_owner, body) in declarations {
+                if (caller, caller_owner) == (name, owner)
+                    || !reaches_fn(body, name, owner.as_deref())
+                {
+                    continue;
+                }
+                let entry = (caller.clone(), caller_owner.clone());
+                if !derived.contains(&entry) && !next.contains(&entry) {
+                    next.push(entry);
+                }
+            }
+        }
+        derived.extend(next.iter().cloned());
+        frontier = next;
+    }
+    derived
 }
 
 /// A Rust source's logical lines: every `\`-continued string literal folded
@@ -1587,32 +2019,60 @@ spec:
 /// `BootstrappedPathDirsGuard::capture_and_clear()` is required too for the
 /// negative direction — the bootstrapped registry is searched after `PATH`.
 ///
-/// Unix-only: the probe files are `/bin/sh` no-ops, and Windows resolves an
-/// executable by `PATHEXT` rather than by the exec bit.
+/// Unix-only: the probe files are `/bin/sh` no-ops.
 #[cfg(unix)]
 pub struct ProbePath {
     _tmp: tempfile::TempDir,
     _path: EnvVarGuard,
 }
 
+/// Where a probe tool named `stem` lives inside `dir`, under the name the host
+/// resolves it by.
+///
+/// The name carries `.exe` on Windows, which is what makes the file resolvable
+/// there: `command_path` searches by `PATHEXT`, not by an exec bit. This is the
+/// one statement of that rule, so a caller holding the path of a tool it planted
+/// asks here rather than spelling the suffix again.
+pub fn probe_tool_path(dir: &Path, stem: &str) -> std::path::PathBuf {
+    if cfg!(windows) {
+        dir.join(format!("{stem}.exe"))
+    } else {
+        dir.join(stem)
+    }
+}
+
+/// Write one no-op executable named `stem` into `dir`, and hand back its path.
+///
+/// The name comes from [`probe_tool_path`]. The body is a `/bin/sh` no-op on
+/// every host, so the planted file is resolvable but not runnable on Windows: a
+/// pin that spawns one wants [`write_tool_shim`] instead.
+pub fn write_probe_tool(dir: &Path, stem: &str) -> std::path::PathBuf {
+    let bin = probe_tool_path(dir, stem);
+    std::fs::write(&bin, "#!/bin/sh\nexit 0\n").expect("write probe tool");
+    crate::set_file_permissions(&bin, 0o755).expect("chmod probe tool");
+    bin
+}
+
 #[cfg(unix)]
 impl ProbePath {
     /// A `PATH` of one directory containing an executable per name.
     pub fn containing(names: &[&str]) -> Self {
-        use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::TempDir::new().expect("tempdir");
         for name in names {
-            let bin = tmp.path().join(name);
-            std::fs::write(&bin, "#!/bin/sh\nexit 0\n").expect("write probe tool");
-            let mut perms = std::fs::metadata(&bin).expect("stat").permissions();
-            perms.set_mode(0o755);
-            std::fs::set_permissions(&bin, perms).expect("chmod");
+            write_probe_tool(tmp.path(), name);
         }
         let path = EnvVarGuard::set("PATH", tmp.path().to_str().expect("utf-8 tempdir"));
         Self {
             _tmp: tmp,
             _path: path,
         }
+    }
+
+    /// Put an executable into this `PATH` AFTER a resolution has already missed
+    /// it, which is how a tool appearing mid-run is reproduced without a second
+    /// `PATH` write.
+    pub fn plant(&self, name: &str) -> std::path::PathBuf {
+        write_probe_tool(self._tmp.path(), name)
     }
 }
 
@@ -1841,6 +2301,7 @@ impl ToolShim {
     /// Windows log is stripped of `"` to read as the same unquoted join
     /// `"$*"` gives on Unix.
     pub fn argv_log(&self) -> String {
+        // absent-file-ok: a shim nothing ran wrote no log, so an empty argv is honest.
         let raw = std::fs::read_to_string(&self.log_path).unwrap_or_default();
         #[cfg(windows)]
         return raw.replace('"', "");
@@ -1952,6 +2413,7 @@ impl PathShimLog {
     /// Read the captured argv. Each line is the space-joined argv of one
     /// invocation, in order.
     pub fn argv_log(&self) -> String {
+        // absent-file-ok: a shim nothing ran wrote no log.
         std::fs::read_to_string(&self.log_path).unwrap_or_default()
     }
 
@@ -2309,6 +2771,20 @@ impl Drop for SpawnEnvGuard {
 /// when the outermost guard drops. See `PATH_ENV_LOCK` for the cross-thread
 /// limit.
 ///
+/// A test may also take it while mutating neither `PATH` nor the working
+/// directory, purely to hold every OTHER thread out of a spawn for the length
+/// of a window: the guarded spawn and `PATH`-resolution helpers in
+/// [`crate::command_output_with_timeout`], [`crate::command_path`] and
+/// [`crate::process_path_with_dirs_prepended`] take the shared read guard at
+/// the spawn, so the exclusive guard excludes all three. That is how a test
+/// setting a process-global `CFGD_*_BIN` seam keeps a sibling's manager sweep
+/// from spawning its shim. The exclusion follows the seam rather than that
+/// list: it reaches every site that takes the read guard at its own seam, the
+/// script and lane spawn paths in `reconciler/scripts.rs` and
+/// `reconciler/lanes.rs` included, and only a site that takes none evades it.
+/// `every_production_path_read_takes_the_read_guard` is what keeps that set
+/// honest, so the list of seams is the walk's to state, not this doc's.
+///
 /// The one order that cannot be made re-entrant is shared-then-exclusive: a
 /// thread holding [`path_env_read_guard`]'s read guard cannot upgrade to the
 /// write guard, and degrading to a no-op would be worse than the hang it
@@ -2472,6 +2948,42 @@ impl Drop for CommandPathMemoTtlGuard {
     }
 }
 
+/// RAII pin of the rate-limited retry ladder's first step, restoring the prior
+/// setting on drop. The sibling of [`CommandPathMemoTtlGuard`], for a different
+/// reason: the ladder a 429 moves the gateway client onto is measured in seconds
+/// against the gateway's own enrollment quota, so a test proving that the client
+/// CHOSE that ladder (rather than the half-second transient one) would otherwise
+/// have to sleep the real wait to see it.
+///
+/// Pinning this one needs serialization: a test asserting that the UNPINNED
+/// accessor still answers the constant is measuring exactly what a concurrent pin
+/// displaces. Pair every use with `#[serial_test::serial(rate_limited_backoff)]`,
+/// the named group that assertion shares — named, so nothing else is held up.
+pub struct RateLimitedBackoffGuard {
+    prior: Option<u64>,
+}
+
+impl RateLimitedBackoffGuard {
+    /// Pin the first step of the rate-limited ladder to `step`, saturating at
+    /// the millisecond range. `u64::MAX` is the "no override" sentinel, so a pin
+    /// that would land on it saturates one below rather than silently restoring
+    /// the default it was called to displace.
+    pub fn pinned(step: std::time::Duration) -> Self {
+        let millis = u64::try_from(step.as_millis())
+            .unwrap_or(u64::MAX)
+            .min(u64::MAX - 1);
+        Self {
+            prior: crate::retry::set_rate_limited_backoff_override(Some(millis)),
+        }
+    }
+}
+
+impl Drop for RateLimitedBackoffGuard {
+    fn drop(&mut self) {
+        crate::retry::set_rate_limited_backoff_override(self.prior);
+    }
+}
+
 /// RAII pin of the installed-package enumeration memo's TTL, restoring the
 /// prior setting on drop. The sibling of [`CommandPathMemoTtlGuard`], for the
 /// same reason and with the same three constructors: the enumeration memo also
@@ -2486,15 +2998,11 @@ impl Drop for CommandPathMemoTtlGuard {
 /// enumeration-count tests share — named, so nothing outside them is held up.
 ///
 /// Scope is the test BINARY, since the override atomic is process-global and a
-/// binary is a process. cfgd-core's own tests pin to zero, so every use here
-/// carries the group; the four count assertions in the `cfgd` crate omit it on
-/// purpose, because nothing in THAT binary pins the ceiling and a group key
-/// there would exclude nothing. That is a precondition on the `cfgd` binary
-/// rather than a property of this type: the first `cfgd`-crate test to pin
-/// `always_expired` has to add the group to all four in the same change
-/// (`cli/live_drift.rs`, `cli/doctor.rs`, `cli/diff.rs`,
-/// `generate/scan/tests.rs`), or it breaks them with nothing going red where
-/// the mistake was made.
+/// binary is a process, and every pin in either binary carries the group —
+/// `every_test_pinning_a_serialized_seam_joins_its_own_group` reads this seam
+/// off its own roster and fails any declaration that pins it, or that asserts
+/// on the unpinned ceiling, without the attribute. The group is demanded
+/// mechanically rather than by this paragraph.
 pub struct EnumerationMemoTtlGuard {
     prior: Option<u64>,
 }
@@ -2811,6 +3319,82 @@ impl Drop for GitRefreshWindowGuard {
 // process-global.
 // ---------------------------------------------------------------------------
 
+/// The path every seam [`NoHostManagers`] pins is aimed at: a file no host has.
+///
+/// A seam naming a missing file is what makes a manager answer "not here"
+/// rather than falling through to the host, so the same string is what every
+/// per-test seam pin aims at too.
+pub const ABSENT_SEAM_PATH: &str = "/nonexistent/cfgd-tool-that-is-not-here";
+
+/// Every `CFGD_*_BIN` seam a registered package manager answers its own
+/// availability from.
+///
+/// Held here rather than in the `cfgd` crate because the guard below is what
+/// tests take, and the two crates compile separately. The roster is kept
+/// honest from the other side by
+/// `no_registered_manager_is_reachable_under_the_no_host_managers_guard`,
+/// which asks the real registry whether any manager is still reachable under
+/// the guard: a manager added with a seam missing from this list fails that
+/// pin on every host rather than quietly spawning a real install.
+pub const MANAGER_SEAMS: &[&str] = &[
+    "CFGD_APK_BIN",
+    "CFGD_APT_CACHE_BIN",
+    "CFGD_APT_GET_BIN",
+    "CFGD_BREW_BIN",
+    "CFGD_BREW_CASK_BIN",
+    "CFGD_CARGO_BIN",
+    "CFGD_CHOCO_BIN",
+    "CFGD_DNF_BIN",
+    "CFGD_DPKG_QUERY_BIN",
+    "CFGD_FLATPAK_BIN",
+    "CFGD_GO_BIN",
+    "CFGD_NIX_BIN",
+    "CFGD_NIX_ENV_BIN",
+    "CFGD_NPM_BIN",
+    "CFGD_PACMAN_BIN",
+    "CFGD_PIP3_BIN",
+    "CFGD_PIP_BIN",
+    "CFGD_PIPX_BIN",
+    "CFGD_PKG_BIN",
+    "CFGD_RPM_BIN",
+    "CFGD_RUSTUP_BIN",
+    "CFGD_SCOOP_BIN",
+    "CFGD_SNAP_BIN",
+    "CFGD_WINGET_BIN",
+    "CFGD_YUM_BIN",
+    "CFGD_ZYPPER_BIN",
+];
+
+/// Put every package manager out of this host's reach for the guard's
+/// lifetime, so a test emptying `PATH` to mean "no tool" really has none.
+///
+/// An emptied `PATH` is not that statement on its own: a manager answers from
+/// its own install prefix as well (Homebrew from `/opt/homebrew` on macOS and
+/// `/home/linuxbrew` on Linux), so a verb that provisions a tool would reach a
+/// real `brew install` on the test runner. A seam naming a missing file is the
+/// one answer that carries on every host, so each of [`MANAGER_SEAMS`] is
+/// pinned at [`ABSENT_SEAM_PATH`].
+///
+/// Pair with `#[serial_test::serial]` and declare it inside the window
+/// [`path_env_mutation_guard`] holds, beside the memo pins the emptied `PATH`
+/// needs ([`CommandPathMemoTtlGuard`], [`AvailabilityMemoTtlGuard`]): a memo
+/// filled before the window answers from what the host had.
+pub struct NoHostManagers {
+    _seams: Vec<EnvVarGuard>,
+}
+
+impl NoHostManagers {
+    /// Pin every seam of [`MANAGER_SEAMS`] at [`ABSENT_SEAM_PATH`].
+    pub fn pinned_missing() -> Self {
+        Self {
+            _seams: MANAGER_SEAMS
+                .iter()
+                .map(|seam| EnvVarGuard::set(seam, ABSENT_SEAM_PATH))
+                .collect(),
+        }
+    }
+}
+
 /// RAII guard that captures the prior value of an env var and restores it on
 /// drop (or removes the var if no prior value existed). Use in tests that
 /// mutate process-global env state.
@@ -2823,6 +3407,7 @@ impl EnvVarGuard {
     /// Capture the prior value of `key`, then set it to `value`.
     pub fn set(key: &'static str, value: &str) -> Self {
         let prior = std::env::var(key).ok();
+        refuse_unbracketed_path_write(key);
         // SAFETY: serial_test::serial gates execution; no concurrent reader/writer.
         unsafe {
             std::env::set_var(key, value);
@@ -2833,6 +3418,7 @@ impl EnvVarGuard {
     /// Capture the prior value of `key`, then remove it.
     pub fn unset(key: &'static str) -> Self {
         let prior = std::env::var(key).ok();
+        refuse_unbracketed_path_write(key);
         // SAFETY: serial_test::serial gates execution; no concurrent reader/writer.
         unsafe {
             std::env::remove_var(key);
@@ -2841,8 +3427,23 @@ impl EnvVarGuard {
     }
 }
 
+/// `PATH` is read by every `command_path` resolution and by every spawn, so a
+/// write to it is only sound inside the window [`path_env_mutation_guard`]
+/// holds: the guard is what blocks a concurrent reader, and declaring it AFTER
+/// the `EnvVarGuard` leaves the restore outside the window it was supposed to
+/// bracket. Debug-only, so the guard's own restore path pays nothing in
+/// release, and it is a deterministic tell rather than a convention.
+fn refuse_unbracketed_path_write(key: &str) {
+    debug_assert!(
+        key != "PATH" || path_env_exclusive_guard_held(),
+        "a PATH write must sit inside path_env_mutation_guard()'s window; \
+         declare the mutation guard BEFORE the EnvVarGuard so it drops last"
+    );
+}
+
 impl Drop for EnvVarGuard {
     fn drop(&mut self) {
+        refuse_unbracketed_path_write(self.key);
         // SAFETY: serial_test::serial gates execution; no concurrent reader/writer.
         unsafe {
             match self.prior.take() {
@@ -3047,6 +3648,7 @@ impl CosignTestShim {
     /// disabled or the shim was never invoked.
     pub fn argv_log(&self) -> String {
         match (&self.argv_logging, &self.log_path) {
+            // absent-file-ok: a shim nothing ran wrote no log.
             (true, Some(path)) => std::fs::read_to_string(path).unwrap_or_default(),
             _ => String::new(),
         }
@@ -3261,7 +3863,7 @@ pub struct MockPackageManager {
     ///
     /// A real manager reports a package it just installed, and a mock that did
     /// not was the only reason a run could install one package twice without a
-    /// test noticing: the `Prerequisites` phase provisions `npm` with `apt
+    /// test noticing: the `Bootstrap` phase provisions `npm` with `apt
     /// install npm`, and the `Packages` phase then asked apt for `npm` again.
     landed: std::sync::Arc<Mutex<std::collections::HashSet<String>>>,
     /// Whether `version_meets_minimum_checked` fails instead of answering —
@@ -3273,6 +3875,14 @@ pub struct MockPackageManager {
     /// rather than a planned raise. `false` by default: every manager that
     /// lists versions carries a raise verb, distinct or its own install.
     no_upgrade_verb: bool,
+    /// When set, every enumeration fails with this message instead of
+    /// answering. The `pipx list --json` shape: the tool is on the host and
+    /// runs, and what it reports back is an error.
+    listing_error: Option<String>,
+    /// What `available_version` answers per package — what this manager
+    /// OFFERS, which is a different question from what it holds installed and
+    /// is the one `fill_available_versions` asks.
+    offered: std::collections::BTreeMap<String, String>,
 }
 
 impl MockPackageManager {
@@ -3305,7 +3915,26 @@ impl MockPackageManager {
             versions: std::collections::BTreeMap::new(),
             comparisons_fail: false,
             no_upgrade_verb: false,
+            listing_error: None,
+            offered: std::collections::BTreeMap::new(),
         }
+    }
+
+    /// The version this manager OFFERS for a package, for a surface that
+    /// prints one beside each entry; a name left out answers `None`, which is
+    /// what a manager with no such package says.
+    #[must_use]
+    pub fn offering(mut self, pkg: &str, version: &str) -> Self {
+        self.offered.insert(pkg.to_string(), version.to_string());
+        self
+    }
+
+    /// A manager that is on the host and cannot say what it holds, so every
+    /// package declared under it is unanswerable rather than missing.
+    #[must_use]
+    pub fn failing_to_list(mut self, message: &str) -> Self {
+        self.listing_error = Some(message.to_string());
+        self
     }
 
     /// The `pkg version -t` shape: the version comparator fails to spawn
@@ -3396,7 +4025,7 @@ impl MockPackageManager {
     }
 
     /// Name the tools this manager's bootstrap plan shells out to — the
-    /// population the `Prerequisites` phase draws a prerequisite node from.
+    /// population the `Bootstrap` phase draws a prerequisite node from.
     pub fn requiring(mut self, tools: &[&str]) -> Self {
         self.bootstrap_requires = tools.iter().map(|t| (*t).to_string()).collect();
         self
@@ -3576,6 +4205,13 @@ impl crate::providers::PackageManager for MockPackageManager {
     ) -> crate::errors::Result<std::collections::HashSet<String>> {
         self.enumerations
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if let Some(message) = &self.listing_error {
+            return Err(crate::errors::PackageError::ListFailed {
+                manager: self.mgr_name.clone(),
+                message: message.clone(),
+            }
+            .into());
+        }
         let mut reported = self.installed.clone();
         reported.extend(self.landed.lock().unwrap().iter().cloned());
         Ok(reported)
@@ -3660,8 +4296,8 @@ impl crate::providers::PackageManager for MockPackageManager {
         Ok(())
     }
 
-    fn available_version(&self, _package: &str) -> crate::errors::Result<Option<String>> {
-        Ok(None)
+    fn available_version(&self, package: &str) -> crate::errors::Result<Option<String>> {
+        Ok(self.offered.get(package).cloned())
     }
 
     fn version_meets_minimum_checked(
@@ -3833,7 +4469,7 @@ impl ReconcilerTestHarness {
     }
 
     /// Apply a plan under an active `--phase`/`--skip` filter — the shape a
-    /// test needs to reproduce "this run never reached the `Prerequisites`
+    /// test needs to reproduce "this run never reached the `Bootstrap`
     /// phase", since [`Self::apply`] always applies unfiltered.
     pub fn apply_with_filter(
         &self,
@@ -3841,7 +4477,13 @@ impl ReconcilerTestHarness {
         printer: &Printer,
         phase_filter: Option<&crate::reconciler::PhaseFilter>,
     ) -> crate::errors::Result<crate::reconciler::ApplyResult> {
-        let reconciler = crate::reconciler::Reconciler::new(&self.registry, &self.state);
+        let reconciler = crate::reconciler::Reconciler::new(&self.registry, &self.state)
+            // What `cmd_apply` computes from its own scope: a filtered run saw
+            // a partial desired set, so retiring a row nothing declares any
+            // more is a claim it cannot make. A harness pruning where the real
+            // verb does not leaves every fixture below it asserting a
+            // semantic production never has.
+            .pruning_managed_resources(phase_filter.is_none());
         reconciler.apply(
             plan,
             &self.resolved,
@@ -3946,6 +4588,62 @@ pub fn freeze_last_scan_at(
     store.freeze_last_scan_at(timestamp)
 }
 
+/// A recorded backup payload gc cannot remove, held that way for as long as the
+/// value lives.
+///
+/// The two operating systems refuse a removal for different reasons, so each
+/// gets the shape its own kernel actually refuses. On unix the snapshot's
+/// destination DIRECTORY is replaced with a file, so the recorded path runs
+/// through a file and yields `NotADirectory`; Windows reports that same path as
+/// `NotFound`, which the remover reads as a payload that was already gone, so
+/// there the snapshot file itself is opened granting no sharing at all and every
+/// `remove_file` against it — from this process or from a child running the real
+/// binary — fails with a sharing violation. Dropping the value releases the
+/// hold, so a caller binds it across the collection it is proving.
+pub struct UnremovablePayload {
+    /// What must still be on disk once gc has reported it could not remove the
+    /// payload: the stand-in file on unix, the held snapshot on Windows. Both
+    /// are files, so one question answers the claim on either OS.
+    witness: PathBuf,
+    #[cfg(windows)]
+    _held_open: std::fs::File,
+}
+
+impl UnremovablePayload {
+    /// Whether what was held unremovable is still there.
+    pub fn witness_survives(&self) -> bool {
+        self.witness.is_file()
+    }
+}
+
+/// Make the recorded snapshot at `payload` unremovable; see
+/// [`UnremovablePayload`] for the per-OS shape.
+pub fn hold_payload_unremovable(payload: &Path) -> UnremovablePayload {
+    #[cfg(unix)]
+    {
+        let dir = payload
+            .parent()
+            .expect("a recorded snapshot lives under a destination")
+            .to_path_buf();
+        std::fs::remove_dir_all(&dir).expect("clear the old destination");
+        std::fs::write(&dir, b"an operator's file").expect("file in its place");
+        UnremovablePayload { witness: dir }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        let held = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(payload)
+            .expect("hold the snapshot open");
+        UnremovablePayload {
+            witness: payload.to_path_buf(),
+            _held_open: held,
+        }
+    }
+}
+
 /// The production region of a Rust source file a walk-style pin reads: the file
 /// with EVERY top-level inline test module removed.
 ///
@@ -3976,8 +4674,9 @@ pub fn freeze_last_scan_at(
 /// — no such literal exists today, and `cli::tests::production_body` assumes
 /// the same shape.
 ///
-/// A walk over several files pairs this with a per-file floor on what it found,
-/// so a future re-blinding fails rather than passes quietly.
+/// A walk over several files reads through [`production_slice_of`] instead,
+/// which owns the read and the per-file floor that keeps a re-blinding from
+/// passing quietly.
 pub fn production_slice(src: &str) -> String {
     let mut out = String::with_capacity(src.len());
     let mut lines = src.lines();
@@ -4008,6 +4707,46 @@ pub fn production_slice(src: &str) -> String {
     out
 }
 
+/// The whole text of a file a walk ENUMERATED, read here so the read failure
+/// cannot be separated from the population's floor.
+///
+/// A file a walk cannot open is otherwise indistinguishable from one holding
+/// nothing: the walk judges it by no rule, reports no offender and passes having
+/// read less than its floor promised. The WHOLE-file twin of
+/// [`production_slice_of`], for a walk whose subject is a source's test region,
+/// a golden or a markdown page rather than a source's production region. A read
+/// whose absence is a legitimate state — an artifact the test itself decided not
+/// to write — stays a silent read and says so with `// absent-file-ok: <why>`.
+pub fn walked_file_body(path: &Path) -> String {
+    std::fs::read_to_string(path)
+        .unwrap_or_else(|e| panic!("{}: the walk must read every file: {e}", path.display()))
+}
+
+/// The production region of the Rust source at `path`, read here so the two
+/// halves a multi-file walk needs cannot be separated: a source the walk cannot
+/// read fails it, and a slice shorter than the lines preceding the file's first
+/// `#[cfg(test)]` fails it, because [`production_slice`] drops a trailing test
+/// module and nothing else, so a shorter read is a walk that went blind partway
+/// down the file. A walk over several files reads every one through this;
+/// [`production_slice`] stays the pure cut for a caller holding one body.
+pub fn production_slice_of(path: &Path) -> String {
+    let body = std::fs::read_to_string(path)
+        .unwrap_or_else(|e| panic!("{}: the walk must read every source: {e}", path.display()));
+    // unfloored-slice-ok: the floor over what this cut returned is the assert below.
+    let production = production_slice(&body);
+    let before_tests = body
+        .lines()
+        .position(|l| l == "#[cfg(test)]")
+        .unwrap_or_else(|| body.lines().count());
+    let walked = production.lines().count();
+    assert!(
+        walked > 0 && walked >= before_tests,
+        "{}: the walk read {walked} lines of the {before_tests} that precede this file's test module",
+        path.display()
+    );
+    production
+}
+
 /// The workspace root: the directory holding `crates/`.
 ///
 /// `CARGO_MANIFEST_DIR` is resolved while THIS crate compiles, so it names
@@ -4017,6 +4756,238 @@ pub fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("..")
+}
+
+/// Every file under `root`, at any depth, in whatever order the filesystem
+/// lists them.
+///
+/// The failure policy every walk in this module shares: a directory it cannot
+/// open, and an entry it cannot read, each fail the walk. Both are a walk gone
+/// blind over whatever was there, and the population a caller then judges is
+/// shorter than the one it claims to have read, which is a pass nobody asked
+/// for.
+fn files_under_root(root: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let entries = std::fs::read_dir(&dir).unwrap_or_else(|e| {
+            panic!("{}: the walk must read every directory: {e}", dir.display())
+        });
+        for entry in entries {
+            let path = entry
+                .unwrap_or_else(|e| {
+                    panic!("{}: the walk must read every entry: {e}", dir.display())
+                })
+                .path();
+            if path.is_dir() {
+                stack.push(path);
+            } else {
+                out.push(path);
+            }
+        }
+    }
+    out
+}
+
+/// Every `.rs` source under `root`, sorted.
+///
+/// A directory the walk cannot open is a walk gone blind over whatever it held,
+/// and a fence built on a short list passes by reading less than it claims, so
+/// an unopenable directory and an empty result both fail here rather than
+/// shrinking the population in silence. The order is the sort, so a walk's own
+/// output and any message it builds read the same on every host.
+pub fn rust_sources_under(root: &Path) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = files_under_root(root)
+        .into_iter()
+        .filter(|p| p.extension().is_some_and(|e| e == "rs"))
+        .collect();
+    assert!(
+        !out.is_empty(),
+        "{}: the walk found no sources, so it proves nothing",
+        root.display()
+    );
+    out.sort();
+    out
+}
+
+/// Every path-based chmod in the production sources of every crate under
+/// `crates_dir`, and the ones that do not say why following a symlink is safe.
+///
+/// One walk for the whole WORKSPACE, not one per crate: a walk reads source
+/// TEXT, so the crate graph does not bound it, and a per-crate body is how three
+/// crates (`cfgd-csi` above all, which runs as root on every node) ended up with
+/// no walk at all. The roots are derived by reading `crates_dir` rather than
+/// listed, so a crate added to the workspace joins the population with it, and
+/// each root is a crate's `src`: a bare `crates/` root would read
+/// `cfgd/tests/common/mod.rs` as production. A `build.rs` is outside the roots
+/// and outside the class — it runs as the building user in its own `OUT_DIR`,
+/// never elevated inside a directory another account owns.
+///
+/// `std::fs::set_permissions` resolves its path again and follows whatever link
+/// it finds. Under an elevated run inside a directory an unprivileged user owns,
+/// that is a read-anything primitive: unlink the file cfgd just wrote, plant a
+/// link at another user's private key, and root applies the mode to that
+/// instead. So a site either takes [`crate::set_file_permissions_nofollow`] /
+/// [`crate::widen_file_permissions_nofollow`], which chmod a descriptor and
+/// refuse a symlink outright, or carries a `// follow-ok: <why>` line on its own
+/// line or the line immediately above it, which is where this repo binds every
+/// other hatch: a wider window lets a marker written for one site drift above a
+/// second site and silently excuse it.
+///
+/// What counts and what offends are deliberately different sets.
+/// [`ChmodPopulation::per_root`]'s chmod count holds EVERY chmod-shaped call
+/// the walk read,
+/// no-follow ones included, because the follow-capable sites are the ones this
+/// rule drives to zero and flooring on those alone would turn a fully converted
+/// crate into a failure. Only the two path-based spellings can be misdirected,
+/// so only they are asked the question. A chmod through a descriptor
+/// (`file.set_permissions(…)` on a handle the caller opened) cannot be pointed
+/// at a second file and is in neither set, and a `set_mode` on a `Permissions`
+/// value reaches the filesystem only through one of the calls already judged. A
+/// `.mode(0o…)` on an `OpenOptions` is outside both sets too (and outside the
+/// class): a create-with-mode that follows a planted link either writes the
+/// victim, which is `atomic_write`'s question, or creates cfgd's own file, and
+/// either way no existing file's mode moves. A
+/// COMMENT line counts for nothing either way: a doc sentence naming the
+/// primitive is documentation, not a call site, and a floor a rustdoc paragraph
+/// could hold up would let the real population shrink with the walk none the
+/// wiser. A function DECLARATION is skipped on the same grounds, and so is a
+/// tell inside a STRING LITERAL, and so is a source that IS test scaffolding.
+pub struct ChmodPopulation {
+    /// Crate `src` roots the walk read, workspace-relative.
+    ///
+    /// The NAMES rather than a count, so a caller can fail by name when a root
+    /// is renamed or moved out of `crates/`: a count is restored by any crate
+    /// that happens to appear, and the walk then reads a narrower population in
+    /// silence.
+    pub roots: Vec<String>,
+    /// Per root, the production sources and the chmod-shaped calls it read,
+    /// in [`ChmodPopulation::roots`] order.
+    ///
+    /// One pair per root rather than two totals: an aggregate is one tree's
+    /// count plus another's, so the largest tree alone clears it and a root
+    /// that stops contributing altogether is judged by nobody.
+    pub per_root: Vec<(String, usize, usize)>,
+    /// Path-based chmods with no `// follow-ok:` above them, `<rel>:<line>` first.
+    pub offenders: Vec<String>,
+}
+
+/// Walk every `<crate>/src` under `crates_dir` for [`ChmodPopulation`]. Offender
+/// lines are workspace-relative, so one naming a file says which crate holds it.
+pub fn path_based_chmod_population(crates_dir: &Path) -> ChmodPopulation {
+    // A tell inside a string literal is a message NAMING the primitive, not a
+    // call to it: `tracing::debug!("set_file_permissions is a no-op on Windows")`
+    // would otherwise hold this walk's floor up and be asked for a hatch a log
+    // line cannot carry.
+    fn names_outside_a_literal(line: &str, tell: &str) -> bool {
+        let mut quoted = false;
+        let mut chars = line.char_indices();
+        while let Some((idx, ch)) = chars.next() {
+            if !quoted && line[idx..].starts_with(tell) {
+                return true;
+            }
+            match ch {
+                '\\' if quoted => {
+                    chars.next();
+                }
+                '"' => quoted = !quoted,
+                _ => {}
+            }
+        }
+        false
+    }
+    const COUNTED: &[&str] = &[
+        "set_file_permissions",
+        "widen_file_permissions",
+        "fs::set_permissions(",
+        "widen_world_readable(",
+        "carry_dir_mode(",
+    ];
+    let mut population = ChmodPopulation {
+        roots: Vec::new(),
+        per_root: Vec::new(),
+        offenders: Vec::new(),
+    };
+    let mut roots: Vec<std::path::PathBuf> = std::fs::read_dir(crates_dir)
+        .unwrap_or_else(|e| panic!("{}: {e}", crates_dir.display()))
+        .map(|entry| {
+            entry
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "{}: the walk must read every entry: {e}",
+                        crates_dir.display()
+                    )
+                })
+                .path()
+                .join("src")
+        })
+        .filter(|src| src.is_dir())
+        .collect();
+    roots.sort();
+    let workspace = workspace_root();
+    population.roots = roots
+        .iter()
+        .map(|root| crate::to_posix_string(root.strip_prefix(&workspace).unwrap_or(root)))
+        .collect();
+    for (root, relative_root) in roots.iter().zip(population.roots.clone()) {
+        let (mut files, mut chmods) = (0usize, 0usize);
+        for path in rust_sources_under(root) {
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            // Test scaffolding carries no `#[cfg(test)]` of its own for the slice
+            // to cut at, so it is named out here instead. `test_helpers.rs` is
+            // named out for the other reason: it ships as production and holds an
+            // inline test module the slice would cut at, leaving a fraction of the
+            // file behind.
+            if name.starts_with("tests")
+                || name == "test_helpers.rs"
+                || path.parent().is_some_and(|p| p.ends_with("tests"))
+            {
+                continue;
+            }
+            let body = production_slice_of(&path);
+            files += 1;
+            let relative = crate::to_posix_string(path.strip_prefix(&workspace).unwrap_or(&path));
+            let lines: Vec<&str> = body.lines().collect();
+            for (idx, line) in lines.iter().enumerate() {
+                if line.trim_start().starts_with("//") {
+                    continue;
+                }
+                // A function DECLARATION carries the name of the primitive it is,
+                // not a call to it: `pub fn set_file_permissions(` is the chmod
+                // every judged site reaches, and asking it the question would ask
+                // the rule of itself.
+                if line.contains(" fn ") || line.trim_start().starts_with("fn ") {
+                    continue;
+                }
+                if COUNTED
+                    .iter()
+                    .any(|tell| names_outside_a_literal(line, tell))
+                {
+                    chmods += 1;
+                }
+                if !(names_outside_a_literal(line, "set_file_permissions(")
+                    || names_outside_a_literal(line, "fs::set_permissions("))
+                {
+                    continue;
+                }
+                if lines[idx.saturating_sub(1)..=idx]
+                    .iter()
+                    .any(|l| l.contains("follow-ok:"))
+                {
+                    continue;
+                }
+                population.offenders.push(format!(
+                    "{relative}:{}: chmods a path that may be a symlink, take \
+                 `set_file_permissions_nofollow` (or \
+                 `widen_file_permissions_nofollow`), else mark it \
+                 `// follow-ok: <the ownership fact that makes the follow safe>`",
+                    idx + 1
+                ));
+            }
+        }
+        population.per_root.push((relative_root, files, chmods));
+    }
+    population
 }
 
 /// Every snapshot-golden root in the workspace, workspace-relative.
@@ -4061,10 +5032,13 @@ pub fn snapshot_golden_roots() -> Vec<PathBuf> {
     let mut roots = Vec::new();
     let mut stack = vec![root.join("crates")];
     while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
+        let entries = std::fs::read_dir(&dir).unwrap_or_else(|e| {
+            panic!("{}: the walk must read every directory: {e}", dir.display())
+        });
+        for entry in entries {
+            let entry = entry.unwrap_or_else(|e| {
+                panic!("{}: the walk must read every entry: {e}", dir.display())
+            });
             let path = entry.path();
             if !path.is_dir() {
                 continue;
@@ -4093,21 +5067,10 @@ pub fn snapshot_golden_roots() -> Vec<PathBuf> {
 /// the COMPLEMENT of, so a render captured under a new extension is
 /// classified rather than skipped in silence.
 pub fn snapshot_root_files() -> Vec<PathBuf> {
-    let mut files = Vec::new();
-    let mut stack = snapshot_golden_roots();
-    while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                stack.push(path);
-            } else {
-                files.push(path);
-            }
-        }
-    }
+    let mut files: Vec<PathBuf> = snapshot_golden_roots()
+        .iter()
+        .flat_map(|root| files_under_root(root))
+        .collect();
     files.sort();
     files
 }
@@ -4132,6 +5095,34 @@ mod tests {
     use super::*;
     use crate::providers::FileManager;
     use secrecy::ExposeSecret;
+
+    /// The literal shapes the blanker has to tell apart, and the
+    /// byte-for-byte promise every walk reading it indexes the raw line with.
+    ///
+    /// The char arm is where a blanker judging closing-quote distance alone
+    /// goes wrong: in `<'a>('x')` a quote sits two bytes ahead of another
+    /// quote with the call's open paren between them, so a distance test
+    /// blanks that paren and a walk counting parens on the result pairs a call
+    /// with the wrong argument.
+    #[test]
+    fn blank_string_literals_blanks_each_literal_shape_byte_for_byte() {
+        for (raw, expected) in [
+            ("let s = \"a\\\"b\";", "let s = \"    \";"),
+            ("let r = r#\"a\"b\"#;", "let r = r#\"   \"#;"),
+            ("let c = '{';", "let c = ' ';"),
+            ("let b = b'}';", "let b = b' ';"),
+            ("let n = count::<'a>('x');", "let n = count::<'a>(' ');"),
+        ] {
+            let blanked = blank_string_literals(raw);
+            assert_eq!(blanked, expected, "blanking `{raw}`");
+            assert_eq!(
+                blanked.len(),
+                raw.len(),
+                "a blanked line is the same length as the raw one, or a byte \
+                 position found on it indexes the wrong byte: `{raw}`"
+            );
+        }
+    }
 
     /// The shapes the fold has to tell apart, in one source.
     ///
@@ -5375,7 +6366,7 @@ mod tests {
             assert_eq!(
                 plan.total_actions(),
                 2,
-                "the install, plus the `Prerequisites` node refreshing the index it reads"
+                "the install, plus the `Bootstrap` node refreshing the index it reads"
             );
         }
 

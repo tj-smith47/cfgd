@@ -25,7 +25,7 @@ impl StateStore {
                 state.content,
                 state.permissions.map(|p| p as i64),
                 state.is_symlink as i64,
-                state.symlink_target.as_ref().map(|p| p.display().to_string()),
+                state.symlink_target.as_ref().map(crate::to_posix_fs_key),
                 state.oversized as i64,
                 timestamp,
             ],

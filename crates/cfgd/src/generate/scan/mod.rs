@@ -574,9 +574,8 @@ pub fn scan_system_settings() -> Result<SystemSettingsResult, CfgdError> {
 
     // macOS: run `defaults domains` and parse comma-separated list — don't export all, just list them
     if cfgd_core::command_available("defaults")
-        && let Ok(output) = std::process::Command::new("defaults")
-            .arg("domains")
-            .output()
+        && let Ok(output) =
+            cfgd_core::command_output(std::process::Command::new("defaults").arg("domains"))
         && output.status.success()
     {
         let domains_str = String::from_utf8_lossy(&output.stdout);
@@ -628,9 +627,8 @@ pub fn scan_system_settings() -> Result<SystemSettingsResult, CfgdError> {
 
     // Linux: list gsettings schemas
     if cfgd_core::command_available("gsettings")
-        && let Ok(output) = std::process::Command::new("gsettings")
-            .arg("list-schemas")
-            .output()
+        && let Ok(output) =
+            cfgd_core::command_output(std::process::Command::new("gsettings").arg("list-schemas"))
         && output.status.success()
     {
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -662,10 +660,9 @@ pub fn scan_system_settings() -> Result<SystemSettingsResult, CfgdError> {
             r"HKCU\Environment",
         ];
         for reg_path in &well_known_paths {
-            if let Ok(output) = std::process::Command::new("reg")
-                .args(["query", reg_path])
-                .output()
-                && output.status.success()
+            if let Ok(output) = cfgd_core::command_output(
+                std::process::Command::new("reg").args(["query", reg_path]),
+            ) && output.status.success()
             {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 for line in stdout.lines() {
@@ -681,9 +678,10 @@ pub fn scan_system_settings() -> Result<SystemSettingsResult, CfgdError> {
 
     // Windows: list installed services via sc.exe
     if cfgd_core::command_available("sc.exe")
-        && let Ok(output) = std::process::Command::new("sc.exe")
-            .args(["query", "type=", "service", "state=", "all"])
-            .output()
+        && let Ok(output) = cfgd_core::command_output(
+            std::process::Command::new("sc.exe")
+                .args(["query", "type=", "service", "state=", "all"]),
+        )
         && output.status.success()
     {
         let stdout = String::from_utf8_lossy(&output.stdout);

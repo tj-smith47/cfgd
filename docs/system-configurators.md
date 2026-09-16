@@ -2,9 +2,10 @@
 
 The `system:` section in profiles routes each key to a registered system configurator. Available configurators depend on the OS and context.
 
-`cfgd plan` and `cfgd apply` distinguish two kinds of unapplied keys:
+`cfgd plan` and `cfgd apply` sort a `system:` key this host cannot run as declared into three cases:
 
-- A **known configurator that isn't available** on the current platform (e.g. `systemdUnits` on macOS) is skipped neutrally: this is expected, not a problem.
+- A **known configurator whose tool is simply missing** (`gsettings`, `xfconf-query`, `kwriteconfig6`, `ssh-keygen`, `gpg`, `git`) does not stay unavailable: the configurator names the binary it drives, cfgd plans the install in the `Bootstrap` phase, and the `System` phase runs the configurator after it. Outside a run, `cfgd doctor --fix` installs the tools `cfgd doctor` reports as missing (`git` and `sops`).
+- A **known configurator that isn't available** for a reason no install changes (the wrong platform, no running init system, a kernel interface this host does not expose) is skipped neutrally: this is expected, not a problem. Every configurator cfgd ships is registered on every host, so the skip names the configurator and the reason (`'windowsRegistry' is not available on this host`) rather than claiming cfgd has no such key.
 - An **unknown key with no matching configurator** (typically a typo, e.g. `gti` for `git`) surfaces as a warning: `unknown system key 'gti' — no such configurator (ignored)`. The key is ignored, but the warning makes the typo easy to catch.
 
 Each configurator follows the same pattern: read what the system has now, compare against what you want, and apply the difference.
@@ -117,7 +118,16 @@ system:
 
 ### `environment`
 
-Manages **system-wide** (all-users, privileged) environment variables: Linux writes `/etc/environment` and `/etc/profile.d/cfgd-env.sh`; macOS writes a system LaunchDaemon plist (`/Library/LaunchDaemons/com.cfgd.environment.plist`, which runs `launchctl setenv` in the system domain at boot so all users inherit it) plus `~/.config/cfgd/env.sh` and refreshes the live session via `launchctl setenv`; Windows writes the user registry (`HKCU\Environment`) via `setx`.
+Manages **system-wide** (all-users, privileged) environment variables: Linux writes `/etc/environment` and `/etc/profile.d/cfgd-env.sh`; macOS writes a system LaunchDaemon plist (`/Library/LaunchDaemons/com.cfgd.environment.plist`, which runs `launchctl setenv` in the system domain at boot so all users inherit it) plus `~/.config/cfgd/env.sh`, adds the line that loads that file to your interactive rc (`~/.zshrc` or `~/.bashrc`, whichever your login shell reads) so no manual paste is needed, and refreshes the live session via `launchctl setenv`; Windows writes the user registry (`HKCU\Environment`) via `setx`.
+
+The files cfgd writes here are world-readable by design (`0644` on Linux and
+FreeBSD, and the macOS plist likewise): every user's login shell has to be able
+to source them, and a root-only file either aborts that shell (FreeBSD sources
+`/etc/profile.d/*.sh` unconditionally) or is skipped silently (Linux), leaving
+the variables unset for everyone but root. A mode you set yourself is preserved,
+cfgd only adds the read bits. Because every user on the machine can read these
+values, do not put a secret in `spec.system.environment`: use `spec.env` with a
+secret backend, which writes per-user files.
 
 ```yaml
 system:

@@ -146,12 +146,13 @@ pub(super) fn decode_docker_auth(auth_b64: &str) -> Option<RegistryAuth> {
 /// Run a Docker credential helper to get credentials.
 fn resolve_from_credential_helper(helper_name: &str, registry: &str) -> Option<RegistryAuth> {
     let helper_bin = format!("docker-credential-{}", helper_name);
-    let output = std::process::Command::new(&helper_bin)
-        .arg("get")
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
+    let output = crate::spawn_child(
+        std::process::Command::new(&helper_bin)
+            .arg("get")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null()),
+    )
         .ok()
         .and_then(|mut child| {
             use std::io::Write;

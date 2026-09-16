@@ -240,7 +240,13 @@ fn finish_enrollment(
 
     match cfgd_core::server_client::save_credential(&credential) {
         Ok(path) => {
-            printer.status_simple(Role::Ok, format!("Saved credential to {}", path.posix()));
+            printer.status_simple(
+                Role::Ok,
+                format!(
+                    "Saved credential to {}",
+                    cfgd_core::fold_home_in_text(&path.display_posix())
+                ),
+            );
         }
         Err(e) => {
             printer.status_simple(
@@ -262,7 +268,10 @@ fn finish_enrollment(
             Ok(path) => {
                 printer
                     .status(Role::Info, "Server pushed desired config")
-                    .detail(format!("saved to {}", path.posix()));
+                    .detail(format!(
+                        "saved to {}",
+                        cfgd_core::fold_home_in_text(&path.display_posix())
+                    ));
                 printer.hint(MSG_RUN_APPLY);
             }
             Err(e) => {
@@ -355,7 +364,10 @@ pub(super) fn detect_ssh_key(printer: &Printer) -> Option<String> {
         {
             printer.status_simple(
                 Role::Info,
-                format!("Using SSH key from agent: {}", key.posix()),
+                format!(
+                    "Using SSH key from agent: {}",
+                    cfgd_core::fold_home_in_text(&key.display_posix())
+                ),
             );
             return Some(key.to_string_lossy().to_string());
         }
@@ -365,7 +377,7 @@ pub(super) fn detect_ssh_key(printer: &Printer) -> Option<String> {
     if let Some(key) = first_existing_ssh_key(&ssh_dir) {
         printer
             .status(Role::Info, "Using SSH key")
-            .qualifier(key.posix().to_string());
+            .qualifier(cfgd_core::fold_home_in_text(&key.display_posix()));
         return Some(key.to_string_lossy().to_string());
     }
 

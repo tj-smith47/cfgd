@@ -24,6 +24,7 @@ pub(crate) fn make_cli(config: PathBuf) -> Cli {
         list_envelope: false,
         no_hints: false,
         theme: None,
+        mask_env_values: None,
         jsonpath: None,
         yes: false,
         state_dir: None,
@@ -951,7 +952,7 @@ pub(crate) fn write_config_with_local_source(
 ) -> PathBuf {
     let config_yaml = format!(
         "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n  sources:\n    - name: test-src\n      origin:\n        type: Git\n        url: {}\n        branch: master\n      subscription:\n        profile: {}\n",
-        source_repo.display(),
+        cfgd_core::to_posix_string(source_repo),
         source_profile,
     );
     let config_path = tmp.join("cfgd.yaml");
@@ -973,7 +974,7 @@ fn compose_with_sources_with_local_source_merges_source_profile() {
     // the composition must merge into the resolved profile.
     let config_yaml = format!(
         "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n  sources:\n    - name: test-src\n      origin:\n        type: Git\n        url: {}\n        branch: master\n      subscription:\n        profile: team\n",
-        source_repo.display()
+        cfgd_core::to_posix_string(&source_repo)
     );
     let config_path = tmp.path().join("cfgd.yaml");
     std::fs::write(&config_path, &config_yaml).unwrap();
@@ -1040,7 +1041,7 @@ fn compose_with_sources_merges_canonical_form_source_profile() {
 
     let config_yaml = format!(
         "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n  sources:\n    - name: test-src\n      origin:\n        type: Git\n        url: {}\n        branch: master\n      subscription:\n        profile: team\n",
-        source_repo.display()
+        cfgd_core::to_posix_string(&source_repo)
     );
     let config_path = tmp.path().join("cfgd.yaml");
     std::fs::write(&config_path, &config_yaml).unwrap();
@@ -1409,11 +1410,13 @@ fn resolve_desired_state_module_only_isolates_every_profile_owned_field() {
                 destination: None,
                 name_pattern: "{filename}.{timestamp}".to_string(),
                 schedule: None,
+                schedule_owner: Default::default(),
                 retention: 10,
                 pre_backup: vec![],
                 post_backup: vec![],
             }],
             entry_owners: Default::default(),
+            layer_sources: Default::default(),
         },
     };
 

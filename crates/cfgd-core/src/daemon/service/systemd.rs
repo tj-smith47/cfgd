@@ -222,7 +222,10 @@ pub(crate) fn start_systemd_service(printer: &Printer, scope: crate::Scope) -> R
             RuntimeDirPlan::Derived(dir) => {
                 printer
                     .status(Role::Info, "XDG_RUNTIME_DIR unset")
-                    .detail(format!("using {} for the user service bus", dir.posix()));
+                    .detail(format!(
+                        "using {} for the user service bus",
+                        crate::fold_home_in_text(&dir.display_posix())
+                    ));
                 Some(dir)
             }
             RuntimeDirPlan::Missing => {

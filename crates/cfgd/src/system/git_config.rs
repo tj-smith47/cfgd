@@ -165,6 +165,10 @@ impl SystemConfigurator for GitConfigurator {
         cfgd_core::command_available("git")
     }
 
+    fn required_tool(&self) -> Option<&'static str> {
+        Some("git")
+    }
+
     fn current_state(&self) -> Result<serde_yaml::Value> {
         // An empty mapping is reported; the reconciler uses diff() for drift detection.
         Ok(serde_yaml::Value::Mapping(serde_yaml::Mapping::new()))

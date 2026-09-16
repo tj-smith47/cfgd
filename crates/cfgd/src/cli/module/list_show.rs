@@ -3,24 +3,26 @@ use cfgd_core::PathDisplayExt;
 use cfgd_core::config::ModuleLockEntry;
 use cfgd_core::output::{Doc, KvPair, Printer, Role, renderer::Table};
 
-/// Per-package display row for `cfgd module show`. Computed from package
-/// resolution so the renderer is pure and snapshot-testable without needing a
-/// live `ProviderRegistry` or `Platform`.
+/// Per-package display row for `cfgd module show --resolved`. Computed from
+/// package resolution so the renderer is pure and snapshot-testable without
+/// needing a live `ProviderRegistry` or `Platform`.
+///
+/// Only the `--resolved` view builds one: the default `module show` renders
+/// the module's DECLARED entries, which need no host to read.
+#[derive(Debug, serde::Serialize)]
+#[serde(tag = "state")]
 pub enum PackageDisplay {
+    #[serde(rename = "resolved", rename_all = "camelCase")]
     Resolved {
         name: String,
         manager: String,
         resolved_name: String,
         version: Option<String>,
     },
-    Skipped {
-        name: String,
-        platforms: String,
-    },
-    Unresolved {
-        summary: String,
-        error: String,
-    },
+    #[serde(rename = "skipped", rename_all = "camelCase")]
+    Skipped { name: String, platforms: String },
+    #[serde(rename = "unresolved", rename_all = "camelCase")]
+    Unresolved { summary: String, error: String },
 }
 
 /// A declared value with its own `platforms:` gate named after it, for the two
@@ -47,10 +49,13 @@ fn source_role(source: &str) -> Option<Role> {
 /// one module-state vocabulary. No row here can read `Drifted` or `Unknown` —
 /// both come from a finding, and `module list` runs no check: it reports
 /// recorded state only. `checked` says whether any check covers the module at
-/// all, so a module nothing has ever checked reads the record's own
-/// `Installed` instead of a `Synced` no check earned.
+/// all, so a module nothing has ever checked reads `Installed` — this table's
+/// own fact, that the module is on the machine — through the LISTING half of
+/// the vocabulary, instead of a `Synced` no check earned.
 fn status_cell(status: &str, checked: bool) -> (String, Option<Role>) {
-    let (word, role) = cfgd_core::state::module_status_display(status, recorded_verdict(checked));
+    // list-status-ok: this IS the listing's one recorded status column, and the
+    // word it renders is the vocabulary's, never a second derivation.
+    let (word, role) = cfgd_core::state::module_listing_display(status, recorded_verdict(checked));
     (word.to_string(), Some(role))
 }
 
@@ -149,88 +154,91 @@ pub fn build_module_not_found_error(name: &str, available: &[String]) -> anyhow:
     )
 }
 
-/// Build the `cfgd module show` Doc from precomputed inputs.
+/// What a declared package entry says beyond its own name: the managers it
+/// names, the floor it demands and the per-manager spellings it carries.
 ///
-/// `checked` is whether any check covers this module — the caller's read of
-/// the machine-wide scan stamp and this module's own scoped one, since this
-/// surface runs no check itself.
-pub fn build_module_show_doc(
-    output: &ModuleShowOutput,
-    lock_entry: Option<&ModuleLockEntry>,
-    packages: &[PackageDisplay],
-    show_values: bool,
-    checked: bool,
+/// This is the DECLARATION, so nothing here reads the host: a `prefer` list is
+/// rendered in the order the author wrote it, and no manager is chosen. Empty
+/// when the entry names a package and nothing else, which is the common case
+/// and renders as the bare name.
+fn declared_package_clauses(entry: &cfgd_core::config::ModulePackageEntry) -> String {
+    let mut clauses = Vec::new();
+    // The gate is a declared property of the entry like `prefer` and `min`, so
+    // it hangs off the description column with them. In the name column it
+    // padded every other package's name out to the width of the annotation.
+    if let Some(tags) = cfgd_core::platform::PlatformGated::platform_annotation(entry) {
+        clauses.push(tags);
+    }
+    if !entry.prefer.is_empty() {
+        clauses.push(format!("prefer: {}", entry.prefer.join(", ")));
+    }
+    if let Some(min) = &entry.min_version {
+        clauses.push(format!("min: {min}"));
+    }
+    if !entry.aliases.is_empty() {
+        let mut aliases: Vec<String> = entry
+            .aliases
+            .iter()
+            .map(|(mgr, pkg)| format!("{mgr}={pkg}"))
+            .collect();
+        aliases.sort();
+        clauses.push(format!("aliases: {}", aliases.join(", ")));
+    }
+    clauses.join(", ")
+}
+
+/// One `--resolved` package row: what this host RESOLVED the declared entry to,
+/// stated as a fact rather than as the command that would install it. The
+/// version is what the manager currently offers and is dropped when it states
+/// none; the manager's own name for the package follows it in parentheses only
+/// where it differs from the declared name, which is the whole reason a reader
+/// needs both.
+///
+/// ```text
+/// neovim → 0.12.5 via brew
+/// gcc → 12.12 via apt (build-essential)
+/// pynvim via pipx
+/// ```
+///
+/// An install VERB belongs to a `plan` / `apply` action row, whose subject
+/// comes from `action_display_subject`; a `show` performs nothing.
+fn resolved_package_row(
+    name: &str,
+    manager: &str,
+    resolved_name: &str,
+    version: Option<&str>,
     arrow: &str,
-    now: &str,
-) -> Doc {
-    // One aligned block: the Status row needs a role-tinted value, which only
-    // `kv_rows` can carry, and `kv_rows` does not coalesce with a preceding
-    // `kv` block — so every row of the header is built here.
-    let mut rows = Vec::new();
-    if let Some(version) = &output.metadata.version {
-        rows.push(KvPair::new("Version", version));
-    }
-    if !output.depends.is_empty() {
-        rows.push(KvPair::new("Dependencies", output.depends.join(", ")));
-    }
-    rows.push(KvPair::new(
-        "Directory",
-        cfgd_core::fold_home_in_text(&output.directory),
-    ));
-
-    if let Some(entry) = lock_entry {
-        // No `(locked)` annotation: a remote module is one the lockfile has an
-        // entry for, so the note can never vary with the module — and the
-        // pinned ref, commit and integrity below are the lock itself.
-        rows.push(KvPair::new("Source", "remote"));
-        rows.push(KvPair::new("URL", &entry.url));
-        rows.push(KvPair::new("Pinned Ref", &entry.pinned_ref));
-        rows.push(KvPair::new("Commit", &entry.commit));
-        rows.push(KvPair::new("Integrity", &entry.integrity));
+) -> String {
+    let offered = match version {
+        Some(v) => format!(" {arrow} {v}"),
+        None => String::new(),
+    };
+    let spelled = if resolved_name == name {
+        String::new()
     } else {
-        rows.push(KvPair::new("Source", "local"));
-    }
+        format!(" ({resolved_name})")
+    };
+    format!("{name}{offered} via {manager}{spelled}")
+}
 
-    if let Some(state_rec) = &output.state {
-        // Recorded state only, same as the list table — see `status_cell`.
-        let (word, role) =
-            cfgd_core::state::module_status_display(&state_rec.status, recorded_verdict(checked));
-        rows.push(KvPair::role_valued("Status", word, role));
-        // The age, not the recorded instant: `-o json`'s `state.installedAt`
-        // carries the exact moment, and the row a person reads answers how
-        // long ago — the same split `cfgd status <module>` makes.
-        rows.push(KvPair::new(
-            "Last Applied",
-            cfgd_core::humanize_age_cell(Some(&state_rec.installed_at), now),
-        ));
-        rows.push(KvPair::new("Packages Hash", &state_rec.packages_hash));
-        rows.push(KvPair::new("Files Hash", &state_rec.files_hash));
-    }
-
-    let mut doc = Doc::new()
-        .heading_title("Module", &output.name)
-        .kv_rows(rows);
-
-    doc = doc.section_if_nonempty("Packages", packages, |s, pkgs| {
+/// The `Packages` section of `cfgd module show --resolved`: what THIS host
+/// reads each declared entry as — the manager that won, the name it installs
+/// under and the version it offers.
+///
+/// A row here is a resolution, not a check: nothing has asked the machine
+/// whether the package is present, which is `cfgd status <module>`'s question.
+fn build_module_show_resolved_packages(doc: Doc, packages: &[PackageDisplay], arrow: &str) -> Doc {
+    doc.section_if_nonempty("Packages", packages, |s, pkgs| {
         pkgs.iter().fold(s, |s, pkg| match pkg {
             PackageDisplay::Resolved {
                 name,
                 manager,
                 resolved_name,
                 version,
-            } => {
-                let ver = version
-                    .as_ref()
-                    .map(|v| format!(" ({})", v))
-                    .unwrap_or_default();
-                s.status(
-                    Role::Ok,
-                    format!(
-                        "{} {} {} install {}{}",
-                        name, arrow, manager, resolved_name, ver
-                    ),
-                )
-            }
+            } => s.status(
+                Role::Ok,
+                resolved_package_row(name, manager, resolved_name, version.as_deref(), arrow),
+            ),
             PackageDisplay::Skipped { name, platforms } => {
                 s.status_with(Role::Info, format!("{}{}", name, platforms), |f| {
                     f.detail(crate::cli::status::PLATFORM_SKIPPED)
@@ -249,7 +257,67 @@ pub fn build_module_show_doc(
                 })
             }
         })
-    });
+    })
+}
+
+/// Build the `cfgd module show` Doc from precomputed inputs.
+///
+/// The default view is the module's DECLARED document: what its `module.yaml`
+/// says, with every `platforms:` gate named rather than applied. `--resolved`
+/// fills `output.resolved` with what this host reads that document as, and the
+/// `Packages` section renders those rows instead.
+pub fn build_module_show_doc(
+    output: &ModuleShowOutput,
+    // declared-lock-ok: the entry supplies the `Source`, `URL` and `Pinned Ref`
+    // rows — where a remote module is declared to come from, written down in
+    // the lockfile because no other file states it.
+    lock_entry: Option<&ModuleLockEntry>,
+    detail: crate::cli::InventoryDetail<'_>,
+    arrow: &str,
+) -> Doc {
+    // One aligned block: `kv_rows` does not coalesce with a preceding `kv`
+    // block, so every row of the header is built here.
+    let mut rows = Vec::new();
+    if let Some(version) = &output.metadata.version {
+        rows.push(KvPair::new("Version", version));
+    }
+    if !output.depends.is_empty() {
+        rows.push(KvPair::new("Dependencies", output.depends.join(", ")));
+    }
+    rows.push(KvPair::new(
+        "Directory",
+        cfgd_core::fold_home_in_text(&output.directory),
+    ));
+
+    if let Some(entry) = lock_entry {
+        // No `(locked)` annotation: a remote module is one the lockfile has an
+        // entry for, so the note can never vary with the module — and the
+        // pinned ref below is the lock itself. The commit the checkout sits at
+        // and its integrity hash are what the lockfile REMEMBERS, so they
+        // belong to `cfgd status <module>` with the rest of the recorded state.
+        rows.push(KvPair::new("Source", "remote"));
+        // acronym-ok: URL is an acronym, which Title Case keeps capitalized.
+        rows.push(KvPair::new("URL", cfgd_core::display_url(&entry.url)));
+        rows.push(KvPair::new("Pinned Ref", &entry.pinned_ref));
+    } else {
+        rows.push(KvPair::new("Source", "local"));
+    }
+
+    let mut doc = Doc::new()
+        .heading_title("Module", &output.name)
+        .kv_rows(rows);
+
+    doc = match output.resolved.as_deref() {
+        Some(rows) => build_module_show_resolved_packages(doc, rows, arrow),
+        None => doc.section_if_nonempty("Packages", &output.spec.packages, |s, entries| {
+            s.command_list(
+                entries
+                    .iter()
+                    .map(|entry| (entry.name.clone(), declared_package_clauses(entry)))
+                    .collect::<Vec<_>>(),
+            )
+        }),
+    };
 
     doc = doc.section_if_nonempty("Files", &output.spec.files, |s, files| {
         files.iter().fold(s, |s, file| {
@@ -275,10 +343,10 @@ pub fn build_module_show_doc(
 
     doc = doc.section_if_nonempty("Env", &output.spec.env, |s, env| {
         env.iter().fold(s, |s, ev| {
-            let display = if show_values {
-                ev.value.clone()
-            } else {
+            let display = if detail.masking.masks(&ev.name) {
                 mask_value(&ev.value)
+            } else {
+                ev.value.clone()
             };
             s.kv(&ev.name, gated_value(display, ev))
         })
@@ -286,36 +354,23 @@ pub fn build_module_show_doc(
 
     // Every hook the module declares, in execution order — read through the
     // one tally so this section and `cfgd status <module>`'s cannot disagree
-    // about what the module declares. No drift engine ever watches a hook
-    // body, so this is always a bare declaration, the same `command_list`
-    // shape `cfgd status <module>`'s Scripts section uses: the hook name is
-    // the key, never a `status` row borrowing a verdict no check gave it.
+    // about what the module declares, and rendered through the one composer so
+    // the two cannot disagree about its shape either.
     let declared = cfgd_core::modules::ModuleSurfaces::of(&output.spec);
-    doc = doc.section_if_nonempty("Scripts", &declared.scripts, |s, hooks| {
-        let pairs: Vec<(String, String)> = hooks
-            .iter()
-            .flat_map(|hook| hook.bodies.iter().map(move |body| (hook.hook, body)))
-            .map(|(hook, body)| {
-                // `--show-values` is the only way to read a whole body; the
-                // default row condenses it, exactly as the status inventory does.
-                let value = if show_values {
-                    body.clone()
-                } else {
-                    cfgd_core::output::condense_script_label(body)
-                };
-                (hook.to_string(), value)
-            })
-            .collect();
-        s.command_list(pairs)
-    });
+    doc = cfgd_core::modules::scripts_section(doc, &declared.scripts, detail.scripts);
 
     doc.with_data(output)
 }
 
+// no-header-ok: a `<noun> list` states what is declared, and reads the
+// resolved chain only to mark which rows the active profile names.
 pub(crate) fn cmd_module_list(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     let config_dir = config_dir(cli);
     let cache_base = module_cache_dir(cli)?;
     let all_modules = modules::load_all_modules(&config_dir, &cache_base, &[], printer)?;
+    // declared-lock-ok: which modules are remote, and where from, is declared
+    // in the lockfile and nowhere else — the Source column states that, not
+    // anything a past run did on this machine.
     let lockfile = modules::load_lockfile(&config_dir)?;
 
     if all_modules.is_empty() {
@@ -330,6 +385,9 @@ pub(crate) fn cmd_module_list(cli: &Cli, printer: &Printer) -> anyhow::Result<()
         Vec::new()
     };
 
+    // list-status-ok: the store answers this listing's ONE recorded status
+    // column and whether a check covers each row's verdict. The Module, Active,
+    // Source and content counts beside it are all declared.
     let state = open_state_store(cli.state_dir.as_deref(), cli.scope())?;
     let state_map = module_state_map(&state);
     // Two reads for the whole table, never one per row: every Status cell
@@ -382,11 +440,91 @@ pub(crate) fn cmd_module_list(cli: &Cli, printer: &Printer) -> anyhow::Result<()
     Ok(())
 }
 
+/// The rows `cfgd module show --resolved` renders: every declared entry read
+/// against THIS host — which manager holds it, what it installs under, and the
+/// version that manager currently offers.
+///
+/// The resolution lives here rather than in `cmd_module_show` because it is
+/// the only part of this command that reads the machine: the default view
+/// renders the module's document and opens no package context, no manager
+/// registry and no platform probe.
+fn build_module_show_resolved_package_rows(
+    ctx: &crate::cli::RunContext<'_>,
+    spec: &cfgd_core::config::ModuleSpec,
+    name: &str,
+) -> anyhow::Result<Vec<PackageDisplay>> {
+    if spec.packages.is_empty() {
+        return Ok(Vec::new());
+    }
+    // Which manager already holds a bare entry is part of what "resolved"
+    // means, so the display reads the same installed state the plan does.
+    let pkg_cx = ctx.package_context()?;
+    let registry = build_registry();
+    Ok(module_show_resolved_rows(
+        spec,
+        name,
+        Platform::current(),
+        &registry.manager_map(),
+        Some(&pkg_cx),
+    ))
+}
+
+/// The resolution itself, over a caller-supplied registry, platform and
+/// installed state — so what each of the three shapes becomes is provable
+/// without a host that happens to hold the right managers.
+pub(super) fn module_show_resolved_rows(
+    spec: &cfgd_core::config::ModuleSpec,
+    name: &str,
+    platform: &Platform,
+    mgr_map: &std::collections::HashMap<String, &dyn cfgd_core::providers::PackageManager>,
+    installed: Option<&cfgd_core::providers::PackageContext<'_>>,
+) -> Vec<PackageDisplay> {
+    spec.packages
+        .iter()
+        .map(|entry| {
+            let clauses = declared_package_clauses(entry);
+            let declared = if clauses.is_empty() {
+                entry.name.clone()
+            } else {
+                format!("{} ({})", entry.name, clauses)
+            };
+            let platform_str = if entry.platforms.is_empty() {
+                String::new()
+            } else {
+                format!(", platforms: {}", entry.platforms.join("/"))
+            };
+
+            match modules::resolve_package(entry, name, platform, mgr_map, installed) {
+                Ok(Some(mut resolved)) => {
+                    // `module show --resolved` prints the version beside each
+                    // package, so it is one of the surfaces that asks for one.
+                    modules::fill_available_versions(std::slice::from_mut(&mut resolved), mgr_map);
+                    PackageDisplay::Resolved {
+                        name: entry.name.clone(),
+                        manager: resolved.manager.clone(),
+                        resolved_name: resolved.resolved_name.clone(),
+                        version: resolved.version.clone(),
+                    }
+                }
+                Ok(None) => PackageDisplay::Skipped {
+                    name: entry.name.clone(),
+                    platforms: platform_str,
+                },
+                Err(e) => PackageDisplay::Unresolved {
+                    summary: format!("{declared}{platform_str}"),
+                    error: e.to_string(),
+                },
+            }
+        })
+        .collect()
+}
+
 pub(crate) fn cmd_module_show(
     cli: &Cli,
     printer: &Printer,
     name: &str,
-    show_values: bool,
+    detail: crate::cli::InventoryDetail<'_>,
+    resolved: bool,
 ) -> anyhow::Result<()> {
     let config_dir = config_dir(cli);
 
@@ -412,6 +550,9 @@ pub(crate) fn cmd_module_show(
         }
     };
 
+    // declared-lock-ok: the `Source`, `URL` and `Pinned Ref` rows below say
+    // where this module is declared to come from; a remote module declares its
+    // origin in the lockfile and in no other file.
     let lockfile = modules::load_lockfile(&config_dir)?;
     let lock_entry = lockfile.modules.iter().find(|e| e.name == name);
     let source_type = if lock_entry.is_some() {
@@ -420,15 +561,20 @@ pub(crate) fn cmd_module_show(
         "local"
     };
 
-    let state = open_state_store(cli.state_dir.as_deref(), cli.scope())?;
-    let state_rec = state.module_state_by_name(name)?;
-    // This surface runs no check, so the Status word states the record's fact
-    // unless something else's check covers the module: the machine-wide scan
-    // stamp, or a scoped scan of this module's own chain.
-    let checked = state.last_scan_at()?.is_some()
-        || state
-            .scoped_scan_stamps()?
-            .contains_key(&cfgd_core::reconciler::Owner::module(name).token());
+    // One context for the whole invocation: the `--resolved` rows and the
+    // `Secrets` masking policy below both need one, and a second would repeat
+    // the config load, the source composition and the profile resolution the
+    // first already paid for.
+    let ctx = crate::cli::RunContext::new(cli, printer);
+    let resolved_packages = if resolved {
+        Some(build_module_show_resolved_package_rows(
+            &ctx,
+            &module.spec,
+            name,
+        )?)
+    } else {
+        None
+    };
 
     let output = ModuleShowOutput {
         name: name.to_string(),
@@ -438,90 +584,30 @@ pub(crate) fn cmd_module_show(
         directory: cfgd_core::to_posix_string(&module.dir),
         source: source_type.to_string(),
         depends: module.spec.depends.clone(),
-        state: state_rec,
         spec: module.spec.clone(),
+        resolved: resolved_packages,
     };
 
-    // Which manager already holds a bare entry is part of what "resolved"
-    // means, so the display reads the same installed state the plan does.
-    let pkg_cx = cfgd_core::providers::PackageContext::new(printer, &state);
-    let installed = Some(&pkg_cx);
-    let packages: Vec<PackageDisplay> = if module.spec.packages.is_empty() {
-        Vec::new()
-    } else {
-        let registry = build_registry();
-        let mgr_map = registry.manager_map();
-        let platform = Platform::current();
-        module
-            .spec
-            .packages
-            .iter()
-            .map(|entry| {
-                let prefer_str = if entry.prefer.is_empty() {
-                    String::new()
-                } else {
-                    format!(" (prefer: {})", entry.prefer.join(", "))
-                };
-                let version_str = entry
-                    .min_version
-                    .as_ref()
-                    .map(|v| format!(", min: {}", v))
-                    .unwrap_or_default();
-                let alias_str = if entry.aliases.is_empty() {
-                    String::new()
-                } else {
-                    let aliases: Vec<String> = entry
-                        .aliases
-                        .iter()
-                        .map(|(k, v)| format!("{}={}", k, v))
-                        .collect();
-                    format!(", aliases: {}", aliases.join(", "))
-                };
-                let platform_str = if entry.platforms.is_empty() {
-                    String::new()
-                } else {
-                    format!(", platforms: {}", entry.platforms.join("/"))
-                };
-
-                match modules::resolve_package(entry, name, platform, &mgr_map, installed) {
-                    Ok(Some(mut resolved)) => {
-                        // `module show` prints the version beside each package,
-                        // so it is one of the surfaces that asks for one.
-                        modules::fill_available_versions(
-                            std::slice::from_mut(&mut resolved),
-                            &mgr_map,
-                        );
-                        PackageDisplay::Resolved {
-                            name: entry.name.clone(),
-                            manager: resolved.manager.clone(),
-                            resolved_name: resolved.resolved_name.clone(),
-                            version: resolved.version.clone(),
-                        }
-                    }
-                    Ok(None) => PackageDisplay::Skipped {
-                        name: entry.name.clone(),
-                        platforms: platform_str,
-                    },
-                    Err(e) => PackageDisplay::Unresolved {
-                        summary: format!(
-                            "{}{}{}{}{}",
-                            entry.name, prefer_str, version_str, alias_str, platform_str
-                        ),
-                        error: e.to_string(),
-                    },
-                }
-            })
-            .collect()
+    // `MaskEnvValues::Secrets` names a SET of env vars, and that set lives in
+    // the profile chain rather than in the module — a module declares no
+    // secrets of its own. Resolved only where the policy needs it, so an
+    // ordinary `module show` still reads the module's own files and nothing
+    // else.
+    let secret_envs = detail
+        .masking
+        .wants_secret_envs()
+        .then(|| ctx.secret_env_names())
+        .flatten();
+    let detail = match secret_envs.as_ref() {
+        Some(names) => detail.with_secret_envs(names),
+        None => detail,
     };
 
     printer.emit(build_module_show_doc(
         &output,
         lock_entry,
-        &packages,
-        show_values,
-        checked,
+        detail,
         printer.arrow(),
-        &cfgd_core::utc_now_iso8601(),
     ));
     Ok(())
 }
@@ -529,6 +615,66 @@ pub(crate) fn cmd_module_show(
 #[cfg(test)]
 mod role_mapping_tests {
     use super::*;
+
+    /// A `--resolved` package row states what this host resolved the entry
+    /// TO. All three shapes render here: the manager's package name appears
+    /// only where it differs from the declared one, the offered version is
+    /// dropped where the manager states none, and no shape carries an install
+    /// verb, which belongs to a row that performs the install.
+    #[test]
+    fn a_resolved_package_row_states_a_fact_and_never_an_install_verb() {
+        assert_eq!(
+            resolved_package_row("neovim", "brew", "neovim", Some("0.12.5"), "→"),
+            "neovim → 0.12.5 via brew"
+        );
+        assert_eq!(
+            resolved_package_row("gcc", "apt", "build-essential", Some("12.12"), "→"),
+            "gcc → 12.12 via apt (build-essential)"
+        );
+        assert_eq!(
+            resolved_package_row("pynvim", "pipx", "pynvim", None, "→"),
+            "pynvim via pipx"
+        );
+        for row in [
+            resolved_package_row("neovim", "brew", "neovim", Some("0.12.5"), "→"),
+            resolved_package_row("gcc", "apt", "build-essential", Some("12.12"), "→"),
+            resolved_package_row("pynvim", "pipx", "pynvim", None, "→"),
+        ] {
+            assert!(
+                !row.contains("install"),
+                "a `show` performs nothing, so no row spells an install verb: {row}"
+            );
+        }
+    }
+
+    /// Every declared property of a package entry hangs off the description
+    /// column, the `platforms:` gate included.
+    ///
+    /// The gate was the one that sat in the NAME cell, so one gated entry
+    /// padded every other package's name out to the width of its annotation.
+    /// The name column names the package and nothing else.
+    #[test]
+    fn a_declared_package_entrys_platform_gate_is_one_of_its_clauses() {
+        let mut entry = cfgd_core::config::ModulePackageEntry {
+            name: "winget-only-tool".to_string(),
+            ..Default::default()
+        };
+        entry.platforms = vec!["windows".to_string()];
+        assert_eq!(declared_package_clauses(&entry), "platforms: windows");
+
+        entry.prefer = vec!["nix".to_string()];
+        entry.min_version = Some("1.0".to_string());
+        assert_eq!(
+            declared_package_clauses(&entry),
+            "platforms: windows, prefer: nix, min: 1.0"
+        );
+
+        let ungated = cfgd_core::config::ModulePackageEntry {
+            name: "ripgrep".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(declared_package_clauses(&ungated), "");
+    }
 
     #[test]
     fn source_role_pinks_remote_only() {
@@ -563,10 +709,10 @@ mod role_mapping_tests {
 
     /// `module list` runs no check of its own, so `Synced` on its rows is a
     /// claim borrowed from somebody else's: the machine-wide scan stamp, or a
-    /// scoped scan of that module. With neither, the row states the record's
-    /// own fact — the module was installed, and nothing has looked since.
-    /// The word a person reads changes; the `status` token `-o json` carries
-    /// does not.
+    /// scoped scan of that module. With neither, the row states this table's
+    /// own fact — the module is on the machine — which is `Installed` and not
+    /// the `Applied` a dashboard row says about a different question. The word
+    /// a person reads changes; the `status` token `-o json` carries does not.
     #[test]
     fn module_list_reads_synced_only_for_a_module_a_check_covers() {
         assert_eq!(

@@ -30,6 +30,7 @@ impl SeccompConfigurator {
     const DEFAULT_PROFILES_DIR: &'static str = "/etc/cfgd/seccomp";
 }
 
+// no-tool-ok: turns on the running kernel carrying seccomp, which no package supplies
 impl SystemConfigurator for SeccompConfigurator {
     fn name(&self) -> &str {
         "seccomp"
@@ -139,6 +140,7 @@ impl SystemConfigurator for SeccompConfigurator {
                 Role::Info,
                 format!("Writing seccomp profile {}: {}", name, profile_path.posix()),
             );
+            // user-scope-ok: read by the container runtime as root, never by a user session
             cfgd_core::atomic_write_str(&profile_path, content)?;
         }
 

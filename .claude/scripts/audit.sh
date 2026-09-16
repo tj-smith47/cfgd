@@ -3,14 +3,14 @@
 # Uses block-aware test filtering: an awk pass strips #[cfg(test)] blocks
 # by tracking brace depth, so violations inside test modules are correctly ignored.
 #
-# Workspace layout: crates/{cfgd-crd,cfgd-core,cfgd,cfgd-csi,cfgd-operator}/src/
+# Workspace layout: crates/{cfgd-schema,cfgd-crd,cfgd-core,cfgd,cfgd-csi,cfgd-operator}/src/
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
 ERRORS=0
 WARNINGS=0
 
-SRC_ROOTS=(crates/cfgd-crd/src crates/cfgd-core/src crates/cfgd/src crates/cfgd-csi/src crates/cfgd-operator/src)
+SRC_ROOTS=(crates/cfgd-schema/src crates/cfgd-crd/src crates/cfgd-core/src crates/cfgd/src crates/cfgd-csi/src crates/cfgd-operator/src)
 
 # --- Formatting helpers ---
 
@@ -25,6 +25,12 @@ log_error()   { _red;    printf "ERROR"; _reset; printf ": %s\n" "$1"; ERRORS=$(
 log_warn()    { _yellow; printf "WARN";  _reset; printf ":  %s\n" "$1"; WARNINGS=$((WARNINGS + 1)); }
 log_ok()      { _green;  printf "OK";    _reset; printf ":    %s\n" "$1"; }
 log_section() { printf "\n--- %s ---\n" "$1"; }
+
+# Bound a report to its first `n` lines. `head` closes the pipe as soon as it
+# has them, and the SIGPIPE that follows fails the pipeline under `set -o
+# pipefail` — aborting the audit precisely on the runs with the most to say.
+# awk drains its input instead, so the producer always finishes writing.
+first_lines() { awk -v n="$1" 'NR <= n'; }
 
 # --- Shared awk library ---
 # Prepend to any awk program that counts braces or honours an `<x>-ok:` marker,
@@ -418,6 +424,17 @@ audit_scan_files() {
     fi
 }
 
+# Whether a gate reading a FIXED population should run at all.
+#
+# The audit-tests driver points CFGD_AUDIT_PATH at one fixture and runs this
+# whole script once per fixture. A gate that cannot be scoped to that path
+# reports on the repository instead, which is the same answer for every
+# fixture and a full scan of the workspace each time. Skipping those is what
+# keeps a fixture suite proportional to the fixtures.
+gate_is_in_scope() {
+    [[ -z "${CFGD_AUDIT_PATH:-}" ]]
+}
+
 check_pattern() {
     local severity="$1"
     local label="$2"
@@ -446,7 +463,7 @@ check_pattern() {
             error) log_error "$label" ;;
             warn)  log_warn "$label"  ;;
         esac
-        echo "$results" | head -20
+        echo "$results" | first_lines 20
     else
         log_ok "$label"
     fi
@@ -481,7 +498,7 @@ check_core_boundary() {
 
     if [[ -n "$results" ]]; then
         log_error "$module/ must not import ${forbidden//:/, }"
-        echo "$results" | head -10
+        echo "$results" | first_lines 10
     fi
 }
 
@@ -542,10 +559,11 @@ log_section "No Unwrap in Library Code"
 #     to unwrap freely (matches the anodizer anti-patterns convention).
 #   - test_*.rs / tests_*.rs: test-only modules gated by #![cfg(test)]
 #     (e.g. test_kube_harness.rs, tests_drift_alert.rs).
+#   - src/**/tests/*.rs: a directory declared `#[cfg(test)] mod tests;` from its parent
 check_pattern error \
     "No .unwrap()/.expect() in library code" \
     '\.unwrap\(\)[^_]|\.unwrap\(\)$|\.expect\(' \
-    'main\.rs:|gen_crds\.rs:|test_helpers\.rs:|/tests\.rs:|_test\.rs:|/test_[^/]*\.rs:|/tests_[^/]*\.rs:'
+    'main\.rs:|gen_crds\.rs:|test_helpers\.rs:|/tests\.rs:|_test\.rs:|/test_[^/]*\.rs:|/tests_[^/]*\.rs:|^[^:]*/src/([^:]*/)?tests/[^/:]*\.rs:'
 
 log_section "One Noun Per Concept"
 # A counted package reads `3 packages` on every human surface — the status
@@ -567,6 +585,7 @@ check_pattern error \
     'use (console|indicatif|syntect)::' \
     'output/'
 
+if gate_is_in_scope; then
 log_section "User-Facing Advisories (config/module/source domains)"
 # tracing::info!/warn!/error! is invisible without RUST_LOG — an advisory routed
 # there is one the user never sees, and `info!` is the least visible of the
@@ -616,7 +635,7 @@ done < <(find "${advisory_scope_dirs[@]}" -name '*.rs' -print0 2>/dev/null)
 advisory_violations=$(echo "$advisory_violations" | sed '/^$/d')
 if [[ -n "$advisory_violations" ]]; then
     log_error "tracing::info!/warn!/error! in the config/module/source domains (invisible without RUST_LOG — route through the deprecations-Vec + printer.deprecation() pattern, or mark // tracing-ok: <why> if genuinely internal):"
-    echo "$advisory_violations" | head -20
+    echo "$advisory_violations" | first_lines 20
 else
     log_ok "No tracing::info!/warn!/error! in the config/module/source domains"
 fi
@@ -658,7 +677,7 @@ done < <(find "${narration_scope_dirs[@]}" -name '*.rs' -print0 2>/dev/null)
 narration_violations=$(echo "$narration_violations" | sed '/^$/d')
 if [[ -n "$narration_violations" ]]; then
     log_error "tracing::info! outside daemon/ (a second copy of a line the Printer already prints, on the stream the live region repaints — demote to debug!, delete it, or mark // tracing-ok: <why>):"
-    echo "$narration_violations" | head -20
+    echo "$narration_violations" | first_lines 20
 else
     log_ok "No tracing::info! outside daemon/"
 fi
@@ -715,9 +734,10 @@ done < <(find crates -name '*.rs' -print0 2>/dev/null)
 comment_voice_violations=$(echo "$comment_voice_violations" | sed '/^$/d')
 if [[ -n "$comment_voice_violations" ]]; then
     log_error "a comment narrates the assistant's own turn instead of documenting the code (\"we\"/\"Claude\"/\"this task|session|round\"/a numbered Plan|Phase|Task|Step|Wave|Cycle|Session|Round marker/\"Fix round\"/a review-finding tag like B1 beside \"finding\"|\"review\"|\"proved\"/\"§\" — reword to passive/imperative, or mark // cite-ok: <why> for a quoted user-facing sentence):"
-    echo "$comment_voice_violations" | head -20
+    echo "$comment_voice_violations" | first_lines 20
 else
     log_ok "No session-narrative or self-citation comments"
+fi
 fi
 
 log_section "Controlled Shell Execution"
@@ -751,12 +771,14 @@ check_pattern warn \
     '#[^!]\[allow\(dead_code\)' \
     ""
 
+if gate_is_in_scope; then
 log_section "Module Boundaries (cfgd-core)"
 check_core_boundary "providers"   "files:packages:secrets:sources:composition:reconciler:state:daemon"
 check_core_boundary "sources"     "files:packages:secrets:reconciler:providers"
 check_core_boundary "composition" "files:packages:secrets:reconciler:daemon:providers"
 check_core_boundary "modules"     "files:packages:secrets:reconciler:state:daemon:composition:sources"
 check_core_boundary "reconciler"  "files:packages:secrets"
+fi
 
 log_section "Dead Error Variants"
 # For each error enum in errors/ files, extract variant names and check if they're
@@ -829,7 +851,10 @@ for errors_file in $(errors_file_candidates); do
         | grep -oP '([A-Z][a-zA-Z0-9]+)\s*\(' | sed 's/\s*($//' || true)
     for variant in $variants; do
         # Skip #[from] variants — they're constructed via the ? operator
-        if echo "$from_variants" | grep -qw "$variant" 2>/dev/null; then
+        # A here-string, not a pipe: `grep -q` exits on its first match, and
+        # under `pipefail` the producer it kills with SIGPIPE makes the whole
+        # pipeline report failure — a match would read as a miss.
+        if grep -qw "$variant" <<<"$from_variants" 2>/dev/null; then
             continue
         fi
         uses=$(production_construction_sites "$variant")
@@ -857,18 +882,37 @@ log_section "DRY — Repeated String Literals"
 # are Rust-mandated literals that cannot be replaced by a const, so skip them —
 # `strip_attr_lines` drops a wrapped attribute's continuation lines too, not
 # just the line that opens it.
+# A `"..."` pattern with a length floor baked in cannot find a literal's own
+# opening quote: on `f("a", g("b"))` the floor rejects `"a"`, so the scan starts
+# again at that literal's CLOSING quote and reports the text BETWEEN two
+# literals as one. Pair the quotes first with an unbounded pattern (grep -o
+# resumes after each match, so quotes pair 1-2, 3-4, ...) and apply the floor
+# afterwards, where it can only reject a whole literal. The pairing is PCRE so
+# that an escaped `\"` stays part of its own literal: read as a real closing
+# quote it shifts every later pairing on the line by one, which both hides the
+# genuine literals and re-opens the cross-literal match. Any `"` that is not a
+# string delimiter shifts the pairing the same way, so the alternation
+# recognises all four literal shapes the Rust-side twin `blank_string_literals`
+# (crates/cfgd-core/src/test_helpers.rs) recognises: a hashed raw string, a bare
+# raw string, a plain or byte string carrying escapes, and a char literal.
+# Longest-first, so `r#"..."#` is not read as a bare `r"..."`. A char literal is
+# matched only to consume its quotes and is dropped before the floor, never
+# being the subject of this gate; raw and plain strings stay candidates, a
+# repeated raw literal being a repeat like any other.
 dupes=$(while IFS= read -r -d '' rsfile; do
     case "$rsfile" in
         */tests.rs|*_test.rs|*/test_*.rs|*/tests_*.rs|*/test_helpers.rs|*/output/*) continue ;;
     esac
     strip_test_blocks_from_file "$rsfile" \
         | strip_attr_lines \
-        | grep -oh '"[^"]\{30,\}"' || true
+        | grep -ohP 'r(#+)".*?"\1|r"[^"]*"|b?"(?:[^"\\]|\\.)*"|\x27(?:[^\x27\\]|\\.)\x27' \
+        | grep -v "^'" \
+        | awk 'length($0) >= 32' || true
 done < <(audit_scan_files) \
     | sort | uniq -c | sort -rn \
     | awk '$1 > 2 {print}' \
     | grep -v -E 'and_then.*unwrap_or|\.status\.conditions\[\?\(@\.type|width=device-width|spec\.[a-z]+\[.{1,5}\]\.[a-z]+ must not be empty|apple\.com/DTDs/PropertyList|Kubernetes CRD|Mode: profile|cannot determine state directory|skipping (env var|alias) with unsafe name|detect_brew_system_method' \
-    | head -5 || true)
+    | first_lines 5 || true)
 if [[ -n "$dupes" ]]; then
     log_warn "Repeated string literals (>2 occurrences, >30 chars):"
     echo "$dupes"
@@ -905,12 +949,27 @@ log_section "DRY — Duplicated Function Definitions"
 # `ApplyRun::execute` runs one reconcile; `cli::execute` dispatches clap
 # subcommands. Nothing is shared between them but the verb.
 #
+# `install_cmd_for` is excused by name in the awk list rather than per site: it
+# is the sanctioned per-manager declaration table these Windows managers answer
+# to, composed by `arm_install_commands` (crates/cfgd/src/packages/shared/mod.rs)
+# and stated on each function's own rustdoc (packages/choco.rs, packages/scoop.rs
+# and packages/winget.rs each call it the ONE declaration of how that manager
+# installs), so each manager owning one is the convention itself, and every
+# manager added later owes one too. The walk is
+# every_windows_manager_install_the_cli_emits_comes_from_its_declaration
+# (crates/cfgd/src/cli/tests.rs), which derives its population from this same
+# anchor, so a manager that copies the convention is walked with it.
+#
 # The remaining pairs excuse a name two unrelated TYPES both answer, where
 # nothing but the verb is shared: `Slot::lane` names a package-manager family
 # while `PackageContext::lane` hands back a live output region; `MemberState`'s
 # `node_id` delegates to `ManagerAction`'s own `*_node` derivations rather than
 # re-deriving them; the `cli::output_types` accessors (`token`, `owner`) read a
 # rendered payload's fields, not the reconciler types they name.
+# `CollectOutcome`'s `tally`, `action_count` and `role` answer for a gc run
+# what `ApplyRun`, `Phase` and the status rows answer for theirs, each on its
+# own type; `cli::output_types::is_zero` is a private serde predicate with one
+# user, the twin of `state::types`'s, and `*n == 0` carries no rule to drift.
 ALLOWED_FN_PAIRS=(
     "is_clean crates/cfgd-core/src/backup/restore.rs"
     "is_clean crates/cfgd-core/src/backup/mod.rs"
@@ -920,6 +979,10 @@ ALLOWED_FN_PAIRS=(
     "source crates/cfgd-core/src/reconciler/types.rs"
     "execute crates/cfgd-core/src/reconciler/run.rs"
     "lane crates/cfgd-core/src/providers/mod.rs"
+    "tally crates/cfgd-core/src/backup/gc.rs"
+    "action_count crates/cfgd-core/src/backup/gc.rs"
+    "role crates/cfgd-core/src/backup/gc.rs"
+    "is_zero crates/cfgd/src/cli/output_types.rs"
     "node_id crates/cfgd-core/src/reconciler/managers.rs"
     "push crates/cfgd-core/src/daemon/service/windows_eventlog.rs"
     "token crates/cfgd/src/cli/output_types.rs"
@@ -942,11 +1005,19 @@ ALLOWED_FN_PAIRS=(
     # slice of sibling fields rather than a single source; a fourth unrelated
     # `of`. `Tier::of` still keeps the budget.
     "of crates/cfgd/src/cli/explain/mod.rs"
+    # `AfterPlanCounts::of` is that convention once more, over a finished
+    # `ApplyResult`: a fifth unrelated `of`, and the one seam that turns the
+    # after-plan class into its wire counts.
+    "of crates/cfgd/src/cli/output_types.rs"
     "role crates/cfgd/src/cli/status.rs"
     "with_config_dir crates/cfgd-core/src/reconciler/mod.rs"
     "report crates/cfgd-core/src/reconciler/sidecar.rs"
     "registers_family_sources crates/cfgd-core/src/reconciler/lanes.rs"
     "refresh_link_deployed_hashes crates/cfgd/src/cli/apply.rs"
+    # A third delegate: cfgd-schema owns the file shape rule so the Module CRD
+    # applies the same one, and this wrapper only re-labels its bare message as
+    # a ConfigError. cfgd-schema's definition keeps the budget.
+    "validate_file_patch_shape crates/cfgd-core/src/config/profile_spec.rs"
     # The names below were blanket-excused by NAME until the trait-impl skip
     # above landed. The skip covers each trait's IMPLS; what still collides is
     # the trait's own declaration against an unrelated inherent method, a free
@@ -1059,6 +1130,17 @@ ALLOWED_FN_PAIRS=(
     # row naming a value change.
     "arrow crates/cfgd-core/src/providers/mod.rs"
     "arrow crates/cfgd-core/src/reconciler/live_tree.rs"
+    # `Tier::of` / `AfterPlanState::of` in reconciler/types.rs keep the budget as
+    # the cataloged inherent `::of` constructor convention (shared-utils.md,
+    # `ModuleSurfaces::of(spec)` and `AfterPlanState::of`); these two are that
+    # same convention on unrelated types, `SpecChange::of` building one lockfile
+    # diff row and `InventoryDetail::of` folding the `--show-*` trio into a view.
+    # `drop_trait_impl_lines` cannot see an inherent impl, so without these the
+    # check reads these constructors as free functions: four definitions across
+    # three files, reconciler/types.rs holding two, and what the gate counts is
+    # the distinct files, three.
+    "of crates/cfgd-core/src/modules/lockfile.rs"
+    "of crates/cfgd/src/cli/mod.rs"
 )
 allowed_pairs_file="$STRIP_CACHE_DIR/allowed-fn-pairs"
 printf '%s\n' "${ALLOWED_FN_PAIRS[@]}" > "$allowed_pairs_file"
@@ -1103,16 +1185,18 @@ done < <(audit_scan_files) \
         $2 != "skipped" && $2 != "metrics_handler" && $2 != "compose" && \
         $2 != "default_cache_dir" && $2 != "default_cache_dir_for" && \
         $2 != "field_tree" && $2 != "resolve_runtime_dir" && \
-        $2 != "probe_dir_writable" && $2 != "surface_stale_skills" \
+        $2 != "probe_dir_writable" && $2 != "surface_stale_skills" && \
+        $2 != "install_cmd_for" \
         {print}' || true)
 rm -f "$allowed_pairs_file"
 if [[ -n "$fn_dupes" ]]; then
     log_warn "Function names defined in multiple files (potential duplication):"
-    echo "$fn_dupes" | head -10
+    echo "$fn_dupes" | first_lines 10
 else
     log_ok "No duplicated function definitions across files"
 fi
 
+if gate_is_in_scope; then
 log_section "Naming Convention — No kebab-case in serde or user-visible strings"
 # Detect any remaining kebab-case serde attributes (should all be camelCase now)
 serde_kebab=$(grep -rn 'rename_all = "kebab-case"\|rename_all = "lowercase"' "${SRC_ROOTS[@]}" --include='*.rs' 2>/dev/null | grep -v 'output/' || true)
@@ -1129,7 +1213,7 @@ bad_renames=$(grep -rn '#\[serde(rename = "' "${SRC_ROOTS[@]}" --include='*.rs' 
     || true)
 if [[ -n "$bad_renames" ]]; then
     log_error "Found kebab-case explicit serde rename attributes (should be camelCase):"
-    echo "$bad_renames" | head -10
+    echo "$bad_renames" | first_lines 10
 else
     log_ok "No kebab-case explicit serde rename attributes"
 fi
@@ -1153,7 +1237,7 @@ if [[ -n "$config_fields" ]]; then
         || true)
     if [[ -n "$kebab_fields" ]]; then
         log_error "Found kebab-case config field names in string literals (should be camelCase):"
-        echo "$kebab_fields" | head -10
+        echo "$kebab_fields" | first_lines 10
     else
         log_ok "No kebab-case config field names in string literals"
     fi
@@ -1191,7 +1275,7 @@ while IFS= read -r -d '' rsfile; do
 done < <(find crates/cfgd-core/src -name '*.rs' -print0 2>/dev/null)
 if [[ -n "$config_parse_violations" ]]; then
     log_warn "serde_yaml::from_* found in cfgd-core outside config/, generate/, schema/, or lockfile.rs (CLAUDE.md rule #5):"
-    printf "%s" "$config_parse_violations" | head -10
+    printf "%s" "$config_parse_violations" | first_lines 10
 else
     log_ok "Config parsing confined to config/, generate/, schema/, and lockfile.rs in cfgd-core"
 fi
@@ -1255,9 +1339,10 @@ done
 effective_violations=$(echo "$effective_violations" | sed '/^$/d')
 if [[ -n "$effective_violations" ]]; then
     log_error "Read path reads profile-only desired state (use cfgd_core::effective::* so module resources stay visible):"
-    echo "$effective_violations" | head -20
+    echo "$effective_violations" | first_lines 20
 else
     log_ok "Read paths route desired state through cfgd_core::effective::*"
+fi
 fi
 
 log_section "DRY — Timestamp/Hash/Command Wrappers"
@@ -1342,6 +1427,7 @@ if unfenced=$(rg --type-add 'rust:*.txt' --type rust -n 'fill_available_versions
   echo "$unfenced"
 fi
 
+if gate_is_in_scope; then
 # 5. Structured-output coverage table — every cmd_* function in cli/ must
 #    appear in .claude/rules/structured-output-coverage.md's table.
 #    Only match file-scope definitions (no leading whitespace) to avoid
@@ -1372,12 +1458,88 @@ if [ -f "$rule_file" ]; then
     # it behind, since the new name trips the check above while the old one sits
     # there looking answered.
     stale=$(LC_ALL=C comm -13 <(echo "$cmds_in_code") <(echo "$cmds_in_table" | tr ' ' '_'))
+    # A dispatched renderer is a command whose body lives under another
+    # command's name: `alias show` is dispatched straight into `cmd_config_get`,
+    # so no `cmd_alias_show` is ever declared and its row would read as stale.
+    # The pairs are the ones `DISPATCHED_RENDERERS` (crates/cfgd/src/cli/tests.rs)
+    # holds. `every_dispatched_renderer_has_a_coverage_row` reads the assignment
+    # below and asserts the two sets are equal, so a pair added to one list and
+    # not the other fails that test.
+    dispatched_renderers="alias_show:cmd_config_get"
+    for pair in $dispatched_renderers; do
+        row="${pair%%:*}"
+        renderer="${pair##*:}"
+        if [[ $'\n'$cmds_in_code$'\n' == *$'\n'"${renderer#cmd_}"$'\n'* ]]; then
+            stale=$(printf '%s\n' "$stale" | grep -vx "$row" || true)
+        fi
+    done
+    stale=$(printf '%s' "$stale" | sed '/^$/d')
     if [ -n "$stale" ]; then
         log_error "Rows in $rule_file naming a cmd_* that no longer exists in crates/cfgd/src/cli/:"
         echo "$stale"
     fi
+    # A `no` row is the table's promise that this command emits no structured
+    # payload, and a consumer decides from it whether `-o json` is worth
+    # parsing at all. The rationale column cannot be checked, but the claim
+    # can: a body reaching `.with_data(` contradicts its own row. The span is
+    # the same one `every_show_and_list_verb_renders_only_its_fact_classes`
+    # reads — the function's own body plus every `build_*` helper it calls in
+    # the same file, each cut at the first `}` in column 1, which is where
+    # rustfmt closes a file-scope function.
+    # Every reader here drains its producer: a `grep -q` or a `head -1` closes
+    # the pipe on its first match, and the SIGPIPE that follows fails the whole
+    # pipeline under `set -o pipefail` — which reads as "no payload found" and
+    # passes the rows with the most to say.
+    # The reach is TRANSITIVE, the same way `fact_class_reaches`
+    # (crates/cfgd/src/cli/tests.rs) queues every helper it discovers: a
+    # payload built two helpers down from the `cmd_*` body is still that
+    # command's payload, and following one level only would pass the row.
+    # Bounded at five rounds so a helper pair calling each other cannot spin.
+    _payload_span() {
+        local span_file="$1" span_line="$2" span_body frontier visited round
+        local helper helper_line helper_body found
+        span_body=$(awk -v start="$span_line" \
+            'NR < start { next } NR > start && /^}/ { exit } { print }' "$span_file")
+        printf '%s\n' "$span_body"
+        frontier="$span_body"
+        visited=""
+        for round in 1 2 3 4 5; do
+            found=""
+            for helper in $(printf '%s\n' "$frontier" \
+                              | grep -oE '\bbuild_[a-z0-9_]+' | LC_ALL=C sort -u || true); do
+                if [[ $'\n'$visited$'\n' == *$'\n'"$helper"$'\n'* ]]; then
+                    continue
+                fi
+                visited="$visited"$'\n'"$helper"
+                helper_line=$(grep -nE "^(pub(\(crate\)|\(super\))? fn |fn )${helper}\b" \
+                                "$span_file" | awk -F: 'NR == 1 { print $1 }') || helper_line=""
+                [ -n "$helper_line" ] || continue
+                helper_body=$(awk -v start="$helper_line" \
+                    'NR < start { next } NR > start && /^}/ { exit } { print }' "$span_file")
+                printf '%s\n' "$helper_body"
+                found="$found"$'\n'"$helper_body"
+            done
+            [ -n "$found" ] || break
+            frontier="$found"
+        done
+    }
+    no_rows=$(grep -E '^\| [a-z][a-z0-9_]*[ ]*\|[ ]*no[ ]*\|' "$rule_file" \
+        | awk -F'|' '{print $2}' | tr -d ' ') || no_rows=""
+    for cmd in $no_rows; do
+        while IFS=: read -r cmd_file cmd_line; do
+            [ -n "$cmd_file" ] || continue
+            cmd_span=$(_payload_span "$cmd_file" "$cmd_line")
+            if [[ $cmd_span == *".with_data("* ]]; then
+                log_error "$rule_file records $cmd as carrying no payload, but cmd_$cmd reaches .with_data( ($cmd_file:$cmd_line) — flip the row to yes and say who reads the payload"
+            fi
+        done < <(rg --type rust --color never -n \
+                    "^(pub(\(crate\)|\(super\))? fn |fn )cmd_${cmd}\\b" \
+                    crates/cfgd/src/cli/ --glob '!**/tests.rs' --glob '!**/tests/**' \
+                    2>/dev/null | awk -F: '{print $1":"$2}')
+    done
 else
     log_error "Structured-output coverage table missing: $rule_file"
+fi
 fi
 # --- end output audit block -------------------------------------------------
 
@@ -1458,6 +1620,7 @@ if w4=$(rg --type rust -n '(tracing::(info|warn|error)!|anyhow!|bail!|printer\.(
   echo "$w4"
 fi
 
+if gate_is_in_scope; then
 log_section "Test-home-safe blocking dispatch (workspace)"
 # Raw `tokio::task::spawn_blocking` drops the test-home
 # thread-local on the worker thread, so any closure that resolves `~`/$HOME
@@ -1485,7 +1648,7 @@ raw_spawns=$(while IFS= read -r -d '' rsfile; do
 done < <(find crates/*/src -name '*.rs' -print0 2>/dev/null))
 if [[ -n "$raw_spawns" ]]; then
     log_error "Raw tokio::task::spawn_blocking (use cfgd_core::spawn_blocking_with_test_home, or annotate // spawn-blocking-ok: <why>):"
-    echo "$raw_spawns" | head -10
+    echo "$raw_spawns" | first_lines 10
 else
     log_ok "No raw spawn_blocking in workspace production code"
 fi
@@ -1514,7 +1677,7 @@ sleep_violations=$(while IFS= read -r -d '' rsfile; do
 done < <(find crates/*/src -name '*.rs' -print0 2>/dev/null) | sed '/^$/d')
 if [[ -n "$sleep_violations" ]]; then
     log_error "thread::sleep/tokio::time::sleep in test code (flaky timing sync — use the observables catalogued in shared-utils.md: ConcurrencyWitness, a channel/oneshot handshake, await_queued_path_writer, await_blocking_source_acquire, a bounded deadline-poll — or annotate // sleep-ok: <why no observable exists>):"
-    echo "$sleep_violations" | head -20
+    echo "$sleep_violations" | first_lines 20
 else
     log_ok "No unguarded sleep-as-synchronization in test code"
 fi
@@ -1551,7 +1714,7 @@ raw_capture_violations=$(while IFS= read -r -d '' rsfile; do
 done < <(find crates/*/src -name '*.rs' -print0 2>/dev/null) | sed '/^$/d')
 if [[ -n "$raw_capture_violations" ]]; then
     log_error "Raw Printer capture-buffer read in test code (use cfgd_core::test_helpers::captured_text(&buf), or annotate // raw-capture-ok: <why>):"
-    echo "$raw_capture_violations" | head -20
+    echo "$raw_capture_violations" | first_lines 20
 else
     log_ok "No raw Printer capture-buffer reads in test code"
 fi
@@ -1789,6 +1952,82 @@ else
     log_error "Publisher-secret lockstep gate could not run (missing $rel_wf or $pub_wf)"
 fi
 
+log_section "e2e compile-cache layering (every building job carries it)"
+# A Rust toolchain step is the tell that an e2e job COMPILES: a suite needing a
+# release `cfgd` builds it on the runner (`ensure_cfgd_binary`, or `cargo run
+# --release --bin cfgd-gen-crds`), and a suite that rides the setup job's images
+# needs no toolchain at all. A cold build is what the per-job timeout cannot
+# absorb, so the toolchain step and the four-part compile cache travel together:
+# `SCCACHE_GHA_ENABLED` + `RUSTC_WRAPPER` for the job, `mozilla-actions/sccache-action`,
+# and `Swatinem/rust-cache` under a `key:` no sibling job shares — one key over two
+# jobs is one cache their different `target/` trees evict each other from. Raising
+# the timeout instead hides a missing cache.
+# The POPULATION is the glob, not a list: a new `e2e-<suite>.yml` joins the gate
+# by existing, and a glob matching nothing means the gate is watching no file.
+# The key map is judged across every scanned workflow at once, because two
+# workflows can hand GitHub the same cache key as easily as two jobs can.
+shopt -s nullglob
+e2e_wfs=(.github/workflows/e2e*.yml)
+shopt -u nullglob
+if (( ${#e2e_wfs[@]} == 0 )); then
+    log_error "e2e compile-cache gate could not run (no .github/workflows/e2e*.yml)"
+else
+    e2e_missing="$(awk '
+        # Per-file state: a job name is unique within its own workflow only, so
+        # every per-job fact is keyed by file AND job.
+        FNR == 1 { injobs = 0; job = "" }
+        /^jobs:[[:space:]]*$/ { injobs = 1; next }
+        # A job key may carry a trailing comment; read as a step line instead,
+        # its own steps are attributed to the job declared above it.
+        injobs && /^  [A-Za-z0-9_-]+:[[:space:]]*(#.*)?$/ {
+            job = $0
+            sub(/^  /, "", job)
+            sub(/:[[:space:]]*(#.*)?$/, "", job)
+            order[++n] = FILENAME SUBSEP job
+            next
+        }
+        injobs && job != "" {
+            j = FILENAME SUBSEP job
+            if ($0 ~ /dtolnay\/rust-toolchain/)         toolchain[j] = 1
+            if ($0 ~ /mozilla-actions\/sccache-action/) sccache[j]   = 1
+            if ($0 ~ /Swatinem\/rust-cache/)            rustcache[j] = 1
+            if ($0 ~ /RUSTC_WRAPPER/)                   wrapper[j]   = 1
+            if ($0 ~ /SCCACHE_GHA_ENABLED/)             gha[j]       = 1
+            if ($0 ~ /^[[:space:]]+key:[[:space:]]*[^[:space:]]/) {
+                k = $0; sub(/^[[:space:]]*key:[[:space:]]*/, "", k); cachekey[j] = k
+            }
+        }
+        END {
+            for (i = 1; i <= n; i++) {
+                j = order[i]
+                if (!(j in toolchain)) continue
+                split(j, part, SUBSEP)
+                where = part[1] " " part[2]
+                miss = ""
+                if (!(j in gha))       miss = miss " SCCACHE_GHA_ENABLED"
+                if (!(j in wrapper))   miss = miss " RUSTC_WRAPPER"
+                if (!(j in sccache))   miss = miss " mozilla-actions/sccache-action"
+                if (!(j in rustcache)) miss = miss " Swatinem/rust-cache"
+                if (miss != "")
+                    print where ": compiles but carries no" miss
+                else if (!(j in cachekey))
+                    print where ": rust-cache carries no key:, so it shares one cache with its siblings"
+                else if (cachekey[j] in owner)
+                    print where ": rust-cache key " cachekey[j] " already belongs to " owner[cachekey[j]]
+                else
+                    owner[cachekey[j]] = part[1] " " part[2]
+            }
+        }
+    ' "${e2e_wfs[@]}")"
+    if [[ -n "$(printf '%s' "$e2e_missing" | grep . || true)" ]]; then
+        log_error "e2e jobs that compile without the full compile-cache layering:"
+        printf '%s\n' "$e2e_missing" | grep . | first_lines 20
+    else
+        log_ok "Every e2e job with a Rust toolchain carries sccache + rust-cache under its own key"
+    fi
+fi
+fi
+
 # --- One owner comparator ---
 # `Owner::sort_key` is the single rule for which owner precedes which, and it is
 # applied exactly once — where a phase's groups are built. A second call site is
@@ -1816,6 +2055,7 @@ else
   log_ok "Owner::sort_key applied at exactly one site"
 fi
 
+if gate_is_in_scope; then
 # --- Every demo tape has a Taskfile target ---
 # A tape is recorded through `demo/scripts/record.sh <name>`, and the Taskfile
 # target wrapping it is the only thing that also runs the tape's font gate and
@@ -1952,7 +2192,7 @@ for tape in demo/*.tape; do
         # (sync.tape) inherits that script's init; the script is the tape's
         # theme selector — either a `--theme` on its init or a `theme:` in the
         # config it seeds — and is checked in its place.
-        setup_script=$(grep -oE 'setup-[a-z0-9-]+\.sh' "$tape" | head -n1)
+        setup_script=$(grep -oE 'setup-[a-z0-9-]+\.sh' "$tape" | first_lines 1)
         if [ -z "$setup_script" ] || ! grep -Eq -- "(--theme|^ *theme:) ${DEMO_THEME}( |\"|'|\$)" "demo/scripts/${setup_script}"; then
             theme_gap="${theme_gap}${tape} (no cfgd init and no setup script selecting the ${DEMO_THEME} theme)"$'\n'
         fi
@@ -2021,6 +2261,162 @@ if [ -n "$catalog_gap" ]; then
     printf '%s\n' "$catalog_gap"
 else
     log_ok "Every shared-utils.md/output-module.md entry and table row stays under ${CATALOG_ENTRY_CAP} bytes"
+fi
+
+log_section "Rules catalog signatures (shared-utils.md <-> the sources)"
+
+# The catalog spells an argument list per entry, and a reader takes it for the
+# real signature: `validate_script_body(subject, slot, body)` outlived the
+# `shape` argument the refusal gained, and four other entries had drifted the
+# same way. Only a plain identifier list is judged; an entry writing `…`, a
+# type, or a closure is describing a shape rather than quoting one.
+signature_gap="$(python3 - <<'PY'
+import pathlib
+import re
+
+doc = pathlib.Path(".claude/rules/shared-utils.md").read_text()
+shapes = set()
+for match in re.finditer(r"`([A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*)\(([^`()]*)\)`", doc):
+    name, args = match.group(1), match.group(2).strip()
+    short = name.split("::")[-1]
+    if short in ("cfg", "format", "println") or not args:
+        continue
+    if any(ch in args for ch in '…&<>".=|'):
+        continue
+    shapes.add((short, len([a for a in args.split(",") if a.strip()]), match.group(0)))
+
+sources = {
+    path: path.read_text(errors="replace")
+    for path in pathlib.Path("crates").rglob("*.rs")
+}
+
+
+def arities(fn):
+    """Every param count the workspace defines for `fn`, receivers excluded."""
+    found = []
+    opener = re.compile(r"fn %s\s*(?:<[^>]*>)?\s*\(" % re.escape(fn))
+    for body in sources.values():
+        for match in opener.finditer(body):
+            start = match.end() - 1
+            depth, end = 0, start
+            while end < len(body):
+                if body[end] == "(":
+                    depth += 1
+                elif body[end] == ")":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                end += 1
+            depth, parts, current, previous = 0, [], "", ""
+            for ch in body[start + 1:end]:
+                if ch in "(<[":
+                    depth += 1
+                elif ch in ")]" or (ch == ">" and previous != "-"):
+                    depth -= 1
+                if ch == "," and depth == 0:
+                    parts.append(current)
+                    current = ""
+                else:
+                    current += ch
+                previous = ch
+            if current.strip():
+                parts.append(current)
+            named = [
+                part.strip()
+                for part in parts
+                if part.strip() and "self" not in part.split(":")[0]
+            ]
+            found.append(len(named))
+    return found
+
+
+checked = 0
+for short, documented, spelling in sorted(shapes):
+    real = arities(short)
+    if not real:
+        continue
+    checked += 1
+    if documented not in real:
+        print(f"{spelling}: the sources define {sorted(set(real))} argument(s)")
+if checked < 200:
+    print(f"the scan judged only {checked} signatures; it has gone blind to the catalog")
+PY
+)"
+if [ -n "$signature_gap" ]; then
+    log_error "shared-utils.md entries whose argument list no definition matches:"
+    printf '%s\n' "$signature_gap"
+else
+    log_ok "Every shared-utils.md argument list matches a real definition"
+fi
+
+log_section "case_insensitive_enum! reaches serde through \$crate"
+
+# The macro is `#[macro_export]`ed, so its expansion lands in crates that carry
+# no serde dependency of their own. A bare `serde::` path in the expansion
+# compiles cleanly here — cfgd-schema has serde — and breaks only in such a
+# consumer, which no in-repo build would ever catch.
+enum_de_file="crates/cfgd-schema/src/enum_de.rs"
+if require_files "case_insensitive_enum! serde-path scan" "$enum_de_file"; then
+    bare_serde="$(grep -n 'serde::' "$enum_de_file" \
+        | grep -v '^[0-9]*:[[:space:]]*//' \
+        | sed 's/\$crate::serde::/ /g' \
+        | grep 'serde::' || true)"
+    if [ -n "$bare_serde" ]; then
+        log_error "case_insensitive_enum!'s expansion names serde directly (reach it through \`\$crate::serde\`, so a crate without serde can still invoke the macro):"
+        printf '%s\n' "$bare_serde" | first_lines 10
+    else
+        log_ok "case_insensitive_enum! names serde only through \$crate::serde"
+    fi
+fi
+
+log_section "CSI keeps kube/k8s-openapi out of its dependency tree"
+
+# The CSI node plugin never touches a Kubernetes API object, so it builds
+# cfgd-core with `default-features = false` to leave the kube stack out of its
+# image. Any crate that slips into cfgd-core unconditionally — or into a new
+# leaf like cfgd-schema — reaches CSI too, and the weight comes back silently.
+# Resolved ONCE, and the resolution is judged before its content is: a `||
+# true` over the whole pipeline cannot tell "no kube crate" from "cargo
+# resolved nothing", so a cold cache or a renamed package would reach the same
+# green a clean tree does. The same vacuous-green shape require_dirs and the
+# ripgrep preamble above exist to prevent.
+# cargo announces a contended build lock on stderr ("Blocking waiting for file
+# lock on package cache"), and a merged stream splices that line into the
+# block-buffered stdout it interrupts: `awk '{print $1}'` then reads `Blocking`
+# where a crate name belongs, and the spliced line can equally hide a kube crate
+# from the grep below. The diagnostic is kept, on its own file, and printed only
+# where it explains a failure.
+csi_stderr="$(mktemp)"
+if ! csi_tree="$(cargo tree -p cfgd-csi -e normal --prefix none --offline 2>"$csi_stderr")"; then
+    log_error "cargo tree -p cfgd-csi did not resolve, so the kube gate proved nothing:"
+    printf '%s\n' "$csi_tree"
+    cat "$csi_stderr"
+    rm -f "$csi_stderr"
+elif ! grep -qx 'cfgd-core' <<<"$(awk '{print $1}' <<<"$csi_tree")"; then
+    rm -f "$csi_stderr"
+    log_error "the resolution named no \`cfgd-core\` line, this gate's canary crate: a wrong tree, a polluted capture, or cfgd-csi genuinely no longer depending on it"
+else
+    rm -f "$csi_stderr"
+    csi_heavy="$(awk '{print $1}' <<<"$csi_tree" | sort -u \
+      | grep -Ex 'kube|kube-core|kube-client|k8s-openapi' || true)"
+    if [ -n "$csi_heavy" ]; then
+        log_error "cfgd-csi pulls the Kubernetes API stack (keep it behind cfgd-core's \`crd\` feature):"
+        printf '%s\n' "$csi_heavy"
+    else
+        log_ok "cfgd-csi's dependency tree carries no kube/k8s-openapi crate"
+    fi
+fi
+
+log_section "Commit guard"
+
+guard_out="$(mktemp)"
+if .claude/scripts/commit-guard.sh --self-test >"$guard_out" 2>&1; then
+    log_ok "commit-guard.sh refuses a breaking signal on a crate below 1.0"
+else
+    log_error "commit-guard.sh's own self-test does not pass:"
+    cat "$guard_out"
+fi
+rm -f "$guard_out"
 fi
 
 # --- Summary ---

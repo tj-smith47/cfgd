@@ -28,7 +28,7 @@ kubectl cluster-info >/dev/null 2>&1 || {
 # --- Step 1b: Pre-flight permission checks ---
 # RBAC is managed by ArgoCD (see /db/manifests/k3s/namespaces/cfgd-system/e2e-rbac.yaml).
 # This script only verifies the runner SA has what it needs; it does NOT apply RBAC.
-kubectl create namespace cfgd-system 2>/dev/null || true
+ensure_namespace cfgd-system
 
 # --- Step 1c: Serialize on shared cluster state via a coordination Lease ---
 # Two near-simultaneous setups mutate the same cluster-scoped state (CRDs,
@@ -311,9 +311,9 @@ record_green_sha() {
     # single-key generated manifest would replace the managed `data` and clobber
     # the sibling images' keys (so only the last image recorded would persist);
     # a merge patch is additive per key.
-    kubectl create configmap "$LAST_GREEN_CM" -n cfgd-system >/dev/null 2>&1 || true
+    kubectl create configmap "$LAST_GREEN_CM" -n cfgd-system >/dev/null 2>&1 || true # rc-ok: idempotent ensure; the merge patch below is what records the value
     kubectl patch configmap "$LAST_GREEN_CM" -n cfgd-system --type merge \
-        -p "{\"data\":{\"${image}_${E2E_BRANCH_KEY}\":\"${GIT_SHA}\"}}" >/dev/null 2>&1 || true
+        -p "{\"data\":{\"${image}_${E2E_BRANCH_KEY}\":\"${GIT_SHA}\"}}" >/dev/null 2>&1 || true # rc-ok: last-green bookkeeping for the next run; no case asserts on it
 }
 
 GIT_SHA="$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || echo "")"
@@ -674,6 +674,21 @@ webhooks:
         apiVersions: ["v1alpha1"]
         operations: [CREATE, UPDATE]
         resources: [modules]
+    failurePolicy: Fail
+    sideEffects: None
+  - name: validate-backuppolicy.cfgd.io
+    admissionReviewVersions: [v1]
+    clientConfig:
+      service:
+        name: cfgd-operator
+        namespace: cfgd-system
+        path: /validate-backuppolicy
+      caBundle: "${CA_BUNDLE}"
+    rules:
+      - apiGroups: ["cfgd.io"]
+        apiVersions: ["v1alpha1"]
+        operations: [CREATE, UPDATE]
+        resources: [backuppolicies]
     failurePolicy: Fail
     sideEffects: None
 ---

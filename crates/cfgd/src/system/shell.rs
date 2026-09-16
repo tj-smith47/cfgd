@@ -69,6 +69,7 @@ fn load_terminal_settings() -> Result<Option<(std::path::PathBuf, serde_json::Va
     Ok(Some((path, settings)))
 }
 
+// no-tool-ok: writes the rc files itself, so it drives no binary and every host with a shell can run it
 impl SystemConfigurator for ShellConfigurator {
     fn name(&self) -> &str {
         "shell"
@@ -180,6 +181,7 @@ impl SystemConfigurator for ShellConfigurator {
                     message: e.to_string(),
                 })
             })?;
+            // user-scope-ok: the invoking user's own Windows Terminal settings.json; NTFS carries no mode bits to widen
             cfgd_core::atomic_write_str(&path, &updated)?;
 
             Ok(())
@@ -189,11 +191,9 @@ impl SystemConfigurator for ShellConfigurator {
                 format!("Setting default shell to {}", desired_shell),
             );
 
-            let output = Command::new("chsh")
-                .arg("-s")
-                .arg(desired_shell)
-                .output()
-                .map_err(cfgd_core::errors::CfgdError::Io)?;
+            let output =
+                cfgd_core::command_output(Command::new("chsh").arg("-s").arg(desired_shell))
+                    .map_err(cfgd_core::errors::CfgdError::Io)?;
 
             if !output.status.success() {
                 cx.report(

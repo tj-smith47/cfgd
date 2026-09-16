@@ -1,8 +1,6 @@
 use super::*;
 use cfgd_core::config::LOCAL_LAYER;
-use cfgd_core::output::{
-    Doc, KvPair, Printer, Role, SectionBuilder, condense_script_label, renderer::Table,
-};
+use cfgd_core::output::{Doc, KvPair, Printer, Role, SectionBuilder, renderer::Table};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -12,7 +10,7 @@ pub struct StatusOutput {
     pub sources: Vec<cfgd_core::state::ConfigSourceRecord>,
     pub pending_decisions: Vec<cfgd_core::state::PendingDecision>,
     pub modules: Vec<ModuleStatusEntry>,
-    pub managed_resources: Vec<cfgd_core::state::ManagedResource>,
+    pub managed_resources: Vec<ManagedResourceRow>,
     /// Source batches no decision row can name (a dotted custom manager) —
     /// withheld from every plan fail-closed, so the dashboard names them here
     /// instead of showing clean-empty. Same lines the `plan` payload's
@@ -68,13 +66,90 @@ pub struct StatusOutput {
     /// branch, which probes nothing.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub system_errors: Vec<super::output_types::SystemCheckError>,
-    /// Rows `drift` above already folds in for rendering: the same
-    /// `standing` key `diff` and `verify` carry, so a `-o json` consumer
-    /// finds this run's own findings and the store's carried-forward rows
-    /// under one name across all three surfaces. Populated only on the
-    /// scanning branch — the recorded-state dashboard reads `drift` alone.
+    /// Rows this run owns but could not re-examine, under the same
+    /// `standing` key `diff` and `verify` carry: the store's own answer, kept
+    /// out of `drift` so a consumer can tell what this run found from what it
+    /// carried forward. Populated only on the scanning branch — the
+    /// recorded-state dashboard reads `drift` alone.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub standing: Vec<cfgd_core::state::DriftEvent>,
+}
+
+impl StatusOutput {
+    /// Whether this machine stands on any drift a reader must act on: a row
+    /// this run found, or one it owns and could not re-examine. The ONE
+    /// composition — the closing hint and the `--exit-code` gate both read it,
+    /// the same shape `VerifyOutput` and `DiffSummary` carry.
+    pub fn any_drift(&self) -> bool {
+        !self.drift.is_empty() || !self.standing.is_empty()
+    }
+}
+
+/// One recorded row as a reader and a `-o json` consumer both receive it: the
+/// stored fact, plus the owner the Managed Resources table prints in its Owner
+/// column.
+///
+/// The owner is DERIVED — the state store records what was applied and under
+/// which source, never whose it is — so it used to exist on the human table
+/// alone and a payload consumer had no key to filter a component's rows by.
+/// One derivation fills both, which is what lets the documented
+/// `jq '.managedResources[] | select(.owner == "module:nvim")'` name the rows
+/// the table shows under `module:nvim`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedResourceRow {
+    #[serde(flatten)]
+    pub resource: cfgd_core::state::ManagedResource,
+    pub owner: String,
+}
+
+impl std::ops::Deref for ManagedResourceRow {
+    type Target = cfgd_core::state::ManagedResource;
+
+    fn deref(&self) -> &Self::Target {
+        &self.resource
+    }
+}
+
+/// Every recorded row with its owner derived once, for the payload and the
+/// table alike.
+pub fn managed_resource_payload(
+    items: Vec<cfgd_core::state::ManagedResource>,
+    profile: Option<&str>,
+) -> Vec<ManagedResourceRow> {
+    let profile_owner = profile.map_or_else(
+        || NO_DETAIL.to_string(),
+        |p| cfgd_core::reconciler::Owner::profile(p).token(),
+    );
+    items
+        .into_iter()
+        .map(|resource| {
+            let owner = recorded_row_owner(&resource, &profile_owner);
+            ManagedResourceRow { resource, owner }
+        })
+        .collect()
+}
+
+/// The owner token one recorded row belongs to.
+///
+/// A row naming a module is that module's; everything else asks
+/// [`recorded_owner`], which is the reconciler's own split.
+///
+/// `profile_owner` is [`cfgd_core::reconciler::Owner::profile`]'s token for what
+/// [`derivable_profile`] answered, which the recorded row does not carry: the
+/// owner reads the same vocabulary the reconciler assigns the very actions that
+/// wrote these rows, so a package the profile declared reads that token here
+/// exactly as the plan and apply trees head its group and as `diff` reports its
+/// drift. The header leaves its `Profile` row out for a run that resolved none,
+/// so the same derivation decides the owner: a nameless token here would name a
+/// profile the row above says nothing has, which is the shape
+/// [`derivable_profile`] exists to refuse. Those rows carry [`NO_DETAIL`]
+/// instead.
+fn recorded_row_owner(r: &cfgd_core::state::ManagedResource, profile_owner: &str) -> String {
+    match module_id_parts(&r.resource_type, &r.resource_id) {
+        Some((module, _)) => cfgd_core::reconciler::Owner::module(module).token(),
+        None => recorded_owner(r, profile_owner),
+    }
 }
 
 #[derive(Serialize)]
@@ -86,8 +161,13 @@ pub struct ModuleStatusEntry {
     /// second count taken off the resolved declaration.
     pub packages: usize,
     pub files: usize,
-    /// How many scripts the module's recorded `script` row stands for — the
-    /// number that row's own cell prints, and 0 for a module with no such row.
+    /// How many scripts the module's recorded `script` row stands for, and 0
+    /// for a module with no such row.
+    ///
+    /// `-o json` only. A script is declared and then run, and nothing checks
+    /// one afterwards, so no human row of this report states a fact about a
+    /// module's scripts; a consumer reading the recorded rows still gets the
+    /// tally beside them.
     pub scripts: usize,
     pub status: String,
     /// Why this host resolves the module to nothing — the reason the header's
@@ -108,7 +188,7 @@ pub struct ModuleStatusEntry {
 /// The detail the Managed Resources table renders beside one module's recorded
 /// rows: the id records WHAT was applied, and this is what the current
 /// resolution can add about it (which directory the files land in, which
-/// manager installs a package, which hooks the module declares).
+/// manager installs a package).
 ///
 /// Empty for a module the config no longer carries — the row still names what
 /// cfgd manages, with only the recorded id behind it.
@@ -116,21 +196,22 @@ pub struct ModuleStatusEntry {
 pub struct ModuleDeclared {
     /// Directory the module's declared file targets share, POSIX-folded.
     pub file_root: Option<String>,
-    /// Resolved package name to every manager the module declares it under.
+    /// Package name to every manager the module declares it under, under BOTH
+    /// spellings resolution knows it by: the canonical name the module wrote
+    /// and the resolved name its manager installs (`gcc` and apt's
+    /// `build-essential` are one package). A recorded row holds whichever
+    /// spelling the apply that wrote it had, and a row whose names this map
+    /// cannot find loses its manager prefix and renders as a bare list beside
+    /// rows spelled `apt:`, `npm:`, `pipx:`.
     ///
     /// A SET per name, because one name can be declared twice: `nvim` resolves
     /// `neovim` under the host's native manager AND under `npm`. Keyed
-    /// name-to-one-manager, the second declaration overwrote the first, and the
-    /// native row — whose names then disagreed about who installs them — lost
-    /// its manager prefix entirely and rendered a bare package list beside rows
-    /// spelled `apt:`, `npm:`, `pipx:`.
+    /// name-to-one-manager, the second declaration overwrote the first and the
+    /// native row's names then disagreed about who installs them.
     pub package_managers: std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
-    /// `3 preApply, 6 postApply`, from [`cfgd_core::modules::ModuleSurfaces`] —
-    /// the same tally, and the same rendering, `cfgd status <module>` reports.
-    pub script_summary: Option<String>,
-    /// The total [`Self::script_summary`] breaks down, from the same
-    /// `ModuleSurfaces` — the headline slot's number, so the summary line and
-    /// the row it summarizes cannot count one module's hooks twice.
+    /// How many scripts the module declares, from
+    /// [`cfgd_core::modules::ModuleSurfaces`] — the `-o json` tally beside the
+    /// module's recorded `script` row, which no human row of this report reads.
     pub scripts: usize,
 }
 
@@ -142,13 +223,14 @@ impl ModuleDeclared {
             package_managers: module.packages.iter().fold(
                 std::collections::BTreeMap::new(),
                 |mut map, p| {
-                    map.entry(p.resolved_name.clone())
-                        .or_default()
-                        .insert(p.manager.clone());
+                    for name in [&p.canonical_name, &p.resolved_name] {
+                        map.entry(name.clone())
+                            .or_default()
+                            .insert(p.manager.clone());
+                    }
                     map
                 },
             ),
-            script_summary: surfaces.script_summary(),
             scripts: surfaces.script_total(),
         }
     }
@@ -218,6 +300,22 @@ pub struct ModuleStatus {
     pub depends: Vec<String>,
     pub status: String,
     pub last_applied: Option<String>,
+    /// The digests the last apply recorded for this module's declared package
+    /// set and its declared files — what the next reconcile compares against
+    /// to decide the module is unchanged. RECORDED, so they belong here
+    /// rather than on `cfgd module show`, which reads the declaration.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub packages_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub files_hash: Option<String>,
+    /// What the lockfile REMEMBERS about a remote module: the commit its
+    /// checkout is pinned at and the integrity digest of the directory that
+    /// commit delivered. Absent for a local module, which no lockfile entry
+    /// names.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub integrity: Option<String>,
     /// What the run that last applied this module was scoped to, when that was
     /// an isolated `--module` run (`module:nvim`). A profile-wide run leaves it
     /// empty: the profile applied every module it carries, and naming it here
@@ -259,14 +357,19 @@ pub struct ModuleStatus {
     /// checked without any machine-wide scan having run.
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub scoped_scans: std::collections::BTreeMap<String, String>,
-    /// A `--scan` run's checks that could not run — today only the env probe
-    /// (the primary managed env file exists but could not be read, so every
-    /// env verdict of this scan is unknown). The SAME `systemErrors` shape
-    /// the fleet payload carries for the same fact, so a consumer parses one
-    /// list of `{key, error}` rows on both surfaces. Rendered as the
-    /// first-class `error checking drift` row `diff` mints for the identical
-    /// probe, and it drives the `Error` exit ahead of `DriftDetected` —
-    /// unknown outranks known.
+    /// A `--scan` run's checks that could not run, from the two passes a
+    /// module scan makes: the env probe, keyed by the managed env file's own
+    /// path (it exists but could not be read, so every env verdict of this
+    /// scan is unknown), and the declared-floor pass, keyed
+    /// `<manager>:<package>` for a pinned `minVersion` its manager could not
+    /// compare. The itemized view files each row under the section its items
+    /// belong to, and only the env probe withholds the Shell verdicts.
+    ///
+    /// The SAME `systemErrors` shape the fleet payload carries for the same
+    /// fact, so a consumer parses one list of `{key, error}` rows on both
+    /// surfaces. Rendered as the first-class `error checking drift` row `diff`
+    /// mints for the identical check, and it drives the `Error` exit ahead of
+    /// `DriftDetected` — unknown outranks known.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub system_errors: Vec<super::output_types::SystemCheckError>,
     /// Rows this module's scope owns that the scan above did not re-check —
@@ -286,13 +389,21 @@ impl ModuleStatus {
     /// `Drifted` is derived, never stored: it is read off the very rows that
     /// fill the Drift section below — a live scan's findings, or the RECORDED
     /// rows the fallback renders — so the verdict word and the section can
-    /// never disagree, and this surface cannot call a module `Installed`
+    /// never disagree, and this surface cannot call a module `Applied`
     /// while the fleet's Component Health calls the same rows `Drifted`.
     /// `Unknown` comes from the same section's erroring checks, for the same
     /// reason: the Drift section prints them, so the headline above it cannot
     /// claim the verdict they withheld.
     fn state_display(&self) -> (&'static str, Role) {
         cfgd_core::state::module_status_display(&self.status, self.drift_verdict())
+    }
+
+    /// Whether this module stands on any drift a reader must act on: a row
+    /// this run found, or one its scope owns and could not re-examine. The ONE
+    /// composition — the verdict, the closing hint and the `--exit-code` gate
+    /// all read it, the same shape `VerifyOutput` and `DiffSummary` carry.
+    fn any_drift(&self) -> bool {
+        !self.drift.is_empty() || !self.standing.is_empty()
     }
 
     /// The ONE composition of this module's two drift facts — rows in the
@@ -307,7 +418,7 @@ impl ModuleStatus {
     fn drift_verdict(&self) -> cfgd_core::state::DriftVerdict {
         covered_verdict(
             cfgd_core::state::DriftVerdict::from_checks(
-                !self.drift.is_empty(),
+                self.any_drift(),
                 !self.system_errors.is_empty(),
             ),
             check_covers(
@@ -435,9 +546,10 @@ fn classify_recorded_drift_for_chain(
                         drifted_ids.insert(event.resource_id.clone());
                         (SURFACE_FILES, item)
                     }
-                    // The daemon's `<module>:script` / `<module>:skip`
-                    // spelling keeps its facet as the item; the bare legacy
-                    // whole-module id has none.
+                    // A faceted legacy id (`<module>:script`,
+                    // `<module>:skip`) keeps its facet as the item; the bare
+                    // legacy whole-module id has none. No producer mints
+                    // either one now.
                     None => (
                         "",
                         cfgd_core::reconciler::module_row_facet(&event.resource_id)
@@ -574,8 +686,12 @@ pub(in crate::cli) const PLATFORM_SKIPPED: &str = "skipped (platform filter)";
 #[serde(rename_all = "camelCase")]
 pub struct ModulePackageStatus {
     pub name: String,
-    /// The manager that answered. `None` when nothing asked, so the row can
-    /// never name a manager as the authority for a verdict it did not give.
+    /// The manager behind this row: the one that answered where a check ran,
+    /// and the one the entry resolves to where none did — a name declared
+    /// twice under two managers is two rows, and a row naming neither tells a
+    /// reader nothing about which entry it is. `None` only for an entry no
+    /// manager can take (a platform gate rules it out, or resolution failed),
+    /// where naming one would claim a route that does not exist.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub manager: Option<String>,
     pub state: ModulePackagePresence,
@@ -652,7 +768,7 @@ fn drift_section<T>(
             // the same failed probe, worded the same way so the two surfaces
             // read as one report.
             check_errors.iter().fold(s, |s, err| {
-                s.status_with(Role::Warn, err.key.clone(), |f| {
+                s.status_with(Role::Warn, err.subject(), |f| {
                     f.qualifier("error checking drift").detail(&err.error)
                 })
             })
@@ -675,17 +791,10 @@ impl HealthFinding {
     /// Word one recorded event for the nested slot. `subject` is the item the
     /// owner row above already attributes, so a module FILE finding names the
     /// bare folded path rather than repeating its owner; every other kind
-    /// takes [`cfgd_core::output::drift_item_subject`]'s spelling. A script
-    /// id is the raw `run_str` body (preserved byte-identical for UPSERT
-    /// matching) and condenses only here, at the point it enters a subject.
+    /// takes [`cfgd_core::output::drift_item_subject`]'s spelling.
     fn of(event: &cfgd_core::state::DriftEvent, subject: Option<String>) -> Self {
         let subject = subject.unwrap_or_else(|| {
-            let display_id =
-                if event.resource_type == "script" || event.resource_type == "Running script" {
-                    condense_script_label(&event.resource_id)
-                } else {
-                    cfgd_core::fold_home_in_text(&event.resource_id)
-                };
+            let display_id = cfgd_core::fold_home_in_text(&event.resource_id);
             cfgd_core::output::drift_item_subject(&event.resource_type, &display_id)
         });
         // The recomputed pair when a surface could read one off the machine
@@ -767,8 +876,10 @@ fn render_module_drift_section(
         scan_note,
         |s, d| {
             // A whole-module verdict has no surface to name: the subject is
-            // the owner token, carrying the `:script` / `:skip` facet the
-            // recording action spelled after it, and the recorded cause speaks.
+            // the owner token, carrying whatever facet a legacy row spelled
+            // after it, and the recorded cause speaks. Nothing mints such a row
+            // now; one already in the store renders plain here, counted in no
+            // owner's clause.
             let subject = if d.surface.is_empty() {
                 let owner = cfgd_core::reconciler::Owner::module(&d.owner).token();
                 if d.item.is_empty() {
@@ -857,7 +968,8 @@ pub fn build_fleet_status_doc(
     resources: &ManagedResourceDetail,
 ) -> Doc {
     // One derivation for the whole document: the header's `Profile` row and
-    // the Managed Resources Owner column name the same profile or neither does.
+    // each recorded row's serialized owner come from the same
+    // `derivable_profile` answer, so both name the profile or neither does.
     let profile = head.profile;
     let mut doc = Doc::new()
         .heading("Status")
@@ -995,13 +1107,17 @@ pub fn build_fleet_status_doc(
                 // for the same failed probe, worded the same way so the two
                 // surfaces read as one report.
                 output.system_errors.iter().fold(s, |s, err| {
-                    s.status_with(Role::Warn, err.key.clone(), |f| {
+                    s.status_with(Role::Warn, err.subject(), |f| {
                         f.qualifier("error checking drift").detail(&err.error)
                     })
                 })
             },
         );
     }
+
+    // Rows the scan owns but could not re-examine, after the live rows it
+    // did: the record's own answer, never a member of what this run found.
+    doc = super::live_drift::standing_section(doc, &output.standing);
 
     doc = doc.section_if_nonempty(
         "Managed Resources",
@@ -1016,19 +1132,30 @@ pub fn build_fleet_status_doc(
                 // terminal wraps it rather than cutting names off the tail.
                 .wrapping()
                 .owner_column("Owner");
-            for row in managed_resource_rows(items, &output.modules, profile, resources) {
+            for row in managed_resource_rows(items, &output.modules, resources) {
                 t = t.row(row);
             }
             s.table(t.without_unfillable_columns())
         },
     );
 
+    // The Pending Decisions section above named the rows; the instruction for
+    // answering them joins the foot of the report rather than sitting indented
+    // inside that section. It leads the closing block because the scan/heal
+    // hint below is the one this report is required to close on
+    // (`the_scan_hint_is_said_once_and_last`).
+    if !output.pending_decisions.is_empty() {
+        doc = doc.hint(cfgd_core::reconciler::answer_decisions_hint(
+            output.pending_decisions.len(),
+        ));
+    }
+
     // A report that SHOWS drift owes the reader the command that heals it, and
     // that outranks the invitation to look again: an unresolved finding a
     // recent check still stands behind is pending work, whether this run did
     // the looking or read what the last one recorded. Only once that evidence
     // has gone stale does the look outrank the heal.
-    if !output.drift.is_empty() && !stale {
+    if output.any_drift() && !stale {
         doc = doc.hint(super::heal_drift_hint(None));
     } else if stale {
         doc = doc.hint(SCAN_HINT);
@@ -1041,7 +1168,7 @@ pub fn build_fleet_status_doc(
 /// unchecked or stale: the one command that looks, at the foot of the report.
 pub(super) const SCAN_HINT: &str = "`cfgd diff` checks the live machine for drift";
 
-use cfgd_core::reconciler::ENV_RESOURCE_TYPE;
+use cfgd_core::reconciler::{ENV_RC_RESOURCE_TYPE, ENV_RESOURCE_TYPE, ENV_SESSION_RESOURCE_TYPE};
 
 /// Stand-in for a resource column with nothing left to say — the same `-` the
 /// Config Sources table renders for a version nobody has fetched.
@@ -1065,77 +1192,98 @@ pub struct ManagedResourceDetail {
 
 /// The Managed Resources rows, as `[Type, Owner, Resource, Method, Source]`.
 ///
+/// A row [`records_a_script`] claims is not one of them, and the Component
+/// Health counts skip the same rows, so the table and the counts above it
+/// cannot disagree about what this host manages.
+///
 /// A recorded row is a state-matching key rather than a report: a `module`
 /// row's id carries the owner and the surface inside it, and a `package` row
 /// is ONE package where a reader wants the list a manager installed. Both are
 /// split out here, so the table can say whose each resource is and can render
 /// one row per manager rather than one per package.
 ///
+/// A declared env var and a declared alias each record their own row, so a
+/// machine declaring twenty of them would otherwise push every other resource
+/// off the screen. They fold the same way a module's files do: one row per
+/// owner and kind naming the count, or the entry itself where an owner
+/// declared exactly one.
+///
 /// `-o wide` is the fleet table at full granularity: a module's `files:<n>`
-/// aggregate blows up into one row per manifest file, and the Method column
-/// fills — a deployed file's resolved strategy in
+/// aggregate blows up into one row per manifest file, every declared entry gets
+/// its own row back, and the Method column fills — a deployed file's resolved
+/// strategy in
 /// [`cfgd_core::config::FileStrategy::method_label`]'s words, an env surface's
 /// own verb from [`cfgd_core::reconciler::recorded_env_method`]. On the
 /// default table every Method cell stays [`NO_DETAIL`], and the shared
 /// unfillable-column settle drops the column whole; `-o json` carries the raw
 /// aggregate ids either way — the pinned wire contract.
 ///
-/// `profile` is what [`derivable_profile`] answered for the resolved name,
-/// which the recorded row does not carry: the Owner column reads the same
-/// vocabulary the reconciler assigns the very actions that wrote these rows,
-/// so a package the profile declared reads
-/// [`cfgd_core::reconciler::Owner::profile`]'s token here exactly as the plan
-/// and apply trees head its group and as `diff` reports its drift. The header
-/// leaves its `Profile` row out for a run that resolved none, so the same
-/// derivation decides the column: a nameless token here would name a profile
-/// the row above says nothing has, which is the shape `derivable_profile`
-/// exists to refuse. Those rows carry [`NO_DETAIL`] instead.
+/// The Owner column is each row's own [`ManagedResourceRow::owner`], derived
+/// once by [`recorded_row_owner`] and never re-derived here.
 fn managed_resource_rows(
-    items: &[cfgd_core::state::ManagedResource],
+    items: &[ManagedResourceRow],
     modules: &[ModuleStatusEntry],
-    profile: Option<&str>,
     detail: &ManagedResourceDetail,
 ) -> Vec<[String; 5]> {
     let mut rows: Vec<[String; 5]> = Vec::with_capacity(items.len());
-    let profile_owner = profile.map_or_else(
-        || NO_DETAIL.to_string(),
-        |p| cfgd_core::reconciler::Owner::profile(p).token(),
-    );
-    // Keyed by (manager, source) rather than manager alone: two sources
+    // Keyed by (owner, manager, source) rather than manager alone: two sources
     // delivering one manager's packages are two facts, and a merged row would
-    // attribute both to whichever source sorted first.
-    let mut own_packages: std::collections::BTreeMap<(&str, &str), Vec<&str>> =
+    // attribute both to whichever source sorted first. The owner is the one
+    // the rows themselves carry, so a group cannot be filed under a second
+    // derivation of it.
+    let mut own_packages: std::collections::BTreeMap<(&str, &str, &str), Vec<&str>> =
+        std::collections::BTreeMap::new();
+    // The declared env vars and aliases of one owner, keyed the same way and
+    // for the same reason: two layers declaring entries are two facts, and a
+    // merged row would file both under whichever source sorted first.
+    let mut own_entries: std::collections::BTreeMap<(&str, &str, &str), Vec<&str>> =
         std::collections::BTreeMap::new();
 
     for r in items {
+        if records_a_script(&r.resource_type, &r.resource_id) {
+            continue;
+        }
         if let Some((manager, package)) = package_id_parts(&r.resource_type, &r.resource_id) {
             own_packages
-                .entry((manager, r.source.as_str()))
+                .entry((r.owner.as_str(), manager, r.source.as_str()))
                 .or_default()
                 .push(package);
             continue;
         }
         let Some((module, rest)) = module_id_parts(&r.resource_type, &r.resource_id) else {
-            // Same rationale as the Drift section above: condense a "script" /
-            // "Running script" resource_id only for this table cell, never the
-            // stored id itself.
-            let resource = if r.resource_type == "script" || r.resource_type == "Running script" {
-                condense_script_label(&r.resource_id)
-            } else if is_session_env_row(r) {
+            if !detail.wide && cfgd_core::reconciler::records_an_env_item(&r.resource_type) {
+                own_entries
+                    .entry((
+                        r.owner.as_str(),
+                        r.resource_type.as_str(),
+                        r.source.as_str(),
+                    ))
+                    .or_default()
+                    .push(r.resource_id.as_str());
+                continue;
+            }
+            let resource = if is_session_env_row(r) {
                 session_env_resource()
             } else {
                 cfgd_core::fold_home_in_text(&r.resource_id)
             };
+            // An `env` row's own type names all three env surfaces at once;
+            // the verb it was written under is what says which one it is.
+            let kind = if r.resource_type == ENV_RESOURCE_TYPE {
+                recorded_env_drift_type(r)
+            } else {
+                r.resource_type.as_str()
+            };
             rows.push([
-                display_type(&r.resource_type).to_string(),
-                recorded_owner(r, &profile_owner),
+                display_type(kind).to_string(),
+                r.owner.clone(),
                 resource,
                 recorded_row_method(r, detail),
                 r.source.clone(),
             ]);
             continue;
         };
-        let owner = cfgd_core::reconciler::Owner::module(module).token();
+        let owner = r.owner.clone();
         let declared = modules
             .iter()
             .find(|m| m.name == module)
@@ -1174,9 +1322,6 @@ fn managed_resource_rows(
         }
         let resource = match surface {
             "packages" => module_packages_resource(item, declared),
-            "script" => declared
-                .and_then(|d| d.script_summary.clone())
-                .unwrap_or_else(|| NO_DETAIL.to_string()),
             _ if item.is_empty() => NO_DETAIL.to_string(),
             _ => item.to_string(),
         };
@@ -1189,12 +1334,26 @@ fn managed_resource_rows(
         ]);
     }
 
-    for ((manager, source), mut packages) in own_packages {
+    for ((owner, manager, source), mut packages) in own_packages {
         packages.sort_unstable();
         rows.push([
             display_type("package").to_string(),
-            profile_owner.clone(),
+            owner.to_string(),
             format!("{manager}: {}", packages.join(", ")),
+            NO_DETAIL.to_string(),
+            source.to_string(),
+        ]);
+    }
+    for ((owner, kind, source), mut entries) in own_entries {
+        entries.sort_unstable();
+        let resource = match entries.as_slice() {
+            [only] => (*only).to_string(),
+            many => cfgd_core::pluralize(many.len(), display_type(kind)),
+        };
+        rows.push([
+            display_type(kind).to_string(),
+            owner.to_string(),
+            resource,
             NO_DETAIL.to_string(),
             source.to_string(),
         ]);
@@ -1255,23 +1414,46 @@ fn recorded_row_method(
 
 /// The Owner column's token for a recorded row that names no module.
 ///
-/// The split is the reconciler's own: an `env` row is a file cfgd authored or
-/// a session cfgd published, so it is cfgd's own and carries the same group
-/// suffix the tree heads it with — [`cfgd_core::reconciler::SESSION_GROUP`]
-/// for the one row whose id names the act, [`cfgd_core::reconciler::ENV_GROUP`]
-/// for the files. Everything else in this branch — a package, a managed file,
-/// a profile script, a system setting, a secret — is work a user document
-/// declared, which is the profile's.
+/// The split is the reconciler's own, and asked of the reconciler rather than
+/// re-derived: an `env` row is a file cfgd authored, a source line cfgd planted
+/// in a file the user owns, or a session cfgd published, and each carries the
+/// same group suffix `reconciler::owner_of` heads its tree group with. The
+/// write-vs-inject half of that question has exactly one answerer,
+/// [`cfgd_core::reconciler::recorded_env_method`], because the recorded id
+/// drops the verb; asking it a second way here is how a table and a tree came
+/// to disagree about which group owns `~/.bashrc`.
+///
+/// Everything else in this branch (a package, a managed file, a profile script,
+/// a system setting, a secret) is work a user document declared, which is the
+/// profile's.
 fn recorded_owner(r: &cfgd_core::state::ManagedResource, profile_owner: &str) -> String {
     if r.resource_type != ENV_RESOURCE_TYPE {
         return profile_owner.to_string();
     }
-    let group = if is_session_env_row(r) {
-        cfgd_core::reconciler::SESSION_GROUP
+    cfgd_core::reconciler::Owner::cfgd(recorded_env_group(r)).token()
+}
+
+/// The cfgd group a recorded `env` row belongs to: the session for the one row
+/// whose id names the act, and otherwise the group the verb that wrote it
+/// belongs to. The ONE reading, shared by the Owner column, the Type cell and
+/// the Component Health counts, so the three cannot classify one row three
+/// ways.
+fn recorded_env_group(r: &cfgd_core::state::ManagedResource) -> &'static str {
+    if is_session_env_row(r) {
+        return cfgd_core::reconciler::SESSION_GROUP;
+    }
+    env_method_group(cfgd_core::reconciler::recorded_env_method(&r.resource_id))
+}
+
+/// The cfgd group an env verb's output belongs to, the same split
+/// `reconciler::owner_of` makes over the ACTIONS, made here over the verb a
+/// recorded row survives with.
+fn env_method_group(method: &str) -> &'static str {
+    if method == cfgd_core::reconciler::ENV_VERB_INJECT {
+        cfgd_core::reconciler::SHELL_GROUP
     } else {
         cfgd_core::reconciler::ENV_GROUP
-    };
-    cfgd_core::reconciler::Owner::cfgd(group).token()
+    }
 }
 
 /// The owner a rendered token names, read back so the table can be ordered by
@@ -1324,10 +1506,24 @@ fn is_session_env_row(r: &cfgd_core::state::ManagedResource) -> bool {
 /// apply settles that action with — the dashboard resolving it from the same
 /// probe rather than reporting a surface it cannot reach as ordinary state.
 fn session_env_resource() -> String {
+    let noun = cfgd_core::output::drift_kind_label(ENV_SESSION_RESOURCE_TYPE);
     if cfgd_core::session_manager_available() {
-        "session env".to_string()
+        noun.to_string()
     } else {
-        format!("session env — {}", cfgd_core::NO_SESSION_MANAGER)
+        format!("{noun} — {}", cfgd_core::NO_SESSION_MANAGER)
+    }
+}
+
+/// The drift `resource_type` a recorded `env` row's own surface is reported
+/// under, so both the Type cell and the Component Health count noun read
+/// through the ONE vocabulary every other row uses ([`display_type`] and
+/// [`cfgd_core::output::drift_kind_label`]) rather than a second word list
+/// that could drift from what `verify` calls the same resource.
+fn recorded_env_drift_type(r: &cfgd_core::state::ManagedResource) -> &'static str {
+    match recorded_env_group(r) {
+        cfgd_core::reconciler::SESSION_GROUP => ENV_SESSION_RESOURCE_TYPE,
+        cfgd_core::reconciler::SHELL_GROUP => ENV_RC_RESOURCE_TYPE,
+        _ => ENV_RESOURCE_TYPE,
     }
 }
 
@@ -1352,6 +1548,25 @@ fn module_id_parts<'a>(resource_type: &str, resource_id: &'a str) -> Option<(&'a
     resource_id
         .split_once(':')
         .filter(|(module, rest)| !module.is_empty() && !rest.is_empty())
+}
+
+/// Whether a recorded row names a script a run executed rather than a resource
+/// this host manages: a module's `<name>:script` row, and the profile-level
+/// `script` / `Running script` rows an inline lifecycle step writes.
+///
+/// A script is declared and then run, and no check ever looks at it again, so
+/// there is no status to state about one. Both walks that read recorded rows
+/// ask this — the Managed Resources table and the Component Health counts that
+/// must agree with it — and `-o json` still carries every row raw.
+///
+/// The module arm reads the tail through
+/// [`cfgd_core::reconciler::module_row_facet`], the one reader of that
+/// grammar.
+fn records_a_script(resource_type: &str, resource_id: &str) -> bool {
+    resource_type == "script"
+        || resource_type == "Running script"
+        || (resource_type == "module"
+            && cfgd_core::reconciler::module_row_facet(resource_id) == Some("script"))
 }
 
 /// A module's file deployment: where the files land, and how many the apply
@@ -1410,16 +1625,19 @@ fn module_packages_resource(recorded: &str, declared: Option<&ModuleDeclared>) -
 /// the one its row-mates agree on. Taking one manager per name instead let
 /// `neovim`, declared natively AND under npm, decide the whole native row's
 /// answer was ambiguous.
+///
+/// A name the module no longer declares is skipped rather than answered for:
+/// resolution says nothing about it, and letting it veto the row dropped the
+/// manager prefix from a row whose other fifteen names all named one.
 fn row_manager<'a>(names: &[&str], declared: Option<&'a ModuleDeclared>) -> Option<&'a str> {
     let declared = declared?;
     let mut shared: Option<std::collections::BTreeSet<&str>> = None;
     for name in names {
-        let managers: std::collections::BTreeSet<&str> = declared
-            .package_managers
-            .get(*name)?
-            .iter()
-            .map(String::as_str)
-            .collect();
+        let Some(declared_managers) = declared.package_managers.get(*name) else {
+            continue;
+        };
+        let managers: std::collections::BTreeSet<&str> =
+            declared_managers.iter().map(String::as_str).collect();
         shared = Some(match shared {
             Some(acc) => acc.intersection(&managers).copied().collect(),
             None => managers,
@@ -1448,15 +1666,18 @@ fn module_files_count(recorded: &str) -> Option<usize> {
 }
 
 /// One module's share of the Managed Resources table: a slot per module-owned
-/// kind the Type column spells (`env` is cfgd's own, so it has none here).
+/// kind the Type column spells (`env` is cfgd's own, so it has none here),
+/// plus the script count only `-o json` reads.
 ///
 /// A named struct rather than a tuple because the headline reads every slot in
-/// order and a fourth kind reaching the table has to be given one — an unnamed
+/// order and a kind reaching the table has to be given one — an unnamed
 /// position is what let the `script` rows fall out of the summary silently.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) struct ModuleTally {
     pub packages: usize,
     pub files: usize,
+    /// `-o json`'s `scripts`, which the table states no row for and the
+    /// headline counts no clause for.
     pub scripts: usize,
 }
 
@@ -1471,9 +1692,11 @@ pub(super) struct ModuleTally {
 /// itself.
 ///
 /// `declared` is what the table's own cells read for the same rows, so the two
-/// renderings of one row cannot name different numbers.
+/// renderings of one row cannot name different numbers. The `scripts` slot is
+/// the exception: it serves `-o json` alone, the table rendering no script row
+/// and the health clause counting no scripts.
 pub(super) fn recorded_module_tallies(
-    items: &[cfgd_core::state::ManagedResource],
+    items: &[ManagedResourceRow],
     declared: &std::collections::BTreeMap<String, ModuleDeclared>,
 ) -> std::collections::BTreeMap<String, ModuleTally> {
     let mut tallies: std::collections::BTreeMap<String, ModuleTally> =
@@ -1489,8 +1712,8 @@ pub(super) fn recorded_module_tallies(
             "files" => entry.files += module_files_count(detail).unwrap_or(0),
             // Every hook a module runs collapses onto one `module:<name>:script`
             // id, so the recorded row carries no count of its own and the number
-            // is the one its table cell prints — assigned, not accumulated,
-            // because a second such row is the same row.
+            // comes from the declaration — assigned, not accumulated, because a
+            // second such row is the same row.
             "script" => entry.scripts = declared.get(module).map_or(0, |d| d.scripts),
             _ => {}
         }
@@ -1543,23 +1766,47 @@ fn freshest_check_stamp<'a>(
     row_stamps.chain(scoped_stamps).chain(last_scan_at).max()
 }
 
-/// Whether a check stands behind a verdict for `owner_token`: this run checked
-/// live, the machine-wide scan stamp stands, or a scoped scan stamped this
-/// owner.
+/// Whether a check stands behind a verdict for `owner_token`: a scoped scan
+/// stamped this owner, or a check the scan REACHES ran — this run live, or the
+/// machine-wide stamp.
 ///
 /// The ONE coverage question every surface deriving a component's word asks,
 /// so a `Synced` can never render beside an annotation saying nothing was ever
-/// checked. Only a module token can be a `scoped` key — a scoped scan checks a
-/// module's own files, packages and env ITEMS, never the env FILES or the
-/// profile's packages — so `cfgd:env` and `profile:*` are covered by a live
-/// check or the machine-wide stamp alone, without a second branch here.
+/// checked. The question is per OWNER because a machine-wide scan is not a
+/// machine-wide answer: it evaluates the resource types
+/// [`super::live_drift::FULL_CHECK_RESOLVABLE_TYPES`] names, and every owner
+/// outside that reach ([`scan_reaches`]) stays as unchecked after a `--scan`
+/// as before it. Only a module token can be a `scoped` key — a scoped scan
+/// checks a module's own files, packages and env ITEMS, never the env FILES or
+/// the profile's packages — so `cfgd:env` and `profile:*` are covered by a
+/// live check or the machine-wide stamp alone, without a second branch here.
 fn check_covers(
     owner_token: &str,
     checked_live: bool,
     last_scan_at: Option<&str>,
     scoped: &std::collections::BTreeMap<String, String>,
 ) -> bool {
-    checked_live || last_scan_at.is_some() || scoped.contains_key(owner_token)
+    scoped.contains_key(owner_token)
+        || (scan_reaches(owner_token) && (checked_live || last_scan_at.is_some()))
+}
+
+/// Whether a full live check evaluates anything this owner owns.
+///
+/// The ONE exclusion, derived from what the scan actually looks at: every
+/// resource type in [`super::live_drift::FULL_CHECK_RESOLVABLE_TYPES`] belongs
+/// to a module, the profile, `cfgd:env`, `cfgd:shell` or `cfgd:managers`, and
+/// none of them to `cfgd:session` — the live session is published, never
+/// probed, so no scan can vouch for it and its row keeps stating the record's
+/// own fact. `every_owner_the_scan_never_reaches_is_excluded_from_coverage`
+/// derives that reached set through [`finding_owner`] and fails if this
+/// disagrees.
+fn scan_reaches(owner_token: &str) -> bool {
+    !matches!(
+        cfgd_core::output::split_owner_token(owner_token),
+        Some((kind, name))
+            if kind == cfgd_core::reconciler::OwnerKind::Cfgd.as_str()
+                && name == cfgd_core::reconciler::SESSION_GROUP
+    )
 }
 
 /// [`check_covers`] applied to a verdict: an owner no check covers cannot earn
@@ -1616,6 +1863,58 @@ enum FindingSlot {
     OwnerVerdict,
 }
 
+/// Who declares each `(manager, package)` pair this render knows about,
+/// derived ONCE off a [`StatusOutput`] before the findings are walked.
+///
+/// [`package_owner`] used to answer each finding by scanning `modules` and then
+/// `managed_resources` from the top, splitting every recorded row's package
+/// list as it went: a machine with a few hundred findings and a few thousand
+/// recorded rows paid hundreds of thousands of string splits per render. The
+/// answer is the same one; only the number of times the rows are read changed.
+///
+/// The two halves stay separate because the precedence is: a module declaring
+/// ANY of a row's names outranks a profile row holding one of them, and a
+/// merged map would let the name order decide instead.
+struct PackageOwners {
+    /// `(manager, package)` to the FIRST module of `output.modules` whose
+    /// resolution declares it, carrying that module's index so a row naming
+    /// several packages answers with the earliest-declared module, as the
+    /// `find` over modules this replaced did.
+    by_module: std::collections::BTreeMap<(String, String), (usize, cfgd_core::reconciler::Owner)>,
+    /// The `(manager, package)` pairs the profile's own recorded rows hold.
+    by_profile: std::collections::BTreeSet<(String, String)>,
+}
+
+impl PackageOwners {
+    fn of(output: &StatusOutput) -> Self {
+        use cfgd_core::reconciler::Owner;
+        let mut by_module = std::collections::BTreeMap::new();
+        for (index, module) in output.modules.iter().enumerate() {
+            for (name, managers) in &module.declared.package_managers {
+                for manager in managers {
+                    by_module
+                        .entry((manager.clone(), name.clone()))
+                        .or_insert_with(|| (index, Owner::module(&module.name)));
+                }
+            }
+        }
+        let mut by_profile = std::collections::BTreeSet::new();
+        for row in &output.managed_resources {
+            let Some((manager, declared)) = package_id_parts(&row.resource_type, &row.resource_id)
+            else {
+                continue;
+            };
+            for name in declared.split(',').map(str::trim) {
+                by_profile.insert((manager.to_string(), name.to_string()));
+            }
+        }
+        Self {
+            by_module,
+            by_profile,
+        }
+    }
+}
+
 /// Which owner a `<manager>:<names>` package row belongs to: the module whose
 /// current resolution declares one of the names under that manager, then the
 /// profile when the profile's own recorded package rows hold one of them.
@@ -1625,80 +1924,92 @@ enum FindingSlot {
 /// the finding walk and the erroring-check walk, which mint the same id.
 fn package_owner(
     resource_id: &str,
-    output: &StatusOutput,
+    owners: &PackageOwners,
     profile_owner: Option<&cfgd_core::reconciler::Owner>,
 ) -> Option<cfgd_core::reconciler::Owner> {
-    use cfgd_core::reconciler::Owner;
     // The id's own producer owns its grammar; a hand-guessed separator here is
     // how a declared package rendered loose while its owner read clean.
     let (manager, names) = cfgd_core::reconciler::split_package_drift_resource_id(resource_id)?;
     let names = || names.iter().map(|name| name.trim());
-    let declaring = output.modules.iter().find(|m| {
-        names().any(|name| {
-            m.declared
-                .package_managers
-                .get(name)
-                .is_some_and(|managers| managers.contains(manager))
+    // A legacy comma-joined row names several packages, and the module that
+    // declares one FIRST owns it however the names are ordered in the id.
+    if let Some((_, owner)) = names()
+        .filter_map(|name| {
+            owners
+                .by_module
+                .get(&(manager.to_string(), name.to_string()))
         })
-    });
-    if let Some(m) = declaring {
-        return Some(Owner::module(&m.name));
+        .min_by_key(|(index, _)| *index)
+    {
+        return Some(owner.clone());
     }
     // The profile's declaration is its own recorded package rows, read back
     // through the same split their producer's composer is pinned against.
-    let profile_declares = output.managed_resources.iter().any(|r| {
-        package_id_parts(&r.resource_type, &r.resource_id).is_some_and(|(m, declared)| {
-            m == manager
-                && names().any(|name| declared.split(',').map(str::trim).any(|d| d == name))
-        })
+    let profile_declares = names().any(|name| {
+        owners
+            .by_profile
+            .contains(&(manager.to_string(), name.to_string()))
     });
     profile_declares.then(|| profile_owner.cloned()).flatten()
+}
+
+/// Whether a check-error key names an env surface, the first of the three key
+/// grammars the erroring-check producers mint.
+///
+/// Judged by SHAPE rather than by a `/` substring: a slash is legal inside a
+/// package name (`npm:@scope/name`, `go:github.com/foo/bar`), so a substring
+/// test hands those to the env surface — the env owner reads `Unknown` while
+/// the module that declared the package still reads `Synced`. The env producer
+/// mints its key from a real path, which is absolute wherever a home directory
+/// resolved and keeps its leading `~/` where none did; both are accepted,
+/// because the tilde form is what the producer emits on a host with no `HOME`,
+/// and no package id takes either shape.
+///
+/// The ONE answer to that question: the Component Health attribution below and
+/// the module report's split of its erroring checks across the Packages and
+/// Shell sections both ask it, so neither can read a key the way the other
+/// would not.
+///
+/// Asked of the SHAPE and not of the file's name, which the env engine spells
+/// differently per platform and per dialect: the producer folds the path it
+/// actually probed through `to_posix_string`, so a Windows key keeps its drive
+/// and answers `is_absolute` there exactly as a POSIX key does here. Matching a
+/// basename instead would accept a key that is no path at all, and every key
+/// this predicate sees was minted on the host now reading it.
+fn check_key_names_env_surface(key: &str) -> bool {
+    std::path::Path::new(key).is_absolute() || key.starts_with("~/")
 }
 
 /// Which Component Health owner a check that could not run belongs to, so the
 /// owner's verdict states the unknown instead of a word only an answered
 /// check earns.
 ///
-/// One arm per key grammar the three producers mint: the managed env file's
-/// own path, a package floor's `<manager>:<package>` drift id, and a system
+/// One arm per key grammar the three producers mint: an env surface's own
+/// path, a package floor's `<manager>:<package>` drift id, and a system
 /// configurator's bare name — which belongs to the profile that declared it,
 /// exactly as its drift findings do. A key no owner claims stays loose, and
 /// its row still renders at the foot of the section.
 ///
-/// The env arm is judged by SHAPE rather than by a `/` substring: a slash is
-/// legal inside a package name (`npm:@scope/name`, `go:github.com/foo/bar`),
-/// so a substring test hands those to the env surface — the env owner reads
-/// `Unknown` while the module that declared the package still reads `Synced`.
-/// The env producer mints its key from a real path, which is absolute
-/// wherever a home directory resolved and keeps its leading `~/` where none
-/// did; both are accepted, because the tilde form is what the producer emits
-/// on a host with no `HOME`, and no package id takes either shape.
+/// A path key is classified by the verb that wrote it, through the same one
+/// answerer [`recorded_owner`] asks, so a failed check on `~/.bashrc` lands on
+/// the owner whose row lists it rather than on its neighbour.
+///
+/// The env arm is [`check_key_names_env_surface`].
 fn check_error_owner(
     key: &str,
-    output: &StatusOutput,
+    owners: &PackageOwners,
     profile_owner: Option<&cfgd_core::reconciler::Owner>,
 ) -> Option<cfgd_core::reconciler::Owner> {
-    use cfgd_core::reconciler::{ENV_GROUP, Owner};
-    if std::path::Path::new(key).is_absolute() || key.starts_with("~/") {
-        return Some(Owner::cfgd(ENV_GROUP));
+    use cfgd_core::reconciler::Owner;
+    if check_key_names_env_surface(key) {
+        return Some(Owner::cfgd(env_method_group(
+            cfgd_core::reconciler::recorded_env_method(key),
+        )));
     }
     if key.contains(':') {
-        return package_owner(key, output, profile_owner);
+        return package_owner(key, owners, profile_owner);
     }
     profile_owner.cloned()
-}
-
-/// The shortfall noun a non-file `module` row counts under, from its facet.
-///
-/// Only `script` is a noun the owner's own inventory prices, so only it earns
-/// a counts clause; a `skip` names no countable resource, and a row wearing a
-/// facet nothing here knows renders its owner's bare verdict rather than
-/// inventing a unit for it.
-fn module_facet_noun(facet: &str) -> Option<&'static str> {
-    match facet {
-        "script" => Some("script"),
-        _ => None,
-    }
 }
 
 /// Which Component Health owner one unresolved recorded finding belongs to,
@@ -1712,9 +2023,10 @@ fn module_facet_noun(facet: &str) -> Option<&'static str> {
 /// does not split is attributed through
 /// [`cfgd_core::reconciler::module_row_owner`] — the ONE reading of a recorded
 /// module row, so a `<module>:script` id names the module rather than becoming
-/// an owner of its own; a shell row belongs to cfgd's env
-/// surface (`owner_of`'s vocabulary — the session refresh row to
-/// `cfgd:session`); a `provision:`/`refuse:` package row to `cfgd:managers`;
+/// an owner of its own; a shell row belongs to whichever cfgd group
+/// `owner_of` heads its action's tree group with (the generated file and its
+/// items to `cfgd:env`, an rc source line to `cfgd:shell`, the session refresh
+/// row to `cfgd:session`); a `provision:`/`refuse:` package row to `cfgd:managers`;
 /// any other package row to the module whose current resolution declares
 /// one of its names under the id's own manager, then to the profile when the
 /// profile's own recorded package rows hold one of the names under that
@@ -1723,14 +2035,14 @@ fn module_facet_noun(facet: &str) -> Option<&'static str> {
 /// clean — so it renders as a loose finding.
 fn finding_owner(
     event: &cfgd_core::state::DriftEvent,
-    output: &StatusOutput,
+    owners: &PackageOwners,
     profile_owner: Option<&cfgd_core::reconciler::Owner>,
 ) -> (
     Option<cfgd_core::reconciler::Owner>,
     Option<&'static str>,
     FindingSlot,
 ) {
-    use cfgd_core::reconciler::{ENV_GROUP, MANAGERS_GROUP, Owner, SESSION_GROUP};
+    use cfgd_core::reconciler::{ENV_GROUP, MANAGERS_GROUP, Owner, SESSION_GROUP, SHELL_GROUP};
     match event.resource_type.as_str() {
         "module" => match super::live_drift::split_module_file_resource_id(&event.resource_id) {
             Some((owner, target)) => (
@@ -1740,18 +2052,22 @@ fn finding_owner(
                 // nested subject is the bare folded target.
                 FindingSlot::Child(Some(cfgd_core::fold_home_in_text(&target))),
             ),
-            // Not a per-file id: a `<module>:script` / `<module>:skip` row, or
-            // the bare whole-module id a tick recorded before either producer
-            // agreed on a spelling. The OWNER is the module the row belongs to
-            // — taking the whole id instead minted a second Component Health
-            // row named `nvim:script` beside the real `nvim`, which then read
-            // clean while its phantom carried the finding.
+            // Not a per-file id: the bare whole-module id a tick recorded
+            // before per-file rows became the one grammar, or a faceted legacy
+            // id (`<module>:script`, `<module>:skip`) no producer mints any
+            // more. The OWNER is the module the row belongs to — taking the
+            // whole id instead minted a second Component Health row named
+            // `nvim:script` beside the real `nvim`, which then read clean while
+            // its phantom carried the finding.
+            //
+            // No noun either way: the owner's own inventory prices no scripts
+            // and a `skip` names no countable resource, so such a row flips its
+            // owner to a bare verdict with no counts clause.
             None => (
                 Some(Owner::module(cfgd_core::reconciler::module_row_owner(
                     &event.resource_id,
                 ))),
-                cfgd_core::reconciler::module_row_facet(&event.resource_id)
-                    .and_then(module_facet_noun),
+                None,
                 FindingSlot::OwnerVerdict,
             ),
         },
@@ -1759,17 +2075,26 @@ fn finding_owner(
         // `action_drift_rows` mints and the apply heals. Reading it off an
         // `env` row's id instead matched a shape no producer wrote, and the
         // env-file redundancy drop below would have swallowed it anyway.
-        "env-session" => (
+        ENV_SESSION_RESOURCE_TYPE => (
             Some(Owner::cfgd(SESSION_GROUP)),
-            Some("session env"),
+            Some(cfgd_core::output::drift_kind_label(
+                ENV_SESSION_RESOURCE_TYPE,
+            )),
             FindingSlot::Child(None),
         ),
-        shell @ (ENV_RESOURCE_TYPE | "env-var" | "alias" | "env-rc") => {
+        // The rc source line is cfgd's edit to a file the user owns, so it is
+        // the shell group's; the file cfgd generates whole and the items
+        // inside it are the env group's.
+        ENV_RC_RESOURCE_TYPE => (
+            Some(Owner::cfgd(SHELL_GROUP)),
+            Some(cfgd_core::output::drift_kind_label(ENV_RC_RESOURCE_TYPE)),
+            FindingSlot::Child(None),
+        ),
+        shell @ (ENV_RESOURCE_TYPE | "env-var" | "alias") => {
             let noun = match shell {
                 ENV_RESOURCE_TYPE => "env file",
                 "env-var" => "env var",
-                "alias" => "alias",
-                _ => "rc line",
+                _ => "alias",
             };
             (
                 Some(Owner::cfgd(ENV_GROUP)),
@@ -1795,7 +2120,7 @@ fn finding_owner(
                 );
             }
             (
-                package_owner(&event.resource_id, output, profile_owner),
+                package_owner(&event.resource_id, owners, profile_owner),
                 Some("package"),
                 FindingSlot::Child(None),
             )
@@ -1805,7 +2130,6 @@ fn finding_owner(
             // shortfall clause can hold the noun beyond the event's borrow.
             let noun = match other {
                 "file" | "files" => "file",
-                "script" | "Running script" => "script",
                 "system" => "setting",
                 _ => "item",
             };
@@ -1820,9 +2144,10 @@ fn finding_owner(
 /// below renders — the profile and cfgd's own env surfaces — and any owner
 /// only an unresolved recorded finding names.
 ///
-/// The owner split is [`recorded_owner`]'s and the module counts are the
-/// recorded tallies already on `output.modules`, so this section and the
-/// table cannot attribute one row to two owners or two counts. The verdicts
+/// The owner is the one each [`ManagedResourceRow`] already carries and the
+/// module counts are the recorded tallies already on `output.modules`, so this
+/// section and the table cannot attribute one row to two owners or two
+/// counts. The verdicts
 /// pass [`cfgd_core::state::module_status_display`] the RECORDED drift
 /// verdict — whether this owner holds an unresolved recorded finding — so a
 /// row reads `Drifted`/warn exactly when its nested findings say why, over
@@ -1839,15 +2164,15 @@ fn component_health_rows(output: &StatusOutput, profile: Option<&str>) -> Compon
     let mut recorded: std::collections::BTreeMap<String, std::collections::BTreeMap<&str, usize>> =
         std::collections::BTreeMap::new();
     for r in &output.managed_resources {
-        if module_id_parts(&r.resource_type, &r.resource_id).is_some() {
+        if module_id_parts(&r.resource_type, &r.resource_id).is_some()
+            || records_a_script(&r.resource_type, &r.resource_id)
+        {
             continue;
         }
         let noun = if r.resource_type == ENV_RESOURCE_TYPE {
-            if is_session_env_row(r) {
-                "session env"
-            } else {
-                "env file"
-            }
+            // The word `verify` prints for the same resource, so the count and
+            // the row it counts name one thing.
+            cfgd_core::output::drift_kind_label(recorded_env_drift_type(r))
         } else {
             // A profile-declared row with no derivable profile has no owner a
             // component row could name; the table renders it under `-`.
@@ -1856,9 +2181,17 @@ fn component_health_rows(output: &StatusOutput, profile: Option<&str>) -> Compon
             }
             display_type(&r.resource_type)
         };
-        let token = recorded_owner(r, profile_token.as_deref().unwrap_or(NO_DETAIL));
-        *recorded.entry(token).or_default().entry(noun).or_default() += 1;
+        *recorded
+            .entry(r.owner.clone())
+            .or_default()
+            .entry(noun)
+            .or_default() += 1;
     }
+
+    // Who declares each package, derived once: the findings walk and the
+    // erroring-check walk below both ask, and each answer used to re-read every
+    // module and every recorded row.
+    let package_owners = PackageOwners::of(output);
 
     // ONE walk over the unresolved recorded findings: each event lands under
     // its owner's token with its worded child row and its shortfall noun, or
@@ -1879,7 +2212,7 @@ fn component_health_rows(output: &StatusOutput, profile: Option<&str>) -> Compon
         if drop_env_file_row && event.resource_type == ENV_RESOURCE_TYPE {
             continue;
         }
-        let (owner, noun, slot) = finding_owner(event, output, profile_owner.as_ref());
+        let (owner, noun, slot) = finding_owner(event, &package_owners, profile_owner.as_ref());
         match owner {
             Some(owner) => {
                 let token = owner.token();
@@ -1914,7 +2247,7 @@ fn component_health_rows(output: &StatusOutput, profile: Option<&str>) -> Compon
     let unanswered: std::collections::BTreeSet<String> = output
         .system_errors
         .iter()
-        .filter_map(|err| check_error_owner(&err.key, output, profile_owner.as_ref()))
+        .filter_map(|err| check_error_owner(&err.key, &package_owners, profile_owner.as_ref()))
         .map(|owner| owner.token())
         .collect();
 
@@ -1958,11 +2291,9 @@ fn component_health_rows(output: &StatusOutput, profile: Option<&str>) -> Compon
             let (verdict, role, counts) = match module {
                 Some(m) => {
                     let (word, role) = cfgd_core::state::module_status_display(&m.status, drift);
-                    let totals = [
-                        ("package", m.packages),
-                        ("file", m.files),
-                        ("script", m.scripts),
-                    ];
+                    // No script clause: the table below lists no script row, and
+                    // a health row counts what the table lists.
+                    let totals = [("package", m.packages), ("file", m.files)];
                     let counts = match shortfall {
                         Some(kinds) => shortfall_counts(kinds, &totals),
                         // Drifted with no countable noun (the whole-module
@@ -2044,13 +2375,13 @@ fn health_counts<'a>(kinds: impl Iterator<Item = (&'a str, usize)>) -> Option<St
     (!parts.is_empty()).then(|| parts.join(", "))
 }
 
-/// A recorded owner's kind counts in render order: the three nouns every
+/// A recorded owner's kind counts in render order: the two nouns every
 /// module row also leads with, then anything else in the map's own
 /// alphabetical order.
 fn ordered_kind_counts<'a>(
     kinds: &'a std::collections::BTreeMap<&'a str, usize>,
 ) -> impl Iterator<Item = (&'a str, usize)> {
-    const LEAD: [&str; 3] = ["package", "file", "script"];
+    const LEAD: [&str; 2] = ["package", "file"];
     LEAD.iter()
         .filter_map(|noun| kinds.get(*noun).map(|n| (*noun, *n)))
         .chain(
@@ -2073,9 +2404,19 @@ fn display_type(kind: &str) -> &str {
     match kind {
         "file" | "files" => "file",
         "package" | "packages" => "package",
-        "script" | "Running script" => "script",
+        ENV_RC_RESOURCE_TYPE => "rc",
+        ENV_SESSION_RESOURCE_TYPE => "session",
+        cfgd_core::reconciler::ENV_VAR_RESOURCE_TYPE => "env var",
+        cfgd_core::reconciler::ALIAS_RESOURCE_TYPE => "alias",
         other => other,
     }
+}
+
+/// A recorded string fact as the report should carry it: `None` for a record
+/// that holds none and for one whose column was never filled in.
+fn recorded_fact(raw: Option<&str>) -> Option<String> {
+    raw.filter(|value| !value.is_empty())
+        .map(|value| value.to_string())
 }
 
 /// Build the per-module `cfgd status <module>` Doc.
@@ -2086,7 +2427,11 @@ fn display_type(kind: &str) -> &str {
 ///
 /// `now` is a parameter, not a clock read, so the `Last Applied` age pins in a
 /// golden.
-pub fn build_module_status_doc(output: &ModuleStatus, view: ModuleStatusView, now: &str) -> Doc {
+pub fn build_module_status_doc(
+    output: &ModuleStatus,
+    view: ModuleStatusView<'_>,
+    now: &str,
+) -> Doc {
     // One aligned block: the Status row needs a role-tinted value, which only
     // `kv_rows` can carry, and `kv_rows` does not coalesce with a preceding
     // `kv` block — so every row of the header is built here.
@@ -2103,16 +2448,31 @@ pub fn build_module_status_doc(output: &ModuleStatus, view: ModuleStatusView, no
             cfgd_core::humanize_age_cell(Some(last), now),
         ));
     }
+    // The four recorded facts behind that apply: the two digests it wrote, and
+    // what the lockfile pinned the checkout it read to. `-o json` carries each
+    // whole; the commit renders short, as every human slot naming one does.
+    if let Some(hash) = &output.packages_hash {
+        rows.push(KvPair::new("Packages Hash", hash));
+    }
+    if let Some(hash) = &output.files_hash {
+        rows.push(KvPair::new("Files Hash", hash));
+    }
+    if let Some(commit) = &output.commit {
+        rows.push(KvPair::new("Commit", cfgd_core::short_commit(commit)));
+    }
+    if let Some(integrity) = &output.integrity {
+        rows.push(KvPair::new("Integrity", integrity));
+    }
     // The counts are what the compact view has INSTEAD of the inventories: a
     // report that showed both would state every fact twice.
-    if view == ModuleStatusView::Compact {
+    if matches!(view, ModuleStatusView::Compact) {
         rows.push(KvPair::new("Packages", output.packages.to_string()));
         rows.push(KvPair::new("Files", output.files.to_string()));
         // `Aliases` and `Env` are the two halves of the shell surface `diff`
         // reports under `Shell` and the drift engine records as the `shell`
         // kind, so the dashboard names them the same way: a total with the
-        // halves nested under it, the shape `Scripts` already uses. Aliases
-        // lead, the order every surface naming the pair renders them in.
+        // halves nested under it. Aliases lead, the order every surface
+        // naming the pair renders them in.
         if output.env > 0 || output.aliases > 0 {
             rows.push(KvPair::new(
                 "Shell",
@@ -2124,20 +2484,6 @@ pub fn build_module_status_doc(output: &ModuleStatus, view: ModuleStatusView, no
             if output.env > 0 {
                 rows.push(KvPair::nested("Env", output.env.to_string()));
             }
-        }
-        // A total with one row per declaring hook beneath it: a single-line
-        // summary reads as the one hook that declares most and hides the rest.
-        let hooks = output.declared.script_counts();
-        if !hooks.is_empty() {
-            rows.push(KvPair::new(
-                "Scripts",
-                output.declared.script_total().to_string(),
-            ));
-            rows.extend(
-                hooks
-                    .into_iter()
-                    .map(|(hook, count)| KvPair::nested(hook, count.to_string())),
-            );
         }
         if !output.system.is_empty() {
             rows.push(KvPair::new("System", output.system.join(", ")));
@@ -2182,22 +2528,39 @@ pub fn build_module_status_doc(output: &ModuleStatus, view: ModuleStatusView, no
                     Some(drift_checked_note(false, freshest, now)),
                 )
             };
-            render_module_drift_section(
-                doc,
-                &output.drift,
-                &output.system_errors,
-                output.drift_checked_live,
-                verified,
-                note.as_deref(),
-            )
+            // A run that found nothing but carries rows it could not
+            // re-examine has no clean verdict to offer: the `Standing` section
+            // below is the report, and "No drift detected" over it would
+            // contradict the rows on the next line.
+            //
+            // drift-chain-ok: whether the section has a verdict to state at
+            // all, not whether the run stands on drift — `any_drift` is that.
+            if output.drift.is_empty()
+                && output.system_errors.is_empty()
+                && !output.standing.is_empty()
+            {
+                doc
+            } else {
+                render_module_drift_section(
+                    doc,
+                    &output.drift,
+                    &output.system_errors,
+                    output.drift_checked_live,
+                    verified,
+                    note.as_deref(),
+                )
+            }
         }
         // No Drift section: every finding is already an inline verdict on the
         // inventory row for the thing it was found on, and repeating it below
         // would let one report state a verdict twice.
-        ModuleStatusView::Inventory { show_values } => {
-            render_module_inventories(doc, output, show_values)
-        }
+        ModuleStatusView::Inventory { masking } => render_module_inventories(doc, output, masking),
     };
+
+    // Rows this module's scope owns but the scan could not re-examine, after
+    // whatever the view rendered of what it did check: the record's own
+    // answer, on both views, never folded in among the live rows.
+    doc = super::live_drift::standing_section(doc, &output.standing);
 
     // Same rule as the fleet report, same staleness gate, and it belongs to
     // the REPORT rather than to either view: the wide view states its drifted
@@ -2205,7 +2568,7 @@ pub fn build_module_status_doc(output: &ModuleStatus, view: ModuleStatusView, no
     // showing drift owes the reader the healing command either way. A
     // recorded view invites a check only once its freshest evidence has gone
     // stale — a fresh record re-invited the look it was just handed.
-    doc = if !output.drift.is_empty() && !stale {
+    doc = if output.any_drift() && !stale {
         doc.hint(super::heal_drift_hint(Some(&output.name)))
     } else if stale {
         doc.hint(SCAN_HINT)
@@ -2226,35 +2589,87 @@ pub fn build_module_status_doc(output: &ModuleStatus, view: ModuleStatusView, no
 }
 
 /// How much of a module a status report itemizes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ModuleStatusView {
+#[derive(Debug, Clone, Copy)]
+pub enum ModuleStatusView<'a> {
     /// Counts, then the drift the scan found (the default).
     Compact,
     /// One row per declared item, with each one's verdict inline (`-o wide`).
-    /// `show_values` renders the declared value beside a name and a script's
-    /// whole body in place of its condensed label.
-    Inventory { show_values: bool },
+    /// `masking` decides, per name, whether the declared value renders
+    /// beside it or the row states the name alone.
+    Inventory {
+        masking: crate::cli::EnvValueMasking<'a>,
+    },
+}
+
+/// A Shell row's clause column: what the row itself reports, with the entry's
+/// own `platforms:` gate named beside it.
+///
+/// The gate is a declared property like a package's `prefer` or `min`, and
+/// [`cfgd_core::platform::PlatformGated::platform_annotation`] leaves the
+/// punctuation to the call site. Comma-joined, the way
+/// `module show` joins a declared package's clauses, so the two surfaces read
+/// the same gate the same way.
+fn shell_row_clauses(cause: &str, gate: Option<&str>) -> String {
+    match gate {
+        Some(tags) if cause.is_empty() => tags.to_string(),
+        Some(tags) => format!("{cause}, {tags}"),
+        None => cause.to_string(),
+    }
 }
 
 /// The wide view's inventories: one section per declared surface, each row
 /// carrying its own verdict.
-fn render_module_inventories(doc: Doc, output: &ModuleStatus, show_values: bool) -> Doc {
-    let mut doc =
-        doc.section_if_nonempty("Installed Packages", &output.package_state, |s, pkgs| {
-            let mut sorted: Vec<&ModulePackageStatus> = pkgs.iter().collect();
+fn render_module_inventories(
+    doc: Doc,
+    output: &ModuleStatus,
+    masking: crate::cli::EnvValueMasking<'_>,
+) -> Doc {
+    // A check that could not run belongs to the section whose rows it is about,
+    // read through the ONE key-grammar answerer the Component Health
+    // attribution asks: an env surface's own path is a finding about the Shell
+    // rows, and a package floor (`<manager>:<package>`) about the Packages
+    // rows. A declared `minVersion` nothing could compare once degraded every
+    // alias and env var to `not scanned` on the strength of a failure that
+    // never looked at them. A key in NEITHER grammar falls with the package
+    // rows rather than being dropped: the two passes a module scan makes mint
+    // only those two shapes, so nothing reaches the fallback today, and a
+    // misfiled row still states the failure a silent one would hide.
+    let (env_probe_errors, package_check_errors): (Vec<_>, Vec<_>) = output
+        .system_errors
+        .iter()
+        .partition(|err| check_key_names_env_surface(&err.key));
+
+    let mut doc = if output.package_state.is_empty() && package_check_errors.is_empty() {
+        doc
+    } else {
+        doc.section("Packages", |s| {
+            let mut sorted: Vec<&ModulePackageStatus> = output.package_state.iter().collect();
             sorted.sort_by(|a, b| a.name.cmp(&b.name));
-            sorted.into_iter().fold(s, |s, pkg| {
-                // An installed row names the manager that has it and nothing else
-                // — the section heading already says installed. Every other row
-                // leads with the verdict, because that is the exception it reports.
+            let s = sorted.into_iter().fold(s, |s, pkg| {
+                // An installed row names the manager that has it and nothing
+                // else: the ✓ is the verdict, so repeating the word would say
+                // it twice. Every other row leads with the verdict, because
+                // that is the exception it reports, and names its manager
+                // after it — one name may be declared twice under two
+                // managers, and two rows reading `neovim — not scanned` say
+                // nothing about which entry is which.
                 let detail = match (&pkg.manager, pkg.state) {
                     (Some(m), ModulePackagePresence::Installed) => m.clone(),
                     (Some(m), state) => format!("{} ({m})", state.label()),
                     (None, state) => state.label().to_string(),
                 };
                 s.status_with(pkg.state.role(), &pkg.name, |f| f.detail(detail))
+            });
+            // The same row the compact Drift section and `diff` render for the
+            // identical check, so `--exit-code`'s Error exit is never invisible
+            // on the wide report.
+            package_check_errors.iter().fold(s, |s, err| {
+                s.status_with(Role::Warn, err.subject(), |f| {
+                    f.qualifier("error checking drift").detail(&err.error)
+                })
             })
-        });
+        })
+    };
 
     // The cause a drifted file's row carries, keyed through the id producer
     // both halves already agree on (`drifted_ids` matches the same way): a
@@ -2311,7 +2726,7 @@ fn render_module_inventories(doc: Doc, output: &ModuleStatus, show_values: bool)
     // has no Drift section to carry it.
     if !output.declared.env.is_empty()
         || !output.declared.aliases.is_empty()
-        || !output.system_errors.is_empty()
+        || !env_probe_errors.is_empty()
     {
         // A Shell row carries the report's own drift verdict for its item —
         // recorded or scanned, whatever filled `output.drift` — so an
@@ -2336,8 +2751,10 @@ fn render_module_inventories(doc: Doc, output: &ModuleStatus, show_values: bool)
         };
         // With the env probe errored, every unanswered Shell verdict is
         // unknown: the item rows degrade to `not scanned` instead of a green
-        // the scan never reached.
-        let probe_errored = !output.system_errors.is_empty();
+        // the scan never reached. Judged on the env probe's own failures —
+        // a package floor the scan could not read says nothing about whether
+        // an alias was checked.
+        let probe_errored = !env_probe_errors.is_empty();
         // A live scan (`do_scan`) is a real check standing behind an item
         // with no cause: absence of a finding there means "checked and
         // clean", the same as a converged `Deployed Files` row. Without a
@@ -2346,13 +2763,22 @@ fn render_module_inventories(doc: Doc, output: &ModuleStatus, show_values: bool)
         // a verdict, and renders through the declaration-shaped composer
         // instead of borrowing the ✓ a scan would have earned.
         let checked_live = output.drift_checked_live;
-        let clean_row = move |s: SectionBuilder, subject: String| {
+        // The gate a declared entry carries is a property of the entry, so it
+        // rides the clause column each of these rows already has — the name
+        // column is what a reader scans down, and an annotation there pads
+        // every ungated sibling out to the width of the longest gate.
+        let clean_row = move |s: SectionBuilder, subject: String, gate: Option<String>| {
             if probe_errored {
-                s.status_with(Role::Info, subject, |f| f.detail(NOT_SCANNED))
+                s.status_with(Role::Info, subject, |f| {
+                    f.detail(shell_row_clauses(NOT_SCANNED, gate.as_deref()))
+                })
             } else if checked_live {
-                s.status(Role::Ok, subject)
+                match gate {
+                    Some(tags) => s.status_with(Role::Ok, subject, |f| f.detail(tags)),
+                    None => s.status(Role::Ok, subject),
+                }
             } else {
-                s.command_list([(subject, String::new())])
+                s.command_list([(subject, gate.unwrap_or_default())])
             }
         };
         doc = doc.section("Shell", |s| {
@@ -2360,15 +2786,28 @@ fn render_module_inventories(doc: Doc, output: &ModuleStatus, show_values: bool)
                 let mut sorted: Vec<&cfgd_core::config::ShellAlias> = aliases.iter().collect();
                 sorted.sort_by(|a, b| a.name.cmp(&b.name));
                 sorted.into_iter().fold(s, |s, alias| {
-                    let subject = if show_values {
-                        super::helpers::quoted_assignment(&alias.name, &alias.command)
-                    } else {
-                        alias.name.clone()
-                    };
-                    let subject = super::module::list_show::gated_value(subject, alias);
+                    let gate = cfgd_core::platform::PlatformGated::platform_annotation(alias);
                     match shell_cause(SURFACE_ALIASES, &alias.name) {
-                        Some(cause) => s.status_with(Role::Warn, subject, |f| f.detail(cause)),
-                        None => clean_row(s, subject),
+                        Some(cause) => {
+                            let detail = shell_row_clauses(&cause, gate.as_deref());
+                            s.status_with(Role::Warn, alias.name.clone(), |f| f.detail(detail))
+                        }
+                        // `--show-values` asks to see the declared document, so
+                        // a row with nothing to report is the kv pair `cfgd
+                        // module show` renders for the same item: the name in
+                        // the key column, the value plain beside it. Painted as
+                        // one subject the whole assignment read as a key, with
+                        // the declared value in the colour of the name. An
+                        // errored probe is not nothing to report, so that row
+                        // keeps the `not scanned` verdict `clean_row` gives it.
+                        // facts-block-ok: this branch renders the inventory row
+                        // INSTEAD of a status row, and the rows around it are
+                        // the same inventory, not a run's result lines.
+                        None if !masking.masks(&alias.name) && !probe_errored => s.kv(
+                            &alias.name,
+                            super::module::list_show::gated_value(alias.command.clone(), alias),
+                        ),
+                        None => clean_row(s, alias.name.clone(), gate),
                     }
                 })
             });
@@ -2376,17 +2815,24 @@ fn render_module_inventories(doc: Doc, output: &ModuleStatus, show_values: bool)
                 let mut sorted: Vec<&cfgd_core::config::EnvVar> = env.iter().collect();
                 sorted.sort_by(|a, b| a.name.cmp(&b.name));
                 sorted.into_iter().fold(s, |s, ev| {
-                    let subject = if show_values {
-                        super::helpers::quoted_assignment(&ev.name, &ev.value)
-                    } else {
-                        ev.name.clone()
-                    };
-                    // Declared state, so a gated entry is listed and annotated
-                    // exactly as `module show` annotates it.
-                    let subject = super::module::list_show::gated_value(subject, ev);
+                    // Declared state, so a gated entry is listed with its gate
+                    // named in the clause column beside whatever else the row
+                    // reports — the same column `module show` hangs a declared
+                    // package's gate off.
+                    let gate = cfgd_core::platform::PlatformGated::platform_annotation(ev);
                     match shell_cause(SURFACE_ENV, &ev.name) {
-                        Some(cause) => s.status_with(Role::Warn, subject, |f| f.detail(cause)),
-                        None => clean_row(s, subject),
+                        Some(cause) => {
+                            let detail = shell_row_clauses(&cause, gate.as_deref());
+                            s.status_with(Role::Warn, ev.name.clone(), |f| f.detail(detail))
+                        }
+                        // facts-block-ok: the inventory row this branch
+                        // renders stands in for a status row, beside other
+                        // rows of the same inventory.
+                        None if !masking.masks(&ev.name) && !probe_errored => s.kv(
+                            &ev.name,
+                            super::module::list_show::gated_value(ev.value.clone(), ev),
+                        ),
+                        None => clean_row(s, ev.name.clone(), gate),
                     }
                 })
             });
@@ -2394,38 +2840,15 @@ fn render_module_inventories(doc: Doc, output: &ModuleStatus, show_values: bool)
             // the same row the compact Drift section and `diff` render for
             // the identical probe, so `--exit-code`'s Error exit is never
             // invisible on the wide report.
-            output.system_errors.iter().fold(s, |s, err| {
-                s.status_with(Role::Warn, err.key.clone(), |f| {
+            env_probe_errors.iter().fold(s, |s, err| {
+                s.status_with(Role::Warn, err.subject(), |f| {
                     f.qualifier("error checking drift").detail(&err.error)
                 })
             })
         });
     }
 
-    // Execution order, never alphabetical: the order is the fact — a
-    // `postApply` that runs after a `preApply` is the only thing the list says
-    // about when either one happens. Nothing here is ever checked (no drift
-    // engine watches a hook body), so every row is a declaration — the hook
-    // name and its body, `command_list`'s "name — description" shape, never
-    // a `status` row borrowing a verdict no check gave it.
-    doc.section_if_nonempty("Scripts", &output.declared.scripts, |s, hooks| {
-        let pairs: Vec<(String, String)> = hooks
-            .iter()
-            .flat_map(|hook| hook.bodies.iter().map(move |body| (hook.hook, body)))
-            .map(|(hook, body)| {
-                // The whole body under `--show-values`, line breaks intact;
-                // otherwise the condensed one-line label `hook_script_subject`
-                // used to compose into its marker.
-                let value = if show_values {
-                    body.clone()
-                } else {
-                    cfgd_core::output::condense_script_label(body)
-                };
-                (hook.to_string(), value)
-            })
-            .collect();
-        s.command_list(pairs)
-    })
+    doc
 }
 
 /// Doc for the `cfgd status <module>` not-found path. Renders the module
@@ -2433,6 +2856,10 @@ fn render_module_inventories(doc: Doc, output: &ModuleStatus, show_values: bool)
 /// and `status: "not found"`. Returns Ok(()) — no main-side error rendering.
 pub fn build_module_status_not_found_doc(name: &str) -> Doc {
     let payload = ModuleStatus {
+        packages_hash: None,
+        files_hash: None,
+        commit: None,
+        integrity: None,
         name: name.to_string(),
         packages: 0,
         files: 0,
@@ -2466,14 +2893,91 @@ pub fn build_module_status_not_found_doc(name: &str) -> Doc {
         })
 }
 
+/// What one `cfgd status` invocation asked for beyond the scope it named: the
+/// two flags that change what the run DOES, and the one knob that changes how
+/// much of a module it itemizes.
+///
+/// A named shape because three adjacent booleans in a call are three chances
+/// to transpose two of them, and every one of these reads as plausible in any
+/// position.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct StatusRun {
+    /// Exit nonzero when the run stands on drift, and scan to find out.
+    pub exit_code: bool,
+    /// Check the machine rather than reporting what is recorded.
+    pub scan: bool,
+    /// Which declared env values render beside their names.
+    pub mask_env_values: cfgd_core::config::MaskEnvValues,
+}
+
+/// A retired `cfgd status` spelling: the flag, the sentence a run naming it is
+/// given, and the command that does the job now.
+///
+/// A removed flag that clap no longer declares gets the bare "unexpected
+/// argument", which tells a script's author nothing about where the display
+/// went. Both spellings stay declared and hidden so the refusal can name the
+/// replacement, the way [`crate::cli::plan_ops::LEGACY_PHASE_TOKENS`] owns the
+/// one wording of a retired `--phase` spelling.
+///
+/// A replacement is a command a reader can run, so it re-parses; a `<word>`
+/// placeholder stands for the argument only the reader knows.
+pub(crate) type LegacyStatusFlag = (&'static str, &'static str, &'static str);
+
+pub(crate) const LEGACY_STATUS_FLAGS: &[LegacyStatusFlag] = &[
+    (
+        "--show-scripts",
+        "`cfgd status` no longer lists scripts",
+        "cfgd module show <module>",
+    ),
+    (
+        "--show-all",
+        "`cfgd status` no longer takes `--show-all`",
+        // name-row-ok: the replacement column is the bare command its two
+        // readers quote for themselves, the sentence in backticks and the hint
+        // block as a `$` line; backticks here would reach the screen.
+        "cfgd status -o wide",
+    ),
+];
+
+/// The retired spelling this invocation carried, in table order.
+pub(super) fn retired_status_flags(
+    show_scripts: bool,
+    show_all: bool,
+) -> Option<&'static LegacyStatusFlag> {
+    let carried = [show_scripts, show_all];
+    LEGACY_STATUS_FLAGS
+        .iter()
+        .zip(carried)
+        .find_map(|(flag, given)| given.then_some(flag))
+}
+
+/// The refusal a retired spelling earns: one sentence naming the replacement,
+/// and the replacement again as a command block a reader can copy.
+pub(super) fn retired_status_flag_error(flag: &LegacyStatusFlag) -> anyhow::Error {
+    let (spelling, reason, replacement) = flag;
+    crate::cli::cli_error_with_hints(
+        *spelling,
+        "invalid_argument",
+        format!("{reason}; run `{replacement}` instead."),
+        serde_json::json!({ "replacement": replacement }),
+        vec![cfgd_core::output::HintCommands::new(
+            "Run this instead:",
+            [replacement.to_string()],
+        )],
+    )
+}
+
 pub(super) fn cmd_status(
     cli: &Cli,
     printer: &Printer,
     module_filter: Option<&str>,
-    exit_code: bool,
-    scan: bool,
-    show_values: bool,
+    run: StatusRun,
 ) -> anyhow::Result<()> {
+    let StatusRun {
+        exit_code,
+        scan,
+        mask_env_values,
+    } = run;
     // `--exit-code` implies the live scan `--scan` names explicitly: a CI
     // gate has to reflect reality regardless of whether the caller also asked
     // to see it. `exit_code` alone still decides whether the run EXITS
@@ -2482,10 +2986,20 @@ pub(super) fn cmd_status(
     let ctx = RunContext::new(cli, printer);
     if let Some(mod_name) = module_filter {
         // `--show-values` is a request to see the declared items themselves,
-        // which only the itemized view has rows for — so it implies it rather
-        // than silently doing nothing beside the counts.
-        let view = if printer.is_wide() || show_values {
-            ModuleStatusView::Inventory { show_values }
+        // which only the itemized view has rows for, so it implies that view
+        // rather than silently doing nothing beside the counts. So does any
+        // policy under which SOME value would render: a run masking every one
+        // of them has nothing to itemize that the counts do not already say.
+        let masking = crate::cli::EnvValueMasking::of(mask_env_values);
+        // Resolved only where the answer depends on it, because a `show`-class
+        // report should not load a profile to decide it has nothing to reveal.
+        let secret_envs = masking.wants_secret_envs().then(|| ctx.secret_env_names());
+        let masking = match secret_envs.as_ref().and_then(Option::as_ref) {
+            Some(names) => masking.with_secret_envs(names),
+            None => masking,
+        };
+        let view = if printer.is_wide() || !masking.masks_every_value() {
+            ModuleStatusView::Inventory { masking }
         } else {
             ModuleStatusView::Compact
         };
@@ -2515,7 +3029,10 @@ pub(super) fn cmd_status(
     // report work awaiting an answer that no answer can release.
     let mut pending = reconciler::Subscriptions::known(cfg.spec.sources.iter().map(|s| &s.name))
         .answerable(state.pending_decisions()?);
-    let resources = state.managed_resources()?;
+    // The owner the table prints is derived, so it is derived once, here, and
+    // carried on the row every consumer of this run reads.
+    let resources =
+        managed_resource_payload(state.managed_resources()?, derivable_profile(profile_name));
 
     let config_dir = config_dir(cli);
 
@@ -2637,7 +3154,10 @@ pub(super) fn cmd_status(
     // The declared catalog, not just the names: the shared `Sources` table
     // carries columns (origin, priority, signing demand) the status payload
     // never held.
-    let configured_sources = super::source::list::configured_source_entries(cfg, state);
+    // declared-lock-ok: the lockfile's pinned ref and commit reach the row
+    // payload alone; no cell of the shared `Sources` table reads either.
+    let lock = cfgd_core::load_sources_lockfile(&config_dir).unwrap_or_default();
+    let configured_sources = super::source::list::configured_source_entries(cfg, state, &lock);
 
     // The per-file half of the table: each listed module's recorded manifest,
     // and — only when the wide table will read them — the resolved
@@ -2748,10 +3268,13 @@ pub(super) fn cmd_status(
     // verdict and the exit code in agreement instead of printing "No drift
     // detected" alongside exit 5.
     if let Some(mut registry) = registry {
-        ctx.resolve_manifest_packages(&mut resolved.merged.packages)?;
+        ctx.resolve_manifest_packages(
+            &mut resolved.merged.packages,
+            &mut resolved.merged.layer_sources,
+        )?;
         registry.set_system_config_dir(&config_dir);
         let cfgd_installed = cfgd_installed_packages(state)?;
-        let pkg_cx = cfgd_core::providers::PackageContext::new(printer, state);
+        let pkg_cx = ctx.package_context()?;
         let fm = crate::files::CfgdFileManager::new(&config_dir, &resolved)?;
         let module_cache = module_cache_dir(cli)?;
         let report = super::live_drift::live_drift_results(
@@ -2781,19 +3304,19 @@ pub(super) fn cmd_status(
         // by the scan itself, and a row it did not re-find was just resolved
         // as healed. What it could NOT re-check it deliberately left standing
         // (`live_drift`'s keep-set), and those rows are still the store's
-        // answer the moment this command returns — dropping them would render
-        // and price a verdict the record contradicts. The displayed set is
-        // therefore the scan's findings plus its own keep-set, the kept rows
-        // carrying their stored producer literals unchanged. A key can appear
-        // in both (a package the presence pass found drifted whose floor check
-        // also errored), so the live wording wins on a tie.
+        // answer the moment this command returns — dropping them would price a
+        // verdict the record contradicts. They are the STORE's answer rather
+        // than this scan's, so they stay out of `drift` and render under their
+        // own heading after the live rows; a key can appear in both (a package
+        // the presence pass found drifted whose floor check also errored), and
+        // the live finding is the one that keeps it.
         output.drift.clear();
         for r in &drift {
             output
                 .drift
                 .push(super::live_drift::drift_event_from(r, &merged_env_items));
         }
-        let standing_rows: Vec<cfgd_core::state::DriftEvent> = report
+        output.standing = report
             .standing
             .into_iter()
             .filter(|e| {
@@ -2802,8 +3325,6 @@ pub(super) fn cmd_status(
                     .any(|r| r.resource_type == e.resource_type && r.resource_id == e.resource_id)
             })
             .collect();
-        output.drift.extend(standing_rows.iter().cloned());
-        output.standing = standing_rows;
     }
 
     // Built from the composition this command already resolved: the rows say
@@ -2832,14 +3353,14 @@ pub(super) fn cmd_status(
     ));
 
     if exit_code {
-        // `--exit-code` implies the scan, so `drift` is the union the scan
-        // just rendered: its findings plus the rows it kept standing. Pricing
-        // the findings alone would exit 0 on a machine whose store — written
-        // by this very command — still holds unresolved drift. The two facts
-        // rank through the same verdict the module surface prices, so a
-        // check that could not run outranks drift it might have found.
+        // `--exit-code` implies the scan, so the price is what the scan just
+        // rendered: its findings AND the rows it kept standing. Pricing the
+        // findings alone would exit 0 on a machine whose store — written by
+        // this very command — still holds unresolved drift. The two facts rank
+        // through the same verdict the module surface prices, so a check that
+        // could not run outranks drift it might have found.
         exit_on_drift_verdict(cfgd_core::state::DriftVerdict::from_checks(
-            !output.drift.is_empty(),
+            output.any_drift(),
             !output.system_errors.is_empty(),
         ));
     }
@@ -2869,6 +3390,14 @@ fn exit_on_drift_verdict(verdict: cfgd_core::state::DriftVerdict) {
 /// as that one manager. A gated entry is answered before the queue is drawn
 /// from — it produced no resolution, so consuming one would hand it the verdict
 /// belonging to its same-named sibling.
+///
+/// A name nothing answered for still names its manager, resolved through
+/// [`modules::resolve_package`] — the ONE resolver — so the two rows of a name
+/// declared twice are told apart on every report. `installed` is the run's own
+/// package context, which is what `cfgd module show` resolves against: which
+/// manager already HOLDS a bare entry is part of what resolution means, so
+/// without it a package a non-default manager holds would be named under the
+/// platform default here and under its holder there.
 fn join_package_state(
     declared: &[cfgd_core::config::ModulePackageEntry],
     scanned: &mut std::collections::HashMap<
@@ -2876,6 +3405,9 @@ fn join_package_state(
         std::collections::VecDeque<(String, ModulePackagePresence)>,
     >,
     here: &Platform,
+    module_name: &str,
+    managers: &std::collections::HashMap<String, &dyn cfgd_core::providers::PackageManager>,
+    installed: Option<&cfgd_core::providers::PackageContext<'_>>,
 ) -> Vec<ModulePackageStatus> {
     declared
         .iter()
@@ -2913,7 +3445,10 @@ fn join_package_state(
                 },
                 None => ModulePackageStatus {
                     name: p.name.clone(),
-                    manager: None,
+                    manager: modules::resolve_package(p, module_name, here, managers, installed)
+                        .ok()
+                        .flatten()
+                        .map(|resolved| resolved.manager),
                     state: ModulePackagePresence::NotScanned,
                 },
             }
@@ -2921,12 +3456,17 @@ fn join_package_state(
         .collect()
 }
 
+// no-header-ok: the invocation named the module, and this report answers for
+// that one module rather than for the configuration around it — its header
+// leads on the module's own Status row (`the_status_row_leads_a_module_report`)
+// and carries no Scope row for the same reason. The config, sources and
+// profile behind it are what `cfgd status` states.
 pub(super) fn cmd_status_module(
     ctx: &RunContext<'_>,
     mod_name: &str,
     exit_code: bool,
     do_scan: bool,
-    view: ModuleStatusView,
+    view: ModuleStatusView<'_>,
 ) -> anyhow::Result<()> {
     let cli = ctx.cli();
     let printer = ctx.printer();
@@ -2948,6 +3488,11 @@ pub(super) fn cmd_status_module(
 
     let state = ctx.state()?;
     let state_rec = state.module_state_by_name(mod_name)?;
+    // What the lockfile remembers about this module, for the two recorded rows
+    // a remote module carries. A lockfile this run cannot read leaves them out
+    // rather than ending a report about the machine's state.
+    let lockfile = modules::load_lockfile(config_dir).unwrap_or_default();
+    let lock_entry = lockfile.modules.iter().find(|e| e.name == mod_name);
 
     let status = state_rec
         .as_ref()
@@ -3028,6 +3573,9 @@ pub(super) fn cmd_status_module(
         )
     };
     if do_scan {
+        // The run's one context, so every pass below — the chain resolution,
+        // the declared-floor check, and the package join after this block —
+        // asks each manager for its installed listing once.
         let pkg_cx = ctx.package_context()?;
         let resolved_modules = resolve_chain(Some(&pkg_cx))?;
         let resolved = empty_resolved_profile(&[mod_name.to_string()], &ctx.active_profile_name());
@@ -3086,10 +3634,6 @@ pub(super) fn cmd_status_module(
                 }
 
                 sp.set_message(format!("Scanning module:{mod_name} packages"));
-                // ONE context across every package of every resolved module,
-                // so a manager is enumerated once however many packages name
-                // it (`PackageContext::installed_for`'s memo).
-                let pkg_cx = cfgd_core::providers::PackageContext::new(printer, state);
                 // The declared-floor pass over this chain's own packages,
                 // through the ONE engine the full walk reads: this surface
                 // RESOLVES version rows, so it evaluates them.
@@ -3258,11 +3802,15 @@ pub(super) fn cmd_status_module(
                     &resolved_modules,
                     registry,
                 );
-                // Sliced off `drift` AFTER classification: the payload's
-                // `standing` is exactly the rows the human render lists,
-                // never a list captured upstream of the classifier.
+                // Classified but kept OUT of `drift`: the payload's
+                // `standing` is exactly the rows the human render lists under
+                // its own heading, and they are the store's answer rather than
+                // this scan's. The classification still runs, because the
+                // inventory rows a standing row names must read its verdict
+                // (`drifted_ids`, `scanned_packages`) — what it decides is the
+                // section a row renders in, never whether the row is known.
                 if !standing.rows.is_empty() {
-                    let drift_len_before_standing = drift.len();
+                    let mut classified: Vec<ModuleDrift> = Vec::new();
                     classify_recorded_drift_for_chain(
                         standing.rows,
                         &ChainOwnership {
@@ -3271,14 +3819,11 @@ pub(super) fn cmd_status_module(
                             managers: &managers,
                             mod_name,
                         },
-                        &mut drift,
+                        &mut classified,
                         &mut drifted_ids,
                         &mut scanned_packages,
                     );
-                    standing_rows = drift[drift_len_before_standing..]
-                        .iter()
-                        .map(|d| d.event.clone())
-                        .collect();
+                    standing_rows = classified.into_iter().map(|d| d.event).collect();
                 }
                 Ok(())
             },
@@ -3310,7 +3855,17 @@ pub(super) fn cmd_status_module(
         }
     }
 
-    let package_state = join_package_state(&module.spec.packages, &mut scanned_packages, platform);
+    // The same installed state `cfgd module show` resolves against, shared
+    // with this run's scan so a manager is enumerated once.
+    let pkg_cx = ctx.package_context()?;
+    let package_state = join_package_state(
+        &module.spec.packages,
+        &mut scanned_packages,
+        platform,
+        mod_name,
+        &mgr_map,
+        Some(&pkg_cx),
+    );
 
     let deployed_files: Vec<ModuleFileStatus> = state
         .module_deployed_files(mod_name)?
@@ -3359,6 +3914,13 @@ pub(super) fn cmd_status_module(
         declared,
         status,
         last_applied,
+        // Each of the four is a plain `String` on its record, and a record
+        // written before the fact was known holds the empty string; an empty
+        // value is nothing to report, so it reads as absent on both surfaces.
+        packages_hash: recorded_fact(state_rec.as_ref().map(|s| s.packages_hash.as_str())),
+        files_hash: recorded_fact(state_rec.as_ref().map(|s| s.files_hash.as_str())),
+        commit: recorded_fact(lock_entry.map(|e| e.commit.as_str())),
+        integrity: recorded_fact(lock_entry.map(|e| e.integrity.as_str())),
         scope,
         package_state,
         deployed_files,
@@ -3397,6 +3959,71 @@ mod tests {
     use cfgd_core::output::Printer;
     use cfgd_core::output::Verbosity;
     use cfgd_core::state::{ApplyRecord, ApplyStatus};
+
+    /// Every retired `cfgd status` spelling is still declared, still reaches its
+    /// own table row, and names a replacement a reader can actually run.
+    ///
+    /// The table and [`retired_status_flags`] agree by POSITION, so a third
+    /// entry added to one and not the other would refuse the wrong flag; the
+    /// walk drives each spelling through clap and asks which row comes back.
+    /// A `<word>` in a replacement stands for the argument only the reader
+    /// knows, so the parse substitutes a concrete token for it.
+    #[test]
+    fn every_retired_status_flag_names_its_replacement() {
+        for (n, entry) in LEGACY_STATUS_FLAGS.iter().enumerate() {
+            let (spelling, reason, replacement) = entry;
+            let parsed = crate::cli::Cli::try_parse_from(["cfgd", "status", spelling])
+                .unwrap_or_else(|e| panic!("`cfgd status {spelling}` must still parse: {e}"));
+            let Some(crate::cli::Command::Status {
+                show_scripts,
+                show_all,
+                ..
+            }) = parsed.command
+            else {
+                panic!("`cfgd status {spelling}` parsed as another command");
+            };
+            let carried = retired_status_flags(show_scripts, show_all)
+                .unwrap_or_else(|| panic!("`{spelling}` reaches no row of the table"));
+            assert_eq!(
+                carried, entry,
+                "`{spelling}` reaches row {n}'s neighbour; the table and \
+                 `retired_status_flags` disagree about order"
+            );
+
+            assert!(
+                !reason.trim().is_empty(),
+                "`{spelling}` states no reason a run naming it is refused"
+            );
+            assert!(
+                !replacement.trim().is_empty(),
+                "`{spelling}` names no replacement, so the refusal tells a \
+                 script's author nothing about where the display went"
+            );
+            let runnable: Vec<String> = replacement
+                .split_whitespace()
+                .map(|word| {
+                    if word.starts_with('<') && word.ends_with('>') {
+                        "x".to_string()
+                    } else {
+                        word.to_string()
+                    }
+                })
+                .collect();
+            crate::cli::Cli::try_parse_from(&runnable).unwrap_or_else(|e| {
+                panic!("the replacement `{replacement}` does not re-parse: {e}")
+            });
+
+            let rendered = retired_status_flag_error(entry).to_string();
+            assert!(
+                rendered.contains(replacement),
+                "the refusal for `{spelling}` must name `{replacement}`: {rendered}"
+            );
+        }
+        assert!(
+            LEGACY_STATUS_FLAGS.len() >= 2,
+            "the table has stopped holding the spellings this command retired"
+        );
+    }
 
     /// A recorded row whose producer stated NO operands reads as a
     /// divergence, not as an absence — on the shell kinds too.
@@ -3481,14 +4108,29 @@ mod tests {
         );
     }
 
-    fn recorded(resource_type: &str, resource_id: &str) -> cfgd_core::state::ManagedResource {
-        cfgd_core::state::ManagedResource {
-            resource_type: resource_type.to_string(),
-            resource_id: resource_id.to_string(),
-            source: "local".to_string(),
-            last_hash: None,
-            last_applied: None,
-        }
+    /// A recorded row as a run carries it: the stored fact plus the owner the
+    /// Owner column and `-o json` both read off the row. Under `base`;
+    /// `recorded_under` is for a fixture whose rows belong to another profile.
+    fn recorded(resource_type: &str, resource_id: &str) -> ManagedResourceRow {
+        recorded_under(Some("base"), resource_type, resource_id)
+    }
+
+    fn recorded_under(
+        profile: Option<&str>,
+        resource_type: &str,
+        resource_id: &str,
+    ) -> ManagedResourceRow {
+        managed_resource_payload(
+            vec![cfgd_core::state::ManagedResource {
+                resource_type: resource_type.to_string(),
+                resource_id: resource_id.to_string(),
+                source: "local".to_string(),
+                last_hash: None,
+                last_applied: None,
+            }],
+            profile,
+        )
+        .remove(0)
     }
 
     /// A declared-package map keyed the way `ModuleDeclared::of` builds it:
@@ -3580,7 +4222,6 @@ mod tests {
                 recorded("package", "brew/bat"),
             ],
             &[],
-            Some("base"),
             &ManagedResourceDetail::default(),
         );
         assert_eq!(
@@ -3618,7 +4259,7 @@ mod tests {
     /// can drift from the tree without failing here.
     #[test]
     fn a_profile_declared_row_carries_the_owner_the_apply_tree_heads_its_group_with() {
-        use cfgd_core::reconciler::{ENV_GROUP, Owner, SESSION_GROUP};
+        use cfgd_core::reconciler::{ENV_GROUP, Owner, SESSION_GROUP, SHELL_GROUP};
 
         let rows = managed_resource_rows(
             &[
@@ -3626,10 +4267,10 @@ mod tests {
                 recorded("module", "nvim:files:1"),
                 recorded("file", "/home/u/.gitconfig"),
                 recorded("env", "/home/u/.cfgd.env"),
+                recorded("env", "/home/u/.bashrc"),
                 recorded("env", cfgd_core::state::ENV_SESSION_RESOURCE_ID),
             ],
             &[],
-            Some("base"),
             &ManagedResourceDetail::default(),
         );
 
@@ -3637,6 +4278,7 @@ mod tests {
             Owner::module("nvim"),
             Owner::cfgd(SESSION_GROUP),
             Owner::profile("base"),
+            Owner::cfgd(SHELL_GROUP),
             Owner::cfgd(ENV_GROUP),
         ];
         Owner::order(&mut expected);
@@ -3645,8 +4287,10 @@ mod tests {
         let mut owners: Vec<String> = rows.iter().map(|r| r[1].clone()).collect();
         owners.dedup();
         assert_eq!(owners, expected, "{rows:?}");
-        // The two `env` rows are cfgd's own and carry the group suffix the
-        // tree heads them with; the file and the package are the profile's.
+        // The three `env` rows are cfgd's own and each carries the group
+        // suffix the tree heads IT with — the generated file's, the rc line's
+        // and the session's are three groups, named by the verb that wrote
+        // them; the file and the package are the profile's.
         assert_eq!(
             rows.iter()
                 .map(|r| (r[0].as_str(), r[1].as_str()))
@@ -3655,10 +4299,249 @@ mod tests {
                 ("file", "profile:base"),
                 ("package", "profile:base"),
                 ("env", "cfgd:env"),
-                ("env", "cfgd:session"),
+                ("rc", "cfgd:shell"),
+                ("session", "cfgd:session"),
                 ("file", "module:nvim"),
             ],
             "{rows:?}"
+        );
+    }
+
+    /// The write-vs-inject question has ONE answerer, and it lives beside the
+    /// generator that mints the targets.
+    ///
+    /// A recorded env id drops the verb, so the only way back to it is the
+    /// target's basename — and every basename a CLI source could test against
+    /// is a name `env_targets` already spells, which is why the tells come from
+    /// `cfgd_core::reconciler::env_target_basenames` rather than from a list
+    /// here. A host adding a dialect (or renaming one) then moves the tree's
+    /// group while a surface keeps classifying by a name nothing writes, which
+    /// is how a table and a tree came to disagree about `~/.bashrc`.
+    ///
+    /// The walk is the whole `cli/` production slice, not this file alone: the
+    /// rule is about the recorded id's verb, and any command holding one can
+    /// break it. A site that names a generated basename for a reason that is
+    /// not the verb — a plan caveat asking whether a file is SOURCEABLE, a
+    /// migration WRITING an rc file — carries `// basename-ok: <why>`, which
+    /// hatches the literals under it up to the next blank line.
+    #[test]
+    fn no_status_site_classifies_an_env_target_by_its_basename() {
+        // Every name the target builders really spell, derived from
+        // `env_targets` rather than re-typed here. Matched per PATH SEGMENT and
+        // exactly, so neither `spec.profile` nor a bare `profile` reads as
+        // `~/.profile`.
+        let basename_tells = cfgd_core::reconciler::env_target_basenames();
+        assert!(
+            basename_tells.len() >= 10,
+            "the env engine no longer offers its target names: {basename_tells:?}"
+        );
+        fn names_a_target(literal: &str, tell: &str) -> bool {
+            literal.split('/').any(|seg| seg == tell)
+        }
+
+        let cli_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli");
+        let mut files = 0usize;
+        let mut literals = 0usize;
+        for path in cfgd_core::test_helpers::rust_sources_under(&cli_root) {
+            if path.file_name().is_some_and(|n| n == "tests.rs")
+                || path.components().any(|c| c.as_os_str() == "tests")
+            {
+                continue;
+            }
+            files += 1;
+            let rel = path.strip_prefix(&cli_root).unwrap_or(&path).to_owned();
+            let rel = cfgd_core::to_posix_string(&rel);
+            let production = cfgd_core::test_helpers::production_slice_of(&path);
+            let mut hatched = false;
+            for (n, line) in production.lines().enumerate() {
+                if line.trim().is_empty() {
+                    hatched = false;
+                }
+                if line.contains("basename-ok:") {
+                    hatched = true;
+                }
+                if hatched || line.trim_start().starts_with("//") {
+                    continue;
+                }
+                for literal in string_literals(line) {
+                    literals += 1;
+                    for tell in &basename_tells {
+                        assert!(
+                            !names_a_target(&literal, tell),
+                            "{rel}:{}: `{literal}` names an env target by its \
+                             basename — ask \
+                             `cfgd_core::reconciler::recorded_env_method` \
+                             instead, or say why with `// basename-ok: <why>`",
+                            n + 1
+                        );
+                    }
+                }
+            }
+        }
+        assert!(
+            files >= 30 && literals >= 2000,
+            "the walk no longer reads the cli crate's production sources: \
+             {files} files, {literals} literals"
+        );
+        // And the one answerer really is reached, so the walk above cannot
+        // pass by this file having stopped classifying env rows at all.
+        // unfloored-slice-ok: one compiled-in body, not a walk over files
+        let production = cfgd_core::test_helpers::production_slice(include_str!("status.rs"));
+        assert!(
+            production.matches("recorded_env_method(").count() >= 2,
+            "the Owner column and the erroring-check key both ask the one answerer"
+        );
+    }
+
+    /// Coverage is per owner, and the owners a `--scan` never reaches are
+    /// derived from the scan's own allow-list rather than listed here.
+    ///
+    /// `check_covers` answers from [`scan_reaches`], whose exclusion has to
+    /// match what a full check can actually resolve: every type in
+    /// `FULL_CHECK_RESOLVABLE_TYPES`, folded through [`finding_owner`], is an
+    /// owner a scan can speak for. The live session is the one cfgd group no
+    /// type there names — nothing re-reads a `launchctl`/`systemctl --user`
+    /// environment — so a `--scan` that healed the whole machine still leaves
+    /// it as unchecked as before, and a row claiming `Synced` off that scan is
+    /// a claim no check earned.
+    #[test]
+    fn every_owner_the_scan_never_reaches_is_excluded_from_coverage() {
+        use cfgd_core::reconciler::{CFGD_GROUP_ORDER, Owner};
+
+        let output = empty_output();
+        let profile_owner = Owner::profile("base");
+        let mut reached: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for rtype in super::super::live_drift::FULL_CHECK_RESOLVABLE_TYPES {
+            // Every id shape its own producer mints for this type, so
+            // `finding_owner` takes each arm the scan's rows really take — a
+            // `package` row is a module's, the profile's OR a manager cfgd
+            // provisions, and one specimen would have hidden two of the three.
+            let ids: &[&str] = match *rtype {
+                "module" => &["nvim/init.lua", "nvim:script"],
+                "package" => &["brew:bat", "provision:npm", "refuse:npm"],
+                "system" => &["sysctl.net.ipv4.ip_forward"],
+                _ => &["/home/u/.bashrc"],
+            };
+            for id in ids {
+                let event = cfgd_core::state::DriftEvent {
+                    id: 1,
+                    timestamp: cfgd_core::utc_now_iso8601(),
+                    resource_type: (*rtype).to_string(),
+                    resource_id: (*id).to_string(),
+                    expected: None,
+                    actual: None,
+                    resolved_by: None,
+                    source: cfgd_core::config::LOCAL_LAYER.to_string(),
+                    want: None,
+                    have: None,
+                };
+                let (owner, _, _) =
+                    finding_owner(&event, &PackageOwners::of(&output), Some(&profile_owner));
+                if let Some(owner) = owner {
+                    reached.insert(owner.token());
+                }
+            }
+        }
+        assert!(
+            reached.len() >= 4,
+            "the walk no longer reaches the scan's own types: {reached:?}"
+        );
+        for group in CFGD_GROUP_ORDER {
+            let token = Owner::cfgd(*group).token();
+            assert_eq!(
+                scan_reaches(&token),
+                reached.contains(&token),
+                "`{token}` disagrees with what the scan's own types resolve to: {reached:?}"
+            );
+        }
+        assert!(
+            scan_reaches(&profile_owner.token()) && scan_reaches(&Owner::module("nvim").token()),
+            "a profile and a module are both reached: {reached:?}"
+        );
+
+        // The session's exclusion is the whole point: a live check AND a
+        // machine-wide stamp still leave it uncovered.
+        let scoped = std::collections::BTreeMap::new();
+        let session = Owner::cfgd(cfgd_core::reconciler::SESSION_GROUP).token();
+        assert!(
+            !check_covers(&session, true, Some("2026-09-07T00:00:00Z"), &scoped),
+            "no check the scan runs stands behind the live session"
+        );
+        assert!(
+            check_covers(
+                &Owner::cfgd(cfgd_core::reconciler::SHELL_GROUP).token(),
+                true,
+                None,
+                &scoped
+            ),
+            "the rc lines ARE re-read by a full check"
+        );
+    }
+
+    /// The `owner` key `-o json` carries on a managed-resource row is the
+    /// token the human Owner column prints for that same row.
+    ///
+    /// The owner is derived — nothing records it — so it used to exist on the
+    /// table alone and `docs/cli-reference.md` documented a
+    /// `jq '.managedResources[] | select(...)'` filter with no key to select
+    /// on. One derivation now fills both, and this reads the payload's own
+    /// serialization against the table the doc builder renders.
+    #[test]
+    fn every_managed_resource_row_serializes_the_owner_its_column_prints() {
+        let rows = managed_resource_payload(
+            vec![
+                cfgd_core::state::ManagedResource {
+                    resource_type: "module".to_string(),
+                    resource_id: "nvim:files:6".to_string(),
+                    source: "local".to_string(),
+                    last_hash: None,
+                    last_applied: None,
+                },
+                cfgd_core::state::ManagedResource {
+                    resource_type: "package".to_string(),
+                    resource_id: cfgd_core::state::package_resource_id("brew", "bat"),
+                    source: "local".to_string(),
+                    last_hash: None,
+                    last_applied: None,
+                },
+                cfgd_core::state::ManagedResource {
+                    resource_type: "file".to_string(),
+                    resource_id: "/home/u/.gitconfig".to_string(),
+                    source: "local".to_string(),
+                    last_hash: None,
+                    last_applied: None,
+                },
+            ],
+            Some("base"),
+        );
+        let payload = serde_json::to_value(&rows).expect("the payload serializes");
+        let owners: Vec<&str> = payload
+            .as_array()
+            .expect("an array of rows")
+            .iter()
+            .map(|row| row["owner"].as_str().expect("every row carries an owner"))
+            .collect();
+        assert_eq!(
+            owners,
+            vec!["module:nvim", "profile:base", "profile:base"],
+            "got: {payload}"
+        );
+        // The stored fact is still the payload's, flattened beside the owner.
+        assert_eq!(payload[0]["resourceId"], "nvim:files:6", "got: {payload}");
+
+        let table = managed_resource_rows(&rows, &[], &ManagedResourceDetail::default());
+        for owner in &owners {
+            assert!(
+                table.iter().any(|row| row[1] == *owner),
+                "the payload names `{owner}` and the Owner column does not: {table:?}"
+            );
+        }
+        let columns: std::collections::BTreeSet<&str> =
+            table.iter().map(|row| row[1].as_str()).collect();
+        let serialized: std::collections::BTreeSet<&str> = owners.into_iter().collect();
+        assert_eq!(
+            columns, serialized,
+            "the two sides name different owner sets: {table:?}"
         );
     }
 
@@ -3667,11 +4550,10 @@ mod tests {
     #[test]
     fn one_manager_delivered_by_two_sources_stays_two_rows() {
         let mut remote = recorded("package", "brew/fd");
-        remote.source = "acme".to_string();
+        remote.resource.source = "acme".to_string();
         let rows = managed_resource_rows(
             &[recorded("package", "brew/bat"), remote],
             &[],
-            Some("base"),
             &ManagedResourceDetail::default(),
         );
         assert_eq!(rows.len(), 2, "{rows:?}");
@@ -3691,12 +4573,11 @@ mod tests {
     fn a_row_no_profile_can_be_named_for_reads_a_dash_and_sorts_last() {
         let rows = managed_resource_rows(
             &[
-                recorded("package", "brew/bat"),
-                recorded("module", "nvim:files:2"),
-                recorded("env", "~/.cfgd.env"),
+                recorded_under(None, "package", "brew/bat"),
+                recorded_under(None, "module", "nvim:files:2"),
+                recorded_under(None, "env", "~/.cfgd.env"),
             ],
             &[],
-            None,
             &ManagedResourceDetail::default(),
         );
         let owners: Vec<&str> = rows.iter().map(|r| r[1].as_str()).collect();
@@ -3707,36 +4588,73 @@ mod tests {
         );
     }
 
+    /// A legacy comma-joined package row answers with the module that declares
+    /// one of its names FIRST, whatever order the names sit in the id.
+    ///
+    /// `package_drift_resource_id` mints exactly one package per row, so only a
+    /// row written by an older cfgd carries several. The owner lookup is a map
+    /// now rather than a scan over the modules, and a map answers by the key it
+    /// is asked for: asking name by name would let the id's own ordering pick
+    /// the owner, so the module INDEX rides along and the earliest wins.
+    #[test]
+    fn a_legacy_multi_name_package_row_answers_with_the_first_module_that_declares_one() {
+        let first = ModuleStatusEntry {
+            name: "alpha".to_string(),
+            declared: ModuleDeclared {
+                package_managers: declared_managers(&[("a", "brew")]),
+                ..ModuleDeclared::default()
+            },
+            ..nvim_entry(ModuleDeclared::default())
+        };
+        let second = ModuleStatusEntry {
+            name: "beta".to_string(),
+            declared: ModuleDeclared {
+                package_managers: declared_managers(&[("b", "brew")]),
+                ..ModuleDeclared::default()
+            },
+            ..nvim_entry(ModuleDeclared::default())
+        };
+        let mut output = empty_output();
+        output.modules = vec![first, second];
+        let owners = PackageOwners::of(&output);
+
+        // `b` leads the id, `a` is declared by the earlier module.
+        let owner = package_owner("brew:b,a", &owners, None);
+        assert_eq!(
+            owner.map(|o| o.token()).as_deref(),
+            Some("module:alpha"),
+            "the earliest-declared module owns the row"
+        );
+        assert_eq!(
+            package_owner("brew:a,b", &owners, None).map(|o| o.token()),
+            package_owner("brew:b,a", &owners, None).map(|o| o.token()),
+            "the id's name order does not decide the owner"
+        );
+    }
+
     /// A module row's id carries the owner and the surface; the detail the
-    /// reader wants (where files land, which manager installs, how many hooks)
-    /// lives in the resolution beside it.
+    /// reader wants (where files land, which manager installs) lives in the
+    /// resolution beside it.
     #[test]
     fn a_module_row_names_its_owner_and_reads_its_detail_from_the_resolution() {
         let declared = ModuleDeclared {
             file_root: Some("/home/u/.config/nvim".to_string()),
             package_managers: declared_managers(&[("git", "apt"), ("gcc", "apt")]),
-            script_summary: Some("preApply (3 scripts), postApply (6 scripts)".to_string()),
             scripts: 9,
         };
         let rows = managed_resource_rows(
             &[
                 recorded("module", "nvim:files:6"),
                 recorded("module", "nvim:packages:git,gcc"),
-                recorded("module", "nvim:script"),
             ],
             &[nvim_entry(declared)],
-            Some("base"),
             &ManagedResourceDetail::default(),
         );
         let resources: Vec<&str> = rows.iter().map(|r| r[2].as_str()).collect();
         assert!(rows.iter().all(|r| r[1] == "module:nvim"), "{rows:?}");
         assert_eq!(
             resources,
-            vec![
-                "/home/u/.config/nvim (6 files)",
-                "apt: gcc, git",
-                "preApply (3 scripts), postApply (6 scripts)",
-            ]
+            vec!["/home/u/.config/nvim (6 files)", "apt: gcc, git"]
         );
     }
 
@@ -3752,10 +4670,63 @@ mod tests {
         let rows = managed_resource_rows(
             &[recorded("module", "nvim:packages:neovim,git")],
             &[nvim_entry(split)],
-            Some("base"),
             &ManagedResourceDetail::default(),
         );
         assert_eq!(rows[0][2], "git, neovim");
+    }
+
+    /// Every package row spells the manager the plan resolved, whichever
+    /// spelling of its names the recorded id happens to hold.
+    ///
+    /// Resolution knows one package under two names — the canonical one the
+    /// module wrote and the one its manager installs (`gcc` is apt's
+    /// `build-essential`) — so the map [`ModuleDeclared::of`] builds is keyed
+    /// under both. It was keyed under the resolved name alone, and a row
+    /// recorded under canonical names then found nothing and rendered a bare
+    /// list beside rows spelled `apt:`, `brew:`, `npm:`. A name the module no
+    /// longer declares is skipped rather than vetoing the row.
+    #[test]
+    fn a_package_row_names_the_manager_the_plan_resolved_under_either_spelling() {
+        let declared_package =
+            |canonical: &str, resolved: &str| cfgd_core::modules::ResolvedPackage {
+                canonical_name: canonical.to_string(),
+                resolved_name: resolved.to_string(),
+                manager: "apt".to_string(),
+                manager_declared: false,
+                version: None,
+                script: None,
+                creates: None,
+                only_if: None,
+                unless: None,
+                min_version: None,
+            };
+        let module = cfgd_core::modules::ResolvedModule {
+            name: "nvim".to_string(),
+            packages: vec![
+                declared_package("gcc", "build-essential"),
+                declared_package("pip", "python3-pip"),
+                declared_package("curl", "curl"),
+            ],
+            files: vec![],
+            ..cfgd_core::test_helpers::make_resolved_module("nvim")
+        };
+        let declared = ModuleDeclared::of(&module);
+        // Every name in these two rows resolves under a spelling of its own, so
+        // neither row has a name whose canonical and resolved spellings match
+        // and could carry the prefix for its row-mates: keyed by the resolved
+        // name alone, the canonical row finds nothing and renders bare.
+        for recorded_names in ["gcc,pip", "build-essential,python3-pip"] {
+            assert_eq!(
+                module_packages_resource(recorded_names, Some(&declared)),
+                format!("apt: {}", module_package_names(recorded_names).join(", ")),
+                "the row spells the manager for `{recorded_names}`"
+            );
+        }
+        assert_eq!(
+            module_packages_resource("curl,ghost", Some(&declared)),
+            "apt: curl, ghost",
+            "a name the module no longer declares does not veto the prefix"
+        );
     }
 
     /// A module the current config no longer resolves still has recorded rows.
@@ -3770,11 +4741,10 @@ mod tests {
                 recorded("module", "gone:script"),
             ],
             &[],
-            Some("base"),
             &ManagedResourceDetail::default(),
         );
         let resources: Vec<&str> = rows.iter().map(|r| r[2].as_str()).collect();
-        assert_eq!(resources, vec!["4 files", "zsh", "-"]);
+        assert_eq!(resources, vec!["4 files", "zsh"]);
     }
 
     /// The live-session row names the RESOURCE cfgd manages, not the act it
@@ -3790,7 +4760,6 @@ mod tests {
             let rows = managed_resource_rows(
                 &[recorded("env", cfgd_core::state::ENV_SESSION_RESOURCE_ID)],
                 &[],
-                Some("base"),
                 &ManagedResourceDetail::default(),
             );
             rows[0][2].clone()
@@ -3802,7 +4771,7 @@ mod tests {
         );
         assert_eq!(
             session_cell(),
-            format!("session env — {}", cfgd_core::NO_SESSION_MANAGER),
+            format!("live session — {}", cfgd_core::NO_SESSION_MANAGER),
             "with nothing to publish to, the row says so"
         );
 
@@ -3813,7 +4782,7 @@ mod tests {
         );
         assert_eq!(
             session_cell(),
-            "session env",
+            "live session",
             "a reachable session manager needs no qualifier"
         );
     }
@@ -3821,6 +4790,10 @@ mod tests {
     /// A recorded type is a state-matching token; the Type column names the
     /// surface in the same words a module row's own id spells them, so one
     /// table never calls one thing two names depending on who declared it.
+    ///
+    /// A profile's inline script is recorded under its own type and reaches no
+    /// column at all: it was declared and then run, and nothing checks one
+    /// afterwards, so the table states no fact about it.
     #[test]
     fn the_type_column_names_the_surface_not_the_recorded_token() {
         let rows = managed_resource_rows(
@@ -3830,17 +4803,17 @@ mod tests {
                 recorded("Running script", "echo hi"),
             ],
             &[],
-            Some("base"),
             &ManagedResourceDetail::default(),
         );
         // Owner order, so the surfaces are named in the order the tree
-        // renders them: the profile's two rows, then cfgd's own env file.
+        // renders them: the profile's managed file, then cfgd's own env file.
+        // The script the profile ran renders no row.
         let types: Vec<&str> = rows.iter().map(|r| r[0].as_str()).collect();
-        assert_eq!(types, vec!["file", "script", "env"]);
-        // The env file is cfgd's own; the managed file and the profile script
-        // are the profile's, and each row says which.
+        assert_eq!(types, vec!["file", "env"]);
+        // The env file is cfgd's own and the managed file is the profile's,
+        // and each row says which.
         let owners: Vec<&str> = rows.iter().map(|r| r[1].as_str()).collect();
-        assert_eq!(owners, vec!["profile:base", "profile:base", "cfgd:env"]);
+        assert_eq!(owners, vec!["profile:base", "cfgd:env"]);
     }
 
     /// Every kind the Type column can print, in the singular — `kubectl get`'s
@@ -3848,10 +4821,11 @@ mod tests {
     /// carries how many.
     ///
     /// The population is both producers: every `resource_type`
-    /// `action_resource_info` records (plus the legacy `"Running script"` that
-    /// `execute_script` stamped), and the three surfaces a module row's own id
-    /// spells. A new kind reaching this column without an arm renders whatever
-    /// its producer spelled, so it is listed here or it is not covered.
+    /// `action_resource_info` records and the two surfaces a module row's own
+    /// id spells, less the script rows [`records_a_script`] keeps out of the
+    /// table altogether. A new kind reaching this column without an arm
+    /// renders whatever its producer spelled, so it is listed here or it is
+    /// not covered.
     #[test]
     fn every_kind_the_type_column_prints_is_singular() {
         const RECORDED_KINDS: &[&str] = &[
@@ -3859,15 +4833,13 @@ mod tests {
             "package",
             "secret",
             "system",
-            "script",
             "module",
             "env",
             "env-rc",
             "env-session",
             "manager",
-            "Running script",
         ];
-        const MODULE_SURFACES: &[&str] = &["files", "packages", "script"];
+        const MODULE_SURFACES: &[&str] = &["files", "packages"];
 
         for kind in RECORDED_KINDS.iter().chain(MODULE_SURFACES) {
             let word = display_type(kind);
@@ -3885,7 +4857,47 @@ mod tests {
         // same kind of thing.
         assert_eq!(display_type("files"), display_type("file"));
         assert_eq!(display_type("packages"), display_type("package"));
-        assert_eq!(display_type("Running script"), display_type("script"));
+        // The three env surfaces are three kinds, not one: the table says
+        // which of them a row is, so no two of them fold onto one word.
+        assert_eq!(display_type("env"), "env");
+        assert_eq!(display_type("env-rc"), "rc");
+        assert_eq!(display_type("env-session"), "session");
+    }
+
+    /// No table wording a kind names a script, because no row reaches one.
+    ///
+    /// The population above says what the Type column prints; this says what
+    /// it must not. `script` and `Running script` are `resource_type` values an
+    /// apply still records, so the exclusion is the only thing keeping them off
+    /// the screen: [`records_a_script`] answers for each of them and for a
+    /// module's own `<name>:script` row, and neither of the two bodies that
+    /// word a kind — the fold `display_type` applies, the lead order
+    /// `ordered_kind_counts` counts in — spells either literal. An arm added
+    /// there would word a row nothing renders.
+    #[test]
+    fn no_table_wording_a_kind_names_a_script() {
+        for resource_type in ["script", "Running script"] {
+            assert!(
+                records_a_script(resource_type, "anything"),
+                "{resource_type:?} is a recorded row the table states nothing about"
+            );
+        }
+        assert!(
+            records_a_script("module", "nvim:script"),
+            "a module's own recorded script row is the same class"
+        );
+        for signature in ["fn display_type(", "fn ordered_kind_counts<"] {
+            let body = production_fn_body(signature);
+            let literals = string_literals(&body);
+            assert!(
+                !literals.is_empty(),
+                "{signature} no longer spells the kinds it words"
+            );
+            assert!(
+                literals.iter().all(|word| !word.contains("script")),
+                "{signature} words a script kind: {literals:?}"
+            );
+        }
     }
 
     /// A config dir whose profile resolves to something its DECLARED list does
@@ -3937,7 +4949,7 @@ mod tests {
             profiles_dir.join("default.yaml"),
             format!(
                 "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  modules:\n    - editor\n    - off-host\n  backups:\n    - name: docs\n      source: {}\n      retention: 3\n",
-                backup_source.display()
+                cfgd_core::to_posix_string(&backup_source)
             ),
         )
         .unwrap();
@@ -4058,7 +5070,7 @@ mod tests {
         cli.cache_dir = Some(env.state_dir.path().to_path_buf());
 
         let (printer, buf) = test_printers();
-        cmd_status(&cli, &printer, None, false, false, false).unwrap();
+        cmd_status(&cli, &printer, None, StatusRun::default()).unwrap();
         drop(printer);
         let dashboard = cfgd_core::test_helpers::captured_text(&buf);
 
@@ -4105,7 +5117,7 @@ mod tests {
         cli.cache_dir = Some(env.state_dir.path().to_path_buf());
 
         let (printer, buf) = test_printers_json();
-        cmd_status(&cli, &printer, None, false, false, false).unwrap();
+        cmd_status(&cli, &printer, None, StatusRun::default()).unwrap();
         drop(printer);
         let payload: serde_json::Value =
             serde_json::from_str(&cfgd_core::test_helpers::captured_text(&buf))
@@ -4166,14 +5178,14 @@ mod tests {
         // paths compose cache-only, so a header derived from the composition
         // would drop its `Sources` row here and the key would be answering
         // "has this machine synced yet" rather than what the config declares.
-        let cold = render(&|p| cmd_status(&cli, p, None, false, false, false).unwrap());
+        let cold = render(&|p| cmd_status(&cli, p, None, StatusRun::default()).unwrap());
         assert_eq!(
             cold.len(),
             4,
             "a cold cache changes nothing about the header: {cold:?}"
         );
 
-        let status = render(&|p| cmd_status(&cli, p, None, false, false, false).unwrap());
+        let status = render(&|p| cmd_status(&cli, p, None, StatusRun::default()).unwrap());
         let diff = render(&|p| crate::cli::diff::cmd_diff(&cli, p, None, false).unwrap());
         let sync = render(&|p| crate::cli::sync::cmd_sync(&cli, p).unwrap());
         // The two verbs that build a `Plan`: their header reads its module
@@ -4376,9 +5388,11 @@ mod tests {
     }
 
     /// The module health line's units agree with their own counts: a module
-    /// with one of each reads `1 package, 1 file, 1 script`, many stay
-    /// plural, and a zero count is dropped rather than reported — a module
-    /// holding nothing reads its bare verdict with no parenthetical at all.
+    /// with one of each reads `1 package, 1 file`, many stay plural, and a
+    /// zero count is dropped rather than reported — a module holding nothing
+    /// reads its bare verdict with no parenthetical at all. The scripts the
+    /// entries declare are counted by no clause: the table below lists no
+    /// script row.
     #[test]
     fn module_status_line_units_agree_with_their_counts() {
         let output = StatusOutput {
@@ -4450,12 +5464,16 @@ mod tests {
         let out = cfgd_core::test_helpers::captured_text(&buf);
 
         assert!(
-            out.contains("Synced (1 package, 1 file, 1 script)"),
-            "a single package, file and script must read singular: {out}"
+            out.contains("Synced (1 package, 1 file)"),
+            "a single package and file must read singular: {out}"
         );
         assert!(
-            out.contains("Synced (3 packages, 12 files, 7 scripts)"),
+            out.contains("Synced (3 packages, 12 files)"),
             "many must stay plural: {out}"
+        );
+        assert!(
+            !out.contains("script"),
+            "a declared script is counted by no health clause: {out}"
         );
         let git_row = out
             .lines()
@@ -4492,13 +5510,16 @@ mod tests {
                 modules: Vec::new(),
                 // One recorded owner, so the Component Health section whose
                 // heading carries the freshness annotation renders.
-                managed_resources: vec![cfgd_core::state::ManagedResource {
-                    resource_type: "file".to_string(),
-                    resource_id: "~/.gitconfig".to_string(),
-                    source: "local".to_string(),
-                    last_hash: Some("hash1".to_string()),
-                    last_applied: Some(1_715_680_800),
-                }],
+                managed_resources: managed_resource_payload(
+                    vec![cfgd_core::state::ManagedResource {
+                        resource_type: "file".to_string(),
+                        resource_id: "~/.gitconfig".to_string(),
+                        source: "local".to_string(),
+                        last_hash: Some("hash1".to_string()),
+                        last_applied: Some(1_715_680_800),
+                    }],
+                    Some("base"),
+                ),
                 warnings: Vec::new(),
                 classification_degraded: false,
                 classification_degraded_code: None,
@@ -4607,6 +5628,10 @@ mod tests {
         // recorded one stands behind its empty section, and nothing else does.
         let module = |last_scan_at: Option<&str>, checked_live: bool| {
             let output = ModuleStatus {
+                packages_hash: None,
+                files_hash: None,
+                commit: None,
+                integrity: None,
                 name: "nvim".to_string(),
                 packages: 0,
                 files: 0,
@@ -4731,7 +5756,7 @@ mod tests {
             "an unchecked fleet row claims no verdict: {unchecked_fleet}"
         );
         assert!(
-            unchecked_fleet.contains("module:nvim") && unchecked_fleet.contains("— Installed"),
+            unchecked_fleet.contains("module:nvim") && unchecked_fleet.contains("— Applied"),
             "it states the record's own fact instead: {unchecked_fleet}"
         );
     }
@@ -4744,6 +5769,10 @@ mod tests {
     #[test]
     fn no_module_headline_claims_synced_over_an_erroring_check() {
         let errored = ModuleStatus {
+            packages_hash: None,
+            files_hash: None,
+            commit: None,
+            integrity: None,
             name: "nvim".to_string(),
             packages: 1,
             files: 0,
@@ -4954,7 +5983,17 @@ mod tests {
     /// never reached.
     #[test]
     fn a_wide_module_view_reports_an_erroring_env_check() {
+        let home = tempfile::tempdir().unwrap();
+        let env_file = cfgd_core::reconciler::primary_env_file(home.path());
+        let env_file_name = env_file
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .expect("the primary env file is a file");
         let output = ModuleStatus {
+            packages_hash: None,
+            files_hash: None,
+            commit: None,
+            integrity: None,
             name: "nvim".to_string(),
             packages: 0,
             files: 0,
@@ -4979,8 +6018,12 @@ mod tests {
             drift_checked_live: true,
             last_scan_at: None,
             scoped_scans: Default::default(),
+            // Composed the way the producer composes it, off the file this host
+            // would actually have probed: the key is classified by whether it
+            // is an absolute path, and a POSIX path spelled by hand is not one
+            // on Windows, where the rows then kept verdicts no check earned.
             system_errors: vec![super::super::output_types::SystemCheckError {
-                key: "/home/user/.cfgd.env".to_string(),
+                key: cfgd_core::to_posix_string(&env_file),
                 error: "Is a directory (os error 21)".to_string(),
             }],
             standing: Vec::new(),
@@ -4989,7 +6032,12 @@ mod tests {
         let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
         printer.emit(build_module_status_doc(
             &output,
-            ModuleStatusView::Inventory { show_values: false },
+            // The invocation the wording above describes: `--show-values`,
+            // under which a clean row is a kv pair. An errored probe is not a
+            // clean row, so the verdict has to survive the flag.
+            ModuleStatusView::Inventory {
+                masking: crate::cli::EnvValueMasking::revealing(),
+            },
             "2026-05-14T10:05:00Z",
         ));
         drop(printer);
@@ -4999,7 +6047,7 @@ mod tests {
             .find(|l| l.contains("error checking drift"))
             .unwrap_or_else(|| panic!("the wide view renders the failed check: {rendered}"));
         assert!(
-            error_line.contains(".cfgd.env") && error_line.contains("Is a directory"),
+            error_line.contains(&env_file_name) && error_line.contains("Is a directory"),
             "the row names the probed file and the failure: {error_line}"
         );
         let editor_line = rendered
@@ -5009,6 +6057,107 @@ mod tests {
         assert!(
             editor_line.contains(NOT_SCANNED),
             "an unanswered check leaves no green verdict on the item rows: {editor_line}"
+        );
+    }
+
+    /// A `minVersion` the scan could not compare is a fact about a PACKAGE.
+    /// Judging the Shell rows on it degraded every alias and env var to
+    /// `not scanned` over a failure that never looked at them, and rendered the
+    /// package's own row among the Shell inventory. The key grammar is read
+    /// through the one answerer [`check_error_owner`] asks, so the two surfaces
+    /// cannot classify one key two ways.
+    #[test]
+    fn a_package_floor_check_error_leaves_the_shell_rows_their_verdicts() {
+        let output = ModuleStatus {
+            packages_hash: None,
+            files_hash: None,
+            commit: None,
+            integrity: None,
+            name: "nvim".to_string(),
+            packages: 1,
+            files: 0,
+            env: 1,
+            aliases: 1,
+            scripts: Vec::new(),
+            system: Vec::new(),
+            depends: Vec::new(),
+            declared: cfgd_core::modules::ModuleSurfaces {
+                env: vec![cfgd_core::config::EnvVar {
+                    name: "EDITOR".to_string(),
+                    value: "vim".to_string(),
+                    platforms: Vec::new(),
+                }],
+                aliases: vec![cfgd_core::config::ShellAlias {
+                    name: "gs".to_string(),
+                    command: "git status --short".to_string(),
+                    platforms: Vec::new(),
+                }],
+                ..Default::default()
+            },
+            status: "installed".to_string(),
+            last_applied: None,
+            scope: None,
+            package_state: vec![ModulePackageStatus {
+                name: "fd".to_string(),
+                manager: Some("npm".to_string()),
+                state: ModulePackagePresence::Installed,
+            }],
+            deployed_files: Vec::new(),
+            drift_checked_live: true,
+            last_scan_at: None,
+            scoped_scans: Default::default(),
+            system_errors: vec![super::super::output_types::SystemCheckError {
+                key: "npm:fd".to_string(),
+                error: "npm ls reported no version".to_string(),
+            }],
+            standing: Vec::new(),
+            drift: Vec::new(),
+        };
+        let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+        printer.emit(build_module_status_doc(
+            &output,
+            ModuleStatusView::Inventory {
+                masking: crate::cli::EnvValueMasking::revealing(),
+            },
+            "2026-05-14T10:05:00Z",
+        ));
+        drop(printer);
+        let rendered = cfgd_core::test_helpers::captured_text(&buf);
+        let line_of = |needle: &str| {
+            rendered
+                .lines()
+                .position(|l| l.contains(needle))
+                .unwrap_or_else(|| panic!("the report holds {needle}: {rendered}"))
+        };
+        assert!(
+            line_of("error checking drift") < line_of("Shell"),
+            "the failed floor check renders under Packages, ahead of the Shell \
+             section it says nothing about: {rendered}"
+        );
+        assert!(
+            line_of("Packages") < line_of("error checking drift"),
+            "the row sits inside the Packages section: {rendered}"
+        );
+        for item in ["EDITOR", "gs"] {
+            let row = rendered
+                .lines()
+                .find(|l| l.contains(item))
+                .unwrap_or_else(|| panic!("the declared {item} row lists: {rendered}"));
+            assert!(
+                !row.contains(NOT_SCANNED),
+                "a package floor nothing could read leaves the Shell verdicts \
+                 alone: {row}"
+            );
+        }
+        let editor_row = rendered
+            .lines()
+            .find(|l| l.contains("EDITOR"))
+            .map(|l| l.split_whitespace().collect::<Vec<&str>>())
+            .unwrap_or_default();
+        assert_eq!(
+            editor_row,
+            vec!["EDITOR", "vim"],
+            "the clean env row is the kv pair `--show-values` asks for: {rendered}"
         );
     }
 
@@ -5096,7 +6245,6 @@ mod tests {
             status: "installed".to_string(),
             platform_skip_reason: None,
             declared: ModuleDeclared {
-                script_summary: Some("postApply (1 script)".to_string()),
                 scripts: 1,
                 ..ModuleDeclared::default()
             },
@@ -5136,6 +6284,11 @@ mod tests {
         assert!(
             nvim.contains("Drifted"),
             "the finding lands on the module that owns it: {nvim}"
+        );
+        assert!(
+            !nvim.contains("script"),
+            "and nothing counts it as a resource, so the row earns no \
+             `(1 script)` parenthetical: {nvim}"
         );
     }
 
@@ -5197,6 +6350,7 @@ mod tests {
             status: ApplyStatus::Success,
             summary: Some(
                 cfgd_core::state::ApplySummary::Actions {
+                    after_plan: 0,
                     total: 22,
                     succeeded: 21,
                     skipped: 1,
@@ -5255,8 +6409,12 @@ mod tests {
 
     /// A module's Component Health row and the Managed Resources table answer
     /// the same question and must give the same number: the row said `28 packages`
-    /// over a table listing 24, and later omitted the module's scripts while
-    /// the table two lines below listed seven of them.
+    /// over a table listing 24.
+    ///
+    /// The module declares scripts, which neither surface states: the table
+    /// lists no script row at either width, so the headline counts none. The
+    /// recorded `nvim:script` row is still in the input, because `-o json`
+    /// carries it.
     #[test]
     fn the_module_headline_counts_what_the_table_lists() {
         let resources = vec![
@@ -5266,7 +6424,6 @@ mod tests {
             recorded("module", "nvim:script"),
         ];
         let declared = ModuleDeclared {
-            script_summary: Some("postApply (7 scripts)".to_string()),
             scripts: 7,
             ..ModuleDeclared::default()
         };
@@ -5291,7 +6448,6 @@ mod tests {
         let rows = managed_resource_rows(
             &resources,
             &output.modules,
-            Some("base"),
             &ManagedResourceDetail::default(),
         );
         let listed: usize = rows
@@ -5306,13 +6462,12 @@ mod tests {
             .sum();
         assert_eq!(tally.packages, listed, "headline vs table: {out}");
         assert!(
-            rows.iter()
-                .any(|row| row[0] == "script" && row[2] == "postApply (7 scripts)"),
-            "the table lists the scripts the headline must name: {rows:?}"
+            rows.iter().all(|row| row[0] != "script"),
+            "a declared script is no managed resource: {rows:?}"
         );
         assert!(
-            out.contains("4 packages, 6 files, 7 scripts"),
-            "the headline reports the recorded tally: {out}"
+            out.contains("4 packages, 6 files") && !out.contains("script"),
+            "the headline counts what the table lists: {out}"
         );
 
         // The same invariant under wide: the exploded per-file rows count
@@ -5332,7 +6487,6 @@ mod tests {
         let wide_rows = managed_resource_rows(
             &resources,
             &output.modules,
-            Some("base"),
             &ManagedResourceDetail {
                 wide: true,
                 module_files: std::collections::BTreeMap::from([("nvim".to_string(), manifest)]),
@@ -5347,6 +6501,10 @@ mod tests {
             tally.files, file_rows,
             "wide table vs headline: {wide_rows:?}"
         );
+        assert!(
+            wide_rows.iter().all(|row| row[0] != "script"),
+            "wide lists no script row either: {wide_rows:?}"
+        );
     }
 
     /// A recorded `file` row outliving its declaration claims no method: the
@@ -5358,7 +6516,6 @@ mod tests {
         let rows = managed_resource_rows(
             &[recorded("file", "~/.stale")],
             &[],
-            Some("base"),
             &ManagedResourceDetail {
                 wide: true,
                 ..Default::default()
@@ -5379,24 +6536,30 @@ mod tests {
     #[test]
     fn the_component_health_counts_what_the_table_lists() {
         let resources = vec![
-            recorded("file", "~/.bashrc"),
-            recorded("file", "~/.vimrc"),
-            recorded("package", "brew/ripgrep"),
-            recorded("package", "brew/bat"),
-            recorded("package", "apt/git"),
-            recorded("env", "/home/user/.cfgd.env"),
-            recorded("env", "/home/user/.config/fish/conf.d/cfgd.fish"),
-            recorded("env", cfgd_core::state::ENV_SESSION_RESOURCE_ID),
+            recorded_under(Some("default"), "file", "~/.bashrc"),
+            recorded_under(Some("default"), "file", "~/.vimrc"),
+            recorded_under(Some("default"), "package", "brew/ripgrep"),
+            recorded_under(Some("default"), "package", "brew/bat"),
+            recorded_under(Some("default"), "package", "apt/git"),
+            recorded_under(Some("default"), "env", "/home/user/.cfgd.env"),
+            recorded_under(
+                Some("default"),
+                "env",
+                "/home/user/.config/fish/conf.d/cfgd-env.fish",
+            ),
+            recorded_under(Some("default"), "env", "/home/user/.bashrc"),
+            recorded_under(Some("default"), "env", "/home/user/.zshenv"),
+            recorded_under(Some("default"), "env", "/home/user/.profile"),
+            recorded_under(
+                Some("default"),
+                "env",
+                cfgd_core::state::ENV_SESSION_RESOURCE_ID,
+            ),
         ];
         let mut output = empty_output();
         output.managed_resources = resources.clone();
 
-        let table = managed_resource_rows(
-            &resources,
-            &[],
-            Some("default"),
-            &ManagedResourceDetail::default(),
-        );
+        let table = managed_resource_rows(&resources, &[], &ManagedResourceDetail::default());
         let rows_of =
             |owner: &str, ty: &str| table.iter().filter(|r| r[1] == owner && r[0] == ty).count();
         // A package row's Resource cell is `manager: a, b`; its unit is the
@@ -5416,12 +6579,18 @@ mod tests {
             names_of("profile:default"),
             rows_of("profile:default", "file"),
         );
-        let (env_files, sessions) = (rows_of("cfgd:env", "env"), rows_of("cfgd:session", "env"));
+        // Each of cfgd's three env groups is counted under the Type word its
+        // own rows carry, so a row moving between groups moves both counts.
+        let (env_files, rc_lines, sessions) = (
+            rows_of("cfgd:env", "env"),
+            rows_of("cfgd:shell", "rc"),
+            rows_of("cfgd:session", "session"),
+        );
         // Grounded against the fixture, so a classifier change dropping rows
         // from BOTH derivations cannot agree its way past this pin.
         assert_eq!(
-            (packages, files, env_files, sessions),
-            (3, 2, 2, 1),
+            (packages, files, env_files, rc_lines, sessions),
+            (3, 2, 2, 3, 1),
             "the table no longer lists the fixture's rows:\n{table:?}"
         );
 
@@ -5440,8 +6609,12 @@ mod tests {
                 format!("({})", cfgd_core::pluralize(env_files, "env file")),
             ),
             (
+                "cfgd:shell",
+                format!("({})", cfgd_core::pluralize(rc_lines, "rc line")),
+            ),
+            (
                 "cfgd:session",
-                format!("({})", cfgd_core::pluralize(sessions, "session env")),
+                format!("({})", cfgd_core::pluralize(sessions, "live session")),
             ),
         ];
         // Only the health section's own rows: the table below carries the
@@ -5465,18 +6638,18 @@ mod tests {
     /// Every kind the Managed Resources table can call a module's has a slot in
     /// the headline three lines above it.
     ///
-    /// The population is read off `display_type`'s own arms — the fn that folds
-    /// a recorded token onto the Type word — so a kind reaching that column
-    /// cannot skip this walk: the words it FOLDS are exactly the module-owned
-    /// ones (`env` and every cfgd-owned token fall through its `other` arm and
-    /// belong to no module). The headline dropped the `script` rows for as long
-    /// as its tally was an unnamed pair, which is why the slot is proven by
-    /// rendering rather than by counting fields.
+    /// The population is read off the literal arms of `display_type` — the fn
+    /// that folds a recorded token onto the Type word — so a kind reaching that
+    /// column cannot skip this walk: the literals it folds are exactly the
+    /// module-owned ones, cfgd's own env tokens naming their group through
+    /// consts and belonging to no module. The headline dropped rows whose
+    /// tally was an unnamed pair, which is why the slot is proven by rendering
+    /// rather than by counting fields.
     #[test]
     fn every_module_owned_kind_the_table_lists_has_a_slot_in_the_headline() {
         let words = folded_type_column_words();
         assert!(
-            words.len() >= 3,
+            words.len() >= 2,
             "the walk no longer reaches `display_type`'s arms: {words:?}"
         );
         for word in &words {
@@ -5485,14 +6658,6 @@ mod tests {
             let (id, declared) = match word.as_str() {
                 "package" => ("nvim:packages:neovim", ModuleDeclared::default()),
                 "file" => ("nvim:files:1", ModuleDeclared::default()),
-                "script" => (
-                    "nvim:script",
-                    ModuleDeclared {
-                        script_summary: Some("postApply (1 script)".to_string()),
-                        scripts: 1,
-                        ..ModuleDeclared::default()
-                    },
-                ),
                 other => panic!(
                     "the Type column prints {other:?}, which this walk cannot record — \
                      give it a recorded id here and a slot in `ModuleTally`"
@@ -5533,18 +6698,37 @@ mod tests {
         }
     }
 
+    /// The text of one production function of this file, for a claim about the
+    /// arms it spells. The signature and the closing brace are both required,
+    /// so a rename fails the reader rather than handing back an empty body a
+    /// walk would pass over.
+    fn production_fn_body(signature: &str) -> String {
+        // unfloored-slice-ok: one compiled-in body, not a walk over files
+        let source = cfgd_core::test_helpers::production_slice(include_str!("status.rs"));
+        let start = source.find(signature).expect("the named production fn");
+        let body = &source[start..];
+        let end = body.find("\n}\n").expect("the fn's closing brace");
+        body[..end].to_string()
+    }
+
     /// The Type words `display_type` FOLDS a recorded token onto — its match
     /// arms read off this file, so the walk above sees a kind added there.
     fn folded_type_column_words() -> Vec<String> {
-        let source = include_str!("status.rs");
-        let start = source
-            .find("fn display_type(")
-            .expect("the Type column's mapping fn");
-        let body = &source[start..];
-        let end = body.find("\n}\n").expect("the fn's closing brace");
-        let mut words: Vec<String> = string_literals(&body[..end])
+        // Four arms name their token through a const, but their WORDS are
+        // literals in the same body. None of the four belongs to a module:
+        // cfgd writes its own env surfaces, and a declared env var or alias
+        // belongs to the layer that declared it. All four are dropped here
+        // rather than by spelling.
+        let not_module_owned = [
+            display_type(ENV_RC_RESOURCE_TYPE),
+            display_type(ENV_SESSION_RESOURCE_TYPE),
+            display_type(cfgd_core::reconciler::ENV_VAR_RESOURCE_TYPE),
+            display_type(cfgd_core::reconciler::ALIAS_RESOURCE_TYPE),
+        ];
+        let mut words: Vec<String> = string_literals(&production_fn_body("fn display_type("))
             .into_iter()
             .map(|token| display_type(&token).to_string())
+            .filter(|word| !not_module_owned.contains(&word.as_str()))
             .collect();
         words.sort();
         words.dedup();
@@ -5574,7 +6758,6 @@ mod tests {
             let rows = managed_resource_rows(
                 &[recorded("module", "nvim:packages:thing")],
                 &[nvim_entry(declared)],
-                Some("base"),
                 &ManagedResourceDetail::default(),
             );
             assert_eq!(
@@ -5594,7 +6777,6 @@ mod tests {
         let rows = managed_resource_rows(
             &[recorded("module", "nvim:packages:neovim")],
             &[nvim_entry(both)],
-            Some("base"),
             &ManagedResourceDetail::default(),
         );
         assert_eq!(
@@ -5681,6 +6863,7 @@ mod tests {
             list_envelope: false,
             no_hints: false,
             theme: None,
+            mask_env_values: None,
             jsonpath: None,
             yes: false,
             state_dir: Some(state_dir.to_path_buf()),
@@ -5779,7 +6962,7 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status(&cli, &printer, None, false, false, false).unwrap();
+        cmd_status(&cli, &printer, None, StatusRun::default()).unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -5792,7 +6975,11 @@ mod tests {
 
     /// `--show-values` names items, and only the itemized view has rows to
     /// name them on — so it selects that view without `-o wide` being asked
-    /// for, and renders the declared value beside the name.
+    /// for, and renders the declared value beside the name as the kv pair
+    /// `cfgd module show` renders for the same item: the name in the key
+    /// column, the value plain beside it. Rendered as one subject
+    /// (`EDITOR="nvim"`) the whole assignment took the key's colour, which
+    /// painted the declared value as though it were part of the name.
     #[test]
     fn show_values_selects_the_itemized_view_without_wide() {
         let tmp_home = tempfile::tempdir().unwrap();
@@ -5810,16 +6997,109 @@ mod tests {
 
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
-        cmd_status(&cli, &printer, Some("test-mod"), false, false, true).unwrap();
+        cmd_status(
+            &cli,
+            &printer,
+            Some("test-mod"),
+            StatusRun {
+                mask_env_values: cfgd_core::config::MaskEnvValues::None,
+                ..StatusRun::default()
+            },
+        )
+        .unwrap();
         drop(printer);
 
         let out = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
-            out.contains("\nShell\n")
-                && out.contains("\n  Env\n")
-                && out.contains(r#"EDITOR="nvim""#),
-            "--show-values must itemize env under Shell and show the declared \
-             value: {out}"
+            out.contains("\nShell\n") && out.contains("\n  Env\n"),
+            "--show-values must itemize env under Shell: {out}"
+        );
+        let row = out
+            .lines()
+            .find(|l| l.split_whitespace().next() == Some("EDITOR"))
+            .unwrap_or_else(|| panic!("no EDITOR row: {out}"));
+        assert_eq!(
+            row.split_whitespace().collect::<Vec<_>>(),
+            vec!["EDITOR", "nvim"],
+            "the row is the key and the declared value, not a quoted assignment: {row}"
+        );
+    }
+
+    /// The two halves of the value rule, driven against ONE fixture: asked for,
+    /// a declared env value renders in the clear; not asked for, it is not on
+    /// the screen at all.
+    ///
+    /// `status <module>` is the one env-rendering surface with no masked middle
+    /// state — `module show`, `profile show` and `source show` mask a value
+    /// they always render, while this report renders the name alone until
+    /// `--show-values` asks for the rest. Pinned as a pair because each half
+    /// alone passes on a report that renders every value always, or none ever.
+    #[test]
+    fn an_env_value_renders_in_the_clear_only_where_show_values_asked_for_it() {
+        const SECRET: &str = "s3cr3t-token-value";
+        let tmp_home = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp_home.path());
+        let (config_dir, state_dir, config_path) = setup_env_with_module();
+        std::fs::write(
+            config_dir
+                .path()
+                .join("modules")
+                .join("test-mod")
+                .join("module.yaml"),
+            format!(
+                "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: test-mod\nspec:\n  env:\n    - name: API_TOKEN\n      value: {SECRET}\n"
+            ),
+        )
+        .unwrap();
+        // Both halves render the ITEMIZED view, so the only difference between
+        // the two runs is the flag: the counts view has no item row to carry a
+        // value in the first place.
+        let mut cli = test_cli_for(config_path, state_dir.path());
+        cli.output = super::OutputFormatArg(cfgd_core::output::OutputFormat::Wide);
+
+        let render = |show_values: bool| {
+            let (printer, cap) =
+                Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Wide);
+            cmd_status(
+                &cli,
+                &printer,
+                Some("test-mod"),
+                StatusRun {
+                    mask_env_values: if show_values {
+                        cfgd_core::config::MaskEnvValues::None
+                    } else {
+                        cfgd_core::config::MaskEnvValues::All
+                    },
+                    ..StatusRun::default()
+                },
+            )
+            .unwrap();
+            drop(printer);
+            cap.human()
+        };
+
+        let asked = render(true);
+        let row = asked
+            .lines()
+            .find(|l| l.split_whitespace().next() == Some("API_TOKEN"))
+            .unwrap_or_else(|| panic!("no API_TOKEN row: {asked}"));
+        assert_eq!(
+            row.split_whitespace().collect::<Vec<_>>(),
+            vec!["API_TOKEN", SECRET],
+            "--show-values renders the declared value in the clear, unmasked \
+             and unquoted: {row}"
+        );
+
+        let unasked = render(false);
+        assert!(
+            unasked.contains("API_TOKEN"),
+            "the declared name is still inventory: {unasked}"
+        );
+        assert!(
+            !unasked.contains(SECRET)
+                && !unasked.contains(crate::cli::module::keys::mask_value(SECRET).as_str()),
+            "without the flag the report renders no value at all, masked or \
+             otherwise: {unasked}"
         );
     }
 
@@ -5835,12 +7115,12 @@ mod tests {
         cli.output = super::OutputFormatArg(cfgd_core::output::OutputFormat::Wide);
         let (printer, cap) =
             Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Wide);
-        cmd_status(&cli, &printer, Some("test-mod"), false, false, false).unwrap();
+        cmd_status(&cli, &printer, Some("test-mod"), StatusRun::default()).unwrap();
         drop(printer);
 
         let out = cap.human();
         assert!(
-            out.contains("\nInstalled Packages\n") && out.contains("ripgrep"),
+            out.contains("\nPackages\n") && out.contains("ripgrep"),
             "-o wide must itemize the declared packages: {out}"
         );
         assert!(
@@ -5856,7 +7136,7 @@ mod tests {
         let cli = test_cli_for(dir.path().join("nope.yaml"), state_dir.path());
         let (printer, _) = test_printers();
 
-        let err = cmd_status(&cli, &printer, None, false, false, false).unwrap_err();
+        let err = cmd_status(&cli, &printer, None, StatusRun::default()).unwrap_err();
         let msg = err.to_string().to_lowercase();
         assert!(
             msg.contains("not found") || msg.contains("nope.yaml"),
@@ -5870,7 +7150,7 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status(&cli, &printer, None, false, false, false).unwrap();
+        cmd_status(&cli, &printer, None, StatusRun::default()).unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -5911,7 +7191,7 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status(&cli, &printer, None, false, false, false).unwrap();
+        cmd_status(&cli, &printer, None, StatusRun::default()).unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -5950,7 +7230,7 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status(&cli, &printer, None, false, false, false).unwrap();
+        cmd_status(&cli, &printer, None, StatusRun::default()).unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -5991,7 +7271,7 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status(&cli, &printer, None, false, false, false).unwrap();
+        cmd_status(&cli, &printer, None, StatusRun::default()).unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -6015,7 +7295,7 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status(&cli, &printer, None, false, false, false).unwrap();
+        cmd_status(&cli, &printer, None, StatusRun::default()).unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -6029,13 +7309,14 @@ mod tests {
         );
     }
 
-    // onChange scripts persist under resource_type
-    // "Running script" (execute_script's own return value), distinct from
-    // the main pre/post-apply phase scripts' "script" type
-    // (apply_script_action's return value). Both must condense for human
-    // display; the stored/JSON id must stay the raw multi-line body.
+    // onChange scripts persist under resource_type "Running script"
+    // (execute_script's own return value), distinct from the main
+    // pre/post-apply phase scripts' "script" type (apply_script_action's
+    // return value). Neither reaches the human table: a script is declared and
+    // then run, and nothing checks one afterwards. The stored id stays the raw
+    // multi-line body, which `-o json` carries (the test below).
     #[test]
-    fn cmd_status_running_script_managed_resource_condenses_for_human_display() {
+    fn cmd_status_renders_no_table_row_for_a_recorded_script() {
         let (_cfg_dir, state_dir, config_path) = setup_env();
         let store = open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
         let raw_body = " echo one\necho two\necho three";
@@ -6046,17 +7327,13 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status(&cli, &printer, None, false, false, false).unwrap();
+        cmd_status(&cli, &printer, None, StatusRun::default()).unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
-            !output.contains("echo two"),
-            "human table cell must not leak the raw multi-line body: {output}"
-        );
-        assert!(
-            output.contains("echo one"),
-            "condensed label should reference the first line: {output}"
+            !output.contains("echo one") && !output.contains("echo two"),
+            "no row of the human report names a script cfgd ran: {output}"
         );
     }
 
@@ -6072,7 +7349,7 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers_json();
 
-        cmd_status(&cli, &printer, None, false, false, false).unwrap();
+        cmd_status(&cli, &printer, None, StatusRun::default()).unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -6098,7 +7375,7 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, _) = test_printers();
 
-        let res = cmd_status(&cli, &printer, None, false, false, false);
+        let res = cmd_status(&cli, &printer, None, StatusRun::default());
         assert!(res.is_ok(), "exit_code=false must return Ok, got: {res:?}");
     }
 
@@ -6111,7 +7388,16 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, _) = test_printers();
 
-        let res = cmd_status(&cli, &printer, None, true, true, false);
+        let res = cmd_status(
+            &cli,
+            &printer,
+            None,
+            StatusRun {
+                exit_code: true,
+                scan: true,
+                ..StatusRun::default()
+            },
+        );
         assert!(
             res.is_ok(),
             "exit_code=true with no drift must return Ok, got: {res:?}"
@@ -6138,7 +7424,16 @@ mod tests {
         cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
         let (printer, buf) = test_printers_json();
 
-        cmd_status(&cli, &printer, None, false, true, false).unwrap();
+        cmd_status(
+            &cli,
+            &printer,
+            None,
+            StatusRun {
+                scan: true,
+                ..StatusRun::default()
+            },
+        )
+        .unwrap();
         drop(printer);
 
         let captured = cfgd_core::test_helpers::captured_text(&buf);
@@ -6221,7 +7516,16 @@ mod tests {
         cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
         let (printer, buf) = test_printers_json();
 
-        cmd_status(&cli, &printer, None, false, true, false).unwrap();
+        cmd_status(
+            &cli,
+            &printer,
+            None,
+            StatusRun {
+                scan: true,
+                ..StatusRun::default()
+            },
+        )
+        .unwrap();
         drop(printer);
 
         let captured = cfgd_core::test_helpers::captured_text(&buf);
@@ -6248,7 +7552,16 @@ mod tests {
         // up there too — a reader healing drift needs the declared value in
         // front of them, not only the terse absence word.
         let (human_printer, human_buf) = test_printers();
-        cmd_status(&cli, &human_printer, None, false, true, false).unwrap();
+        cmd_status(
+            &cli,
+            &human_printer,
+            None,
+            StatusRun {
+                scan: true,
+                ..StatusRun::default()
+            },
+        )
+        .unwrap();
         drop(human_printer);
         let human = cfgd_core::test_helpers::captured_text(&human_buf);
         let editor_line = human
@@ -6345,7 +7658,16 @@ mod tests {
         let mut cli = test_cli_for(config_path, &state_dir);
         for scan in [false, true] {
             let (printer, buf) = test_printers();
-            cmd_status(&cli, &printer, None, false, scan, false).unwrap();
+            cmd_status(
+                &cli,
+                &printer,
+                None,
+                StatusRun {
+                    scan,
+                    ..StatusRun::default()
+                },
+            )
+            .unwrap();
             drop(printer);
             let human = cfgd_core::test_helpers::captured_text(&buf);
             let editor_line = human
@@ -6363,7 +7685,7 @@ mod tests {
         // its own row — and the recompute rides the additive pair beside them.
         cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
         let (printer, buf) = test_printers_json();
-        cmd_status(&cli, &printer, None, false, false, false).unwrap();
+        cmd_status(&cli, &printer, None, StatusRun::default()).unwrap();
         drop(printer);
         let captured = cfgd_core::test_helpers::captured_text(&buf);
         let parsed: serde_json::Value = serde_json::from_str(captured.trim())
@@ -6465,7 +7787,16 @@ mod tests {
         let cli = test_cli_for(config_path.clone(), &state_dir);
         for scan in [false, true] {
             let (printer, buf) = test_printers();
-            cmd_status(&cli, &printer, None, false, scan, false).unwrap();
+            cmd_status(
+                &cli,
+                &printer,
+                None,
+                StatusRun {
+                    scan,
+                    ..StatusRun::default()
+                },
+            )
+            .unwrap();
             drop(printer);
             let human = cfgd_core::test_helpers::captured_text(&buf);
             assert!(
@@ -6488,7 +7819,16 @@ mod tests {
             let mut cli = test_cli_for(config_path.clone(), &state_dir);
             cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
             let (printer, buf) = test_printers_json();
-            cmd_status(&cli, &printer, None, false, scan, false).unwrap();
+            cmd_status(
+                &cli,
+                &printer,
+                None,
+                StatusRun {
+                    scan,
+                    ..StatusRun::default()
+                },
+            )
+            .unwrap();
             drop(printer);
             let captured = cfgd_core::test_helpers::captured_text(&buf);
             let parsed: serde_json::Value = serde_json::from_str(captured.trim())
@@ -6564,7 +7904,16 @@ mod tests {
 
         let cli = test_cli_for(config_path.clone(), &state_dir);
         let (printer, buf) = test_printers();
-        cmd_status(&cli, &printer, None, false, true, false).unwrap();
+        cmd_status(
+            &cli,
+            &printer,
+            None,
+            StatusRun {
+                scan: true,
+                ..StatusRun::default()
+            },
+        )
+        .unwrap();
         drop(printer);
         let human = cfgd_core::test_helpers::captured_text(&buf);
         assert_eq!(
@@ -6576,7 +7925,16 @@ mod tests {
         let mut cli = test_cli_for(config_path, &state_dir);
         cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
         let (printer, buf) = test_printers_json();
-        cmd_status(&cli, &printer, None, false, true, false).unwrap();
+        cmd_status(
+            &cli,
+            &printer,
+            None,
+            StatusRun {
+                scan: true,
+                ..StatusRun::default()
+            },
+        )
+        .unwrap();
         drop(printer);
         let captured = cfgd_core::test_helpers::captured_text(&buf);
         let parsed: serde_json::Value = serde_json::from_str(captured.trim())
@@ -6622,7 +7980,7 @@ mod tests {
         cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
         let (printer, buf) = test_printers_json();
 
-        cmd_status(&cli, &printer, None, false, false, false).unwrap();
+        cmd_status(&cli, &printer, None, StatusRun::default()).unwrap();
         drop(printer);
 
         let captured = cfgd_core::test_helpers::captured_text(&buf);
@@ -6655,7 +8013,7 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status(&cli, &printer, Some("test-mod"), false, false, false).unwrap();
+        cmd_status(&cli, &printer, Some("test-mod"), StatusRun::default()).unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -6776,17 +8134,43 @@ mod tests {
             "module declares 1 package, got: {output}"
         );
         // No check has run on this host, so the recorded fact is the whole
-        // verdict — `Synced` here would claim an answer nothing produced.
+        // verdict — `Synced` here would claim an answer nothing produced, and
+        // the word for what the record alone can say is `Applied`. Read off
+        // the Status ROW, because the header's `Last Applied` age carries the
+        // same word in a slot that answers a different question.
         assert!(
-            output.contains("Installed"),
+            status_row_reads(&output, "Applied"),
             "should print state-store status, got: {output}"
         );
+    }
+
+    /// Whether the module report's own `Status` row reads `word`.
+    ///
+    /// The whole render is not the assertion: `Last Applied` is a different
+    /// row answering a different question, and a bare `contains` on the
+    /// vocabulary's words matches it. The CELL is compared, never a suffix of
+    /// it, because `NotApplied` ends with `Applied` and would otherwise
+    /// satisfy a claim about the converged word.
+    fn status_row_reads(output: &str, word: &str) -> bool {
+        output.lines().any(|line| {
+            line.trim_start().starts_with("Status") && line.split_whitespace().last() == Some(word)
+        })
     }
 
     fn declared(name: &str, platforms: &[&str]) -> cfgd_core::config::ModulePackageEntry {
         cfgd_core::config::ModulePackageEntry {
             name: name.to_string(),
             platforms: platforms.iter().map(|p| (*p).to_string()).collect(),
+            ..Default::default()
+        }
+    }
+
+    /// The same entry with the manager its author named, the shape a module
+    /// takes when it declares one name under two managers.
+    fn declared_under(name: &str, manager: &str) -> cfgd_core::config::ModulePackageEntry {
+        cfgd_core::config::ModulePackageEntry {
+            name: name.to_string(),
+            prefer: vec![manager.to_string()],
             ..Default::default()
         }
     }
@@ -6809,6 +8193,9 @@ mod tests {
             &[declared("docker", &[]), declared("docker", &[])],
             &mut scanned,
             Platform::current(),
+            "test-mod",
+            &std::collections::HashMap::new(),
+            None,
         );
 
         assert_eq!(rows.len(), 2);
@@ -6838,6 +8225,9 @@ mod tests {
             &[declared("tool", &[]), declared("tool", &[])],
             &mut scanned,
             Platform::current(),
+            "test-mod",
+            &std::collections::HashMap::new(),
+            None,
         );
 
         assert_eq!(rows.len(), 2);
@@ -6845,6 +8235,105 @@ mod tests {
         assert_eq!(rows[0].state, ModulePackagePresence::NotScanned);
         assert_eq!(rows[1].manager.as_deref(), Some("brew"));
         assert_eq!(rows[1].state, ModulePackagePresence::Installed);
+    }
+
+    /// Nothing asked, and the two rows for one name still read differently:
+    /// the manager each entry RESOLVES to goes on its row, through the one
+    /// resolver `cfgd module show` reads, so a reader can tell `neovim` under
+    /// `brew` from `neovim` under `npm`. Both rows read `◉ neovim — not
+    /// scanned` before this, which says nothing about either entry.
+    #[test]
+    fn an_unscanned_row_names_the_manager_its_entry_resolves_to() {
+        let brew = cfgd_core::test_helpers::MockPackageManager::new("brew");
+        let npm = cfgd_core::test_helpers::MockPackageManager::new("npm");
+        let managers: std::collections::HashMap<String, &dyn cfgd_core::providers::PackageManager> =
+            [
+                (
+                    "brew".to_string(),
+                    &brew as &dyn cfgd_core::providers::PackageManager,
+                ),
+                (
+                    "npm".to_string(),
+                    &npm as &dyn cfgd_core::providers::PackageManager,
+                ),
+            ]
+            .into_iter()
+            .collect();
+
+        let rows = join_package_state(
+            &[
+                declared_under("neovim", "brew"),
+                declared_under("neovim", "npm"),
+            ],
+            &mut std::collections::HashMap::new(),
+            Platform::current(),
+            "test-mod",
+            &managers,
+            None,
+        );
+
+        assert_eq!(rows.len(), 2);
+        for row in &rows {
+            assert_eq!(row.state, ModulePackagePresence::NotScanned);
+        }
+        assert_eq!(rows[0].manager.as_deref(), Some("brew"));
+        assert_eq!(rows[1].manager.as_deref(), Some("npm"));
+    }
+
+    /// A bare entry names the manager that already HOLDS it, not the manager
+    /// this platform installs by default: which manager has a package is part
+    /// of what resolution means, and `cfgd module show` resolves against the
+    /// same installed state. Resolved without it, the row named the platform
+    /// default while `module show` named the holder, for one package.
+    #[test]
+    fn an_unscanned_bare_entry_names_the_manager_that_holds_it() {
+        let apt = cfgd_core::test_helpers::MockPackageManager::new("apt");
+        let npm = cfgd_core::test_helpers::MockPackageManager::new("npm").with_installed(&["fd"]);
+        let managers: std::collections::HashMap<String, &dyn cfgd_core::providers::PackageManager> =
+            [
+                (
+                    "apt".to_string(),
+                    &apt as &dyn cfgd_core::providers::PackageManager,
+                ),
+                (
+                    "npm".to_string(),
+                    &npm as &dyn cfgd_core::providers::PackageManager,
+                ),
+            ]
+            .into_iter()
+            .collect();
+        let printer = cfgd_core::test_helpers::test_printer();
+        let state = cfgd_core::test_helpers::test_state();
+        let installed = cfgd_core::test_helpers::test_package_context(&printer, &state);
+
+        let rows = join_package_state(
+            &[declared("fd", &[])],
+            &mut std::collections::HashMap::new(),
+            Platform::current(),
+            "test-mod",
+            &managers,
+            Some(&installed),
+        );
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].state, ModulePackagePresence::NotScanned);
+        assert_eq!(rows[0].manager.as_deref(), Some("npm"));
+
+        // And the holder is what the context ADDS: with none in hand the same
+        // entry falls to whatever this platform installs by default.
+        let blind = join_package_state(
+            &[declared("fd", &[])],
+            &mut std::collections::HashMap::new(),
+            Platform::current(),
+            "test-mod",
+            &managers,
+            None,
+        );
+        assert_ne!(
+            blind[0].manager.as_deref(),
+            Some("npm"),
+            "the holder is only knowable from the installed state"
+        );
     }
 
     /// A gated entry resolved to nothing, so it must not consume the verdict
@@ -6864,6 +8353,9 @@ mod tests {
             &[declared("docker", &["plan9"]), declared("docker", &[])],
             &mut scanned,
             Platform::current(),
+            "test-mod",
+            &std::collections::HashMap::new(),
+            None,
         );
 
         assert_eq!(rows[0].state, ModulePackagePresence::PlatformSkipped);
@@ -6904,7 +8396,9 @@ mod tests {
             "test-mod",
             false,
             false,
-            ModuleStatusView::Inventory { show_values: false },
+            ModuleStatusView::Inventory {
+                masking: crate::cli::EnvValueMasking::default(),
+            },
         )
         .unwrap();
         drop(printer);
@@ -7004,7 +8498,7 @@ mod tests {
         drop(printer);
         let output = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
-            output.contains("Installed") && !output.contains("NotApplied"),
+            status_row_reads(&output, "Applied") && !output.contains("NotApplied"),
             "a converged module must not report itself unapplied, got: {output}"
         );
     }
@@ -7138,7 +8632,9 @@ mod tests {
             "test-mod",
             false,
             false,
-            ModuleStatusView::Inventory { show_values: false },
+            ModuleStatusView::Inventory {
+                masking: crate::cli::EnvValueMasking::default(),
+            },
         )
         .unwrap();
         drop(printer);
@@ -7311,7 +8807,9 @@ mod tests {
             "test-mod",
             false,
             true,
-            ModuleStatusView::Inventory { show_values: false },
+            ModuleStatusView::Inventory {
+                masking: crate::cli::EnvValueMasking::default(),
+            },
         )
         .unwrap();
         drop(printer);
@@ -7347,7 +8845,9 @@ mod tests {
             "test-mod",
             false,
             true,
-            ModuleStatusView::Inventory { show_values: false },
+            ModuleStatusView::Inventory {
+                masking: crate::cli::EnvValueMasking::default(),
+            },
         )
         .unwrap();
         drop(printer);
@@ -7382,14 +8882,16 @@ mod tests {
             "test-mod",
             false,
             true,
-            ModuleStatusView::Inventory { show_values: false },
+            ModuleStatusView::Inventory {
+                masking: crate::cli::EnvValueMasking::default(),
+            },
         )
         .unwrap();
         drop(printer);
 
         let out = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
-            out.contains("\nInstalled Packages\n"),
+            out.contains("\nPackages\n"),
             "the packages phase must have a section of its own: {out}"
         );
         let row = out
@@ -7418,7 +8920,9 @@ mod tests {
             "test-mod",
             false,
             false,
-            ModuleStatusView::Inventory { show_values: false },
+            ModuleStatusView::Inventory {
+                masking: crate::cli::EnvValueMasking::default(),
+            },
         )
         .unwrap();
         drop(printer);
@@ -7434,14 +8938,17 @@ mod tests {
         );
     }
 
-    /// A declared alias, env var and script hook with no check standing
-    /// behind them: `Installed Packages` and `Deployed Files` already
-    /// degrade an unchecked declaration to `not scanned` (the two pins
-    /// above), but `Shell` and `Scripts` rendered every row `Role::Ok`
-    /// regardless — the same doctrine
-    /// (`no_recorded_verdict_claims_a_check_that_never_ran`) extended to
-    /// every inventory row: a row reporting a bare declaration renders as a
+    /// A declared alias and env var with no check standing behind them:
+    /// `Packages` and `Deployed Files` already degrade an unchecked
+    /// declaration to `not scanned` (the two pins above), but `Shell` rendered
+    /// every row `Role::Ok` regardless — the same doctrine
+    /// (`no_recorded_verdict_claims_a_check_that_never_ran`) extended to every
+    /// inventory row: a row reporting a bare declaration renders as a
     /// declaration, never a verdict it never earned.
+    ///
+    /// The module declares a `postApply` hook too, and this report names it
+    /// nowhere: a script is never checked, so the one honest thing to say
+    /// about it is nothing.
     #[test]
     fn no_declared_inventory_row_wears_a_verdict_glyph() {
         let tmp_home = tempfile::tempdir().unwrap();
@@ -7467,7 +8974,9 @@ mod tests {
             "test-mod",
             false,
             false,
-            ModuleStatusView::Inventory { show_values: false },
+            ModuleStatusView::Inventory {
+                masking: crate::cli::EnvValueMasking::default(),
+            },
         )
         .unwrap();
         drop(printer);
@@ -7478,10 +8987,12 @@ mod tests {
             .unwrap_or_else(|| panic!("no Shell section: {out}"))
             .1;
         assert!(
-            shell_onward.contains("EDITOR")
-                && shell_onward.contains("ll")
-                && shell_onward.contains("postApply"),
+            shell_onward.contains("EDITOR") && shell_onward.contains("ll"),
             "every declared item must still be named: {shell_onward}"
+        );
+        assert!(
+            !out.contains("postApply") && !out.contains("Scripts"),
+            "a declared script is not a fact this report states: {out}"
         );
         assert!(
             !shell_onward.contains('✓'),
@@ -7589,6 +9100,10 @@ mod tests {
 
     fn module_status_with_scope(scope: Option<&str>) -> ModuleStatus {
         ModuleStatus {
+            packages_hash: None,
+            files_hash: None,
+            commit: None,
+            integrity: None,
             name: "nvim".into(),
             packages: 0,
             files: 0,
@@ -7703,7 +9218,7 @@ mod tests {
             profiles_dir.join("default.yaml"),
             format!(
                 "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  files:\n    managed:\n      - source: files/managed.txt\n        target: {}\n        strategy: Copy\n",
-                target.display()
+                cfgd_core::to_posix_string(&target)
             ),
         )
         .unwrap();
@@ -7761,7 +9276,7 @@ mod tests {
         );
 
         let (printer, buf) = test_printers();
-        cmd_status(&cli, &printer, None, false, false, false).unwrap();
+        cmd_status(&cli, &printer, None, StatusRun::default()).unwrap();
         drop(printer);
         let out = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
@@ -7810,7 +9325,7 @@ mod tests {
         );
 
         let (printer, buf) = test_printers();
-        cmd_status(&cli, &printer, None, false, false, false).unwrap();
+        cmd_status(&cli, &printer, None, StatusRun::default()).unwrap();
         drop(printer);
         let out = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
@@ -7848,7 +9363,7 @@ mod tests {
             mod_dir.join("module.yaml"),
             format!(
                 "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: test-mod\nspec:\n  files:\n    - source: conf\n      target: {}\n",
-                module_target.display()
+                cfgd_core::to_posix_string(&module_target)
             ),
         )
         .unwrap();
@@ -7974,7 +9489,7 @@ mod tests {
             dep_dir.join("module.yaml"),
             format!(
                 "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: dep-mod\nspec:\n  files:\n    - source: conf\n      target: {}\n",
-                tmp_home.path().join("dep-file.txt").display()
+                cfgd_core::to_posix_string(tmp_home.path().join("dep-file.txt"))
             ),
         )
         .unwrap();
@@ -7985,7 +9500,7 @@ mod tests {
             mod_dir.join("module.yaml"),
             format!(
                 "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: test-mod\nspec:\n  depends:\n    - dep-mod\n  files:\n    - source: conf\n      target: {}\n",
-                tmp_home.path().join("mod-file.txt").display()
+                cfgd_core::to_posix_string(tmp_home.path().join("mod-file.txt"))
             ),
         )
         .unwrap();
@@ -8043,7 +9558,7 @@ mod tests {
             mod_dir.join("module.yaml"),
             format!(
                 "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: test-mod\nspec:\n  files:\n    - source: conf\n      target: {}\n",
-                module_target.display()
+                cfgd_core::to_posix_string(&module_target)
             ),
         )
         .unwrap();
@@ -8086,7 +9601,7 @@ mod tests {
         assert_eq!(store.last_scan_at().unwrap(), None);
 
         let (printer, buf) = test_printers();
-        cmd_status(&cli, &printer, None, false, false, false).unwrap();
+        cmd_status(&cli, &printer, None, StatusRun::default()).unwrap();
         drop(printer);
         let rendered = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
@@ -8346,7 +9861,9 @@ mod tests {
             "test-mod",
             false,
             false,
-            ModuleStatusView::Inventory { show_values: false },
+            ModuleStatusView::Inventory {
+                masking: crate::cli::EnvValueMasking::default(),
+            },
         )
         .unwrap();
         drop(printer);
@@ -8437,13 +9954,16 @@ mod tests {
             "test-mod",
             false,
             false,
-            ModuleStatusView::Inventory { show_values: false },
+            ModuleStatusView::Inventory {
+                masking: crate::cli::EnvValueMasking::default(),
+            },
         )
         .unwrap();
         drop(printer);
         let out = cfgd_core::test_helpers::captured_text(&buf);
 
-        // Word-match: a substring scan for `ll` matches "Installed Packages".
+        // Word-match: a substring scan for `ll` matches any line carrying
+        // the letters, the `Installed` of a verdict included.
         let row = |needle: &str| {
             out.lines()
                 .find(|l| l.split_whitespace().any(|w| w == needle))
@@ -8643,8 +10163,8 @@ mod tests {
         );
     }
 
-    /// A package the Drift section names never reads `not scanned` beside
-    /// its finding, on the scan branch as on the recorded one: a `prefer:
+    /// A package a report names never reads `not scanned` beside its finding,
+    /// on the scan branch as on the recorded one: a `prefer:
     /// [script]` entry is seeded `NotScanned` by the scan (no manager to
     /// ask) and `NotInstalled` by its standing row, and `-o json`'s
     /// `packageState` must carry the verdict whichever seed landed first.
@@ -8697,9 +10217,14 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(captured.trim())
             .unwrap_or_else(|e| panic!("invalid JSON: {e}, got: {captured}"));
         assert_eq!(
-            parsed["drift"][0]["resourceId"],
+            parsed["standing"][0]["resourceId"],
             serde_json::json!("script:mytool"),
-            "the standing row is the finding the section names, got: {parsed}"
+            "the row the scan could not re-check stands under its own key, got: {parsed}"
+        );
+        assert_eq!(
+            parsed["drift"],
+            serde_json::json!([]),
+            "a standing row is not something this scan found, got: {parsed}"
         );
         assert_eq!(
             parsed["packageState"][0],
@@ -8709,8 +10234,8 @@ mod tests {
     }
 
     /// `status --module --scan`'s `-o json` `standing` set IS the set the
-    /// human render's Drift section lists — driven from the one store, twice,
-    /// once per format. The package this scan could not re-check (a
+    /// human render's Standing section lists — driven from the one store,
+    /// twice, once per format. The package this scan could not re-check (a
     /// `script`-managed package: no manager to ask, so it never joins
     /// `checked`) stands in both; a recorded row for a package the module
     /// gates off this host is in neither, because the scope every scoped
@@ -8799,9 +10324,9 @@ mod tests {
             .iter()
             .map(|e| e["resourceId"].as_str().unwrap_or_default())
             .collect();
-        assert_eq!(
-            drift_ids, standing_ids,
-            "`standing` is exactly the set the Drift section renders, got: {parsed}"
+        assert!(
+            drift_ids.is_empty(),
+            "a row the scan could not re-check is the store's answer, never one              of this run's own findings, got: {parsed}"
         );
 
         let human_cli = test_cli_for(config_path, state_dir.path());

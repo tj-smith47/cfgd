@@ -553,7 +553,7 @@ fn verify_full_path_resolves_modules_and_catches_module_file_drift() {
     // deployed file without changing the module's own source through the link.
     let module_yaml = format!(
         "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: accmod\nspec:\n  packages: []\n  files:\n    - source: conf\n      strategy: Copy\n      target: {}\n",
-        module_target.display()
+        cfgd_core::to_posix_string(&module_target)
     );
     std::fs::write(module_dir.join("module.yaml"), module_yaml).unwrap();
 
@@ -631,7 +631,7 @@ fn status_module_exit_code_catches_module_file_drift() {
     // deployed file without changing the module's own source through the link.
     let module_yaml = format!(
         "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: accmod\nspec:\n  packages: []\n  files:\n    - source: conf\n      strategy: Copy\n      target: {}\n",
-        module_target.display()
+        cfgd_core::to_posix_string(&module_target)
     );
     std::fs::write(module_dir.join("module.yaml"), module_yaml).unwrap();
 
@@ -1508,7 +1508,7 @@ fn status_exit_code_renders_live_file_drift_not_no_drift() {
 
     let profile = format!(
         "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: base\nspec:\n  files:\n    managed:\n      - source: dotfile\n        target: {}\n",
-        target.display()
+        cfgd_core::to_posix_string(&target)
     );
     std::fs::write(dir.path().join("profiles/base.yaml"), profile).unwrap();
 
@@ -2139,6 +2139,38 @@ fn source_remove_missing_without_flag_still_6() {
     assert_eq!(v["error"], "not_found");
 }
 
+/// A `--package` name the config parser will not hold is refused at the flag,
+/// not written and then refused on the next load: a written one leaves a
+/// profile no command can read until it is hand-edited.
+#[test]
+fn profile_update_refuses_a_package_name_the_parser_would_reject() {
+    let dir = tempfile::tempdir().unwrap();
+    create_valid_config(dir.path());
+    let state_dir = tempfile::tempdir().unwrap();
+    let profile = dir.path().join("profiles/base.yaml");
+    let before = std::fs::read_to_string(&profile).unwrap();
+
+    let assert = Command::cargo_bin("cfgd")
+        .unwrap()
+        .args(["profile", "update", "base", "--package", "brew:foo&calc"])
+        .arg("--config")
+        .arg(dir.path().join("cfgd.yaml"))
+        .arg("--state-dir")
+        .arg(state_dir.path())
+        .assert()
+        .failure();
+    let err = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
+    assert!(
+        err.contains("--package") && err.contains("foo&calc"),
+        "the refusal names the flag and the name, got:\n{err}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&profile).unwrap(),
+        before,
+        "a refused --package writes nothing"
+    );
+}
+
 #[test]
 fn profile_delete_missing_ignore_not_found_is_0() {
     let dir = tempfile::tempdir().unwrap();
@@ -2383,7 +2415,7 @@ fn status_plain_keeps_recorded_dashboard_despite_live_drift() {
     std::fs::write(&target, "tampered\n").unwrap();
     let profile = format!(
         "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: base\nspec:\n  files:\n    managed:\n      - source: dotfile\n        target: {}\n",
-        target.display()
+        cfgd_core::to_posix_string(&target)
     );
     std::fs::write(dir.path().join("profiles/base.yaml"), profile).unwrap();
 
@@ -2698,7 +2730,7 @@ fn backup_run_all_clean_exits_0() {
     let source = backup_source_path(dir.path());
     let backups_yaml = format!(
         "    - name: clean\n      source: {}\n      retention: 3\n",
-        source.display()
+        cfgd_core::to_posix_string(&source)
     );
     create_backup_config(dir.path(), &backups_yaml);
 
@@ -2724,7 +2756,7 @@ fn backup_run_dirty_success_exits_nonzero() {
     let source = backup_source_path(dir.path());
     let backups_yaml = format!(
         "    - name: dirty\n      source: {}\n      retention: 3\n      postBackup:\n        - \"exit 1\"\n",
-        source.display()
+        cfgd_core::to_posix_string(&source)
     );
     create_backup_config(dir.path(), &backups_yaml);
 
@@ -2754,7 +2786,7 @@ fn backup_run_failed_unit_exits_nonzero() {
     let missing_source = dir.path().join("does-not-exist.txt");
     let backups_yaml = format!(
         "    - name: broken\n      source: {}\n      retention: 3\n",
-        missing_source.display()
+        cfgd_core::to_posix_string(&missing_source)
     );
     create_backup_config(dir.path(), &backups_yaml);
 
@@ -2784,7 +2816,7 @@ fn backup_run_unknown_name_exits_6_with_hint_in_stderr() {
     let source = backup_source_path(dir.path());
     let backups_yaml = format!(
         "    - name: clean\n      source: {}\n      retention: 3\n",
-        source.display()
+        cfgd_core::to_posix_string(&source)
     );
     create_backup_config(dir.path(), &backups_yaml);
 
@@ -2812,7 +2844,7 @@ fn backup_run_unknown_name_exits_6_with_hint_in_stderr() {
 
 /// A config + profile + module whose `plan` always finds exactly one pending
 /// file deploy, so it renders `perform_preview_hint`'s closing `→` line.
-/// `usage_hints` writes (or omits) `spec.usageHints` in the config.
+/// `usage_hints` writes (or omits) `spec.output.usageHints` in the config.
 fn create_hint_producing_config(dir: &std::path::Path, usage_hints: Option<bool>) {
     std::fs::create_dir_all(dir.join("profiles")).unwrap();
     std::fs::create_dir_all(dir.join("modules/example/files")).unwrap();
@@ -2836,7 +2868,7 @@ fn create_hint_producing_config(dir: &std::path::Path, usage_hints: Option<bool>
         dir.join("modules/example/module.yaml"),
         format!(
             "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: example\nspec:\n  files:\n    - source: files/example.txt\n      target: {}/deployed/example.txt\n",
-            dir.display()
+            cfgd_core::to_posix_string(dir)
         ),
     )
     .unwrap();
@@ -2929,7 +2961,7 @@ fn cfgd_usage_hints_env_suppresses_the_hint_and_its_leading_blank_end_to_end() {
     );
 }
 
-/// `spec.usageHints: false` reaching a real command's rendered output.
+/// `spec.output.usageHints: false` reaching a real command's rendered output.
 #[test]
 fn spec_usage_hints_false_suppresses_the_hint_and_its_leading_blank_end_to_end() {
     let dir = tempfile::tempdir().unwrap();

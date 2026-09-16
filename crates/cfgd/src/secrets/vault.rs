@@ -21,6 +21,10 @@ impl SecretProvider for VaultProvider {
         command_available_with_seam(VAULT_BIN_ENV, "vault")
     }
 
+    fn required_tool(&self) -> Option<&'static str> {
+        Some("vault")
+    }
+
     fn resolve(&self, reference: &str) -> Result<SecretString> {
         // reference format: "secret/path#field"
         let (path, field) = if let Some(idx) = reference.rfind('#') {

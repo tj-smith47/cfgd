@@ -19,8 +19,8 @@ use super::scripts::{
 };
 use super::sidecar::SidecarOutcome;
 use super::types::{
-    Action, ActionResult, ApplyResult, ENV_RESOURCE_TYPE, MANAGER_RESOURCE_TYPE, ManagerAction,
-    ModuleAction, ModuleActionKind, Owner, OwnerKind, PhaseFilter, PhaseName, Plan,
+    Action, ActionResult, AfterPlan, ApplyResult, ENV_RESOURCE_TYPE, MANAGER_RESOURCE_TYPE,
+    ManagerAction, ModuleAction, ModuleActionKind, Owner, OwnerKind, PhaseFilter, PhaseName, Plan,
     ReconcileContext, ScriptAction, ScriptPhase, SystemAction, module_skipped_whole,
 };
 use crate::providers::{
@@ -158,7 +158,7 @@ fn deploy_files_summary(action: &Action) -> Option<String> {
 /// is one string across the preview bullet, the alignment column and the
 /// executed row) and so does the recorded description, which is a wire
 /// contract. What the executed row alone can differ on is the COUNT, and it
-/// only learns it at execute time: the `Prerequisites` phase installs packages,
+/// only learns it at execute time: the `Bootstrap` phase installs packages,
 /// so an install re-reads the machine and drops every entry that is already
 /// there. `installed` is that re-read's answer, carried out of the executor on
 /// [`ActionRun`]; `None` is a preview, which has no answer yet.
@@ -182,7 +182,7 @@ fn installed_packages_summary(
     let planned = planned_package_count(action)?;
     let landed = installed.filter(|landed| *landed < planned)?;
     // `already installed` is the vocabulary for state this run did not
-    // create. An entry the run's own `Prerequisites` phase put on the machine
+    // create. An entry the run's own `Bootstrap` phase put on the machine
     // (`provision npm via brew` IS a `brew install node`) reads as delivered
     // by the run, or the row says cfgd declared one tool twice and wasted
     // half the install twelve lines under the provision that landed it.
@@ -196,6 +196,36 @@ fn installed_packages_summary(
         parts.push(format!("{delivered} provisioned by this run"));
     }
     Some(parts.join(", "))
+}
+
+/// The trust cfgd grants a declared Homebrew tap on the reader's behalf.
+///
+/// Homebrew reads a tap's index while tapping it and refuses a tap it has not
+/// been told to trust, so `BrewTapManager::install` records the grant first.
+/// That is a decision about what the machine will run, made for the reader
+/// because they declared the tap, so the row that adds it says so in one
+/// clause rather than leaving the extra command invisible. It is not a warning
+/// and needs no note: trust is what declaring a tap asked for.
+///
+/// First in the chain, so the clause reads the same on the preview bullet and
+/// on the settled row. The install shortfall a tap could otherwise state is a
+/// race between plan and execute, and a row cannot hold two clauses.
+fn brew_tap_trust_summary(action: &Action) -> Option<String> {
+    let taps = match action {
+        Action::Package(PackageAction::Install { manager, .. }) => {
+            manager == crate::BREW_TAP_MANAGER
+        }
+        // A module's install action is minted per manager, so the whole
+        // resolved set answers for the action.
+        Action::Module(ModuleAction {
+            kind: ModuleActionKind::InstallPackages { resolved },
+            ..
+        }) => resolved
+            .first()
+            .is_some_and(|pkg| pkg.manager == crate::BREW_TAP_MANAGER),
+        _ => false,
+    };
+    taps.then(|| "trusted first".to_string())
 }
 
 /// How many entries an install NAMES, for the two shapes whose executed set
@@ -216,7 +246,7 @@ fn planned_package_count(action: &Action) -> Option<usize> {
 ///
 /// A provision node promises an AVAILABLE manager, not a second run of an
 /// installer that is minutes of work and idempotent for nobody — so an earlier
-/// node, or the `Prerequisites` phase, may have already delivered one of the
+/// node, or the `Bootstrap` phase, may have already delivered one of the
 /// managers this node names. The subject stays the planned set in both trees
 /// (it is one string across the preview bullet, the alignment column and the
 /// executed row), so the count is the only seam that can say the run landed
@@ -289,7 +319,8 @@ pub fn action_produced_detail(
     delivered: usize,
     versions: &[(String, String)],
 ) -> Option<String> {
-    env_write_summary(action)
+    brew_tap_trust_summary(action)
+        .or_else(|| env_write_summary(action))
         .or_else(|| deploy_files_summary(action))
         .or_else(|| installed_packages_summary(action, installed, delivered))
         .or_else(|| provisioned_managers_summary(action, installed, versions))
@@ -633,7 +664,7 @@ pub fn render_caveats(printer: &Printer, groups: &[(Owner, Vec<ActionNote>)]) {
     // Both note slots deduplicate by MESSAGE, across the whole report. A caveat
     // states a fact about the MACHINE — brew put its completions in one
     // directory, once — and a run that provisions a manager in
-    // `Prerequisites` and uses it again in `Packages` files that one fact
+    // `Bootstrap` and uses it again in `Packages` files that one fact
     // under two owners, so the section printed it twice with nothing but the
     // owner heading to distinguish the copies. Attributing a machine-level
     // fact to an owner is what produces the duplicate; the first occurrence
@@ -757,13 +788,13 @@ fn action_key(action: &Action) -> usize {
 ///
 /// The ONE partition, so the phase's two halves cannot both claim an action or
 /// both disown it: all of `Packages`, and only the `cfgd:managers` group of
-/// `Prerequisites` — its other two groups write the env file and refresh the
+/// `Bootstrap` — its other two groups write the env file and refresh the
 /// live session, which are one file and one session and contend with each
 /// other rather than with a manager's binary.
 fn dispatched_in_lanes(phase: &PhaseName, owner: &Owner) -> bool {
     match phase {
         PhaseName::Packages => true,
-        PhaseName::Prerequisites => owner.is_managers(),
+        PhaseName::Bootstrap => owner.is_managers(),
         _ => false,
     }
 }
@@ -792,7 +823,7 @@ pub(super) fn hash_sorted_parts(mut parts: Vec<String>) -> String {
 /// phase-equality semantics.
 ///
 /// `PhaseFilter::Selector(name, selector)` (the `<phase>.<selector>` grammar,
-/// e.g. `prerequisites.managers`) is stricter still: it never inherits the
+/// e.g. `bootstrap.managers`) is stricter still: it never inherits the
 /// post/pre-scripts cross-phase leak above, because a selector already names
 /// something narrower than a whole phase.
 pub fn action_matches_phase_filter(
@@ -819,18 +850,19 @@ pub fn action_matches_phase_filter(
 }
 
 /// The `<selector>` half of a dotted phase filter: either one of the closed
-/// cfgd owner-group names (`managers`/`env`/`session`) or a manager name.
+/// cfgd owner-group names (`managers`/`env`/`shell`/`session`) or a manager
+/// name.
 ///
 /// A manager selector matches on [`ManagerAction::filter_subject`] directly
 /// rather than through `Owner`, because every [`ManagerAction`] shares the
 /// single `cfgd:managers` owner — the manager identity lives on the action,
 /// not the owner. Sub-managers are already collapsed onto their family at
-/// plan time (`managers.rs`), so `prerequisites.brew` matching `brew-cask`'s
+/// plan time (`managers.rs`), so `bootstrap.brew` matching `brew-cask`'s
 /// plan node costs nothing extra here. `filter_subject` (not
 /// [`ManagerAction::manager`]) keys a prerequisite node on its TOOL rather
 /// than its installer, so this matcher agrees with `cfgd`'s own
 /// `action_path`/`pattern_matches_action` on which node
-/// `prerequisites.curl` reaches.
+/// `bootstrap.curl` reaches.
 fn selector_matches(owner: &Owner, action: &Action, selector: &str) -> bool {
     if super::types::CFGD_GROUP_ORDER.contains(&selector) {
         return owner.kind == OwnerKind::Cfgd && owner.name == selector;
@@ -974,7 +1006,7 @@ pub(super) fn merge_env_result(
         // These are env actions no matter which late input triggered them, and a
         // caller filtering results by phase must find them where every other
         // `env:write:`/`env:inject:` result sits.
-        phase: PhaseName::Prerequisites.as_str().to_string(),
+        phase: PhaseName::Bootstrap.as_str().to_string(),
         description,
         success: true,
         error: None,
@@ -986,7 +1018,140 @@ pub(super) fn merge_env_result(
         installed: None,
         versions: Default::default(),
         drift_rows,
+        // A generated env file folds every layer at once, so no single
+        // subscription delivered it.
+        origin: None,
+        after_plan: Some(AfterPlan::EnvSurface),
     });
+}
+
+/// Which composed layer declared each package a profile's package actions
+/// install, keyed by the row id the apply writes.
+///
+/// One `PackageAction::Install` batches every package its manager is missing,
+/// and those entries can have arrived on different layers, so the action's own
+/// origin cannot say which subscription delivered any one of them. The merge's
+/// own claim can ([`crate::config::LayerSources`]), and it is keyed on the
+/// DECLARED entry: a manager whose `package_identity` is not the identity
+/// function records its rows under something else (`go`'s `rsc.io/2fa` is the
+/// row `2fa`, winget folds case, FreeBSD `pkg` drops the version suffix), so
+/// both sides are folded through that same function here and the lookup cannot
+/// miss.
+struct PackageLayers<'r> {
+    by_row: std::collections::HashMap<String, String>,
+    registry: &'r ProviderRegistry,
+}
+
+impl<'r> PackageLayers<'r> {
+    fn of(resolved: &ResolvedProfile, registry: &'r ProviderRegistry) -> Self {
+        let mut layers = Self {
+            by_row: std::collections::HashMap::new(),
+            registry,
+        };
+        for (declared, source) in &resolved.merged.layer_sources.packages {
+            let Some((manager, entry)) = crate::state::split_package_resource_id(declared) else {
+                continue;
+            };
+            let row = layers.row_id(manager, entry);
+            layers.by_row.insert(row, source.clone());
+        }
+        layers
+    }
+
+    /// A `(manager, package)` pair as the row it records under: the manager's
+    /// own identity for the name, so a declared entry and the row the writer
+    /// composes reach the same key.
+    fn row_id(&self, manager: &str, package: &str) -> String {
+        let identity = self
+            .registry
+            .package_managers()
+            .iter()
+            .find(|m| m.name() == manager)
+            .map(|m| m.package_identity(package))
+            .unwrap_or_else(|| package.to_string());
+        crate::state::package_resource_id(manager, &identity)
+    }
+
+    /// The layer to record a `(manager, package)` pair under. `fallback` covers
+    /// a package no layer declares — an entry the CLI folded in from a Brewfile
+    /// or a `package.json` after the merge — which stays whatever the action
+    /// said.
+    fn recording_layer<'a>(&'a self, manager: &str, package: &str, fallback: &'a str) -> &'a str {
+        match self.by_row.get(&self.row_id(manager, package)) {
+            Some(source) if !source.is_empty() => source,
+            _ => fallback,
+        }
+    }
+}
+
+/// The layer source each owner token an env entry carries records under.
+///
+/// [`crate::config::EntryOwners`] answers which layer declared an env var or
+/// alias as an owner TOKEN, while `managed_resources.source` holds the layer
+/// NAME every other row records under, so the two vocabularies are joined here
+/// once per apply instead of at each entry. A `PATH` entry carries every token
+/// that contributed to it, and the row names every layer behind those tokens,
+/// joined by [`Owner::TOKEN_SEPARATOR`] in fold order: the merge knows each
+/// contributor, so each of them is recorded, and `cfgd source remove` finds
+/// its own segments in the row through
+/// [`crate::reconciler::recorded_source_layers`].
+struct EntryLayers {
+    by_token: std::collections::HashMap<String, String>,
+}
+
+impl EntryLayers {
+    fn of(resolved: &ResolvedProfile, modules: &[ResolvedModule]) -> Self {
+        let mut by_token = std::collections::HashMap::new();
+        for layer in &resolved.layers {
+            by_token.insert(layer.owner_token(), layer.source.clone());
+        }
+        // In the env engine's own order, so a module claiming over a layer's
+        // entry is answered by the module's origin exactly as its value wins.
+        for module in modules {
+            by_token.insert(
+                Owner::module(&module.name).token(),
+                module
+                    .origin
+                    .clone()
+                    .unwrap_or_else(|| LOCAL_LAYER.to_string()),
+            );
+        }
+        Self { by_token }
+    }
+
+    /// The layer or layers to record an entry under, given the owner token or
+    /// tokens its claim carries, in fold order and without repeats.
+    fn layer(&self, owner: Option<&str>) -> String {
+        let mut claimed: Vec<&str> = Vec::new();
+        for token in owner.unwrap_or_default().split_whitespace() {
+            let source = match self.by_token.get(token) {
+                Some(source) if !source.is_empty() => source.as_str(),
+                _ => LOCAL_LAYER,
+            };
+            if !claimed.contains(&source) {
+                claimed.push(source);
+            }
+        }
+        if claimed.is_empty() {
+            return LOCAL_LAYER.to_string();
+        }
+        claimed.join(Owner::TOKEN_SEPARATOR)
+    }
+}
+
+/// The `managed_resources.source` value one settled action's row records.
+///
+/// `cfgd source remove <name>` finds what a subscription put on the machine by
+/// this column alone, so a row recorded under [`LOCAL_LAYER`] for an item a
+/// source delivered is a row nothing can hand back or clean up. The answer
+/// travels on the result, read off the action by [`Action::origin`]; an empty
+/// token means the same thing as [`LOCAL_LAYER`], exactly as the plan's
+/// provenance suffix reads it.
+fn recording_layer(result: &ActionResult) -> &str {
+    match result.origin.as_deref() {
+        Some(origin) if !origin.is_empty() => origin,
+        _ => LOCAL_LAYER,
+    }
 }
 
 fn is_post_apply_script(action: &Action) -> bool {
@@ -1060,19 +1225,21 @@ impl<'a> super::Reconciler<'a> {
                 module
                     .files
                     .iter()
+                    // native-ok: the digest is rendered back as the Files Hash row of
+                    // `cfgd module show` and compared with nothing, on this host or
+                    // any other, so the separator its parts carry reaches no key.
                     .map(|f| format!("{}:{}", f.source.display(), f.target.display()))
                     .collect(),
             );
 
-            // Collect git source info
             let git_sources: Vec<serde_json::Value> = module
                 .files
                 .iter()
                 .filter(|f| f.is_git_source)
                 .map(|f| {
                     serde_json::json!({
-                        "source": f.source.display().to_string(),
-                        "target": f.target.display().to_string(),
+                        "source": crate::to_posix_string(&f.source),
+                        "target": crate::to_posix_string(&f.target),
                     })
                 })
                 .collect();
@@ -1184,7 +1351,7 @@ impl<'a> super::Reconciler<'a> {
         // `plan()` folds a to-be-provisioned manager's OWN declared dirs into
         // the Env phase's write (`managers::fold_provision_path_dirs`), so
         // this baseline must fold the SAME way against the SAME
-        // Prerequisites-phase Provision actions — otherwise it is a pre-run
+        // Bootstrap-phase Provision actions — otherwise it is a pre-run
         // snapshot missing every manager this run is about to bootstrap, and
         // the comparison below flags ordinary, successful provisioning as
         // drift.
@@ -1192,7 +1359,7 @@ impl<'a> super::Reconciler<'a> {
             self.registry,
             plan.phases
                 .iter()
-                .find(|phase| phase.name == PhaseName::Prerequisites)
+                .find(|phase| phase.name == PhaseName::Bootstrap)
                 .into_iter()
                 .flat_map(|phase| phase.actions()),
             super::env::recorded_manager_path_dirs(self.state, &resolved.merged, module_actions),
@@ -1287,7 +1454,7 @@ impl<'a> super::Reconciler<'a> {
                 subjects: &subjects,
             };
             // The concurrent actions of this phase — all of `Packages`, and the
-            // `cfgd:managers` group of `Prerequisites`, whose nodes are a DAG
+            // `cfgd:managers` group of `Bootstrap`, whose nodes are a DAG
             // over the same family lanes. The rest of the phase runs
             // sequentially AFTER them: `cfgd:env` publishes where the binaries
             // the managers group just created live, so producer precedes
@@ -1299,7 +1466,7 @@ impl<'a> super::Reconciler<'a> {
             // the serial half streams after it, so the phase reads in
             // `Owner::sort_key` order only while every lane group sorts above
             // every serial one. `Packages` hands everything to a lane and
-            // `Prerequisites` leads with `cfgd:managers`; a third partition
+            // `Bootstrap` leads with `cfgd:managers`; a third partition
             // that did not would print its groups out of order.
             debug_assert!(
                 lane_dispatch.iter().all(|(lane_owner, _, _)| {
@@ -1336,7 +1503,7 @@ impl<'a> super::Reconciler<'a> {
             let mut pre_script_stop: Option<String> = None;
 
             // The one owner every lane action of this phase belongs to, when
-            // there is one. `Prerequisites` always has one (`cfgd:managers`);
+            // there is one. `Bootstrap` always has one (`cfgd:managers`);
             // `Packages` has one per module plus the profile's.
             let mut lane_owners = lane_dispatch.iter().map(|(owner, _, _)| *owner);
             let sole_lane_owner = lane_owners
@@ -1456,7 +1623,7 @@ impl<'a> super::Reconciler<'a> {
                 );
                 // Committed HERE, not at phase close: whatever the phase does
                 // next renders below the live region, so the region has to be
-                // down first. `Prerequisites` is the phase that needs it — its
+                // down first. `Bootstrap` is the phase that needs it — its
                 // `cfgd:env` and `cfgd:session` groups run in the serial half
                 // below and stream their own lines, which would land ABOVE the
                 // managers group they follow if this waited.
@@ -1700,14 +1867,16 @@ impl<'a> super::Reconciler<'a> {
         // for the actions that did run, then record an `Aborted` marker and
         // return the signal exit code. The lock releases via the caller's Drop.
         if let Some(code) = aborted_code {
-            self.record_managed_resources(apply_id, &results, resolved, module_actions)?;
+            self.record_managed_resources(apply_id, &results, resolved, module_actions, true)?;
             self.update_module_state(module_actions, Some(apply_id), &results)?;
-            let not_attempted = not_attempted_count(&results);
-            let succeeded = results
-                .iter()
-                .filter(|r| r.success && !r.skipped && r.not_attempted.is_none())
-                .count();
-            let skipped = results.iter().filter(|r| r.success && r.skipped).count();
+            let result = ApplyResult {
+                action_results: results,
+                status: ApplyStatus::Aborted,
+                apply_id,
+                aborted: Some(code),
+                planned_total,
+                caveats,
+            };
             // `total` is what the run PLANNED, not what it reached: an aborted
             // run's whole point is that those two numbers differ, and a stored
             // record whose total is the reached count reads as a clean sweep
@@ -1715,27 +1884,23 @@ impl<'a> super::Reconciler<'a> {
             // and it is the only place the actions the abort stopped are
             // accounted for — the dispatcher deliberately reports none of them
             // action by action.
-            let not_run = planned_total.saturating_sub(results.len() - not_attempted);
+            let after_plan = result.after_plan().len();
+            let not_run = planned_total
+                .saturating_sub(result.succeeded() + result.skipped() + result.failed());
             let summary = crate::state::ApplySummary::Actions {
                 total: planned_total,
-                succeeded,
-                skipped,
-                failed: results.len() - not_attempted - succeeded - skipped,
-                not_attempted,
+                succeeded: result.succeeded(),
+                skipped: result.skipped(),
+                failed: result.failed(),
+                not_attempted: result.not_attempted().len(),
+                after_plan,
                 not_run: Some(not_run),
                 aborted: true,
             }
             .to_column();
             self.state
                 .update_apply_status(apply_id, ApplyStatus::Aborted, Some(&summary))?;
-            return Ok(ApplyResult {
-                action_results: results,
-                status: ApplyStatus::Aborted,
-                apply_id,
-                aborted: Some(code),
-                planned_total,
-                caveats,
-            });
+            return Ok(result);
         }
 
         // --- Env regeneration: fold in inputs that only exist once the phases ran ---
@@ -1803,7 +1968,7 @@ impl<'a> super::Reconciler<'a> {
                                 .status(Role::Fail, "regenerate shell env files")
                                 .detail(e.to_string());
                             results.push(ActionResult {
-                                phase: PhaseName::Prerequisites.as_str().to_string(),
+                                phase: PhaseName::Bootstrap.as_str().to_string(),
                                 description: format!(
                                     "env:{}:regenerate",
                                     super::env_engine::ENV_VERB_WRITE
@@ -1816,6 +1981,8 @@ impl<'a> super::Reconciler<'a> {
                                 installed: None,
                                 versions: Default::default(),
                                 drift_rows: Vec::new(),
+                                origin: None,
+                                after_plan: Some(AfterPlan::EnvSurface),
                             });
                         }
                     }
@@ -1825,12 +1992,70 @@ impl<'a> super::Reconciler<'a> {
 
         // --- onChange detection: run profile onChange scripts if anything changed ---
         let any_changed = results.iter().any(|r| r.changed);
-        if any_changed && !skip_scripts && !resolved.merged.scripts.on_change.is_empty() {
-            let profile_name = resolved
-                .layers
-                .last()
-                .map(|l| l.profile_name.as_str())
-                .unwrap_or("unknown");
+        let profile_name = resolved
+            .layers
+            .last()
+            .map(|l| l.profile_name.as_str())
+            .unwrap_or("unknown");
+        // Hooks the plan could not name open their own group, the shape the repo
+        // rules for unplanned work, instead of printing at the run's own depth
+        // between the phase tree and the rollup. One phase over both loops: a
+        // profile hook and a module hook are the same class of work, and two
+        // headings would read as two. Inside it each declaring thing opens its
+        // own owner group, the shape the daemon's `Drift Hooks` already holds,
+        // because a hook row that names no owner leaves which module declared it
+        // unstated on a surface whose job is attribution.
+        let run_change_hooks = any_changed && !skip_scripts;
+        let profile_change_hooks: &[crate::config::ScriptEntry] = if run_change_hooks {
+            &resolved.merged.scripts.on_change
+        } else {
+            &[]
+        };
+        // Which modules will run a hook is settled HERE rather than inside the
+        // loop, because the phase's alignment column is derived from every row it
+        // will print and the column has to exist before the first script streams
+        // its own status. The predicate is the one the loop asked: nothing the
+        // profile hooks record can start with another module's `module:<name>:`
+        // prefix.
+        let change_hook_modules: Vec<&ResolvedModule> = if run_change_hooks {
+            module_actions
+                .iter()
+                .filter(|module| {
+                    !module.on_change_scripts.is_empty() && {
+                        let prefix = format!("module:{}:", module.name);
+                        results
+                            .iter()
+                            .any(|r| r.changed && r.description.starts_with(&prefix))
+                    }
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let hook_labels: Vec<String> = profile_change_hooks
+            .iter()
+            .chain(
+                change_hook_modules
+                    .iter()
+                    .flat_map(|module| module.on_change_scripts.iter()),
+            )
+            .map(|entry| {
+                super::format::hook_script_subject(
+                    ScriptPhase::OnChange.display_name(),
+                    entry.run_str(),
+                )
+                .to_string()
+            })
+            .collect();
+        // A heading over no rows promises work this run did not do, so the phase
+        // opens only once the labels say a hook will actually run.
+        let hook_width = super::run::align_width_of(hook_labels.iter().map(String::as_str));
+        let change_hooks = (!hook_labels.is_empty())
+            .then(|| super::run::pseudo_phase(printer, super::run::CHANGE_HOOKS_PHASE_LABEL));
+        if let Some(phase) = &change_hooks
+            && !profile_change_hooks.is_empty()
+        {
+            let _group = phase.owner(&Owner::profile(profile_name), hook_width);
             let env_vars = build_script_env(&ScriptEnvContext {
                 config_dir,
                 profile_name,
@@ -1841,7 +2066,7 @@ impl<'a> super::Reconciler<'a> {
                 path_dirs: &super::all_recorded_path_dirs(self.state),
             });
             let working = script_default_workdir(config_dir);
-            for entry in &resolved.merged.scripts.on_change {
+            for entry in profile_change_hooks {
                 match execute_script(
                     entry,
                     config_dir,
@@ -1871,6 +2096,8 @@ impl<'a> super::Reconciler<'a> {
                             installed: None,
                             versions: Default::default(),
                             drift_rows: Vec::new(),
+                            origin: None,
+                            after_plan: Some(AfterPlan::ChangeHook),
                         });
                     }
                     Err(e) => {
@@ -1887,6 +2114,8 @@ impl<'a> super::Reconciler<'a> {
                             installed: None,
                             versions: Default::default(),
                             drift_rows: Vec::new(),
+                            origin: None,
+                            after_plan: Some(AfterPlan::ChangeHook),
                         });
                         if !continue_on_err {
                             return Err(e);
@@ -1897,24 +2126,10 @@ impl<'a> super::Reconciler<'a> {
         }
 
         // --- Module-level onChange: run per-module onChange scripts if that module had changes ---
-        if any_changed && !skip_scripts {
-            let profile_name = resolved
-                .layers
-                .last()
-                .map(|l| l.profile_name.as_str())
-                .unwrap_or("unknown");
+        if let Some(phase) = &change_hooks {
             let path_dirs = super::all_recorded_path_dirs(self.state);
-            for module in module_actions {
-                if module.on_change_scripts.is_empty() {
-                    continue;
-                }
-                let prefix = format!("module:{}:", module.name);
-                let module_changed = results
-                    .iter()
-                    .any(|r| r.changed && r.description.starts_with(&prefix));
-                if !module_changed {
-                    continue;
-                }
+            for module in &change_hook_modules {
+                let _group = phase.owner(&Owner::module(&module.name), hook_width);
                 let env_vars = build_module_script_env(
                     &ScriptEnvContext {
                         config_dir,
@@ -1956,6 +2171,8 @@ impl<'a> super::Reconciler<'a> {
                                 installed: None,
                                 versions: Default::default(),
                                 drift_rows: Vec::new(),
+                                origin: module.origin.clone(),
+                                after_plan: Some(AfterPlan::ChangeHook),
                             });
                         }
                         Err(e) => {
@@ -1976,6 +2193,8 @@ impl<'a> super::Reconciler<'a> {
                                 installed: None,
                                 versions: Default::default(),
                                 drift_rows: Vec::new(),
+                                origin: module.origin.clone(),
+                                after_plan: Some(AfterPlan::ChangeHook),
                             });
                             if !continue_on_err {
                                 return Err(e);
@@ -1986,27 +2205,42 @@ impl<'a> super::Reconciler<'a> {
             }
         }
 
-        // `total` is what the run ATTEMPTED: a pre-skipped action has a result
-        // row (its reason) and no place in the count the header promised.
-        let not_attempted = not_attempted_count(&results);
-        let total = results.len() - not_attempted;
-        let failed = results.iter().filter(|r| !r.success).count();
-        let status = if failed == 0 {
+        // The group closes before the verdict: the rollup is the run's, not the
+        // hooks'.
+        drop(change_hooks);
+
+        // The verdict is taken over everything that RAN, after-plan work
+        // included: a surface this run rewrote and failed to write is a failed
+        // apply, whatever the plan happened to name.
+        let attempted = results.len() - not_attempted_count(&results);
+        let failed_all = results.iter().filter(|r| !r.success).count();
+        let status = if failed_all == 0 {
             ApplyStatus::Success
-        } else if failed == total {
+        } else if failed_all == attempted {
             ApplyStatus::Failed
         } else {
             ApplyStatus::Partial
         };
 
-        // Update apply status from "in-progress" placeholder to final
-        let skipped = results.iter().filter(|r| r.success && r.skipped).count();
+        let result = ApplyResult {
+            action_results: results,
+            status,
+            apply_id,
+            aborted: None,
+            planned_total,
+            caveats,
+        };
+        // The stored row is priced by the SAME predicates the rollup and the
+        // `-o json` payload read, so the three cannot disagree: `total` is what
+        // the header promised, the three counts partition the PLANNED results
+        // under it, and `after_plan` holds what the run learned it had to do.
         let summary = crate::state::ApplySummary::Actions {
-            total,
-            succeeded: total - failed - skipped,
-            skipped,
-            failed,
-            not_attempted,
+            total: result.planned_total,
+            succeeded: result.succeeded(),
+            skipped: result.skipped(),
+            failed: result.failed(),
+            not_attempted: result.not_attempted().len(),
+            after_plan: result.after_plan().len(),
             not_run: None,
             aborted: false,
         }
@@ -2026,21 +2260,20 @@ impl<'a> super::Reconciler<'a> {
         // which is what a run that did not finish its bookkeeping actually is.
         self.state.in_transaction(|| {
             self.state
-                .update_apply_status(apply_id, status.clone(), Some(&summary))?;
-            self.record_managed_resources(apply_id, &results, resolved, module_actions)?;
+                .update_apply_status(apply_id, result.status.clone(), Some(&summary))?;
+            self.record_managed_resources(
+                apply_id,
+                &result.action_results,
+                resolved,
+                module_actions,
+                false,
+            )?;
             // Update module state and file manifests for successfully applied modules
-            self.update_module_state(module_actions, Some(apply_id), &results)?;
+            self.update_module_state(module_actions, Some(apply_id), &result.action_results)?;
             self.snapshot_touched_files(apply_id, resolved, module_actions)
         })?;
 
-        Ok(ApplyResult {
-            action_results: results,
-            status,
-            apply_id,
-            aborted: None,
-            planned_total,
-            caveats,
-        })
+        Ok(result)
     }
 
     /// Post-apply snapshot: capture the resolved content (following symlinks)
@@ -2094,23 +2327,41 @@ impl<'a> super::Reconciler<'a> {
     /// actions in `results`. Shared by the normal completion path and the
     /// cooperative-abort path, which both need state to reflect exactly the
     /// resources that actually changed.
+    ///
+    /// `aborted` is which of those two callers this is. A run a signal stopped
+    /// between actions holds a `results` that is a PREFIX of its plan, so the
+    /// absence of an action there says nothing about what the plan carried,
+    /// and the env entries below cannot read it as convergence.
     pub(super) fn record_managed_resources(
         &self,
         apply_id: i64,
         results: &[ActionResult],
         resolved: &ResolvedProfile,
         modules: &[ResolvedModule],
+        aborted: bool,
     ) -> Result<()> {
+        let package_layers = PackageLayers::of(resolved, self.registry);
+        // Whether this run carried an action for the file the per-item
+        // `env-var`/`alias` checks read. A failed or withheld write counts:
+        // the plan named the surface and the run did not converge it, which
+        // is exactly when the entries' rows must stand.
+        let mut saw_primary_env_action = false;
         for result in results {
             if !result.success {
+                saw_primary_env_action |= self.targets_primary_env_file(&result.description);
                 continue;
             }
             // An action this host was never going to run put nothing on the
             // machine: it manages no resource and heals no finding. The plan
             // already priced it out of the header's total; the store must agree.
             if result.not_attempted.is_some() {
+                saw_primary_env_action |= self.targets_primary_env_file(&result.description);
                 continue;
             }
+
+            // Which layer this apply records the row under, so that removing
+            // a subscription can find everything it put on the machine.
+            let recording_layer = recording_layer(result);
 
             // Packages track per-resolved-name under "package"/"<mgr>/<pkg>" so the
             // set is usable for declarative prune. The generic parser is lossy for
@@ -2135,7 +2386,7 @@ impl<'a> super::Reconciler<'a> {
                                 .and_then(|m| m.persisted_uninstall());
                             self.state.upsert_package_resource(
                                 &rid,
-                                LOCAL_LAYER,
+                                package_layers.recording_layer(&manager, pkg, recording_layer),
                                 Some(apply_id),
                                 uninstall_cmd.as_deref(),
                             )?;
@@ -2213,8 +2464,13 @@ impl<'a> super::Reconciler<'a> {
                 }
                 continue;
             }
-            self.state
-                .upsert_managed_resource(&rtype, &rid, LOCAL_LAYER, None, Some(apply_id))?;
+            self.state.upsert_managed_resource(
+                &rtype,
+                &rid,
+                recording_layer,
+                None,
+                Some(apply_id),
+            )?;
             if rtype == ENV_RESOURCE_TYPE {
                 // An `env:inject:<rc>` action's subject is the shell rc file,
                 // but the check that reads it records the source line under
@@ -2226,9 +2482,19 @@ impl<'a> super::Reconciler<'a> {
                 if rid != crate::state::ENV_SESSION_RESOURCE_ID
                     && super::recorded_env_method(&rid) == super::ENV_VERB_INJECT
                 {
-                    self.state.resolve_drift(apply_id, "env-rc", &rid)?;
+                    self.state
+                        .resolve_drift(apply_id, super::ENV_RC_RESOURCE_TYPE, &rid)?;
                 }
-                self.resolve_env_item_drift(apply_id, &rid, resolved, modules)?;
+                // Only the PRIMARY file's write says anything about the
+                // entries: it is the one file the per-item checks read and the
+                // one whose entries every dialect agrees on. A write of
+                // `environment.d` or the launchd plist answers nothing about
+                // whether an entry landed where it was verified.
+                if self.is_primary_env_file(&rid) {
+                    saw_primary_env_action = true;
+                    self.record_env_items(apply_id, resolved, modules)?;
+                    self.resolve_env_items(apply_id, resolved, modules)?;
+                }
             }
             if let Some(module) =
                 super::format::module_files_description_module(&result.description)
@@ -2236,7 +2502,41 @@ impl<'a> super::Reconciler<'a> {
                 self.resolve_module_file_drift(apply_id, module, modules)?;
             }
         }
+        // The item rows come from the DECLARED set, not from an action: a
+        // converged machine plans no env action at all, so an apply whose env
+        // surface already holds every entry recorded none of them and
+        // `cfgd source remove` could not find what a subscription had put on
+        // the machine. A run that saw the whole picture records them here,
+        // whether or not it rewrote the file; a scoped run saw a partial one
+        // and records nothing it never looked at.
+        if self.prune_rows {
+            self.record_env_items(apply_id, resolved, modules)?;
+            // Resolving is a claim about the MACHINE, which recording is not:
+            // it says the entries the per-item checks read are on it now. This
+            // run may make that claim only where it converged the primary env
+            // surface itself (the successful write above), or where it saw
+            // the whole picture, ran to its end with the surface in its remit
+            // and found no action to take, which is the file already holding
+            // every declared entry. A run cut short, one whose write failed
+            // and one that held the surface back all found out nothing.
+            if !aborted && !self.withhold_env_surface && !saw_primary_env_action {
+                self.resolve_env_items(apply_id, resolved, modules)?;
+            }
+        }
         Ok(())
+    }
+
+    /// Whether `rid` names the primary env file, the one surface the per-item
+    /// `env-var` and `alias` checks read.
+    fn is_primary_env_file(&self, rid: &str) -> bool {
+        rid == to_posix_string(super::primary_env_file(&self.home))
+    }
+
+    /// Whether an action result names that surface, asked of a result the
+    /// recording loop turned away before it derived a resource id.
+    fn targets_primary_env_file(&self, description: &str) -> bool {
+        let (rtype, rid) = parse_resource_from_description(env_result_key(description));
+        rtype == ENV_RESOURCE_TYPE && self.is_primary_env_file(&rid)
     }
 
     /// Resolve the per-file `module` drift rows a successful file deployment
@@ -2288,10 +2588,85 @@ impl<'a> super::Reconciler<'a> {
         self.state.resolve_drift_keys(apply_id, &keys)
     }
 
-    /// Resolve the per-item `env-var`/`alias` drift rows a successful write of
-    /// the PRIMARY managed env file converged.
+    /// The declared env vars and aliases, each with the layer that declared it.
     ///
-    /// `verify_env_items` records one row per declared entry, keyed by the
+    /// The one derivation both halves below read, so a row this apply records
+    /// and a row it resolves can never name two different sets.
+    fn declared_env_items(
+        &self,
+        resolved: &ResolvedProfile,
+        modules: &[ResolvedModule],
+    ) -> Vec<(&'static str, String, String)> {
+        let (env, aliases, origins) = super::verify::merge_module_env_aliases(
+            &resolved.merged.env,
+            &resolved.merged.aliases,
+            &resolved.merged.entry_owners,
+            modules,
+        );
+        let layers = EntryLayers::of(resolved, modules);
+        let mut items = Vec::with_capacity(env.len() + aliases.len());
+        for ev in &env {
+            items.push((
+                super::ENV_VAR_RESOURCE_TYPE,
+                ev.name.clone(),
+                layers.layer(origins.env_owner(&ev.name)),
+            ));
+        }
+        for alias in &aliases {
+            items.push((
+                super::ALIAS_RESOURCE_TYPE,
+                alias.name.clone(),
+                layers.layer(origins.alias_owner(&alias.name)),
+            ));
+        }
+        items
+    }
+
+    /// Record one tracking row per declared env var and alias, and retire the
+    /// rows of entries no layer declares any more.
+    ///
+    /// The env file, its rc line and the live session are artifacts cfgd writes
+    /// whole out of every layer, so their rows record cfgd as the writer and
+    /// can name no delivering layer. The ENTRIES in them each come from one
+    /// declaration, so each is its own row under the layer that declared it:
+    /// without them a subscription's env vars and aliases were invisible to
+    /// `cfgd source remove`, which reads `managed_resources.source` alone. The
+    /// declared set is also what prunes: an entry no layer declares any more
+    /// leaves the file on this very write, so its row leaves with it.
+    ///
+    /// Read off the DECLARED set rather than off an action, so a converged
+    /// machine (which plans no env action at all) records the same rows a
+    /// rewriting one does. Both facts are answers about the CONFIG, which is
+    /// why this half runs wherever the run's scope resolved the whole of it.
+    fn record_env_items(
+        &self,
+        apply_id: i64,
+        resolved: &ResolvedProfile,
+        modules: &[ResolvedModule],
+    ) -> Result<()> {
+        let items = self.declared_env_items(resolved, modules);
+        for (rtype, name, layer) in &items {
+            self.state
+                .upsert_managed_resource(rtype, name, layer, None, Some(apply_id))?;
+        }
+        // Retiring a row is a claim about the WHOLE desired set: an entry this
+        // run's scope never resolved is not an entry that left the config.
+        if self.prune_rows {
+            for rtype in [super::ENV_VAR_RESOURCE_TYPE, super::ALIAS_RESOURCE_TYPE] {
+                let names: Vec<String> = items
+                    .iter()
+                    .filter(|(t, _, _)| *t == rtype)
+                    .map(|(_, name, _)| name.clone())
+                    .collect();
+                self.state.prune_managed_resources_except(rtype, &names)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Resolve the per-item `env-var`/`alias` drift rows this apply converged.
+    ///
+    /// `verify_env_items` records a drift row per declared entry, keyed by the
     /// entry's own name, but the action that heals every one of them is a
     /// single `env:write:<path>` whose description parses to
     /// `("env", <path>)` — so the file's own row resolved and the item rows
@@ -2300,36 +2675,22 @@ impl<'a> super::Reconciler<'a> {
     /// operand: the rows are resolved exactly as the file's own row is, so the
     /// stored `current` / `missing or changed` markers stay byte-exact.
     ///
-    /// Gated on the PRIMARY file because that is the only one the per-item
-    /// checks read; a write of `environment.d` or the launchd plist says
-    /// nothing about whether the entry landed in the file that was verified.
-    fn resolve_env_item_drift(
+    /// Unlike its recording half this is a claim about the MACHINE: the
+    /// entries are in the file a check will read, so a caller makes it only
+    /// where this run converged that file or found it already converged.
+    fn resolve_env_items(
         &self,
         apply_id: i64,
-        written: &str,
         resolved: &ResolvedProfile,
         modules: &[ResolvedModule],
     ) -> Result<()> {
-        if written != to_posix_string(super::primary_env_file(&self.home)) {
-            return Ok(());
-        }
-        let (env, aliases, _) = super::verify::merge_module_env_aliases(
-            &resolved.merged.env,
-            &resolved.merged.aliases,
-            &resolved.merged.entry_owners,
-            modules,
-        );
         // One statement for the whole merged set: a per-entry resolve is its own
         // index seek and its own statement per declared env var and alias,
         // inside the apply transaction, where the set-based form seeks once.
-        let keys: Vec<(String, String)> = env
-            .iter()
-            .map(|ev| ("env-var".to_string(), ev.name.clone()))
-            .chain(
-                aliases
-                    .iter()
-                    .map(|alias| ("alias".to_string(), alias.name.clone())),
-            )
+        let keys: Vec<(String, String)> = self
+            .declared_env_items(resolved, modules)
+            .into_iter()
+            .map(|(rtype, name, _)| (rtype.to_string(), name))
             .collect();
         self.state.resolve_drift_keys(apply_id, &keys)
     }
@@ -2499,6 +2860,11 @@ impl<'a> super::Reconciler<'a> {
             } else {
                 Vec::new()
             },
+            // Off the action itself, so the layer the plan printed beside
+            // this row is the layer its tracking row records.
+            origin: action.origin().map(str::to_string),
+            // The plan named this action, so the header already promised it.
+            after_plan: None,
         });
 
         if action_reports_its_own_status(action) {

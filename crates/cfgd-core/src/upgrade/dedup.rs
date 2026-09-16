@@ -371,6 +371,7 @@ mod tests {
     /// execute their `provider.id()`/`kind.as_str()` field reads when a
     /// subscriber is active — as it is in production.
     fn with_trace_subscriber<T>(f: impl FnOnce() -> T) -> T {
+        crate::test_helpers::install_tracing_journal();
         let sub = tracing_subscriber::fmt()
             .with_max_level(tracing::Level::TRACE)
             .with_test_writer()

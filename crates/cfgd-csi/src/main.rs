@@ -85,6 +85,7 @@ mod tests {
     /// answer on its own.
     #[test]
     fn the_json_log_line_neutralizes_a_hostile_field_and_stays_parseable() {
+        cfgd_core::test_helpers::install_tracing_journal();
         let poison = format!("nvim{}{}[2Kevil{}[2Kworse", '\r', '\u{1b}', '\u{9b}');
         let capture = Capture::default();
         let sink = capture.clone();

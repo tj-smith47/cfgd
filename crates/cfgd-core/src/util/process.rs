@@ -42,6 +42,199 @@ pub struct CommandOutcome {
     pub timed_out: bool,
 }
 
+/// How many spawns a program file reported busy is given, and the backoff
+/// ladder between them: 1 ms doubling to a 32 ms ceiling, so the whole ladder
+/// costs under 200 ms before the error is handed back.
+const BUSY_PROGRAM_ATTEMPTS: u32 = 10;
+const BUSY_PROGRAM_FIRST_WAIT: std::time::Duration = std::time::Duration::from_millis(1);
+const BUSY_PROGRAM_MAX_WAIT: std::time::Duration = std::time::Duration::from_millis(32);
+
+/// Whether the OS refused this spawn for a reason that a sibling finishing its
+/// own work takes away.
+///
+/// Two refusals qualify, and both are about what some OTHER thread of this
+/// process is holding at the instant of the `exec`.
+///
+/// The program file is still open for writing somewhere else: a `fork` between
+/// that file's open and close inherits the writable descriptor until the child
+/// `exec`s. Unix names that refusal and nothing else shares the name
+/// (`ETXTBSY`). Windows has no equivalent kind: `CreateProcess` against a file
+/// another handle holds without sharing comes back as a sharing violation (raw
+/// os error 32), and the same race reached through a handle opened for
+/// exclusive access comes back as access denied, so both join the ladder
+/// there. Neither widens to Unix, where raw 32 is `EPIPE` and access denied is
+/// a permission fact that no wait changes.
+///
+/// Or the descriptor table is full at this instant (`EMFILE`, and its
+/// system-wide sibling `ENFILE`): every spawn here takes three pipes plus the
+/// child's own descriptors, so concurrent spawns can crowd a low soft limit
+/// even though each one hands its descriptors back a moment later.
+/// [`raise_open_file_limit`] moves the limit itself; this keeps the spawn that
+/// arrives during the crowd from failing a run over it. Rust names no
+/// `ErrorKind` for either, so they are matched by errno.
+fn spawn_refusal_is_transient(e: &std::io::Error) -> bool {
+    if e.kind() == std::io::ErrorKind::ExecutableFileBusy {
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        if matches!(e.raw_os_error(), Some(libc::EMFILE) | Some(libc::ENFILE)) {
+            return true;
+        }
+    }
+    #[cfg(windows)]
+    {
+        const ERROR_SHARING_VIOLATION: i32 = 32;
+        if e.raw_os_error() == Some(ERROR_SHARING_VIOLATION)
+            || e.kind() == std::io::ErrorKind::PermissionDenied
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// Raise this process's soft open-file limit toward its hard one, once.
+///
+/// macOS ships a 256-descriptor soft limit against a hard limit in the tens of
+/// thousands, and cfgd's own work is descriptor-hungry: every spawn takes three
+/// pipes, and lanes spawn concurrently. A soft limit nobody raised is what
+/// turns a perfectly ordinary eight-way filter-script run into
+/// `io error: Too many open files`.
+///
+/// Raising it is the process's own business: the limit is per-process, the
+/// hard limit is the administrator's statement of the ceiling, and nothing
+/// outside this process observes the change. `RLIM_INFINITY` as the hard limit
+/// does not mean the kernel will hand out that many (macOS caps a process at
+/// `kern.maxfilesperproc`), so the raise is clamped to a number comfortably
+/// under every such cap.
+///
+/// Best-effort and idempotent: a kernel that refuses leaves the limit where it
+/// was, and the spawn ladder still absorbs a momentary exhaustion. Called from
+/// the spawn seam rather than from each binary's `main`, so a test binary, a
+/// new binary and an embedding caller all get it without remembering to.
+pub fn raise_open_file_limit() {
+    static RAISED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    RAISED.get_or_init(|| {
+        #[cfg(unix)]
+        raise_soft_nofile_toward(NOFILE_WANT);
+    });
+}
+
+/// Well under macOS's `kern.maxfilesperproc` and Linux's `nr_open`, and far
+/// past anything cfgd's own lanes need.
+#[cfg(unix)]
+const NOFILE_WANT: libc::rlim_t = 8192;
+
+/// The raise itself, outside the once-guard [`raise_open_file_limit`] wraps it
+/// in.
+///
+/// Split out because a guarded call answers nothing about whether the raise
+/// works: whoever spawned first in this process consumed the one call, and
+/// `cargo` hands a test binary a soft limit already at the hard one, so the
+/// wrapper is a no-op by the time anything can watch it.
+#[cfg(unix)]
+fn raise_soft_nofile_toward(want: libc::rlim_t) {
+    // SAFETY: both calls take a pointer to a fully initialized `rlimit` this
+    // frame owns, and neither retains it.
+    unsafe {
+        let mut limit = std::mem::zeroed::<libc::rlimit>();
+        if libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) != 0 {
+            return;
+        }
+        let ceiling = if limit.rlim_max == libc::RLIM_INFINITY {
+            want
+        } else {
+            limit.rlim_max.min(want)
+        };
+        if limit.rlim_cur >= ceiling {
+            return;
+        }
+        limit.rlim_cur = ceiling;
+        libc::setrlimit(libc::RLIMIT_NOFILE, &limit);
+    }
+}
+
+/// Spawn `cmd`, giving a refusal another thread of this process caused a few
+/// more tries.
+///
+/// Writing an executable and running it races every other thread in the
+/// process: a `fork` anywhere between the file's open and close inherits the
+/// writable descriptor until that child reaches its own `exec`, and an `exec` of
+/// that same file in this thread fails for as long as the descriptor lives
+/// (`ETXTBSY`). Cargo's own process builder retries for this reason. The
+/// descriptor table filling up under concurrent spawns is the same shape of
+/// problem with the same answer. `spawn_refusal_is_transient` decides which
+/// refusals that covers on this host; every other error comes straight back,
+/// unretried.
+///
+/// Which hosts refuse at all is a per-platform fact: Linux and the BSDs answer
+/// `ETXTBSY` while the descriptor lives, script and native binary alike, and
+/// Windows answers a sharing violation. macOS refuses neither shape, so the
+/// ladder there spends a retry only on a crowded descriptor table.
+///
+/// This and its two siblings ([`command_output`], [`command_status`]) are the
+/// ONE start of a [`std::process::Command`]'s child in the workspace, one per
+/// way `std` offers: a path calling `spawn`, `output` or `status` for itself is
+/// a path the ladder and the limit raise above do not reach. The spawn count
+/// travels beside the outcome so a test can state that the ladder really ran, a
+/// claim the spawned child alone cannot support.
+pub fn spawn_past_a_transient_refusal(
+    cmd: &mut std::process::Command,
+) -> (std::io::Result<std::process::Child>, u32) {
+    past_a_transient_refusal(|| cmd.spawn())
+}
+
+/// The ladder itself, over whichever of the three ways a
+/// [`std::process::Command`] starts a child the caller asked for.
+///
+/// One body, so the retry set, the wait ladder and the descriptor-limit raise
+/// cannot differ between spawning for a handle, for the captured output, or
+/// for the exit status alone.
+fn past_a_transient_refusal<T>(
+    mut start: impl FnMut() -> std::io::Result<T>,
+) -> (std::io::Result<T>, u32) {
+    raise_open_file_limit();
+    let mut wait = BUSY_PROGRAM_FIRST_WAIT;
+    for attempt in 1..BUSY_PROGRAM_ATTEMPTS {
+        match start() {
+            Err(e) if spawn_refusal_is_transient(&e) => {
+                std::thread::sleep(wait);
+                wait = (wait * 2).min(BUSY_PROGRAM_MAX_WAIT);
+            }
+            outcome => return (outcome, attempt),
+        }
+    }
+    (start(), BUSY_PROGRAM_ATTEMPTS)
+}
+
+/// [`spawn_past_a_transient_refusal`] for a caller with no claim to make about
+/// how many attempts the ladder spent.
+pub fn spawn_child(cmd: &mut std::process::Command) -> std::io::Result<std::process::Child> {
+    spawn_past_a_transient_refusal(cmd).0
+}
+
+/// [`spawn_child`] for a caller that wants the child run to completion and its
+/// output captured.
+///
+/// [`std::process::Command::output`] spawns a child of its own, so a call site
+/// reaching it directly is outside the ladder and the limit raise exactly as a
+/// bare `spawn` would be.
+pub fn command_output(cmd: &mut std::process::Command) -> std::io::Result<std::process::Output> {
+    past_a_transient_refusal(|| cmd.output()).0
+}
+
+/// [`spawn_child`] for a caller that wants only the child's exit status, its
+/// output going wherever the command's own stdio says.
+///
+/// [`std::process::Command::status`] spawns a child of its own, so the same
+/// reasoning as [`command_output`] applies.
+pub fn command_status(
+    cmd: &mut std::process::Command,
+) -> std::io::Result<std::process::ExitStatus> {
+    past_a_transient_refusal(|| cmd.status()).0
+}
+
 /// Run a [`std::process::Command`] with a timeout, surfacing whether the timeout fired.
 ///
 /// On timeout the watchdog sends SIGTERM, waits [`KILL_GRACE_PERIOD`] for the
@@ -82,7 +275,8 @@ pub fn command_output_with_timeout_outcome(
     cmd.stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
-    let mut child = cmd.spawn()?;
+    let (spawned, _attempts) = spawn_past_a_transient_refusal(cmd);
+    let mut child = spawned?;
     let id = child.id();
 
     let abandoned = Arc::new(AtomicBool::new(false));
@@ -812,6 +1006,9 @@ pub fn require_tool_with_seam(
         }
         return Err(format!("{env_var} points to {custom} which is not a file"));
     }
+    // no-provision-route-ok: this is the refusal itself, shared by every tool
+    // including the ones no manager packages; the caller decides whether a
+    // route exists and reaches `provision_tool` when one does.
     require_tool(default, install_hint)
 }
 
@@ -944,19 +1141,6 @@ mod tests {
         assert!(command_available("sh"));
     }
 
-    /// Write an executable file named so `command_path(stem)` can resolve it.
-    fn write_probe_tool(dir: &std::path::Path, stem: &str) -> std::path::PathBuf {
-        let name = if cfg!(windows) {
-            format!("{stem}.exe")
-        } else {
-            stem.to_string()
-        };
-        let path = dir.join(name);
-        std::fs::write(&path, b"#!/bin/sh\nexit 0\n").expect("write probe tool");
-        crate::set_file_permissions(&path, 0o755).expect("chmod probe tool");
-        path
-    }
-
     #[test]
     #[serial]
     fn command_path_resolves_a_tool_only_a_registered_dir_holds() {
@@ -969,7 +1153,7 @@ mod tests {
         let _dirs = crate::test_helpers::BootstrappedPathDirsGuard::capture();
         let dir = tempfile::tempdir().expect("tempdir");
         let stem = "cfgd-probe-registered-tool";
-        let expected = write_probe_tool(dir.path(), stem);
+        let expected = crate::test_helpers::write_probe_tool(dir.path(), stem);
 
         assert!(
             command_path(stem).is_none(),
@@ -992,8 +1176,8 @@ mod tests {
         let on_path = tempfile::tempdir().expect("tempdir");
         let registered = tempfile::tempdir().expect("tempdir");
         let stem = "cfgd-probe-shadowed-tool";
-        let preferred = write_probe_tool(on_path.path(), stem);
-        write_probe_tool(registered.path(), stem);
+        let preferred = crate::test_helpers::write_probe_tool(on_path.path(), stem);
+        crate::test_helpers::write_probe_tool(registered.path(), stem);
 
         register_bootstrapped_path_dirs(&[registered.path().to_string_lossy().into_owned()]);
         let _path =
@@ -1045,7 +1229,7 @@ mod tests {
                     command_path(stem).is_none(),
                     "nothing named {stem} exists yet"
                 );
-                let expected = write_probe_tool(dir.path(), stem);
+                let expected = crate::test_helpers::write_probe_tool(dir.path(), stem);
                 let memoized = command_path(stem);
                 drop(path);
                 (dir, expected, memoized)
@@ -1085,7 +1269,7 @@ mod tests {
             command_path(stem).is_none(),
             "nothing named {stem} exists yet"
         );
-        let expected = write_probe_tool(dir.path(), stem);
+        let expected = crate::test_helpers::write_probe_tool(dir.path(), stem);
 
         assert_eq!(
             command_path(stem).as_deref(),
@@ -1105,7 +1289,7 @@ mod tests {
         let empty = tempfile::tempdir().expect("tempdir");
         let holding = tempfile::tempdir().expect("tempdir");
         let stem = "cfgd-probe-path-rekey";
-        let expected = write_probe_tool(holding.path(), stem);
+        let expected = crate::test_helpers::write_probe_tool(holding.path(), stem);
 
         let first = crate::test_helpers::EnvVarGuard::set("PATH", &empty.path().to_string_lossy());
         assert!(command_path(stem).is_none());
@@ -1135,7 +1319,7 @@ mod tests {
     fn a_resolution_queues_behind_a_tests_empty_path_window() {
         let dir = tempfile::tempdir().expect("tempdir");
         let stem = "cfgd-probe-queued-reader";
-        write_probe_tool(dir.path(), stem);
+        crate::test_helpers::write_probe_tool(dir.path(), stem);
 
         let excl = crate::test_helpers::path_env_mutation_guard();
         let dirs = crate::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
@@ -1555,6 +1739,202 @@ mod tests {
         assert!(
             !orphan.is_empty(),
             "output written before the kill must still be captured"
+        );
+    }
+
+    /// A program file held open for writing: each platform's real answer, and
+    /// what the ladder does about it.
+    ///
+    /// Linux refuses the exec with `ETXTBSY` for as long as the writable
+    /// descriptor lives, so the probe holds one open and the attempt count is
+    /// what says the ladder waited it out. macOS execs the file as it stands,
+    /// so the first attempt is the one that spawns; that arm is asserted rather
+    /// than skipped, because a macOS answer that changed would otherwise leave
+    /// the ladder's behaviour there unstated.
+    #[cfg(unix)]
+    #[test]
+    fn a_program_file_held_open_for_writing_is_spawned_once_the_writer_closes() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let program = tmp.path().join("busy");
+        std::fs::write(&program, "#!/bin/sh\nexit 0\n").unwrap();
+        crate::set_file_permissions(&program, 0o755).unwrap();
+        let writer = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&program)
+            .unwrap();
+
+        #[cfg(target_os = "macos")]
+        {
+            std::process::Command::new(&program)
+                .spawn()
+                .expect("macOS execs a program file that is open for writing")
+                .wait()
+                .unwrap();
+
+            let mut cmd = std::process::Command::new(&program);
+            let (spawned, attempts) = spawn_past_a_transient_refusal(&mut cmd);
+            let status = spawned.expect("nothing refused the spawn").wait().unwrap();
+            drop(writer);
+
+            assert!(status.success());
+            assert_eq!(
+                attempts, 1,
+                "nothing was refused, so nothing was retried; {attempts} attempt(s) \
+                 means macOS began answering ETXTBSY"
+            );
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            let refused = std::process::Command::new(&program)
+                .spawn()
+                .expect_err("a program file open for writing cannot be executed");
+            assert_eq!(refused.kind(), std::io::ErrorKind::ExecutableFileBusy);
+
+            let releasing = std::thread::spawn(move || {
+                // The release has to land while the ladder is already retrying, and
+                // 20ms sits well inside its ~160ms budget.
+                // sleep-ok: a spawn attempt publishes no observable to wait on
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                drop(writer);
+            });
+            let mut cmd = std::process::Command::new(&program);
+            let (spawned, attempts) = spawn_past_a_transient_refusal(&mut cmd);
+            let status = spawned
+                .expect("the ladder must wait the writer out")
+                .wait()
+                .unwrap();
+            releasing.join().unwrap();
+
+            assert!(status.success());
+            assert!(
+                attempts >= 2,
+                "the first spawn was refused, so the child came from a retry; \
+             {attempts} attempt(s) means the ladder was never exercised"
+            );
+        }
+    }
+
+    /// Only a refusal some other thread of this process takes away reaches the
+    /// retry ladder: the program file still open for writing (`ETXTBSY`) and a
+    /// descriptor table full at this instant (`EMFILE`, `ENFILE`). A broken
+    /// pipe carries raw os error 32 on Unix, which is Windows' sharing
+    /// violation number and nothing to wait out here, and a permission refusal
+    /// is a fact no wait changes.
+    #[cfg(unix)]
+    #[test]
+    fn a_unix_spawn_refusal_no_sibling_takes_away_leaves_the_ladder() {
+        for refusal in [
+            std::io::Error::from_raw_os_error(32),
+            std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+            std::io::Error::from(std::io::ErrorKind::NotFound),
+        ] {
+            assert!(
+                !spawn_refusal_is_transient(&refusal),
+                "{refusal:?} must come straight back"
+            );
+        }
+        for refusal in [
+            std::io::Error::from(std::io::ErrorKind::ExecutableFileBusy),
+            std::io::Error::from_raw_os_error(libc::EMFILE),
+            std::io::Error::from_raw_os_error(libc::ENFILE),
+        ] {
+            assert!(
+                spawn_refusal_is_transient(&refusal),
+                "{refusal:?} is a refusal a sibling takes away, so the ladder must wait it out"
+            );
+        }
+    }
+
+    /// The raise moves the soft limit to the ceiling it names.
+    ///
+    /// The condition is CREATED here rather than inherited: `cargo` raises its
+    /// own soft limit to the hard one and the test binary inherits it, so a
+    /// runner never starts under the ceiling and an assertion about a limit
+    /// the test found holds whether or not the raise does anything. So the pin
+    /// lowers the soft limit itself, calls the raise, reads the limit back and
+    /// restores what it found before asserting anything. It calls the body
+    /// rather than [`raise_open_file_limit`] for the second reason the same
+    /// claim used to be empty: the wrapper's one call is usually spent by
+    /// whichever test spawned first.
+    ///
+    /// The lowered window is process-global, so the pin takes the unnamed
+    /// serial lock, and it lowers to half the ceiling rather than to a host
+    /// default: a sibling thread opening a file during the window must not be
+    /// refused, and half the ceiling is both far past anything a test binary
+    /// holds open and far under the number the raise must reach.
+    ///
+    /// An unreadable limit fails the test rather than passing it: the claim is
+    /// about a number, and no number was read.
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn the_soft_descriptor_limit_is_raised_toward_its_hard_one() {
+        // SAFETY: every call takes a pointer to a fully initialized `rlimit`
+        // this frame owns, and none retains it.
+        let read = || unsafe {
+            let mut limit = std::mem::zeroed::<libc::rlimit>();
+            assert_eq!(
+                libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit),
+                0,
+                "the descriptor limit must be readable for this claim to mean anything"
+            );
+            limit
+        };
+        let before = read();
+        let ceiling = if before.rlim_max == libc::RLIM_INFINITY {
+            NOFILE_WANT
+        } else {
+            before.rlim_max.min(NOFILE_WANT)
+        };
+        let lower_soft_nofile = |soft: libc::rlim_t| unsafe {
+            let limit = libc::rlimit {
+                rlim_cur: soft,
+                rlim_max: before.rlim_max,
+            };
+            assert_eq!(
+                libc::setrlimit(libc::RLIMIT_NOFILE, &limit),
+                0,
+                "the pin must be able to put the soft limit where it wants it"
+            );
+        };
+        lower_soft_nofile(ceiling / 2);
+        raise_soft_nofile_toward(NOFILE_WANT);
+        let after = read();
+        lower_soft_nofile(before.rlim_cur);
+        assert!(
+            after.rlim_cur >= ceiling,
+            "the raise left the soft limit at {}, under the {ceiling} its hard limit of {} allows",
+            after.rlim_cur,
+            before.rlim_max
+        );
+        assert_eq!(
+            read().rlim_cur,
+            before.rlim_cur,
+            "the pin must leave the descriptor limit where it found it"
+        );
+    }
+
+    /// Windows reports a program file another handle still holds as a sharing
+    /// violation or as access denied, neither of which carries a kind of its
+    /// own, so both are what the ladder waits out there. `write_tool_shim`
+    /// writes a `.cmd` shim and spawns it, which is exactly that race.
+    #[cfg(windows)]
+    #[test]
+    fn a_windows_spawn_refusal_naming_a_held_program_file_joins_the_ladder() {
+        for refusal in [
+            std::io::Error::from_raw_os_error(32),
+            std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+            std::io::Error::from(std::io::ErrorKind::ExecutableFileBusy),
+        ] {
+            assert!(
+                spawn_refusal_is_transient(&refusal),
+                "{refusal:?} names a program file still being written"
+            );
+        }
+        assert!(
+            !spawn_refusal_is_transient(&std::io::Error::from(std::io::ErrorKind::NotFound)),
+            "a missing program is not a race"
         );
     }
 

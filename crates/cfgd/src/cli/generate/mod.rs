@@ -11,7 +11,7 @@ use crate::ai::tools;
 use crate::generate;
 use crate::packages;
 
-use super::{Cli, MSG_RUN_APPLY, config_dir, open_state_store};
+use super::{Cli, MSG_RUN_APPLY, config_dir};
 
 #[derive(Debug, Args)]
 pub struct GenerateArgs {
@@ -181,8 +181,8 @@ pub fn cmd_generate(cli: &Cli, printer: &Printer, args: &GenerateArgs) -> anyhow
     let managers: Vec<Box<dyn cfgd_core::providers::PackageManager>> =
         packages::all_package_managers();
     let home = dirs_from_env();
-    let gen_state = open_state_store(cli.state_dir.as_deref(), cli.scope())?;
-    let pkg_cx = cfgd_core::providers::PackageContext::new(printer, &gen_state);
+    let ctx = crate::cli::RunContext::new(cli, printer);
+    let pkg_cx = ctx.package_context()?;
 
     // 9. Conversation loop
     const MAX_TURNS: usize = 100;
@@ -298,7 +298,7 @@ pub fn cmd_generate(cli: &Cli, printer: &Printer, args: &GenerateArgs) -> anyhow
             for g in &generated {
                 add_cmd.arg(g.path.as_os_str());
             }
-            let add_out = add_cmd.output()?;
+            let add_out = cfgd_core::command_output(&mut add_cmd)?;
             if !add_out.status.success() {
                 printer.status_simple(
                     Role::Warn,
@@ -308,14 +308,13 @@ pub fn cmd_generate(cli: &Cli, printer: &Printer, args: &GenerateArgs) -> anyhow
                     ),
                 );
             } else {
-                let commit_out = cfgd_core::git_cmd_local()
-                    .current_dir(&repo_root)
-                    .args([
+                let commit_out = cfgd_core::command_output(
+                    cfgd_core::git_cmd_local().current_dir(&repo_root).args([
                         "commit",
                         "-m",
                         "feat: add AI-generated configuration profiles and modules",
-                    ])
-                    .output()?;
+                    ]),
+                )?;
                 if commit_out.status.success() {
                     committed = true;
                     printer.status_simple(Role::Ok, "Committed changes");
@@ -466,6 +465,7 @@ fn cmd_generate_scan_only(printer: &Printer, args: &GenerateArgs) -> anyhow::Res
             sec.kv("Exports", shell_result.exports.len().to_string());
         }
         if !shell_result.path_additions.is_empty() {
+            // name-row-ok: `PATH` is the environment variable's own name.
             sec.kv(
                 "PATH Additions",
                 shell_result.path_additions.len().to_string(),

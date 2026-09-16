@@ -2,10 +2,12 @@ use std::path::Path;
 
 use serde::Serialize;
 
+use cfgd_schema::{BackupSpec, ScriptSpec};
+
 use super::parse::{find_profile_path, load_profile};
 use super::profile_spec::{
-    BackupSpec, EnvScope, FilesSpec, PackagesSpec, ProfileDocument, ProfileSpec, ScriptSpec,
-    SecretSpec, SystemSettings, validate_backup_specs, validate_managed_file_specs,
+    EnvScope, FilesSpec, PackagesSpec, ProfileDocument, ProfileSpec, SecretSpec, SystemSettings,
+    validate_backup_specs, validate_managed_file_specs, validate_package_specs,
     validate_secret_specs,
 };
 use super::source::{EnvVar, ShellAlias};
@@ -149,6 +151,166 @@ impl ResolvedProfile {
         local_names.pop();
         local_names.into_iter().rev().map(String::from).collect()
     }
+
+    /// Every env var name a declared secret exports, across every layer of the
+    /// chain and the merge they fold into.
+    ///
+    /// The ONE derivation of the set `MaskEnvValues::Secrets` masks by: a
+    /// declared value is a secret's value exactly when a `spec.secrets[].envs`
+    /// entry names it. Both halves are read because a layer's secret can be
+    /// dropped or rewritten by the fold, and a name the operator wrote in ANY
+    /// layer of the chain they are looking at is still a secret's name.
+    pub fn secret_env_names(&self) -> std::collections::BTreeSet<String> {
+        let per_layer = self.layers.iter().flat_map(|layer| &layer.spec.secrets);
+        per_layer
+            .chain(self.merged.secrets.iter())
+            .filter_map(|secret| secret.envs.as_ref())
+            .flatten()
+            .cloned()
+            .collect()
+    }
+}
+
+/// Which layer delivered each declared resource that is NOT an env var or an
+/// alias: the packages, system settings, secrets and scripts a subscription can
+/// put on the machine.
+///
+/// The sibling of [`EntryOwners`], and recorded by the merge for the same
+/// reason: last-writer-wins is the merge's own rule, so a second walk applying
+/// it again is a second implementation, and the row `cfgd source remove` looks
+/// a subscription's resources up by would name a layer whose declaration is not
+/// the one that survived. The value is [`ProfileLayer::source`] rather than the
+/// `kind:name` token [`EntryOwners`] holds, because `managed_resources.source`
+/// is what the removal selects on.
+///
+/// Display-free and never persisted: `#[serde(skip)]` where it hangs off
+/// [`MergedProfile`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LayerSources {
+    /// `<manager>/<declared entry>` ([`crate::state::package_resource_id`]) to
+    /// the layer that declared it. Keyed on the DECLARED entry, which is what a
+    /// layer holds; a reader matching the row a manager's
+    /// `package_identity` composes folds this key through the same function.
+    pub packages: std::collections::HashMap<String, String>,
+    /// `<configurator>.<key>`
+    /// ([`crate::reconciler::system_resource_key`]) to the layer that declared
+    /// that leaf, plus the bare `<configurator>` a whole withheld block records
+    /// under.
+    pub system: std::collections::HashMap<String, String>,
+    /// `spec.secrets[].source`, the key the merge itself deduplicates a secret
+    /// by, so one declaration answers for every action it mints.
+    pub secrets: std::collections::HashMap<String, String>,
+    /// A script's `run` string ([`cfgd_schema::ScriptEntry::run_str`]), the id
+    /// its action records under.
+    pub scripts: std::collections::HashMap<String, String>,
+    /// A manager name ([`PackagesSpec::manager_names`]) to the layer that
+    /// declared the `<manager>.file` manifest feeding it. The packages a
+    /// manifest yields are folded into the merged lists after both merges have
+    /// run, so the reader doing that fold is the only thing that can claim
+    /// them, and this is where it looks the delivering layer up.
+    pub manifests: std::collections::HashMap<String, String>,
+}
+
+impl LayerSources {
+    /// Record `source` against every package, system key, secret and script
+    /// `spec` declares, overwriting an earlier claim exactly as the merge
+    /// overwrites the declaration itself.
+    pub fn claim(&mut self, source: &str, spec: &ProfileSpec) {
+        if let Some(packages) = &spec.packages {
+            for manager in packages.manifest_manager_names() {
+                self.manifests
+                    .insert(manager.to_string(), source.to_string());
+            }
+            for manager in packages.manager_names() {
+                for package in desired_packages_for_spec(&manager, packages) {
+                    self.packages.insert(
+                        crate::state::package_resource_id(&manager, &package),
+                        source.to_string(),
+                    );
+                }
+            }
+        }
+        for (configurator, value) in &spec.system {
+            // A block withheld whole records under the configurator alone, so
+            // the last layer to declare anything under it answers for that row.
+            self.system.insert(configurator.clone(), source.to_string());
+            self.claim_system_keys(source, configurator, "", value);
+        }
+        for secret in &spec.secrets {
+            self.secrets
+                .insert(secret.source.clone(), source.to_string());
+        }
+        if let Some(scripts) = &spec.scripts {
+            for entry in scripts.hooks().into_iter().flat_map(|(_, entries)| entries) {
+                self.scripts
+                    .insert(entry.run_str().to_string(), source.to_string());
+            }
+        }
+    }
+
+    /// Claim every leaf a configurator's declared mapping reaches, under the
+    /// key its own drift row composes: one level for a flat mapping, two for a
+    /// nested one (a `defaults` domain, a gsettings schema), which is as deep
+    /// as `diff_nested_mapping` goes.
+    pub(crate) fn claim_system_keys(
+        &mut self,
+        source: &str,
+        configurator: &str,
+        key_prefix: &str,
+        value: &serde_yaml::Value,
+    ) {
+        let Some(mapping) = value.as_mapping() else {
+            return;
+        };
+        for (key, inner) in mapping {
+            let Some(key) = key.as_str() else { continue };
+            let key_path = if key_prefix.is_empty() {
+                key.to_string()
+            } else {
+                format!("{key_prefix}.{key}")
+            };
+            // A declared key repeating its own configurator's name is malformed
+            // and composes no row; claiming it would trip the composer's own
+            // assertion.
+            if crate::reconciler::system_key_doubling_error(configurator, &key_path).is_none() {
+                self.system.insert(
+                    crate::reconciler::system_resource_key(configurator, &key_path),
+                    source.to_string(),
+                );
+            }
+            self.claim_system_keys(source, configurator, &key_path, inner);
+        }
+    }
+
+    /// The layer that declared the manifest feeding `manager`, or
+    /// [`LOCAL_LAYER`] when no layer declared one.
+    ///
+    /// The fold that merges a manifest's packages into a manager's list claims
+    /// each one under this, so a package that reaches the machine only through
+    /// a source-declared Brewfile records the source that delivered it.
+    pub fn manifest_layer(&self, manager: &str) -> &str {
+        match self.manifests.get(manager) {
+            Some(source) if !source.is_empty() => source,
+            _ => LOCAL_LAYER,
+        }
+    }
+
+    /// The layer to record `id` under for a resource of `kind`, as
+    /// `action_resource_info` spells the pair. `fallback` covers an id no layer
+    /// declares, which stays whatever the caller already had.
+    pub fn recording_layer<'a>(&'a self, kind: &str, id: &str, fallback: &'a str) -> &'a str {
+        let claimed = match kind {
+            "package" => self.packages.get(id),
+            "system" => self.system.get(id),
+            "secret" => self.secrets.get(id),
+            "script" => self.scripts.get(id),
+            _ => None,
+        };
+        match claimed {
+            Some(source) if !source.is_empty() => source,
+            _ => fallback,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -167,6 +329,10 @@ pub struct MergedProfile {
     /// so a `-o json` reader sees the payload it always saw.
     #[serde(skip)]
     pub entry_owners: EntryOwners,
+    /// Which layer delivered each surviving package, system key, secret and
+    /// script. Never serialized, for the same reason.
+    #[serde(skip)]
+    pub layer_sources: LayerSources,
 }
 
 /// Resolve a profile by loading it and its full inheritance chain, then merging.
@@ -190,7 +356,10 @@ pub fn resolve_profile(profile_name: &str, profiles_dir: &Path) -> Result<Resolv
 
     validate_secret_specs(&merged.secrets)?;
     validate_managed_file_specs(&merged.files.managed)?;
+    validate_package_specs(&merged.packages)?;
     validate_backup_specs(&merged.backups)?;
+    cfgd_schema::validate_script_bodies("profile", &merged.scripts)
+        .map_err(|e| crate::errors::ConfigError::Invalid { message: e.0 })?;
 
     Ok(ResolvedProfile { layers, merged })
 }
@@ -290,6 +459,7 @@ pub fn merge_layers(layers: &[ProfileLayer]) -> MergedProfile {
         // Env: later layer overrides earlier by name; `PATH` concatenates.
         crate::fold_env_layer(&mut merged.env, &env, crate::PATH_LIST_SEPARATOR);
         merged.entry_owners.claim(&layer_owner, &env, &aliases);
+        merged.layer_sources.claim(&layer.source, &layer.spec);
         for secret in secrets {
             merged.entry_owners.claim_env_names(
                 &layer_owner,
@@ -860,6 +1030,61 @@ mod tests {
         }
     }
 
+    /// Plant a name a command line would read as syntax into every package
+    /// list the schema offers, through the real deserializer, and require the
+    /// parse-boundary validator to refuse each one under its own field path.
+    ///
+    /// Walked over `PACKAGE_SCHEMA_PATHS` rather than over a hand-written list
+    /// of managers, so a manager or sub-list added to the schema is checked
+    /// here the day it joins the table.
+    #[test]
+    fn every_package_list_the_schema_offers_refuses_a_name_that_carries_a_metacharacter() {
+        for entry in PACKAGE_SCHEMA_PATHS {
+            let yaml = match entry.path.split_once('.') {
+                Some((manager, sublist)) => format!("{manager}:\n  {sublist}: [\"foo&calc\"]\n"),
+                None => format!("{}: [\"foo&calc\"]\n", entry.path),
+            };
+            let spec: PackagesSpec = serde_yaml::from_str(&yaml)
+                .unwrap_or_else(|e| panic!("`{}` parses as a package list: {e}", entry.path));
+            let why = validate_package_specs(&spec)
+                .expect_err(&format!("`{}` refuses a name carrying '&'", entry.path))
+                .to_string();
+            assert!(
+                why.contains("foo&calc") && why.contains("spec.packages."),
+                "`{}` names the offending entry and its field path: {why}",
+                entry.path
+            );
+        }
+    }
+
+    /// A custom manager's own list is reached by the same walk, even though it
+    /// is discovered by name rather than named in the schema-path table.
+    #[test]
+    fn a_custom_managers_package_list_refuses_a_name_that_carries_a_metacharacter() {
+        let spec: PackagesSpec = serde_yaml::from_str(
+            "custom:\n  - name: asdf\n    check: 'command -v asdf'\n    listInstalled: 'asdf list'\n    install: 'asdf install {package}'\n    uninstall: 'asdf uninstall {package}'\n    packages: [\"nodejs&calc\"]\n",
+        )
+        .expect("a custom manager parses");
+        let why = validate_package_specs(&spec)
+            .expect_err("a custom manager's list is judged too")
+            .to_string();
+        assert!(
+            why.contains("spec.packages.custom[0].packages[0]") && why.contains("nodejs&calc"),
+            "the refusal names the custom entry's own path: {why}"
+        );
+    }
+
+    /// The spellings real ecosystems use survive every list form, so the
+    /// refusal cannot quietly widen into a legitimate profile.
+    #[test]
+    fn the_package_name_gate_admits_the_spellings_real_ecosystems_use() {
+        let spec: PackagesSpec = serde_yaml::from_str(
+            "brew:\n  taps: [charmbracelet/tap]\n  formulae: [foo+bar, foo~bar]\n  casks: [foo_bar]\napt: [\"libfoo-dev:amd64\"]\nnpm:\n  global: [\"@scope/pkg\"]\ncargo: [\"foo@1.2\"]\ngo: [\"github.com/x/y@latest\"]\npkg: [devel/py-pipx]\nwinget: [Microsoft.VisualStudio.2022.Community]\npipx: [\"foo[extra]\"]\n",
+        )
+        .expect("a profile of real package spellings parses");
+        validate_package_specs(&spec).expect("every spelling a real ecosystem uses is admitted");
+    }
+
     fn layer(name: &str, env_scope: Option<EnvScope>) -> ProfileLayer {
         ProfileLayer {
             source: "local".to_string(),
@@ -896,5 +1121,74 @@ mod tests {
             layer("child", Some(EnvScope::Login)),
         ]);
         assert_eq!(merged.env_scope, EnvScope::Login);
+    }
+
+    fn secret_layer(name: &str, envs: &[&str]) -> ProfileLayer {
+        ProfileLayer {
+            spec: ProfileSpec {
+                secrets: vec![crate::config::SecretSpec {
+                    source: format!("{name}-secret"),
+                    target: None,
+                    template: None,
+                    backend: None,
+                    envs: Some(envs.iter().map(|e| (*e).to_string()).collect()),
+                }],
+                ..Default::default()
+            },
+            ..layer(name, None)
+        }
+    }
+
+    /// The set `MaskEnvValues::Secrets` masks by is the union over the WHOLE
+    /// chain and the merge it folds into: a parent's secret still names a
+    /// secret's value on the screen the operator is looking at, even where the
+    /// child's fold no longer carries that secret. A secret declaring no
+    /// `envs:` exports no name and contributes nothing.
+    #[test]
+    fn the_secret_env_names_of_a_chain_are_the_union_of_every_layer_and_the_merge() {
+        let layers = vec![
+            secret_layer("base", &["AWS_SECRET_ACCESS_KEY"]),
+            secret_layer("child", &["GH_TOKEN"]),
+            ProfileLayer {
+                spec: ProfileSpec {
+                    secrets: vec![crate::config::SecretSpec {
+                        source: "no-envs".to_string(),
+                        target: None,
+                        template: None,
+                        backend: None,
+                        envs: None,
+                    }],
+                    ..Default::default()
+                },
+                ..layer("leaf", None)
+            },
+        ];
+        // The two halves are read separately, because neither implies the
+        // other: a layer's secret the fold dropped still named a secret on the
+        // screen the operator is looking at, and a secret composition added is
+        // in no layer of the chain at all.
+        let mut merged = merge_layers(&layers);
+        merged.secrets.clear();
+        let layers_only = ResolvedProfile {
+            layers: layers.clone(),
+            merged,
+        };
+        let names = layers_only.secret_env_names();
+        assert!(names.contains("AWS_SECRET_ACCESS_KEY"), "{names:?}");
+        assert!(names.contains("GH_TOKEN"), "{names:?}");
+        assert!(
+            !names.contains("EDITOR"),
+            "a name no secret exports is not in the set: {names:?}"
+        );
+        assert_eq!(names.len(), 2, "{names:?}");
+
+        let merged_only = ResolvedProfile {
+            layers: Vec::new(),
+            merged: merge_layers(&layers),
+        };
+        let names = merged_only.secret_env_names();
+        assert!(names.contains("AWS_SECRET_ACCESS_KEY"), "{names:?}");
+        assert!(names.contains("GH_TOKEN"), "{names:?}");
+        assert_eq!(names.len(), 2, "{names:?}");
     }
 }

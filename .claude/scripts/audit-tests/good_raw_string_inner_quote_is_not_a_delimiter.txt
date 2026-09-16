@@ -1,0 +1,17 @@
+# EXPECTED: NOT flagged. A quote inside a raw string body is not a delimiter
+# either. An extractor that pairs quotes one by one reads the inner quote as a
+# closing one, so the raw string's real closer pairs against the next literal's
+# opening quote and the 40-plus characters between them read as one repeat.
+# Matching the raw string whole, hash run and all, leaves it and the following
+# literal both under the gate's 32-character floor.
+fn first() -> Note {
+    compose(r#"a "quoted word"#, describe_the_named_dialect_for_output("x"))
+}
+
+fn second() -> Note {
+    compose(r#"a "quoted word"#, describe_the_named_dialect_for_output("x"))
+}
+
+fn third() -> Note {
+    compose(r#"a "quoted word"#, describe_the_named_dialect_for_output("x"))
+}

@@ -70,6 +70,40 @@ if [[ -n "$WARNINGS" ]]; then
     echo -e "$WARNINGS"
 fi
 
+# --- comment wording: no em dash in a Rust comment ---------------------------
+# An em dash is the one punctuation this repo's prose rules refuse outright, and
+# a comment is where it keeps arriving. Only the comment PART of a line is
+# judged, so a string literal cfgd prints an em dash from (the closing line of a
+# run) is untouched.
+#
+# Enforced on the DELTA, not the baseline: only newly-added comment lines trip
+# this, so a file already holding an em dash can still be edited and the
+# existing ones stay a separate sweep.
+if [ -n "$FILE" ] && [ -f "$FILE" ]; then
+    case "$FILE" in
+        *.rs)
+            GITDIR=$(dirname "$FILE")
+            if git -C "$GITDIR" ls-files --error-unmatch "$FILE" >/dev/null 2>&1; then
+                ADDED=$(git -C "$GITDIR" diff -U0 HEAD -- "$FILE" 2>/dev/null | grep -E '^\+[^+]' || true)
+            else
+                ADDED=$(cat "$FILE")
+            fi
+            EMDASH=$(printf '%s\n' "$ADDED" \
+                       | awk '/\/\// { c = substr($0, index($0, "//")); if (c ~ /—/) print }' \
+                       || true)
+            if [ -n "$EMDASH" ]; then
+                echo
+                echo "EM DASH IN A COMMENT in $FILE"
+                echo "  A comment states the fact in plain punctuation: a colon, a comma,"
+                echo "  parentheses, or a second sentence. Never an em dash."
+                echo "$EMDASH"
+                exit 2
+            fi
+            ;;
+    esac
+fi
+# --- end comment-wording block -----------------------------------------------
+
 # --- output banned patterns -------------------------------------------------
 # Mirrors .claude/scripts/audit.sh rules but per-file (fast).
 # Runs AFTER the CRITICAL/WARNINGS block above so its `exit 2` still wins.
@@ -138,10 +172,12 @@ fi
 # Enforced on the DELTA, not the baseline: only newly-added native renders trip
 # this, so the documented legacy uses (swept separately) don't block edits.
 # output/ owns terminal rendering (native correct); tests carry no cross-OS keys.
+# The binary crate is in scope too: its `-o json` payloads are read on other
+# hosts, which is how `plan -o json` shipped native targets.
 if [ -n "${EDITED_FILE:-}" ] && [ -f "$EDITED_FILE" ]; then
     case "$EDITED_FILE" in
         */crates/cfgd-core/src/output/*|*tests.rs|*/tests/*) ;;
-        */crates/cfgd-core/src/*)
+        */crates/cfgd-core/src/*|*/crates/cfgd/src/*)
             GITDIR=$(dirname "$EDITED_FILE")
             if git -C "$GITDIR" ls-files --error-unmatch "$EDITED_FILE" >/dev/null 2>&1; then
                 # tracked: inspect only added lines, preserving the legacy baseline
@@ -157,7 +193,7 @@ if [ -n "${EDITED_FILE:-}" ] && [ -f "$EDITED_FILE" ]; then
             if [ -n "$LEAK" ]; then
                 echo
                 echo "PATH-HANDLING in $EDITED_FILE"
-                echo "  New native path render in the cross-OS library core. A path that"
+                echo "  New native path render in a cross-OS source. A path that"
                 echo "  becomes a resource-id / state key / snapshot / env-file body must"
                 echo "  fold to '/', or it never matches its Unix counterpart on Windows:"
                 echo "    path.posix()           instead of  path.display()"

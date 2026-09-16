@@ -18,7 +18,10 @@ use crate::state::{ApplyStatus, StateStore};
 
 use super::apply::action_matches_phase_filter;
 use super::format::action_display_subject_within;
-use super::types::{Action, ApplyResult, Owner, OwnerGroup, Phase, PhaseFilter, PhaseName, Plan};
+use super::types::{
+    Action, AfterPlan, AfterPlanOutcome, AfterPlanState, ApplyResult, Owner, OwnerGroup, Phase,
+    PhaseFilter, PhaseName, Plan,
+};
 
 /// Heading for a hook group that runs around a reconcile but is not part of
 /// the plan. Rendered through the same section primitive as a phase so the
@@ -51,6 +54,13 @@ pub fn nothing_to_do_verdict(pending_decisions: usize) -> (Role, String) {
     )
 }
 
+/// Heading for the `onChange` hooks an apply runs once it knows something
+/// changed. Not a [`PhaseName`] either: the hook fires on whether THIS run
+/// changed anything, so no plan can hold it, and its rows would otherwise print
+/// at the run's own depth between the phase tree and the rollup while the
+/// sibling class of unplanned hook work ([`HOOKS_PHASE_LABEL`]) opens a group.
+pub const CHANGE_HOOKS_PHASE_LABEL: &str = "Change Hooks";
+
 /// Heading for `spec.backups[]` work. Also not a [`PhaseName`]: backups are
 /// declared work with their own hooks and record, but nothing plans them into
 /// a [`Plan`] and nothing journals them into `apply_journal`.
@@ -66,9 +76,24 @@ pub enum RunTitle {
     Backup,
     Restore,
     Rollback,
+    /// `cfgd backup gc` — the snapshots a `destination:` change orphaned.
+    Collect,
 }
 
 impl RunTitle {
+    /// Every title, for a walk that must judge the whole population. A pin
+    /// listing the variants itself goes stale on the next one silently, which
+    /// is the one failure mode a population walk exists to prevent.
+    pub const ALL: &'static [RunTitle] = &[
+        RunTitle::Plan,
+        RunTitle::Apply,
+        RunTitle::Reconcile,
+        RunTitle::Backup,
+        RunTitle::Restore,
+        RunTitle::Rollback,
+        RunTitle::Collect,
+    ];
+
     pub fn as_str(&self) -> &'static str {
         match self {
             RunTitle::Plan => "Plan",
@@ -77,6 +102,7 @@ impl RunTitle {
             RunTitle::Backup => "Backup",
             RunTitle::Restore => "Restore",
             RunTitle::Rollback => "Rollback",
+            RunTitle::Collect => "Collect",
         }
     }
 }
@@ -235,6 +261,15 @@ pub struct RunTally {
     /// What the run set out to do. The `Actions  N planned` header row and the
     /// `◉ N actions not attempted` shortfall line read the same field.
     pub planned_total: usize,
+    /// What the run did that its plan could not name, one entry per item with
+    /// the state it settled in — see [`AfterPlan`] and [`AfterPlanState`].
+    /// Outside `planned_total` and outside the three counts above, because the
+    /// header printed before the run could not promise it; the class states
+    /// itself on its own lines instead, one per outcome.
+    ///
+    /// [`AfterPlan`]: super::AfterPlan
+    /// [`AfterPlanState`]: super::AfterPlanState
+    pub after_plan: Vec<AfterPlanOutcome>,
     pub status: ApplyStatus,
     pub aborted: Option<u8>,
 }
@@ -248,6 +283,7 @@ impl RunTally {
             not_attempted: Vec::new(),
             failed: 0,
             planned_total: 0,
+            after_plan: Vec::new(),
             status: ApplyStatus::Success,
             aborted: None,
         }
@@ -263,6 +299,7 @@ impl RunTally {
         self.failed += other.failed;
         self.not_attempted.extend(other.not_attempted);
         self.planned_total += other.planned_total;
+        self.after_plan.extend(other.after_plan);
         if status_severity(&other.status) > status_severity(&self.status) {
             self.status = other.status;
         }
@@ -286,7 +323,14 @@ impl RunTally {
     /// two things on screen that could tell the user what happened — the ✓ and
     /// the exit code — disagreed.
     fn nothing_attempted(&self) -> bool {
-        self.planned_total > 0 && self.succeeded == 0 && self.skipped == 0 && self.failed == 0
+        self.planned_total > 0
+            && self.succeeded == 0
+            && self.skipped == 0
+            && self.failed == 0
+            // A run that converged an env surface its plan could not name DID
+            // something, and `did not run` over a line saying so is two
+            // answers to one question.
+            && self.after_plan.is_empty()
     }
 }
 
@@ -305,15 +349,31 @@ fn status_severity(status: &ApplyStatus) -> u8 {
 
 impl ApplyResult {
     /// The rollup's view of an apply. The ONE place the conversion happens:
-    /// every `ActionResult` lands in exactly one of the two counts, so the
-    /// tally's shortfall is arithmetically `planned_total - action_results.len()`.
+    /// every `ActionResult` lands in exactly one of the counts, so the tally's
+    /// shortfall is arithmetically `planned_total` less the planned results.
     pub fn tally(&self) -> RunTally {
+        let succeeded = self.succeeded();
+        let skipped = self.skipped();
+        let failed = self.failed();
+        // The header printed `Actions {planned_total} planned` before the first
+        // action ran, so the three counts may come UNDER it (an abort, a
+        // pre-script stop) and may never go over it. Work the run learned it had
+        // to do is priced by `after_plan` instead; counted here, it put four
+        // succeeded actions under a header promising one.
+        debug_assert!(
+            succeeded + skipped + failed <= self.planned_total,
+            "the rollup counts {succeeded}+{skipped}+{failed} exceed the \
+             {} the header promised: a result the plan did not name is \
+             missing its `after_plan` subject",
+            self.planned_total
+        );
         RunTally {
-            succeeded: self.succeeded(),
-            skipped: self.skipped(),
+            succeeded,
+            skipped,
             not_attempted: self.not_attempted(),
-            failed: self.failed(),
+            failed,
             planned_total: self.planned_total,
+            after_plan: self.after_plan(),
             status: self.status.clone(),
             aborted: self.aborted,
         }
@@ -619,13 +679,10 @@ impl<'a> ApplyRun<'a> {
         // The rows are the ones `cfgd decide` and `cfgd status` render, from
         // the same composer and grouped the same way: the owner heading names
         // the source, the subject names the tier and resource, and the detail
-        // says what would land on the machine. What is run-SPECIFIC is the
-        // instruction, and it is ONE hint under the block rather than a suffix
-        // repeated on every row.
-        let block = |title: &str,
-                     rows: &[crate::state::PendingDecision],
-                     role,
-                     hint: crate::output::HintCommands| {
+        // says what would land on the machine. The instruction for answering
+        // them is not part of the block: it closes the surface through
+        // `withheld_hints`.
+        let block = |title: &str, rows: &[crate::state::PendingDecision], role| {
             let section = printer.section(title);
             for (source, items) in super::decisions_by_source(rows) {
                 let owner = section.section_owner(&OwnerLabel::new("source", source));
@@ -638,21 +695,8 @@ impl<'a> ApplyRun<'a> {
                     };
                 }
             }
-            section.hint(hint);
         };
         if !withheld.pending.is_empty() {
-            // An unrecorded item (`id` 0) is answerable only where `cfgd
-            // decide` can mint its row. On a run whose config does not own the
-            // store, the usual instruction names a command that will refuse —
-            // so say what is true instead. Recorded rows resolve without a mint
-            // and keep the instruction everywhere.
-            let unrecorded = withheld.pending.iter().any(|d| d.id == 0);
-            let hint = if unrecorded && !self.decide_answerable {
-                "Not yet recorded — answer from the machine's own config, or pass --state-dir"
-                    .into()
-            } else {
-                super::answer_decisions_hint(withheld.pending.len())
-            };
             block(
                 &super::pending_decisions_title(
                     withheld.pending.len(),
@@ -660,7 +704,6 @@ impl<'a> ApplyRun<'a> {
                 ),
                 &withheld.pending,
                 Role::Info,
-                hint,
             );
         }
         if !withheld.rejected.is_empty() {
@@ -671,8 +714,55 @@ impl<'a> ApplyRun<'a> {
                 ),
                 &withheld.rejected,
                 Role::Skipped,
-                super::MSG_INCLUDE_DECLINED_DECISIONS.into(),
             );
+        }
+    }
+
+    /// The instructions for the decisions this run was pruned with, as the
+    /// closing hints of whatever surface rendered the run.
+    ///
+    /// Separate from `render_withheld` because the two land in
+    /// different places: the sections name what is missing directly under the
+    /// header, while the instruction for answering them is a closing hint like
+    /// every other one cfgd prints — left-aligned at the foot of the surface
+    /// after its verdict, not indented inside the section and printed above
+    /// the rest of the report.
+    pub fn withheld_hints(&self) -> Vec<crate::output::HintCommands> {
+        let Some(withheld) = self.withheld else {
+            return Vec::new();
+        };
+        let mut hints = Vec::new();
+        if !withheld.pending.is_empty() {
+            // An unrecorded item (`id` 0) is answerable only where `cfgd
+            // decide` can mint its row. On a run whose config does not own the
+            // store, the usual instruction names a command that will refuse —
+            // so say what is true instead. Recorded rows resolve without a mint
+            // and keep the instruction everywhere.
+            let unrecorded = withheld.pending.iter().any(|d| d.id == 0);
+            hints.push(if unrecorded && !self.decide_answerable {
+                crate::output::HintCommands::new(
+                    "Not yet recorded — the fetch that composed them records their rows, \
+                     or point this run at the store that already holds them:",
+                    ["cfgd sync", "cfgd apply --state-dir <dir>"],
+                )
+            } else {
+                super::answer_decisions_hint(withheld.pending.len())
+            });
+        }
+        if !withheld.rejected.is_empty() {
+            hints.push(super::MSG_INCLUDE_DECLINED_DECISIONS.into());
+        }
+        hints
+    }
+
+    /// [`Self::withheld_hints`] emitted at the surface's own depth.
+    ///
+    /// The CALLER owns the call, and makes it last: a run's own `execute`
+    /// returns while its caller still has caveats to print, so a hint emitted
+    /// from inside would land above a whole section again.
+    pub fn render_withheld_hints(&self, printer: &Printer) {
+        for hint in self.withheld_hints() {
+            printer.hint(hint);
         }
     }
 
@@ -1071,6 +1161,7 @@ fn backup_report_tally(report: &crate::backup::BackupRunReport, planned: usize) 
         not_attempted: Vec::new(),
         failed: report.items.len() - succeeded,
         planned_total: planned,
+        after_plan: Vec::new(),
         // A skip is not a partial run of this unit; it is no run of it, so it
         // leaves the run's status alone.
         status: match (&report.skipped, report.is_clean()) {
@@ -1132,7 +1223,8 @@ pub fn sole_phase(printer: &Printer) -> PseudoPhase<'_> {
     }
 }
 
-/// Open a pseudo-phase heading ([`HOOKS_PHASE_LABEL`], [`BACKUPS_PHASE_LABEL`])
+/// Open a pseudo-phase heading ([`HOOKS_PHASE_LABEL`],
+/// [`CHANGE_HOOKS_PHASE_LABEL`], [`BACKUPS_PHASE_LABEL`])
 /// as a section, for work that surrounds a run without being planned. Styled
 /// exactly like a real reconciler phase (`Phase: <name>`, via [`PhaseLabel`])
 /// so the two are visually one family — a reader should not be able to tell
@@ -1167,7 +1259,7 @@ pub fn align_width_of<'s>(labels: impl Iterator<Item = &'s str>) -> usize {
 ///
 /// Per REPORT, not per phase. The trailing column is the one thing a reader's
 /// eye scans straight down, and measuring it inside each phase moved it
-/// between `Prerequisites` and `Packages` of the same apply — correct within
+/// between `Bootstrap` and `Packages` of the same apply — correct within
 /// each block, a wobble across the page. Both trees call this with the same
 /// plan and the same filter, so a preview and the apply that follows it pad to
 /// one column too.
@@ -1397,6 +1489,10 @@ fn outcome_clauses(tally: &RunTally) -> Vec<(Role, String)> {
             clauses.push((Role::Skipped, format!("{} skipped", tally.skipped)));
         }
     }
+    // After the planned classes and before the withheld footnote: this work
+    // HAPPENED, so it belongs with the outcomes, while the withheld clause
+    // names reasons after a colon and closes the account.
+    clauses.extend(after_plan_clauses(tally));
     // The withheld actions are OUTSIDE the counted rollup — the header never
     // promised them, and they never reconcile against `planned_total` — and
     // they close the list with the reason the row above already gave, after a
@@ -1416,6 +1512,31 @@ fn outcome_clauses(tally: &RunTally) -> Vec<(Role, String)> {
                 reasons.join(", ")
             ),
         ));
+    }
+    clauses
+}
+
+/// One clause per [`AfterPlan`] member per [`AfterPlanState`] the run has
+/// something to say about, each at its own role: the three outcomes cannot share
+/// a line, for the same reason a planned skip cannot share one with a success.
+///
+/// Walked over both vocabularies rather than over the entries, so the render
+/// order is theirs and a pair the run produced none of says nothing. Read by
+/// [`outcome_clauses`] for every verdict that lists its clauses, and directly by
+/// the `Failed` arm of [`rollup_lines`], which lists none.
+fn after_plan_clauses(tally: &RunTally) -> Vec<(Role, String)> {
+    let mut clauses = Vec::new();
+    for subject in AfterPlan::ALL {
+        for state in AfterPlanState::ALL {
+            let count = tally
+                .after_plan
+                .iter()
+                .filter(|o| o.subject == subject && o.state == state)
+                .count();
+            if count > 0 {
+                clauses.push(state.clause(subject, count));
+            }
+        }
     }
     clauses
 }
@@ -1468,12 +1589,18 @@ fn rollup_lines(tally: &RunTally, title: RunTitle) -> Vec<(Role, String, Option<
             // green line above it.
             //
             // It sits above the withheld clauses because a failure is what the
-            // reader acts on, and what did not happen is the footnote.
-            lines.push((
-                Role::Fail,
-                format!("{} failed", pluralize(tally.failed, "action")),
-                None,
-            ));
+            // reader acts on, and what did not happen is the footnote. Drawn
+            // only when a PLANNED action failed: a run turned partial by an
+            // after-plan failure alone has that failure stated by the class's
+            // own clause below, and `0 actions failed` over it names a failure
+            // nothing had.
+            if tally.failed > 0 {
+                lines.push((
+                    Role::Fail,
+                    format!("{} failed", pluralize(tally.failed, "action")),
+                    None,
+                ));
+            }
             lines.extend(trailing(1));
             lines
         }
@@ -1502,11 +1629,23 @@ fn rollup_lines(tally: &RunTally, title: RunTitle) -> Vec<(Role, String, Option<
             lines.extend(trailing(usize::from(head)));
             lines
         }
-        ApplyStatus::Failed => vec![(
-            Role::Fail,
-            format!("{} failed", title.as_str()),
-            Some(format!("{} failed", pluralize(tally.failed, "action"))),
-        )],
+        // Every attempted action failed, so there is no success count to split
+        // out and the clause list is dropped — except the after-plan class,
+        // whose members the plan never named and which is the only news on a
+        // run whose planned actions were all withheld.
+        ApplyStatus::Failed => {
+            let mut lines = vec![(
+                Role::Fail,
+                format!("{} failed", title.as_str()),
+                (tally.failed > 0).then(|| format!("{} failed", pluralize(tally.failed, "action"))),
+            )];
+            lines.extend(
+                after_plan_clauses(tally)
+                    .into_iter()
+                    .map(|(role, clause)| (role, clause, None)),
+            );
+            lines
+        }
         ApplyStatus::InProgress => vec![(
             Role::Warn,
             format!("{} still in progress (unexpected state)", title.as_str()),
@@ -1555,6 +1694,7 @@ fn rerun_command(title: RunTitle) -> &'static str {
         RunTitle::Backup => "cfgd backup run <name>",
         RunTitle::Restore => "cfgd backup restore <name>",
         RunTitle::Rollback => "cfgd backup rollback <name>",
+        RunTitle::Collect => "cfgd backup gc <name>",
     }
 }
 

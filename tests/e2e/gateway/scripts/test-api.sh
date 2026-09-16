@@ -10,17 +10,6 @@ gw_device_auth_header() {
     fi
 }
 
-# Re-use admin auth helper from test-enrollment.sh if available, otherwise define it.
-if ! type gw_admin_auth_header >/dev/null 2>&1; then
-    gw_admin_auth_header() {
-        if [ -n "${ADMIN_KEY:-}" ]; then
-            echo "Authorization: Bearer $ADMIN_KEY"
-        else
-            echo "X-No-Auth: open-mode"
-        fi
-    }
-fi
-
 # =================================================================
 # GW-11: Device list API
 # =================================================================

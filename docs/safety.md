@@ -145,7 +145,7 @@ Both `unknown pid` cases have a live holder. Find it and stop it: kill the non-c
 
 `cfgd apply` handles `SIGINT` (Ctrl-C) and `SIGTERM` as a **cooperative abort** rather than an abrupt kill:
 
-- **File and package actions** finish before the abort is honoured: atomic file writes complete, and every package install already in flight completes before the reconciler stops. The abort is checked before anything new is dispatched, never mid-write, so the concurrent `Prerequisites` and `Packages` phases drain their running lanes rather than dropping them.
+- **File and package actions** finish before the abort is honoured: atomic file writes complete, and every package install already in flight completes before the reconciler stops. The abort is checked before anything new is dispatched, never mid-write, so the concurrent `Bootstrap` and `Packages` phases drain their running lanes rather than dropping them.
 - **Script actions** (`preApply`, `postApply`, module scripts) are killed immediately: cfgd sends `SIGKILL` to the script's process group so the process exits within milliseconds instead of waiting for the full script timeout. Script authors should write idempotent scripts so a kill-and-rerun leaves the system in a clean state.
 - The reconciler stops **before** starting the next action after any killed/completed abort and unwinds normally.
 - The apply lock is released via its normal RAII drop (the guard drops as `cfgd apply` returns, *before* the process exits), so a subsequent `cfgd apply` runs immediately (no stuck lock).
@@ -161,10 +161,10 @@ $ cfgd apply --yes            # Ctrl-C pressed during the package install
 Apply
   Config   /home/you/.config/cfgd/cfgd.yaml
   Profile  abortdemo
-  Phases   Prerequisites, Packages, Files
+  Phases   Bootstrap, Packages, Files
   Actions  3 planned
 
-Phase: Prerequisites
+Phase: Bootstrap
   cfgd:managers
     ✓ refresh slowbox index
 

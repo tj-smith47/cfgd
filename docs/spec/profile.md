@@ -387,6 +387,20 @@ The published JSON schemas (`schemas/cfgd-profile.schema.json`, `schemas/cfgd-so
 and `cfgd explain profile.spec.packages.<manager>` state both shapes; the `Variants` section of
 `explain` lists them.
 
+Every package name is checked when the profile is parsed. A name is refused when it is empty,
+when it holds whitespace, when it begins with `-` (every manager reads a leading dash as an
+option rather than as a package), or when it holds one of `&`, `<`, `>`, `(`, `)`, `^`, `|`,
+`"`, `%`, `!`, or a line break: a package name becomes an argument on a manager's command line,
+and on Windows several managers are reached through a `cmd.exe` shim where those characters
+would start a second command. Ordinary packaging spellings are unaffected, including
+`@scope/pkg`, `foo@1.2`, `libfoo-dev:amd64`, `Microsoft.VisualStudio.2022.Community`,
+`foo[extra]`, `devel/py-pipx` and `github.com/x/y@latest`. A trailing version spec is judged as
+a version rather than as part of the name, so cfgd's own pin grammar (`tool@^14`, `tool@>=2.1`,
+`tool@v1.2.3`) still parses; the spec itself may hold only digits, identifiers and range
+operators. The same rule applies to a module's `spec.packages[]` entries (the `name`, the
+per-manager `aliases` values, and the `prefer` / `deny` tokens) and to the cluster-side `Module`
+and `MachineConfig` resources.
+
 ---
 
 ### spec.packages.brew
@@ -395,7 +409,7 @@ Homebrew packages for macOS (and Linux Homebrew). A bare list of names is the sh
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `file` | string | No | | Path to a `Brewfile` to install from. When set, cfgd runs `brew bundle`. |
+| `file` | string | No | | Path to a `Brewfile` to install from, relative to the config root. When set, cfgd runs `brew bundle`. |
 | `taps` | list of string | No | `[]` | Homebrew taps to add before installing formulae/casks. |
 | `formulae` | list of string | No | `[]` | Homebrew formulae to install. |
 | `casks` | list of string | No | `[]` | Homebrew casks to install (macOS GUI apps). |
@@ -423,7 +437,7 @@ APT packages for Debian and Ubuntu. A bare list of names is the short form and f
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `file` | string | No | | Path to a file listing packages (one per line). |
+| `file` | string | No | | Path to a file listing packages (one per line), relative to the config root. |
 | `packages` | list of string | No | `[]` | APT package names to install. |
 
 ---
@@ -435,7 +449,7 @@ form.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `file` | string | No | | Path to a `Cargo.toml` (installs all `[dependencies]`). |
+| `file` | string | No | | Path to a `Cargo.toml` (installs all `[dependencies]`), relative to the config root. |
 | `packages` | list of string | No | `[]` | Crate names to install via `cargo install`. |
 
 **List shorthand** (when no `file` is needed):
@@ -464,7 +478,7 @@ npm global packages. A bare list of names is the short form and folds into `glob
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `file` | string | No | | Path to a `package.json` to install from. |
+| `file` | string | No | | Path to a `package.json` to install from, relative to the config root. |
 | `global` | list of string | No | `[]` | npm package names to install globally (`npm install -g`). |
 
 ---
@@ -545,7 +559,7 @@ on the machine.
 | `target` | string | Yes | | Absolute destination path on the machine. Supports `~/` expansion. |
 | `strategy` | enum | No | Global `fileStrategy` | Deployment strategy for this file. Overrides the global default. See [FileStrategy values](#filestrategy-values). |
 | `private` | bool | No | `false` | When `true`, the source file is local-only: automatically added to `.gitignore` and silently skipped on machines where it does not exist. |
-| `permissions` | string | No | | Octal permission mode to enforce on the deployed target file (e.g. `"600"`). Distinct from `files.permissions`, which enforces permissions on paths not managed as file entries. |
+| `permissions` | string | No | | Octal permission mode to enforce on the deployed file (e.g. `"600"`). With `strategy: Symlink` the mode is set on the source file the link points at, which is what the link resolves to. Distinct from `files.permissions`, which enforces permissions on paths not managed as file entries. |
 | `encryption` | object | No | | Encryption enforcement for this file. Has `backend` (`"sops"` or `"age"`) and `mode` (`InRepo` or `Always`). Rejected with `strategy: Patch`, which has no source to enforce it on. See [encryption fields](#managed-file-encryption-fields). |
 | `patch` | object | Only when `strategy: Patch` | | Structured merge or script configuration, used only when `strategy: Patch`. Has `format` (`Ini`/`Json`/`Yaml`/`Toml`, inferred from `target`'s extension when omitted), `ensure` (keys/values to deep-merge into the target), and `script` (a script that receives the target's current content on stdin and writes the new content to stdout). Exactly one of `ensure` or `script` must be set. See [FileStrategy values](#filestrategy-values). |
 
@@ -635,11 +649,11 @@ Common configurators:
 | Key | Platform | Description |
 |-----|----------|-------------|
 | `shell` | All | Default login shell path (e.g. `/bin/zsh`). |
-| `systemd` | Linux | systemd unit management. |
+| `systemdUnits` | Linux | systemd unit management. |
 | `gsettings` | Linux | GNOME/GTK desktop settings via gsettings. |
 | `kdeConfig` | Linux | KDE Plasma settings via kwriteconfig. |
 | `xfconf` | Linux | XFCE desktop settings via xfconf-query. |
-| `launchd` | macOS | launchd plist management. |
+| `launchAgents` | macOS | launchd plist management. |
 | `environment` | All | System-level environment file management. |
 | `macosDefaults` | macOS | macOS `defaults write` settings. |
 | `sysctl` | Linux | sysctl kernel parameter tuning. |
@@ -648,12 +662,14 @@ Common configurators:
 | `kubelet` | Linux | kubelet configuration for Kubernetes nodes. |
 | `apparmor` | Linux | AppArmor profile management. |
 | `seccomp` | Linux | seccomp filter deployment. |
-| `certificates` | All | CA certificate installation. |
+| `certificates` | Linux | CA certificate installation into the system trust store. |
 | `windowsRegistry` | Windows | Registry key/value management. |
 | `windowsServices` | Windows | Windows Service lifecycle management. |
 | `sshKeys` | All | SSH key pair provisioning and permission enforcement. |
 | `gpgKeys` | All | GPG key provisioning and validity tracking. |
 | `git` | All | Global git configuration (`git config --global`). |
+
+The Platform column says which hosts can run a configurator, not which hosts know about it: cfgd registers all of them everywhere. A key declared off its platform is planned as a `System` skip naming the configurator and the refusal, so `windowsRegistry` on Linux reads `'windowsRegistry' is not available on this host`. Only a key no configurator claims (a typo) is reported as unknown.
 
 **Example:**
 ```yaml
@@ -829,6 +845,7 @@ A schedule-less entry runs during `cfgd apply`; a scheduled one runs on the
 | `destination` | string (path) | No | `<state_dir>/backups/<name>/` | Where snapshots are written; a leading `~` expands to the home directory. The default is resolved by the backup engine at run time, not at parse time. |
 | `namePattern` | string | No | `"{filename}.{timestamp}"` | Filename template for each snapshot. Supports `{name}`, `{filename}`, and `{timestamp}` (UTC, `%Y%m%dT%H%M%SZ`). Unknown `{var}` tokens are rejected at parse time. A literal `/` nests the snapshot under the destination; the rendered value must be relative and every segment must name something (`.`, `..`, empty segments, rooted values like `/daily` or `C:/daily`, and `:` anywhere are rejected at run time — the rejection names the `{filename}` it interpolated so a colon in the source filename points at itself). |
 | `schedule` | string | No | | When to run this backup: a duration interval (e.g. `6h`) or a cron expression, validated at parse time. Cron accepts 5-field (`minute hour day month weekday`, e.g. `0 3 * * *`) or 6-field with a leading seconds field (`second minute hour day month weekday`, e.g. `30 0 3 * * *`), evaluated in the machine's **local** timezone like a crontab entry. Setting it hands the backup to the daemon's timers and takes it out of apply; omitted means "run on every apply". |
+| `scheduleOwner` | enum | No | `Cluster` | Which layer owns this unit's schedule. `Cluster` lets the cluster's `BackupPolicy` set or replace this unit's `schedule` and `retention`; `Local` pins the unit to the machine, so a policy reports it but projects no schedule onto it. Parsed case-insensitively. |
 | `retention` | integer | No | `10` | Number of newest snapshots to keep; older snapshots are pruned from disk and from the run history. Counted per outcome, so failed runs never evict good snapshots. Must be at least 1 — `0` is rejected at parse time as a misconfiguration, not an "unlimited" mode. |
 | `preBackup` | list | No | `[]` | Scripts run before the snapshot is taken. Same shape as [spec.scripts](#specscripts) entries. A failure skips the copy and records a failed run; `postBackup` still runs. |
 | `postBackup` | list | No | `[]` | Scripts run after the copy step, and after a failed `preBackup` — always attempted, so whatever `preBackup` stopped gets restarted. Same shape as [spec.scripts](#specscripts) entries. |
@@ -841,6 +858,7 @@ backups:
     destination: ~/backups/notes          # optional; default <state_dir>/backups/<name>/
     namePattern: "{filename}.{timestamp}" # optional; vars {name} {filename} {timestamp}
     schedule: "0 3 * * *"                 # optional; cron (local time) OR interval ("6h"); set → daemon timer, omitted → every apply
+    scheduleOwner: Local                  # optional; default Cluster; Local pins the schedule to this machine
     retention: 7                          # optional; default 10; newest N kept per backup
     preBackup:                            # optional; existing ScriptEntry shape
       - run: sqlite3 ~/.local/share/notes/notes.db "PRAGMA wal_checkpoint(TRUNCATE)"
@@ -848,8 +866,9 @@ backups:
       - run: sqlite3 ~/.local/share/notes/notes.db "PRAGMA quick_check"
 ```
 
-`spec.backups[]` exists only in the YAML/TOML profile config path; the `MachineConfig` CRD does not
-carry it.
+`spec.backups[]` defines the unit and lives only in the profile; the cluster's `BackupPolicy`
+(see [Backup policies](../backup-policy.md)) may override a named unit's `schedule`/`retention`
+unless the profile pins `scheduleOwner: Local`.
 
 Every run is recorded in the state database's `backup_runs` table (source, destination, size,
 status, error, start/finish timestamps), and retention pruning walks those records rather than

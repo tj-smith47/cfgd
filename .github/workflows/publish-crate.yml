@@ -85,7 +85,9 @@ jobs:
           # dispatched publish-oidc.yml (workflow_run taints the OIDC claim here).
           # Exact complement of publish-oidc's `--publishers cargo`. The `skip`
           # input appends any operator-supplied publishers to the same denylist.
-          args: release --publish-only --crate ${{ inputs.crate }} --skip cargo${{ inputs.skip != '' && format(',{0}', inputs.skip) || '' }}
+          # --skip preflight: release.yml's pre-tag `preflight` job already ran
+          # the whole check (environment, credential probes, reconcile).
+          args: release --publish-only --crate ${{ inputs.crate }} --skip cargo,preflight${{ inputs.skip != '' && format(',{0}', inputs.skip) || '' }}
         env:
           AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
           CHOCOLATEY_API_KEY: ${{ secrets.CHOCOLATEY_API_KEY }}

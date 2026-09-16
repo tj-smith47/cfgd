@@ -27,28 +27,14 @@ FRAMES=demo/.out/raw
 # demo/scripts/record.sh beside the frames; the tier boundary is read from it.
 LOG=demo/.out/init.log
 OUT=demo/cfgd-demo.gif
-# The head has to hold the opening typing AND the install's first real progress
-# lines, or the ramp starts while the viewer is still reading the first thing
-# cfgd printed. Measured on a take: ~10s of scripted beats (two typed commands
-# at 50ms, the 700ms pause before Enter, the 2s nvim glance), the container
-# start on top of it (unscripted, swings with the page cache), the plan tree at
-# ~12s, `refresh apt index` settling at ~15s and `provision brew` settling with
-# its version at ~26-28s. 29 ends on that settle. The margin for a cold
-# container start is not spent here but in the ease that follows: it climbs at
-# ~2x, so a brew row that settles a second or two late is still read at a pace
-# a viewer can keep. 32 held the margin in 1:1 seconds instead, and on a warm
-# take those seconds were a viewer waiting on a screen that had already
-# finished; 29 still felt late, so the head ends on the settle itself.
-HEAD=26
-# The tail begins at the apply's rollup line, so the whole payoff plays at 1:1:
-# the 6s summary read, `source ~/.cfgd.env`, nvim's start, the 1s settle, the
-# 7.5s hero hold, `:qa`, the screen restore, and the version line with its 2s
-# hold plus the closing breath. Measured off the log of a 236.9s take: the
-# rollup lands 23.9s from the end. 27 covers that plus nvim's own variable
-# start; the margin is paid as a few seconds of 1:1 install log before the
-# rollup, which is the right side to err on. Too small and the rollup or the
-# summary read falls into the compressed middle; too large and the ramp
-# decelerates onto a frozen install log, which is what 41 did.
+# 1:1 seconds at the start: the opening typing, the plan tree (~12s on a take)
+# and the apt index settling (~15s). Brew's own settle at ~26-28s rides the
+# ~2x ease that follows; holding it at 1:1 (32, 29, 26) each read as waiting.
+HEAD=20
+# 1:1 seconds at the end, from the apply's rollup line: the summary read, the
+# env source, nvim's start and hold, the quit and the version line. The tape's
+# beats sum to ~23s; the margin covers nvim's variable start and lands as a
+# few seconds of 1:1 install log before the rollup, the right side to err on.
 TAIL=27
 # Output seconds the plan-and-install region plays in: from HEAD to the moment
 # the apply opens its scripts phase, ease-in included. Phase headings, package
@@ -92,8 +78,6 @@ fi
 # h264 mp4 is 4:2:0, and chroma subsampling smears exactly the thin coloured
 # glyphs (check marks, drift arrows, accent headings) the demo exists to show,
 # before the palette pass ever sees them.
-TEXT="${FRAMES}/frame-text-%05d.png"
-CURSOR="${FRAMES}/frame-cursor-%05d.png"
 frames=$(find "$FRAMES" -maxdepth 1 -name 'frame-text-*.png' | wc -l)
 if [ "$frames" -eq 0 ]; then
     echo "$FRAMES holds no frame-text-*.png frames — the take produced no recording." >&2
@@ -102,28 +86,35 @@ fi
 
 # fps 50 divides 100 exactly, so every GIF frame delay is a whole 2-centisecond
 # delay and playback does not drift against the recorded timing. That is the
-# OUTPUT rate only. The frames are demuxed on their own mtimes (`ts_from_file`),
-# never at a rate: vhs screenshots as fast as the host lets it, and on one take
-# that swung between 26 and 47 fps as the install loaded the box. Demuxed at
-# the take's average rate the fast stretches played slow, the slow ones fast,
-# and a source second named by the log landed ten seconds away from the frame
-# that showed it. On the mtimes every trim below cuts at the wall-clock second
-# it names, the 1:1 ends play at the speed the session ran, and the take's
-# length is the span of its mtimes. ffmpeg rebases the first frame to 0.
+# OUTPUT rate only. The frames are timed by their own mtimes, never at a rate:
+# vhs screenshots as fast as the host lets it, and on one take that swung
+# between 26 and 47 fps as the install loaded the box. Demuxed at the take's
+# average rate the fast stretches played slow, the slow ones fast, and a source
+# second named by the log landed ten seconds away from the frame that showed
+# it. Each frame's share of those mtimes is capped, so the wall time a `Hide`
+# segment spends off camera does not reach the viewer as a held frame; the cap
+# and the gaps it separates are stated in demo/scripts/frame-lists.sh. What the
+# trims below cut on is therefore the CAPPED timeline, which is the one the
+# viewer sees, and every boundary read off the log is moved onto it.
 FPS=50
-# One awk pass, not `sort | head`: under pipefail a `head` that closes early
-# turns sort's SIGPIPE into this script's exit.
-read -r first_frame dur < <(find "$FRAMES" -maxdepth 1 -name 'frame-text-*.png' -printf '%T@\n' |
-    awk 'NR == 1 { lo = $1; hi = $1 } $1 < lo { lo = $1 } $1 > hi { hi = $1 } END { printf "%.3f %.3f\n", lo, hi - lo }')
+LISTS=demo/.out/raw-lists
+dur=$(demo/scripts/frame-lists.sh "$FRAMES" "$LISTS")
+TIMELINE="${LISTS}/timeline.tsv"
+# A wall-clock instant, as a second of the capped timeline: the play time of
+# the last frame written at or before it. The log stamps and the frame mtimes
+# share the host's clock, so this is the only conversion either needs.
+played_at() {
+    awk -v at="$1" '$1 <= at { t = $2 } END { printf "%.3f", t }' "$TIMELINE"
+}
 mid_end=$(awk -v d="$dur" -v t="$TAIL" 'BEGIN { printf "%.3f", d - t }')
 
 # The tier boundary is the source second the apply opened `Phase: Post-Scripts`.
 # It moves with every take — the package install ahead of it swings tens of
 # seconds with the mirrors — so a hand-kept value would be stale on every
 # re-record. The container's log stamps each line with the host's clock and
-# the frames carry the same clock in their mtimes, so the heading's stamp minus
-# the first frame's mtime is the heading's source second, on the same timeline
-# the trims below cut. `--yes` prints no preview tree, so the first line
+# the frames carry the same clock in their mtimes, so the heading's stamp is
+# converted onto the capped timeline by `played_at`, which is the timeline the
+# trims below cut on. `--yes` prints no preview tree, so the first line
 # carrying the heading is the execution's; the colour escapes are stripped
 # first because the heading paints in two theme slots. `LC_ALL=C` because the
 # final-byte range `[@-~]` is a BYTE range only in the C locale — under a
@@ -133,7 +124,7 @@ if [ -z "$heading_stamp" ]; then
     echo "$LOG never shows \`Phase: Post-Scripts\` — the take did not reach the module's scripts." >&2
     exit 1
 fi
-scripts_at=$(awk -v h="$(date -d "$heading_stamp" +%s.%N)" -v f="$first_frame" 'BEGIN { printf "%.3f", h - f }')
+scripts_at=$(played_at "$(date -d "$heading_stamp" +%s.%N)")
 if ! awk -v s="$scripts_at" -v h="$HEAD" -v e="$mid_end" 'BEGIN { exit (s > h && s < e) ? 0 : 1 }'; then
     echo "The scripts phase opened at ${scripts_at}s, outside the ${HEAD}s..${mid_end}s middle — the take cannot ramp in two tiers." >&2
     exit 1
@@ -185,9 +176,9 @@ BG="#$(ffmpeg -v error -i "${FRAMES}/frame-text-00001.png" -vf crop=1:1:0:0 -f r
 #
 # The composite is built once and split six ways because a filter output can
 # only be consumed once, where the single mp4 input the trims used to read from
-# could be referenced six times directly. The trims cut on source SECONDS, the
-# frames' own wall clock, so every boundary the ramp math produces is the
-# instant the log or the tape measured.
+# could be referenced six times directly. The trims cut on source SECONDS of
+# the capped timeline, so every boundary the ramp math produces is the instant
+# the log or the tape measured, less whatever wall time the take spent hidden.
 #
 # stats_mode=diff weights the palette toward the pixels that actually move, so
 # the long static editor holds stop spending colours the install log needs
@@ -219,10 +210,10 @@ RAMP="[0][1]overlay[merged];\
 [a][b][c][d][e][f]concat=n=6:v=1:a=0[v];\
 [v]fps=${FPS}[vf]"
 
-INPUTS=(-ts_from_file 2 -i "$TEXT" -ts_from_file 2 -i "$CURSOR")
+INPUTS=(-f concat -safe 0 -i "${LISTS}/text.ffconcat" -f concat -safe 0 -i "${LISTS}/cursor.ffconcat")
 
 PALETTE=demo/.out/palette.png
-trap 'rm -f "$PALETTE"' EXIT
+trap 'rm -f "$PALETTE" "${LISTS}/text.ffconcat" "${LISTS}/cursor.ffconcat" "$TIMELINE"; rmdir "$LISTS" 2>/dev/null || true' EXIT
 
 ffmpeg -y -loglevel error "${INPUTS[@]}" -filter_complex "\
 ${RAMP};[vf]palettegen=max_colors=256:stats_mode=diff" "$PALETTE"

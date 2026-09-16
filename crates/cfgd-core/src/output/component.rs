@@ -126,6 +126,21 @@ pub enum Component {
     CodeBlock {
         lines: Vec<String>,
     },
+    /// The script steps one lifecycle hook declares, shown in the form the
+    /// invocation asked for. One component per hook, so the renderer owns the
+    /// separation between steps as well as each step's own two parts: a caller
+    /// that emitted the blank line itself would be painting layout.
+    ///
+    /// `form` is display-only and never serialized, like [`Section`]'s
+    /// `owner`: the step bodies are the declared spec, which every surface
+    /// rendering them already carries in its own `-o json` payload.
+    ///
+    /// [`Section`]: Component::Section
+    ScriptSteps {
+        steps: Vec<ScriptStep>,
+        #[serde(skip)]
+        form: ScriptsForm,
+    },
     Table {
         headers: Vec<String>,
         rows: Vec<Vec<String>>,
@@ -173,6 +188,32 @@ pub enum Component {
 pub struct StatusLabel {
     pub role: Role,
     pub text: String,
+}
+
+/// How a surface shows the script steps a module declares.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ScriptsForm {
+    /// One row per step, the body condensed to its first line.
+    #[default]
+    Condensed,
+    /// Each step's marker line and its whole body, highlighted.
+    Full,
+}
+
+/// One declared script step as a human surface shows it.
+#[derive(Debug, Clone, Serialize)]
+pub struct ScriptStep {
+    /// The step's position among its hook's steps and the knobs it declares
+    /// (`1/7 · timeout 120s · continueOnError`), rendered muted above the
+    /// body. `None` in the condensed form, where the body is the whole row.
+    ///
+    /// A renderer-owned slot rather than a line the composer paints: the coat
+    /// is styling, and [`crate::output::cursor_safe`] would eat a caller's own.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub marker: Option<String>,
+    /// The body, verbatim under [`ScriptsForm::Full`] and condensed to one
+    /// line under [`ScriptsForm::Condensed`].
+    pub body: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -387,6 +428,7 @@ pub fn config_header_rows(head: &ConfigHeader<'_>) -> Vec<KvPair> {
                 .join(", "),
         ));
     }
+    let chain = profile_inherits.join(&format!(" {arrow} "));
     if let Some(profile) = profile {
         if profile_inherits.is_empty() {
             rows.push(KvPair::new("Profile", profile));
@@ -394,9 +436,15 @@ pub fn config_header_rows(head: &ConfigHeader<'_>) -> Vec<KvPair> {
             rows.push(KvPair::annotated(
                 "Profile",
                 profile,
-                format!("inherits: {}", profile_inherits.join(&format!(" {arrow} "))),
+                format!("inherits: {chain}"),
             ));
         }
+    } else if !profile_inherits.is_empty() {
+        // A surface whose heading already names the profile passes no `profile`
+        // value, so the chain has no row to annotate and becomes one of its
+        // own — still built here, so the two renders of one fact cannot use
+        // two separators.
+        rows.push(KvPair::new("Inherits", chain));
     }
     rows.extend(modules_header_row_for(modules));
     rows

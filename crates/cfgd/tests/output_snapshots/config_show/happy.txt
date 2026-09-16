@@ -35,5 +35,6 @@ Daemon
 Secrets
   Backend  sops
 
-Theme
-  Theme  dracula
+Output
+  Theme            dracula
+  Mask Env Values  None

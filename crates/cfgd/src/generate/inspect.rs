@@ -35,7 +35,7 @@ pub struct PackageQueryResult {
 /// Returns None if the tool is not installed or does not respond.
 fn probe_version(name: &str) -> Option<String> {
     for flag in &["--version", "-V", "-version"] {
-        if let Ok(output) = Command::new(name).arg(flag).output()
+        if let Ok(output) = cfgd_core::command_output(Command::new(name).arg(flag))
             && output.status.success()
         {
             let stdout = cfgd_core::stdout_lossy_trimmed(&output);

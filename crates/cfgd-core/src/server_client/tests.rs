@@ -32,9 +32,139 @@ fn checkin_request_without_compliance_summary() {
         arch: "x86_64".into(),
         config_hash: "abc123".into(),
         compliance_summary: None,
+        package_versions: None,
+        backup_schedule_owners: None,
     };
     let json = serde_json::to_string(&req).unwrap();
     assert!(!json.contains("complianceSummary"));
+}
+
+/// The device's two reported maps travel as camelCase keys, and a map this
+/// device did not OBSERVE is omitted entirely, so a device with nothing to say
+/// sends the body every gateway that predates the fields already parses. An
+/// observed map is sent whole, empty included: that is the only way the gateway
+/// can tell "I hold none of these" from "I could not look".
+#[test]
+fn checkin_carries_the_declared_package_versions_and_backup_schedule_owners() {
+    let mut server = mockito::Server::new();
+    let mock = server
+        .mock("POST", "/api/v1/checkin")
+        .match_body(mockito::Matcher::JsonString(
+            serde_json::json!({
+                "deviceId": "dev-1",
+                "hostname": crate::hostname_string(),
+                "os": std::env::consts::OS,
+                "arch": std::env::consts::ARCH,
+                "configHash": "hash123",
+                "packageVersions": { "brew/git": "2.45.1" },
+                "backupScheduleOwners": { "dotfiles": "local" },
+            })
+            .to_string(),
+        ))
+        .with_status(200)
+        .with_body(r#"{"status":"ok","configChanged":false}"#)
+        .create();
+
+    let client = ServerClient::new(&server.url(), Some("key"), "dev-1");
+    let printer = test_printer();
+    let facts = CheckinFacts {
+        package_versions: Some(BTreeMap::from([(
+            crate::state::package_resource_id("brew", "git"),
+            "2.45.1".to_string(),
+        )])),
+        backup_schedule_owners: Some(BTreeMap::from([(
+            "dotfiles".to_string(),
+            crate::config::ScheduleOwner::Local.label().to_string(),
+        )])),
+    };
+    client
+        .checkin("hash123", None, facts, &printer)
+        .expect("the gateway answered");
+    mock.assert();
+
+    // The unobserved case is the older device's body: neither key is written.
+    let unobserved = serde_json::to_string(&CheckinRequest {
+        device_id: "dev-1".into(),
+        hostname: "ws-1".into(),
+        os: "linux".into(),
+        arch: "x86_64".into(),
+        config_hash: "abc123".into(),
+        compliance_summary: None,
+        package_versions: None,
+        backup_schedule_owners: None,
+    })
+    .expect("serialize");
+    assert!(
+        !unobserved.contains("packageVersions") && !unobserved.contains("backupScheduleOwners"),
+        "an unobserved map must be omitted, not sent as {{}}: {unobserved}"
+    );
+
+    // An OBSERVED but empty map is sent, because it is what retires the last
+    // key the machine reported.
+    let observed_none = serde_json::to_string(&CheckinRequest {
+        device_id: "dev-1".into(),
+        hostname: "ws-1".into(),
+        os: "linux".into(),
+        arch: "x86_64".into(),
+        config_hash: "abc123".into(),
+        compliance_summary: None,
+        package_versions: Some(BTreeMap::new()),
+        backup_schedule_owners: Some(BTreeMap::new()),
+    })
+    .expect("serialize");
+    assert!(
+        observed_none.contains("\"packageVersions\":{}")
+            && observed_none.contains("\"backupScheduleOwners\":{}"),
+        "an observed empty map is sent whole: {observed_none}"
+    );
+}
+
+/// A gateway that answers without `backupSchedules` leaves every unit on the
+/// cadence its own profile declares.
+#[test]
+fn checkin_response_without_backup_schedules_projects_nothing() {
+    let mut server = mockito::Server::new();
+    let _mock = server
+        .mock("POST", "/api/v1/checkin")
+        .with_status(200)
+        .with_body(r#"{"status":"ok","configChanged":false}"#)
+        .create();
+
+    let client = ServerClient::new(&server.url(), Some("key"), "dev-1");
+    let printer = test_printer();
+    let resp = client
+        .checkin("hash", None, Default::default(), &printer)
+        .expect("the gateway answered");
+    assert!(
+        resp.backup_schedules.is_none(),
+        "an absent projection is a gateway that said nothing, not one that said none"
+    );
+}
+
+/// A projection the gateway sent reaches the caller with both operands.
+#[test]
+fn checkin_response_carries_the_cluster_owned_projection() {
+    let mut server = mockito::Server::new();
+    let _mock = server
+        .mock("POST", "/api/v1/checkin")
+        .with_status(200)
+        .with_body(
+            r#"{"status":"ok","configChanged":false,"backupSchedules":{"dotfiles":{"schedule":"0 3 * * *","retention":7}}}"#,
+        )
+        .create();
+
+    let client = ServerClient::new(&server.url(), Some("key"), "dev-1");
+    let printer = test_printer();
+    let resp = client
+        .checkin("hash", None, Default::default(), &printer)
+        .expect("the gateway answered");
+    let projected = resp
+        .backup_schedules
+        .as_ref()
+        .and_then(|s| s.get("dotfiles"))
+        .expect("the unit the gateway scheduled");
+    assert_eq!(projected.schedule, "0 3 * * *");
+    assert_eq!(projected.retention, Some(7));
 }
 
 #[test]
@@ -125,7 +255,7 @@ fn checkin_sends_correct_payload_and_parses_response() {
 
     let client = ServerClient::new(&server.url(), Some("test-key"), "dev-1");
     let printer = test_printer();
-    let result = client.checkin("hash123", None, &printer);
+    let result = client.checkin("hash123", None, Default::default(), &printer);
 
     assert!(result.is_ok());
     let resp = result.unwrap();
@@ -150,7 +280,7 @@ fn checkin_with_compliance_summary() {
         warning: 1,
         violation: 0,
     };
-    let result = client.checkin("hash", Some(summary), &printer);
+    let result = client.checkin("hash", Some(summary), Default::default(), &printer);
     assert!(result.is_ok());
     assert!(result.unwrap().config_changed);
     mock.assert();
@@ -330,7 +460,7 @@ fn checkin_server_error_returns_error() {
 
     let client = ServerClient::new(&server.url(), Some("key"), "dev-1");
     let printer = test_printer();
-    let result = client.checkin("hash", None, &printer);
+    let result = client.checkin("hash", None, Default::default(), &printer);
     assert!(result.is_err());
     mock.assert();
 }
@@ -347,7 +477,7 @@ fn checkin_client_error_does_not_retry() {
 
     let client = ServerClient::new(&server.url(), Some("bad-key"), "dev-1");
     let printer = test_printer();
-    let result = client.checkin("hash", None, &printer);
+    let result = client.checkin("hash", None, Default::default(), &printer);
     assert!(result.is_err());
     mock.assert();
 }
@@ -437,7 +567,7 @@ fn checkin_invalid_json_response() {
 
     let client = ServerClient::new(&server.url(), Some("key"), "dev-1");
     let printer = test_printer();
-    let result = client.checkin("hash", None, &printer);
+    let result = client.checkin("hash", None, Default::default(), &printer);
     assert!(result.is_err());
     let err_msg = format!("{}", result.unwrap_err());
     assert!(
@@ -563,7 +693,7 @@ fn request_challenge_connection_refused() {
 fn checkin_connection_refused() {
     let client = ServerClient::new("http://127.0.0.1:1", Some("key"), "dev-1");
     let printer = test_printer();
-    let result = client.checkin("hash", None, &printer);
+    let result = client.checkin("hash", None, Default::default(), &printer);
     assert!(result.is_err());
     let err_msg = format!("{}", result.unwrap_err());
     assert!(
@@ -627,7 +757,9 @@ fn checkin_with_desired_config_in_response() {
 
     let client = ServerClient::new(&server.url(), Some("key"), "dev-1");
     let printer = test_printer();
-    let result = client.checkin("hash", None, &printer).unwrap();
+    let result = client
+        .checkin("hash", None, Default::default(), &printer)
+        .unwrap();
     assert!(result.config_changed);
     assert!(result.desired_config.is_some());
     mock.assert();
@@ -706,7 +838,7 @@ fn checkin_no_api_key_omits_auth_header() {
 
     let client = ServerClient::new(&server.url(), None, "dev-1");
     let printer = test_printer();
-    let result = client.checkin("hash", None, &printer);
+    let result = client.checkin("hash", None, Default::default(), &printer);
     assert!(result.is_ok());
     mock.assert();
 }
@@ -870,7 +1002,9 @@ mod bridge {
 
         let client = ServerClient::new(&server.url(), Some("key"), "dev-1");
         let (printer, cap) = Printer::for_test_doc();
-        let resp = client.checkin("hash123", None, &printer).unwrap();
+        let resp = client
+            .checkin("hash123", None, Default::default(), &printer)
+            .unwrap();
 
         let summary = CheckinSummary {
             server_status: resp.status.clone(),
@@ -950,4 +1084,182 @@ mod bridge {
 
         assert_snapshot("drift_report.txt", &captured);
     }
+}
+
+/// A gateway rationing its enrollment routes answers 429, which means "later",
+/// not "never" — a device sharing an egress address with its fleet must be able
+/// to wait the quota out instead of failing enrollment outright. It also says
+/// WHEN, and the server knows when its own next token lands, so the advised wait
+/// is what the device sleeps rather than a ladder guessed on the client.
+#[test]
+#[serial_test::serial(rate_limited_backoff)]
+fn enroll_honours_the_wait_a_rate_limited_gateway_advised() {
+    // Pinned two orders of magnitude below the advised second, so the floor
+    // asserted at the end can only be met by reading the header.
+    let _ladder =
+        crate::test_helpers::RateLimitedBackoffGuard::pinned(std::time::Duration::from_millis(10));
+
+    let mut server = mockito::Server::new();
+    let limited = server
+        .mock("POST", "/api/v1/enroll")
+        .with_status(429)
+        .with_header("Retry-After", "1")
+        .with_body(r#"{"error":"too many requests; slow down","retry_after_secs":1}"#)
+        .expect(1)
+        .create();
+    let admitted = server
+        .mock("POST", "/api/v1/enroll")
+        .with_status(200)
+        .with_body(
+            r#"{"status":"enrolled","deviceId":"new-dev","apiKey":"new-key","username":"user1"}"#,
+        )
+        .expect(1)
+        .create();
+
+    let client = ServerClient::new(&server.url(), None, "dev-1");
+    let printer = test_printer();
+    let started = std::time::Instant::now();
+    let result = client.enroll("bootstrap-token-429", &printer);
+    let elapsed = started.elapsed();
+
+    assert!(result.is_ok(), "429 must be retried, got {:?}", result);
+    assert!(
+        elapsed >= std::time::Duration::from_secs(1),
+        "the gateway advised a 1s wait; the client slept {elapsed:?}"
+    );
+    limited.assert();
+    admitted.assert();
+}
+
+/// A 429 that advises no wait still moves the client onto the rationed ladder:
+/// the transient half-second one would exhaust all three attempts before the
+/// quota that refused them has handed back a single token.
+#[test]
+#[serial_test::serial(rate_limited_backoff)]
+fn enroll_waits_on_the_rationed_ladder_when_a_429_advises_nothing() {
+    let _ladder =
+        crate::test_helpers::RateLimitedBackoffGuard::pinned(std::time::Duration::from_millis(10));
+
+    let mut server = mockito::Server::new();
+    let limited = server
+        .mock("POST", "/api/v1/enroll")
+        .with_status(429)
+        .with_body("rate limited")
+        .expect(1)
+        .create();
+    let admitted = server
+        .mock("POST", "/api/v1/enroll")
+        .with_status(200)
+        .with_body(
+            r#"{"status":"enrolled","deviceId":"new-dev","apiKey":"new-key","username":"user1"}"#,
+        )
+        .expect(1)
+        .create();
+
+    let client = ServerClient::new(&server.url(), None, "dev-1");
+    let printer = test_printer();
+    let started = std::time::Instant::now();
+    let result = client.enroll("bootstrap-token-429", &printer);
+    let elapsed = started.elapsed();
+
+    assert!(result.is_ok(), "429 must be retried, got {:?}", result);
+    assert!(
+        elapsed < crate::retry::BackoffConfig::DEFAULT_TRANSIENT.initial_backoff,
+        "a 429 slept the transient ladder ({elapsed:?}), not the pinned rationed one"
+    );
+    limited.assert();
+    admitted.assert();
+}
+
+/// The next step an exhausted ladder closes on describes its LAST refusal: a 429
+/// the server errors out of is a server problem, and pointing the reader at the
+/// enrollment quota sends them after a limit no longer refusing them.
+#[test]
+#[serial_test::serial(rate_limited_backoff)]
+fn the_rate_limit_next_step_follows_the_refusal_the_ladder_ended_on() {
+    let _ladder =
+        crate::test_helpers::RateLimitedBackoffGuard::pinned(std::time::Duration::from_millis(10));
+
+    let mut rationing = mockito::Server::new();
+    let quota = rationing
+        .mock("POST", "/api/v1/enroll")
+        .with_status(429)
+        .with_body("rate limited")
+        .expect(3)
+        .create();
+    let printer = test_printer();
+    let rationed = ServerClient::new(&rationing.url(), None, "dev-1")
+        .enroll("bootstrap-token-429", &printer)
+        .expect_err("three 429s exhaust the ladder");
+    quota.assert();
+    assert_eq!(
+        rationed.to_string(),
+        "io error: device gateway enrollment failed: failed after 3 attempts: rate limited \
+         (HTTP 429); \
+         the gateway limits enrollment attempts per source address, so retry in a minute or \
+         enrol from another address"
+    );
+
+    let mut erroring = mockito::Server::new();
+    let limited = erroring
+        .mock("POST", "/api/v1/enroll")
+        .with_status(429)
+        .with_body("rate limited")
+        .expect(1)
+        .create();
+    let broken = erroring
+        .mock("POST", "/api/v1/enroll")
+        .with_status(500)
+        .with_body("boom")
+        .expect(2)
+        .create();
+    let server_error = ServerClient::new(&erroring.url(), None, "dev-1")
+        .enroll("bootstrap-token-429", &printer)
+        .expect_err("a 429 then two 500s exhausts the ladder");
+    limited.assert();
+    broken.assert();
+    assert_eq!(
+        server_error.to_string(),
+        "io error: device gateway enrollment failed: failed after 3 attempts: server error \
+         (HTTP 500)"
+    );
+}
+
+/// Every form the wait can arrive in, and every form that leaves the client on
+/// its own ladder instead.
+#[test]
+fn an_advised_wait_reads_the_seconds_form_from_the_header_or_the_body() {
+    use std::time::Duration;
+
+    assert_eq!(advised_wait(Some("7"), ""), Some(Duration::from_secs(7)));
+    assert_eq!(advised_wait(Some(" 7 "), ""), Some(Duration::from_secs(7)));
+    assert_eq!(
+        advised_wait(
+            None,
+            r#"{"error":"too many requests","retry_after_secs":9}"#
+        ),
+        Some(Duration::from_secs(9))
+    );
+    assert_eq!(advised_wait(Some("99999"), ""), Some(ADVISED_WAIT_CEILING));
+    // The header's other legal form is an HTTP-date, and a device's clock is
+    // exactly what cannot be trusted to subtract one from.
+    assert_eq!(
+        advised_wait(Some("Wed, 21 Oct 2015 07:28:00 GMT"), ""),
+        None
+    );
+    assert_eq!(advised_wait(Some("-5"), ""), None);
+    assert_eq!(advised_wait(None, "not json"), None);
+    assert_eq!(advised_wait(None, ""), None);
+}
+
+/// A status code alone says nothing about which field the gateway rejected.
+#[test]
+fn a_refusal_carries_the_gateways_own_words() {
+    assert_eq!(
+        refusal_detail(r#"{"error":"unauthorized"}"#),
+        "unauthorized"
+    );
+    assert_eq!(refusal_detail("  plain text  "), "plain text");
+    assert_eq!(refusal_detail(""), "");
+    assert_eq!(refusal_detail(&"x".repeat(500)).chars().count(), 200);
 }

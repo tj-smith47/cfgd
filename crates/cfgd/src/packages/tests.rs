@@ -629,7 +629,7 @@ fn plan_installs_unavailable_bootstrappable_manager_optimistically() {
 
     // An unavailable-but-bootstrappable manager gets its Install planned
     // optimistically here; provisioning the manager itself is the
-    // Prerequisites phase's job (`ManagerAction::Provision`), planned
+    // Bootstrap phase's job (`ManagerAction::Provision`), planned
     // separately and not visible to this per-manager planner.
     assert_eq!(actions.len(), 1);
     assert!(
@@ -689,7 +689,7 @@ fn plan_sub_manager_installs_when_parent_bootstrapping() {
 
     // Should have: Install(brew-tap: some/tap), Install(brew: ripgrep) — the tap
     // registers the source a formula may come from, so it orders first; brew's
-    // own provisioning is a Prerequisites-phase concern this planner never sees.
+    // own provisioning is a Bootstrap-phase concern this planner never sees.
     assert_eq!(actions.len(), 2);
     assert!(matches!(&actions[0], PackageAction::Install { manager, .. } if manager == "brew-tap"));
     assert!(matches!(&actions[1], PackageAction::Install { manager, .. } if manager == "brew"));
@@ -1491,7 +1491,7 @@ fn plan_with_new_managers() {
     )));
 
     // snap: unavailable but bootstrappable → Install planned optimistically
-    // (provisioning is a separate Prerequisites-phase concern)
+    // (provisioning is a separate Bootstrap-phase concern)
     assert!(actions.iter().any(|a| matches!(
         a,
         PackageAction::Install { manager, packages, .. }
@@ -1799,7 +1799,19 @@ fn detect_system_method_names_only_a_manager_this_host_can_run() {
             tool,
         )
     };
-    match shared::detect_system_method(&|_| false) {
+    // snap's real arms: every Linux mediator, and no FreeBSD port. A manager
+    // that declines an arm must never have it named, or the plan binds
+    // execution to a step the cascade skips.
+    let snap_arms = shared::MediatedArms {
+        brew: None,
+        arms: &[
+            ("apt", &["snapd"]),
+            ("dnf", &["snapd"]),
+            ("zypper", &["snapd"]),
+            ("pkg", &[]),
+        ],
+    };
+    match shared::detect_system_method(&snap_arms, &|_| false) {
         Some("apt") => assert!(runnable("apt-get")),
         Some("dnf") => assert!(runnable("dnf")),
         Some("zypper") => assert!(runnable("zypper")),
@@ -1811,15 +1823,498 @@ fn detect_system_method_names_only_a_manager_this_host_can_run() {
     }
 }
 
+/// A plan's method is binding at execution, so the detector may only name an
+/// arm the cascade will actually run: a manager with no FreeBSD port declines
+/// `pkg`, and naming it anyway would bind the provision to a step
+/// `bootstrap_system_arms` skips.
+///
+/// Every arm is answered from `delivered` alone here — an emptied `PATH` and
+/// no tool seams leave the host with nothing to offer — so the two answers
+/// differ only in what the manager declares.
+#[cfg(target_os = "linux")]
+#[test]
+#[serial_test::serial]
+fn detect_system_method_names_the_pkg_arm_only_for_a_manager_that_declares_one() {
+    let _path_excl = cfgd_core::test_helpers::path_env_mutation_guard();
+    let _path = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
+    let _seams: Vec<_> = [
+        "CFGD_APT_GET_BIN",
+        "CFGD_DNF_BIN",
+        "CFGD_ZYPPER_BIN",
+        "CFGD_PKG_BIN",
+    ]
+    .into_iter()
+    .map(cfgd_core::test_helpers::EnvVarGuard::unset)
+    .collect();
+    let ported = shared::MediatedArms {
+        brew: None,
+        arms: &[
+            ("apt", &["golang"]),
+            ("dnf", &["golang"]),
+            ("zypper", &["golang"]),
+            ("pkg", &["lang/go"]),
+        ],
+    };
+    let unported = shared::MediatedArms {
+        brew: None,
+        arms: &[
+            ("apt", &["snapd"]),
+            ("dnf", &["snapd"]),
+            ("zypper", &["snapd"]),
+            ("pkg", &[]),
+        ],
+    };
+    assert_eq!(
+        shared::detect_system_method(&ported, &|m| m == "pkg"),
+        Some("pkg"),
+        "a manager with a port is planned through the pkg this run delivers"
+    );
+    assert_eq!(
+        shared::detect_system_method(&unported, &|m| m == "pkg"),
+        None,
+        "a manager with no port is never planned through pkg"
+    );
+}
+
 #[test]
 fn detect_brew_system_method_returns_valid_manager() {
-    // detect_brew_system_method cascades brew → apt → dnf → fallback
-    let method = shared::detect_brew_system_method("pip", &|_| false);
+    // detect_brew_system_method cascades brew → apt → dnf → pkg → fallback
+    let arms = shared::MediatedArms {
+        brew: Some("pipx"),
+        arms: &[
+            ("apt", &["pipx"]),
+            ("dnf", &["pipx"]),
+            ("pkg", &["devel/py-pipx"]),
+        ],
+    };
+    let method = shared::detect_brew_system_method(&arms, "pip", &|_| false);
     assert!(
-        method == "brew" || method == "apt" || method == "dnf" || method == "pip",
-        "expected brew, apt, dnf, or pip, got: {}",
+        ["brew", "apt", "dnf", "pkg", "pip"].contains(&method),
+        "expected brew, apt, dnf, pkg, or pip, got: {}",
         method
     );
+}
+
+/// One mediated manager, by the name its registry entry carries.
+fn mediated_manager(name: &str) -> Box<dyn PackageManager> {
+    match name {
+        "npm" => Box::new(super::npm::NpmManager),
+        "pipx" => Box::new(super::pipx::PipxManager),
+        "go" => Box::new(super::go::GoInstallManager),
+        "cargo" => Box::new(super::cargo::CargoManager),
+        other => panic!("{other} declares no mediated arms"),
+    }
+}
+
+/// Every arm a mediated manager declares installs through that arm's OWN
+/// manager: the verb comes from the family's or the Windows manager's own
+/// install declaration, and the package names from that repository. Driven
+/// through each manager's real `bootstrap` with the method a plan would have
+/// named, so the argv asserted here is the argv an apply runs.
+///
+/// The Windows arms are driven on any host. A planned method is binding, so the
+/// apply looks its arm up in both tables and answers for the arm the plan named
+/// rather than re-judging it against the host it woke up on.
+#[test]
+#[serial_test::serial]
+fn every_mediated_arm_installs_through_its_own_managers_argv() {
+    let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+    // cargo's arms deliver rustup alone, so its bootstrap settles a toolchain
+    // behind every one of them; the shim catches that second spawn.
+    let rustup = cfgd_core::test_helpers::ToolShim::install("CFGD_RUSTUP_BIN", 0, "", "");
+
+    // winget's install argv is one shape whatever the id, so the flags are
+    // spelled once here rather than per row.
+    let winget = |id: &str| {
+        format!("install --id {id} --silent --accept-package-agreements --accept-source-agreements")
+    };
+    // (manager, planned method, the arm's own seam, the argv it must log)
+    let cases: Vec<(&str, &str, &str, String)> = vec![
+        (
+            "npm",
+            "pacman",
+            "CFGD_PACMAN_BIN",
+            "-S --noconfirm nodejs npm".into(),
+        ),
+        ("npm", "apk", "CFGD_APK_BIN", "add nodejs npm".into()),
+        ("npm", "yum", "CFGD_YUM_BIN", "install -y nodejs npm".into()),
+        (
+            "npm",
+            "zypper",
+            "CFGD_ZYPPER_BIN",
+            "install -y nodejs24 npm24".into(),
+        ),
+        (
+            "npm",
+            "winget",
+            "CFGD_WINGET_BIN",
+            winget("OpenJS.NodeJS.LTS"),
+        ),
+        (
+            "npm",
+            "chocolatey",
+            "CFGD_CHOCO_BIN",
+            "install -y nodejs-lts".into(),
+        ),
+        (
+            "npm",
+            "scoop",
+            "CFGD_SCOOP_BIN",
+            "install nodejs-lts".into(),
+        ),
+        (
+            "pipx",
+            "pacman",
+            "CFGD_PACMAN_BIN",
+            "-S --noconfirm python-pipx".into(),
+        ),
+        ("pipx", "apk", "CFGD_APK_BIN", "add pipx".into()),
+        (
+            "pipx",
+            "zypper",
+            "CFGD_ZYPPER_BIN",
+            "install -y python3-pipx".into(),
+        ),
+        (
+            "pipx",
+            "chocolatey",
+            "CFGD_CHOCO_BIN",
+            "install -y pipx".into(),
+        ),
+        ("pipx", "scoop", "CFGD_SCOOP_BIN", "install pipx".into()),
+        (
+            "go",
+            "pacman",
+            "CFGD_PACMAN_BIN",
+            "-S --noconfirm go".into(),
+        ),
+        ("go", "apk", "CFGD_APK_BIN", "add go".into()),
+        ("go", "yum", "CFGD_YUM_BIN", "install -y golang".into()),
+        ("go", "zypper", "CFGD_ZYPPER_BIN", "install -y go".into()),
+        ("go", "winget", "CFGD_WINGET_BIN", winget("GoLang.Go")),
+        (
+            "go",
+            "chocolatey",
+            "CFGD_CHOCO_BIN",
+            "install -y golang".into(),
+        ),
+        ("go", "scoop", "CFGD_SCOOP_BIN", "install go".into()),
+        (
+            "cargo",
+            "winget",
+            "CFGD_WINGET_BIN",
+            winget("Rustlang.Rustup"),
+        ),
+        (
+            "cargo",
+            "chocolatey",
+            "CFGD_CHOCO_BIN",
+            "install -y rustup.install".into(),
+        ),
+        ("cargo", "scoop", "CFGD_SCOOP_BIN", "install rustup".into()),
+    ];
+
+    for (manager, method, seam, expected) in cases {
+        let shim = cfgd_core::test_helpers::ToolShim::install(seam, 0, "", "");
+        let (printer, _buf) =
+            cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+        let cx = cfgd_core::test_helpers::test_bootstrap_context(&printer).for_provision(method);
+        mediated_manager(manager)
+            .bootstrap(&cx)
+            .unwrap_or_else(|e| panic!("{manager} via {method} must install: {e}"));
+        let logged = shim.argv_log();
+        assert!(
+            logged.lines().any(|line| line.trim() == expected),
+            "{manager} via {method} must spawn `{expected}`, logged: {logged}"
+        );
+    }
+
+    let toolchain = rustup.argv_log();
+    assert_eq!(
+        toolchain
+            .lines()
+            .filter(|line| line.trim() == "default stable")
+            .count(),
+        3,
+        "each of cargo's three arms settles the toolchain behind it: {toolchain}"
+    );
+
+    // pipx's winget arm is the one arm that installs something other than the
+    // tool: winget delivers a Python interpreter and the pip step behind it
+    // installs pipx with it. Both spawns are asserted rather than the arm
+    // alone, each through its own seam, so the row runs on every host.
+    {
+        let pip = cfgd_core::test_helpers::ToolShim::install("CFGD_PIP_BIN", 0, "", "");
+        let shim = cfgd_core::test_helpers::ToolShim::install("CFGD_WINGET_BIN", 0, "", "");
+        let (printer, _buf) =
+            cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+        let cx = cfgd_core::test_helpers::test_bootstrap_context(&printer).for_provision("winget");
+        mediated_manager("pipx")
+            .bootstrap(&cx)
+            .expect("pipx via winget must install");
+        let interpreter = winget("Python.Python.3.13");
+        let logged = shim.argv_log();
+        assert!(
+            logged.lines().any(|line| line.trim() == interpreter),
+            "pipx via winget must spawn `{interpreter}`, logged: {logged}"
+        );
+        let pip_log = pip.argv_log();
+        assert!(
+            pip_log
+                .lines()
+                .any(|line| line.trim() == "install --user pipx"),
+            "the pip step behind the winget arm installs pipx, logged: {pip_log}"
+        );
+    }
+}
+
+/// The winget route registers the directory its pip came from.
+///
+/// A Windows installer adds the interpreter's directory to the user's `PATH` in
+/// the registry, which this process cannot see, so nothing later in the run
+/// would resolve that pip or the pipx the step below lands beside it.
+/// `command_path` searches what a bootstrap registered as well as `$PATH`, and
+/// this is what puts it there.
+#[test]
+#[serial_test::serial]
+fn the_winget_route_registers_the_directory_its_pip_came_from() {
+    let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+    let _winget = cfgd_core::test_helpers::ToolShim::install("CFGD_WINGET_BIN", 0, "", "");
+    let _pip = cfgd_core::test_helpers::ToolShim::install("CFGD_PIP_BIN", 0, "", "");
+    let planted = std::path::PathBuf::from(std::env::var("CFGD_PIP_BIN").expect("the seam is set"));
+    let interpreter_dir = planted.parent().expect("the shim has a directory");
+
+    let (printer, _buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let cx = cfgd_core::test_helpers::test_bootstrap_context(&printer).for_provision("winget");
+    mediated_manager("pipx")
+        .bootstrap(&cx)
+        .expect("pipx via winget must install");
+
+    let registered = cfgd_core::bootstrapped_path_dirs();
+    assert!(
+        registered.iter().any(|dir| dir == interpreter_dir),
+        "the run must keep resolving what the interpreter carries: {registered:?}"
+    );
+}
+
+/// A two-step route names the tool that actually failed.
+///
+/// winget did its half: it installed the interpreter it packages. When the pip
+/// behind it cannot be found, or runs and fails, the refusal has to say pip, or
+/// the reader goes off checking a winget that worked and re-runs a plan that
+/// will fail the same way forever.
+#[test]
+#[serial_test::serial]
+fn a_failed_pip_step_behind_the_winget_arm_names_pip_and_not_winget() {
+    let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+    let _winget = cfgd_core::test_helpers::ToolShim::install("CFGD_WINGET_BIN", 0, "", "");
+
+    let refusal = |cx_printer: &cfgd_core::output::Printer| {
+        let cx =
+            cfgd_core::test_helpers::test_bootstrap_context(cx_printer).for_provision("winget");
+        mediated_manager("pipx")
+            .bootstrap(&cx)
+            .expect_err("the pip step behind the arm did not finish")
+            .to_string()
+    };
+
+    // pip ran and exited non-zero, carrying its own diagnostic.
+    let (printer, _buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let _pip =
+        cfgd_core::test_helpers::ToolShim::install("CFGD_PIP_BIN", 1, "", "no matching dist");
+    let failed = refusal(&printer);
+    assert!(
+        failed.contains("pip could not finish installing pipx")
+            && failed.contains("no matching dist"),
+        "the refusal names pip and carries what pip said: {failed}"
+    );
+    assert!(
+        !failed.contains("winget could not install"),
+        "winget installed what it packages, so it is not the failing party: {failed}"
+    );
+    drop(_pip);
+
+    // No pip at all after the arm ran: the same attribution, no diagnostic to
+    // carry. Every route to a pip this host holds is closed, or the machine
+    // answers for the one the interpreter never left behind: `PATH`, both
+    // seams, the `%LOCALAPPDATA%` tree a Windows installer writes into, and the
+    // `py` launcher Windows keeps beside itself, which a real Python install
+    // leaves at `%SystemRoot%\py.exe` and which really did run a
+    // `pip install --user pipx` here.
+    let _path_excl = cfgd_core::test_helpers::path_env_mutation_guard();
+    let _path = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
+    let _pip_seam = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_PIP_BIN");
+    let _pip3_seam = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_PIP3_BIN");
+    let empty = tempfile::tempdir().expect("tempdir");
+    let empty_dir = empty.path().to_string_lossy().into_owned();
+    let _local_appdata =
+        cfgd_core::test_helpers::EnvVarGuard::set("LOCALAPPDATA", empty_dir.as_str());
+    let _system_root = cfgd_core::test_helpers::EnvVarGuard::set("SystemRoot", empty_dir.as_str());
+    let (printer, _buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let absent = refusal(&printer);
+    assert!(
+        absent.contains("pip could not finish installing pipx"),
+        "an absent pip is still pip's half of the route: {absent}"
+    );
+    assert!(
+        !absent.contains("which is not available on this host"),
+        "winget is here and ran; it is not the thing that went missing: {absent}"
+    );
+}
+
+/// A pip the reader nominated through the seam is the route's pip, and its
+/// failure ends the route.
+///
+/// The host's own pip is on `PATH` and works. If the seam were merely one
+/// candidate among the names `pip_tool_order` walks, the route would retry
+/// against that one, install pipx for real on the machine running the suite,
+/// and report a success the reader's pip never had.
+#[test]
+#[serial_test::serial]
+fn a_failing_seam_pip_is_never_retried_against_the_hosts_own_pip() {
+    let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+    let _memo = cfgd_core::test_helpers::CommandPathMemoTtlGuard::always_expired();
+    let _winget = cfgd_core::test_helpers::ToolShim::install("CFGD_WINGET_BIN", 0, "", "");
+    let _seam =
+        cfgd_core::test_helpers::ToolShim::install("CFGD_PIP_BIN", 1, "", "no matching dist");
+
+    // A pip that answers every argv with success, reachable by bare name.
+    let host = tempfile::tempdir().expect("tempdir");
+    cfgd_core::test_helpers::write_tool_shim(
+        host.path(),
+        "pip",
+        &[cfgd_core::test_helpers::ShimArm::always("", "", 0)],
+    );
+    let _path_excl = cfgd_core::test_helpers::path_env_mutation_guard();
+    let _path = cfgd_core::test_helpers::EnvVarGuard::set(
+        "PATH",
+        host.path().to_str().expect("utf-8 tempdir"),
+    );
+
+    let (printer, _buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let cx = cfgd_core::test_helpers::test_bootstrap_context(&printer).for_provision("winget");
+    let err = mediated_manager("pipx")
+        .bootstrap(&cx)
+        .expect_err("the pip the seam names failed, so the route did")
+        .to_string();
+    assert!(
+        err.contains("pip could not finish installing pipx") && err.contains("no matching dist"),
+        "the refusal carries what the seam's own pip said: {err}"
+    );
+}
+
+/// The same attribution on cargo's two-step route: a Windows mediator installs
+/// rustup, and the toolchain rustup then fails to fetch is rustup's failure,
+/// not the mediator's.
+#[test]
+#[serial_test::serial]
+fn a_failed_toolchain_step_behind_a_windows_arm_names_rustup_and_not_the_mediator() {
+    let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+    let _rustup =
+        cfgd_core::test_helpers::ToolShim::install("CFGD_RUSTUP_BIN", 1, "", "could not download");
+    // All three Windows arms deliver rustup alone and reach the toolchain step
+    // through the same call, so each one can point the blame at its own
+    // mediator.
+    for (method, seam) in [
+        ("winget", "CFGD_WINGET_BIN"),
+        ("chocolatey", "CFGD_CHOCO_BIN"),
+        ("scoop", "CFGD_SCOOP_BIN"),
+    ] {
+        let _mediator = cfgd_core::test_helpers::ToolShim::install(seam, 0, "", "");
+        let (printer, _buf) =
+            cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+        let cx = cfgd_core::test_helpers::test_bootstrap_context(&printer).for_provision(method);
+        let err = mediated_manager("cargo")
+            .bootstrap(&cx)
+            .expect_err("the toolchain step behind the arm did not finish")
+            .to_string();
+        assert!(
+            err.contains("rustup could not finish installing cargo")
+                && err.contains("could not download"),
+            "the refusal names rustup and carries what rustup said: {err}"
+        );
+        assert!(
+            !err.contains(&format!("{method} could not install")),
+            "{method} installed the rustup it packages, so it is not the failing party: {err}"
+        );
+    }
+}
+
+/// An arm a mediator declined is not a route, so a plan that somehow named one
+/// is refused rather than answered with the Linux names.
+///
+/// The refusal says the manager does not package the tool, which is a different
+/// fact from the manager being absent: yum really is on a RHEL 7 host, so
+/// "re-run to re-plan" would send the reader round a circle that never closes.
+#[test]
+#[serial_test::serial]
+fn a_mediator_that_declined_an_arm_refuses_a_plan_naming_it() {
+    let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+    for (manager, method, seam) in [
+        ("pipx", "yum", "CFGD_YUM_BIN"),
+        ("cargo", "apt", "CFGD_APT_GET_BIN"),
+        ("cargo", "pkg", "CFGD_PKG_BIN"),
+    ] {
+        let shim = cfgd_core::test_helpers::ToolShim::install(seam, 0, "", "");
+        let (printer, _buf) =
+            cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+        let cx = cfgd_core::test_helpers::test_bootstrap_context(&printer).for_provision(method);
+        let err = mediated_manager(manager)
+            .bootstrap(&cx)
+            .expect_err("a declined arm installs nothing");
+        let msg = err.to_string();
+        assert!(
+            msg.contains(&format!(
+                "installs {manager} via {method}, which does not package it"
+            )),
+            "the refusal names the manager, the method and the reason: {msg}"
+        );
+        assert_eq!(
+            shim.invocation_count(),
+            0,
+            "a declined arm spawns nothing: {}",
+            shim.argv_log()
+        );
+    }
+}
+
+/// A host carrying none of winget, chocolatey and scoop refuses a plan that
+/// named one of them, and spawns nothing: the mediator went away between the
+/// plan and the apply, which is a re-plan rather than a substitution.
+#[test]
+#[serial_test::serial]
+fn a_plan_naming_a_windows_mediator_this_host_lacks_is_refused_without_a_spawn() {
+    let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+    let _seams: Vec<_> = ["CFGD_WINGET_BIN", "CFGD_CHOCO_BIN", "CFGD_SCOOP_BIN"]
+        .into_iter()
+        .map(cfgd_core::test_helpers::EnvVarGuard::unset)
+        .collect();
+    let _path_excl = cfgd_core::test_helpers::path_env_mutation_guard();
+    let _path = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
+
+    for method in ["winget", "chocolatey", "scoop"] {
+        let (printer, buf) =
+            cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+        let cx = cfgd_core::test_helpers::test_bootstrap_context(&printer).for_provision(method);
+        let err = super::npm::NpmManager
+            .bootstrap(&cx)
+            .expect_err("no mediator is here to run the planned arm");
+        let msg = err.to_string();
+        assert!(
+            msg.contains(&format!("installs npm via {method}"))
+                && msg.contains("not available on this host"),
+            "the refusal names the planned method and says it is gone: {msg}"
+        );
+        assert!(
+            !cfgd_core::test_helpers::captured_text(&buf).contains("Installing"),
+            "nothing was spawned: {}",
+            cfgd_core::test_helpers::captured_text(&buf)
+        );
+    }
 }
 
 // --- pip user-scripts directory (the pipx `pip` arm's declared dir) ---
@@ -2273,6 +2768,239 @@ fn parse_cargo_toml_invalid_toml() {
 
 // --- resolve_manifest_packages edge cases ---
 
+/// A manifest's names reach the same argv a declared one does, so the merge
+/// judges them against the same grammar the profile parse used, and names the
+/// file, and where a file holds several lists the list, that carried the
+/// refused one.
+#[test]
+fn a_manifest_carrying_a_metacharacter_name_is_refused_naming_the_file() {
+    let dir = tempfile::tempdir().unwrap();
+    // A Brewfile holds three lists whose positions each restart at zero, so it
+    // carries a clean tap ahead of the refused formula: a subject naming only
+    // the file and the index would read the same for either list.
+    std::fs::write(
+        dir.path().join("Brewfile"),
+        "tap \"homebrew/cask-fonts\"\nbrew \"foo&calc\"\n",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("packages.apt.txt"), "foo&calc\n").unwrap();
+    std::fs::write(
+        dir.path().join("package.json"),
+        r#"{"dependencies": {"foo&calc": "^1.0.0"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("Cargo.toml"),
+        "[dependencies]\n\"foo&calc\" = \"4\"\n",
+    )
+    .unwrap();
+
+    for (subject, spec) in [
+        (
+            "Brewfile formulae[0]",
+            PackagesSpec {
+                brew: Some(cfgd_core::config::BrewSpec {
+                    file: Some("Brewfile".into()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        ),
+        (
+            "packages.apt.txt[0]",
+            PackagesSpec {
+                apt: Some(cfgd_core::config::AptSpec {
+                    file: Some("packages.apt.txt".into()),
+                    packages: vec![],
+                }),
+                ..Default::default()
+            },
+        ),
+        (
+            "package.json[0]",
+            PackagesSpec {
+                npm: Some(cfgd_core::config::NpmSpec {
+                    file: Some("package.json".into()),
+                    global: vec![],
+                }),
+                ..Default::default()
+            },
+        ),
+        (
+            "Cargo.toml[0]",
+            PackagesSpec {
+                cargo: Some(cfgd_core::config::CargoSpec {
+                    file: Some("Cargo.toml".into()),
+                    packages: vec![],
+                }),
+                ..Default::default()
+            },
+        ),
+    ] {
+        let mut spec = spec;
+        let why = resolve_manifest_packages(&mut spec, dir.path())
+            .expect_err("a manifest name a command line reads as syntax is refused")
+            .to_string();
+        assert!(
+            why.contains(subject) && why.contains("foo&calc"),
+            "the refusal names the subject `{subject}` and the refused name: {why}"
+        );
+    }
+}
+
+/// Two manifests are declared and only one carries a refused name, so the
+/// refusal has to name that one rather than every file the merge read.
+#[test]
+fn a_manifest_refusal_names_only_the_file_that_carried_the_name() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("packages.apt.txt"),
+        "ripgrep
+fd-find
+",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("Cargo.toml"),
+        "[dependencies]\nclap = \"4\"\n\"foo&calc\" = \"1\"\n",
+    )
+    .unwrap();
+
+    let mut spec = PackagesSpec {
+        apt: Some(cfgd_core::config::AptSpec {
+            file: Some("packages.apt.txt".into()),
+            packages: vec![],
+        }),
+        cargo: Some(cfgd_core::config::CargoSpec {
+            file: Some("Cargo.toml".into()),
+            packages: vec![],
+        }),
+        ..Default::default()
+    };
+
+    let why = resolve_manifest_packages(&mut spec, dir.path())
+        .expect_err("the offending manifest is refused")
+        .to_string();
+    assert!(
+        why.contains("Cargo.toml[1]") && why.contains("foo&calc"),
+        "the refusal names the file that carried the name and its position: {why}"
+    );
+    assert!(
+        !why.contains("packages.apt.txt"),
+        "the clean manifest is not named: {why}"
+    );
+}
+
+/// A declared manifest path is resolved against the config directory, so one
+/// that climbs out of it is refused before the join rather than read.
+#[test]
+fn a_manifest_path_that_climbs_out_of_the_config_dir_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut spec = PackagesSpec {
+        apt: Some(cfgd_core::config::AptSpec {
+            file: Some("../elsewhere/packages.txt".into()),
+            packages: vec![],
+        }),
+        ..Default::default()
+    };
+
+    let why = resolve_manifest_packages(&mut spec, dir.path())
+        .expect_err("a manifest path leaving the config dir is refused")
+        .to_string();
+    assert!(
+        why.contains("../elsewhere/packages.txt") && why.contains(".."),
+        "the refusal names the declared path: {why}"
+    );
+}
+
+/// An absolute path discards the config directory at the join, so the
+/// containment the declaration answers to would bound nothing.
+#[test]
+fn an_absolute_manifest_path_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let outside = dir.path().join("outside.txt");
+    std::fs::write(&outside, "ripgrep\n").unwrap();
+    let config_dir = dir.path().join("config");
+    std::fs::create_dir_all(&config_dir).unwrap();
+
+    let mut spec = PackagesSpec {
+        apt: Some(cfgd_core::config::AptSpec {
+            file: Some(outside.to_string_lossy().into_owned()),
+            packages: vec![],
+        }),
+        ..Default::default()
+    };
+
+    let why = resolve_manifest_packages(&mut spec, &config_dir)
+        .expect_err("an absolute manifest path is refused")
+        .to_string();
+    assert!(
+        why.contains("relative to the config directory"),
+        "the refusal says what a manifest path must be: {why}"
+    );
+    assert!(
+        spec.apt.as_ref().is_some_and(|apt| apt.packages.is_empty()),
+        "nothing outside the config directory was read"
+    );
+}
+
+/// A symlink sitting inside the config directory can still point out of it,
+/// and only canonicalization sees that.
+#[test]
+#[cfg(unix)]
+fn a_manifest_symlink_pointing_out_of_the_config_dir_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let outside = dir.path().join("outside.txt");
+    std::fs::write(&outside, "ripgrep\n").unwrap();
+    let config_dir = dir.path().join("config");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::os::unix::fs::symlink(&outside, config_dir.join("packages.apt.txt")).unwrap();
+
+    let mut spec = PackagesSpec {
+        apt: Some(cfgd_core::config::AptSpec {
+            file: Some("packages.apt.txt".into()),
+            packages: vec![],
+        }),
+        ..Default::default()
+    };
+
+    let why = resolve_manifest_packages(&mut spec, &config_dir)
+        .expect_err("a manifest symlink escaping the config dir is refused")
+        .to_string();
+    assert!(
+        why.contains("packages.apt.txt") && why.contains("outside the config directory"),
+        "the refusal names the declared path and why: {why}"
+    );
+    assert!(
+        spec.apt.as_ref().is_some_and(|apt| apt.packages.is_empty()),
+        "nothing the symlink pointed at was read"
+    );
+}
+
+/// The containment refuses what leaves the config directory and nothing else:
+/// an ordinary in-tree manifest still merges.
+#[test]
+fn a_relative_in_tree_manifest_path_is_read() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("lists")).unwrap();
+    std::fs::write(dir.path().join("lists/apt.txt"), "ripgrep\n").unwrap();
+
+    let mut spec = PackagesSpec {
+        apt: Some(cfgd_core::config::AptSpec {
+            file: Some("lists/apt.txt".into()),
+            packages: vec![],
+        }),
+        ..Default::default()
+    };
+
+    resolve_manifest_packages(&mut spec, dir.path()).unwrap();
+    assert_eq!(
+        spec.apt.as_ref().map(|apt| apt.packages.clone()),
+        Some(vec!["ripgrep".to_string()]),
+        "an in-tree manifest still merges"
+    );
+}
+
 #[test]
 fn resolve_manifest_packages_npm_file() {
     let dir = tempfile::tempdir().unwrap();
@@ -2545,7 +3273,7 @@ fn plan_packages_mixed_available_and_unavailable() {
     )));
 
     // nix: unavailable + bootstrappable → install planned optimistically
-    // (provisioning is a separate Prerequisites-phase concern)
+    // (provisioning is a separate Bootstrap-phase concern)
     assert!(actions.iter().any(|a| matches!(
         a,
         PackageAction::Install { manager, packages, .. }
@@ -3030,121 +3758,106 @@ fn all_package_managers_unique_names() {
     );
 }
 
+/// Whether a mediator THIS manager declares is on this host, read off the
+/// manager's own arms table and this host's own arm list rather than a tool
+/// list typed here: a table that gains or loses an arm moves this answer with
+/// it, where a retyped list went on asserting the old population.
+fn a_declared_mediator_is_present(m: &dyn cfgd_core::providers::PackageManager) -> bool {
+    if m.mediated_packages("brew").is_some() && super::shared::brew_available() {
+        return true;
+    }
+    super::shared::host_arms().iter().any(|(method, tool)| {
+        m.mediated_packages(method).is_some() && super::shared::system_tool_available(tool)
+    })
+}
+
+/// Which managers can be provisioned here, and which can never be.
+///
+/// A manager's own bootstrap arm runs only where its installer can: the POSIX
+/// shell arms (brew's and nix's installers, rustup piped into `sh`, npm's nvm)
+/// exist off Windows, chocolatey's and scoop's PowerShell installers exist on
+/// Windows alone, and snap and flatpak are Linux mediators. A plan's method is
+/// binding at execution, so a manager with no runnable arm here plans nothing
+/// rather than naming one.
+///
+/// A manager whose own arm this platform cannot run is still provisionable
+/// through a mediator: on Windows npm, cargo, pipx and go all reach their tool
+/// through winget, chocolatey or scoop, which is the whole point of the Windows
+/// rows in their tables. Their bootstrappability there tracks whether such a
+/// mediator is actually on the host, so the expectation is derived from the
+/// tables rather than asserted blanket.
 #[test]
 fn all_package_managers_bootstrap_consistency() {
     let managers = all_package_managers();
 
-    // snap and flatpak are Linux-only; they plan nothing elsewhere.
-    #[cfg(target_os = "linux")]
-    let bootstrappable: HashSet<&str> = [
-        "brew",
-        "cargo",
-        "npm",
-        "pipx",
-        "nix",
-        "go",
-        "chocolatey",
-        "scoop",
-        "snap",
-        "flatpak",
-    ]
-    .into();
-    #[cfg(not(target_os = "linux"))]
-    let bootstrappable: HashSet<&str> = [
-        "brew",
-        "cargo",
-        "npm",
-        "pipx",
-        "nix",
-        "go",
-        "chocolatey",
-        "scoop",
-    ]
-    .into();
+    // Provisionable everywhere, by a mediator where their own arm cannot run:
+    // npm's nvm and rustup's installer are POSIX-only, and the three Windows
+    // managers package node and rustup themselves.
+    let mut bootstrappable: HashSet<&str> = ["pipx", "go", "npm", "cargo"].into();
+    if cfg!(windows) {
+        bootstrappable.extend(["chocolatey", "scoop"]);
+    } else {
+        bootstrappable.extend(["brew", "nix"]);
+    }
+    if cfg!(target_os = "linux") {
+        bootstrappable.extend(["snap", "flatpak"]);
+    }
 
-    #[cfg(target_os = "linux")]
-    let not_bootstrappable: HashSet<&str> = [
-        "brew-tap",
-        "brew-cask",
-        "apt",
-        "dnf",
-        "apk",
-        "pacman",
-        "zypper",
-        "yum",
-        "pkg",
-        "winget",
-    ]
-    .into();
-    #[cfg(not(target_os = "linux"))]
-    let not_bootstrappable: HashSet<&str> = [
-        "brew-tap",
-        "brew-cask",
-        "apt",
-        "dnf",
-        "apk",
-        "pacman",
-        "zypper",
-        "yum",
-        "pkg",
-        "winget",
-        "snap",
-        "flatpak",
-    ]
-    .into();
+    // The managers whose ONLY route here is a mediator: they plan a bootstrap
+    // exactly when one of their declared mediators is on this host.
+    let mediated_only: HashSet<&str> = if cfg!(windows) {
+        ["go", "npm", "cargo", "pipx"].into()
+    } else {
+        ["go"].into()
+    };
+
+    // The complement, derived from the registry rather than retyped, so a
+    // manager added to cfgd is classified by this test instead of escaping it.
+    let not_bootstrappable: HashSet<&str> = managers
+        .iter()
+        .map(|m| m.name())
+        .filter(|name| !bootstrappable.contains(name))
+        .collect();
+    assert!(
+        not_bootstrappable.contains("winget") && not_bootstrappable.contains("apt"),
+        "a manager that ships with its own operating system is never bootstrappable: {not_bootstrappable:?}"
+    );
 
     for m in &managers {
         if not_bootstrappable.contains(m.name()) {
-            // Safety invariant (every platform): a system package manager must
-            // never report bootstrappable — cfgd cannot self-install the OS's
-            // own manager, and claiming otherwise would drive a nonsensical
-            // install attempt.
+            // Safety invariant (every platform): a manager outside the set
+            // above reports no plan at all. The key is that complement, not
+            // whether the manager is a system one: chocolatey and scoop are
+            // system managers that Windows DOES bootstrap, through their own
+            // PowerShell installers, while apt and winget ship with the
+            // operating system and cfgd cannot install either.
             assert!(
                 m.bootstrap_plan().is_none(),
                 "{} should NOT be bootstrappable",
                 m.name()
             );
         } else if bootstrappable.contains(m.name()) {
-            // The positive direction is environment-conditional: each user
-            // manager can self-install only where its prerequisite tooling
-            // exists (curl, a system package manager, or pip). Those
-            // prerequisites are always present on the Linux/macOS/Windows CI
-            // runners but not on a minimal FreeBSD base, where several managers
-            // correctly report not-bootstrappable. Skip the positive assertion
-            // there rather than assert a platform whose bootstrap prerequisites
-            // this test cannot guarantee.
-            #[cfg(not(target_os = "freebsd"))]
-            {
-                // `go` alone bootstraps only through brew or a *system* package
-                // manager (not curl, which the others fall back to), so a shell
-                // without one on PATH — e.g. brew not exported into a non-login
-                // macOS session — correctly reports it non-bootstrappable.
-                // Assert the wiring in whichever direction the environment
-                // dictates instead of a blanket true that false-fails there;
-                // CI runners have a system manager, so this still asserts go IS
-                // bootstrappable. The mediators are named here rather than read
-                // back from the detector, so a detector that stopped seeing one
-                // of them fails this test instead of agreeing with itself.
-                if m.name() == "go" {
-                    let mediator_present = super::shared::brew_available()
-                        || ["apt-get", "dnf", "zypper"].into_iter().any(|tool| {
-                            cfgd_core::command_available_with_seam(
-                                &format!("CFGD_{}_BIN", tool.to_uppercase().replace('-', "_")),
-                                tool,
-                            )
-                        });
-                    assert_eq!(
-                        m.bootstrap_plan().is_some(),
-                        mediator_present,
-                        "go bootstrappability must track the mediators its bootstrap can run"
-                    );
-                } else {
-                    assert!(
-                        m.bootstrap_plan().is_some(),
-                        "{} should be bootstrappable",
-                        m.name()
-                    );
-                }
+            // A mediator-only manager reports bootstrappable exactly where one
+            // of its own mediators is present, so a shell without one on PATH
+            // (brew not exported into a non-login macOS session) correctly
+            // reports it non-bootstrappable instead of failing a blanket claim.
+            // CI runners and the FreeBSD host both carry a system manager, so
+            // this still asserts the positive there. On Windows pipx keeps a
+            // second route: the pip arm answers once an interpreter is present,
+            // so its plan may stand with no mediator at all.
+            if mediated_only.contains(m.name()) && m.name() != "pipx" {
+                assert_eq!(
+                    m.bootstrap_plan().is_some(),
+                    a_declared_mediator_is_present(m.as_ref()),
+                    "{}'s bootstrappability must track the mediators its bootstrap can run",
+                    m.name()
+                );
+            } else {
+                assert!(
+                    m.bootstrap_plan().is_some(),
+                    "{} should be bootstrappable",
+                    m.name()
+                );
             }
         }
     }
@@ -3154,6 +3867,10 @@ fn all_package_managers_bootstrap_consistency() {
 /// being planned delivers brew, whatever this host has. The brew arm is
 /// declared by `mediated_packages("brew")`, so a manager that grows one is
 /// walked here without being named.
+///
+/// Windows is the complementary claim over the same population: brew has no
+/// build there, so a method binding at execution may never name it, and the
+/// cascade answers with a Windows mediator or with nothing at all.
 #[test]
 fn every_manager_with_a_brew_arm_plans_via_the_brew_this_run_delivers() {
     let brew_delivered = |m: &str| m == "brew";
@@ -3162,9 +3879,18 @@ fn every_manager_with_a_brew_arm_plans_via_the_brew_this_run_delivers() {
         if m.mediated_packages("brew").is_none() || m.name() == "brew" {
             continue;
         }
-        let plan = m
-            .bootstrap_plan_given(&brew_delivered)
-            .unwrap_or_else(|| panic!("{} plans nothing with brew delivered", m.name()));
+        let planned = m.bootstrap_plan_given(&brew_delivered);
+        if cfg!(windows) {
+            assert!(
+                planned.as_ref().is_none_or(|p| p.method != "brew"),
+                "{} named an arm Windows cannot run: {planned:?}",
+                m.name()
+            );
+            walked.push(m.name().to_string());
+            continue;
+        }
+        let plan =
+            planned.unwrap_or_else(|| panic!("{} plans nothing with brew delivered", m.name()));
         assert_eq!(
             plan.method,
             "brew",
@@ -3181,6 +3907,8 @@ fn every_manager_with_a_brew_arm_plans_via_the_brew_this_run_delivers() {
 
 #[test]
 fn every_bootstrap_plan_declares_usable_tools_and_dirs() {
+    // host-tool-ok: every plan's feasibility is asserted against the same probe it
+    // is derived from, so the comparison holds on a host carrying any of the tools.
     // One gate over the whole registry, so a manager added later cannot declare
     // a prerequisite nothing can install or a PATH entry nothing can resolve.
     // The read guard brackets BOTH probe passes: `feasible == obtainable`
@@ -3209,10 +3937,14 @@ fn every_bootstrap_plan_declares_usable_tools_and_dirs() {
     for (name, plan, feasible) in plans {
         assert!(!plan.method.trim().is_empty(), "{name}: empty method");
         // The prerequisite population is closed on purpose: a plan may only
-        // name a tool a system manager can actually install for it.
+        // name a tool whose absence the planner can give as the cause. `curl`
+        // is installable from a system manager; `pip3`, `pip` and `bash` are
+        // not obtainable under those names from any of them, so a host without
+        // one makes the plan infeasible and the manager is refused with the
+        // tool named instead of being dropped.
         for tool in &plan.requires {
             assert!(
-                ["curl", "pip3", "pip"].contains(&tool.as_str()),
+                ["curl", "pip3", "pip", "bash"].contains(&tool.as_str()),
                 "{name}: unknown prerequisite {tool}"
             );
         }
@@ -3901,15 +4633,22 @@ fn cmd_builders_return_valid_commands() {
 // --- BrewManager::path_dirs called through trait ---
 
 #[test]
+#[serial_test::serial]
 fn brew_path_dirs_through_trait() {
+    // `brew_path_dirs` answers from `CFGD_BREW_BIN` when it is set, so the
+    // platform arm this pins is only reachable with the seam clear; a sibling
+    // test's brew shim is a process-global that would answer in its place.
+    let _no_seam = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_BREW_BIN");
     let printer = cfgd_core::test_helpers::test_printer();
     let state = cfgd_core::test_helpers::test_state();
     let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
     let mgr: Box<dyn PackageManager> = Box::new(BrewManager);
     let dirs = mgr.path_dirs(&cx);
-    // On Linux: should have linuxbrew dirs
-    // On macOS: should have homebrew dirs
-    // On Windows: should be empty
+    assert_eq!(
+        dirs,
+        super::shared::brew_path_dirs(),
+        "the trait answers as the free function does"
+    );
     if cfg!(target_os = "linux") {
         assert_eq!(dirs.len(), 2);
     }
@@ -4221,7 +4960,8 @@ fn a_cached_manifest_is_read_once_per_run() {
 
     let cache = ManifestCache::default();
     let mut first = apt_manifest_spec();
-    resolve_manifest_packages_cached(&mut first, dir.path(), &cache).unwrap();
+    resolve_manifest_packages_cached(&mut first, &mut LayerSources::default(), dir.path(), &cache)
+        .unwrap();
     assert_eq!(resolved_apt(first), vec!["git", "curl"]);
 
     // Rewritten to the same length with the same mtime restored: the file is
@@ -4237,7 +4977,13 @@ fn a_cached_manifest_is_read_once_per_run() {
         .unwrap();
 
     let mut second = apt_manifest_spec();
-    resolve_manifest_packages_cached(&mut second, dir.path(), &cache).unwrap();
+    resolve_manifest_packages_cached(
+        &mut second,
+        &mut LayerSources::default(),
+        dir.path(),
+        &cache,
+    )
+    .unwrap();
     assert_eq!(resolved_apt(second), vec!["git", "curl"]);
 }
 
@@ -4249,14 +4995,21 @@ fn a_changed_manifest_is_read_again() {
 
     let cache = ManifestCache::default();
     let mut first = apt_manifest_spec();
-    resolve_manifest_packages_cached(&mut first, dir.path(), &cache).unwrap();
+    resolve_manifest_packages_cached(&mut first, &mut LayerSources::default(), dir.path(), &cache)
+        .unwrap();
     assert_eq!(resolved_apt(first), vec!["git", "curl"]);
 
     // A lifecycle hook rewriting a manifest mid-run changes its length, so the
     // entry describing the old bytes is retired rather than merged.
     std::fs::write(&manifest, "ripgrep\n").unwrap();
     let mut second = apt_manifest_spec();
-    resolve_manifest_packages_cached(&mut second, dir.path(), &cache).unwrap();
+    resolve_manifest_packages_cached(
+        &mut second,
+        &mut LayerSources::default(),
+        dir.path(),
+        &cache,
+    )
+    .unwrap();
     assert_eq!(resolved_apt(second), vec!["ripgrep"]);
 }
 
@@ -5107,4 +5860,360 @@ fn a_stricter_readable_floor_beats_a_family_grammar_one_the_manager_can_read() {
             "the strictest floor in the family's own grammar survives: {effective:?}"
         );
     }
+}
+
+/// A `pkg` arm names PORT ORIGINS. FreeBSD's Python packages carry the flavour
+/// in the name (`py311-pipx`), so a bare `pipx` resolves to nothing and a
+/// flavoured name goes stale the moment the default Python moves; the origin
+/// (`devel/py-pipx`) is what stays correct. Walked over the whole registry so a
+/// manager that grows a `pkg` arm answers this without being named.
+#[test]
+fn every_mediated_manager_names_its_pkg_origin() {
+    let mut walked = Vec::new();
+    for m in all_package_managers() {
+        let Some(pkgs) = m.mediated_packages("pkg") else {
+            continue;
+        };
+        for pkg in &pkgs {
+            let (category, name) = pkg
+                .split_once('/')
+                .unwrap_or_else(|| panic!("{}'s pkg entry {pkg} is not a port origin", m.name()));
+            assert!(
+                !category.is_empty() && !name.is_empty() && !name.contains('/'),
+                "{}'s pkg entry {pkg} is not a <category>/<name> port origin",
+                m.name()
+            );
+        }
+        walked.push(m.name().to_string());
+    }
+    for expected in ["pipx", "go", "npm"] {
+        assert!(
+            walked.iter().any(|n| n == expected),
+            "the walk must cover {expected}, whose FreeBSD bootstrap this arm exists for: {walked:?}"
+        );
+    }
+}
+
+/// The window [`silence_every_mediator_but_pkg`] holds open, and the ORDER its
+/// guards release in.
+///
+/// A struct's fields drop in DECLARATION order, the reverse of how locals drop,
+/// so the exclusive `PATH` guard is declared LAST here and released last: every
+/// `EnvVarGuard` above it restores its variable while the lock is still held,
+/// which is the whole window the lock exists to close. Reordering these fields
+/// would put the `PATH` restore outside the lock, where a parallel reader in the
+/// same binary can observe the emptied value.
+struct SilencedMediators {
+    _memo: cfgd_core::test_helpers::CommandPathMemoTtlGuard,
+    _seams: Vec<cfgd_core::test_helpers::EnvVarGuard>,
+    _brew: cfgd_core::test_helpers::EnvVarGuard,
+    _path: cfgd_core::test_helpers::EnvVarGuard,
+    _path_excl: cfgd_core::test_helpers::ExclusiveEnvGuard,
+}
+
+/// Every mediator the pipx and npm cascades outrank `pkg` with, silenced so a
+/// bare FreeBSD host can be simulated on any developer box: an emptied `PATH`,
+/// no tool seams, and a `CFGD_BREW_BIN` naming a file that does not exist,
+/// which `brew_available` answers on alone.
+///
+/// The guards are returned rather than dropped, so a caller holds the window
+/// open for as long as it reads a cascade; [`SilencedMediators`] owns the order
+/// they release in.
+fn silence_every_mediator_but_pkg() -> SilencedMediators {
+    // A mediator this process resolved moments ago would otherwise answer from
+    // the memo, which the emptied `PATH` below cannot reach.
+    let memo = cfgd_core::test_helpers::CommandPathMemoTtlGuard::always_expired();
+    let path_excl = cfgd_core::test_helpers::path_env_mutation_guard();
+    let path = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
+    let brew = cfgd_core::test_helpers::EnvVarGuard::set(
+        "CFGD_BREW_BIN",
+        "/nonexistent/cfgd-no-brew-on-this-host",
+    );
+    let seams = ["CFGD_APT_GET_BIN", "CFGD_DNF_BIN", "CFGD_PKG_BIN"]
+        .into_iter()
+        .map(cfgd_core::test_helpers::EnvVarGuard::unset)
+        .collect();
+    SilencedMediators {
+        _memo: memo,
+        _seams: seams,
+        _brew: brew,
+        _path: path,
+        _path_excl: path_excl,
+    }
+}
+
+/// A bare FreeBSD host has `pkg` and nothing else the pipx cascade knows, so
+/// the plan names it rather than falling to the `pip` arm that host has no
+/// python for.
+///
+/// Every mediator that outranks `pkg` is silenced, so only the run's own
+/// delivery answers and the method is asserted on any host.
+///
+/// `pkg` is a POSIX arm whose port tree Windows has no shell for, so the arm is
+/// withheld there and the complementary fact is what runs: the plan, if the
+/// cascade names one at all, is not `pkg`. The origin below reads the arm table
+/// rather than the host, so it is asserted everywhere.
+#[test]
+#[serial_test::serial]
+fn a_freebsd_host_plans_pipx_via_pkg() {
+    let _guards = silence_every_mediator_but_pkg();
+    let pipx = super::pipx::PipxManager;
+    let planned = pipx.bootstrap_plan_given(&|m| m == "pkg");
+    if cfg!(windows) {
+        assert!(
+            planned.as_ref().is_none_or(|p| p.method != "pkg"),
+            "a FreeBSD port is no route on Windows: {planned:?}"
+        );
+    } else {
+        let plan = planned.expect("pkg delivers pipx");
+        assert_eq!(
+            plan.method, "pkg",
+            "a run delivering pkg alone provisions pipx through it"
+        );
+    }
+    assert_eq!(
+        pipx.mediated_packages("pkg").as_deref(),
+        Some(["devel/py-pipx".to_string()].as_slice()),
+        "the pkg arm installs the port origin"
+    );
+}
+
+/// The same for npm, whose `pkg` arm is otherwise asserted by its origin
+/// alone: a run delivering `pkg` reaches npm's port rather than the `nvm`
+/// installer, which needs a network and a shell FreeBSD's base system lacks.
+///
+/// The same host split as its pipx sibling: the `pkg` arm is POSIX, so Windows
+/// is offered it by no delivery, and npm has no arm of its own to decline
+/// toward there. The origin is read off the arm table on every host.
+#[test]
+#[serial_test::serial]
+fn a_freebsd_host_plans_npm_via_pkg() {
+    let _guards = silence_every_mediator_but_pkg();
+    let npm = super::npm::NpmManager;
+    let planned = npm.bootstrap_plan_given(&|m| m == "pkg");
+    if cfg!(windows) {
+        assert!(
+            planned.is_none(),
+            "no Windows mediator is here and a FreeBSD port is no route: {planned:?}"
+        );
+    } else {
+        let plan = planned.expect("pkg delivers npm");
+        assert_eq!(
+            plan.method, "pkg",
+            "a run delivering pkg alone provisions npm through it"
+        );
+    }
+    assert_eq!(
+        npm.mediated_packages("pkg").as_deref(),
+        Some(["www/npm".to_string()].as_slice()),
+        "the pkg arm installs the port origin"
+    );
+}
+
+/// The wiring half of [`npm_nvm_fallback_requires_bash`]: with no mediator on
+/// the host and none delivered by the run, the cascade declines all the way to
+/// npm's own arm and the plan carries what that arm needs.
+///
+/// On Windows that arm does not exist, so the same cascade ends in no plan:
+/// nvm's installer is a shell script, and a plan's method is binding at
+/// execution, so naming it would schedule a provision the apply could only
+/// fail.
+#[test]
+#[serial_test::serial]
+fn a_host_with_no_mediator_at_all_plans_npm_only_where_its_own_arm_runs() {
+    let _guards = silence_every_mediator_but_pkg();
+    let planned = super::npm::NpmManager.bootstrap_plan_given(&|_| false);
+    if cfg!(windows) {
+        assert!(
+            planned.is_none(),
+            "nvm cannot run on Windows, so npm names no arm there: {planned:?}"
+        );
+        return;
+    }
+    let plan = planned.expect("every host with a shell has npm's own arm");
+    assert_eq!(
+        plan.method, "nvm",
+        "a host no mediator reaches falls to npm's own installer"
+    );
+    for tool in ["curl", "bash"] {
+        assert!(
+            plan.requires.iter().any(|t| t == tool),
+            "the arm the cascade planned carries what the installer needs, {tool} included: {:?}",
+            plan.requires
+        );
+    }
+}
+
+/// The nvm installer is fetched with curl and RUN by bash. FreeBSD's base
+/// system carries neither, so a plan naming only curl would be approved and
+/// then die inside the install.
+///
+/// Read off the arm's own producer rather than off `bootstrap_plan_given`: the
+/// cascade prefers brew and every system mediator over this arm, so a host
+/// carrying any of them never returns it.
+///
+/// The arm is compiled off Windows only, where nvm's installer cannot run, so
+/// there is nothing for this to assert there; the absence of the plan itself is
+/// pinned by `all_package_managers_bootstrap_consistency`.
+#[cfg(not(windows))]
+#[test]
+fn npm_nvm_fallback_requires_bash() {
+    let plan = super::npm::nvm_bootstrap_plan();
+    assert_eq!(plan.method, "nvm", "the fallback arm is nvm");
+    for tool in ["curl", "bash"] {
+        assert!(
+            plan.requires.iter().any(|t| t == tool),
+            "the nvm arm fetches with curl and runs under bash, so it declares {tool}: {:?}",
+            plan.requires
+        );
+    }
+}
+
+/// One list answers "where is pip" for both halves of the two-step route.
+///
+/// The half that RUNS pip and the half that asks which interpreter it belongs
+/// to resolve it separately. A fallback only one of them reads makes the plan
+/// promise a scripts directory the run then never records, which is what a
+/// Windows interpreter off `$PATH` produced.
+#[test]
+fn both_pip_resolutions_read_the_one_fallback_list() {
+    // This crate's own manifest dir: the sources under test are compiled from
+    // it, so the walk cannot read one tree while the binary was built from
+    // another.
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/packages");
+    for (file, head) in [
+        ("pipx.rs", "fn find_pip("),
+        ("shared/mod.rs", "fn pip_python_version("),
+    ] {
+        let src = cfgd_core::test_helpers::production_slice_of(&root.join(file));
+        let at = src
+            .find(head)
+            .unwrap_or_else(|| panic!("{file} no longer declares `{head}`"));
+        let body = &src[at..];
+        let end = body
+            .find("\n}\n")
+            .unwrap_or_else(|| panic!("{file}: `{head}` has no closing brace"));
+        assert!(
+            body[..end].contains("pip_fallbacks()"),
+            "{file}: `{head}` resolves pip through a fallback list of its own:\n{}",
+            &body[..end]
+        );
+    }
+}
+
+/// A package a source-declared Brewfile names is recorded under that source.
+///
+/// The manifest fold runs after both merges, so the merge's own claim never saw
+/// the packages a `<manager>.file` contributes and every one of them recorded
+/// `local`: `cfgd source remove acme` then found none of them, and the formulae
+/// a subscription put on the machine stayed there with nothing able to name
+/// them. The claim now travels with the fold, keyed by the manager the file
+/// feeds, and `reconciler::apply::PackageLayers` reads it like any other.
+#[test]
+fn an_apply_records_a_brewfile_package_under_the_layer_that_declared_the_brewfile() {
+    use cfgd_core::config::{ProfileLayer, ProfileSpec, merge_layers};
+    use cfgd_core::providers::{PackageAction, ProviderRegistry};
+    use cfgd_core::reconciler::{ReconcileContext, Reconciler};
+
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("Brewfile"), "brew \"jq\"\n").unwrap();
+
+    let mut resolved = cfgd_core::test_helpers::make_empty_resolved();
+    resolved.layers.push(ProfileLayer {
+        source: "acme".to_string(),
+        profile_name: "acme/required".to_string(),
+        priority: 2000,
+        policy: cfgd_core::config::LayerPolicy::Required,
+        spec: ProfileSpec {
+            packages: Some(PackagesSpec {
+                brew: Some(cfgd_core::config::BrewSpec {
+                    file: Some("Brewfile".to_string()),
+                    formulae: vec!["ripgrep".to_string()],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+    });
+    resolved.merged = merge_layers(&resolved.layers);
+
+    resolve_manifest_packages_cached(
+        &mut resolved.merged.packages,
+        &mut resolved.merged.layer_sources,
+        dir.path(),
+        &ManifestCache::default(),
+    )
+    .unwrap();
+    let formulae = resolved
+        .merged
+        .packages
+        .brew
+        .as_ref()
+        .expect("the brew spec survives the merge")
+        .formulae
+        .clone();
+    assert!(
+        formulae.contains(&"jq".to_string()),
+        "the Brewfile's formula is folded in: {formulae:?}"
+    );
+
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(cfgd_core::test_helpers::MockPackageManager::new(
+        "brew",
+    )));
+    let state = cfgd_core::test_helpers::test_state();
+    let reconciler = Reconciler::new(&registry, &state);
+    let plan = reconciler
+        .plan(
+            &resolved,
+            Vec::new(),
+            vec![PackageAction::Install {
+                manager: "brew".to_string(),
+                packages: formulae,
+                // The action batches both formulae, so its own origin can name
+                // neither: the per-package answer is the claim's job.
+                origin: LOCAL_LAYER.to_string(),
+            }],
+            Vec::new(),
+            ReconcileContext::Apply,
+        )
+        .unwrap();
+    reconciler
+        .apply(
+            &plan,
+            &resolved,
+            dir.path(),
+            &cfgd_core::test_helpers::test_printer(),
+            None,
+            &[],
+            ReconcileContext::Apply,
+            false,
+            None,
+            &cfgd_core::AbortFlag::new(),
+        )
+        .unwrap();
+
+    let delivered: Vec<(String, String)> = state
+        .managed_resources_by_source("acme")
+        .unwrap()
+        .into_iter()
+        .map(|r| (r.resource_type, r.resource_id))
+        .collect();
+    for package in ["brew/jq", "brew/ripgrep"] {
+        assert!(
+            delivered.contains(&("package".to_string(), package.to_string())),
+            "{package} is recorded under the source that declared it: {delivered:?}"
+        );
+    }
+    let local: Vec<(String, String)> = state
+        .managed_resources_by_source(LOCAL_LAYER)
+        .unwrap()
+        .into_iter()
+        .map(|r| (r.resource_type, r.resource_id))
+        .collect();
+    assert!(
+        !local.iter().any(|(rtype, _)| rtype == "package"),
+        "no package the source declared is also claimed by the operator: {local:?}"
+    );
 }

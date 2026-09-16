@@ -77,7 +77,10 @@ pub fn cmd_workflow_generate(cli: &Cli, printer: &Printer, force: bool) -> anyho
         Doc::new()
             .status(
                 Role::Ok,
-                format!("Generated release workflow at {}", workflow_path.posix()),
+                format!(
+                    "Generated release workflow at {}",
+                    cfgd_core::fold_home_in_text(&workflow_path.display_posix())
+                ),
             )
             // modules-row-ok: a COUNT of what the generated workflow covers, not the names
             .kv("Modules", module_names.len().to_string())

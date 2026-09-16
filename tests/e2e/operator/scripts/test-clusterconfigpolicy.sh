@@ -10,10 +10,10 @@ echo "=== ClusterConfigPolicy Tests ==="
 begin_test "OP-CCP-01: ClusterConfigPolicy — namespaceSelector filtering"
 
 # Create two namespaces: one matching, one not
-kubectl create namespace "e2e-team-alpha-${E2E_RUN_ID}" 2>/dev/null || true
-kubectl create namespace "e2e-team-beta-${E2E_RUN_ID}" 2>/dev/null || true
-kubectl label namespace "e2e-team-alpha-${E2E_RUN_ID}" "$E2E_RUN_LABEL" cfgd.io/team=alpha --overwrite 2>/dev/null
-kubectl label namespace "e2e-team-beta-${E2E_RUN_ID}" "$E2E_RUN_LABEL" cfgd.io/team=beta --overwrite 2>/dev/null
+ensure_namespace "e2e-team-alpha-${E2E_RUN_ID}"
+ensure_namespace "e2e-team-beta-${E2E_RUN_ID}"
+ensure_label namespace "e2e-team-alpha-${E2E_RUN_ID}" "$E2E_RUN_LABEL" cfgd.io/team=alpha --overwrite
+ensure_label namespace "e2e-team-beta-${E2E_RUN_ID}" "$E2E_RUN_LABEL" cfgd.io/team=beta --overwrite
 
 # Create MachineConfigs in both namespaces
 for ns in "e2e-team-alpha-${E2E_RUN_ID}" "e2e-team-beta-${E2E_RUN_ID}"; do
@@ -136,10 +136,10 @@ NS_A="e2e-ns-a-${E2E_RUN_ID}"
 NS_B="e2e-ns-b-${E2E_RUN_ID}"
 
 # --- Setup: create two ephemeral namespaces with labels ---
-kubectl create namespace "$NS_A" 2>/dev/null || true
-kubectl create namespace "$NS_B" 2>/dev/null || true
-kubectl label namespace "$NS_A" "$E2E_RUN_LABEL" cfgd.io/team=frontend --overwrite 2>/dev/null
-kubectl label namespace "$NS_B" "$E2E_RUN_LABEL" cfgd.io/team=frontend --overwrite 2>/dev/null
+ensure_namespace "$NS_A"
+ensure_namespace "$NS_B"
+ensure_label namespace "$NS_A" "$E2E_RUN_LABEL" cfgd.io/team=frontend --overwrite
+ensure_label namespace "$NS_B" "$E2E_RUN_LABEL" cfgd.io/team=frontend --overwrite
 
 # Create MachineConfigs in both namespaces
 kubectl apply -n "$NS_A" -f - <<EOF
@@ -272,7 +272,7 @@ fi
 begin_test "OP-NS-03: Namespace selector filtering"
 
 # Remove the team label from ns-b so it no longer matches the selector
-kubectl label namespace "$NS_B" cfgd.io/team- 2>/dev/null || true
+ensure_label namespace "$NS_B" cfgd.io/team-
 
 # Wait for the controller to re-evaluate (label change triggers reconciliation)
 echo "  Waiting for ClusterConfigPolicy to re-evaluate after unlabeling ns-b..."
@@ -308,7 +308,7 @@ else
 fi
 
 # Restore the label for subsequent tests
-kubectl label namespace "$NS_B" cfgd.io/team=frontend --overwrite 2>/dev/null
+ensure_label namespace "$NS_B" cfgd.io/team=frontend --overwrite
 
 # =================================================================
 # OP-NS-04: Policy priority resolution — both namespace and cluster

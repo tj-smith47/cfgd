@@ -147,13 +147,13 @@ pub(crate) fn launchd_bootstrap_argv(
         vec![
             "bootstrap".to_string(),
             "system".to_string(),
-            plist_path.display().to_string(),
+            plist_path.display().to_string(), // absolute-path-ok: launchctl argv, not a display slot
         ]
     } else {
         vec![
             "bootstrap".to_string(),
             format!("gui/{uid}"),
-            plist_path.display().to_string(),
+            plist_path.display().to_string(), // absolute-path-ok: launchctl argv, not a display slot
         ]
     }
 }
@@ -286,13 +286,13 @@ pub(crate) fn launchd_bootout_argv(
         vec![
             "bootout".to_string(),
             "system".to_string(),
-            plist_path.display().to_string(),
+            plist_path.display().to_string(), // absolute-path-ok: launchctl argv, not a display slot
         ]
     } else {
         vec![
             "bootout".to_string(),
             format!("gui/{uid}"),
-            plist_path.display().to_string(),
+            plist_path.display().to_string(), // absolute-path-ok: launchctl argv, not a display slot
         ]
     }
 }

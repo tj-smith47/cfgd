@@ -5,6 +5,7 @@ Pending Decisions (3 items)
     ◉ Optional env.EDITOR
   source:team-config
     ◉ Recommended packages.brew.curl
-  → Answer each pending decision:
-    $ cfgd decide [accept|reject] <resource>
-    $ cfgd decide accept --all
+
+→ Answer each pending decision:
+  $ cfgd decide [accept|reject] <resource>
+  $ cfgd decide accept --all

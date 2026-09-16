@@ -47,7 +47,7 @@ pub fn sign_artifact(artifact_ref: &str, key_path: Option<&str>) -> Result<(), O
     apply_registry_scheme(&mut cmd, artifact_ref);
     cmd.arg(artifact_ref);
 
-    let output = cmd.output().map_err(|e| OciError::SigningError {
+    let output = crate::command_output(&mut cmd).map_err(|e| OciError::SigningError {
         message: format!("failed to run cosign: {e}"),
     })?;
 
@@ -62,6 +62,38 @@ pub fn sign_artifact(artifact_ref: &str, key_path: Option<&str>) -> Result<(), O
 
     tracing::debug!(reference = artifact_ref, "artifact signed with cosign");
     Ok(())
+}
+
+/// The PEM public key belonging to `key_ref`, read from cosign itself.
+///
+/// A KMS or PKCS#11 key has no filesystem sibling to read, but the host that
+/// just signed with it can still be asked for its public half, which is what
+/// the operator's `disallowUnsigned` check needs recorded on the module.
+pub fn public_key_of(key_ref: &str) -> Result<String, OciError> {
+    crate::require_cosign().map_err(|_| OciError::ToolNotFound {
+        tool: "cosign".to_string(),
+    })?;
+
+    let mut cmd = crate::cosign_cmd();
+    // no-registry-ok: the key is read from a file, a KMS or a token, so this
+    // subcommand names no artifact and reaches no registry.
+    cmd.arg("public-key").arg("--key").arg(key_ref);
+    let output =
+        crate::command_output_with_timeout(&mut cmd, crate::COMMAND_TIMEOUT).map_err(|e| {
+            OciError::SigningError {
+                message: format!("failed to run cosign: {e}"),
+            }
+        })?;
+
+    if !output.status.success() {
+        return Err(OciError::SigningError {
+            message: format!(
+                "cosign public-key failed: {}",
+                crate::stderr_lossy_trimmed(&output)
+            ),
+        });
+    }
+    Ok(crate::stdout_lossy_trimmed(&output))
 }
 
 /// Options for cosign verification (signature or attestation).
@@ -132,7 +164,7 @@ pub fn verify_signature(artifact_ref: &str, opts: &VerifyOptions<'_>) -> Result<
     apply_registry_scheme(&mut cmd, artifact_ref);
     cmd.arg(artifact_ref);
 
-    let output = cmd.output().map_err(|e| OciError::VerificationFailed {
+    let output = crate::command_output(&mut cmd).map_err(|e| OciError::VerificationFailed {
         reference: artifact_ref.to_string(),
         message: format!("failed to run cosign: {e}"),
     })?;
@@ -280,7 +312,7 @@ pub fn attach_attestation(
         .arg("slsaprovenance1")
         .arg(artifact_ref);
 
-    let output = cmd.output().map_err(|e| OciError::AttestationError {
+    let output = crate::command_output(&mut cmd).map_err(|e| OciError::AttestationError {
         message: format!("failed to run cosign attest: {e}"),
     })?;
 
@@ -354,7 +386,7 @@ pub fn verify_attestation(
     apply_registry_scheme(&mut cmd, artifact_ref);
     cmd.arg("--type").arg(predicate_type).arg(artifact_ref);
 
-    let output = cmd.output().map_err(|e| OciError::AttestationError {
+    let output = crate::command_output(&mut cmd).map_err(|e| OciError::AttestationError {
         message: format!("failed to run cosign verify-attestation: {e}"),
     })?;
 

@@ -11,7 +11,11 @@ use cfgd_core::{command_available_with_seam, tool_cmd};
 /// Env-var seam for the `sops` binary path. Production reads no env var and
 /// `Command::new` resolves `"sops"` via PATH; tests set this to a
 /// `cfgd_core::test_helpers::ToolShim` script.
-const SOPS_BIN_ENV: &str = "CFGD_SOPS_BIN";
+///
+/// `pub(crate)` because `doctor`'s own sops probe is a second spawn of the same
+/// binary: reading a different seam there is a doctor that reports on one copy
+/// of sops while every decrypt runs another.
+pub(crate) const SOPS_BIN_ENV: &str = "CFGD_SOPS_BIN";
 
 /// SOPS-based secret backend. Encrypts values within structured YAML/JSON files,
 /// keeping keys visible for meaningful diffs. Wraps the `sops` CLI binary.
@@ -62,14 +66,18 @@ impl SecretBackend for SopsBackend {
         command_available_with_seam(SOPS_BIN_ENV, "sops")
     }
 
+    fn required_tool(&self) -> Option<&'static str> {
+        Some("sops")
+    }
+
     fn encrypt_file(&self, path: &Path) -> Result<()> {
-        let output = self
-            .sops_encrypt_command()
-            .arg("--encrypt")
-            .arg("--in-place")
-            .arg(path)
-            .output()
-            .map_err(|_| SecretError::SopsNotFound)?;
+        let output = cfgd_core::command_output(
+            self.sops_encrypt_command()
+                .arg("--encrypt")
+                .arg("--in-place")
+                .arg(path),
+        )
+        .map_err(|_| SecretError::SopsNotFound)?;
 
         if !output.status.success() {
             return Err(SecretError::EncryptionFailed {
@@ -83,11 +91,7 @@ impl SecretBackend for SopsBackend {
     }
 
     fn decrypt_file(&self, path: &Path) -> Result<SecretString> {
-        let output = self
-            .sops_command()
-            .arg("--decrypt")
-            .arg(path)
-            .output()
+        let output = cfgd_core::command_output(self.sops_command().arg("--decrypt").arg(path))
             .map_err(|_| SecretError::SopsNotFound)?;
 
         if !output.status.success() {
@@ -106,14 +110,14 @@ impl SecretBackend for SopsBackend {
     }
 
     fn edit_file(&self, path: &Path) -> Result<()> {
-        let status = self
-            .sops_command()
-            .arg(path)
-            .stdin(std::process::Stdio::inherit())
-            .stdout(std::process::Stdio::inherit())
-            .stderr(std::process::Stdio::inherit())
-            .status()
-            .map_err(|_| SecretError::SopsNotFound)?;
+        let status = cfgd_core::command_status(
+            self.sops_command()
+                .arg(path)
+                .stdin(std::process::Stdio::inherit())
+                .stdout(std::process::Stdio::inherit())
+                .stderr(std::process::Stdio::inherit()),
+        )
+        .map_err(|_| SecretError::SopsNotFound)?;
 
         // sops exits with code 200 when the editor didn't change the file
         // (e.g., EDITOR=true). Treat this as a no-op success.

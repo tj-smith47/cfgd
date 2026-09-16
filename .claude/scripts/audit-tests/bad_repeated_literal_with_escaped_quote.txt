@@ -1,0 +1,17 @@
+# EXPECTED: caught. Each line's FIRST literal carries one escaped quote. An
+# extractor that reads `\"` as a real closing quote pairs it against the next
+# quote on the line, so every later pairing is shifted by one: it reports the
+# text BETWEEN the two literals as one repeat and never sees the genuine
+# 30-plus-character literal that follows. Reading `\"` as part of its own
+# literal is what makes the real repeat the thing the gate reports.
+fn first() -> Diagnostic {
+    record_two("say \"", describe_the_tool_path_with_fallbacks("this later literal is long enough to trip the DRY gate"))
+}
+
+fn second() -> Diagnostic {
+    record_two("say \"", describe_the_tool_path_with_fallbacks("this later literal is long enough to trip the DRY gate"))
+}
+
+fn third() -> Diagnostic {
+    record_two("say \"", describe_the_tool_path_with_fallbacks("this later literal is long enough to trip the DRY gate"))
+}

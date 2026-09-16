@@ -87,6 +87,12 @@ pub struct ApplyOutput {
     pub status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub apply_id: Option<i64>,
+    /// What the run's plan promised, which is the number the header printed
+    /// before the first action ran: the three counts below partition it, and
+    /// `afterPlan` sits outside it. A consumer differencing the counts against
+    /// a total derived from the result list read work the plan never named as
+    /// part of the plan.
+    pub total: usize,
     pub succeeded: usize,
     /// Actions that ran and changed nothing — the rollup's `N skipped`.
     pub skipped: usize,
@@ -95,6 +101,11 @@ pub struct ApplyOutput {
     /// attempted — <reason>)`); outside `succeeded`/`skipped`/`failed` and
     /// outside the plan's `totalActions`, exactly as the human line prices it.
     pub not_attempted: usize,
+    /// The work the run did that its plan could not name, split by outcome.
+    /// Flattened, so its three counts are siblings of the planned ones on the
+    /// wire.
+    #[serde(flatten)]
+    pub after_plan: AfterPlanCounts,
     // `BTreeMap`, not `HashMap`: this field serializes into `-o json` /
     // `-o yaml`, and with no `preserve_order` feature on `serde_json` a
     // `HashMap` writes its keys in per-process-random order — byte-unstable
@@ -113,10 +124,12 @@ impl ApplyOutput {
         Self {
             status: "nothingToDo".to_string(),
             apply_id: None,
+            total: 0,
             succeeded: 0,
             skipped: 0,
             failed: 0,
             not_attempted: 0,
+            after_plan: AfterPlanCounts::default(),
             source_commits: BTreeMap::new(),
             backups: Vec::new(),
         }
@@ -126,12 +139,63 @@ impl ApplyOutput {
         Self {
             status: "aborted".to_string(),
             apply_id: None,
+            total: 0,
             succeeded: 0,
             skipped: 0,
             failed: 0,
             not_attempted: 0,
+            after_plan: AfterPlanCounts::default(),
             source_commits: BTreeMap::new(),
             backups: Vec::new(),
+        }
+    }
+}
+
+/// The `cfgd apply` payload's account of work the run did that its plan could
+/// not name — an env surface a resolved secret or a late PATH directory forced
+/// it to rewrite, an `onChange` hook whose condition is whether this very run
+/// changed anything.
+///
+/// All three counts sit outside `total` and outside the three counts that
+/// partition it, because the header promised the plan's number before the run
+/// began. They are three fields rather than one because `-o json` emits no
+/// rollup: a consumer reading a lone class total cannot tell a surface that
+/// converged from one that changed nothing or failed, which is the very
+/// conflation this class exists to end. Each is omitted at zero, so a run that
+/// did no such work, or none that failed, puts nothing on the wire.
+#[derive(Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AfterPlanCounts {
+    /// Every such item, whatever its outcome.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub after_plan: usize,
+    /// Those that ran and changed nothing (a live-session publish no manager
+    /// performed, an env file already holding the bytes the run would write).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub after_plan_skipped: usize,
+    /// Those that failed. A run can close `status: success` with one of these:
+    /// the plan's own actions all succeeded, and this class is outside them.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub after_plan_failed: usize,
+}
+
+impl AfterPlanCounts {
+    /// Count a finished run's after-plan class by outcome, off the ONE
+    /// derivation of that outcome (`ApplyResult::after_plan`), so the wire
+    /// cannot disagree with the rollup the same run printed.
+    pub fn of(result: &cfgd_core::reconciler::ApplyResult) -> Self {
+        use cfgd_core::reconciler::AfterPlanState;
+        let outcomes = result.after_plan();
+        Self {
+            after_plan: outcomes.len(),
+            after_plan_skipped: outcomes
+                .iter()
+                .filter(|o| o.state == AfterPlanState::Skipped)
+                .count(),
+            after_plan_failed: outcomes
+                .iter()
+                .filter(|o| o.state == AfterPlanState::Failed)
+                .count(),
         }
     }
 }
@@ -563,6 +627,12 @@ pub struct DoctorConfigCheck {
     pub name: Option<String>,
     pub profile: Option<String>,
     pub error: Option<String>,
+    /// The pre-`spec.output` flat presentation keys this config still spells,
+    /// as `config::LEGACY_OUTPUT_KEYS` names them. Empty for a migrated
+    /// config, which is what lets a consumer gate on the list rather than
+    /// matching a rendered sentence.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub legacy_output_keys: Vec<String>,
     /// Typed classification driving rendering and verdict scoring. Skipped
     /// from serialization: the consumer-facing JSON field set stays frozen —
     /// `valid`/`error` carry the same values as before this field existed.
@@ -616,6 +686,10 @@ pub struct DoctorManagerCheck {
     pub can_bootstrap: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bootstrap_method: Option<String>,
+    /// How many declared modules have a package that resolves to this manager.
+    /// A manager no `spec.packages` list names is still used when a module
+    /// routes to it, which is what the `(not used)` annotation reads.
+    pub used_by_modules: usize,
 }
 
 #[derive(Serialize)]
@@ -624,23 +698,22 @@ pub struct DoctorModuleCheck {
     pub name: String,
     pub valid: bool,
     pub error: Option<String>,
+    /// The managers this module's packages resolve to on this host, in the
+    /// order its package list reaches them, with whether each one is here.
     #[serde(default)]
-    pub packages: Vec<DoctorModulePackageCheck>,
+    pub managers: Vec<DoctorModuleManagerRoute>,
+    /// One message per declared package no manager on this host can deliver.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unresolved: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct DoctorModulePackageCheck {
+pub struct DoctorModuleManagerRoute {
     pub name: String,
-    pub resolved_name: String,
-    pub manager: String,
-    pub installed: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub version: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub skip_reason: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
+    pub available: bool,
+    /// How many of the module's declared packages route to this manager.
+    pub package_count: usize,
 }
 
 #[derive(Serialize)]
@@ -687,6 +760,15 @@ pub struct SourceListEntry {
     /// rows cannot answer it either). The machine-wide total is a header fact,
     /// never a row's.
     pub drift_count: Option<u32>,
+    /// The ref `sources.lock` pins for this source, and the commit that ref
+    /// resolved to, full length. Payload-only: neither gets a column, so this
+    /// listing keeps its one recorded status column and `source show` keeps
+    /// rendering what the subscription DECLARES. They ride here because a
+    /// lockfile fact readable only from a human render is not readable, and
+    /// this is the one listing whose payload already carries a subscription's
+    /// recorded side. `None` is "the lockfile names no entry for this source".
+    pub locked_ref: Option<String>,
+    pub locked_commit: Option<String>,
 }
 
 /// One `spec.backups[]` entry plus its last recorded run, for
@@ -698,7 +780,25 @@ pub struct BackupListEntry {
     pub source: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub schedule: Option<String>,
+    /// Which layer owns this unit's schedule, as the lowercase word
+    /// `ScheduleOwner::label` spells (`cluster` / `local`). Never skipped: a
+    /// constant key is what a consumer gates on to tell a unit a cluster
+    /// `BackupPolicy` may reschedule from one the profile pinned.
+    pub schedule_owner: String,
+    /// The cadence a cluster `BackupPolicy` projected onto this unit, present
+    /// only when the projection CHANGED it. `schedule` stays what the profile
+    /// declared, so a consumer can see both what the machine asked for and what
+    /// the cluster projected, and the key's presence means one thing: the two
+    /// differ.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effective_schedule: Option<String>,
     pub retention: u32,
+    /// The retention the cluster projected, on the same terms as
+    /// `effective_schedule`: present only when the projection changed it. A
+    /// projection that states no retention leaves `retention` standing and
+    /// omits this.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effective_retention: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_run_status: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -722,6 +822,12 @@ pub struct BackupListEntry {
     /// source is a sidecar, not a snapshot, and is never counted here.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub snapshots: Option<usize>,
+    /// How many recorded snapshots of this unit sit OUTSIDE its current
+    /// destination — what a `destination:` change stranded and
+    /// `cfgd backup gc` collects. `None` on the same terms as `snapshots`: an
+    /// unknown count is not zero.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub orphaned: Option<usize>,
 }
 
 /// One snapshot on disk, for `cfgd backup list <name> --snapshots`.
@@ -912,6 +1018,78 @@ pub struct BackupRollbackDeclinedOutput {
     pub declined: bool,
 }
 
+/// One orphaned snapshot `cfgd backup gc` read, in whichever of the payload's
+/// three lists its outcome put it.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupGcEntry {
+    /// The `spec.backups[]` unit that recorded the snapshot.
+    pub name: String,
+    /// The path the state store recorded, absolute and posix-folded — the only
+    /// path gc ever removes.
+    pub path: String,
+    /// Bytes the snapshot occupied when it was written. Kept on a `skipped`
+    /// entry too: it is what the row recorded, not what was measured now.
+    pub size_bytes: u64,
+    /// Why the removal failed. Present only on a `failed` entry, whose record
+    /// is left in place for a later `cfgd backup gc` to retry.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+impl From<&cfgd_core::backup::CollectedSnapshot> for BackupGcEntry {
+    fn from(entry: &cfgd_core::backup::CollectedSnapshot) -> Self {
+        Self {
+            name: entry.name.clone(),
+            path: entry.path.clone(),
+            size_bytes: entry.size_bytes,
+            error: entry.error.clone(),
+        }
+    }
+}
+
+/// Outcome of `cfgd backup gc`, split the way the run reported it.
+///
+/// Three constant keys rather than one list with an outcome field: a consumer
+/// deciding whether anything on the machine changed reads `collected`, and a
+/// list it would have to filter first answers that question wrongly by
+/// default. Every key is present even when empty, so a script never has to
+/// tell "nothing was collected" from "this cfgd does not report it".
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupGcOutput {
+    /// Snapshots whose payload this run removed.
+    pub collected: Vec<BackupGcEntry>,
+    /// Snapshots whose payload was already gone: the record is dropped, and
+    /// nothing on the machine changed.
+    pub skipped: Vec<BackupGcEntry>,
+    /// Snapshots that could not be removed. Each keeps its record.
+    pub failed: Vec<BackupGcEntry>,
+    /// Units whose recorded history could not be read at all, so nothing can
+    /// say what they still hold. Absent when every declared unit answered,
+    /// which is a different fact from a run that found nothing to collect.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub unreadable: Vec<String>,
+}
+
+impl From<&cfgd_core::backup::CollectOutcome> for BackupGcOutput {
+    fn from(outcome: &cfgd_core::backup::CollectOutcome) -> Self {
+        let map = |entries: &[cfgd_core::backup::CollectedSnapshot]| {
+            entries.iter().map(BackupGcEntry::from).collect()
+        };
+        Self {
+            collected: map(&outcome.collected),
+            skipped: map(&outcome.skipped),
+            failed: map(&outcome.failed),
+            unreadable: outcome
+                .unreadable
+                .iter()
+                .map(|unit| unit.unit.clone())
+                .collect(),
+        }
+    }
+}
+
 /// Outcome of one unit run by `cfgd backup run`.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -926,6 +1104,17 @@ pub struct BackupRunOutput {
     pub clean: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// How many recorded snapshots this run found outside the destination now
+    /// in force, and so re-classified for `cfgd backup gc` to collect. Absent
+    /// on a run that stranded nothing, which is every run until a
+    /// `destination:` moves.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub orphaned: usize,
+}
+
+/// Whether a count is zero, for the `-o json` slots a zero says nothing in.
+fn is_zero(n: &usize) -> bool {
+    *n == 0
 }
 
 impl From<&cfgd_core::state::BackupRunRecord> for BackupRunOutput {
@@ -936,6 +1125,7 @@ impl From<&cfgd_core::state::BackupRunRecord> for BackupRunOutput {
             destination_path: record.destination_path.clone(),
             clean: record.is_clean(),
             error: record.error.clone(),
+            orphaned: 0,
         }
     }
 }
@@ -950,13 +1140,17 @@ impl BackupRunOutput {
     /// is the caller's because a record-less report has no name of its own.
     pub fn from_report(name: &str, report: &cfgd_core::backup::BackupRunReport) -> Self {
         match (&report.record, &report.skipped) {
-            (Some(record), _) => Self::from(record),
+            (Some(record), _) => Self {
+                orphaned: report.orphaned,
+                ..Self::from(record)
+            },
             (None, Some(holder)) => Self {
                 name: name.to_string(),
                 status: "skipped".to_string(),
                 destination_path: None,
                 clean: false,
                 error: Some(format!("already running ({holder})")),
+                orphaned: 0,
             },
             (None, None) => Self {
                 name: name.to_string(),
@@ -966,6 +1160,7 @@ impl BackupRunOutput {
                 destination_path: None,
                 clean: false,
                 error: report.error.clone(),
+                orphaned: 0,
             },
         }
     }
@@ -983,8 +1178,6 @@ pub struct SourceShowOutput {
     pub sync_interval: String,
     pub auto_apply: bool,
     pub pin_version: Option<String>,
-    pub state: Option<SourceStateInfo>,
-    pub managed_resources: Vec<SourceResourceEntry>,
     /// Module names this source declares deliverable — its manifest
     /// `spec.provides.modules` allow-list (the module bodies it offers to
     /// subscribers). Empty (and omitted from the wire) when the source delivers
@@ -1080,33 +1273,6 @@ pub struct SourceEncryptionOutput {
     pub mode: Option<String>,
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SourceStateInfo {
-    pub status: String,
-    /// The ISO 8601 stamp of the last fetch; the human render humanizes it.
-    pub last_fetched: Option<String>,
-    pub last_commit: Option<String>,
-    /// Whether the fetched commit carried a signature cfgd accepts. `None` is
-    /// "not known", never "unsigned".
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub signed: Option<bool>,
-    pub version: Option<String>,
-    /// Resolved tag name from sources.lock (None for HEAD-tracking sources).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub locked_ref: Option<String>,
-    /// 40-char commit SHA from sources.lock at time of last lock.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub locked_commit: Option<String>,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SourceResourceEntry {
-    pub resource_type: String,
-    pub resource_id: String,
-}
-
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProfileListEntry {
@@ -1146,8 +1312,13 @@ pub struct AliasListEntry {
 #[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct KeyListEntry {
     pub name: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub fingerprint: Option<String>,
+    /// Whether the private half of this key pair sits beside the public one.
+    ///
+    /// The field was `fingerprint: Option<String>` carrying the prose
+    /// `"private key: yes"` — a name promising a digest, a type promising the
+    /// fact could be unknown, and a value a consumer had to substring-match to
+    /// read a boolean cfgd already knew.
+    pub private_key_present: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub created: Option<String>,
 }
@@ -1343,10 +1514,12 @@ mod tests {
         let v = ApplyOutput {
             status: "partial".to_string(),
             apply_id: Some(7),
+            total: 2,
             succeeded: 2,
             skipped: 0,
             failed: 0,
             not_attempted: 0,
+            after_plan: AfterPlanCounts::default(),
             source_commits: BTreeMap::new(),
             backups: vec![BackupRunOutput {
                 name: "photos".to_string(),
@@ -1354,12 +1527,14 @@ mod tests {
                 destination_path: Some("/backups/photos/20260801T000000Z".to_string()),
                 clean: false,
                 error: Some("postBackup hook failed".to_string()),
+                orphaned: 2,
             }],
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["backups"][0]["name"], json!("photos"));
         assert_eq!(json["backups"][0]["clean"], json!(false));
         assert_eq!(json["backups"][0]["error"], json!("postBackup hook failed"));
+        assert_eq!(json["backups"][0]["orphaned"], json!(2));
     }
 
     #[test]
@@ -1367,8 +1542,10 @@ mod tests {
         let mut commits = BTreeMap::new();
         commits.insert("origin".to_string(), "abc123".to_string());
         let v = ApplyOutput {
+            after_plan: AfterPlanCounts::default(),
             status: "success".to_string(),
             apply_id: Some(99),
+            total: 4,
             succeeded: 3,
             skipped: 0,
             failed: 1,
@@ -1396,8 +1573,10 @@ mod tests {
         commits.insert("alpha".to_string(), "a-sha".to_string());
         commits.insert("mid".to_string(), "m-sha".to_string());
         let v = ApplyOutput {
+            after_plan: AfterPlanCounts::default(),
             status: "success".to_string(),
             apply_id: Some(1),
+            total: 1,
             succeeded: 1,
             skipped: 0,
             failed: 0,
@@ -1845,6 +2024,7 @@ mod tests {
                 name: Some("host".to_string()),
                 profile: Some("default".to_string()),
                 error: None,
+                legacy_output_keys: Vec::new(),
                 state: DoctorConfigState::Valid,
             },
             git: true,
@@ -1866,12 +2046,14 @@ mod tests {
                 declared: true,
                 can_bootstrap: false,
                 bootstrap_method: None,
+                used_by_modules: 0,
             }],
             modules: vec![DoctorModuleCheck {
                 name: "shell".to_string(),
                 valid: true,
                 error: None,
-                packages: vec![],
+                managers: vec![],
+                unresolved: vec![],
             }],
             system_configurators: vec![DoctorConfiguratorCheck {
                 name: "systemd".to_string(),
@@ -1903,6 +2085,7 @@ mod tests {
             name: None,
             profile: None,
             error: Some("missing".to_string()),
+            legacy_output_keys: Vec::new(),
             state: DoctorConfigState::Invalid,
         };
         let json = serde_json::to_value(&v).unwrap();
@@ -1971,6 +2154,7 @@ mod tests {
             declared: false,
             can_bootstrap: false,
             bootstrap_method: None,
+            used_by_modules: 0,
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["name"], json!("apt"));
@@ -1991,75 +2175,54 @@ mod tests {
             declared: true,
             can_bootstrap: true,
             bootstrap_method: Some("curl-installer".to_string()),
+            used_by_modules: 2,
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["bootstrapMethod"], json!("curl-installer"));
     }
 
     #[test]
-    fn doctor_module_check_emits_packages_array_and_null_error() {
+    fn doctor_module_check_emits_its_manager_routes_and_null_error() {
         let v = DoctorModuleCheck {
             name: "git".to_string(),
             valid: true,
             error: None,
-            packages: vec![DoctorModulePackageCheck {
-                name: "git".to_string(),
-                resolved_name: "git".to_string(),
-                manager: "apt".to_string(),
-                installed: true,
-                version: Some("2.40.1".to_string()),
-                skip_reason: None,
-                error: None,
+            managers: vec![DoctorModuleManagerRoute {
+                name: "apt".to_string(),
+                available: true,
+                package_count: 3,
             }],
+            unresolved: vec![],
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["name"], json!("git"));
         assert_eq!(json["valid"], json!(true));
         assert_eq!(json["error"], Value::Null);
-        let pkgs = json["packages"].as_array().expect("packages is array");
-        assert_eq!(pkgs.len(), 1);
-        assert_eq!(pkgs[0]["resolvedName"], json!("git"));
-    }
-
-    #[test]
-    fn doctor_module_package_check_skips_all_none_optionals() {
-        let v = DoctorModulePackageCheck {
-            name: "ripgrep".to_string(),
-            resolved_name: "ripgrep".to_string(),
-            manager: "brew".to_string(),
-            installed: false,
-            version: None,
-            skip_reason: None,
-            error: None,
-        };
-        let json = serde_json::to_value(&v).unwrap();
-        assert_eq!(json["name"], json!("ripgrep"));
-        assert_eq!(json["resolvedName"], json!("ripgrep"));
-        assert_eq!(json["manager"], json!("brew"));
-        assert_eq!(json["installed"], json!(false));
-        assert!(json.get("version").is_none(), "version must be skipped");
         assert!(
-            json.get("skipReason").is_none(),
-            "skipReason must be skipped"
+            json.get("unresolved").is_none(),
+            "an empty unresolved list must be skipped"
         );
-        assert!(json.get("error").is_none(), "error must be skipped");
+        let routes = json["managers"].as_array().expect("managers is array");
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0]["name"], json!("apt"));
+        assert_eq!(routes[0]["available"], json!(true));
+        assert_eq!(routes[0]["packageCount"], json!(3));
     }
 
     #[test]
-    fn doctor_module_package_check_includes_all_optionals_when_populated() {
-        let v = DoctorModulePackageCheck {
-            name: "bat".to_string(),
-            resolved_name: "bat-cat".to_string(),
-            manager: "cargo".to_string(),
-            installed: false,
-            version: Some("0.24.0".to_string()),
-            skip_reason: Some("offline".to_string()),
-            error: Some("network".to_string()),
+    fn doctor_module_check_lists_a_package_no_manager_can_deliver() {
+        let v = DoctorModuleCheck {
+            name: "jarvis".to_string(),
+            valid: true,
+            error: None,
+            managers: vec![],
+            unresolved: vec!["no available manager for `ripgrep`".to_string()],
         };
         let json = serde_json::to_value(&v).unwrap();
-        assert_eq!(json["version"], json!("0.24.0"));
-        assert_eq!(json["skipReason"], json!("offline"));
-        assert_eq!(json["error"], json!("network"));
+        assert_eq!(
+            json["unresolved"],
+            json!(["no available manager for `ripgrep`"])
+        );
     }
 
     #[test]
@@ -2086,6 +2249,8 @@ mod tests {
             require_signed_commits: Some(true),
             last_commit: Some("0123456789abcdef0123456789abcdef01234567".to_string()),
             drift_count: None,
+            locked_ref: Some("refs/tags/v1.2.0".to_string()),
+            locked_commit: Some("89abcdef0123456789abcdef0123456789abcdef".to_string()),
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["name"], json!("main"));
@@ -2101,10 +2266,21 @@ mod tests {
             "the payload keeps the full id; only the column shortens it"
         );
         assert_eq!(json["driftCount"], Value::Null);
+        assert_eq!(
+            json["lockedRef"],
+            json!("refs/tags/v1.2.0"),
+            "the ref `sources.lock` pins lives on this listing's payload, \
+             which is where `source show` no longer carries it"
+        );
+        assert_eq!(
+            json["lockedCommit"],
+            json!("89abcdef0123456789abcdef0123456789abcdef"),
+            "and the commit it resolved to, full length"
+        );
     }
 
     #[test]
-    fn source_show_output_camelcases_all_fields_and_nests_state() {
+    fn source_show_output_camelcases_every_declared_field_and_carries_no_recorded_block() {
         let v = SourceShowOutput {
             name: "infra".to_string(),
             url: "https://example.com/r.git".to_string(),
@@ -2115,19 +2291,6 @@ mod tests {
             sync_interval: "5m".to_string(),
             auto_apply: false,
             pin_version: Some("v1.2.3".to_string()),
-            state: Some(SourceStateInfo {
-                status: "fresh".to_string(),
-                last_fetched: Some("2026-01-01T00:00:00Z".to_string()),
-                last_commit: Some("abc".to_string()),
-                signed: Some(true),
-                version: Some("v1.2.3".to_string()),
-                locked_ref: None,
-                locked_commit: None,
-            }),
-            managed_resources: vec![SourceResourceEntry {
-                resource_type: "Module".to_string(),
-                resource_id: "shell".to_string(),
-            }],
             modules: vec!["dev-tools".to_string()],
             policy: Some(SourcePolicyOutput {
                 require_signed_commits: true,
@@ -2155,8 +2318,8 @@ mod tests {
         assert_eq!(json["syncInterval"], json!("5m"));
         assert_eq!(json["autoApply"], json!(false));
         assert_eq!(json["pinVersion"], json!("v1.2.3"));
-        assert_eq!(json["state"]["status"], json!("fresh"));
-        assert_eq!(json["managedResources"][0]["resourceType"], json!("Module"));
+        assert!(json.get("state").is_none(), "{json}");
+        assert!(json.get("managedResources").is_none(), "{json}");
         assert_eq!(json["policy"]["requireSignedCommits"], json!(true));
         assert_eq!(json["policy"]["signedCommitsBypassed"], json!(true));
         assert_eq!(json["policy"]["scriptsAllowed"], json!(false));
@@ -2212,8 +2375,6 @@ mod tests {
             sync_interval: "5m".to_string(),
             auto_apply: false,
             pin_version: None,
-            state: None,
-            managed_resources: Vec::new(),
             modules: Vec::new(),
             policy: None,
             manifest: None,
@@ -2228,37 +2389,6 @@ mod tests {
             "no manifest means no effective policy to report — the key must be \
              omitted, not serialized as null: {json}"
         );
-    }
-
-    #[test]
-    fn source_state_info_emits_camelcase_keys() {
-        let v = SourceStateInfo {
-            status: "stale".to_string(),
-            last_fetched: Some("2026-01-01T00:00:00Z".to_string()),
-            last_commit: Some("c0ffee".to_string()),
-            signed: None,
-            version: Some("v0.1".to_string()),
-            locked_ref: Some("v2.1.0".to_string()),
-            locked_commit: Some("a".repeat(40)),
-        };
-        let json = serde_json::to_value(&v).unwrap();
-        assert_eq!(json["status"], json!("stale"));
-        assert_eq!(json["lastFetched"], json!("2026-01-01T00:00:00Z"));
-        assert_eq!(json["lastCommit"], json!("c0ffee"));
-        assert_eq!(json["version"], json!("v0.1"));
-        assert_eq!(json["lockedRef"], json!("v2.1.0"));
-        assert_eq!(json["lockedCommit"], json!("a".repeat(40)));
-    }
-
-    #[test]
-    fn source_resource_entry_camelcases_resource_type_and_id() {
-        let v = SourceResourceEntry {
-            resource_type: "Profile".to_string(),
-            resource_id: "dev".to_string(),
-        };
-        let json = serde_json::to_value(&v).unwrap();
-        assert_eq!(json["resourceType"], json!("Profile"));
-        assert_eq!(json["resourceId"], json!("dev"));
     }
 
     #[test]
@@ -2330,28 +2460,31 @@ mod tests {
         assert_eq!(json["url"], json!("oci://registry.example.com"));
     }
 
+    /// The private-key fact is a boolean a consumer reads directly, and an
+    /// unstamped key still carries it: only `created`, which genuinely may be
+    /// unreadable, drops out of the payload.
     #[test]
-    fn key_list_entry_skips_none_fingerprint_and_created() {
+    fn key_list_entry_states_the_private_key_fact_and_skips_an_unknown_created() {
         let v = KeyListEntry {
             name: "signing".to_string(),
-            fingerprint: None,
+            private_key_present: false,
             created: None,
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["name"], json!("signing"));
-        assert!(json.get("fingerprint").is_none());
+        assert_eq!(json["privateKeyPresent"], json!(false));
         assert!(json.get("created").is_none());
     }
 
     #[test]
-    fn key_list_entry_includes_fingerprint_and_created_when_some() {
+    fn key_list_entry_includes_the_private_key_fact_and_created_when_known() {
         let v = KeyListEntry {
             name: "signing".to_string(),
-            fingerprint: Some("SHA256:abc".to_string()),
+            private_key_present: true,
             created: Some("2026-01-01T00:00:00Z".to_string()),
         };
         let json = serde_json::to_value(&v).unwrap();
-        assert_eq!(json["fingerprint"], json!("SHA256:abc"));
+        assert_eq!(json["privateKeyPresent"], json!(true));
         assert_eq!(json["created"], json!("2026-01-01T00:00:00Z"));
     }
 

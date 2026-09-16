@@ -68,12 +68,23 @@ fn parse_brew_versions_whitespace_only() {
 }
 
 #[test]
+#[serial_test::serial]
 fn brew_manager_name_and_bootstrap_plan() {
+    // `brew_path_dirs` answers from `CFGD_BREW_BIN` when it is set, so the
+    // platform arm this pins is only reachable with the seam clear; a sibling
+    // test's brew shim is a process-global that would answer in its place.
+    let _no_seam = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_BREW_BIN");
     let mgr = BrewManager;
     assert_eq!(mgr.name(), "brew");
-    let plan = mgr
-        .bootstrap_plan()
-        .expect("brew always plans to provision itself");
+    let planned = mgr.bootstrap_plan();
+    if cfg!(windows) {
+        assert!(
+            planned.is_none(),
+            "Homebrew has no Windows build and its installer is bash: {planned:?}"
+        );
+        return;
+    }
+    let plan = planned.expect("brew plans to provision itself on every host it runs on");
     // What `bootstrap` runs: Homebrew's install.sh, fetched with curl, landing
     // in the same prefix `path_dirs` reports.
     assert_eq!(plan.method, "homebrew installer");
@@ -122,20 +133,28 @@ fn brew_tap_manager_available_version_is_none() {
 }
 
 #[test]
+#[serial_test::serial]
 fn brew_manager_path_dirs_returns_vec() {
+    // `brew_path_dirs` answers from `CFGD_BREW_BIN` when it is set, so the
+    // platform arm this pins is only reachable with the seam clear; a sibling
+    // test's brew shim is a process-global that would answer in its place.
+    let _no_seam = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_BREW_BIN");
     let mgr = BrewManager;
     let printer = cfgd_core::test_helpers::test_printer();
     let state = cfgd_core::test_helpers::test_state();
     let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
     let dirs = mgr.path_dirs(&cx);
-    // On Linux CI, should return linuxbrew paths
-    // On macOS, should return /opt/homebrew or /usr/local paths
-    // On Windows, should return empty
-    if cfg!(target_os = "windows") {
-        assert!(dirs.is_empty());
-    } else if cfg!(target_os = "linux") {
+    if cfg!(target_os = "linux") {
         assert_eq!(dirs.len(), 2);
         assert!(dirs[0].contains("linuxbrew"));
+    } else if cfg!(target_os = "macos") {
+        assert_eq!(dirs.len(), 2, "a prefix's bin and sbin, got: {dirs:?}");
+        assert!(
+            dirs[0].ends_with("/bin") && dirs[1].ends_with("/sbin"),
+            "{dirs:?}"
+        );
+    } else {
+        assert!(dirs.is_empty(), "brew has no prefix here, got: {dirs:?}");
     }
 }
 
@@ -174,7 +193,12 @@ fn brew_manager_created_path_dirs_is_empty() {
 }
 
 #[test]
+#[serial_test::serial]
 fn brew_manager_path_dirs_non_empty_on_linux_macos() {
+    // `brew_path_dirs` answers from `CFGD_BREW_BIN` when it is set, so the
+    // platform arm this pins is only reachable with the seam clear; a sibling
+    // test's brew shim is a process-global that would answer in its place.
+    let _no_seam = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_BREW_BIN");
     // Homebrew exists only on Linux and macOS; brew_path_dirs() correctly
     // returns empty on other unices (e.g. FreeBSD), so scope the non-empty
     // assertion to the two platforms where brew is a real manager.
@@ -752,7 +776,7 @@ mod brew_shim {
 
     #[test]
     #[serial]
-    fn brew_tap_install_taps_then_trusts_each_entry() {
+    fn brew_tap_install_trusts_each_entry_before_tapping_it() {
         let shim = ToolShim::install(SHIM_ENV, 0, "", "");
         let p = test_printer();
         let st = test_state();
@@ -774,10 +798,14 @@ mod brew_shim {
                 .position(|l| *l == needle)
                 .unwrap_or_else(|| panic!("missing `{needle}` in {lines:?}"))
         };
-        // Trust follows its own tap: brew ignores an untrusted tap's formulae,
-        // so a formula install later in the run needs the grant already recorded.
-        assert!(tap_at("tap org/foo") < tap_at("trust --tap org/foo"));
-        assert!(tap_at("tap org/bar") < tap_at("trust --tap org/bar"));
+        // The grant precedes its own tap: brew reads the tap's index while
+        // adding it and refuses a name it has not been told to trust, so a
+        // trust recorded afterwards is never reached.
+        assert!(tap_at("trust --tap org/foo") < tap_at("tap org/foo"));
+        assert!(tap_at("trust --tap org/bar") < tap_at("tap org/bar"));
+        // Each entry is trusted and tapped before the next one starts, so a
+        // per-entry pair is what runs, not two batched passes.
+        assert!(tap_at("tap org/foo") < tap_at("trust --tap org/bar"));
     }
 
     #[test]
@@ -790,13 +818,19 @@ mod brew_shim {
         BrewTapManager
             .install(&["org/foo".into()], &cx)
             .expect("an old brew with no trust gate needs no trust step");
-        assert!(shim.argv_log().contains("tap org/foo"));
+        // The refusal comes from the FIRST spawn now, so tolerating it is what
+        // lets the tap run at all.
+        assert!(
+            shim.argv_log().lines().any(|l| l == "tap org/foo"),
+            "the tap still runs after an unknown-command refusal: {}",
+            shim.argv_log()
+        );
     }
 
     #[test]
     #[serial]
     fn brew_tap_install_propagates_a_real_trust_failure() {
-        let _shim = ToolShim::install_failing_on(SHIM_ENV, "trust", "Error: org/foo is not tapped");
+        let shim = ToolShim::install_failing_on(SHIM_ENV, "trust", "Error: org/foo is not tapped");
         let p = test_printer();
         let st = test_state();
         let cx = test_package_context(&p, &st);
@@ -807,6 +841,11 @@ mod brew_shim {
         assert!(
             msg.contains("brew trust --tap org/foo"),
             "error must name the trust step that failed: {msg}"
+        );
+        assert!(
+            !shim.argv_log().lines().any(|l| l == "tap org/foo"),
+            "a refused grant stops the tap: {}",
+            shim.argv_log()
         );
     }
 
@@ -1098,7 +1137,7 @@ mod brew_shim {
     /// by the linuxbrew tests below).
     #[test]
     #[serial]
-    fn brew_manager_bootstrap_non_root_runs_bash_install_pipeline_ok() {
+    fn brew_manager_bootstrap_runs_bash_install_pipeline_ok_as_non_linux_root() {
         if cfg!(target_os = "linux") && cfgd_core::is_root() {
             return;
         }
@@ -1111,7 +1150,7 @@ mod brew_shim {
 
     #[test]
     #[serial]
-    fn brew_manager_bootstrap_non_root_propagates_bash_failure() {
+    fn brew_manager_bootstrap_propagates_bash_failure_as_non_linux_root() {
         if cfg!(target_os = "linux") && cfgd_core::is_root() {
             return;
         }
@@ -1167,60 +1206,63 @@ mod brew_shim {
 
     #[test]
     #[serial]
-    fn brew_manager_bootstrap_linux_root_path_success() {
+    fn brew_manager_bootstrap_path_success_as_linux_root() {
+        if !(cfg!(target_os = "linux") && cfgd_core::is_root()) {
+            return;
+        }
         let (_tmp, _guard) = cfgd_core::test_helpers::install_named_path_shims(&[
             ("useradd", 0),
             ("sudo", 0),
             ("bash", 0),
         ]);
         let p = test_printer();
-        if cfg!(target_os = "linux") && cfgd_core::is_root() {
-            BrewManager
-                .bootstrap(&cfgd_core::test_helpers::test_bootstrap_context(&p))
-                .expect("bootstrap ok with shim");
-        }
+        BrewManager
+            .bootstrap(&cfgd_core::test_helpers::test_bootstrap_context(&p))
+            .expect("bootstrap ok with shim");
     }
 
     #[test]
     #[serial]
-    fn brew_manager_bootstrap_linux_root_useradd_failure_returns_err() {
+    fn brew_manager_bootstrap_useradd_failure_returns_err_as_linux_root() {
+        if !(cfg!(target_os = "linux") && cfgd_core::is_root()) {
+            return;
+        }
         let (_tmp, _guard) = cfgd_core::test_helpers::install_named_path_shims(&[
             ("useradd", 1),
             ("sudo", 0),
             ("bash", 0),
         ]);
         let p = test_printer();
-        if cfg!(target_os = "linux") && cfgd_core::is_root() {
-            let err = BrewManager
-                .bootstrap(&cfgd_core::test_helpers::test_bootstrap_context(&p))
-                .expect_err("useradd exit 1 → BootstrapFailed");
-            assert!(
-                err.to_string().contains("brew"),
-                "error must reference brew manager: {}",
-                err
-            );
-        }
+        let err = BrewManager
+            .bootstrap(&cfgd_core::test_helpers::test_bootstrap_context(&p))
+            .expect_err("useradd exit 1 → BootstrapFailed");
+        assert!(
+            err.to_string().contains("brew"),
+            "error must reference brew manager: {}",
+            err
+        );
     }
 
     #[test]
     #[serial]
-    fn brew_manager_bootstrap_linux_root_install_script_failure_returns_err() {
+    fn brew_manager_bootstrap_install_script_failure_returns_err_as_linux_root() {
+        if !(cfg!(target_os = "linux") && cfgd_core::is_root()) {
+            return;
+        }
         let (_tmp, _guard) = cfgd_core::test_helpers::install_named_path_shims(&[
             ("useradd", 0),
             ("sudo", 1),
             ("bash", 1),
         ]);
         let p = test_printer();
-        if cfg!(target_os = "linux") && cfgd_core::is_root() {
-            let err = BrewManager
-                .bootstrap(&cfgd_core::test_helpers::test_bootstrap_context(&p))
-                .expect_err("sudo exit 1 → BootstrapFailed");
-            assert!(
-                err.to_string().contains("brew"),
-                "error must reference brew manager: {}",
-                err
-            );
-        }
+        let err = BrewManager
+            .bootstrap(&cfgd_core::test_helpers::test_bootstrap_context(&p))
+            .expect_err("sudo exit 1 → BootstrapFailed");
+        assert!(
+            err.to_string().contains("brew"),
+            "error must reference brew manager: {}",
+            err
+        );
     }
 }
 

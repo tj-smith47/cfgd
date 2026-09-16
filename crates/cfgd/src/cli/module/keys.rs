@@ -2,12 +2,17 @@ use super::*;
 use cfgd_core::PathDisplayExt;
 use cfgd_core::output::{Doc, ICON_ARROW, Printer, Role};
 
+/// Get cosign onto this host, or say why this host cannot have it.
+///
+/// Both key verbs need the same binary and neither can do anything without it,
+/// so the one route to it is resolved once here.
+fn provision_cosign(printer: &Printer) -> std::result::Result<(), String> {
+    let registry = crate::cli::build_registry();
+    crate::cli::helpers::provision_tool(printer, &registry, "cosign", "CFGD_COSIGN_BIN")
+}
+
 pub fn cmd_module_keys_generate(printer: &Printer, output_dir: Option<&str>) -> anyhow::Result<()> {
-    if let Err(msg) = cfgd_core::require_tool_with_seam(
-        "CFGD_COSIGN_BIN",
-        "cosign",
-        Some("install it from https://docs.sigstore.dev/cosign/installation/"),
-    ) {
+    if let Err(msg) = provision_cosign(printer) {
         return Err(crate::cli::cli_error(
             "cosign",
             "tool_missing",
@@ -28,16 +33,17 @@ pub fn cmd_module_keys_generate(printer: &Printer, output_dir: Option<&str>) -> 
     } else {
         std::process::Stdio::inherit()
     };
-    let status = cfgd_core::cosign_cmd()
-        .args(["generate-key-pair"])
-        .current_dir(dir)
-        .stdin(stdin_cfg)
-        .stdout(std::process::Stdio::inherit())
-        // Override the default piped stderr: interactive key-pair generation
-        // prompts the user and inherits the real terminal.
-        .stderr(std::process::Stdio::inherit())
-        .status()
-        .map_err(|e| anyhow::anyhow!("failed to run cosign: {e}"))?;
+    let status = cfgd_core::command_status(
+        cfgd_core::cosign_cmd()
+            .args(["generate-key-pair"])
+            .current_dir(dir)
+            .stdin(stdin_cfg)
+            .stdout(std::process::Stdio::inherit())
+            // Override the default piped stderr: interactive key-pair generation
+            // prompts the user and inherits the real terminal.
+            .stderr(std::process::Stdio::inherit()),
+    )
+    .map_err(|e| anyhow::anyhow!("failed to run cosign: {e}"))?;
 
     if !status.success() {
         return Err(crate::cli::cli_error(
@@ -78,23 +84,31 @@ pub fn cmd_module_keys_generate(printer: &Printer, output_dir: Option<&str>) -> 
     Ok(())
 }
 
-pub fn cmd_module_keys_list(printer: &Printer) -> anyhow::Result<()> {
-    let locations = [
-        ("./cosign.key", "./cosign.pub"),
-        ("~/.cfgd/cosign.key", "~/.cfgd/cosign.pub"),
-    ];
+/// The key-pair locations `cfgd module keys list` probes.
+///
+/// `--dir` is the same argument `keys generate` and `keys rotate` take, and it
+/// means the same thing: the directory holding the pair. Given one, that
+/// directory is the whole search — a listing that answered about `~/.cfgd`
+/// after being asked about a project directory would report a key the caller
+/// did not ask about. Given none, the two locations the other two verbs write
+/// to by default are probed, current directory first.
+fn key_pair_locations(dir: Option<&str>) -> Vec<std::path::PathBuf> {
+    match dir {
+        Some(d) => vec![cfgd_core::expand_tilde(Path::new(d))],
+        None => vec![
+            cfgd_core::expand_tilde(Path::new(".")),
+            cfgd_core::expand_tilde(Path::new("~/.cfgd")),
+        ],
+    }
+}
 
+pub fn cmd_module_keys_list(printer: &Printer, dir: Option<&str>) -> anyhow::Result<()> {
     let mut entries: Vec<super::KeyListEntry> = Vec::new();
-    for (private, public) in &locations {
-        let priv_path = cfgd_core::expand_tilde(Path::new(private));
-        let pub_path = cfgd_core::expand_tilde(Path::new(public));
+    for base in key_pair_locations(dir) {
+        let priv_path = base.join("cosign.key");
+        let pub_path = base.join("cosign.pub");
 
         if pub_path.exists() {
-            let fingerprint = if priv_path.exists() {
-                Some("private key: yes".to_string())
-            } else {
-                Some("private key: no".to_string())
-            };
             let created = std::fs::metadata(&pub_path)
                 .ok()
                 .and_then(|m| m.modified().ok())
@@ -106,8 +120,8 @@ pub fn cmd_module_keys_list(printer: &Printer) -> anyhow::Result<()> {
                     cfgd_core::unix_secs_to_iso8601(secs)
                 });
             entries.push(super::KeyListEntry {
-                name: pub_path.display().to_string(),
-                fingerprint,
+                name: cfgd_core::to_posix_string(&pub_path),
+                private_key_present: priv_path.exists(),
                 created,
             });
         }
@@ -120,11 +134,16 @@ pub fn cmd_module_keys_list(printer: &Printer) -> anyhow::Result<()> {
             .status(Role::Info, "No signing keys found")
             .hint_commands("Generate with:", &["cfgd module keys generate"]);
     } else {
-        let pairs: Vec<(String, String)> = entries
-            .iter()
-            .map(|e| (e.name.clone(), e.fingerprint.clone().unwrap_or_default()))
-            .collect();
-        doc = doc.kv_block(pairs);
+        // The rows are a display slot and the key files sit under home; the
+        // payload below keeps the absolute path a script needs.
+        let mut table = cfgd_core::output::renderer::Table::new(["Key", "Private Key"]);
+        for e in &entries {
+            table = table.row([
+                cfgd_core::fold_home_in_text(&e.name),
+                cfgd_core::yes_no(Some(e.private_key_present)).to_string(),
+            ]);
+        }
+        doc = doc.table(table.without_unfillable_columns());
     }
 
     printer.emit(doc.with_data(&entries));
@@ -136,23 +155,14 @@ pub fn cmd_module_keys_rotate(
     dir: Option<&str>,
     artifacts: &[String],
 ) -> anyhow::Result<()> {
-    if let Err(msg) = cfgd_core::require_tool_with_seam(
-        "CFGD_COSIGN_BIN",
-        "cosign",
-        Some("install it from https://docs.sigstore.dev/cosign/installation/"),
-    ) {
-        return Err(crate::cli::cli_error(
-            "cosign",
-            "tool_missing",
-            msg,
-            serde_json::json!({}),
-        ));
-    }
-
     let key_dir = dir.unwrap_or(".");
     let old_key = Path::new(key_dir).join("cosign.key");
     let old_pub = Path::new(key_dir).join("cosign.pub");
 
+    // Ahead of the install: a rotate with no key to rotate does no work
+    // whatever cosign this host has, so putting a package manager to work
+    // first spends an install on a run that was always going to refuse. See
+    // `crate::cli::helpers::provision_tool`.
     if !old_key.exists() {
         return Err(crate::cli::cli_error(
             key_dir,
@@ -162,6 +172,15 @@ pub fn cmd_module_keys_rotate(
                 key_dir
             ),
             serde_json::json!({ "dir": key_dir }),
+        ));
+    }
+
+    if let Err(msg) = provision_cosign(printer) {
+        return Err(crate::cli::cli_error(
+            "cosign",
+            "tool_missing",
+            msg,
+            serde_json::json!({}),
         ));
     }
 
@@ -178,27 +197,34 @@ pub fn cmd_module_keys_rotate(
     std::fs::rename(&old_key, &backup_key)?;
     printer.status_simple(
         Role::Info,
-        format!("Backed up old private key to {}", backup_key.posix()),
+        format!(
+            "Backed up old private key to {}",
+            cfgd_core::fold_home_in_text(&backup_key.display_posix())
+        ),
     );
     if old_pub.exists() {
         std::fs::rename(&old_pub, &backup_pub)?;
         printer.status_simple(
             Role::Info,
-            format!("Backed up old public key to {}", backup_pub.posix()),
+            format!(
+                "Backed up old public key to {}",
+                cfgd_core::fold_home_in_text(&backup_pub.display_posix())
+            ),
         );
     }
 
     // Generate new key pair
-    let status = cfgd_core::cosign_cmd()
-        .args(["generate-key-pair"])
-        .current_dir(key_dir)
-        .stdin(std::process::Stdio::inherit())
-        .stdout(std::process::Stdio::inherit())
-        // Override the default piped stderr: interactive key-pair generation
-        // prompts the user and inherits the real terminal.
-        .stderr(std::process::Stdio::inherit())
-        .status()
-        .map_err(|e| anyhow::anyhow!("failed to run cosign: {e}"))?;
+    let status = cfgd_core::command_status(
+        cfgd_core::cosign_cmd()
+            .args(["generate-key-pair"])
+            .current_dir(key_dir)
+            .stdin(std::process::Stdio::inherit())
+            .stdout(std::process::Stdio::inherit())
+            // Override the default piped stderr: interactive key-pair generation
+            // prompts the user and inherits the real terminal.
+            .stderr(std::process::Stdio::inherit()),
+    )
+    .map_err(|e| anyhow::anyhow!("failed to run cosign: {e}"))?;
 
     if !status.success() {
         let mut restore_failures: Vec<String> = Vec::new();
@@ -207,42 +233,40 @@ pub fn cmd_module_keys_rotate(
         {
             restore_failures.push(format!(
                 "{} {} {}: {}",
-                backup_key.posix(),
+                backup_key.posix(), // absolute-path-ok: a recorded failure `-o json` carries
                 ICON_ARROW,
-                old_key.posix(),
+                old_key.posix(), // absolute-path-ok: a recorded failure `-o json` carries
                 e
             ));
+            // The two display slots fold the home directory; the recorded
+            // failure above keeps the absolute path for `-o json`.
+            let shown = cfgd_core::fold_home_in_text(&backup_key.display_posix());
             printer
                 .status(
                     Role::Fail,
-                    format!(
-                        "Failed to restore private key from {}: {}",
-                        backup_key.posix(),
-                        e
-                    ),
+                    format!("Failed to restore private key from {shown}: {e}"),
                 )
-                .detail(format!("backup remains at {}", backup_key.posix()));
+                .detail(format!("backup remains at {shown}"));
         }
         if backup_pub.exists()
             && let Err(e) = std::fs::rename(&backup_pub, &old_pub)
         {
             restore_failures.push(format!(
                 "{} {} {}: {}",
-                backup_pub.posix(),
+                backup_pub.posix(), // absolute-path-ok: a recorded failure `-o json` carries
                 ICON_ARROW,
-                old_pub.posix(),
+                old_pub.posix(), // absolute-path-ok: a recorded failure `-o json` carries
                 e
             ));
+            // The two display slots fold the home directory; the recorded
+            // failure above keeps the absolute path for `-o json`.
+            let shown = cfgd_core::fold_home_in_text(&backup_pub.display_posix());
             printer
                 .status(
                     Role::Fail,
-                    format!(
-                        "Failed to restore public key from {}: {}",
-                        backup_pub.posix(),
-                        e
-                    ),
+                    format!("Failed to restore public key from {shown}: {e}"),
                 )
-                .detail(format!("backup remains at {}", backup_pub.posix()));
+                .detail(format!("backup remains at {shown}"));
         }
 
         let (bail_msg, json_extra) = if restore_failures.is_empty() {
@@ -252,13 +276,14 @@ pub fn cmd_module_keys_rotate(
             )
         } else {
             let backups = [
-                backup_key.display().to_string(),
-                backup_pub.display().to_string(),
+                cfgd_core::to_posix_string(&backup_key),
+                cfgd_core::to_posix_string(&backup_pub),
             ];
             (
                 format!(
                     "key restore FAILED — keys are at {} and {}; manually restore. cosign generate-key-pair failed",
-                    backups[0], backups[1]
+                    cfgd_core::fold_home_in_text(&backups[0]),
+                    cfgd_core::fold_home_in_text(&backups[1])
                 ),
                 serde_json::json!({
                     "dir": key_dir,
@@ -284,6 +309,7 @@ pub fn cmd_module_keys_rotate(
     let mut resigned: Vec<String> = Vec::new();
     for artifact in artifacts {
         let sp = printer.spinner(format!("Re-signing {artifact}"));
+        // absolute-path-ok: cosign opens the key, so it is handed the real path
         match cfgd_core::oci::sign_artifact(artifact, Some(&new_key_path.display().to_string())) {
             Ok(()) => {
                 sp.finish_ok(format!("Re-signed {artifact}"));
@@ -298,7 +324,7 @@ pub fn cmd_module_keys_rotate(
                     e.to_string(),
                     serde_json::json!({
                         "artifact": artifact,
-                        "newKeyPath": new_key_path.display().to_string(),
+                        "newKeyPath": cfgd_core::to_posix_string(&new_key_path),
                     }),
                 ));
             }
@@ -306,7 +332,7 @@ pub fn cmd_module_keys_rotate(
     }
 
     let backup_pub_path = if old_pub.exists() || backup_pub.exists() {
-        Some(backup_pub.display().to_string())
+        Some(cfgd_core::to_posix_string(&backup_pub))
     } else {
         None
     };
@@ -319,7 +345,7 @@ pub fn cmd_module_keys_rotate(
             }))
             .with_data(serde_json::json!({
                 "dir": key_dir,
-                "backupPrivateKey": backup_key.display().to_string(),
+                "backupPrivateKey": cfgd_core::to_posix_string(&backup_key),
                 "backupPublicKey": backup_pub_path,
                 "artifactsResigned": resigned,
             })),
@@ -375,7 +401,11 @@ mod tests {
     #[test]
     #[serial]
     fn generate_cosign_missing_returns_error_meta() {
-        let _g = EnvVarGuard::set("CFGD_COSIGN_BIN", "/nonexistent/cosign");
+        // A seam at a path that is not there sends the verb to a package
+        // manager, so every manager is pinned missing too: without it this pin
+        // installs cosign on whoever runs the suite.
+        let _managers = cfgd_core::test_helpers::NoHostManagers::pinned_missing();
+        let _g = EnvVarGuard::set("CFGD_COSIGN_BIN", cfgd_core::test_helpers::ABSENT_SEAM_PATH);
         let (printer, _cap) = Printer::for_test_doc();
         let err = cmd_module_keys_generate(&printer, None).unwrap_err();
         assert!(
@@ -449,7 +479,7 @@ mod tests {
         let _home = with_test_home_guard(tmp.path());
         let _cwd = cfgd_core::test_helpers::CwdGuard::set(tmp.path()).expect("cwd guard");
         let (printer, cap) = Printer::for_test_doc();
-        cmd_module_keys_list(&printer).expect("list should not error");
+        cmd_module_keys_list(&printer, None).expect("list should not error");
         let human = cap.human();
         assert!(
             human.contains("No signing keys found"),
@@ -465,7 +495,7 @@ mod tests {
         std::fs::write(cfgd_dir.join("cosign.pub"), "fake-pub-key").expect("write pub key");
         let _home = with_test_home_guard(tmp.path());
         let (printer, cap) = Printer::for_test_doc();
-        cmd_module_keys_list(&printer).expect("list should not error");
+        cmd_module_keys_list(&printer, None).expect("list should not error");
         let json = cap.json().expect("doc should have json payload");
         let entries = json.as_array().expect("payload should be an array");
         assert!(!entries.is_empty(), "should find at least one key entry");
@@ -626,7 +656,7 @@ mod tests {
         let _cwd = cfgd_core::test_helpers::CwdGuard::set(tmp.path()).expect("cwd guard");
 
         let (printer, cap) = Printer::for_test_doc();
-        cmd_module_keys_list(&printer).expect("list should not error");
+        cmd_module_keys_list(&printer, None).expect("list should not error");
         let json = cap.json().expect("doc should have json payload");
         let entries = json.as_array().expect("payload should be an array");
         assert!(
@@ -635,12 +665,10 @@ mod tests {
                 .any(|e| e["name"].as_str().is_some_and(|n| n.contains("cosign.pub"))),
             "expected entry to include the local cosign.pub: {entries:?}"
         );
-        // Private-key sentinel should mention "yes" because both files exist.
+        // The private half is there, so the payload states it as `true`.
         assert!(
-            entries
-                .iter()
-                .any(|e| e["fingerprint"].as_str().is_some_and(|f| f.contains("yes"))),
-            "expected 'private key: yes' for an entry: {entries:?}"
+            entries.iter().any(|e| e["privateKeyPresent"] == true),
+            "expected privateKeyPresent true for an entry: {entries:?}"
         );
     }
 
@@ -650,7 +678,10 @@ mod tests {
         // Drives the rotate-path tool_missing branch: when
         // require_tool_with_seam reports cosign is missing, rotate must return
         // a tool_missing CliErrorMeta and bail BEFORE attempting any rename.
-        let _g = EnvVarGuard::set("CFGD_COSIGN_BIN", "/nonexistent/cosign");
+        // Every manager is pinned missing, or the absent seam sends the verb to
+        // this host's own package manager to go and get cosign.
+        let _managers = cfgd_core::test_helpers::NoHostManagers::pinned_missing();
+        let _g = EnvVarGuard::set("CFGD_COSIGN_BIN", cfgd_core::test_helpers::ABSENT_SEAM_PATH);
         let tmp = tempfile::tempdir().expect("tempdir");
         let dir_str = tmp.path().to_str().expect("utf8 path");
         // Write a key so the not-found check doesn't short-circuit first.
@@ -711,12 +742,45 @@ mod tests {
         );
     }
 
+    /// `--dir` is the whole search, not an addition to it.
+    ///
+    /// The three key verbs take one `--dir` meaning one thing: the directory
+    /// holding the pair. A listing that answered about `~/.cfgd` as well would
+    /// report a key the caller did not ask about, under a flag the other two
+    /// verbs use to pick exactly one directory.
     #[test]
     #[serial]
-    fn list_local_dir_without_priv_uses_no_sentinel() {
-        // Drives the "./cosign.pub" branch where priv_path.exists()=false,
-        // producing "private key: no" instead of "yes". `CwdGuard` holds the
-        // exclusive spawn-environment guard while the process is chdir'd.
+    fn list_dir_lists_that_directory_and_nothing_else() {
+        let home = tempfile::tempdir().expect("home tempdir");
+        let asked = tempfile::tempdir().expect("asked tempdir");
+        std::fs::write(asked.path().join("cosign.pub"), "asked-pub").expect("write pub");
+        std::fs::write(asked.path().join("cosign.key"), "asked-priv").expect("write priv");
+        // A default location holding its own pair, which the answer must not
+        // mention once a directory was named.
+        let dotcfgd = home.path().join(".cfgd");
+        std::fs::create_dir_all(&dotcfgd).expect("mk ~/.cfgd");
+        std::fs::write(dotcfgd.join("cosign.pub"), "home-pub").expect("write home pub");
+        let _home = with_test_home_guard(home.path());
+
+        let (printer, cap) = Printer::for_test_doc();
+        cmd_module_keys_list(&printer, asked.path().to_str()).expect("list should not error");
+        let json = cap.json().expect("doc should have json payload");
+        let entries = json.as_array().expect("payload should be an array");
+        assert_eq!(entries.len(), 1, "one directory, one pair: {entries:?}");
+        assert_eq!(entries[0]["privateKeyPresent"], true);
+        let name = entries[0]["name"].as_str().unwrap_or_default();
+        assert!(
+            name.contains(&cfgd_core::to_posix_string(asked.path())),
+            "the entry is the named directory's pair: {name}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn list_local_dir_without_priv_reports_the_private_key_absent() {
+        // Drives the "./cosign.pub" branch where priv_path.exists()=false, so
+        // the payload states `false`. `CwdGuard` holds the exclusive
+        // spawn-environment guard while the process is chdir'd.
         let tmp = tempfile::tempdir().expect("tempdir");
         std::fs::write(tmp.path().join("cosign.pub"), "fake-pub").expect("write pub");
         // No cosign.key — exercises the priv_path.exists()==false arm.
@@ -726,14 +790,12 @@ mod tests {
         let _home = with_test_home_guard(tmp.path());
 
         let (printer, cap) = Printer::for_test_doc();
-        cmd_module_keys_list(&printer).expect("list should not error");
+        cmd_module_keys_list(&printer, None).expect("list should not error");
         let json = cap.json().expect("doc should have json payload");
         let entries = json.as_array().expect("payload should be array");
         assert!(
-            entries
-                .iter()
-                .any(|e| e["fingerprint"].as_str().is_some_and(|f| f.contains("no"))),
-            "expected 'private key: no' sentinel: {entries:?}"
+            entries.iter().any(|e| e["privateKeyPresent"] == false),
+            "expected privateKeyPresent false: {entries:?}"
         );
     }
 }

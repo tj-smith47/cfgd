@@ -35,13 +35,25 @@ use super::{LoadedModule, ResolvedFile, ResolvedModule, ResolvedPackage, SourceM
 /// 3. First satisfying candidate wins
 /// 4. If none satisfies, return error with details
 ///
+/// A declared `minVersion` never makes a package unresolvable because a
+/// manager could not say what it offers. A candidate whose offered version is
+/// known and clears the floor wins where it always did, ahead of any earlier
+/// candidate that stated nothing, because that choice is the one the author
+/// can observe. A candidate that PROVES it offers below the floor is still
+/// passed over. What is left is ignorance, which shows nothing about the
+/// machine: the first such candidate in candidate order resolves with no
+/// version, carrying its `min_version` on to the live floor check
+/// ([`crate::reconciler::package_version_floor`]), which reports an
+/// unanswerable floor as an erroring check rather than as a refusal to run at
+/// all.
+///
 /// `installed` is the run's installed-state reader. A bare `- name: npm`
 /// means "npm on this machine", not "npm through apt": with a reader wired,
 /// a manager that is available and already reports the package installed
 /// wins over the platform default, so the entry is satisfied rather than
 /// re-installed as a second copy through the default. `None` (a surface with
 /// no state to read) keeps the platform default. The in-run twin of this rule
-/// is `Reconciler::provisioned`: a tool THIS run's own `Prerequisites` phase
+/// is `Reconciler::provisioned`: a tool THIS run's own `Bootstrap` phase
 /// delivered is not yet in any listing when the plan is read, so
 /// `Reconciler::package_survives_elision` elides it from the run's own record
 /// of what it provisioned instead. Resolution answers "already here before
@@ -76,6 +88,15 @@ pub fn resolve_package(
         .into_iter()
         .filter(|c| !entry.deny.contains(c))
         .collect();
+
+    // A candidate that is available and states nothing about what it offers,
+    // kept in candidate order so an authored `prefer` still decides which of
+    // them stands in. Used only once the whole walk has failed to find a
+    // candidate that proves the floor met.
+    let mut unproven: Option<ResolvedPackage> = None;
+    // Whether some candidate proved it offers below the floor, which is the
+    // only way a floor can make a package genuinely unresolvable.
+    let mut proven_below = false;
 
     for candidate in &candidates {
         // Special "script" manager — always available, uses custom install script
@@ -161,6 +182,7 @@ pub fn resolve_package(
                     // manager compares against its own scheme; everyone else falls
                     // through to the loose-semver default.
                     if !mgr.version_meets_minimum(&ver, min_ver) {
+                        proven_below = true;
                         continue;
                     }
                     return Ok(Some(ResolvedPackage {
@@ -176,8 +198,23 @@ pub fn resolve_package(
                         min_version: entry.min_version.clone(),
                     }));
                 }
-                Ok(None) => continue,
-                Err(_) => continue,
+                // The manager answered nothing, or could not be asked at all.
+                // Neither says the floor is unmet, so the candidate stands by
+                // in case nothing better is found.
+                Ok(None) | Err(_) => {
+                    unproven.get_or_insert(ResolvedPackage {
+                        canonical_name: entry.name.clone(),
+                        resolved_name,
+                        manager: candidate.clone(),
+                        manager_declared,
+                        version: None,
+                        script: None,
+                        creates: None,
+                        only_if: None,
+                        unless: None,
+                        min_version: entry.min_version.clone(),
+                    });
+                }
             }
         } else {
             // No min-version: first available manager wins, and nothing about
@@ -199,10 +236,22 @@ pub fn resolve_package(
         }
     }
 
+    if let Some(pkg) = unproven {
+        return Ok(Some(pkg));
+    }
+
+    let reason = if proven_below {
+        format!(
+            "every available manager offers a version below the declared minVersion {}",
+            entry.min_version.as_deref().unwrap_or("any")
+        )
+    } else {
+        "no manager for it is available on this host, and none can be bootstrapped".to_string()
+    };
     Err(ModuleError::UnresolvablePackage {
         module: module_name.to_string(),
         package: entry.name.clone(),
-        min_version: entry.min_version.clone().unwrap_or_else(|| "any".into()),
+        reason,
     }
     .into())
 }

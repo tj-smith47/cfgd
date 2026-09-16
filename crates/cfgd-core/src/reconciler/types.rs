@@ -23,7 +23,7 @@ pub enum PhaseName {
     /// file that publishes where their binaries live (`cfgd:env`), and the live
     /// session broadcast (`cfgd:session`) — in that producer-before-consumer
     /// order.
-    Prerequisites,
+    Bootstrap,
     Modules,
     Packages,
     System,
@@ -36,7 +36,7 @@ impl PhaseName {
     pub fn as_str(&self) -> &str {
         match self {
             PhaseName::PreScripts => "pre-scripts",
-            PhaseName::Prerequisites => "prerequisites",
+            PhaseName::Bootstrap => "bootstrap",
             PhaseName::Modules => "modules",
             PhaseName::Packages => "packages",
             PhaseName::System => "system",
@@ -49,7 +49,7 @@ impl PhaseName {
     pub fn display_name(&self) -> &str {
         match self {
             PhaseName::PreScripts => "Pre-Scripts",
-            PhaseName::Prerequisites => "Prerequisites",
+            PhaseName::Bootstrap => "Bootstrap",
             PhaseName::Modules => "Modules",
             PhaseName::Packages => "Packages",
             PhaseName::System => "System",
@@ -79,10 +79,11 @@ impl FromStr for PhaseName {
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s {
             "pre-scripts" => Ok(PhaseName::PreScripts),
-            // `env` is the phase's pre-merge spelling: it now names the
-            // `cfgd:env` group of a wider phase, and a filter written against
-            // it still selects the phase that holds that work.
-            "prerequisites" | "env" => Ok(PhaseName::Prerequisites),
+            // `prerequisites` and `env` are the phase's earlier spellings:
+            // `env` named only the `cfgd:env` group a wider phase now holds,
+            // and a filter written against either still selects the phase that
+            // holds that work.
+            "bootstrap" | "prerequisites" | "env" => Ok(PhaseName::Bootstrap),
             "modules" => Ok(PhaseName::Modules),
             "system" => Ok(PhaseName::System),
             "packages" => Ok(PhaseName::Packages),
@@ -130,7 +131,7 @@ pub enum EnvAction {
 }
 
 /// Work on a package manager itself, rather than on a package: the
-/// `cfgd:managers` owner group of the [`PhaseName::Prerequisites`] phase.
+/// `cfgd:managers` owner group of the [`PhaseName::Bootstrap`] phase.
 ///
 /// The group is a DAG, not a list. Each node carries the ids of the nodes it
 /// must follow ([`ManagerAction::depends_on`]), so a scheduler reads the edges
@@ -193,6 +194,13 @@ pub enum ManagerAction {
     /// user-managed resource and never removed later: it is a tool cfgd needed.
     Prerequisite {
         tool: String,
+        /// What `installer` calls the tool, from
+        /// [`crate::providers::INSTALLABLE_TOOLS`]. Carried rather than
+        /// re-derived, so the line a preview printed and the command the apply
+        /// runs are one string: apt installs `pip3` under `python3-pip`, and a
+        /// node that re-looked-up at execute time could answer differently
+        /// from the one the reader approved.
+        package: String,
         installer: String,
         /// The managers that named the tool, in sorted order — one node serves
         /// all of them, and the line says so.
@@ -235,6 +243,42 @@ pub(super) const MANAGER_RESOURCE_TYPE: &str = "manager";
 /// `cfgd status`'s Managed Resources table, which reads it to give those rows
 /// the `cfgd:` owner the plan and apply trees head them with.
 pub const ENV_RESOURCE_TYPE: &str = "env";
+
+/// The `resource_type` of the source line cfgd plants in a shell rc file the
+/// USER owns, and of the live-session publish — the two env surfaces
+/// [`ENV_RESOURCE_TYPE`] does not name. Spelled here for the same reason its
+/// sibling is: both crates match on them (the apply that resolves an rc row,
+/// the scan's own resolvable-type list, and `cfgd status`'s Type cell and
+/// Component Health counts), so a rename cannot leave one side matching a
+/// type nothing writes.
+pub const ENV_RC_RESOURCE_TYPE: &str = "env-rc";
+pub const ENV_SESSION_RESOURCE_TYPE: &str = "env-session";
+
+/// The `resource_type` of ONE declared env var, and of one declared alias.
+///
+/// The env surfaces above are artifacts cfgd writes whole out of every layer,
+/// so their rows record cfgd as the writer and can name no delivering layer.
+/// The entries INSIDE them each come from one declaration, so each is its own
+/// row under the layer that declared it, which is what lets
+/// `cfgd source remove` list the vars and aliases a subscription put on the
+/// machine. Both spellings were already the per-item drift grammar
+/// ([`crate::reconciler::env_item_verify_results`]); named here so the
+/// tracking row and the drift row cannot drift apart.
+pub const ENV_VAR_RESOURCE_TYPE: &str = "env-var";
+pub const ALIAS_RESOURCE_TYPE: &str = "alias";
+
+/// Whether a recorded `resource_type` names ONE declared env var or alias
+/// rather than a surface, a file or a package.
+///
+/// Two surfaces ask it and must agree: `cfgd source remove` lists what a
+/// subscription put on the machine and copies those declarations into the
+/// local profile, and `cfgd status` folds an owner's entries into a single
+/// table row. A third spelling is how the two came to classify one row two
+/// ways.
+#[must_use]
+pub fn records_an_env_item(resource_type: &str) -> bool {
+    resource_type == ENV_VAR_RESOURCE_TYPE || resource_type == ALIAS_RESOURCE_TYPE
+}
 
 fn refresh_id(manager: &str) -> String {
     format!("refresh:{manager}")
@@ -351,8 +395,8 @@ impl ManagerAction {
     /// needs, while this one answers "what does the user see in the tree"
     /// (`manager:prereq:curl` — the subject is the tool, not brew's name
     /// merely because brew happens to be the installer). Both this crate's
-    /// `action_matches_phase_filter` (`--phase prerequisites.curl`) and the
-    /// `cfgd` binary's `action_path` (`--skip prerequisites.curl`) key on this
+    /// `action_matches_phase_filter` (`--phase bootstrap.curl`) and the
+    /// `cfgd` binary's `action_path` (`--skip bootstrap.curl`) key on this
     /// so the two matchers can never disagree about which node a selector
     /// reaches.
     pub fn filter_subject(&self) -> &str {
@@ -406,6 +450,11 @@ impl ManagerAction {
     }
 }
 
+/// Why a `ConfigureAfterInstall` this run will not deliver the tool for is
+/// withheld, worded so it names neither the configurator nor the tool the row's
+/// own subject already spells.
+pub const PREREQUISITE_NOT_IN_RUN: &str = "prerequisite install not in this run";
+
 /// A unified action across all resource types.
 #[derive(Debug, Serialize)]
 pub enum Action {
@@ -439,7 +488,59 @@ impl Action {
                     crate::NO_SESSION_MANAGER,
                 ))
             }
+            Action::System(SystemAction::ConfigureAfterInstall {
+                prerequisite_withheld: true,
+                ..
+            }) => Some(super::format::debug_checked_pre_skip_reason(
+                self,
+                PREREQUISITE_NOT_IN_RUN,
+            )),
             _ => None,
+        }
+    }
+
+    /// The composed layer that delivered the work this action performs, or
+    /// `None` for work cfgd itself owns.
+    ///
+    /// Every declared action already carries the layer token the plan renders
+    /// as its ` <- <source>` suffix; this reads that same fact back so the
+    /// apply can record it on the tracking row it writes, which is what
+    /// `cfgd source remove` looks a removed subscription's resources up by.
+    /// An empty token and [`crate::config::LOCAL_LAYER`] both mean the
+    /// operator's own config, exactly as
+    /// `super::format::provenance_suffix` reads them.
+    ///
+    /// The env surface and a manager node carry no token: a generated env file
+    /// folds every layer into one file, and a bootstrapped manager is cfgd's
+    /// own scaffolding, so neither belongs to a single subscription.
+    pub fn origin(&self) -> Option<&str> {
+        match self {
+            Action::File(fa) => Some(match fa {
+                FileAction::Create { origin, .. }
+                | FileAction::Update { origin, .. }
+                | FileAction::Delete { origin, .. }
+                | FileAction::SetPermissions { origin, .. }
+                | FileAction::Skip { origin, .. } => origin,
+            }),
+            Action::Package(pa) => Some(match pa {
+                PackageAction::Install { origin, .. }
+                | PackageAction::Uninstall { origin, .. }
+                | PackageAction::Skip { origin, .. } => origin,
+            }),
+            Action::Secret(sa) => Some(match sa {
+                SecretAction::Decrypt { origin, .. }
+                | SecretAction::Resolve { origin, .. }
+                | SecretAction::ResolveEnv { origin, .. }
+                | SecretAction::Skip { origin, .. } => origin,
+            }),
+            Action::System(sa) => Some(match sa {
+                SystemAction::SetValue { origin, .. }
+                | SystemAction::Skip { origin, .. }
+                | SystemAction::ConfigureAfterInstall { origin, .. } => origin,
+            }),
+            Action::Script(ScriptAction::Run { origin, .. }) => Some(origin),
+            Action::Module(ma) => ma.origin.as_deref(),
+            Action::Env(_) | Action::Manager(_) => None,
         }
     }
 }
@@ -551,6 +652,32 @@ pub enum SystemAction {
         /// but is unavailable on this host (expected, surfaced neutrally).
         unknown: bool,
     },
+    /// Configure `configurator` once `tool` is on the machine, reading the
+    /// desired set at execute time.
+    ///
+    /// The tool this configurator drives is absent, so the planner could not
+    /// call `diff` and has no per-key rows to promise. The `Bootstrap` phase
+    /// installs the tool ahead of `System`, and the executor then re-asks
+    /// `is_available` (the availability memo moved when the install landed) and
+    /// diffs against the live machine, the way an install re-reads what a
+    /// manager holds before it runs.
+    ConfigureAfterInstall {
+        configurator: String,
+        /// The binary the `Bootstrap` phase is installing for it.
+        tool: String,
+        origin: String,
+        /// Whether this run's own scope excludes the `Bootstrap` node that
+        /// would install [`Self::ConfigureAfterInstall::tool`].
+        ///
+        /// Minted `false` and settled once by
+        /// [`super::managers::withhold_orphaned_prerequisites`], after every
+        /// selector the invocation carried has been resolved against the plan.
+        /// `--phase system`, `--skip bootstrap` and `--only system` each leave
+        /// the configure step behind a tool nothing in the run will deliver,
+        /// and a run that executes it anyway fails on a tool it never tried to
+        /// install.
+        prerequisite_withheld: bool,
+    },
 }
 
 /// Script execution action.
@@ -582,6 +709,10 @@ pub enum ScriptPhase {
 
 impl ScriptPhase {
     pub fn display_name(&self) -> &'static str {
+        // hook-table-ok: the phase vocabulary, whose last three members name no
+        // lifecycle hook at all; the six that do are held to the names
+        // `ScriptSpec::hooks` pairs, in its order, by
+        // `the_lifecycle_phases_are_named_as_the_hook_set_names_them`.
         match self {
             ScriptPhase::PreApply => "preApply",
             ScriptPhase::PostApply => "postApply",
@@ -603,8 +734,8 @@ pub enum PhaseFilter {
     Phase(PhaseName),
     ModuleOwners,
     /// `<phase>.<selector>` — one cfgd-owned group (`managers`/`env`/`session`)
-    /// or one manager, scoped to `PhaseName` (`prerequisites.managers`,
-    /// `prerequisites.brew`). Resolved by [`crate::reconciler::action_matches_phase_filter`];
+    /// or one manager, scoped to `PhaseName` (`bootstrap.managers`,
+    /// `bootstrap.brew`). Resolved by [`crate::reconciler::action_matches_phase_filter`];
     /// `ModuleOwners` never carries a selector because it already spans every
     /// phase module work can land in, so nothing single-phase to scope it to.
     Selector(PhaseName, String),
@@ -670,31 +801,43 @@ impl OwnerKind {
 
 /// The order cfgd's own groups run and render in, which is causal rather than
 /// alphabetical: `managers` is the only group that changes what binaries exist,
-/// `env` publishes where they live, `session` broadcasts that to the running
-/// login session. Producer before consumer.
+/// `env` writes the files that publish where they live, `shell` plants the
+/// source lines that make a future shell read those files, `session` broadcasts
+/// the same values to the running login session. Producer before consumer.
 ///
 /// Only cfgd's names are ordered this way, and only because cfgd mints all of
 /// them — a profile, module, backup or source name is a user string with no
 /// meaning to order by, so those still sort by name.
 ///
 /// `pub`, not `pub(super)`: the CLI's `--phase`/`--skip`/`--only` dotted
-/// grammar (`prerequisites.managers`/`.env`/`.session`) and its selector
+/// grammar (`bootstrap.managers`/`.env`/`.shell`/`.session`) and its selector
 /// validation both read this list rather than minting their own copy of it —
 /// two copies is how the group vocabulary drifted between `--phase` (via
 /// `reconciler::action_matches_phase_filter`) and `--skip`/`--only` (via
 /// `cfgd::cli::plan_ops::pattern_matches_action`) before it was unified here.
-pub const CFGD_GROUP_ORDER: &[&str] = &[MANAGERS_GROUP, ENV_GROUP, SESSION_GROUP];
+pub const CFGD_GROUP_ORDER: &[&str] = &[MANAGERS_GROUP, ENV_GROUP, SHELL_GROUP, SESSION_GROUP];
 
 /// The cfgd-owned group every [`ManagerAction`] belongs to. Named once: a
 /// filter that keeps this group and a planner that mints into it must agree on
 /// the spelling, and a mismatch drops the whole phase silently.
 pub const MANAGERS_GROUP: &str = "managers";
 
-/// The cfgd-owned group every [`EnvAction`] but the live-session broadcast
-/// belongs to. Named once for the same reason as [`MANAGERS_GROUP`]: the
-/// assignment rule below and [`CFGD_GROUP_ORDER`] above spelled it twice, and
-/// two spellings of a group name is how a filter and a planner stop agreeing.
+/// The cfgd-owned group of the env files cfgd generates whole
+/// ([`EnvAction::WriteEnvFile`]). Named once for the same reason as
+/// [`MANAGERS_GROUP`]: the assignment rule below and [`CFGD_GROUP_ORDER`] above
+/// spelled it twice, and two spellings of a group name is how a filter and a
+/// planner stop agreeing.
 pub const ENV_GROUP: &str = "env";
+
+/// The cfgd-owned group of the source lines cfgd plants in shell rc files it
+/// does not own ([`EnvAction::InjectSourceLine`]).
+///
+/// Split from [`ENV_GROUP`] because the two do different things to different
+/// files: `env` writes files cfgd authored whole and may rewrite freely, while
+/// `shell` edits a file the user owns, one line at a time. Skipping one and
+/// keeping the other is a real request (`--skip bootstrap.shell` writes the env
+/// file without touching `~/.bashrc`), and a single group could not express it.
+pub const SHELL_GROUP: &str = "shell";
 
 /// The cfgd-owned group the live-session broadcast belongs to; the sibling of
 /// [`ENV_GROUP`], named for the same reason.
@@ -824,6 +967,25 @@ impl Owner {
     }
 }
 
+/// The layer names a recorded `managed_resources.source` carries.
+///
+/// A row records every layer that contributed to the resource, joined by
+/// [`Owner::TOKEN_SEPARATOR`], because an entry several layers built together
+/// (a `PATH` each of them extends) belongs to all of them: a column naming one
+/// of those layers hides the resource from every other subscription that put
+/// something in it. One contributor is the common case and reads back as
+/// itself.
+///
+/// The ONE reading of that column, beside the separator its writers join with,
+/// so `cfgd source remove` and the apply cannot disagree about where one layer
+/// name ends.
+pub fn recorded_source_layers(recorded: &str) -> Vec<&str> {
+    recorded
+        .split(Owner::TOKEN_SEPARATOR)
+        .filter(|layer| !layer.is_empty())
+        .collect()
+}
+
 /// One owner's slice of a phase. Never empty — an owner with no actions in a
 /// phase produces no group.
 #[derive(Debug, Serialize)]
@@ -841,9 +1003,12 @@ pub fn owner_of(action: &Action, profile: &Owner) -> Owner {
         Action::Module(ma) => Owner::module(ma.module_name.clone()),
         // Env surfaces aggregate declarations from the profile *and* every
         // module, so no single user document owns them — cfgd authored the file
-        // and cfgd owns it.
+        // and cfgd owns it. Matched exhaustively rather than through a
+        // wildcard: a fourth env act would otherwise land in whichever group
+        // the wildcard happened to name.
+        Action::Env(EnvAction::WriteEnvFile { .. }) => Owner::cfgd(ENV_GROUP),
+        Action::Env(EnvAction::InjectSourceLine { .. }) => Owner::cfgd(SHELL_GROUP),
         Action::Env(EnvAction::RefreshLiveSession { .. }) => Owner::cfgd(SESSION_GROUP),
-        Action::Env(_) => Owner::cfgd(ENV_GROUP),
         // A manager is a prerequisite every owner may be waiting on; cfgd
         // provisions it, and no user document declares it.
         Action::Manager(_) => Owner::cfgd(MANAGERS_GROUP),
@@ -1079,10 +1244,10 @@ pub fn attempted_count<'a>(actions: impl IntoIterator<Item = &'a Action>) -> usi
 /// Two surfaces read this and they must not disagree: the dispatch order
 /// ([`Phase::dispatch_order`]) partitions the phase by it, and the dispatcher
 /// releases a tier only once the tier above it has *completed*. Manager
-/// provisioning is a `Prerequisites`-phase [`ManagerAction`] node now, ahead
-/// of the whole `Packages` phase, so nothing in this phase blocks on a
-/// same-phase bootstrap any more — module work still runs first because a
-/// profile install may consume a package a module just installed.
+/// provisioning is a `Bootstrap`-phase [`ManagerAction`] node, ahead of the
+/// whole `Packages` phase, so nothing in this phase blocks on a same-phase
+/// bootstrap — module work still runs first because a profile install may
+/// consume a package a module just installed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Tier {
     /// Module-owned package work.
@@ -1180,6 +1345,155 @@ impl Plan {
     }
 }
 
+/// Work a run did that its plan could not name, by what the work was.
+///
+/// The header prints `Actions N planned` before the first action runs, so it can
+/// only ever promise what the plan knew. Both members below are triggered by
+/// something the run itself observes — a secret that resolved, a PATH directory
+/// a manager only reports once its install finished, a declaration that
+/// changed — which is why folding them into `planned_total` cannot work: the
+/// header would still say `N`. They are a class of their own instead, counted
+/// and rendered as their own rollup clauses, so the number the header promised
+/// and the numbers the rollup reports are one account again.
+///
+/// A member is added here with its own wording (see `counted_noun` /
+/// `performed_verb`) and its own entry in [`Self::ALL`], which is what
+/// every clause walks. What OUTCOME each item settled as is
+/// [`AfterPlanState`]'s; this type only says what kind of thing it was.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AfterPlan {
+    /// An env surface rewritten once a late input landed: a secret's resolved
+    /// value, or the PATH directory of a manager (npm) whose global prefix is
+    /// only knowable after its install finished.
+    ///
+    /// A surface is one FILE or one rc source line this host's generator
+    /// writes, plus the live session itself, so one late variable reaches the
+    /// machine as several surfaces: the count is of surfaces rewritten, never
+    /// of variables resolved, which is what lets a reader reconcile six
+    /// surfaces against one late input.
+    EnvSurface,
+    /// An `onChange` hook, whose condition is whether anything in this very run
+    /// changed — an answer no plan can hold.
+    ChangeHook,
+}
+
+impl AfterPlan {
+    /// Every member, in the order their clauses render. A new variant joins it
+    /// or no surface counts one.
+    pub const ALL: [Self; 2] = [Self::EnvSurface, Self::ChangeHook];
+
+    /// The unit a count of these is IN, for the counted-clause rule.
+    fn counted_noun(self) -> &'static str {
+        match self {
+            Self::EnvSurface => "env surface",
+            Self::ChangeHook => "onChange hook",
+        }
+    }
+
+    /// What this member DID when it went well and changed the machine. An env
+    /// surface converges; a hook runs.
+    fn performed_verb(self) -> &'static str {
+        match self {
+            Self::EnvSurface => "converged",
+            Self::ChangeHook => "ran",
+        }
+    }
+}
+
+/// How one item of after-plan work settled: the same three-way split the planned
+/// counts use, derived at the ONE place the record is read.
+///
+/// The class was born pricing itself by `success` alone, so a surface that
+/// changed nothing — the live-session refresh whose `systemctl` publish failed
+/// and whose notes carried the failure — was counted inside
+/// `N env surfaces converged after the plan`, a verdict contradicting the warn
+/// line above it. [`ApplyResult::{succeeded, skipped, failed}`] already hold the
+/// rule it broke: a successful action that CHANGED nothing is skipped, not done,
+/// and `!failed` is not a success count. One enum, derived once, is what keeps
+/// the rollup, the stored summary and `-o json` from disagreeing about which of
+/// the three a given surface was.
+///
+/// [`ApplyResult::{succeeded, skipped, failed}`]: ApplyResult::succeeded
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AfterPlanState {
+    /// It did the thing and the machine changed.
+    Performed,
+    /// It ran and changed nothing: the surface already held what it had to hold,
+    /// or a best-effort publish reached nothing to change.
+    Skipped,
+    /// It could not be done, and the class states its own failures.
+    Failed,
+}
+
+impl AfterPlanState {
+    /// Every member, in the order their clauses render.
+    pub const ALL: [Self; 3] = [Self::Performed, Self::Skipped, Self::Failed];
+
+    /// The state one recorded result settled in, judged in the same order the
+    /// planned predicates judge theirs: a failure first, then a success that
+    /// changed nothing, which is a skip and never a performance.
+    fn of(success: bool, skipped: bool) -> Self {
+        if !success {
+            Self::Failed
+        } else if skipped {
+            Self::Skipped
+        } else {
+            Self::Performed
+        }
+    }
+
+    /// The role a clause of this state renders at, the same one the class's own
+    /// action rows wear; a skip is never drawn green.
+    pub fn clause_role(self) -> crate::output::Role {
+        match self {
+            Self::Performed => crate::output::Role::Ok,
+            Self::Skipped => crate::output::Role::Skipped,
+            Self::Failed => crate::output::Role::Fail,
+        }
+    }
+
+    /// Everything a clause of this state says about `subject` after its count:
+    /// the verb and the `after the plan` tail that says which class the line
+    /// belongs to. A walk claims a rendered line by this string, so no surface
+    /// hand-writes one.
+    ///
+    /// `Skipped` and `Failed` word themselves the same for every member on
+    /// purpose: a skip is the absence of change and a failure is a failure,
+    /// which are facts about the outcome, not about what kind of thing settled
+    /// it. `actions failed` stays the planned class's own tell.
+    pub fn clause_tell(self, subject: AfterPlan) -> String {
+        let verb = match self {
+            Self::Performed => subject.performed_verb(),
+            Self::Skipped => "changed nothing",
+            Self::Failed => "failed",
+        };
+        format!("{verb} after the plan")
+    }
+
+    /// The clause naming `count` of `subject` that settled in this state, with
+    /// the role it renders at. The ONE composer: the noun names the unit the
+    /// count is in, and the count comes first so the line reads as a result.
+    pub fn clause(self, subject: AfterPlan, count: usize) -> (crate::output::Role, String) {
+        (
+            self.clause_role(),
+            format!(
+                "{} {}",
+                crate::pluralize(count, subject.counted_noun()),
+                self.clause_tell(subject)
+            ),
+        )
+    }
+}
+
+/// One item of work a run did after its plan settled: what it was, and how it
+/// settled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AfterPlanOutcome {
+    pub subject: AfterPlan,
+    pub state: AfterPlanState,
+}
+
 /// Result of applying a single action.
 #[derive(Debug, Serialize)]
 pub struct ActionResult {
@@ -1225,6 +1539,22 @@ pub struct ActionResult {
     /// `-o json` shape.
     #[serde(skip)]
     pub drift_rows: Vec<(String, String)>,
+    /// The composed layer that delivered this action, read off the action
+    /// itself through [`Action::origin`] rather than re-derived from
+    /// `description`, so the token the plan printed beside the row and the
+    /// token the tracking row records are one string. `None` for work cfgd
+    /// owns, which records as [`crate::config::LOCAL_LAYER`].
+    ///
+    /// Not serialized: the apply payload already carries each action's origin
+    /// under the plan, and this is the recording half of the same fact.
+    #[serde(skip)]
+    pub origin: Option<String>,
+    /// What this result is, when the plan never named it — see [`AfterPlan`].
+    /// `None` for every planned action, and the ONE thing that keeps such a
+    /// result out of the three counts the header's `Actions N planned` is
+    /// reconciled against.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub after_plan: Option<AfterPlan>,
 }
 
 /// Result of an entire apply operation.
@@ -1271,11 +1601,14 @@ pub struct RollbackResult {
 impl ApplyResult {
     /// Actions that ran and did something. A skipped action is NOT one of
     /// these — it settled a skip dash on screen, and a count claiming it as a
-    /// success contradicts the line the reader kept.
+    /// success contradicts the line the reader kept. Neither is work the plan
+    /// never named ([`Self::after_plan`]), which the header never promised.
     pub fn succeeded(&self) -> usize {
         self.action_results
             .iter()
-            .filter(|r| r.success && !r.skipped && r.not_attempted.is_none())
+            .filter(|r| {
+                r.success && !r.skipped && r.not_attempted.is_none() && r.after_plan.is_none()
+            })
             .count()
     }
 
@@ -1285,7 +1618,9 @@ impl ApplyResult {
     pub fn skipped(&self) -> usize {
         self.action_results
             .iter()
-            .filter(|r| r.success && r.skipped && r.not_attempted.is_none())
+            .filter(|r| {
+                r.success && r.skipped && r.not_attempted.is_none() && r.after_plan.is_none()
+            })
             .count()
     }
 
@@ -1298,8 +1633,31 @@ impl ApplyResult {
             .collect()
     }
 
+    /// Planned actions that failed. An after-plan failure is NOT one of these:
+    /// it belongs to the class that states its own failures, and counting it
+    /// here is what made `succeeded + skipped + failed` exceed the
+    /// `planned_total` the header promised.
     pub fn failed(&self) -> usize {
-        self.action_results.iter().filter(|r| !r.success).count()
+        self.action_results
+            .iter()
+            .filter(|r| !r.success && r.after_plan.is_none())
+            .count()
+    }
+
+    /// Every item of work this run did that its plan could not name, in result
+    /// order, each with the state it settled in — see [`AfterPlan`] and
+    /// [`AfterPlanState`]. The ONE derivation of that state, so no surface can
+    /// read a skip as a performance.
+    pub fn after_plan(&self) -> Vec<AfterPlanOutcome> {
+        self.action_results
+            .iter()
+            .filter_map(|r| {
+                r.after_plan.map(|subject| AfterPlanOutcome {
+                    subject,
+                    state: AfterPlanState::of(r.success, r.skipped),
+                })
+            })
+            .collect()
     }
 }
 
@@ -1442,7 +1800,10 @@ pub(crate) fn action_resource_info(action: &Action) -> (String, String) {
                 "system".to_string(),
                 super::format::system_resource_key(configurator, key),
             ),
-            SystemAction::Skip { configurator, .. } => ("system".to_string(), configurator.clone()),
+            SystemAction::Skip { configurator, .. }
+            | SystemAction::ConfigureAfterInstall { configurator, .. } => {
+                ("system".to_string(), configurator.clone())
+            }
         },
         Action::Script(sa) => {
             match sa {
@@ -1464,15 +1825,17 @@ pub(crate) fn action_resource_info(action: &Action) -> (String, String) {
         Action::Env(ea) => {
             use crate::reconciler::EnvAction;
             match ea {
-                EnvAction::WriteEnvFile { path, .. } => ("env".to_string(), to_posix_string(path)),
+                EnvAction::WriteEnvFile { path, .. } => {
+                    (ENV_RESOURCE_TYPE.to_string(), to_posix_string(path))
+                }
                 EnvAction::InjectSourceLine { rc_path, .. } => {
-                    ("env-rc".to_string(), to_posix_string(rc_path))
+                    (ENV_RC_RESOURCE_TYPE.to_string(), to_posix_string(rc_path))
                 }
                 // The ONE spelling of the live-session surface, shared with
                 // the tracking row the apply upserts: three spellings of one
                 // fact left the tick recording a row no verb could settle.
                 EnvAction::RefreshLiveSession { .. } => (
-                    "env-session".to_string(),
+                    ENV_SESSION_RESOURCE_TYPE.to_string(),
                     crate::state::ENV_SESSION_RESOURCE_ID.to_string(),
                 ),
             }
@@ -1552,14 +1915,13 @@ impl DriftRow {
 ///   `<manager>:<identity>` id. A `script`-installed entry mints none — a
 ///   custom install script has no queryable installed state, so a row for one
 ///   names something no check can re-find.
-/// * Every other `Module` kind — the id its own executed description parses to
-///   (`<name>:script`, `<name>:skip`), so the apply settles exactly what the
-///   tick recorded.
 /// * `Package(Install | Uninstall)` — one row PER PACKAGE, keyed on the
 ///   manager's [`package_entry_drift_id`], carrying the presence words every
 ///   live check words a package finding with.
 /// * `Env(RefreshLiveSession)` — `("env-session", ENV_SESSION_RESOURCE_ID)`,
 ///   the one spelling of that surface.
+/// * `Script(Run)` — no row. A profile's own lifecycle script is the same class
+///   as a module's hook, below.
 /// * Everything else — `action_resource_info`'s pair, unchanged.
 ///
 /// An action [`Action::pre_skip_reason`] answers for yields NO rows: the plan
@@ -1573,17 +1935,23 @@ impl DriftRow {
 /// [`apply_heals_action_rows`] holds them back from the heal. They are cleared
 /// by the tick's own complement, when a later plan stops carrying the skip.
 ///
-/// The two module kinds that mint NO row are `ModuleActionKind::Skip` and
-/// `ModuleActionKind::FilesRefused`. The other four Skips name a resource cfgd
+/// The three module kinds that mint NO row are `ModuleActionKind::Skip`,
+/// `ModuleActionKind::FilesRefused` and `ModuleActionKind::RunScript`, and
+/// `ScriptAction::Run` joins them. The four provider Skips name a resource cfgd
 /// probed and could not converge; a module the host declined whole was never
-/// probed at all, and a refused file deploy is cfgd declining to touch the
-/// files rather than finding them diverged — in neither case is there anything
-/// under it to report as divergence. That is why the tick keeps the rows
-/// standing under such a module rather than re-finding them
-/// (`daemon::reconcile`'s `tick_cannot_refind`), and why no CLI check can
-/// re-mint a `<name>:skip` row: a gate is information, not divergence. Both
-/// kinds are still LISTED — the refusal as a counted action row, the host
-/// decline as the header's `Modules` clause.
+/// probed at all, a refused file deploy is cfgd declining to touch the files
+/// rather than finding them diverged, and a script — a module's hook or a
+/// profile's own lifecycle step — is work a run performs that no check ever
+/// looks at again. In none of them is there anything to report as divergence.
+/// That is why the tick keeps the rows standing under a module whose files it
+/// never probed rather than re-finding them (`daemon::reconcile`'s
+/// `tick_cannot_refind`), and why no CLI check can re-mint a `<name>:skip`, a
+/// `<name>:script` or a `script`-typed row: a gate is information and a script
+/// is an act, and neither is divergence. Every one of them is still LISTED —
+/// the refusal as a counted action row, the host decline as the header's
+/// `Modules` clause, each script as the action row that runs it — and a script
+/// still records its `managed_resources` tracking row, which is what this host
+/// RAN rather than a finding about it.
 pub fn action_drift_rows(
     action: &Action,
     registry: &crate::providers::ProviderRegistry,
@@ -1593,9 +1961,17 @@ pub fn action_drift_rows(
     }
     match action {
         Action::Module(ma) => match &ma.kind {
-            // `Skip` is settled by the guard above; both arms are what keep
-            // the match exhaustive over `ModuleActionKind`.
-            ModuleActionKind::Skip { .. } | ModuleActionKind::FilesRefused { .. } => Vec::new(),
+            // `Skip` is settled by the guard above; all three arms are what
+            // keep the match exhaustive over `ModuleActionKind`.
+            //
+            // A hook is the third: nothing checks a hook body, so a planned
+            // script is not divergence. The row it used to mint duplicated the
+            // package or file finding it was planned beside, and a module
+            // declaring only scripts read `Drifted` on every tick for as long
+            // as the module existed, with no command able to clear it.
+            ModuleActionKind::Skip { .. }
+            | ModuleActionKind::FilesRefused { .. }
+            | ModuleActionKind::RunScript { .. } => Vec::new(),
             ModuleActionKind::DeployFiles { files, .. } => files
                 .iter()
                 .map(|f| {
@@ -1639,15 +2015,6 @@ pub fn action_drift_rows(
                     })
                     .collect()
             }
-            // Parsed back out of the action's own description rather than
-            // re-spelled: the apply upserts and settles under exactly this
-            // string, and two hand-written composers of one id is how the
-            // whole-module row came to be healed by nothing.
-            _ => vec![DriftRow::plain(
-                super::format::parse_resource_from_description(
-                    &super::format::format_action_description(action),
-                ),
-            )],
         },
         // A Skip names the bare manager whose whole block was withheld — a
         // finding about the TOOLING, not about any package in it.
@@ -1655,8 +2022,44 @@ pub fn action_drift_rows(
             vec![DriftRow::plain(action_resource_info(action))]
         }
         Action::Package(pa) => package_action_drift_rows(pa, registry),
+        // A profile's own lifecycle script, the same class as a module's hook:
+        // nothing checks a script body, so running one is an act rather than a
+        // convergence. The row it used to mint duplicated the package or file
+        // finding it was planned beside, and no live check could ever re-find
+        // it. `action_resource_info` still names the action, which is what the
+        // journal and the tracking row are keyed on.
+        Action::Script(ScriptAction::Run { .. }) => Vec::new(),
         _ => vec![DriftRow::plain(action_resource_info(action))],
     }
+}
+
+/// Whether a planned action stands for divergence a reconcile tick reports.
+///
+/// The count side of [`action_drift_rows`]: a tick prices the drift it found
+/// from the rows it is about to record, so an action that mints none is not
+/// divergence — a plan whose only actions are scripts logs no drift, records
+/// nothing, fires no `onDrift` hook and sends no drift notice. Pricing that
+/// from the plan's action total instead is what made a module declaring only
+/// hooks report a drifted resource on every tick while the store stayed empty.
+///
+/// [`ModuleActionKind::FilesRefused`] is the one action counted here that
+/// records nothing. cfgd refused to write the module's files, so there is no
+/// row for a later run to heal, but the declared files are not on the machine
+/// and no tick will put them there until the source is encrypted: the reader
+/// must act, and every other surface prices the refusal the same way (the
+/// header counts it, both trees draw it, the tick's closing sentence names it).
+#[must_use]
+pub fn action_counts_as_drift(
+    action: &Action,
+    registry: &crate::providers::ProviderRegistry,
+) -> bool {
+    matches!(
+        action,
+        Action::Module(ModuleAction {
+            kind: ModuleActionKind::FilesRefused { .. },
+            ..
+        })
+    ) || !action_drift_rows(action, registry).is_empty()
 }
 
 /// The `actual` verb an uninstall's drift row carries — what the machine still
@@ -1742,8 +2145,9 @@ fn presence_drift_rows<'a>(
 /// nothing about it. Resolving those rows on a skip would report a machine
 /// converged by the very run that declined to touch it.
 ///
-/// The two module kinds are held back as a belt: [`action_drift_rows`] mints no
-/// row for either, so the heal each would perform is over an empty set.
+/// The two module kinds and both script shapes are held back as a belt:
+/// [`action_drift_rows`] mints no row for any of them, so the heal each would
+/// perform is over an empty set.
 #[must_use]
 pub fn apply_heals_action_rows(action: &Action) -> bool {
     !matches!(
@@ -1752,8 +2156,9 @@ pub fn apply_heals_action_rows(action: &Action) -> bool {
             | Action::System(SystemAction::Skip { .. })
             | Action::Secret(SecretAction::Skip { .. })
             | Action::File(FileAction::Skip { .. })
+            | Action::Script(ScriptAction::Run { .. })
             | Action::Module(ModuleAction {
-                kind: ModuleActionKind::FilesRefused { .. },
+                kind: ModuleActionKind::FilesRefused { .. } | ModuleActionKind::RunScript { .. },
                 ..
             })
     ) && !module_skipped_whole(action)
@@ -1807,9 +2212,16 @@ mod tests {
     #[test]
     fn phase_name_from_str_round_trips() {
         assert_eq!(
-            "env".parse::<PhaseName>().unwrap(),
-            PhaseName::Prerequisites
+            "bootstrap".parse::<PhaseName>().unwrap(),
+            PhaseName::Bootstrap
         );
+        // Both earlier spellings still resolve to the phase that holds their
+        // work, so a stored `phase` column written under either reads back.
+        assert_eq!(
+            "prerequisites".parse::<PhaseName>().unwrap(),
+            PhaseName::Bootstrap
+        );
+        assert_eq!("env".parse::<PhaseName>().unwrap(), PhaseName::Bootstrap);
         assert_eq!("files".parse::<PhaseName>().unwrap(), PhaseName::Files);
         assert_eq!(
             "packages".parse::<PhaseName>().unwrap(),
@@ -1835,6 +2247,30 @@ mod tests {
         assert_eq!(ScriptPhase::PostApply.display_name(), "postApply");
         assert_eq!(ScriptPhase::OnDrift.display_name(), "onDrift");
         assert_eq!(ScriptPhase::OnChange.display_name(), "onChange");
+    }
+
+    /// The six lifecycle phases are named the way the hook set names them, in
+    /// its order, so a renamed hook moves this vocabulary with it instead of
+    /// leaving a script row reporting a hook the YAML no longer accepts.
+    #[test]
+    fn the_lifecycle_phases_are_named_as_the_hook_set_names_them() {
+        let declared = crate::config::ScriptSpec::default();
+        let hooks: Vec<&str> = declared.hooks().iter().map(|(name, _)| *name).collect();
+        let phases = [
+            ScriptPhase::PreApply,
+            ScriptPhase::PostApply,
+            ScriptPhase::PreReconcile,
+            ScriptPhase::PostReconcile,
+            ScriptPhase::OnDrift,
+            ScriptPhase::OnChange,
+        ];
+        assert_eq!(
+            hooks,
+            phases
+                .iter()
+                .map(|p| p.display_name())
+                .collect::<Vec<&str>>()
+        );
     }
 
     #[test]
@@ -1910,16 +2346,18 @@ mod tests {
     #[test]
     fn owner_sort_key_breaks_rank_ties_by_name() {
         assert!(Owner::module("apt").sort_key() < Owner::module("brew").sort_key());
-        assert!(Owner::cfgd("env").sort_key() < Owner::cfgd("session").sort_key());
+        assert!(Owner::cfgd(ENV_GROUP).sort_key() < Owner::cfgd(SHELL_GROUP).sort_key());
+        assert!(Owner::cfgd(SHELL_GROUP).sort_key() < Owner::cfgd(SESSION_GROUP).sort_key());
     }
 
     #[test]
     fn renders_above_answers_from_the_comparator_it_is_asked_of() {
         // The prerequisites shape the apply path depends on: the lane group is
         // written as a tree, and the serial groups stream below it.
-        assert!(Owner::cfgd("managers").renders_above(&Owner::cfgd("env")));
-        assert!(Owner::cfgd("env").renders_above(&Owner::cfgd("session")));
-        assert!(!Owner::cfgd("session").renders_above(&Owner::cfgd("managers")));
+        assert!(Owner::cfgd(MANAGERS_GROUP).renders_above(&Owner::cfgd(ENV_GROUP)));
+        assert!(Owner::cfgd(ENV_GROUP).renders_above(&Owner::cfgd(SHELL_GROUP)));
+        assert!(Owner::cfgd(SHELL_GROUP).renders_above(&Owner::cfgd(SESSION_GROUP)));
+        assert!(!Owner::cfgd(SESSION_GROUP).renders_above(&Owner::cfgd(MANAGERS_GROUP)));
         assert!(
             !Owner::cfgd("env").renders_above(&Owner::cfgd("env")),
             "an owner does not render above itself"

@@ -4,15 +4,47 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::process::Command;
 
-use cfgd_core::errors::Result;
-use cfgd_core::providers::{BootstrapPlan, PackageManager};
+use cfgd_core::errors::{PackageError, Result};
+use cfgd_core::providers::{BootstrapPlan, PackageContext, PackageManager};
 
+#[cfg(windows)]
+use super::shared::detect_windows_method;
 use super::shared::{
-    bootstrap_via_shell_script, home_relative_dir, resolve_tool_with_fallbacks, run_pkg_cmd,
-    run_pkg_cmd_live, run_pkg_query, tool_cmd_with_resolver,
+    MediatedArms, bootstrap_via_shell_script, bootstrap_via_system_manager, command_failure_reason,
+    home_relative_dir, pkg_run, planned_step_failed, resolve_tool_with_fallbacks, run_pkg_cmd,
+    run_pkg_cmd_live, run_pkg_query, tool_cmd_at,
 };
 
 pub struct CargoManager;
+
+/// cargo's own bootstrap arm: rustup's installer, fetched and run by a POSIX
+/// shell. The ONE spelling, so the plan's method and the route that answers to
+/// it cannot drift apart.
+const RUSTUP_METHOD: &str = "rustup";
+
+/// What a mediator installs to deliver cargo.
+///
+/// Every arm delivers RUSTUP rather than cargo: upstream ships no repository
+/// package of the toolchain, and a distro copy would be a second installation
+/// the rustup cfgd then manages cannot see. The POSIX route is rustup's own
+/// installer, which is why the Unix arms are declined here.
+const CARGO_MEDIATED: MediatedArms = MediatedArms {
+    brew: None,
+    arms: &[
+        // no-driven-route-ok: rustup's own installer is upstream's route on
+        // every POSIX host, and it is what then installs a toolchain.
+        ("apt", &[]),
+        ("dnf", &[]),
+        ("yum", &[]),
+        ("zypper", &[]),
+        ("pacman", &[]),
+        ("apk", &[]),
+        ("pkg", &[]),
+        ("winget", &["Rustlang.Rustup"]),
+        ("chocolatey", &["rustup.install"]),
+        ("scoop", &["rustup"]),
+    ],
+};
 
 /// Cargo fallback locations when `cargo` is not on `$PATH`.
 fn cargo_fallbacks() -> Vec<PathBuf> {
@@ -30,7 +62,73 @@ pub(super) fn cargo_available() -> bool {
 }
 
 pub(super) fn cargo_cmd() -> Command {
-    tool_cmd_with_resolver("cargo", find_cargo)
+    tool_cmd_at("cargo", find_cargo())
+}
+
+/// Fallback locations for the rustup a mediated arm installs, for a run whose
+/// command resolution was memoized before the install put it there.
+///
+/// `~/.cargo/bin` is where rustup's own installer lands it; a Windows mediator
+/// lands it in its own shim tree instead, so those two directories are read off
+/// the managers that own them rather than re-derived here. Both answer `None`
+/// off Windows, where neither manager is a route.
+fn rustup_fallbacks() -> Vec<PathBuf> {
+    let exe = if cfg!(windows) {
+        "rustup.exe"
+    } else {
+        "rustup"
+    };
+    [
+        home_relative_dir("~/.cargo/bin"),
+        super::scoop::scoop_shims_dir(),
+        super::choco::choco_bin_dir(),
+    ]
+    .into_iter()
+    .flatten()
+    .map(|dir| dir.join(exe))
+    .collect()
+}
+
+fn rustup_cmd() -> Command {
+    tool_cmd_at(
+        "rustup",
+        resolve_tool_with_fallbacks("rustup", &rustup_fallbacks()),
+    )
+}
+
+/// Install the default toolchain behind a rustup a mediated arm just placed.
+///
+/// Only chocolatey's `rustup.install` runs `rustup-init -y` for you; winget's
+/// `Rustlang.Rustup` and scoop's `rustup` place the binary and leave the
+/// toolchain unset, so `cargo.exe` does not exist yet. `rustup default stable`
+/// is idempotent, so the arm that already has a toolchain pays a no-op rather
+/// than a second download.
+fn install_default_toolchain(cx: &PackageContext<'_>, planned: Option<&str>) -> Result<()> {
+    let result = pkg_run(
+        cx,
+        rustup_cmd().args(["default", "stable"]),
+        "Installing the stable Rust toolchain",
+    )
+    .map_err(|e| PackageError::BootstrapFailed {
+        manager: "cargo".into(),
+        message: format!("rustup default stable failed: {e}"),
+    })?;
+    if result.status.success() {
+        return Ok(());
+    }
+    Err(match planned {
+        // The mediator installed the rustup it packages; the toolchain step is
+        // what then failed, so the refusal names rustup rather than sending the
+        // reader to check a manager that worked.
+        Some(method) => {
+            planned_step_failed("cargo", method, "rustup", &command_failure_reason(&result))
+        }
+        None => PackageError::BootstrapFailed {
+            manager: "cargo".into(),
+            message: "rustup default stable failed".into(),
+        },
+    }
+    .into())
 }
 
 // Single source for the rustup-installed bin dir, so `bootstrap_plan`'s
@@ -58,33 +156,60 @@ impl PackageManager for CargoManager {
         cargo_available()
     }
 
-    fn bootstrap_plan_given(&self, _delivered: &dyn Fn(&str) -> bool) -> Option<BootstrapPlan> {
-        Some(
-            BootstrapPlan::new("rustup")
-                .requiring(["curl"])
-                .creating(cargo_bin_dir()),
-        )
+    fn bootstrap_plan_given(&self, delivered: &dyn Fn(&str) -> bool) -> Option<BootstrapPlan> {
+        // Windows has no `sh` for rustup's installer pipeline, so the route
+        // there is a mediator that packages rustup itself. A host carrying none
+        // of the three is offered nothing: a method is binding at execution.
+        #[cfg(windows)]
+        {
+            detect_windows_method(&CARGO_MEDIATED, delivered)
+                .map(|method| BootstrapPlan::new(method).creating(cargo_bin_dir()))
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = delivered;
+            Some(
+                BootstrapPlan::new(RUSTUP_METHOD)
+                    .requiring(["curl"])
+                    .creating(cargo_bin_dir()),
+            )
+        }
     }
 
     // Reads `cargo_bin_dir()` directly rather than the recorded state row: the
     // rustup cascade always lands cargo in the same `~`-relative place, so
     // there is nothing a live probe would learn that the plan's own
     // declaration does not already know.
-    fn path_dirs(&self, _cx: &cfgd_core::providers::PackageContext<'_>) -> Vec<String> {
+    fn path_dirs(&self, _cx: &PackageContext<'_>) -> Vec<String> {
         cargo_bin_dir()
             .into_iter()
             .map(cfgd_core::to_posix_string)
             .collect()
     }
 
-    // bootstrap-arm-ok: rustup's installer is the only route to cargo
-    fn bootstrap(&self, cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
+    fn bootstrap(&self, cx: &PackageContext<'_>) -> Result<()> {
+        // Which route runs is decided by the method the plan named rather than
+        // by this host: a mediated arm delivers rustup alone, so the toolchain
+        // is a second step behind it, while rustup's own installer does both.
+        let planned = cx.planned_method();
+        if planned.is_some_and(|method| method != RUSTUP_METHOD) || cfg!(windows) {
+            bootstrap_via_system_manager(cx, &CARGO_MEDIATED, "cargo")?;
+            // The arm just put rustup on the machine, and the step below
+            // resolves it through the memoized `command_path`, which still
+            // holds the miss the plan's own probe recorded.
+            cfgd_core::invalidate_command_resolution();
+            return install_default_toolchain(cx, planned);
+        }
         bootstrap_via_shell_script(
             cx,
             "cargo",
             "Installing Rust via rustup",
             "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y",
         )
+    }
+
+    fn mediated_packages(&self, via: &str) -> Option<Vec<String>> {
+        CARGO_MEDIATED.packages_for(via)
     }
 
     fn installed_packages(
@@ -348,19 +473,61 @@ tokei v12.1.2:
         assert_eq!(my_tool.version, "0.1.0 (/home/user/projects/my-tool)");
     }
 
+    /// Every mediator arm's seam pointed at nothing, so a mediator this machine
+    /// really carries cannot answer ahead of the one a delivery names.
+    ///
+    /// The cascade takes the FIRST arm the run can use, asking the delivery and
+    /// then the host on each arm in turn, so an available winget answers a
+    /// chocolatey delivery on a host that has both.
+    fn no_host_mediator_answers() -> Vec<cfgd_core::test_helpers::EnvVarGuard> {
+        super::super::shared::host_arms()
+            .iter()
+            .map(|(_, tool)| {
+                let var: &'static str =
+                    Box::leak(super::super::shared::tool_seam_var(tool).into_boxed_str());
+                cfgd_core::test_helpers::EnvVarGuard::set(var, "/nonexistent/cfgd-no-mediator")
+            })
+            .collect()
+    }
+
     #[test]
+    #[serial_test::serial]
     fn cargo_bootstrap_plan_names_rustup_curl_and_the_cargo_bin_dir() {
         // Both sides read `PATH`; without the guard a concurrent test's
         // `PATH` mutation can land between them and they disagree.
         let _path = cfgd_core::test_helpers::path_env_read_guard();
         let home = tempfile::tempdir().unwrap();
-        let plan = cfgd_core::with_test_home(home.path(), || CargoManager.bootstrap_plan());
-        // The plan is unconditional: it describes what the cascade needs, and
-        // whether this host can carry that out is `feasible_bootstrap_plan`'s
-        // question — so the planner can name `curl` as the cause when it
-        // cannot.
-        assert!(plan.is_some());
-        let Some(plan) = plan else { return };
+        if cfg!(windows) {
+            // Windows has no `sh` for rustup's installer, so the route there is
+            // a mediator that packages rustup itself. Each arm is driven by a
+            // delivery against silenced seams, so which of the three this
+            // machine carries cannot decide what the plan declares.
+            let _silenced = no_host_mediator_answers();
+            for method in ["winget", "chocolatey", "scoop"] {
+                let plan = cfgd_core::with_test_home(home.path(), || {
+                    CargoManager.bootstrap_plan_given(&|m| m == method)
+                })
+                .unwrap_or_else(|| panic!("{method} packages the rustup that delivers cargo"));
+                assert_eq!(plan.method, method);
+                assert!(
+                    plan.requires.is_empty(),
+                    "the mediator fetches what it installs, so the arm names no tool: {:?}",
+                    plan.requires
+                );
+                assert_eq!(
+                    plan.creates_path_dirs,
+                    [cfgd_core::to_posix_string(home.path().join(".cargo/bin"))],
+                    "the toolchain behind the arm lands cargo where rustup always does"
+                );
+            }
+            return;
+        }
+        let planned = cfgd_core::with_test_home(home.path(), || CargoManager.bootstrap_plan());
+        // Off Windows the plan describes what the cascade needs whatever this
+        // host carries, and whether the host can carry it out is
+        // `feasible_bootstrap_plan`'s question, so the planner can name `curl`
+        // as the cause when it cannot.
+        let plan = planned.expect("every host with a shell plans rustup");
         // What `bootstrap` runs: rustup's install script, fetched with curl,
         // landing cargo (and everything `cargo install` builds) in ~/.cargo/bin.
         assert_eq!(plan.method, "rustup");
@@ -372,11 +539,25 @@ tokei v12.1.2:
     }
 
     #[test]
+    #[serial_test::serial]
     fn cargo_path_dirs_matches_the_bootstrap_plans_declaration() {
         let _path = cfgd_core::test_helpers::path_env_read_guard();
+        let _silenced = no_host_mediator_answers();
         let home = tempfile::tempdir().unwrap();
         cfgd_core::with_test_home(home.path(), || {
-            let plan = CargoManager.bootstrap_plan().unwrap();
+            // The Windows arms are driven by a delivery against silenced seams,
+            // for the same reason the sibling above drives them: a host carrying
+            // no mediator plans nothing, and the declaration is what this
+            // compares.
+            let plan = if cfg!(windows) {
+                CargoManager
+                    .bootstrap_plan_given(&|m| m == "winget")
+                    .expect("winget packages the rustup that delivers cargo")
+            } else {
+                CargoManager
+                    .bootstrap_plan()
+                    .expect("every host with a shell plans rustup")
+            };
             let printer = cfgd_core::test_helpers::test_printer();
             let state = cfgd_core::test_helpers::test_state();
             let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
@@ -598,16 +779,22 @@ tokei v12.1.2:
 
         use cfgd_core::test_helpers::EnvVarGuard;
 
-        /// Point the seam env-var at a non-existent path so the spawned
-        /// `Command` fails with ENOENT, exercising the `CommandFailed` map_err
-        /// arm in `available_version` (which prices through `run_pkg_query`).
+        /// Point the seam env-var at a file nothing can execute, so the spawn
+        /// itself fails and exercises the `CommandFailed` map_err arm in
+        /// `available_version` (which prices through `run_pkg_query`).
+        ///
+        /// The file has to exist: the resolution behind the factory declines a
+        /// seam naming nothing, and this host's own cargo would answer instead.
         #[test]
         #[serial]
         fn cargo_available_version_spawn_failure_maps_to_command_failed() {
-            let _g = EnvVarGuard::set(SHIM_ENV, "/nonexistent/cfgd-cargo-shim-does-not-exist");
-            let err = CargoManager
-                .available_version("ripgrep")
-                .expect_err("ENOENT spawn must surface as CommandFailed, not a panic");
+            let dir = tempfile::tempdir().expect("tempdir");
+            let unspawnable = dir.path().join("cargo");
+            std::fs::write(&unspawnable, "").expect("write the unspawnable file");
+            let _g = EnvVarGuard::set(SHIM_ENV, unspawnable.to_string_lossy().as_ref());
+            let err = CargoManager.available_version("ripgrep").expect_err(
+                "a file nothing can execute must surface as CommandFailed, not a panic",
+            );
             assert!(
                 matches!(err, cfgd_core::errors::CfgdError::Package(
                     cfgd_core::errors::PackageError::CommandFailed { ref manager, .. }) if manager == "cargo"),

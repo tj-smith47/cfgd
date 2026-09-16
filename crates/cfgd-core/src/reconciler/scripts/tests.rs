@@ -1371,6 +1371,65 @@ fn interactive_script_without_tty_skips_with_warn() {
     );
 }
 
+// An interactive script inherits no timeout: only an author-declared
+// `timeout:` bounds it. Where one IS declared the deadline is enforced — the
+// child is killed rather than waited on forever, and the row names the ceiling
+// it passed. The body's own side effect is the kill's evidence: it lands two
+// seconds after the deadline, while the refusal only returns once the grace
+// period is over, so a body still running would have written the sentinel
+// before this assertion reads for it.
+#[cfg(all(unix, feature = "test-helpers"))]
+#[test]
+fn an_interactive_script_passing_its_declared_timeout_is_killed() {
+    let (printer, buf) = crate::output::Printer::for_test_at(crate::output::Verbosity::Normal);
+    let tmp = tempfile::tempdir().unwrap();
+    let sentinel = tmp.path().join("body-finished");
+    let entry = ScriptEntry::Full(ScriptCommand {
+        workdir: None,
+        run: format!(
+            "sleep 3; touch {}",
+            crate::posix_single_quoted(&sentinel.to_string_lossy())
+        ),
+        timeout: Some("1s".to_string()),
+        idle_timeout: None,
+        continue_on_error: None,
+        shell: ScriptShell::Sh,
+        only_if: None,
+        unless: None,
+        creates: None,
+        interactive: true,
+    });
+
+    let err = execute_script_with_tty(
+        true,
+        &entry,
+        tmp.path(),
+        tmp.path(),
+        &[],
+        std::time::Duration::from_secs(600),
+        &printer,
+        None,
+        None,
+        ScriptReport::default(),
+    )
+    .expect_err("a declared timeout bounds an interactive script");
+    printer.flush();
+
+    assert!(
+        err.to_string().contains("timed out after 1s (interactive)"),
+        "the refusal names the declared ceiling and the arm it fired on: {err}"
+    );
+    assert!(
+        !sentinel.exists(),
+        "the body outlived its deadline instead of being killed"
+    );
+    let out = crate::test_helpers::captured_text(&buf);
+    assert!(
+        out.contains("timed out after 1s (interactive)"),
+        "the row states why the script ended: {out:?}"
+    );
+}
+
 /// A user script is the one thing cfgd runs whose effects it cannot predict: a
 /// `preApply` hook that installs a toolchain must be visible to everything
 /// planned after it. The tool lands in a directory a bootstrap registered, so
