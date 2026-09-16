@@ -96,7 +96,7 @@ FILTER="[0][1]overlay[merged];\
 INPUTS=(-f concat -safe 0 -i "${LISTS}/text.ffconcat" -f concat -safe 0 -i "${LISTS}/cursor.ffconcat")
 
 PALETTE="demo/.out/${NAME}-palette.png"
-trap 'rm -f "$PALETTE" "${LISTS}/text.ffconcat" "${LISTS}/cursor.ffconcat" "${LISTS}/timeline.tsv"' EXIT
+trap 'rm -f "$PALETTE" "${LISTS}/text.ffconcat" "${LISTS}/cursor.ffconcat" "${LISTS}/timeline.tsv"; rmdir "$LISTS" 2>/dev/null || true' EXIT
 
 ffmpeg -y -loglevel error "${INPUTS[@]}" -filter_complex "\
 ${FILTER};[vf]palettegen=max_colors=256:stats_mode=diff" "$PALETTE"

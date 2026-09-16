@@ -112,9 +112,9 @@ mid_end=$(awk -v d="$dur" -v t="$TAIL" 'BEGIN { printf "%.3f", d - t }')
 # It moves with every take — the package install ahead of it swings tens of
 # seconds with the mirrors — so a hand-kept value would be stale on every
 # re-record. The container's log stamps each line with the host's clock and
-# the frames carry the same clock in their mtimes, so the heading's stamp minus
-# the first frame's mtime is the heading's source second, on the same timeline
-# the trims below cut. `--yes` prints no preview tree, so the first line
+# the frames carry the same clock in their mtimes, so the heading's stamp is
+# converted onto the capped timeline by `played_at`, which is the timeline the
+# trims below cut on. `--yes` prints no preview tree, so the first line
 # carrying the heading is the execution's; the colour escapes are stripped
 # first because the heading paints in two theme slots. `LC_ALL=C` because the
 # final-byte range `[@-~]` is a BYTE range only in the C locale — under a
@@ -213,7 +213,7 @@ RAMP="[0][1]overlay[merged];\
 INPUTS=(-f concat -safe 0 -i "${LISTS}/text.ffconcat" -f concat -safe 0 -i "${LISTS}/cursor.ffconcat")
 
 PALETTE=demo/.out/palette.png
-trap 'rm -f "$PALETTE" "${LISTS}/text.ffconcat" "${LISTS}/cursor.ffconcat" "$TIMELINE"' EXIT
+trap 'rm -f "$PALETTE" "${LISTS}/text.ffconcat" "${LISTS}/cursor.ffconcat" "$TIMELINE"; rmdir "$LISTS" 2>/dev/null || true' EXIT
 
 ffmpeg -y -loglevel error "${INPUTS[@]}" -filter_complex "\
 ${RAMP};[vf]palettegen=max_colors=256:stats_mode=diff" "$PALETTE"

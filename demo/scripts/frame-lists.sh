@@ -20,7 +20,15 @@
 # separates them. 0.5s takes the middle: four times the widest visible hold
 # ever recorded, and still short enough that a capped frame reads as a beat
 # rather than a pause.
+#
+# FLOOR is the other end, and one output frame at the encoders' 50 fps: two
+# frames the host stamped in the same millisecond, or a frame dir copied onto a
+# filesystem with a coarser mtime, give a gap of zero or less. Mapping those to
+# CAP would hold each of them for half a second — the held frame all of this
+# exists to remove — so they take the shortest duration the encode can show
+# instead.
 CAP=0.5
+FLOOR=0.02
 
 set -euo pipefail
 
@@ -36,7 +44,7 @@ OUT=$(cd "$OUT" && pwd)
 # not be allowed to swap.
 find "$FRAMES" -maxdepth 1 -name 'frame-text-*.png' -printf '%T@ %f\n' |
     sort -k2,2 |
-    awk -v frames="$FRAMES" -v out="$OUT" -v cap="$CAP" '
+    awk -v frames="$FRAMES" -v out="$OUT" -v cap="$CAP" -v floor="$FLOOR" '
 { t[NR] = $1; f[NR] = $2 }
 END {
     if (NR == 0) { print "no frames" > "/dev/stderr"; exit 1 }
@@ -48,7 +56,7 @@ END {
     total = 0
     for (i = 1; i <= NR; i++) {
         d = (i < NR) ? t[i + 1] - t[i] : prev
-        if (d > cap || d <= 0) d = cap
+        if (d <= 0) d = floor; else if (d > cap) d = cap
         prev = d
         c = f[i]; sub(/frame-text-/, "frame-cursor-", c)
         printf "file %s/%s\nduration %.6f\n", frames, f[i], d > text
