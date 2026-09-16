@@ -679,13 +679,10 @@ impl<'a> ApplyRun<'a> {
         // The rows are the ones `cfgd decide` and `cfgd status` render, from
         // the same composer and grouped the same way: the owner heading names
         // the source, the subject names the tier and resource, and the detail
-        // says what would land on the machine. What is run-SPECIFIC is the
-        // instruction, and it is ONE hint under the block rather than a suffix
-        // repeated on every row.
-        let block = |title: &str,
-                     rows: &[crate::state::PendingDecision],
-                     role,
-                     hint: crate::output::HintCommands| {
+        // says what would land on the machine. The instruction for answering
+        // them is not part of the block: it closes the surface through
+        // `withheld_hints`.
+        let block = |title: &str, rows: &[crate::state::PendingDecision], role| {
             let section = printer.section(title);
             for (source, items) in super::decisions_by_source(rows) {
                 let owner = section.section_owner(&OwnerLabel::new("source", source));
@@ -698,21 +695,8 @@ impl<'a> ApplyRun<'a> {
                     };
                 }
             }
-            section.hint(hint);
         };
         if !withheld.pending.is_empty() {
-            // An unrecorded item (`id` 0) is answerable only where `cfgd
-            // decide` can mint its row. On a run whose config does not own the
-            // store, the usual instruction names a command that will refuse —
-            // so say what is true instead. Recorded rows resolve without a mint
-            // and keep the instruction everywhere.
-            let unrecorded = withheld.pending.iter().any(|d| d.id == 0);
-            let hint = if unrecorded && !self.decide_answerable {
-                "Not yet recorded — answer from the machine's own config, or pass --state-dir"
-                    .into()
-            } else {
-                super::answer_decisions_hint(withheld.pending.len())
-            };
             block(
                 &super::pending_decisions_title(
                     withheld.pending.len(),
@@ -720,7 +704,6 @@ impl<'a> ApplyRun<'a> {
                 ),
                 &withheld.pending,
                 Role::Info,
-                hint,
             );
         }
         if !withheld.rejected.is_empty() {
@@ -731,8 +714,49 @@ impl<'a> ApplyRun<'a> {
                 ),
                 &withheld.rejected,
                 Role::Skipped,
-                super::MSG_INCLUDE_DECLINED_DECISIONS.into(),
             );
+        }
+    }
+
+    /// The instructions for the decisions this run was pruned with, as the
+    /// closing hints of whatever surface rendered the run.
+    ///
+    /// Separate from [`Self::render_withheld`] because the two land in
+    /// different places: the sections name what is missing directly under the
+    /// header, while the instruction for answering them is a closing hint like
+    /// every other one cfgd prints — left-aligned at the foot of the surface
+    /// after its verdict, not indented inside the section and printed above
+    /// the rest of the report.
+    pub fn withheld_hints(&self) -> Vec<crate::output::HintCommands> {
+        let Some(withheld) = self.withheld else {
+            return Vec::new();
+        };
+        let mut hints = Vec::new();
+        if !withheld.pending.is_empty() {
+            // An unrecorded item (`id` 0) is answerable only where `cfgd
+            // decide` can mint its row. On a run whose config does not own the
+            // store, the usual instruction names a command that will refuse —
+            // so say what is true instead. Recorded rows resolve without a mint
+            // and keep the instruction everywhere.
+            let unrecorded = withheld.pending.iter().any(|d| d.id == 0);
+            hints.push(if unrecorded && !self.decide_answerable {
+                "Not yet recorded — answer from the machine's own config, or pass --state-dir"
+                    .into()
+            } else {
+                super::answer_decisions_hint(withheld.pending.len())
+            });
+        }
+        if !withheld.rejected.is_empty() {
+            hints.push(super::MSG_INCLUDE_DECLINED_DECISIONS.into());
+        }
+        hints
+    }
+
+    /// [`Self::withheld_hints`] emitted at the surface's own depth. Every
+    /// surface that renders this run calls it once, after its verdict.
+    pub fn render_withheld_hints(&self, printer: &Printer) {
+        for hint in self.withheld_hints() {
+            printer.hint(hint);
         }
     }
 
@@ -752,6 +776,22 @@ impl<'a> ApplyRun<'a> {
     /// work) → execute → `Backups` pseudo-phase → rollup. Never exits, and
     /// never prompts on [`Confirm::Skip`].
     pub fn execute(
+        &self,
+        printer: &Printer,
+        confirm: Confirm,
+        exec: &mut dyn RunExecutor,
+    ) -> Result<RunDisposition> {
+        let disposition = self.execute_body(printer, confirm, exec);
+        // Last, whatever the run had to say about itself: the decisions that
+        // pruned it are the reader's next move, and a run that failed outright
+        // has a different one.
+        if disposition.is_ok() {
+            self.render_withheld_hints(printer);
+        }
+        disposition
+    }
+
+    fn execute_body(
         &self,
         printer: &Printer,
         confirm: Confirm,

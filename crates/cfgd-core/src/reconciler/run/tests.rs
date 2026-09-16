@@ -2739,7 +2739,7 @@ fn the_plan_tree_hangs_a_produced_count_off_the_bullet_not_the_subject() {
 /// something to do. A run that did not converge is the only closing line in
 /// the CLI family that ever shipped without one — a drift verdict has
 /// `heal_drift_hint`, a refused source `source_failure_next_step`, a mutating
-/// verb `success_next_step`, a decisions section `answer_decisions_hint`, a
+/// verb `success_next_step`, a withheld decision `answer_decisions_hint`, a
 /// no-op run `nothing_to_do_verdict` — and the env-file reminder that happened
 /// to be on screen is about a different subject.
 #[test]

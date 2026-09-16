@@ -1139,6 +1139,17 @@ pub fn build_fleet_status_doc(
         },
     );
 
+    // The Pending Decisions section above named the rows; the instruction for
+    // answering them joins the foot of the report rather than sitting indented
+    // inside that section. It leads the closing block because the scan/heal
+    // hint below is the one this report is required to close on
+    // (`the_scan_hint_is_said_once_and_last`).
+    if !output.pending_decisions.is_empty() {
+        doc = doc.hint(cfgd_core::reconciler::answer_decisions_hint(
+            output.pending_decisions.len(),
+        ));
+    }
+
     // A report that SHOWS drift owes the reader the command that heals it, and
     // that outranks the invitation to look again: an unresolved finding a
     // recent check still stands behind is pending work, whether this run did

@@ -376,5 +376,8 @@ pub fn build_decide_list_doc(
         ),
         |s| build_pending_decisions_table_section(s, decisions, contents),
     ))
+    // The listing has no verdict of its own, so the instruction for answering
+    // it is what closes the surface.
+    .hint(reconciler::answer_decisions_hint(decisions.len()))
     .with_data(payload)
 }

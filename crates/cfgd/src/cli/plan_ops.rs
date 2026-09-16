@@ -866,6 +866,10 @@ pub(in crate::cli) fn display_plan_preview(
         withheld.pending.len(),
         &args.preview,
     );
+    // The sections naming the withheld items are up under the header; the
+    // instruction for answering them closes the preview, left-aligned like
+    // every other closing hint.
+    run.render_withheld_hints(printer);
 }
 
 // --- Plan filtering for --skip and --only ---

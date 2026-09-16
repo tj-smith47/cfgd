@@ -646,6 +646,7 @@ pub fn run_apply(
             // into a next step.
             &crate::cli::PreviewScope::unscoped(),
         );
+        run.render_withheld_hints(printer);
         printer.emit(Doc::new().with_data(ApplyOutput::nothing_to_do()));
         return Ok(ApplyOutcome::success());
     }

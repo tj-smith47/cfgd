@@ -14974,8 +14974,8 @@ fn every_verdict_that_shows_pending_work_names_the_command_that_settles_it() {
             false,
         ),
         (
-            // The decisions SECTION closes on `answer_decisions_hint` from
-            // inside itself, so the verdict under it adds nothing.
+            // The run closes on `answer_decisions_hint` after this verdict,
+            // so the verdict itself adds nothing.
             "withheld by a pending decision",
             Box::new(|p: &cfgd_core::output::Printer| {
                 report_plan_verdict(p, 0, Some(&in_sync), 1, &PreviewScope::unscoped())
@@ -34109,27 +34109,27 @@ fn fn_body(lines: &[&str], name: &str) -> Option<String> {
     Some(lines[start..=end].join("\n"))
 }
 
-/// The Pending / Declined Decisions section closes on ITS instruction, from
-/// inside: `cfgd plan` rendered the answer hint at the section's own depth and
-/// straight under its last row, while `cfgd decide` and `cfgd status` closed
-/// the section and hung the same sentence off the document — one indent
-/// shallower and a blank line lower, eight lines apart on one screen. The
-/// hint is emitted by exactly two composers, one per rendering path (the run
-/// skeleton's live `SectionGuard`, the Doc surfaces' `SectionBuilder`), and
-/// both address it to the section they are standing in.
+/// The Pending / Declined Decisions instruction is a CLOSING hint, addressed
+/// to the surface and never to the section.
+///
+/// Rendered from inside the section it wore the group's indent and had no
+/// blank line above it, so on a recorded take the one hint in the product that
+/// looked like a row sat in the middle of the report, above everything still
+/// to come — while every other hint cfgd prints closes its surface flush left
+/// after a blank line. Each surface emits it once, after its own verdict: the
+/// run through `withheld_hints`, the two Doc surfaces at the foot of the doc
+/// they build.
 #[test]
-fn every_decisions_hint_closes_its_section_from_inside() {
+fn every_decisions_hint_closes_the_surface_not_its_section() {
     const SYMBOLS: &[&str] = &[
         "answer_decisions_hint(",
         "MSG_ANSWER_DECISIONS",
         "MSG_INCLUDE_DECLINED_DECISIONS",
     ];
     const COMPOSERS: &[(&str, &str)] = &[
-        ("reconciler/run.rs", "render_withheld"),
-        (
-            "cli/source/helpers.rs",
-            "build_pending_decisions_table_section",
-        ),
+        ("reconciler/run.rs", "withheld_hints"),
+        ("cli/decide.rs", "build_decide_list_doc"),
+        ("cli/status.rs", "build_fleet_status_doc"),
     ];
     let walked: Vec<(std::path::PathBuf, String)> = cli_production_sources()
         .into_iter()
@@ -34181,12 +34181,11 @@ fn every_decisions_hint_closes_its_section_from_inside() {
         let lines: Vec<&str> = body.lines().collect();
         let composer = fn_body(&lines, func)
             .unwrap_or_else(|| panic!("{}: `{func}` is still declared", path.display()));
-        let section_scoped = composer.contains("section.hint(") || composer.contains("s.hint(");
-        let doc_scoped = composer.contains("doc.hint(") || composer.contains("Doc::new().hint(");
-        if !section_scoped || doc_scoped {
+        if composer.contains("section.hint(") || composer.contains("sub.hint(") {
             offenders.push(format!(
-                "{}: `{func}` must address the hint to the section it is standing in \
-                 (`section.hint(` / `s.hint(`), never to the document",
+                "{}: `{func}` addresses the decisions hint to a section — it closes the \
+                 surface, so it belongs to the document (`doc.hint(` / `.hint(` on the \
+                 `Doc` being returned) or to the run's own `render_withheld_hints`",
                 path.display()
             ));
         }
@@ -34195,6 +34194,24 @@ fn every_decisions_hint_closes_its_section_from_inside() {
             "{}: `{func}` no longer emits a decisions hint — the walk lost a composer",
             path.display()
         );
+    }
+    // The rows-only builder both Doc surfaces share must not grow one back:
+    // its caller owns the hint, or `cfgd status` prints it twice.
+    let (helpers_path, helpers_body) = walked
+        .iter()
+        .find(|(p, _)| p.ends_with("cli/source/helpers.rs"))
+        .expect("cli/source/helpers.rs is walked");
+    let rows_only = fn_body(
+        &helpers_body.lines().collect::<Vec<_>>(),
+        "build_pending_decisions_table_section",
+    )
+    .expect("the rows-only decisions builder is still declared");
+    if SYMBOLS.iter().any(|sym| rows_only.contains(sym)) {
+        offenders.push(format!(
+            "{}: `build_pending_decisions_table_section` renders ROWS; the instruction \
+             for answering them is its caller's closing hint",
+            helpers_path.display()
+        ));
     }
     assert!(
         offenders.is_empty(),
