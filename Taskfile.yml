@@ -265,8 +265,10 @@ tasks:
       # current version. A pin the release cut from THIS commit publishes is
       # never asked of ghcr, because that release is still building when CI
       # runs: the release either has yet to be tagged (`anodizer tag --dry-run`
-      # predicts it) or was tagged on this very commit (the crate's own release
-      # tag points at HEAD, the shape every anodizer bump commit has). The
+      # predicts it) or is already tagged (the crate's own release tag exists,
+      # on this commit for anodizer's bump commit or behind it for every commit
+      # pushed while that release still builds; a release that fails to push
+      # its image is red on its own workflow). The
       # `hand` branch below is for a pin no crate enrolls: on a release branch
       # it must already name the predicted version, and off one it may run
       # ahead of the released version, which the release branch's own run then
@@ -277,7 +279,7 @@ tasks:
           current=$(for f in crates/*/Cargo.toml; do yq -p toml -o json -I=0 '{.package.name: .package.version}' "$f"; done | jq -sc add)
           swept=$(yq -o=json -I=0 '[.workspaces[].crates[] | select((.version_files // []) | length > 0) | .name]' .anodizer.yaml)
           templates=$(yq -o=json -I=0 '.workspaces[].crates[] | {.name: .tag_template}' .anodizer.yaml | jq -sc add)
-          tagged_here=$(git tag --points-at HEAD)
+          tagged=$(git tag -l)
           if git symbolic-ref -q --short HEAD | grep -qx -f <(yq '.tag.release_branches[]' .anodizer.yaml); then on_release=1; else on_release=0; fi
           failed=0
           for ref in $(helm template cfgd chart/cfgd --set agent.enabled=true --set csiDriver.enabled=true \
@@ -290,8 +292,8 @@ tasks:
             release_tag=$(jq -rn --argjson t "$templates" --arg c "$crate" --arg v "$tag" '$t[$c] // empty | sub("\\{\\{ *Version *\\}\\}"; $v)')
             if [ "$tag" = "$expected" ] && [ "$tag" = "$next" ]; then
               echo "OK       $ref (published by the release cut from this commit)"
-            elif [ "$tag" = "$expected" ] && [ -n "$release_tag" ] && printf '%s\n' "$tagged_here" | grep -qxF "$release_tag"; then
-              echo "OK       $ref (published by the release tagged $release_tag on this commit)"
+            elif [ "$tag" = "$expected" ] && [ -n "$release_tag" ] && printf '%s\n' "$tagged" | grep -qxF "$release_tag"; then
+              echo "OK       $ref (published by the release tagged $release_tag)"
             elif [ "$tag" = "$expected" ] && docker manifest inspect "$ref" >/dev/null 2>&1; then
               echo "OK       $ref"
             elif [ "$tag" = "$expected" ]; then

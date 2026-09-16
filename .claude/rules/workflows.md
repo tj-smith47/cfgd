@@ -43,7 +43,7 @@ single-source-of-truth wiring.
   `dispatch-oidc`, and `dispatch-oidc`'s in-job rollback runs only after every
   trio leg has settled, so neither races the other. helm/crossplane/olm gate on
   BOTH `publish-trio` and `dispatch-oidc` success (cargo is no longer transitive
-  via trio). crates.io dep ordering (`cfgd-crd → cfgd-core → trio`) is
+  via trio). crates.io dep ordering (`cfgd-schema → cfgd-crd → cfgd-core → trio`) is
   load-bearing and enforced INSIDE anodizer's workspace topo-sort, not the job
   graph.
 - Determinism lanes come from the tag job's `det_matrix` output: trio
@@ -69,7 +69,7 @@ single-source-of-truth wiring.
   would re-inherit the caller's `workflow_run` event and re-taint the claim),
   polls it to a verdict, and rolls the tags + the trio's GitHub releases back on
   cargo failure. anodizer topo-sorts the workspace, so one `--publishers cargo`
-  call publishes all five crates in `cfgd-crd → cfgd-core → trio` dependency
+  call publishes all six crates in `cfgd-schema → cfgd-crd → cfgd-core → trio` dependency
   order — the trio's
   `publish-crate.yml` legs run `--skip cargo` (the exact complement). The
   Trusted-Publisher configs on crates.io therefore name `publish-oidc.yml` (the
@@ -165,10 +165,12 @@ single-source-of-truth wiring.
   commit publishes is never asked of ghcr, because that release is still
   building while CI runs it: either `anodizer tag --dry-run` predicts the
   version (the commit is about to be tagged), or the crate's own release tag,
-  composed from its `tag_template` in `.anodizer.yaml`, already points at
-  HEAD (the commit IS anodizer's bump commit; run 35131202311 failed all
-  three pins as MISSING on exactly that commit, minutes before the release
-  pushed the images). The guard keeps its hand-maintained branch for a pin no
+  composed from its `tag_template` in `.anodizer.yaml`, already exists: on
+  this commit for anodizer's bump commit, behind it for a commit pushed while
+  that release still builds (runs 35131202311 and 35136058425 failed all
+  three pins as MISSING on those two shapes, minutes before the release
+  pushed the images; a release that fails to push its image is red on its
+  own workflow). The guard keeps its hand-maintained branch for a pin no
   crate enrolls: on a release branch such a pin must equal the predicted
   version, which is why the guard as an existence check could never pass a
   pin bump (run 34063783806); off a release branch it may run ahead of the

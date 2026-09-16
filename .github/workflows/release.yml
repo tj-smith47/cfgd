@@ -123,12 +123,12 @@ jobs:
       trio: ${{ steps.trio.outputs.list }}
       # Determinism matrix: one entry per released crate with the OS shards
       # it needs — the binary trio across all three OSes, the library crates
-      # (cfgd-crd / cfgd-core) linux-only (their preserved dist is source
+      # (cfgd-schema / cfgd-crd / cfgd-core) linux-only (their preserved dist is source
       # packaging, OS-independent, but publish-only still requires one).
       det_matrix: ${{ steps.trio.outputs.det }}
       # Released crates in crates.io dependency order, space-separated, for
-      # dispatch-oidc's per-crate SERIAL cargo publish (cfgd-crd → cfgd-core →
-      # cfgd → cfgd-operator → cfgd-csi ∩ released). One crate per dispatch
+      # dispatch-oidc's per-crate SERIAL cargo publish (cfgd-schema → cfgd-crd →
+      # cfgd-core → cfgd → cfgd-operator → cfgd-csi ∩ released). One crate per dispatch
       # keeps anodizer's per-crate publish-only loop single-crate, so an
       # earlier binstall crate's in-tree Cargo.toml write can never dirty a
       # sibling's clean-tree guard (the v0.6.0 tree-leak blocker).
@@ -220,9 +220,9 @@ jobs:
           # SSOT crate partitions — the ONLY place these literals live. `libs`
           # and `trio` partition the workspace by publish target; `order` is the
           # crates.io dependency topo-sort across both.
-          libs='["cfgd-crd","cfgd-core"]'
+          libs='["cfgd-schema","cfgd-crd","cfgd-core"]'
           trio='["cfgd","cfgd-csi","cfgd-operator"]'
-          order='["cfgd-crd","cfgd-core","cfgd","cfgd-operator","cfgd-csi"]'
+          order='["cfgd-schema","cfgd-crd","cfgd-core","cfgd","cfgd-operator","cfgd-csi"]'
 
           list="$(jq -cn --argjson all "$CRATES" --argjson trio "$trio" \
             '$trio - ($trio - $all)')"
@@ -272,8 +272,8 @@ jobs:
   # inherits it), so no job here can present an OIDC event_name crates.io
   # accepts — only a workflow_dispatch run can. anodizer topologically sorts the
   # workspace, so one `release --publish-only --publishers cargo` publishes
-  # cfgd-crd → cfgd-core → the binary trio in crates.io dependency order
-  # internally, replacing the hand-ordered publish-crd → publish-core → trio
+  # cfgd-schema → cfgd-crd → cfgd-core → the binary trio in crates.io dependency
+  # order internally, replacing the hand-ordered publish-crd → publish-core → trio
   # cargo legs. This job dispatches that workflow, polls it to a verdict, and rolls
   # back on cargo failure. It runs cargo-LAST, after publish-trio: anodizer's
   # cargo publisher refuses to burn a binary crate until its GitHub release +
