@@ -18,17 +18,17 @@ Set Shell "bash"
 Set FontFamily "FiraCode Nerd Font Mono"
 Set FontSize 15
 Set Width 1320
-# 1320x820 at font size 15 measures 125x40, counted off the take's own frames
+# 1320x958 at font size 15 measures 125x47, counted off the take's own frames
 # rather than from the pixel arithmetic, which lands a row high. The grid is
 # sized to the tallest single render below — the closing `cfgd status -o wide`,
-# 35 rows including the line that typed it — plus five rows of headroom,
+# 42 rows including the line that typed it — plus five rows of headroom,
 # because both machine-wide renders are preceded by a clear and so never have
 # to share the frame with what came before them. The beats between the two
-# clears do accumulate past 40 rows and the earlier ones scroll away; each
+# clears do accumulate past 47 rows and the earlier ones scroll away; each
 # one has already had its own hold by then, and every beat's own output is
 # whole on screen while it is the beat being read. A taller grid only pads
 # the closing frame with empty background.
-Set Height 820
+Set Height 958
 Set TypingSpeed 50ms
 Set Padding 20
 Set Framerate 50
@@ -127,8 +127,8 @@ Enter
 Type "cfgd status"
 Enter
 Wait@60s /cfgd\$$/
-# 32 lines → 4.7s
-Sleep 4700ms
+# 35 lines → 5.0s
+Sleep 5s
 
 # Beat 4: the hunk. cfgd diff always runs the live scan — no --scan needed.
 Type "cfgd diff --module nvim"
@@ -156,17 +156,19 @@ Wait@60s /cfgd\$$/
 Sleep 2800ms
 
 # Beat 7: the healed machine at full granularity — `-o wide` blows the file
-# aggregate into one row per deployed file and fills the Method column for
-# every row that has one. No `--scan`: the apply that healed the file resolved
-# that file's own drift row on its way out, so the fast read off the record is
-# already the converged truth. Cleared first, same reason as beat 3b.
+# aggregate into one row per deployed file, gives every declared env var and
+# alias back the row the plain table folds into a count, and fills the Method
+# column for every row that has one. No `--scan`: the apply that healed the
+# file resolved that file's own drift row on its way out, so the fast read off
+# the record is already the converged truth. Cleared first, same reason as
+# beat 3b.
 Type "clear"
 Enter
 Type "cfgd status -o wide"
 Enter
 Wait@60s /cfgd\$$/
-# 34 lines → 4.9s
-Sleep 4900ms
+# 41 lines → 5.6s
+Sleep 5600ms
 
 # Closing hold — the last beat's own hold already covers reading it; this is
 # only the breath before the loop snaps back.
