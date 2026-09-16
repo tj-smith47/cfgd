@@ -5,7 +5,7 @@
 # cfgd-crd carries.
 [package]
 name = "cfgd-schema"
-version = "0.1.0"
+version = "0.5.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

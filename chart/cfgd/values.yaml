@@ -14,7 +14,7 @@ operator:
     # rewritten with it. Anything but a comment between `repository:` and `tag:`
     # stops the anchor matching, and the audit job's `check version-files` fails.
     # `task chart:tags:check` catches a pin nobody pushed.
-    tag: "0.8.0"
+    tag: "0.9.0"
     pullPolicy: IfNotPresent
   resources:
     limits:
@@ -150,7 +150,7 @@ csiDriver:
     repository: ghcr.io/tj-smith47/cfgd-csi
     # Pinned to the cfgd-csi crate's own version; see the operator image comment
     # above for how the two anchored sweeps stay off each other's line.
-    tag: "0.7.1"
+    tag: "0.7.2"
     pullPolicy: IfNotPresent
   cache:
     maxSizeGi: 5

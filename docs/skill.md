@@ -96,8 +96,8 @@ Installed Skills
 
 Provider     Kind     Path                                        Version
 ─────────────────────────────────────────────────────────────────────────
-claude-code  Module   ~/repo/.claude/skills/cfgd-module/SKILL.md  0.10.0
-codex        Profile  ~/repo/AGENTS.md                            0.10.0
+claude-code  Module   ~/repo/.claude/skills/cfgd-module/SKILL.md  0.11.0
+codex        Profile  ~/repo/AGENTS.md                            0.11.0
 ```
 
 A skill rendered by an older cfgd is flagged stale (it carries a version stamp):
@@ -110,7 +110,7 @@ Installed Skills
 Provider     Kind     Path                                        Version
 ─────────────────────────────────────────────────────────────────────────
 claude-code  Module   ~/repo/.claude/skills/cfgd-module/SKILL.md  0.3.5
-codex        Profile  ~/repo/AGENTS.md                            0.10.0
+codex        Profile  ~/repo/AGENTS.md                            0.11.0
 
 → 1 skill rendered by an older cfgd; run `cfgd skill update` to refresh it
 ```
@@ -156,7 +156,7 @@ CI and scripts can parse the per-provider outcome:
 ```console
 $ cfgd skill install module -o json
 {
-  "cfgdVersion": "0.10.0",
+  "cfgdVersion": "0.11.0",
   "kind": "Module",
   "results": [
     {

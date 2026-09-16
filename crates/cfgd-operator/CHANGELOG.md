@@ -2,6 +2,46 @@
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-09-16
+
+### Features
+
+* adb6be582758 add the BackupPolicy kind — a namespaced, selector-matched fleet backup schedule that overrides a named unit's cadence and never defines the unit itself ([@tj-smith47](https://github.com/tj-smith47))
+* ef83f0e8d0f8 carry every local module field on the Module CRD — per-file strategy, patch, encryption and permissions, package minVersion and prefer, module platforms, aliases, system and the full hook set — and fold the rendered schema into a structural one ([@tj-smith47](https://github.com/tj-smith47))
+* d89de00d4753 widen the Module CRD to the local kind — a package entry carries its per-manager `aliases`, its `deny` list and its own platform gates, every platform tag is validated by the rule the local parser refuses one by, and `spec.files` refuses an empty or duplicated server-side-apply key before the API server rejects the whole resource naming neither entry ([@tj-smith47](https://github.com/tj-smith47))
+* e840ed29cca4 carry a device's package versions and backup schedule owners onto its MachineConfig status at check-in, and answer with the BackupPolicy schedules the cluster owns so a fleet cadence reaches the machine ([@tj-smith47](https://github.com/tj-smith47))
+* 5b99bd406701 reconcile BackupPolicy — project a fleet schedule onto every selected machine and report, rather than silently override, a unit the machine pins locally ([@tj-smith47](https://github.com/tj-smith47))
+* f6f90df295eb honour a module's own platforms list when injecting it into a pod, skipping the whole module before its CSI volume and naming it on the pod's skipped-modules annotation ([@tj-smith47](https://github.com/tj-smith47))
+
+---
+### Bug Fixes
+
+* cf041959f2e6 say the cluster projected a unit's cadence on every surface that names it, keep each listing helper under its own rustdoc, floor every source walk per file, and resolve only the two crates the sweep bumped ([@tj-smith47](https://github.com/tj-smith47))
+* 6f63e9b9ca0d refuse a package name a Windows shim would read as a second command ([@tj-smith47](https://github.com/tj-smith47))
+* 2f66239ab88d honour the wait a rate-limited gateway advised, and measure the fallback ladder against the quota that refused the request ([@tj-smith47](https://github.com/tj-smith47))
+* 88780e29d7e2 refuse a socket path whose ancestors another account can swap, roster the dispatcher installer wrapper so its callers are demanded the group, and name the chmod walk roots ([@tj-smith47](https://github.com/tj-smith47))
+* 5f9797430198 start every child process through the one retry ladder, however the caller asks for it ([@tj-smith47](https://github.com/tj-smith47))
+* 7ed3ea6ce96f declare every rendered map's merge type so a module push and a policy selector are applied whole like the device-reported status maps, and settle the user-authored settings maps as granular by declaration ([@tj-smith47](https://github.com/tj-smith47))
+* 6086bc80185b declare the device-reported MachineConfig status maps atomic so a check-in applied by the gateway replaces each map whole and retires a key an earlier operator or a manual patch left behind ([@tj-smith47](https://github.com/tj-smith47))
+* ab6d25e549b1 name both claimants when two module file entries share a target, and word each refusal with the one subject its parser uses ([@tj-smith47](https://github.com/tj-smith47))
+* 83aae4f105c0 refuse a blank postApply command on a Module, and make the pod webhook read blank as absent ([@tj-smith47](https://github.com/tj-smith47))
+* 4c20ba8c166a require spec.units on a BackupPolicy in the schema itself, so the API server refuses a policy that schedules nothing before any webhook sees it ([@tj-smith47](https://github.com/tj-smith47))
+* 97818ebfa541 validate a BackupPolicy unit's schedule and name by the grammar the machine parses, hoisted into cfgd-schema beside the local parser, and make the CRD completeness guard read every roster a kind must join ([@tj-smith47](https://github.com/tj-smith47))
+* 45c5c5d28289 withhold a device's package versions from the cluster when any manager holding a declared package could not be listed, so a broken manager never retires the versions the cluster already holds, and pin the check-in that records and re-arms the fleet backup cadence ([@tj-smith47](https://github.com/tj-smith47))
+* 7a53c9530c8c apply each device-reported status map under its own field manager so a check-in that observed one never retires the other, answer with no projection rather than an empty one when the cluster could not be read, and pin the timer re-arm and the credential-less check-in ([@tj-smith47](https://github.com/tj-smith47))
+* 55460404c7df let a check-in retire what the device stopped reporting by applying its status maps server-side, keep a lost gateway from wiping the cluster cadences, re-arm the daemon's backup timers when the projection changes, judge a version pin against every copy a machine holds, and send the daemon's periodic check-in as the device it is ([@tj-smith47](https://github.com/tj-smith47))
+* f93e63f943b0 chmod the per-key gpg homedir through the no-follow descriptor, and walk the whole crate for a site that never says why it may follow a link ([@tj-smith47](https://github.com/tj-smith47))
+* 8c18e1a561bc inject a module into a pod on any Linux-family platform tag ([@tj-smith47](https://github.com/tj-smith47))
+* 44f0633a91ee name a label selector by the matchLabels and matchExpressions the CRD spells, judge a rendered cap as the number it states, and list BackupPolicy among the kinds the operator ships ([@tj-smith47](https://github.com/tj-smith47))
+* 550f8a49964d read a machine's schedule-owner pin through the one parser and never apply on an unreadable word, count the Applied condition by distinct units and machines, refuse a BackupPolicy that schedules nothing, and drop the accessor nothing calls ([@tj-smith47](https://github.com/tj-smith47))
+* 5c59d4f54c29 register the BackupPolicy validating webhook in the OLM bundle and prove every kind's admission path is both declared and served ([@tj-smith47](https://github.com/tj-smith47))
+* ec433d91ef21 report a pod injection by the complement of what it skipped, and build an init container only for a module the pod actually mounts ([@tj-smith47](https://github.com/tj-smith47))
+
+---
+### Performance
+
+* 514efc352971 answer a device check-in from the BackupPolicy watch cache the controllers already keep, instead of listing the namespace once per check-in ([@tj-smith47](https://github.com/tj-smith47))
+
 ## [0.8.0] - 2026-09-07
 
 ### Features
@@ -89,7 +129,8 @@
 * ac2efacbcbc3 extract cfgd-crd crate (types + validate) from operator ([@tj-smith47](https://github.com/tj-smith47))
 * d7d3bf6bc720 gen_crds render_all + file-writing, sourced from cfgd-crd ([@tj-smith47](https://github.com/tj-smith47))
 
-[Unreleased]: https://github.com/tj-smith47/cfgd/compare/operator-v0.8.0...HEAD
+[Unreleased]: https://github.com/tj-smith47/cfgd/compare/operator-v0.9.0...HEAD
+[0.9.0]: https://github.com/tj-smith47/cfgd/compare/operator-v0.8.0...operator-v0.9.0
 [0.8.0]: https://github.com/tj-smith47/cfgd/compare/operator-v0.7.0...operator-v0.8.0
 [0.7.0]: https://github.com/tj-smith47/cfgd/compare/operator-v0.5.1...operator-v0.7.0
 [0.5.1]: https://github.com/tj-smith47/cfgd/compare/operator-v0.5.0...operator-v0.5.1

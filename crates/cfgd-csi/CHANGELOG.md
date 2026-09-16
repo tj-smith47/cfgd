@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-09-16
+
+### Bug Fixes
+
+* 88780e29d7e2 refuse a socket path whose ancestors another account can swap, roster the dispatcher installer wrapper so its callers are demanded the group, and name the chmod walk roots ([@tj-smith47](https://github.com/tj-smith47))
+
 ## [0.7.1] - 2026-09-07
 
 ### Bug Fixes
@@ -25,7 +31,8 @@
 
 * f1ab9eb25ba2 drop now-derivable anodizer config (auto-derived from Cargo.toml) (TJ Smith)
 
-[Unreleased]: https://github.com/tj-smith47/cfgd/compare/csi-v0.7.1...HEAD
+[Unreleased]: https://github.com/tj-smith47/cfgd/compare/csi-v0.7.2...HEAD
+[0.7.2]: https://github.com/tj-smith47/cfgd/compare/csi-v0.7.1...csi-v0.7.2
 [0.7.1]: https://github.com/tj-smith47/cfgd/compare/csi-v0.7.0...csi-v0.7.1
 [0.7.0]: https://github.com/tj-smith47/cfgd/compare/csi-v0.5.0...csi-v0.7.0
 [0.5.0]: https://github.com/tj-smith47/cfgd/compare/csi-v0.4.0...csi-v0.5.0
