@@ -431,6 +431,7 @@ Phase: Packages
     - brew install ripgrep
 
 ◉ 2 actions planned
+
 → Run `cfgd apply` to make these changes
 → Answer each pending decision:
   $ cfgd decide [accept|reject] <resource>
@@ -441,9 +442,11 @@ $ cfgd decide accept packages.brew.k9s
 → Run `cfgd plan` to preview changes, then `cfgd apply`
 $ cfgd plan            # k9s now plans alongside ripgrep
 ◉ 3 actions planned
+
+→ Run `cfgd apply` to make these changes
 ```
 
-The answer instruction is a closing hint on every surface that lists a decision (`plan`, `apply`, `decide`, `status`): the section names the withheld items, the surface prints its own verdict, and the instruction closes the screen flush left, where every other cfgd hint is. `cfgd decide` is the only way to move an item out of Pending; neither `plan` nor `apply` resolves a decision for you, and an accepted item reaches the machine only through the `cfgd apply` the verdict points at (or the next daemon tick, where one runs).
+The answer instruction is a closing hint on every surface that lists a decision (`plan`, `apply`, `decide`, `status`): the section names the withheld items, the surface prints its own verdict, and the instruction renders flush left after a blank line, where every other cfgd hint is. It closes `plan`, `apply` and `decide`, and on `status` it joins the report's closing hints ahead of the scan hint that has to be last. `cfgd decide` is the only way to move an item out of Pending; neither `plan` nor `apply` resolves a decision for you, and an accepted item reaches the machine only through the `cfgd apply` the verdict points at (or the next daemon tick, where one runs).
 
 A plan whose only remaining work is withheld says so instead of reporting success, so "up to date" never covers an item you have not answered:
 
@@ -453,6 +456,7 @@ Pending Decisions (1 item, not included in this plan)
     ◉ Recommended packages.brew.k9s — brew install k9s
 
 ⊙ Nothing to apply — 1 decision pending
+
 → Answer each pending decision:
   $ cfgd decide [accept|reject] <resource>
 ```
