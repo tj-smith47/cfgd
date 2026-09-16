@@ -62,6 +62,133 @@ impl indicatif::TermLike for RecordingTerm {
     }
 }
 
+/// One call indicatif makes on the emulated terminal, held until the frame it
+/// belongs to is complete.
+#[cfg(test)]
+#[derive(Debug)]
+enum TermOp {
+    CursorUp(usize),
+    CursorDown(usize),
+    CursorRight(usize),
+    CursorLeft(usize),
+    Line(String),
+    Str(String),
+    ClearLine,
+}
+
+/// A frame-atomic emulated terminal: every cursor move, clear and write is
+/// queued and the whole queue is applied to the screen inside `flush`, under
+/// the same mutex [`LiveScreen`] reads through, so a reader sees only whole
+/// frames.
+///
+/// indicatif paints one frame as a run of separate `TermLike` calls (a cursor
+/// rewind, a clear per row, a write per row) and ends it on `flush`, while a
+/// bar's steady tick repaints the region from its own thread. Applied as they
+/// arrive, a read landing between a frame's clears and its rewrites returns a
+/// screen missing the rows that frame is in the middle of redrawing, and a test
+/// asserting on a row it drew fails on nothing but timing.
+#[cfg(test)]
+#[derive(Debug, Clone)]
+pub(crate) struct FrameTerm(Arc<FrameTermInner>);
+
+#[cfg(test)]
+#[derive(Debug)]
+struct FrameTermInner {
+    term: indicatif::InMemoryTerm,
+    /// The frame being painted, and the gate every touch of `term` takes.
+    frame: Mutex<Vec<TermOp>>,
+}
+
+#[cfg(test)]
+impl FrameTerm {
+    fn new(rows: u16, cols: u16) -> Self {
+        Self(Arc::new(FrameTermInner {
+            term: indicatif::InMemoryTerm::new(rows, cols),
+            frame: Mutex::new(Vec::new()),
+        }))
+    }
+
+    fn queue(&self, op: TermOp) -> std::io::Result<()> {
+        self.0
+            .frame
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(op);
+        Ok(())
+    }
+
+    /// Apply one call to the screen at once, for a writer that paints no frame
+    /// of its own: the printer's sink commits a line straight to the terminal,
+    /// and taking the gate is what keeps that line from landing between a
+    /// frame's clears and its rewrites.
+    fn apply_now(&self, op: &TermOp) -> std::io::Result<()> {
+        let _gate = self.0.frame.lock().unwrap_or_else(|e| e.into_inner());
+        Self::apply(&self.0.term, op)
+    }
+
+    fn apply(term: &indicatif::InMemoryTerm, op: &TermOp) -> std::io::Result<()> {
+        use indicatif::TermLike as _;
+        match op {
+            TermOp::CursorUp(n) => term.move_cursor_up(*n),
+            TermOp::CursorDown(n) => term.move_cursor_down(*n),
+            TermOp::CursorRight(n) => term.move_cursor_right(*n),
+            TermOp::CursorLeft(n) => term.move_cursor_left(*n),
+            TermOp::Line(s) => term.write_line(s),
+            TermOp::Str(s) => term.write_str(s),
+            TermOp::ClearLine => term.clear_line(),
+        }
+    }
+
+    /// Read the screen with the gate held, so what comes back is the terminal
+    /// between frames rather than part-way through one.
+    fn read<T>(&self, f: impl FnOnce(&indicatif::InMemoryTerm) -> T) -> T {
+        let _gate = self.0.frame.lock().unwrap_or_else(|e| e.into_inner());
+        f(&self.0.term)
+    }
+}
+
+#[cfg(test)]
+impl indicatif::TermLike for FrameTerm {
+    /// Answered from the screen directly: a dimension is not part of a frame,
+    /// and indicatif asks for it in the middle of painting one.
+    fn width(&self) -> u16 {
+        indicatif::TermLike::width(&self.0.term)
+    }
+    fn height(&self) -> u16 {
+        indicatif::TermLike::height(&self.0.term)
+    }
+    fn move_cursor_up(&self, n: usize) -> std::io::Result<()> {
+        self.queue(TermOp::CursorUp(n))
+    }
+    fn move_cursor_down(&self, n: usize) -> std::io::Result<()> {
+        self.queue(TermOp::CursorDown(n))
+    }
+    fn move_cursor_right(&self, n: usize) -> std::io::Result<()> {
+        self.queue(TermOp::CursorRight(n))
+    }
+    fn move_cursor_left(&self, n: usize) -> std::io::Result<()> {
+        self.queue(TermOp::CursorLeft(n))
+    }
+    fn write_line(&self, s: &str) -> std::io::Result<()> {
+        self.queue(TermOp::Line(s.to_string()))
+    }
+    fn write_str(&self, s: &str) -> std::io::Result<()> {
+        self.queue(TermOp::Str(s.to_string()))
+    }
+    fn clear_line(&self) -> std::io::Result<()> {
+        self.queue(TermOp::ClearLine)
+    }
+    /// Where the frame lands. indicatif ends every `draw_to_term` on this call,
+    /// so the queue is exactly one frame's worth of calls.
+    fn flush(&self) -> std::io::Result<()> {
+        let mut frame = self.0.frame.lock().unwrap_or_else(|e| e.into_inner());
+        for op in std::mem::take(&mut *frame) {
+            Self::apply(&self.0.term, &op)?;
+        }
+        indicatif::TermLike::flush(&self.0.term)
+    }
+}
+
 /// The emulated terminal [`Printer::for_test_live_terminal`] hands back — an
 /// `output/`-owned name for it, so a test anywhere else can read the screen
 /// without naming an indicatif type (hard rule #1: every `console` / `indicatif`
@@ -71,7 +198,7 @@ impl indicatif::TermLike for RecordingTerm {
 /// Opaque on purpose: it answers the one question the fixture exists to ask.
 #[cfg(test)]
 #[derive(Debug, Clone)]
-pub(crate) struct LiveScreen(indicatif::InMemoryTerm);
+pub(crate) struct LiveScreen(FrameTerm);
 
 #[cfg(test)]
 impl LiveScreen {
@@ -81,7 +208,7 @@ impl LiveScreen {
     /// CONTENT, so an escape that reached it was consumed as a cursor move or a
     /// colour change and never lands in a row.
     pub(crate) fn contents(&self) -> String {
-        self.0.contents()
+        self.0.read(indicatif::InMemoryTerm::contents)
     }
 
     /// Every write and cursor move the screen took since the last call, in
@@ -89,7 +216,7 @@ impl LiveScreen {
     /// view that sees an escape the screen CONSUMED — a cursor hide/show never
     /// lands in a cell, so `contents()` is blind to it by construction.
     pub(crate) fn moves(&self) -> String {
-        self.0.moves_since_last_check()
+        self.0.read(indicatif::InMemoryTerm::moves_since_last_check)
     }
 }
 
@@ -98,12 +225,12 @@ impl LiveScreen {
 /// relationship the two writers have in production, where both are stderr.
 #[cfg(test)]
 #[derive(Debug)]
-struct TermSink(indicatif::InMemoryTerm);
+struct TermSink(FrameTerm);
 
 #[cfg(test)]
 impl Writer for TermSink {
     fn write_line(&self, text: &str) {
-        let _ = indicatif::TermLike::write_line(&self.0, text);
+        let _ = self.0.apply_now(&TermOp::Line(text.to_string()));
     }
 
     /// The width the SCREEN wraps at, not the renderer's fallback. In
@@ -123,7 +250,7 @@ impl Writer for TermSink {
         // style-gate-ok: a fixture emulating a terminal's own mode change, not
         // a painter — cursor visibility carries no styling.
         let seq = if visible { "\x1b[?25h" } else { "\x1b[?25l" };
-        let _ = indicatif::TermLike::write_str(&self.0, seq);
+        let _ = self.0.apply_now(&TermOp::Str(seq.to_string()));
     }
 }
 
@@ -416,7 +543,7 @@ impl Printer {
         rows: u16,
         cols: u16,
     ) -> (Self, LiveScreen) {
-        let term = indicatif::InMemoryTerm::new(rows, cols);
+        let term = FrameTerm::new(rows, cols);
         let multi = indicatif::MultiProgress::with_draw_target(
             indicatif::ProgressDrawTarget::term_like(Box::new(term.clone())),
         );
@@ -645,6 +772,41 @@ pub fn strip_spinner_duration(s: String) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A ticking live region is repainted from indicatif's own thread, so a
+    /// read of the screen races the frame being painted. Every read here sees
+    /// all three rows: a frame is applied in one step under the gate this read
+    /// takes, so the only screens observable are the one before the frame and
+    /// the one after it. Without that, a read landing between the frame's
+    /// clears and its rewrites returns a screen short of the rows it is
+    /// redrawing.
+    #[test]
+    fn a_read_of_the_emulated_screen_never_sees_half_a_frame() {
+        let (printer, screen) = Printer::for_test_live_terminal(24, 120);
+        let subjects = ["fetching sources", "resolving modules", "planning packages"];
+        let _rows: Vec<_> = subjects.iter().map(|s| printer.spinner(*s)).collect();
+        let whole = |held: &str| subjects.iter().all(|s| held.contains(s));
+
+        // The first frame has to be on the screen before a read can claim
+        // anything about one. A tick is 80ms away at most, so this reads
+        // rather than sleeps, and the deadline turns a region that never
+        // painted into a failure instead of a hang.
+        let armed = std::time::Instant::now();
+        while !whole(&screen.contents()) {
+            assert!(
+                armed.elapsed() < std::time::Duration::from_secs(10),
+                "the live region never painted all three rows",
+            );
+        }
+
+        // Long enough to cross several of the region's own ticks, read
+        // continuously so no window between two of its calls goes unsampled.
+        let until = std::time::Instant::now() + std::time::Duration::from_millis(250);
+        while std::time::Instant::now() < until {
+            let held = screen.contents();
+            assert!(whole(&held), "a read landed inside a frame: {held:?}",);
+        }
+    }
 
     #[test]
     fn for_test_returns_buffer() {
