@@ -27,7 +27,8 @@ pub struct OutputConfig {
     #[serde(default)]
     pub theme: Option<ThemeConfig>,
 
-    /// Whether closing `→` usage hints render. Omitted, hints render.
+    /// Whether closing `→` usage hints render. Omitted, they do not; a
+    /// refusal's remediation and a run's own instructions render either way.
     #[serde(default)]
     pub usage_hints: Option<bool>,
 

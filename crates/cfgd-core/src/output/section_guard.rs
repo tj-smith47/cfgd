@@ -124,8 +124,13 @@ impl<'p> SectionGuard<'p> {
 
     pub fn hint(&self, hint: impl Into<crate::output::HintCommands>) -> &Self {
         let hint = hint.into();
-        self.renderer
-            .render_hint(self.sink.as_ref(), self.depth, &hint.text, &hint.commands);
+        self.renderer.render_hint(
+            self.sink.as_ref(),
+            self.depth,
+            &hint.text,
+            &hint.commands,
+            hint.gated,
+        );
         self
     }
 

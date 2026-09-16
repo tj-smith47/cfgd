@@ -1263,15 +1263,24 @@ impl Renderer {
     /// `Doc` with no `with_data` serializes its `Component::Hint` text into the
     /// Doc-derived payload, which keeps the absolute path a script can `cat`.
     ///
-    /// Also the ONE seam `spec.output.usageHints: false` / `CFGD_USAGE_HINTS=false` /
-    /// `--no-hints` suppresses through: the early return below fires before
-    /// `open_top_group` arms the leading blank line a hint would otherwise
-    /// own, so turning hints off drops both the hint AND its blank line
-    /// rather than leaving a bare blank behind. `note`/`deprecation`/`alert`
-    /// are NOT hints and do not check this flag — they report what the run
-    /// did or will do, not what to run next, and stay visible with hints off.
-    pub fn render_hint(&self, w: &dyn Writer, depth: usize, text: &str, commands: &[String]) {
-        if self.verbosity == Verbosity::Quiet || !self.hints_enabled() {
+    /// Also the ONE seam `--hints` / `CFGD_USAGE_HINTS` /
+    /// `spec.output.usageHints` decides through: the early return below fires
+    /// before `open_top_group` arms the leading blank line a hint would
+    /// otherwise own, so a suppressed hint drops its blank line with it rather
+    /// than leaving a bare blank behind. Only a `gated` hint asks — a
+    /// remediation an invocation cannot be acted on without renders whatever
+    /// the reader decided about tutorials. `note`/`deprecation`/`alert` are
+    /// NOT hints and never ask — they report what the run did or will do, not
+    /// what to run next.
+    pub fn render_hint(
+        &self,
+        w: &dyn Writer,
+        depth: usize,
+        text: &str,
+        commands: &[String],
+        gated: bool,
+    ) {
+        if self.verbosity == Verbosity::Quiet || (gated && !self.hints_enabled()) {
             return;
         }
         let arrow = self
@@ -1430,7 +1439,7 @@ mod tests {
         assert_styled("heading", |r, s| r.render_heading(s, "h"));
         assert_styled("bullet", |r, s| r.render_bullet(s, 0, "b", None, None));
         assert_styled("stream_line", |r, s| r.render_stream_line(s, 0, "l"));
-        assert_styled("hint", |r, s| r.render_hint(s, 0, "h", &[]));
+        assert_styled("hint", |r, s| r.render_hint(s, 0, "h", &[], true));
         assert_styled("code_block", |r, s| {
             r.render_code_block(s, 0, &["c".to_string()])
         });
@@ -1689,7 +1698,7 @@ mod tests {
                         },
                     )
                 }),
-                TopGroup::Hint => Some(|r, w| r.render_hint(w, 0, "run cfgd apply", &[])),
+                TopGroup::Hint => Some(|r, w| r.render_hint(w, 0, "run cfgd apply", &[], true)),
                 TopGroup::Bullet => Some(|r, w| r.render_bullet(w, 0, "item", None, None)),
                 TopGroup::CodeBlock => {
                     Some(|r, w| r.render_code_block(w, 0, &["let x = 1;".to_string()]))
@@ -1753,7 +1762,7 @@ mod tests {
     #[test]
     fn hint_uses_arrow_glyph() {
         let (r, sink, buf) = capture();
-        r.render_hint(&sink, 0, "run cfgd apply", &[]);
+        r.render_hint(&sink, 0, "run cfgd apply", &[], true);
         let s = crate::test_helpers::captured_text(&buf);
         assert!(s.contains("→"), "got: {s:?}");
         assert!(s.contains("run cfgd apply"));
@@ -1774,6 +1783,7 @@ mod tests {
                 "git add -A && git commit -m 'initial'".to_string(),
                 "cfgd pull".to_string(),
             ],
+            true,
         );
         let s = crate::test_helpers::captured_text(&buf);
         let rows: Vec<&str> = s.lines().filter(|l| !l.trim().is_empty()).collect();
@@ -1804,6 +1814,7 @@ mod tests {
                 "launchctl bootout gui/$(id -u) {}/Library/LaunchAgents/com.cfgd.daemon.plist",
                 crate::to_posix_string(home.path())
             )],
+            true,
         );
         let s = crate::test_helpers::captured_text(&buf);
         assert!(
@@ -1853,6 +1864,7 @@ mod tests {
                 crate::to_posix_string(home.path())
             ),
             &[],
+            true,
         );
         let s = crate::test_helpers::captured_text(&buf);
         assert!(s.contains("chmod u+w ~/.config/cfgd"), "got: {s:?}");

@@ -120,8 +120,12 @@ fn render_component(
         } => {
             renderer.render_child_row_labeled(sink, depth + 1, subject, detail, label.as_ref());
         }
-        Component::Hint { text, commands } => {
-            renderer.render_hint(sink, depth, text, commands);
+        Component::Hint {
+            text,
+            commands,
+            gated,
+        } => {
+            renderer.render_hint(sink, depth, text, commands, *gated);
         }
         Component::Note { text } => {
             renderer.render_note(sink, depth, text);

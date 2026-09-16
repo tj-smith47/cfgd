@@ -16,10 +16,12 @@ use cfgd_core::output::HintCommands;
 ///
 /// `hints` are remediation lines rendered in human mode only (matching the
 /// `.hint(...)` calls the old call sites attached to their error `Doc`);
-/// they never appear in the structured payload. A hint whose payload is a
-/// colon-introduced command carries it as [`HintCommands::commands`] rather
-/// than inside the sentence, and renders as the same `$` block every other
-/// surface's hints do.
+/// they never appear in the structured payload. Every one of them follows a
+/// refusal, so [`render_cli_error`] renders them unconditionally: `usageHints`
+/// decides tutorials, not the way out of a command that declined to run. A
+/// hint whose payload is a colon-introduced command carries it as
+/// [`HintCommands::commands`] rather than inside the sentence, and renders as
+/// the same `$` block every other surface's hints do.
 #[derive(Debug, Clone)]
 pub struct CliErrorMeta {
     pub error_kind: String,
@@ -204,7 +206,13 @@ pub fn render_cli_error(
                 m.extras.clone(),
             );
             for hint in &m.hints {
-                doc = doc.hint(hint.clone());
+                // A hint on a refusal IS its remediation, so `usageHints` does
+                // not decide it: a reader who turned tutorials off still has to
+                // be told the way out of a command that declined to run.
+                doc = doc.hint(HintCommands {
+                    gated: false,
+                    ..hint.clone()
+                });
             }
             // The code block renders after the hints in human mode as a tight,
             // copy-pasteable snippet. `with_data` keeps it out of the structured
@@ -239,7 +247,9 @@ pub fn render_cli_error(
     let code = exit_code_for_anyhow(err);
     // The hint goes to the same stream (stderr) as the error above.
     if code == cfgd_core::exit::ExitCode::NoConfig {
-        printer.hint("Run `cfgd init` to create a config, or pass --config <path>");
+        printer.hint(HintCommands::unconditional(
+            "Run `cfgd init` to create a config, or pass --config <path>",
+        ));
     }
     code
 }
@@ -342,6 +352,40 @@ mod tests {
         assert!(
             out.contains("cfgd init"),
             "expected remediation naming `cfgd init`, got: {out:?}"
+        );
+    }
+
+    /// Every remediation a refusal carries survives `usageHints: false`: the
+    /// two shapes are the attached `CliErrorMeta::hints` and the `cfgd init`
+    /// line `render_cli_error` adds for a `NoConfig` exit.
+    #[test]
+    fn a_refusals_remediation_renders_with_usage_hints_off() {
+        let (printer, buf) =
+            cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+        let printer = printer.with_hints_enabled(false);
+        let err = cli_error_with_hints(
+            "acme",
+            "not_found",
+            "source not found: acme",
+            serde_json::json!({}),
+            vec![HintCommands::from("Add it with `cfgd source add`")],
+        );
+        render_cli_error(&printer, &err);
+        let err: anyhow::Error =
+            cfgd_core::errors::CfgdError::Config(cfgd_core::errors::ConfigError::NotFound {
+                path: "/home/u/.config/cfgd/cfgd.yaml".into(),
+            })
+            .into();
+        render_cli_error(&printer, &err);
+        printer.flush();
+        let out = cfgd_core::test_helpers::captured_text(&buf);
+        assert!(
+            out.contains("cfgd source add"),
+            "an attached remediation must survive hints-off, got: {out:?}"
+        );
+        assert!(
+            out.contains("cfgd init"),
+            "the NoConfig remediation must survive hints-off, got: {out:?}"
         );
     }
 

@@ -2400,6 +2400,9 @@ fn profile_delete_inherited_with_ignore_not_found_still_errors() {
 /// and exits 0 even when a managed file is live-drifted — the live scan is
 /// `-e`-only by design. What it must NOT do is call that a detection: this run
 /// asked the machine nothing, and the file on disk is drifted.
+///
+/// `--hints` because the pointer at the live check is a tutorial hint, and the
+/// subject here is its WORDING rather than the gate it renders behind.
 #[test]
 fn status_plain_keeps_recorded_dashboard_despite_live_drift() {
     let dir = tempfile::tempdir().unwrap();
@@ -2423,6 +2426,7 @@ fn status_plain_keeps_recorded_dashboard_despite_live_drift() {
         .unwrap()
         .arg("status")
         .arg("--no-color")
+        .arg("--hints")
         .arg("--config")
         .arg(dir.path().join("cfgd.yaml"))
         .arg("--state-dir")
@@ -2882,10 +2886,86 @@ fn create_hint_producing_config(dir: &std::path::Path, usage_hints: Option<bool>
 /// call, a swapped argument order, or a wrong config path would go red here
 /// even though it would pass every unit-level pin.
 #[test]
-fn hints_render_by_default_end_to_end() {
+fn hints_are_off_by_default_end_to_end() {
     let dir = tempfile::tempdir().unwrap();
     let state_dir = tempfile::tempdir().unwrap();
     create_hint_producing_config(dir.path(), None);
+
+    let assert = Command::cargo_bin("cfgd")
+        .unwrap()
+        .arg("plan")
+        .arg("--config")
+        .arg(dir.path().join("cfgd.yaml"))
+        .arg("--state-dir")
+        .arg(state_dir.path())
+        .assert()
+        .success();
+    let out = cfgd_core::output::strip_ansi(&String::from_utf8_lossy(&assert.get_output().stderr));
+    assert!(!out.contains('→'), "hint must be gone, got:\n{out}");
+    // `trim_end()` would strip any number of trailing newlines, making this
+    // check pass even with a stranded blank line — compare the exact tail
+    // instead: one closing newline, never two, so a surviving blank (which
+    // would leave the string ending "planned\n\n") is falsifiable.
+    assert!(
+        out.ends_with("1 action planned\n") && !out.ends_with("\n\n"),
+        "the verdict line must be the last line, with no leftover blank, got:\n{out:?}"
+    );
+}
+
+/// `--hints` reaching a real command's rendered output.
+#[test]
+fn hints_flag_renders_the_hint_and_its_leading_blank_end_to_end() {
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+    create_hint_producing_config(dir.path(), None);
+
+    let assert = Command::cargo_bin("cfgd")
+        .unwrap()
+        .arg("--hints")
+        .arg("plan")
+        .arg("--config")
+        .arg(dir.path().join("cfgd.yaml"))
+        .arg("--state-dir")
+        .arg(state_dir.path())
+        .assert()
+        .success();
+    let out = cfgd_core::output::strip_ansi(&String::from_utf8_lossy(&assert.get_output().stderr));
+    assert!(
+        out.contains("\n\n→ Run `cfgd apply`"),
+        "--hints must render the hint behind its leading blank, got:\n{out}"
+    );
+}
+
+/// `CFGD_USAGE_HINTS=true` reaching a real command's rendered output.
+#[test]
+fn cfgd_usage_hints_env_true_renders_the_hint_end_to_end() {
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+    create_hint_producing_config(dir.path(), None);
+
+    let assert = Command::cargo_bin("cfgd")
+        .unwrap()
+        .env("CFGD_USAGE_HINTS", "true")
+        .arg("plan")
+        .arg("--config")
+        .arg(dir.path().join("cfgd.yaml"))
+        .arg("--state-dir")
+        .arg(state_dir.path())
+        .assert()
+        .success();
+    let out = cfgd_core::output::strip_ansi(&String::from_utf8_lossy(&assert.get_output().stderr));
+    assert!(
+        out.contains("\n\n→ Run `cfgd apply`"),
+        "CFGD_USAGE_HINTS=true must render the hint behind its leading blank, got:\n{out}"
+    );
+}
+
+/// `spec.usageHints: true` reaching a real command's rendered output.
+#[test]
+fn spec_usage_hints_true_renders_the_hint_end_to_end() {
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+    create_hint_producing_config(dir.path(), Some(true));
 
     let assert = Command::cargo_bin("cfgd")
         .unwrap()
@@ -2899,90 +2979,51 @@ fn hints_render_by_default_end_to_end() {
     let out = cfgd_core::output::strip_ansi(&String::from_utf8_lossy(&assert.get_output().stderr));
     assert!(
         out.contains("\n\n→ Run `cfgd apply`"),
-        "baseline must render the hint behind its leading blank, got:\n{out}"
+        "spec.usageHints: true must render the hint behind its leading blank, got:\n{out}"
     );
 }
 
-/// `--no-hints` reaching a real command's rendered output.
+/// The two states a lone `--no-hints` could never reach: overruling a stored
+/// `usageHints: false` for one invocation, and overruling a stored
+/// `usageHints: true` for one invocation.
 #[test]
-fn no_hints_flag_suppresses_the_hint_and_its_leading_blank_end_to_end() {
-    let dir = tempfile::tempdir().unwrap();
+fn each_half_of_the_hints_pair_outranks_the_stored_value_end_to_end() {
+    let on_over_stored_off = tempfile::tempdir().unwrap();
     let state_dir = tempfile::tempdir().unwrap();
-    create_hint_producing_config(dir.path(), None);
+    create_hint_producing_config(on_over_stored_off.path(), Some(false));
+
+    let assert = Command::cargo_bin("cfgd")
+        .unwrap()
+        .arg("--hints")
+        .arg("plan")
+        .arg("--config")
+        .arg(on_over_stored_off.path().join("cfgd.yaml"))
+        .arg("--state-dir")
+        .arg(state_dir.path())
+        .assert()
+        .success();
+    let out = cfgd_core::output::strip_ansi(&String::from_utf8_lossy(&assert.get_output().stderr));
+    assert!(
+        out.contains("\n\n→ Run `cfgd apply`"),
+        "--hints must outrank a stored usageHints: false, got:\n{out}"
+    );
+
+    let off_over_stored_on = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+    create_hint_producing_config(off_over_stored_on.path(), Some(true));
 
     let assert = Command::cargo_bin("cfgd")
         .unwrap()
         .arg("--no-hints")
         .arg("plan")
         .arg("--config")
-        .arg(dir.path().join("cfgd.yaml"))
+        .arg(off_over_stored_on.path().join("cfgd.yaml"))
         .arg("--state-dir")
         .arg(state_dir.path())
         .assert()
         .success();
     let out = cfgd_core::output::strip_ansi(&String::from_utf8_lossy(&assert.get_output().stderr));
     assert!(!out.contains('→'), "hint must be gone, got:\n{out}");
-    // `trim_end()` would strip any number of trailing newlines, making this
-    // check pass even with a stranded blank line — compare the exact tail
-    // instead: one closing newline, never two, so a surviving blank (which
-    // would leave the string ending "planned\n\n") is falsifiable.
-    assert!(
-        out.ends_with("1 action planned\n") && !out.ends_with("\n\n"),
-        "the verdict line must be the last line, with no leftover blank, got:\n{out:?}"
-    );
-}
-
-/// `CFGD_USAGE_HINTS=false` reaching a real command's rendered output.
-#[test]
-fn cfgd_usage_hints_env_suppresses_the_hint_and_its_leading_blank_end_to_end() {
-    let dir = tempfile::tempdir().unwrap();
-    let state_dir = tempfile::tempdir().unwrap();
-    create_hint_producing_config(dir.path(), None);
-
-    let assert = Command::cargo_bin("cfgd")
-        .unwrap()
-        .env("CFGD_USAGE_HINTS", "false")
-        .arg("plan")
-        .arg("--config")
-        .arg(dir.path().join("cfgd.yaml"))
-        .arg("--state-dir")
-        .arg(state_dir.path())
-        .assert()
-        .success();
-    let out = cfgd_core::output::strip_ansi(&String::from_utf8_lossy(&assert.get_output().stderr));
-    assert!(!out.contains('→'), "hint must be gone, got:\n{out}");
-    // `trim_end()` would strip any number of trailing newlines, making this
-    // check pass even with a stranded blank line — compare the exact tail
-    // instead: one closing newline, never two, so a surviving blank (which
-    // would leave the string ending "planned\n\n") is falsifiable.
-    assert!(
-        out.ends_with("1 action planned\n") && !out.ends_with("\n\n"),
-        "the verdict line must be the last line, with no leftover blank, got:\n{out:?}"
-    );
-}
-
-/// `spec.output.usageHints: false` reaching a real command's rendered output.
-#[test]
-fn spec_usage_hints_false_suppresses_the_hint_and_its_leading_blank_end_to_end() {
-    let dir = tempfile::tempdir().unwrap();
-    let state_dir = tempfile::tempdir().unwrap();
-    create_hint_producing_config(dir.path(), Some(false));
-
-    let assert = Command::cargo_bin("cfgd")
-        .unwrap()
-        .arg("plan")
-        .arg("--config")
-        .arg(dir.path().join("cfgd.yaml"))
-        .arg("--state-dir")
-        .arg(state_dir.path())
-        .assert()
-        .success();
-    let out = cfgd_core::output::strip_ansi(&String::from_utf8_lossy(&assert.get_output().stderr));
-    assert!(!out.contains('→'), "hint must be gone, got:\n{out}");
-    // `trim_end()` would strip any number of trailing newlines, making this
-    // check pass even with a stranded blank line — compare the exact tail
-    // instead: one closing newline, never two, so a surviving blank (which
-    // would leave the string ending "planned\n\n") is falsifiable.
     assert!(
         out.ends_with("1 action planned\n") && !out.ends_with("\n\n"),
         "the verdict line must be the last line, with no leftover blank, got:\n{out:?}"

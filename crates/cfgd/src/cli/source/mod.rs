@@ -83,9 +83,9 @@ pub(in crate::cli) fn subscription_knob_label(key: &str) -> &str {
 pub(in crate::cli) fn source_failure_next_step(
     err: &cfgd_core::errors::CfgdError,
     name: &str,
-) -> String {
+) -> cfgd_core::output::HintCommands {
     use cfgd_core::errors::SourceError;
-    match err {
+    let text = match err {
         cfgd_core::errors::CfgdError::Source(SourceError::SignatureVerificationFailed {
             ..
         }) => format!(
@@ -103,7 +103,10 @@ pub(in crate::cli) fn source_failure_next_step(
         // Fetch, git, cache: a transport or a local-cache failure the reader
         // retries once the cause the detail names is gone.
         _ => format!("Retry with `cfgd source update {name}` once the cause above is resolved"),
-    }
+    };
+    // A refused source blocks the reader, so this line is not a tutorial
+    // `spec.output.usageHints` may withhold.
+    cfgd_core::output::HintCommands::unconditional(text)
 }
 
 /// Warning emitted when writing `sources.lock` fails after a source mutation.

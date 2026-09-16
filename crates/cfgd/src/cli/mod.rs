@@ -117,7 +117,7 @@ const MSG_NOT_A_REPOSITORY: &str = "Nothing to pull — the config directory is 
 /// `command` is the verb that just reported the refusal, so the re-run names
 /// the command the reader actually ran.
 pub(in crate::cli) fn local_pull_next_step(failure: &PullFailure, command: &str) -> HintCommands {
-    match failure.kind {
+    let hint: HintCommands = match failure.kind {
         PullFailureKind::FindRemote => {
             format!("Add the remote with `git remote add origin <url>`, then re-run `{command}`")
                 .into()
@@ -147,6 +147,12 @@ pub(in crate::cli) fn local_pull_next_step(failure: &PullFailure, command: &str)
         | PullFailureKind::Checkout => {
             format!("Inspect the config directory with `git status`, then re-run `{command}`").into()
         }
+    };
+    // Every wording here follows a refused pull, so `spec.output.usageHints`
+    // does not decide it: the reader is blocked and this is the way out.
+    HintCommands {
+        gated: false,
+        ..hint
     }
 }
 
@@ -435,7 +441,7 @@ pub(in crate::cli) fn perform_preview_hint(scope: &PreviewScope<'_>) -> String {
 /// stored `true` has to survive an invocation that never mentioned the knob.
 /// clap's `conflicts_with` rejects both halves at once, so the pair can never
 /// arrive contradicting itself.
-fn paired_flag(set: bool, unset: bool) -> Option<bool> {
+pub fn paired_flag(set: bool, unset: bool) -> Option<bool> {
     match (set, unset) {
         (true, _) => Some(true),
         (_, true) => Some(false),
@@ -817,27 +823,31 @@ pub fn resolve_theme_config(
     }
 }
 
-/// Resolve whether closing `→` usage hints render, folding `--no-hints`,
-/// `CFGD_USAGE_HINTS` and `spec.usageHints` into the one decision every
-/// entry point's printer is built from (`Printer::with_hints_enabled`).
-/// Precedence: the flag beats the env var beats the config field beats the
-/// default (hints render).
+/// Resolve whether closing `→` usage hints render, folding the
+/// `--hints`/`--no-hints` pair, `CFGD_USAGE_HINTS` and `spec.usageHints` into
+/// the one decision every entry point's printer is built from
+/// (`Printer::with_hints_enabled`). Precedence: the flag beats the env var
+/// beats the config field beats the default (hints do not render).
+///
+/// Only a TUTORIAL hint asks this. A refusal's remediation carries
+/// [`cfgd_core::output::HintCommands::unconditional`] and renders whatever
+/// this returns, so turning tutorials off never leaves a reader without the
+/// instruction a declined command's whole value is.
 ///
 /// Best-effort by design, mirroring [`resolve_theme_config`]: a missing,
-/// unreadable or malformed config renders hints rather than failing, because
-/// a printer has to exist before there is anything to report a load failure
-/// through.
+/// unreadable or malformed config falls to the default rather than failing,
+/// because a printer has to exist before there is anything to report a load
+/// failure through.
 ///
-/// `CFGD_USAGE_HINTS` is read directly here rather than bound to `--no-hints`
-/// via `#[arg(env = …)]`: the two spellings have OPPOSITE polarity (a set
-/// `--no-hints` suppresses; a set `CFGD_USAGE_HINTS=false` also suppresses,
-/// but `CFGD_USAGE_HINTS=true` does NOT set `no_hints`), and clap has no
-/// shape for negating a bool flag from a positively-named env var short of a
-/// second hidden field. Boolish spellings are accepted through the same
-/// table every other `CFGD_*` boolean env var uses.
-pub fn resolve_hints_enabled(config_path: &Path, no_hints_flag: bool) -> bool {
-    if no_hints_flag {
-        return false;
+/// `CFGD_USAGE_HINTS` is read directly here rather than bound to either half
+/// via `#[arg(env = …)]`: `--no-hints` has the OPPOSITE polarity to the env
+/// var, and binding the env var to `--hints` alone would let it be outranked
+/// by nothing, since clap cannot express "this env var sets that flag's
+/// negation". Boolish spellings are accepted through the same table every
+/// other `CFGD_*` boolean env var uses.
+pub fn resolve_hints_enabled(config_path: &Path, hints: Option<bool>) -> bool {
+    if let Some(want) = hints {
+        return want;
     }
     if let Ok(raw) = std::env::var("CFGD_USAGE_HINTS")
         && let Some(canonical) = cfgd_core::canonical_bool_str(&raw)
@@ -849,7 +859,7 @@ pub fn resolve_hints_enabled(config_path: &Path, no_hints_flag: bool) -> bool {
         .then(|| cfgd_core::config::load_config(config_path).ok())
         .flatten()
         .and_then(|c| c.spec.usage_hints());
-    stored.unwrap_or(true)
+    stored.unwrap_or(false)
 }
 
 /// Resolve which declared env values this run renders masked, folding
@@ -1033,10 +1043,14 @@ pub struct Cli {
     #[arg(long, global = true, env = "CFGD_LIST_ENVELOPE")]
     pub list_envelope: bool,
 
-    /// Suppress closing `→` usage hints for this invocation. `CFGD_USAGE_HINTS=false`
-    /// and `spec.usageHints: false` do the same thing persistently; this flag wins
-    /// over both. No env attached here: `CFGD_USAGE_HINTS` has the OPPOSITE polarity
-    /// (it names what stays ON) and is read directly in `resolve_hints_enabled`.
+    /// Render closing `→` usage hints for this invocation. `CFGD_USAGE_HINTS=true`
+    /// and `spec.output.usageHints: true` do the same persistently; this flag wins.
+    #[arg(long = "hints", global = true, conflicts_with = "no_hints")]
+    pub hints: bool,
+
+    /// Suppress closing `→` usage hints for this invocation, over a config or
+    /// env var that turned them on. No env attached: `CFGD_USAGE_HINTS` has the
+    /// OPPOSITE polarity and is read in `resolve_hints_enabled`.
     #[arg(long = "no-hints", global = true)]
     pub no_hints: bool,
 

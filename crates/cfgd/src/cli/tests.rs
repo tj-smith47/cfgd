@@ -199,6 +199,7 @@ impl CliTestHarness {
             quiet: true,
             output: OutputFormatArg(self.output_format.clone()),
             list_envelope: false,
+            hints: false,
             no_hints: false,
             theme: None,
             mask_env_values: None,
@@ -1063,11 +1064,28 @@ fn resolve_theme_config_falls_back_to_the_default_theme_when_it_cannot_read_one(
 }
 
 #[test]
-fn resolve_hints_enabled_defaults_on_with_no_config_flag_or_env() {
+fn resolve_hints_enabled_defaults_off_with_no_config_flag_or_env() {
     let dir = tempfile::tempdir().expect("tempdir");
     assert!(
-        super::resolve_hints_enabled(&dir.path().join("absent.yaml"), false),
-        "hints render by default"
+        !super::resolve_hints_enabled(&dir.path().join("absent.yaml"), None),
+        "tutorial hints stay off until something asks for them"
+    );
+}
+
+/// `spec.output.usageHints: true` is a stored demand, so an invocation that
+/// mentions neither half of the pair must not overrule it.
+#[test]
+fn resolve_hints_enabled_reads_a_stored_demand_for_hints() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("cfgd.yaml");
+    std::fs::write(
+        &path,
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n  output:\n    usageHints: true\n",
+    )
+    .expect("write config");
+    assert!(
+        super::resolve_hints_enabled(&path, None),
+        "spec.output.usageHints: true must turn hints on"
     );
 }
 
@@ -1081,7 +1099,7 @@ fn resolve_hints_enabled_reads_spec_output_usage_hints() {
     )
     .expect("write config");
     assert!(
-        !super::resolve_hints_enabled(&path, false),
+        !super::resolve_hints_enabled(&path, None),
         "spec.output.usageHints: false must turn hints off"
     );
 }
@@ -1098,7 +1116,7 @@ fn resolve_hints_enabled_reads_the_legacy_flat_usage_hints_key() {
     )
     .expect("write config");
     assert!(
-        !super::resolve_hints_enabled(&path, false),
+        !super::resolve_hints_enabled(&path, None),
         "the legacy flat key must still turn hints off"
     );
 }
@@ -1159,20 +1177,25 @@ fn resolve_hints_enabled_precedence_flag_beats_env_beats_spec_beats_default() {
 
     // spec.usageHints: false, no env, no flag -> off.
     let _unset = EnvVarGuard::unset("CFGD_USAGE_HINTS");
-    assert!(!super::resolve_hints_enabled(&path, false));
+    assert!(!super::resolve_hints_enabled(&path, None));
 
     // The env var beats a config that says the opposite.
     let _on_env = EnvVarGuard::set("CFGD_USAGE_HINTS", "true");
     assert!(
-        super::resolve_hints_enabled(&path, false),
+        super::resolve_hints_enabled(&path, None),
         "CFGD_USAGE_HINTS=true must outrank spec.usageHints: false"
     );
 
-    // The flag beats an env var that says the opposite.
+    // The flag beats an env var that says the opposite, in both directions.
     let _off_env = EnvVarGuard::set("CFGD_USAGE_HINTS", "true");
     assert!(
-        !super::resolve_hints_enabled(&path, true),
+        !super::resolve_hints_enabled(&path, Some(false)),
         "--no-hints must outrank CFGD_USAGE_HINTS=true"
+    );
+    let _back_off = EnvVarGuard::set("CFGD_USAGE_HINTS", "false");
+    assert!(
+        super::resolve_hints_enabled(&path, Some(true)),
+        "--hints must outrank CFGD_USAGE_HINTS=false"
     );
 }
 
@@ -2243,6 +2266,7 @@ fn test_cli_with_state(dir: &Path, state_dir: Option<PathBuf>) -> Cli {
         quiet: true,
         output: OutputFormatArg(cfgd_core::output::OutputFormat::Table),
         list_envelope: false,
+        hints: false,
         no_hints: false,
         theme: None,
         mask_env_values: None,
@@ -5731,6 +5755,7 @@ fn run_apply_home_unset_errors_and_creates_no_state() {
         quiet: true,
         output: OutputFormatArg(cfgd_core::output::OutputFormat::Table),
         list_envelope: false,
+        hints: false,
         no_hints: false,
         theme: None,
         mask_env_values: None,
@@ -6295,6 +6320,7 @@ fn execute_with_no_subcommand_prints_help_and_returns_ok() {
         quiet: false,
         output: OutputFormatArg(cfgd_core::output::OutputFormat::Table),
         list_envelope: false,
+        hints: false,
         no_hints: false,
         theme: None,
         mask_env_values: None,
@@ -34880,6 +34906,117 @@ fn composed_hints() -> Vec<(String, cfgd_core::output::HintCommands)> {
         out.len()
     );
     out
+}
+
+/// Which hint composers word a REFUSAL and which word a tutorial.
+///
+/// `spec.output.usageHints` decides tutorials only: a reader who turned them
+/// off still has to be told the way out of a command that declined to run, so
+/// a refusal's remediation carries `HintCommands::unconditional`. The table is
+/// pinned to `PINNED_HINT_COMPOSERS` below, so a composer registered there
+/// fails this walk until its class is stated.
+const HINT_COMPOSER_FOLLOWS_A_REFUSAL: &[(&str, bool)] = &[
+    ("answer_decisions_hint", false),
+    ("heal_drift_hint", false),
+    ("local_pull_next_step", true),
+    ("perform_preview_hint", false),
+    ("run_next_step", false),
+    ("source_failure_next_step", true),
+    ("success_next_step", false),
+];
+
+/// Every wording a refusal composer can produce is ungated, and every wording
+/// a tutorial composer produces is gated.
+#[test]
+fn every_hint_composer_states_whether_its_wording_follows_a_refusal() {
+    use cfgd_core::daemon::{PullFailure, PullFailureKind};
+    use cfgd_core::errors::{CfgdError, SourceError};
+
+    let mut classified: Vec<&str> = HINT_COMPOSER_FOLLOWS_A_REFUSAL
+        .iter()
+        .map(|(name, _)| *name)
+        .collect();
+    classified.sort_unstable();
+    let mut registered: Vec<&str> = PINNED_HINT_COMPOSERS.to_vec();
+    registered.sort_unstable();
+    assert_eq!(
+        classified, registered,
+        "every registered hint composer states whether its wording follows a refusal"
+    );
+
+    let mut refusals: Vec<(String, cfgd_core::output::HintCommands)> = Vec::new();
+    for kind in PullFailureKind::ALL {
+        let failure = PullFailure {
+            kind: *kind,
+            message: "whatever libgit2 said".to_string(),
+        };
+        refusals.push((
+            format!("local_pull_next_step {kind:?}"),
+            super::local_pull_next_step(&failure, "cfgd sync"),
+        ));
+    }
+    for err in [
+        CfgdError::Source(SourceError::NotFound {
+            name: "acme".into(),
+        }),
+        CfgdError::Source(SourceError::PinRefNotFound {
+            name: "acme".into(),
+            pin: "v9".into(),
+            available: None,
+        }),
+        CfgdError::Source(SourceError::SignatureVerificationFailed {
+            name: "acme".into(),
+            message: "no signature".into(),
+        }),
+        CfgdError::Source(SourceError::InvalidManifest {
+            name: "acme".into(),
+            message: "bad".into(),
+        }),
+        CfgdError::Source(SourceError::FetchFailed {
+            name: "acme".into(),
+            message: "transport died".into(),
+        }),
+    ] {
+        refusals.push((
+            format!("source_failure_next_step {}", err.kind()),
+            crate::cli::source::source_failure_next_step(&err, "acme"),
+        ));
+    }
+    assert!(
+        refusals.len() >= 15,
+        "the refusal population shrank to {} — a composer stopped being walked",
+        refusals.len()
+    );
+    for (subject, hint) in &refusals {
+        assert!(
+            !hint.gated,
+            "{subject}: a refusal's remediation renders whatever usageHints says: {hint:?}"
+        );
+    }
+
+    let mut tutorials: Vec<(String, cfgd_core::output::HintCommands)> = walked_mutations()
+        .iter()
+        .map(|(mutation, _)| {
+            (
+                format!("success_next_step {mutation:?}"),
+                success_next_step(*mutation),
+            )
+        })
+        .collect();
+    tutorials.push((
+        "answer_decisions_hint".to_string(),
+        cfgd_core::reconciler::answer_decisions_hint(1),
+    ));
+    tutorials.push((
+        "heal_drift_hint".to_string(),
+        super::heal_drift_hint(None).into(),
+    ));
+    for (subject, hint) in &tutorials {
+        assert!(
+            hint.gated,
+            "{subject}: a tutorial hint is what usageHints decides: {hint:?}"
+        );
+    }
 }
 
 /// The `kind` strings `enroll_error_hint` answers, read off its own match arms:

@@ -586,7 +586,7 @@
         },
         "usageHints": {
           "default": null,
-          "description": "Whether closing `→` usage hints render. Omitted, hints render.",
+          "description": "Whether closing `→` usage hints render. Omitted, they do not; a\nrefusal's remediation and a run's own instructions render either way.",
           "type": [
             "boolean",
             "null"

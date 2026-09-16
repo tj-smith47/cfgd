@@ -116,6 +116,11 @@ pub enum Component {
         text: String,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         commands: Vec<String>,
+        /// Render-only: the class decides whether the renderer prints the row,
+        /// never what `-o json` says about it. Skipped so no `.json` golden
+        /// gains a key for a decision the payload does not make.
+        #[serde(skip)]
+        gated: bool,
     },
     Note {
         text: String,
@@ -634,10 +639,27 @@ impl<K: Into<String>, V: Into<String>> From<(K, V)> for CommandPair {
 /// An empty `commands` is a plain prose hint, which is why `String` and
 /// `&str` convert straight into one and every existing `hint` call site is
 /// unchanged.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HintCommands {
     pub text: String,
     pub commands: Vec<String>,
+    /// Whether `spec.output.usageHints` decides this hint. A tutorial "run X
+    /// next" is gated; an instruction the reader cannot act without — a
+    /// refusal's remediation — is not. The class travels on the payload
+    /// because `Renderer::render_hint` is the one seam that can suppress it.
+    pub gated: bool,
+}
+
+// A derived `Default` yields `gated: false`, so `HintCommands { .., ..Default::default() }`
+// would mint an ungated hint nobody asked for.
+impl Default for HintCommands {
+    fn default() -> Self {
+        Self {
+            text: String::new(),
+            commands: Vec::new(),
+            gated: true,
+        }
+    }
 }
 
 impl HintCommands {
@@ -650,6 +672,17 @@ impl HintCommands {
         Self {
             text: text.into(),
             commands: commands.into_iter().map(Into::into).collect(),
+            gated: true,
+        }
+    }
+
+    /// A hint no `usageHints` decision suppresses. Reach for it from a
+    /// composer whose every wording follows a refusal, never from a call site.
+    pub fn unconditional(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            commands: Vec::new(),
+            gated: false,
         }
     }
 }
@@ -659,6 +692,7 @@ impl From<String> for HintCommands {
         Self {
             text,
             commands: Vec::new(),
+            gated: true,
         }
     }
 }

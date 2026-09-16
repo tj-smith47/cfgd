@@ -616,8 +616,13 @@ impl Printer {
     pub fn hint(&self, hint: impl Into<crate::output::HintCommands>) {
         let hint = hint.into();
         let depth = self.renderer.inherit_depth();
-        self.renderer
-            .render_hint(self.sink_stderr.as_ref(), depth, &hint.text, &hint.commands);
+        self.renderer.render_hint(
+            self.sink_stderr.as_ref(),
+            depth,
+            &hint.text,
+            &hint.commands,
+            hint.gated,
+        );
     }
 
     /// A hint whose colon-introduced payload is one or more commands, dropped
@@ -1931,6 +1936,36 @@ mod tests {
         assert!(
             !without_hints.contains('→'),
             "hint glyph leaked with hints off: {without_hints:?}"
+        );
+    }
+
+    /// An UNCONDITIONAL hint survives the gate a tutorial hint dies at.
+    ///
+    /// The gate is the one seam (`Renderer::render_hint`), so the class has to
+    /// travel on the payload: a refusal's remediation is the whole value of the
+    /// refusal, and a reader who turned tutorials off did not ask to be told
+    /// nothing when a command declines to run.
+    ///
+    /// `Verbosity::Normal`, because `Printer::for_test()` is Quiet and a Quiet
+    /// run suppresses every hint whatever its class.
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn an_unconditional_hint_renders_with_usage_hints_off() {
+        let (p, buf) = Printer::for_test_at(Verbosity::Normal);
+        let p = p.with_hints_enabled(false);
+        p.hint("Run `cfgd apply` to reconcile");
+        p.hint(crate::output::HintCommands::unconditional(
+            "Pick an existing ref with `cfgd source update acme --pin-version <ref>`",
+        ));
+        p.flush();
+        let out = crate::test_helpers::captured_text(&buf);
+        assert!(
+            !out.contains("to reconcile"),
+            "the tutorial hint stays off: {out:?}"
+        );
+        assert!(
+            out.contains("--pin-version"),
+            "the remediation hint renders: {out:?}"
         );
     }
 

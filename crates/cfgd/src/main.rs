@@ -299,7 +299,10 @@ fn main() -> anyhow::Result<()> {
 
     let theme_config =
         cli::resolve_theme_config(std::path::Path::new(&cli.config), cli.theme.as_deref());
-    let hints_enabled = cli::resolve_hints_enabled(std::path::Path::new(&cli.config), cli.no_hints);
+    let hints_enabled = cli::resolve_hints_enabled(
+        std::path::Path::new(&cli.config),
+        cli::paired_flag(cli.hints, cli.no_hints),
+    );
     let mask_env_values = cli::resolve_mask_env_values(
         std::path::Path::new(&cli.config),
         cli.mask_env_values.as_deref(),

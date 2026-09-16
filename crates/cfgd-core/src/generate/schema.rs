@@ -662,7 +662,7 @@ spec:
   # optional
   output:
     # Whether closing usage hints render.
-    # optional, bool, default: true
+    # optional, bool, default: false
     usageHints: true
 
     # Which declared env values render masked.

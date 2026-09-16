@@ -306,6 +306,7 @@ impl Doc {
         self.children.push(Component::Hint {
             text: hint.text,
             commands: hint.commands,
+            gated: hint.gated,
         });
         self
     }
@@ -668,6 +669,7 @@ impl SectionBuilder {
         self.children.push(Component::Hint {
             text: hint.text,
             commands: hint.commands,
+            gated: hint.gated,
         });
         self
     }
