@@ -20,18 +20,19 @@ Set Shell "bash"
 Set FontFamily "FiraCode Nerd Font Mono"
 Set FontSize 15
 Set Width 1320
-# 1320x914 at font size 15 measures 125x45, counted off the take's own frames
+# 1320x1055 at font size 15 measures 125x52, counted off the take's own frames
 # rather than from the pixel arithmetic, which lands a row high. The grid is
 # sized to the tallest single render below — the closing `cfgd status -o wide`,
-# 40 rows including the line that typed it, the plain dashboard's rows with the
-# file aggregate blown into one row per deployed file — plus five rows of
-# headroom. That beat is preceded by a clear, so it never shares the frame
+# 47 rows including the line that typed it, the plain dashboard's rows with the
+# file aggregate blown into one row per deployed file and each declared env var
+# and alias back on the row the plain table folds into a count — plus five rows
+# of headroom. That beat is preceded by a clear, so it never shares the frame
 # with the authoring loop above it; the loop's own beats scroll as they go,
 # each whole on screen while it is the beat being read. A taller grid only
 # pads the closing frame with empty background. Beat 0b's `cfgd module show`
 # is the one render taller than this grid, at 90 rows, which is why that beat
 # pages instead of scrolling most of itself away unread.
-Set Height 914
+Set Height 1055
 Set TypingSpeed 50ms
 Set Padding 20
 Set Framerate 50
@@ -79,14 +80,14 @@ Sleep 1s
 Type "cfgd status"
 Enter
 Wait@60s /cfgd\$$/
-# 31 lines → 4.6s
-Sleep 4600ms
+# 34 lines → 4.9s
+Sleep 4900ms
 
 # Beat 0b: what the profile actually declares for one module, scripts
 # included, so beat 3's authoring lands against a visible inventory rather
-# than against a name. The render is 90 rows against this grid's 45, measured
-# off a real `cfgd module show nvim -s` in this image at 125x45, so it goes
-# through a pager instead of scrolling 45 rows off the top unread. `less`
+# than against a name. The render is 90 rows against this grid's 52, measured
+# off a real `cfgd module show nvim -s` in this image at 125x52, so it goes
+# through a pager instead of scrolling 52 rows off the top unread. `less`
 # rather than the `more` ubuntu:24.04 ships: `more` counts the SGR escapes as
 # printable width and breaks every highlighted script body at the wrong
 # column, so the demo image installs `less` for this beat. The report writes
@@ -101,17 +102,15 @@ Enter
 # The first page appears only once every manager has been enumerated, about 20s
 # in this image, so the wait is on that page rather than on a clock.
 Wait+Screen@60s /Module: nvim/
-# `less` keeps the bottom row for its own prompt, so a full page is 44 rows,
+# `less` keeps the bottom row for its own prompt, so a full page is 51 rows,
 # past the dwell rule's 6s ceiling either way.
 Sleep 6s
-Space
-Sleep 6s
-# `less` clamps its last page to a full screen rather than advancing the two
-# rows that remain of the 90, so the third page repeats all but the tail of
-# the second, ending on the closing `fi` with `(END)` on the bottom row. A
-# full screen holds the same 6s ceiling the two pages before it do. The
-# returning prompt is what proves the pager left, so the quit is waited on
-# rather than held over with a clock.
+# `less` clamps its last page to a full screen rather than advancing the 39
+# rows that remain of the 90, so the second page carries the tail of the first
+# down with it and ends on the closing `fi` with `(END)` on the bottom row. A
+# full screen holds the same 6s ceiling the page before it does. The returning
+# prompt is what proves the pager left, so the quit is waited on rather than
+# held over with a clock.
 Space
 Sleep 6s
 Type "q"
@@ -228,8 +227,8 @@ Enter
 Type "cfgd status -o wide"
 Enter
 Wait@60s /cfgd\$$/
-# 39 lines → 5.4s
-Sleep 5400ms
+# 46 lines → 6.0s
+Sleep 6s
 
 # Closing hold — the last beat's own hold already covers reading it; this is
 # only the breath before the loop snaps back.
