@@ -2272,6 +2272,8 @@ fn profile_create_output_messages() {
     let cli = test_cli(dir.path());
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    // Hints are off by default; the verb's closing next step is asserted.
+    let printer = printer.with_hints_enabled(true);
 
     let mut args = make_profile_create_args("fancy");
     args.inherits = vec!["default".to_string()];

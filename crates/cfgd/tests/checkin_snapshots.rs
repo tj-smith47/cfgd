@@ -138,6 +138,7 @@ fn checkin_no_drift_human() {
 #[test]
 fn checkin_server_pushed_config_human() {
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
     printer.heading("Checkin");
     {
         let gateway_sec = printer.section("Gateway");
@@ -149,7 +150,7 @@ fn checkin_server_pushed_config_human() {
     {
         let push_sec = printer.section("Server Config");
         push_sec.status_simple(Role::Ok, "Saved to <PATH>");
-        push_sec.hint("Run 'cfgd plan' to preview changes, then 'cfgd apply'");
+        push_sec.hint("Run `cfgd plan` to preview changes, then `cfgd apply`");
     }
     {
         let drift_sec = printer.section("System Settings");

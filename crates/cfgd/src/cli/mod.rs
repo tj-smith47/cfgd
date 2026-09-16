@@ -150,10 +150,7 @@ pub(in crate::cli) fn local_pull_next_step(failure: &PullFailure, command: &str)
     };
     // Every wording here follows a refused pull, so `spec.output.usageHints`
     // does not decide it: the reader is blocked and this is the way out.
-    HintCommands {
-        gated: false,
-        ..hint
-    }
+    hint.ungated()
 }
 
 /// What a mutating `source` or `module` verb just did, for

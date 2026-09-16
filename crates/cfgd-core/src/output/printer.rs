@@ -424,9 +424,11 @@ impl Printer {
     }
 
     /// Enable or disable closing `→` usage hints for this printer's lifetime.
-    /// Builder-style, mirroring [`Self::with_list_envelope`]; on by default.
-    /// Wired from `cli::resolve_hints_enabled` (`--no-hints` /
-    /// `CFGD_USAGE_HINTS` / `spec.output.usageHints`).
+    /// Builder-style, mirroring [`Self::with_list_envelope`]; OFF by default,
+    /// which is what a cfgd run renders when nothing asked for hints. Wired
+    /// from `cli::resolve_hints_enabled` (`--hints` / `--no-hints` /
+    /// `CFGD_USAGE_HINTS` / `spec.output.usageHints`). It decides a GATED
+    /// hint only: an unconditional one renders whatever this says.
     ///
     /// The decision lives on the `Renderer` rather than on `Printer` itself:
     /// `SectionGuard` and `Doc` rendering hold their own `Arc<Renderer>`
@@ -621,7 +623,7 @@ impl Printer {
             depth,
             &hint.text,
             &hint.commands,
-            hint.gated,
+            hint.is_gated(),
         );
     }
 
@@ -1903,8 +1905,9 @@ mod tests {
         assert_eq!(parsed, payload, "default emit must keep the bare array");
     }
 
-    /// `spec.output.usageHints: false` / `CFGD_USAGE_HINTS=false` / `--no-hints`
-    /// resolve to `Printer::with_hints_enabled(false)`, which must suppress
+    /// `spec.output.usageHints: false` / `CFGD_USAGE_HINTS=false` /
+    /// `--no-hints`, and the shipped default they share, resolve to
+    /// `Printer::with_hints_enabled(false)`, which must suppress
     /// BOTH the hint text AND its leading blank line — a bare blank left
     /// behind would be a visible artifact of a feature that is supposed to
     /// leave no trace. `render_hint`'s early return fires before
@@ -1914,6 +1917,7 @@ mod tests {
     #[test]
     fn hints_off_suppresses_the_hint_and_its_leading_blank() {
         let (on, buf_on) = Printer::for_test_at(Verbosity::Normal);
+        let on = on.with_hints_enabled(true);
         on.status_simple(Role::Ok, "did thing");
         on.hint("run `cfgd apply`");
         on.flush();
@@ -1970,8 +1974,9 @@ mod tests {
     }
 
     /// `note`/`deprecation`/`alert` are NOT hints — they report what a run
-    /// did or will do, not what to run next — so `--no-hints` and its env/config
-    /// twins must never touch them. Only `render_hint` checks `hints_enabled`.
+    /// did or will do, not what to run next — so `--hints`/`--no-hints` and
+    /// their env/config twins must never touch them. Only `render_hint` reads
+    /// `hints_enabled`.
     #[cfg(feature = "test-helpers")]
     #[test]
     fn hints_off_leaves_note_deprecation_and_alert_visible() {
@@ -2081,7 +2086,9 @@ mod tests {
     #[cfg(feature = "test-helpers")]
     #[test]
     fn section_hint_renders() {
+        // Hints are off by default, as a cfgd run renders them.
         let (p, buf) = Printer::for_test_at(Verbosity::Normal);
+        let p = p.with_hints_enabled(true);
         {
             let s = p.section("Setup");
             s.hint("Run cfgd init first");
@@ -2309,7 +2316,9 @@ mod tests {
     #[test]
     fn render_doc_with_hint_renders_content() {
         use super::super::doc::Doc;
+        // Hints are off by default, as a cfgd run renders them.
         let (p, buf) = Printer::for_test_at(Verbosity::Normal);
+        let p = p.with_hints_enabled(true);
         let doc = Doc::new()
             .heading("Setup")
             .hint("Run cfgd init to get started");

@@ -52,6 +52,7 @@ fn assert_json(cap: &DocCapture, name: &str) {
 #[test]
 fn explain_index_human() {
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
     printer.emit(build_explain_index_doc());
     drop(printer);
     assert_human(&cap, "explain/index.txt");
@@ -79,6 +80,7 @@ fn explain_index_json() {
 fn explain_module_human() {
     let schema = find_schema("module").expect("module schema is registered");
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
     printer.emit(build_explain_schema_doc(schema, false));
     drop(printer);
     assert_human(&cap, "explain/module.txt");

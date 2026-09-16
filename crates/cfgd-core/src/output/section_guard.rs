@@ -129,7 +129,7 @@ impl<'p> SectionGuard<'p> {
             self.depth,
             &hint.text,
             &hint.commands,
-            hint.gated,
+            hint.is_gated(),
         );
         self
     }

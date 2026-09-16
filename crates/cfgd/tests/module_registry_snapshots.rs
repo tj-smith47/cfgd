@@ -111,6 +111,7 @@ fn module_registry_add_happy_human() {
     let (config_dir, _state_dir) = registry_test_setup();
     let cli = cli_for(config_dir.path(), config_dir.path());
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
 
     module::cmd_module_registry_add(
         &cli,
@@ -271,6 +272,7 @@ fn module_registry_list_empty_human() {
     let (config_dir, _state_dir) = registry_test_setup();
     let cli = cli_for(config_dir.path(), config_dir.path());
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
 
     module::cmd_module_registry_list(&cli, &printer).unwrap();
     drop(printer);
@@ -333,6 +335,7 @@ fn module_add_bridge_one_blank_line() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) =
         Printer::for_test_doc_with_prompt_responses(vec![PromptAnswer::Confirm(true)]);
+    let printer = printer.with_hints_enabled(true);
     module::cmd_module_add_remote(&cli, &printer, &url, None, true, true).unwrap();
     drop(printer);
 
@@ -444,6 +447,7 @@ fn module_add_from_registry_bridge_one_blank_line() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) =
         Printer::for_test_doc_with_prompt_responses(vec![PromptAnswer::Confirm(true)]);
+    let printer = printer.with_hints_enabled(true);
     module::cmd_module_add_from_registry(&cli, &printer, "myreg/alpha@v1.0.0", true, true).unwrap();
     drop(printer);
 
@@ -485,6 +489,7 @@ fn module_search_no_registries_human() {
     let (config_dir, _state_dir) = registry_test_setup();
     let cli = cli_for(config_dir.path(), config_dir.path());
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
 
     module::cmd_module_search(&cli, &printer, "anything").unwrap();
     drop(printer);

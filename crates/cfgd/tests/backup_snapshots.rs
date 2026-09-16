@@ -799,6 +799,7 @@ fn backup_rollback_human() {
     restored_docs(&cli, &source, "live");
 
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
     run_backup_rollback(&cli, &printer, "docs", true).unwrap();
     drop(printer);
 
@@ -915,6 +916,7 @@ fn backup_rollback_listing_is_empty_when_nothing_was_displaced() {
     let cli = cli_for(config_dir.path(), state_dir.path());
 
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
     cmd_backup_rollback(&cli, &printer, None, false).unwrap();
     drop(printer);
 

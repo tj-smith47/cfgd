@@ -53,6 +53,7 @@ fn pending_fixture() -> Vec<PendingDecision> {
 fn decide_pending_human() {
     let decisions = pending_fixture();
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
     printer.emit(build_decide_list_doc(
         &decisions,
         &[],
@@ -127,6 +128,7 @@ fn decide_pending_multi_source_human() {
         ),
     ];
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
     printer.emit(build_decide_list_doc(
         &decisions,
         &[],
@@ -162,6 +164,7 @@ fn decide_pending_single_item_human() {
         "Create bashrc",
     )];
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
     printer.emit(build_decide_list_doc(
         &decisions,
         &[],
@@ -191,6 +194,7 @@ fn decide_pending_single_item_human() {
 #[test]
 fn decide_after_accept_human() {
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
     printer.emit(build_decide_bulk_doc("accepted", 2, None));
     drop(printer);
     let human = cap.human();
@@ -281,6 +285,7 @@ fn decide_pending_names_the_content_of_each_item() {
     );
 
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
     printer.emit(build_decide_list_doc(&decisions, &[], None, &contents));
     drop(printer);
     let human = cap.human();
@@ -319,6 +324,7 @@ fn decide_pending_names_the_content_of_each_item() {
 #[test]
 fn decide_after_accept_one_human() {
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
     printer.emit(build_decide_single_doc(
         "accepted",
         "packages.brew.k9s",
@@ -336,6 +342,7 @@ fn decide_after_accept_one_human() {
 #[test]
 fn decide_after_reject_one_human() {
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
     printer.emit(build_decide_single_doc(
         "rejected",
         "packages.brew.k9s",

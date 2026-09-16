@@ -92,6 +92,7 @@ fn plugin_debug_module_required_json() {
 #[test]
 fn plugin_debug_created_human() {
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
     printer.emit(plugin::build_debug_doc(
         "demo",
         "app",

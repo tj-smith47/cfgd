@@ -126,6 +126,7 @@ fn verify_ok_json() {
 fn verify_drift_human() {
     let output = drift_fixture();
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
     emit(&printer, &output);
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "verify/drift.txt");

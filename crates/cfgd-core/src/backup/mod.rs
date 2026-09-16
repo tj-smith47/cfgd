@@ -539,11 +539,16 @@ pub(super) fn outcome_detail(error: Option<&str>, size: Option<String>) -> Optio
 /// cannot land in one and not the other. The verb inside `safety.detail()`
 /// is the sidecar's own — a copy that was REUSED must not read as one written
 /// this time.
-pub(super) fn safety_copy_hint(safety: &crate::reconciler::SidecarOutcome, name: &str) -> String {
-    format!(
+pub(super) fn safety_copy_hint(
+    safety: &crate::reconciler::SidecarOutcome,
+    name: &str,
+) -> crate::output::HintCommands {
+    // Where displaced live data went is the whole value of the run that
+    // displaced it, so `usageHints` does not decide it.
+    crate::output::HintCommands::unconditional(format!(
         "Previous contents {}; put them back with `cfgd backup rollback {name}`",
         safety.detail()
-    )
+    ))
 }
 
 /// Join a run's failures, write its record, and prune to `spec.retention`.
@@ -1251,13 +1256,15 @@ fn prune_retention(store: &StateStore, unit: &BackupUnit<'_>, printer: &Printer)
 /// the prune runs under the unit's lock and the snapshot's own row is not on
 /// screen until that lock is released. It fires once, on the run that
 /// discovers them, because an orphaned row is never re-marked.
-fn orphan_hint(count: usize, name: &str, destination: &Path) -> String {
-    format!(
+fn orphan_hint(count: usize, name: &str, destination: &Path) -> crate::output::HintCommands {
+    // The only statement of what the destination change stranded, so
+    // `usageHints` does not decide it.
+    crate::output::HintCommands::unconditional(format!(
         "run `cfgd backup gc {name}` to remove the {} left outside the destination {} by a \
          destination change",
         crate::plural_noun(count, "snapshot"),
         destination.posix(),
-    )
+    ))
 }
 
 /// Remove now-empty directories a nested `namePattern` left behind, walking up

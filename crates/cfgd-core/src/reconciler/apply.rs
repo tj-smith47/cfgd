@@ -714,7 +714,9 @@ pub fn render_caveats(printer: &Printer, groups: &[(Owner, Vec<ActionNote>)]) {
         }
     }
     for step in next_steps {
-        printer.hint(step);
+        // A configurator's own instruction, not a tutorial the reader can be
+        // assumed to already know.
+        printer.hint(crate::output::HintCommands::unconditional(step));
     }
 }
 

@@ -34,6 +34,7 @@ fn rollback_happy_human() {
     let (_workspace, state_dir, target, apply_id) = rollback_state_with_backups_setup();
 
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
 
     cmd_rollback(
         &printer,
@@ -61,6 +62,7 @@ fn rollback_removed_files_human() {
     let (_workspace, state_dir, created, apply_id) = rollback_state_with_created_files_setup();
 
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
 
     cmd_rollback(
         &printer,
@@ -151,6 +153,7 @@ fn rollback_accept_human() {
         vec![PromptAnswer::Confirm(true)],
         Verbosity::Normal,
     );
+    let printer = printer.with_hints_enabled(true);
 
     cmd_rollback(
         &printer,

@@ -45,6 +45,7 @@ fn profile_switch_happy_human() {
     let (config_dir, state_dir) = profile_test_config_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
 
     cmd_profile_switch(&cli, "work", &printer).unwrap();
     drop(printer);

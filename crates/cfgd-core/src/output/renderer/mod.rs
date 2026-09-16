@@ -407,17 +407,20 @@ pub struct Renderer {
     pub(crate) live: std::sync::Arc<LiveBarState>,
     /// Non-zero while a `DepthInheritGuard` is alive.
     pub(crate) inherit_guards: AtomicUsize,
-    /// Whether [`Self::render_hint`] emits anything. Settled once by
-    /// `Printer::with_hints_enabled` (from `--no-hints` / `CFGD_USAGE_HINTS` /
-    /// `spec.output.usageHints`) and then read by every renderer sharing this
-    /// printer's decision — `SectionGuard` and `Doc` rendering hold their own
-    /// `Arc<Renderer>` clone rather than asking the `Printer`, so the flag has
-    /// to live here, at the one seam every hint producer already reaches.
+    /// Whether [`Self::render_hint`] emits a GATED hint. Settled once by
+    /// `Printer::with_hints_enabled` (from `--hints` / `--no-hints` /
+    /// `CFGD_USAGE_HINTS` / `spec.output.usageHints`) and then read by every
+    /// renderer sharing this printer's decision — `SectionGuard` and `Doc`
+    /// rendering hold their own `Arc<Renderer>` clone rather than asking the
+    /// `Printer`, so the flag has to live here, at the one seam every hint
+    /// producer already reaches. An unconditional hint ignores it entirely.
     /// `AtomicBool` rather than a constructor parameter: threading a new
     /// argument through `Renderer::new`/`with_bars` would touch every one of
-    /// their ~70 test call sites for a decision the CLI's one production call
-    /// site ever needs to flip off (the kubectl plugin's minimal global-flag
-    /// subset omits `--no-hints` entirely, so hints there always stay on).
+    /// their ~70 test call sites for a decision one CLI call site settles.
+    /// It starts FALSE, matching the product default, so a printer nobody
+    /// resolved a decision for (the kubectl plugin's minimal global-flag
+    /// subset carries no hints flag at all) renders what a default cfgd run
+    /// renders rather than a tutorial nothing asked for.
     pub(crate) hints_enabled: AtomicBool,
 }
 
@@ -430,7 +433,7 @@ impl Renderer {
             bars: None,
             live: std::sync::Arc::new(LiveBarState::new(None)),
             inherit_guards: AtomicUsize::new(0),
-            hints_enabled: AtomicBool::new(true),
+            hints_enabled: AtomicBool::new(false),
         }
     }
 
@@ -1405,6 +1408,9 @@ mod tests {
         let buf = Arc::new(Mutex::new(String::new()));
         let sink = StringSink(buf.clone());
         let r = Renderer::new(Theme::default(), Verbosity::Normal);
+        // Hints start off, matching the product default, so a render test whose
+        // subject is a hint's LAYOUT has to ask for one first.
+        r.set_hints_enabled(true);
         (r, sink, buf)
     }
 
@@ -1427,6 +1433,8 @@ mod tests {
                 Theme::from_preset("dracula").with_colors(true),
                 Verbosity::Verbose,
             );
+            // `hint` is one of the emitters walked, and hints start off.
+            r.set_hints_enabled(true);
             emit(&r, &sink);
             // raw-capture-ok: asserting a free-text emitter's raw output carries ANSI at all — captured_text would strip the escapes this test exists to check
             let out = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
@@ -1835,6 +1843,7 @@ mod tests {
         let cmd = "launchctl bootout gui/$(id -u) \
                    ~/Library/LaunchAgents/com.cfgd.daemon.plist";
         let (printer, screen) = crate::output::Printer::for_test_live_terminal(24, 60);
+        let printer = printer.with_hints_enabled(true);
         printer.hint_commands("Stop it later, from a GUI login session:", &[cmd]);
         drop(printer);
         // Soft wrap breaks a row at the terminal's edge and resumes at column

@@ -128,6 +128,7 @@ fn explain_resolve_field_path_leaf() {
 fn every_explain_hint_names_a_selector_that_reparses() {
     let render = |resource: &str| {
         let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+        let printer = printer.with_hints_enabled(true);
         cmd_explain(&printer, Some(resource), false).unwrap();
         printer.flush();
         let captured = cfgd_core::test_helpers::captured_text(&buf);
@@ -324,6 +325,7 @@ fn explain_cmd_field_path_multi_child_object_shows_own_header_and_tree_stays_col
 fn every_field_list_carrying_the_mark_explains_it_once() {
     let render = |resource: &str, recursive: bool| {
         let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+        let printer = printer.with_hints_enabled(true);
         cmd_explain(&printer, Some(resource), recursive).unwrap();
         printer.flush();
         cfgd_core::test_helpers::captured_text(&buf)

@@ -44,6 +44,7 @@ fn strip_ansi(s: &str) -> String {
 fn source_create_happy_human() {
     let (config_dir, _state_dir) = source_test_config_setup();
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
 
     cmd_source_create(
         &printer,

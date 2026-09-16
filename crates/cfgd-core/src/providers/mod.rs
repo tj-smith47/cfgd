@@ -612,7 +612,9 @@ impl NoteSink {
         if self.collecting {
             self.push(ActionNote::next_step(message));
         } else {
-            printer.hint(message);
+            // An instruction from the configurator that just ran, which nothing
+            // else on the surface states, so `usageHints` does not decide it.
+            printer.hint(crate::output::HintCommands::unconditional(message));
         }
     }
 

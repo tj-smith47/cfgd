@@ -82,6 +82,7 @@ fn source_add_happy_human() {
 
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
     let mut args = source_add_args(url);
     args.name = Some("team-config".into());
 
@@ -211,6 +212,7 @@ fn source_add_bridge_one_blank_line() {
 
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
     let mut args = source_add_args(url);
     args.name = Some("bridge-src".into());
 

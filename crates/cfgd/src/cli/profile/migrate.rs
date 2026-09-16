@@ -324,7 +324,9 @@ pub(crate) fn run_profile_migrate(
     };
     let mut doc = Doc::new().status(role, summary);
     if failed > 0 {
-        doc = doc.hint("Resolve the reasons above, then run `cfgd profile migrate` again");
+        doc = doc.hint(cfgd_core::output::HintCommands::unconditional(
+            "Resolve the reasons above, then run `cfgd profile migrate` again",
+        ));
     }
     printer.emit(doc.with_data(summary_payload(&records, false)));
 

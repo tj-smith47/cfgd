@@ -558,7 +558,7 @@
     },
     "OutputConfig": {
       "additionalProperties": false,
-      "description": "`spec.output`: how cfgd renders what it reports.\n\n```yaml\nspec:\n  output:\n    theme: dracula\n    usageHints: true\n    maskEnvValues: All\n```\n\nEach key has a per-invocation override (`--theme` / `CFGD_THEME`,\n`--no-hints` / `CFGD_USAGE_HINTS`, `--mask-env-values` /\n`CFGD_MASK_ENV_VALUES`) that outranks what is stored here.",
+      "description": "`spec.output`: how cfgd renders what it reports.\n\n```yaml\nspec:\n  output:\n    theme: dracula\n    usageHints: true\n    maskEnvValues: All\n```\n\nEach key has a per-invocation override (`--theme` / `CFGD_THEME`,\n`--hints` / `--no-hints` / `CFGD_USAGE_HINTS`, `--mask-env-values` /\n`CFGD_MASK_ENV_VALUES`) that outranks what is stored here.",
       "properties": {
         "maskEnvValues": {
           "anyOf": [

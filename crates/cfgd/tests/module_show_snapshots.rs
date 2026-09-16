@@ -405,6 +405,7 @@ fn module_list_happy_json() {
 fn module_list_empty_human() {
     let config_dir = Path::new("/etc/cfgd");
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
     printer.emit(build_module_list_doc(&[], false, config_dir));
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "module_list/empty.txt");

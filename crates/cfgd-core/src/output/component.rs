@@ -644,10 +644,16 @@ pub struct HintCommands {
     pub text: String,
     pub commands: Vec<String>,
     /// Whether `spec.output.usageHints` decides this hint. A tutorial "run X
-    /// next" is gated; an instruction the reader cannot act without — a
-    /// refusal's remediation — is not. The class travels on the payload
-    /// because `Renderer::render_hint` is the one seam that can suppress it.
-    pub gated: bool,
+    /// next" is gated; an instruction the reader must act on that nothing else
+    /// on the surface states — a refusal's remediation, a non-converged run's
+    /// own instruction, a configurator's next step — is not. The class travels
+    /// on the payload because `Renderer::render_hint` is the one seam that can
+    /// suppress it.
+    ///
+    /// Private so [`Self::ungated`] is the only door: a struct literal at a
+    /// call site would let any wording opt out of the knob without passing the
+    /// composer that classifies it.
+    gated: bool,
 }
 
 // A derived `Default` yields `gated: false`, so `HintCommands { .., ..Default::default() }`
@@ -679,11 +685,20 @@ impl HintCommands {
     /// A hint no `usageHints` decision suppresses. Reach for it from a
     /// composer whose every wording follows a refusal, never from a call site.
     pub fn unconditional(text: impl Into<String>) -> Self {
-        Self {
-            text: text.into(),
-            commands: Vec::new(),
-            gated: false,
-        }
+        Self::from(text.into()).ungated()
+    }
+
+    /// The same opt-out for a hint that carries commands:
+    /// `HintCommands::new(prose, cmds).ungated()`. The ONE writer of the
+    /// class, so a site cannot mint an ungated hint by spelling the struct.
+    pub fn ungated(mut self) -> Self {
+        self.gated = false;
+        self
+    }
+
+    /// Whether `spec.output.usageHints` decides this hint.
+    pub fn is_gated(&self) -> bool {
+        self.gated
     }
 }
 

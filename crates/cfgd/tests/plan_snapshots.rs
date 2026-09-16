@@ -143,6 +143,7 @@ fn plan_happy_human() {
 
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
     let args = plan_args();
 
     cmd_plan(&cli, &printer, &args).unwrap();
@@ -340,6 +341,7 @@ fn plan_only_zero_match_token_warns_and_names_owners_present_human() {
 
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
     let args = cfgd::cli::PlanArgs {
         only: vec!["packages.brwe".to_string()],
         ..plan_args()
@@ -376,6 +378,7 @@ fn plan_with_a_decision_from_an_unsubscribed_source_human() {
 
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
     let args = plan_args();
 
     cmd_plan(&cli, &printer, &args).unwrap();
@@ -477,6 +480,7 @@ fn plan_module_package_already_installed_is_elided() {
 
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
 
     cmd_plan(&cli, &printer, &plan_args()).unwrap();
     drop(printer);
@@ -575,6 +579,7 @@ fn plan_composed_source_human() {
 
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
 
     cmd_plan(&cli, &printer, &plan_args()).unwrap();
     drop(printer);

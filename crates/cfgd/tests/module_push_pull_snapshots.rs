@@ -134,6 +134,7 @@ fn module_push_pushed_human() {
     let dir_str = cfgd_core::to_posix_string(dir.path());
 
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
     module::cmd_module_push(
         &printer,
         &dir_str,

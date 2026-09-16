@@ -2,6 +2,13 @@ use super::super::*;
 use crate::PathDisplayExt;
 use crate::output::Role;
 
+/// Why a user-scope `systemctl` call that failed leaves the daemon stopped.
+/// Both failing arms below word it once: a systemd user manager only runs
+/// while the user has a session unless lingering is enabled, and nothing else
+/// on the screen says so.
+const LINGER_NEXT_STEP: &str =
+    "If you have no active login session, enable lingering: loginctl enable-linger $USER";
+
 /// Render one `ExecStart` token so systemd passes it to the daemon verbatim.
 ///
 /// systemd splits `ExecStart` on whitespace unless a token is quoted, so an
@@ -209,7 +216,9 @@ pub(crate) fn start_systemd_service(printer: &Printer, scope: crate::Scope) -> R
         printer
             .status(Role::Warn, "systemctl not found") // name-row-ok: the init system's own tool name, which is lowercase
             .detail(super::INSTALLED_NOT_STARTED);
-        printer.hint(format!("Start it later with `{hint_cmd}`"));
+        printer.hint(crate::output::HintCommands::unconditional(format!(
+            "Start it later with `{hint_cmd}`"
+        )));
         return Ok(false);
     }
 
@@ -235,9 +244,12 @@ pub(crate) fn start_systemd_service(printer: &Printer, scope: crate::Scope) -> R
                         "No user session bus (XDG_RUNTIME_DIR unset and /run/user/<uid> absent)",
                     )
                     .detail(super::INSTALLED_NOT_STARTED);
-                printer.hint_commands(
-                    "Enable lingering so the user service can run without an active login:",
-                    &["loginctl enable-linger $USER", "cfgd daemon install"],
+                printer.hint(
+                    crate::output::HintCommands::new(
+                        "Enable lingering so the user service can run without an active login:",
+                        ["loginctl enable-linger $USER", "cfgd daemon install"],
+                    )
+                    .ungated(),
                 );
                 return Ok(false);
             }
@@ -265,9 +277,7 @@ pub(crate) fn start_systemd_service(printer: &Printer, scope: crate::Scope) -> R
                     ),
                 );
                 if scope == crate::Scope::User {
-                    printer.hint(
-                        "If you have no active login session, enable lingering: loginctl enable-linger $USER",
-                    );
+                    printer.hint(crate::output::HintCommands::unconditional(LINGER_NEXT_STEP));
                 }
                 return Ok(false);
             }
@@ -281,9 +291,7 @@ pub(crate) fn start_systemd_service(printer: &Printer, scope: crate::Scope) -> R
                     ),
                 );
                 if scope == crate::Scope::User {
-                    printer.hint(
-                        "If you have no active login session, enable lingering: loginctl enable-linger $USER",
-                    );
+                    printer.hint(crate::output::HintCommands::unconditional(LINGER_NEXT_STEP));
                 }
                 return Ok(false);
             }
@@ -337,7 +345,9 @@ pub(crate) fn stop_systemd_service(printer: &Printer, scope: crate::Scope) {
         } else {
             "systemctl --user disable --now cfgd.service".to_string()
         };
-        printer.hint(format!("Stop it manually with `{hint_cmd}`"));
+        printer.hint(crate::output::HintCommands::unconditional(format!(
+            "Stop it manually with `{hint_cmd}`"
+        )));
         return;
     }
 

@@ -585,17 +585,17 @@ fn classify_mutate_error(e: &anyhow::Error) -> &'static str {
 /// Remediation hint for a `target_not_writable` mutate failure naming the config
 /// directory, or none for other failure kinds. Centralized so `config set` and
 /// `config unset` attach the identical chmod guidance.
+///
+/// Unconditional: the write refused, and the way out of a refusal is not a
+/// tutorial `spec.output.usageHints` gets to suppress.
 fn writability_hint(kind: &str, config_path: &Path) -> Vec<cfgd_core::output::HintCommands> {
     if kind == "target_not_writable"
         && let Some(parent) = config_path.parent()
     {
-        return vec![
-            format!(
-                "check directory permissions: chmod u+w {}",
-                cfgd_core::to_posix_string(parent)
-            )
-            .into(),
-        ];
+        return vec![cfgd_core::output::HintCommands::unconditional(format!(
+            "check directory permissions: chmod u+w {}",
+            cfgd_core::to_posix_string(parent)
+        ))];
     }
     Vec::new()
 }

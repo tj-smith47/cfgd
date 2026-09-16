@@ -343,7 +343,11 @@ pub fn plugin_main() -> anyhow::Result<()> {
         theme_config.as_ref(),
         cli.output.0,
         color_choice,
-    );
+    )
+    // No hints flag in the plugin's global-flag subset, so the decision comes
+    // from the persistent halves alone rather than from whatever a printer
+    // happened to start at.
+    .with_hints_enabled(crate::cli::resolve_hints_enabled(&config_path, None));
     tracing_writer.attach(&printer);
 
     let result = match cli.command {

@@ -186,9 +186,12 @@ pub(crate) fn start_launchd_service(printer: &Printer, scope: crate::Scope) -> R
         printer
             .status(Role::Warn, "launchctl not found") // name-row-ok: the init system's own tool name, which is lowercase
             .detail(super::INSTALLED_NOT_STARTED);
-        printer.hint_commands(
-            "Start it later from a GUI login session with:",
-            &["cfgd daemon install"],
+        printer.hint(
+            crate::output::HintCommands::new(
+                "Start it later from a GUI login session with:",
+                ["cfgd daemon install"],
+            )
+            .ungated(),
         );
         return Ok(false);
     }
@@ -216,9 +219,12 @@ pub(crate) fn start_launchd_service(printer: &Printer, scope: crate::Scope) -> R
                     crate::output::collapse_to_subject_line(&detail)
                 ),
             );
-            printer.hint_commands(
-                "Run from a GUI login session, or start later with:",
-                &["cfgd daemon install"],
+            printer.hint(
+                crate::output::HintCommands::new(
+                    "Run from a GUI login session, or start later with:",
+                    ["cfgd daemon install"],
+                )
+                .ungated(),
             );
             return Ok(false);
         }
@@ -230,9 +236,12 @@ pub(crate) fn start_launchd_service(printer: &Printer, scope: crate::Scope) -> R
                     crate::output::collapse_to_subject_line(&e)
                 ),
             );
-            printer.hint_commands(
-                "Run from a GUI login session, or start later with:",
-                &["cfgd daemon install"],
+            printer.hint(
+                crate::output::HintCommands::new(
+                    "Run from a GUI login session, or start later with:",
+                    ["cfgd daemon install"],
+                )
+                .ungated(),
             );
             return Ok(false);
         }
@@ -315,14 +324,20 @@ pub(crate) fn stop_launchd_service(printer: &Printer, scope: crate::Scope) {
             .status(Role::Warn, "launchctl not found") // name-row-ok: the init system's own tool name, which is lowercase
             .detail("plist removed but daemon may still be running");
         if scope == crate::Scope::System {
-            printer.hint_commands(
-                "Stop it later:",
-                &["launchctl bootout system /Library/LaunchDaemons/com.cfgd.daemon.plist"],
+            printer.hint(
+                crate::output::HintCommands::new(
+                    "Stop it later:",
+                    ["launchctl bootout system /Library/LaunchDaemons/com.cfgd.daemon.plist"],
+                )
+                .ungated(),
             );
         } else {
-            printer.hint_commands(
-                "Stop it later, from a GUI login session:",
-                &["launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.cfgd.daemon.plist"],
+            printer.hint(
+                crate::output::HintCommands::new(
+                    "Stop it later, from a GUI login session:",
+                    ["launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.cfgd.daemon.plist"],
+                )
+                .ungated(),
             );
         }
         return;

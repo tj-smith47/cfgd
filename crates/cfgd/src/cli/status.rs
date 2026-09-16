@@ -5531,6 +5531,8 @@ mod tests {
                 standing: Vec::new(),
             };
             let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+            // Hints are off by default; the drift verdict's hint is asserted.
+            let printer = printer.with_hints_enabled(true);
             printer.emit(build_fleet_status_doc(
                 &output,
                 &cfgd_core::output::ConfigHeader {
@@ -6295,7 +6297,10 @@ mod tests {
     /// The whole dashboard for a `StatusOutput`, rendered the way `cmd_status`
     /// renders it. Every clock-reading input is supplied, so a render pins.
     fn dashboard(output: &StatusOutput) -> String {
+        // Hints are off by default; this surface's closing instructions are
+        // part of what a dashboard render is read for.
         let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+        let printer = printer.with_hints_enabled(true);
         printer.emit(build_fleet_status_doc(
             output,
             &cfgd_core::output::ConfigHeader {
@@ -6876,8 +6881,12 @@ mod tests {
         }
     }
 
+    /// Hints ON: a printer starts with them off, as a cfgd run renders them,
+    /// and this surface's closing instructions are what most of these tests
+    /// are reading.
     fn test_printers() -> (Printer, std::sync::Arc<std::sync::Mutex<String>>) {
-        Printer::for_test_at(Verbosity::Normal)
+        let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+        (printer.with_hints_enabled(true), buf)
     }
 
     fn test_printers_json() -> (Printer, std::sync::Arc<std::sync::Mutex<String>>) {

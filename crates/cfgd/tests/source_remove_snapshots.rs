@@ -57,6 +57,7 @@ fn source_remove_happy_human() {
     );
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
 
     cmd_source_remove(&cli, &printer, "team-config", false, true, false, false).unwrap();
     drop(printer);
@@ -99,6 +100,7 @@ fn source_remove_keep_all_human() {
     );
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
 
     cmd_source_remove(&cli, &printer, "team-config", true, false, false, false).unwrap();
     drop(printer);

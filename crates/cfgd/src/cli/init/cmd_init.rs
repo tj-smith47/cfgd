@@ -502,7 +502,13 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                             cfgd_core::output::collapse_to_subject_line(&e),
                         ),
                     );
-                    printer.hint_commands("Install later with:", &["cfgd daemon install"]);
+                    printer.hint(
+                        cfgd_core::output::HintCommands::new(
+                            "Install later with:",
+                            ["cfgd daemon install"],
+                        )
+                        .ungated(),
+                    );
                 }
             }
         }
@@ -512,7 +518,13 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                 Role::Warn,
                 "Daemon service installation is not supported on this platform",
             );
-            printer.hint_commands("Run the daemon directly with:", &["cfgd daemon"]);
+            printer.hint(
+                cfgd_core::output::HintCommands::new(
+                    "Run the daemon directly with:",
+                    ["cfgd daemon"],
+                )
+                .ungated(),
+            );
         }
     }
 
@@ -1036,7 +1048,9 @@ pub(super) fn check_prerequisites(printer: &Printer) -> bool {
             // Command Line Tools installer is macOS's own, and cfgd cannot
             // drive its GUI prompt.
             if cfg!(target_os = "macos") {
-                printer.hint("Install with `xcode-select --install`");
+                printer.hint(cfgd_core::output::HintCommands::unconditional(
+                    "Install with `xcode-select --install`",
+                ));
             }
             false
         }

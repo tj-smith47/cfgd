@@ -162,6 +162,10 @@ impl CliTestHarnessBuilder {
         } else {
             cfgd_core::output::Printer::for_test_with_format(self.output_format.clone())
         };
+        // Hints ON: a printer starts with them off, as a cfgd run renders them,
+        // and a verb's closing instruction is part of what this harness exists
+        // to capture.
+        let printer = printer.with_hints_enabled(true);
 
         CliTestHarness {
             config_dir,
@@ -2292,8 +2296,12 @@ use cfgd_core::test_helpers::test_printer;
 
 /// Capturing Printer at `Normal` verbosity for tests that need to inspect
 /// headings, sections, or other output that requires non-quiet verbosity.
+/// Hints ON: a printer starts with them off, as a cfgd run renders them, and a
+/// verb's closing instruction is what many of these tests read back.
 fn test_printer_capture() -> (cfgd_core::output::Printer, Arc<Mutex<String>>) {
-    cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal)
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    (printer.with_hints_enabled(true), buf)
 }
 
 /// Extract JSON object or array from captured output that may contain
@@ -17549,7 +17557,9 @@ fn every_drift_verdict_offers_the_heal_and_only_when_it_reports_drift() {
     use crate::cli::verify::test_support::verify_doc_for_test;
 
     let rendered = |doc: cfgd_core::output::Doc| -> String {
+        // Hints are off by default; every verdict's heal hint is the subject.
         let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
+        let printer = printer.with_hints_enabled(true);
         printer.emit(doc);
         drop(printer);
         cap.human()
@@ -25854,6 +25864,8 @@ fn cmd_decide_no_args_with_pending_shows_list() {
     let state_dir = tempfile::tempdir().unwrap();
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    // Hints are off by default; the closing instruction is asserted.
+    let printer = printer.with_hints_enabled(true);
     let state = super::open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
 
     state
@@ -26045,6 +26057,8 @@ fn cmd_decide_accept_all_reports_count() {
     let state_dir = tempfile::tempdir().unwrap();
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    // Hints are off by default; the closing instruction is asserted.
+    let printer = printer.with_hints_enabled(true);
     let state = super::open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
 
     for i in 0..3 {
@@ -34610,28 +34624,44 @@ fn str_consts(
 /// is registered here and pinned.
 const PINNED_HINT_COMPOSERS: &[&str] = &[
     "answer_decisions_hint",
+    "enroll_error_hint",
+    "enroll_error_hints",
     "heal_drift_hint",
     "local_pull_next_step",
+    "orphan_hint",
     "perform_preview_hint",
     "run_next_step",
+    "safety_copy_hint",
     "source_failure_next_step",
     "success_next_step",
+    "withheld_hints",
+    "writability_hint",
 ];
 
-/// Whether a hint's argument is a call to one of those composers — its last
-/// path segment immediately followed by `(`, which `format!` and friends are
-/// not.
-fn is_composed_call(arg: &str) -> bool {
+/// The `HintCommands` doors a hint's argument may name without being a
+/// composer of its own: the type's constructors, whose text is the literal
+/// beside them or a value some other composer already classified.
+const HINT_CONSTRUCTORS: &[&str] = &["new", "unconditional", "from", "hint_commands"];
+
+/// The two of those that build a `$` BLOCK, whose prose ends on a colon and
+/// whose commands are the payload. Judged by the block walk instead, so this
+/// walk's backtick rule — which is about a command named INSIDE a sentence —
+/// does not fire on prose that names none by design.
+const HINT_BLOCK_CONSTRUCTORS: &[&str] = &["new", "hint_commands"];
+
+/// The function a hint's argument CALLS, by its last path segment immediately
+/// followed by `(` — which `format!` and friends are not. `None` for an
+/// argument that is a literal, a constant or a method chain.
+fn composed_call_name(arg: &str) -> Option<String> {
     let arg = arg.trim_start();
     let head: String = arg
         .chars()
         .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == ':')
         .collect();
     if head.is_empty() || !arg[head.len()..].starts_with('(') {
-        return false;
+        return None;
     }
-    let name = head.rsplit("::").next().unwrap_or_default();
-    PINNED_HINT_COMPOSERS.contains(&name)
+    Some(head.rsplit("::").next().unwrap_or_default().to_string())
 }
 
 /// A closing hint names the command that comes next. `cfgd decide accept`
@@ -34700,9 +34730,25 @@ fn every_closing_hint_names_a_command() {
                 let arg = call_argument(&lines, n, at);
                 // A hint COMPOSED by another function is that function's class,
                 // pinned by its own producer; the operand it takes here (a command
-                // name, a subject) is not the hint's text.
-                if is_composed_call(&arg) {
-                    continue;
+                // name, a subject) is not the hint's text. A call to anything
+                // ELSE is a composer nobody registered, so nothing holds its
+                // wording or states whether `usageHints` decides it — which is
+                // exactly how `safety_copy_hint` and `orphan_hint` shipped
+                // unheld. Reading the exemption as "any call" is what let them.
+                if let Some(name) = composed_call_name(&arg) {
+                    if PINNED_HINT_COMPOSERS.contains(&name.as_str())
+                        || HINT_BLOCK_CONSTRUCTORS.contains(&name.as_str())
+                    {
+                        continue;
+                    }
+                    if !HINT_CONSTRUCTORS.contains(&name.as_str()) {
+                        offenders.push(format!(
+                            "{}:{}: unregistered hint composer `{name}`",
+                            path.display(),
+                            n + 1
+                        ));
+                        continue;
+                    }
                 }
                 let text = first_string_literal(&arg).or_else(|| {
                     let ident = arg.trim().rsplit("::").next().unwrap_or_default().trim();
@@ -34908,31 +34954,47 @@ fn composed_hints() -> Vec<(String, cfgd_core::output::HintCommands)> {
     out
 }
 
-/// Which hint composers word a REFUSAL and which word a tutorial.
+/// Which hint composers word an UNCONDITIONAL instruction and which word a
+/// tutorial.
 ///
-/// `spec.output.usageHints` decides tutorials only: a reader who turned them
-/// off still has to be told the way out of a command that declined to run, so
-/// a refusal's remediation carries `HintCommands::unconditional`. The table is
-/// pinned to `PINNED_HINT_COMPOSERS` below, so a composer registered there
-/// fails this walk until its class is stated.
-const HINT_COMPOSER_FOLLOWS_A_REFUSAL: &[(&str, bool)] = &[
+/// `spec.output.usageHints` decides tutorials only. Unconditional means an
+/// instruction the reader must act on that nothing else on the surface states:
+/// every refusal's remediation, a non-converged run's own instruction, a
+/// configurator's next step, and where a backup put the live data it
+/// displaced. A tutorial points past a fact the surface above it already
+/// stated, so a reader who turned tutorials off loses nothing by its absence.
+///
+/// The table is the SSOT, checked in three directions:
+/// `PINNED_HINT_COMPOSERS` may register nothing it does not classify, the
+/// producer walk below may find no `HintCommands` producer it does not
+/// classify, and each entry's class is exercised — by calling the composer
+/// where the test can reach it, by reading its body where it cannot.
+const HINT_COMPOSER_IS_UNCONDITIONAL: &[(&str, bool)] = &[
     ("answer_decisions_hint", false),
+    ("enroll_error_hint", true),
+    ("enroll_error_hints", true),
     ("heal_drift_hint", false),
     ("local_pull_next_step", true),
+    ("orphan_hint", true),
     ("perform_preview_hint", false),
-    ("run_next_step", false),
+    ("run_next_step", true),
+    ("safety_copy_hint", true),
     ("source_failure_next_step", true),
     ("success_next_step", false),
+    ("withheld_hints", false),
+    ("writability_hint", true),
 ];
 
-/// Every wording a refusal composer can produce is ungated, and every wording
-/// a tutorial composer produces is gated.
+/// Every wording an unconditional composer can produce is ungated, and every
+/// wording a tutorial composer produces is gated.
 #[test]
-fn every_hint_composer_states_whether_its_wording_follows_a_refusal() {
+fn every_hint_composer_states_whether_its_wording_is_unconditional() {
     use cfgd_core::daemon::{PullFailure, PullFailureKind};
     use cfgd_core::errors::{CfgdError, SourceError};
+    use cfgd_core::reconciler::{RunTally, RunTitle};
+    use cfgd_core::state::ApplyStatus;
 
-    let mut classified: Vec<&str> = HINT_COMPOSER_FOLLOWS_A_REFUSAL
+    let mut classified: Vec<&str> = HINT_COMPOSER_IS_UNCONDITIONAL
         .iter()
         .map(|(name, _)| *name)
         .collect();
@@ -34941,16 +35003,16 @@ fn every_hint_composer_states_whether_its_wording_follows_a_refusal() {
     registered.sort_unstable();
     assert_eq!(
         classified, registered,
-        "every registered hint composer states whether its wording follows a refusal"
+        "every registered hint composer states whether its wording is unconditional"
     );
 
-    let mut refusals: Vec<(String, cfgd_core::output::HintCommands)> = Vec::new();
+    let mut unconditional: Vec<(String, cfgd_core::output::HintCommands)> = Vec::new();
     for kind in PullFailureKind::ALL {
         let failure = PullFailure {
             kind: *kind,
             message: "whatever libgit2 said".to_string(),
         };
-        refusals.push((
+        unconditional.push((
             format!("local_pull_next_step {kind:?}"),
             super::local_pull_next_step(&failure, "cfgd sync"),
         ));
@@ -34977,20 +35039,58 @@ fn every_hint_composer_states_whether_its_wording_follows_a_refusal() {
             message: "transport died".into(),
         }),
     ] {
-        refusals.push((
+        unconditional.push((
             format!("source_failure_next_step {}", err.kind()),
             crate::cli::source::source_failure_next_step(&err, "acme"),
         ));
     }
+    for kind in enroll_error_hint_kinds() {
+        if let Some(hint) = crate::cli::init::enroll::enroll_error_hint(&kind) {
+            unconditional.push((format!("enroll_error_hint {kind}"), hint));
+        }
+    }
+    // Every state a run can end in, over every title, because the wording is
+    // per state and only `Success` with work attempted leaves nothing to say.
+    let tally = |status: ApplyStatus, not_attempted: Vec<String>| RunTally {
+        after_plan: Vec::new(),
+        succeeded: 2,
+        skipped: 0,
+        not_attempted,
+        failed: 1,
+        planned_total: 3,
+        status,
+        aborted: None,
+    };
+    for title in RunTitle::ALL {
+        for tally in [
+            tally(ApplyStatus::Partial, Vec::new()),
+            tally(ApplyStatus::Failed, Vec::new()),
+            tally(ApplyStatus::Aborted, Vec::new()),
+            tally(ApplyStatus::InProgress, Vec::new()),
+            RunTally {
+                succeeded: 0,
+                failed: 0,
+                planned_total: 1,
+                ..tally(ApplyStatus::Success, vec!["no session manager".to_string()])
+            },
+        ] {
+            let subject = format!("run_next_step {:?} {title:?}", tally.status);
+            let Some(hint) = cfgd_core::reconciler::run_next_step(&tally, *title) else {
+                panic!("{subject} leaves the reader nothing to do");
+            };
+            unconditional.push((subject, hint));
+        }
+    }
     assert!(
-        refusals.len() >= 15,
-        "the refusal population shrank to {} — a composer stopped being walked",
-        refusals.len()
+        unconditional.len() >= 55,
+        "the unconditional population shrank to {} — a composer stopped being walked",
+        unconditional.len()
     );
-    for (subject, hint) in &refusals {
+    for (subject, hint) in &unconditional {
         assert!(
-            !hint.gated,
-            "{subject}: a refusal's remediation renders whatever usageHints says: {hint:?}"
+            !hint.is_gated(),
+            "{subject}: an instruction nothing else states renders whatever usageHints \
+             says: {hint:?}"
         );
     }
 
@@ -35008,15 +35108,152 @@ fn every_hint_composer_states_whether_its_wording_follows_a_refusal() {
         cfgd_core::reconciler::answer_decisions_hint(1),
     ));
     tutorials.push((
-        "heal_drift_hint".to_string(),
+        "heal_drift_hint whole machine".to_string(),
         super::heal_drift_hint(None).into(),
     ));
+    tutorials.push((
+        "heal_drift_hint module".to_string(),
+        super::heal_drift_hint(Some("nvim")).into(),
+    ));
+    let module = ["nvim".to_string()];
+    let only = ["packages".to_string()];
+    for scope in [
+        super::PreviewScope::unscoped(),
+        super::PreviewScope {
+            module: &module,
+            with_profile: true,
+            phase: None,
+            only: &only,
+            skip: &[],
+            skip_scripts: true,
+        },
+    ] {
+        tutorials.push((
+            format!("perform_preview_hint {:?}", scope.module),
+            super::perform_preview_hint(&scope).into(),
+        ));
+    }
+    assert!(
+        tutorials.len() >= 30,
+        "the tutorial population shrank to {} — a composer stopped being walked",
+        tutorials.len()
+    );
     for (subject, hint) in &tutorials {
         assert!(
-            hint.gated,
+            hint.is_gated(),
             "{subject}: a tutorial hint is what usageHints decides: {hint:?}"
         );
     }
+}
+
+/// Every function in either crate that PRODUCES a `HintCommands` is classified
+/// above, and its body mints the class it claims.
+///
+/// The population is derived from the PRODUCER rather than listed, because a
+/// list is what `safety_copy_hint` and `orphan_hint` escaped: both composed a
+/// closing hint, neither was registered anywhere, and the gate silenced the
+/// only statement of where a restore had put the reader's live data. A
+/// composer added to either crate now fails this walk until its class is
+/// written down.
+///
+/// The body check is what holds a composer the test cannot call — a private
+/// one, or one needing a whole run to build. An unconditional composer mints
+/// through `HintCommands::unconditional` or `.ungated()`; a tutorial one names
+/// neither. A pure delegator mints nothing and forwards the class it is
+/// handed, which is why an absent tell fails only the tutorial direction.
+#[test]
+fn every_hint_composer_the_workspace_declares_is_classified() {
+    use cfgd_core::test_helpers::{fn_declarations, production_slice_of, rust_sources_under};
+
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let crates_dir = manifest.join("..");
+    // One floor per root, never an aggregate: the composers live in both
+    // trees, and floored together one tree could go dark behind the other's
+    // count.
+    const WALK_ROOTS: &[(&str, usize)] = &[("cfgd", 6), ("cfgd-core", 5)];
+
+    let mut per_root: Vec<(&str, usize)> = Vec::new();
+    let mut offenders: Vec<String> = Vec::new();
+    for (krate, floor) in WALK_ROOTS {
+        let root = crates_dir.join(krate).join("src");
+        let sources = rust_sources_under(&root);
+        assert!(
+            sources.len() >= 50,
+            "the {krate} tree stopped contributing sources — it read {}",
+            sources.len()
+        );
+        let mut found = 0usize;
+        for path in sources {
+            if path.file_name().is_some_and(|n| n == "tests.rs")
+                || path.components().any(|c| c.as_os_str() == "tests")
+            {
+                continue;
+            }
+            // Reads the file HERE, so an unreadable one and a slice shorter
+            // than the file's own production region both fail the walk rather
+            // than shrinking the population silently.
+            let production = production_slice_of(&path);
+            for (name, _, code) in fn_declarations(&production) {
+                let Some(signature) = code.split('{').next() else {
+                    continue;
+                };
+                let Some(returns) = signature.rsplit("->").next() else {
+                    continue;
+                };
+                // A sink takes `impl Into<HintCommands>` and returns `Self` or
+                // nothing; only a RETURN naming the type composes one.
+                if signature.rsplit_once("->").is_none() || !returns.contains("HintCommands") {
+                    continue;
+                }
+                found += 1;
+                let Some((_, unconditional)) = HINT_COMPOSER_IS_UNCONDITIONAL
+                    .iter()
+                    .find(|(n, _)| *n == name)
+                else {
+                    offenders.push(format!(
+                        "{}: `{name}` composes a hint and states no class",
+                        path.display()
+                    ));
+                    continue;
+                };
+                let ungated_tell = code.contains("::unconditional(") || code.contains(".ungated()");
+                // Every way a body MINTS a hint rather than forwarding one it
+                // was handed, derived from the constructor list so a
+                // constructor added there joins this question with it: naming
+                // one constructor alone is how a `HintCommands::from` body
+                // reads as a pure delegator and escapes the class check.
+                let mints = ungated_tell
+                    || code.contains(".into()")
+                    || HINT_CONSTRUCTORS
+                        .iter()
+                        .any(|c| code.contains(&format!("HintCommands::{c}(")));
+                if *unconditional && mints && !ungated_tell {
+                    offenders.push(format!(
+                        "{}: `{name}` is unconditional and mints a gated hint",
+                        path.display()
+                    ));
+                }
+                if !*unconditional && ungated_tell {
+                    offenders.push(format!(
+                        "{}: `{name}` is a tutorial and mints an ungated hint",
+                        path.display()
+                    ));
+                }
+            }
+        }
+        assert!(
+            found >= *floor,
+            "the {krate} tree no longer reaches the composers this walk exists to hold — \
+             it found {found}"
+        );
+        per_root.push((krate, found));
+    }
+    assert!(
+        offenders.is_empty(),
+        "every hint composer states whether `usageHints` decides its wording:\n{}",
+        offenders.join("\n")
+    );
+    assert_eq!(per_root.len(), 2, "both crate roots were walked");
 }
 
 /// The `kind` strings `enroll_error_hint` answers, read off its own match arms:

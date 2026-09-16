@@ -159,6 +159,7 @@ fn apply_dry_run_human() {
 
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
     let args = apply_args_dry_run();
 
     cmd_apply(&cli, &printer, &args).unwrap();

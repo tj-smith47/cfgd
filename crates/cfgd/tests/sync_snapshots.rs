@@ -94,6 +94,7 @@ fn sync_happy_human() {
 
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
 
     cmd_sync(&cli, &printer).unwrap();
     drop(printer);
@@ -243,6 +244,7 @@ fn sync_perm_changes_accept_human() {
         vec![PromptAnswer::Confirm(true)],
         Verbosity::Normal,
     );
+    let printer = printer.with_hints_enabled(true);
 
     cmd_sync(&cli, &printer).unwrap();
     printer.flush();

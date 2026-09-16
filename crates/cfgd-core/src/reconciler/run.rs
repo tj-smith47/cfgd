@@ -1712,19 +1712,23 @@ fn rerun_command(title: RunTitle) -> &'static str {
 ///
 /// `Success` with something attempted is the one verdict with no next step:
 /// the run converged, and the surfaces that DO have something left to say
-/// (a withheld decision, a written env file) say it themselves.
-pub fn run_next_step(tally: &RunTally, title: RunTitle) -> Option<String> {
+/// (a withheld decision, a written env file) say it themselves. Every OTHER
+/// arm follows a run that did not converge, so the hint is ungated: without it
+/// the reader is left with `✗ 1 action failed` and nothing saying the run is
+/// repeatable, which `spec.output.usageHints` was never meant to decide.
+pub fn run_next_step(tally: &RunTally, title: RunTitle) -> Option<crate::output::HintCommands> {
     let cmd = rerun_command(title);
-    match tally.status {
-        ApplyStatus::Success if tally.nothing_attempted() => Some(format!(
-            "Resolve what withheld the actions above, then run `{cmd}` again"
-        )),
-        ApplyStatus::Success => None,
-        ApplyStatus::Aborted => Some(format!("Run `{cmd}` again to converge")),
-        ApplyStatus::Failed | ApplyStatus::Partial | ApplyStatus::InProgress => {
-            Some(format!("Fix what failed, then run `{cmd}` again"))
+    let text = match tally.status {
+        ApplyStatus::Success if tally.nothing_attempted() => {
+            format!("Resolve what withheld the actions above, then run `{cmd}` again")
         }
-    }
+        ApplyStatus::Success => return None,
+        ApplyStatus::Aborted => format!("Run `{cmd}` again to converge"),
+        ApplyStatus::Failed | ApplyStatus::Partial | ApplyStatus::InProgress => {
+            format!("Fix what failed, then run `{cmd}` again")
+        }
+    };
+    Some(crate::output::HintCommands::unconditional(text))
 }
 
 /// The run's closing rollup: one or two status lines naming what happened, plus

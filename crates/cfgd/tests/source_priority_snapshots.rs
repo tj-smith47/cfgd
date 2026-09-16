@@ -50,6 +50,7 @@ fn source_priority_happy_human() {
     );
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
 
     cmd_source_priority(&cli, &printer, "team-config", Some(500)).unwrap();
     drop(printer);
@@ -92,6 +93,7 @@ fn source_priority_view_human() {
     );
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
 
     cmd_source_priority(&cli, &printer, "team-config", None).unwrap();
     drop(printer);

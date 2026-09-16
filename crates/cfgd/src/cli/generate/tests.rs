@@ -1114,6 +1114,8 @@ mod cmd_generate_mockito {
 
         let cli = test_cli(tmp.path().join("cfgd.yaml"));
         let (printer, buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+        // Hints are off by default; this run's closing instruction is asserted.
+        let printer = printer.with_hints_enabled(true);
         let args = GenerateArgs {
             target: None,
             model: None,

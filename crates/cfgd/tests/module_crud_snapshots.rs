@@ -94,6 +94,7 @@ fn module_create_happy_human() {
     let (config_dir, state_dir) = module_test_config_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
 
     let args = cfgd::cli::ModuleCreateArgs {
         name: "happy-mod".to_string(),
@@ -131,6 +132,7 @@ fn module_create_with_apply_human() {
     let _home = cfgd_core::with_test_home_guard(config_dir.path());
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
 
     let args = cfgd::cli::ModuleCreateArgs {
         name: "apply-mod".to_string(),
@@ -243,6 +245,7 @@ fn module_update_happy_human() {
     );
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
 
     let args = cfgd::cli::ModuleUpdateArgs {
         name: "upd-mod".to_string(),
@@ -432,6 +435,7 @@ fn module_edit_valid_human() {
     write_module(config_dir.path(), "edit-mod", VALID_MODULE);
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
 
     let _editor = EditorGuard::set("/usr/bin/true");
     module::cmd_module_edit(&cli, &printer, "edit-mod").unwrap();

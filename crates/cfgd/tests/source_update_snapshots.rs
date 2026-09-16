@@ -317,6 +317,7 @@ fn source_update_happy_human() {
     drop(add_printer);
 
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
     cmd_source_update(&cli, &printer, Some("upd-src"), Default::default()).unwrap();
     drop(printer);
 
@@ -353,6 +354,7 @@ fn source_update_trust_knob_hints_the_sync_that_meets_it_human() {
     drop(add_printer);
 
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
     cmd_source_update(
         &cli,
         &printer,
@@ -451,6 +453,7 @@ fn source_update_accept_human() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) =
         Printer::for_test_doc_with_prompt_responses(vec![PromptAnswer::Confirm(true)]);
+    let printer = printer.with_hints_enabled(true);
     cmd_source_update(&cli, &printer, Some("accept-src"), Default::default()).unwrap();
     drop(printer);
 
@@ -533,6 +536,7 @@ fn source_update_bridge_one_blank_line() {
     drop(add_printer);
 
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
     cmd_source_update(&cli, &printer, Some("bridge-upd"), Default::default()).unwrap();
     drop(printer);
 

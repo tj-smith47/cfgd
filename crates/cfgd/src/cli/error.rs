@@ -209,10 +209,7 @@ pub fn render_cli_error(
                 // A hint on a refusal IS its remediation, so `usageHints` does
                 // not decide it: a reader who turned tutorials off still has to
                 // be told the way out of a command that declined to run.
-                doc = doc.hint(HintCommands {
-                    gated: false,
-                    ..hint.clone()
-                });
+                doc = doc.hint(hint.clone().ungated());
             }
             // The code block renders after the hints in human mode as a tight,
             // copy-pasteable snippet. `with_data` keeps it out of the structured

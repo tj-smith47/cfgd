@@ -55,6 +55,7 @@ fn profile_update_happy_human() {
     let (config_dir, state_dir) = profile_test_config_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
     let mut args = profile_update_args();
     args.env = vec!["EDITOR=nvim".to_string()];
 
@@ -124,6 +125,7 @@ fn profile_update_add_remove_mixed_human() {
     let (config_dir, state_dir) = profile_test_config_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
     let mut args = profile_update_args();
     args.modules = vec!["nvim".to_string(), "-missing".to_string()];
     args.env = vec!["-EDITOR".to_string()];
@@ -157,6 +159,7 @@ fn profile_update_add_module_remote_hybrid_human() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) =
         Printer::for_test_doc_with_prompt_responses(vec![PromptAnswer::Confirm(true)]);
+    let printer = printer.with_hints_enabled(true);
     let mut args = profile_update_args();
     args.modules = vec![module_url.clone()];
 

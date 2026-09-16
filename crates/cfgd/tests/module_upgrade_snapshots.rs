@@ -382,6 +382,7 @@ fn module_upgrade_happy_human_json() {
     push_second_tag(bare_root.path(), "upmod", &bare, "v1.1.0");
 
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
     module::cmd_module_upgrade(&cli, &printer, "upmod", Some("v1.1.0"), true, true).unwrap();
     drop(printer);
 

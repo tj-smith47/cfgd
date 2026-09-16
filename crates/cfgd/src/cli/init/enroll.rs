@@ -38,23 +38,33 @@ pub struct EnrollOutput {
 /// Remediation hint for an enrollment error `kind`, rendered in human mode.
 /// Shared by [`build_enroll_error`] and the `signing_failed` ctx carrier so the
 /// hint text stays in one place.
+///
+/// Every wording follows a refusal, so each is unconditional: enrollment
+/// declined to run, and `spec.output.usageHints` does not decide whether the
+/// reader is told the way out of it.
 pub(in crate::cli) fn enroll_error_hint(kind: &str) -> Option<HintCommands> {
     match kind {
         // The failure itself is the message's to state; a hint says only what
         // the reader does about it, so neither one restates the other.
-        "method_mismatch" => Some(HintCommands::new(
-            "Re-run with a bootstrap token:",
-            ["cfgd enroll --server-url <url> --token <token>"],
-        )),
+        "method_mismatch" => Some(
+            HintCommands::new(
+                "Re-run with a bootstrap token:",
+                ["cfgd enroll --server-url <url> --token <token>"],
+            )
+            .ungated(),
+        ),
         // Two flags, one re-run: the reader picks a key kind, not a command,
         // so the alternatives collapse into the one line they differ inside.
-        "no_key" => Some(HintCommands::new(
-            "Re-run naming a key:",
-            ["cfgd enroll [--ssh-key <path> | --gpg-key <id>]"],
+        "no_key" => Some(
+            HintCommands::new(
+                "Re-run naming a key:",
+                ["cfgd enroll [--ssh-key <path> | --gpg-key <id>]"],
+            )
+            .ungated(),
+        ),
+        "signing_failed" => Some(HintCommands::unconditional(
+            "Verify the signing key is accessible and the signing tool is installed.",
         )),
-        "signing_failed" => {
-            Some("Verify the signing key is accessible and the signing tool is installed.".into())
-        }
         _ => None,
     }
 }

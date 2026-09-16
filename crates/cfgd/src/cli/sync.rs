@@ -450,10 +450,10 @@ pub fn run_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
                         sp.finish_fail("Sync failed").detail(
                             "load_source reported success but the source is not in the cache",
                         );
-                        owner.hint(format!(
+                        owner.hint(cfgd_core::output::HintCommands::unconditional(format!(
                             "Discard the cached checkout and retry with `cfgd source update {}`",
                             source_spec.name
-                        ));
+                        )));
                         sync_payload.sources.push(SourceSyncOutput {
                             name: source_spec.name.clone(),
                             status: SourceOutcome::Failed,

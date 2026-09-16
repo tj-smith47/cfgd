@@ -14,7 +14,7 @@ use super::theme::ThemeConfig;
 /// ```
 ///
 /// Each key has a per-invocation override (`--theme` / `CFGD_THEME`,
-/// `--no-hints` / `CFGD_USAGE_HINTS`, `--mask-env-values` /
+/// `--hints` / `--no-hints` / `CFGD_USAGE_HINTS`, `--mask-env-values` /
 /// `CFGD_MASK_ENV_VALUES`) that outranks what is stored here.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

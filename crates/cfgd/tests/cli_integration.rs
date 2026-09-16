@@ -2445,6 +2445,25 @@ fn status_plain_keeps_recorded_dashboard_despite_live_drift() {
         "nothing detected anything: the file at `deployed.conf` is drifted right \
          now and this run never looked, got:\n{out}"
     );
+
+    // The same run at the shipped default, which is hints off: the flag above
+    // is what puts the tutorial on screen, so without it the report ends on
+    // its last content line.
+    let bare = Command::cargo_bin("cfgd")
+        .unwrap()
+        .arg("status")
+        .arg("--no-color")
+        .arg("--config")
+        .arg(dir.path().join("cfgd.yaml"))
+        .arg("--state-dir")
+        .arg(state_dir.path())
+        .assert()
+        .code(0);
+    let bare = cfgd_core::output::strip_ansi(&String::from_utf8_lossy(&bare.get_output().stderr));
+    assert!(
+        !bare.contains('→'),
+        "a default run renders no closing usage hint, got:\n{bare}"
+    );
 }
 
 /// `cfgd upgrade --help` surfaces the exit-code taxonomy in the long_about

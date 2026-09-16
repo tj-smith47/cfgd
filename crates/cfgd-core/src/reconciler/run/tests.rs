@@ -2780,6 +2780,11 @@ fn every_unfinished_verdict_closes_on_the_one_next_step() {
                 )
             });
             assert!(
+                !next.is_gated(),
+                "a non-converged run's instruction is not a tutorial usageHints decides: {next:?}"
+            );
+            let next = next.text;
+            assert!(
                 next.contains('`') && next.contains("cfgd "),
                 "a closing hint names the command that comes next, in backticks: {next:?}"
             );

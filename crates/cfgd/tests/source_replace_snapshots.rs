@@ -89,6 +89,7 @@ fn source_replace_happy_human() {
     drop(add_printer);
 
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
     cmd_source_replace(&cli, &printer, "replace-old", &url_new).unwrap();
     drop(printer);
 
