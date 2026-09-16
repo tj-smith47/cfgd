@@ -262,16 +262,22 @@ tasks:
       # The chart's three components version independently (agent = appVersion,
       # operator/csi = their own crate versions). All three pins are swept by
       # anodizer's version_files at tag time, so each must name its crate's
-      # current version. The `hand` branch below is for a pin no crate enrolls:
-      # on a release branch it must already name the version the release cut
-      # from this commit publishes (`anodizer tag --dry-run`), and off one it
-      # may run ahead of the released version, which the release branch's own
-      # run then checks exactly. Anything else is asked of ghcr.
+      # current version. A pin the release cut from THIS commit publishes is
+      # never asked of ghcr, because that release is still building when CI
+      # runs: the release either has yet to be tagged (`anodizer tag --dry-run`
+      # predicts it) or was tagged on this very commit (the crate's own release
+      # tag points at HEAD, the shape every anodizer bump commit has). The
+      # `hand` branch below is for a pin no crate enrolls: on a release branch
+      # it must already name the predicted version, and off one it may run
+      # ahead of the released version, which the release branch's own run then
+      # checks exactly. Anything else is asked of ghcr.
       - cmd: |
           set -e
           predicted=$(${ANODIZER_BIN:-anodizer} tag --dry-run 2>/dev/null | sed -n 's/^anodizer-output versions=//p')
           current=$(for f in crates/*/Cargo.toml; do yq -p toml -o json -I=0 '{.package.name: .package.version}' "$f"; done | jq -sc add)
           swept=$(yq -o=json -I=0 '[.workspaces[].crates[] | select((.version_files // []) | length > 0) | .name]' .anodizer.yaml)
+          templates=$(yq -o=json -I=0 '.workspaces[].crates[] | {.name: .tag_template}' .anodizer.yaml | jq -sc add)
+          tagged_here=$(git tag --points-at HEAD)
           if git symbolic-ref -q --short HEAD | grep -qx -f <(yq '.tag.release_branches[]' .anodizer.yaml); then on_release=1; else on_release=0; fi
           failed=0
           for ref in $(helm template cfgd chart/cfgd --set agent.enabled=true --set csiDriver.enabled=true \
@@ -281,8 +287,11 @@ tasks:
             next=$(jq -rn --argjson m "${predicted:-{\}}" --arg c "$crate" '$m[$c] // empty')
             hand=$(jq -rn --argjson s "$swept" --arg c "$crate" '$s | index($c) == null')
             if [ "$hand" = true ] && [ -n "$next" ]; then expected=$next; else expected=$now; fi
+            release_tag=$(jq -rn --argjson t "$templates" --arg c "$crate" --arg v "$tag" '$t[$c] // empty | sub("\\{\\{ *Version *\\}\\}"; $v)')
             if [ "$tag" = "$expected" ] && [ "$tag" = "$next" ]; then
               echo "OK       $ref (published by the release cut from this commit)"
+            elif [ "$tag" = "$expected" ] && [ -n "$release_tag" ] && printf '%s\n' "$tagged_here" | grep -qxF "$release_tag"; then
+              echo "OK       $ref (published by the release tagged $release_tag on this commit)"
             elif [ "$tag" = "$expected" ] && docker manifest inspect "$ref" >/dev/null 2>&1; then
               echo "OK       $ref"
             elif [ "$tag" = "$expected" ]; then

@@ -161,13 +161,19 @@ single-source-of-truth wiring.
   name the released version and exist on ghcr. The operator and CSI pins are
   swept at tag time too, by anchored `version_files` entries whose `match`
   scopes each rewrite to its own crate's line, so each must equal its crate's
-  current version and exist on ghcr. The guard keeps its hand-maintained
-  branch for a pin no crate enrolls: on a release branch such a pin must
-  equal the version `anodizer tag --dry-run` predicts for its crate, because
-  the release cut from that very commit publishes it, which is why the guard
-  as an existence check could never pass a pin bump (run 34063783806); off a
-  release branch it may run ahead of the released version, which the release
-  branch's own run then checks exactly. Both guards are registry/anodizer
+  current version and exist on ghcr. A pin the release cut from the checked
+  commit publishes is never asked of ghcr, because that release is still
+  building while CI runs it: either `anodizer tag --dry-run` predicts the
+  version (the commit is about to be tagged), or the crate's own release tag,
+  composed from its `tag_template` in `.anodizer.yaml`, already points at
+  HEAD (the commit IS anodizer's bump commit; run 35131202311 failed all
+  three pins as MISSING on exactly that commit, minutes before the release
+  pushed the images). The guard keeps its hand-maintained branch for a pin no
+  crate enrolls: on a release branch such a pin must equal the predicted
+  version, which is why the guard as an existence check could never pass a
+  pin bump (run 34063783806); off a release branch it may run ahead of the
+  released version, which the release branch's own run then checks exactly.
+  Both guards are registry/anodizer
   questions rather than Rust ones; they sit in the one job that holds the
   tools they need (`task`, anodizer on PATH from the action step, docker,
   helm, yq, jq), and that job checks out with `fetch-depth: 0` because the
