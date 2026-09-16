@@ -1941,6 +1941,43 @@ mod tests {
             !without_hints.contains('→'),
             "hint glyph leaked with hints off: {without_hints:?}"
         );
+
+        // The same question one depth in. The blank a hint is preceded by is
+        // armed by the group the SECTION opened, not by the hint's own call,
+        // so a nested hint could suppress its text and still leave the blank
+        // the section's boundary had already put in place.
+        let (nested_on, buf_nested_on) = Printer::for_test_at(Verbosity::Normal);
+        let nested_on = nested_on.with_hints_enabled(true);
+        {
+            let section = nested_on.section("Sources");
+            section.status_simple(Role::Ok, "did thing");
+            section.hint("run `cfgd apply`");
+        }
+        nested_on.flush();
+        let nested_with = crate::test_helpers::captured_text(&buf_nested_on);
+        assert!(
+            nested_with.contains("→ run `cfgd apply`"),
+            "nested hints-on baseline shape changed: {nested_with:?}"
+        );
+
+        let (nested_off, buf_nested_off) = Printer::for_test_at(Verbosity::Normal);
+        let nested_off = nested_off.with_hints_enabled(false);
+        {
+            let section = nested_off.section("Sources");
+            section.status_simple(Role::Ok, "did thing");
+            section.hint("run `cfgd apply`");
+        }
+        nested_off.flush();
+        let nested_without = crate::test_helpers::captured_text(&buf_nested_off);
+        assert!(
+            !nested_without.contains('→'),
+            "hint glyph leaked from inside a section with hints off: {nested_without:?}"
+        );
+        assert!(
+            nested_without.ends_with("did thing\n"),
+            "a nested hint left a trailing blank line or the hint itself: \
+             {nested_without:?}"
+        );
     }
 
     /// An UNCONDITIONAL hint survives the gate a tutorial hint dies at.

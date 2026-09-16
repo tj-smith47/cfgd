@@ -16926,25 +16926,73 @@ fn production_body(body: &str) -> String {
             i += 1;
             continue;
         }
-        // rustfmt puts the item's closing brace at the attribute's own indent,
-        // which reads an item's extent without counting braces inside the string
-        // literals a test body is full of.
-        let closer = format!("{}}}", &lines[i][..lines[i].len() - trimmed.len()]);
+        // rustfmt puts a multi-line item's closing delimiter at the
+        // attribute's own indent, and a one-line item closes itself — which is
+        // the half that was missing, and each shape it missed blanked the
+        // production code that followed it. The gated re-export `use
+        // source::{…};` at `cli/mod.rs:57` opens and closes a brace on one
+        // line, so the scan walked past it to the next top-level `}` 97 lines
+        // down and took `local_pull_next_step` out of every sweep below; the
+        // `#[cfg(test)]` on a struct FIELD in `daemon/mod.rs` closes on a
+        // comma, which ran it through the three methods after it.
+        let indent = &lines[i][..lines[i].len() - trimmed.len()];
+        let closers: Vec<String> = ['}', ']', ')']
+            .iter()
+            .flat_map(|d| {
+                ["", ";", ","]
+                    .iter()
+                    .map(move |tail| format!("{indent}{d}{tail}"))
+            })
+            .collect();
         let mut end = i;
         while end < lines.len() && lines[end].trim_start().starts_with('#') {
             end += 1;
         }
-        let mut opened = false;
-        while end < lines.len() {
-            opened |= lines[end].contains('{');
-            let last = if opened {
-                lines[end] == closer
-            } else {
-                lines[end].trim_end().ends_with(';')
-            };
+        // Literals and the trailing comment are blanked first, so a delimiter
+        // inside one is never counted as the item's own.
+        let code_at = |k: usize| cfgd_core::test_helpers::code_line(lines[k]);
+        let brackets = |code: &str| {
+            let opens = code
+                .chars()
+                .filter(|c| matches!(c, '{' | '[' | '('))
+                .count();
+            let shuts = code
+                .chars()
+                .filter(|c| matches!(c, '}' | ']' | ')'))
+                .count();
+            (opens, shuts)
+        };
+        let head = code_at(end);
+        let (opens, shuts) = brackets(&head);
+        if opens == shuts && head.trim_end().ends_with([';', ',']) {
+            // A one-line item closes on its own line.
             end += 1;
-            if last {
-                break;
+        } else if head.contains('{') {
+            // A braced item closes on a delimiter at its own indent.
+            while end < lines.len() {
+                let last = closers.iter().any(|c| lines[end] == *c);
+                end += 1;
+                if last {
+                    break;
+                }
+            }
+        } else {
+            // A statement spread over several lines (a gated `static` whose
+            // TYPE wraps) closes on the semicolon that ends it, once every
+            // bracket it opened is shut. A wrapped generic parameter list ends
+            // its line on a comma with nothing open, so the comma a one-line
+            // item closes on is not a terminator here.
+            let mut depth = 0i64;
+            while end < lines.len() {
+                let code = code_at(end);
+                let (opens, shuts) = brackets(&code);
+                depth += opens as i64 - shuts as i64;
+                let last = closers.iter().any(|c| lines[end] == *c)
+                    || (depth <= 0 && code.trim_end().ends_with(';'));
+                end += 1;
+                if last {
+                    break;
+                }
             }
         }
         for slot in keep.iter_mut().take(end).skip(i) {
@@ -16958,6 +17006,65 @@ fn production_body(body: &str) -> String {
         .map(|(line, keep)| if keep { *line } else { "" })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// A `#[cfg(test)]` item's extent ends where the ITEM ends, whatever delimiter
+/// it closes on.
+///
+/// Every sweep below reads what [`production_body`] hands back, so an extent
+/// that runs past its item takes production code out of the population with it
+/// and the sweep still reports the file as read. Two shapes did exactly that:
+/// the one-line `use source::{…};` at `cli/mod.rs:57`, whose brace opens and
+/// shuts on its own line, blanked the 97 lines down to the next top-level `}`
+/// and hid `local_pull_next_step` from every walk in this file; and the
+/// `#[cfg(test)]` on a struct FIELD in `daemon/mod.rs`, which closes on a
+/// comma, blanked the three methods declared after it.
+#[test]
+fn a_gated_items_extent_ends_where_the_item_does() {
+    let src = concat!(
+        "pub fn kept_before() {}\n",
+        "#[cfg(test)]\n",
+        "use source::{alpha, beta};\n",
+        "pub fn kept_after_one_line_use() {}\n",
+        "#[cfg(test)]\n",
+        "use source::{\n",
+        "    gamma,\n",
+        "};\n",
+        "pub fn kept_after_wrapped_use() {}\n",
+        "struct Holder {\n",
+        "    #[cfg(test)]\n",
+        "    captured: Mutex<Vec<String>>,\n",
+        "    kept_field: usize,\n",
+        "}\n",
+        "#[cfg(test)]\n",
+        "static WRAPPED: LazyLock<\n",
+        "    Mutex<HashMap<Duration, usize>>,\n",
+        "> = LazyLock::new(|| Mutex::new(HashMap::new()));\n",
+        "pub fn kept_after_wrapped_static() {}\n",
+        "#[cfg(test)]\n",
+        "mod tests {\n",
+        "    fn gated_away() {}\n",
+        "}\n",
+    );
+    let production = production_body(src);
+    for kept in [
+        "kept_before",
+        "kept_after_one_line_use",
+        "kept_after_wrapped_use",
+        "kept_field",
+        "kept_after_wrapped_static",
+    ] {
+        assert!(
+            production.contains(kept),
+            "the extent ran past its item and blanked `{kept}`:\n{production}"
+        );
+    }
+    for gated in ["alpha, beta", "gamma", "captured:", "WRAPPED", "gated_away"] {
+        assert!(
+            !production.contains(gated),
+            "a gated item survived the blanking: `{gated}`:\n{production}"
+        );
+    }
 }
 
 /// The production text of `path`, floored the way [`production_slice_of`] floors
@@ -16989,6 +17096,49 @@ fn floored_production_body(path: &std::path::Path) -> String {
         path.display()
     );
     production
+}
+
+/// Every crate root's production sources, keyed by the crate's own name, for a
+/// walk whose population is the WHOLE workspace rather than one tree.
+///
+/// The named set is checked against `crates/` itself, so a crate joining the
+/// workspace fails the caller's walk instead of going unread, and each root
+/// must yield at least one source — a tree read as empty is otherwise
+/// indistinguishable from one holding no offender.
+fn production_sources_per_root(roots: &[&str]) -> Vec<(String, Vec<(std::path::PathBuf, String)>)> {
+    let crates_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let mut present: Vec<String> = std::fs::read_dir(&crates_dir)
+        .expect("the workspace's crate directory is readable")
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.path().join("src").is_dir())
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    present.sort();
+    let named: Vec<String> = roots.iter().map(|k| (*k).to_string()).collect();
+    assert_eq!(
+        present, named,
+        "a crate joined or left the workspace, so its tree is judged by nobody"
+    );
+    roots
+        .iter()
+        .map(|krate| {
+            let files: Vec<(std::path::PathBuf, String)> =
+                rust_sources_under(&crates_dir.join(krate).join("src"))
+                    .into_iter()
+                    .filter(|p| p.file_name().is_none_or(|n| n != "tests.rs"))
+                    .filter(|p| !p.components().any(|c| c.as_os_str() == "tests"))
+                    .map(|path| {
+                        let production = floored_production_body(&path);
+                        (path, production)
+                    })
+                    .collect();
+            assert!(
+                !files.is_empty(),
+                "the {krate} tree stopped contributing sources"
+            );
+            ((*krate).to_string(), files)
+        })
+        .collect()
 }
 
 /// Every production `.rs` under `src/cli/`, with its `#[cfg(test)]` items and
@@ -34640,8 +34790,20 @@ const PINNED_HINT_COMPOSERS: &[&str] = &[
 
 /// The `HintCommands` doors a hint's argument may name without being a
 /// composer of its own: the type's constructors, whose text is the literal
-/// beside them or a value some other composer already classified.
+/// beside them or a value some other composer already classified. Read by
+/// `every_closing_hint_names_a_command`, which asks what a hint's ARGUMENT
+/// calls, so the free `hint_commands` belongs here and `default` does not —
+/// a hint whose argument is `HintCommands::default()` carries no text to hold.
 const HINT_CONSTRUCTORS: &[&str] = &["new", "unconditional", "from", "hint_commands"];
+
+/// The associated functions a composer's BODY mints a `HintCommands` through,
+/// spelled `HintCommands::<name>(`. Read by
+/// `every_hint_composer_the_workspace_declares_is_classified`, which asks what
+/// a body does rather than what an argument calls: `hint_commands` is the
+/// Printer's free function and has no such spelling, while `default` does and
+/// yields the gated class, so a body minting through it must not claim to be
+/// unconditional.
+const HINT_MINT_TELLS: &[&str] = &["new", "unconditional", "from", "default"];
 
 /// The two of those that build a `$` BLOCK, whose prose ends on a colon and
 /// whose commands are the payload. Judged by the block walk instead, so this
@@ -34668,11 +34830,15 @@ fn composed_call_name(arg: &str) -> Option<String> {
 /// closed on `Changes will take effect on next reconcile` — the one next step
 /// in the product that named no command, pointing at a background reconcile a
 /// daemon-less machine never runs, leaving the reader to type the command the
-/// tool had declined to name. Every other hint in the take named
-/// its command in backticks; the walk holds the whole `crates/cfgd/src/cli/`
-/// population to that shape, and the reconciler's with it — a run composes its
-/// own closing hints (`ApplyRun::withheld_hints`), so a hint built there is
-/// the same class as one built beside the verb that prints it.
+/// tool had declined to name. Every other hint in the take named its command in
+/// backticks.
+///
+/// What it reads: the production region of every `.rs` under each
+/// `crates/*/src`, and within that, every `.hint(` and `next_step(` call. The
+/// population is the whole workspace because a hint composed anywhere reaches
+/// one reader the same way: `safety_copy_hint` and `orphan_hint` live under
+/// `backup/`, outside both the `cli` and `reconciler` trees this walk began
+/// with, and shipped with nobody holding their wording or their class.
 ///
 /// A hint whose text is built elsewhere (`answer_decisions_hint`,
 /// `success_next_step`, an error's remediation lines) is out of class
@@ -34685,20 +34851,21 @@ fn composed_call_name(arg: &str) -> Option<String> {
 /// `every_hint_command_block_line_comes_from_the_one_composer` holds those.
 #[test]
 fn every_closing_hint_names_a_command() {
-    let cli = cli_production_sources();
-    // The reconciler's own hint texts. It holds none the walk can read today
-    // (every one is composed), so it is floored on the sources it must still
-    // be reading rather than on a count of nothing.
-    let core: Vec<(std::path::PathBuf, String)> = core_production_sources()
-        .into_iter()
-        .filter(|(p, _)| p.components().any(|c| c.as_os_str() == "reconciler"))
-        .collect();
-    assert!(
-        core.len() >= 20,
-        "the reconciler tree stopped contributing sources — it read {}",
-        core.len()
-    );
-    let trees = [("cli", cli), ("reconciler", core)];
+    // Every crate root, not the `cli` and `reconciler` subtrees this walk used
+    // to read: a hint composed in `backup/`, `daemon/service/` or `providers/`
+    // and handed to `printer.hint(...)` lay outside both, which is how
+    // `safety_copy_hint` and `orphan_hint` shipped with nobody holding their
+    // wording or their class.
+    const WALK_ROOTS: &[(&str, usize)] = &[
+        ("cfgd", 23),
+        ("cfgd-core", 0),
+        ("cfgd-crd", 0),
+        ("cfgd-csi", 0),
+        ("cfgd-operator", 0),
+        ("cfgd-schema", 0),
+    ];
+    let names: Vec<&str> = WALK_ROOTS.iter().map(|(k, _)| *k).collect();
+    let trees = production_sources_per_root(&names);
     let sources: Vec<(std::path::PathBuf, String)> = trees
         .iter()
         .flat_map(|(_, files)| files.iter().cloned())
@@ -34707,6 +34874,7 @@ fn every_closing_hint_names_a_command() {
     let mut per_root: Vec<(&str, usize)> = Vec::new();
     let mut offenders = Vec::new();
     for (tree, files) in &trees {
+        let tree = tree.as_str();
         let mut checked = 0usize;
         for (path, body) in files {
             let lines: Vec<&str> = body.lines().collect();
@@ -34765,17 +34933,19 @@ fn every_closing_hint_names_a_command() {
         }
         per_root.push((tree, checked));
     }
-    // One floor per tree, never an aggregate: the reconciler tree holds no
-    // hint text of its own today, and floored together the CLI tree could go
-    // dark behind a count the other one met.
-    for (tree, floor) in [("cli", 23usize), ("reconciler", 0)] {
+    // One floor per root, never an aggregate: every root but `cfgd` holds only
+    // composed hints today, so each is floored on the sources it must still be
+    // reading (asserted by `production_sources_per_root`) rather than on a
+    // count of nothing, and floored together the `cfgd` tree could go dark
+    // behind a count another root met.
+    for (tree, floor) in WALK_ROOTS {
         let found = per_root
             .iter()
-            .find(|(t, _)| *t == tree)
+            .find(|(t, _)| t == tree)
             .map(|(_, c)| *c)
             .unwrap_or_else(|| panic!("the {tree} tree was walked"));
         assert!(
-            found >= floor,
+            found >= *floor,
             "the walk no longer reaches the hints it exists to hold in {tree} — it found \
              {found}"
         );
@@ -35146,8 +35316,13 @@ fn every_hint_composer_states_whether_its_wording_is_unconditional() {
     }
 }
 
-/// Every function in either crate that PRODUCES a `HintCommands` is classified
-/// above, and its body mints the class it claims.
+/// Every function in the workspace whose RETURN TYPE names `HintCommands` is
+/// classified above, and its body mints the class it claims.
+///
+/// What it reads: the production region of every `.rs` under each `crates/*/src`,
+/// and within that, a declaration whose signature returns the type. A composer
+/// returning a `String` the caller wraps is a different question, held by
+/// `every_closing_hint_names_a_command`'s unregistered-composer arm.
 ///
 /// The population is derived from the PRODUCER rather than listed, because a
 /// list is what `safety_copy_hint` and `orphan_hint` escaped: both composed a
@@ -35163,37 +35338,32 @@ fn every_hint_composer_states_whether_its_wording_is_unconditional() {
 /// handed, which is why an absent tell fails only the tutorial direction.
 #[test]
 fn every_hint_composer_the_workspace_declares_is_classified() {
-    use cfgd_core::test_helpers::{fn_declarations, production_slice_of, rust_sources_under};
+    use cfgd_core::test_helpers::fn_declarations;
 
-    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let crates_dir = manifest.join("..");
-    // One floor per root, never an aggregate: the composers live in both
-    // trees, and floored together one tree could go dark behind the other's
-    // count.
-    const WALK_ROOTS: &[(&str, usize)] = &[("cfgd", 6), ("cfgd-core", 5)];
+    // Every crate root, not the two that hold the composers today: a hint
+    // composed in `cfgd-operator` or `cfgd-csi` would compose one nobody
+    // classified, and the walk would report the workspace as swept. One floor
+    // per root, never an aggregate, so a tree cannot go dark behind another's
+    // count; the roots with no composer of their own are floored at zero and
+    // held by `production_sources_per_root`, which fails on a root that reads
+    // as empty and on a crate joining the workspace unnamed.
+    const WALK_ROOTS: &[(&str, usize)] = &[
+        ("cfgd", 6),
+        ("cfgd-core", 5),
+        ("cfgd-crd", 0),
+        ("cfgd-csi", 0),
+        ("cfgd-operator", 0),
+        ("cfgd-schema", 0),
+    ];
+    let names: Vec<&str> = WALK_ROOTS.iter().map(|(k, _)| *k).collect();
+    let trees = production_sources_per_root(&names);
 
     let mut per_root: Vec<(&str, usize)> = Vec::new();
     let mut offenders: Vec<String> = Vec::new();
-    for (krate, floor) in WALK_ROOTS {
-        let root = crates_dir.join(krate).join("src");
-        let sources = rust_sources_under(&root);
-        assert!(
-            sources.len() >= 50,
-            "the {krate} tree stopped contributing sources — it read {}",
-            sources.len()
-        );
+    for ((krate, floor), (_, sources)) in WALK_ROOTS.iter().zip(&trees) {
         let mut found = 0usize;
-        for path in sources {
-            if path.file_name().is_some_and(|n| n == "tests.rs")
-                || path.components().any(|c| c.as_os_str() == "tests")
-            {
-                continue;
-            }
-            // Reads the file HERE, so an unreadable one and a slice shorter
-            // than the file's own production region both fail the walk rather
-            // than shrinking the population silently.
-            let production = production_slice_of(&path);
-            for (name, _, code) in fn_declarations(&production) {
+        for (path, production) in sources {
+            for (name, _, code) in fn_declarations(production) {
                 let Some(signature) = code.split('{').next() else {
                     continue;
                 };
@@ -35224,7 +35394,7 @@ fn every_hint_composer_the_workspace_declares_is_classified() {
                 // reads as a pure delegator and escapes the class check.
                 let mints = ungated_tell
                     || code.contains(".into()")
-                    || HINT_CONSTRUCTORS
+                    || HINT_MINT_TELLS
                         .iter()
                         .any(|c| code.contains(&format!("HintCommands::{c}(")));
                 if *unconditional && mints && !ungated_tell {
@@ -35253,7 +35423,11 @@ fn every_hint_composer_the_workspace_declares_is_classified() {
         "every hint composer states whether `usageHints` decides its wording:\n{}",
         offenders.join("\n")
     );
-    assert_eq!(per_root.len(), 2, "both crate roots were walked");
+    assert_eq!(
+        per_root.len(),
+        WALK_ROOTS.len(),
+        "every crate root was walked"
+    );
 }
 
 /// The `kind` strings `enroll_error_hint` answers, read off its own match arms:

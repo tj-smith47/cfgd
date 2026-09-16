@@ -1537,6 +1537,7 @@ pub(super) fn print_startup_banner(
     tracing::info!("daemon: health endpoint at {ipc_path}"); // native-ok: journal line, not a display slot
     tracing::info!("daemon: running — {}", intervals.join(", "));
     if printer.can_prompt() {
+        // hint-ok: a keystroke the reader presses, not a command they type
         printer.hint("Press Ctrl+C to stop");
     }
 }

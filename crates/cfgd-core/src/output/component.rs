@@ -682,8 +682,16 @@ impl HintCommands {
         }
     }
 
-    /// A hint no `usageHints` decision suppresses. Reach for it from a
-    /// composer whose every wording follows a refusal, never from a call site.
+    /// A hint no `usageHints` decision suppresses: an instruction the reader
+    /// must act on that nothing else on the surface states.
+    ///
+    /// Composers mint one where every wording they build is of that class
+    /// (`safety_copy_hint`, `run_next_step`, a configurator's `next_step`); a
+    /// call site mints one where the wording beside it is the remediation of
+    /// the refusal it has just printed, which is the shape most of the
+    /// error paths take. [`Self::ungated`] is the only writer either way, and
+    /// `every_hint_composer_the_workspace_declares_is_classified` holds each
+    /// composer to the class it claims.
     pub fn unconditional(text: impl Into<String>) -> Self {
         Self::from(text.into()).ungated()
     }

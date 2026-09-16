@@ -512,7 +512,7 @@ spec:
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `theme` | string or object | No | `default` | Output theme name or detailed theme config. See [spec.output.theme](#specoutputtheme). |
-| `usageHints` | bool | No | `false` | Whether closing `→` usage hints render. Tutorial hints only: a refusal's remediation renders either way. `--hints` / `--no-hints` / `CFGD_USAGE_HINTS` override for one invocation. |
+| `usageHints` | bool | No | `false` | Whether closing `→` usage hints render. A refusal's remediation and a run's own instructions render either way. `--hints` / `--no-hints` / `CFGD_USAGE_HINTS` override for one invocation. |
 | `maskEnvValues` | enum | No | `All` | Which declared env values render masked: `All`, `Secrets` or `None`. See [MaskEnvValues values](#maskenvvalues-values). |
 
 `spec.theme` and `spec.usageHints` are the pre-`spec.output` spellings. cfgd still reads
