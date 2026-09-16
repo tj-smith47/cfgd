@@ -407,13 +407,18 @@ const MODULES_ANNOTATION: &str = cfgd_core::MODULES_ANNOTATION;
 const SKIPPED_MODULES_ANNOTATION: &str = cfgd_core::SKIPPED_MODULES_ANNOTATION;
 
 /// Whether a `platforms:` list admits injection into a pod. A pod is a Linux
-/// container, so the webhook can answer an `os` tag and nothing else: a list
-/// naming anything but `linux` is the author saying "not here", and the gated
-/// entry is left out rather than injected regardless. The ONE predicate behind
-/// both gates the webhook applies — a module's own `spec.platforms` and each
-/// `spec.env[].platforms`.
+/// container, so a list naming any tag in the Linux family is the author
+/// saying "here": `linux`, a Linux distribution, or an architecture, all read
+/// through [`cfgd_core::platform::tag_admits_linux`]. A list naming only
+/// `macos`, `windows` or `freebsd` is the author saying "not here", and the
+/// gated entry is left out rather than injected regardless. The ONE predicate
+/// behind both gates the webhook applies — a module's own `spec.platforms` and
+/// each `spec.env[].platforms`.
 fn injects_on_linux(platforms: &[String]) -> bool {
-    platforms.is_empty() || platforms.iter().any(|tag| tag == "linux")
+    platforms.is_empty()
+        || platforms
+            .iter()
+            .any(|tag| cfgd_core::platform::tag_admits_linux(tag))
 }
 
 /// Whether a module reaches the pod's own containers: admitted by

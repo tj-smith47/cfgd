@@ -194,7 +194,7 @@ spec:
 | `ociArtifact` | string | OCI reference the module's content is pulled from. Omitted, the module carries its content inline |
 | `signature` | object | `cosign` block (`publicKey`, `keyless`, `certificateIdentity`, `certificateOidcIssuer`) the artifact is verified against |
 | `mountPolicy` | `Always` \| `Debug` | How the module is exposed to pod containers (default `Always`) |
-| `platforms` | list of string | Platform tags gating the whole module on a machine reconciling it (OS, distro or arch; `macos` for macOS). Cluster-side, the pod webhook injects the module only when the list is empty or names `linux`. A skipped module is named on the pod's `cfgd.io/skipped-modules` annotation |
+| `platforms` | list of string | Platform tags gating the whole module on a machine reconciling it (OS, distro or arch; `macos` for macOS). Cluster-side, the pod webhook injects the module when the list is empty or names any Linux-family tag (`linux`, a Linux distro such as `ubuntu`, or an architecture such as `x86_64`); `macos`, `windows` and `freebsd` exclude it. A skipped module is named on the pod's `cfgd.io/skipped-modules` annotation |
 | `depends` | list of string | Names of other `Module` resources applied first |
 | `packages` | list | Packages the module declares: `name`, per-manager name overrides in `aliases`, `minVersion`, a `prefer` manager order, a `deny` manager list, and per-entry `platforms` gates |
 | `files` | list | Files the module declares: `source`, `target`, `strategy`, `private`, `permissions`, an `encryption` block, and a `patch` block for `strategy: Patch` |
@@ -345,7 +345,7 @@ kubectl exec demo-pod -- sh /cfgd-modules/tools/bin/hello.sh
 
 A `ConfigPolicy` or `ClusterConfigPolicy` can add modules the pod never asked for, through `requiredModules` (mounted) and `debugModules` (staged only). Label a pod `cfgd.io/skip-injection` to exempt it.
 
-A pod is a Linux container, so a module whose `spec.platforms` names no `linux` is injected into no pod at all: no CSI volume, no volumeMount, no env, no init container, whatever its `mountPolicy` says. The webhook names every module it skipped this way on the pod's `cfgd.io/skipped-modules` annotation, so a pod that asked for a module by name can say why it is not mounted:
+A pod is a Linux container, so the webhook injects a module when its `spec.platforms` is empty or names any Linux-family tag: `linux`, a Linux distribution (`ubuntu`, `debian`, `fedora`, `rhel`, `centos`, `arch`, `manjaro`, `alpine`, `opensuse`) or an architecture (`x86_64`, `aarch64`). An architecture tag admits on every node, because an admission request does not carry the node the pod will be scheduled to: a module tagged `x86_64` is injected into a pod that lands on an arm64 node too. A list naming only `macos`, `windows` or `freebsd` is injected into no pod at all: no CSI volume, no volumeMount, no env, no init container, whatever its `mountPolicy` says. The webhook names every module it skipped this way on the pod's `cfgd.io/skipped-modules` annotation, so a pod that asked for a module by name can say why it is not mounted:
 
 ```sh
 kubectl get pod demo-pod -o jsonpath='{.metadata.annotations.cfgd\.io/skipped-modules}'

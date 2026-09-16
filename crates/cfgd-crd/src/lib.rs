@@ -542,9 +542,11 @@ pub struct ModuleEnvVar {
     /// Platform tags gating this entry alone. Empty means every platform the
     /// declaring module is not already gated off of. Tags are matched against
     /// the machine's OS, distro, and arch; use `macos` for macOS. A pod is a
-    /// Linux container, so the pod-mutating webhook injects an entry only when
-    /// this is empty or names `linux` — nothing about a pod can answer a
-    /// distro or arch tag.
+    /// Linux container, so the pod-mutating webhook injects an entry when this
+    /// is empty or names any Linux-family tag (`linux`, a Linux distro, or an
+    /// architecture); `macos`, `windows` and `freebsd` withhold it. The
+    /// webhook does not know the node's architecture at admission, so an
+    /// architecture tag admits on every node.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub platforms: Vec<String>,
 }

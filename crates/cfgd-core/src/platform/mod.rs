@@ -194,7 +194,32 @@ pub fn applicable_here<'a, T: PlatformGated>(
 // `platforms:` field names the serde hook through this module's path.
 pub use cfgd_schema::{deserialize_platform_tags, validate_platform_tag};
 
+/// Whether a single `platforms:` tag admits a Linux machine.
+///
+/// A pod is a Linux container, and at admission time the webhook knows nothing
+/// else about the node it will land on: not the distribution, not the
+/// architecture. So every tag in the Linux family admits — `linux` itself,
+/// each distribution whose [`Distro::os`] is [`Os::Linux`], and each
+/// architecture cfgd names — while `macos`, `windows` and `freebsd` exclude.
+/// Reading the enums' own spellings is what keeps a distribution added later
+/// from needing a second list here.
+///
+/// The consequence to state where a reader sees it: an `x86_64` tag admits on
+/// an arm64 node too, because nothing in an admission request carries the
+/// node's architecture.
+pub fn tag_admits_linux(tag: &str) -> bool {
+    tag == Os::Linux.as_str()
+        || Distro::ALL
+            .iter()
+            .any(|d| d.os() == Some(Os::Linux) && d.as_str() == tag)
+        || Arch::NAMED.iter().any(|a| a.as_str() == tag)
+}
+
 impl Os {
+    /// Every operating system cfgd detects, for a reader that must judge a
+    /// whole vocabulary rather than one value.
+    pub const ALL: &'static [Os] = &[Os::Linux, Os::MacOS, Os::FreeBSD, Os::Windows];
+
     pub fn as_str(&self) -> &str {
         match self {
             Os::Linux => "linux",
@@ -206,6 +231,46 @@ impl Os {
 }
 
 impl Distro {
+    /// Every distribution cfgd detects, for a reader that must judge a whole
+    /// vocabulary rather than one value.
+    pub const ALL: &'static [Distro] = &[
+        Distro::Ubuntu,
+        Distro::Debian,
+        Distro::Fedora,
+        Distro::RHEL,
+        Distro::CentOS,
+        Distro::Arch,
+        Distro::Manjaro,
+        Distro::Alpine,
+        Distro::OpenSUSE,
+        Distro::FreeBSD,
+        Distro::MacOS,
+        Distro::Windows,
+        Distro::Unknown,
+    ];
+
+    /// The operating system this distribution runs on, or `None` for
+    /// [`Distro::Unknown`], which is what a machine whose `/etc/os-release`
+    /// named nothing cfgd recognises reports: the name says nothing about the
+    /// kernel under it, so nothing may be concluded from it either.
+    pub fn os(&self) -> Option<Os> {
+        match self {
+            Distro::Ubuntu
+            | Distro::Debian
+            | Distro::Fedora
+            | Distro::RHEL
+            | Distro::CentOS
+            | Distro::Arch
+            | Distro::Manjaro
+            | Distro::Alpine
+            | Distro::OpenSUSE => Some(Os::Linux),
+            Distro::FreeBSD => Some(Os::FreeBSD),
+            Distro::MacOS => Some(Os::MacOS),
+            Distro::Windows => Some(Os::Windows),
+            Distro::Unknown => None,
+        }
+    }
+
     pub fn as_str(&self) -> &str {
         match self {
             Distro::Ubuntu => "ubuntu",
@@ -226,6 +291,10 @@ impl Distro {
 }
 
 impl Arch {
+    /// Every architecture cfgd names in its own vocabulary. [`Arch::Other`]
+    /// carries whatever the host reported and belongs to no fixed list.
+    pub const NAMED: &'static [Arch] = &[Arch::X86_64, Arch::Aarch64];
+
     pub fn as_str(&self) -> &str {
         match self {
             Arch::X86_64 => "x86_64",

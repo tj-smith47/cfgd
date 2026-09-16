@@ -695,3 +695,42 @@ fn every_platforms_field_in_the_config_types_is_deserialized_through_the_validat
         assert!(err.to_string().contains("use 'macos'"), "{which}: {err}");
     }
 }
+
+/// Every tag in cfgd's own vocabulary, judged against `tag_admits_linux` by
+/// the OS each one maps to rather than by a hand-written list of tags: an OS
+/// tag admits only `linux`, a distribution tag admits when its `os()` is
+/// Linux, and every architecture tag admits because a pod's node architecture
+/// is unknown at admission.
+#[test]
+fn every_platform_tag_admits_linux_by_the_os_it_names() {
+    for os in Os::ALL {
+        assert_eq!(
+            tag_admits_linux(os.as_str()),
+            *os == Os::Linux,
+            "os tag {}",
+            os.as_str()
+        );
+    }
+    for distro in Distro::ALL {
+        // A distro spelling shared with an architecture would make this
+        // assertion read the wrong rule; none is, and the OS tags overlapping
+        // the pseudo-distros agree with this answer anyway.
+        assert_eq!(
+            tag_admits_linux(distro.as_str()),
+            distro.os() == Some(Os::Linux),
+            "distro tag {}",
+            distro.as_str()
+        );
+    }
+    for arch in Arch::NAMED {
+        assert!(
+            tag_admits_linux(arch.as_str()),
+            "arch tag {}",
+            arch.as_str()
+        );
+    }
+    assert!(
+        !tag_admits_linux("riscv64"),
+        "a tag cfgd names nowhere admits nothing"
+    );
+}
