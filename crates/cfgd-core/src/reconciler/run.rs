@@ -721,7 +721,7 @@ impl<'a> ApplyRun<'a> {
     /// The instructions for the decisions this run was pruned with, as the
     /// closing hints of whatever surface rendered the run.
     ///
-    /// Separate from [`Self::render_withheld`] because the two land in
+    /// Separate from `render_withheld` because the two land in
     /// different places: the sections name what is missing directly under the
     /// header, while the instruction for answering them is a closing hint like
     /// every other one cfgd prints — left-aligned at the foot of the surface

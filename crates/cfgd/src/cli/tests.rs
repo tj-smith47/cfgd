@@ -33310,6 +33310,130 @@ fn every_test_whose_plan_shape_a_host_tool_decides_plants_its_path() {
     );
 }
 
+/// A test claiming an env-seam shim ran nothing owns the spawn window while it
+/// says so.
+///
+/// `ToolShim::install` writes a `CFGD_*_BIN` seam, and that seam is
+/// process-global: any other thread spawning the same tool while the shim is up
+/// appends to the same log, so "this call spawned nothing" then reports what the
+/// rest of the binary happened to do. A threaded run put a `brew tap` listing
+/// into `provision_tool_answers_from_the_seam_without_reaching_a_manager`'s log
+/// that way. Every guarded spawn takes the shared read half of the `PATH`
+/// window, so holding the exclusive half for the length of the claim is what
+/// keeps the other threads out and makes the empty log a fact about this test.
+///
+/// A claim that the log CARRIES something stays out: it names the argv it wants,
+/// and a stranger's line cannot satisfy it.
+#[test]
+fn every_test_claiming_an_env_seam_shim_ran_nothing_holds_the_spawn_window() {
+    /// The guard that makes the spawn window exclusive for the claim's length.
+    const GUARD: &str = "path_env_mutation_guard";
+    /// The shim whose seam is process-global.
+    const SHIM: &str = "ToolShim::install(";
+    /// The two spellings of "this log is empty". A literal-blanked line keeps
+    /// its quotes and blanks its body, so an assertion message stays wide and
+    /// only a genuinely empty literal matches either one.
+    const EMPTY_CLAIMS: [&str; 2] = ["argv_log(), \"\"", "argv_log() == \"\""];
+    /// Per root, because an aggregate floor is one tree's count plus the
+    /// other's and the larger tree alone clears it. `cfgd-core` holds no member
+    /// today and is read anyway, so one moving there joins the walk.
+    const FLOOR_CLAIMS: [usize; 2] = [3, 0];
+    /// The sources each root holds today, so a tree going dark fails here
+    /// rather than passing on a population of nothing.
+    const FLOOR_SOURCES: [usize; 2] = [135, 180];
+
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let roots = [manifest.join("src"), manifest.join("../cfgd-core/src")];
+    let mut found = 0usize;
+    let mut offenders: Vec<String> = Vec::new();
+    for (r, root) in roots.iter().enumerate() {
+        let (mut sources, mut claims) = (0usize, 0usize);
+        for path in rust_sources_under(root) {
+            sources += 1;
+            let body = cfgd_core::test_helpers::walked_file_body(&path);
+            let lines: Vec<&str> = body.lines().collect();
+            let mut spans: Vec<(usize, usize)> = Vec::new();
+            for (i, line) in lines.iter().enumerate() {
+                if !cfgd_core::test_helpers::code_line(line).contains(SHIM) {
+                    continue;
+                }
+                if let Some(span) = enclosing_fn_span(&lines, i)
+                    && !spans.contains(&span)
+                {
+                    spans.push(span);
+                }
+            }
+            for (start, end) in spans {
+                // `enclosing_fn_span` opens at the first row of the statement,
+                // which is the attribute block, so a declaration the harness
+                // runs is told apart from a helper by the rows ahead of the
+                // signature.
+                let signature = (start..=end)
+                    .find(|k| {
+                        cfgd_core::test_helpers::blank_string_literals(lines[*k])
+                            .replace(['(', ')'], " ")
+                            .split_whitespace()
+                            .any(|word| word == "fn")
+                    })
+                    .unwrap_or(start);
+                if !lines[start..signature]
+                    .iter()
+                    .any(|l| l.trim() == "#[test]" || l.trim() == "#[tokio::test]")
+                {
+                    continue;
+                }
+                // The claim and the guard are both code, so a mention in a
+                // string or a comment answers neither question; the rows are
+                // flattened because an assertion wraps its operands over
+                // several of them.
+                let flat = lines[start..=end]
+                    .iter()
+                    .map(|l| cfgd_core::test_helpers::code_line(l))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                if !EMPTY_CLAIMS.iter().any(|claim| flat.contains(claim)) {
+                    continue;
+                }
+                claims += 1;
+                if flat.contains(GUARD) {
+                    continue;
+                }
+                let name = cfgd_core::test_helpers::declared_fn_name(
+                    &cfgd_core::test_helpers::code_line(lines[signature]),
+                )
+                .unwrap_or_default();
+                offenders.push(format!("{}:{}: {name}", path.display(), start + 1));
+            }
+        }
+        assert!(
+            sources >= FLOOR_SOURCES[r],
+            "the walk read {sources} sources under {}, under the floor, so it is looking \
+             at the wrong root",
+            root.display()
+        );
+        assert!(
+            claims >= FLOOR_CLAIMS[r],
+            "the walk found {claims} empty-log claims under {}, under the floor",
+            root.display()
+        );
+        found += claims;
+    }
+    assert!(
+        found >= 3,
+        "the walk found {found} empty-log claims across the workspace, so it is proving \
+         its rule over nothing"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a test asserting an env-seam shim's argv log is empty is asserting what every \
+         other thread did too, unless it holds `{GUARD}` as its first guard:\n{}",
+        offenders.join("\n")
+    );
+}
+
 /// No CLI slot chooses a drift row's cause by hand.
 ///
 /// The verbose form states both operands and the terse one names the kind of
@@ -40338,6 +40462,10 @@ const ABSENT_SEAM_PATH: &str = cfgd_core::test_helpers::ABSENT_SEAM_PATH;
 #[test]
 #[serial_test::serial]
 fn provision_tool_answers_from_the_seam_without_reaching_a_manager() {
+    // The seam is process-global, so a sibling enumerating installed packages
+    // would spawn this shim and leave a `tap` in its log; the exclusive window
+    // keeps every guarded spawn out, and comes first so it drops last.
+    let _spawn_excl = cfgd_core::test_helpers::path_env_mutation_guard();
     let shim = cfgd_core::test_helpers::ToolShim::install("CFGD_BREW_BIN", 0, "", "");
     let here = std::env::current_exe().expect("the running test binary is a real file");
     let _seam = cfgd_core::test_helpers::EnvVarGuard::set(
