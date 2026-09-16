@@ -78,8 +78,6 @@ fi
 # h264 mp4 is 4:2:0, and chroma subsampling smears exactly the thin coloured
 # glyphs (check marks, drift arrows, accent headings) the demo exists to show,
 # before the palette pass ever sees them.
-TEXT="${FRAMES}/frame-text-%05d.png"
-CURSOR="${FRAMES}/frame-cursor-%05d.png"
 frames=$(find "$FRAMES" -maxdepth 1 -name 'frame-text-*.png' | wc -l)
 if [ "$frames" -eq 0 ]; then
     echo "$FRAMES holds no frame-text-*.png frames — the take produced no recording." >&2
@@ -88,19 +86,26 @@ fi
 
 # fps 50 divides 100 exactly, so every GIF frame delay is a whole 2-centisecond
 # delay and playback does not drift against the recorded timing. That is the
-# OUTPUT rate only. The frames are demuxed on their own mtimes (`ts_from_file`),
-# never at a rate: vhs screenshots as fast as the host lets it, and on one take
-# that swung between 26 and 47 fps as the install loaded the box. Demuxed at
-# the take's average rate the fast stretches played slow, the slow ones fast,
-# and a source second named by the log landed ten seconds away from the frame
-# that showed it. On the mtimes every trim below cuts at the wall-clock second
-# it names, the 1:1 ends play at the speed the session ran, and the take's
-# length is the span of its mtimes. ffmpeg rebases the first frame to 0.
+# OUTPUT rate only. The frames are timed by their own mtimes, never at a rate:
+# vhs screenshots as fast as the host lets it, and on one take that swung
+# between 26 and 47 fps as the install loaded the box. Demuxed at the take's
+# average rate the fast stretches played slow, the slow ones fast, and a source
+# second named by the log landed ten seconds away from the frame that showed
+# it. Each frame's share of those mtimes is capped, so the wall time a `Hide`
+# segment spends off camera does not reach the viewer as a held frame; the cap
+# and the gaps it separates are stated in demo/scripts/frame-lists.sh. What the
+# trims below cut on is therefore the CAPPED timeline, which is the one the
+# viewer sees, and every boundary read off the log is moved onto it.
 FPS=50
-# One awk pass, not `sort | head`: under pipefail a `head` that closes early
-# turns sort's SIGPIPE into this script's exit.
-read -r first_frame dur < <(find "$FRAMES" -maxdepth 1 -name 'frame-text-*.png' -printf '%T@\n' |
-    awk 'NR == 1 { lo = $1; hi = $1 } $1 < lo { lo = $1 } $1 > hi { hi = $1 } END { printf "%.3f %.3f\n", lo, hi - lo }')
+LISTS=demo/.out/raw-lists
+dur=$(demo/scripts/frame-lists.sh "$FRAMES" "$LISTS")
+TIMELINE="${LISTS}/timeline.tsv"
+# A wall-clock instant, as a second of the capped timeline: the play time of
+# the last frame written at or before it. The log stamps and the frame mtimes
+# share the host's clock, so this is the only conversion either needs.
+played_at() {
+    awk -v at="$1" '$1 <= at { t = $2 } END { printf "%.3f", t }' "$TIMELINE"
+}
 mid_end=$(awk -v d="$dur" -v t="$TAIL" 'BEGIN { printf "%.3f", d - t }')
 
 # The tier boundary is the source second the apply opened `Phase: Post-Scripts`.
@@ -119,7 +124,7 @@ if [ -z "$heading_stamp" ]; then
     echo "$LOG never shows \`Phase: Post-Scripts\` — the take did not reach the module's scripts." >&2
     exit 1
 fi
-scripts_at=$(awk -v h="$(date -d "$heading_stamp" +%s.%N)" -v f="$first_frame" 'BEGIN { printf "%.3f", h - f }')
+scripts_at=$(played_at "$(date -d "$heading_stamp" +%s.%N)")
 if ! awk -v s="$scripts_at" -v h="$HEAD" -v e="$mid_end" 'BEGIN { exit (s > h && s < e) ? 0 : 1 }'; then
     echo "The scripts phase opened at ${scripts_at}s, outside the ${HEAD}s..${mid_end}s middle — the take cannot ramp in two tiers." >&2
     exit 1
@@ -171,9 +176,9 @@ BG="#$(ffmpeg -v error -i "${FRAMES}/frame-text-00001.png" -vf crop=1:1:0:0 -f r
 #
 # The composite is built once and split six ways because a filter output can
 # only be consumed once, where the single mp4 input the trims used to read from
-# could be referenced six times directly. The trims cut on source SECONDS, the
-# frames' own wall clock, so every boundary the ramp math produces is the
-# instant the log or the tape measured.
+# could be referenced six times directly. The trims cut on source SECONDS of
+# the capped timeline, so every boundary the ramp math produces is the instant
+# the log or the tape measured, less whatever wall time the take spent hidden.
 #
 # stats_mode=diff weights the palette toward the pixels that actually move, so
 # the long static editor holds stop spending colours the install log needs
@@ -205,10 +210,10 @@ RAMP="[0][1]overlay[merged];\
 [a][b][c][d][e][f]concat=n=6:v=1:a=0[v];\
 [v]fps=${FPS}[vf]"
 
-INPUTS=(-ts_from_file 2 -i "$TEXT" -ts_from_file 2 -i "$CURSOR")
+INPUTS=(-f concat -safe 0 -i "${LISTS}/text.ffconcat" -f concat -safe 0 -i "${LISTS}/cursor.ffconcat")
 
 PALETTE=demo/.out/palette.png
-trap 'rm -f "$PALETTE"' EXIT
+trap 'rm -f "$PALETTE" "${LISTS}/text.ffconcat" "${LISTS}/cursor.ffconcat" "$TIMELINE"' EXIT
 
 ffmpeg -y -loglevel error "${INPUTS[@]}" -filter_complex "\
 ${RAMP};[vf]palettegen=max_colors=256:stats_mode=diff" "$PALETTE"

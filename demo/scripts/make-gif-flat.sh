@@ -36,8 +36,6 @@ fi
 # h264 mp4 is 4:2:0, and chroma subsampling smears exactly the thin coloured
 # glyphs (check marks, drift arrows, accent headings) the demos exist to show,
 # before the palette pass ever sees them.
-TEXT="${FRAMES}/frame-text-%05d.png"
-CURSOR="${FRAMES}/frame-cursor-%05d.png"
 frames=$(find "$FRAMES" -maxdepth 1 -name 'frame-text-*.png' | wc -l)
 if [ "$frames" -eq 0 ]; then
     echo "$FRAMES holds no frame-text-*.png frames — the take produced no recording." >&2
@@ -46,12 +44,14 @@ fi
 
 # fps 50 divides 100 exactly, so every GIF frame delay is a whole 2-centisecond
 # delay and playback does not drift against the recorded timing. That is the
-# OUTPUT rate only. The frames are demuxed on their own mtimes (`ts_from_file`),
-# never at a rate — see make-gif.sh for the swing a take's capture rate makes
-# within one recording and what an average-rate demux did to its holds.
+# OUTPUT rate only. The frames still carry the take's own timing in their
+# mtimes — see make-gif.sh for the swing a capture rate makes within one
+# recording and what an average-rate demux did to its holds — but each frame's
+# share of it is capped, so the wall time a `Hide` segment spends off camera
+# does not play as a held frame. demo/scripts/frame-lists.sh states the cap.
 FPS=50
-dur=$(find "$FRAMES" -maxdepth 1 -name 'frame-text-*.png' -printf '%T@\n' |
-    awk 'NR == 1 { lo = $1; hi = $1 } $1 < lo { lo = $1 } $1 > hi { hi = $1 } END { printf "%.2f\n", hi - lo }')
+LISTS="demo/.out/${NAME}-lists"
+dur=$(demo/scripts/frame-lists.sh "$FRAMES" "$LISTS")
 
 # The frames are the bare terminal, with none of the surrounding padding the
 # tape asks for, so the canvas has to be rebuilt here. Both numbers are read
@@ -93,10 +93,10 @@ FILTER="[0][1]overlay[merged];\
 [merged]pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:${BG}[padded];\
 [padded]fps=${FPS}[vf]"
 
-INPUTS=(-ts_from_file 2 -i "$TEXT" -ts_from_file 2 -i "$CURSOR")
+INPUTS=(-f concat -safe 0 -i "${LISTS}/text.ffconcat" -f concat -safe 0 -i "${LISTS}/cursor.ffconcat")
 
 PALETTE="demo/.out/${NAME}-palette.png"
-trap 'rm -f "$PALETTE"' EXIT
+trap 'rm -f "$PALETTE" "${LISTS}/text.ffconcat" "${LISTS}/cursor.ffconcat" "${LISTS}/timeline.tsv"' EXIT
 
 ffmpeg -y -loglevel error "${INPUTS[@]}" -filter_complex "\
 ${FILTER};[vf]palettegen=max_colors=256:stats_mode=diff" "$PALETTE"
@@ -104,4 +104,4 @@ ${FILTER};[vf]palettegen=max_colors=256:stats_mode=diff" "$PALETTE"
 ffmpeg -y -loglevel error "${INPUTS[@]}" -i "$PALETTE" -filter_complex "\
 ${FILTER};[vf][2:v]paletteuse=dither=none:diff_mode=rectangle" "$OUT"
 
-echo "Wrote $OUT ($(du -h "$OUT" | cut -f1), ${frames} frames over a ${dur}s take at 1:1)"
+echo "Wrote $OUT ($(du -h "$OUT" | cut -f1), ${frames} frames over a ${dur}s take at 1:1, hidden segments capped)"
