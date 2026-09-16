@@ -5,7 +5,7 @@
 # recording rather than at the start of it. Nothing here tracks Homebrew's
 # formula index, which a pin would go stale against — this image ships none of
 # Homebrew at all; cfgd bootstraps it live during the recorded apply.
-FROM ubuntu:24.04
+FROM ubuntu:26.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
