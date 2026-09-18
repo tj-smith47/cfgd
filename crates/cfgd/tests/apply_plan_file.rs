@@ -243,6 +243,22 @@ fn a_plan_recorded_under_another_config_is_refused() {
     let plan_file = state_dir.path().join("plan.json");
     record_plan_file(&cli, &plan_args(), &plan_file);
 
+    // Both staleness facts are made true first, so the assertion below reads
+    // the ORDER and not just the refusal: the config the derivation read is
+    // moved, and an apply is recorded against the serial the plan carries.
+    // With the identity question asked after either of them, a different
+    // sentence prints.
+    let profile = config_dir.path().join("profiles").join("tiny.yaml");
+    let body = std::fs::read_to_string(&profile).unwrap();
+    std::fs::write(&profile, format!("{body}# the operator edited this\n")).unwrap();
+    {
+        let state = StateStore::open(&state_dir.path().join("state.db")).unwrap();
+        let id = state
+            .record_apply("tiny", "deadbeef", ApplyStatus::Success, None)
+            .unwrap();
+        assert_eq!(id, 1, "the first recorded apply is #1");
+    }
+
     let (other_dir, _other_state, other_target) = tiny_profile_setup();
     let foreign = cli_for(other_dir.path(), state_dir.path());
 
@@ -253,6 +269,10 @@ fn a_plan_recorded_under_another_config_is_refused() {
     assert!(
         err.contains("is not a plan cfgd wrote for this config"),
         "a foreign config is a shape refusal, not a staleness one: {err}"
+    );
+    assert!(
+        !err.contains("is stale"),
+        "the shape refusal precedes both staleness facts, which are also true here: {err}"
     );
     assert!(
         err.contains("cfgd.yaml"),
@@ -407,16 +427,12 @@ fn every_apply_arg_is_refused_with_a_plan_file_or_is_an_execution_knob() {
     use clap::{CommandFactory, Parser};
 
     // These say HOW the run behaves, not WHAT it does, which is the file's to
-    // say. `plan` itself and clap's own built-ins are not arguments of the run.
-    const EXECUTION_KNOBS: [&str; 7] = [
-        "plan",
-        "help",
-        "version",
-        "dry_run",
-        "yes",
-        "shell",
-        "on_conflict",
-    ];
+    // say. `plan` itself is not an argument of the run. The list holds only
+    // ids clap really declares here: `--yes` is global (`from_global`) and
+    // `--help`/`--version` belong to the root command, so none of the three
+    // reaches this walk, and naming them would exempt a future argument that
+    // took one of those ids.
+    const EXECUTION_KNOBS: [&str; 4] = ["plan", "dry_run", "shell", "on_conflict"];
 
     let command = ApplyArgs::command();
     let args: Vec<_> = command.get_arguments().collect();
@@ -426,9 +442,11 @@ fn every_apply_arg_is_refused_with_a_plan_file_or_is_an_execution_knob() {
         args.len()
     );
     let mut refused = 0;
+    let mut knobs_seen = Vec::new();
     for arg in args {
         let id = arg.get_id().as_str();
         if EXECUTION_KNOBS.contains(&id) {
+            knobs_seen.push(id.to_string());
             continue;
         }
         let long = arg
@@ -456,4 +474,11 @@ fn every_apply_arg_is_refused_with_a_plan_file_or_is_an_execution_knob() {
         refused >= 8,
         "every selector the command declares was walked: {refused}"
     );
+    for knob in EXECUTION_KNOBS {
+        assert!(
+            knobs_seen.iter().any(|seen| seen == knob),
+            "`{knob}` names no argument this walk saw, so it exempts nothing and \
+             hides the next argument that takes its id: {knobs_seen:?}"
+        );
+    }
 }

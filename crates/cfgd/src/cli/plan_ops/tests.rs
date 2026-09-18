@@ -3735,6 +3735,53 @@ fn a_plan_naming_a_package_the_modules_no_longer_route_the_same_way_is_refused()
     assert!(err.contains("`cfgd plan -o json`"), "{err}");
 }
 
+/// The keys [`super::is_plan_payload`] asks for are ones `cfgd plan -o json`
+/// cannot omit, read off the real serialization rather than off a comment: a
+/// key gaining a `skip_serializing_if` would make a plan cfgd wrote fail the
+/// question and earn a stranger's sentence.
+#[test]
+fn is_plan_payload_reads_keys_the_plan_output_always_serializes() {
+    // Every optional slot empty, which is the payload most likely to drop a
+    // key.
+    let bare = PlanOutput {
+        context: "apply".to_string(),
+        phases: vec![],
+        total_actions: 0,
+        sources: vec![],
+        warnings: vec![],
+        pending_backups: vec![],
+        pending_decisions: vec![],
+        rejected_decisions: vec![],
+        saved_plan: None,
+    };
+    let body = serde_json::to_string(&bare).unwrap();
+    let doc: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let mut keys: Vec<_> = doc
+        .as_object()
+        .expect("a plan payload is an object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        ["context", "phases", "totalActions"],
+        "these are the keys no filter suppresses, and the ones the question may read"
+    );
+    assert!(
+        super::is_plan_payload(&body),
+        "the emptiest plan output is still recognised as one: {body}"
+    );
+    assert!(
+        !super::is_plan_payload(r#"{"context":"apply"}"#),
+        "a document carrying only the third key is not a plan output"
+    );
+    assert!(
+        !super::is_plan_payload("[1, 2]"),
+        "a JSON array is no plan output"
+    );
+}
+
 /// The same refusal one level up: the file plans packages for a module this
 /// run's resolution no longer produces at all, so nothing can state the two
 /// facts for it.
