@@ -358,15 +358,15 @@ so it is exactly as sensitive as the config it was derived from: see
 The replay still resolves this machine's config for itself, because two planner
 inputs live outside the plan format (the manager a `prefer` list names, and a
 package's `minVersion`). It fetches nothing: refreshing a source mid-run would
-move the very stamps the refusal above compares against. Both planner inputs have
-to come from a module that still resolves the same way, so a plan naming a module
-this run no longer resolves, or naming a `manager:package` pair a module no longer
-routes that way, is refused (`plan.json does not describe this host: ...`) with the
-same next step: run `cfgd plan -o json` again. A package installed by hand between
-the plan and the replay is the usual cause, since it moves the manager the resolver
-picks while every recorded stamp still matches. `--dry-run`, `--yes` and
-`--on-conflict` stay legal, since they say how the run behaves rather than what it
-does.
+move the very stamps the staleness refusal above compares against. Both planner
+inputs have to come from a module that still resolves the same way, so a plan
+naming a module this run no longer resolves, or naming a `manager:package` pair a
+module no longer routes that way, is refused (`plan.json does not describe this
+host: ...`) with the same next step: run `cfgd plan -o json` again. A package
+installed by hand between the plan and the replay is the usual cause, since it
+moves the manager the resolver picks while every recorded stamp still matches.
+`--dry-run`, `--yes` and `--on-conflict` stay legal, since they say how the run
+behaves rather than what it does.
 
 ### `cfgd plan`
 
