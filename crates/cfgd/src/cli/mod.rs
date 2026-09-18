@@ -635,6 +635,7 @@ fn is_value_taking_flag(flag: &str) -> bool {
             | "--theme"
             | "--color"
             | "--mask-env-values"
+            | "--migration-policy"
     )
 }
 
@@ -656,6 +657,7 @@ fn is_value_taking_flag_inline(arg: &str) -> bool {
         "--theme=",
         "--color=",
         "--mask-env-values=",
+        "--migration-policy=",
     ];
     PREFIXES.iter().any(|p| arg.starts_with(p))
 }
@@ -831,73 +833,121 @@ pub fn resolve_theme_config(
     }
 }
 
+/// Resolve one per-invocation knob the way every other one resolves: the flag
+/// beats `env`, which beats the `spec.*` field `stored` reads, which beats the
+/// type's own default.
+///
+/// The variable is read HERE rather than left to clap's `env =` binding,
+/// because that binding fills `flag` only where clap parsed an argv: every
+/// caller holding a path and no argv — a test of a knob, any future entry
+/// point resolving one before dispatch — would otherwise never see it. A knob
+/// whose flag IS bound through clap (`--mask-env-values`) loses nothing: the
+/// flag still answers first, and the read below finds the same value the
+/// binding would have.
+///
+/// A word `T` cannot read is ignored rather than fatal, and so is a config
+/// that does not load: a printer has to exist before there is anything to
+/// report either through, which is [`resolve_theme_config`]'s reasoning and
+/// the reason every knob resolver is best-effort.
+pub fn resolve_knob<T>(
+    config_path: &Path,
+    flag: Option<T>,
+    env: &str,
+    stored: impl FnOnce(&cfgd_core::config::ConfigSpec) -> Option<T>,
+) -> T
+where
+    T: std::str::FromStr + Default,
+{
+    if let Some(value) = flag {
+        return value;
+    }
+    if let Ok(raw) = std::env::var(env) {
+        if let Ok(value) = T::from_str(&raw) {
+            return value;
+        }
+        // A boolean knob's variable is spelled the way every other `CFGD_*`
+        // boolean is (`1`, `yes`, `on`), which `bool::from_str` refuses. The
+        // fold runs SECOND so an enum that one day spells a variant `on` keeps
+        // its own reading of the word.
+        if let Some(canonical) = cfgd_core::canonical_bool_str(&raw)
+            && let Ok(value) = T::from_str(canonical)
+        {
+            return value;
+        }
+    }
+    config_path
+        .exists()
+        .then(|| cfgd_core::config::load_config(config_path).ok())
+        .flatten()
+        .and_then(|c| stored(&c.spec))
+        .unwrap_or_default()
+}
+
+/// Resolve the migration policy in force for this invocation, folding
+/// `--migration-policy`, `CFGD_MIGRATION_POLICY` and `spec.migrationPolicy`
+/// into the one answer the load-time gate reads. A config cfgd cannot read
+/// falls to `Prompt`, which writes nothing on its own.
+pub fn resolve_migration_policy(
+    config_path: &Path,
+    flag: Option<&str>,
+) -> cfgd_schema::MigrationPolicy {
+    use std::str::FromStr;
+    resolve_knob(
+        config_path,
+        flag.and_then(|raw| cfgd_schema::MigrationPolicy::from_str(raw).ok()),
+        "CFGD_MIGRATION_POLICY",
+        // The field is not optional: an absent key materializes `Prompt`
+        // through `#[serde(default)]`, which is also `T::default()`, so the
+        // two paths cannot disagree.
+        |spec| Some(spec.migration_policy),
+    )
+}
+
 /// Resolve whether closing `→` usage hints render, folding the
 /// `--hints`/`--no-hints` pair, `CFGD_USAGE_HINTS` and `spec.usageHints` into
 /// the one decision every entry point's printer is built from
-/// (`Printer::with_hints_enabled`). Precedence: the flag beats the env var
-/// beats the config field beats the default (hints do not render).
+/// (`Printer::with_hints_enabled`).
 ///
 /// Only a TUTORIAL hint asks this. A refusal's remediation carries
 /// [`cfgd_core::output::HintCommands::unconditional`] and renders whatever
 /// this returns, so turning tutorials off never leaves a reader without the
 /// instruction a declined command's whole value is.
 ///
-/// Best-effort by design, mirroring [`resolve_theme_config`]: a missing,
-/// unreadable or malformed config falls to the default rather than failing,
-/// because a printer has to exist before there is anything to report a load
-/// failure through.
-///
-/// `CFGD_USAGE_HINTS` is read directly here rather than bound to either half
-/// via `#[arg(env = …)]`: `--no-hints` has the OPPOSITE polarity to the env
-/// var, and binding the env var to `--hints` alone would let it be outranked
-/// by nothing, since clap cannot express "this env var sets that flag's
-/// negation". Boolish spellings are accepted through the same table every
-/// other `CFGD_*` boolean env var uses.
+/// `CFGD_USAGE_HINTS` is read by [`resolve_knob`] rather than bound to either
+/// half via `#[arg(env = …)]`: `--no-hints` has the OPPOSITE polarity to the
+/// env var, and binding the env var to `--hints` alone would let it be
+/// outranked by nothing, since clap cannot express "this env var sets that
+/// flag's negation". Boolish spellings are accepted through the same table
+/// every other `CFGD_*` boolean env var uses.
 pub fn resolve_hints_enabled(config_path: &Path, hints: Option<bool>) -> bool {
-    if let Some(want) = hints {
-        return want;
-    }
-    if let Ok(raw) = std::env::var("CFGD_USAGE_HINTS")
-        && let Some(canonical) = cfgd_core::canonical_bool_str(&raw)
-    {
-        return canonical == "true";
-    }
-    let stored = config_path
-        .exists()
-        .then(|| cfgd_core::config::load_config(config_path).ok())
-        .flatten()
-        .and_then(|c| c.spec.usage_hints());
-    stored.unwrap_or(false)
+    resolve_knob(config_path, hints, "CFGD_USAGE_HINTS", |spec| {
+        spec.usage_hints()
+    })
 }
 
 /// Resolve which declared env values this run renders masked, folding
 /// `--mask-env-values`, `CFGD_MASK_ENV_VALUES` and `spec.output.maskEnvValues`
 /// into the one decision the printer carries
-/// (`Printer::with_mask_env_values`). Precedence: the flag beats the env var
-/// beats the config field beats the default (every value masked).
+/// (`Printer::with_mask_env_values`).
 ///
-/// `CFGD_MASK_ENV_VALUES` is bound to the flag through clap's own `env`, so a
-/// word neither spelling accepts is a usage error before this runs.
+/// `CFGD_MASK_ENV_VALUES` is ALSO bound to the flag through clap's own `env`,
+/// so a word neither spelling accepts is a usage error before this runs;
+/// [`resolve_knob`]'s own read of it answers a caller that parsed no argv.
 ///
-/// Best-effort by design, mirroring [`resolve_theme_config`]: a missing,
-/// unreadable or malformed config masks rather than failing, which is also the
-/// safe direction — a config cfgd cannot read never reveals a value.
+/// A missing, unreadable or malformed config masks rather than failing, which
+/// is also the safe direction — a config cfgd cannot read never reveals a
+/// value.
 pub fn resolve_mask_env_values(
     config_path: &Path,
     flag: Option<&str>,
 ) -> cfgd_core::config::MaskEnvValues {
     use std::str::FromStr;
-    if let Some(raw) = flag
-        && let Ok(mode) = cfgd_core::config::MaskEnvValues::from_str(raw)
-    {
-        return mode;
-    }
-    config_path
-        .exists()
-        .then(|| cfgd_core::config::load_config(config_path).ok())
-        .flatten()
-        .and_then(|c| c.spec.mask_env_values())
-        .unwrap_or_default()
+    resolve_knob(
+        config_path,
+        flag.and_then(|raw| cfgd_core::config::MaskEnvValues::from_str(raw).ok()),
+        "CFGD_MASK_ENV_VALUES",
+        |spec| spec.mask_env_values(),
+    )
 }
 
 #[derive(Debug, Clone)]
@@ -1042,6 +1092,18 @@ pub struct Cli {
         value_parser = clap::builder::PossibleValuesParser::new(["all", "secrets", "none"])
     )]
     pub mask_env_values: Option<String>,
+
+    /// What to do when cfgd.yaml is behind this build's schema: prompt (the
+    /// default), warn, update or ignore. `spec.migrationPolicy` does the same
+    /// thing persistently; this flag wins over it.
+    #[arg(
+        long = "migration-policy",
+        global = true,
+        value_name = "POLICY",
+        env = "CFGD_MIGRATION_POLICY",
+        value_parser = clap::builder::PossibleValuesParser::new(["prompt", "warn", "update", "ignore"])
+    )]
+    pub migration_policy: Option<String>,
 
     /// Output format: table, wide, json, yaml, name, jsonpath=EXPR, template=TMPL, template-file=PATH
     #[arg(long, short = 'o', global = true, default_value = "table")]

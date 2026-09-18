@@ -8,7 +8,7 @@ use super::compliance::ComplianceConfig;
 use super::daemon::DaemonConfig;
 use super::origin::OriginSpec;
 use super::output::OutputConfig;
-use cfgd_schema::FileStrategy;
+use cfgd_schema::{FileStrategy, MigrationPolicy};
 
 use super::profile_spec::ProfileDocument;
 use super::root::{CfgdConfig, ConfigMetadata, ConfigSpec, UpdateConfig};
@@ -373,6 +373,7 @@ pub fn parse_config(contents: &str, path: &Path) -> Result<CfgdConfig> {
             ai: raw.spec.ai,
             compliance: raw.spec.compliance,
             update: raw.spec.update,
+            migration_policy: raw.spec.migration_policy,
         },
         deprecations,
         legacy_output_keys,
@@ -421,6 +422,8 @@ struct RawConfigSpec {
     compliance: Option<ComplianceConfig>,
     #[serde(default)]
     update: Option<UpdateConfig>,
+    #[serde(default)]
+    migration_policy: MigrationPolicy,
     /// The pre-`spec.output` spelling of `spec.output.usageHints`, still read.
     #[serde(default)]
     usage_hints: Option<bool>,

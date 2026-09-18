@@ -209,6 +209,7 @@ impl CliTestHarness {
             no_hints: false,
             theme: None,
             mask_env_values: None,
+            migration_policy: None,
             jsonpath: None,
             yes: false,
             state_dir: Some(self.state_dir.path().to_path_buf()),
@@ -1202,6 +1203,45 @@ fn resolve_hints_enabled_precedence_flag_beats_env_beats_spec_beats_default() {
     assert!(
         super::resolve_hints_enabled(&path, Some(true)),
         "--hints must outrank CFGD_USAGE_HINTS=false"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn the_migration_policy_flag_outranks_the_env_var_and_the_config_field() {
+    use cfgd_core::test_helpers::EnvVarGuard;
+    use cfgd_schema::MigrationPolicy;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("cfgd.yaml");
+    std::fs::write(
+        &path,
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n  migrationPolicy: warn\n",
+    )
+    .expect("write config");
+
+    let _unset = EnvVarGuard::unset("CFGD_MIGRATION_POLICY");
+    assert_eq!(
+        super::resolve_migration_policy(&dir.path().join("absent.yaml"), None),
+        MigrationPolicy::Prompt,
+        "with nothing said, cfgd asks before it writes"
+    );
+    assert_eq!(
+        super::resolve_migration_policy(&path, None),
+        MigrationPolicy::Warn,
+        "spec.migrationPolicy must be read when nothing outranks it"
+    );
+
+    let _env = EnvVarGuard::set("CFGD_MIGRATION_POLICY", "ignore");
+    assert_eq!(
+        super::resolve_migration_policy(&path, None),
+        MigrationPolicy::Ignore,
+        "CFGD_MIGRATION_POLICY must outrank spec.migrationPolicy"
+    );
+    assert_eq!(
+        super::resolve_migration_policy(&path, Some("update")),
+        MigrationPolicy::Update,
+        "--migration-policy must outrank CFGD_MIGRATION_POLICY"
     );
 }
 
@@ -2276,6 +2316,7 @@ fn test_cli_with_state(dir: &Path, state_dir: Option<PathBuf>) -> Cli {
         no_hints: false,
         theme: None,
         mask_env_values: None,
+        migration_policy: None,
         jsonpath: None,
         yes: false,
         state_dir,
@@ -5771,6 +5812,7 @@ fn run_apply_home_unset_errors_and_creates_no_state() {
         no_hints: false,
         theme: None,
         mask_env_values: None,
+        migration_policy: None,
         jsonpath: None,
         yes: false,
         state_dir: None,
@@ -6346,6 +6388,7 @@ fn execute_with_no_subcommand_prints_help_and_returns_ok() {
         no_hints: false,
         theme: None,
         mask_env_values: None,
+        migration_policy: None,
         jsonpath: None,
         yes: false,
         state_dir: Some(h.state_path().to_path_buf()),

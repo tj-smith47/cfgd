@@ -26,6 +26,7 @@ pub(crate) fn make_cli(config: PathBuf) -> Cli {
         no_hints: false,
         theme: None,
         mask_env_values: None,
+        migration_policy: None,
         jsonpath: None,
         yes: false,
         state_dir: None,
@@ -2130,6 +2131,26 @@ fn a_declared_default_scalar_is_kept_and_the_payload_always_carries_it() {
         serde_json::json!("Symlink"),
         "the serialized payload must name the effective strategy even when it is the default"
     );
+}
+
+// Every undeclared default is dropped, however many the struct carries: the
+// prune judges each candidate against the same document, so dropping one does
+// not make the next one look load-bearing.
+#[test]
+fn every_undeclared_default_scalar_is_dropped_not_only_the_first() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("cfgd.yaml");
+    let source = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: probe\nspec:\n  profile: base\n";
+    std::fs::write(&path, source).unwrap();
+    let doc: CfgdConfig = serde_yaml::from_str(source).unwrap();
+    rewrite_user_yaml(&path, &doc).unwrap();
+    let written = std::fs::read_to_string(&path).unwrap();
+    for litter in ["fileStrategy: Symlink", "migrationPolicy: Prompt"] {
+        assert!(
+            !written.contains(litter),
+            "rewrite kept the undeclared default {litter:?}:\n{written}"
+        );
+    }
 }
 
 // A non-default scalar the author never declared is real content (a

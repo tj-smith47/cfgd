@@ -230,6 +230,11 @@
           ],
           "type": "string"
         },
+        "migrationPolicy": {
+          "$ref": "#/definitions/MigrationPolicy",
+          "default": "Prompt",
+          "description": "What cfgd does when this document is behind the schema the running\nbinary reads. `Prompt` asks once on an interactive run; `Warn` only\nreports; `Update` writes the alignment; `Ignore` says nothing."
+        },
         "modules": {
           "anyOf": [
             {
@@ -406,6 +411,31 @@
         {
           "const": "None",
           "description": "Mask nothing: every declared value renders in full, as though\n`--show-values` had been passed to every verb that takes it.",
+          "type": "string"
+        }
+      ]
+    },
+    "MigrationPolicy": {
+      "description": "What cfgd does when the config document on disk is behind the schema this\nbuild reads: a field the binary now carries that the document never names,\nor an `apiVersion` an older release wrote.",
+      "oneOf": [
+        {
+          "const": "Prompt",
+          "description": "Ask once, on an interactive run, before writing anything (default).",
+          "type": "string"
+        },
+        {
+          "const": "Warn",
+          "description": "Report what is behind and write nothing. What a non-interactive run\nunder `Prompt` does.",
+          "type": "string"
+        },
+        {
+          "const": "Update",
+          "description": "Write the alignment without asking.",
+          "type": "string"
+        },
+        {
+          "const": "Ignore",
+          "description": "Say nothing and write nothing.",
           "type": "string"
         }
       ]

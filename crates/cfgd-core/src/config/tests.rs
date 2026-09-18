@@ -100,6 +100,26 @@ fn file_strategy_all_round_trips_through_the_deserializer() {
     }
 }
 
+/// `spec.migrationPolicy` is the persistent twin of `--migration-policy`, so
+/// every word the flag accepts reaches the parser, spelled as a hand-written
+/// document spells it; an absent key materializes the policy that writes
+/// nothing on its own.
+#[test]
+fn parse_config_reads_every_migration_policy_and_defaults_to_prompt() {
+    let absent = parse_config(SAMPLE_CONFIG_YAML, Path::new("cfgd.yaml")).unwrap();
+    assert_eq!(absent.spec.migration_policy, MigrationPolicy::Prompt);
+
+    for policy in MigrationPolicy::ALL {
+        let value = policy.as_str().to_lowercase();
+        let yaml = format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: m\nspec:\n  profile: default\n  migrationPolicy: {value}\n"
+        );
+        let parsed = parse_config(&yaml, Path::new("cfgd.yaml"))
+            .unwrap_or_else(|e| panic!("{value} must parse: {e}"));
+        assert_eq!(parsed.spec.migration_policy, *policy);
+    }
+}
+
 #[test]
 fn load_profile_rejects_unknown_apiversion() {
     let dir = tempfile::tempdir().unwrap();

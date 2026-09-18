@@ -14,7 +14,7 @@ use super::source::SourceSpec;
 use super::sync_secrets::SecretsConfig;
 use super::theme::ThemeConfig;
 use crate::errors::Result;
-use cfgd_schema::FileStrategy;
+use cfgd_schema::{FileStrategy, MigrationPolicy};
 
 // --- Root Config (cfgd.yaml) ---
 
@@ -166,6 +166,12 @@ pub struct ConfigSpec {
     /// Update policy for the cfgd binary and authored skills.
     #[serde(default)]
     pub update: Option<UpdateConfig>,
+
+    /// What cfgd does when this document is behind the schema the running
+    /// binary reads. `Prompt` asks once on an interactive run; `Warn` only
+    /// reports; `Update` writes the alignment; `Ignore` says nothing.
+    #[serde(default)]
+    pub migration_policy: MigrationPolicy,
 }
 
 impl ConfigSpec {

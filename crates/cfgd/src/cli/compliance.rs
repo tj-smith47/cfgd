@@ -623,6 +623,7 @@ mod tests {
             no_hints: false,
             theme: None,
             mask_env_values: None,
+            migration_policy: None,
             jsonpath: None,
             yes: false,
             state_dir: Some(state_dir.to_path_buf()),

@@ -61,8 +61,8 @@ pub use profile_spec::{
 // The value types cfgd-schema owns, kept resolvable at their long-standing
 // `cfgd_core::config::*` paths so the CRD sharing them changes no caller here.
 pub use cfgd_schema::{
-    BackupSpec, EncryptionMode, EncryptionSpec, FileStrategy, PatchFormat, PatchSpec,
-    ScheduleOwner, ScriptCommand, ScriptEntry, ScriptShell, ScriptSpec,
+    BackupSpec, EncryptionMode, EncryptionSpec, FileStrategy, MigrationPolicy, PatchFormat,
+    PatchSpec, ScheduleOwner, ScriptCommand, ScriptEntry, ScriptShell, ScriptSpec,
 };
 pub(crate) use profile_spec::{profile_spec_from_value, validate_backup_name};
 pub use resolve::{

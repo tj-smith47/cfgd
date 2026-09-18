@@ -6467,6 +6467,19 @@
         "type": "string"
       },
       {
+        "description": "What cfgd does when this document is behind the schema the running binary reads. `Prompt` asks once on an interactive run; `Warn` only reports; `Update` writes the alignment; `Ignore` says nothing.",
+        "enum": [
+          "Prompt",
+          "Warn",
+          "Update",
+          "Ignore"
+        ],
+        "name": "migrationPolicy",
+        "required": false,
+        "type": "string",
+        "typeName": "MigrationPolicy"
+      },
+      {
         "children": [
           {
             "children": [

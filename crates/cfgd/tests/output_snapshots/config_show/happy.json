@@ -27,6 +27,7 @@
       "windowsEventLog": false
     },
     "fileStrategy": "Symlink",
+    "migrationPolicy": "Prompt",
     "modules": {
       "registries": [
         {

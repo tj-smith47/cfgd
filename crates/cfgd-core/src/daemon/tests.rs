@@ -417,6 +417,7 @@ fn find_server_url_returns_none_for_git_origin() {
             name: "test".into(),
         },
         spec: ConfigSpec {
+            migration_policy: Default::default(),
             profile: Some("default".into()),
             origin: vec![OriginSpec {
                 origin_type: OriginType::Git,
@@ -453,6 +454,7 @@ fn find_server_url_returns_url_for_server_origin() {
             name: "test".into(),
         },
         spec: ConfigSpec {
+            migration_policy: Default::default(),
             profile: Some("default".into()),
             origin: vec![OriginSpec {
                 origin_type: OriginType::Server,
@@ -3561,6 +3563,7 @@ fn find_server_url_picks_server_among_multiple_origins() {
             name: "test".into(),
         },
         spec: ConfigSpec {
+            migration_policy: Default::default(),
             profile: Some("default".into()),
             origin: vec![
                 OriginSpec {
@@ -3609,6 +3612,7 @@ fn find_server_url_returns_none_for_empty_origins() {
             name: "test".into(),
         },
         spec: ConfigSpec {
+            migration_policy: Default::default(),
             profile: Some("default".into()),
             origin: vec![],
             daemon: None,
@@ -4207,6 +4211,7 @@ fn find_server_url_picks_first_server_among_duplicates() {
             name: "test".into(),
         },
         spec: ConfigSpec {
+            migration_policy: Default::default(),
             profile: Some("default".into()),
             origin: vec![
                 OriginSpec {
@@ -6445,6 +6450,7 @@ fn try_server_checkin_no_server_origin_returns_false() {
             name: "test".into(),
         },
         spec: ConfigSpec {
+            migration_policy: Default::default(),
             profile: Some("default".into()),
             origin: vec![OriginSpec {
                 origin_type: OriginType::Git,
@@ -6511,6 +6517,7 @@ fn try_server_checkin_with_server_origin_calls_checkin() {
             name: "test".into(),
         },
         spec: ConfigSpec {
+            migration_policy: Default::default(),
             profile: Some("default".into()),
             origin: vec![OriginSpec {
                 origin_type: OriginType::Server,

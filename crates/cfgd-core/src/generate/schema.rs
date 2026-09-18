@@ -716,6 +716,11 @@ spec:
   # Values: Symlink, Copy, Template, Hardlink
   fileStrategy: Symlink
 
+  # What cfgd does when this document is behind the schema the running binary reads.
+  # optional, default: Prompt
+  # Values: Prompt, Warn, Update, Ignore
+  migrationPolicy: Prompt
+
   # Security settings for source signature verification.
   # optional
   security:
