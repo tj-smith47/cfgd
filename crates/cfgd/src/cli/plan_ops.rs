@@ -640,10 +640,11 @@ struct PlanFile {
 /// Whether a JSON document is a `cfgd plan -o json` payload at all.
 ///
 /// [`PlanOutput`] serializes exactly three keys unconditionally: `context`,
-/// `phases` and `totalActions`. Two of them are asked for here, which is
-/// enough for a document holding neither to be one cfgd never wrote, and
-/// `is_plan_payload_reads_keys_the_plan_output_always_serializes` pins the
-/// unsuppressable set against the real serialization.
+/// `phases` and `totalActions`. Only two are asked for here, because a
+/// document missing `context` never reaches this question: [`PlanFile`] reads
+/// that key as a required field, so serde's own sentence refuses such a
+/// document first. `is_plan_payload_reads_keys_the_plan_output_always_serializes`
+/// pins the unsuppressable set against the real serialization.
 ///
 /// Asked only on the path that has to explain why a file carries no
 /// `savedPlan`, which is the one place the two answers differ: a plan cfgd
@@ -727,8 +728,8 @@ pub(in crate::cli) fn load_saved_plan(
     let Some(saved) = file.saved_plan else {
         if !is_plan_payload(&body) {
             anyhow::bail!(
-                "{shown} is not the payload of `cfgd plan -o json`: it carries neither a \
-                 `phases` nor a `totalActions` key, which every plan output has"
+                "{shown} is not the payload of `cfgd plan -o json`: it does not carry both a \
+                 `phases` and a `totalActions` key, which every plan output has"
             );
         }
         anyhow::bail!(
