@@ -253,9 +253,10 @@ installs, then `module:nvim`. Execution reverses those two (see the note above).
 ### The saved plan (`savedPlan`)
 
 An unfiltered `cfgd plan` (or `cfgd apply --dry-run`) under any structured format
-(`-o json`, `-o yaml`, and the `jsonpath`/`template`/`name` projections over them)
+(`-o json`, `-o yaml`, and the `jsonpath`/`template` projections over them)
 records one more key, `savedPlan`: the plan itself plus the two facts that say
-whether it still describes this machine.
+whether it still describes this machine. `-o name` prints the context name on its
+own line and exposes no payload key, so it projects nothing of this one.
 
 | Field | What it holds |
 |---|---|
