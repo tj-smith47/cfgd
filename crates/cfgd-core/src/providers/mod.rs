@@ -3552,7 +3552,7 @@ mod installable_tools_tests {
                     let text = above.trim();
                     text.starts_with("//") || text.ends_with("\"\"),")
                 })
-                .any(|above| above.contains("no-driven-route-ok:"));
+                .any(|above| crate::test_helpers::carries_hatch(above, "no-driven-route-ok:"));
             if !marked {
                 unmarked.push(format!("{}: {}", i + 1, line.trim()));
             }

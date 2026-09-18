@@ -4,8 +4,9 @@
 use std::path::{Path, PathBuf};
 
 use crate::test_helpers::{
-    KNOWN_GOLDEN_ROOTS, blank_string_literals, rust_sources_under, snapshot_golden_roots,
-    snapshot_goldens, snapshot_root_files, walked_file_body, workspace_root,
+    KNOWN_GOLDEN_ROOTS, blank_string_literals, carries_hatch, is_plain_line_comment,
+    rust_sources_under, snapshot_golden_roots, snapshot_goldens, snapshot_root_files,
+    walked_file_body, workspace_root,
 };
 
 /// Every `.rs` file under every crate's `src/`.
@@ -446,10 +447,11 @@ fn code_half(line: &str) -> String {
 /// marker inside a string literal.
 fn hatched(lines: &[&str], at: usize, marker: &str) -> bool {
     let marked = |line: &str| {
-        blank_string_literals(line)
-            .find("//")
-            .and_then(|pos| line[pos + 2..].split_once(marker))
-            .is_some_and(|(_, why)| !why.trim().is_empty())
+        carries_hatch(line, marker)
+            && blank_string_literals(line)
+                .find("//")
+                .and_then(|pos| line[pos + 2..].split_once(marker))
+                .is_some_and(|(_, why)| !why.trim().is_empty())
     };
     marked(lines[at]) || (at > 0 && marked(lines[at - 1]))
 }
@@ -714,9 +716,9 @@ fn no_decision_row_renderer_reads_the_stored_summary() {
             if trimmed.starts_with("//") || !reads_a_summary_field(line) {
                 continue;
             }
-            let hatched = line.contains("decision-summary-ok:")
+            let hatched = carries_hatch(line, "decision-summary-ok:")
                 || i.checked_sub(1)
-                    .is_some_and(|p| lines[p].contains("decision-summary-ok:"));
+                    .is_some_and(|p| carries_hatch(lines[p], "decision-summary-ok:"));
             if !hatched {
                 offenders.push(format!("{}:{}: {}", path.display(), i + 1, trimmed));
             }
@@ -3296,7 +3298,7 @@ fn every_multi_file_production_walk_reads_through_the_floored_helper() {
                     continue;
                 }
                 let above = n.checked_sub(1).map(|i| lines[i]).unwrap_or_default();
-                if line.contains(hatch) || above.contains(hatch) {
+                if carries_hatch(line, hatch) || carries_hatch(above, hatch) {
                     continue;
                 }
                 offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
@@ -3329,6 +3331,163 @@ fn every_multi_file_production_walk_reads_through_the_floored_helper() {
         sources[1]
     );
 }
+
+/// Whether `name` holds a hatch marker, judged on the name alone.
+///
+/// A marker is held in a name that says so: a `*_HATCH` / `*_MARKER` const, or
+/// the bare `marker` / `hatch` a shared lookup takes as its parameter. The walk
+/// below has to tell `contains(NATIVE_HATCH)` — reading a hatch off a source
+/// line — from `contains(STD_MARKER)`, which reads a `PATH` entry, and both
+/// arrive as identifiers, so the convention is what separates them.
+fn names_a_hatch_marker(name: &str) -> bool {
+    let shouted = name.to_ascii_uppercase();
+    shouted.contains("HATCH") || shouted.ends_with("_MARKER") || shouted == "MARKER"
+}
+
+/// The region of a source a test lives in: the whole file where the file IS
+/// test scaffolding, and everything from its first `#[cfg(test)]` otherwise.
+///
+/// The complement of [`crate::test_helpers::production_slice`], and the half
+/// this walk judges: a marker-shaped name in production code names something
+/// else entirely, and a production file has no business carrying a walk's hatch.
+fn test_region(path: &Path, body: &str) -> String {
+    let scaffolding = path
+        .components()
+        .any(|c| c.as_os_str() == std::ffi::OsStr::new("tests"))
+        || matches!(
+            path.file_stem().and_then(|s| s.to_str()),
+            Some("tests" | "test_helpers")
+        );
+    if scaffolding {
+        return body.to_string();
+    }
+    match body.find("#[cfg(test)]") {
+        Some(at) => body[at..].to_string(),
+        None => String::new(),
+    }
+}
+
+/// A hatch is read off a source line through
+/// [`crate::test_helpers::carries_hatch`], never through a bare `contains`.
+///
+/// `"/// name-row-ok: …"` contains `"// name-row-ok:"`, so a lookup asking only
+/// whether a line holds the marker accepts a rustdoc line as the hatch — and
+/// this tree holds 97 rustdoc lines that QUOTE a marker while describing its
+/// rule. Any of them sitting above an offending item silently exempts it, which
+/// is a walk reporting a population it never judged. `carries_hatch` refuses a
+/// `///` or `//!` line and accepts both shapes a hatch is really written in.
+///
+/// `starts_with` and `strip_prefix` are not judged: both anchor at the start of
+/// the trimmed line, and a marker spelled with its own `// ` prefix cannot match
+/// a `///` line, while one spelled without it cannot match a comment line at
+/// all. `contains` and `split_once` are the two that read the marker from
+/// anywhere on the line, so they are the two that can be fooled.
+///
+/// A site whose subject is not a source line — a fixture's own rows, a rendered
+/// screen — says so with `// doc-comment-ok: <why>` on the line or the one above.
+#[test]
+fn every_hatch_a_walk_reads_comes_from_the_one_line_reader() {
+    // Spelled in parts, or the walk's own needles are its first offenders.
+    let reads = [concat!(".contains", "("), concat!(".split_once", "(")];
+    let routed = [
+        concat!("carries_", "hatch("),
+        concat!("is_plain_", "line_comment("),
+    ];
+    let hatch = concat!("doc-comment", "-ok:");
+    let mut offenders = Vec::new();
+    let mut per_crate: std::collections::BTreeMap<String, usize> =
+        std::collections::BTreeMap::new();
+    for path in workspace_rust_files() {
+        let body = test_region(&path, &walked_file_body(&path));
+        let lines: Vec<&str> = body.lines().collect();
+        let mut read_here = 0usize;
+        for (n, line) in lines.iter().enumerate() {
+            let code = blank_string_literals(line);
+            let code = code.split("//").next().unwrap_or_default();
+            let mut reads_a_marker = false;
+            for read in reads {
+                let mut from = 0;
+                while let Some(at) = code[from..].find(read) {
+                    from = from + at + read.len();
+                    let argument: String = code[from..]
+                        .trim_start()
+                        .trim_start_matches('&')
+                        .chars()
+                        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                        .collect();
+                    // The literal is blanked out of `code`, so the marker it
+                    // spells is read off the raw line at the same position.
+                    let spells_a_marker = line[from..].trim_start().starts_with('"')
+                        && line[from..]
+                            .split('"')
+                            .nth(1)
+                            // doc-comment-ok: the literal is this walk's own subject
+                            .is_some_and(|literal| literal.contains("-ok:"));
+                    reads_a_marker |= spells_a_marker || names_a_hatch_marker(&argument);
+                }
+            }
+            let routed_here = routed.iter().any(|call| line.contains(call));
+            if routed_here || reads_a_marker {
+                read_here += 1;
+            }
+            if !reads_a_marker || routed_here {
+                continue;
+            }
+            // The routed call may sit on an earlier line of the same method
+            // chain, which is where a filter belongs when the read that follows
+            // it destructures what it kept.
+            let mut statement = vec![*line];
+            for above in lines[..n].iter().rev() {
+                let ended = crate::test_helpers::code_line(above);
+                let ended = ended.trim_end();
+                if ended.ends_with(';') || ended.ends_with('{') || ended.ends_with('}') {
+                    break;
+                }
+                statement.push(above);
+            }
+            if statement
+                .iter()
+                .any(|l| routed.iter().any(|call| l.contains(call)))
+            {
+                continue;
+            }
+            let above = n.checked_sub(1).map(|p| lines[p]).unwrap_or_default();
+            if carries_hatch(line, hatch) || carries_hatch(above, hatch) {
+                continue;
+            }
+            offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+        }
+        if read_here > 0 {
+            let owner = path
+                .strip_prefix(workspace_root().join("crates"))
+                .ok()
+                .and_then(|rest| rest.components().next())
+                .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                .unwrap_or_default();
+            *per_crate.entry(owner).or_default() += read_here;
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "read the hatch through `cfgd_core::test_helpers::carries_hatch`, which \
+         refuses a `///` or `//!` line so a rustdoc paragraph quoting the marker \
+         cannot exempt the item below it — or say why this subject is no source \
+         line with `// doc-comment-ok: <why>`:\n{}",
+        offenders.join("\n")
+    );
+    for (owner, floor) in FLOORS {
+        let found = per_crate.get(owner).copied().unwrap_or_default();
+        assert!(
+            found >= floor,
+            "the walk read {found} marker lookups in {owner}; it has stopped \
+             reading the population it judges"
+        );
+    }
+}
+
+/// The marker lookups each crate holds, so a walk that stopped reading one of
+/// them fails by that crate's name rather than by a total the other still fills.
+const FLOORS: [(&str, usize); 2] = [("cfgd", 79), ("cfgd-core", 28)];
 
 /// Every fence in this file is a claim about a POPULATION, so the walk that
 /// enumerates it fails rather than returning a shorter one.
@@ -4162,7 +4321,7 @@ fn no_production_site_spells_an_env_resource_type_instead_of_its_constant() {
         let mut hatched = false;
         for (i, line) in production.lines().enumerate() {
             let previous = hatched;
-            hatched = line.contains("env-type-literal-ok:");
+            hatched = carries_hatch(line, "env-type-literal-ok:");
             if previous || hatched || line.trim_start().starts_with("//") {
                 continue;
             }
@@ -4289,7 +4448,7 @@ fn every_gc_failed_removal_pin_holds_its_payload_through_the_one_fixture() {
             let hatched = attributes
                 .iter()
                 .chain(slice.lines().collect::<Vec<_>>().iter())
-                .any(|l| l.contains("unix-only-gc-ok:"));
+                .any(|l| carries_hatch(l, "unix-only-gc-ok:"));
             let reaches = slice.contains("hold_payload_unremovable");
             let hand_rolled = tells.iter().any(|tell| slice.contains(tell.as_str()));
             // Anything driving a collection is a candidate pin of this arm
@@ -4544,7 +4703,7 @@ fn every_production_spawn_in_the_workspace_goes_through_the_one_ladder() {
                 // off the raw rows, on the tell's own line or the one above it.
                 if lines[i.saturating_sub(1)..=i]
                     .iter()
-                    .any(|(_, l)| l.contains(HATCH) || l.contains(NOT_A_CHILD))
+                    .any(|(_, l)| carries_hatch(l, HATCH) || carries_hatch(l, NOT_A_CHILD))
                 {
                     continue;
                 }
@@ -5469,22 +5628,6 @@ fn declares_serde_skip(attribute: &str) -> bool {
             .contains("skip")
 }
 
-/// Whether a source line is a plain `//` comment rather than a `///` or `//!`
-/// doc comment.
-///
-/// A `plan-skip-ok:` reason addresses whoever maintains the field, and
-/// `critical.md` rule 8 puts that in a `//` comment. The distinction is not
-/// stylistic here: `PatchSpec` is a `JsonSchema` type, so schemars takes its
-/// `///` block as the schema description and a reason written there ships to
-/// users as documentation of a field they cannot set, which
-/// `no_schema_description_addresses_a_maintainer_instead_of_a_user` refuses
-/// from the other side. A lookup accepting `///` would also let a rustdoc
-/// paragraph that merely QUOTES the marker hatch the field below it.
-fn is_plain_line_comment(line: &str) -> bool {
-    let trimmed = line.trim_start();
-    trimmed.starts_with("//") && !trimmed.starts_with("///") && !trimmed.starts_with("//!")
-}
-
 /// Every attribute one source declares, as `(line number, whole attribute)`.
 ///
 /// An attribute is folded back onto one string because rustfmt breaks a long
@@ -5568,7 +5711,7 @@ fn every_optional_field_of_the_plan_format_deserializes_from_its_absence() {
                     .iter()
                     .rev()
                     .take_while(|above| is_plain_line_comment(above))
-                    .any(|above| above.contains(HATCH));
+                    .any(|above| carries_hatch(above, HATCH));
                 if !hatched {
                     offenders.push(format!(
                         "{rel}:{nth}: {attribute} — no `{HATCH}` line above it"

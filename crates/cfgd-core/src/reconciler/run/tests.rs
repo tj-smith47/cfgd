@@ -2006,6 +2006,7 @@ fn preview_bullet_styles_a_scripts_marker() {
     let (_, accent) = crate::output::renderer::role_glyph(&theme, Role::Accent);
     let styled_marker = accent.apply_to("run postApply script:").to_string();
     assert!(
+        // doc-comment-ok: a styled span in captured output, not a source line
         raw.contains(&styled_marker),
         "the marker must carry Role::Accent styling: {raw:?}"
     );

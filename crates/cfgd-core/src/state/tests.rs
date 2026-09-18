@@ -4671,9 +4671,9 @@ fn every_upsert_refreshes_its_own_timestamp() {
                 || set.contains("last_applied =")
                 || set.contains("last_fetched =");
             let n = body[..at].matches('\n').count();
-            let hatched = lines[n].contains("// stamp-ok:")
+            let hatched = crate::test_helpers::carries_hatch(lines[n], "// stamp-ok:")
                 || n.checked_sub(1)
-                    .is_some_and(|p| lines[p].contains("// stamp-ok:"));
+                    .is_some_and(|p| crate::test_helpers::carries_hatch(lines[p], "// stamp-ok:"));
             if !stamped && !hatched {
                 offenders.push(format!("{}:{}", path.display(), n + 1));
             }

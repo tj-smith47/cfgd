@@ -1162,7 +1162,7 @@ mod condense_script_label_tests {
                 seen += 1;
                 let hatched = [line, lines.get(n.wrapping_sub(1)).copied().unwrap_or("")]
                     .iter()
-                    .any(|l| l.contains("// plain-clamp-ok:"));
+                    .any(|l| crate::test_helpers::carries_hatch(l, "// plain-clamp-ok:"));
                 if !hatched {
                     offenders.push(format!("{}:{}: {}", path.display(), n + 1, code.trim()));
                 }

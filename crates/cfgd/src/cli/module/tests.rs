@@ -5773,6 +5773,7 @@ fn print_module_review_summary_shows_control_characters_on_every_row() {
     for marker in ["dep-", "pkg-", "src-", "ENV=", "al="] {
         let row = out
             .lines()
+            // doc-comment-ok: a rendered row, not a source line
             .find(|l| l.contains(marker))
             .unwrap_or_else(|| panic!("row {marker:?} missing; screen holds: {out}"));
         assert!(
@@ -5815,6 +5816,7 @@ fn print_module_review_summary_shows_control_characters_in_heading_and_trailer()
     for marker in ["module:mod-", "commit-", "sha256-"] {
         let row = out
             .lines()
+            // doc-comment-ok: a rendered row, not a source line
             .find(|l| l.contains(marker))
             .unwrap_or_else(|| panic!("row {marker:?} missing; screen holds: {out}"));
         assert!(

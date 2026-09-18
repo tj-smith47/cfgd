@@ -944,7 +944,7 @@ fn every_privileged_writer_says_whether_a_non_root_reader_opens_its_file() {
             // `else if let Err(e)` chain, so that half is read per function.
             let hatched = lines[idx.saturating_sub(2)..idx]
                 .iter()
-                .any(|l| l.contains("user-scope-ok:"));
+                .any(|l| cfgd_core::test_helpers::carries_hatch(l, "user-scope-ok:"));
             let lo = fn_starts
                 .iter()
                 .rev()

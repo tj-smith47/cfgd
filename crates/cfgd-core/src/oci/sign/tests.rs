@@ -1017,7 +1017,10 @@ fn every_cosign_subcommand_this_module_spells_declares_the_registry_scheme() {
             .map(|(_, rest)| rest.split('"').next().unwrap_or_default())
             .unwrap_or_default();
         assert!(
-            body.contains("apply_registry_scheme(&mut cmd") || body.contains("// no-registry-ok:"),
+            body.contains("apply_registry_scheme(&mut cmd")
+                || body
+                    .lines()
+                    .any(|l| crate::test_helpers::carries_hatch(l, "// no-registry-ok:")),
             "cosign {subcommand} reaches a registry but never declares its scheme"
         );
         checked += 1;

@@ -273,12 +273,12 @@ fn every_styled_span_reaches_bytes_through_the_one_gate() {
             // line, not off the one line before it: a reason worth writing
             // rarely fits on one, and a two-line justification is not a
             // missing one.
-            let mut hatched_here = line.contains(HATCH);
+            let mut hatched_here = crate::test_helpers::carries_hatch(line, HATCH);
             let mut back = i;
             while !hatched_here && back > 0 {
                 back -= 1;
                 let prev = lines[back].trim_start();
-                if prev.contains(HATCH) {
+                if crate::test_helpers::carries_hatch(prev, HATCH) {
                     hatched_here = true;
                 } else if !prev.starts_with("//") && !prev.starts_with('#') {
                     break;

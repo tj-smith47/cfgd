@@ -2656,12 +2656,12 @@ fn unhatched_seam_reading_factories(src: &str) -> Vec<(String, usize)> {
         };
         // The whole comment block above the head, so a reason too long for one
         // line still hatches the factory it was written for.
-        let hatched = line.contains("// seam-read-ok:")
+        let hatched = cfgd_core::test_helpers::carries_hatch(line, "// seam-read-ok:")
             || lines[..i]
                 .iter()
                 .rev()
                 .take_while(|l| l.trim_start().starts_with("//"))
-                .any(|l| l.contains("// seam-read-ok:"));
+                .any(|l| cfgd_core::test_helpers::carries_hatch(l, "// seam-read-ok:"));
         if hatched {
             continue;
         }
@@ -2786,7 +2786,7 @@ fn every_manager_command_factory_spawns_the_path_its_resolver_chose() {
             .filter(|c| command_factory_name(c).is_some())
             .count();
         for line in src.lines() {
-            if line.contains("// seam-read-ok:") {
+            if cfgd_core::test_helpers::carries_hatch(line, "// seam-read-ok:") {
                 hatched.push(path.display().to_string());
             }
         }

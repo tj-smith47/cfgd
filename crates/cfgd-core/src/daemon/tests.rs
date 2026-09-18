@@ -4448,9 +4448,10 @@ fn no_daemon_state_write_reaches_a_source_row_by_position() {
             if !positional_write(line) {
                 continue;
             }
-            let hatched = line.contains("// positional-source-ok:")
-                || n.checked_sub(1)
-                    .is_some_and(|p| lines[p].contains("// positional-source-ok:"));
+            let hatched = crate::test_helpers::carries_hatch(line, "// positional-source-ok:")
+                || n.checked_sub(1).is_some_and(|p| {
+                    crate::test_helpers::carries_hatch(lines[p], "// positional-source-ok:")
+                });
             if !hatched {
                 offenders.push(format!("{}:{}", path.display(), n + 1));
             }

@@ -4357,7 +4357,7 @@ mod tests {
                 if line.trim().is_empty() {
                     hatched = false;
                 }
-                if line.contains("basename-ok:") {
+                if cfgd_core::test_helpers::carries_hatch(line, "basename-ok:") {
                     hatched = true;
                 }
                 if hatched || line.trim_start().starts_with("//") {

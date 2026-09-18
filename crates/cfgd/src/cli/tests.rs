@@ -3,7 +3,9 @@ use cfgd_core::reconciler::{MSG_NOTHING_TO_DO, is_unmanaged_file};
 use std::sync::{Arc, Mutex};
 
 use cfgd_core::PathDisplayExt;
-use cfgd_core::test_helpers::{blank_string_literals, rust_sources_under, walked_file_body};
+use cfgd_core::test_helpers::{
+    blank_string_literals, carries_hatch, rust_sources_under, walked_file_body,
+};
 
 const TEST_CONFIG_YAML: &str =
     "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n";
@@ -17435,13 +17437,13 @@ fn shouts(label: &str) -> bool {
 /// pushed in a loop — a marker in the enclosing function's doc block would
 /// hatch every call in that function.
 fn line_hatched(lines: &[&str], n: usize, marker: &str) -> bool {
-    if lines[n].contains(marker) {
+    if carries_hatch(lines[n], marker) {
         return true;
     }
     let mut above = n;
     while above > 0 && lines[above - 1].trim_start().starts_with("//") {
         above -= 1;
-        if lines[above].contains(marker) {
+        if carries_hatch(lines[above], marker) {
             return true;
         }
     }
@@ -17465,7 +17467,7 @@ fn label_hatched(lines: &[&str], n: usize, marker: &str) -> bool {
                 if !above.starts_with("//") {
                     return false;
                 }
-                if above.contains(marker) {
+                if carries_hatch(above, marker) {
                     return true;
                 }
                 j -= 1;
@@ -19503,7 +19505,9 @@ fn every_run_that_renders_the_rollup_also_renders_the_run_header() {
             // paths, so the entry is folded: a native render makes the walk
             // report itself broken on Windows and nowhere else.
             checked.push(format!("{}:{}", cfgd_core::to_posix_string(&path), n + 1));
-            if scope.contains(".header(printer)") || scope.contains("// run-header-ok:") {
+            if scope.contains(".header(printer)")
+                || scope.lines().any(|l| carries_hatch(l, "// run-header-ok:"))
+            {
                 continue;
             }
             offenders.push(format!("{}:{}: {}", path.display(), n + 1, code));
@@ -32644,8 +32648,8 @@ fn every_merged_env_view_is_built_once_per_command() {
         let mut prev = "";
         for line in production.lines() {
             if line.contains("MergedEnvItems::new(")
-                && !line.contains(HATCH)
-                && !prev.contains(HATCH)
+                && !carries_hatch(line, HATCH)
+                && !carries_hatch(prev, HATCH)
             {
                 *counts.entry(name.clone()).or_default() += 1;
                 if let Some(opener) = open
@@ -32748,7 +32752,7 @@ fn every_live_minted_drift_id_comes_from_its_composer() {
             }) else {
                 continue;
             };
-            if line.contains(HATCH) || (i > 0 && lines[i - 1].contains(HATCH)) {
+            if carries_hatch(line, HATCH) || (i > 0 && carries_hatch(lines[i - 1], HATCH)) {
                 continue;
             }
             *counts.entry(name.clone()).or_default() += 1;
@@ -32856,7 +32860,7 @@ fn every_core_minted_package_drift_id_comes_from_its_composer() {
             {
                 continue;
             }
-            if line.contains(HATCH) || (i > 0 && lines[i - 1].contains(HATCH)) {
+            if carries_hatch(line, HATCH) || (i > 0 && carries_hatch(lines[i - 1], HATCH)) {
                 continue;
             }
             *counts.entry(name.clone()).or_default() += 1;
@@ -32957,7 +32961,7 @@ fn no_production_site_outside_format_rs_splits_a_module_id() {
                         && !ahead
                             .iter()
                             .any(|(_, l)| OWNER_READERS.iter().any(|r| l.contains(r)))
-                        && !behind.iter().any(|(_, l)| l.contains(HATCH))
+                        && !behind.iter().any(|(_, l)| carries_hatch(l, HATCH))
                     {
                         offenders.push(format!("{}:{}: {}", path.display(), n, line.trim()));
                     }
@@ -32969,7 +32973,7 @@ fn no_production_site_outside_format_rs_splits_a_module_id() {
                 // `.split_once('/')`), so the subject is looked for in the rows
                 // above the split as well as on it — and so is the hatch.
                 let window = &lines[i.saturating_sub(3)..=i];
-                if window.iter().any(|(_, l)| l.contains(HATCH))
+                if window.iter().any(|(_, l)| carries_hatch(l, HATCH))
                     || !window.iter().any(|(_, l)| l.contains("resource_id"))
                 {
                     continue;
@@ -33211,6 +33215,7 @@ fn every_reconciler_a_production_site_builds_says_which_picture_it_saw() {
                 let hatch = raw_chain
                     .iter()
                     .chain(comment_block.iter())
+                    .filter(|l| carries_hatch(l, HATCH))
                     .find_map(|l| l.split_once(HATCH));
                 if let Some((_, why)) = hatch {
                     let where_ = format!("{}:{n}", path.display());
@@ -33520,7 +33525,7 @@ fn every_two_root_walk_guards_each_root_it_reads() {
                     .map(cfgd_core::test_helpers::code_line)
                     .collect::<Vec<_>>()
                     .join("\n");
-                if floors_per_root(&code) || body.contains(HATCH) {
+                if floors_per_root(&code) || body.lines().any(|l| carries_hatch(l, HATCH)) {
                     continue;
                 }
                 // `enclosing_fn_span` opens the span at the first row of the
@@ -33667,6 +33672,7 @@ fn every_test_whose_plan_shape_a_host_tool_decides_plants_its_path() {
                 let hatch = text
                     .lines()
                     .chain(attributes.iter().copied())
+                    .filter(|l| carries_hatch(l, HATCH))
                     .find_map(|l| l.split_once(HATCH));
                 let name = cfgd_core::test_helpers::declared_fn_name(
                     &cfgd_core::test_helpers::code_line(lines[signature]),
@@ -33958,7 +33964,7 @@ fn no_core_production_site_compares_a_manager_name_to_a_bare_script_literal() {
                 }
                 if lines[i.saturating_sub(1)..=i]
                     .iter()
-                    .any(|(_, l)| l.contains(HATCH))
+                    .any(|(_, l)| carries_hatch(l, HATCH))
                 {
                     continue;
                 }
@@ -34059,7 +34065,7 @@ fn every_module_drift_id_names_the_file_it_stands_for() {
                 if !TYPE_TELLS.iter().any(|t| line.contains(t)) {
                     continue;
                 }
-                if line.contains(HATCH) || (i > 0 && lines[i - 1].1.contains(HATCH)) {
+                if carries_hatch(line, HATCH) || (i > 0 && carries_hatch(&lines[i - 1].1, HATCH)) {
                     continue;
                 }
                 *counts.entry(name.clone()).or_default() += 1;
@@ -34267,11 +34273,11 @@ fn every_manager_install_the_cli_emits_spells_its_weak_dependency_policy_once() 
             }
             // An install verb aimed at a HUMAN — advice for a tool cfgd cannot
             // install for them — is not an install cfgd emits, and says so.
-            let hatched = line.contains(MARKER)
+            let hatched = carries_hatch(line, MARKER)
                 || n.checked_sub(1)
                     .and_then(|prev| lines.get(prev))
                     .is_some_and(|prev| {
-                        prev.trim_start().starts_with("//") && prev.contains(MARKER)
+                        prev.trim_start().starts_with("//") && carries_hatch(prev, MARKER)
                     });
             if hatched {
                 continue;
@@ -34360,10 +34366,10 @@ fn every_windows_manager_install_the_cli_emits_comes_from_its_declaration() {
     // A hatch is read off the line itself or the comment directly above it, the
     // way the walk above reads the same marker.
     let hatched = |lines: &[(usize, String)], i: usize| {
-        lines[i].1.contains(MARKER)
+        carries_hatch(&lines[i].1, MARKER)
             || i.checked_sub(1).is_some_and(|prev| {
                 let above = lines[prev].1.trim_start();
-                above.starts_with("//") && above.contains(MARKER)
+                above.starts_with("//") && carries_hatch(above, MARKER)
             })
     };
     // The call whose argument list the word sits in, read at the word's own
@@ -35947,8 +35953,8 @@ fn ungating_site_hatched(path: &str, name: &str) -> bool {
             && entry.iter().any(|line| line.contains(&name_token))
             && (entry
                 .iter()
-                .any(|line| line.contains(UNGATING_SITE_UNCALLED_HATCH))
-                || lines[start - 1].contains(UNGATING_SITE_UNCALLED_HATCH))
+                .any(|line| carries_hatch(line, UNGATING_SITE_UNCALLED_HATCH))
+                || carries_hatch(lines[start - 1], UNGATING_SITE_UNCALLED_HATCH))
     })
 }
 
@@ -37660,7 +37666,7 @@ fn every_config_and_profile_header_row_comes_from_the_one_builder() {
             checked.push(format!("{}:{}", cfgd_core::to_posix_string(&path), n + 1));
             // The marker may head a multi-line comment block, so the search
             // walks the contiguous comment lines above the row.
-            let marked = code.contains("// header-row-ok:")
+            let marked = carries_hatch(code, "// header-row-ok:")
                 || (0..n)
                     .rev()
                     .take_while(|&p| lines[p].trim_start().starts_with("//"))
@@ -37840,12 +37846,12 @@ fn every_verb_reporting_on_a_resolved_configuration_opens_on_the_header_block() 
                     && (code.starts_with("fn ") || code.starts_with("pub"))
             })
             .unwrap_or_else(|| panic!("{file} no longer declares `{entry}`"));
-        let is_hatched = lines[at].contains(HATCH)
+        let is_hatched = carries_hatch(lines[at], HATCH)
             || lines[..at]
                 .iter()
                 .rev()
                 .take_while(|l| l.trim_start().starts_with("//"))
-                .any(|l| l.contains(HATCH));
+                .any(|l| carries_hatch(l, HATCH));
         if is_hatched {
             hatched.push(format!("{file}:{entry}"));
             continue;
@@ -38009,7 +38015,7 @@ fn every_recorded_scope_slot_declares_its_owner_tokens() {
             }
             let hatched = lines[n..=end]
                 .iter()
-                .any(|l| l.contains("owner-column-ok:"));
+                .any(|l| carries_hatch(l, "owner-column-ok:"));
             let declared: Vec<String> = owned
                 .iter()
                 .filter(|h| !decl.contains(&format!(".owner_column(\"{h}\")")))
@@ -38152,10 +38158,10 @@ fn every_title_cased_status_word_renders_role_styled() {
         let mut hits = Vec::new();
         for (n, line) in lines.iter().enumerate() {
             let code = line.trim_start();
-            if code.starts_with("//") || code.contains("// status-word-ok:") {
+            if code.starts_with("//") || carries_hatch(code, "// status-word-ok:") {
                 continue;
             }
-            if (n.saturating_sub(1)..n).any(|p| lines[p].contains("// status-word-ok:")) {
+            if (n.saturating_sub(1)..n).any(|p| carries_hatch(lines[p], "// status-word-ok:")) {
                 continue;
             }
             // The VALUE position only: the same words are legitimate KEYS
@@ -38314,7 +38320,7 @@ fn every_status_row_naming_an_owner_takes_the_owner_subject_slot() {
             if !(call.contains(".token()") || call.contains(".plain()")) {
                 continue;
             }
-            if (n.saturating_sub(1)..=n).any(|p| lines[p].contains("owner-subject-ok:")) {
+            if (n.saturating_sub(1)..=n).any(|p| carries_hatch(lines[p], "owner-subject-ok:")) {
                 continue;
             }
             hits.push((n + 1, code.to_string()));
@@ -38414,7 +38420,7 @@ fn every_resolved_profile_header_names_its_modules_through_the_one_builder() {
                 continue;
             }
             checked.push(format!("{}:{}", cfgd_core::to_posix_string(&path), n + 1));
-            let marked = code.contains("// modules-row-ok:")
+            let marked = carries_hatch(code, "// modules-row-ok:")
                 || (0..n)
                     .rev()
                     .take_while(|&p| lines[p].trim_start().starts_with("//"))
@@ -38528,7 +38534,7 @@ fn every_surface_naming_an_env_block_names_its_aliases_first() {
 /// it — the ONE reading of a hatch, so every walk in this file accepts a marker
 /// in the same two places and a typo in one cannot pass in the other.
 fn hatched(lines: &[&str], n: usize, marker: &str) -> bool {
-    lines[n].trim_start().contains(marker)
+    carries_hatch(lines[n], marker)
         || (0..n)
             .rev()
             .take_while(|&p| lines[p].trim_start().starts_with("//"))
@@ -38856,7 +38862,7 @@ fn no_journal_line_folds_the_home_directory() {
                     .find(|&i| lines[i].trim_end().ends_with(';'))
                     .unwrap_or(n);
                 let stmt = lines[n..=end].join("\n");
-                if stmt.contains("native-ok:") {
+                if stmt.lines().any(|l| carries_hatch(l, "native-ok:")) {
                     hatched += 1;
                 }
                 if stmt.contains("fold_home_in_text(") {
@@ -39018,7 +39024,7 @@ fn no_production_site_hand_rolls_the_v_strip_or_the_owner_token_split() {
                 };
                 if lines[i.saturating_sub(1)..=i]
                     .iter()
-                    .any(|(_, l)| l.contains(hatch))
+                    .any(|(_, l)| carries_hatch(l, hatch))
                 {
                     continue;
                 }
@@ -39092,7 +39098,7 @@ fn no_production_site_joins_the_module_cache_segment_by_hand() {
                 }
                 if lines[i.saturating_sub(1)..=i]
                     .iter()
-                    .any(|(_, l)| l.contains(HATCH))
+                    .any(|(_, l)| carries_hatch(l, HATCH))
                 {
                     continue;
                 }
@@ -39158,7 +39164,7 @@ fn every_recorded_origin_names_the_layer_that_delivered_it() {
                 }
                 if lines[i.saturating_sub(1)..=i]
                     .iter()
-                    .any(|(_, l)| l.contains(HATCH))
+                    .any(|(_, l)| carries_hatch(l, HATCH))
                 {
                     hatched += 1;
                     continue;
@@ -39362,9 +39368,11 @@ fn no_serialized_payload_field_is_built_from_a_themed_arrow() {
                     let Some(line_no) = offender_line_no else {
                         continue;
                     };
-                    let hatched = lines.get(line_no).is_some_and(|l| l.contains(HATCH))
+                    let hatched = lines.get(line_no).is_some_and(|l| carries_hatch(l, HATCH))
                         || (line_no > 0
-                            && lines.get(line_no - 1).is_some_and(|l| l.contains(HATCH)));
+                            && lines
+                                .get(line_no - 1)
+                                .is_some_and(|l| carries_hatch(l, HATCH)));
                     if hatched {
                         continue;
                     }
@@ -39597,7 +39605,7 @@ fn every_path_naming_confirm_prompt_folds_the_home_directory() {
                     let journal = ["warn!", "info!", "debug!", "error!", "tracing::"];
                     if path_idiom(l)
                         && !l.contains("fold_home_in_text")
-                        && !l.contains("// native-prompt-ok:")
+                        && !carries_hatch(l, "// native-prompt-ok:")
                         && !journal.iter().any(|m| l.contains(m))
                         && !lines[lo..lo + i]
                             .iter()
@@ -40268,7 +40276,7 @@ struct FoldHomeTally {
 /// block as well, or a `#[cfg(unix)]` composer could only ever be marked on the
 /// signature line rustfmt owns.
 fn absolute_path_hatched(lines: &[&str], at: usize) -> bool {
-    if lines[at].contains(ABSOLUTE_PATH_HATCH) {
+    if carries_hatch(lines[at], ABSOLUTE_PATH_HATCH) {
         return true;
     }
     let mut j = at;
@@ -40277,7 +40285,7 @@ fn absolute_path_hatched(lines: &[&str], at: usize) -> bool {
         above.starts_with("//") || above.starts_with("#[")
     } {
         j -= 1;
-        if lines[j].contains(ABSOLUTE_PATH_HATCH) {
+        if carries_hatch(lines[j], ABSOLUTE_PATH_HATCH) {
             return true;
         }
     }
@@ -40673,12 +40681,12 @@ fn serializing_type_names() -> std::collections::BTreeSet<String> {
 /// and a hatch pushed onto the line of a closure's `map` reads as a comment about
 /// the wrong thing.
 fn hatched_here_or_just_above(lines: &[&str], at: usize) -> bool {
-    lines[at].contains(NATIVE_HATCH)
+    carries_hatch(lines[at], NATIVE_HATCH)
         || lines[..at]
             .iter()
             .rev()
             .take_while(|prior| prior.trim_start().starts_with("//"))
-            .any(|prior| prior.contains(NATIVE_HATCH))
+            .any(|prior| carries_hatch(prior, NATIVE_HATCH))
 }
 
 /// The digest composers whose parts become a PERSISTED string.
@@ -40961,7 +40969,7 @@ fn native_paths_in_declared_documents(region: &str) -> (Vec<(usize, String)>, us
             } else if NATIVE.iter().any(|f| text.contains(f)) {
                 let hatched = lines[hatch_from.min(j.saturating_sub(1))..=j.max(n)]
                     .iter()
-                    .any(|l| l.contains(NATIVE_HATCH));
+                    .any(|l| carries_hatch(l, NATIVE_HATCH));
                 if !hatched {
                     offenders.push((j, text.to_string()));
                 }
@@ -41302,7 +41310,7 @@ fn every_plan_running_verb_settles_its_link_deployed_hashes() {
             }
             let hatched = lines[n.saturating_sub(1)..=n]
                 .iter()
-                .any(|l| l.contains("// no-hash-refresh-ok:"));
+                .any(|l| carries_hatch(l, "// no-hash-refresh-ok:"));
             if hatched {
                 continue;
             }
@@ -41631,7 +41639,10 @@ fn every_offered_bootstrap_plan_says_which_platforms_run_its_arm() {
                 gated += 1;
                 continue;
             }
-            if body.iter().any(|l| l.contains("// every-platform-ok:")) {
+            if body
+                .iter()
+                .any(|l| carries_hatch(l, "// every-platform-ok:"))
+            {
                 continue;
             }
             offenders.push(format!("{}:{}", path.display(), n + 1));
@@ -41786,7 +41797,9 @@ fn every_bootstrap_route_a_plan_withholds_is_one_no_manager_could_drive() {
             }
             withholding += 1;
             if rostered.contains(&relative.as_str())
-                || body.iter().any(|l| l.contains(NO_DRIVEN_ROUTE_MARKER))
+                || body
+                    .iter()
+                    .any(|l| carries_hatch(l, NO_DRIVEN_ROUTE_MARKER))
             {
                 continue;
             }
@@ -41854,7 +41867,7 @@ fn declared_arms_tables(body: &str) -> Vec<DeclaredArms> {
             });
             if !marked
                 .clone()
-                .any(|j| lines[j].contains(NO_DRIVEN_ROUTE_MARKER))
+                .any(|j| carries_hatch(lines[j], NO_DRIVEN_ROUTE_MARKER))
             {
                 declined_unmarked.push(arm.to_string());
             }
@@ -41940,7 +41953,9 @@ fn the_withheld_route_walks_read_an_unmarked_refusal() {
         "a cfg-gated `None` is exactly what the walk is for"
     );
     assert!(
-        !unmarked.iter().any(|l| l.contains(NO_DRIVEN_ROUTE_MARKER)),
+        !unmarked
+            .iter()
+            .any(|l| carries_hatch(l, NO_DRIVEN_ROUTE_MARKER)),
         "the fixture carries no reason, so a manager off the roster fails on it"
     );
     let arm = vec![
@@ -42812,8 +42827,9 @@ const NO_PROVISION_ROUTE_MARKER: &str = "// no-provision-route-ok:";
 /// can run is the same gap worded confidently.
 fn unrouted_require_tool_sites(body: &str) -> Vec<String> {
     let lines = cfgd_core::test_helpers::logical_source_lines(body);
-    let marks =
-        |l: &str| l.contains(PROVISION_ROUTE_MARKER) || l.contains(NO_PROVISION_ROUTE_MARKER);
+    let marks = |l: &str| {
+        carries_hatch(l, PROVISION_ROUTE_MARKER) || carries_hatch(l, NO_PROVISION_ROUTE_MARKER)
+    };
     let mut offenders = Vec::new();
     for (idx, (number, raw)) in lines.iter().enumerate() {
         if !require_tool_call_line(raw) {
@@ -42831,11 +42847,12 @@ fn unrouted_require_tool_sites(body: &str) -> Vec<String> {
         }
         match marker {
             None => offenders.push(format!("{number}: {}", raw.trim())),
-            Some(m) if m.contains(PROVISION_ROUTE_MARKER) && !m.contains("cfgd ") => offenders
-                .push(format!(
+            Some(m) if carries_hatch(m, PROVISION_ROUTE_MARKER) && !m.contains("cfgd ") => {
+                offenders.push(format!(
                     "{number}: {} (its route names no cfgd command)",
                     raw.trim()
-                )),
+                ))
+            }
             Some(_) => {}
         }
     }
@@ -43486,9 +43503,9 @@ fn every_docs_pointer_the_cli_renders_goes_through_the_linked_slot() {
             // A `docs:` field DECLARES the pointer; `ResourceSchema::docs_url`
             // is its only reader, and the row pin above covers the render.
             let declares = code.starts_with("docs:");
-            let hatched = code.contains("// docs-pointer-ok:")
+            let hatched = carries_hatch(code, "// docs-pointer-ok:")
                 || n.checked_sub(1)
-                    .is_some_and(|p| lines[p].contains("// docs-pointer-ok:"));
+                    .is_some_and(|p| carries_hatch(lines[p], "// docs-pointer-ok:"));
             if !declares && !hatched {
                 pointers.push(at);
             }
@@ -43880,7 +43897,7 @@ fn every_fleet_drift_surface_names_the_system_settings_class() {
                 continue;
             }
             checked += 1;
-            let hatched = |s: &str| s.contains("fleet-drift-ok:");
+            let hatched = |s: &str| carries_hatch(s, "fleet-drift-ok:");
             if lowered.contains("system setting") || hatched(line) || n > 0 && hatched(lines[n - 1])
             {
                 continue;
@@ -44034,8 +44051,8 @@ fn every_core_composed_system_identity_comes_from_the_one_composer() {
                     && window.contains("configurator"));
             if line.trim_start().starts_with("//")
                 || !hand_composed
-                || line.contains(HATCH)
-                || (i > 0 && lines[i - 1].contains(HATCH))
+                || carries_hatch(line, HATCH)
+                || (i > 0 && carries_hatch(lines[i - 1], HATCH))
             {
                 continue;
             }
@@ -44152,7 +44169,7 @@ fn no_doctor_section_or_verdict_borrows_the_managed_resource_vocabulary() {
     let plines: Vec<&str> = production.lines().collect();
     for (i, line) in plines.iter().enumerate() {
         let code = blank_string_literals(line.split("//").next().unwrap_or(line));
-        if !PRESENCE_TELLS.iter().any(|t| code.contains(t)) || line.contains(PRESENCE_HATCH) {
+        if !PRESENCE_TELLS.iter().any(|t| code.contains(t)) || carries_hatch(line, PRESENCE_HATCH) {
             continue;
         }
         // The hatch may head the contiguous comment block above the line, so a
@@ -44161,7 +44178,7 @@ fn no_doctor_section_or_verdict_borrows_the_managed_resource_vocabulary() {
         let mut hatched = false;
         while above > 0 && plines[above - 1].trim_start().starts_with("//") {
             above -= 1;
-            hatched |= plines[above].contains(PRESENCE_HATCH);
+            hatched |= carries_hatch(plines[above], PRESENCE_HATCH);
         }
         if hatched {
             continue;
@@ -44302,7 +44319,7 @@ fn every_verb_composes_its_drift_predicate_once() {
             chains += 1;
             if lines[i.saturating_sub(3)..=i]
                 .iter()
-                .any(|l| l.contains(HATCH))
+                .any(|l| carries_hatch(l, HATCH))
             {
                 continue;
             }
@@ -44513,7 +44530,7 @@ fn no_command_paints_its_heading_before_the_wait_that_fills_it() {
             // one arm of a `match` is hatched once, above the `match`, rather
             // than once per arm.
             let hatched = |i: usize| {
-                if lines[i].contains("heading-first-ok:") {
+                if carries_hatch(lines[i], "heading-first-ok:") {
                     return true;
                 }
                 let indent = |l: &str| l.len() - l.trim_start().len();
@@ -44524,7 +44541,7 @@ fn no_command_paints_its_heading_before_the_wait_that_fills_it() {
                     let mut k = j;
                     while k > start && lines[k - 1].trim_start().starts_with("//") {
                         k -= 1;
-                        if lines[k].contains("heading-first-ok:") {
+                        if carries_hatch(lines[k], "heading-first-ok:") {
                             return true;
                         }
                     }
@@ -44708,11 +44725,11 @@ fn every_mutating_verbs_next_step_renders_at_the_runs_own_depth() {
                         .unwrap_or_default()
                         .to_string(),
                 );
-                if lines[i].contains(HATCH)
+                if carries_hatch(lines[i], HATCH)
                     || (start..i)
                         .rev()
                         .take_while(|&j| lines[j].trim_start().starts_with("//"))
-                        .any(|j| lines[j].contains(HATCH))
+                        .any(|j| carries_hatch(lines[j], HATCH))
                 {
                     continue;
                 }
@@ -44914,7 +44931,7 @@ fn every_backup_unit_the_cli_builds_is_projected() {
                 continue;
             }
             let window = lines[n.saturating_sub(15)..=n].join("\n");
-            if window.contains(HATCH) {
+            if window.lines().any(|l| carries_hatch(l, HATCH)) {
                 continue;
             }
             seen += 1;
@@ -45070,12 +45087,12 @@ fn every_scripts_inventory_a_surface_renders_comes_from_the_one_composer() {
                 matched[index] = true;
                 // The whole comment block above the call, so a reason long
                 // enough to be worth reading is not pushed out of range.
-                let hatched = line.contains(HATCH)
+                let hatched = carries_hatch(line, HATCH)
                     || lines[..n]
                         .iter()
                         .rev()
                         .take_while(|l| l.trim_start().starts_with("//"))
-                        .any(|l| l.contains(HATCH));
+                        .any(|l| carries_hatch(l, HATCH));
                 if *is_script_body && !hatched {
                     unhatched.push(format!("{rel}:{}: {}", n + 1, line.trim()));
                 }
@@ -45245,7 +45262,7 @@ fn every_hook_table_a_production_site_builds_reads_the_one_hook_set() {
                     hatched = false;
                     continue;
                 }
-                if line.contains(HATCH) {
+                if carries_hatch(line, HATCH) {
                     hatched = true;
                 }
                 let code = line.split("//").next().unwrap_or(line);
@@ -45609,7 +45626,7 @@ fn no_gated_value_result_reaches_a_name_column() {
             }
             sites += 1;
             let n = joined[..at].matches('\n').count();
-            if lines[n].contains(HATCH) || (n > 0 && lines[n - 1].contains(HATCH)) {
+            if carries_hatch(lines[n], HATCH) || (n > 0 && carries_hatch(lines[n - 1], HATCH)) {
                 continue;
             }
             let spans = spans.get_or_insert_with(|| declared_fn_spans(&lines));
@@ -45811,12 +45828,12 @@ fn fact_class_reaches(source: &str, entry: &str, hatch_allowed: bool) -> Vec<Str
             // a reason worth writing rarely fits on one line, and a hatch that
             // only reads the line above rewards a one-word excuse.
             let marked = |hatch: &str| {
-                lines[n].contains(hatch)
+                carries_hatch(lines[n], hatch)
                     || lines[..n]
                         .iter()
                         .rev()
                         .take_while(|l| l.trim_start().starts_with("//"))
-                        .any(|l| l.contains(hatch))
+                        .any(|l| carries_hatch(l, hatch))
             };
             if marked(DECLARED_LOCK_HATCH) || (hatch_allowed && marked(LIST_STATUS_HATCH)) {
                 continue;

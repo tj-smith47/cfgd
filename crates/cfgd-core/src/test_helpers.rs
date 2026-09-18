@@ -1489,6 +1489,36 @@ pub fn code_line(line: &str) -> String {
     }
 }
 
+/// Whether a source line is a plain `//` comment rather than a `///` or `//!`
+/// doc comment.
+///
+/// Every hatch a source-walking pin reads is maintainer text, which
+/// `critical.md` rule 8 puts in a `//` comment; a `///` block is USER text, and
+/// on a `JsonSchema` type it IS the published schema's description. A lookup
+/// that asks only `starts_with("//")` therefore accepts the reason in the one
+/// place the repo forbids writing it — and, worse, lets a rustdoc paragraph
+/// that merely QUOTES a marker while describing its rule hatch whatever item
+/// sits below it. Reach for this wherever a walk decides that a comment line
+/// carries its marker.
+pub fn is_plain_line_comment(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    trimmed.starts_with("//") && !trimmed.starts_with("///") && !trimmed.starts_with("//!")
+}
+
+/// Whether this source line carries `marker` as a HATCH — the marker written
+/// where a walk will read it, rather than merely spelled somewhere on the line.
+///
+/// A hatch is written either as a comment line of its own above the subject or
+/// as a trailing comment on the subject itself, so both shapes answer true. A
+/// `///` or `//!` line does not: see [`is_plain_line_comment`] for why, and for
+/// the 97 rustdoc lines in this tree that quote a marker while describing its
+/// rule — each of which a bare `contains` would have let hatch the item
+/// directly below it. Reach for this in place of `line.contains(marker)` at
+/// every site that decides whether a subject is exempt.
+pub fn carries_hatch(line: &str, marker: &str) -> bool {
+    line.contains(marker) && (is_plain_line_comment(line) || !line.trim_start().starts_with("//"))
+}
+
 /// The name a function declaration on this CODE line declares, if it declares
 /// one. A generic declaration (`fn foo<T>(`) is one.
 pub fn declared_fn_name(code: &str) -> Option<String> {
@@ -4972,7 +5002,7 @@ pub fn path_based_chmod_population(crates_dir: &Path) -> ChmodPopulation {
                 }
                 if lines[idx.saturating_sub(1)..=idx]
                     .iter()
-                    .any(|l| l.contains("follow-ok:"))
+                    .any(|l| carries_hatch(l, "follow-ok:"))
                 {
                     continue;
                 }
