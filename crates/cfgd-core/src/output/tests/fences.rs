@@ -5431,3 +5431,143 @@ fn the_validator_tell_reads_a_whole_field_token_outside_the_call_name() {
         );
     }
 }
+
+/// Every file the plan-file format is spread across, and how many optional
+/// fields each holds today.
+///
+/// The count is a per-file floor, not a total: one aggregate number stays
+/// satisfied while a whole file is renamed out of the walk. A file holding no
+/// optional field yet is floored on the readers it declares instead, which is
+/// what says the walk still reaches the types it names.
+const PLAN_FORMAT_FILES: [(&str, usize); 3] = [
+    ("crates/cfgd-core/src/reconciler/types.rs", 2),
+    ("crates/cfgd-core/src/providers/mod.rs", 3),
+    ("crates/cfgd-core/src/modules/mod.rs", 0),
+];
+
+/// Every attribute one source declares, as `(line number, whole attribute)`.
+///
+/// An attribute is folded back onto one string because rustfmt breaks a long
+/// `#[serde(...)]` across lines, and a walk reading a physical line would then
+/// see `skip_serializing_if` and `default` as two unrelated facts. Brackets are
+/// counted on the line with its string literals blanked, so a bracket inside a
+/// `skip_serializing_if = "..."` path closes nothing.
+fn declared_attributes(body: &str) -> Vec<(usize, String)> {
+    let mut attributes = Vec::new();
+    let mut open: Option<(usize, String, i32)> = None;
+    for (nth, line) in body.lines().enumerate() {
+        let code = blank_string_literals(line);
+        let depth: i32 = code
+            .chars()
+            .map(|c| i32::from(c == '[') - i32::from(c == ']'))
+            .sum();
+        match open.take() {
+            Some((start, mut text, pending)) => {
+                text.push(' ');
+                text.push_str(line.trim());
+                let pending = pending + depth;
+                if pending > 0 {
+                    open = Some((start, text, pending));
+                } else {
+                    attributes.push((start, text));
+                }
+            }
+            None if line.trim_start().starts_with("#[") => {
+                if depth > 0 {
+                    open = Some((nth + 1, line.trim().to_string(), depth));
+                } else {
+                    attributes.push((nth + 1, line.trim().to_string()));
+                }
+            }
+            None => {}
+        }
+    }
+    attributes
+}
+
+/// Every optional field of the plan-file format deserializes from its ABSENCE.
+///
+/// `#[serde(skip_serializing_if = "Option::is_none")]` drops the key from the
+/// wire when it is empty, and serde's derive then REFUSES a file that omits it
+/// unless the field also carries `#[serde(default)]`. Dropping the skip instead
+/// is not the alternative: the hash `applies.plan_hash` stores is a
+/// serialization of the actions (`Plan::to_hash_string`), so a key that starts
+/// being written rewrites every hash already in every state store.
+#[test]
+fn every_optional_field_of_the_plan_format_deserializes_from_its_absence() {
+    let mut offenders = Vec::new();
+    for (rel, floor) in PLAN_FORMAT_FILES {
+        let body = crate::test_helpers::production_slice_of(&workspace_root().join(rel));
+        let mut deserializes = false;
+        let mut readers = 0usize;
+        let mut checked = 0usize;
+        for (nth, attribute) in declared_attributes(&body) {
+            if attribute.starts_with("#[derive(") {
+                deserializes = attribute.contains("Deserialize");
+                readers += usize::from(deserializes);
+            }
+            if !deserializes || !attribute.contains("skip_serializing_if") {
+                continue;
+            }
+            checked += 1;
+            if !attribute.contains("default") {
+                offenders.push(format!("{rel}:{nth}: {attribute}"));
+            }
+        }
+        assert!(
+            readers > 0,
+            "{rel}: the walk found no type that reads a plan file back; \
+             the plan format no longer lives where this walk looks"
+        );
+        assert!(
+            checked >= floor,
+            "{rel}: the walk judged {checked} optional fields, below this file's floor of {floor}"
+        );
+    }
+    assert!(
+        offenders.is_empty(),
+        "an optional field of the plan format carries no `default`, so a plan file \
+         omitting its key fails to read:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// A wrapped attribute reaches the walk above as one attribute.
+///
+/// rustfmt breaks a `#[serde(...)]` that outgrows the line, and the two facts
+/// the walk pairs — the skip and the `default` that makes its key optional —
+/// then sit on different physical lines. The shape below is the one rustfmt
+/// already writes in `cfgd-schema`.
+#[test]
+fn a_wrapped_attribute_is_folded_before_the_plan_format_walk_reads_it() {
+    let source = "\
+#[derive(Deserialize)]
+struct Wire {
+    #[serde(
+        default,
+        skip_serializing_if = \"Option::is_none\",
+        rename = \"idleTimeout\"
+    )]
+    idle_timeout: Option<String>,
+}
+";
+    let folded = declared_attributes(source);
+    let serde_attr = folded
+        .iter()
+        .find(|(_, text)| text.contains("skip_serializing_if"))
+        .expect("the wrapped attribute is one of the attributes the walk reads");
+    assert_eq!(
+        serde_attr.0, 3,
+        "the attribute is reported at the line it opens on"
+    );
+    assert!(
+        serde_attr.1.contains("default"),
+        "both halves reach the walk on one string: {}",
+        serde_attr.1
+    );
+    assert_eq!(
+        folded.len(),
+        2,
+        "the derive and the wrapped attribute, and no fragment of either: {folded:?}"
+    );
+}

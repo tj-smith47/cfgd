@@ -9,7 +9,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::config::{EnvVar, ModuleSpec, ShellAlias};
 
@@ -54,7 +54,7 @@ pub use surfaces::{DeclaredScript, HookScripts, ModuleSurfaces, scripts_section}
 // ---------------------------------------------------------------------------
 
 /// A package resolved to a concrete manager and name.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResolvedPackage {
     /// Canonical name from the module spec.
     pub canonical_name: String,
@@ -117,7 +117,7 @@ pub struct ResolvedPackage {
 }
 
 /// A file resolved to a concrete local path.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResolvedFile {
     /// Local source path (after git clone if needed).
     pub source: PathBuf,

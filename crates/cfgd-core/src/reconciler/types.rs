@@ -1,6 +1,6 @@
 use std::str::FromStr;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::config::ScriptEntry;
 use crate::providers::{ActionNote, FileAction, PackageAction, SecretAction};
@@ -15,7 +15,7 @@ pub enum ReconcileContext {
 }
 
 /// Ordered reconciliation phases.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PhaseName {
     PreScripts,
     /// Everything the rest of the run consumes but no user document declares:
@@ -96,7 +96,7 @@ impl FromStr for PhaseName {
 }
 
 /// Environment file action — write ~/.cfgd.env or inject source line into shell rc.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub enum EnvAction {
     /// Write the generated env file (bash/zsh or fish).
     WriteEnvFile {
@@ -138,7 +138,7 @@ pub enum EnvAction {
 /// off the plan instead of re-deriving them from provider probes that may
 /// answer differently by the time it runs — and a failed node fails its
 /// dependents transitively by the same edges.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ManagerAction {
     /// A manager already present on the host: refresh its package index.
@@ -170,7 +170,7 @@ pub enum ManagerAction {
         /// A declared route is never batched: the batch is one mediator
         /// command over `mediated_packages`, and those are the manager's own
         /// names, not the alias the module wrote.
-        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         declared: Option<DeclaredProvision>,
         /// The other managers this node's ONE `via` command provisions
         /// alongside `manager`, in provision order and never naming `manager`
@@ -219,7 +219,7 @@ pub enum ManagerAction {
 /// Built by the planner from the module's already-resolved `spec.packages`
 /// entry, so the `prefer` chain and the `aliases` map are read exactly once,
 /// by the code that owns them.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeclaredProvision {
     /// The registered manager the entry's `prefer` chain resolved to.
@@ -456,7 +456,7 @@ impl ManagerAction {
 pub const PREREQUISITE_NOT_IN_RUN: &str = "prerequisite install not in this run";
 
 /// A unified action across all resource types.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub enum Action {
     File(FileAction),
     Package(PackageAction),
@@ -546,7 +546,7 @@ impl Action {
 }
 
 /// Module-level action — first-class phase, not flattened into packages/files.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ModuleAction {
     pub module_name: String,
     pub kind: ModuleActionKind,
@@ -584,7 +584,7 @@ impl ModuleAction {
 }
 
 /// What kind of module action to take.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub enum ModuleActionKind {
     /// Install/update packages resolved from a module.
     InstallPackages {
@@ -634,7 +634,7 @@ pub enum ModuleActionKind {
 pub const MODULE_FACET_FILES_REFUSED: &str = "files-refused";
 
 /// System configuration action.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub enum SystemAction {
     SetValue {
         configurator: String,
@@ -681,7 +681,7 @@ pub enum SystemAction {
 }
 
 /// Script execution action.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub enum ScriptAction {
     Run {
         entry: ScriptEntry,
@@ -691,7 +691,7 @@ pub enum ScriptAction {
 }
 
 /// When a script runs relative to reconciliation.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ScriptPhase {
     PreApply,
     PostApply,
@@ -747,7 +747,7 @@ pub enum PhaseFilter {
 /// a file's body; the module still owns the action, and making the source an
 /// owner would give an action two parents. Source attribution rides on the
 /// action instead, as the ` <- name` provenance suffix and the `origin` field.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum OwnerKind {
     Profile,
@@ -856,7 +856,7 @@ fn cfgd_group_rank(kind: &OwnerKind, name: &str) -> u8 {
 }
 
 /// Who declared an action: a kind plus the name of the thing that declared it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Owner {
     pub kind: OwnerKind,
@@ -988,7 +988,7 @@ pub fn recorded_source_layers(recorded: &str) -> Vec<&str> {
 
 /// One owner's slice of a phase. Never empty — an owner with no actions in a
 /// phase produces no group.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct OwnerGroup {
     pub owner: Owner,
     pub actions: Vec<Action>,
@@ -1038,6 +1038,41 @@ fn batch_survives(batched: usize, kept: usize) -> bool {
 pub struct Phase {
     pub name: PhaseName,
     groups: Vec<OwnerGroup>,
+}
+
+/// A phase read back from a plan file.
+///
+/// Hand-written rather than derived because `groups` is private, and the
+/// invariants above are the whole reason it is: a derive would hand a file's
+/// own shape straight into the field every surface renders. A plan file is an
+/// input like any other, so the same three facts [`Phase::from_actions`]
+/// establishes are established again here — one group per owner, no empty
+/// group, owners in [`Owner::sort_key`] order — leaving a phase no reader can
+/// tell from one the planner built.
+impl<'de> Deserialize<'de> for Phase {
+    fn deserialize<D: serde::Deserializer<'de>>(de: D) -> std::result::Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Wire {
+            name: PhaseName,
+            groups: Vec<OwnerGroup>,
+        }
+        let wire = Wire::deserialize(de)?;
+        let mut phase = Self {
+            name: wire.name,
+            groups: Vec::with_capacity(wire.groups.len()),
+        };
+        for group in wire.groups {
+            match phase.groups.iter_mut().find(|g| g.owner == group.owner) {
+                Some(held) => held.actions.extend(group.actions),
+                None => phase.groups.push(group),
+            }
+        }
+        phase
+            .groups
+            .sort_by(|a, b| a.owner.sort_key().cmp(&b.owner.sort_key()));
+        phase.prune_empty_groups();
+        Ok(phase)
+    }
 }
 
 impl Phase {
@@ -1282,14 +1317,14 @@ impl Tier {
 }
 
 /// A complete reconciliation plan.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Plan {
     pub phases: Vec<Phase>,
     /// Run-level warnings the header renders and the `-o json` payload
     /// carries: shell rc conflicts (env/alias defined before the cfgd source
     /// line) and source batches withheld without a row
     /// (`UndecidableBatch::warning`).
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
 }
 

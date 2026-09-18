@@ -1762,7 +1762,7 @@ pub enum FileDiffKind {
     Unchanged,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub enum FileAction {
     Create {
         source: PathBuf,
@@ -1774,7 +1774,7 @@ pub enum FileAction {
         /// Merge spec carried from the profile entry, set exactly when
         /// `strategy` is `Patch`. Apply re-runs it against the target's live
         /// content, so `source` is empty and `source_hash` is `None`.
-        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         patch: Option<crate::config::PatchSpec>,
     },
     Update {
@@ -1786,7 +1786,7 @@ pub enum FileAction {
         /// SHA256 of source content at plan time (for TOCTOU verification).
         source_hash: Option<String>,
         /// See [`FileAction::Create::patch`].
-        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         patch: Option<crate::config::PatchSpec>,
     },
     Delete {
@@ -1810,7 +1810,7 @@ pub enum FileAction {
         /// an elevated chmod at any file on the machine. The planner names the
         /// path from the resolved strategy: a probe at apply time would lose
         /// that race.
-        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         chmod_path: Option<PathBuf>,
     },
     Skip {
@@ -1938,7 +1938,7 @@ pub struct LinkDeployedRow {
 
 // --- PackageAction ---
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub enum PackageAction {
     Install {
         manager: String,
@@ -2002,7 +2002,7 @@ pub trait SecretProvider: Send + Sync {
 
 // --- SecretAction ---
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub enum SecretAction {
     Decrypt {
         source: PathBuf,

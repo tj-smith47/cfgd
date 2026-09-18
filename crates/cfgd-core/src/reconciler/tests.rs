@@ -25560,6 +25560,180 @@ fn to_hash_string_is_stable_across_group_permutation() {
     );
 }
 
+/// Every `Action` variant survives the plan-file round trip.
+///
+/// The match takes no wildcard, so a ninth variant fails to COMPILE here rather
+/// than shipping a plan file cfgd cannot read back. Every optional field is left
+/// empty, which is the case a `skip_serializing_if` with no `#[serde(default)]`
+/// fails on: the key is absent from the wire entirely.
+#[test]
+fn every_action_variant_survives_the_plan_file_round_trip() {
+    let actions = vec![
+        Action::File(FileAction::Create {
+            source: std::path::PathBuf::from("/cfg/files/a"),
+            target: std::path::PathBuf::from("/home/u/a"),
+            origin: String::new(),
+            strategy: crate::config::FileStrategy::Copy,
+            source_hash: None,
+            patch: None,
+        }),
+        Action::Package(PackageAction::Install {
+            manager: "brew".into(),
+            packages: vec!["jq".into()],
+            origin: String::new(),
+        }),
+        Action::Secret(SecretAction::Skip {
+            source: "s".into(),
+            reason: "r".into(),
+            origin: String::new(),
+        }),
+        Action::System(SystemAction::Skip {
+            configurator: "sysctl".into(),
+            reason: "r".into(),
+            origin: String::new(),
+            unknown: false,
+        }),
+        Action::Script(ScriptAction::Run {
+            entry: ScriptEntry::Simple("echo hi".into()),
+            phase: ScriptPhase::PreApply,
+            origin: String::new(),
+        }),
+        Action::Module(ModuleAction {
+            module_name: "nvim".into(),
+            kind: ModuleActionKind::Skip {
+                reason: "platform".into(),
+            },
+            origin: None,
+        }),
+        Action::Env(EnvAction::InjectSourceLine {
+            rc_path: std::path::PathBuf::from("/home/u/.zshrc"),
+            line: "source ~/.cfgd.env".into(),
+        }),
+        Action::Manager(ManagerAction::RefreshIndex {
+            manager: "brew".into(),
+        }),
+    ];
+    let sampled: HashSet<_> = actions.iter().map(std::mem::discriminant).collect();
+    assert_eq!(
+        sampled.len(),
+        actions.len(),
+        "no variant is sampled twice, or the count below vouches for a variant nothing built"
+    );
+    assert_eq!(actions.len(), 8, "one sample per Action variant");
+    for action in &actions {
+        match action {
+            Action::File(_)
+            | Action::Package(_)
+            | Action::Secret(_)
+            | Action::System(_)
+            | Action::Script(_)
+            | Action::Module(_)
+            | Action::Env(_)
+            | Action::Manager(_) => {}
+        }
+    }
+    let plan = Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::Files,
+            &Owner::profile("work"),
+            actions,
+        )],
+        warnings: Vec::new(),
+    };
+    let wire = serde_json::to_string(&plan).expect("a plan serializes");
+    let back: Plan = serde_json::from_str(&wire).expect("a plan file reads back");
+    assert_eq!(
+        back.to_hash_string(),
+        plan.to_hash_string(),
+        "the round trip must land the same actions, byte for byte: {wire}"
+    );
+    assert_eq!(
+        serde_json::to_string(&back).expect("the plan read back serializes"),
+        wire,
+        "the whole plan returns as the same bytes, phases and owner groups included",
+    );
+}
+
+/// A plan file's phase reads back as one `Phase::from_actions` could have built.
+///
+/// That constructor is the only other way a phase comes into being, and it
+/// settles three facts every tree, preview and report then renders without
+/// checking: one group per owner, no empty group, owners in [`Owner::sort_key`]
+/// order. A file is an input like any other, so the fixture below breaks all
+/// three and the reader answers with the phase the planner would have built.
+#[test]
+fn a_plan_file_whose_groups_arrived_out_of_order_reads_back_in_display_order() {
+    let profile = Owner::profile("work");
+    let skip = |name: &str| {
+        Action::File(FileAction::Skip {
+            target: std::path::PathBuf::from(name),
+            origin: String::new(),
+            reason: "r".into(),
+        })
+    };
+    let ordered = Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::Files,
+            &profile,
+            vec![
+                skip("/home/u/a"),
+                skip("/home/u/b"),
+                Action::Manager(ManagerAction::RefreshIndex {
+                    manager: "brew".into(),
+                }),
+            ],
+        )],
+        warnings: Vec::new(),
+    };
+    let owners = |plan: &Plan| -> Vec<String> {
+        plan.phases[0]
+            .groups()
+            .iter()
+            .map(|g| g.owner.token())
+            .collect()
+    };
+
+    let mut wire: serde_json::Value = serde_json::to_value(&ordered).expect("a plan serializes");
+    let groups = wire["phases"][0]["groups"]
+        .as_array_mut()
+        .expect("a phase carries its groups");
+    assert_eq!(
+        owners(&ordered),
+        vec!["profile:work", "cfgd:managers"],
+        "the fixture leads on the profile group, which the wire below puts last"
+    );
+    // One owner's actions split across two groups, an owner carrying nothing at
+    // all, and the profile group behind the one it outranks: the three shapes a
+    // file can hold that no planner ever writes.
+    let mut leading_half = groups[0].clone();
+    let trailing = leading_half["actions"]
+        .as_array_mut()
+        .expect("the profile group carries its actions")
+        .split_off(1);
+    assert!(
+        !trailing.is_empty(),
+        "the split must leave actions on both halves, or the merge is not exercised"
+    );
+    *groups = vec![
+        groups[1].clone(),
+        serde_json::json!({ "owner": { "kind": "module", "name": "ghost" }, "actions": [] }),
+        serde_json::json!({ "owner": leading_half["owner"], "actions": trailing }),
+        leading_half,
+    ];
+
+    let back: Plan = serde_json::from_value(wire).expect("a plan file reads back");
+    assert_eq!(
+        owners(&back),
+        owners(&ordered),
+        "a shuffled file reads back as the phase the planner would have built",
+    );
+    assert_eq!(
+        back.phases[0].actions().count(),
+        ordered.phases[0].actions().count(),
+        "and it carries every action the file did, each exactly once",
+    );
+}
+
 // --- the Bootstrap phase's cfgd:managers DAG ---
 
 fn bootstrap_phase(actions: Vec<Action>) -> Plan {
