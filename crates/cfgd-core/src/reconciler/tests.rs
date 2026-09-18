@@ -27708,9 +27708,15 @@ fn the_re_source_reminder_renders_with_usage_hints_off() {
 /// the glyph a problem wears and stood among the run's real warnings; it
 /// renders as an `Info` note row, below every note its group holds — the
 /// warnings and the reports of work done alike — and reads as an instruction
-/// ("Run", not "run"). The fixture hands the three in the order that discovers
+/// ("Run", not "run"). The fixture hands the four in the order that discovers
 /// a sort keyed on the role alone, which would leave the instruction between
-/// the warning and the report.
+/// the warning and the reports.
+///
+/// The fourth is the shape a key of `tag.is_none()` cannot tell from the
+/// instruction: `NoteSink::report` pushes every `SystemConfigurator`'s report
+/// untagged, because its owning action line already names the producer. It is
+/// collected AFTER the instruction, so a stable sort sharing one key leaves it
+/// below — which is the render the marker exists to refuse.
 #[test]
 fn an_instruction_renders_as_an_info_row_below_the_warnings() {
     let (printer, cap) = crate::output::Printer::for_test_doc();
@@ -27722,6 +27728,10 @@ fn an_instruction_renders_as_an_info_row_below_the_warnings() {
                 crate::providers::ActionNote::instruction("Run `source ~/.cfgd.env`"),
                 crate::providers::ActionNote::warn("npm", "deprecated: glob@7"),
                 crate::providers::ActionNote::info("npm", "installed into ~/.npm-global"),
+                crate::providers::ActionNote::untagged(
+                    crate::output::Role::Info,
+                    "Updated /etc/environment",
+                ),
             ],
         )],
     );
@@ -27745,6 +27755,11 @@ fn an_instruction_renders_as_an_info_row_below_the_warnings() {
     assert!(
         position("Run `source") > position("installed into"),
         "the instruction closes its group, below the notes reporting what the run did: {out}"
+    );
+    assert!(
+        position("Run `source") > position("Updated /etc/environment"),
+        "an untagged report is still a report, and the instruction closes the group \
+         below it: {out}"
     );
     let step = lines[position("Run `source")];
     assert!(

@@ -404,6 +404,16 @@ pub struct ActionNote {
     /// fallback is a [`Role::Warn`]; a report of work done on the side is a
     /// [`Role::Info`].
     pub role: Role,
+    /// Whether this note is the run's own INSTRUCTION to the reader instead of
+    /// a report of what happened. It is the one fact behind
+    /// [`is_instruction`](Self::is_instruction), which is the key
+    /// [`crate::reconciler::render_caveats`] closes a group on.
+    ///
+    /// Private, and set by [`instruction`](Self::instruction) alone. An absent
+    /// tag cannot stand in for it: every `SystemConfigurator` report reaches
+    /// [`NoteSink::report`] and is pushed untagged (its owning action line
+    /// already names the producer), so the two classes would share one key.
+    instruction: bool,
 }
 
 impl ActionNote {
@@ -413,6 +423,7 @@ impl ActionNote {
             tag: Some(tag.into()),
             message: message.into(),
             role: Role::Warn,
+            instruction: false,
         }
     }
 
@@ -422,6 +433,7 @@ impl ActionNote {
             tag: Some(tag.into()),
             message: message.into(),
             role: Role::Info,
+            instruction: false,
         }
     }
 
@@ -435,6 +447,7 @@ impl ActionNote {
             tag: None,
             message: message.into(),
             role: Role::Info,
+            instruction: true,
         }
     }
 
@@ -444,7 +457,18 @@ impl ActionNote {
             tag: None,
             message: message.into(),
             role,
+            instruction: false,
         }
+    }
+
+    /// Whether this note is the run's own instruction to the reader.
+    ///
+    /// The one question a render ordering a group's notes asks. Nothing else
+    /// answers it: an untagged note is the ordinary shape of a
+    /// `SystemConfigurator`'s report, so the tag says who spoke rather than
+    /// what the note is for.
+    pub fn is_instruction(&self) -> bool {
+        self.instruction
     }
 
     /// Re-tag a note with the SUBJECT of the action that produced it.
@@ -575,6 +599,7 @@ impl NoteSink {
                 tag: tag.map(str::to_string),
                 message,
                 role,
+                instruction: false,
             });
         } else {
             // Untagged once it settles: a standalone line has no action line

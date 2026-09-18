@@ -18,6 +18,8 @@ use super::LoadedModule;
 const MAX_MODULE_SIZE: u64 = 10 * 1024 * 1024; // 10 MB
 
 /// Read a `module.yaml` after enforcing [`MAX_MODULE_SIZE`].
+// absolute-path-ok: the string handed back is the file's own bytes, and both
+// path renders fill a returned error, which keeps the path a reader can act on.
 fn read_module_yaml_capped(module_yaml: &Path) -> Result<String> {
     crate::record_config_input(module_yaml);
     if let Ok(meta) = std::fs::metadata(module_yaml)

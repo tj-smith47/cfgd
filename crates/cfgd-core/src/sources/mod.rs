@@ -1741,6 +1741,8 @@ pub fn head_signature_accepted(name: &str, repo_dir: &Path) -> Option<bool> {
 /// The raw `git log -1 --format=%G?` code for HEAD at `repo_dir`, or the reason
 /// it could not be read. The ONE place that shells out for it, so the enforcing
 /// and the reporting reader run the same command with the same timeout.
+// absolute-path-ok: the string handed back is git's own `%G?` code, and the one
+// path render is an argv token this host resolves, already marked `native-ok`.
 fn head_signature_code(repo_dir: &Path) -> std::result::Result<String, String> {
     if !crate::command_available("git") {
         return Err(

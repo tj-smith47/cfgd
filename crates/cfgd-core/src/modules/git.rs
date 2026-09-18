@@ -768,6 +768,9 @@ fn checkout_ref(repo_path: &Path, git_src: &GitSource, module_name: &str) -> Res
 }
 
 /// Get the HEAD commit SHA from a git repo.
+// absolute-path-ok: the string handed back is a commit id, and every path
+// render here fills a `ModuleError` field, which keeps the path a reader can
+// act on, as every other returned error does.
 pub fn get_head_commit_sha(repo_path: &Path) -> Result<String> {
     let path_str = repo_path.display_posix();
     let repo = open_repo(repo_path, &path_str, &path_str)?;

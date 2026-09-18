@@ -39860,7 +39860,7 @@ const FOLD_PASSED_OVER: &[&str] = &[
     ".hint(",
     ".hint_commands(",
     ".report(",
-    "next_step(",
+    ".instruction(",
     "cli_error",
     "anyhow!(",
     "bail!(",
@@ -39918,12 +39918,28 @@ fn absolute_path_hatched(lines: &[&str], at: usize) -> bool {
 /// carries `// absolute-path-ok:` on its declaration or in the comment block
 /// above it, which answers for its whole body.
 ///
+/// A member is judged whatever calls it, never by a fold from the display
+/// slots back up the call graph. The sentence a composer hands back reaches a
+/// row through however many wrappers its callers care to add, and a fold goes
+/// blind at the first of them: `format_module_action_body` is reached only
+/// through `plan_item`, whose own two callers answer the question in opposite
+/// directions. So the judgment sits at the producer, where the path enters the
+/// sentence, and a composer whose string is not a row says so with the hatch.
+///
 /// Each member comes back as its DECLARATION line and its body's span: the
 /// declaration is what the hatch is read from, and the population is counted
 /// whole, hatched members included, so the count floors the derivation rather
 /// than whatever is left unmarked.
 fn path_carrying_composers(lines: &[&str]) -> Vec<(usize, (usize, usize))> {
-    const RETURNS: &[&str] = &["-> String", "-> Option<String>", "-> Cow<"];
+    const RETURNS: &[&str] = &[
+        "-> String",
+        "-> Option<String>",
+        "-> Cow<",
+        "Result<String>",
+        "Result<String,",
+        "Result<Option<String>>",
+        "Result<Cow<",
+    ];
     const BUILDERS: &[&str] = &["format!", "write!", "push_str"];
 
     let code: Vec<String> = lines
@@ -40078,18 +40094,29 @@ fn every_display_slot_of_both_crates_folds_the_home_directory() {
         ("cfgd/src/cli/profile/backups.rs", 3),
         ("cfgd/src/cli/profile/show.rs", 3),
     ];
-    // The whole-walk floors a mis-rooted walk cannot fake: a root resolving
+    /// The crate roots the walk reads, and the ONE order every floor below is
+    /// indexed in: the paths are derived from these names, so the two lists
+    /// cannot fall out of step.
+    const ROOTS: [&str; 2] = ["cfgd", "cfgd-core"];
+    /// One production source the walk read: the index of the root it came from
+    /// in `ROOTS`, the path as a message renders it, and its logical lines.
+    type WalkedSource = (usize, String, Vec<(usize, String)>);
+    // The per-root floors a mis-rooted walk cannot fake: a root resolving
     // nowhere reads no files, one holding no command code judges no slot, and a
     // composer derivation that stopped matching would report an empty second
-    // population while every sink-held render still passed.
-    const FLOOR_SOURCES: usize = 280;
-    const FLOOR_SLOTS: usize = 125;
-    const FLOOR_COMPOSERS: usize = 8;
+    // population while every sink-held render still passed. One count per root,
+    // because an aggregate is one tree's number plus the other's: `cfgd` holds
+    // a single composer today, so an aggregate floor of eight is cleared by
+    // `cfgd-core` alone the moment it gains one and this crate's member goes
+    // dark.
+    const FLOOR_SOURCES: [usize; 2] = [145, 191];
+    const FLOOR_SLOTS: [usize; 2] = [100, 36];
+    const FLOOR_COMPOSERS: [usize; 2] = [1, 11];
 
-    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let roots = [manifest.join("src"), manifest.join("../cfgd-core/src")];
-    let mut sources: Vec<(String, Vec<(usize, String)>)> = Vec::new();
-    for root in &roots {
+    let crates_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let roots = ROOTS.map(|krate| crates_dir.join(krate).join("src"));
+    let mut sources: Vec<WalkedSource> = Vec::new();
+    for (at, root) in roots.iter().enumerate() {
         for path in rust_sources_under(root) {
             let name = path
                 .file_name()
@@ -40106,6 +40133,7 @@ fn every_display_slot_of_both_crates_folds_the_home_directory() {
             }
             let production = cfgd_core::test_helpers::production_slice_of(&path);
             sources.push((
+                at,
                 cfgd_core::to_posix_string(&path),
                 cfgd_core::test_helpers::logical_source_lines(&production),
             ));
@@ -40113,11 +40141,15 @@ fn every_display_slot_of_both_crates_folds_the_home_directory() {
     }
 
     let mut tally = FoldHomeTally::default();
-    let mut composers = 0usize;
-    for (shown, folded) in &sources {
+    let mut read = [0usize; ROOTS.len()];
+    let mut slots = [0usize; ROOTS.len()];
+    let mut composers = [0usize; ROOTS.len()];
+    for (at, shown, folded) in &sources {
+        let judged_before = tally.slots;
+        read[*at] += 1;
         let lines: Vec<&str> = folded.iter().map(|(_, line)| line.as_str()).collect();
         for (declaration, span) in path_carrying_composers(&lines) {
-            composers += 1;
+            composers[*at] += 1;
             if absolute_path_hatched(&lines, declaration) {
                 continue;
             }
@@ -40146,19 +40178,26 @@ fn every_display_slot_of_both_crates_folds_the_home_directory() {
             // another's statement included.
             n += 1;
         }
+        slots[*at] += tally.slots - judged_before;
     }
-    assert!(
-        sources.len() >= FLOOR_SOURCES && tally.slots >= FLOOR_SLOTS,
-        "the walk read {} sources and judged {} display slots — under the floor, so it is \
-         looking at the wrong roots",
-        sources.len(),
-        tally.slots
-    );
-    assert!(
-        composers >= FLOOR_COMPOSERS,
-        "the walk derived {composers} sentence composers — under the floor, so its second \
-         population has stopped matching"
-    );
+    for (at, krate) in ROOTS.iter().enumerate() {
+        assert!(
+            read[at] >= FLOOR_SOURCES[at] && slots[at] >= FLOOR_SLOTS[at],
+            "the walk read {} of `{krate}`'s sources and judged {} display slots in them, \
+             under the floors of {} and {} — so it is looking at the wrong root",
+            read[at],
+            slots[at],
+            FLOOR_SOURCES[at],
+            FLOOR_SLOTS[at]
+        );
+        assert!(
+            composers[at] >= FLOOR_COMPOSERS[at],
+            "the walk derived {} sentence composers in `{krate}`, under its floor of {} — \
+             so its second population has stopped matching there",
+            composers[at],
+            FLOOR_COMPOSERS[at]
+        );
+    }
     for (relative, floor) in FLOOR_FILES {
         let judged = tally
             .per_file

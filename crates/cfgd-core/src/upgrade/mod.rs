@@ -717,6 +717,8 @@ fn stream_chunks_to_file(
 }
 
 /// Compute the SHA256 hex digest of a file.
+// absolute-path-ok: the string handed back is a digest, and the one path render
+// fills a returned error, which keeps the path a reader can act on.
 fn sha256_file(path: &Path) -> std::result::Result<String, UpgradeError> {
     let bytes = fs::read(path).map_err(|e| UpgradeError::DownloadFailed {
         message: format!("read {}: {}", path.posix(), e),
