@@ -3358,7 +3358,9 @@ fn names_a_hatch_marker(name: &str) -> bool {
 ///
 /// The cut moves line numbers, so the region arrives with the count of lines
 /// that precede it: an offender a reader cannot open at the line it names is a
-/// report they have to go looking for.
+/// report they have to go looking for. The count is of COMPLETED lines, since
+/// an indented anchor (or one inside a comment) leaves the prefix ending
+/// mid-line, where a segment count would be one too high.
 fn test_region(path: &Path, body: &str) -> (usize, String) {
     let scaffolding = path
         .components()
@@ -3371,7 +3373,7 @@ fn test_region(path: &Path, body: &str) -> (usize, String) {
         return (0, body.to_string());
     }
     match body.find("#[cfg(test)]") {
-        Some(at) => (body[..at].lines().count(), body[at..].to_string()),
+        Some(at) => (body[..at].matches('\n').count(), body[at..].to_string()),
         None => (0, String::new()),
     }
 }
@@ -3383,6 +3385,16 @@ fn the_test_region_reports_the_lines_its_cut_skipped() {
     assert_eq!(
         skipped, 2,
         "the lines above the cut are what an offender is offset by"
+    );
+    assert!(
+        region.starts_with("#[cfg(test)]"),
+        "the region opens on the cut: {region:?}"
+    );
+
+    let (skipped, region) = test_region(Path::new("src/thing.rs"), "a\nb\n    #[cfg(test)]\nc\n");
+    assert_eq!(
+        skipped, 2,
+        "an indented anchor leaves the prefix ending mid-line, and the cut skipped two lines all the same"
     );
     assert!(
         region.starts_with("#[cfg(test)]"),

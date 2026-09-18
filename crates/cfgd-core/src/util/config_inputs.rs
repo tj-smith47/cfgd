@@ -68,9 +68,14 @@ pub fn record_config_input(path: &Path) {
 ///
 /// The path is a POSIX-folded key that is also REOPENED to re-stat, so it takes
 /// [`crate::to_posix_fs_key`] rather than the unconditional fold (see
-/// `path-handling.md`). `mtime` is nanoseconds since the epoch, the exact value
-/// `SystemTime` reconstructs from, so a set written and read back compares
-/// equal to the one the derivation recorded.
+/// `path-handling.md`). The reopen holds for a path the wire can spell: a
+/// component that is not UTF-8 folds lossily and reads back as a path that
+/// re-stats to nothing, so that entry reports as moved on every comparison.
+/// Serde's own `PathBuf` refuses such a path outright, which would fail the
+/// whole document rather than one entry, and over-reporting a change only
+/// recomputes a derivation. `mtime` is nanoseconds since the epoch, the exact
+/// value `SystemTime` reconstructs from, so a set written and read back
+/// compares equal to the one the derivation recorded.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConfigInput {
@@ -259,9 +264,17 @@ mod tests {
 
     #[test]
     fn an_empty_input_set_is_never_unchanged() {
-        assert!(!ConfigInputs::default().unchanged());
+        let empty = ConfigInputs::default();
+        assert!(!empty.unchanged());
+        assert_eq!(
+            empty.first_moved(),
+            None,
+            "an empty set has no mover, and that None is not a reuse verdict"
+        );
         let rec = ConfigInputRecorder::start();
-        assert!(!rec.finish().unchanged());
+        let recorded_nothing = rec.finish();
+        assert!(!recorded_nothing.unchanged());
+        assert_eq!(recorded_nothing.first_moved(), None);
     }
 
     #[test]
@@ -299,9 +312,11 @@ mod tests {
     fn a_recorded_input_set_survives_a_round_trip_and_names_what_moved() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("cfgd.yaml");
+        let absent = dir.path().join("modules.lock");
         std::fs::write(&path, "a").unwrap();
         let recorder = ConfigInputRecorder::start();
         record_config_input(&path);
+        record_config_input(&absent);
         let inputs = recorder.finish();
 
         let wire = serde_json::to_string(&inputs).unwrap();
@@ -311,6 +326,14 @@ mod tests {
             "an untouched input set reads back unchanged: {wire}"
         );
         assert_eq!(back.first_moved(), None);
+
+        std::fs::write(&absent, "modules: []").unwrap();
+        assert!(!back.unchanged());
+        assert_eq!(
+            back.first_moved(),
+            Some(absent.as_path()),
+            "an input recorded as absent crosses the wire absent, so its arrival is a change: {wire}"
+        );
 
         std::fs::write(&path, "aa").unwrap();
         assert!(!back.unchanged());
