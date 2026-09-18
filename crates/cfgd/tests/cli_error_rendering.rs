@@ -164,3 +164,43 @@ fn missing_config_json_emits_one_payload_never_silent() {
         "structured failure payload must carry an `error` key — got {v}"
     );
 }
+
+/// The same class decision, over the real binary's dispatch: a refusal's
+/// remediation survives `CFGD_USAGE_HINTS=false`.
+///
+/// `usageHints` decides tutorial pointers, never the one statement of what
+/// would let a refused command run. The child's stderr is read raw — a piped
+/// child resolves `ColorChoice::Auto` to no colour, so there is nothing to
+/// strip — and the fixture declares a module, because the not-found hint names
+/// the modules that DO exist and a config declaring none carries no hint to
+/// suppress.
+#[test]
+fn a_refusal_names_its_fix_end_to_end_with_usage_hints_off() {
+    let dir = tempfile::tempdir().unwrap();
+    create_valid_config(dir.path());
+    let module_dir = dir.path().join("modules").join("git");
+    std::fs::create_dir_all(&module_dir).unwrap();
+    std::fs::write(
+        module_dir.join("module.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: git\nspec: {}\n",
+    )
+    .unwrap();
+
+    let out = Command::cargo_bin("cfgd")
+        .unwrap()
+        .env("CFGD_USAGE_HINTS", "false")
+        .args(["module", "show", "nope", "--config"])
+        .arg(dir.path().join("cfgd.yaml"))
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("→ "),
+        "the refusal's remediation survives the gate: {stderr:?}"
+    );
+    assert!(
+        stderr.contains("Available modules: git"),
+        "and it still names the way out: {stderr:?}"
+    );
+}
