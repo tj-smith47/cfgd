@@ -17000,6 +17000,41 @@ fn production_body(body: &str) -> String {
             // is shut. A wrapped generic parameter list ends its line on a
             // comma with its angle bracket still open, so the comma a one-line
             // item closes on is not a terminator there.
+            //
+            // The comma ends a FIELD or a statement only, which is what its
+            // head `name: Type<` says: an ITEM's `where` clause shuts its last
+            // bound on a comma with every bracket and angle bracket closed, and
+            // reading that as the end hands the braced body below it to every
+            // walk here as production text.
+            let head_is_item = {
+                let bare = head.trim_start();
+                let bare = bare.strip_prefix("pub").map_or(bare, str::trim_start);
+                let bare = bare
+                    .strip_prefix('(')
+                    .and_then(|rest| rest.split_once(')'))
+                    .map_or(bare, |(_, after)| after.trim_start());
+                matches!(
+                    bare.split(|c: char| !c.is_alphanumeric() && c != '_')
+                        .next(),
+                    Some(
+                        "fn" | "impl"
+                            | "struct"
+                            | "enum"
+                            | "trait"
+                            | "union"
+                            | "mod"
+                            | "use"
+                            | "type"
+                            | "static"
+                            | "const"
+                            | "let"
+                            | "macro_rules"
+                            | "unsafe"
+                            | "async"
+                            | "extern"
+                    )
+                )
+            };
             let mut depth = 0i64;
             let mut angle = 0i64;
             while end < lines.len() {
@@ -17009,7 +17044,10 @@ fn production_body(body: &str) -> String {
                 let (lt, gt) = angles(&code);
                 angle += lt as i64 - gt as i64;
                 let last = closes_at_indent(&code)
-                    || (depth <= 0 && angle <= 0 && code.trim_end().ends_with([';', ',']));
+                    || (depth <= 0
+                        && angle <= 0
+                        && (code.trim_end().ends_with(';')
+                            || (code.trim_end().ends_with(',') && !head_is_item)));
                 end += 1;
                 if last {
                     break;
@@ -17047,7 +17085,10 @@ fn production_body(body: &str) -> String {
 /// paired here with the neighbour an over-long extent would eat, and with the
 /// wrapped generic parameter list that must NOT be read as a field — a
 /// terminator rule loose enough to end the field early leaves half a gated
-/// function standing as production text.
+/// function standing as production text. The `where` clause is that rule's
+/// other edge: its last bound ends a line on a comma with every delimiter
+/// shut, and `crates/cfgd/src/packages/npm.rs` had its gated helper's body
+/// handed to every walk here until the comma was refused on an item's head.
 #[test]
 fn a_gated_items_extent_ends_where_the_item_does() {
     let src = concat!(
@@ -17094,6 +17135,15 @@ fn a_gated_items_extent_ends_where_the_item_does() {
         "}\n",
         "pub fn kept_after_wrapped_generics() {}\n",
         "#[cfg(test)]\n",
+        "fn gated_where_clause<F, R>(elevated: bool, f: F) -> R\n",
+        "where\n",
+        "    F: FnOnce() -> R,\n",
+        "{\n",
+        "    leaked_where_body(elevated);\n",
+        "    f()\n",
+        "}\n",
+        "pub fn kept_after_where_clause() {}\n",
+        "#[cfg(test)]\n",
         "mod tests {\n",
         "    fn gated_away() {}\n",
         "}\n",
@@ -17110,6 +17160,7 @@ fn a_gated_items_extent_ends_where_the_item_does() {
         "kept_after_compound_closer",
         "kept_wrapped_neighbour",
         "kept_after_wrapped_generics",
+        "kept_after_where_clause",
     ] {
         assert!(
             production.contains(kept),
@@ -17126,6 +17177,8 @@ fn a_gated_items_extent_ends_where_the_item_does() {
         "COMPOUND",
         "wrapped_capture",
         "gated_wrapped_generics",
+        "gated_where_clause",
+        "leaked_where_body",
     ] {
         assert!(
             !production.contains(gated),
@@ -34869,7 +34922,10 @@ const PINNED_HINT_COMPOSERS: &[&str] = &[
 /// impl joined whichever list its author remembered, and a body minting
 /// through the other one read as a pure delegator. `ungated` and `is_gated`
 /// are excluded by the receiver they take — one edits a hint already built,
-/// the other only reads it.
+/// the other only reads it. That `component.rs` is the only file declaring a
+/// door is held by
+/// [`the_hint_minting_doors_are_read_off_the_types_own_declaration`], since a
+/// read of one file cannot notice an impl block in another.
 fn hint_commands_minting_doors() -> Vec<String> {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../cfgd-core/src/output/component.rs");
@@ -34950,6 +35006,46 @@ fn the_hint_minting_doors_are_read_off_the_types_own_declaration() {
             "`{builder}` edits or reads a hint that already exists and mints none"
         );
     }
+    // The derivation reads `component.rs` alone, and no read of one file can
+    // notice a door declared in another: an inherent `impl HintCommands` block
+    // elsewhere in the crate, or a `From`/`Default` impl for the type in any
+    // crate, would mint doors both questions above judge without. Nothing
+    // outside that file may declare one.
+    //
+    // one-root-population-ok: the question is an absence, which no root has a
+    // count of; each root's own floor is `production_sources_per_root`'s, which
+    // fails a tree that stopped contributing sources.
+    let elsewhere: Vec<String> = production_sources_per_root(&[
+        "cfgd",
+        "cfgd-core",
+        "cfgd-crd",
+        "cfgd-csi",
+        "cfgd-operator",
+        "cfgd-schema",
+    ])
+    .into_iter()
+    .flat_map(|(_, sources)| sources)
+    .filter(|(path, _)| path.file_name().is_some_and(|name| name != "component.rs"))
+    .filter(|(_, production)| {
+        production.lines().any(|line| {
+            let code = cfgd_core::test_helpers::code_line(line);
+            let code = code.trim();
+            code.starts_with("impl")
+                && code.ends_with('{')
+                && code
+                    .trim_end_matches('{')
+                    .trim_end()
+                    .ends_with("HintCommands")
+        })
+    })
+    .map(|(path, _)| path.display().to_string())
+    .collect();
+    assert!(
+        elsewhere.is_empty(),
+        "a `HintCommands` door is declared outside `output/component.rs`, which the \
+         derivation does not read:\n{}",
+        elsewhere.join("\n")
+    );
 }
 
 /// The two of those that build a `$` BLOCK, whose prose ends on a colon and
@@ -35301,22 +35397,70 @@ fn composed_hints() -> Vec<(String, cfgd_core::output::HintCommands)> {
 /// gives every hatched population — a count lets the next site ungate itself
 /// silently. The type's own doors are not call sites and are excluded by their
 /// impl owner.
-const UNCONDITIONAL_HINT_CALL_SITES: &[&str] = &[
-    "check_prerequisites",
-    "cmd_daemon_install",
-    "cmd_daemon_uninstall",
-    "cmd_init",
-    "next_step",
-    "print_startup_banner",
-    "render_caveats",
-    "render_cli_error",
-    "run_profile_migrate",
-    "run_sync",
-    "start_launchd_service",
-    "start_systemd_service",
-    "stop_launchd_service",
-    "stop_systemd_service",
+///
+/// Each entry names the file it lives in as well as the function, because a
+/// bare name is not an identity: `cmd_init` names 38 declarations in the
+/// workspace and `next_step` 7, so a new function that happened to share one
+/// would ungate itself under another file's entry. The path is the source's
+/// own, relative to `crates/`, with `/` separators on every host.
+const UNCONDITIONAL_HINT_CALL_SITES: &[(&str, &str)] = &[
+    ("cfgd-core/src/daemon/mod.rs", "print_startup_banner"),
+    (
+        "cfgd-core/src/daemon/service/launchd.rs",
+        "start_launchd_service",
+    ),
+    (
+        "cfgd-core/src/daemon/service/launchd.rs",
+        "stop_launchd_service",
+    ),
+    (
+        "cfgd-core/src/daemon/service/systemd.rs",
+        "start_systemd_service",
+    ),
+    (
+        "cfgd-core/src/daemon/service/systemd.rs",
+        "stop_systemd_service",
+    ),
+    ("cfgd-core/src/providers/mod.rs", "next_step"),
+    ("cfgd-core/src/reconciler/apply.rs", "render_caveats"),
+    ("cfgd/src/cli/daemon.rs", "cmd_daemon_install"),
+    ("cfgd/src/cli/daemon.rs", "cmd_daemon_uninstall"),
+    ("cfgd/src/cli/error.rs", "render_cli_error"),
+    ("cfgd/src/cli/init/cmd_init.rs", "check_prerequisites"),
+    ("cfgd/src/cli/init/cmd_init.rs", "cmd_init"),
+    ("cfgd/src/cli/profile/migrate.rs", "run_profile_migrate"),
+    ("cfgd/src/cli/sync.rs", "run_sync"),
 ];
+
+/// Exempts an [`UNCONDITIONAL_HINT_CALL_SITES`] entry that matches no site.
+const UNGATING_SITE_UNCALLED_HATCH: &str = "ungating-site-uncalled-ok:";
+
+/// Whether the roster entry's own line, or the line above it, carries the
+/// uncalled hatch.
+///
+/// An entry matching nothing is the silence the roster exists to prevent worn
+/// as a green table: it satisfies the walk while watching no call site, and a
+/// site that moved file keeps its old entry's blessing. Read out of this
+/// file's own source, the way `ENV_MUTATORS` reads its hatch.
+fn ungating_site_hatched(path: &str, name: &str) -> bool {
+    let own = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli/tests.rs");
+    let body = cfgd_core::test_helpers::walked_file_body(&own);
+    let lines: Vec<&str> = body.lines().collect();
+    let open = lines
+        .iter()
+        .position(|line| line.starts_with("const UNCONDITIONAL_HINT_CALL_SITES"))
+        .expect("this file declares `UNCONDITIONAL_HINT_CALL_SITES`");
+    let len = lines[open..]
+        .iter()
+        .position(|line| line.starts_with("];"))
+        .expect("`UNCONDITIONAL_HINT_CALL_SITES` is closed");
+    let entry = format!("(\"{path}\", \"{name}\")");
+    (open..open + len).any(|at| {
+        lines[at].contains(&entry)
+            && (lines[at].contains(UNGATING_SITE_UNCALLED_HATCH)
+                || at > 0 && lines[at - 1].contains(UNGATING_SITE_UNCALLED_HATCH))
+    })
+}
 
 const HINT_COMPOSER_IS_UNCONDITIONAL: &[(&str, bool)] = &[
     ("answer_decisions_hint", false),
@@ -35540,13 +35684,20 @@ fn every_hint_composer_the_workspace_declares_is_classified() {
     let names: Vec<&str> = WALK_ROOTS.iter().map(|(k, _, _)| *k).collect();
     let trees = production_sources_per_root(&names);
     let mint_tells = hint_mint_tells();
+    let crates_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
 
     let mut per_root: Vec<(&str, usize)> = Vec::new();
     let mut offenders: Vec<String> = Vec::new();
+    let mut matched = vec![false; UNCONDITIONAL_HINT_CALL_SITES.len()];
     for ((krate, floor, mint_floor), (_, sources)) in WALK_ROOTS.iter().zip(&trees) {
         let mut found = 0usize;
         let mut minted = 0usize;
         for (path, production) in sources {
+            let rel = path
+                .strip_prefix(&crates_dir)
+                .unwrap_or(path)
+                .to_string_lossy()
+                .replace('\\', "/");
             for (name, owner, code) in fn_declarations(production) {
                 let Some(signature) = code.split('{').next() else {
                     continue;
@@ -35566,11 +35717,14 @@ fn every_hint_composer_the_workspace_declares_is_classified() {
                         && (code.contains("::unconditional(") || code.contains(".ungated()"))
                     {
                         minted += 1;
-                        if !UNCONDITIONAL_HINT_CALL_SITES.contains(&name.as_str()) {
-                            offenders.push(format!(
-                                "{}: `{name}` mints an ungated hint and states no class",
-                                path.display()
-                            ));
+                        match UNCONDITIONAL_HINT_CALL_SITES
+                            .iter()
+                            .position(|(file, site)| *file == rel && *site == name)
+                        {
+                            Some(at) => matched[at] = true,
+                            None => offenders.push(format!(
+                                "{rel}: `{name}` mints an ungated hint and states no class"
+                            )),
                         }
                     }
                     continue;
@@ -35632,6 +35786,19 @@ fn every_hint_composer_the_workspace_declares_is_classified() {
         per_root.len(),
         WALK_ROOTS.len(),
         "every crate root was walked"
+    );
+    let unmatched: Vec<String> = UNCONDITIONAL_HINT_CALL_SITES
+        .iter()
+        .zip(&matched)
+        .filter(|((file, site), hit)| !**hit && !ungating_site_hatched(file, site))
+        .map(|((file, site), _)| format!("{file}: `{site}`"))
+        .collect();
+    assert!(
+        unmatched.is_empty(),
+        "every `UNCONDITIONAL_HINT_CALL_SITES` entry must name a site that really \
+         ungates a hint, or carry `// ungating-site-uncalled-ok: <why>` — an entry \
+         matching nothing blesses a site that has moved or gone:\n{}",
+        unmatched.join("\n")
     );
 }
 
