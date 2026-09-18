@@ -925,3 +925,75 @@ fn lexically_normalized_keeps_every_dotdot_it_has_nothing_to_pop() {
         moved.join("; ")
     );
 }
+
+// --- names_the_same_path: the two answers, and what each one alone misses ---
+
+/// Every shape [`names_the_same_path`] has to settle, over one temp tree.
+///
+/// The two halves are asserted where each is the ONLY one that can answer:
+/// the walk-back goes through a component that does not exist, so no inode
+/// question can be asked about it at all, and the symlink is two genuinely
+/// different paths the fold cannot equate. The negatives matter as much: a
+/// side that is absent answers `false` rather than panicking or reading a
+/// missing file as a match.
+#[test]
+fn names_the_same_path_answers_both_spellings_and_neither_stranger() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    let file = root.join("cfgd.yaml");
+    std::fs::write(&file, "spec: {}\n").unwrap();
+    let other = root.join("other.yaml");
+    std::fs::write(&other, "spec: {}\n").unwrap();
+
+    // One file, two spellings the fold settles on its own.
+    assert!(names_the_same_path(
+        &file,
+        &root.join(".").join("cfgd.yaml")
+    ));
+    // A walk-back through a component that is not there: nothing to stat, so
+    // the lexical fold is the only half that can answer.
+    assert!(!root.join("absent").exists());
+    assert!(names_the_same_path(
+        &file,
+        &root.join("absent").join("..").join("cfgd.yaml")
+    ));
+    // Relative spellings of one path resolve against the same working
+    // directory, so they fold together whatever that directory is.
+    assert!(names_the_same_path(
+        Path::new("a/b/cfgd.yaml"),
+        Path::new("./a/b/../b/cfgd.yaml")
+    ));
+
+    // Two files, not two spellings.
+    assert!(!names_the_same_path(&file, &other));
+    // A side that is not there is not a match, and asking costs no panic.
+    assert!(!names_the_same_path(&file, &root.join("gone.yaml")));
+    assert!(!names_the_same_path(
+        &root.join("gone.yaml"),
+        &root.join("also-gone.yaml")
+    ));
+}
+
+/// The half the fold cannot answer: one file reached through a symlinked
+/// directory is two paths that share no components, so only the inode answer
+/// equates them. Unix alone, because a Windows host refuses the link itself
+/// without Developer Mode.
+#[test]
+#[cfg(unix)]
+fn names_the_same_path_reads_through_a_symlink_the_fold_cannot_fold() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let real = dir.path().join("real");
+    std::fs::create_dir(&real).unwrap();
+    let file = real.join("cfgd.yaml");
+    std::fs::write(&file, "spec: {}\n").unwrap();
+    let link = dir.path().join("link");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+
+    let through_link = link.join("cfgd.yaml");
+    assert_ne!(
+        lexically_normalized(&through_link),
+        lexically_normalized(&file),
+        "the fold sees two different paths, which is what makes this the inode arm's case"
+    );
+    assert!(names_the_same_path(&through_link, &file));
+}

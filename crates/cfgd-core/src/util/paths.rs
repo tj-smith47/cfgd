@@ -997,6 +997,10 @@ pub fn lexically_normalized(path: &std::path::Path) -> std::path::PathBuf {
 /// COMPARISON only. Both halves discard the spelling the caller wrote, so a
 /// slot rendering a path still renders the caller's own.
 pub fn names_the_same_path(a: &std::path::Path, b: &std::path::Path) -> bool {
+    // The fold compares `OsString`s, so on Windows two spellings differing
+    // only in the drive letter's case (`c:\cfgd` against `C:\cfgd`) or in an
+    // 8.3 short name are not equal to it, and the file-index answer is the
+    // only one that settles them.
     lexically_normalized(&absolutize_path(a)) == lexically_normalized(&absolutize_path(b))
         || crate::is_same_inode(a, b)
 }

@@ -39234,6 +39234,81 @@ fn no_production_site_hand_rolls_the_v_strip_or_the_owner_token_split() {
     );
 }
 
+/// Two spellings are judged to name one file in ONE place
+/// (`cfgd_core::names_the_same_path`), which answers lexically and then by
+/// inode because neither half alone is enough. A second hand-rolled copy is
+/// how one caller started refusing a relative spelling the other accepted, or
+/// accepting a symlinked path the other refused. `util/paths.rs` (which OWNS
+/// the helper and the fold) and `util/fs_perms.rs` (which OWNS the inode
+/// answer) are exempt by path; a site asking a genuinely different question
+/// of the same primitive carries `// same-path-ok: <why>`.
+#[test]
+fn no_production_site_hand_rolls_the_same_path_comparison() {
+    const HATCH: &str = "same-path-ok:";
+    // The floors are what a walk over the WRONG root cannot fake: a root that
+    // resolves nowhere sees no files. Both counts are far under today's real
+    // counts, so a deletion does not trip them and a re-rooting does.
+    const FLOOR_FILES: [usize; 2] = [80, 90];
+
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let roots = [manifest.join("src"), manifest.join("../cfgd-core/src")];
+    let mut offenders = Vec::new();
+    for (r, root) in roots.iter().enumerate() {
+        let files = rust_sources_under(root);
+        let mut seen = 0usize;
+        for path in files {
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default()
+                .to_string();
+            if name == "tests.rs"
+                || name == "test_helpers.rs"
+                || path.components().any(|c| c.as_os_str() == "tests")
+                || path.ends_with("util/paths.rs")
+                || path.ends_with("util/fs_perms.rs")
+            {
+                continue;
+            }
+            seen += 1;
+            let production = cfgd_core::test_helpers::production_slice_of(&path);
+            let lines: Vec<&str> = production.lines().collect();
+            for (i, line) in lines.iter().enumerate() {
+                let code = cfgd_core::test_helpers::code_line(line);
+                // A lexical compare of two folded paths IS the helper's first
+                // half; the inode answer is its second. Either one reached
+                // directly is a caller answering the question itself.
+                let hand_folded = code.contains("lexically_normalized(")
+                    && (code.contains("==") || code.contains("!="));
+                let hand_inode = code.contains("is_same_inode(");
+                if !hand_folded && !hand_inode {
+                    continue;
+                }
+                if lines[i.saturating_sub(1)..=i]
+                    .iter()
+                    .any(|l| carries_hatch(l, HATCH))
+                {
+                    continue;
+                }
+                offenders.push(format!("{}:{}: {}", path.display(), i + 1, line.trim()));
+            }
+        }
+        assert!(
+            seen >= FLOOR_FILES[r],
+            "the walk read {seen} files under {}, under the floor, so it is \
+             looking at the wrong root",
+            root.display()
+        );
+    }
+    assert!(
+        offenders.is_empty(),
+        "two spellings name one file through `cfgd_core::names_the_same_path`, never a \
+         second hand-rolled fold-or-inode pair (or the site carries \
+         `// same-path-ok: <why>`):\n{}",
+        offenders.join("\n")
+    );
+}
+
 /// Two owners split the whole population of `"modules"` joins. A module
 /// CACHE root — materialized git sources — is `module_cache_root`
 /// (`util/paths.rs`) plus, for the daemon's fallback, `daemon::tick_module_cache`.
