@@ -71,7 +71,7 @@ pub(in crate::cli) fn enroll_error_hint(kind: &str) -> Option<HintCommands> {
 
 /// Hints for an enrollment error `kind` as a `Vec`, suitable for the
 /// `cli_error*_with_hints` carriers.
-fn enroll_error_hints(kind: &str) -> Vec<HintCommands> {
+pub(in crate::cli) fn enroll_error_hints(kind: &str) -> Vec<HintCommands> {
     enroll_error_hint(kind).into_iter().collect()
 }
 

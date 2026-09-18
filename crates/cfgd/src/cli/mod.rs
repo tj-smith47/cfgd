@@ -317,17 +317,28 @@ pub(in crate::cli) fn success_next_step(mutation: Mutation<'_>) -> HintCommands 
         }
         Mutation::RegistryAdded => "Search for modules with `cfgd module search <query>`".into(),
         Mutation::KeysGenerated { dir } => format!(
+            // gated-hint-ok: the key path is the argument of the `--key` this
+            // command names, and `module keys generate` states it in an
+            // unconditional `Private Key` row before reaching the hint.
             "Sign with `cfgd module push <dir> --artifact <ref> --sign --key {dir}/cosign.key`"
         )
         .into(),
         Mutation::KeysRotated {
             dir,
             resigned: true,
-        } => format!("Verify with `cosign verify --key {dir}/cosign.pub <artifact>`").into(),
+        } => {
+            // gated-hint-ok: the key directory is what the reader passed to
+            // `module keys rotate`, and the path is the argument of the
+            // `cosign verify --key` this hint names.
+            format!("Verify with `cosign verify --key {dir}/cosign.pub <artifact>`").into()
+        }
         Mutation::KeysRotated {
             dir,
             resigned: false,
         } => format!(
+            // gated-hint-ok: the key directory is what the reader passed to
+            // `module keys rotate`, and the path is the argument of the
+            // `--key` this hint names.
             "Re-sign each artifact with `cfgd module push <dir> --artifact <ref> --sign --key {dir}/cosign.key`"
         )
         .into(),

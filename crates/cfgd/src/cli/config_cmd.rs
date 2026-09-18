@@ -588,7 +588,10 @@ fn classify_mutate_error(e: &anyhow::Error) -> &'static str {
 ///
 /// Unconditional: the write refused, and the way out of a refusal is not a
 /// tutorial `spec.output.usageHints` gets to suppress.
-fn writability_hint(kind: &str, config_path: &Path) -> Vec<cfgd_core::output::HintCommands> {
+pub(in crate::cli) fn writability_hint(
+    kind: &str,
+    config_path: &Path,
+) -> Vec<cfgd_core::output::HintCommands> {
     if kind == "target_not_writable"
         && let Some(parent) = config_path.parent()
     {
