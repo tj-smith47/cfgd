@@ -189,11 +189,13 @@ fn refuse_unstringed_key(path: &str, value: &serde_yaml::Value) -> std::result::
                     // A scalar key has a one-character remedy (quote it), and
                     // `1` was almost always meant as the section name `"1"`.
                     // A sequence- or mapping-keyed entry has no spelling that
-                    // means the same thing, so no remedy is invented for it.
+                    // means the same thing, and quoting a TAGGED key drops the
+                    // tag the author wrote, so no remedy is invented for any of
+                    // the three.
                     let hint = match key {
-                        serde_yaml::Value::Sequence(_) | serde_yaml::Value::Mapping(_) => {
-                            String::new()
-                        }
+                        serde_yaml::Value::Sequence(_)
+                        | serde_yaml::Value::Mapping(_)
+                        | serde_yaml::Value::Tagged(_) => String::new(),
                         _ => format!("; did you mean '\"{rendered}\"'?"),
                     };
                     return Err(format!(
@@ -1185,8 +1187,8 @@ mod tests {
     /// be written out, and the hash `applies.plan_hash` stores cannot name it.
     ///
     /// A scalar key closes on the remedy, the way this file's other refusals do;
-    /// a sequence- or mapping-keyed entry has no quoted spelling meaning the
-    /// same thing, so it states the rule alone.
+    /// a sequence-, mapping- or tagged-keyed entry has no quoted spelling
+    /// meaning the same thing, so it states the rule alone.
     #[test]
     fn a_patch_ensure_key_that_is_not_a_string_is_refused_at_every_depth() {
         for (yaml, expected) in [
@@ -1211,13 +1213,25 @@ mod tests {
             );
         }
 
-        let seq_keyed = serde_yaml::from_str::<PatchSpec>("ensure:\n  ? [a, b]\n  : c\n")
-            .expect_err("a sequence-keyed mapping is refused")
-            .to_string();
-        assert!(
-            !seq_keyed.contains("did you mean"),
-            "a key no quoting can rescue is offered no remedy: {seq_keyed}"
-        );
+        for yaml in [
+            "ensure:\n  ? [a, b]\n  : c\n",
+            "ensure:\n  ? {a: b}\n  : c\n",
+            // Quoting a tagged key would hand back a plain string, which is a
+            // different key from the tag the author wrote.
+            "ensure:\n  ? !Ref foo\n  : c\n",
+        ] {
+            let refusal = serde_yaml::from_str::<PatchSpec>(yaml)
+                .expect_err("a key with no JSON spelling is refused")
+                .to_string();
+            assert!(
+                refusal.contains("a mapping key must be a string"),
+                "the refusal is this rule's, not a parse failure: {refusal}"
+            );
+            assert!(
+                !refusal.contains("did you mean"),
+                "a key no quoting can rescue is offered no remedy: {refusal}"
+            );
+        }
 
         let ok = serde_yaml::from_str::<PatchSpec>(
             "ensure:\n  outer:\n    inner: 1\n  items:\n    - a\n    - 2\n",
