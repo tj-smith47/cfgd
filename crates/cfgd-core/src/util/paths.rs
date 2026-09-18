@@ -985,6 +985,22 @@ pub fn lexically_normalized(path: &std::path::Path) -> std::path::PathBuf {
     out
 }
 
+/// Whether two spellings name one file or directory.
+///
+/// Two answers, in this order, because neither alone is enough. The lexical
+/// fold ([`absolutize_path`] then [`lexically_normalized`]) equates a relative
+/// spelling, a `.` component and a `..` walking back through a component that
+/// does not exist. That last one stats nothing, so no inode question can be
+/// asked about it at all. [`is_same_inode`] then catches what the fold cannot:
+/// two genuinely different spellings of one path, reached through a symlink.
+///
+/// COMPARISON only. Both halves discard the spelling the caller wrote, so a
+/// slot rendering a path still renders the caller's own.
+pub fn names_the_same_path(a: &std::path::Path, b: &std::path::Path) -> bool {
+    lexically_normalized(&absolutize_path(a)) == lexically_normalized(&absolutize_path(b))
+        || crate::is_same_inode(a, b)
+}
+
 /// Resolve a relative path against a base directory with traversal validation.
 /// Absolute paths are returned as-is. Relative paths are validated with
 /// `validate_no_traversal` and then joined to `base`.

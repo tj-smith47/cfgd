@@ -224,8 +224,8 @@ pub fn run_apply(
     // the source fetch and the module resolution below.
     let (saved_plan, saved_context) = match args.plan.as_deref() {
         Some(path) => {
-            let loaded = plan_ops::load_saved_plan(path, state)?;
-            (Some(loaded.plan), Some(loaded.context))
+            let loaded = plan_ops::load_saved_plan(path, &cli.config, state)?;
+            (Some((loaded.plan, path)), Some(loaded.context))
         }
         None => (None, None),
     };
@@ -320,8 +320,29 @@ pub fn run_apply(
                 .collect();
             // A replay's package actions came off the wire, already priced by
             // the run that recorded them, so nothing is planned again here.
+            // The enumeration still runs where the source-policy classification
+            // below can answer differently without it: `manual_install_verdict`
+            // misses every candidate against an empty observation, so a
+            // `Notify` item the recording run auto-accepted because the machine
+            // already held the package would be withheld here and pruned out of
+            // an approved plan. With no subscription declared, or auto-apply
+            // off, no item can be auto-accepted and the replay pays nothing.
             let (pkg, actual) = if replaying {
-                (Vec::new(), cfgd_core::reconciler::ActualPackages::default())
+                let classification_reads_installed = !cfg.spec.sources.is_empty()
+                    && cfgd_core::reconciler::configured_auto_apply(&cfg);
+                let actual = if classification_reads_installed {
+                    packages::plan_packages_observed(
+                        &effective_resolved.merged,
+                        &[],
+                        &all_managers,
+                        &std::collections::HashSet::new(),
+                        &pkg_cx,
+                    )?
+                    .1
+                } else {
+                    cfgd_core::reconciler::ActualPackages::default()
+                };
+                (Vec::new(), actual)
             } else {
                 let cfgd_installed = if prune_eligible {
                     cfgd_installed_packages(state)?
@@ -464,8 +485,8 @@ pub fn run_apply(
         // `manager_declared` and `min_version` are planner inputs the format
         // does not carry, so they come from the modules this run resolved
         // rather than from the file.
-        Some(mut recorded) => {
-            plan_ops::restore_module_planner_inputs(&mut recorded, &resolved_modules);
+        Some((mut recorded, path)) => {
+            plan_ops::restore_module_planner_inputs(&mut recorded, &resolved_modules, path)?;
             recorded
         }
         None => printer.narrate("Planning", |sp| {

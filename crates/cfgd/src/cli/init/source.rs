@@ -147,12 +147,10 @@ fn occupied_default_destination(dest: &Path) -> Option<&'static str> {
 /// `--config` pointed at whatever the default directory is a symlink to named
 /// it under another.
 ///
-/// Two answers, in this order. [`cfgd_core::lexically_normalized`] folds both
-/// spellings first, because a `..` walking back through a component that does
-/// not exist (`<default>/absent/../cfgd.yaml`) stats nothing, and
-/// [`cfgd_core::is_same_inode`] can only say "different" about a path it
-/// cannot open. The inode question then catches what the fold cannot: two
-/// genuinely different spellings of one directory, reached through a symlink.
+/// Both answers are [`cfgd_core::names_the_same_path`]'s, which folds the
+/// spellings before it asks the inode question: a `..` walking back through a
+/// component that does not exist (`<default>/absent/../cfgd.yaml`) stats
+/// nothing, so the inode question cannot be asked about it at all.
 /// The occupancy probe then reads the DEFAULT directory, which is the
 /// directory the refusal is about: the fold is a comparison value, so where the
 /// match came from the inode it names a path that is not that directory, and
@@ -160,10 +158,7 @@ fn occupied_default_destination(dest: &Path) -> Option<&'static str> {
 /// default holds. The message still names the path the caller wrote.
 fn refuse_occupied_default_destination(dest: &Path) -> anyhow::Result<()> {
     let default = cfgd_core::default_config_dir();
-    let folded = cfgd_core::lexically_normalized(dest);
-    if folded != cfgd_core::lexically_normalized(&default)
-        && !cfgd_core::is_same_inode(dest, &default)
-    {
+    if !cfgd_core::names_the_same_path(dest, &default) {
         return Ok(());
     }
     let Some(finding) = occupied_default_destination(&default) else {

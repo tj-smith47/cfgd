@@ -116,7 +116,7 @@ impl<'a> super::Reconciler<'a> {
     pub fn plan_observed(
         &self,
         resolved: &ResolvedProfile,
-        file_actions: Vec<FileAction>,
+        mut file_actions: Vec<FileAction>,
         pkg_actions: Vec<PackageAction>,
         module_actions: Vec<ResolvedModule>,
         context: ReconcileContext,
@@ -153,7 +153,7 @@ impl<'a> super::Reconciler<'a> {
         let profile = Owner::profile(resolved.profile_name());
 
         observe(PhaseName::PreScripts);
-        let (pre_script_actions, post_script_actions) =
+        let (mut pre_script_actions, mut post_script_actions) =
             self.plan_scripts(&resolved.merged, context);
 
         // Module work is attributed to the phase whose KIND it is, so a
@@ -257,7 +257,7 @@ impl<'a> super::Reconciler<'a> {
         // `dedup_module_packages` and `plan_managers` above read only
         // `InstallPackages` actions, and hooks are none.
         let EnvPlanOutcome {
-            actions: env_actions,
+            actions: mut env_actions,
             warnings,
             primary_write,
         } = env_plan;
@@ -273,49 +273,57 @@ impl<'a> super::Reconciler<'a> {
             }
         }
 
-        let package_actions = profile_packages
+        let mut package_actions = profile_packages
             .into_iter()
             .map(Action::Package)
             .collect::<Vec<_>>();
 
         observe(PhaseName::System);
-        let system_actions = self.plan_system(&resolved.merged, &module_actions)?;
+        let mut system_actions = self.plan_system(&resolved.merged, &module_actions)?;
         observe(PhaseName::Secrets);
-        let secret_actions = self.plan_secrets(&resolved.merged);
+        let mut secret_actions = self.plan_secrets(&resolved.merged);
 
-        let mut buckets: Vec<(PhaseName, Vec<Action>)> = vec![
-            // `Modules` holds only platform-gated skips — the meta phase — and
-            // is first so a "not for this host" answer precedes every step.
-            (PhaseName::Modules, Vec::new()),
-            (PhaseName::PreScripts, pre_script_actions),
-            // One phase, three cfgd-owned groups in producer-before-consumer
-            // order: `cfgd:managers` creates the binaries, `cfgd:env` publishes
-            // where they live, `cfgd:session` broadcasts. `Owner::sort_key`
-            // orders the groups; the concatenation order here is irrelevant.
-            (
-                PhaseName::Bootstrap,
-                manager_actions.into_iter().chain(env_actions).collect(),
-            ),
-            (PhaseName::Packages, package_actions),
-            // `Files` precedes `System` so a file is materialised before
-            // anything that consumes it: a unit file deployed through `files:`
-            // has to exist before `systemctl enable` names it.
-            (
-                PhaseName::Files,
-                file_actions.into_iter().map(Action::File).collect(),
-            ),
-            (PhaseName::System, system_actions),
-            (PhaseName::Secrets, secret_actions),
-            (PhaseName::PostScripts, post_script_actions),
-        ];
-
-        debug_assert!(
-            buckets
-                .iter()
-                .map(|(n, _)| n)
-                .eq(PhaseName::EXECUTION_ORDER.iter()),
-            "the bucket order above IS PhaseName::EXECUTION_ORDER, which a plan file is read against"
-        );
+        // The bucket order IS `PhaseName::EXECUTION_ORDER`, by construction
+        // rather than by assertion: a plan FILE is read back against that
+        // const, and a debug-only check is stripped from the release binary
+        // that writes the files. The match is exhaustive, so a phase added to
+        // the enum fails to compile here instead of reaching a reader in an
+        // order it does not expect. Each arm takes its actions once, the
+        // phases being distinct.
+        let mut buckets: Vec<(PhaseName, Vec<Action>)> = PhaseName::EXECUTION_ORDER
+            .into_iter()
+            .map(|name| {
+                let actions = match name {
+                    // `Modules` holds only platform-gated skips (the meta
+                    // phase) and is first so a "not for this host" answer
+                    // precedes every step.
+                    PhaseName::Modules => Vec::new(),
+                    PhaseName::PreScripts => std::mem::take(&mut pre_script_actions),
+                    // One phase, three cfgd-owned groups in
+                    // producer-before-consumer order: `cfgd:managers` creates
+                    // the binaries, `cfgd:env` publishes where they live,
+                    // `cfgd:session` broadcasts. `Owner::sort_key` orders the
+                    // groups; the concatenation order here is irrelevant.
+                    PhaseName::Bootstrap => std::mem::take(&mut manager_actions)
+                        .into_iter()
+                        .chain(std::mem::take(&mut env_actions))
+                        .collect(),
+                    PhaseName::Packages => std::mem::take(&mut package_actions),
+                    // `Files` precedes `System` so a file is materialised
+                    // before anything that consumes it: a unit file deployed
+                    // through `files:` has to exist before `systemctl enable`
+                    // names it.
+                    PhaseName::Files => std::mem::take(&mut file_actions)
+                        .into_iter()
+                        .map(Action::File)
+                        .collect(),
+                    PhaseName::System => std::mem::take(&mut system_actions),
+                    PhaseName::Secrets => std::mem::take(&mut secret_actions),
+                    PhaseName::PostScripts => std::mem::take(&mut post_script_actions),
+                };
+                (name, actions)
+            })
+            .collect();
 
         for (phase_name, action) in module_routed {
             if let Some((_, bucket)) = buckets.iter_mut().find(|(n, _)| *n == phase_name) {

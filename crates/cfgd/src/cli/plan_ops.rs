@@ -637,6 +637,25 @@ struct PlanFile {
     saved_plan: Option<SavedPlanIn>,
 }
 
+/// Whether a JSON document is a `cfgd plan -o json` payload at all.
+///
+/// `phases` and `totalActions` are the two keys every plan output carries and
+/// no filter suppresses, so a document holding neither is one cfgd never
+/// wrote. Asked only on the path that has to explain why a file carries no
+/// `savedPlan`, which is the one place the two answers differ: a plan cfgd
+/// wrote earns the explanation of which filters suppress the recording, while
+/// a stranger's JSON would be told causes that cannot apply to it.
+fn is_plan_payload(body: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|value| {
+            value
+                .as_object()
+                .map(|doc| doc.contains_key("phases") && doc.contains_key("totalActions"))
+        })
+        .unwrap_or(false)
+}
+
 /// The `savedPlan` block, typed for reading. Mirrors [`SavedPlan`] key for key.
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -679,13 +698,20 @@ fn phases_in_execution_order(plan: &reconciler::Plan) -> bool {
 /// the machine has moved past approves actions nobody looked at.
 ///
 /// Ahead of those two comes the question of whether the file is a plan cfgd
-/// wrote at all: a payload carrying no `savedPlan` (its run was filtered), and
-/// one whose phases are not [`PhaseName::EXECUTION_ORDER`]'s subsequence. The
-/// per-phase half of that question — an action filed under an owner that does
-/// not own it — is `Phase`'s own `Deserialize`, and lands here as a parse
-/// error.
+/// wrote FOR THIS CONFIG: a payload carrying no `savedPlan` (its run was
+/// filtered), one whose phases are not [`PhaseName::EXECUTION_ORDER`]'s
+/// subsequence, and one whose derivation never read `config`. The per-phase
+/// half of that question (an action filed under an owner that does not own it)
+/// is `Phase`'s own `Deserialize`, and lands here as a parse error.
+///
+/// `config` is the config file this run resolved. A plan file names no config
+/// of its own, so without that question a global `--config` re-aims a replay
+/// at a second machine picture: the recorded actions run while the header, the
+/// resolved modules and the profile the `applies` row is written under all
+/// come from the other config.
 pub(in crate::cli) fn load_saved_plan(
     path: &std::path::Path,
+    config: &std::path::Path,
     state: &cfgd_core::state::StateStore,
 ) -> anyhow::Result<LoadedPlan> {
     let shown = path.display(); // native-ok: a human-facing error, not a key
@@ -695,6 +721,12 @@ pub(in crate::cli) fn load_saved_plan(
         .map_err(|e| anyhow::anyhow!("{shown} is not the payload of `cfgd plan -o json`: {e}"))?;
 
     let Some(saved) = file.saved_plan else {
+        if !is_plan_payload(&body) {
+            anyhow::bail!(
+                "{shown} is not the payload of `cfgd plan -o json`: it carries neither a \
+                 `phases` nor a `totalActions` key, which every plan output has"
+            );
+        }
         anyhow::bail!(
             "{shown} carries no saved plan: `cfgd plan -o json` records one only for a run \
              describing the whole machine, so a run narrowed by --module, --only, --skip, \
@@ -713,6 +745,20 @@ pub(in crate::cli) fn load_saved_plan(
         anyhow::bail!(
             "{shown} is not a plan cfgd wrote: it lists the phases {listed}, and cfgd plans \
              each phase at most once, in the order an apply runs them in"
+        );
+    }
+
+    if !saved
+        .config_inputs
+        .paths()
+        .any(|read| cfgd_core::names_the_same_path(read, config))
+    {
+        anyhow::bail!(
+            "{shown} is not a plan cfgd wrote for this config: nothing its derivation read was \
+             {config}, so the actions in it were priced against another machine picture — run \
+             `cfgd plan -o json` under this config",
+            // native-ok: a human-facing error, not a key
+            config = config.display()
         );
     }
 
@@ -754,13 +800,20 @@ pub(in crate::cli) fn load_saved_plan(
 /// the replay path, so they are taken from it rather than trusted from the
 /// file.
 ///
-/// A package the file names and the modules no longer resolve keeps what the
-/// file said: the two facts are the module's to state, and a plan whose modules
-/// moved out from under it is what the config-input refusal above is for.
+/// A package the file names and the modules no longer resolve the same way is
+/// a REFUSAL, not a pass-through. The config-input check above does not cover
+/// it: [`cfgd_core::modules::resolve_package`] picks a manager by what this
+/// host holds, so a package installed between the plan and the replay moves
+/// the `(manager, canonical_name)` key while every recorded input still stats
+/// identical. Keeping the file's own `min_version: None` there would let
+/// `Reconciler::package_survives_elision` elide an outdated copy as converged,
+/// which is the one outcome the floor exists to prevent.
 pub(in crate::cli) fn restore_module_planner_inputs(
     plan: &mut reconciler::Plan,
     modules: &[cfgd_core::modules::ResolvedModule],
-) {
+    path: &std::path::Path,
+) -> anyhow::Result<()> {
+    let shown = path.display(); // native-ok: a human-facing error, not a key
     for phase in &mut plan.phases {
         for (_, actions) in phase.groups_mut() {
             for action in actions {
@@ -771,13 +824,25 @@ pub(in crate::cli) fn restore_module_planner_inputs(
                     continue;
                 };
                 let Some(module) = modules.iter().find(|r| r.name == m.module_name) else {
-                    continue;
+                    anyhow::bail!(
+                        "{shown} does not describe this host: it plans packages for module \
+                         {module}, which this run's modules no longer resolve — run \
+                         `cfgd plan -o json` again",
+                        module = m.module_name
+                    );
                 };
                 for pkg in resolved.iter_mut() {
                     let Some(source) = module.packages.iter().find(|p| {
                         p.manager == pkg.manager && p.canonical_name == pkg.canonical_name
                     }) else {
-                        continue;
+                        anyhow::bail!(
+                            "{shown} does not describe this host: it plans {manager}:{name} for \
+                             module {module}, which that module no longer resolves that way — \
+                             run `cfgd plan -o json` again",
+                            manager = pkg.manager,
+                            name = pkg.canonical_name,
+                            module = m.module_name
+                        );
                     };
                     pkg.manager_declared = source.manager_declared;
                     pkg.min_version.clone_from(&source.min_version);
@@ -785,6 +850,7 @@ pub(in crate::cli) fn restore_module_planner_inputs(
             }
         }
     }
+    Ok(())
 }
 
 /// The manager every `PackageAction` names.
