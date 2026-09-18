@@ -126,7 +126,7 @@ spec:
 | `spec.aliases.<name>` | no | — | CLI command aliases (e.g. `add: "profile update --file"`) |
 | `spec.compliance` | no | — | Continuous compliance snapshot settings. Reports the effective desired state (profile + modules), and file checks are content-aware (see [spec/config.md](spec/config.md#speccompliance)) |
 | `spec.sources[].subscription.requireSignedCommits` | no | `false` | Demand a valid GPG or SSH signature on that source's HEAD commit. ORed with the source manifest's `constraints.requireSignedCommits`, so it only adds strictness (see [sources.md](sources.md#security-model)) |
-| `spec.output.usageHints` | no | `false` | Whether closing `→` usage hints render. A refusal's remediation and a run's own instructions render either way. `--hints` / `--no-hints` / `CFGD_USAGE_HINTS` override for one invocation (see [Global Flags](#global-flags)) |
+| `spec.output.usageHints` | no | `false` | Whether closing `→` usage hints render. A refusal's remediation, the next step a run closes on when it did not fully succeed, and a run's own instructions render either way. `--hints` / `--no-hints` / `CFGD_USAGE_HINTS` override for one invocation (see [Global Flags](#global-flags)) |
 | `spec.output.maskEnvValues` | no | `All` | Which declared env values render masked: `All`, `Secrets` (only a name some `spec.secrets[].envs` exports) or `None`. `--mask-env-values` / `CFGD_MASK_ENV_VALUES` override for one invocation; `--show-values` is the per-verb alias for `None` |
 
 The three presentation keys live under `spec.output`:
@@ -943,12 +943,16 @@ These flags work with any subcommand:
 | | | `DO_NOT_TRACK` | Same, via the [consoledonottrack.com](https://consoledonottrack.com) convention |
 
 Usage hints are off unless something asks for them, and the knob reaches the closing
-tutorial pointers only (the "run this next" lines). Two kinds of line ignore it and render
-whatever it says: a refusal's remediation (the way out of a command that declined to run,
-such as the valid names an unknown one is refused with) and a run's own instructions, which
-are note rows beside the run's other rows (the safety copy a restore left your previous
-contents in, the env file a shell has to re-source, the snapshots a changed `destination:`
-stranded). The transcripts in these docs are rendered with hints on.
+tutorial pointers only (the "run this next" lines). Three kinds of line ignore it and
+render whatever it says: a refusal's remediation (the way out of a command that declined
+to run, such as the valid names an unknown one is refused with), the next step a run
+closes on when it did not fully succeed ("Fix what failed, then run `cfgd apply` again",
+and the same for a pull that could not reach its remote), and a run's own instructions,
+which are note rows beside the run's other rows (the safety copy a restore left your
+previous contents in, the env file a shell has to re-source, the snapshots a changed
+`destination:` stranded). The first two are instructions the reader has to act on that
+nothing else on the surface states; the last is a fact about this machine. The transcripts
+in these docs are rendered with hints on.
 
 Boolean env vars accept shell-truthy spellings, not only `true`/`false`. The
 accept-set matches `CFGD_YES`: `1`/`y`/`yes`/`t`/`true`/`on` (case-insensitive)

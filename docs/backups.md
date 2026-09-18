@@ -785,8 +785,9 @@ staging removed      ← on every path, success or failure
   the current bytes was reused rather than written (`safetyCopyReused` in `-o json`). A note row is
   a row the run leaves under its owner rather than a closing hint, so `spec.output.usageHints` never
   takes it away. A sidecar holding different bytes is kept and the new copy lands at a stamped
-  `<path>.cfgd-backup.<stamp>` name instead, so an older copy is never overwritten. If the copy cannot be written, the restore is **abandoned**: cfgd will not overwrite
-  data whose current contents were not captured.
+  `<path>.cfgd-backup.<stamp>` name instead, so an older copy is never overwritten. If the copy
+  cannot be written, the restore is **abandoned**: cfgd will not overwrite data whose current
+  contents were not captured.
 - **It is skipped on the target, not on the flag.** `--to` pointing back at the source, or at a
   path inside it, overwrites exactly what a plain restore would, so it still takes one. Only a
   target genuinely outside the source (or a source that does not exist yet) skips it.

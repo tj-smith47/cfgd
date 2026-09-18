@@ -12,8 +12,8 @@ topic document, which links back here; this file does not restate them. `cfgd he
 
 The closing `→` pointers in the transcripts below are usage hints, and they render only when
 `--hints`, `CFGD_USAGE_HINTS=true` or `spec.output.usageHints: true` asks for them (see
-[Configuration](configuration.md#global-flags)). A refusal's remediation, which names the way out
-of a command that declined to run, and the `◉` note rows a run leaves behind render either way.
+[Configuration](configuration.md#global-flags)). A refusal's remediation, the next step a run
+closes on when it did not fully succeed, and the note rows a run leaves behind render either way.
 
 ## Core Commands
 
