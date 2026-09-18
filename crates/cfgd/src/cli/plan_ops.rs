@@ -639,9 +639,13 @@ struct PlanFile {
 
 /// Whether a JSON document is a `cfgd plan -o json` payload at all.
 ///
-/// `phases` and `totalActions` are the two keys every plan output carries and
-/// no filter suppresses, so a document holding neither is one cfgd never
-/// wrote. Asked only on the path that has to explain why a file carries no
+/// [`PlanOutput`] serializes exactly three keys unconditionally: `context`,
+/// `phases` and `totalActions`. Two of them are asked for here, which is
+/// enough for a document holding neither to be one cfgd never wrote, and
+/// `is_plan_payload_reads_keys_the_plan_output_always_serializes` pins the
+/// unsuppressable set against the real serialization.
+///
+/// Asked only on the path that has to explain why a file carries no
 /// `savedPlan`, which is the one place the two answers differ: a plan cfgd
 /// wrote earns the explanation of which filters suppress the recording, while
 /// a stranger's JSON would be told causes that cannot apply to it.
