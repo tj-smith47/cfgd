@@ -252,13 +252,14 @@ installs, then `module:nvim`. Execution reverses those two (see the note above).
 
 ### The saved plan (`savedPlan`)
 
-An unfiltered `cfgd plan -o json` (or `cfgd apply --dry-run -o json`) records one
-more key, `savedPlan`: the plan itself plus the two facts that say whether it still
-describes this machine.
+An unfiltered `cfgd plan` (or `cfgd apply --dry-run`) under any structured format
+(`-o json`, `-o yaml`, and the `jsonpath`/`template`/`name` projections over them)
+records one more key, `savedPlan`: the plan itself plus the two facts that say
+whether it still describes this machine.
 
 | Field | What it holds |
 |---|---|
-| `plan` | The reconciler's own action graph, typed and serialized whole. `phases[]` is the rendered contract a reader scans; this is the one cfgd reads back. |
+| `plan` | The reconciler's own action graph, typed and serialized whole. `phases[]` is the rendered contract a reader scans; this is cfgd's own format, written for cfgd to read back. It spells its variants the way Rust tags them (PascalCase, externally tagged) rather than the camelCase the rest of the payload uses, and it is not a surface to build a `jq` expression on: read `phases[]` for that. |
 | `configInputs` | Every file the derivation opened, each with the modification time and size it carried. A file that has since moved (or appeared, or gone) makes the plan stale. |
 | `serial` | The id of the last apply recorded on this machine, or `0` when none has run. A later apply means the machine is no longer the one the plan was taken against. |
 
@@ -266,6 +267,13 @@ A filtered run records nothing here, and the key is absent rather than null: the
 plan file would otherwise state a scope a second time, once in its actions and once
 in the flags that produced them. A run scoped by `--phase`, `--only`, `--skip`,
 `--skip-scripts` or `--module` is therefore not recorded.
+
+Neither is a run holding a withheld source decision, whatever flags it was given.
+A pending, declined or rejected decision prunes actions out of the plan, and
+answering it with `cfgd decide` writes decision rows only: no config file changes
+and no apply is recorded, so neither `configInputs` nor `serial` moves. A plan
+recorded under a pending decision would otherwise replay after the answer with the
+accepted resource silently missing. Answer the decisions, then plan again.
 
 `savedPlan.plan` carries everything the plan carries, the generated env file's body
 included. Treat a saved plan as exactly as sensitive as the config it was derived

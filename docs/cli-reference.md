@@ -287,6 +287,10 @@ item (the default) is withheld from the first run that sees it, before any row e
 `apply` records the row so `cfgd decide` can answer it without waiting for a daemon tick,
 while `plan` withholds it read-only.
 
+`cfgd apply --dry-run` under a structured format records the same `savedPlan` key
+`cfgd plan` does, on the same terms: see [`cfgd plan`](#cfgd-plan) and
+[The saved plan](reconciliation.md#the-saved-plan-savedplan).
+
 ### `cfgd plan`
 
 Preview the reconciliation plan without applying. This is the canonical preview command; `apply --dry-run` is a convenience that delegates to the same logic.
@@ -616,8 +620,10 @@ a run judges ownership against is always the store it opened.
 
 An unfiltered run carries one further key, `savedPlan`, holding the typed action
 graph, the files the derivation read with their stamps, and the id of the last
-recorded apply. A scoped run (`--phase`, `--only`, `--skip`, `--skip-scripts`,
-`--module`) omits it. See [The saved plan](reconciliation.md#the-saved-plan-savedplan).
+recorded apply; every structured format carries it, not `-o json` alone. A scoped
+run (`--phase`, `--only`, `--skip`, `--skip-scripts`, `--module`) omits it, and so
+does a run holding a withheld source decision. See
+[The saved plan](reconciliation.md#the-saved-plan-savedplan).
 
 ### `cfgd status`
 
