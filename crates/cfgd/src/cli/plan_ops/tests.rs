@@ -2218,6 +2218,16 @@ fn the_plan_json_payload_is_the_same_bytes_under_a_preset_that_overrides_the_arr
 /// payload envelope cannot move it: a plan read back out of `savedPlan.plan`
 /// hashes to what the same plan hashed before it was written. A replay that
 /// hashed differently would record an apply nothing can be matched against.
+///
+/// The hash equality alone covers the ENVELOPE and nothing else. Both operands
+/// run through the same serde impl, so a symmetric change — a rename, a
+/// `skip_serializing`, a new field — moves both and the digests still agree.
+/// What guards field coverage is
+/// `every_optional_field_of_the_plan_format_deserializes_from_its_absence` and
+/// the `// plan-skip-ok:` marker rule it reads. The `Debug` equality below is
+/// the asymmetric half available here: `Debug` does not go through serde, so a
+/// field dropped from the wire reads back as its default and fails there while
+/// the digests still match.
 #[test]
 fn a_saved_plan_hashes_to_what_it_hashed_before_the_payload_carried_it() {
     let plan = make_plan(vec![(PhaseName::System, vec![system_set()])]);
@@ -2236,6 +2246,11 @@ fn a_saved_plan_hashes_to_what_it_hashed_before_the_payload_carried_it() {
         replayed.to_hash_string().expect("the replayed plan hashes"),
         before,
         "the payload envelope adds nothing the plan hash is taken over"
+    );
+    assert_eq!(
+        format!("{replayed:?}"),
+        format!("{plan:?}"),
+        "every field of the recorded plan survives the round trip"
     );
 }
 

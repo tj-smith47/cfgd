@@ -177,6 +177,39 @@ fn apply_dry_run_human() {
 /// the only difference either is allowed to have is the title row. Comparing
 /// the two goldens would only prove they were regenerated together, so both are
 /// re-driven here against identical setups and diffed live.
+/// The same agreement on the wire: both spellings record the approval contract,
+/// and they record the SAME one.
+///
+/// Driven against a single fixture, because a dry run mutates nothing and both
+/// refusal facts are derived from it — two setups would differ in their
+/// recorded paths and the equality would have to be weakened to prove anything.
+/// Without this, deleting the `saved_plan` block from `run_apply` leaves every
+/// test green: nothing else asserts the key on that side.
+#[test]
+fn plan_and_dry_run_record_the_same_saved_plan() {
+    let (config_dir, state_dir, _target) = tiny_profile_setup();
+    let cli = cli_for(config_dir.path(), state_dir.path());
+
+    let (printer, cap) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
+    cmd_plan(&cli, &printer, &plan_args()).unwrap();
+    drop(printer);
+    let planned = cap.json().expect("plan doc carries a payload");
+
+    let (printer, cap) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
+    cmd_apply(&cli, &printer, &apply_args_dry_run()).unwrap();
+    drop(printer);
+    let dry_run = cap.json().expect("apply doc carries a payload");
+
+    assert!(
+        planned["savedPlan"]["plan"]["phases"].is_array(),
+        "the plan surface records a contract: {planned}"
+    );
+    assert_eq!(
+        planned["savedPlan"], dry_run["savedPlan"],
+        "cfgd plan and cfgd apply --dry-run must record the same approval contract"
+    );
+}
+
 #[test]
 fn plan_and_dry_run_agree_below_the_title_row() {
     fn body(rendered: &str) -> String {
