@@ -34681,14 +34681,18 @@ fn enclosing_fn_name(lines: &[&str], n: usize) -> Option<String> {
 /// reads a hatch beside it: a body handed over as one string has no line
 /// numbers left to name.
 ///
-/// The braces are counted on literal-blanked lines, the reading
-/// [`enclosing_fn_span`] states: a `}` inside a hint's own text would otherwise
-/// close the function early, and every walk this range bounds would read a body
-/// that stops before the line it was looking for.
+/// BOTH ends of the range are read on code, never on the raw line, which is the
+/// reading [`enclosing_fn_span`] states. The opener is a declaration
+/// `cfgd_core::test_helpers::declared_fn_name` recognizes, so a `fn <name>(`
+/// spelled inside a literal (a walk's own offender message, a fixture source
+/// built as a string) does not open the span declarations early; the braces are
+/// counted on literal-blanked lines, so a `}` inside a hint's own text does not
+/// close it early. Either way the walk would report a `path:line` for a region
+/// that is not the function.
 fn fn_span(lines: &[&str], name: &str) -> Option<(usize, usize)> {
     let start = lines.iter().position(|l| {
-        let t = l.trim_start();
-        t.contains(&format!("fn {name}(")) && !t.starts_with("//")
+        cfgd_core::test_helpers::declared_fn_name(&cfgd_core::test_helpers::code_line(l)).as_deref()
+            == Some(name)
     })?;
     let mut depth = 0usize;
     let mut opened = false;
