@@ -614,6 +614,11 @@ state root (Linux `/var/lib/cfgd`, macOS `/Library/Application Support/cfgd/stat
 Windows `%ProgramData%\cfgd\state`) rather than the per-user one, so the store
 a run judges ownership against is always the store it opened.
 
+An unfiltered run carries one further key, `savedPlan`, holding the typed action
+graph, the files the derivation read with their stamps, and the id of the last
+recorded apply. A scoped run (`--phase`, `--only`, `--skip`, `--skip-scripts`,
+`--module`) omits it. See [The saved plan](reconciliation.md#the-saved-plan-savedplan).
+
 ### `cfgd status`
 
 Show configuration status, drift, and pending decisions.

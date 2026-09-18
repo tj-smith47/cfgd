@@ -250,6 +250,27 @@ count is of surfaces rewritten, not of variables resolved.
 The `Packages` bullets are the group order in miniature: the profile's own
 installs, then `module:nvim`. Execution reverses those two (see the note above).
 
+### The saved plan (`savedPlan`)
+
+An unfiltered `cfgd plan -o json` (or `cfgd apply --dry-run -o json`) records one
+more key, `savedPlan`: the plan itself plus the two facts that say whether it still
+describes this machine.
+
+| Field | What it holds |
+|---|---|
+| `plan` | The reconciler's own action graph, typed and serialized whole. `phases[]` is the rendered contract a reader scans; this is the one cfgd reads back. |
+| `configInputs` | Every file the derivation opened, each with the modification time and size it carried. A file that has since moved (or appeared, or gone) makes the plan stale. |
+| `serial` | The id of the last apply recorded on this machine, or `0` when none has run. A later apply means the machine is no longer the one the plan was taken against. |
+
+A filtered run records nothing here, and the key is absent rather than null: the
+plan file would otherwise state a scope a second time, once in its actions and once
+in the flags that produced them. A run scoped by `--phase`, `--only`, `--skip`,
+`--skip-scripts` or `--module` is therefore not recorded.
+
+`savedPlan.plan` carries everything the plan carries, the generated env file's body
+included. Treat a saved plan as exactly as sensitive as the config it was derived
+from.
+
 ## Filtering
 
 ```sh
