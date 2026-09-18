@@ -39,9 +39,13 @@ impl PhaseName {
     ///
     /// It is not the declaration order above: `Modules` leads so a "not for
     /// this host" answer precedes every step, and `Files` precedes `System` so
-    /// a unit file exists before `systemctl enable` names it. The planner's own
-    /// bucket list is welded to this by a `debug_assert` beside it, so the two
-    /// cannot drift.
+    /// a unit file exists before `systemctl enable` names it. The planner keeps
+    /// no second list: `Reconciler::plan_observed` BUILDS its buckets by
+    /// mapping this const through an exhaustive `match`, so a phase added to
+    /// the enum fails to compile there rather than reaching a reader in an
+    /// order it does not expect.
+    /// `every_phase_the_planner_can_name_sits_in_the_execution_order_exactly_once`
+    /// pins that every variant sits here exactly once.
     ///
     /// A plan cfgd wrote carries a SUBSEQUENCE of this — an empty phase is
     /// dropped — which is how a reader of a plan FILE tells a plan cfgd
