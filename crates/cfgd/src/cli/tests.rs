@@ -11469,40 +11469,6 @@ fn load_config_and_profile_active_profile_delivered_by_source_emits_wrap_hint() 
     );
 }
 
-/// A refusal's remediation renders with usage hints off.
-///
-/// [`super::error::render_cli_error`] is the ONE place a `CliErrorMeta`'s hints
-/// reach a `Doc`, so the class is settled there and this pin reads the sink
-/// rather than one verb. The hint handed in is an ordinary gated one
-/// (`From<&str>`), which is the point: the sink flips it, so a producer never
-/// has to know. `Verbosity::Normal` because `render_hint` prints nothing at
-/// all under `Quiet`, which would green both assertions for the wrong reason.
-#[test]
-fn a_refusal_keeps_its_remediation_with_usage_hints_off() {
-    let (printer, buf) =
-        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    let printer = printer.with_hints_enabled(false);
-    let err = super::error::cli_error_with_hints(
-        "acme",
-        "source_not_found",
-        "no source named `acme`",
-        serde_json::json!({}),
-        vec![cfgd_core::output::HintCommands::from(
-            "Pick an existing ref with `cfgd source update acme --pin-version <ref>`",
-        )],
-    );
-    super::error::render_cli_error(&printer, &err);
-    printer.flush();
-    let rendered = cfgd_core::test_helpers::captured_text(&buf);
-    assert!(
-        rendered.contains("→ "),
-        "a refusal keeps the arrow: {rendered:?}"
-    );
-    assert!(
-        rendered.contains("--pin-version"),
-        "a refusal still names the fix: {rendered:?}"
-    );
-}
 #[test]
 fn load_config_and_profile_explicit_profile_delivered_by_source_emits_wrap_hint() {
     // Same remedy applies when the name comes from --profile, not active_profile.
@@ -11546,6 +11512,45 @@ fn load_config_and_profile_explicit_profile_delivered_by_source_emits_wrap_hint(
         meta.hints
     );
     assert_eq!(meta.extras["profile"], "hardened");
+}
+
+/// A refusal's remediation renders with usage hints off.
+///
+/// [`super::error::render_cli_error`] is the ONE place a `CliErrorMeta`'s hints
+/// reach a `Doc`, so the class is settled there and this pin reads the sink
+/// rather than one verb. The hint handed in is an ordinary gated one
+/// (`From<&str>`), which is the point: the sink flips it, so a producer never
+/// has to know. `Verbosity::Normal` because `render_hint` prints nothing at
+/// all under `Quiet`: both assertions below would then fail whatever the class
+/// is, so the pin could never discriminate. The sink's other ungating mint, the
+/// `NoConfig` closer, is guarded by
+/// `missing_config_human_emits_one_fail_line_and_init_hint`
+/// (`crates/cfgd/tests/cli_error_rendering.rs`).
+#[test]
+fn a_refusal_keeps_its_remediation_with_usage_hints_off() {
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let printer = printer.with_hints_enabled(false);
+    let err = super::error::cli_error_with_hints(
+        "acme",
+        "source_not_found",
+        "no source named `acme`",
+        serde_json::json!({}),
+        vec![cfgd_core::output::HintCommands::from(
+            "Pick an existing ref with `cfgd source update acme --pin-version <ref>`",
+        )],
+    );
+    super::error::render_cli_error(&printer, &err);
+    printer.flush();
+    let rendered = cfgd_core::test_helpers::captured_text(&buf);
+    assert!(
+        rendered.contains("→ "),
+        "a refusal keeps the arrow: {rendered:?}"
+    );
+    assert!(
+        rendered.contains("--pin-version"),
+        "a refusal still names the fix: {rendered:?}"
+    );
 }
 
 #[test]

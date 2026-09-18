@@ -195,6 +195,11 @@ fn a_refusal_names_its_fix_end_to_end_with_usage_hints_off() {
         .unwrap();
 
     let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(
+        out.status.code(),
+        Some(6),
+        "module show must refuse with NotFound(6), or the hint below is a tutorial `usageHints` may take away — stderr: {stderr:?}"
+    );
     assert!(
         stderr.contains("→ "),
         "the refusal's remediation survives the gate: {stderr:?}"
