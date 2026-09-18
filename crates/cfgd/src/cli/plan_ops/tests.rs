@@ -2228,6 +2228,11 @@ fn the_plan_json_payload_is_the_same_bytes_under_a_preset_that_overrides_the_arr
 /// the asymmetric half available here: `Debug` does not go through serde, so a
 /// field dropped from the wire reads back as its default and fails there while
 /// the digests still match.
+///
+/// That equality holds over THIS fixture's plan, which reaches no hatched
+/// field: a `// plan-skip-ok:` skip is a blessed shape, so one added to a type
+/// this fixture carries is a reason to move the fixture off that type, never a
+/// reason to read the failure as a broken plan format.
 #[test]
 fn a_saved_plan_hashes_to_what_it_hashed_before_the_payload_carried_it() {
     let plan = make_plan(vec![(PhaseName::System, vec![system_set()])]);
@@ -2250,7 +2255,8 @@ fn a_saved_plan_hashes_to_what_it_hashed_before_the_payload_carried_it() {
     assert_eq!(
         format!("{replayed:?}"),
         format!("{plan:?}"),
-        "every field of the recorded plan survives the round trip"
+        "this fixture's plan carries no `plan-skip-ok` field, so every field of \
+         it survives the round trip"
     );
 }
 

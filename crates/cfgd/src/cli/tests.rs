@@ -17377,30 +17377,64 @@ fn cli_production_sources() -> Vec<(std::path::PathBuf, String)> {
 /// a withheld source decision. Written twice, a clause found on one producer
 /// left the other one wrong. `plan_ops::saved_plan_for` owns the gate and the
 /// construction; every other production site takes the value it returns.
+///
+/// The population is every crate's production sources, not `src/cli/`'s:
+/// `SavedPlan` is plain `pub` inside `pub mod cli::output_types`, so anything
+/// in this crate can write the literal, and a walk scoped to the module that
+/// happens to hold today's two would report a tree it never read as swept.
 #[test]
 fn every_saved_plan_the_cli_records_comes_from_the_one_gate() {
-    let mut judged = 0usize;
+    // The declaration and its one producer both live in `cfgd`; no other crate
+    // depends on this one, so nothing else can name the type at all.
+    const WALK_ROOTS: &[(&str, usize)] = &[
+        ("cfgd", 2),
+        ("cfgd-core", 0),
+        ("cfgd-crd", 0),
+        ("cfgd-csi", 0),
+        ("cfgd-operator", 0),
+        ("cfgd-schema", 0),
+    ];
+    let names: Vec<&str> = WALK_ROOTS.iter().map(|(k, _)| *k).collect();
+    let trees = production_sources_per_root(&names);
     let mut offenders = Vec::new();
-    for (path, body) in cli_production_sources() {
-        for (n, line) in body.lines().enumerate() {
-            let code = cfgd_core::test_helpers::code_line(line);
-            if !code.contains("SavedPlan {") {
-                continue;
-            }
-            judged += 1;
-            // The type's own declaration is the one `SavedPlan {` that names no
-            // run: it states the shape, it does not decide who may record one.
-            let is_declaration = code.contains("struct SavedPlan {");
-            let is_the_gate = path.file_name().is_some_and(|n| n == "plan_ops.rs");
-            if !is_declaration && !is_the_gate {
-                offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+    let mut per_root: Vec<(&str, usize)> = Vec::new();
+    for (tree, files) in &trees {
+        let mut judged = 0usize;
+        for (path, body) in files {
+            for (n, line) in body.lines().enumerate() {
+                let code = cfgd_core::test_helpers::code_line(line);
+                if !code.contains("SavedPlan {") {
+                    continue;
+                }
+                judged += 1;
+                // The type's own declaration is the one `SavedPlan {` that
+                // names no run: it states the shape, it does not decide who may
+                // record one.
+                let is_declaration = code.contains("struct SavedPlan {");
+                let is_the_gate = path.file_name().is_some_and(|n| n == "plan_ops.rs");
+                if !is_declaration && !is_the_gate {
+                    offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+                }
             }
         }
+        let root: &str = WALK_ROOTS
+            .iter()
+            .find(|(k, _)| *k == tree.as_str())
+            .map(|(k, _)| *k)
+            .expect("every walked tree is a named root");
+        per_root.push((root, judged));
     }
-    assert!(
-        judged >= 2,
-        "the walk no longer reaches the declaration and its producer — it judged {judged}"
-    );
+    for (root, floor) in WALK_ROOTS {
+        let judged = per_root
+            .iter()
+            .find(|(k, _)| k == root)
+            .map(|(_, c)| *c)
+            .unwrap_or_default();
+        assert!(
+            judged >= *floor,
+            "the {root} tree judged {judged} `SavedPlan` literals, below its floor of {floor}"
+        );
+    }
     assert!(
         offenders.is_empty(),
         "a `SavedPlan` is built by `plan_ops::saved_plan_for`, which owns the whole replayability gate:\n{}",
