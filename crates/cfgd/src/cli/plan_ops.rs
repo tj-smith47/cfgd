@@ -693,6 +693,26 @@ fn phases_in_execution_order(plan: &reconciler::Plan) -> bool {
         .all(|phase| expected.any(|name| *name == phase.name))
 }
 
+/// A refusal of the file `--plan` named, typed so a structured consumer reads
+/// which question the document failed instead of the `internal` kind a bare
+/// `anyhow!` falls back to.
+///
+/// Every payload carries the file, because the path is what names the document
+/// a caller handed cfgd; `extras` adds whatever the one refusal knows on top.
+fn plan_refusal(
+    file: &std::path::Path,
+    kind: &str,
+    message: String,
+    extras: serde_json::Value,
+) -> anyhow::Error {
+    let mut payload = serde_json::json!({ "file": file.display_posix() });
+    if let (serde_json::Value::Object(map), serde_json::Value::Object(add)) = (&mut payload, extras)
+    {
+        map.extend(add);
+    }
+    super::cli_error("plan", kind, message, payload)
+}
+
 /// Read `cfgd plan -o json`'s payload back, refusing one this machine has moved
 /// past.
 ///
@@ -720,23 +740,52 @@ pub(in crate::cli) fn load_saved_plan(
     state: &cfgd_core::state::StateStore,
 ) -> anyhow::Result<LoadedPlan> {
     let shown = path.display(); // native-ok: a human-facing error, not a key
-    let body = std::fs::read_to_string(path)
-        .map_err(|e| anyhow::anyhow!("cannot read plan file {shown}: {e}"))?;
-    let file: PlanFile = serde_json::from_str(&body)
-        .map_err(|e| anyhow::anyhow!("{shown} is not the payload of `cfgd plan -o json`: {e}"))?;
+    let body = std::fs::read_to_string(path).map_err(|e| {
+        // The two io outcomes a reader scripts differently: a path that is not
+        // there at all, and one cfgd was not allowed to open.
+        let kind = if e.kind() == std::io::ErrorKind::NotFound {
+            "not_found"
+        } else {
+            "read_failed"
+        };
+        plan_refusal(
+            path,
+            kind,
+            format!("cannot read plan file {shown}: {e}"),
+            serde_json::json!({}),
+        )
+    })?;
+    let file: PlanFile = serde_json::from_str(&body).map_err(|e| {
+        plan_refusal(
+            path,
+            "parse_failed",
+            format!("{shown} is not the payload of `cfgd plan -o json`: {e}"),
+            serde_json::json!({}),
+        )
+    })?;
 
     let Some(saved) = file.saved_plan else {
         if !is_plan_payload(&body) {
-            anyhow::bail!(
-                "{shown} is not the payload of `cfgd plan -o json`: it does not carry both a \
-                 `phases` and a `totalActions` key, which every plan output has"
-            );
+            return Err(plan_refusal(
+                path,
+                "parse_failed",
+                format!(
+                    "{shown} is not the payload of `cfgd plan -o json`: it does not carry both \
+                     a `phases` and a `totalActions` key, which every plan output has"
+                ),
+                serde_json::json!({}),
+            ));
         }
-        anyhow::bail!(
-            "{shown} carries no saved plan: `cfgd plan -o json` records one only for a run \
-             describing the whole machine, so a run narrowed by --module, --only, --skip, \
-             --phase or --skip-scripts, or one holding a source decision back, writes none"
-        );
+        return Err(plan_refusal(
+            path,
+            "no_saved_plan",
+            format!(
+                "{shown} carries no saved plan: `cfgd plan -o json` records one only for a run \
+                 describing the whole machine, so a run narrowed by --module, --only, --skip, \
+                 --phase or --skip-scripts, or one holding a source decision back, writes none"
+            ),
+            serde_json::json!({}),
+        ));
     };
 
     if !phases_in_execution_order(&saved.plan) {
@@ -747,10 +796,15 @@ pub(in crate::cli) fn load_saved_plan(
             .map(|p| p.name.display_name())
             .collect::<Vec<_>>()
             .join(", ");
-        anyhow::bail!(
-            "{shown} is not a plan cfgd wrote: it lists the phases {listed}, and cfgd plans \
-             each phase at most once, in the order an apply runs them in"
-        );
+        return Err(plan_refusal(
+            path,
+            "not_a_cfgd_plan",
+            format!(
+                "{shown} is not a plan cfgd wrote: it lists the phases {listed}, and cfgd plans \
+                 each phase at most once, in the order an apply runs them in"
+            ),
+            serde_json::json!({ "phases": listed }),
+        ));
     }
 
     if !saved
@@ -758,34 +812,50 @@ pub(in crate::cli) fn load_saved_plan(
         .paths()
         .any(|read| cfgd_core::names_the_same_path(read, config))
     {
-        anyhow::bail!(
-            "{shown} is not a plan cfgd wrote for this config: nothing its derivation read was \
-             {config}, so the actions in it were priced against another machine picture — run \
-             `cfgd plan -o json` under this config",
-            // native-ok: a human-facing error, not a key
-            config = config.display()
-        );
+        return Err(plan_refusal(
+            path,
+            "foreign_config",
+            format!(
+                "{shown} is not a plan cfgd wrote for this config: nothing its derivation read \
+                 was {config}, so the actions in it were priced against another machine picture \
+                 — run `cfgd plan -o json` under this config",
+                // native-ok: a human-facing error, not a key
+                config = config.display()
+            ),
+            serde_json::json!({ "config": config.display_posix() }),
+        ));
     }
 
     let serial = state.last_apply()?.map_or(0, |a| a.id);
     if serial != saved.serial {
-        anyhow::bail!(
-            "{shown} is stale: apply #{serial} has run since it was written (it recorded \
-             #{recorded}), so it no longer describes this machine — run `cfgd plan -o json` \
-             again",
-            recorded = saved.serial
-        );
+        return Err(plan_refusal(
+            path,
+            "stale",
+            format!(
+                "{shown} is stale: apply #{serial} has run since it was written (it recorded \
+                 #{recorded}), so it no longer describes this machine — run `cfgd plan -o json` \
+                 again",
+                recorded = saved.serial
+            ),
+            serde_json::json!({ "serial": serial, "recordedSerial": saved.serial }),
+        ));
     }
 
     if !saved.config_inputs.unchanged() {
-        let moved = saved.config_inputs.first_moved().map_or_else(
+        let moved_path = saved.config_inputs.first_moved();
+        let moved = moved_path.as_ref().map_or_else(
             || "the config".to_string(),
             |p| p.display().to_string(), // native-ok: a human-facing error, not a key
         );
-        anyhow::bail!(
-            "{shown} is stale: {moved} changed since it was written, so it no longer describes \
-             this config — run `cfgd plan -o json` again"
-        );
+        return Err(plan_refusal(
+            path,
+            "stale",
+            format!(
+                "{shown} is stale: {moved} changed since it was written, so it no longer \
+                 describes this config — run `cfgd plan -o json` again"
+            ),
+            serde_json::json!({ "changed": moved_path.as_ref().map(|p| p.display_posix()) }),
+        ));
     }
 
     Ok(LoadedPlan {
@@ -829,25 +899,39 @@ pub(in crate::cli) fn restore_module_planner_inputs(
                     continue;
                 };
                 let Some(module) = modules.iter().find(|r| r.name == m.module_name) else {
-                    anyhow::bail!(
-                        "{shown} does not describe this host: it plans packages for module \
-                         {module}, which this run's modules no longer resolve — run \
-                         `cfgd plan -o json` again",
-                        module = m.module_name
-                    );
+                    return Err(plan_refusal(
+                        path,
+                        "host_moved",
+                        format!(
+                            "{shown} does not describe this host: it plans packages for module \
+                             {module}, which this run's modules no longer resolve — run \
+                             `cfgd plan -o json` again",
+                            module = m.module_name
+                        ),
+                        serde_json::json!({ "module": m.module_name }),
+                    ));
                 };
                 for pkg in resolved.iter_mut() {
                     let Some(source) = module.packages.iter().find(|p| {
                         p.manager == pkg.manager && p.canonical_name == pkg.canonical_name
                     }) else {
-                        anyhow::bail!(
-                            "{shown} does not describe this host: it plans {manager}:{name} for \
-                             module {module}, which that module no longer resolves that way — \
-                             run `cfgd plan -o json` again",
-                            manager = pkg.manager,
-                            name = pkg.canonical_name,
-                            module = m.module_name
-                        );
+                        return Err(plan_refusal(
+                            path,
+                            "host_moved",
+                            format!(
+                                "{shown} does not describe this host: it plans {manager}:{name} \
+                                 for module {module}, which that module no longer resolves that \
+                                 way — run `cfgd plan -o json` again",
+                                manager = pkg.manager,
+                                name = pkg.canonical_name,
+                                module = m.module_name
+                            ),
+                            serde_json::json!({
+                                "module": m.module_name,
+                                "manager": pkg.manager,
+                                "package": pkg.canonical_name,
+                            }),
+                        ));
                     };
                     pkg.manager_declared = source.manager_declared;
                     pkg.min_version.clone_from(&source.min_version);
