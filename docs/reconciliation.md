@@ -280,6 +280,11 @@ accepted resource silently missing. Answer the decisions, then plan again.
 included. Treat a saved plan as exactly as sensitive as the config it was derived
 from.
 
+`cfgd apply --plan <file>` reads the payload back and runs it: see
+[Applying a saved plan](cli-reference.md#applying-a-saved-plan). The two fields
+above are what it refuses on, so the window a saved plan is good for is exactly
+"nothing has changed and nothing has been applied".
+
 ## Filtering
 
 ```sh

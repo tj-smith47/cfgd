@@ -176,6 +176,7 @@ cfgd apply --skip system.sysctl         # skip specific items
 cfgd apply --skip-scripts               # apply without running any hooks
 cfgd apply --yes --on-conflict backup   # copy every stranger aside, then write
 cfgd apply --yes --on-conflict fail     # refuse to touch a file cfgd never wrote
+cfgd apply --plan plan.json             # run the plan `cfgd plan -o json` recorded
 ```
 
 | Flag | Description |
@@ -191,6 +192,7 @@ cfgd apply --yes --on-conflict fail     # refuse to touch a file cfgd never wrot
 | `--context <ctx>` | `apply` (default) or `reconcile` — selects which hooks run |
 | `--shell <auto\|sh\|bash\|zsh\|pwsh\|cmd>` | Force every *inline* lifecycle script under this interpreter, overriding each entry's own `shell:`. File and shebang scripts are unaffected. For debugging a script that behaves differently under another shell |
 | `--on-conflict <ask\|backup\|overwrite\|skip\|fail>` | What to do with a managed target that already holds a file cfgd never wrote (default `ask`) |
+| `--plan <file>` | Run the plan `cfgd plan -o json` recorded, instead of planning again (see [Applying a saved plan](#applying-a-saved-plan)). Every flag that would narrow or re-aim the run is refused with it: `--from`, `--phase`, `--skip`, `--only`, `--module`, `--with-profile`, `--skip-scripts`, `--context` |
 
 #### What the closing rollup accounts for
 
@@ -290,6 +292,55 @@ while `plan` withholds it read-only.
 `cfgd apply --dry-run` under a structured format records the same `savedPlan` key
 `cfgd plan` does, on the same terms: see [`cfgd plan`](#cfgd-plan) and
 [The saved plan](reconciliation.md#the-saved-plan-savedplan).
+
+#### Applying a saved plan
+
+`cfgd apply --plan <file>` runs the plan a `cfgd plan -o json` recorded, with no
+second planning pass and no confirmation prompt. The file is the approval, which
+is what makes it reviewable: hand it to whoever signs off, and apply the bytes
+they read.
+
+```console
+$ cfgd plan -o json > plan.json
+$ cfgd apply --plan plan.json
+Apply
+  Config   ~/.config/cfgd/cfgd.yaml
+  Profile  tiny
+  Phases   Files
+  Actions  1 planned
+
+Phase: Files
+  profile:tiny
+    ✓ create ~/.config/app/hello.txt (<0.1s)
+
+✓ Apply complete — 1 action succeeded (<0.1s wall)
+```
+
+Two facts decide whether the file still describes this machine, and both are
+refusals (exit 1) rather than warnings. An apply recorded since it was written:
+
+```console
+$ cfgd apply --plan plan.json
+✗ plan.json is stale: apply #1 has run since it was written (it recorded #0), so it no longer describes this machine — run `cfgd plan -o json` again
+```
+
+Or any file the derivation read carrying a different stamp:
+
+```console
+$ cfgd apply --plan plan.json
+✗ plan.json is stale: ~/.config/cfgd/profiles/tiny.yaml changed since it was written, so it no longer describes this config — run `cfgd plan -o json` again
+```
+
+Two shapes are refused ahead of those: a payload carrying no `savedPlan` (its run
+was filtered, or held a source decision back), and one whose phases were reordered
+or duplicated by hand. Both mean the file is not one cfgd wrote.
+
+The replay still resolves this machine's config for itself, because two planner
+inputs live outside the plan format (the manager a `prefer` list names, and a
+package's `minVersion`). It fetches nothing: refreshing a source mid-run would
+move the very stamps the refusal above compares against. `--dry-run`, `--yes` and
+`--on-conflict` stay legal, since they say how the run behaves rather than what it
+does.
 
 ### `cfgd plan`
 
