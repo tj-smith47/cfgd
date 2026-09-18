@@ -1254,6 +1254,10 @@ fn prune_retention(store: &StateStore, unit: &BackupUnit<'_>, printer: &Printer)
 /// screen until that lock is released. It fires once, on the run that
 /// discovers them, because an orphaned row is never re-marked. A row rather
 /// than a hint: it names a directory still holding data nothing will prune.
+///
+/// The destination folds here. The hint slot this sentence used to take folds
+/// its own text at render, while the status row it takes now folds nothing, so
+/// a declared `~/backups/notes` would otherwise read back absolute.
 // note-row-ok: a note beside the run's rows, not one of them, so it states a
 // sentence rather than the lowercase imperative an action row takes
 fn orphan_note(count: usize, name: &str, destination: &Path) -> String {
@@ -1261,7 +1265,7 @@ fn orphan_note(count: usize, name: &str, destination: &Path) -> String {
         "Run `cfgd backup gc {name}` to remove the {} left outside the destination {} by a \
          destination change",
         crate::plural_noun(count, "snapshot"),
-        destination.posix(),
+        crate::fold_home_in_text(&destination.posix().to_string()),
     )
 }
 

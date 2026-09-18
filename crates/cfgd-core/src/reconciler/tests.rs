@@ -27703,10 +27703,14 @@ fn the_re_source_reminder_renders_with_usage_hints_off() {
     assert!(!out.contains('\u{2192}'), "and not as a hint: {out:?}");
 }
 
-/// An instruction is not a warning. `⚠ run `source ~/.cfgd.env`, or open a
-/// new shell` marked an instruction with the glyph a problem wears and stood
-/// among the run's real warnings; it renders as an `Info` note row, below the
-/// warnings its group holds, and reads as an instruction ("Run", not "run").
+/// An instruction is not a warning, and it is the last line its group says.
+/// `⚠ run `source ~/.cfgd.env`, or open a new shell` marked an instruction with
+/// the glyph a problem wears and stood among the run's real warnings; it
+/// renders as an `Info` note row, below every note its group holds — the
+/// warnings and the reports of work done alike — and reads as an instruction
+/// ("Run", not "run"). The fixture hands the three in the order that discovers
+/// a sort keyed on the role alone, which would leave the instruction between
+/// the warning and the report.
 #[test]
 fn an_instruction_renders_as_an_info_row_below_the_warnings() {
     let (printer, cap) = crate::output::Printer::for_test_doc();
@@ -27737,6 +27741,10 @@ fn an_instruction_renders_as_an_info_row_below_the_warnings() {
     assert!(
         position("Run `source") > position("deprecated: glob@7"),
         "the run's real warnings come first: {out}"
+    );
+    assert!(
+        position("Run `source") > position("installed into"),
+        "the instruction closes its group, below the notes reporting what the run did: {out}"
     );
     let step = lines[position("Run `source")];
     assert!(

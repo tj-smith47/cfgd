@@ -114,11 +114,11 @@ Seven conventions about the SHAPE of a settled row, each pinned (in `crates/cfgd
 
 Three grammars share one screen, and which one a string takes is decided by WHAT the string is, never by which surface prints it:
 
-| Kind | Grammar | Example |
-|---|---|---|
-| **Body row of a run** — previewed by the plan and settled by the apply, ONE string in both slots | lowercase imperative | `create ~/.zshrc`, `provision npm via apt (rustc)` |
-| **Result line** — an outcome reported once, never previewed | sentence case, past-tense verb first | `✓ Installed daemon service`, `✓ Cloned repository` |
-| **Provider note** — a `.report(` body under a settled row | a sentence, or the command as it was run | `Updated /etc/environment`, `systemctl restart foo` |
+| Kind | Grammar | Example | Pin |
+|---|---|---|---|
+| **Body row of a run** — previewed by the plan and settled by the apply, ONE string in both slots | lowercase imperative | `create ~/.zshrc`, `provision npm via apt (rustc)` | `every_action_row_subject_opens_on_a_lowercase_verb` |
+| **Result line** — an outcome reported once, never previewed | sentence case, past-tense verb first | `✓ Installed daemon service`, `✓ Cloned repository` | `every_result_line_is_sentence_case` |
+| **Note row beside a run's rows** — a `.report(` body under a settled row, or a fact a run leaves under its owner (`// note-row-ok:`) | a sentence, or the command as it was run | `Updated /etc/environment`, `Previous contents backed up to ~/notes.md.cfgd-backup; put them back with …` | `every_action_row_subject_opens_on_a_lowercase_verb` |
 
 Headings are not in any of the three: a heading is a Title Case label. A note echoing a command keeps the command's own spelling, which is why the note population is judged on its ROLE, not its case. Both snapshot normalizers know the duration floor's spelling, so goldens stay host-stable.
 

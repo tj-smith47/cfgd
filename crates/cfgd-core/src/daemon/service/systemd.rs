@@ -43,6 +43,9 @@ pub(crate) fn systemd_quote(token: &str) -> String {
 /// events and backups under the scope default while the operator's CLI reads
 /// the directory they named — and the two apply locks would stop excluding
 /// each other.
+// absolute-path-ok: the unit is a file systemd parses, and every path in
+// it is an argv token this host resolves — a `~/` spelling there is a
+// path nothing opens.
 #[cfg(unix)]
 pub(crate) fn generate_systemd_unit(
     binary: &Path,

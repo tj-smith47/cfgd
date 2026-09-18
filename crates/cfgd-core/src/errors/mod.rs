@@ -8,6 +8,8 @@ pub type Result<T> = std::result::Result<T, CfgdError>;
 
 /// Render a path list as `'a', 'b', 'c'` (posix separators) for single-line
 /// error messages that must name every candidate.
+// absolute-path-ok: the list lands in a `thiserror` message, which keeps
+// the path a reader can act on, as every other returned error does.
 fn join_quoted_posix(paths: &[PathBuf]) -> String {
     paths
         .iter()

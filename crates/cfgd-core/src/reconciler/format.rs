@@ -620,6 +620,9 @@ pub fn format_plan_item(action: &Action, arrow: &str) -> String {
     plan_item(action, arrow)
 }
 
+// absolute-path-ok: this string is the persisted plan description and the
+// `-o json` payload as well as a row's subject; `action_display_subject`
+// folds the display copy alone.
 fn plan_item(action: &Action, arrow: &str) -> String {
     match action {
         Action::File(fa) => match fa {
@@ -894,6 +897,8 @@ fn module_action_item(action: &ModuleAction) -> String {
     format!("{body}{suffix}")
 }
 
+// absolute-path-ok: reached from `plan_item`, which the persisted plan
+// description reads; `action_display_subject` folds the display copy.
 fn format_module_action_body(action: &ModuleAction) -> String {
     match &action.kind {
         ModuleActionKind::InstallPackages { resolved } => {

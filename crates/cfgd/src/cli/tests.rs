@@ -39838,6 +39838,200 @@ fn opening_statement(lines: &[&str], render: usize) -> usize {
 /// payload (`cli_error`, `anyhow!`, `bail!`, `json!`). Anything else that must
 /// print the absolute path says why with `// absolute-path-ok: <why>` on its
 /// line or in the comment block above it.
+/// The three path renders a display slot reaches for, as a walk over source
+/// text reads one. A conversion helper (`to_posix_string`) is what these are
+/// written on top of, so a body holding only one of those composes nothing a
+/// person reads.
+const PATH_RENDERS: &[&str] = &[".posix()", ".display_posix()", ".display()"];
+
+/// Why a path prints absolutely where nothing folds it.
+const ABSOLUTE_PATH_HATCH: &str = "// absolute-path-ok:";
+
+/// A render carrying one of these in its own statement is not a display slot's:
+/// the statement is read from the row after the previous one, so a macro's name
+/// several rows above the argument still answers for it.
+const FOLD_PASSED_OVER: &[&str] = &[
+    "tracing::",
+    "warn!(",
+    "info!(",
+    "debug!(",
+    "error!(",
+    "trace!(",
+    ".hint(",
+    ".hint_commands(",
+    ".report(",
+    "next_step(",
+    "cli_error",
+    "anyhow!(",
+    "bail!(",
+    "json!(",
+];
+
+/// What the fold-home walk has judged, so a render reached twice is counted
+/// once.
+///
+/// A sink's lookback reaches rows another sink's window already covered, and a
+/// sentence composer's body is reached both on its own and inside whatever
+/// function declares it.
+#[derive(Default)]
+struct FoldHomeTally {
+    judged: std::collections::HashSet<(String, usize)>,
+    per_file: std::collections::HashMap<String, usize>,
+    slots: usize,
+    offenders: Vec<String>,
+}
+
+/// Whether line `at` or the comment block above it says why a path prints
+/// absolutely.
+///
+/// The lookback climbs the attributes between a declaration and its comment
+/// block as well, or a `#[cfg(unix)]` composer could only ever be marked on the
+/// signature line rustfmt owns.
+fn absolute_path_hatched(lines: &[&str], at: usize) -> bool {
+    if lines[at].contains(ABSOLUTE_PATH_HATCH) {
+        return true;
+    }
+    let mut j = at;
+    while j > 0 && {
+        let above = lines[j - 1].trim_start();
+        above.starts_with("//") || above.starts_with("#[")
+    } {
+        j -= 1;
+        if lines[j].contains(ABSOLUTE_PATH_HATCH) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Every sentence composer in one source: a function that interpolates a path
+/// render into the string it hands back, by the span of its body.
+///
+/// This is the shape no sink's own function can see. A composer builds the
+/// sentence a row renders and RETURNS it, so its render sits in a function
+/// holding no sink at all — which is how the orphan-snapshot note shipped its
+/// destination absolute while every row around it folded, and no golden could
+/// say so (`normalize_for_snapshot` substitutes a path's absolute and folded
+/// spellings alike). The tells are a string return, a builder that composes a
+/// sentence, and a path render inside it. A composer handing back an absolute
+/// path on purpose — a persisted plan description, a `thiserror` message —
+/// carries `// absolute-path-ok:` on its declaration or in the comment block
+/// above it, which answers for its whole body.
+///
+/// Each member comes back as its DECLARATION line and its body's span: the
+/// declaration is what the hatch is read from, and the population is counted
+/// whole, hatched members included, so the count floors the derivation rather
+/// than whatever is left unmarked.
+fn path_carrying_composers(lines: &[&str]) -> Vec<(usize, (usize, usize))> {
+    const RETURNS: &[&str] = &["-> String", "-> Option<String>", "-> Cow<"];
+    const BUILDERS: &[&str] = &["format!", "write!", "push_str"];
+
+    let code: Vec<String> = lines
+        .iter()
+        .map(|line| cfgd_core::test_helpers::code_line(line))
+        .collect();
+    let mut out = Vec::new();
+    for (i, line) in code.iter().enumerate() {
+        if cfgd_core::test_helpers::declared_fn_name(line).is_none() {
+            continue;
+        }
+        // rustfmt breaks a long signature over several rows, so the return type
+        // is read from the declaration up to the row opening the body.
+        let Some(open) = (i..code.len()).find(|at| code[*at].contains('{')) else {
+            continue;
+        };
+        let signature = code[i..=open].join(" ");
+        if !RETURNS.iter().any(|shape| signature.contains(shape)) {
+            continue;
+        }
+        let end = enclosing_fn_end(lines, open);
+        let body = code[open..=end].join("\n");
+        if !BUILDERS.iter().any(|tell| body.contains(tell))
+            || !PATH_RENDERS.iter().any(|render| body.contains(render))
+        {
+            continue;
+        }
+        out.push((i, (open, end)));
+    }
+    out
+}
+
+/// Judge every path render between `span`'s two lines of one source, counting
+/// each render once however many regions reach it.
+fn judge_path_renders(
+    shown: &str,
+    folded: &[(usize, String)],
+    span: (usize, usize),
+    tally: &mut FoldHomeTally,
+) {
+    let lines: Vec<&str> = folded.iter().map(|(_, line)| line.as_str()).collect();
+    for i in span.0..=span.1 {
+        let line = lines[i];
+        if line.trim_start().starts_with("//")
+            || !PATH_RENDERS.iter().any(|render| line.contains(render))
+        {
+            continue;
+        }
+        let own = lines[opening_statement(&lines, i)..=i].join("\n");
+        if FOLD_PASSED_OVER.iter().any(|tell| own.contains(tell)) {
+            continue;
+        }
+        if !tally.judged.insert((shown.to_string(), folded[i].0)) {
+            continue;
+        }
+        tally.slots += 1;
+        *tally.per_file.entry(shown.to_string()).or_default() += 1;
+        // rustfmt may break the fold's own call, so the two rows above the
+        // render answer for it.
+        if lines[i.saturating_sub(2)..=i]
+            .iter()
+            .any(|l| l.contains("fold_home_in_text"))
+        {
+            continue;
+        }
+        if absolute_path_hatched(&lines, i) {
+            continue;
+        }
+        tally
+            .offenders
+            .push(format!("{shown}:{}: {}", folded[i].0, line.trim()));
+    }
+}
+
+/// Every display slot in the production sources of both crates folds the home
+/// directory.
+///
+/// A command that prints back a path usually prints one under the home
+/// directory of whoever ran it, and one report spelling `$HOME` two ways is the
+/// defect `fold_home_in_text` exists to stop. The walk is the only thing that
+/// reaches the arms no fixture can drive: a backend that fails on a real file,
+/// a key restore needing two renames to fail in order, a rollback whose every
+/// warning arm needs a different filesystem refusal.
+///
+/// The display slots it judges are every status row and its `detail` /
+/// `qualifier` / `verdict` parts, every section head, every kv row (`kv`,
+/// `kv_block`, a hand-built `KvPair`), every bullet, every table row, every
+/// spinner finish and every question a prompt asks. A function holding one of
+/// those answers for every path render inside it: a row's value is often
+/// resolved in the function's first statement and printed from a branch well
+/// below, and an operand a row was built from is often assembled after the
+/// print.
+///
+/// The second population is the sentence composers
+/// [`path_carrying_composers`] derives: a render inside one reaches a row
+/// through a `String` its caller merely hands on, so the function holding the
+/// sink holds no render to judge.
+///
+/// Four shapes are passed over, each because the absolute path is right there
+/// or because something else folds it: a `tracing` / `warn!` / `info!` line (a
+/// journal is read from other hosts, per `path-handling.md`), a hint
+/// (`Renderer::render_hint` folds its own text and every command it carries), a
+/// provider note (a note folds at both its render points, `ActionNote::body`
+/// for a collected caveat and `NoteSink::report_tagged`'s non-collecting arm
+/// for one that settles on the printer), and a returned error or an `-o json`
+/// payload (`cli_error`, `anyhow!`, `bail!`, `json!`). Anything else that must
+/// print the absolute path says why with `// absolute-path-ok: <why>` on its
+/// line or in the comment block above it.
 #[test]
 fn every_display_slot_of_both_crates_folds_the_home_directory() {
     const SINKS: &[&str] = &[
@@ -39861,27 +40055,6 @@ fn every_display_slot_of_both_crates_folds_the_home_directory() {
         "prompt_select(",
         "prompt_text(",
     ];
-    const RENDERS: &[&str] = &[".posix()", ".display_posix()", ".display()"];
-    // A render carrying one of these in its own statement is not a display
-    // slot's: the statement is read from the row after the previous one, so a
-    // macro's name several rows above the argument still answers for it.
-    const PASSED_OVER: &[&str] = &[
-        "tracing::",
-        "warn!(",
-        "info!(",
-        "debug!(",
-        "error!(",
-        "trace!(",
-        ".hint(",
-        ".hint_commands(",
-        ".report(",
-        "next_step(",
-        "cli_error",
-        "anyhow!(",
-        "bail!(",
-        "json!(",
-    ];
-    const HATCH: &str = "// absolute-path-ok:";
     // A per-file floor, so a read going blind in one file fails instead of
     // passing on another's slots. The members are every file the walk judges
     // three or more slots in, which is what keeps the table from being a
@@ -39906,18 +40079,16 @@ fn every_display_slot_of_both_crates_folds_the_home_directory() {
         ("cfgd/src/cli/profile/show.rs", 3),
     ];
     // The whole-walk floors a mis-rooted walk cannot fake: a root resolving
-    // nowhere reads no files, and one holding no command code judges no slot.
+    // nowhere reads no files, one holding no command code judges no slot, and a
+    // composer derivation that stopped matching would report an empty second
+    // population while every sink-held render still passed.
     const FLOOR_SOURCES: usize = 280;
     const FLOOR_SLOTS: usize = 125;
+    const FLOOR_COMPOSERS: usize = 8;
 
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let roots = [manifest.join("src"), manifest.join("../cfgd-core/src")];
-    let mut offenders: Vec<String> = Vec::new();
-    let mut per_file: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-    // A sink's lookback reaches rows an earlier sink's window already covered,
-    // so a render is judged by whichever sink reaches it first and counted once.
-    let mut judged: std::collections::HashSet<(String, usize)> = std::collections::HashSet::new();
-    let (mut sources, mut slots) = (0usize, 0usize);
+    let mut sources: Vec<(String, Vec<(usize, String)>)> = Vec::new();
     for root in &roots {
         for path in rust_sources_under(root) {
             let name = path
@@ -39933,72 +40104,64 @@ fn every_display_slot_of_both_crates_folds_the_home_directory() {
             {
                 continue;
             }
-            sources += 1;
             let production = cfgd_core::test_helpers::production_slice_of(&path);
-            let folded = cfgd_core::test_helpers::logical_source_lines(&production);
-            let lines: Vec<&str> = folded.iter().map(|(_, line)| line.as_str()).collect();
-            let shown = cfgd_core::to_posix_string(&path);
-            let mut n = 0usize;
-            while n < lines.len() {
-                if lines[n].trim_start().starts_with("//")
-                    || !SINKS.iter().any(|sink| lines[n].contains(sink))
-                {
-                    n += 1;
-                    continue;
-                }
-                // The whole function the sink sits in: its rows are built
-                // wherever the code that resolved them runs, which for a path
-                // is often the function's first statement and for an operand
-                // list the rows after the print.
-                let start = enclosing_fn_start(&lines, n);
-                for i in start..=enclosing_fn_end(&lines, start) {
-                    let line = lines[i];
-                    if line.trim_start().starts_with("//")
-                        || !RENDERS.iter().any(|render| line.contains(render))
-                    {
-                        continue;
-                    }
-                    let own = lines[opening_statement(&lines, i)..=i].join("\n");
-                    if PASSED_OVER.iter().any(|tell| own.contains(tell)) {
-                        continue;
-                    }
-                    if !judged.insert((shown.clone(), folded[i].0)) {
-                        continue;
-                    }
-                    slots += 1;
-                    *per_file.entry(shown.clone()).or_default() += 1;
-                    // rustfmt may break the fold's own call, so the two rows
-                    // above the render answer for it.
-                    if lines[i.saturating_sub(2)..=i]
-                        .iter()
-                        .any(|l| l.contains("fold_home_in_text"))
-                    {
-                        continue;
-                    }
-                    let mut hatched = line.contains(HATCH);
-                    let mut j = i;
-                    while j > 0 && lines[j - 1].trim_start().starts_with("//") {
-                        j -= 1;
-                        hatched |= lines[j].contains(HATCH);
-                    }
-                    if hatched {
-                        continue;
-                    }
-                    offenders.push(format!("{shown}:{}: {}", folded[i].0, line.trim()));
-                }
-                // Every sink answers for its own block, a sink nested inside
-                // another's statement included.
-                n += 1;
+            sources.push((
+                cfgd_core::to_posix_string(&path),
+                cfgd_core::test_helpers::logical_source_lines(&production),
+            ));
+        }
+    }
+
+    let mut tally = FoldHomeTally::default();
+    let mut composers = 0usize;
+    for (shown, folded) in &sources {
+        let lines: Vec<&str> = folded.iter().map(|(_, line)| line.as_str()).collect();
+        for (declaration, span) in path_carrying_composers(&lines) {
+            composers += 1;
+            if absolute_path_hatched(&lines, declaration) {
+                continue;
             }
+            judge_path_renders(shown, folded, span, &mut tally);
+        }
+        let mut n = 0usize;
+        while n < lines.len() {
+            if lines[n].trim_start().starts_with("//")
+                || !SINKS.iter().any(|sink| lines[n].contains(sink))
+            {
+                n += 1;
+                continue;
+            }
+            // The whole function the sink sits in: its rows are built wherever
+            // the code that resolved them runs, which for a path is often the
+            // function's first statement and for an operand list the rows after
+            // the print.
+            let start = enclosing_fn_start(&lines, n);
+            judge_path_renders(
+                shown,
+                folded,
+                (start, enclosing_fn_end(&lines, start)),
+                &mut tally,
+            );
+            // Every sink answers for its own block, a sink nested inside
+            // another's statement included.
+            n += 1;
         }
     }
     assert!(
-        sources >= FLOOR_SOURCES && slots >= FLOOR_SLOTS,
-        "the walk read {sources} sources and judged {slots} display slots — under the \
-         floor, so it is looking at the wrong roots"
+        sources.len() >= FLOOR_SOURCES && tally.slots >= FLOOR_SLOTS,
+        "the walk read {} sources and judged {} display slots — under the floor, so it is \
+         looking at the wrong roots",
+        sources.len(),
+        tally.slots
+    );
+    assert!(
+        composers >= FLOOR_COMPOSERS,
+        "the walk derived {composers} sentence composers — under the floor, so its second \
+         population has stopped matching"
     );
     for (relative, floor) in FLOOR_FILES {
-        let judged = per_file
+        let judged = tally
+            .per_file
             .iter()
             .find(|(path, _)| path.ends_with(relative))
             .map(|(_, count)| *count)
@@ -40010,10 +40173,10 @@ fn every_display_slot_of_both_crates_folds_the_home_directory() {
         );
     }
     assert!(
-        offenders.is_empty(),
+        tally.offenders.is_empty(),
         "a display slot folds the home directory through `cfgd_core::fold_home_in_text`, \
-         or says why the absolute path is right with `{HATCH} <why>`:\n{}",
-        offenders.join("\n")
+         or says why the absolute path is right with `{ABSOLUTE_PATH_HATCH} <why>`:\n{}",
+        tally.offenders.join("\n")
     );
 }
 

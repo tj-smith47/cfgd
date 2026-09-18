@@ -1096,6 +1096,48 @@ fn an_orphaned_row_takes_no_retention_slot() {
     );
 }
 
+/// The orphan note row spells a destination under the home directory `~/`.
+///
+/// The status row that carries this sentence folds nothing of what it is
+/// handed, unlike the hint slot the sentence used to take, so the fold has to
+/// live in the composer. No golden can answer the question:
+/// `normalize_for_snapshot` substitutes a path's absolute and `~/`-folded
+/// spellings alike, so both read back as the same label. The claim is on the
+/// captured bytes ahead of any normalization for that reason.
+#[test]
+fn the_orphan_note_folds_a_destination_under_the_home_directory() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let destination = home.path().join("backups/notes");
+    let absolute = crate::to_posix_string(&destination);
+    let (note, folded) = crate::with_test_home(home.path(), || {
+        (
+            orphan_note(2, "docs", &destination),
+            crate::fold_home_in_text(&absolute),
+        )
+    });
+    // The premise the claim rests on: this destination is one the fold moves,
+    // so a `~/` spelling in the row is the composer's work rather than the
+    // only form the path has.
+    assert_ne!(
+        folded, absolute,
+        "the fixture must put the destination under the home it folds against"
+    );
+
+    let (printer, buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
+    printer.status_simple(Role::Warn, note);
+    drop(printer);
+    let out = crate::test_helpers::captured_text(&buf);
+
+    assert!(
+        out.contains("destination ~/backups/notes by"),
+        "the note row folds the home directory, got:\n{out}"
+    );
+    assert!(
+        !out.contains(&absolute),
+        "the note row still spells {absolute} absolutely:\n{out}"
+    );
+}
+
 #[test]
 fn gc_leaves_a_row_whose_status_and_containment_disagree_standing() {
     let h = Harness::new();

@@ -7,6 +7,9 @@ use crate::output::Role;
 /// `dirs` carries the process-level `--state-dir` / `--runtime-dir` — see
 /// [`super::generate_systemd_unit`] for why dropping them silently splits the
 /// daemon's state from the CLI's.
+// absolute-path-ok: the plist is a file launchd parses, and every path in
+// it is an argv token or a log destination this host resolves — a `~/`
+// spelling there is a path nothing opens.
 #[cfg(unix)]
 pub(crate) fn generate_launchd_plist(
     binary: &Path,

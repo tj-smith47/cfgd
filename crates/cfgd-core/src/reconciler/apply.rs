@@ -644,9 +644,11 @@ pub(super) fn collect_caveats(
 /// apply`; a per-configurator snapshot bridge is the other caller, with a
 /// single group of its own.
 ///
-/// Within a group, `Role::Warn` notes render before every other role — a
-/// stable partition, so two `Warn`s (or two non-`Warn`s) keep the relative
-/// order they were collected in. Settle order among concurrent lanes is not
+/// Within a group, `Role::Warn` notes render before every other role, and an
+/// untagged note — the run's own instruction to the reader, rather than a
+/// tagged subsystem's report — renders last of its role. Both keys sort
+/// stably, so notes sharing them keep the relative order they were collected
+/// in. Settle order among concurrent lanes is not
 /// deterministic (a fast manager can finish well before a slower one
 /// dispatched first), so a caveat's ROLE, not its arrival time, decides
 /// precedence: the reader's attention goes to what needs it before what is
@@ -695,7 +697,14 @@ pub fn render_caveats(printer: &Printer, groups: &[(Owner, Vec<ActionNote>)]) {
         }
         let section = section.get_or_insert_with(|| printer.section_caveats());
         let group = section.section_owner(&owner.label());
-        reports.sort_by_key(|note| note.role != Role::Warn);
+        // Warnings lead, and an untagged note closes the group. A tag names
+        // the subsystem that spoke, so a tagged note reports what happened
+        // while an untagged one is the run's own word to the reader — an
+        // instruction that has to be acted on, which cannot sit between two
+        // reports and still read as the last thing the group says. The sort is
+        // stable, so notes sharing both keys keep the order their actions ran
+        // in.
+        reports.sort_by_key(|note| (note.role != Role::Warn, note.tag.is_none()));
         for note in reports {
             group.status_simple(note.role, note.body());
         }
