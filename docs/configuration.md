@@ -135,7 +135,7 @@ The three presentation keys live under `spec.output`:
 spec:
   output:
     theme: dracula
-    usageHints: true
+    usageHints: true       # the opt-in: hints do not render until something asks for them
     maskEnvValues: All
 ```
 
@@ -934,12 +934,21 @@ These flags work with any subcommand:
 | `--theme <name>` | | `CFGD_THEME` | Theme preset for this invocation. Replaces `spec.output.theme.name` only; `spec.output.theme.overrides` still apply on top. Unknown names are rejected at the flag with the preset list |
 | `--output <format>` | `-o` | | Output format: `table` (default), `wide`, `json`, `yaml`, `name`, `jsonpath=EXPR`, `template=TMPL`, `template-file=PATH` |
 | `--list-envelope` | | `CFGD_LIST_ENVELOPE` | Under `-o json`/`-o yaml`, wrap a top-level array in a KRM `List` envelope (`{apiVersion, kind: List, items}`) |
-| `--hints` / `--no-hints` | | `CFGD_USAGE_HINTS` | Whether closing `→` usage hints render for this invocation; a suppressed hint drops its leading blank line with it. The flag outranks `CFGD_USAGE_HINTS`, which outranks `spec.output.usageHints`; all default to hints off. Note the polarity: the env var and config field name what stays ON (`CFGD_USAGE_HINTS=true` / `spec.output.usageHints: true` turn them on). A refusal's remediation and a run's own instructions render either way |
+| `--hints` | | `CFGD_USAGE_HINTS` | Render closing `→` usage hints for this invocation. They are off until something asks for them: this flag, `CFGD_USAGE_HINTS=true`, or `spec.output.usageHints: true`. Either flag outranks `CFGD_USAGE_HINTS`, which outranks `spec.output.usageHints` |
+| `--no-hints` | | `CFGD_USAGE_HINTS` | Suppress them again for this invocation, over a config or env var that turned them on; a suppressed hint drops its leading blank line with it. Note the polarity: the env var and the config field name what stays ON, so `CFGD_USAGE_HINTS=false` is the persistent form of this flag |
 | `--mask-env-values <all\|secrets\|none>` | | `CFGD_MASK_ENV_VALUES` | Which declared env values render masked. `all` (default) masks every value as `***` plus its last three characters; `secrets` masks only the values a declared secret exports (every name listed in a `spec.secrets[].envs` of the resolved chain) and renders the rest in full; `none` renders them all in full. The flag outranks `CFGD_MASK_ENV_VALUES`, which outranks `spec.output.maskEnvValues`. `--show-values` is the per-verb alias for `none` and conflicts with this flag |
 | `--scope <user\|system>` | | `CFGD_SCOPE` | Installation scope: `user` (default) or `system`. `system` switches all four directory roots to system/FHS defaults (`/etc/cfgd`, `/var/lib/cfgd`, …). See [System scope](configuration.md#system-scope). |
 | | | `CFGD_NO_UPDATE_CHECK` | Silence the automatic update check (see [Suppressing the automatic check](#suppressing-the-automatic-check)) |
 | | | `NO_UPDATE_NOTIFIER` | Same, via npm's `update-notifier` convention |
 | | | `DO_NOT_TRACK` | Same, via the [consoledonottrack.com](https://consoledonottrack.com) convention |
+
+Usage hints are off unless something asks for them, and the knob reaches the closing
+tutorial pointers only (the "run this next" lines). Two kinds of line ignore it and render
+whatever it says: a refusal's remediation (the way out of a command that declined to run,
+such as the valid names an unknown one is refused with) and a run's own instructions, which
+are note rows beside the run's other rows (the safety copy a restore left your previous
+contents in, the env file a shell has to re-source, the snapshots a changed `destination:`
+stranded). The transcripts in these docs are rendered with hints on.
 
 Boolean env vars accept shell-truthy spellings, not only `true`/`false`. The
 accept-set matches `CFGD_YES`: `1`/`y`/`yes`/`t`/`true`/`on` (case-insensitive)

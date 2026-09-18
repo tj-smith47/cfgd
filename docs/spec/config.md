@@ -505,7 +505,7 @@ that outranks the stored value.
 spec:
   output:
     theme: dracula
-    usageHints: true
+    usageHints: true       # the opt-in: hints do not render until something asks for them
     maskEnvValues: All
 ```
 
