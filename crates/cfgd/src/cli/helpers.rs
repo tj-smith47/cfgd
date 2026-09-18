@@ -140,6 +140,11 @@ enum YamlStep {
 /// file declares is kept whatever its value, so a user who wrote the default
 /// out on purpose keeps it. Only scalars are candidates: a mapping or sequence
 /// is either data or already pruned as an absent section.
+///
+/// Both sides of the comparison are re-parsed from the tree as it stands, so
+/// a key already dropped in this loop cannot make the next candidate look
+/// load-bearing: comparing a candidate's round trip against the raw tree made
+/// the second of two defaulted keys survive whenever the first was pruned.
 fn prune_undeclared_defaults<T: serde::Serialize + serde::de::DeserializeOwned>(
     tree: &mut serde_yaml::Value,
     declared: &serde_yaml::Value,
@@ -149,14 +154,17 @@ fn prune_undeclared_defaults<T: serde::Serialize + serde::de::DeserializeOwned>(
     for path in candidates {
         let mut probe = tree.clone();
         remove_at(&mut probe, &path);
-        let Ok(parsed) = serde_yaml::from_value::<T>(probe) else {
+        let (Ok(with), Ok(without)) = (
+            serde_yaml::from_value::<T>(tree.clone()),
+            serde_yaml::from_value::<T>(probe),
+        ) else {
             continue;
         };
-        let Ok(mut round_trip) = serde_yaml::to_value(&parsed) else {
+        let (Ok(with), Ok(without)) = (serde_yaml::to_value(&with), serde_yaml::to_value(&without))
+        else {
             continue;
         };
-        prune_absent_sections(&mut round_trip, 0);
-        if round_trip == *tree {
+        if with == without {
             remove_at(tree, &path);
         }
     }
