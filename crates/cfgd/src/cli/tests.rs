@@ -16936,14 +16936,6 @@ fn production_body(body: &str) -> String {
         // `#[cfg(test)]` on a struct FIELD in `daemon/mod.rs` closes on a
         // comma, which ran it through the three methods after it.
         let indent = &lines[i][..lines[i].len() - trimmed.len()];
-        let closers: Vec<String> = ['}', ']', ')']
-            .iter()
-            .flat_map(|d| {
-                ["", ";", ","]
-                    .iter()
-                    .map(move |tail| format!("{indent}{d}{tail}"))
-            })
-            .collect();
         let mut end = i;
         while end < lines.len() && lines[end].trim_start().starts_with('#') {
             end += 1;
@@ -16962,33 +16954,62 @@ fn production_body(body: &str) -> String {
                 .count();
             (opens, shuts)
         };
+        // A closing line is judged on what it CLOSES, not on being one
+        // delimiter: `});`, `}]` and `)),` all end an item as surely as a lone
+        // `}`, and matching whole lines ran a gated `Lazy::new(|| {` … `});`
+        // past its own end. The indent still has to be the attribute's own, so
+        // a delimiter closing something nested inside the item is not read as
+        // the item's.
+        let closes_at_indent = |code: &str| {
+            let trimmed = code.trim_end().trim_end_matches([';', ',']);
+            let body = trimmed.trim_start();
+            !body.is_empty()
+                && body.chars().all(|c| matches!(c, '}' | ']' | ')'))
+                && trimmed.len() - body.len() == indent.len()
+        };
+        // `<` and `>` are counted apart from the brackets above because they
+        // are what tells a wrapped struct FIELD (`captured: Mutex<` … `>,`)
+        // from a wrapped generic parameter list (`fn g<` … `>(f: F)`): both
+        // balance their brackets on every line, and only the field is over
+        // when its angle brackets shut. `->` and `=>` are cut first, their `>`
+        // closing nothing.
+        let angles = |code: &str| {
+            let code = code.replace("->", "").replace("=>", "");
+            (code.matches('<').count(), code.matches('>').count())
+        };
         let head = code_at(end);
         let (opens, shuts) = brackets(&head);
-        if opens == shuts && head.trim_end().ends_with([';', ',']) {
-            // A one-line item closes on its own line.
+        if opens == shuts && (head.trim_end().ends_with([';', ',']) || head.contains('{')) {
+            // A one-line item closes on its own line — either on its
+            // terminator, or on the brace it opened and shut again, which is
+            // how rustfmt writes an empty body (`fn g() {}`).
             end += 1;
         } else if head.contains('{') {
             // A braced item closes on a delimiter at its own indent.
             while end < lines.len() {
-                let last = closers.iter().any(|c| lines[end] == *c);
+                let last = closes_at_indent(&code_at(end));
                 end += 1;
                 if last {
                     break;
                 }
             }
         } else {
-            // A statement spread over several lines (a gated `static` whose
-            // TYPE wraps) closes on the semicolon that ends it, once every
-            // bracket it opened is shut. A wrapped generic parameter list ends
-            // its line on a comma with nothing open, so the comma a one-line
-            // item closes on is not a terminator here.
+            // A statement or field spread over several lines (a gated `static`
+            // whose TYPE wraps, a field whose type does) closes on the `;` or
+            // `,` that ends it, once every bracket AND angle bracket it opened
+            // is shut. A wrapped generic parameter list ends its line on a
+            // comma with its angle bracket still open, so the comma a one-line
+            // item closes on is not a terminator there.
             let mut depth = 0i64;
+            let mut angle = 0i64;
             while end < lines.len() {
                 let code = code_at(end);
                 let (opens, shuts) = brackets(&code);
                 depth += opens as i64 - shuts as i64;
-                let last = closers.iter().any(|c| lines[end] == *c)
-                    || (depth <= 0 && code.trim_end().ends_with(';'));
+                let (lt, gt) = angles(&code);
+                angle += lt as i64 - gt as i64;
+                let last = closes_at_indent(&code)
+                    || (depth <= 0 && angle <= 0 && code.trim_end().ends_with([';', ',']));
                 end += 1;
                 if last {
                     break;
@@ -17019,6 +17040,14 @@ fn production_body(body: &str) -> String {
 /// and hid `local_pull_next_step` from every walk in this file; and the
 /// `#[cfg(test)]` on a struct FIELD in `daemon/mod.rs`, which closes on a
 /// comma, blanked the three methods declared after it.
+///
+/// Three more shapes the workspace does not hold today and rustfmt writes
+/// freely: an item whose braced body opens and shuts on one line, one closing
+/// on a compound delimiter (`});`), and a field whose TYPE wraps. Each is
+/// paired here with the neighbour an over-long extent would eat, and with the
+/// wrapped generic parameter list that must NOT be read as a field — a
+/// terminator rule loose enough to end the field early leaves half a gated
+/// function standing as production text.
 #[test]
 fn a_gated_items_extent_ends_where_the_item_does() {
     let src = concat!(
@@ -17042,10 +17071,34 @@ fn a_gated_items_extent_ends_where_the_item_does() {
         "> = LazyLock::new(|| Mutex::new(HashMap::new()));\n",
         "pub fn kept_after_wrapped_static() {}\n",
         "#[cfg(test)]\n",
+        "fn gated_empty_body() {}\n",
+        "pub fn kept_after_self_closing_body() {}\n",
+        "#[cfg(test)]\n",
+        "static COMPOUND: LazyLock<Mutex<Vec<String>>> = LazyLock::new(|| {\n",
+        "    Mutex::new(Vec::new())\n",
+        "});\n",
+        "pub fn kept_after_compound_closer() {}\n",
+        "struct Wrapper {\n",
+        "    #[cfg(test)]\n",
+        "    wrapped_capture: Mutex<\n",
+        "        Vec<String>,\n",
+        "    >,\n",
+        "    kept_wrapped_neighbour: usize,\n",
+        "}\n",
+        "#[cfg(test)]\n",
+        "fn gated_wrapped_generics<\n",
+        "    F,\n",
+        "    R,\n",
+        ">(f: F) -> R {\n",
+        "    f()\n",
+        "}\n",
+        "pub fn kept_after_wrapped_generics() {}\n",
+        "#[cfg(test)]\n",
         "mod tests {\n",
         "    fn gated_away() {}\n",
         "}\n",
     );
+    // unfloored-slice-ok: the subject is this fixture's own string, not a file, so there is no read to floor.
     let production = production_body(src);
     for kept in [
         "kept_before",
@@ -17053,13 +17106,27 @@ fn a_gated_items_extent_ends_where_the_item_does() {
         "kept_after_wrapped_use",
         "kept_field",
         "kept_after_wrapped_static",
+        "kept_after_self_closing_body",
+        "kept_after_compound_closer",
+        "kept_wrapped_neighbour",
+        "kept_after_wrapped_generics",
     ] {
         assert!(
             production.contains(kept),
             "the extent ran past its item and blanked `{kept}`:\n{production}"
         );
     }
-    for gated in ["alpha, beta", "gamma", "captured:", "WRAPPED", "gated_away"] {
+    for gated in [
+        "alpha, beta",
+        "gamma",
+        "captured:",
+        "WRAPPED",
+        "gated_away",
+        "gated_empty_body",
+        "COMPOUND",
+        "wrapped_capture",
+        "gated_wrapped_generics",
+    ] {
         assert!(
             !production.contains(gated),
             "a gated item survived the blanking: `{gated}`:\n{production}"
@@ -17104,7 +17171,10 @@ fn floored_production_body(path: &std::path::Path) -> String {
 /// The named set is checked against `crates/` itself, so a crate joining the
 /// workspace fails the caller's walk instead of going unread, and each root
 /// must yield at least one source — a tree read as empty is otherwise
-/// indistinguishable from one holding no offender.
+/// indistinguishable from one holding no offender. The comparison is
+/// order-insensitive: both sides are sorted first, so a caller listing its
+/// roots in its own order is not failed with a message about a crate joining
+/// the workspace.
 fn production_sources_per_root(roots: &[&str]) -> Vec<(String, Vec<(std::path::PathBuf, String)>)> {
     let crates_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     let mut present: Vec<String> = std::fs::read_dir(&crates_dir)
@@ -17114,7 +17184,8 @@ fn production_sources_per_root(roots: &[&str]) -> Vec<(String, Vec<(std::path::P
         .map(|entry| entry.file_name().to_string_lossy().into_owned())
         .collect();
     present.sort();
-    let named: Vec<String> = roots.iter().map(|k| (*k).to_string()).collect();
+    let mut named: Vec<String> = roots.iter().map(|k| (*k).to_string()).collect();
+    named.sort();
     assert_eq!(
         present, named,
         "a crate joined or left the workspace, so its tree is judged by nobody"
@@ -34788,13 +34859,60 @@ const PINNED_HINT_COMPOSERS: &[&str] = &[
     "writability_hint",
 ];
 
+/// Every door that MINTS a `HintCommands`, read off the type's OWN
+/// declaration: an associated function taking no receiver and handing back
+/// `Self`, over `impl HintCommands` and over the `From` / `Default` impls
+/// beside it.
+///
+/// Derived rather than listed, because the two questions below share four of
+/// their entries and neither could see the type: a constructor added to that
+/// impl joined whichever list its author remembered, and a body minting
+/// through the other one read as a pure delegator. `ungated` and `is_gated`
+/// are excluded by the receiver they take — one edits a hint already built,
+/// the other only reads it.
+fn hint_commands_minting_doors() -> Vec<String> {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../cfgd-core/src/output/component.rs");
+    let body = cfgd_core::test_helpers::production_slice_of(&path);
+    let mut doors: Vec<String> = Vec::new();
+    for (name, owner, code) in cfgd_core::test_helpers::fn_declarations(&body) {
+        if owner.as_deref() != Some("HintCommands") {
+            continue;
+        }
+        let Some(signature) = code.split('{').next() else {
+            continue;
+        };
+        let signature = signature.replace(' ', "");
+        let takes_receiver = ["(self", "(&self", "(mutself", "(&mutself"]
+            .iter()
+            .any(|r| signature.contains(r));
+        if takes_receiver || !signature.contains("->Self") {
+            continue;
+        }
+        if !doors.contains(&name) {
+            doors.push(name);
+        }
+    }
+    doors.sort();
+    assert!(
+        !doors.is_empty(),
+        "the `HintCommands` impl block stopped being read, so both questions below judge nothing"
+    );
+    doors
+}
+
 /// The `HintCommands` doors a hint's argument may name without being a
-/// composer of its own: the type's constructors, whose text is the literal
+/// composer of its own: the minting doors above, whose text is the literal
 /// beside them or a value some other composer already classified. Read by
 /// `every_closing_hint_names_a_command`, which asks what a hint's ARGUMENT
 /// calls, so the free `hint_commands` belongs here and `default` does not —
 /// a hint whose argument is `HintCommands::default()` carries no text to hold.
-const HINT_CONSTRUCTORS: &[&str] = &["new", "unconditional", "from", "hint_commands"];
+fn hint_constructors() -> Vec<String> {
+    let mut doors = hint_commands_minting_doors();
+    doors.retain(|door| door != "default");
+    doors.push("hint_commands".to_string());
+    doors
+}
 
 /// The associated functions a composer's BODY mints a `HintCommands` through,
 /// spelled `HintCommands::<name>(`. Read by
@@ -34803,7 +34921,36 @@ const HINT_CONSTRUCTORS: &[&str] = &["new", "unconditional", "from", "hint_comma
 /// Printer's free function and has no such spelling, while `default` does and
 /// yields the gated class, so a body minting through it must not claim to be
 /// unconditional.
-const HINT_MINT_TELLS: &[&str] = &["new", "unconditional", "from", "default"];
+fn hint_mint_tells() -> Vec<String> {
+    hint_commands_minting_doors()
+}
+
+/// The doors both questions above read are the ones the type really declares.
+///
+/// A derivation that silently found none, or that started reading a builder
+/// method as a constructor, would leave both walks judging the wrong set while
+/// still passing: the closing-hint walk would file every constructor call as
+/// an unregistered composer, and the classifier would read every minting body
+/// as a delegator.
+#[test]
+fn the_hint_minting_doors_are_read_off_the_types_own_declaration() {
+    assert_eq!(
+        hint_commands_minting_doors(),
+        vec![
+            "default".to_string(),
+            "from".to_string(),
+            "new".to_string(),
+            "unconditional".to_string(),
+        ],
+        "a door was added to `HintCommands` or taken off it"
+    );
+    for builder in ["ungated", "is_gated"] {
+        assert!(
+            !hint_commands_minting_doors().iter().any(|d| d == builder),
+            "`{builder}` edits or reads a hint that already exists and mints none"
+        );
+    }
+}
 
 /// The two of those that build a `$` BLOCK, whose prose ends on a colon and
 /// whose commands are the payload. Judged by the block walk instead, so this
@@ -34871,6 +35018,7 @@ fn every_closing_hint_names_a_command() {
         .flat_map(|(_, files)| files.iter().cloned())
         .collect();
     let consts = str_consts(&sources);
+    let constructors = hint_constructors();
     let mut per_root: Vec<(&str, usize)> = Vec::new();
     let mut offenders = Vec::new();
     for (tree, files) in &trees {
@@ -34909,7 +35057,7 @@ fn every_closing_hint_names_a_command() {
                     {
                         continue;
                     }
-                    if !HINT_CONSTRUCTORS.contains(&name.as_str()) {
+                    if !constructors.contains(&name) {
                         offenders.push(format!(
                             "{}:{}: unregistered hint composer `{name}`",
                             path.display(),
@@ -35139,6 +35287,37 @@ fn composed_hints() -> Vec<(String, cfgd_core::output::HintCommands)> {
 /// producer walk below may find no `HintCommands` producer it does not
 /// classify, and each entry's class is exercised — by calling the composer
 /// where the test can reach it, by reading its body where it cannot.
+/// The functions that mint an ungated hint AT A CALL SITE rather than through
+/// a composer of their own, so the walk below reads their bodies rather than
+/// their signatures.
+///
+/// A call site mints one where the wording beside it is the remediation of a
+/// refusal it has just printed, or the one instruction the surface leaves the
+/// reader — the daemon's startup banner names the keystroke that stops a
+/// foreground process, and the three log lines beside it say everything else.
+/// Whether a given wording is of that class is a judgment nothing can grep,
+/// which is what the roster is for: a new ungated mint fails this walk until
+/// somebody writes its name down. Listed member by member, the shape this repo
+/// gives every hatched population — a count lets the next site ungate itself
+/// silently. The type's own doors are not call sites and are excluded by their
+/// impl owner.
+const UNCONDITIONAL_HINT_CALL_SITES: &[&str] = &[
+    "check_prerequisites",
+    "cmd_daemon_install",
+    "cmd_daemon_uninstall",
+    "cmd_init",
+    "next_step",
+    "print_startup_banner",
+    "render_caveats",
+    "render_cli_error",
+    "run_profile_migrate",
+    "run_sync",
+    "start_launchd_service",
+    "start_systemd_service",
+    "stop_launchd_service",
+    "stop_systemd_service",
+];
+
 const HINT_COMPOSER_IS_UNCONDITIONAL: &[(&str, bool)] = &[
     ("answer_decisions_hint", false),
     ("enroll_error_hint", true),
@@ -35317,11 +35496,14 @@ fn every_hint_composer_states_whether_its_wording_is_unconditional() {
 }
 
 /// Every function in the workspace whose RETURN TYPE names `HintCommands` is
-/// classified above, and its body mints the class it claims.
+/// classified above, and its body mints the class it claims; every function
+/// that ungates a hint without composing one is named in
+/// `UNCONDITIONAL_HINT_CALL_SITES`.
 ///
 /// What it reads: the production region of every `.rs` under each `crates/*/src`,
-/// and within that, a declaration whose signature returns the type. A composer
-/// returning a `String` the caller wraps is a different question, held by
+/// and within that, a declaration whose signature returns the type, or whose
+/// body spells one of the two ungating doors. A composer returning a `String`
+/// the caller wraps is a different question, held by
 /// `every_closing_hint_names_a_command`'s unregistered-composer arm.
 ///
 /// The population is derived from the PRODUCER rather than listed, because a
@@ -35347,23 +35529,25 @@ fn every_hint_composer_the_workspace_declares_is_classified() {
     // count; the roots with no composer of their own are floored at zero and
     // held by `production_sources_per_root`, which fails on a root that reads
     // as empty and on a crate joining the workspace unnamed.
-    const WALK_ROOTS: &[(&str, usize)] = &[
-        ("cfgd", 6),
-        ("cfgd-core", 5),
-        ("cfgd-crd", 0),
-        ("cfgd-csi", 0),
-        ("cfgd-operator", 0),
-        ("cfgd-schema", 0),
+    const WALK_ROOTS: &[(&str, usize, usize)] = &[
+        ("cfgd", 6, 7),
+        ("cfgd-core", 5, 7),
+        ("cfgd-crd", 0, 0),
+        ("cfgd-csi", 0, 0),
+        ("cfgd-operator", 0, 0),
+        ("cfgd-schema", 0, 0),
     ];
-    let names: Vec<&str> = WALK_ROOTS.iter().map(|(k, _)| *k).collect();
+    let names: Vec<&str> = WALK_ROOTS.iter().map(|(k, _, _)| *k).collect();
     let trees = production_sources_per_root(&names);
+    let mint_tells = hint_mint_tells();
 
     let mut per_root: Vec<(&str, usize)> = Vec::new();
     let mut offenders: Vec<String> = Vec::new();
-    for ((krate, floor), (_, sources)) in WALK_ROOTS.iter().zip(&trees) {
+    for ((krate, floor, mint_floor), (_, sources)) in WALK_ROOTS.iter().zip(&trees) {
         let mut found = 0usize;
+        let mut minted = 0usize;
         for (path, production) in sources {
-            for (name, _, code) in fn_declarations(production) {
+            for (name, owner, code) in fn_declarations(production) {
                 let Some(signature) = code.split('{').next() else {
                     continue;
                 };
@@ -35373,6 +35557,22 @@ fn every_hint_composer_the_workspace_declares_is_classified() {
                 // A sink takes `impl Into<HintCommands>` and returns `Self` or
                 // nothing; only a RETURN naming the type composes one.
                 if signature.rsplit_once("->").is_none() || !returns.contains("HintCommands") {
+                    // The other half of the class: a function composing no hint
+                    // of its own still ungates one by spelling the door, and a
+                    // walk reading signatures alone never sees it. That is how
+                    // the daemon's `Press Ctrl+C to stop` went gated on the
+                    // shipped default while two docs pages promised it.
+                    if owner.as_deref() != Some("HintCommands")
+                        && (code.contains("::unconditional(") || code.contains(".ungated()"))
+                    {
+                        minted += 1;
+                        if !UNCONDITIONAL_HINT_CALL_SITES.contains(&name.as_str()) {
+                            offenders.push(format!(
+                                "{}: `{name}` mints an ungated hint and states no class",
+                                path.display()
+                            ));
+                        }
+                    }
                     continue;
                 }
                 found += 1;
@@ -35394,7 +35594,7 @@ fn every_hint_composer_the_workspace_declares_is_classified() {
                 // reads as a pure delegator and escapes the class check.
                 let mints = ungated_tell
                     || code.contains(".into()")
-                    || HINT_MINT_TELLS
+                    || mint_tells
                         .iter()
                         .any(|c| code.contains(&format!("HintCommands::{c}(")));
                 if *unconditional && mints && !ungated_tell {
@@ -35415,6 +35615,11 @@ fn every_hint_composer_the_workspace_declares_is_classified() {
             found >= *floor,
             "the {krate} tree no longer reaches the composers this walk exists to hold — \
              it found {found}"
+        );
+        assert!(
+            minted >= *mint_floor,
+            "the {krate} tree no longer reaches the call sites that ungate a hint — \
+             it found {minted}"
         );
         per_root.push((krate, found));
     }
