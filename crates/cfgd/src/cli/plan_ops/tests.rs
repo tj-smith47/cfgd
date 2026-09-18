@@ -3649,6 +3649,56 @@ fn module_batch(module: &str, resolved: Vec<cfgd_core::modules::ResolvedPackage>
     })
 }
 
+/// A plan file carries neither `manager_declared` nor `min_version` — both are
+/// `#[serde(skip)]`, because serializing either would move every stored
+/// `plan_hash` — so a replay reads them back `false` and `None`. The resolution
+/// that filled them runs again on that path, and this is what puts them back:
+/// without it `Reconciler::package_survives_elision` reads a module's declared
+/// floor as "no floor" and elides an outdated copy as converged.
+#[test]
+fn a_plan_read_off_the_wire_takes_its_declared_manager_and_floor_from_the_modules() {
+    let off_the_wire = resolved_package("brew", "neovim");
+    assert!(
+        !off_the_wire.manager_declared && off_the_wire.min_version.is_none(),
+        "the premise: a package read back off a plan file states neither"
+    );
+    let mut plan = make_plan(vec![(
+        PhaseName::Packages,
+        vec![module_batch(
+            "editor",
+            vec![off_the_wire, resolved_package("brew", "ripgrep")],
+        )],
+    )]);
+
+    let mut module = cfgd_core::test_helpers::make_resolved_module("editor");
+    module.packages = vec![cfgd_core::modules::ResolvedPackage {
+        manager_declared: true,
+        min_version: Some("0.11".to_string()),
+        ..resolved_package("brew", "neovim")
+    }];
+
+    super::restore_module_planner_inputs(&mut plan, std::slice::from_ref(&module));
+
+    let restored: Vec<_> = plan.phases[0]
+        .actions()
+        .filter_map(|a| match a {
+            Action::Module(m) => match &m.kind {
+                ModuleActionKind::InstallPackages { resolved } => Some(resolved),
+                _ => None,
+            },
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    assert_eq!(restored.len(), 2);
+    assert!(restored[0].manager_declared, "the author named the manager");
+    assert_eq!(restored[0].min_version.as_deref(), Some("0.11"));
+    assert!(
+        !restored[1].manager_declared && restored[1].min_version.is_none(),
+        "a package the modules no longer resolve keeps what the file said"
+    );
+}
+
 fn module_named(module: &str) -> Action {
     module_batch(module, vec![resolved_package("brew", "neovim")])
 }
