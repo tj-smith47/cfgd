@@ -17369,6 +17369,45 @@ fn cli_production_sources() -> Vec<(std::path::PathBuf, String)> {
         .collect()
 }
 
+/// One producer of the approval contract, so its gate cannot be half-applied.
+///
+/// `cfgd plan` and `cfgd apply --dry-run` both record a [`SavedPlan`], and the
+/// question "may this run be replayed" has more clauses than either call site
+/// can be trusted to carry: a filter, a module isolate, a structured format and
+/// a withheld source decision. Written twice, a clause found on one producer
+/// left the other one wrong. `plan_ops::saved_plan_for` owns the gate and the
+/// construction; every other production site takes the value it returns.
+#[test]
+fn every_saved_plan_the_cli_records_comes_from_the_one_gate() {
+    let mut judged = 0usize;
+    let mut offenders = Vec::new();
+    for (path, body) in cli_production_sources() {
+        for (n, line) in body.lines().enumerate() {
+            let code = cfgd_core::test_helpers::code_line(line);
+            if !code.contains("SavedPlan {") {
+                continue;
+            }
+            judged += 1;
+            // The type's own declaration is the one `SavedPlan {` that names no
+            // run: it states the shape, it does not decide who may record one.
+            let is_declaration = code.contains("struct SavedPlan {");
+            let is_the_gate = path.file_name().is_some_and(|n| n == "plan_ops.rs");
+            if !is_declaration && !is_the_gate {
+                offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+            }
+        }
+    }
+    assert!(
+        judged >= 2,
+        "the walk no longer reaches the declaration and its producer — it judged {judged}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a `SavedPlan` is built by `plan_ops::saved_plan_for`, which owns the whole replayability gate:\n{}",
+        offenders.join("\n")
+    );
+}
+
 /// One collection, one noun. `source list` headed its table `Config Sources`
 /// while `status` opened a `Config Sources` section and every owner token,
 /// error and hint in the product called the same thing a `source` — so the

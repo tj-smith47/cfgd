@@ -580,6 +580,50 @@ pub(in crate::cli) fn build_plan_output(
     }
 }
 
+/// The approval contract this run records, or `None` where its own scope makes
+/// it unreplayable.
+///
+/// The ONE place that question is answered, for both producers: `cfgd plan` and
+/// `cfgd apply --dry-run` describe the same run in two spellings, so a clause
+/// discovered on one of them must bind the other. A run is replayable only when
+/// the payload it writes describes the whole machine:
+///
+/// - Every flag that narrows the plan disqualifies it. `--plan` refuses a
+///   filter, so a scope baked into the file would be a second answer to the
+///   question the flags already answer. `filter_active` already covers
+///   `--skip-scripts`, which leaves the module isolate to ask for separately.
+/// - A withheld source decision disqualifies it too, and no flag can recover
+///   that one because no flag caused it: `withhold_from_plan` prunes actions
+///   out of an unfiltered plan for every row this run holds back, and `cfgd
+///   decide` writes decision rows only — no config file, no `applies` row — so
+///   neither `config_inputs` nor `serial` moves when the operator answers one.
+///   A plan recorded under a pending decision would replay after the answer
+///   with the accepted resource silently missing.
+/// - A human run answers `None` before anything is computed, so it pays neither
+///   the whole-plan serialization nor the store read.
+pub(in crate::cli) fn saved_plan_for(
+    printer: &Printer,
+    plan: &reconciler::Plan,
+    state: &cfgd_core::state::StateStore,
+    filter_active: bool,
+    module_filter: &[String],
+    withheld: &reconciler::WithheldDecisions,
+    config_inputs: cfgd_core::ConfigInputs,
+) -> anyhow::Result<Option<SavedPlan>> {
+    if !printer.is_structured()
+        || filter_active
+        || !module_filter.is_empty()
+        || !withheld.is_empty()
+    {
+        return Ok(None);
+    }
+    Ok(Some(SavedPlan {
+        plan: serde_json::to_value(plan)?,
+        config_inputs,
+        serial: state.last_apply()?.map_or(0, |a| a.id),
+    }))
+}
+
 /// The manager every `PackageAction` names.
 ///
 /// One or-pattern over all three variants rather than two arms and a

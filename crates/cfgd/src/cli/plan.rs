@@ -258,19 +258,15 @@ pub fn cmd_plan(
         .map(|b| b.name.clone())
         .collect();
 
-    // An unfiltered plan is the only one that can be replayed: `--plan` refuses
-    // every filter, so a scope baked into the file would be a second answer to
-    // the question the flags already answer. `filter_active` already covers
-    // `--skip-scripts`, so only the module isolate is asked for separately.
-    let saved_plan = (printer.is_structured() && !filter_active && module_filter.is_empty())
-        .then(|| -> anyhow::Result<SavedPlan> {
-            Ok(SavedPlan {
-                plan: serde_json::to_value(&plan)?,
-                config_inputs,
-                serial: state.last_apply()?.map_or(0, |a| a.id),
-            })
-        })
-        .transpose()?;
+    let saved_plan = plan_ops::saved_plan_for(
+        printer,
+        &plan,
+        state,
+        filter_active,
+        module_filter,
+        &withheld,
+        config_inputs,
+    )?;
 
     let profile_inherits = effective_resolved.inherits_chain();
     let run = reconciler::ApplyRun::new(

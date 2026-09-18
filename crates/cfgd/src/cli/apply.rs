@@ -512,18 +512,18 @@ pub fn run_apply(
         if prune_eligible {
             preview_orphaned_custom_packages(state, &registry, printer);
         }
-        // The same contract `cfgd plan` records, on the same terms: a dry run
-        // previews exactly what `apply` would do, so an unfiltered one is
-        // replayable and a scoped one is not.
-        let saved_plan = (printer.is_structured() && !filter_active && module_filter.is_empty())
-            .then(|| -> anyhow::Result<SavedPlan> {
-                Ok(SavedPlan {
-                    plan: serde_json::to_value(&plan)?,
-                    config_inputs,
-                    serial: state.last_apply()?.map_or(0, |a| a.id),
-                })
-            })
-            .transpose()?;
+        // The same contract `cfgd plan` records, through the same gate: a dry
+        // run previews exactly what `apply` would do, so the two cannot answer
+        // "is this replayable" differently.
+        let saved_plan = plan_ops::saved_plan_for(
+            printer,
+            &plan,
+            state,
+            filter_active,
+            module_filter,
+            &withheld,
+            config_inputs,
+        )?;
         display_plan_preview(
             &run,
             &plan,
