@@ -40109,9 +40109,9 @@ fn every_display_slot_of_both_crates_folds_the_home_directory() {
     // a single composer today, so an aggregate floor of eight is cleared by
     // `cfgd-core` alone the moment it gains one and this crate's member goes
     // dark.
-    const FLOOR_SOURCES: [usize; 2] = [145, 191];
-    const FLOOR_SLOTS: [usize; 2] = [100, 36];
-    const FLOOR_COMPOSERS: [usize; 2] = [1, 11];
+    const FLOOR_SOURCES: [usize; ROOTS.len()] = [145, 191];
+    const FLOOR_SLOTS: [usize; ROOTS.len()] = [100, 36];
+    const FLOOR_COMPOSERS: [usize; ROOTS.len()] = [1, 11];
 
     let crates_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     let roots = ROOTS.map(|krate| crates_dir.join(krate).join("src"));

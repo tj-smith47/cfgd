@@ -634,8 +634,9 @@ pub(super) fn collect_caveats(
 ///
 /// Every note deduplicates by MESSAGE across the whole section, the first
 /// occurrence keeping it; a group left holding nothing but repeats opens no
-/// heading. A render fold only — the `-o json` payload keeps every note under
-/// its own owner.
+/// heading. A render fold over notes nothing serializes: the collected
+/// `ApplyResult.caveats` keeps every note under its own owner, and `-o json`
+/// carries no note at all.
 ///
 /// Groups render in the order given — deciding THAT order (informational
 /// groups first, `cfgd:env`'s re-source reminder last, since it is the one
@@ -665,8 +666,9 @@ pub fn render_caveats(printer: &Printer, groups: &[(Owner, Vec<ActionNote>)]) {
     // owner heading to distinguish the copies. Attributing a machine-level
     // fact to an owner is what produces the duplicate; the first occurrence
     // keeps it, so the note stays under the owner that produced it earliest
-    // and the phase order still reads top to bottom. A render fold only: the
-    // `-o json` payload keeps every note under its own owner.
+    // and the phase order still reads top to bottom. A render fold over notes
+    // nothing serializes: the collected `ApplyResult.caveats` keeps every note
+    // under its own owner, and `-o json` carries no note at all.
     //
     // The MESSAGE, never the composed body: `collect_caveats` re-tags every
     // note with the SUBJECT of the action that produced it, so two copies of
