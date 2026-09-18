@@ -313,6 +313,7 @@ mod tests {
             "6. **Self-critique",
         ] {
             let at = body
+                // doc-comment-ok: a rendered skill body, not a source line
                 .find(marker)
                 .unwrap_or_else(|| panic!("step marker absent: {marker}"));
             assert!(at >= last, "step out of order: {marker}");

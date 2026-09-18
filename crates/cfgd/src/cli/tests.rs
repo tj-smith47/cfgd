@@ -19211,6 +19211,7 @@ fn every_subscription_knob_renders_a_title_case_label() {
         let body =
             std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(path))
                 .expect("the source file is checked out");
+        // doc-comment-ok: locates a list in a source, deciding no exemption
         let at = body.find(marker).expect("the list is where the pin says");
         let open = array_of_pairs(&body, at);
         let (_, span) = bracketed_span(&body, open);

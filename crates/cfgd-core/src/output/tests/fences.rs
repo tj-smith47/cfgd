@@ -3347,10 +3347,19 @@ fn names_a_hatch_marker(name: &str) -> bool {
 /// The region of a source a test lives in: the whole file where the file IS
 /// test scaffolding, and everything from its first `#[cfg(test)]` otherwise.
 ///
-/// The complement of [`crate::test_helpers::production_slice`], and the half
-/// this walk judges: a marker-shaped name in production code names something
-/// else entirely, and a production file has no business carrying a walk's hatch.
-fn test_region(path: &Path, body: &str) -> String {
+/// The half this walk judges: a marker-shaped name in production code names
+/// something else entirely, and a production file has no business carrying a
+/// walk's hatch. The cut is deliberately WIDER than the one
+/// [`crate::test_helpers::production_slice`] makes, which anchors on the
+/// TRAILING test module: a file whose production code sits after an early
+/// `#[cfg(test)]` item has that code read here too. Over-reading can only add
+/// an offender a human then judges, never hide one, so the cheap anchor is the
+/// right one for a walk whose failure mode is a population it never read.
+///
+/// The cut moves line numbers, so the region arrives with the count of lines
+/// that precede it: an offender a reader cannot open at the line it names is a
+/// report they have to go looking for.
+fn test_region(path: &Path, body: &str) -> (usize, String) {
     let scaffolding = path
         .components()
         .any(|c| c.as_os_str() == std::ffi::OsStr::new("tests"))
@@ -3359,20 +3368,44 @@ fn test_region(path: &Path, body: &str) -> String {
             Some("tests" | "test_helpers")
         );
     if scaffolding {
-        return body.to_string();
+        return (0, body.to_string());
     }
     match body.find("#[cfg(test)]") {
-        Some(at) => body[at..].to_string(),
-        None => String::new(),
+        Some(at) => (body[..at].lines().count(), body[at..].to_string()),
+        None => (0, String::new()),
     }
+}
+
+/// An offender's line number is the file's, so the cut reports what it skipped.
+#[test]
+fn the_test_region_reports_the_lines_its_cut_skipped() {
+    let (skipped, region) = test_region(Path::new("src/thing.rs"), "a\nb\n#[cfg(test)]\nc\n");
+    assert_eq!(
+        skipped, 2,
+        "the lines above the cut are what an offender is offset by"
+    );
+    assert!(
+        region.starts_with("#[cfg(test)]"),
+        "the region opens on the cut: {region:?}"
+    );
+
+    let (skipped, region) = test_region(Path::new("src/tests.rs"), "a\n#[cfg(test)]\nb\n");
+    assert_eq!(
+        skipped, 0,
+        "a scaffolding file is read whole, so nothing is skipped"
+    );
+    assert!(
+        region.starts_with('a'),
+        "the region opens on the file: {region:?}"
+    );
 }
 
 /// A hatch is read off a source line through
 /// [`crate::test_helpers::carries_hatch`], never through a bare `contains`.
 ///
 /// `"/// name-row-ok: …"` contains `"// name-row-ok:"`, so a lookup asking only
-/// whether a line holds the marker accepts a rustdoc line as the hatch — and
-/// this tree holds 97 rustdoc lines that QUOTE a marker while describing its
+/// whether a line holds the marker accepts a rustdoc line as the hatch, and
+/// this tree is full of rustdoc lines that QUOTE a marker while describing its
 /// rule. Any of them sitting above an offending item silently exempts it, which
 /// is a walk reporting a population it never judged. `carries_hatch` refuses a
 /// `///` or `//!` line and accepts both shapes a hatch is really written in.
@@ -3380,15 +3413,28 @@ fn test_region(path: &Path, body: &str) -> String {
 /// `starts_with` and `strip_prefix` are not judged: both anchor at the start of
 /// the trimmed line, and a marker spelled with its own `// ` prefix cannot match
 /// a `///` line, while one spelled without it cannot match a comment line at
-/// all. `contains` and `split_once` are the two that read the marker from
-/// anywhere on the line, so they are the two that can be fooled.
+/// all. `contains`, `split_once` and `find` are the three that read the marker
+/// from anywhere on the line, so they are the three that can be fooled.
+///
+/// Two escapes the tell cannot see, stated rather than left silent. A marker
+/// const named outside the `*_HATCH` / `*_MARKER` / `marker` / `hatch`
+/// convention is invisible to [`names_a_hatch_marker`], which has the name
+/// alone to go on; `NOT_A_CHILD` is the one such const today and it is routed.
+/// And the statement scan below asks only whether a routed call appears, not
+/// which marker it was asked about, so a chain filtering on one marker and
+/// destructuring another would pass. That same latitude is what lets the
+/// legitimate filter-then-destructure shape work.
 ///
 /// A site whose subject is not a source line — a fixture's own rows, a rendered
 /// screen — says so with `// doc-comment-ok: <why>` on the line or the one above.
 #[test]
 fn every_hatch_a_walk_reads_comes_from_the_one_line_reader() {
     // Spelled in parts, or the walk's own needles are its first offenders.
-    let reads = [concat!(".contains", "("), concat!(".split_once", "(")];
+    let reads = [
+        concat!(".contains", "("),
+        concat!(".split_once", "("),
+        concat!(".find", "("),
+    ];
     let routed = [
         concat!("carries_", "hatch("),
         concat!("is_plain_", "line_comment("),
@@ -3398,7 +3444,7 @@ fn every_hatch_a_walk_reads_comes_from_the_one_line_reader() {
     let mut per_crate: std::collections::BTreeMap<String, usize> =
         std::collections::BTreeMap::new();
     for path in workspace_rust_files() {
-        let body = test_region(&path, &walked_file_body(&path));
+        let (skipped, body) = test_region(&path, &walked_file_body(&path));
         let lines: Vec<&str> = body.lines().collect();
         let mut read_here = 0usize;
         for (n, line) in lines.iter().enumerate() {
@@ -3455,7 +3501,12 @@ fn every_hatch_a_walk_reads_comes_from_the_one_line_reader() {
             if carries_hatch(line, hatch) || carries_hatch(above, hatch) {
                 continue;
             }
-            offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+            offenders.push(format!(
+                "{}:{}: {}",
+                path.display(),
+                skipped + n + 1,
+                line.trim()
+            ));
         }
         if read_here > 0 {
             let owner = path

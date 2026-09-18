@@ -5780,6 +5780,7 @@ fn print_module_review_summary_shows_control_characters_on_every_row() {
             row.contains("\\x0d") && row.contains("\\x1b[2K"),
             "row {marker:?} hid what it is asking the operator to approve: {row:?}"
         );
+        // doc-comment-ok: a rendered row, not a source line
         let payload = &row[row.find(marker).unwrap_or(0)..];
         assert!(
             !payload.contains('\r'),
@@ -5823,6 +5824,7 @@ fn print_module_review_summary_shows_control_characters_in_heading_and_trailer()
             row.contains("\\x0d") && row.contains("\\x1b[2K"),
             "row {marker:?} hid what it is asking the operator to approve: {row:?}"
         );
+        // doc-comment-ok: a rendered row, not a source line
         let payload = &row[row.find(marker).unwrap_or(0)..];
         assert!(
             !payload.contains('\r'),

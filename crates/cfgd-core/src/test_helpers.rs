@@ -1511,8 +1511,8 @@ pub fn is_plain_line_comment(line: &str) -> bool {
 /// A hatch is written either as a comment line of its own above the subject or
 /// as a trailing comment on the subject itself, so both shapes answer true. A
 /// `///` or `//!` line does not: see [`is_plain_line_comment`] for why, and for
-/// the 97 rustdoc lines in this tree that quote a marker while describing its
-/// rule — each of which a bare `contains` would have let hatch the item
+/// the rustdoc lines in this tree that quote a marker while describing its
+/// rule, each of which a bare `contains` would have let hatch the item
 /// directly below it. Reach for this in place of `line.contains(marker)` at
 /// every site that decides whether a subject is exempt.
 pub fn carries_hatch(line: &str, marker: &str) -> bool {

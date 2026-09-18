@@ -186,8 +186,18 @@ fn refuse_unstringed_key(path: &str, value: &serde_yaml::Value) -> std::result::
                         .unwrap_or_else(|_| format!("{key:?}"))
                         .trim()
                         .replace('\n', " ");
+                    // A scalar key has a one-character remedy (quote it), and
+                    // `1` was almost always meant as the section name `"1"`.
+                    // A sequence- or mapping-keyed entry has no spelling that
+                    // means the same thing, so no remedy is invented for it.
+                    let hint = match key {
+                        serde_yaml::Value::Sequence(_) | serde_yaml::Value::Mapping(_) => {
+                            String::new()
+                        }
+                        _ => format!("; did you mean '\"{rendered}\"'?"),
+                    };
                     return Err(format!(
-                        "{path}: a mapping key must be a string, and this one is not: {rendered}"
+                        "{path}: a mapping key must be a string, and this one is not: {rendered}{hint}"
                     ));
                 };
                 refuse_unstringed_key(&format!("{path}.{name}"), nested)?;
@@ -1173,6 +1183,10 @@ mod tests {
     /// at and the key itself. Without the refusal such a spec rides into a
     /// `FileAction`, where `serde_json` refuses the whole action: the plan cannot
     /// be written out, and the hash `applies.plan_hash` stores cannot name it.
+    ///
+    /// A scalar key closes on the remedy, the way this file's other refusals do;
+    /// a sequence- or mapping-keyed entry has no quoted spelling meaning the
+    /// same thing, so it states the rule alone.
     #[test]
     fn a_patch_ensure_key_that_is_not_a_string_is_refused_at_every_depth() {
         for (yaml, expected) in [
@@ -1182,11 +1196,11 @@ mod tests {
             ),
             (
                 "ensure:\n  outer:\n    1: on\n",
-                "patch.ensure.outer: a mapping key must be a string, and this one is not: 1",
+                "patch.ensure.outer: a mapping key must be a string, and this one is not: 1; did you mean '\"1\"'?",
             ),
             (
                 "ensure:\n  items:\n    - nested:\n        true: yes\n",
-                "patch.ensure.items[0].nested: a mapping key must be a string, and this one is not: true",
+                "patch.ensure.items[0].nested: a mapping key must be a string, and this one is not: true; did you mean '\"true\"'?",
             ),
         ] {
             let err = serde_yaml::from_str::<PatchSpec>(yaml)
@@ -1196,6 +1210,14 @@ mod tests {
                 "the refusal names the field and the key it found: {err}"
             );
         }
+
+        let seq_keyed = serde_yaml::from_str::<PatchSpec>("ensure:\n  ? [a, b]\n  : c\n")
+            .expect_err("a sequence-keyed mapping is refused")
+            .to_string();
+        assert!(
+            !seq_keyed.contains("did you mean"),
+            "a key no quoting can rescue is offered no remedy: {seq_keyed}"
+        );
 
         let ok = serde_yaml::from_str::<PatchSpec>(
             "ensure:\n  outer:\n    inner: 1\n  items:\n    - a\n    - 2\n",
