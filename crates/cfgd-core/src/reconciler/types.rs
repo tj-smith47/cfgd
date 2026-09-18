@@ -113,8 +113,13 @@ pub enum EnvAction {
         /// a serialization of the actions, so a counted field that reached it
         /// would rewrite every stored `plan_hash` for a value nothing matches
         /// on.
+        // plan-skip-ok: a plan file reads both back as 0, and `env_write_summary`
+        // states no detail at 0 — the re-read row names the path alone rather
+        // than a count that would be wrong. The counts describe `content`, which
+        // the same action carries.
         #[serde(skip)]
         vars: usize,
+        // plan-skip-ok: see `vars` above — the same count, over the same content.
         #[serde(skip)]
         aliases: usize,
     },
@@ -994,26 +999,36 @@ pub struct OwnerGroup {
     pub actions: Vec<Action>,
 }
 
-/// Which owner an action belongs to, under the profile that planned it.
+/// The owner an action names on its own, whatever profile planned it.
 ///
-/// The single owner-assignment rule: every group in every phase is built
-/// through it, so no surface can attribute the same action to two owners.
-pub fn owner_of(action: &Action, profile: &Owner) -> Owner {
+/// `None` for an action whose owner IS the planning profile — a fact the action
+/// does not carry and only its planner knows. Split out from [`owner_of`] so
+/// the [`Phase`] reader can ask the same question of a plan file, where no
+/// profile is in hand.
+fn determined_owner(action: &Action) -> Option<Owner> {
     match action {
-        Action::Module(ma) => Owner::module(ma.module_name.clone()),
+        Action::Module(ma) => Some(Owner::module(ma.module_name.clone())),
         // Env surfaces aggregate declarations from the profile *and* every
         // module, so no single user document owns them — cfgd authored the file
         // and cfgd owns it. Matched exhaustively rather than through a
         // wildcard: a fourth env act would otherwise land in whichever group
         // the wildcard happened to name.
-        Action::Env(EnvAction::WriteEnvFile { .. }) => Owner::cfgd(ENV_GROUP),
-        Action::Env(EnvAction::InjectSourceLine { .. }) => Owner::cfgd(SHELL_GROUP),
-        Action::Env(EnvAction::RefreshLiveSession { .. }) => Owner::cfgd(SESSION_GROUP),
+        Action::Env(EnvAction::WriteEnvFile { .. }) => Some(Owner::cfgd(ENV_GROUP)),
+        Action::Env(EnvAction::InjectSourceLine { .. }) => Some(Owner::cfgd(SHELL_GROUP)),
+        Action::Env(EnvAction::RefreshLiveSession { .. }) => Some(Owner::cfgd(SESSION_GROUP)),
         // A manager is a prerequisite every owner may be waiting on; cfgd
         // provisions it, and no user document declares it.
-        Action::Manager(_) => Owner::cfgd(MANAGERS_GROUP),
-        _ => profile.clone(),
+        Action::Manager(_) => Some(Owner::cfgd(MANAGERS_GROUP)),
+        _ => None,
     }
+}
+
+/// Which owner an action belongs to, under the profile that planned it.
+///
+/// The single owner-assignment rule: every group in every phase is built
+/// through it, so no surface can attribute the same action to two owners.
+pub fn owner_of(action: &Action, profile: &Owner) -> Owner {
+    determined_owner(action).unwrap_or_else(|| profile.clone())
 }
 
 /// Whether a batching action survives its batch being filtered: dropped only
@@ -1027,10 +1042,14 @@ fn batch_survives(batched: usize, kept: usize) -> bool {
 
 /// A phase in the reconciliation plan, as owner groups in display order.
 ///
-/// `groups` is private and [`Phase::from_actions`] is the only constructor, so
-/// a phase whose owners are out of [`Owner::sort_key`] order is unrepresentable
-/// rather than merely discouraged: no caller can write a struct literal, insert
-/// a group, or re-sort the vec. The mutators below only ever shrink an existing
+/// `groups` is private, so a phase whose owners are out of [`Owner::sort_key`]
+/// order is unrepresentable rather than merely discouraged: no caller can write
+/// a struct literal, insert a group, or re-sort the vec. Two constructors reach
+/// the field, and both settle the same facts: [`Phase::from_actions`] from a
+/// flat action list, and the `Deserialize` impl below from a plan file, which
+/// re-establishes them instead of taking the file's word. A fact added to one
+/// is added to the other, or a plan file carries the shape the other forbids.
+/// The mutators below only ever shrink an existing
 /// ordering ([`Phase::retain_groups`], [`Phase::retain_actions`],
 /// [`Phase::retain_actions_and_batches`]) or hand out an owner's action list
 /// ([`Phase::groups_mut`]).
@@ -1045,10 +1064,20 @@ pub struct Phase {
 /// Hand-written rather than derived because `groups` is private, and the
 /// invariants above are the whole reason it is: a derive would hand a file's
 /// own shape straight into the field every surface renders. A plan file is an
-/// input like any other, so the same three facts [`Phase::from_actions`]
-/// establishes are established again here — one group per owner, no empty
-/// group, owners in [`Owner::sort_key`] order — leaving a phase no reader can
-/// tell from one the planner built.
+/// input like any other, so the four facts [`Phase::from_actions`] establishes
+/// are established again here — each action under the owner
+/// [`determined_owner`] names for it, one group per owner, no empty group,
+/// owners in [`Owner::sort_key`] order — leaving a phase no reader can tell
+/// from one the planner built.
+///
+/// The first is the one fact a file can state and the reader cannot repair: an
+/// owner is what a consumer partitions on (`apply::dispatched_in_lanes`,
+/// `daemon::reconcile::narrow_to_module` both ask `Owner::is_managers`), so a
+/// misplaced action would be dispatched and filtered unlike every planner-built
+/// one. It is refused rather than corrected, because a file disagreeing with
+/// [`determined_owner`] is a file cfgd did not write. An action whose owner is
+/// the planning PROFILE names no owner of its own, and the file's answer is
+/// taken as given — nothing in the phase says which profile planned it.
 impl<'de> Deserialize<'de> for Phase {
     fn deserialize<D: serde::Deserializer<'de>>(de: D) -> std::result::Result<Self, D::Error> {
         #[derive(Deserialize)]
@@ -1057,6 +1086,22 @@ impl<'de> Deserialize<'de> for Phase {
             groups: Vec<OwnerGroup>,
         }
         let wire = Wire::deserialize(de)?;
+        for group in &wire.groups {
+            for action in &group.actions {
+                let Some(determined) = determined_owner(action) else {
+                    continue;
+                };
+                if determined != group.owner {
+                    let (rtype, rid) = action_resource_info(action);
+                    return Err(serde::de::Error::custom(format!(
+                        "a plan file put the {rtype} action `{rid}` in the `{}` group, \
+                         but that action belongs to `{}`",
+                        group.owner.token(),
+                        determined.token()
+                    )));
+                }
+            }
+        }
         let mut phase = Self {
             name: wire.name,
             groups: Vec::with_capacity(wire.groups.len()),

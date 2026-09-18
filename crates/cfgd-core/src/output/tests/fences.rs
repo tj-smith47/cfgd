@@ -5436,14 +5436,38 @@ fn the_validator_tell_reads_a_whole_field_token_outside_the_call_name() {
 /// fields each holds today.
 ///
 /// The count is a per-file floor, not a total: one aggregate number stays
-/// satisfied while a whole file is renamed out of the walk. A file holding no
-/// optional field yet is floored on the readers it declares instead, which is
-/// what says the walk still reaches the types it names.
-const PLAN_FORMAT_FILES: [(&str, usize); 3] = [
-    ("crates/cfgd-core/src/reconciler/types.rs", 2),
+/// satisfied while a whole file is renamed out of the walk. Each file is also
+/// floored on the readers it declares, which is what says the walk still reaches
+/// the types it names rather than a file that stopped holding any.
+///
+/// `cfgd-schema` is on the list because the serialized action graph reaches into
+/// it: `PatchSpec` rides in `FileAction::{Create,Update}`, `ScriptEntry` and
+/// `ScriptCommand` in `ScriptAction::Run` and `ModuleActionKind::RunScript`,
+/// `EncryptionSpec` in `ResolvedFile`. An optional field of any of those refuses
+/// a plan file exactly as one declared in `reconciler/types.rs` does.
+const PLAN_FORMAT_FILES: [(&str, usize); 4] = [
+    ("crates/cfgd-core/src/reconciler/types.rs", 4),
     ("crates/cfgd-core/src/providers/mod.rs", 3),
-    ("crates/cfgd-core/src/modules/mod.rs", 0),
+    ("crates/cfgd-core/src/modules/mod.rs", 2),
+    ("crates/cfgd-schema/src/lib.rs", 16),
 ];
+
+/// Whether an attribute declares `#[serde(skip)]` — the field serde writes on no
+/// wire and reads back as [`Default`].
+///
+/// `skip_serializing`, `skip_serializing_if` and `skip_deserializing` all open on
+/// the same six letters and are different rules, so each is cut before the token
+/// is looked for — the first cut takes `skip_serializing_if` with it — and the
+/// attribute's string literals are blanked first so a `rename = "skipped"`
+/// spells no rule at all.
+fn declares_serde_skip(attribute: &str) -> bool {
+    let code = blank_string_literals(attribute);
+    code.contains("serde(")
+        && code
+            .replace("skip_serializing", "")
+            .replace("skip_deserializing", "")
+            .contains("skip")
+}
 
 /// Every attribute one source declares, as `(line number, whole attribute)`.
 ///
@@ -5485,7 +5509,8 @@ fn declared_attributes(body: &str) -> Vec<(usize, String)> {
     attributes
 }
 
-/// Every optional field of the plan-file format deserializes from its ABSENCE.
+/// Every optional field of the plan-file format deserializes from its ABSENCE,
+/// and every skipped one says what a plan file reads back in its place.
 ///
 /// `#[serde(skip_serializing_if = "Option::is_none")]` drops the key from the
 /// wire when it is empty, and serde's derive then REFUSES a file that omits it
@@ -5493,11 +5518,20 @@ fn declared_attributes(body: &str) -> Vec<(usize, String)> {
 /// is not the alternative: the hash `applies.plan_hash` stores is a
 /// serialization of the actions (`Plan::to_hash_string`), so a key that starts
 /// being written rewrites every hash already in every state store.
+///
+/// `#[serde(skip)]` is the same rule's other half. Such a field reaches no wire
+/// at all, so the round trip is byte-identical and value-different, and the same
+/// hash argument rules out simply serializing it. It therefore carries a
+/// `// plan-skip-ok:` line saying what a plan file reads back in its place and
+/// what reads that value, so "cfgd can read this back" is never taken to mean
+/// more than the bytes, and a fifth skipped field cannot be added by reflex.
 #[test]
 fn every_optional_field_of_the_plan_format_deserializes_from_its_absence() {
+    const HATCH: &str = "plan-skip-ok:";
     let mut offenders = Vec::new();
     for (rel, floor) in PLAN_FORMAT_FILES {
         let body = crate::test_helpers::production_slice_of(&workspace_root().join(rel));
+        let lines: Vec<&str> = body.lines().collect();
         let mut deserializes = false;
         let mut readers = 0usize;
         let mut checked = 0usize;
@@ -5506,12 +5540,31 @@ fn every_optional_field_of_the_plan_format_deserializes_from_its_absence() {
                 deserializes = attribute.contains("Deserialize");
                 readers += usize::from(deserializes);
             }
-            if !deserializes || !attribute.contains("skip_serializing_if") {
+            if !deserializes {
+                continue;
+            }
+            if declares_serde_skip(&attribute) {
+                checked += 1;
+                // The marker sits in the comment block above the attribute —
+                // the run of `//` lines rustfmt leaves where they were written.
+                let hatched = lines[..nth.saturating_sub(1)]
+                    .iter()
+                    .rev()
+                    .take_while(|above| above.trim_start().starts_with("//"))
+                    .any(|above| above.contains(HATCH));
+                if !hatched {
+                    offenders.push(format!(
+                        "{rel}:{nth}: {attribute} — no `{HATCH}` line above it"
+                    ));
+                }
+                continue;
+            }
+            if !attribute.contains("skip_serializing_if") {
                 continue;
             }
             checked += 1;
             if !attribute.contains("default") {
-                offenders.push(format!("{rel}:{nth}: {attribute}"));
+                offenders.push(format!("{rel}:{nth}: {attribute} — no `default`"));
             }
         }
         assert!(
@@ -5526,10 +5579,40 @@ fn every_optional_field_of_the_plan_format_deserializes_from_its_absence() {
     }
     assert!(
         offenders.is_empty(),
-        "an optional field of the plan format carries no `default`, so a plan file \
-         omitting its key fails to read:\n{}",
+        "an optional field of the plan format either carries no `default`, so a plan file \
+         omitting its key fails to read, or is skipped with nothing saying what a plan file \
+         reads back in its place:\n{}",
         offenders.join("\n")
     );
+}
+
+/// The walk above reads `#[serde(skip)]` and the three rules that open on it.
+///
+/// `skip_serializing_if` is the rule the walk's other half judges, and both
+/// `skip_serializing` and `skip_deserializing` are one-way halves of neither —
+/// a substring test for `skip` would file all three under the marker rule.
+#[test]
+fn only_a_whole_serde_skip_reaches_the_plan_format_walks_marker_rule() {
+    for (attribute, skips) in [
+        ("#[serde(skip)]", true),
+        ("#[serde(default, skip)]", true),
+        ("#[serde(skip, default)]", true),
+        (
+            "#[serde(default, skip_serializing_if = \"Option::is_none\")]",
+            false,
+        ),
+        ("#[serde(skip_serializing)]", false),
+        ("#[serde(skip_deserializing)]", false),
+        ("#[serde(rename = \"skipped\")]", false),
+        ("#[derive(Deserialize)]", false),
+    ] {
+        assert_eq!(
+            declares_serde_skip(attribute),
+            skips,
+            "the walk reads `{attribute}` as {}skipped",
+            if skips { "not " } else { "" }
+        );
+    }
 }
 
 /// A wrapped attribute reaches the walk above as one attribute.

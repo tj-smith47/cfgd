@@ -101,6 +101,11 @@ pub struct ResolvedPackage {
     ///
     /// Not serialized: it is a planner input, and the declaration itself is
     /// already in the module's own spec.
+    // plan-skip-ok: a plan file reads it back `false`, which `declared_manager_routes`
+    // and `Reconciler::package_survives_elision` read as cfgd's own platform default
+    // — so a run driven from a file, rather than from the resolver that filled this,
+    // must resolve the module again instead of trusting the field. Serializing it
+    // would put it in `Plan::to_hash_string` and rewrite every stored `plan_hash`.
     #[serde(skip)]
     pub manager_declared: bool,
     /// The declared `minVersion` floor, carried through resolution.
@@ -112,6 +117,10 @@ pub struct ResolvedPackage {
     /// `neovim 0.9` under a module declaring `minVersion: 0.11` reads as
     /// converged and the gap is never named. Not serialized: it is a planner
     /// input, and the declared value is already in the module's own spec.
+    // plan-skip-ok: a plan file reads it back `None`, which the floor check inside
+    // `package_survives_elision` reads as no floor declared — the same constraint as
+    // `manager_declared` above: a file-driven run resolves the module again.
+    // Serializing it would rewrite every stored `plan_hash`.
     #[serde(skip)]
     pub min_version: Option<String>,
 }

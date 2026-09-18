@@ -25728,9 +25728,74 @@ fn a_plan_file_whose_groups_arrived_out_of_order_reads_back_in_display_order() {
         "a shuffled file reads back as the phase the planner would have built",
     );
     assert_eq!(
-        back.phases[0].actions().count(),
-        ordered.phases[0].actions().count(),
+        back.to_hash_string(),
+        ordered.to_hash_string(),
         "and it carries every action the file did, each exactly once",
+    );
+}
+
+/// A plan file may not file an action under an owner that action does not name.
+///
+/// `owner_of` answers from the ACTION alone for a module, an env surface and a
+/// manager node, and from the planning profile for everything else. A file
+/// stating an owner the action itself contradicts is one no planner wrote, and
+/// the two consumers that partition a phase on `Owner::is_managers`
+/// (`apply::dispatched_in_lanes`, `daemon::reconcile::narrow_to_module`) would
+/// dispatch and filter it unlike every other copy of that action.
+#[test]
+fn a_plan_file_filing_an_action_under_the_wrong_owner_is_refused() {
+    let misfiled = serde_json::json!({
+        "phases": [{
+            "name": "Bootstrap",
+            "groups": [{
+                "owner": { "kind": "module", "name": "nvim" },
+                "actions": [{ "Manager": { "refreshIndex": { "manager": "brew" } } }],
+            }],
+        }],
+        "warnings": [],
+    });
+    let refusal = serde_json::from_value::<Plan>(misfiled)
+        .expect_err("a misfiled manager node is refused")
+        .to_string();
+    assert!(
+        refusal.contains("`module:nvim`") && refusal.contains("`cfgd:managers`"),
+        "the refusal names the group the file wrote and the one the action belongs to: {refusal}"
+    );
+    assert!(
+        refusal.contains("manager") && refusal.contains("brew"),
+        "and it names the action, so a reader can find it in the file: {refusal}"
+    );
+}
+
+/// An action whose owner is the planning profile is filed where the file says.
+///
+/// Nothing in a phase says which profile planned it, so `owner_of`'s profile
+/// arm has no answer to check the file against — and a run under a different
+/// profile name is not a corrupt file. The refusal above covers the three arms
+/// the action itself determines and no more.
+#[test]
+fn a_plan_file_filing_a_profile_owned_action_under_any_owner_reads_back() {
+    let filed = serde_json::json!({
+        "phases": [{
+            "name": "Files",
+            "groups": [{
+                "owner": { "kind": "module", "name": "nvim" },
+                "actions": [{ "File": { "Skip": {
+                    "target": "/home/u/a", "origin": "", "reason": "r",
+                } } }],
+            }],
+        }],
+        "warnings": [],
+    });
+    let back: Plan = serde_json::from_value(filed).expect("a profile-owned action reads back");
+    assert_eq!(
+        back.phases[0]
+            .groups()
+            .iter()
+            .map(|g| g.owner.token())
+            .collect::<Vec<_>>(),
+        vec!["module:nvim"],
+        "the file's own owner survives the read",
     );
 }
 

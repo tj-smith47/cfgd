@@ -140,6 +140,11 @@ pub struct PatchSpec {
     /// file visible on read-only surfaces while making the filter unrunnable by
     /// construction — every evaluation path funnels through `compute_patched`,
     /// which refuses a marked spec.
+    // plan-skip-ok: a plan file reads it back `None`, so the poison a composition
+    // applied does not survive one — a file-driven run recomposes rather than
+    // trusting the mark. Serializing it would add a key to the published schema
+    // that `deny_unknown_fields` then refuses in YAML, and rewrite every stored
+    // `plan_hash`, this spec riding inside `FileAction::{Create,Update}`.
     #[serde(skip)]
     pub blocked_by: Option<String>,
 }
