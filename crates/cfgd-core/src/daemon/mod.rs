@@ -1519,13 +1519,13 @@ pub(super) fn format_interval_lines(
 /// to a captured stdout nobody follows, it was the only startup evidence and it
 /// landed in a different place from every line after it.
 ///
-/// The Ctrl+C hint stays a `Printer` hint, and only where a human could press
-/// it: the key reaches a process through a controlling terminal's line
-/// discipline, which a service manager's child does not have. It is
-/// unconditional because a daemon holds the terminal until it is stopped and
-/// the three log lines beside it say everything except how to stop it, so a
-/// reader with `usageHints` off is left with no way out of a foreground
-/// process.
+/// The Ctrl+C line stays a `Printer` row, and only where a human could press
+/// the key: it reaches a process through a controlling terminal's line
+/// discipline, which a service manager's child does not have. It is a note
+/// row rather than a hint because a daemon holds the terminal until it is
+/// stopped and the three log lines beside it say everything except how to stop
+/// it, so no `usageHints` decision may leave a reader with no way out of a
+/// foreground process.
 ///
 /// The version line is the banner's own, not a restatement of the cadence line
 /// under it: it is the only place on the stream that says WHICH build is
@@ -1541,10 +1541,8 @@ pub(super) fn print_startup_banner(
     tracing::info!("daemon: health endpoint at {ipc_path}"); // native-ok: journal line, not a display slot
     tracing::info!("daemon: running — {}", intervals.join(", "));
     if printer.can_prompt() {
-        // hint-ok: a keystroke the reader presses, not a command they type
-        printer.hint(crate::output::HintCommands::unconditional(
-            "Press Ctrl+C to stop",
-        ));
+        // terminal-row-ok: a terminal answered, so there is a reader for it
+        printer.status_simple(crate::output::Role::Info, "Press Ctrl+C to stop");
     }
 }
 

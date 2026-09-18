@@ -94,7 +94,7 @@ $ cfgd daemon
 14:32:05  INFO daemon: starting cfgd 0.9.0
 14:32:05  INFO daemon: health endpoint at /run/user/0/cfgd/cfgd.sock
 14:32:05  INFO daemon: running — reconcile every 5s
-→ Press Ctrl+C to stop
+◉ Press Ctrl+C to stop
 14:32:10  INFO watch: config changed profiles/driftdemo.yaml
 14:32:10  INFO reconcile: drift detected in 1 resource
 
@@ -117,10 +117,10 @@ Every line the daemon logs is `HH:MM:SS  INFO <subsystem>: <sentence>` in local 
 `daemon:`, `sync:`, `reconcile:` and `watch:` the four subsystems that speak. Operands are
 spelled into the sentence rather than appended as `key=value`; the field form lives on the
 `debug!` event beside each info line, so `-v` still gives a machine-parseable stream. The
-`press Ctrl+C to stop` hint is the one piece of the startup that is not a log line: it is
+`Press Ctrl+C to stop` row is the one piece of the startup that is not a log line: it is
 printed only when a terminal is attached, because a service under systemd has no keyboard,
-and `spec.output.usageHints` does not decide it — it is the only statement of how to stop a
-foreground run.
+and it is a note row rather than a hint, so `spec.output.usageHints` cannot take away the
+only statement of how to stop a foreground run.
 
 The `tracing` lines around it are unchanged, so existing log consumers keep working; the
 tree is strictly additional. Under `driftPolicy: NotifyOnly` (or `Prompt`, which has no

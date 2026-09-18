@@ -217,7 +217,9 @@ Homebrew, and `brew`'s binaries are reachable from the next shell without you ed
 The test is who made the directory, not who installed the manager: a manager that was already on
 the machine keeps its own locations untouched, while a prefix cfgd had to create for it (npm's
 `$HOME/.npm-global`, when npm's own prefix is not writable) is exported like any other. cfgd
-prints a re-source reminder as the closing hint of any apply that touched either.
+prints a re-source reminder under `cfgd:env` in the caveats of any apply that touched
+either. It names the file the run wrote, so it is a note row and `spec.output.usageHints`
+does not decide it.
 
 ### Example: make `EDITOR` reach everywhere
 
@@ -251,7 +253,9 @@ Phase: Bootstrap
 
 ✓ Apply complete — 6 actions succeeded (0.1s wall)
 
-→ Run `source ~/.cfgd.env`, or open a new shell
+Caveats
+  cfgd:env
+    ◉ Run `source ~/.cfgd.env`, or open a new shell
 
 # Now every entry point sees it, no re-login:
 $ ssh localhost 'echo $EDITOR'            # non-interactive ssh command

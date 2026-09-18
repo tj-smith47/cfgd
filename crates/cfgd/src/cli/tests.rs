@@ -15451,6 +15451,14 @@ fn every_result_line_is_sentence_case() {
 /// literal it renders. A subject composed at runtime (`{owner}: …`) is
 /// unjudgeable and skipped; a subject that opens on a proper noun says so
 /// with a `// name-row-ok:` marker on the call or on the producer's doc.
+///
+/// A NOTE row is the same slot carrying a different grammar: the safety copy a
+/// restore leaves and the snapshots a destination change stranded are facts
+/// beside the run's rows rather than work the run did, so they state a
+/// sentence. `// note-row-ok: <why>` says which, and the walk then holds the
+/// row to sentence case instead of exempting it — judged either way by one
+/// walk, because a row the lowercase pin waved through and the sentence-case
+/// pin never reads is a row with no grammar at all.
 #[test]
 fn every_action_row_subject_opens_on_a_lowercase_verb() {
     const OPENERS: &[&str] = &[
@@ -15572,6 +15580,7 @@ fn every_action_row_subject_opens_on_a_lowercase_verb() {
     }
 
     let mut judged = Vec::new();
+    let mut notes = Vec::new();
     let mut offenders = Vec::new();
     for (path, body) in &sources {
         let lines: Vec<&str> = body.lines().collect();
@@ -15597,6 +15606,7 @@ fn every_action_row_subject_opens_on_a_lowercase_verb() {
                 if subject.is_empty() {
                     continue;
                 }
+                let mut note_judged = false;
                 for (lit_path, lit_line, lit) in resolve(&sources, path, body, at, &subject, 3) {
                     let Some(first) = lit.chars().next() else {
                         continue;
@@ -15604,18 +15614,40 @@ fn every_action_row_subject_opens_on_a_lowercase_verb() {
                     if !first.is_alphabetic() {
                         continue;
                     }
+                    let marked = |marker: &str| {
+                        label_hatched(&lines, n, marker)
+                            || sources.iter().any(|(p, b)| {
+                                p == &lit_path
+                                    && label_hatched(
+                                        &b.lines().collect::<Vec<_>>(),
+                                        lit_line,
+                                        marker,
+                                    )
+                            })
+                    };
+                    if marked("// note-row-ok:") {
+                        // Only the row's OPENING literal carries a grammar;
+                        // the producer's other literals are operands
+                        // (`plural_noun(count, "snapshot")`).
+                        if note_judged {
+                            continue;
+                        }
+                        note_judged = true;
+                        notes.push(lit.clone());
+                        if !first.is_uppercase() {
+                            offenders.push(format!(
+                                "{}:{}: {lit:?} — a note row states a sentence (reached \
+                                 from {}:{})",
+                                lit_path.display(),
+                                lit_line + 1,
+                                path.display(),
+                                n + 1
+                            ));
+                        }
+                        continue;
+                    }
                     judged.push(lit.clone());
-                    if first.is_lowercase()
-                        || label_hatched(&lines, n, "// name-row-ok:")
-                        || sources.iter().any(|(p, b)| {
-                            p == &lit_path
-                                && label_hatched(
-                                    &b.lines().collect::<Vec<_>>(),
-                                    lit_line,
-                                    "// name-row-ok:",
-                                )
-                        })
-                    {
+                    if first.is_lowercase() || marked("// name-row-ok:") {
                         continue;
                     }
                     offenders.push(format!(
@@ -15634,6 +15666,11 @@ fn every_action_row_subject_opens_on_a_lowercase_verb() {
     assert!(
         judged.len() >= 15,
         "the walk no longer reaches the subject slots — it judged {judged:?}"
+    );
+    assert!(
+        notes.len() >= 2,
+        "the walk no longer reaches the note rows rendered beside those subjects \
+         — it judged {notes:?}"
     );
     for witness in ["snapshot", "restore ", "create ", "run "] {
         assert!(
@@ -30388,7 +30425,7 @@ fn apply_closes_on_the_decisions_hint_after_its_caveats() {
 
     let caveat = output
         .lines()
-        .position(|l| l.starts_with("→ Run `source "))
+        .position(|l| l.trim_start().starts_with("\u{25c9} Run `source "))
         .unwrap_or_else(|| panic!("the fixture earns a caveat of its own:\n{output}"));
     let hint = output
         .lines()
@@ -34902,10 +34939,8 @@ const PINNED_HINT_COMPOSERS: &[&str] = &[
     "enroll_error_hints",
     "heal_drift_hint",
     "local_pull_next_step",
-    "orphan_hint",
     "perform_preview_hint",
     "run_next_step",
-    "safety_copy_hint",
     "source_failure_next_step",
     "success_next_step",
     "withheld_hints",
@@ -35110,7 +35145,8 @@ fn composed_call_name(arg: &str) -> Option<String> {
 /// What it reads: the production region of every `.rs` under each
 /// `crates/*/src`, and within that, every `.hint(` and `next_step(` call. The
 /// population is the whole workspace because a hint composed anywhere reaches
-/// one reader the same way: `safety_copy_hint` and `orphan_hint` live under
+/// one reader the same way: the two backup note composers (`safety_copy_note`
+/// and `orphan_note`, closing hints until they became rows) live under
 /// `backup/`, outside both the `cli` and `reconciler` trees this walk began
 /// with, and shipped with nobody holding their wording or their class.
 ///
@@ -35127,11 +35163,11 @@ fn composed_call_name(arg: &str) -> Option<String> {
 fn every_closing_hint_names_a_command() {
     // Every crate root, not the `cli` and `reconciler` subtrees this walk used
     // to read: a hint composed in `backup/`, `daemon/service/` or `providers/`
-    // and handed to `printer.hint(...)` lay outside both, which is how
-    // `safety_copy_hint` and `orphan_hint` shipped with nobody holding their
-    // wording or their class.
+    // and handed to `printer.hint(...)` lay outside both, which is how the two
+    // backup note composers shipped with nobody holding their wording or
+    // their class.
     const WALK_ROOTS: &[(&str, usize)] = &[
-        ("cfgd", 23),
+        ("cfgd", 28),
         ("cfgd-core", 0),
         ("cfgd-crd", 0),
         ("cfgd-csi", 0),
@@ -35176,8 +35212,8 @@ fn every_closing_hint_names_a_command() {
                 // name, a subject) is not the hint's text. A call to anything
                 // ELSE is a composer nobody registered, so nothing holds its
                 // wording or states whether `usageHints` decides it — which is
-                // exactly how `safety_copy_hint` and `orphan_hint` shipped
-                // unheld. Reading the exemption as "any call" is what let them.
+                // exactly how the two backup note composers shipped unheld.
+                // Reading the exemption as "any call" is what let them.
                 if let Some(name) = composed_call_name(&arg) {
                     if PINNED_HINT_COMPOSERS.contains(&name.as_str())
                         || HINT_BLOCK_CONSTRUCTORS.contains(&name.as_str())
@@ -35435,7 +35471,6 @@ fn composed_hints() -> Vec<(String, cfgd_core::output::HintCommands)> {
 /// would ungate itself under another file's entry. The path is the source's
 /// own, relative to `crates/`, with `/` separators on every host.
 const UNCONDITIONAL_HINT_CALL_SITES: &[(&str, &str)] = &[
-    ("cfgd-core/src/daemon/mod.rs", "print_startup_banner"),
     (
         "cfgd-core/src/daemon/service/launchd.rs",
         "start_launchd_service",
@@ -35452,8 +35487,6 @@ const UNCONDITIONAL_HINT_CALL_SITES: &[(&str, &str)] = &[
         "cfgd-core/src/daemon/service/systemd.rs",
         "stop_systemd_service",
     ),
-    ("cfgd-core/src/providers/mod.rs", "next_step"),
-    ("cfgd-core/src/reconciler/apply.rs", "render_caveats"),
     ("cfgd/src/cli/daemon.rs", "cmd_daemon_install"),
     ("cfgd/src/cli/daemon.rs", "cmd_daemon_uninstall"),
     ("cfgd/src/cli/error.rs", "render_cli_error"),
@@ -35478,8 +35511,10 @@ const UNGATING_SITE_UNCALLED_HATCH: &str = "ungating-site-uncalled-ok:";
 /// breaks an entry too long for the line width over four lines, and a marker
 /// written on any of them would otherwise be ignored: four of this roster's
 /// entries were offered a hatch that could not be applied. An entry opens on
-/// the line whose first character is `(`, whichever shape it took, and runs
-/// to the line before the next one opens.
+/// the line whose first character is `(`, whichever shape it took, and ends
+/// on its own closing `),`. Read as far as the NEXT entry's opening instead,
+/// the span swallows the comment lines above its neighbour, so a marker
+/// written for entry N+1 blesses a stale entry N beside it.
 fn ungating_site_hatched(path: &str, name: &str) -> bool {
     let own = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli/tests.rs");
     let body = cfgd_core::test_helpers::walked_file_body(&own);
@@ -35499,7 +35534,13 @@ fn ungating_site_hatched(path: &str, name: &str) -> bool {
     let name_token = format!("\"{name}\"");
     opens.iter().enumerate().any(|(nth, start)| {
         let end = opens.get(nth + 1).copied().unwrap_or(open + len);
-        let entry = &lines[*start..end];
+        // The entry's OWN close, not the next entry's opening: a marker
+        // written above entry N+1 lies inside a span that runs that far, and
+        // would hatch entry N with it.
+        let close = (*start..end)
+            .find(|at| lines[*at].trim_end().ends_with("),"))
+            .map_or(end, |at| at + 1);
+        let entry = &lines[*start..close];
         entry.iter().any(|line| line.contains(&path_token))
             && entry.iter().any(|line| line.contains(&name_token))
             && (entry
@@ -35515,10 +35556,8 @@ const HINT_COMPOSER_IS_UNCONDITIONAL: &[(&str, bool)] = &[
     ("enroll_error_hints", true),
     ("heal_drift_hint", false),
     ("local_pull_next_step", true),
-    ("orphan_hint", true),
     ("perform_preview_hint", false),
     ("run_next_step", true),
-    ("safety_copy_hint", true),
     ("source_failure_next_step", true),
     ("success_next_step", false),
     ("withheld_hints", false),
@@ -35698,9 +35737,9 @@ fn every_hint_composer_states_whether_its_wording_is_unconditional() {
 /// `every_closing_hint_names_a_command`'s unregistered-composer arm.
 ///
 /// The population is derived from the PRODUCER rather than listed, because a
-/// list is what `safety_copy_hint` and `orphan_hint` escaped: both composed a
-/// closing hint, neither was registered anywhere, and the gate silenced the
-/// only statement of where a restore had put the reader's live data. A
+/// list is what `safety_copy_note` and `orphan_note` escaped while they were
+/// hints: neither was registered anywhere, and the gate silenced the only
+/// statement of where a restore had put the reader's live data. A
 /// composer added to either crate now fails this walk until its class is
 /// written down.
 ///
@@ -35722,7 +35761,7 @@ fn every_hint_composer_the_workspace_declares_is_classified() {
     // as empty and on a crate joining the workspace unnamed.
     const WALK_ROOTS: &[(&str, usize, usize)] = &[
         ("cfgd", 6, 7),
-        ("cfgd-core", 5, 7),
+        ("cfgd-core", 3, 4),
         ("cfgd-crd", 0, 0),
         ("cfgd-csi", 0, 0),
         ("cfgd-operator", 0, 0),

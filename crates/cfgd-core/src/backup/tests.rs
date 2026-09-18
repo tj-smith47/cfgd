@@ -2297,22 +2297,22 @@ fn a_restore_over_bytes_already_preserved_reads_already_backed_up_at() {
     report_restore(&printer, &second);
     drop(printer);
     let out = crate::test_helpers::captured_text(&buf);
-    let hints: Vec<&str> = out
+    let rows: Vec<&str> = out
         .lines()
         .filter(|l| l.contains("Previous contents"))
         .collect();
-    assert_eq!(hints.len(), 2, "one hint per restore, got:\n{out}");
+    assert_eq!(rows.len(), 2, "one row per restore, got:\n{out}");
     assert!(
-        hints[0].contains(&format!("Previous contents {}", first_copy.detail()))
-            && hints[0].contains("backed up to"),
+        rows[0].contains(&format!("Previous contents {}", first_copy.detail()))
+            && rows[0].contains("backed up to"),
         "the written copy reads as written, got: {}",
-        hints[0]
+        rows[0]
     );
     assert!(
-        hints[1].contains(&format!("Previous contents {}", second_copy.detail()))
-            && hints[1].contains("already backed up at"),
+        rows[1].contains(&format!("Previous contents {}", second_copy.detail()))
+            && rows[1].contains("already backed up at"),
         "the reused copy must not claim a write, got: {}",
-        hints[1]
+        rows[1]
     );
 }
 

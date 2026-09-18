@@ -16958,22 +16958,22 @@ spec: {}
         );
     }
 
-    /// The one line of the banner a reader has to act on survives
-    /// `usageHints` being off, which is the shipped default: a foreground
-    /// daemon holds the terminal until it is stopped, and the three log lines
-    /// beside it say everything except how to stop it.
+    /// The one line of the banner a reader has to act on is a note row, so
+    /// `usageHints` being off — the shipped default — cannot take it: a
+    /// foreground daemon holds the terminal until it is stopped, and the three
+    /// log lines beside it say everything except how to stop it.
     ///
-    /// A capture printer answers `can_prompt()` false, so the branch the hint
+    /// A capture printer answers `can_prompt()` false, so the branch the row
     /// lives in is reached by pinning the printer's own terminal answer rather
     /// than the process's — the same field a production printer probes once at
     /// construction.
     #[test]
-    fn print_startup_banner_keeps_the_stop_hint_with_usage_hints_off() {
+    fn print_startup_banner_states_the_stop_key_as_a_note_row() {
         let (mut printer, buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
         printer.interactive_stdin = true;
         assert!(
             printer.can_prompt(),
-            "the fixture must reach the branch the hint lives in"
+            "the fixture must reach the branch the row lives in"
         );
         printer.renderer.set_hints_enabled(false);
         super::super::print_startup_banner(
@@ -16986,6 +16986,10 @@ spec: {}
         assert!(
             out.contains("Press Ctrl+C to stop"),
             "the only statement of how to stop a foreground daemon is not a tutorial: {out}"
+        );
+        assert!(
+            !out.contains('\u{2192}'),
+            "and reaches the reader as a row, not as a hint: {out}"
         );
     }
 

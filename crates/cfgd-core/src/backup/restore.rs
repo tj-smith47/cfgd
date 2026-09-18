@@ -20,7 +20,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::errors::{BackupError, CfgdError, Result};
-use crate::output::{Printer, collapse_to_subject_line};
+use crate::output::{Printer, Role, collapse_to_subject_line};
 use crate::reconciler::{ScriptPhase, SidecarOutcome};
 use crate::state::StateStore;
 
@@ -100,7 +100,7 @@ impl RestoreOutcome {
 
 /// Report a completed restore in the shape [`super::run_backup_group`] reports
 /// a completed backup: an owner section headed `backup:<name>`, one status row
-/// for the restore itself, and the one hint a regretted restore needs.
+/// for the restore itself, and the one note row a regretted restore needs.
 ///
 /// `backup run` and `backup restore` are the two mutating verbs of one command,
 /// and the restore used to settle as a bare title plus a single status line —
@@ -132,10 +132,11 @@ pub fn report_restore(printer: &Printer, outcome: &RestoreOutcome) -> crate::rec
         }
     }
     if let Some(safety) = &outcome.safety_copy {
-        // `hint`, not `note`: where the overwritten data went is the one thing
-        // an operator needs after a restore they regret, and `note` is
-        // Verbose-only.
-        group.hint(super::safety_copy_hint(safety, &outcome.name));
+        // A status row, not `Printer::note` or a hint: where the overwritten
+        // data went is the one thing an operator needs after a restore they
+        // regret, and `note` is Verbose-only while a hint is what `usageHints`
+        // can eat.
+        group.status_simple(Role::Info, super::safety_copy_note(safety, &outcome.name));
     }
     crate::reconciler::RunTally {
         after_plan: Vec::new(),

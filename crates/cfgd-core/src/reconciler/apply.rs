@@ -632,7 +632,7 @@ pub(super) fn collect_caveats(
 /// token the phase tree uses. Silent (opens nothing) when every group is
 /// empty, so a run that produced no caveats prints nothing extra.
 ///
-/// Both note slots deduplicate by MESSAGE across the whole section, the first
+/// Every note deduplicates by MESSAGE across the whole section, the first
 /// occurrence keeping it; a group left holding nothing but repeats opens no
 /// heading. A render fold only — the `-o json` payload keeps every note under
 /// its own owner.
@@ -656,12 +656,7 @@ pub fn render_caveats(printer: &Printer, groups: &[(Owner, Vec<ActionNote>)]) {
     if groups.iter().all(|(_, notes)| notes.is_empty()) {
         return;
     }
-    // A next step is what the reader does after reading everything the run had
-    // to say about itself, so it belongs at the report's FOOT — not indented
-    // inside one owner's caveat group, where it reads as a remark about that
-    // owner rather than as the run's closing instruction.
-    let mut next_steps: Vec<String> = Vec::new();
-    // Both note slots deduplicate by MESSAGE, across the whole report. A caveat
+    // Every note deduplicates by MESSAGE, across the whole report. A caveat
     // states a fact about the MACHINE — brew put its completions in one
     // directory, once — and a run that provisions a manager in
     // `Bootstrap` and uses it again in `Packages` files that one fact
@@ -680,43 +675,30 @@ pub fn render_caveats(printer: &Printer, groups: &[(Owner, Vec<ActionNote>)]) {
     // attribution — which is exactly what it did, while the hero printed
     // `Bash completion has been installed to` twice.
     let mut reported: Vec<String> = Vec::new();
-    {
-        let mut section = None;
-        for (owner, notes) in groups {
-            for note in notes.iter().filter(|n| n.hint) {
-                if !next_steps.iter().any(|s| s == &note.message) {
-                    next_steps.push(note.message.clone());
+    let mut section = None;
+    for (owner, notes) in groups {
+        let mut reports: Vec<&ActionNote> = notes
+            .iter()
+            .filter(|n| {
+                if reported.contains(&n.message) {
+                    return false;
                 }
-            }
-            let mut reports: Vec<&ActionNote> = notes
-                .iter()
-                .filter(|n| !n.hint)
-                .filter(|n| {
-                    if reported.contains(&n.message) {
-                        return false;
-                    }
-                    reported.push(n.message.clone());
-                    true
-                })
-                .collect();
-            // Every report this group held was a repeat, so it opens no
-            // heading: an owner label over nothing reads as a group whose
-            // contents went missing.
-            if reports.is_empty() {
-                continue;
-            }
-            let section = section.get_or_insert_with(|| printer.section_caveats());
-            let group = section.section_owner(&owner.label());
-            reports.sort_by_key(|note| note.role != Role::Warn);
-            for note in reports {
-                group.status_simple(note.role, note.body());
-            }
+                reported.push(n.message.clone());
+                true
+            })
+            .collect();
+        // Every report this group held was a repeat, so it opens no heading:
+        // an owner label over nothing reads as a group whose contents went
+        // missing.
+        if reports.is_empty() {
+            continue;
         }
-    }
-    for step in next_steps {
-        // A configurator's own instruction, not a tutorial the reader can be
-        // assumed to already know.
-        printer.hint(crate::output::HintCommands::unconditional(step));
+        let section = section.get_or_insert_with(|| printer.section_caveats());
+        let group = section.section_owner(&owner.label());
+        reports.sort_by_key(|note| note.role != Role::Warn);
+        for note in reports {
+            group.status_simple(note.role, note.body());
+        }
     }
 }
 

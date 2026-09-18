@@ -5,8 +5,9 @@ use crate::output::Role;
 /// Why a user-scope `systemctl` call that failed leaves the daemon stopped.
 /// Both failing arms below word it once: a systemd user manager only runs
 /// while the user has a session unless lingering is enabled, and nothing else
-/// on the screen says so.
-const LINGER_NEXT_STEP: &str =
+/// on the screen says so. It states THIS host's session state, so it renders
+/// as a note row beside the failure rather than as a hint.
+const LINGER_SESSION_STATE: &str =
     "If you have no active login session, enable lingering: loginctl enable-linger $USER";
 
 /// Render one `ExecStart` token so systemd passes it to the daemon verbatim.
@@ -277,7 +278,7 @@ pub(crate) fn start_systemd_service(printer: &Printer, scope: crate::Scope) -> R
                     ),
                 );
                 if scope == crate::Scope::User {
-                    printer.hint(crate::output::HintCommands::unconditional(LINGER_NEXT_STEP));
+                    printer.status_simple(Role::Warn, LINGER_SESSION_STATE);
                 }
                 return Ok(false);
             }
@@ -291,7 +292,7 @@ pub(crate) fn start_systemd_service(printer: &Printer, scope: crate::Scope) -> R
                     ),
                 );
                 if scope == crate::Scope::User {
-                    printer.hint(crate::output::HintCommands::unconditional(LINGER_NEXT_STEP));
+                    printer.status_simple(Role::Warn, LINGER_SESSION_STATE);
                 }
                 return Ok(false);
             }

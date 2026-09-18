@@ -3419,16 +3419,16 @@ fn shell_env_reminder_names_the_written_env_file() {
         !home.is_empty() && home != "~",
         "the test home must resolve to a real sandbox path, got: {home}"
     );
-    // The reminder is the report's closing instruction, so it renders at the
-    // foot with no `Caveats` heading and no owner group around it — there is
-    // nothing to caveat here, only something to do next.
+    // The reminder names the file this apply wrote, so it is a note row under
+    // the owner that wrote it — inside the report's own `Caveats` section,
+    // where no `usageHints` decision can reach it.
     assert!(
-        !out.contains("Caveats"),
-        "a lone next step opens no Caveats section, got: {out}"
+        out.contains("Caveats"),
+        "an instruction renders inside the report's caveats, got: {out}"
     );
     assert!(
-        !out.contains("cfgd:env"),
-        "a next step is not a remark about one owner, got: {out}"
+        out.contains("cfgd:env"),
+        "and under the owner that wrote the file it names, got: {out}"
     );
     assert!(
         out.contains("Run `source ~/.cfgd.env`"),
@@ -3529,8 +3529,8 @@ fn shell_env_reminder_fires_for_source_line_injection_alone() {
          the running shell stale: {out}"
     );
     assert!(
-        !out.contains("Caveats"),
-        "a lone next step opens no Caveats section, got: {out}"
+        out.contains("Caveats"),
+        "an instruction renders inside the report's caveats, got: {out}"
     );
 }
 

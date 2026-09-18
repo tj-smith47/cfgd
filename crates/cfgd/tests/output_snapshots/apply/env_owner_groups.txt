@@ -17,4 +17,6 @@ Phase: Bootstrap
 
 ✓ Apply complete — 6 actions succeeded (XXs wall)
 
-→ Run `source ~/.cfgd.env`, or open a new shell
+Caveats
+  cfgd:env
+    ◉ Run `source ~/.cfgd.env`, or open a new shell

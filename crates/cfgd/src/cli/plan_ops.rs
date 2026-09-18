@@ -116,7 +116,7 @@ fn shell_env_reminder_note(
         format!("source {shown}")
     };
 
-    Some(cfgd_core::providers::ActionNote::next_step(format!(
+    Some(cfgd_core::providers::ActionNote::instruction(format!(
         "Run `{command}`, or open a new shell"
     )))
 }

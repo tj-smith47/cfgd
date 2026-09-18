@@ -27,9 +27,9 @@
 //!     the recorded path being a tempdir.
 //!   - `backup/gc_nothing.txt`             — `cfgd backup gc` on a machine that
 //!     has moved no destination.
-//!   - `backup/run_orphan_hint.txt`        — the `cfgd backup run` that moves a
+//!   - `backup/run_orphan_note.txt`        — the `cfgd backup run` that moves a
 //!     `destination:`, whose group carries the snapshot row it wrote and then
-//!     the hint naming what the move stranded.
+//!     the note row naming what the move stranded.
 //!   - `backup/rollback_no_copy.{txt,json}` — `cfgd backup rollback docs` on a
 //!     unit with no copy beside its source: the typed `no_rollback_copy` error
 //!     and its read-only-surface hint (`cfgd backup list <name>`, never the
@@ -1361,7 +1361,7 @@ fn backup_gc_with_nothing_to_collect_says_so() {
 }
 
 #[test]
-fn backup_run_hints_at_gc_after_the_snapshot_row_it_follows() {
+fn backup_run_names_the_stranded_snapshots_after_the_row_it_follows() {
     let config_dir = tempfile::tempdir().unwrap();
     let state_dir = tempfile::tempdir().unwrap();
     let source = config_dir.path().join("data").join("notes.txt");
@@ -1369,8 +1369,8 @@ fn backup_run_hints_at_gc_after_the_snapshot_row_it_follows() {
     std::fs::write(&source, "hello backup").unwrap();
 
     // The run that MOVED the destination is the one that discovers the rows the
-    // move stranded, so its own snapshot row and the hint about them share a
-    // group — and the hint has to come second, or it names work the reader has
+    // move stranded, so its own snapshot row and the note about them share a
+    // group — and the note has to come second, or it names work the reader has
     // not been told about yet.
     let (_, moved_run) = strand_a_snapshot(config_dir.path(), state_dir.path(), &source);
 
@@ -1387,7 +1387,7 @@ fn backup_run_hints_at_gc_after_the_snapshot_row_it_follows() {
         cfgd_core::normalize_snapshot_durations(&normalize_backup_timestamp(&normalized));
     assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
-        "backup/run_orphan_hint.txt",
+        "backup/run_orphan_note.txt",
         &normalized
     );
 }

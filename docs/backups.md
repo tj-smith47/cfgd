@@ -510,7 +510,7 @@ $ cfgd daemon
 09:00:00  INFO daemon: starting cfgd 0.9.0
 09:00:00  INFO daemon: health endpoint at /home/me/.cache/cfgd/runtime/cfgd.sock
 09:00:00  INFO daemon: running — reconcile every 300s, 2 scheduled backups
-→ Press Ctrl+C to stop
+◉ Press Ctrl+C to stop
 
 Backup
   Config   ~/.config/cfgd/cfgd.yaml
@@ -592,7 +592,7 @@ Backup: notes-db
 
 backup:notes-db
   ✓ snapshot notes.db.20260908T141604Z — 55 B
-  → run `cfgd backup gc notes-db` to remove the snapshot left outside the destination ~/backups/notes by a destination change
+  ⚠ Run `cfgd backup gc notes-db` to remove the snapshot left outside the destination ~/backups/notes by a destination change
 
 ✓ Backup complete — 1 action succeeded (<0.1s wall)
 
@@ -701,7 +701,7 @@ Restore: notes-db
 
 backup:notes-db
   ✓ restore ~/.local/share/notes/notes.db from notes.db.20260813T061333Z — 8.0 KB
-  → Previous contents backed up to ~/.local/share/notes/notes.db.cfgd-backup; put them back with `cfgd backup rollback notes-db`
+  ◉ Previous contents backed up to ~/.local/share/notes/notes.db.cfgd-backup; put them back with `cfgd backup rollback notes-db`
 
 ✓ Restore complete — 1 action succeeded (0.3s wall)
 ```
@@ -778,8 +778,8 @@ staging removed      ← on every path, success or failure
   into the unit's `destination`, so it is not in `backup list`'s count, not in `--snapshots`, not
   subject to `retention`, and not a `backup_runs` row. `backup list` never reports it as the unit's
   **Last Run**, and the daemon never re-anchors **Next Run** on it, so restoring a unit does not push
-  its schedule out. Its path is reported as `safetyCopy` in `-o json` and as the `→` line in human
-  output, worded the way an adoption row words the same copy: `Previous contents backed up to
+  its schedule out. Its path is reported as `safetyCopy` in `-o json` and as a `◉` note row in
+  human output, worded the way an adoption row words the same copy: `Previous contents backed up to
   <path>`, or `Previous contents already backed up at <path>` when a sidecar already holding exactly
   the current bytes was reused rather than written (`safetyCopyReused` in `-o json`). A sidecar
   holding different bytes is kept and the new copy lands at a stamped `<path>.cfgd-backup.<stamp>`
@@ -833,7 +833,7 @@ Rollback: notes-db
 
 backup:notes-db
   ✓ rollback ~/.local/share/notes/notes.db from notes.db.cfgd-backup — 8.0 KB
-  → Previous contents backed up to ~/.local/share/notes/notes.db.cfgd-backup.20260101T120000Z; put them back with `cfgd backup rollback notes-db`
+  ◉ Previous contents backed up to ~/.local/share/notes/notes.db.cfgd-backup.20260101T120000Z; put them back with `cfgd backup rollback notes-db`
 
 ✓ Rollback complete — 1 action succeeded (0.2s wall)
 

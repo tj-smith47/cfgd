@@ -795,7 +795,10 @@ const DAEMON_SUBSYSTEMS: &[&str] = &["daemon: ", "sync: ", "reconcile: ", "watch
 /// opened with a bare `Daemon` heading and `Starting cfgd daemon` above a
 /// stream of `HH:MM:SS  INFO daemon: …`, which is two dialects in one log.
 /// `service/` is exempt: installing the unit is a one-shot command the user is
-/// watching, and its report belongs on the terminal.
+/// watching, and its report belongs on the terminal. Inside the loop's own
+/// directory, `// terminal-row-ok: <why>` on the call's line or the one above
+/// exempts a row addressed to a terminal the code has just established there
+/// is one of — the startup banner's stop key, printed under `can_prompt()`.
 ///
 /// Scoped to `daemon/`, because that is exactly the directory `audit.sh`
 /// exempts from the workspace-wide `tracing::info!` ban.
@@ -807,6 +810,7 @@ fn every_daemon_info_event_names_its_subsystem() {
         "printer.status(",
         "printer.status_with(",
     ];
+    const TERMINAL_ROW_HATCH: &str = "terminal-row-ok:";
     let mut offenders = Vec::new();
     let mut seen = 0usize;
     for path in workspace_rust_files() {
@@ -820,12 +824,17 @@ fn every_daemon_info_event_names_its_subsystem() {
         // the user is watching, so those DO report through the printer. The
         // loop itself has no terminal to report to.
         if !path.components().any(|c| c.as_os_str() == "service") {
-            for (n, line) in body.lines().enumerate() {
+            let lines: Vec<&str> = body.lines().collect();
+            for (n, line) in lines.iter().enumerate() {
                 if let Some(call) = PRINTER_LINES.iter().find(|c| line.contains(**c)) {
+                    if hatched(&lines, n, TERMINAL_ROW_HATCH) {
+                        continue;
+                    }
                     offenders.push(format!(
                         "{}:{}: `{call}` — the reconcile loop speaks through \
                          `tracing`, whose events carry the timestamp and level \
-                         a journal reader reads",
+                         a journal reader reads, so a row addressed to a \
+                         terminal carries `// terminal-row-ok: <why>`",
                         path.display(),
                         n + 1
                     ));

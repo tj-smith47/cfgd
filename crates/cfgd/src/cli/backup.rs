@@ -8,10 +8,10 @@ use cfgd_core::format_bytes;
 use cfgd_core::output::{Doc, Printer, Role, renderer::Table};
 use cfgd_core::state::BackupRunRecord;
 
-/// How a rollback copy comes to exist, read by both the empty-listing hint
-/// and the "nothing to roll back to" error: a `cfgd backup restore` or an
-/// adopting `cfgd apply` is what leaves one beside a source, never the
-/// rollback itself.
+/// How a rollback copy comes to exist, read by both the empty listing's note
+/// row and the "nothing to roll back to" error's remediation: a `cfgd backup
+/// restore` or an adopting `cfgd apply` is what leaves one beside a source,
+/// never the rollback itself.
 const ROLLBACK_COPY_ORIGIN: &str = "A copy is left beside a source by `cfgd backup restore <name>`, and by any file `cfgd apply` adopts";
 
 fn backup_not_found_error(name: &str, valid: Vec<String>) -> anyhow::Error {
@@ -737,7 +737,7 @@ pub fn build_backup_rollback_list_doc(entries: &[BackupRollbackEntry], now: &str
 
     if entries.is_empty() {
         doc = doc.status(Role::Info, "Nothing to roll back");
-        doc = doc.hint(ROLLBACK_COPY_ORIGIN);
+        doc = doc.status(Role::Info, ROLLBACK_COPY_ORIGIN);
         return doc.with_data(entries);
     }
 

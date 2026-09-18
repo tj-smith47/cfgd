@@ -27675,19 +27675,47 @@ fn every_caveat_names_the_subject_that_produced_it() {
     );
 }
 
-/// A next step is not a warning. `⚠ run `source ~/.cfgd.env`, or open a new
-/// shell` marked an instruction with the glyph a problem wears, and stood
-/// among the run's real warnings; it renders as a hint, after everything the
-/// run had to report, and reads as an instruction ("Run", not "run").
+/// A run's own instruction survives `usageHints: false`.
+///
+/// The re-source reminder names the file this apply wrote. A reader whose
+/// shell is stale and whose config says "no tutorials" still has to be told
+/// which file to source, so it is a note row under its owner rather than a
+/// hint the gate can eat.
+///
+/// `for_test_at(Normal)`, not `for_test()`: a note row is a `status_simple`,
+/// and every non-`Fail` role is suppressed at `Verbosity::Quiet`, so the
+/// Quiet capture would read back empty whichever slot carried the sentence.
 #[test]
-fn a_next_step_renders_as_a_hint_below_the_reports() {
+fn the_re_source_reminder_renders_with_usage_hints_off() {
+    let (printer, buf) = crate::output::Printer::for_test_at(crate::output::Verbosity::Normal);
+    let printer = printer.with_hints_enabled(false);
+    let owner = Owner::cfgd(crate::reconciler::ENV_GROUP);
+    let notes = vec![crate::providers::ActionNote::instruction(
+        "Run `source ~/.cfgd.env`, or open a new shell",
+    )];
+    crate::reconciler::render_caveats(&printer, &[(owner, notes)]);
+    printer.flush();
+    let out = crate::test_helpers::captured_text(&buf);
+    assert!(
+        out.contains("source ~/.cfgd.env"),
+        "the instruction renders: {out:?}"
+    );
+    assert!(!out.contains('\u{2192}'), "and not as a hint: {out:?}");
+}
+
+/// An instruction is not a warning. `⚠ run `source ~/.cfgd.env`, or open a
+/// new shell` marked an instruction with the glyph a problem wears and stood
+/// among the run's real warnings; it renders as an `Info` note row, below the
+/// warnings its group holds, and reads as an instruction ("Run", not "run").
+#[test]
+fn an_instruction_renders_as_an_info_row_below_the_warnings() {
     let (printer, cap) = crate::output::Printer::for_test_doc();
     crate::reconciler::render_caveats(
         &printer,
         &[(
             Owner::cfgd("env"),
             vec![
-                crate::providers::ActionNote::next_step("Run `source ~/.cfgd.env`"),
+                crate::providers::ActionNote::instruction("Run `source ~/.cfgd.env`"),
                 crate::providers::ActionNote::warn("npm", "deprecated: glob@7"),
                 crate::providers::ActionNote::info("npm", "installed into ~/.npm-global"),
             ],
@@ -27707,37 +27735,42 @@ fn a_next_step_renders_as_a_hint_below_the_reports() {
             .unwrap_or_else(|| panic!("{needle:?} missing from: {out}"))
     };
     assert!(
-        position("Run `source") > position("deprecated: glob@7")
-            && position("Run `source") > position("installed into"),
-        "the next step must come last: {out}"
+        position("Run `source") > position("deprecated: glob@7"),
+        "the run's real warnings come first: {out}"
     );
     let step = lines[position("Run `source")];
     assert!(
         !step.starts_with('\u{26a0}'),
-        "a next step wears the warning glyph: {step:?}"
+        "an instruction wears the warning glyph: {step:?}"
+    );
+    assert!(
+        !step.contains('\u{2192}'),
+        "an instruction is a row, not a hint the gate can eat: {step:?}"
     );
     assert!(
         step.contains("Run `source"),
-        "a next step is an instruction, capitalized: {step:?}"
+        "an instruction is capitalized: {step:?}"
     );
 }
 
-/// A next step closes the REPORT, not an owner group inside `Caveats`.
+/// An instruction renders UNDER the owner that produced it, at the same depth
+/// as that owner's other notes.
 ///
-/// Nested under `cfgd:env` it read as a remark about that one owner, indented
-/// two levels below a heading whose subject is "things that went sideways" —
-/// while the thing it actually says is what the reader does next about the
-/// whole run. It renders after the section closes, at the report's foot, and a
-/// run whose only note is a next step opens no `Caveats` heading at all.
+/// It used to close the report at column 0, printed through `Printer::hint`
+/// after the section had closed — which put the one line naming the file the
+/// run just wrote behind the `usageHints` gate. A reader who turned tutorials
+/// off was told nothing about a shell that no longer matches the machine, so
+/// the fact moved to the row slot that no knob decides, beside the owner whose
+/// work produced it.
 #[test]
-fn a_next_step_renders_below_the_closed_caveats_section() {
+fn an_instruction_renders_under_the_owner_that_produced_it() {
     let (printer, cap) = crate::output::Printer::for_test_doc();
     crate::reconciler::render_caveats(
         &printer,
         &[
             (
                 Owner::cfgd("env"),
-                vec![crate::providers::ActionNote::next_step(
+                vec![crate::providers::ActionNote::instruction(
                     "Run `source ~/.cfgd.env`",
                 )],
             ),
@@ -27755,7 +27788,7 @@ fn a_next_step_renders_below_the_closed_caveats_section() {
     let step = out
         .lines()
         .find(|l| l.contains("Run `source"))
-        .unwrap_or_else(|| panic!("the next step must render: {out}"));
+        .unwrap_or_else(|| panic!("the instruction must render: {out}"));
     let warn = out
         .lines()
         .find(|l| l.contains("deprecated: glob@7"))
@@ -27763,39 +27796,43 @@ fn a_next_step_renders_below_the_closed_caveats_section() {
     let indent = |l: &str| l.len() - l.trim_start().len();
     assert_eq!(
         indent(step),
-        0,
-        "a next step closes the report at column 0, not inside a caveat group: {out}"
+        indent(warn),
+        "an instruction is a note row like any other, at its owner's depth: {out}"
     );
     assert!(
-        indent(warn) > 0,
-        "a report still nests under its owner group: {out}"
+        !step.contains('\u{2192}'),
+        "and never a hint the `usageHints` gate can eat: {out}"
     );
     assert!(
-        !out.contains("cfgd:env"),
-        "an owner whose only note is a next step opens no caveat group: {out}"
+        out.contains("cfgd:env"),
+        "the owner that produced it names it: {out}"
     );
 }
 
-/// A run whose only note is a next step prints the step and no `Caveats`
-/// heading — the heading would introduce an empty section.
+/// A run whose only note is an instruction still opens the section: the row
+/// lives under an owner heading, and a heading is what says whose work left
+/// the reader something to do.
 #[test]
-fn a_lone_next_step_opens_no_caveats_heading() {
+fn a_lone_instruction_opens_its_owners_group() {
     let (printer, cap) = crate::output::Printer::for_test_doc();
     crate::reconciler::render_caveats(
         &printer,
         &[(
             Owner::cfgd("env"),
-            vec![crate::providers::ActionNote::next_step(
+            vec![crate::providers::ActionNote::instruction(
                 "Run `source ~/.cfgd.env`",
             )],
         )],
     );
     drop(printer);
     let out = crate::output::strip_ansi(&cap.human());
-    assert!(out.contains("Run `source"), "the step must render: {out}");
     assert!(
-        !out.contains("Caveats"),
-        "nothing to caveat, so no heading: {out}"
+        out.contains("Run `source"),
+        "the instruction must render: {out}"
+    );
+    assert!(
+        out.contains("cfgd:env"),
+        "under the owner that produced it: {out}"
     );
 }
 
@@ -27867,16 +27904,19 @@ fn a_caveat_message_renders_once_per_report() {
     );
 }
 
-/// The report half and the hint half are two slots on one section, and for a
-/// while only the hint half deduplicated. Walk both, so they cannot diverge
-/// again: the same message, filed under two owners, renders once whichever
-/// slot carries it — and the report slots go through `collect_caveats`, so the
-/// per-action attribution is in the way of the fold exactly as it is on a run.
+/// The report half and the instruction half were two slots on one section, and
+/// for a while only one of them deduplicated. Walk every note shape, so they
+/// cannot diverge again: the same message, filed under two owners, renders
+/// once whichever shape carries it — and every slot goes through
+/// `collect_caveats`, so the per-action attribution is in the way of the fold
+/// exactly as it is on a run.
 #[test]
 fn every_caveat_slot_dedupes_by_message() {
     type NoteBuilder = fn(&str) -> crate::providers::ActionNote;
     let slots: [(&str, NoteBuilder); 4] = [
-        ("hint", |m| crate::providers::ActionNote::next_step(m)),
+        ("instruction", |m| {
+            crate::providers::ActionNote::instruction(m)
+        }),
         ("report/warn", |m| {
             crate::providers::ActionNote::untagged(crate::output::Role::Warn, m)
         }),
