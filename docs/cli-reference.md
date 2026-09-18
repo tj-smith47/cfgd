@@ -328,12 +328,32 @@ Or any file the derivation read carrying a different stamp:
 
 ```console
 $ cfgd apply --plan plan.json
-✗ plan.json is stale: ~/.config/cfgd/profiles/tiny.yaml changed since it was written, so it no longer describes this config — run `cfgd plan -o json` again
+✗ plan.json is stale: /home/you/.config/cfgd/profiles/tiny.yaml changed since it was written, so it no longer describes this config — run `cfgd plan -o json` again
 ```
 
-Two shapes are refused ahead of those: a payload carrying no `savedPlan` (its run
-was filtered, or held a source decision back), and one whose phases were reordered
-or duplicated by hand. Both mean the file is not one cfgd wrote.
+Three shapes are refused ahead of those: a payload carrying no `savedPlan` (its run
+was filtered, or held a source decision back), one whose phases were reordered or
+duplicated by hand, and one whose derivation never read the config this run resolved.
+The last is what a global `--config` beside `--plan` runs into: a plan file names no
+config of its own, so without that question the recorded actions would run against a
+second machine picture.
+
+```console
+$ cfgd apply --config /etc/cfgd/other.yaml --plan plan.json
+✗ plan.json is not a plan cfgd wrote for this config: nothing its derivation read was /etc/cfgd/other.yaml, so the actions in it were priced against another machine picture — run `cfgd plan -o json` under this config
+```
+
+There is no `--force` over either refusal. A plan the machine has moved past is
+replaced by a new one, not overridden: the file is the approval, and forcing it would
+approve actions nobody looked at.
+
+Per-action safety is unchanged. The replay runs the same unmanaged-file sweep a fresh
+apply does, under its own `--on-conflict`, so a target holding bytes cfgd never wrote
+is still backed up, skipped or refused exactly as it would be without a plan file.
+
+The file carries everything the plan carries, the generated env file's body included,
+so it is exactly as sensitive as the config it was derived from: see
+[The saved plan](reconciliation.md#the-saved-plan-savedplan).
 
 The replay still resolves this machine's config for itself, because two planner
 inputs live outside the plan format (the manager a `prefer` list names, and a

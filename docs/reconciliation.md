@@ -283,7 +283,10 @@ from.
 `cfgd apply --plan <file>` reads the payload back and runs it: see
 [Applying a saved plan](cli-reference.md#applying-a-saved-plan). The two fields
 above are what it refuses on, so the window a saved plan is good for is exactly
-"nothing has changed and nothing has been applied".
+"nothing has changed and nothing has been applied". `configInputs` answers one
+more question first: the config file the replay resolved has to be among the paths
+it lists, or the file is a plan written for another machine picture rather than a
+stale one.
 
 ## Filtering
 
