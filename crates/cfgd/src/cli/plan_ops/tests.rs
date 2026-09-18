@@ -3664,10 +3664,7 @@ fn a_plan_read_off_the_wire_takes_its_declared_manager_and_floor_from_the_module
     );
     let mut plan = make_plan(vec![(
         PhaseName::Packages,
-        vec![module_batch(
-            "editor",
-            vec![off_the_wire, resolved_package("brew", "ripgrep")],
-        )],
+        vec![module_batch("editor", vec![off_the_wire])],
     )]);
 
     let mut module = cfgd_core::test_helpers::make_resolved_module("editor");
@@ -3677,7 +3674,12 @@ fn a_plan_read_off_the_wire_takes_its_declared_manager_and_floor_from_the_module
         ..resolved_package("brew", "neovim")
     }];
 
-    super::restore_module_planner_inputs(&mut plan, std::slice::from_ref(&module));
+    super::restore_module_planner_inputs(
+        &mut plan,
+        std::slice::from_ref(&module),
+        std::path::Path::new("plan.json"),
+    )
+    .unwrap();
 
     let restored: Vec<_> = plan.phases[0]
         .actions()
@@ -3690,13 +3692,78 @@ fn a_plan_read_off_the_wire_takes_its_declared_manager_and_floor_from_the_module
         })
         .flatten()
         .collect();
-    assert_eq!(restored.len(), 2);
+    assert_eq!(restored.len(), 1);
     assert!(restored[0].manager_declared, "the author named the manager");
     assert_eq!(restored[0].min_version.as_deref(), Some("0.11"));
+}
+
+/// The two facts the restore puts back are the MODULE's to state, and
+/// `modules::resolve_package` picks a manager by what this host holds, so a
+/// package installed between the plan and the replay moves the
+/// `(manager, canonical_name)` key while every recorded config input still
+/// stats identical. Passing the entry through would hand
+/// `package_survives_elision` a floor of `None` and elide an outdated copy as
+/// converged, so the file is refused instead.
+#[test]
+fn a_plan_naming_a_package_the_modules_no_longer_route_the_same_way_is_refused() {
+    let mut plan = make_plan(vec![(
+        PhaseName::Packages,
+        vec![module_batch(
+            "editor",
+            vec![resolved_package("brew", "neovim")],
+        )],
+    )]);
+
+    let mut module = cfgd_core::test_helpers::make_resolved_module("editor");
+    module.packages = vec![resolved_package("cargo", "neovim")];
+
+    let err = super::restore_module_planner_inputs(
+        &mut plan,
+        std::slice::from_ref(&module),
+        std::path::Path::new("plan.json"),
+    )
+    .unwrap_err()
+    .to_string();
     assert!(
-        !restored[1].manager_declared && restored[1].min_version.is_none(),
-        "a package the modules no longer resolve keeps what the file said"
+        err.contains("plan.json does not describe this host"),
+        "the refusal names the file: {err}"
     );
+    assert!(
+        err.contains("brew:neovim") && err.contains("module editor"),
+        "the refusal names the package and its module: {err}"
+    );
+    assert!(err.contains("`cfgd plan -o json`"), "{err}");
+}
+
+/// The same refusal one level up: the file plans packages for a module this
+/// run's resolution no longer produces at all, so nothing can state the two
+/// facts for it.
+#[test]
+fn a_plan_naming_a_module_this_run_no_longer_resolves_is_refused() {
+    let mut plan = make_plan(vec![(
+        PhaseName::Packages,
+        vec![module_batch(
+            "editor",
+            vec![resolved_package("brew", "neovim")],
+        )],
+    )]);
+
+    let err = super::restore_module_planner_inputs(
+        &mut plan,
+        &[cfgd_core::test_helpers::make_resolved_module("shell")],
+        std::path::Path::new("plan.json"),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        err.contains("plan.json does not describe this host"),
+        "the refusal names the file: {err}"
+    );
+    assert!(
+        err.contains("module editor"),
+        "the refusal names the module: {err}"
+    );
+    assert!(err.contains("`cfgd plan -o json`"), "{err}");
 }
 
 fn module_named(module: &str) -> Action {

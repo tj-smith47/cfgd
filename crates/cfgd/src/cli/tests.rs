@@ -30112,6 +30112,11 @@ struct DecisionShape<'a> {
     local_file: bool,
     /// YAML appended to the local profile's `spec:` block (two-space indent).
     extra_profile_spec: &'a str,
+    /// The source delivers `withheld.txt`, the undecided item most of these
+    /// fixtures are about. `false` for a source whose only delivery is what
+    /// `extra_team_spec` declares, which is how a run reaches a plan with no
+    /// decision withheld at all.
+    source_file: bool,
     /// The source delivers `sibling.txt` alongside `withheld.txt`.
     sibling: bool,
     /// YAML appended to the SOURCE's team profile `spec:` block (two-space
@@ -30130,6 +30135,7 @@ impl Default for DecisionShape<'_> {
             extra_spec: "",
             local_file: true,
             extra_profile_spec: "",
+            source_file: true,
             sibling: false,
             extra_team_spec: "",
             allow_scripts: false,
@@ -30150,10 +30156,14 @@ fn decision_fixture_shaped(shape: DecisionShape<'_>) -> DecisionFixture {
     // A source-declared `source:` path resolves against the SUBSCRIBER's config
     // directory, so both bodies are written there and only the declaration
     // moves into the source.
-    let mut team = format!(
-        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: team\nspec:\n  files:\n    managed:\n      - source: files/withheld.txt\n        target: {}\n        strategy: Copy\n",
-        withheld.posix(),
-    );
+    let mut team = if shape.source_file {
+        format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: team\nspec:\n  files:\n    managed:\n      - source: files/withheld.txt\n        target: {}\n        strategy: Copy\n",
+            withheld.posix(),
+        )
+    } else {
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: team\nspec:\n".to_string()
+    };
     if shape.sibling {
         team.push_str(&format!(
             "      - source: files/sibling.txt\n        target: {}\n        strategy: Copy\n",
@@ -31837,6 +31847,60 @@ fn apply_records_an_installed_source_package_as_auto_accepted() {
             .iter()
             .any(|d| d.resource.contains("kubectx")),
         "an auto-accepted resolution releases the resource"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn a_replay_still_auto_accepts_a_source_package_the_machine_already_holds() {
+    // A replay runs the file's own package actions and plans none, so nothing
+    // needs the installed view to price them. The source-policy classification
+    // still reads it: `manual_install_verdict` misses every candidate against
+    // an empty observation, so an item the recording run auto-accepted BECAUSE
+    // the machine already held the package would be withheld here instead, and
+    // pruned out of a plan the operator already approved.
+    let f = decision_fixture_shaped(DecisionShape {
+        extra_spec: NOTIFYING_POLICY,
+        extra_team_spec: INSTALLED_CUSTOM_TEAM_SPEC,
+        allow_scripts: true,
+        // A plan records nothing replayable while a decision is withheld, and
+        // this source's file is one. Its package is the whole subject here.
+        source_file: false,
+        ..Default::default()
+    });
+
+    let plan_file = f.h.state_path().join("plan.json");
+    let (plan_printer, cap) =
+        cfgd_core::output::Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
+    super::plan::cmd_plan(&f.h.cli(), &plan_printer, &plan_args()).unwrap();
+    drop(plan_printer);
+    let payload = cap.json().expect("the plan emits a payload");
+    assert!(
+        payload.get("savedPlan").is_some(),
+        "the fixture's plan run records a saved plan: {payload}"
+    );
+    std::fs::write(&plan_file, serde_json::to_string(&payload).unwrap()).unwrap();
+
+    let args = ApplyArgs {
+        plan: Some(plan_file),
+        ..apply_args(false)
+    };
+    super::apply::cmd_apply(&f.h.cli(), f.h.printer(), &args).unwrap();
+
+    let state = super::open_state_store(Some(f.h.state_path()), cfgd_core::Scope::User).unwrap();
+    assert!(
+        state
+            .has_decision("acme", "packages.fakemgr.kubectx")
+            .unwrap(),
+        "the replay classified against the machine, not against an empty view"
+    );
+    assert!(
+        !state
+            .withheld_decisions()
+            .unwrap()
+            .iter()
+            .any(|d| d.resource.contains("kubectx")),
+        "an auto-accepted resolution releases the resource on a replay too"
     );
 }
 

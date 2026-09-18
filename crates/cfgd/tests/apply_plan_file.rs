@@ -232,3 +232,228 @@ fn a_filter_is_refused_with_a_plan_file() {
         Cli::try_parse_from(["cfgd", "apply", "--plan", "p.json", "--on-conflict", "skip"]).is_ok()
     );
 }
+
+#[test]
+fn a_plan_recorded_under_another_config_is_refused() {
+    // A plan file names no config of its own, so a global `--config` beside
+    // `--plan` would run one config's recorded actions while the header, the
+    // resolved modules and the `applies` row all came from another.
+    let (config_dir, state_dir, target) = tiny_profile_setup();
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let plan_file = state_dir.path().join("plan.json");
+    record_plan_file(&cli, &plan_args(), &plan_file);
+
+    let (other_dir, _other_state, other_target) = tiny_profile_setup();
+    let foreign = cli_for(other_dir.path(), state_dir.path());
+
+    let printer = test_printer();
+    let err = run_apply(&foreign, &printer, &replay_args(&plan_file))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("is not a plan cfgd wrote for this config"),
+        "a foreign config is a shape refusal, not a staleness one: {err}"
+    );
+    assert!(
+        err.contains("cfgd.yaml"),
+        "the refusal names the config this run resolved: {err}"
+    );
+    assert!(!target.exists(), "a refused plan runs nothing: {err}");
+    assert!(
+        !other_target.exists(),
+        "nor against the other config: {err}"
+    );
+}
+
+#[test]
+fn a_relative_spelling_of_the_same_config_replays_the_plan() {
+    // The identity question above is asked about the FILE, not about the
+    // string: a `..` walking back through a component names the same config
+    // the derivation read, and must not refuse.
+    let (config_dir, state_dir, target) = tiny_profile_setup();
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let plan_file = state_dir.path().join("plan.json");
+    record_plan_file(&cli, &plan_args(), &plan_file);
+
+    // `files/` is created by the fixture, so the walk-back opens.
+    let respelled = Cli {
+        config: config_dir.path().join("files").join("..").join("cfgd.yaml"),
+        ..cli_for(config_dir.path(), state_dir.path())
+    };
+    let printer = test_printer();
+    let outcome = run_apply(&respelled, &printer, &replay_args(&plan_file)).unwrap();
+
+    assert_eq!(outcome.status, ApplyStatus::Success);
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "hello world");
+}
+
+#[test]
+fn a_replay_records_its_applies_row_under_the_profile_the_plan_was_written_for() {
+    // The config-identity refusal above is what makes this true: the replay
+    // resolves the same config the plan was derived from, so the scope it
+    // records cannot be another machine picture's profile.
+    let (config_dir, state_dir, _target) = tiny_profile_setup();
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let plan_file = state_dir.path().join("plan.json");
+    record_plan_file(&cli, &plan_args(), &plan_file);
+
+    let printer = test_printer();
+    run_apply(&cli, &printer, &replay_args(&plan_file)).unwrap();
+
+    let state = StateStore::open(&state_dir.path().join("state.db")).unwrap();
+    let recorded = state
+        .last_apply()
+        .unwrap()
+        .expect("the replay recorded an apply");
+    assert_eq!(recorded.profile, "tiny");
+}
+
+#[test]
+fn a_replay_runs_under_the_context_the_plan_recorded() {
+    // `--context` is clap-refused beside `--plan`, so the file is the only
+    // thing that can answer it, and the answer decides which hooks run at
+    // execute time.
+    let (config_dir, state_dir, _target) = tiny_profile_setup();
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let plan_file = state_dir.path().join("plan.json");
+    let mut args = plan_args();
+    args.context = "reconcile".to_string();
+    record_plan_file(&cli, &args, &plan_file);
+
+    let (printer, cap) = Printer::for_test_doc_with_format(OutputFormat::Json);
+    let mut replay = replay_args(&plan_file);
+    replay.dry_run = true;
+    run_apply(&cli, &printer, &replay).unwrap();
+    drop(printer);
+
+    let payload = cap.json().expect("the replay emits a payload");
+    assert_eq!(
+        payload["context"],
+        serde_json::json!("reconcile"),
+        "the saved context wins over the flag's default: {payload}"
+    );
+}
+
+#[test]
+fn a_missing_plan_file_is_refused() {
+    let (config_dir, state_dir, target) = tiny_profile_setup();
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let absent = state_dir.path().join("nope.json");
+
+    let printer = test_printer();
+    let err = run_apply(&cli, &printer, &replay_args(&absent))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("cannot read plan file") && err.contains("nope.json"),
+        "the likeliest operator error names the path: {err}"
+    );
+    assert!(!target.exists(), "a refused plan runs nothing: {err}");
+}
+
+#[test]
+fn an_unparsable_plan_file_is_refused() {
+    let (config_dir, state_dir, target) = tiny_profile_setup();
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let garbage = state_dir.path().join("garbage.json");
+    std::fs::write(&garbage, "{\n").unwrap();
+
+    let printer = test_printer();
+    let err = run_apply(&cli, &printer, &replay_args(&garbage))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("is not the payload of `cfgd plan -o json`"),
+        "{err}"
+    );
+    assert!(!target.exists(), "a refused plan runs nothing: {err}");
+}
+
+#[test]
+fn a_json_document_that_is_no_plan_output_is_refused_as_one() {
+    // Valid JSON cfgd never wrote. It earns its own sentence: the
+    // filtered-run explanation names causes that cannot apply to it.
+    let (config_dir, state_dir, target) = tiny_profile_setup();
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let stranger = state_dir.path().join("stranger.json");
+    std::fs::write(&stranger, "{\"context\":\"apply\"}").unwrap();
+
+    let printer = test_printer();
+    let err = run_apply(&cli, &printer, &replay_args(&stranger))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("is not the payload of `cfgd plan -o json`"),
+        "{err}"
+    );
+    assert!(
+        err.contains("phases") && err.contains("totalActions"),
+        "the refusal names the keys every plan output carries: {err}"
+    );
+    assert!(
+        !err.contains("carries no saved plan"),
+        "only a plan cfgd wrote earns the filtered-run explanation: {err}"
+    );
+    assert!(!target.exists(), "a refused plan runs nothing: {err}");
+}
+
+/// Every argument `cfgd apply` takes is either refused beside `--plan` or one
+/// of the named execution knobs. `conflicts_with_all` and the enumeration in
+/// `a_filter_is_refused_with_a_plan_file` are both hand lists, so a selector
+/// ADDED to `ApplyArgs` would join neither and pass forever; this walks clap's
+/// own argument list instead.
+#[test]
+fn every_apply_arg_is_refused_with_a_plan_file_or_is_an_execution_knob() {
+    use clap::{CommandFactory, Parser};
+
+    // These say HOW the run behaves, not WHAT it does, which is the file's to
+    // say. `plan` itself and clap's own built-ins are not arguments of the run.
+    const EXECUTION_KNOBS: [&str; 7] = [
+        "plan",
+        "help",
+        "version",
+        "dry_run",
+        "yes",
+        "shell",
+        "on_conflict",
+    ];
+
+    let command = ApplyArgs::command();
+    let args: Vec<_> = command.get_arguments().collect();
+    assert!(
+        args.len() >= 12,
+        "the walk read clap's real argument list: {}",
+        args.len()
+    );
+    let mut refused = 0;
+    for arg in args {
+        let id = arg.get_id().as_str();
+        if EXECUTION_KNOBS.contains(&id) {
+            continue;
+        }
+        let long = arg
+            .get_long()
+            .unwrap_or_else(|| panic!("`{id}` takes no long flag, so it cannot be refused"));
+        let flag = format!("--{long}");
+        let mut argv = vec!["cfgd", "apply", "--plan", "p.json", flag.as_str()];
+        if matches!(
+            arg.get_action(),
+            clap::ArgAction::Set | clap::ArgAction::Append
+        ) {
+            argv.push("files");
+        }
+        let err = Cli::try_parse_from(&argv)
+            .err()
+            .unwrap_or_else(|| panic!("`{flag}` must be refused with --plan"));
+        assert_eq!(
+            err.kind(),
+            clap::error::ErrorKind::ArgumentConflict,
+            "`{flag}` is refused as a conflict, not for some other reason: {err}"
+        );
+        refused += 1;
+    }
+    assert!(
+        refused >= 8,
+        "every selector the command declares was walked: {refused}"
+    );
+}

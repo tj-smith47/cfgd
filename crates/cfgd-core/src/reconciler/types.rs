@@ -2325,6 +2325,53 @@ pub fn module_files_unprobed(action: &Action) -> bool {
 mod tests {
     use super::*;
 
+    /// A plan FILE is read back against [`PhaseName::EXECUTION_ORDER`], so a
+    /// phase missing from that const would make every plan carrying it refuse
+    /// as a file cfgd did not write. The match is exhaustive, so a variant
+    /// added to the enum fails to compile here until it is placed; the const's
+    /// length is asserted beside it, so a variant DROPPED from the const
+    /// fails too.
+    #[test]
+    fn every_phase_the_planner_can_name_sits_in_the_execution_order_exactly_once() {
+        let variants = [
+            PhaseName::PreScripts,
+            PhaseName::Bootstrap,
+            PhaseName::Modules,
+            PhaseName::Packages,
+            PhaseName::System,
+            PhaseName::Files,
+            PhaseName::Secrets,
+            PhaseName::PostScripts,
+        ];
+        for name in &variants {
+            // Exhaustive, so the array above cannot silently fall behind the
+            // enum: a variant added to it has no arm and does not compile.
+            match name {
+                PhaseName::PreScripts
+                | PhaseName::Bootstrap
+                | PhaseName::Modules
+                | PhaseName::Packages
+                | PhaseName::System
+                | PhaseName::Files
+                | PhaseName::Secrets
+                | PhaseName::PostScripts => {}
+            }
+            assert_eq!(
+                PhaseName::EXECUTION_ORDER
+                    .iter()
+                    .filter(|p| *p == name)
+                    .count(),
+                1,
+                "{name:?} sits in EXECUTION_ORDER exactly once"
+            );
+        }
+        assert_eq!(
+            PhaseName::EXECUTION_ORDER.len(),
+            variants.len(),
+            "EXECUTION_ORDER names every phase and nothing twice"
+        );
+    }
+
     #[test]
     fn phase_name_from_str_round_trips() {
         assert_eq!(
