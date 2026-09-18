@@ -35012,9 +35012,18 @@ fn the_hint_minting_doors_are_read_off_the_types_own_declaration() {
     // crate, would mint doors both questions above judge without. Nothing
     // outside that file may declare one.
     //
+    // The file that may is named by its whole path rather than its basename, so
+    // a second `component.rs` anywhere in the workspace is judged like any other
+    // source. A door is matched on the impl head's trailing type name against
+    // the names THIS file can reach the type by, its own plus every `use … as`
+    // alias, because an aliased impl is a door the derivation reads no
+    // differently and a name test against the type's own spelling misses.
+    //
     // one-root-population-ok: the question is an absence, which no root has a
     // count of; each root's own floor is `production_sources_per_root`'s, which
     // fails a tree that stopped contributing sources.
+    let door_home = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../cfgd-core/src/output/component.rs");
     let elsewhere: Vec<String> = production_sources_per_root(&[
         "cfgd",
         "cfgd-core",
@@ -35025,17 +35034,39 @@ fn the_hint_minting_doors_are_read_off_the_types_own_declaration() {
     ])
     .into_iter()
     .flat_map(|(_, sources)| sources)
-    .filter(|(path, _)| path.file_name().is_some_and(|name| name != "component.rs"))
+    .filter(|(path, _)| path != &door_home)
     .filter(|(_, production)| {
+        let mut names = vec!["HintCommands".to_string()];
+        for line in production.lines() {
+            let code = cfgd_core::test_helpers::code_line(line);
+            let Some((_, bound)) = code.split_once("HintCommands as ") else {
+                continue;
+            };
+            let alias: String = bound
+                .trim_start()
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            if !alias.is_empty() && !names.contains(&alias) {
+                names.push(alias);
+            }
+        }
         production.lines().any(|line| {
             let code = cfgd_core::test_helpers::code_line(line);
             let code = code.trim();
-            code.starts_with("impl")
-                && code.ends_with('{')
-                && code
-                    .trim_end_matches('{')
-                    .trim_end()
-                    .ends_with("HintCommands")
+            if !code.starts_with("impl") || !code.ends_with('{') {
+                return false;
+            }
+            let head = code.trim_end_matches('{').trim_end();
+            let subject: String = head
+                .chars()
+                .rev()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect::<Vec<char>>()
+                .into_iter()
+                .rev()
+                .collect();
+            names.contains(&subject)
         })
     })
     .map(|(path, _)| path.display().to_string())
@@ -35435,13 +35466,20 @@ const UNCONDITIONAL_HINT_CALL_SITES: &[(&str, &str)] = &[
 /// Exempts an [`UNCONDITIONAL_HINT_CALL_SITES`] entry that matches no site.
 const UNGATING_SITE_UNCALLED_HATCH: &str = "ungating-site-uncalled-ok:";
 
-/// Whether the roster entry's own line, or the line above it, carries the
-/// uncalled hatch.
+/// Whether the roster entry carries the uncalled hatch, on any of its own
+/// lines or on the line above it.
 ///
 /// An entry matching nothing is the silence the roster exists to prevent worn
 /// as a green table: it satisfies the walk while watching no call site, and a
 /// site that moved file keeps its old entry's blessing. Read out of this
 /// file's own source, the way `ENV_MUTATORS` reads its hatch.
+///
+/// The entry is found by its SPAN rather than by one needle, because rustfmt
+/// breaks an entry too long for the line width over four lines, and a marker
+/// written on any of them would otherwise be ignored: four of this roster's
+/// entries were offered a hatch that could not be applied. An entry opens on
+/// the line whose first character is `(`, whichever shape it took, and runs
+/// to the line before the next one opens.
 fn ungating_site_hatched(path: &str, name: &str) -> bool {
     let own = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli/tests.rs");
     let body = cfgd_core::test_helpers::walked_file_body(&own);
@@ -35454,11 +35492,20 @@ fn ungating_site_hatched(path: &str, name: &str) -> bool {
         .iter()
         .position(|line| line.starts_with("];"))
         .expect("`UNCONDITIONAL_HINT_CALL_SITES` is closed");
-    let entry = format!("(\"{path}\", \"{name}\")");
-    (open..open + len).any(|at| {
-        lines[at].contains(&entry)
-            && (lines[at].contains(UNGATING_SITE_UNCALLED_HATCH)
-                || at > 0 && lines[at - 1].contains(UNGATING_SITE_UNCALLED_HATCH))
+    let opens: Vec<usize> = (open + 1..open + len)
+        .filter(|at| lines[*at].trim_start().starts_with('('))
+        .collect();
+    let path_token = format!("\"{path}\"");
+    let name_token = format!("\"{name}\"");
+    opens.iter().enumerate().any(|(nth, start)| {
+        let end = opens.get(nth + 1).copied().unwrap_or(open + len);
+        let entry = &lines[*start..end];
+        entry.iter().any(|line| line.contains(&path_token))
+            && entry.iter().any(|line| line.contains(&name_token))
+            && (entry
+                .iter()
+                .any(|line| line.contains(UNGATING_SITE_UNCALLED_HATCH))
+                || lines[start - 1].contains(UNGATING_SITE_UNCALLED_HATCH))
     })
 }
 
