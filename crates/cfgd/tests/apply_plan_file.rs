@@ -172,6 +172,62 @@ fn a_filtered_payload_is_refused_as_a_plan_file() {
     assert!(!target.exists(), "a refused plan runs nothing: {err}");
 }
 
+/// What a refused replay puts on the wire, rendered through the CLI's own
+/// error sink rather than read off the carrier.
+///
+/// Each refusal names the question the file failed, so a script can tell
+/// "re-plan" (`stale`) from "you named the wrong file" (`not_found`) from
+/// "that run was filtered" (`no_saved_plan`). Written as bare `anyhow!`s,
+/// all three reported the `internal` kind the sink falls back to for an
+/// untyped failure.
+#[test]
+fn every_saved_plan_refusal_names_its_own_kind_on_the_wire() {
+    fn payload_of(err: &anyhow::Error) -> serde_json::Value {
+        let (printer, cap) = Printer::for_test_doc_with_format(OutputFormat::Json);
+        let _ = cfgd::cli::error::render_cli_error(&printer, err);
+        drop(printer);
+        cap.json().expect("an error doc carries a payload")
+    }
+
+    let (config_dir, state_dir, _target) = tiny_profile_setup();
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let printer = test_printer();
+
+    let absent = state_dir.path().join("nope.json");
+    let missing = payload_of(&run_apply(&cli, &printer, &replay_args(&absent)).unwrap_err());
+    assert_eq!(missing["error"], "not_found", "{missing}");
+    assert!(
+        missing["file"]
+            .as_str()
+            .is_some_and(|f| f.ends_with("nope.json")),
+        "the payload names the file the caller passed: {missing}"
+    );
+
+    let filtered_file = state_dir.path().join("filtered.json");
+    let mut filtered_args = plan_args();
+    filtered_args.only = vec!["files".to_string()];
+    record_plan_file(&cli, &filtered_args, &filtered_file);
+    let filtered =
+        payload_of(&run_apply(&cli, &printer, &replay_args(&filtered_file)).unwrap_err());
+    assert_eq!(filtered["error"], "no_saved_plan", "{filtered}");
+
+    let plan_file = state_dir.path().join("plan.json");
+    record_plan_file(&cli, &plan_args(), &plan_file);
+    {
+        let state = StateStore::open(&state_dir.path().join("state.db")).unwrap();
+        state
+            .record_apply("tiny", "deadbeef", ApplyStatus::Success, None)
+            .unwrap();
+    }
+    let stale = payload_of(&run_apply(&cli, &printer, &replay_args(&plan_file)).unwrap_err());
+    assert_eq!(stale["error"], "stale", "{stale}");
+    assert_eq!(stale["serial"], 1, "{stale}");
+    assert_eq!(
+        stale["recordedSerial"], 0,
+        "both serials reach the payload: {stale}"
+    );
+}
+
 #[test]
 fn a_plan_file_whose_phases_were_reordered_is_refused() {
     let (config_dir, state_dir, target) = tiny_profile_setup();
