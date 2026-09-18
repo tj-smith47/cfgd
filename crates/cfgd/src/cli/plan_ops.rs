@@ -522,6 +522,11 @@ pub(in crate::cli) enum DecisionWrites<'a> {
 /// never a caller's themed [`Printer::arrow()`] — a `-o json` field is the
 /// SAME bytes under every `--theme`/preset, and a parameter here is the seam
 /// that regresses that promise.
+///
+/// `saved` is the approval contract an UNFILTERED run records (see
+/// [`SavedPlan`]); it is a parameter rather than something this builder derives
+/// so that the one question "may this run be replayed" is answered where the
+/// run's own scope is known, and every caller has to answer it.
 pub(in crate::cli) fn build_plan_output(
     plan: &reconciler::Plan,
     context_name: &str,
@@ -529,6 +534,7 @@ pub(in crate::cli) fn build_plan_output(
     pending_backups: &[String],
     withheld: &reconciler::WithheldDecisions,
     sources: &[reconciler::ComposedSource],
+    saved: Option<SavedPlan>,
 ) -> PlanOutput {
     let tree = reconciler::in_scope_tree(plan, phase_filter, reconciler::PhaseCoverage::Complete);
     let total_actions = reconciler::attempted_count(
@@ -570,6 +576,7 @@ pub(in crate::cli) fn build_plan_output(
         pending_backups: pending_backups.to_vec(),
         pending_decisions: withheld.pending.clone(),
         rejected_decisions: withheld.rejected.clone(),
+        saved_plan: saved,
     }
 }
 
@@ -744,7 +751,10 @@ pub(in crate::cli) fn report_plan_verdict(
 /// Bundles `display_plan_preview`'s non-core arguments (everything but the
 /// plan/printer/state it acts on) so the call stays under clippy's
 /// too-many-arguments budget as fields accrue.
-#[derive(Clone, Copy)]
+///
+/// Passed by value rather than by reference because `saved_plan` owns the
+/// recorded action graph, which the payload builder takes whole; copying it to
+/// hand it over would double a plan-sized JSON value for nothing.
 pub(in crate::cli) struct PlanPreviewArgs<'a> {
     pub context: &'a str,
     /// How this preview was scoped, for the verdict's next step. A bare
@@ -759,13 +769,17 @@ pub(in crate::cli) struct PlanPreviewArgs<'a> {
     /// run carries, so the block naming what is missing and the payload keys
     /// reporting it cannot describe different sets.
     pub withheld: &'a reconciler::WithheldDecisions,
+    /// The approval contract this run recorded, or `None` where its scope
+    /// makes it unreplayable. Decided by the caller, which is the only place
+    /// the run's own filters are known.
+    pub saved_plan: Option<SavedPlan>,
 }
 
 pub(in crate::cli) fn display_plan_preview(
     run: &reconciler::ApplyRun<'_>,
     plan: &reconciler::Plan,
     printer: &Printer,
-    args: &PlanPreviewArgs<'_>,
+    args: PlanPreviewArgs<'_>,
 ) {
     let PlanPreviewArgs {
         context,
@@ -774,8 +788,9 @@ pub(in crate::cli) fn display_plan_preview(
         scope,
         pending_backups,
         withheld,
-        preview: _,
-    } = *args;
+        preview,
+        saved_plan,
+    } = args;
 
     // The run's own rows and warnings, before anything this command adds: the
     // header is what states the scope every block below is read against, and
@@ -790,6 +805,7 @@ pub(in crate::cli) fn display_plan_preview(
         pending_backups,
         withheld,
         run.sources(),
+        saved_plan,
     );
 
     // Structured-output routing: when -o yaml/json/etc., emit the plan as the
@@ -864,7 +880,7 @@ pub(in crate::cli) fn display_plan_preview(
         plan_output.total_actions,
         Some(scope),
         withheld.pending.len(),
-        &args.preview,
+        &preview,
     );
     // The sections naming the withheld items are up under the header; the
     // instruction for answering them closes the preview, left-aligned like

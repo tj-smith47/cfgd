@@ -194,6 +194,14 @@ pub fn run_apply(
     // counts — so the profile label is carried down rather than printed
     // here. An isolated run resolved no profile, so it carries none and the
     // header omits the row.
+    //
+    // Opened around the whole derivation, not around the config parse alone:
+    // the profile chain, the module bodies, the lockfiles and the declared
+    // package manifests are all inputs a replay must re-check, and each reports
+    // itself from its own read. A run that is not a dry run records nothing, so
+    // the frame costs it one `stat` per file it was going to open anyway.
+    let recorder = cfgd_core::ConfigInputRecorder::start();
+
     let (cfg, resolved, profile_label, config_parsed) =
         load_config_and_profile_module_scoped(cli, printer, module_filter, with_profile)?;
 
@@ -235,6 +243,7 @@ pub fn run_apply(
         &mut effective_resolved.merged.packages,
         &mut effective_resolved.merged.layer_sources,
     )?;
+    let config_inputs = recorder.finish();
 
     // `PhaseArg`'s base phase is clap-validated; a selector combined with
     // `--phase modules` is the one combination `resolve_phase_filter` still
@@ -503,11 +512,23 @@ pub fn run_apply(
         if prune_eligible {
             preview_orphaned_custom_packages(state, &registry, printer);
         }
+        // The same contract `cfgd plan` records, on the same terms: a dry run
+        // previews exactly what `apply` would do, so an unfiltered one is
+        // replayable and a scoped one is not.
+        let saved_plan = (printer.is_structured() && !filter_active && module_filter.is_empty())
+            .then(|| -> anyhow::Result<SavedPlan> {
+                Ok(SavedPlan {
+                    plan: serde_json::to_value(&plan)?,
+                    config_inputs,
+                    serial: state.last_apply()?.map_or(0, |a| a.id),
+                })
+            })
+            .transpose()?;
         display_plan_preview(
             &run,
             &plan,
             printer,
-            &PlanPreviewArgs {
+            PlanPreviewArgs {
                 context: &args.context,
                 preview: crate::cli::PreviewScope {
                     module: &args.module,
@@ -522,6 +543,7 @@ pub fn run_apply(
                 scope: &scope,
                 pending_backups: &pending_backups,
                 withheld: &withheld,
+                saved_plan,
             },
         );
         return Ok(ApplyOutcome::success());

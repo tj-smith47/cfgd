@@ -41,6 +41,12 @@ pub fn cmd_plan(
         );
     }
 
+    // Opened around the whole derivation, not around the config parse alone:
+    // the profile chain, the module bodies, the lockfiles and the declared
+    // package manifests are all inputs a replay must re-check, and each reports
+    // itself from its own read.
+    let recorder = cfgd_core::ConfigInputRecorder::start();
+
     // Load config and profile — same pattern as cmd_apply. The header these
     // rows belong to is rendered once the plan is final, so the profile label
     // is carried down rather than printed here. An isolated run resolved no
@@ -76,6 +82,7 @@ pub fn cmd_plan(
         &mut effective_resolved.merged.packages,
         &mut effective_resolved.merged.layer_sources,
     )?;
+    let config_inputs = recorder.finish();
 
     // `PhaseArg`'s base phase is clap-validated; a selector combined with
     // `--phase modules` is the one combination `resolve_phase_filter` still
@@ -251,6 +258,20 @@ pub fn cmd_plan(
         .map(|b| b.name.clone())
         .collect();
 
+    // An unfiltered plan is the only one that can be replayed: `--plan` refuses
+    // every filter, so a scope baked into the file would be a second answer to
+    // the question the flags already answer. `filter_active` already covers
+    // `--skip-scripts`, so only the module isolate is asked for separately.
+    let saved_plan = (printer.is_structured() && !filter_active && module_filter.is_empty())
+        .then(|| -> anyhow::Result<SavedPlan> {
+            Ok(SavedPlan {
+                plan: serde_json::to_value(&plan)?,
+                config_inputs,
+                serial: state.last_apply()?.map_or(0, |a| a.id),
+            })
+        })
+        .transpose()?;
+
     let profile_inherits = effective_resolved.inherits_chain();
     let run = reconciler::ApplyRun::new(
         reconciler::RunContext {
@@ -279,7 +300,7 @@ pub fn cmd_plan(
         &run,
         &plan,
         printer,
-        &PlanPreviewArgs {
+        PlanPreviewArgs {
             context: &args.context,
             preview: crate::cli::PreviewScope {
                 module: &args.module,
@@ -294,6 +315,7 @@ pub fn cmd_plan(
             scope: &scope,
             pending_backups: &pending_backups,
             withheld: &withheld,
+            saved_plan,
         },
     );
 

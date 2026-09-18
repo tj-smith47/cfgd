@@ -80,6 +80,7 @@ fn happy_plan_output() -> PlanOutput {
         pending_backups: vec![],
         pending_decisions: vec![],
         rejected_decisions: vec![],
+        saved_plan: None,
     }
 }
 
@@ -122,6 +123,7 @@ fn owner_groups_plan_output() -> PlanOutput {
         pending_backups: vec![],
         pending_decisions: vec![],
         rejected_decisions: vec![],
+        saved_plan: None,
     }
 }
 
@@ -598,5 +600,51 @@ fn plan_composed_source_human() {
         Path::new(SNAPSHOT_ROOT),
         "plan/composed_source.txt",
         &stripped
+    );
+}
+
+/// The approval contract `cfgd apply --plan` replays: the typed actions, the
+/// inputs the derivation read, and the serial of the last recorded apply.
+#[test]
+fn plan_json_records_the_saved_plan_for_an_unfiltered_run() {
+    let (config_dir, state_dir, _target) = tiny_profile_setup();
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let (printer, cap) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
+    cmd_plan(&cli, &printer, &plan_args()).unwrap();
+    drop(printer);
+    let payload = cap.json().expect("plan doc carries a payload");
+    let saved = &payload["savedPlan"];
+    assert!(
+        saved["plan"]["phases"].is_array(),
+        "the typed action graph: {payload}"
+    );
+    assert_eq!(
+        saved["serial"],
+        serde_json::json!(0),
+        "no apply has run: {payload}"
+    );
+    assert!(
+        saved["configInputs"].as_array().is_some_and(|inputs| inputs
+            .iter()
+            .any(|i| i["path"].as_str().is_some_and(|p| p.ends_with("cfgd.yaml")))),
+        "the config it read is one of the inputs: {payload}"
+    );
+}
+
+/// A filtered plan records none: `--plan` refuses a filter, so a payload that
+/// baked one in would be a second source of truth about the run's scope.
+#[test]
+fn plan_json_records_no_saved_plan_for_a_filtered_run() {
+    let (config_dir, state_dir, _target) = tiny_profile_setup();
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let mut args = plan_args();
+    args.only = vec!["files".to_string()];
+    let (printer, cap) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
+    cmd_plan(&cli, &printer, &args).unwrap();
+    drop(printer);
+    let payload = cap.json().expect("plan doc carries a payload");
+    assert!(
+        payload["savedPlan"].is_null(),
+        "a filtered run records no approval contract: {payload}"
     );
 }

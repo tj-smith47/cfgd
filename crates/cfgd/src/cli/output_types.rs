@@ -470,6 +470,31 @@ pub struct PlanOutput {
     /// omitted from the wire) when nothing this run declares was declined.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub rejected_decisions: Vec<cfgd_core::state::PendingDecision>,
+    /// What a later `cfgd apply --plan` replays, recorded by an UNFILTERED
+    /// run and absent from every other payload.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub saved_plan: Option<SavedPlan>,
+}
+
+/// What `cfgd apply --plan` replays, recorded by an UNFILTERED `cfgd plan -o json`.
+///
+/// `plan` is the reconciler's own action graph, serialized whole: `phases[]`
+/// above is the RENDERED contract a consumer reads (descriptions, targets,
+/// provenance), this is the typed one cfgd reads back. `configInputs` is every
+/// file the derivation opened with the stamp it carried, and `serial` the id of
+/// the last recorded apply: the two facts `apply --plan` refuses on, and the
+/// only two. A filtered run records nothing here, because `--plan` refuses a
+/// filter and a payload carrying one would be a second statement of the run's
+/// scope.
+///
+/// It carries what the plan carries, the generated env file's body included, so
+/// a plan file is as sensitive as the config it was derived from.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedPlan {
+    pub plan: serde_json::Value,
+    pub config_inputs: cfgd_core::ConfigInputs,
+    pub serial: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -1883,6 +1908,7 @@ mod tests {
             pending_backups: vec![],
             pending_decisions: vec![],
             rejected_decisions: vec![],
+            saved_plan: None,
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["context"], json!("default"));
@@ -1914,6 +1940,7 @@ mod tests {
             pending_backups: vec![],
             pending_decisions: vec![],
             rejected_decisions: vec![],
+            saved_plan: None,
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["warnings"], json!(["missing tool"]));
@@ -1930,6 +1957,7 @@ mod tests {
             pending_backups: vec!["photos".to_string()],
             pending_decisions: vec![],
             rejected_decisions: vec![],
+            saved_plan: None,
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["pendingBackups"], json!(["photos"]));

@@ -134,6 +134,7 @@ fn plan_output_roundtrips_through_emit() {
         pending_backups: vec!["photos".into()],
         pending_decisions: vec![],
         rejected_decisions: vec![],
+        saved_plan: None,
     };
 
     let actual = emit_and_parse(&payload);

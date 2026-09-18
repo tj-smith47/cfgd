@@ -1734,7 +1734,7 @@ fn every_operand_a_plan_action_holds_reaches_the_json_payload() {
     ];
     for (shape, action) in shapes {
         let plan = one_phase_plan(vec![action]);
-        let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
+        let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[], None);
         let json = serde_json::to_string(&output).unwrap();
         for name in &names {
             assert!(
@@ -1794,7 +1794,7 @@ fn a_tool_this_plan_provisions_is_named_once_in_the_json_payload() {
         )
         .expect("plan");
 
-    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
+    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[], None);
     let json = serde_json::to_string(&output).expect("serialize");
     assert_eq!(
         json.matches("tool-alias").count(),
@@ -1820,7 +1820,7 @@ fn build_plan_output_counts_actions_and_sets_context() {
         ),
         (PhaseName::Packages, vec![pkg_install("brew", vec!["rg"])]),
     ]);
-    let output = build_plan_output(&plan, "my-machine", None, &[], &no_decisions(), &[]);
+    let output = build_plan_output(&plan, "my-machine", None, &[], &no_decisions(), &[], None);
 
     assert_eq!(output.context, "my-machine");
     assert_eq!(output.total_actions, 3);
@@ -1867,6 +1867,7 @@ fn build_plan_output_phase_filter_excludes_other_phases() {
         &[],
         &no_decisions(),
         &[],
+        None,
     );
 
     assert_eq!(output.phases.len(), 1);
@@ -1880,7 +1881,7 @@ fn build_plan_output_names_the_kind_phase_and_carries_the_module_as_an_owner() {
         PhaseName::PostScripts,
         vec![module_run_script()],
     )]);
-    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
+    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[], None);
 
     assert_eq!(output.phases.len(), 1);
     assert_eq!(output.phases[0].phase, "Post-Scripts");
@@ -1925,7 +1926,7 @@ fn build_plan_output_orders_groups_profile_first() {
             pkg_install("apt", vec!["sl"]),
         ],
     )]);
-    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
+    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[], None);
 
     assert_eq!(
         output.phases[0]
@@ -1953,7 +1954,7 @@ fn no_bootstrap_means_no_managers_group_in_the_payload() {
         PhaseName::Packages,
         vec![pkg_install("apt", vec!["sl"])],
     )]);
-    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
+    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[], None);
 
     assert_eq!(
         output.phases[0]
@@ -1993,7 +1994,7 @@ fn build_plan_output_manager_action_carries_the_structured_manager_payload() {
             }),
         ],
     )]);
-    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
+    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[], None);
     let json = serde_json::to_value(&output).unwrap();
     let groups = json["phases"][0]["groups"].as_array().expect("groups");
     assert_eq!(groups.len(), 1);
@@ -2045,6 +2046,7 @@ fn build_plan_output_manager_action_carries_the_structured_manager_payload() {
         &[],
         &no_decisions(),
         &[],
+        None,
     );
     let other_json = serde_json::to_value(&other).unwrap();
     assert!(
@@ -2058,7 +2060,7 @@ fn build_plan_output_manager_action_carries_the_structured_manager_payload() {
 #[test]
 fn build_plan_output_non_module_phase_omits_module_and_section_keys() {
     let plan = make_plan(vec![(PhaseName::Files, vec![file_create("/etc/foo")])]);
-    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
+    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[], None);
 
     // `skip_serializing_if` back-compat guarantee: a non-module phase's wire
     // form carries no `module`/`section` keys at all, not `null` values.
@@ -2090,7 +2092,7 @@ fn build_plan_output_carries_source_module_origin() {
         PhaseName::Modules,
         vec![module_install_from_source("acme"), module_install()],
     )]);
-    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
+    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[], None);
 
     let actions = phase_actions(&output.phases[0]);
     let sourced = actions
@@ -2127,7 +2129,7 @@ fn build_plan_output_local_only_omits_all_origins() {
         PhaseName::Modules,
         vec![module_install(), module_deploy_files()],
     )]);
-    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
+    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[], None);
     for phase in &output.phases {
         for action in phase_actions(phase) {
             assert_eq!(action.origin, None, "local plan must carry no origin");
@@ -2148,7 +2150,7 @@ fn build_plan_output_local_only_omits_all_origins() {
 #[test]
 fn build_plan_output_empty_plan_has_zero_actions() {
     let plan = make_plan(vec![]);
-    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
+    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[], None);
 
     assert_eq!(output.total_actions, 0);
     assert!(output.phases.is_empty());
@@ -2191,8 +2193,9 @@ fn the_plan_json_payload_is_the_same_bytes_under_a_preset_that_overrides_the_arr
             scope: &scope,
             pending_backups: &[],
             withheld: &decisions,
+            saved_plan: None,
         };
-        display_plan_preview(&run, &plan, &printer, &args);
+        display_plan_preview(&run, &plan, &printer, args);
         drop(printer);
         cfgd_core::test_helpers::captured_text(&buf)
     };
@@ -2211,6 +2214,44 @@ fn the_plan_json_payload_is_the_same_bytes_under_a_preset_that_overrides_the_arr
     );
 }
 
+/// `applies.plan_hash` is a digest of the ACTIONS, so recording the graph in the
+/// payload envelope cannot move it: a plan read back out of `savedPlan.plan`
+/// hashes to what the same plan hashed before it was written. A replay that
+/// hashed differently would record an apply nothing can be matched against.
+#[test]
+fn a_saved_plan_hashes_to_what_it_hashed_before_the_payload_carried_it() {
+    let plan = make_plan(vec![(PhaseName::System, vec![system_set()])]);
+    let before = plan.to_hash_string().expect("the fixture plan hashes");
+    let saved = SavedPlan {
+        plan: serde_json::to_value(&plan).expect("a plan serializes"),
+        config_inputs: cfgd_core::ConfigInputs::default(),
+        serial: 7,
+    };
+    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[], Some(saved));
+    let json = serde_json::to_value(&output).expect("the payload serializes");
+    assert_eq!(json["savedPlan"]["serial"], serde_json::json!(7));
+    let replayed: Plan = serde_json::from_value(json["savedPlan"]["plan"].clone())
+        .expect("the recorded plan reads back as the reconciler's own plan");
+    assert_eq!(
+        replayed.to_hash_string().expect("the replayed plan hashes"),
+        before,
+        "the payload envelope adds nothing the plan hash is taken over"
+    );
+}
+
+/// A payload with no approval contract omits the key outright, so every
+/// existing consumer reads the same bytes it always did.
+#[test]
+fn a_plan_output_with_no_saved_plan_omits_the_key() {
+    let plan = make_plan(vec![(PhaseName::System, vec![system_set()])]);
+    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[], None);
+    let json = serde_json::to_value(&output).expect("the payload serializes");
+    assert!(
+        json.get("savedPlan").is_none(),
+        "an unrecorded contract is absent, not null: {json}"
+    );
+}
+
 // `build_plan_output`'s `PlanActionOutput.description` is the
 // `-o json` plan payload — it must preserve a multi-line inline script's
 // run_str body byte-identical, never condensed. Condensing belongs solely to
@@ -2224,7 +2265,7 @@ fn build_plan_output_script_action_json_preserves_raw_multiline_body() {
         origin: "test".to_string(),
     });
     let plan = make_plan(vec![(PhaseName::PreScripts, vec![action])]);
-    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
+    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[], None);
 
     let desc = &output.phases[0].groups[0].actions()[0].description;
     assert!(
@@ -2249,7 +2290,7 @@ fn build_plan_output_module_script_action_json_preserves_raw_multiline_body() {
         origin: None,
     });
     let plan = make_plan(vec![(PhaseName::Modules, vec![action])]);
-    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
+    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[], None);
 
     let desc = &output.phases[0].groups[0].actions()[0].description;
     assert!(
@@ -4054,7 +4095,7 @@ fn platform_skip_survives_in_the_plan_payload() {
         (PhaseName::Modules, vec![skip]),
         (PhaseName::Packages, vec![pkg_install("brew", vec!["rg"])]),
     ]);
-    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
+    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[], None);
 
     assert_eq!(
         output.total_actions, 1,
@@ -4111,7 +4152,7 @@ fn the_payload_total_matches_the_plans_own_count_over_a_pre_skipped_action() {
             pkg_install("brew", vec!["rg"]),
         ],
     )]);
-    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
+    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[], None);
 
     assert_eq!(
         output.total_actions,
@@ -4137,7 +4178,7 @@ fn a_phase_scoped_payload_prices_only_the_scope_it_listed() {
         (PhaseName::Files, vec![file_create("/etc/foo")]),
     ]);
     let filter = reconciler::PhaseFilter::Phase(PhaseName::Files);
-    let output = build_plan_output(&plan, "ctx", Some(&filter), &[], &no_decisions(), &[]);
+    let output = build_plan_output(&plan, "ctx", Some(&filter), &[], &no_decisions(), &[], None);
 
     assert_eq!(plan.total_actions(), 2, "the plan itself holds both phases");
     assert_eq!(output.total_actions, 1);
