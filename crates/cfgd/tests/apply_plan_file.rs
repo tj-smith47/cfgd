@@ -275,8 +275,9 @@ fn a_plan_recorded_under_another_config_is_refused() {
         "the shape refusal precedes both staleness facts, which are also true here: {err}"
     );
     assert!(
-        err.contains("cfgd.yaml"),
-        "the refusal names the config this run resolved: {err}"
+        err.contains(&other_dir.path().join("cfgd.yaml").display().to_string()),
+        "the refusal names the config this run resolved, which both fixtures call \
+         `cfgd.yaml`: {err}"
     );
     assert!(!target.exists(), "a refused plan runs nothing: {err}");
     assert!(
@@ -395,26 +396,37 @@ fn a_json_document_that_is_no_plan_output_is_refused_as_one() {
     // filtered-run explanation names causes that cannot apply to it.
     let (config_dir, state_dir, target) = tiny_profile_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let stranger = state_dir.path().join("stranger.json");
-    std::fs::write(&stranger, "{\"context\":\"apply\"}").unwrap();
 
-    let printer = test_printer();
-    let err = run_apply(&cli, &printer, &replay_args(&stranger))
-        .unwrap_err()
-        .to_string();
-    assert!(
-        err.contains("is not the payload of `cfgd plan -o json`"),
-        "{err}"
-    );
-    assert!(
-        err.contains("phases") && err.contains("totalActions"),
-        "the refusal names the keys every plan output carries: {err}"
-    );
-    assert!(
-        !err.contains("carries no saved plan"),
-        "only a plan cfgd wrote earns the filtered-run explanation: {err}"
-    );
-    assert!(!target.exists(), "a refused plan runs nothing: {err}");
+    // The question reads BOTH keys, so a document carrying exactly one of them
+    // is what holds the refusal's wording honest: "neither" is false of it.
+    for (name, body) in [
+        ("stranger.json", r#"{"context":"apply"}"#),
+        ("one-key.json", r#"{"phases":[],"context":"apply"}"#),
+    ] {
+        let stranger = state_dir.path().join(name);
+        std::fs::write(&stranger, body).unwrap();
+
+        let printer = test_printer();
+        let err = run_apply(&cli, &printer, &replay_args(&stranger))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("is not the payload of `cfgd plan -o json`"),
+            "{err}"
+        );
+        assert!(
+            err.contains(
+                "it does not carry both a `phases` and a `totalActions` key, which every plan \
+                 output has"
+            ),
+            "the refusal states the pair it needs, of a document holding one of them too: {err}"
+        );
+        assert!(
+            !err.contains("carries no saved plan"),
+            "only a plan cfgd wrote earns the filtered-run explanation: {err}"
+        );
+        assert!(!target.exists(), "a refused plan runs nothing: {err}");
+    }
 }
 
 /// Every argument `cfgd apply` takes is either refused beside `--plan` or one
