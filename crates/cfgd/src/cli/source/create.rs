@@ -145,6 +145,9 @@ pub fn cmd_source_create(
         );
     }
     doc = doc
+        // gated-hint-ok: the path is the argument of the command this hint
+        // names, and the `Created cfgd-source.yaml at …` row above states it
+        // whatever `usageHints` says.
         .hint(format!(
             "Edit the manifest to configure policy tiers and platform-profiles, then run `cfgd source validate {}`",
             cfgd_core::to_posix_string(&source_path)

@@ -34964,26 +34964,45 @@ fn str_consts(
     consts
 }
 
-/// The hint composers this walk stands down for, each of which carries an
-/// `every_*` pin of its own over the sentences it builds.
+/// The hint composers this walk stands down for, each paired with whether its
+/// wording is UNCONDITIONAL, and each carrying an `every_*` pin of its own over
+/// the sentences it builds.
 ///
 /// An allowlist rather than "any call": read as a shape, the exemption also
 /// covered `printer.hint(String::from("…"))` and every future
 /// `printer.hint(some_helper(…))`, so a hint could leave the walk with nothing
 /// asserting anything about its text. A new composer fails the walk until it
 /// is registered here and pinned.
-const PINNED_HINT_COMPOSERS: &[&str] = &[
-    "answer_decisions_hint",
-    "enroll_error_hint",
-    "enroll_error_hints",
-    "heal_drift_hint",
-    "local_pull_next_step",
-    "perform_preview_hint",
-    "run_next_step",
-    "source_failure_next_step",
-    "success_next_step",
-    "withheld_hints",
-    "writability_hint",
+///
+/// `spec.output.usageHints` decides tutorials only. Unconditional means an
+/// instruction the reader must act on that nothing else on the surface states:
+/// every refusal's remediation, a non-converged run's own instruction, a
+/// configurator's next step, and where a backup put the live data it
+/// displaced. A tutorial points past a fact the surface above it already
+/// stated, so a reader who turned tutorials off loses nothing by its absence.
+///
+/// The class travels ON the roster entry rather than in a second table beside
+/// it: two lists of one set of names agree only while somebody keeps them
+/// agreeing, and a composer renamed in one of them reads as registered in the
+/// other. Three directions hold the pairing:
+/// [`every_hint_composer_declares_its_class`] holds each entry to a composer
+/// the workspace really declares and to a body of the class it claims,
+/// [`every_hint_composer_the_workspace_declares_is_classified`] finds no
+/// `HintCommands` producer the roster leaves out, and
+/// [`every_hint_composer_states_whether_its_wording_is_unconditional`]
+/// exercises each class by calling the composer.
+const PINNED_HINT_COMPOSERS: &[(&str, bool)] = &[
+    ("answer_decisions_hint", false),
+    ("enroll_error_hint", true),
+    ("enroll_error_hints", true),
+    ("heal_drift_hint", false),
+    ("local_pull_next_step", true),
+    ("perform_preview_hint", false),
+    ("run_next_step", true),
+    ("source_failure_next_step", true),
+    ("success_next_step", false),
+    ("withheld_hints", false),
+    ("writability_hint", true),
 ];
 
 /// Every door that MINTS a `HintCommands`, read off the type's OWN
@@ -35254,7 +35273,7 @@ fn every_closing_hint_names_a_command() {
                 // exactly how the two backup note composers shipped unheld.
                 // Reading the exemption as "any call" is what let them.
                 if let Some(name) = composed_call_name(&arg) {
-                    if PINNED_HINT_COMPOSERS.contains(&name.as_str())
+                    if PINNED_HINT_COMPOSERS.iter().any(|(c, _)| *c == name)
                         || HINT_BLOCK_CONSTRUCTORS.contains(&name.as_str())
                     {
                         continue;
@@ -35303,6 +35322,242 @@ fn every_closing_hint_names_a_command() {
     assert!(
         offenders.is_empty(),
         "a closing hint names the command the reader runs next, in backticks:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// The functions a hint's argument reaches when it names something on THIS
+/// machine, and the spellings of a home directory a hint's own text can carry.
+///
+/// Derived from the path surface rather than from a list of words a hint might
+/// use: a hint interpolating one of these is carrying a fact, and a fact the
+/// reader needs is not a tutorial `spec.output.usageHints` may delete.
+const PATH_PRODUCERS: &[&str] = &[
+    ".posix()",
+    ".display()",
+    ".to_string_lossy()",
+    "default_config_dir(",
+    "destination_dir(",
+    "display_posix(",
+    "expand_tilde(",
+    "fold_home_in_text(",
+    "to_posix_string(",
+];
+
+/// The home-directory spellings a hint's own literal can carry, for a text that
+/// names a path without composing one.
+const HOME_SPELLINGS: &[&str] = &["~/", "$HOME", "%USERPROFILE%"];
+
+/// No GATED hint names a path or a machine state.
+///
+/// `spec.output.usageHints: false` is a reader saying "stop teaching me the
+/// next command". It is not a reader saying "withhold where you put my file".
+/// The safety copy's path, the env file to source and the snapshots left
+/// outside a destination all rode the same `→` slot as the tutorial pointing
+/// at `cfgd apply`, so one knob deleted both classes at once. A hint that
+/// interpolates a path producer, or whose own text spells a home directory, is
+/// fact-carrying: it belongs in `HintCommands::unconditional` or in a note row
+/// (`ActionNote::instruction`).
+///
+/// `// gated-hint-ok: <why>` hatches a hint whose path withholds no fact about
+/// what this run did to the machine: the path is the argument of the command
+/// the hint names, or an unconditional row on the same surface states it
+/// already. The marker is read on the call's own line or in the comment run
+/// directly above it, never on the enclosing function's doc block, which
+/// would hatch every hint that function prints.
+#[test]
+fn no_gated_hint_names_a_path_or_a_machine_state() {
+    const HATCH: &str = "// gated-hint-ok:";
+    // The population `every_closing_hint_names_a_command` walks, for the same
+    // reason: a hint composed anywhere reaches one reader the same way. One
+    // floor per root, never an aggregate, so a tree that stops contributing
+    // hints fails on its own name instead of hiding behind another's count;
+    // the roots holding no hint today are floored at zero and held by
+    // `production_sources_per_root`, which fails a root that reads as empty.
+    const WALK_ROOTS: &[(&str, usize)] = &[
+        ("cfgd", 63),
+        ("cfgd-core", 5),
+        ("cfgd-crd", 0),
+        ("cfgd-csi", 0),
+        ("cfgd-operator", 0),
+        ("cfgd-schema", 0),
+    ];
+    let names: Vec<&str> = WALK_ROOTS.iter().map(|(k, _)| *k).collect();
+    let trees = production_sources_per_root(&names);
+    // A hint naming its text through a constant is read as the text, the way
+    // `every_closing_hint_names_a_command` reads one: a `~/` moved into a
+    // `const` is the same fact riding the same slot.
+    let consts = str_consts(
+        &trees
+            .iter()
+            .flat_map(|(_, files)| files.iter().cloned())
+            .collect::<Vec<_>>(),
+    );
+    let mut per_root: Vec<(&str, usize)> = Vec::new();
+    let mut offenders: Vec<String> = Vec::new();
+    for ((krate, _), (_, sources)) in WALK_ROOTS.iter().zip(&trees) {
+        let mut checked = 0usize;
+        for (path, body) in sources {
+            let lines: Vec<&str> = body.lines().collect();
+            for (n, raw) in lines.iter().enumerate() {
+                // The tell is read off the line with its literals blanked and
+                // its trailing comment cut, so a `.hint(` named in prose or
+                // inside a string is not a call site; the ARGUMENT is read
+                // back off the raw lines, which still carry the text.
+                let line = cfgd_core::test_helpers::code_line(raw);
+                let Some(at) = line.find(".hint(").or_else(|| line.find(".hint_commands(")) else {
+                    continue;
+                };
+                let arg = call_argument(&lines, n, at);
+                // An already-unconditional hint is out of class: this walk
+                // judges what `usageHints` can delete.
+                if arg.contains("unconditional(") || arg.contains(".ungated()") {
+                    continue;
+                }
+                checked += 1;
+                let text = first_string_literal(&arg).or_else(|| {
+                    let ident = arg.trim().rsplit("::").next().unwrap_or_default().trim();
+                    consts.get(ident).cloned()
+                });
+                let names_a_path = PATH_PRODUCERS.iter().any(|p| arg.contains(p))
+                    || text.is_some_and(|t| HOME_SPELLINGS.iter().any(|h| t.contains(h)));
+                if names_a_path && !line_hatched(&lines, n, HATCH) {
+                    offenders.push(format!("{}:{}: {}", path.display(), n + 1, arg.trim()));
+                }
+            }
+        }
+        per_root.push((krate, checked));
+    }
+    let dark: Vec<String> = WALK_ROOTS
+        .iter()
+        .zip(&per_root)
+        .filter(|((_, floor), (_, checked))| checked < floor)
+        .map(|((krate, floor), (_, checked))| format!("{krate}: {checked} of {floor}"))
+        .collect();
+    assert!(
+        dark.is_empty(),
+        "the walk no longer reaches the gated hints it exists to hold — {} (every root: {per_root:?})",
+        dark.join(", ")
+    );
+    assert!(
+        offenders.is_empty(),
+        "a hint naming a path or a machine state is unconditional or a note row:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// Every composer `PINNED_HINT_COMPOSERS` registers is declared once and mints
+/// the class the roster gives it.
+///
+/// The roster's own reachability is what this asks, and nothing else does:
+/// [`every_hint_composer_the_workspace_declares_is_classified`] reads the
+/// declarations and looks each one up, so a roster entry whose composer was
+/// renamed or deleted is a name it never meets: the entry goes on exempting
+/// `every_closing_hint_names_a_command` from a composer that no longer exists,
+/// and the hint that took its place is registered by nobody. Two declarations
+/// of one name fail for the same reason: the walk cannot say which body the
+/// class was written for.
+///
+/// It also reaches the two composers that hand back a `String` the call site
+/// converts (`heal_drift_hint`, `perform_preview_hint`), which a walk reading
+/// return types cannot see.
+///
+/// The bodies arrive through `fn_declarations` with every string literal
+/// blanked, so a composer whose prose says "unconditional" is not read as
+/// calling it.
+#[test]
+fn every_hint_composer_declares_its_class() {
+    // Both crates hold composers today and the other four could; one floor per
+    // root, so a tree that stops declaring them fails on its own name.
+    const WALK_ROOTS: &[(&str, usize)] = &[
+        ("cfgd", 8),
+        ("cfgd-core", 3),
+        ("cfgd-crd", 0),
+        ("cfgd-csi", 0),
+        ("cfgd-operator", 0),
+        ("cfgd-schema", 0),
+    ];
+    let names: Vec<&str> = WALK_ROOTS.iter().map(|(k, _)| *k).collect();
+    let trees = production_sources_per_root(&names);
+    let mint_tells = hint_mint_tells();
+    let mut per_root: Vec<(&str, usize)> = Vec::new();
+    let mut declared: Vec<(String, std::path::PathBuf, String)> = Vec::new();
+    for ((krate, _), (_, sources)) in WALK_ROOTS.iter().zip(&trees) {
+        let mut found = 0usize;
+        for (path, body) in sources {
+            for (name, _, code) in cfgd_core::test_helpers::fn_declarations(body) {
+                if PINNED_HINT_COMPOSERS.iter().any(|(c, _)| *c == name) {
+                    found += 1;
+                    declared.push((name, path.clone(), code));
+                }
+            }
+        }
+        per_root.push((krate, found));
+    }
+    let dark: Vec<String> = WALK_ROOTS
+        .iter()
+        .zip(&per_root)
+        .filter(|((_, floor), (_, found))| found < floor)
+        .map(|((krate, floor), (_, found))| format!("{krate}: {found} of {floor}"))
+        .collect();
+    assert!(
+        dark.is_empty(),
+        "the walk no longer reaches the composers the roster registers — {} (every root: {per_root:?})",
+        dark.join(", ")
+    );
+
+    let mut offenders: Vec<String> = Vec::new();
+    for (composer, unconditional) in PINNED_HINT_COMPOSERS {
+        let found: Vec<&(String, std::path::PathBuf, String)> = declared
+            .iter()
+            .filter(|(name, _, _)| name == composer)
+            .collect();
+        if found.len() != 1 {
+            offenders.push(format!(
+                "`{composer}` is declared {} times in the workspace's production sources",
+                found.len()
+            ));
+            continue;
+        }
+        let (_, path, code) = found[0];
+        let ungated_tell = code.contains("::unconditional(") || code.contains(".ungated()");
+        // Every way a body MINTS a hint rather than forwarding one it was
+        // handed, derived from the type's own doors so a constructor added
+        // there joins this question with it. A composer that mints its text
+        // gated and ungates the whole once at its exit is the shape
+        // `local_pull_next_step` has, which is why the tell is read over the
+        // body rather than per arm; the arms themselves are held by
+        // `every_hint_composer_states_whether_its_wording_is_unconditional`,
+        // which calls the composer.
+        let mints = ungated_tell
+            || code.contains(".into()")
+            || mint_tells
+                .iter()
+                .any(|door| code.contains(&format!("HintCommands::{door}(")));
+        if *unconditional && mints && !ungated_tell {
+            offenders.push(format!(
+                "{}: `{composer}` is rostered unconditional and mints a gated hint",
+                path.display()
+            ));
+        }
+        if !*unconditional && ungated_tell {
+            offenders.push(format!(
+                "{}: `{composer}` is rostered a tutorial and mints an ungated hint",
+                path.display()
+            ));
+        }
+    }
+    // The roster is this walk's population, so it cannot shrink to nothing and
+    // pass: a composer taken off it stops being exempted from
+    // `every_closing_hint_names_a_command` and fails there instead.
+    assert!(
+        PINNED_HINT_COMPOSERS.len() >= 11,
+        "the composer roster shrank to {}",
+        PINNED_HINT_COMPOSERS.len()
+    );
+    assert!(
+        offenders.is_empty(),
+        "a hint composer mints the class the roster gives it:\n{}",
         offenders.join("\n")
     );
 }
@@ -35474,21 +35729,6 @@ fn composed_hints() -> Vec<(String, cfgd_core::output::HintCommands)> {
     out
 }
 
-/// Which hint composers word an UNCONDITIONAL instruction and which word a
-/// tutorial.
-///
-/// `spec.output.usageHints` decides tutorials only. Unconditional means an
-/// instruction the reader must act on that nothing else on the surface states:
-/// every refusal's remediation, a non-converged run's own instruction, a
-/// configurator's next step, and where a backup put the live data it
-/// displaced. A tutorial points past a fact the surface above it already
-/// stated, so a reader who turned tutorials off loses nothing by its absence.
-///
-/// The table is the SSOT, checked in three directions:
-/// `PINNED_HINT_COMPOSERS` may register nothing it does not classify, the
-/// producer walk below may find no `HintCommands` producer it does not
-/// classify, and each entry's class is exercised — by calling the composer
-/// where the test can reach it, by reading its body where it cannot.
 /// The functions that mint an ungated hint AT A CALL SITE rather than through
 /// a composer of their own, so the walk below reads their bodies rather than
 /// their signatures.
@@ -35589,40 +35829,19 @@ fn ungating_site_hatched(path: &str, name: &str) -> bool {
     })
 }
 
-const HINT_COMPOSER_IS_UNCONDITIONAL: &[(&str, bool)] = &[
-    ("answer_decisions_hint", false),
-    ("enroll_error_hint", true),
-    ("enroll_error_hints", true),
-    ("heal_drift_hint", false),
-    ("local_pull_next_step", true),
-    ("perform_preview_hint", false),
-    ("run_next_step", true),
-    ("source_failure_next_step", true),
-    ("success_next_step", false),
-    ("withheld_hints", false),
-    ("writability_hint", true),
-];
-
 /// Every wording an unconditional composer can produce is ungated, and every
 /// wording a tutorial composer produces is gated.
+///
+/// The composers are named here one by one and CALLED, which is what the two
+/// reading walks cannot do: a body spelling `HintCommands::unconditional` in
+/// one of its five arms satisfies a reader of its text and still hands a gated
+/// hint back from the other four.
 #[test]
 fn every_hint_composer_states_whether_its_wording_is_unconditional() {
     use cfgd_core::daemon::{PullFailure, PullFailureKind};
     use cfgd_core::errors::{CfgdError, SourceError};
     use cfgd_core::reconciler::{RunTally, RunTitle};
     use cfgd_core::state::ApplyStatus;
-
-    let mut classified: Vec<&str> = HINT_COMPOSER_IS_UNCONDITIONAL
-        .iter()
-        .map(|(name, _)| *name)
-        .collect();
-    classified.sort_unstable();
-    let mut registered: Vec<&str> = PINNED_HINT_COMPOSERS.to_vec();
-    registered.sort_unstable();
-    assert_eq!(
-        classified, registered,
-        "every registered hint composer states whether its wording is unconditional"
-    );
 
     let mut unconditional: Vec<(String, cfgd_core::output::HintCommands)> = Vec::new();
     for kind in PullFailureKind::ALL {
@@ -35855,9 +36074,8 @@ fn every_hint_composer_the_workspace_declares_is_classified() {
                     continue;
                 }
                 found += 1;
-                let Some((_, unconditional)) = HINT_COMPOSER_IS_UNCONDITIONAL
-                    .iter()
-                    .find(|(n, _)| *n == name)
+                let Some((_, unconditional)) =
+                    PINNED_HINT_COMPOSERS.iter().find(|(n, _)| *n == name)
                 else {
                     offenders.push(format!(
                         "{}: `{name}` composes a hint and states no class",

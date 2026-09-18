@@ -77,6 +77,9 @@ pub fn build_module_list_doc(entries: &[ModuleListEntry], wide: bool, config_dir
     let mut doc = Doc::new().heading("Modules");
 
     if entries.is_empty() {
+        // gated-hint-ok: a listing put nothing on the machine, and the
+        // directory is the alternative to the command the same sentence
+        // names, so the tutorial withholds no fact about this run.
         doc = doc.status(Role::Info, "No modules found").hint(format!(
             "Create one with `cfgd module create <name>`, or add a directory under {}/modules/",
             config_dir.posix()
