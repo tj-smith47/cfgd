@@ -34680,6 +34680,11 @@ fn enclosing_fn_name(lines: &[&str], n: usize) -> Option<String> {
 /// The range rather than the text, for a walk that reports a LINE of a body and
 /// reads a hatch beside it: a body handed over as one string has no line
 /// numbers left to name.
+///
+/// The braces are counted on literal-blanked lines, the reading
+/// [`enclosing_fn_span`] states: a `}` inside a hint's own text would otherwise
+/// close the function early, and every walk this range bounds would read a body
+/// that stops before the line it was looking for.
 fn fn_span(lines: &[&str], name: &str) -> Option<(usize, usize)> {
     let start = lines.iter().position(|l| {
         let t = l.trim_start();
@@ -34689,7 +34694,7 @@ fn fn_span(lines: &[&str], name: &str) -> Option<(usize, usize)> {
     let mut opened = false;
     let mut end = start;
     for (i, line) in lines.iter().enumerate().skip(start) {
-        for c in line.chars() {
+        for c in cfgd_core::test_helpers::code_line(line).chars() {
             match c {
                 '{' => {
                     depth += 1;
@@ -35376,6 +35381,10 @@ const HOME_SPELLINGS: &[&str] = &["~/", "$HOME", "%USERPROFILE%"];
 /// path differently: a call site's argument is code, and code that builds a
 /// path calls one of [`PATH_PRODUCERS`], while a composer's parameter arrives
 /// already a string and only the arm's own text can show what it is.
+///
+/// It reaches wider than paths: an interpolated segment followed by `/` that is
+/// no path at all — an OCI reference, a URL — fires the same tell and takes
+/// [`GATED_HINT_HATCH`] with a reason of its own.
 const INTERPOLATED_PATH_SEGMENT: &str = "}/";
 
 /// Hatches a hint whose path withholds no fact about what this run did.
@@ -35395,12 +35404,13 @@ const GATED_HINT_HATCH: &str = "// gated-hint-ok:";
 /// [`GATED_HINT_HATCH`] hatches a hint whose path withholds no fact about what
 /// this run did to the machine, which is one of three shapes: the path is the
 /// argument of the command the hint names (`source/create.rs`), an
-/// unconditional row on the same surface states it already (`module/keys.rs`'s
-/// `Private Key` / `Public Key` rows), or the run put nothing on the machine
-/// and the path is the standard layout the reader could create one in
-/// (`module/list_show.rs`). The marker is read on the call's own line or in the
-/// comment run directly above it, never on the enclosing function's doc block,
-/// which would hatch every hint that function prints.
+/// unconditional row on the same surface states it already (the hatch on
+/// `cli/mod.rs`'s `KeysGenerated` arm, over `module/keys.rs`'s `Private Key`
+/// row), or the run put nothing on the machine and the path is the standard
+/// layout the reader could create one in (`module/list_show.rs`). The marker is
+/// read on the call's own line or in the comment run directly above it, never
+/// on the enclosing function's doc block, which would hatch every hint that
+/// function prints.
 #[test]
 fn no_gated_hint_names_a_path_or_a_machine_state() {
     const HATCH: &str = GATED_HINT_HATCH;

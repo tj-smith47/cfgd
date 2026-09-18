@@ -327,18 +327,18 @@ pub(in crate::cli) fn success_next_step(mutation: Mutation<'_>) -> HintCommands 
             dir,
             resigned: true,
         } => {
-            // gated-hint-ok: the key directory is what the reader passed to
-            // `module keys rotate`, and the path is the argument of the
-            // `cosign verify --key` this hint names.
+            // gated-hint-ok: the key directory is the one the reader named, or
+            // the current directory `module keys rotate` defaults to, and the
+            // path is the argument of the `cosign verify --key` this hint names.
             format!("Verify with `cosign verify --key {dir}/cosign.pub <artifact>`").into()
         }
         Mutation::KeysRotated {
             dir,
             resigned: false,
         } => format!(
-            // gated-hint-ok: the key directory is what the reader passed to
-            // `module keys rotate`, and the path is the argument of the
-            // `--key` this hint names.
+            // gated-hint-ok: the key directory is the one the reader named, or
+            // the current directory `module keys rotate` defaults to, and the
+            // path is the argument of the `--key` this hint names.
             "Re-sign each artifact with `cfgd module push <dir> --artifact <ref> --sign --key {dir}/cosign.key`"
         )
         .into(),
