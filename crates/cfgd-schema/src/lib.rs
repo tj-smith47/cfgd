@@ -542,6 +542,30 @@ case_insensitive_enum!(ScheduleOwner {
     "Local" => ScheduleOwner::Local,
 });
 
+/// What cfgd does when the config document on disk is behind the schema this
+/// build reads: a field the binary now carries that the document never names,
+/// or an `apiVersion` an older release wrote.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, schemars::JsonSchema)]
+pub enum MigrationPolicy {
+    /// Ask once, on an interactive run, before writing anything (default).
+    #[default]
+    Prompt,
+    /// Report what is behind and write nothing. What a non-interactive run
+    /// under `Prompt` does.
+    Warn,
+    /// Write the alignment without asking.
+    Update,
+    /// Say nothing and write nothing.
+    Ignore,
+}
+
+case_insensitive_enum!(MigrationPolicy {
+    "Prompt" => MigrationPolicy::Prompt,
+    "Warn" => MigrationPolicy::Warn,
+    "Update" => MigrationPolicy::Update,
+    "Ignore" => MigrationPolicy::Ignore,
+});
+
 impl ScheduleOwner {
     /// The lowercase word a listing's Schedule Owner cell shows. Distinct from
     /// [`Self::as_str`], the canonical PascalCase wire/schema spelling: this is
