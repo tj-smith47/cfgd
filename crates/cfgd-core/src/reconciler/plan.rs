@@ -309,6 +309,14 @@ impl<'a> super::Reconciler<'a> {
             (PhaseName::PostScripts, post_script_actions),
         ];
 
+        debug_assert!(
+            buckets
+                .iter()
+                .map(|(n, _)| n)
+                .eq(PhaseName::EXECUTION_ORDER.iter()),
+            "the bucket order above IS PhaseName::EXECUTION_ORDER, which a plan file is read against"
+        );
+
         for (phase_name, action) in module_routed {
             if let Some((_, bucket)) = buckets.iter_mut().find(|(n, _)| *n == phase_name) {
                 bucket.push(action);

@@ -34,6 +34,29 @@ pub enum PhaseName {
 }
 
 impl PhaseName {
+    /// The phases in the order the planner builds them, which is the order an
+    /// apply runs them in.
+    ///
+    /// It is not the declaration order above: `Modules` leads so a "not for
+    /// this host" answer precedes every step, and `Files` precedes `System` so
+    /// a unit file exists before `systemctl enable` names it. The planner's own
+    /// bucket list is welded to this by a `debug_assert` beside it, so the two
+    /// cannot drift.
+    ///
+    /// A plan cfgd wrote carries a SUBSEQUENCE of this — an empty phase is
+    /// dropped — which is how a reader of a plan FILE tells a plan cfgd
+    /// produced from one whose phases were reordered or duplicated by hand.
+    pub const EXECUTION_ORDER: [PhaseName; 8] = [
+        PhaseName::Modules,
+        PhaseName::PreScripts,
+        PhaseName::Bootstrap,
+        PhaseName::Packages,
+        PhaseName::Files,
+        PhaseName::System,
+        PhaseName::Secrets,
+        PhaseName::PostScripts,
+    ];
+
     pub fn as_str(&self) -> &str {
         match self {
             PhaseName::PreScripts => "pre-scripts",

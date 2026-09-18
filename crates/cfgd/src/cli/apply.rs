@@ -137,6 +137,20 @@ pub fn cmd_apply(
     Ok(())
 }
 
+/// The reconcile context a run words itself as, from the spelling `--context`
+/// takes.
+///
+/// Shared by the flag and by a plan file's recorded `context`, which is the
+/// same vocabulary written back out — a replay must not accept a word the flag
+/// would refuse.
+fn parse_reconcile_context(raw: &str) -> anyhow::Result<ReconcileContext> {
+    match raw {
+        "apply" => Ok(ReconcileContext::Apply),
+        "reconcile" => Ok(ReconcileContext::Reconcile),
+        other => anyhow::bail!("Unknown context '{other}'. Valid values: apply, reconcile"),
+    }
+}
+
 /// Drive a full apply (or dry-run) and return the resulting [`ApplyOutcome`]
 /// so the caller can map a partial/total failure to a nonzero process exit and
 /// a signal abort to its conventional exit code.
@@ -151,17 +165,10 @@ pub fn run_apply(
     printer: &cfgd_core::output::Printer,
     args: &ApplyArgs,
 ) -> anyhow::Result<ApplyOutcome> {
-    // Parse --context (mirrors PlanArgs::context).
-    let reconcile_context = match args.context.as_str() {
-        "apply" => ReconcileContext::Apply,
-        "reconcile" => ReconcileContext::Reconcile,
-        other => {
-            anyhow::bail!(
-                "Unknown context '{}'. Valid values: apply, reconcile",
-                other
-            );
-        }
-    };
+    // Parsed before anything is read, so a misspelled `--context` is refused
+    // ahead of config discovery; a replay overrides it below with the context
+    // its plan was priced for.
+    let flag_context = parse_reconcile_context(&args.context)?;
 
     // --from: clone from git source or use local path as config directory.
     if let Some(from) = &args.from {
@@ -212,6 +219,25 @@ pub fn run_apply(
     // NoConfig exit would leave an orphan state directory behind.
     let state = ctx.state()?;
 
+    // The file IS the approval, so it is read before any of the work it
+    // approves: a plan the machine has moved past is refused here, ahead of
+    // the source fetch and the module resolution below.
+    let (saved_plan, saved_context) = match args.plan.as_deref() {
+        Some(path) => {
+            let loaded = plan_ops::load_saved_plan(path, state)?;
+            (Some(loaded.plan), Some(loaded.context))
+        }
+        None => (None, None),
+    };
+    let replaying = saved_plan.is_some();
+    // A replay takes the context its actions were priced for: `--context` is
+    // refused alongside `--plan`, so nothing but the file can answer this.
+    let context_label: &str = saved_context.as_deref().unwrap_or(&args.context);
+    let reconcile_context = match &saved_context {
+        Some(saved) => parse_reconcile_context(saved)?,
+        None => flag_context,
+    };
+
     // Compose with sources (network refresh) and resolve modules through the one
     // desired-state resolver every command shares, so apply and the read paths
     // compute an identical effective module set for the same config.
@@ -222,7 +248,7 @@ pub fn run_apply(
         module_filter,
         with_profile,
         printer,
-        true,
+        !replaying,
         composition::ConstraintMode::Enforce,
     )?;
     // Taken before the other fields, because a partial move out of `desired`
@@ -292,21 +318,27 @@ pub fn run_apply(
                 .iter()
                 .map(|m| m.as_ref())
                 .collect();
-            let cfgd_installed = if prune_eligible {
-                cfgd_installed_packages(state)?
+            // A replay's package actions came off the wire, already priced by
+            // the run that recorded them, so nothing is planned again here.
+            let (pkg, actual) = if replaying {
+                (Vec::new(), cfgd_core::reconciler::ActualPackages::default())
             } else {
-                std::collections::HashSet::new()
+                let cfgd_installed = if prune_eligible {
+                    cfgd_installed_packages(state)?
+                } else {
+                    std::collections::HashSet::new()
+                };
+                // Profile-scoped: module packages are added separately by
+                // `reconciler.plan` as `Action::Module`, so this planner must
+                // stay profile-only to avoid double-handling them.
+                packages::plan_packages_observed(
+                    &effective_resolved.merged,
+                    &[],
+                    &all_managers,
+                    &cfgd_installed,
+                    &pkg_cx,
+                )?
             };
-            // Profile-scoped: module packages are added separately by
-            // `reconciler.plan` as `Action::Module`, so this planner must stay
-            // profile-only to avoid double-handling them.
-            let (pkg, actual) = packages::plan_packages_observed(
-                &effective_resolved.merged,
-                &[],
-                &all_managers,
-                &cfgd_installed,
-                &pkg_cx,
-            )?;
 
             sp.set_message("Planning Files");
             let mut fm = CfgdFileManager::new(&config_dir, &effective_resolved)?;
@@ -327,7 +359,14 @@ pub fn run_apply(
                 );
             }
 
-            let fa = fm.plan(&effective_resolved.merged)?;
+            // The manager itself is still built: the reconciler deploys
+            // through the trait and the dry-run preview reads its diffs off the
+            // loaded plan's own rows. Only the diff PASS is skipped.
+            let fa = if replaying {
+                Vec::new()
+            } else {
+                fm.plan(&effective_resolved.merged)?
+            };
 
             Ok(if dry_run {
                 // Keep fm around for diff display but don't register it
@@ -421,23 +460,32 @@ pub fn run_apply(
         } else {
             profile_label.clone().unwrap_or_default()
         });
-    let mut plan = printer.narrate("Planning", |sp| {
-        // Apply's plan preview reads `brew install neovim (0.10.2)`, and the
-        // same string is the persisted action description and the module's
-        // recorded packages hash — priced survivor-gated (a package the
-        // machine already holds is elided and never queried), and under this
-        // bar so the wait is narrated, not dead air.
-        sp.set_message("Resolving package versions");
-        reconciler.fill_planned_versions(&mut resolved_modules, &registry.manager_map());
-        reconciler.plan_observed(
-            &effective_resolved,
-            file_actions,
-            pkg_actions,
-            resolved_modules.clone(),
-            reconcile_context,
-            &mut |phase| sp.set_message(format!("Planning {}", phase.display_name())),
-        )
-    })?;
+    let mut plan = match saved_plan {
+        // `manager_declared` and `min_version` are planner inputs the format
+        // does not carry, so they come from the modules this run resolved
+        // rather than from the file.
+        Some(mut recorded) => {
+            plan_ops::restore_module_planner_inputs(&mut recorded, &resolved_modules);
+            recorded
+        }
+        None => printer.narrate("Planning", |sp| {
+            // Apply's plan preview reads `brew install neovim (0.10.2)`, and the
+            // same string is the persisted action description and the module's
+            // recorded packages hash — priced survivor-gated (a package the
+            // machine already holds is elided and never queried), and under this
+            // bar so the wait is narrated, not dead air.
+            sp.set_message("Resolving package versions");
+            reconciler.fill_planned_versions(&mut resolved_modules, &registry.manager_map());
+            reconciler.plan_observed(
+                &effective_resolved,
+                file_actions,
+                pkg_actions,
+                resolved_modules.clone(),
+                reconcile_context,
+                &mut |phase| sp.set_message(format!("Planning {}", phase.display_name())),
+            )
+        })?,
+    };
     // Snapshot BEFORE `withhold_from_plan` and every filter below prunes the
     // plan: a module is converged only when the RECONCILER found nothing to
     // do, never when a filter emptied a plan that still held real work.
@@ -529,7 +577,7 @@ pub fn run_apply(
             &plan,
             printer,
             PlanPreviewArgs {
-                context: &args.context,
+                context: context_label,
                 preview: crate::cli::PreviewScope {
                     module: &args.module,
                     with_profile: args.with_profile,
@@ -681,7 +729,9 @@ pub fn run_apply(
     // no diff to confirm, and `ApplyRun::execute` skips the prompt for exactly
     // that case — prompting "Apply these changes?" over nothing would confuse
     // the one case this exists to serve.
-    let confirm = if yes {
+    // A plan file is itself an approval of exactly these actions, and a run
+    // that refused it never gets here — so a replay asks nothing.
+    let confirm = if yes || replaying {
         reconciler::Confirm::Skip
     } else {
         // Closed-TTY / non-interactive defaults to "no" — apply is destructive

@@ -624,6 +624,169 @@ pub(in crate::cli) fn saved_plan_for(
     }))
 }
 
+/// The payload of `cfgd plan -o json`, typed for reading it back.
+///
+/// The consumer half of [`SavedPlan`], and deliberately not that type: the
+/// producer serializes the whole rendered document, and deserializing that
+/// would put every display type on the file format's contract. Only the two
+/// keys a replay needs are read — the saved context, and the approval block.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PlanFile {
+    context: String,
+    saved_plan: Option<SavedPlanIn>,
+}
+
+/// The `savedPlan` block, typed for reading. Mirrors [`SavedPlan`] key for key.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SavedPlanIn {
+    plan: reconciler::Plan,
+    config_inputs: cfgd_core::ConfigInputs,
+    serial: i64,
+}
+
+/// A plan file this machine has not moved past.
+pub(in crate::cli) struct LoadedPlan {
+    pub plan: reconciler::Plan,
+    /// The reconcile context the recorded run planned under, which the replay
+    /// takes in place of its own `--context`: the actions in the file were
+    /// priced for it.
+    pub context: String,
+}
+
+/// Whether a plan file's phases are ones cfgd's planner could have emitted.
+///
+/// A plan carries a SUBSEQUENCE of [`PhaseName::EXECUTION_ORDER`] — the planner
+/// fills the buckets in that order and drops the empty ones — so a list that is
+/// not one has been reordered or had a phase duplicated by hand. Neither is a
+/// stale plan: both are files cfgd did not write, and running one would execute
+/// a phase against a machine the phase before it was supposed to prepare.
+fn phases_in_execution_order(plan: &reconciler::Plan) -> bool {
+    let mut expected = PhaseName::EXECUTION_ORDER.iter();
+    plan.phases
+        .iter()
+        .all(|phase| expected.any(|name| *name == phase.name))
+}
+
+/// Read `cfgd plan -o json`'s payload back, refusing one this machine has moved
+/// past.
+///
+/// Two facts decide that, and they are the two [`saved_plan_for`] records: the
+/// `applies` serial the plan was written against, and whether every config
+/// input the derivation read still has the stamp it had. Both are refusals
+/// rather than warnings — the file IS the approval, and an approval of a plan
+/// the machine has moved past approves actions nobody looked at.
+///
+/// Ahead of those two comes the question of whether the file is a plan cfgd
+/// wrote at all: a payload carrying no `savedPlan` (its run was filtered), and
+/// one whose phases are not [`PhaseName::EXECUTION_ORDER`]'s subsequence. The
+/// per-phase half of that question — an action filed under an owner that does
+/// not own it — is `Phase`'s own `Deserialize`, and lands here as a parse
+/// error.
+pub(in crate::cli) fn load_saved_plan(
+    path: &std::path::Path,
+    state: &cfgd_core::state::StateStore,
+) -> anyhow::Result<LoadedPlan> {
+    let shown = path.display(); // native-ok: a human-facing error, not a key
+    let body = std::fs::read_to_string(path)
+        .map_err(|e| anyhow::anyhow!("cannot read plan file {shown}: {e}"))?;
+    let file: PlanFile = serde_json::from_str(&body)
+        .map_err(|e| anyhow::anyhow!("{shown} is not the payload of `cfgd plan -o json`: {e}"))?;
+
+    let Some(saved) = file.saved_plan else {
+        anyhow::bail!(
+            "{shown} carries no saved plan: `cfgd plan -o json` records one only for a run \
+             describing the whole machine, so a run narrowed by --module, --only, --skip, \
+             --phase or --skip-scripts, or one holding a source decision back, writes none"
+        );
+    };
+
+    if !phases_in_execution_order(&saved.plan) {
+        let listed = saved
+            .plan
+            .phases
+            .iter()
+            .map(|p| p.name.display_name())
+            .collect::<Vec<_>>()
+            .join(", ");
+        anyhow::bail!(
+            "{shown} is not a plan cfgd wrote: it lists the phases {listed}, and cfgd plans \
+             each phase at most once, in the order an apply runs them in"
+        );
+    }
+
+    let serial = state.last_apply()?.map_or(0, |a| a.id);
+    if serial != saved.serial {
+        anyhow::bail!(
+            "{shown} is stale: apply #{serial} has run since it was written (it recorded \
+             #{recorded}), so it no longer describes this machine — run `cfgd plan -o json` \
+             again",
+            recorded = saved.serial
+        );
+    }
+
+    if !saved.config_inputs.unchanged() {
+        let moved = saved.config_inputs.first_moved().map_or_else(
+            || "the config".to_string(),
+            |p| p.display().to_string(), // native-ok: a human-facing error, not a key
+        );
+        anyhow::bail!(
+            "{shown} is stale: {moved} changed since it was written, so it no longer describes \
+             this config — run `cfgd plan -o json` again"
+        );
+    }
+
+    Ok(LoadedPlan {
+        plan: saved.plan,
+        context: file.context,
+    })
+}
+
+/// Put back the two planner inputs a plan FILE cannot carry.
+///
+/// `ResolvedPackage::manager_declared` and `min_version` are `#[serde(skip)]`
+/// — serializing either would move every stored `plan_hash` — so a package read
+/// off the wire claims no author-named manager and no floor. Both are read
+/// AFTER a plan is built: `Reconciler::package_survives_elision` asks the floor
+/// whether the copy the machine holds is new enough, and would elide an
+/// outdated one as converged. The resolution that fills them has already run on
+/// the replay path, so they are taken from it rather than trusted from the
+/// file.
+///
+/// A package the file names and the modules no longer resolve keeps what the
+/// file said: the two facts are the module's to state, and a plan whose modules
+/// moved out from under it is what the config-input refusal above is for.
+pub(in crate::cli) fn restore_module_planner_inputs(
+    plan: &mut reconciler::Plan,
+    modules: &[cfgd_core::modules::ResolvedModule],
+) {
+    for phase in &mut plan.phases {
+        for (_, actions) in phase.groups_mut() {
+            for action in actions {
+                let reconciler::Action::Module(m) = action else {
+                    continue;
+                };
+                let reconciler::ModuleActionKind::InstallPackages { resolved } = &mut m.kind else {
+                    continue;
+                };
+                let Some(module) = modules.iter().find(|r| r.name == m.module_name) else {
+                    continue;
+                };
+                for pkg in resolved.iter_mut() {
+                    let Some(source) = module.packages.iter().find(|p| {
+                        p.manager == pkg.manager && p.canonical_name == pkg.canonical_name
+                    }) else {
+                        continue;
+                    };
+                    pkg.manager_declared = source.manager_declared;
+                    pkg.min_version.clone_from(&source.min_version);
+                }
+            }
+        }
+    }
+}
+
 /// The manager every `PackageAction` names.
 ///
 /// One or-pattern over all three variants rather than two arms and a

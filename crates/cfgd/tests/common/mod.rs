@@ -274,6 +274,7 @@ pub fn cli_for(config_dir: &std::path::Path, state_dir: &std::path::Path) -> Cli
 pub fn apply_args() -> ApplyArgs {
     ApplyArgs {
         on_conflict: cfgd::cli::OnConflict::Ask,
+        plan: None,
         from: None,
         dry_run: false,
         phase: None,
@@ -292,6 +293,7 @@ pub fn apply_args() -> ApplyArgs {
 pub fn apply_args_dry_run() -> ApplyArgs {
     ApplyArgs {
         on_conflict: cfgd::cli::OnConflict::Ask,
+        plan: None,
         from: None,
         dry_run: true,
         phase: None,

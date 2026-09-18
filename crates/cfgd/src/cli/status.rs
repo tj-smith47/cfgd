@@ -5351,6 +5351,7 @@ mod tests {
     /// pin having to converge a machine to read it.
     fn header_apply_args() -> crate::cli::ApplyArgs {
         crate::cli::ApplyArgs {
+            plan: None,
             on_conflict: crate::cli::OnConflict::Ask,
             from: None,
             dry_run: true,
@@ -8466,6 +8467,7 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (apply_printer, apply_buf) = test_printers();
         let args = crate::cli::ApplyArgs {
+            plan: None,
             on_conflict: crate::cli::OnConflict::Ask,
             from: None,
             dry_run: false,
@@ -8548,6 +8550,7 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (apply_printer, apply_buf) = test_printers();
         let args = crate::cli::ApplyArgs {
+            plan: None,
             on_conflict: crate::cli::OnConflict::Ask,
             from: None,
             dry_run: false,
@@ -9236,6 +9239,7 @@ mod tests {
 
         let cli = test_cli_for(config_path.clone(), state_dir.path());
         let args = crate::cli::ApplyArgs {
+            plan: None,
             on_conflict: crate::cli::OnConflict::Ask,
             from: None,
             dry_run: false,
