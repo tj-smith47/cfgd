@@ -3001,6 +3001,39 @@ fn a_relative_in_tree_manifest_path_is_read() {
     );
 }
 
+/// A declared `<manager>.file` is part of what the derivation read, so a daemon
+/// tick reusing a derivation notices a Brewfile that changed under it.
+///
+/// Absence is recorded as a state of its own: a manifest that only appears
+/// later reads as a change rather than as nothing at all, which is why the
+/// record is taken before the caller's `exists()`.
+#[test]
+fn resolving_a_declared_manifest_records_it_as_a_config_input() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("Brewfile"), "brew \"jq\"\n").unwrap();
+    let recorder = cfgd_core::ConfigInputRecorder::start();
+    let _ = manifest_path(dir.path(), "Brewfile").unwrap();
+    let _ = manifest_path(dir.path(), "Gemfile").unwrap();
+    let inputs = recorder.finish();
+
+    assert!(
+        inputs.paths().any(|p| p.ends_with("Brewfile")),
+        "a declared manifest is part of what the derivation read"
+    );
+    assert!(
+        inputs.paths().any(|p| p.ends_with("Gemfile")),
+        "a manifest that is not there yet is recorded too, so its arrival reads as a change"
+    );
+    assert!(inputs.unchanged(), "nothing has moved since the record");
+
+    std::fs::write(dir.path().join("Gemfile"), "gem \"rake\"\n").unwrap();
+    assert_eq!(
+        inputs.first_moved(),
+        Some(dir.path().join("Gemfile").as_path()),
+        "the manifest that appeared is the one named as moved"
+    );
+}
+
 #[test]
 fn resolve_manifest_packages_npm_file() {
     let dir = tempfile::tempdir().unwrap();

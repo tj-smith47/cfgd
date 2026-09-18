@@ -1124,6 +1124,10 @@ fn manifest_path(config_dir: &Path, file: &str) -> Result<PathBuf> {
     if path.exists() && cfgd_core::validate_path_within(&path, config_dir).is_err() {
         return Err(refuse("it resolves outside the config directory").into());
     }
+    // A declared Brewfile or package.json is a config input like any profile
+    // file: recorded BEFORE the `exists()` its callers ask, so a manifest that
+    // only appears later reads as a change. Absence is a stamp of its own.
+    cfgd_core::record_config_input(&path);
     Ok(path)
 }
 

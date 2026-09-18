@@ -12,9 +12,10 @@
 //! exist is an input whose later appearance changes the resolution, so it is
 //! stamped `None` and its arrival reads as a change.
 
+use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// What an input looked like when it was read: its modification time (where the
 /// host reports one) and its length.
@@ -63,10 +64,76 @@ pub fn record_config_input(path: &Path) {
     });
 }
 
+/// One recorded input as a plan file carries it.
+///
+/// The path is a POSIX-folded key that is also REOPENED to re-stat, so it takes
+/// [`crate::to_posix_fs_key`] rather than the unconditional fold (see
+/// `path-handling.md`). `mtime` is nanoseconds since the epoch, the exact value
+/// `SystemTime` reconstructs from, so a set written and read back compares
+/// equal to the one the derivation recorded.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigInput {
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mtime: Option<u64>,
+    #[serde(default)]
+    pub size: u64,
+    /// Whether the input EXISTED when it was read. An absent `modules.lock` is
+    /// an input whose later appearance changes the resolution, so absence is a
+    /// state of its own and survives the wire as one.
+    #[serde(default)]
+    pub present: bool,
+}
+
 /// The inputs one derivation read, and the stamps they carried.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(into = "Vec<ConfigInput>", from = "Vec<ConfigInput>")]
 pub struct ConfigInputs {
     entries: Vec<Entry>,
+}
+
+impl From<ConfigInputs> for Vec<ConfigInput> {
+    fn from(inputs: ConfigInputs) -> Self {
+        inputs
+            .entries
+            .into_iter()
+            .map(|(path, stamp)| ConfigInput {
+                path: crate::to_posix_fs_key(&path),
+                // A `SystemTime` before the epoch has no nanosecond count to
+                // carry, and one past 2554 outruns `u64`; either reads back as
+                // "no modification time", the same state a host reporting none
+                // produces.
+                mtime: stamp
+                    .and_then(|(at, _)| at)
+                    .and_then(|at| at.duration_since(UNIX_EPOCH).ok())
+                    .and_then(|since| u64::try_from(since.as_nanos()).ok()),
+                size: stamp.map(|(_, len)| len).unwrap_or_default(),
+                present: stamp.is_some(),
+            })
+            .collect()
+    }
+}
+
+impl From<Vec<ConfigInput>> for ConfigInputs {
+    fn from(wire: Vec<ConfigInput>) -> Self {
+        Self {
+            entries: wire
+                .into_iter()
+                .map(|input| {
+                    let stamp = input.present.then(|| {
+                        (
+                            input
+                                .mtime
+                                .map(|nanos| UNIX_EPOCH + Duration::from_nanos(nanos)),
+                            input.size,
+                        )
+                    });
+                    (PathBuf::from(input.path), stamp)
+                })
+                .collect(),
+        }
+    }
 }
 
 impl ConfigInputs {
@@ -81,6 +148,18 @@ impl ConfigInputs {
                 .entries
                 .iter()
                 .all(|(path, stamp)| stamp_of(path) == *stamp)
+    }
+
+    /// The first recorded input that no longer carries the stamp it was read
+    /// with, for a caller wording WHICH file moved.
+    ///
+    /// [`Self::unchanged`] stays the verdict: an EMPTY set has nothing moved
+    /// and is still not unchanged, so a `None` here never means "reuse".
+    pub fn first_moved(&self) -> Option<&Path> {
+        self.entries
+            .iter()
+            .find(|(path, stamp)| stamp_of(path) != *stamp)
+            .map(|(path, _)| path.as_path())
     }
 
     /// How many distinct paths the derivation read.
@@ -214,6 +293,28 @@ mod tests {
 
         assert_eq!(inner_inputs.len(), 1);
         assert_eq!(outer_inputs.len(), 2);
+    }
+
+    #[test]
+    fn a_recorded_input_set_survives_a_round_trip_and_names_what_moved() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cfgd.yaml");
+        std::fs::write(&path, "a").unwrap();
+        let recorder = ConfigInputRecorder::start();
+        record_config_input(&path);
+        let inputs = recorder.finish();
+
+        let wire = serde_json::to_string(&inputs).unwrap();
+        let back: ConfigInputs = serde_json::from_str(&wire).unwrap();
+        assert!(
+            back.unchanged(),
+            "an untouched input set reads back unchanged: {wire}"
+        );
+        assert_eq!(back.first_moved(), None);
+
+        std::fs::write(&path, "aa").unwrap();
+        assert!(!back.unchanged());
+        assert_eq!(back.first_moved(), Some(path.as_path()));
     }
 
     #[test]
