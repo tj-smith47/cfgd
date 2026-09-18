@@ -5469,6 +5469,22 @@ fn declares_serde_skip(attribute: &str) -> bool {
             .contains("skip")
 }
 
+/// Whether a source line is a plain `//` comment rather than a `///` or `//!`
+/// doc comment.
+///
+/// A `plan-skip-ok:` reason addresses whoever maintains the field, and
+/// `critical.md` rule 8 puts that in a `//` comment. The distinction is not
+/// stylistic here: `PatchSpec` is a `JsonSchema` type, so schemars takes its
+/// `///` block as the schema description and a reason written there ships to
+/// users as documentation of a field they cannot set, which
+/// `no_schema_description_addresses_a_maintainer_instead_of_a_user` refuses
+/// from the other side. A lookup accepting `///` would also let a rustdoc
+/// paragraph that merely QUOTES the marker hatch the field below it.
+fn is_plain_line_comment(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    trimmed.starts_with("//") && !trimmed.starts_with("///") && !trimmed.starts_with("//!")
+}
+
 /// Every attribute one source declares, as `(line number, whole attribute)`.
 ///
 /// An attribute is folded back onto one string because rustfmt breaks a long
@@ -5546,11 +5562,12 @@ fn every_optional_field_of_the_plan_format_deserializes_from_its_absence() {
             if declares_serde_skip(&attribute) {
                 checked += 1;
                 // The marker sits in the comment block above the attribute —
-                // the run of `//` lines rustfmt leaves where they were written.
+                // the run of plain `//` lines rustfmt leaves where they were
+                // written.
                 let hatched = lines[..nth.saturating_sub(1)]
                     .iter()
                     .rev()
-                    .take_while(|above| above.trim_start().starts_with("//"))
+                    .take_while(|above| is_plain_line_comment(above))
                     .any(|above| above.contains(HATCH));
                 if !hatched {
                     offenders.push(format!(
@@ -5611,6 +5628,34 @@ fn only_a_whole_serde_skip_reaches_the_plan_format_walks_marker_rule() {
             skips,
             "the walk reads `{attribute}` as {}skipped",
             if skips { "not " } else { "" }
+        );
+    }
+}
+
+/// Only a plain `//` line carries the walk's `plan-skip-ok:` hatch.
+///
+/// The reason a skipped field gives is maintainer text, and the rustdoc block
+/// above it is user text: on `PatchSpec`, a `JsonSchema` type, that block IS the
+/// published schema's description. A lookup reading both would accept the reason
+/// in the one place the repo forbids writing it, and would let a `///` paragraph
+/// naming the marker hatch whatever sits below it.
+#[test]
+fn only_a_plain_line_comment_carries_the_plan_format_walks_hatch() {
+    for (line, plain) in [
+        ("// plan-skip-ok: reason", true),
+        ("    // plan-skip-ok: reason", true),
+        ("//", true),
+        ("/// plan-skip-ok: reason", false),
+        ("    /// plan-skip-ok: reason", false),
+        ("//! plan-skip-ok: reason", false),
+        ("    pub blocked_by: Option<String>,", false),
+        ("", false),
+    ] {
+        assert_eq!(
+            is_plain_line_comment(line),
+            plain,
+            "the hatch lookup reads `{line}` as {}a plain line comment",
+            if plain { "not " } else { "" }
         );
     }
 }

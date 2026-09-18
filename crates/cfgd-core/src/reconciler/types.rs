@@ -3,6 +3,7 @@ use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 
 use crate::config::ScriptEntry;
+use crate::errors::Result;
 use crate::providers::{ActionNote, FileAction, PackageAction, SecretAction};
 use crate::state::ApplyStatus;
 use crate::to_posix_string;
@@ -1413,15 +1414,27 @@ impl Plan {
     /// the order a particular version happened to walk them in. Uses serde_json
     /// serialization instead of Debug formatting for stability across compiler
     /// versions.
-    pub fn to_hash_string(&self) -> String {
+    ///
+    /// An action serde_json cannot write ends the whole composition rather than
+    /// leaving the rest: the string is what `applies.plan_hash` stores, so a
+    /// dropped action would let a run that deploys a file and a run that does
+    /// not record one hash, and every surface comparing stored hashes would
+    /// read them as the same plan. Every action that serializes contributes the
+    /// bytes it always did, so a plan cfgd can write keeps the hash it had.
+    pub fn to_hash_string(&self) -> Result<String> {
         let mut parts: Vec<String> = self
             .phases
             .iter()
             .flat_map(|p| p.actions())
-            .filter_map(|a| serde_json::to_string(a).ok())
-            .collect();
+            .map(|a| {
+                serde_json::to_string(a).map_err(|source| {
+                    let (rtype, rid) = action_resource_info(a);
+                    crate::errors::StateError::PlanActionUnserializable { rtype, rid, source }
+                })
+            })
+            .collect::<std::result::Result<_, _>>()?;
         parts.sort_unstable();
-        parts.join("|")
+        Ok(parts.join("|"))
     }
 }
 

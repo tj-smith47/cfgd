@@ -625,6 +625,19 @@ pub enum StateError {
         source: serde_json::Error,
     },
 
+    // The plan hash IS the serialization of the actions, so an action that
+    // cannot be written has no hash to contribute and no honest one to omit:
+    // dropping it would let two different plans record the same
+    // `applies.plan_hash`. The action is named the way every other reader of
+    // one names it, by its `(type, id)` pair.
+    #[error("the {rtype} action '{rid}' cannot be serialized, so the plan has no hash: {source}")]
+    PlanActionUnserializable {
+        rtype: String,
+        rid: String,
+        #[source]
+        source: serde_json::Error,
+    },
+
     #[error("apply lock held by another process: {holder}")]
     ApplyLockHeld { holder: String },
 

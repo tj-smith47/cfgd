@@ -1296,7 +1296,7 @@ impl<'a> super::Reconciler<'a> {
         abort: &AbortFlag,
     ) -> Result<ApplyResult> {
         // Record apply up front as "in-progress" so the journal can reference it
-        let plan_hash = crate::state::plan_hash(&plan.to_hash_string());
+        let plan_hash = crate::state::plan_hash(&plan.to_hash_string()?);
         // What this run was SCOPED to, which is not always a profile: a
         // `--module` run resolves none, and the caller says so with
         // `module:<name>`. An empty string is the honest record of a scope

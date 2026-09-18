@@ -893,11 +893,11 @@ fn plan_hash_string() {
         )],
         warnings: vec![],
     };
-    let hash = plan.to_hash_string();
+    let hash = plan.to_hash_string().expect("the plan hashes");
     assert!(!hash.is_empty());
     assert_eq!(
         hash,
-        plan.to_hash_string(),
+        plan.to_hash_string().expect("the plan hashes again"),
         "plan hash must be deterministic"
     );
 }
@@ -1857,7 +1857,7 @@ fn plan_hash_includes_module_actions() {
         warnings: vec![],
     };
 
-    let hash = plan.to_hash_string();
+    let hash = plan.to_hash_string().expect("the plan hashes");
     assert!(hash.contains("nvim"));
     assert!(hash.contains("neovim"));
     assert!(hash.contains("brew"));
@@ -9016,7 +9016,7 @@ fn plan_to_hash_string_empty_plan_is_empty() {
         phases: vec![],
         warnings: vec![],
     };
-    assert_eq!(plan.to_hash_string(), "");
+    assert_eq!(plan.to_hash_string().expect("an empty plan hashes"), "");
 }
 
 #[test]
@@ -9047,7 +9047,7 @@ fn plan_to_hash_string_multiple_phases() {
         ],
         warnings: vec![],
     };
-    let hash = plan.to_hash_string();
+    let hash = plan.to_hash_string().expect("the plan hashes");
     assert!(hash.contains('|'));
     assert!(hash.contains("jq"));
 }
@@ -25554,8 +25554,8 @@ fn to_hash_string_is_stable_across_group_permutation() {
     );
 
     assert_eq!(
-        plan.to_hash_string(),
-        permuted.to_hash_string(),
+        plan.to_hash_string().expect("the plan hashes"),
+        permuted.to_hash_string().expect("the permuted plan hashes"),
         "the hash identifies the SET of planned actions, not the walk order"
     );
 }
@@ -25643,8 +25643,8 @@ fn every_action_variant_survives_the_plan_file_round_trip() {
     let wire = serde_json::to_string(&plan).expect("a plan serializes");
     let back: Plan = serde_json::from_str(&wire).expect("a plan file reads back");
     assert_eq!(
-        back.to_hash_string(),
-        plan.to_hash_string(),
+        back.to_hash_string().expect("the plan read back hashes"),
+        plan.to_hash_string().expect("the plan hashes"),
         "the round trip must land the same actions, byte for byte: {wire}"
     );
     assert_eq!(
@@ -25728,8 +25728,8 @@ fn a_plan_file_whose_groups_arrived_out_of_order_reads_back_in_display_order() {
         "a shuffled file reads back as the phase the planner would have built",
     );
     assert_eq!(
-        back.to_hash_string(),
-        ordered.to_hash_string(),
+        back.to_hash_string().expect("the plan read back hashes"),
+        ordered.to_hash_string().expect("the ordered plan hashes"),
         "and it carries every action the file did, each exactly once",
     );
 }
@@ -25796,6 +25796,70 @@ fn a_plan_file_filing_a_profile_owned_action_under_any_owner_reads_back() {
             .collect::<Vec<_>>(),
         vec!["module:nvim"],
         "the file's own owner survives the read",
+    );
+}
+
+/// An action `serde_json` cannot write ends the hash rather than vanishing from it.
+///
+/// `applies.plan_hash` is a serialization of the actions, so an action dropped
+/// from the composition would let a run that deploys a file and a run that does
+/// not record the same hash, and every surface comparing stored hashes would
+/// read the two runs as the same plan. The unwritable shape is built here rather
+/// than parsed: `PatchSpec`'s own reader refuses a mapping key that is not a
+/// string, which is the other half of the same rule, so this is the residual a
+/// caller holding the struct can still reach.
+#[test]
+fn an_action_serde_json_cannot_write_fails_the_plan_hash_instead_of_vanishing() {
+    let mut ensure = serde_yaml::Mapping::new();
+    ensure.insert(
+        serde_yaml::Value::Sequence(vec![
+            serde_yaml::Value::String("a".into()),
+            serde_yaml::Value::String("b".into()),
+        ]),
+        serde_yaml::Value::String("c".into()),
+    );
+    let unwritable = Action::File(FileAction::Create {
+        source: PathBuf::from("/cfg/files/a"),
+        target: PathBuf::from("/home/u/a"),
+        origin: String::new(),
+        strategy: crate::config::FileStrategy::Patch,
+        source_hash: None,
+        patch: Some(crate::config::PatchSpec {
+            format: None,
+            ensure: Some(serde_yaml::Value::Mapping(ensure)),
+            script: None,
+            blocked_by: None,
+        }),
+    });
+    let refresh = || {
+        Action::Manager(ManagerAction::RefreshIndex {
+            manager: "brew".to_string(),
+        })
+    };
+    let plan_of = |actions: Vec<Action>| Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::Files,
+            &Owner::profile("work"),
+            actions,
+        )],
+        warnings: Vec::new(),
+    };
+
+    let with_file = plan_of(vec![unwritable, refresh()]);
+    let without_file = plan_of(vec![refresh()]);
+
+    let err = with_file
+        .to_hash_string()
+        .expect_err("an action that cannot be serialized has no hash to contribute");
+    let message = err.to_string();
+    assert!(
+        message.contains("file") && message.contains("/home/u/a"),
+        "the refusal names the action it could not write: {message}"
+    );
+    assert_ne!(
+        with_file.to_hash_string().ok(),
+        without_file.to_hash_string().ok(),
+        "two plans differing by one file action must never reach the same hash"
     );
 }
 

@@ -120,7 +120,11 @@ pub struct PatchSpec {
     /// Keys/values to deep-merge into the target, leaving unmentioned keys
     /// untouched. Values are literal (no template rendering). Mutually
     /// exclusive with `script`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_ensure",
+        skip_serializing_if = "Option::is_none"
+    )]
     #[schemars(with = "Option<serde_json::Value>")]
     pub ensure: Option<serde_yaml::Value>,
     /// A script path or an inline command that receives the target's current
@@ -147,6 +151,56 @@ pub struct PatchSpec {
     // `plan_hash`, this spec riding inside `FileAction::{Create,Update}`.
     #[serde(skip)]
     pub blocked_by: Option<String>,
+}
+
+/// Read `patch.ensure`, refusing a mapping key that is not a string.
+///
+/// The field is declared to the world as `Option<serde_json::Value>`
+/// (`#[schemars(with = ...)]`), and a JSON object keys on strings alone. The
+/// YAML parser behind it is wider: `? [a, b]` gives a sequence-keyed mapping,
+/// and `1: x` a number-keyed one. Such a value has no JSON spelling, so
+/// `serde_json` refuses the whole action carrying it when the reconciler's plan
+/// is written out or hashed, and a number key that does survive comes back as
+/// the string `"1"`, which is a different patch from the one that was declared.
+/// The refusal lands here, at the one parse boundary every holder shares (the
+/// profile's managed files, a module body, the Module CRD, a plan file read
+/// back), so no caller has to remember to ask.
+fn deserialize_ensure<'de, D>(de: D) -> std::result::Result<Option<serde_yaml::Value>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<serde_yaml::Value>::deserialize(de)?;
+    if let Some(inner) = &value {
+        refuse_unstringed_key("patch.ensure", inner).map_err(serde::de::Error::custom)?;
+    }
+    Ok(value)
+}
+
+/// Refuse a non-string mapping key anywhere under `value`, naming where it sits.
+fn refuse_unstringed_key(path: &str, value: &serde_yaml::Value) -> std::result::Result<(), String> {
+    match value {
+        serde_yaml::Value::Mapping(map) => {
+            for (key, nested) in map {
+                let serde_yaml::Value::String(name) = key else {
+                    let rendered = serde_yaml::to_string(key)
+                        .unwrap_or_else(|_| format!("{key:?}"))
+                        .trim()
+                        .replace('\n', " ");
+                    return Err(format!(
+                        "{path}: a mapping key must be a string, and this one is not: {rendered}"
+                    ));
+                };
+                refuse_unstringed_key(&format!("{path}.{name}"), nested)?;
+            }
+            Ok(())
+        }
+        serde_yaml::Value::Sequence(items) => items
+            .iter()
+            .enumerate()
+            .try_for_each(|(nth, item)| refuse_unstringed_key(&format!("{path}[{nth}]"), item)),
+        serde_yaml::Value::Tagged(tagged) => refuse_unstringed_key(path, &tagged.value),
+        _ => Ok(()),
+    }
 }
 
 /// Controls when encryption is required for a managed file.
@@ -1110,6 +1164,45 @@ fn is_version_spec_char(c: char) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every `patch.ensure` a parse accepts is one `serde_json` can write.
+    ///
+    /// The field is published as `Option<serde_json::Value>`, and a JSON object
+    /// keys on strings alone. The YAML behind it is wider, so a mapping key that
+    /// is not a string is refused where the value enters, naming the path it sits
+    /// at and the key itself. Without the refusal such a spec rides into a
+    /// `FileAction`, where `serde_json` refuses the whole action: the plan cannot
+    /// be written out, and the hash `applies.plan_hash` stores cannot name it.
+    #[test]
+    fn a_patch_ensure_key_that_is_not_a_string_is_refused_at_every_depth() {
+        for (yaml, expected) in [
+            (
+                "ensure:\n  ? [a, b]\n  : c\n",
+                "patch.ensure: a mapping key must be a string, and this one is not: - a - b",
+            ),
+            (
+                "ensure:\n  outer:\n    1: on\n",
+                "patch.ensure.outer: a mapping key must be a string, and this one is not: 1",
+            ),
+            (
+                "ensure:\n  items:\n    - nested:\n        true: yes\n",
+                "patch.ensure.items[0].nested: a mapping key must be a string, and this one is not: true",
+            ),
+        ] {
+            let err = serde_yaml::from_str::<PatchSpec>(yaml)
+                .expect_err("a key with no JSON spelling is refused");
+            assert!(
+                err.to_string().contains(expected),
+                "the refusal names the field and the key it found: {err}"
+            );
+        }
+
+        let ok = serde_yaml::from_str::<PatchSpec>(
+            "ensure:\n  outer:\n    inner: 1\n  items:\n    - a\n    - 2\n",
+        )
+        .expect("string-keyed mappings, and values of any shape, still parse");
+        assert!(ok.ensure.is_some(), "the value survives the check: {ok:?}");
+    }
 
     /// The ONE cadence grammar both `spec.backups[].schedule` and
     /// `BackupPolicy.spec.units[].schedule` answer to; a refusal names both
