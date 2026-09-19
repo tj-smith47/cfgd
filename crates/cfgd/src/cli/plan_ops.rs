@@ -752,7 +752,10 @@ pub(in crate::cli) fn load_saved_plan(
             path,
             kind,
             format!("cannot read plan file {shown}: {e}"),
-            serde_json::json!({}),
+            // `read_failed` is one kind for every io failure but a missing
+            // file, so a reader telling a permission refusal from a directory
+            // has only this to read it off.
+            serde_json::json!({ "reason": e.to_string() }),
         )
     })?;
     let file: PlanFile = serde_json::from_str(&body).map_err(|e| {
@@ -760,7 +763,7 @@ pub(in crate::cli) fn load_saved_plan(
             path,
             "parse_failed",
             format!("{shown} is not the payload of `cfgd plan -o json`: {e}"),
-            serde_json::json!({}),
+            serde_json::json!({ "reason": e.to_string() }),
         )
     })?;
 
