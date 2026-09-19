@@ -13,6 +13,16 @@ use std::process::Command;
 
 use assert_cmd::cargo::CommandCargoExt;
 
+/// The binary under test, with cfgd's own startup update check opted out.
+/// A fixture spawning the real binary reaches GitHub over the network on every
+/// human-channel run otherwise, which is no part of what any of these pins
+/// claims.
+fn cfgd_bin() -> Result<Command, assert_cmd::cargo::CargoError> {
+    let mut cmd = Command::cargo_bin("cfgd")?;
+    cmd.env("CFGD_NO_UPDATE_CHECK", "1");
+    Ok(cmd)
+}
+
 /// A document whose theme block holds `name`, laid out at the default config
 /// directory of a throwaway home.
 fn write_config(home: &Path, theme_name: &str) {
@@ -57,7 +67,7 @@ fn run(home: &Path, args: &[&str]) -> std::process::Output {
 /// The same, from a chosen working directory, for `cfgd init` — which writes
 /// its document where it is run rather than at the default config path.
 fn run_at(home: &Path, cwd: &Path, args: &[&str]) -> std::process::Output {
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .current_dir(cwd)
         .args(args)
@@ -409,6 +419,71 @@ fn a_key_under_a_genuine_leaf_is_refused_as_a_missing_key_by_both_verbs() {
     }
 }
 
+#[test]
+fn a_key_named_under_a_declared_list_is_a_missing_key_on_every_verb() {
+    // The other half of the shape question: these two documents hold exactly
+    // what the schema declares — `spec.sources` and `spec.origin` are both
+    // lists — so nothing about them is wrong. The key walkers address no list
+    // element, which makes `sources.name` a key that is not there rather than
+    // a document that contradicts its schema.
+    for (body, key) in [
+        (
+            "  sources:\n    - name: team\n      origin:\n        type: Git\n        \
+             url: https://example.invalid/cfg.git\n",
+            "sources.name",
+        ),
+        (
+            "  origin:\n    - type: Git\n      url: https://example.invalid/cfg.git\n",
+            "origin.url",
+        ),
+    ] {
+        let home = tempfile::tempdir().unwrap();
+        write_spec(home.path(), body);
+
+        let shown = run(home.path(), &["config", "show"]);
+        assert_eq!(
+            shown.status.code(),
+            Some(0),
+            "the document loads: {}",
+            String::from_utf8_lossy(&shown.stderr)
+        );
+
+        for verb in ["get", "set", "unset"] {
+            let mut args = vec!["config", verb, key];
+            if verb == "set" {
+                args.push("x");
+            }
+            let out = run(home.path(), &args);
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            assert_eq!(
+                out.status.code(),
+                Some(6),
+                "a key under a list exits 6 on every verb: {stderr}"
+            );
+            assert!(
+                stderr.contains(&format!("key '{key}' not found")),
+                "the refusal names the path it walked: {stderr}"
+            );
+
+            let json: Vec<&str> = std::iter::once("-o")
+                .chain(std::iter::once("json"))
+                .chain(args.iter().copied())
+                .collect();
+            let out = run(home.path(), &json);
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            assert!(
+                stdout.contains("\"key_not_found\""),
+                "a list the schema declares is no shape failure: {stdout}"
+            );
+            assert_eq!(
+                out.status.code(),
+                Some(6),
+                "one kind, one exit code, on both channels: {stdout}"
+            );
+        }
+    }
+}
+
 /// A document whose spec is `body`, laid out at the default config directory
 /// of a throwaway home.
 fn write_spec(home: &Path, body: &str) {
@@ -425,10 +500,14 @@ fn write_spec(home: &Path, body: &str) {
 
 #[test]
 fn a_value_standing_where_a_mapping_belongs_is_a_shape_failure_not_a_missing_key() {
-    // Three documents whose shape contradicts the schema, each named by the
+    // Five documents whose shape contradicts the schema, each named by the
     // path it goes wrong at: a sequence where the theme union accepts a scalar
-    // or a mapping, a spec that is no mapping at all, and a scalar where the
-    // schema declares a section. None of them is a key a setter could create.
+    // or a mapping, a spec that is no mapping at all, a scalar where the
+    // schema declares a section, a scalar where it declares a free-form map,
+    // and a scalar where it declares a list. None of them is a key a setter
+    // could create. A list standing where the schema declares one is the other
+    // half of this, and is a missing key rather than a shape failure — see
+    // `a_key_named_under_a_declared_list_is_a_missing_key_on_every_verb`.
     for (body, args, refusal) in [
         (
             "  output:\n    theme:\n      - dracula\n",
@@ -444,6 +523,16 @@ fn a_value_standing_where_a_mapping_belongs_is_a_shape_failure_not_a_missing_key
             "  daemon: yes\n",
             vec!["config", "set", "daemon.interval", "5m"],
             "'daemon' holds a scalar, not a mapping",
+        ),
+        (
+            "  aliases: yes\n",
+            vec!["config", "set", "aliases.ll", "ls -la"],
+            "'aliases' holds a scalar, not a mapping",
+        ),
+        (
+            "  sources: team\n",
+            vec!["config", "set", "sources.name", "team"],
+            "'sources' holds a scalar, not a mapping",
         ),
     ] {
         let home = tempfile::tempdir().unwrap();

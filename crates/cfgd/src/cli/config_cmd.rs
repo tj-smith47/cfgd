@@ -207,9 +207,10 @@ fn is_union_scalar(value: &serde_yaml::Value) -> bool {
     blocking_shape(value) == SHAPE_SCALAR
 }
 
-/// The word a refusal calls a scalar. Named, because which refusal a blocked
-/// descent earns turns on it.
+/// The words a refusal calls the two shapes whose refusal turns on what the
+/// schema declares at the path they blocked.
 const SHAPE_SCALAR: &str = "a scalar";
+const SHAPE_SEQUENCE: &str = "a sequence";
 
 /// What a value that blocked a descent IS, as the refusal words it. Captured
 /// before the parent it sits in is borrowed mutably, so both walkers can name
@@ -219,7 +220,7 @@ fn blocking_shape(value: &serde_yaml::Value) -> &'static str {
         serde_yaml::Value::String(_)
         | serde_yaml::Value::Number(_)
         | serde_yaml::Value::Bool(_) => SHAPE_SCALAR,
-        serde_yaml::Value::Sequence(_) => "a sequence",
+        serde_yaml::Value::Sequence(_) => SHAPE_SEQUENCE,
         serde_yaml::Value::Mapping(_) => "a mapping",
         serde_yaml::Value::Tagged(_) => "a tagged value",
         serde_yaml::Value::Null => "nothing",
@@ -256,19 +257,35 @@ fn key_not_found(asked: &[&str]) -> anyhow::Error {
 /// The refusal a descent blocked at `path` earns, where `asked` is the path
 /// the caller named and `found` the shape that blocked it.
 ///
-/// A child of a genuine scalar leaf can never exist however the document is
-/// written, so that is the same missing key the absent-section arm answers
-/// with. Every other block — a sequence, or a scalar where the schema declares
-/// a mapping — is a document whose shape contradicts the schema, which a
-/// script must be able to tell from a key it can simply create.
+/// Which one it is turns on the shape the schema declares at `path`, on both
+/// branches. A child of a genuine scalar leaf, and a key named under a
+/// declared list, can never exist however the document is written: the key
+/// walkers address no sequence element, so neither says anything is wrong with
+/// the document, and both are the missing key the absent-section arm answers
+/// with. Every other block — a scalar where the schema declares a mapping or a
+/// list, a sequence where it declares a mapping or a value — is a document
+/// whose shape contradicts the schema, which a script must be able to tell
+/// from a key it can simply create.
 fn descent_blocked(path: &[&str], asked: &[&str], found: &'static str) -> anyhow::Error {
-    let declared_mapping = path.is_empty() || super::explain::config_field_is_mapping(path);
-    if found == SHAPE_SCALAR && !declared_mapping {
+    use super::explain::DeclaredShape;
+
+    let declared = if path.is_empty() {
+        DeclaredShape::Mapping
+    } else {
+        super::explain::config_field_shape(path)
+    };
+    let document_agrees_with_schema = matches!(
+        (found, declared),
+        (SHAPE_SCALAR, DeclaredShape::Leaf | DeclaredShape::Unknown)
+            | (SHAPE_SEQUENCE, DeclaredShape::Sequence)
+    );
+    if document_agrees_with_schema {
         return key_not_found(asked);
     }
     anyhow::Error::new(ShapeBlocked {
         // The root of the walk is `spec` itself, which every path is relative
-        // to and no segment names.
+        // to and no segment names, so an empty path is the mapping the whole
+        // field list hangs off.
         path: if path.is_empty() {
             "spec".to_string()
         } else {
@@ -953,8 +970,126 @@ spec:
         assert_eq!(err.to_string(), "'daemon' holds a scalar, not a mapping");
     }
 
-    // A sequence is no arm of any union here, so it is a shape error whatever
-    // the schema says about the path.
+    /// Every `spec`-relative path the `Config` schema names that a key path
+    /// can address: each top-level field, and then each field under one the
+    /// schema declares a mapping at, to any depth. A sequence's element fields
+    /// are left out because no key path names an element.
+    fn addressable_config_paths() -> Vec<Vec<String>> {
+        fn walk(
+            fields: &[cfgd_core::schema::FieldNode],
+            at: &[String],
+            out: &mut Vec<Vec<String>>,
+        ) {
+            for field in fields {
+                if field.is_variant {
+                    continue;
+                }
+                let mut path = at.to_vec();
+                path.push(field.name.clone());
+                out.push(path.clone());
+                if field.type_desc == "object" {
+                    walk(&field.children, &path, out);
+                }
+            }
+        }
+        let schema = crate::cli::explain::find_schema("Config").expect("the Config schema");
+        let mut out = Vec::new();
+        walk(&schema.fields, &[], &mut out);
+        out
+    }
+
+    /// A `spec` document holding `leaf` at `path` and nothing else.
+    fn spec_holding(path: &[String], leaf: serde_yaml::Value) -> serde_yaml::Value {
+        path.iter().rev().fold(leaf, |value, segment| {
+            let mut map = serde_yaml::Mapping::new();
+            map.insert(serde_yaml::Value::String(segment.clone()), value);
+            serde_yaml::Value::Mapping(map)
+        })
+    }
+
+    // The population walk behind `descent_blocked`: for every field the Config
+    // schema names, plant a value of the wrong shape under it and ask for a
+    // key beneath it, then check the refusal against what the schema declares
+    // there rather than against a hand-picked list of paths. A free-form map
+    // (`spec.aliases`) is a mapping that names no child field, and a list is a
+    // shape the key walker cannot address rather than one the document got
+    // wrong; both read the same as their neighbours under a child count.
+    #[test]
+    fn every_config_spec_field_refuses_a_wrong_shape_by_its_declared_shape() {
+        use crate::cli::explain::DeclaredShape;
+
+        let paths = addressable_config_paths();
+        assert!(
+            paths.len() >= 60,
+            "the Config schema names far more addressable fields than this: {}",
+            paths.len()
+        );
+        for expected in ["aliases", "sources", "origin", "daemon", "fileStrategy"] {
+            assert!(
+                paths.iter().any(|p| p == &[expected.to_string()]),
+                "{expected} is in the population"
+            );
+        }
+
+        let scalar = serde_yaml::Value::String("planted".into());
+        let sequence = serde_yaml::Value::Sequence(vec![scalar.clone()]);
+        for path in &paths {
+            let segments: Vec<&str> = path.iter().map(String::as_str).collect();
+            let declared = crate::cli::explain::config_field_shape(&segments);
+            let key = format!("{}.probe", path.join("."));
+            // A scalar-or-mapping union's scalar arm IS its mapping with one
+            // field set, so it is settled before the shape question is asked
+            // and `probe` is simply another field of the arm.
+            let union_arm = scalar_union_field(&segments).is_some();
+
+            for (planted, expected) in [
+                (
+                    scalar.clone(),
+                    match declared {
+                        _ if union_arm => "key_not_found",
+                        DeclaredShape::Mapping | DeclaredShape::Sequence => "parse_failed",
+                        DeclaredShape::Leaf | DeclaredShape::Unknown => "key_not_found",
+                    },
+                ),
+                (
+                    sequence.clone(),
+                    match declared {
+                        DeclaredShape::Sequence => "key_not_found",
+                        _ => "parse_failed",
+                    },
+                ),
+            ] {
+                let spec = spec_holding(path, planted.clone());
+                let err = walk_yaml_path(&spec, &key)
+                    .err()
+                    .unwrap_or_else(|| panic!("{key} resolves nothing on {planted:?}"));
+                assert_eq!(
+                    classify_config_error(&err),
+                    expected,
+                    "read walk on {key} over {planted:?} (declared {declared:?}): {err}"
+                );
+
+                // The setter promotes a union's scalar arm rather than
+                // refusing it, so only the read walk answers there.
+                if union_arm && planted.is_string() {
+                    continue;
+                }
+                let mut spec = spec_holding(path, planted.clone());
+                let err = walk_yaml_path_mut(&mut spec, &key)
+                    .err()
+                    .unwrap_or_else(|| panic!("{key} is writable on {planted:?}"));
+                assert_eq!(
+                    classify_config_error(&err),
+                    expected,
+                    "write walk on {key} over {planted:?} (declared {declared:?}): {err}"
+                );
+            }
+        }
+    }
+
+    // The schema names no `a`, so a value there is a leaf as far as the key
+    // walker can tell, and a sequence standing at one is a shape the document
+    // got wrong rather than a list the walker declines to index into.
     #[test]
     fn walk_yaml_path_blocked_by_a_sequence_names_it() {
         let yaml: serde_yaml::Value = serde_yaml::from_str("a:\n  - 1\n").unwrap();
