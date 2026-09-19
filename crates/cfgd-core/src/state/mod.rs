@@ -43,6 +43,7 @@ pub use types::{
 pub const STATE_DB_FILENAME: &str = "state.db";
 
 const MIGRATIONS: &[&str] = &[
+    // space-run-ok: a table definition's own column layout.
     "CREATE TABLE IF NOT EXISTS applies (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         timestamp TEXT NOT NULL,
@@ -146,6 +147,7 @@ const MIGRATIONS: &[&str] = &[
 
     INSERT INTO schema_version (version) VALUES (0);",
     // Migration 2: File safety — backup store, transaction journal, module file manifest
+    // space-run-ok: a table definition's own column layout.
     "CREATE TABLE IF NOT EXISTS file_backups (
         id              INTEGER PRIMARY KEY AUTOINCREMENT,
         apply_id        INTEGER NOT NULL,
@@ -301,6 +303,7 @@ const MIGRATIONS: &[&str] = &[
     // planning and verification read instead. `path_dirs` holds a JSON array
     // because the order is load-bearing: the generated shell file is hashed and
     // compared on every reconcile tick.
+    // space-run-ok: a table definition's own column layout.
     "CREATE TABLE IF NOT EXISTS bootstrapped_managers (
         manager         TEXT PRIMARY KEY,
         path_dirs       TEXT NOT NULL,
@@ -316,6 +319,7 @@ const MIGRATIONS: &[&str] = &[
     // than the one packages were actually installed under, making them
     // invisible to `installed_packages()` — the prefix must be decided once
     // and reused by every subsequent operation, not re-negotiated on each one.
+    // space-run-ok: a table definition's own column layout.
     "CREATE TABLE IF NOT EXISTS package_manager_prefixes (
         manager     TEXT PRIMARY KEY,
         prefix      TEXT NOT NULL,
@@ -331,6 +335,7 @@ const MIGRATIONS: &[&str] = &[
     // after the migrations that shipped on master before it: the runner is
     // positional, so an element inserted mid-array is silently skipped by any
     // database already past that index.
+    // space-run-ok: a table definition's own column layout.
     "CREATE TABLE IF NOT EXISTS backup_runs (
         id                INTEGER PRIMARY KEY AUTOINCREMENT,
         name              TEXT NOT NULL,
@@ -644,6 +649,7 @@ const MIGRATIONS: &[&str] = &[
     // actually use. A check-in REPLACES the whole set, so a unit a policy
     // stopped scheduling falls back to the profile's own cadence rather than
     // running on a projection nothing renews.
+    // space-run-ok: a table definition's own column layout.
     "CREATE TABLE IF NOT EXISTS cluster_backup_schedules (
         name       TEXT PRIMARY KEY,
         schedule   TEXT NOT NULL,

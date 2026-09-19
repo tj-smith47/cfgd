@@ -1688,6 +1688,60 @@ pub fn logical_source_lines(body: &str) -> Vec<(usize, String)> {
     out
 }
 
+/// A Rust source's lines with every literal that spans rows folded onto the
+/// row it opened on, paired with that row's 1-based number.
+///
+/// [`logical_source_lines`] joins the `\`-continued form alone, so a walk
+/// reading it still cannot see INTO a literal carrying a real newline: the
+/// rows below the opening one match no quote pair, and the literal is skipped
+/// whole. Here both forms fold, and the real newline is KEPT in the folded
+/// text, so a reader judging the body sees the same line breaks the literal
+/// prints.
+///
+/// A raw literal spanning rows is left alone, and so is every row inside one:
+/// it reproduces another file's bytes, where a quote is that fixture's text
+/// rather than a delimiter.
+pub fn folded_literal_lines(body: &str) -> Vec<(usize, String)> {
+    let mut out: Vec<(usize, String)> = Vec::new();
+    let mut raw_hashes: Option<usize> = None;
+    let mut continues = false;
+    for (n, text) in logical_source_lines(body) {
+        let opened_inside_raw = raw_hashes.is_some();
+        scan_raw_literals(&text, &mut raw_hashes);
+        match out.last_mut() {
+            Some((_, acc)) if continues => {
+                acc.push('\n');
+                acc.push_str(&text);
+            }
+            _ => out.push((n, text)),
+        }
+        continues = !opened_inside_raw
+            && raw_hashes.is_none()
+            && out
+                .last()
+                .is_some_and(|(_, acc)| leaves_a_plain_literal_open(acc));
+    }
+    out
+}
+
+/// Whether `line` opens a plain string literal it does not close, so the row
+/// below it is that same literal's continuation.
+///
+/// The BLANKED line answers it: every literal body is spaces there, so the
+/// quotes left standing are delimiters alone, an odd count leaves exactly one
+/// opener unmatched, and that opener is the last of them. A raw literal's
+/// opener carries its `r` and its hashes ahead of the quote, which is what
+/// tells the two apart.
+fn leaves_a_plain_literal_open(line: &str) -> bool {
+    let blanked = blank_string_literals(line);
+    let code = blanked.find("//").map_or(&blanked[..], |c| &blanked[..c]);
+    if code.bytes().filter(|b| *b == b'"').count() % 2 == 0 {
+        return false;
+    }
+    code.rfind('"')
+        .is_some_and(|opener| !code[..opener].trim_end_matches('#').ends_with('r'))
+}
+
 /// A raw literal opening at `bytes[i]` (`r`, some `#`s, a `"`): its hash
 /// count, or `None` when nothing opens there.
 ///

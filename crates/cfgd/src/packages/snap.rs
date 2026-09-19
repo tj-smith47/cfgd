@@ -444,6 +444,7 @@ channels:
 
     #[test]
     fn parse_snap_list_skips_header_and_returns_first_token() {
+        // space-run-ok: a fixture reproducing the manager's own column-aligned listing.
         let stdout = "\
 Name      Version  Rev    Tracking       Publisher     Notes
 core22    20240124 1100   latest/stable  canonical**   base
@@ -482,6 +483,7 @@ fd        9.0.0    100    latest/stable  -             -
 
     #[test]
     fn parse_snap_list_versions_real_world() {
+        // space-run-ok: a fixture reproducing the manager's own column-aligned listing.
         let stdout = "\
 Name      Version  Rev    Tracking       Publisher     Notes
 core22    20240124 1100   latest/stable  canonical**   base
@@ -658,6 +660,7 @@ ripgrep   14.1.0   234    latest/stable  burntsushi    classic
         #[test]
         #[serial]
         fn snap_installed_packages_parses_list_output() {
+            // space-run-ok: a fixture reproducing the manager's own column-aligned listing.
             let stdout = "\
 Name      Version  Rev   Tracking       Publisher    Notes
 core22    20240124 1100  latest/stable  canonical**  base

@@ -51,6 +51,7 @@ CFGD_TEST_NONEXISTENT_VAR_12345: "test_value"
 
 #[test]
 fn windows_reg_query_parsing_typical() {
+    // space-run-ok: a fixture reproducing `reg query`'s column-aligned output.
     let output = "\
 HKEY_CURRENT_USER\\Environment\n\
 \n\
@@ -80,6 +81,7 @@ fn windows_reg_query_parsing_blank_input() {
 
 #[test]
 fn windows_reg_query_parsing_single_var() {
+    // space-run-ok: a fixture reproducing `reg query`'s column-aligned output.
     let output = "HKEY_CURRENT_USER\\Environment\n\
                        \n\
                            JAVA_HOME    REG_SZ    C:\\Program Files\\Java\\jdk-17\n";
@@ -96,6 +98,7 @@ fn environment_configurator_available_on_linux() {
 
 #[test]
 fn parse_reg_query_output_expand_sz_type() {
+    // space-run-ok: a fixture reproducing `reg query`'s column-aligned output.
     let output = "HKEY_CURRENT_USER\\Environment\n\
                       \n\
                           Path    REG_EXPAND_SZ    %USERPROFILE%\\bin\n";
@@ -106,6 +109,7 @@ fn parse_reg_query_output_expand_sz_type() {
 
 #[test]
 fn parse_reg_query_output_mixed_types() {
+    // space-run-ok: a fixture reproducing `reg query`'s column-aligned output.
     let output = "HKEY_CURRENT_USER\\Environment\n\
                       \n\
                           EDITOR    REG_SZ    vim\n\
@@ -265,6 +269,7 @@ fn parse_export_file_skips_non_export_lines() {
 #[test]
 fn parse_reg_query_output_dword_preserved_as_raw() {
     // parse_reg_query_output uses parse_reg_line which returns raw value
+    // space-run-ok: a fixture reproducing `reg query`'s column-aligned output.
     let output = "HKEY_CURRENT_USER\\Environment\n\
                       \n\
                           Count    REG_DWORD    0x5\n";
@@ -548,6 +553,7 @@ fn write_profile_d_empty_managed_removes_file() {
 
 #[test]
 fn parse_reg_query_output_multiple_types_preserved() {
+    // space-run-ok: a fixture reproducing `reg query`'s column-aligned output.
     let output = "\
 HKEY_CURRENT_USER\\Environment\n\
 \n\

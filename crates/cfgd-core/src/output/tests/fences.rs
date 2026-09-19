@@ -4,9 +4,9 @@
 use std::path::{Path, PathBuf};
 
 use crate::test_helpers::{
-    KNOWN_GOLDEN_ROOTS, blank_string_literals, carries_hatch, is_plain_line_comment,
-    rust_sources_under, snapshot_golden_roots, snapshot_goldens, snapshot_root_files,
-    walked_file_body, workspace_root,
+    KNOWN_GOLDEN_ROOTS, blank_string_literals, carries_hatch, folded_literal_lines,
+    is_plain_line_comment, rust_sources_under, snapshot_golden_roots, snapshot_goldens,
+    snapshot_root_files, walked_file_body, workspace_root,
 };
 
 /// Every `.rs` file under every crate's `src/`.
@@ -5929,30 +5929,42 @@ const SPACE_RUN_HATCH: &str = "space-run-ok:";
 /// tool's columns. A column whose left cell is a WORD still reads as a
 /// sentence here, so those carry `// space-run-ok: <why>` on the line or the
 /// line above.
+///
+/// A literal spanning source rows is read as the one literal it is
+/// ([`crate::test_helpers::folded_literal_lines`]), reported at the row it
+/// opened on and hatched there or on the row above; a line-based read matched
+/// no quote pair below that row and skipped the whole body, which is where
+/// every `\`-continued column fixture sat. The break itself still ends a
+/// line, so the indentation FOLLOWING one is the next line's indent by the
+/// same rule the escaped `\n` takes below: every literal in this workspace
+/// that spans rows is a document (a table definition, a captured listing, an
+/// embedded YAML body), and reading its rows as one sentence would make each
+/// of them a run.
 #[test]
 fn no_string_literal_carries_a_mid_sentence_space_run() {
     let mut offenders = Vec::new();
     let mut scanned = 0usize;
     for path in workspace_rust_files() {
-        if path.ends_with(Path::new("output/tests/fences.rs")) {
-            continue;
-        }
         scanned += 1;
         let body = walked_file_body(&path);
-        let lines: Vec<&str> = body.lines().collect();
-        for (i, line) in lines.iter().enumerate() {
-            if is_plain_line_comment(line) || line.trim_start().starts_with("///") {
+        let raw: Vec<&str> = body.lines().collect();
+        for (n, line) in folded_literal_lines(&body) {
+            let trimmed = line.trim_start();
+            if is_plain_line_comment(&line)
+                || trimmed.starts_with("///")
+                || trimmed.starts_with("//!")
+            {
                 continue;
             }
-            if carries_hatch(line, SPACE_RUN_HATCH)
-                || (i > 0 && carries_hatch(lines[i - 1], SPACE_RUN_HATCH))
+            if carries_hatch(&line, SPACE_RUN_HATCH)
+                || (n > 1 && carries_hatch(raw[n - 2], SPACE_RUN_HATCH))
             {
                 continue;
             }
             // The blanked line keeps every quote at its own byte offset, so a
             // span found there indexes the raw line exactly; a trailing `//`
             // is cut on the blanked line for the same reason.
-            let blanked = blank_string_literals(line);
+            let blanked = blank_string_literals(&line);
             let code = blanked.find("//").map_or(&blanked[..], |c| &blanked[..c]);
             let bytes = code.as_bytes();
             let mut at = 0usize;
@@ -5967,7 +5979,7 @@ fn no_string_literal_carries_a_mid_sentence_space_run() {
                 if let Some(literal) = line.get(open + 1..close)
                     && let Some(run) = mid_sentence_space_run(literal)
                 {
-                    offenders.push(format!("{}:{}: {run}", path.display(), i + 1));
+                    offenders.push(format!("{}:{n}: {run}", path.display()));
                 }
                 at = close + 1;
             }

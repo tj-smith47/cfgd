@@ -119,6 +119,7 @@ impl StateStore {
         keys: &[(String, String)],
     ) -> Result<()> {
         self.conn.execute_batch(
+            // space-run-ok: a table definition's own column layout.
             "CREATE TEMP TABLE IF NOT EXISTS drift_key_set (
                  resource_type TEXT NOT NULL,
                  resource_id   TEXT NOT NULL,

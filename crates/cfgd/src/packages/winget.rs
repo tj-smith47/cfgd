@@ -237,6 +237,7 @@ mod tests {
 
     #[test]
     fn winget_parse_list_output() {
+        // space-run-ok: a fixture reproducing the manager's own column-aligned listing.
         let output = "Name            Id                    Version\n\
                       -----------------------------------------------\n\
                       Visual Studio   Microsoft.VisualStudio 17.8.3\n\
@@ -255,6 +256,7 @@ mod tests {
     #[test]
     fn winget_parse_list_no_separator_line() {
         // Without a separator line, no packages are parsed (header not yet seen).
+        // space-run-ok: a fixture reproducing the manager's own column-aligned listing.
         let output = "Name   Id      Version\n\
                       foo    foo.Bar  1.0\n";
         let packages = parse_winget_list(output);
@@ -264,6 +266,7 @@ mod tests {
     #[test]
     fn parse_winget_list_wide_columns() {
         // Winget output with wider column spacing
+        // space-run-ok: a fixture reproducing the manager's own column-aligned listing.
         let output = "\
 Name                              Id                                   Version       Available Source\n\
 ---------------------------------------------------------------------------------------------------\n\
@@ -278,6 +281,7 @@ Windows Terminal                   Microsoft.WindowsTerminal            1.18.318
     #[test]
     fn parse_winget_list_equals_separator() {
         // Some winget versions use === separator
+        // space-run-ok: a fixture reproducing the manager's own column-aligned listing.
         let output = "\
 Name       Id          Version\n\
 ============================\n\
@@ -288,6 +292,7 @@ Git        Git.Git     2.43.0\n";
 
     #[test]
     fn parse_winget_list_trailing_blank_lines() {
+        // space-run-ok: a fixture reproducing the manager's own column-aligned listing.
         let output = "\
 Name       Id          Version\n\
 -------------------------------\n\
@@ -337,6 +342,7 @@ Git        Git.Git     2.43.0\n\
 
     #[test]
     fn parse_winget_list_with_available_column() {
+        // space-run-ok: a fixture reproducing the manager's own column-aligned listing.
         let output = "\
 Name                  Id                        Version    Available  Source\n\
 ---------------------------------------------------------------------------\n\
@@ -357,6 +363,7 @@ PowerShell            Microsoft.PowerShell      7.4.0                 winget\n";
 
     #[test]
     fn parse_winget_list_real_world_output() {
+        // space-run-ok: a fixture reproducing the manager's own column-aligned listing.
         let output = "\
 Name                                   Id                                      Version          Available        Source
 ----------------------------------------------------------------------------------------------------------------------
@@ -375,6 +382,7 @@ PowerShell                             Microsoft.PowerShell                    7
 
     #[test]
     fn parse_winget_list_unicode_names() {
+        // space-run-ok: a fixture reproducing the manager's own column-aligned listing.
         let output = "\
 Name                Id                  Version
 -------------------------------------------------
@@ -388,6 +396,7 @@ Git                 Git.Git             2.43.0
 
     #[test]
     fn parse_winget_list_basic() {
+        // space-run-ok: a fixture reproducing the manager's own column-aligned listing.
         let output = "\
 Name            Id                  Version\n\
 ----------------------------------------------\n\
@@ -401,6 +410,7 @@ Node.js         OpenJS.NodeJS       20.11.1\n";
 
     #[test]
     fn parse_winget_list_empty_after_header() {
+        // space-run-ok: a fixture reproducing the manager's own column-aligned listing.
         let output = "\
 Name            Id                  Version\n\
 ----------------------------------------------\n";
@@ -418,6 +428,7 @@ Name            Id                  Version\n\
     #[test]
     fn parse_winget_list_id_column_at_different_position() {
         // When "Id" column starts at a different offset
+        // space-run-ok: a fixture reproducing the manager's own column-aligned listing.
         let output = "\
 Name                  Id                        Version\n\
 -------------------------------------------------------\n\
@@ -552,6 +563,7 @@ SomeApp               Some.App                  1.0.0\n";
         #[test]
         #[serial]
         fn installed_packages_parses_winget_list_output() {
+            // space-run-ok: a fixture reproducing the manager's own column-aligned listing.
             let stdout = "\
 Name            Id                    Version
 ------------------------------------------------
@@ -576,6 +588,7 @@ Git             Git.Git                2.43.0
 
         #[test]
         fn parse_winget_list_versions_keeps_registered_case_and_version() {
+            // space-run-ok: a fixture reproducing the manager's own column-aligned listing.
             let output = "\
 Name            Id                    Version
 ------------------------------------------------

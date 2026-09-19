@@ -431,6 +431,7 @@ mod tests {
     /// on a systemd that honours it and an older one still prints. Every state
     /// below was compared against the same host's `systemctl is-enabled` for
     /// the same unit.
+    // space-run-ok: a fixture reproducing `systemctl list-unit-files`'s column-aligned output.
     const REAL_UNIT_FILES: &str = "\
 UNIT FILE                                                                     STATE           PRESET
 cron.service                                                                  enabled         enabled

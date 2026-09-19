@@ -242,6 +242,7 @@ mod tests {
     /// property of each shape), captured against a channel XML holding a
     /// string, a spaced string, an int, a bool, an empty string and a
     /// two-element array.
+    // space-run-ok: a fixture reproducing `xfconf-query`'s column-aligned listing.
     const REAL_LISTING: &str = "/general/arr         [a,b]\n\
          /general/empty       \n\
          /general/flag        true\n\
@@ -300,6 +301,7 @@ mod tests {
         // with — reading one as a property would invent a property, and the
         // property it continues was only half-read.
         let snapshot = parse_channel_listing(
+            // space-run-ok: a fixture reproducing `xfconf-query`'s column-aligned listing.
             "/general/theme       Default\n\
              /general/motd        line one\n\
              line two\n\
@@ -332,6 +334,7 @@ mod tests {
         // `last_property` — an empty key would collect every later
         // continuation under `""` and leave the half-read property trusted.
         let snapshot = parse_channel_listing(
+            // space-run-ok: a fixture reproducing `xfconf-query`'s column-aligned listing.
             "/general/motd        line one\n\
              \x20 /usr/bin/x\n\
              /general/num         42\n",

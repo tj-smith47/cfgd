@@ -241,6 +241,7 @@ mod tests {
     /// It is the whole point of the bulk read: every NAME, TYPE and DATA cfgd
     /// asks about is in this one dump, where it used to cost two `reg query
     /// … /v <name>` spawns per value.
+    // space-run-ok: a fixture reproducing `reg query`'s column-aligned output.
     const REG_QUERY_DUMP: &str = "\r\n\
         HKEY_CURRENT_USER\\Software\\cfgd-qp5\r\n\
         \x20   PlainSz    REG_SZ    hello\r\n\
@@ -417,6 +418,7 @@ mod tests {
 
     #[test]
     fn registry_parse_reg_value_dword() {
+        // space-run-ok: a fixture reproducing `reg query`'s column-aligned output.
         let output = "HKEY_CURRENT_USER\\Software\\Test\n\
                       \n\
                           HideFileExt    REG_DWORD    0x0\n";
@@ -428,6 +430,7 @@ mod tests {
 
     #[test]
     fn registry_parse_reg_value_dword_nonzero() {
+        // space-run-ok: a fixture reproducing `reg query`'s column-aligned output.
         let output = "HKEY_CURRENT_USER\\Software\\Test\n\
                       \n\
                           ShowHidden    REG_DWORD    0x1\n";
@@ -439,6 +442,7 @@ mod tests {
 
     #[test]
     fn registry_parse_reg_value_dword_large() {
+        // space-run-ok: a fixture reproducing `reg query`'s column-aligned output.
         let output = "HKEY_CURRENT_USER\\Software\\Test\n\
                       \n\
                           Timeout    REG_DWORD    0xff\n";
@@ -450,6 +454,7 @@ mod tests {
 
     #[test]
     fn registry_parse_reg_value_string() {
+        // space-run-ok: a fixture reproducing `reg query`'s column-aligned output.
         let output = "HKEY_CURRENT_USER\\Software\\Test\n\
                       \n\
                           Theme    REG_SZ    dark\n";
@@ -467,6 +472,7 @@ mod tests {
 
     #[test]
     fn registry_parse_reg_value_wrong_name() {
+        // space-run-ok: a fixture reproducing `reg query`'s column-aligned output.
         let output = "HKEY_CURRENT_USER\\Software\\Test\n\
                       \n\
                           OtherValue    REG_SZ    hello\n";
@@ -510,6 +516,7 @@ mod tests {
 
     #[test]
     fn registry_parse_reg_value_expand_sz() {
+        // space-run-ok: a fixture reproducing `reg query`'s column-aligned output.
         let output = "HKEY_CURRENT_USER\\Environment\n\
                       \n\
                           Path    REG_EXPAND_SZ    %SystemRoot%\\system32\n";
@@ -531,6 +538,7 @@ mod tests {
 
     #[test]
     fn registry_parse_reg_value_multi_line_picks_correct_name() {
+        // space-run-ok: a fixture reproducing `reg query`'s column-aligned output.
         let output = "HKEY_CURRENT_USER\\Software\\Test\n\
                       \n\
                           Alpha    REG_SZ    one\n\
@@ -727,6 +735,7 @@ mod tests {
     #[test]
     fn parse_reg_value_output_selects_first_match() {
         // If the same name appears twice, the first one wins
+        // space-run-ok: a fixture reproducing `reg query`'s column-aligned output.
         let output = "\
     Dup    REG_SZ    first\n\
     Dup    REG_SZ    second\n";
