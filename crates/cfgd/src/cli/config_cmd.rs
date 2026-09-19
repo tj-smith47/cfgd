@@ -204,10 +204,78 @@ fn scalar_union_field(segments: &[&str]) -> Option<&'static str> {
 /// written as. A sequence is no arm of any union here, so it stays a shape
 /// error rather than being promoted into one.
 fn is_union_scalar(value: &serde_yaml::Value) -> bool {
-    matches!(
-        value,
-        serde_yaml::Value::String(_) | serde_yaml::Value::Number(_) | serde_yaml::Value::Bool(_)
-    )
+    blocking_shape(value) == SHAPE_SCALAR
+}
+
+/// The word a refusal calls a scalar. Named, because which refusal a blocked
+/// descent earns turns on it.
+const SHAPE_SCALAR: &str = "a scalar";
+
+/// What a value that blocked a descent IS, as the refusal words it. Captured
+/// before the parent it sits in is borrowed mutably, so both walkers can name
+/// the shape they found.
+fn blocking_shape(value: &serde_yaml::Value) -> &'static str {
+    match value {
+        serde_yaml::Value::String(_)
+        | serde_yaml::Value::Number(_)
+        | serde_yaml::Value::Bool(_) => SHAPE_SCALAR,
+        serde_yaml::Value::Sequence(_) => "a sequence",
+        serde_yaml::Value::Mapping(_) => "a mapping",
+        serde_yaml::Value::Tagged(_) => "a tagged value",
+        serde_yaml::Value::Null => "nothing",
+    }
+}
+
+/// A descent blocked by a value that is no mapping and no union arm cfgd can
+/// promote. Typed, so the classifier reads the failure the walker actually hit
+/// instead of matching a message four situations shared.
+#[derive(Debug)]
+pub(super) struct ShapeBlocked {
+    path: String,
+    found: &'static str,
+}
+
+impl std::fmt::Display for ShapeBlocked {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "'{}' holds {}, not a mapping", self.path, self.found)
+    }
+}
+
+impl std::error::Error for ShapeBlocked {}
+
+/// The typed missing-key refusal both walkers mint, naming the path that is
+/// not there.
+fn key_not_found(asked: &[&str]) -> anyhow::Error {
+    anyhow::Error::new(cfgd_core::errors::CfgdError::Config(
+        cfgd_core::errors::ConfigError::KeyNotFound {
+            key: asked.join("."),
+        },
+    ))
+}
+
+/// The refusal a descent blocked at `path` earns, where `asked` is the path
+/// the caller named and `found` the shape that blocked it.
+///
+/// A child of a genuine scalar leaf can never exist however the document is
+/// written, so that is the same missing key the absent-section arm answers
+/// with. Every other block — a sequence, or a scalar where the schema declares
+/// a mapping — is a document whose shape contradicts the schema, which a
+/// script must be able to tell from a key it can simply create.
+fn descent_blocked(path: &[&str], asked: &[&str], found: &'static str) -> anyhow::Error {
+    let declared_mapping = path.is_empty() || super::explain::config_field_is_mapping(path);
+    if found == SHAPE_SCALAR && !declared_mapping {
+        return key_not_found(asked);
+    }
+    anyhow::Error::new(ShapeBlocked {
+        // The root of the walk is `spec` itself, which every path is relative
+        // to and no segment names.
+        path: if path.is_empty() {
+            "spec".to_string()
+        } else {
+            path.join(".")
+        },
+        found,
+    })
 }
 
 /// Rewrite a union's scalar arm in place as the mapping it stands for, so a
@@ -246,21 +314,15 @@ pub(super) fn walk_yaml_path<'a>(
         match current {
             serde_yaml::Value::Mapping(map) => {
                 let key = serde_yaml::Value::String((*segment).to_string());
-                current = map.get(&key).ok_or_else(|| {
-                    let partial = segments[..=i].join(".");
-                    anyhow::Error::new(cfgd_core::errors::CfgdError::Config(
-                        cfgd_core::errors::ConfigError::KeyNotFound { key: partial },
-                    ))
-                })?;
+                current = map
+                    .get(&key)
+                    .ok_or_else(|| key_not_found(&segments[..=i]))?;
             }
             // `daemon:` with nothing beneath it parses as Null and means the
             // section is absent, so a key asked for under it is not found —
-            // only a genuine scalar is "not a mapping".
+            // only a value standing in the way is a shape error.
             serde_yaml::Value::Null => {
-                let partial = segments[..=i].join(".");
-                return Err(anyhow::Error::new(cfgd_core::errors::CfgdError::Config(
-                    cfgd_core::errors::ConfigError::KeyNotFound { key: partial },
-                )));
+                return Err(key_not_found(&segments[..=i]));
             }
             other => {
                 // A union's scalar arm is its mapping with one field set, so
@@ -272,13 +334,13 @@ pub(super) fn walk_yaml_path<'a>(
                     if *segment == field && i + 1 == segments.len() {
                         return Ok(other);
                     }
-                    let partial = segments[..=i].join(".");
-                    return Err(anyhow::Error::new(cfgd_core::errors::CfgdError::Config(
-                        cfgd_core::errors::ConfigError::KeyNotFound { key: partial },
-                    )));
+                    return Err(key_not_found(&segments[..=i]));
                 }
-                let partial = segments[..i].join(".");
-                anyhow::bail!("'{}' is not a mapping", partial);
+                return Err(descent_blocked(
+                    &segments[..i],
+                    &segments[..=i],
+                    blocking_shape(other),
+                ));
             }
         }
     }
@@ -306,10 +368,10 @@ pub(super) fn walk_yaml_path_mut<'a>(
     for (i, segment) in segments[..segments.len() - 1].iter().enumerate() {
         promote_scalar_union(current, &segments[..i]);
         let key = serde_yaml::Value::String((*segment).to_string());
-        let map = current.as_mapping_mut().ok_or_else(|| {
-            let partial = segments[..i].join(".");
-            anyhow::anyhow!("'{}' is not a mapping", partial)
-        })?;
+        let found = blocking_shape(current);
+        let map = current
+            .as_mapping_mut()
+            .ok_or_else(|| descent_blocked(&segments[..i], &segments[..=i], found))?;
         // An absent key and a `daemon:` holding nothing (Null, which is also
         // how a serialized `None` section reads back) both mean there is no
         // section here yet, so both get a fresh mapping to descend into.
@@ -326,10 +388,10 @@ pub(super) fn walk_yaml_path_mut<'a>(
 
     promote_scalar_union(current, &segments[..segments.len() - 1]);
     // Named rather than "parent", so a refusal reads the same on both verbs.
-    let parent = current.as_mapping_mut().ok_or_else(|| {
-        let partial = segments[..segments.len() - 1].join(".");
-        anyhow::anyhow!("'{}' is not a mapping", partial)
-    })?;
+    let found = blocking_shape(current);
+    let parent = current
+        .as_mapping_mut()
+        .ok_or_else(|| descent_blocked(&segments[..segments.len() - 1], &segments, found))?;
     let leaf = segments
         .last()
         .ok_or_else(|| anyhow::anyhow!("empty key path"))?
@@ -426,19 +488,32 @@ pub fn cmd_config_get(cli: &Cli, printer: &Printer, key: &str) -> anyhow::Result
 
     // A legacy flat key names the nested one; a document that still carries
     // the flat spelling is answered from it rather than reported missing.
-    let alias = nested_output_key(key).or_else(|| flat_output_key(key));
     let resolved = nested_output_key(key).unwrap_or_else(|| key.to_string());
+    // The fallback is the flat twin of the key the walk RESOLVED to, not of
+    // the one the caller wrote: a caller writing the legacy spelling already
+    // resolves to the nested key, and asking for its own twin again would
+    // leave `theme.name` — the spelling the docs print — with no fallback at
+    // all on a document nothing has migrated.
+    let alias = flat_output_key(&resolved);
     let value = match walk_yaml_path(spec, &resolved).or_else(|e| match alias.as_deref() {
-        Some(alias) if alias != resolved => walk_yaml_path(spec, alias),
+        // Only a key that is not there is worth asking the other spelling
+        // about: a shape the walk refused is a fact about the document, and
+        // the legacy path would answer for it with a missing key.
+        Some(alias) if alias != resolved && classify_config_error(&e) == "key_not_found" => {
+            // A rescue that fails is not the refusal a reader gets: the key
+            // they named is the resolved one, and its own walk said why.
+            walk_yaml_path(spec, alias).map_err(|_| e)
+        }
         _ => Err(e),
     }) {
         Ok(v) => v,
         Err(e) => {
             let msg = format!("{}", e);
+            let kind = classify_config_error(&e);
             return Err(crate::cli::cli_error_ctx(
                 e,
                 key,
-                "key_not_found",
+                kind,
                 msg,
                 serde_json::json!({ "path": cfgd_core::to_posix_string(config_path) }),
             ));
@@ -543,7 +618,7 @@ pub fn cmd_config_set(cli: &Cli, printer: &Printer, key: &str, value: &str) -> a
     });
 
     if let Err(e) = mutate_result {
-        let kind = classify_mutate_error(&e);
+        let kind = classify_config_error(&e);
         let msg = format!("{}", e);
         let hints = writability_hint(kind, config_path);
         return Err(crate::cli::cli_error_ctx_with_hints(
@@ -619,7 +694,7 @@ pub fn cmd_config_unset(cli: &Cli, printer: &Printer, key: &str) -> anyhow::Resu
     });
 
     if let Err(e) = mutate_result {
-        let kind = classify_mutate_error(&e);
+        let kind = classify_config_error(&e);
         let msg = format!("{}", e);
         let hints = writability_hint(kind, config_path);
         return Err(crate::cli::cli_error_ctx_with_hints(
@@ -645,24 +720,31 @@ pub fn cmd_config_unset(cli: &Cli, printer: &Printer, key: &str) -> anyhow::Resu
     Ok(())
 }
 
-/// Classify a `mutate_config_yaml` error into a stable error_kind for the
-/// emit-then-bail Doc payload. Falls back to `invalid_value` for shapes that
-/// don't match the known buckets (parse-fail / not-found / no-spec).
-fn classify_mutate_error(e: &anyhow::Error) -> &'static str {
+/// Classify a `config get`/`set`/`unset` failure into a stable error_kind for
+/// the emit-then-bail Doc payload. Falls back to `invalid_value` for shapes
+/// that don't match the known buckets (parse-fail / not-found / no-spec).
+///
+/// The typed errors are read first, and they are what tells a key that is not
+/// there from a document whose shape contradicts the schema: the two failures
+/// the walkers used to word alike, which left the human channel saying one
+/// thing and `-o json` the other.
+fn classify_config_error(e: &anyhow::Error) -> &'static str {
     // A read-only config dir is a distinct, scriptable failure: the pre-flight in
-    // mutate_config_yaml surfaces a typed TargetNotWritable. Match the typed error
-    // first so its kind survives regardless of message phrasing.
-    if let Some(cfgd_core::errors::CfgdError::File(
-        cfgd_core::errors::FileError::TargetNotWritable { .. },
-    )) = e.downcast_ref::<cfgd_core::errors::CfgdError>()
-    {
-        return "target_not_writable";
+    // mutate_config_yaml surfaces a typed TargetNotWritable.
+    match e.downcast_ref::<cfgd_core::errors::CfgdError>() {
+        Some(cfgd_core::errors::CfgdError::File(
+            cfgd_core::errors::FileError::TargetNotWritable { .. },
+        )) => return "target_not_writable",
+        Some(cfgd_core::errors::CfgdError::Config(
+            cfgd_core::errors::ConfigError::KeyNotFound { .. },
+        )) => return "key_not_found",
+        _ => {}
+    }
+    if e.downcast_ref::<ShapeBlocked>().is_some() {
+        return "parse_failed";
     }
     let msg = e.to_string();
-    // A key whose parent holds a scalar is not a parse failure: the document
-    // read fine and the path named a child of a leaf, which is the same "no
-    // such key" the walker's absent-section arm already answers with.
-    if msg.contains("not found") || msg.contains("not a mapping") {
+    if msg.contains("not found") {
         "key_not_found"
     } else if msg.contains("no 'spec' section") || msg.contains("would become invalid") {
         "parse_failed"
@@ -851,16 +933,33 @@ spec:
         assert_eq!(leaf, &serde_yaml::Value::String("monokai".into()));
     }
 
+    // 'a' exists and holds a scalar the schema declares no fields under, so
+    // 'a.b' is a key that can never exist rather than a shape the document
+    // got wrong — the walk names the path it could not reach.
     #[test]
     fn walk_yaml_path_missing_key_errs_with_partial_path() {
         let yaml: serde_yaml::Value = serde_yaml::from_str("a: 1\n").unwrap();
         let err = walk_yaml_path(&yaml, "a.b.c").unwrap_err();
-        let msg = err.to_string();
-        // 'a' exists but is not a mapping → error mentions the partial prefix
-        assert!(
-            msg.contains("not a mapping") && msg.contains("a"),
-            "expected non-mapping error mentioning prefix 'a', got: {msg}"
-        );
+        assert_eq!(err.to_string(), "config error: key 'a.b' not found");
+    }
+
+    // The other half: `daemon` is a mapping in the Config schema, so a scalar
+    // there is a document whose shape contradicts it, and the refusal says
+    // which shape it found.
+    #[test]
+    fn walk_yaml_path_at_a_declared_mapping_names_the_shape_it_found() {
+        let yaml: serde_yaml::Value = serde_yaml::from_str("daemon: yes\n").unwrap();
+        let err = walk_yaml_path(&yaml, "daemon.reconcile").unwrap_err();
+        assert_eq!(err.to_string(), "'daemon' holds a scalar, not a mapping");
+    }
+
+    // A sequence is no arm of any union here, so it is a shape error whatever
+    // the schema says about the path.
+    #[test]
+    fn walk_yaml_path_blocked_by_a_sequence_names_it() {
+        let yaml: serde_yaml::Value = serde_yaml::from_str("a:\n  - 1\n").unwrap();
+        let err = walk_yaml_path(&yaml, "a.b").unwrap_err();
+        assert_eq!(err.to_string(), "'a' holds a sequence, not a mapping");
     }
 
     #[test]
@@ -1415,15 +1514,30 @@ spec:
         );
     }
 
-    // Target 3: walk_yaml_path_mut names the segment that resolved to a scalar,
-    // the same spelling the read walk uses.
-    // `a: 1` → attempting `a.b.c` finds `a` = scalar 1, not a mapping.
+    // Target 3: the setter refuses a blocked descent exactly as the read walk
+    // does, so a script reading one channel and a person reading the other are
+    // told the same thing. `a: 1` is a leaf the schema declares nothing under;
+    // `daemon: yes` is a mapping the document got wrong.
     #[test]
-    fn walk_yaml_path_mut_non_mapping_intermediate_errs() {
+    fn walk_yaml_path_mut_under_a_leaf_is_a_missing_key() {
         let mut yaml: serde_yaml::Value = serde_yaml::from_str("a: 1\n").unwrap();
         let err = walk_yaml_path_mut(&mut yaml, "a.b.c").unwrap_err();
-        let msg = err.to_string();
-        assert_eq!(msg, "'a' is not a mapping");
+        assert_eq!(err.to_string(), "config error: key 'a.b' not found");
+    }
+
+    #[test]
+    fn walk_yaml_path_mut_at_a_declared_mapping_names_the_shape_it_found() {
+        let mut yaml: serde_yaml::Value = serde_yaml::from_str("daemon: yes\n").unwrap();
+        let err = walk_yaml_path_mut(&mut yaml, "daemon.reconcile.interval").unwrap_err();
+        assert_eq!(err.to_string(), "'daemon' holds a scalar, not a mapping");
+    }
+
+    // The root of the walk is `spec` itself, which no segment names.
+    #[test]
+    fn walk_yaml_path_mut_names_the_root_when_the_document_is_not_a_mapping() {
+        let mut yaml: serde_yaml::Value = serde_yaml::from_str("- a\n").unwrap();
+        let err = walk_yaml_path_mut(&mut yaml, "profile").unwrap_err();
+        assert_eq!(err.to_string(), "'spec' holds a sequence, not a mapping");
     }
 
     // `daemon: null` is how a serialized `None` section reads back (and how a

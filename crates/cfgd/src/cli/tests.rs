@@ -23458,11 +23458,11 @@ fn walk_yaml_path_empty_segment_errors() {
 fn walk_yaml_path_traverse_into_scalar_errors() {
     let val: serde_yaml::Value = serde_yaml::from_str("a: 1").unwrap();
     let result = super::config_cmd::walk_yaml_path(&val, "a.b");
-    assert!(result.is_err());
     let msg = result.unwrap_err().to_string();
+    // A child of a leaf can never exist, so it reads as the missing key it is.
     assert!(
-        msg.contains("not a mapping"),
-        "should report not a mapping, got: {msg}"
+        msg.contains("key 'a.b' not found"),
+        "should report a missing key, got: {msg}"
     );
 }
 

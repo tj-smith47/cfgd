@@ -427,6 +427,21 @@ fn find_field_node<'a>(fields: &'a [FieldNode], path_parts: &[&str]) -> Option<&
     None
 }
 
+/// Whether the `Config` schema declares a MAPPING at this `spec`-relative
+/// path: a field carrying fields of its own, rather than a scalar leaf.
+///
+/// The config key walkers ask it about the path a value blocked their descent
+/// at. A scalar sitting where the schema declares a mapping is a document that
+/// contradicts the schema; a scalar sitting where the schema declares a value
+/// is a genuine leaf, and a child of one can never exist however the document
+/// is written — the two refusals a reader and a script must be able to tell
+/// apart.
+pub(super) fn config_field_is_mapping(path: &[&str]) -> bool {
+    find_schema("Config")
+        .and_then(|schema| find_field_node(&schema.fields, path))
+        .is_some_and(|field| !field.children.is_empty())
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExplainOutput {

@@ -375,18 +375,129 @@ fn a_key_under_a_genuine_leaf_is_refused_as_a_missing_key_by_both_verbs() {
     .unwrap();
 
     for args in [
-        vec!["-o", "json", "config", "get", "fileStrategy.nope"],
-        vec!["-o", "json", "config", "set", "fileStrategy.nope", "x"],
+        vec!["config", "get", "fileStrategy.nope"],
+        vec!["config", "set", "fileStrategy.nope", "x"],
+        vec!["config", "unset", "fileStrategy.nope"],
     ] {
         let out = run(home.path(), &args);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(
+            out.status.code(),
+            Some(6),
+            "a missing key exits 6 on every verb: {stderr}"
+        );
+        assert!(
+            stderr.contains("key 'fileStrategy.nope' not found"),
+            "the refusal names the path it walked: {stderr}"
+        );
+
+        let json: Vec<&str> = std::iter::once("-o")
+            .chain(std::iter::once("json"))
+            .chain(args.iter().copied())
+            .collect();
+        let out = run(home.path(), &json);
         let stdout = String::from_utf8_lossy(&out.stdout);
         assert!(
             stdout.contains("\"key_not_found\""),
             "a child of a leaf is a missing key, not a parse failure: {stdout}"
         );
-        assert!(
-            stdout.contains("fileStrategy") || out.status.code() == Some(6),
-            "the refusal names the path it walked: {stdout}"
+        assert_eq!(
+            out.status.code(),
+            Some(6),
+            "one kind, one exit code, on both channels: {stdout}"
         );
+    }
+}
+
+/// A document whose spec is `body`, laid out at the default config directory
+/// of a throwaway home.
+fn write_spec(home: &Path, body: &str) {
+    let dir = home.join(".config").join("cfgd");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("cfgd.yaml"),
+        format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: pin\nspec:\n{body}"
+        ),
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_value_standing_where_a_mapping_belongs_is_a_shape_failure_not_a_missing_key() {
+    // Three documents whose shape contradicts the schema, each named by the
+    // path it goes wrong at: a sequence where the theme union accepts a scalar
+    // or a mapping, a spec that is no mapping at all, and a scalar where the
+    // schema declares a section. None of them is a key a setter could create.
+    for (body, args, refusal) in [
+        (
+            "  output:\n    theme:\n      - dracula\n",
+            vec!["config", "set", "theme.name", "minimal"],
+            "'output.theme' holds a sequence, not a mapping",
+        ),
+        (
+            "  - a\n",
+            vec!["config", "set", "theme.name", "minimal"],
+            "'spec' holds a sequence, not a mapping",
+        ),
+        (
+            "  daemon: yes\n",
+            vec!["config", "set", "daemon.interval", "5m"],
+            "'daemon' holds a scalar, not a mapping",
+        ),
+    ] {
+        let home = tempfile::tempdir().unwrap();
+        write_spec(home.path(), body);
+        let before = stored_config(home.path());
+
+        let out = run(home.path(), &args);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains(refusal),
+            "the refusal names the path and the shape it found: {stderr}"
+        );
+        assert_eq!(out.status.code(), Some(1), "refused: {stderr}");
+
+        let json: Vec<&str> = std::iter::once("-o")
+            .chain(std::iter::once("json"))
+            .chain(args.iter().copied())
+            .collect();
+        let out = run(home.path(), &json);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            stdout.contains("\"parse_failed\""),
+            "a shape the document got wrong is not a key that is merely unset: {stdout}"
+        );
+        assert_eq!(
+            out.status.code(),
+            Some(1),
+            "the kind a script reads and the exit code agree: {stdout}"
+        );
+        assert_eq!(
+            stored_config(home.path()),
+            before,
+            "a refused write leaves the document alone"
+        );
+    }
+}
+
+#[test]
+fn the_documented_getter_answers_from_a_document_nothing_has_migrated() {
+    // `spec.theme` is the spelling before the presentation knobs moved under
+    // `spec.output`; both arms of the union still name a theme, and
+    // `config get theme.name` is what the docs print for either.
+    for body in ["  theme: dracula\n", "  theme:\n    name: dracula\n"] {
+        let home = tempfile::tempdir().unwrap();
+        write_spec(home.path(), body);
+
+        for key in ["theme.name", "output.theme.name"] {
+            let out = run(home.path(), &["config", "get", key]);
+            assert_eq!(
+                String::from_utf8_lossy(&out.stdout).trim(),
+                "dracula",
+                "{key} on {body:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
     }
 }

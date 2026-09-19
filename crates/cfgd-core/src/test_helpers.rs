@@ -1659,10 +1659,11 @@ pub fn callers_reaching(
 /// and a RAW literal has no escapes at all, so neither the line opening one
 /// nor any line inside it can be continued.
 ///
-/// The raw-literal scan ignores ordinary string literals, so an `r#` written
-/// inside one is read as an opener. That direction is the safe one: it can
-/// only SUPPRESS a fold — costing a walk one offender it would have caught —
-/// never join two lines that were never one.
+/// Which rows are source at all is [`LineMask`]'s answer: an `r#` written
+/// inside an ordinary literal or a comment is masked rather than read as an
+/// opener, so the scan stays in step with the rows below it. A scan tracking
+/// raw literals alone reads the `r"` ending a word like `"…provider"` as one,
+/// and every row after it is glued onto the line that word sits on.
 pub fn logical_source_lines(body: &str) -> Vec<(usize, String)> {
     let mut out: Vec<(usize, String)> = Vec::new();
     let mut continues = false;
