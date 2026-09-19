@@ -776,7 +776,12 @@ pub(in crate::cli) fn load_saved_plan(
                     "{shown} is not the payload of `cfgd plan -o json`: it does not carry both \
                      a `phases` and a `totalActions` key, which every plan output has"
                 ),
-                serde_json::json!({}),
+                // A stranger document and a malformed one share the
+                // `parse_failed` kind, so this is what a script reads to tell
+                // "well-formed JSON cfgd did not write" from "not JSON".
+                serde_json::json!({
+                    "reason": "it does not carry both a `phases` and a `totalActions` key"
+                }),
             ));
         }
         return Err(plan_refusal(

@@ -519,6 +519,13 @@ fn a_json_document_that_is_no_plan_output_is_refused_as_one() {
         let refusal = run_apply(&cli, &printer, &replay_args(&stranger)).unwrap_err();
         let payload = payload_of(&refusal);
         assert_eq!(payload["error"], "parse_failed", "{payload}");
+        // A malformed document refuses under the same kind with serde's own
+        // sentence, so the reason is the only thing separating the two on the
+        // wire.
+        assert_eq!(
+            payload["reason"], "it does not carry both a `phases` and a `totalActions` key",
+            "{payload}"
+        );
         let err = refusal.to_string();
         assert!(
             err.contains("is not the payload of `cfgd plan -o json`"),
