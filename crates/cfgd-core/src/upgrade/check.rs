@@ -80,7 +80,7 @@ pub fn resolved_interval(config: &UpdateConfig) -> Duration {
 /// conventions shared with npm's `update-notifier` and consoledonottrack.com,
 /// so a workstation already opted out of those tools' checks is opted out of
 /// cfgd's too without new configuration.
-const OPTOUT_VARS: [&str; 3] = ["CFGD_NO_UPDATE_CHECK", "NO_UPDATE_NOTIFIER", "DO_NOT_TRACK"];
+pub const OPTOUT_VARS: [&str; 3] = ["CFGD_NO_UPDATE_CHECK", "NO_UPDATE_NOTIFIER", "DO_NOT_TRACK"];
 
 /// The environment variable currently suppressing the automatic update check,
 /// or `None` when no opt-out is in effect. Precedence: `CFGD_NO_UPDATE_CHECK`,
@@ -285,21 +285,13 @@ mod tests {
 
     const HOUR: u64 = 3600;
 
-    const CFGD_VAR: &str = "CFGD_NO_UPDATE_CHECK";
-    const NPM_VAR: &str = "NO_UPDATE_NOTIFIER";
-    const DNT_VAR: &str = "DO_NOT_TRACK";
-
-    /// Guard all three opt-out vars unset. Every test that reaches
+    /// Guard every opt-out var unset. Every test that reaches
     /// [`should_check`] needs this: the gate reads the process environment, so a
     /// `DO_NOT_TRACK` exported in the developer's shell profile — or on a CI
     /// runner, which is exactly this feature's audience — would otherwise
     /// suppress the check a test expects to happen and fail it spuriously.
-    fn all_unset() -> (EnvVarGuard, EnvVarGuard, EnvVarGuard) {
-        (
-            EnvVarGuard::unset(CFGD_VAR),
-            EnvVarGuard::unset(NPM_VAR),
-            EnvVarGuard::unset(DNT_VAR),
-        )
+    fn all_unset() -> [EnvVarGuard; OPTOUT_VARS.len()] {
+        OPTOUT_VARS.map(EnvVarGuard::unset)
     }
 
     fn config(policy: UpdatePolicy) -> UpdateConfig {
@@ -688,8 +680,8 @@ mod tests {
         #[serial]
         fn cfgd_var_opts_out() {
             let _g = all_unset();
-            let _set = EnvVarGuard::set(CFGD_VAR, "1");
-            assert_eq!(update_optout_var(), Some(CFGD_VAR));
+            let _set = EnvVarGuard::set(OPTOUT_VARS[0], "1");
+            assert_eq!(update_optout_var(), Some(OPTOUT_VARS[0]));
             assert!(!should_check(
                 UpdatePolicy::Notify,
                 Duration::from_secs(HOUR),
@@ -702,8 +694,8 @@ mod tests {
         #[serial]
         fn npm_convention_var_opts_out() {
             let _g = all_unset();
-            let _set = EnvVarGuard::set(NPM_VAR, "1");
-            assert_eq!(update_optout_var(), Some(NPM_VAR));
+            let _set = EnvVarGuard::set(OPTOUT_VARS[1], "1");
+            assert_eq!(update_optout_var(), Some(OPTOUT_VARS[1]));
             assert!(!should_check(
                 UpdatePolicy::Notify,
                 Duration::from_secs(HOUR),
@@ -716,8 +708,8 @@ mod tests {
         #[serial]
         fn do_not_track_var_opts_out() {
             let _g = all_unset();
-            let _set = EnvVarGuard::set(DNT_VAR, "1");
-            assert_eq!(update_optout_var(), Some(DNT_VAR));
+            let _set = EnvVarGuard::set(OPTOUT_VARS[2], "1");
+            assert_eq!(update_optout_var(), Some(OPTOUT_VARS[2]));
             assert!(!should_check(
                 UpdatePolicy::Notify,
                 Duration::from_secs(HOUR),
@@ -730,7 +722,7 @@ mod tests {
         #[serial]
         fn do_not_track_zero_is_not_an_optout() {
             let _g = all_unset();
-            let _set = EnvVarGuard::set(DNT_VAR, "0");
+            let _set = EnvVarGuard::set(OPTOUT_VARS[2], "0");
             assert_eq!(update_optout_var(), None);
             assert!(should_check(
                 UpdatePolicy::Notify,
@@ -745,10 +737,10 @@ mod tests {
         fn do_not_track_false_and_empty_are_not_an_optout() {
             let _g = all_unset();
             {
-                let _set = EnvVarGuard::set(DNT_VAR, "false");
+                let _set = EnvVarGuard::set(OPTOUT_VARS[2], "false");
                 assert_eq!(update_optout_var(), None);
             }
-            let _set = EnvVarGuard::set(DNT_VAR, "");
+            let _set = EnvVarGuard::set(OPTOUT_VARS[2], "");
             assert_eq!(update_optout_var(), None);
         }
 
@@ -756,16 +748,16 @@ mod tests {
         #[serial]
         fn two_set_returns_higher_precedence() {
             let _g = all_unset();
-            let _npm = EnvVarGuard::set(NPM_VAR, "1");
-            let _dnt = EnvVarGuard::set(DNT_VAR, "1");
-            assert_eq!(update_optout_var(), Some(NPM_VAR));
+            let _npm = EnvVarGuard::set(OPTOUT_VARS[1], "1");
+            let _dnt = EnvVarGuard::set(OPTOUT_VARS[2], "1");
+            assert_eq!(update_optout_var(), Some(OPTOUT_VARS[1]));
         }
 
         #[test]
         #[serial]
         fn optout_wins_over_auto_policy_with_interval_elapsed() {
             let _g = all_unset();
-            let _set = EnvVarGuard::set(CFGD_VAR, "1");
+            let _set = EnvVarGuard::set(OPTOUT_VARS[0], "1");
             // Auto + no prior check would otherwise always check — the gate
             // must win regardless.
             assert!(!should_check(

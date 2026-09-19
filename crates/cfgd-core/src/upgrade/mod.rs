@@ -14,8 +14,8 @@ use crate::output::{Printer, Role};
 mod check;
 mod dedup;
 pub use check::{
-    UpdateAction, UpdateCheckEffects, UpdateCheckOutcome, resolve_action, resolved_interval,
-    run_update_check, should_check, update_optout_var,
+    OPTOUT_VARS, UpdateAction, UpdateCheckEffects, UpdateCheckOutcome, resolve_action,
+    resolved_interval, run_update_check, should_check, update_optout_var,
 };
 pub use dedup::{
     RideAlongOutcome, SkillStaleness, StandaloneSkillAction, StandaloneSkillOutcome,

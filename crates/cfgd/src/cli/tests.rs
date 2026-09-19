@@ -46832,21 +46832,23 @@ fn every_e2e_suite_runs_under_the_one_scratch_home() {
 /// hundreds across the suite, each one a wait and a failure mode no pin is
 /// asking about, and all of them in a test run that may have no network at all.
 /// The opt-out belongs to the spawn, so each fixture names the binary exactly
-/// once, inside its own `cfgd_bin` helper, and that helper names
-/// `CFGD_NO_UPDATE_CHECK` as the FIRST string literal of a `.env(` statement
-/// that runs: the statement is located between `fn cfgd_bin(` and its closing
-/// brace on the body with every literal and comment blanked, so no comment
-/// syntax can move the brace, and the name is then that statement's first
-/// literal read whole, so a mention in a comment, a name spelled in the VALUE
-/// slot, a longer name and one fragment of a `concat!` each set something
-/// other than the opt-out and are refused as such. Both of Cargo's spellings
-/// (`Command::cargo_bin("cfgd")`,
-/// `CARGO_BIN_EXE_cfgd`) count as the population tell and as the call sites
-/// counted, so a fixture reaching for the other one joins the rule rather
-/// than sitting outside it.
+/// once, inside its own `cfgd_bin` helper, and that helper names the variable
+/// `cfgd_core::upgrade::OPTOUT_VARS[0]` holds as the FIRST string literal of a
+/// `.env(` statement that runs: the statement is located between
+/// `fn cfgd_bin(` and its closing brace on the body with every literal and
+/// comment blanked, so no comment syntax can move the brace, and the name is
+/// then that statement's first literal read whole, so a mention in a comment,
+/// a name spelled in the VALUE slot, a longer name and one fragment of a
+/// `concat!` each set something other than the opt-out and are refused as
+/// such. The name is read off that production constant rather than spelled
+/// here, because a spelling of its own keeps passing once the gate reads some
+/// other variable and no fixture opts out any more. Both of Cargo's spellings
+/// (`Command::cargo_bin("cfgd")`, `CARGO_BIN_EXE_cfgd`) count as the
+/// population tell and as the call sites counted, so a fixture reaching for
+/// the other one joins the rule rather than sitting outside it.
 #[test]
 fn every_integration_fixture_spawning_the_binary_opts_out_of_the_update_check() {
-    const OPTOUT: &str = "CFGD_NO_UPDATE_CHECK";
+    const OPTOUT: &str = cfgd_core::upgrade::OPTOUT_VARS[0];
     const HELPER: &str = "fn cfgd_bin(";
     const SPAWNS: [&str; 2] = ["cargo_bin(\"cfgd\")", "CARGO_BIN_EXE_cfgd"];
 
