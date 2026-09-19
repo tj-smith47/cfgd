@@ -1032,7 +1032,7 @@ fn resolve_theme_config_carries_the_whole_block_not_just_the_preset_name() {
     )
     .expect("write config");
 
-    let theme = super::resolve_theme_config(&path, None).expect("spec.theme must resolve");
+    let theme = super::resolve_theme_config(&path, None).expect("spec.output.theme must resolve");
     assert_eq!(theme.name, "dracula");
     assert_eq!(
         theme.overrides.header.as_deref(),
@@ -1578,17 +1578,19 @@ fn every_knob_resolver_routes_through_resolve_knob() {
         Some((declared.split_whitespace().collect::<String>(), signature))
     }
 
-    /// Whether that parameter is the config path a knob resolver reads: the
-    /// reference forms (`Path`, once the `&` and any lifetime are off), the
-    /// `impl AsRef<Path>` form, and a generic parameter the declaration bounds
-    /// by `AsRef<Path>` in its generic list or its `where` clause. All three
-    /// are admitted rather than refused, so a resolver cannot spell its way
-    /// out of the rule through its signature.
+    /// Whether that parameter is the config path a knob resolver reads: any
+    /// type whose spelling NAMES `Path` or `PathBuf`, judged once the `&` and
+    /// any lifetime are off. The borrowed form, the owned `PathBuf`, an
+    /// `Option` of either, an `impl AsRef<Path>` and a generic parameter the
+    /// declaration bounds by `AsRef<Path>` in its generic list or its `where`
+    /// clause are all admitted rather than refused, so a resolver cannot spell
+    /// its way out of the rule through its signature.
     fn reads_a_config_path((declared, signature): &(String, String)) -> bool {
+        // Any spelling of either type counts, qualified or not: the question
+        // is what the parameter NAMES, and a wider read can only pull one more
+        // declaration into the rule.
         fn names_path(t: &str) -> bool {
-            matches!(t, "Path" | "std::path::Path")
-                || t.contains("AsRef<Path>")
-                || t.contains("AsRef<std::path::Path>")
+            t.contains("Path")
         }
         names_path(declared)
             || (!declared.is_empty()
