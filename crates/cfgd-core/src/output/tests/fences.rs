@@ -1029,21 +1029,14 @@ fn names_identifier(func: &str, ident: &str) -> bool {
     })
 }
 
-/// The walk's masking state across physical lines: whatever a line sits
-/// inside of that makes its text NOT source — a raw literal, an ordinary
-/// `"…"` literal (a `\`-continued one included: the escape arm keeps
-/// `in_plain` latched across the break), or a block comment.
-#[derive(Default)]
-struct LineMask {
-    raw_hashes: Option<usize>,
-    in_plain: bool,
-    comment_depth: usize,
-    /// Byte offset at which the line just advanced across stopped being
-    /// masked, when it began masked and ended one of its states.
-    resumed_at: Option<usize>,
-}
+use crate::test_helpers::LineMask;
 
 impl LineMask {
+    /// Whether the NEXT line begins inside a literal or comment.
+    fn masked(&self) -> bool {
+        self.raw_hashes.is_some() || self.in_plain || self.comment_depth > 0
+    }
+
     /// The source half of one line, advancing across it: everything from the
     /// point the line stopped being masked, less its own literal bodies and
     /// trailing comment.
@@ -1068,99 +1061,6 @@ impl LineMask {
             0
         };
         line.get(from..).unwrap_or("")
-    }
-
-    /// Whether the NEXT line begins inside a literal or comment.
-    fn masked(&self) -> bool {
-        self.raw_hashes.is_some() || self.in_plain || self.comment_depth > 0
-    }
-
-    /// Advance across one physical line: raw literals by the fold layer's own
-    /// open/close arithmetic, ordinary literals escape-aware (`\"` does not
-    /// close one, `\\` does not escape what follows), char literals whole
-    /// (`'"'` must not open plain-string state, while a lifetime's lone `'`
-    /// is left alone), `//` cutting the line and `/* … */` nesting across
-    /// lines.
-    fn advance(&mut self, line: &str) {
-        let bytes = line.as_bytes();
-        let mut i = 0;
-        self.resumed_at = None;
-        while i < bytes.len() {
-            if let Some(open) = self.raw_hashes {
-                if crate::test_helpers::raw_string_closes(bytes, i, open) {
-                    self.raw_hashes = None;
-                    i += 1 + open;
-                    self.resumed_at.get_or_insert(i);
-                } else {
-                    i += 1;
-                }
-                continue;
-            }
-            if self.in_plain {
-                match bytes[i] {
-                    b'\\' => i += 2,
-                    b'"' => {
-                        self.in_plain = false;
-                        i += 1;
-                        self.resumed_at.get_or_insert(i);
-                    }
-                    _ => i += 1,
-                }
-                continue;
-            }
-            if self.comment_depth > 0 {
-                if bytes[i] == b'*' && bytes.get(i + 1) == Some(&b'/') {
-                    self.comment_depth -= 1;
-                    i += 2;
-                    if self.comment_depth == 0 {
-                        self.resumed_at.get_or_insert(i);
-                    }
-                } else if bytes[i] == b'/' && bytes.get(i + 1) == Some(&b'*') {
-                    self.comment_depth += 1;
-                    i += 2;
-                } else {
-                    i += 1;
-                }
-                continue;
-            }
-            match bytes[i] {
-                b'"' => {
-                    self.in_plain = true;
-                    i += 1;
-                }
-                b'\'' => {
-                    if bytes.get(i + 1) == Some(&b'\\') {
-                        // The escaped byte sits at i + 2, so the closing-quote
-                        // search starts past it: searched from i + 2, an
-                        // escaped quote (`'\''`) is its own first hit and the
-                        // scan lands on the escaped byte instead of past the
-                        // literal.
-                        let after_escape = (i + 3).min(bytes.len());
-                        i = bytes[after_escape..]
-                            .iter()
-                            .position(|b| *b == b'\'')
-                            .map_or(bytes.len(), |p| after_escape + p + 1);
-                    } else if bytes.get(i + 2) == Some(&b'\'') {
-                        i += 3;
-                    } else {
-                        i += 1;
-                    }
-                }
-                b'/' if bytes.get(i + 1) == Some(&b'/') => return,
-                b'/' if bytes.get(i + 1) == Some(&b'*') => {
-                    self.comment_depth += 1;
-                    i += 2;
-                }
-                _ => {
-                    if let Some(open) = crate::test_helpers::raw_string_open(bytes, i) {
-                        self.raw_hashes = Some(open);
-                        i += 2 + open;
-                    } else {
-                        i += 1;
-                    }
-                }
-            }
-        }
     }
 }
 

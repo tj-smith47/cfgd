@@ -1666,14 +1666,14 @@ pub fn callers_reaching(
 pub fn logical_source_lines(body: &str) -> Vec<(usize, String)> {
     let mut out: Vec<(usize, String)> = Vec::new();
     let mut continues = false;
-    let mut raw_hashes: Option<usize> = None;
+    let mut mask = LineMask::default();
     for (n, line) in body.lines().enumerate() {
-        let opened_inside_raw = raw_hashes.is_some();
-        scan_raw_literals(line, &mut raw_hashes);
+        let opened_inside_raw = mask.in_raw();
+        mask.advance(line);
         let trimmed = line.trim_end();
         let trailing = trimmed.chars().rev().take_while(|c| *c == '\\').count();
         let opens_next =
-            !opened_inside_raw && raw_hashes.is_none() && trailing % 2 == 1 && !trimmed.is_empty();
+            !opened_inside_raw && !mask.in_raw() && trailing % 2 == 1 && !trimmed.is_empty();
         let piece = if opens_next {
             &trimmed[..trimmed.len() - 1]
         } else {
@@ -1700,14 +1700,17 @@ pub fn logical_source_lines(body: &str) -> Vec<(usize, String)> {
 ///
 /// A raw literal spanning rows is left alone, and so is every row inside one:
 /// it reproduces another file's bytes, where a quote is that fixture's text
-/// rather than a delimiter.
+/// rather than a delimiter. [`LineMask`] is what earns that claim — a quote
+/// inside an ordinary literal or a comment is not a delimiter either, and a
+/// scanner reading bytes alone takes the `r"` at the end of `"…provider"` for
+/// an opener and desynchronizes every row below it.
 pub fn folded_literal_lines(body: &str) -> Vec<(usize, String)> {
     let mut out: Vec<(usize, String)> = Vec::new();
-    let mut raw_hashes: Option<usize> = None;
+    let mut mask = LineMask::default();
     let mut continues = false;
     for (n, text) in logical_source_lines(body) {
-        let opened_inside_raw = raw_hashes.is_some();
-        scan_raw_literals(&text, &mut raw_hashes);
+        let opened_inside_raw = mask.in_raw();
+        mask.advance(&text);
         match out.last_mut() {
             Some((_, acc)) if continues => {
                 acc.push('\n');
@@ -1716,7 +1719,7 @@ pub fn folded_literal_lines(body: &str) -> Vec<(usize, String)> {
             _ => out.push((n, text)),
         }
         continues = !opened_inside_raw
-            && raw_hashes.is_none()
+            && !mask.in_raw()
             && out
                 .last()
                 .is_some_and(|(_, acc)| leaves_a_plain_literal_open(acc));
@@ -1764,29 +1767,112 @@ pub(crate) fn raw_string_closes(bytes: &[u8], i: usize, open: usize) -> bool {
     bytes[i] == b'"' && bytes[i + 1..].iter().take_while(|b| **b == b'#').count() >= open
 }
 
-/// Advance the raw-literal state across one physical line: `r`, some `#`s and
-/// a `"` opens one; a `"` followed by the same number of `#`s closes it.
-fn scan_raw_literals(line: &str, hashes: &mut Option<usize>) {
-    let bytes = line.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        match *hashes {
-            Some(open) => {
+/// The walk's masking state across physical lines: whatever a line sits
+/// inside of that makes its text NOT source — a raw literal, an ordinary
+/// `"…"` literal (a `\`-continued one included: the escape arm keeps
+/// `in_plain` latched across the break), or a block comment.
+#[derive(Default)]
+pub(crate) struct LineMask {
+    pub(crate) raw_hashes: Option<usize>,
+    pub(crate) in_plain: bool,
+    pub(crate) comment_depth: usize,
+    /// Byte offset at which the line just advanced across stopped being
+    /// masked, when it began masked and ended one of its states.
+    pub(crate) resumed_at: Option<usize>,
+}
+
+impl LineMask {
+    /// Advance across one physical line: raw literals by the fold layer's own
+    /// open/close arithmetic, ordinary literals escape-aware (`\"` does not
+    /// close one, `\\` does not escape what follows), char literals whole
+    /// (`'"'` must not open plain-string state, while a lifetime's lone `'`
+    /// is left alone), `//` cutting the line and `/* … */` nesting across
+    /// lines.
+    pub(crate) fn advance(&mut self, line: &str) {
+        let bytes = line.as_bytes();
+        let mut i = 0;
+        self.resumed_at = None;
+        while i < bytes.len() {
+            if let Some(open) = self.raw_hashes {
                 if raw_string_closes(bytes, i, open) {
-                    *hashes = None;
+                    self.raw_hashes = None;
                     i += 1 + open;
-                    continue;
+                    self.resumed_at.get_or_insert(i);
+                } else {
+                    i += 1;
                 }
+                continue;
             }
-            None => {
-                if let Some(open) = raw_string_open(bytes, i) {
-                    *hashes = Some(open);
-                    i += 2 + open;
-                    continue;
+            if self.in_plain {
+                match bytes[i] {
+                    b'\\' => i += 2,
+                    b'"' => {
+                        self.in_plain = false;
+                        i += 1;
+                        self.resumed_at.get_or_insert(i);
+                    }
+                    _ => i += 1,
+                }
+                continue;
+            }
+            if self.comment_depth > 0 {
+                if bytes[i] == b'*' && bytes.get(i + 1) == Some(&b'/') {
+                    self.comment_depth -= 1;
+                    i += 2;
+                    if self.comment_depth == 0 {
+                        self.resumed_at.get_or_insert(i);
+                    }
+                } else if bytes[i] == b'/' && bytes.get(i + 1) == Some(&b'*') {
+                    self.comment_depth += 1;
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+                continue;
+            }
+            match bytes[i] {
+                b'"' => {
+                    self.in_plain = true;
+                    i += 1;
+                }
+                b'\'' => {
+                    if bytes.get(i + 1) == Some(&b'\\') {
+                        // The escaped byte sits at i + 2, so the closing-quote
+                        // search starts past it: searched from i + 2, an
+                        // escaped quote (`'\''`) is its own first hit and the
+                        // scan lands on the escaped byte instead of past the
+                        // literal.
+                        let after_escape = (i + 3).min(bytes.len());
+                        i = bytes[after_escape..]
+                            .iter()
+                            .position(|b| *b == b'\'')
+                            .map_or(bytes.len(), |p| after_escape + p + 1);
+                    } else if bytes.get(i + 2) == Some(&b'\'') {
+                        i += 3;
+                    } else {
+                        i += 1;
+                    }
+                }
+                b'/' if bytes.get(i + 1) == Some(&b'/') => return,
+                b'/' if bytes.get(i + 1) == Some(&b'*') => {
+                    self.comment_depth += 1;
+                    i += 2;
+                }
+                _ => {
+                    if let Some(open) = raw_string_open(bytes, i) {
+                        self.raw_hashes = Some(open);
+                        i += 2 + open;
+                    } else {
+                        i += 1;
+                    }
                 }
             }
         }
-        i += 1;
+    }
+
+    /// Whether the line just advanced across ended inside a raw literal.
+    pub(crate) fn in_raw(&self) -> bool {
+        self.raw_hashes.is_some()
     }
 }
 
@@ -5215,8 +5301,15 @@ mod tests {
     /// that were never one, and a walk then reports a tell on a line that does
     /// not carry it. An escaped backslash is the same mistake at the end of an
     /// ordinary literal. The hashed and byte-raw forms take the hash-counting
-    /// arithmetic in `scan_raw_literals`, which the zero-hash case never
-    /// touches, so each holds a case of its own.
+    /// arithmetic in [`LineMask`], which the zero-hash case never touches, so
+    /// each holds a case of its own.
+    ///
+    /// The last two shapes are the OTHER direction: a quote that is not a
+    /// delimiter. An ordinary literal whose body ends in the letter `r`, and a
+    /// comment carrying a quoted word, each spell `r"` where a scanner reading
+    /// bytes alone sees an opener — and a row believed to sit inside a raw
+    /// literal can carry no continuation, so a real one below either shape is
+    /// dropped on the floor.
     #[test]
     fn the_continuation_fold_joins_only_a_real_continuation() {
         let body = concat!(
@@ -5230,13 +5323,19 @@ mod tests {
             "let e = br\"a byte raw ending in \\\n",
             "    and its next line\";\n",
             "let f = r##\"holds a \"# decoy and ends in \\\n",
-            "    still raw\"##;\n"
+            "    still raw\"##;\n",
+            "let g = \"a plain literal ending in provider\";\n",
+            "let h = \"a real continuation after it \\\n",
+            "    joins\";\n",
+            "//! a doc comment holding the word \"never\" and more\n",
+            "let i = \"a real continuation after that \\\n",
+            "    joins too\";\n"
         );
         let folded = logical_source_lines(body);
         assert_eq!(
             folded.len(),
-            10,
-            "only the first literal is continued: {folded:?}"
+            14,
+            "only a real continuation is joined: {folded:?}"
         );
         assert_eq!(folded[0].0, 1, "a fold reports its OPENING line");
         assert_eq!(
@@ -5274,6 +5373,19 @@ mod tests {
              so its line stands alone: {folded:?}"
         );
         assert_eq!(folded[9].0, 11, "the two-hash raw's next line is its own");
+        assert_eq!(folded[10].0, 12, "a closed plain literal stands alone");
+        assert_eq!(folded[11].0, 13);
+        assert_eq!(
+            folded[11].1, "let h = \"a real continuation after it joins\";",
+            "a plain literal whose body ends in `r` opens nothing, so the \
+             continuation below it still joins: {folded:?}"
+        );
+        assert_eq!(folded[12].0, 15, "the comment line stands alone");
+        assert_eq!(folded[13].0, 16);
+        assert_eq!(
+            folded[13].1, "let i = \"a real continuation after that joins too\";",
+            "a quote inside a comment opens nothing either: {folded:?}"
+        );
     }
 
     #[test]
