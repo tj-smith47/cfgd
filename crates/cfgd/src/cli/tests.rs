@@ -46832,11 +46832,14 @@ fn every_e2e_suite_runs_under_the_one_scratch_home() {
 /// hundreds across the suite, each one a wait and a failure mode no pin is
 /// asking about, and all of them in a test run that may have no network at all.
 /// The opt-out belongs to the spawn, so each fixture names the binary exactly
-/// once, inside its own `cfgd_bin` helper, and that helper sets
-/// `CFGD_NO_UPDATE_CHECK` on a `.env(` line that runs: the opt-out is read
-/// between `fn cfgd_bin(` and its closing brace on the body with every
-/// literal and comment blanked, so no comment syntax and no literal can move
-/// the brace or stand in for the line. Both of Cargo's spellings
+/// once, inside its own `cfgd_bin` helper, and that helper names
+/// `CFGD_NO_UPDATE_CHECK` as the FIRST string literal of a `.env(` statement
+/// that runs: the statement is located between `fn cfgd_bin(` and its closing
+/// brace on the body with every literal and comment blanked, so no comment
+/// syntax can move the brace, and the name is then that statement's first
+/// literal read whole, so a mention in a comment, a name spelled in the VALUE
+/// slot, a longer name and one fragment of a `concat!` each set something
+/// other than the opt-out and are refused as such. Both of Cargo's spellings
 /// (`Command::cargo_bin("cfgd")`,
 /// `CARGO_BIN_EXE_cfgd`) count as the population tell and as the call sites
 /// counted, so a fixture reaching for the other one joins the rule rather
@@ -46881,15 +46884,19 @@ fn every_integration_fixture_spawning_the_binary_opts_out_of_the_update_check() 
         // debugging, by one written inside a string, and by one sitting in
         // some other function, each of which leaves every spawn reaching
         // GitHub. The call is found on the blanked span, where nothing a
-        // comment or a literal holds survives; the NAME is read off the raw
-        // span at the same byte range, because it lives inside a string
-        // literal whose body the blanking spaces out. Scoping to the
-        // statement is what keeps a `.env` setting something else from
-        // pairing with the name written further down.
+        // comment or a literal holds survives; the name is then the
+        // statement's FIRST literal, paired off the raw span at the same byte
+        // range because a literal's body is what the blanking spaces out.
+        // Asking only whether the statement CARRIES the name reads a
+        // `.env(/* CFGD_NO_UPDATE_CHECK */ "OTHER", "1")`, a name written in
+        // the value slot, a longer `CFGD_NO_UPDATE_CHECKS` and a `concat!`
+        // fragment as the opt-out while the spawn still reaches GitHub.
         let code = &blanked[open..open + helper.len()];
         let sets_optout = code.match_indices(".env(").any(|(at, _)| {
             let end = code[at..].find(';').map_or(code.len(), |n| at + n);
-            helper[at..end].contains(OPTOUT)
+            span_literals(&code[at..end], &helper[at..end])
+                .first()
+                .is_some_and(|(_, name)| *name == OPTOUT)
         });
         if !sets_optout {
             offenders.push(format!(
