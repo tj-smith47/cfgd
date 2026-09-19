@@ -434,18 +434,20 @@ pub fn cmd_config_set(cli: &Cli, printer: &Printer, key: &str, value: &str) -> a
     // fall back to the default palette. This setter runs with a printer in
     // hand, which is what `Theme::from_preset`'s render-time fallback does not,
     // so the refusal belongs here. Both spellings of the block are covered:
-    // `output.theme` carrying a scalar IS the name.
+    // `output.theme` carrying a scalar IS the name. The word judged is the one
+    // the caller wrote rather than the `String` arm of the parsed value:
+    // `123`, `true`, `null` and `3.14` each parse as another YAML shape, and a
+    // shape that is no scalar at all reads back as no preset either.
     if matches!(written_key.as_str(), "output.theme" | "output.theme.name")
-        && let serde_yaml::Value::String(name) = &parsed_value
-        && let Some(accepted) = crate::cli::unknown_theme_preset(name)
+        && let Some(accepted) = crate::cli::unknown_theme_preset(value)
     {
         return Err(crate::cli::cli_error(
             key,
             "invalid_value",
-            format!("`{name}` is not a theme preset; accepted names: {accepted}"),
+            format!("`{value}` is not a theme preset; accepted names: {accepted}"),
             serde_json::json!({
                 "path": cfgd_core::to_posix_string(config_path),
-                "value": name,
+                "value": value,
                 "accepted": cfgd_core::output::Theme::PRESET_NAMES,
             }),
         ));

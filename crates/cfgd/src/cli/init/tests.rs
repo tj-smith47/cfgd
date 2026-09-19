@@ -3549,7 +3549,7 @@ fn cmd_init_from_git_applies_name_and_theme_overrides_together() {
     assert_eq!(
         cfg.spec.theme().map(|t| t.name.as_str()),
         Some("dracula"),
-        "spec.theme.name should be overridden to the --theme value"
+        "spec.output.theme.name should be overridden to the --theme value"
     );
 }
 

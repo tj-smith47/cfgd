@@ -1345,7 +1345,7 @@ pub(super) fn ensure_module_in_profile_doc(
 /// Derived from the command's own printer rather than built fresh: a sink
 /// built from nothing re-resolves colour and theme, and a lib call that does
 /// emit — a warning survives Quiet — would answer to the terminal instead of
-/// to `--no-color` and `spec.theme`.
+/// to `--no-color` and `spec.output.theme`.
 fn null_lib_printer(printer: &Printer) -> cfgd_core::output::Printer {
     printer.at_verbosity(cfgd_core::output::Verbosity::Quiet)
 }

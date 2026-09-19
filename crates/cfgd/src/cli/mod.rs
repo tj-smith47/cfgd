@@ -1379,7 +1379,7 @@ pub enum Command {
         #[arg(long)]
         install_daemon: bool,
 
-        /// Theme preset to write into the new config's spec.theme
+        /// Theme preset to write into the new config's spec.output.theme
         #[arg(
             long,
             value_name = "NAME",
