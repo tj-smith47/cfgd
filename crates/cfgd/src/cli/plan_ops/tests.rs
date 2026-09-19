@@ -3698,13 +3698,6 @@ fn a_plan_read_off_the_wire_takes_its_declared_manager_and_floor_from_the_module
     assert_eq!(restored[0].min_version.as_deref(), Some("0.11"));
 }
 
-/// The two facts the restore puts back are the MODULE's to state, and
-/// `modules::resolve_package` picks a manager by what this host holds, so a
-/// package installed between the plan and the replay moves the
-/// `(manager, canonical_name)` key while every recorded config input still
-/// stats identical. Passing the entry through would hand
-/// `package_survives_elision` a floor of `None` and elide an outdated copy as
-/// converged, so the file is refused instead.
 /// What a refusal puts on the wire, rendered through the CLI's own error sink.
 ///
 /// `restore_module_planner_inputs` runs after the file has already been read
@@ -3717,6 +3710,13 @@ fn refusal_payload(err: &anyhow::Error) -> serde_json::Value {
     cap.json().expect("an error doc carries a payload")
 }
 
+/// The two facts the restore puts back are the MODULE's to state, and
+/// `modules::resolve_package` picks a manager by what this host holds, so a
+/// package installed between the plan and the replay moves the
+/// `(manager, canonical_name)` key while every recorded config input still
+/// stats identical. Passing the entry through would hand
+/// `package_survives_elision` a floor of `None` and elide an outdated copy as
+/// converged, so the file is refused instead.
 #[test]
 fn a_plan_naming_a_package_the_modules_no_longer_route_the_same_way_is_refused() {
     let mut plan = make_plan(vec![(

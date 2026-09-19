@@ -814,6 +814,7 @@ pub fn resolve_color_choice(no_color: bool, color: ColorWhen) -> cfgd_core::outp
 /// `name` and nothing else, so the flag means exactly what `cfgd config set
 /// theme.name <preset>` would have persisted: the config's `overrides` still
 /// layer on top. With no config to read it stands alone as the whole block.
+// knob-resolver-ok: composes a whole ThemeConfig block, not one value with a default.
 pub fn resolve_theme_config(
     config_path: &Path,
     preset: Option<&str>,
@@ -856,6 +857,7 @@ pub fn resolve_theme_config(
 /// accepted spellings named, so none ever reaches here. `CFGD_USAGE_HINTS` is
 /// the one variable no flag binds, `--hints` and `--no-hints` having opposite
 /// polarities, so it is the one whose unreadable word this ignores in silence.
+// knob-resolver-ok: this IS the resolution every other resolver routes through.
 pub fn resolve_knob<T>(
     config_path: &Path,
     flag: Option<T>,

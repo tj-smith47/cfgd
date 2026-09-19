@@ -1320,19 +1320,32 @@ fn resolve_hints_enabled_folds_the_boolish_spellings_of_its_env_var() {
 
 /// Every global flag clap validates against a fixed value list, and whether the
 /// type behind it spells a variant in any case other than the one that list
-/// shows.
+/// shows. The population is read off `Cli::command()`, which covers a
+/// `PossibleValuesParser` and a `ValueEnum` alike, and every member falls in
+/// one of three classes:
 ///
-/// `--theme` names a preset, and `Theme::preset` answers the lowercase
-/// spelling alone, so folding case there would have clap accept a name the
-/// renderer then drops. The other two stand for `case_insensitive_enum!`
-/// types whose `as_str` is PascalCase, which is what `config get`, `explain`
-/// and the published schemas all show: a flag refusing that spelling makes the
-/// documented word a usage error, and an exported `CFGD_*` carrying it ends
-/// every invocation before dispatch.
+/// - DRIVEN: `--mask-env-values` and `--migration-policy` stand for
+///   `case_insensitive_enum!` types whose `as_str` is PascalCase, which is what
+///   `config get`, `explain` and the published schemas all show: a flag
+///   refusing that spelling makes the documented word a usage error, and an
+///   exported `CFGD_*` carrying it ends every invocation before dispatch. Both
+///   spellings of every variant run through the flag and the env var below.
+/// - LOWERCASE STORED TWIN: `--theme` names a preset, and `Theme::preset`
+///   answers the lowercase spelling alone, so folding case there would have
+///   clap accept a name the renderer then drops. Its stored twin
+///   `spec.output.theme.name` already serializes that lowercase name, so the
+///   rule is met without a fold.
+/// - NO STORED TWIN: `--color` and `--scope` mirror no `spec.*` field, so
+///   nothing can show a second casing of their words.
+///
+/// The last two classes are held to the fact that makes them safe: every word
+/// the flag accepts is already lowercase, so its list is the only spelling
+/// there is.
 #[test]
 #[serial_test::serial]
 fn every_enum_valued_global_flag_accepts_its_config_spelling() {
-    use cfgd_core::test_helpers::{EnvVarGuard, code_line, production_slice_of, workspace_root};
+    use cfgd_core::test_helpers::EnvVarGuard;
+    use clap::CommandFactory;
     use std::str::FromStr;
 
     struct Knob {
@@ -1377,51 +1390,69 @@ fn every_enum_valued_global_flag_accepts_its_config_spelling() {
         },
     ];
 
-    // A fourth such flag joins the population by being written into `Cli`, so
-    // the set the source shows and the set this pin classifies are compared
-    // rather than assumed.
-    let source = production_slice_of(&workspace_root().join("crates/cfgd/src/cli/mod.rs"));
-    let lines: Vec<String> = source.lines().map(code_line).collect();
-    let open = lines
-        .iter()
-        .position(|l| l.starts_with("pub struct Cli {"))
-        .expect("cli/mod.rs declares `pub struct Cli`");
-    let mut found: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    let mut pending = false;
-    for line in &lines[open + 1..] {
-        if line.starts_with('}') {
-            break;
-        }
-        pending |= line.contains("PossibleValuesParser");
-        let Some(rest) = line.trim_start().strip_prefix("pub ") else {
-            continue;
-        };
-        let name: String = rest
-            .chars()
-            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
-            .collect();
-        if !rest[name.len()..].starts_with(':') {
-            continue;
-        }
-        if pending {
-            found.insert(name);
-            pending = false;
-        }
-    }
+    // The population is clap's own, so a list written as a `ValueEnum` joins
+    // it beside one built with `PossibleValuesParser`, and a flag added to
+    // `Cli` in either shape fails here until it is classified.
+    let cmd = Cli::command();
+    let listed: Vec<&clap::Arg> = cmd
+        .get_arguments()
+        .filter(|a| {
+            // A `SetTrue` flag carries `true`/`false` as its values; it parses
+            // no word of its own, so it is no spelling for a config to show.
+            a.is_global_set()
+                && a.get_action().takes_values()
+                && !a.get_possible_values().is_empty()
+        })
+        .collect();
+
+    // `--theme` names a preset whose stored twin `spec.output.theme.name`
+    // already serializes lowercase; `--color` and `--scope` mirror no `spec.*`
+    // field at all, so neither has a second casing to accept. Both classes are
+    // held to that below rather than to the fold the driven flags carry.
+    let lowercase_stored_twin = ["theme"];
+    let no_stored_twin = ["color", "scope_arg"];
+    let found: std::collections::BTreeSet<String> =
+        listed.iter().map(|a| a.get_id().to_string()).collect();
     let classified: std::collections::BTreeSet<String> = knobs
         .iter()
         .map(|k| k.field.to_string())
-        .chain(std::iter::once("theme".to_string()))
+        .chain(
+            lowercase_stored_twin
+                .iter()
+                .chain(no_stored_twin.iter())
+                .map(|f| (*f).to_string()),
+        )
         .collect();
     assert!(
-        found.len() >= 3,
-        "the walk found {} value-list flags on `Cli`; it has stopped seeing them",
+        found.len() >= 5,
+        "the walk found {} value-list global flags; it has stopped seeing them",
         found.len()
     );
     assert_eq!(
         found, classified,
-        "every flag clap validates against a value list is either driven below or named as          lowercase-only above"
+        concat!(
+            "every global flag clap validates against a value list is either driven below ",
+            "or named above as one whose value list is the only spelling there is"
+        )
     );
+
+    for arg in listed
+        .iter()
+        .filter(|a| !knobs.iter().any(|k| k.field == a.get_id().as_str()))
+    {
+        for value in arg.get_possible_values() {
+            assert_eq!(
+                value.get_name(),
+                value.get_name().to_ascii_lowercase(),
+                concat!(
+                    "`--{}` folds no case, so every word it accepts must be the lowercase one ",
+                    "its config spelling uses: {}"
+                ),
+                arg.get_long().unwrap_or_default(),
+                value.get_name()
+            );
+        }
+    }
 
     for knob in &knobs {
         let _clear = EnvVarGuard::unset(knob.env);
@@ -1454,27 +1485,89 @@ fn every_enum_valued_global_flag_accepts_its_config_spelling() {
 /// precedence is what the catalog promises, and a resolver written by hand
 /// would answer a different order while reading as one of the family.
 ///
-/// The population is the free `resolve_*` functions of `cli/mod.rs` taking a
-/// `config_path`, which is the shape of a resolver folding a flag, a `CFGD_*`
-/// variable and a `spec.*` field into one answer. `resolve_theme_config`
-/// composes a whole `ThemeConfig` block out of the stored one plus a preset
-/// name, so it has no single value for a default to stand behind, and
-/// `resolve_knob` is the resolution itself.
+/// The population is the free `resolve_*` functions of `cli/mod.rs` whose first
+/// parameter is a `&Path`, which is the SHAPE of a resolver folding a flag, a
+/// `CFGD_*` variable and a `spec.*` field into one answer: a parameter name is
+/// the author's to pick, so admitting on one lets the next resolver spell its
+/// way out of the rule. `resolve_color_choice` and `resolve_phase_filter` read
+/// no config and fall out on that test. An exemption is a
+/// `// knob-resolver-ok:` line at the production site, where a maintainer
+/// editing the function sees it, and never a list held here.
 #[test]
 fn every_knob_resolver_routes_through_resolve_knob() {
     use cfgd_core::test_helpers::{
-        calls_free_fn, fn_declarations, production_slice_of, workspace_root,
+        calls_free_fn, carries_hatch, code_line, declared_fn_name, fn_declarations,
+        production_slice_of, workspace_root,
     };
 
+    /// The type of a declaration's first parameter, whitespace folded out, so
+    /// `&Path` and `& Path` read alike and a name never enters the answer.
+    fn first_param_type(code: &str) -> Option<String> {
+        let after = code.split_once("fn ")?.1;
+        let name_len = after
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .count();
+        let mut rest = &after[name_len..];
+        if rest.starts_with('<') {
+            let mut depth = 0i32;
+            let cut = rest.char_indices().find_map(|(i, c)| match c {
+                '<' => {
+                    depth += 1;
+                    None
+                }
+                '>' => {
+                    depth -= 1;
+                    (depth == 0).then_some(i + 1)
+                }
+                _ => None,
+            })?;
+            rest = &rest[cut..];
+        }
+        let rest = rest.strip_prefix('(')?;
+        let mut depth = 0i32;
+        let end = rest
+            .char_indices()
+            .find_map(|(i, c)| match c {
+                '(' | '[' | '<' => {
+                    depth += 1;
+                    None
+                }
+                ')' | ']' | '>' if depth == 0 => Some(i),
+                ')' | ']' | '>' => {
+                    depth -= 1;
+                    None
+                }
+                ',' if depth == 0 => Some(i),
+                _ => None,
+            })
+            .unwrap_or(rest.len());
+        Some(
+            rest[..end]
+                .split_once(':')?
+                .1
+                .split_whitespace()
+                .collect::<String>(),
+        )
+    }
+
     let source = production_slice_of(&workspace_root().join("crates/cfgd/src/cli/mod.rs"));
-    let exempt = ["resolve_knob", "resolve_theme_config"];
+    let lines: Vec<&str> = source.lines().collect();
+    let hatched: Vec<String> = lines
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| *i > 0 && carries_hatch(lines[i - 1], "knob-resolver-ok"))
+        .filter_map(|(_, line)| declared_fn_name(&code_line(line)))
+        .collect();
+
     let mut routed = Vec::new();
     let mut hand_written = Vec::new();
     for (name, owner, code) in fn_declarations(&source) {
-        if owner.is_some()
-            || !name.starts_with("resolve_")
-            || !code.contains("config_path: &Path")
-            || exempt.contains(&name.as_str())
+        if owner.is_some() || !name.starts_with("resolve_") || hatched.contains(&name) {
+            continue;
+        }
+        if !first_param_type(&code)
+            .is_some_and(|t| matches!(t.as_str(), "&Path" | "&std::path::Path"))
         {
             continue;
         }
@@ -1486,7 +1579,11 @@ fn every_knob_resolver_routes_through_resolve_knob() {
     }
     assert!(
         hand_written.is_empty(),
-        "a knob resolver must fold its flag, its `CFGD_*` variable and its `spec.*` field          through `resolve_knob`: {hand_written:?}"
+        concat!(
+            "a knob resolver must fold its flag, its `CFGD_*` variable and its `spec.*` ",
+            "field through `resolve_knob`: {:?}"
+        ),
+        hand_written
     );
     assert!(
         routed.len() >= 3,
