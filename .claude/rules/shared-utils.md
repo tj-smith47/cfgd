@@ -61,7 +61,7 @@ This file is an **INDEX**. The reasoning — why a helper exists, what breaks wi
 ## CLI parsing / validation
 
 - `canonical_bool_str(raw)` — a boolish env-var value (`1`/`yes`/`on`/… and their negatives) to clap's canonical `"true"`/`"false"`; `None` for anything else. Shared across the `cfgd` binary's env pre-normalization and the library's own manual boolean-env reads (`cli::resolve_hints_enabled`) because the two are separate crate compilations.
-- `cli::resolve_knob(config_path, flag, env, stored)` (`crates/cfgd/src/cli/mod.rs`) — the ONE precedence resolution behind every per-invocation knob: flag > `CFGD_*` env (read here, not through clap's `env =`) > the `spec.*` field > `T::default()`. Every knob resolver below is a call to it.
+- `cli::resolve_knob(config_path, flag, env, stored)` (`crates/cfgd/src/cli/mod.rs`) — the ONE precedence resolution behind every per-invocation knob: flag > `CFGD_*` env (read here, not through clap's `env =`) > the `spec.*` field > `T::default()`. Every knob resolver below is a call to it (`every_knob_resolver_routes_through_resolve_knob`).
 - `cli::resolve_hints_enabled(config_path, flag)` — whether closing `→` TUTORIAL hints render, over `CFGD_USAGE_HINTS` / `spec.output.usageHints`; the flag is the `--hints`/`--no-hints` pair collapsed through `cli::paired_flag`.
 - `cli::resolve_mask_env_values(config_path, flag)` — which declared env values render masked, over `CFGD_MASK_ENV_VALUES` / `spec.output.maskEnvValues`.
 - `cli::resolve_migration_policy(config_path, flag)` — what a document behind this build's schema gets, over `CFGD_MIGRATION_POLICY` / `spec.migrationPolicy`.
