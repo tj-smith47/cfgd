@@ -4,7 +4,8 @@ use std::sync::{Arc, Mutex};
 
 use cfgd_core::PathDisplayExt;
 use cfgd_core::test_helpers::{
-    blank_string_literals, carries_hatch, rust_sources_under, walked_file_body,
+    blank_non_code, blank_string_literals, carries_hatch, code_line, rust_sources_under,
+    walked_file_body,
 };
 
 const TEST_CONFIG_YAML: &str =
@@ -9738,7 +9739,7 @@ fn no_system_configurator_registration_is_gated_on_a_tool_probe() {
     let offenders: Vec<&str> = production
         .lines()
         .filter(|l| {
-            let code = l.split("//").next().unwrap_or("");
+            let code = code_line(l);
             code.contains("command_available")
         })
         .collect();
@@ -9764,7 +9765,7 @@ fn no_system_configurator_registration_is_gated_on_a_tool_probe() {
     let gated: Vec<&str> = block
         .lines()
         .filter(|l| {
-            let code = l.split("//").next().unwrap_or("");
+            let code = code_line(l);
             code.contains("cfg!(") || code.contains("#[cfg(")
         })
         .collect();
@@ -15991,18 +15992,29 @@ fn every_action_row_subject_opens_on_a_lowercase_verb() {
         ".action_status(",
         ".set_action_status(",
     ];
-    let sources: Vec<(std::path::PathBuf, String)> = core_production_sources()
+    /// One production source as this walk reads it: its path, its raw body,
+    /// and that body with every literal and comment blanked.
+    type SourceBody = (std::path::PathBuf, String, String);
+
+    // Each file is blanked ONCE and carried beside its raw body: every name
+    // lookup, brace match, literal derivation and callee scan below reads the
+    // blanked copy, and the raw one supplies the text a literal renders.
+    let sources: Vec<SourceBody> = core_production_sources()
         .into_iter()
         .filter(|(path, _)| {
             let p = path.to_string_lossy().replace('\\', "/");
             p.contains("/reconciler/") || p.contains("/backup/")
+        })
+        .map(|(path, body)| {
+            let blanked = blank_non_code(&body);
+            (path, body, blanked)
         })
         .collect();
 
     /// The string literals a function body renders, with the callees it
     /// reaches (up to `depth` calls deep), as `(file, line, literal)`.
     fn producer_literals(
-        sources: &[(std::path::PathBuf, String)],
+        sources: &[SourceBody],
         name: &str,
         depth: usize,
         seen: &mut Vec<String>,
@@ -16012,26 +16024,27 @@ fn every_action_row_subject_opens_on_a_lowercase_verb() {
         }
         seen.push(name.to_string());
         let mut out = Vec::new();
-        for (path, body) in sources {
-            let Some(at) = body
+        for (path, body, blanked) in sources {
+            let Some(at) = blanked
                 .find(&format!("fn {name}("))
-                .or_else(|| body.find(&format!("fn {name}<")))
+                .or_else(|| blanked.find(&format!("fn {name}<")))
             else {
                 continue;
             };
-            let Some(open) = body[at..].find('{').map(|i| at + i) else {
+            let Some(open) = blanked[at..].find('{').map(|i| at + i) else {
                 continue;
             };
-            let fn_body = brace_span(body, open);
+            let fn_body = brace_span(body, blanked, open);
+            let fn_code = &blanked[open..open + fn_body.len()];
             let base_line = body[..open].matches('\n').count();
-            for (rel, lit) in string_literals(fn_body) {
+            for (rel, lit) in span_literals(fn_code, fn_body) {
                 out.push((
                     path.clone(),
                     base_line + fn_body[..rel].matches('\n').count(),
-                    lit,
+                    lit.to_string(),
                 ));
             }
-            for callee in callee_names(fn_body) {
+            for callee in callee_names(fn_code) {
                 out.extend(producer_literals(sources, &callee, depth - 1, seen));
             }
             break;
@@ -16041,7 +16054,7 @@ fn every_action_row_subject_opens_on_a_lowercase_verb() {
 
     /// Resolve the expression in a subject slot to the literals it renders.
     fn resolve(
-        sources: &[(std::path::PathBuf, String)],
+        sources: &[SourceBody],
         path: &std::path::Path,
         body: &str,
         at: usize,
@@ -16106,7 +16119,7 @@ fn every_action_row_subject_opens_on_a_lowercase_verb() {
     let mut judged = Vec::new();
     let mut notes = Vec::new();
     let mut offenders = Vec::new();
-    for (path, body) in &sources {
+    for (path, body, _) in &sources {
         let lines: Vec<&str> = body.lines().collect();
         for opener in OPENERS {
             for (at, _) in body.match_indices(opener) {
@@ -16140,7 +16153,7 @@ fn every_action_row_subject_opens_on_a_lowercase_verb() {
                     }
                     let marked = |marker: &str| {
                         label_hatched(&lines, n, marker)
-                            || sources.iter().any(|(p, b)| {
+                            || sources.iter().any(|(p, b, _)| {
                                 p == &lit_path
                                     && label_hatched(
                                         &b.lines().collect::<Vec<_>>(),
@@ -17055,71 +17068,65 @@ fn literal_head(expr: &str) -> Option<String> {
     None
 }
 
-/// Every string literal in `body` as `(byte offset, literal)`, comment lines
-/// excluded. Char literals (`'"'`) are stepped over so they cannot open one.
-fn string_literals(body: &str) -> Vec<(usize, String)> {
+/// Every string literal in a span of `blanked` as `(byte offset relative to
+/// the span, its raw text)`, where `blanked` is the whole body as
+/// [`blank_non_code`] renders it and `raw` the same byte range of the body
+/// itself.
+///
+/// A `"` still standing on the blanked body is a DELIMITER and nothing else:
+/// every literal body, every comment and every char literal is spaces there,
+/// so the quotes pair off in order and the raw bytes between a pair are the
+/// literal. That is also what makes a raw literal need no arm of its own
+/// (`r#"` keeps its quote, its body is blanked, an inner `"` with it) and a
+/// literal inside a comment vanish rather than be excluded by a rule.
+fn span_literals<'a>(blanked: &str, raw: &'a str) -> Vec<(usize, &'a str)> {
+    let mut quotes = blanked.match_indices('"').map(|(i, _)| i);
     let mut out = Vec::new();
-    let bytes = body.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'/' if bytes.get(i + 1) == Some(&b'/') => {
-                i = body[i..].find('\n').map_or(bytes.len(), |n| i + n);
-            }
-            b'\'' if bytes.get(i + 2) == Some(&b'\'') => i += 3,
-            b'"' => {
-                let start = i;
-                i += 1;
-                let mut lit = String::new();
-                while i < bytes.len() && bytes[i] != b'"' {
-                    if bytes[i] == b'\\' {
-                        i += 1;
-                    }
-                    lit.push(bytes[i] as char);
-                    i += 1;
-                }
-                out.push((start, lit));
-                i += 1;
-            }
-            _ => i += 1,
-        }
+    while let (Some(open), Some(close)) = (quotes.next(), quotes.next()) {
+        out.push((open, &raw[open + 1..close]));
     }
     out
 }
 
-/// The text inside the brace block opened at `open`, braces inside string
-/// literals (`"{}"`) and `//` comments not counted.
-fn brace_span(body: &str, open: usize) -> &str {
-    let bytes = body.as_bytes();
+/// One line with its trailing `//` comment cut but its literals intact.
+///
+/// [`code_line`] answers where the code ends, on a copy whose literals are
+/// blanked so a `//` written inside one does not cut; the cut is then taken on
+/// the raw line, which that copy indexes byte for byte. Reach for it where the
+/// tell the walk looks for is written INSIDE a literal, which [`code_line`]'s
+/// own return would have spaced out.
+fn commentless(line: &str) -> &str {
+    &line[..code_line(line).len()]
+}
+
+/// The text of the brace block opened at `open`, matched on `blanked` and
+/// sliced off `raw`.
+///
+/// `blanked` is the same body with every literal and comment blanked whole by
+/// [`blank_non_code`], which indexes `raw` byte for byte, so the depth count
+/// is a bare `{`/`}` tally: no brace inside a literal, a line comment, a block
+/// comment or a row of any of them that spans several lines can move the span.
+fn brace_span<'a>(raw: &'a str, blanked: &str, open: usize) -> &'a str {
+    debug_assert_eq!(
+        blanked.as_bytes().get(open),
+        Some(&b'{'),
+        "a brace span opens at a brace the blanked body still carries"
+    );
+    let bytes = blanked.as_bytes();
     let mut depth = 0usize;
-    let mut i = open;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'/' if bytes.get(i + 1) == Some(&b'/') => {
-                i = body[i..].find('\n').map_or(bytes.len(), |n| i + n);
-            }
-            b'"' => {
-                i += 1;
-                while i < bytes.len() && bytes[i] != b'"' {
-                    if bytes[i] == b'\\' {
-                        i += 1;
-                    }
-                    i += 1;
-                }
-            }
-            b'\'' if bytes.get(i + 2) == Some(&b'\'') => i += 2,
+    for (i, byte) in bytes.iter().enumerate().skip(open) {
+        match byte {
             b'{' => depth += 1,
             b'}' => {
-                depth -= 1;
+                depth = depth.saturating_sub(1);
                 if depth == 0 {
-                    return &body[open..=i];
+                    return &raw[open..=i];
                 }
             }
             _ => {}
         }
-        i += 1;
     }
-    &body[open..]
+    &raw[open..]
 }
 
 /// The free functions `body` calls, by name: an identifier followed by `(`
@@ -35027,8 +35034,7 @@ fn every_windows_manager_install_the_cli_emits_comes_from_its_declaration() {
         let mut out: Vec<Option<String>> = Vec::with_capacity(lines.len());
         let mut open: Vec<String> = Vec::new();
         for (_, line) in lines {
-            let blanked = cfgd_core::test_helpers::blank_string_literals(line);
-            let code = blanked.split("//").next().unwrap_or_default();
+            let code = code_line(line);
             let word = line.find(WORD);
             let mut at_word: Option<Option<String>> = None;
             for (at, ch) in code.char_indices() {
@@ -35508,11 +35514,11 @@ fn section_argument_spans(code: &str) -> Vec<(usize, usize)> {
     let scan: String = code
         .lines()
         .map(|line| {
-            let blanked = cfgd_core::test_helpers::blank_string_literals(line);
-            match blanked.find("//") {
-                Some(at) => format!("{}{}", &blanked[..at], " ".repeat(blanked.len() - at)),
-                None => blanked,
-            }
+            // Padded back to the line's own width, so every offset the
+            // scan reports still indexes `code` itself.
+            let code = code_line(line);
+            let cut = line.len() - code.len();
+            format!("{code}{}", " ".repeat(cut))
         })
         .collect::<Vec<_>>()
         .join("\n");
@@ -37004,41 +37010,6 @@ fn every_catalog_sourced_sources_column_can_be_absent() {
 /// no operand to drop.
 #[test]
 fn every_bootstrap_failure_names_what_it_installed() {
-    /// The struct-literal body after `BootstrapFailed {`, brace-matched with
-    /// string literals and line comments skipped — a `format!("{name} …")`
-    /// carries braces of its own, and a naive depth count closes on them.
-    fn literal_body(src: &str, open: usize) -> Option<&str> {
-        let bytes = src.as_bytes();
-        let mut depth = 0usize;
-        let mut i = open;
-        while i < bytes.len() {
-            match bytes[i] {
-                b'"' => {
-                    i += 1;
-                    while i < bytes.len() && bytes[i] != b'"' {
-                        i += if bytes[i] == b'\\' { 2 } else { 1 };
-                    }
-                }
-                b'/' if bytes.get(i + 1) == Some(&b'/') => {
-                    while i < bytes.len() && bytes[i] != b'\n' {
-                        i += 1;
-                    }
-                    continue;
-                }
-                b'{' => depth += 1,
-                b'}' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        return Some(&src[open + 1..i]);
-                    }
-                }
-                _ => {}
-            }
-            i += 1;
-        }
-        None
-    }
-
     /// The leading identifier of a field's expression — `(*name).to_string()`
     /// and `manager_name.into()` both name their binding, and a literal
     /// (`"brew".into()`) names none.
@@ -37126,11 +37097,21 @@ fn every_bootstrap_failure_names_what_it_installed() {
     let mut seen = 0usize;
     let mut offenders = Vec::new();
     for (path, body) in &files {
+        // Blanked once per file: the construction is located, and its braces
+        // matched, on a body where a `format!("{name} …")` placeholder, a
+        // commented-out construction and a brace inside either are already
+        // spaces. The FIELDS come back raw, because the message's own
+        // placeholders are what `names_only_the_manager` reads.
+        let blanked = blank_non_code(body);
         let mut from = 0usize;
-        while let Some(hit) = body[from..].find("BootstrapFailed {") {
+        while let Some(hit) = blanked[from..].find("BootstrapFailed {") {
             let open = from + hit + "BootstrapFailed ".len();
             from = open + 1;
-            let Some(fields) = literal_body(body, open) else {
+            let span = brace_span(body, &blanked, open);
+            let Some(fields) = span
+                .strip_prefix('{')
+                .and_then(|inner| inner.strip_suffix('}'))
+            else {
                 continue;
             };
             seen += 1;
@@ -38445,7 +38426,7 @@ fn call_closure_reaches(source: &str, entry: &str, needle: &str) -> bool {
             continue;
         };
         for line in &lines[*from..=*to] {
-            let code = blank_string_literals(line.split("//").next().unwrap_or(line));
+            let code = code_line(line);
             if code.contains(needle) {
                 return true;
             }
@@ -39563,7 +39544,7 @@ fn no_production_slot_hardcodes_the_arrow_glyph() {
                 let code = line.trim_start();
                 // A trailing `// old → new` on a code line is still a
                 // comment: only the part before the FIRST `//` is code.
-                let code_only = code.split("//").next().unwrap_or(code);
+                let code_only = commentless(code);
                 if !code_only.contains('→') {
                     continue;
                 }
@@ -39801,7 +39782,7 @@ fn no_production_site_joins_the_module_cache_segment_by_hand() {
             let lines = cfgd_core::test_helpers::logical_source_lines(&production);
             let in_git_rs = path.ends_with("modules/git.rs");
             for (i, (n, line)) in lines.iter().enumerate() {
-                let code = line.split("//").next().unwrap_or(line);
+                let code = commentless(line);
                 let is_offender = code.contains("join(\"modules\")")
                     || code.contains(".module-cache")
                     || (!in_git_rs && code.contains("join(crate::MODULE_CACHE_SEGMENT)"));
@@ -39870,7 +39851,7 @@ fn every_recorded_origin_names_the_layer_that_delivered_it() {
             let production = cfgd_core::test_helpers::production_slice_of(&path);
             let lines = cfgd_core::test_helpers::logical_source_lines(&production);
             for (i, (n, line)) in lines.iter().enumerate() {
-                let code = line.split("//").next().unwrap_or(line);
+                let code = code_line(line);
                 if !code.contains("origin: LOCAL_LAYER") {
                     continue;
                 }
@@ -41414,7 +41395,8 @@ fn opens_a_serialized_span(line: &str, serializing: &std::collections::BTreeSet<
     if line.contains("json!") || DIGEST_COMPOSERS.iter().any(|call| line.contains(call)) {
         return true;
     }
-    let code = line.split("//").next().unwrap_or(line).trim_end();
+    let code = code_line(line);
+    let code = code.trim_end();
     let Some(head) = code.strip_suffix('{') else {
         return false;
     };
@@ -41637,7 +41619,7 @@ fn native_paths_in_declared_documents(region: &str) -> (Vec<(usize, String)>, us
             // `declared_fn_spans` takes. Counted raw, one such line leaves the
             // depth permanently positive and the span swallows the rest of the
             // file, attributing every later render to this document.
-            let code = blank_string_literals(text.split("//").next().unwrap_or(text));
+            let code = code_line(text);
             depth += code.matches(['(', '[', '{']).count() as i32;
             depth -= code.matches([')', ']', '}']).count() as i32;
             judged.push(n + i);
@@ -41647,7 +41629,7 @@ fn native_paths_in_declared_documents(region: &str) -> (Vec<(usize, String)>, us
             // quote to a per-line blanker, which would eat the `;` that ends
             // the statement.
             let ends = |text: &str| text.trim_end().ends_with([';', '?', ')']);
-            if depth <= 0 && (ends(text) || ends(text.split("//").next().unwrap_or(text))) {
+            if depth <= 0 && (ends(text) || ends(&code_line(text))) {
                 break;
             }
             // A source the blanking still cannot balance (a macro spelling one
@@ -44880,7 +44862,7 @@ fn no_doctor_section_or_verdict_borrows_the_managed_resource_vocabulary() {
     let mut presence: Vec<String> = Vec::new();
     let plines: Vec<&str> = production.lines().collect();
     for (i, line) in plines.iter().enumerate() {
-        let code = blank_string_literals(line.split("//").next().unwrap_or(line));
+        let code = code_line(line);
         if !PRESENCE_TELLS.iter().any(|t| code.contains(t)) || carries_hatch(line, PRESENCE_HATCH) {
             continue;
         }
@@ -44958,7 +44940,7 @@ fn every_verb_composes_its_drift_predicate_once() {
         let mut open: Vec<(String, usize, i32, bool)> = Vec::new();
         let mut depth: i32 = 0;
         for (i, line) in lines.iter().enumerate() {
-            let code = line.split("//").next().unwrap_or(line);
+            let code = code_line(line);
             if let Some(at) = code.find("fn ") {
                 let rest = &code[at + 3..];
                 let end = rest
@@ -45001,7 +44983,7 @@ fn every_verb_composes_its_drift_predicate_once() {
         let lines: Vec<&str> = body.lines().collect();
         let spans = fn_spans(&lines);
         let mut last_hit: Option<usize> = None;
-        let code = |l: &str| l.split("//").next().unwrap_or(l).to_string();
+        let code = code_line;
         for i in 0..lines.len() {
             // The chain's own first line, so a hatch above it is the hatch of
             // the thing it names; comments are cut, or a rustdoc paragraph
@@ -45760,7 +45742,7 @@ fn every_scripts_inventory_a_surface_renders_comes_from_the_one_composer() {
             let body = cfgd_core::test_helpers::production_slice_of(&path);
             let lines: Vec<&str> = body.lines().collect();
             for (n, line) in lines.iter().enumerate() {
-                let code = line.split("//").next().unwrap_or(line);
+                let code = commentless(line);
                 // The cfgd-core root is reached through `..`, so the walked
                 // path carries that hop and the match is on the tail.
                 if !rel.ends_with(COMPOSER) {
@@ -45776,7 +45758,7 @@ fn every_scripts_inventory_a_surface_renders_comes_from_the_one_composer() {
                         lines[..n]
                             .iter()
                             .rev()
-                            .map(|l| l.split("//").next().unwrap_or(l).trim_end())
+                            .map(|l| commentless(l).trim_end())
                             .find(|c| !c.trim().is_empty())
                             .is_some_and(|c| SECTION_SLOTS.iter().any(|s| c.ends_with(s)))
                     };
@@ -45978,7 +45960,7 @@ fn every_hook_table_a_production_site_builds_reads_the_one_hook_set() {
                 if carries_hatch(line, HATCH) {
                     hatched = true;
                 }
-                let code = line.split("//").next().unwrap_or(line);
+                let code = commentless(line);
                 for hook in HOOKS {
                     if code.contains(hook) && !named.contains(hook) {
                         named.push(hook);
@@ -46319,10 +46301,7 @@ fn no_gated_value_result_reaches_a_name_column() {
         let lines: Vec<&str> = production.lines().collect();
         // Literals blanked and comments cut, so neither a documented spelling
         // nor the hatch marker itself reads as a call.
-        let code: Vec<String> = lines
-            .iter()
-            .map(|l| blank_string_literals(l.split("//").next().unwrap_or(l)))
-            .collect();
+        let code: Vec<String> = lines.iter().map(|l| code_line(l)).collect();
         let joined = code.join("\n");
         // A let-binding is followed to its uses inside the function that holds
         // it, so the walk needs each hit's enclosing span. Both are derived
@@ -46468,7 +46447,7 @@ fn a_let_bound_gate_annotation_is_judged_by_the_slot_its_name_reaches() {
 fn declared_fn_spans(lines: &[&str]) -> Vec<(String, usize, usize)> {
     let mut spans = Vec::new();
     for (i, line) in lines.iter().enumerate() {
-        let code = blank_string_literals(line.split("//").next().unwrap_or(line));
+        let code = code_line(line);
         let Some(at) = code.find("fn ") else { continue };
         let qualifiers = code[..at].trim();
         if !(qualifiers.is_empty()
@@ -46489,7 +46468,7 @@ fn declared_fn_spans(lines: &[&str]) -> Vec<(String, usize, usize)> {
         let mut opened = false;
         let mut last = i;
         for (j, l) in lines.iter().enumerate().skip(i) {
-            let code = blank_string_literals(l.split("//").next().unwrap_or(l));
+            let code = code_line(l);
             depth += code.matches('{').count() as i32 - code.matches('}').count() as i32;
             opened |= code.contains('{');
             last = j;
@@ -46527,7 +46506,7 @@ fn fact_class_reaches(source: &str, entry: &str, hatch_allowed: bool) -> Vec<Str
             continue;
         };
         for n in *from..=*to {
-            let code = blank_string_literals(lines[n].split("//").next().unwrap_or(lines[n]));
+            let code = code_line(lines[n]);
             for cand in &names {
                 if code.contains(&format!("{cand}(")) {
                     queue.push(cand.clone());
@@ -46855,10 +46834,10 @@ fn every_e2e_suite_runs_under_the_one_scratch_home() {
 /// The opt-out belongs to the spawn, so each fixture names the binary exactly
 /// once, inside its own `cfgd_bin` helper, and that helper sets
 /// `CFGD_NO_UPDATE_CHECK` on a `.env(` line that runs: the opt-out is read
-/// between `fn cfgd_bin(` and its closing brace, which a brace inside a
-/// comment cannot move, and off the code part of each line, so an opt-out
-/// written as a comment (a whole line, a trailing one, a `///` line) sets
-/// nothing. Both of Cargo's spellings (`Command::cargo_bin("cfgd")`,
+/// between `fn cfgd_bin(` and its closing brace on the body with every
+/// literal and comment blanked, so no comment syntax and no literal can move
+/// the brace or stand in for the line. Both of Cargo's spellings
+/// (`Command::cargo_bin("cfgd")`,
 /// `CARGO_BIN_EXE_cfgd`) count as the population tell and as the call sites
 /// counted, so a fixture reaching for the other one joins the rule rather
 /// than sitting outside it.
@@ -46881,33 +46860,38 @@ fn every_integration_fixture_spawning_the_binary_opts_out_of_the_update_check() 
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let helper = body.find(HELPER).and_then(|at| {
-            body[at..]
-                .find('{')
-                .map(|open| brace_span(&body[at..], open))
-        });
-        let Some(helper) = helper else {
+        // Blanked once: the helper is located, and its braces matched, on a
+        // body carrying no comment and no literal, so neither a `{` written
+        // in either nor a row of one that spans several lines can move the
+        // span's ends.
+        let blanked = blank_non_code(&body);
+        let helper = blanked
+            .find(HELPER)
+            .and_then(|at| blanked[at..].find('{').map(|rel| at + rel))
+            .map(|open| (open, brace_span(&body, &blanked, open)));
+        let Some((open, helper)) = helper else {
             offenders.push(format!(
                 "{name} — spawns the binary with no `cfgd_bin` helper"
             ));
             continue;
         };
-        // The opt-out is the SPAWN's, so only a line that runs inside the
-        // helper counts: read file-wide it is satisfied by the name surviving
-        // in a doc comment, by a `.env` line commented out while debugging,
-        // and by one sitting in some other function, each of which leaves
-        // every spawn reaching GitHub.
-        if !helper
-            .lines()
-            .map(|line| {
-                // `code_line` would blank the literal the name itself lives
-                // in, so the cut point is found on a blanked copy and taken
-                // on the raw line, which the blanking indexes byte for byte.
-                let end = blank_string_literals(line).find("//").unwrap_or(line.len());
-                &line[..end]
-            })
-            .any(|code| code.contains(".env(") && code.contains(OPTOUT))
-        {
+        // The opt-out is the SPAWN's, so only a statement that RUNS inside
+        // the helper counts: read otherwise it is satisfied by the name
+        // surviving in a doc comment, by a `.env` line commented out while
+        // debugging, by one written inside a string, and by one sitting in
+        // some other function, each of which leaves every spawn reaching
+        // GitHub. The call is found on the blanked span, where nothing a
+        // comment or a literal holds survives; the NAME is read off the raw
+        // span at the same byte range, because it lives inside a string
+        // literal whose body the blanking spaces out. Scoping to the
+        // statement is what keeps a `.env` setting something else from
+        // pairing with the name written further down.
+        let code = &blanked[open..open + helper.len()];
+        let sets_optout = code.match_indices(".env(").any(|(at, _)| {
+            let end = code[at..].find(';').map_or(code.len(), |n| at + n);
+            helper[at..end].contains(OPTOUT)
+        });
+        if !sets_optout {
             offenders.push(format!(
                 "{name} — no `.env(` line setting {OPTOUT} inside `cfgd_bin`; its spawns never opt out"
             ));
@@ -47176,5 +47160,76 @@ fn every_declared_env_value_a_surface_masks_is_decided_by_the_one_masking() {
     assert!(
         witnesses >= 2,
         "the walk found {witnesses} masking sites; `module show` and `profile show` both mask one"
+    );
+}
+
+/// No walk in this file reads Rust syntax with a scanner of its own.
+///
+/// Every scanner here answers one question (where does the code on this line
+/// end, which brace closes this one, is this `"` a delimiter), and each answer
+/// needs the same arms: raw literals with their hash counts, escapes, `\`
+/// continuations, char literals against lifetimes, `//`, and nested `/* */`
+/// that a literal or a comment may open on one row and close on another. A
+/// scanner grown here learns those arms one review round at a time, and the
+/// rounds in between ship a walk that reads a commented-out statement as code
+/// or loses a brace inside a literal, both of which pass green.
+///
+/// `cfgd_core::test_helpers` already carries the arms once, in `LineMask`, and
+/// reaches them through `blank_non_code` (a whole body), `code_line` (one
+/// line's code part) and this file's `commentless` (that cut taken on the raw
+/// line). Those three are the whole vocabulary; a tell below is a fourth being
+/// born.
+#[test]
+fn no_source_walk_in_this_file_scans_syntax_by_hand() {
+    const HATCH: &str = "// hand-scan-ok:";
+    // Each tell is the opening move of one hand-rolled scanner: cutting a
+    // comment by searching for its delimiter, and stepping bytes with the
+    // quote or slash arm a masker already owns. Composed from its pieces
+    // rather than spelled, because a tell lives inside a literal and the
+    // judgement below keeps literals, so a spelled one would name this
+    // declaration as the first offender.
+    let q = '\'';
+    let dq = '"';
+    let tells = [
+        format!(".split({dq}//{dq})"),
+        format!("find({dq}//{dq})"),
+        format!("find({dq}/*{dq})"),
+        format!("b{q}{dq}{q} =>"),
+        format!("b{q}/{q} if"),
+    ];
+
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli/tests.rs");
+    // The whole file, not its production slice: the scanners this closes are
+    // test code, so a slice cut at the first `#[cfg(test)]` reads none of them.
+    let body = cfgd_core::test_helpers::walked_file_body(&path);
+    let lines: Vec<&str> = body.lines().collect();
+    assert!(
+        lines.len() >= 40_000,
+        "the walk read {} lines of its own file; the population is the whole file",
+        lines.len()
+    );
+
+    let mut offenders = Vec::new();
+    for (n, line) in lines.iter().enumerate() {
+        // Judged with the trailing comment cut but the literals kept: every
+        // tell but one is itself written inside a literal, which `code_line`'s
+        // own return would have spaced out.
+        let code = commentless(line);
+        let Some(tell) = tells.iter().find(|t| code.contains(t.as_str())) else {
+            continue;
+        };
+        if lines[n.saturating_sub(1)..=n]
+            .iter()
+            .any(|l| carries_hatch(l, HATCH))
+        {
+            continue;
+        }
+        offenders.push(format!("{}: {}: {}", n + 1, tell, line.trim()));
+    }
+    assert!(
+        offenders.is_empty(),
+        "these lines scan Rust syntax by hand; reach for `blank_non_code`, \
+         `code_line` or `commentless` instead, or say why with `{HATCH} <why>`:\n{}",
+        offenders.join("\n")
     );
 }
