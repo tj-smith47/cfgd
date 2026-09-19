@@ -181,6 +181,52 @@ pub fn cmd_config_edit(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
 
 // --- Config get/set/unset ---
 
+/// The `spec`-relative paths whose value is a scalar-or-mapping union, paired
+/// with the field a bare scalar there stands for. Both rows are `ThemeConfig`:
+/// `theme: dracula` IS `theme: {name: dracula}`, and that scalar arm is what
+/// `cfgd init` and `cfgd config set theme <name>` write, so a walk refusing to
+/// descend through it would fail every documented `config set theme.name` on
+/// cfgd's own document. The legacy flat spelling is listed because `get` falls
+/// back to it on an unmigrated document.
+const SCALAR_UNION_FIELDS: &[(&str, &str)] = &[("output.theme", "name"), ("theme", "name")];
+
+/// The field a bare scalar at these path segments stands for, or `None` where a
+/// scalar is genuinely a leaf.
+fn scalar_union_field(segments: &[&str]) -> Option<&'static str> {
+    SCALAR_UNION_FIELDS.iter().find_map(|(path, field)| {
+        path.split('.')
+            .eq(segments.iter().copied())
+            .then_some(*field)
+    })
+}
+
+/// Whether this value is a scalar a union's mapping arm could have been
+/// written as. A sequence is no arm of any union here, so it stays a shape
+/// error rather than being promoted into one.
+fn is_union_scalar(value: &serde_yaml::Value) -> bool {
+    matches!(
+        value,
+        serde_yaml::Value::String(_) | serde_yaml::Value::Number(_) | serde_yaml::Value::Bool(_)
+    )
+}
+
+/// Rewrite a union's scalar arm in place as the mapping it stands for, so a
+/// write to a field beneath it descends instead of refusing.
+fn promote_scalar_union(value: &mut serde_yaml::Value, segments: &[&str]) {
+    let Some(field) = scalar_union_field(segments) else {
+        return;
+    };
+    if !is_union_scalar(value) {
+        return;
+    }
+    let mut promoted = serde_yaml::Mapping::new();
+    promoted.insert(
+        serde_yaml::Value::String(field.to_string()),
+        std::mem::replace(value, serde_yaml::Value::Null),
+    );
+    *value = serde_yaml::Value::Mapping(promoted);
+}
+
 /// Walk a dotted key path through a YAML value, returning the leaf.
 /// Use "." to return the root value itself.
 pub(super) fn walk_yaml_path<'a>(
@@ -216,7 +262,21 @@ pub(super) fn walk_yaml_path<'a>(
                     cfgd_core::errors::ConfigError::KeyNotFound { key: partial },
                 )));
             }
-            _ => {
+            other => {
+                // A union's scalar arm is its mapping with one field set, so
+                // that field answers from the scalar itself and every other
+                // field of the arm is absent rather than a shape error.
+                if is_union_scalar(other)
+                    && let Some(field) = scalar_union_field(&segments[..i])
+                {
+                    if *segment == field && i + 1 == segments.len() {
+                        return Ok(other);
+                    }
+                    let partial = segments[..=i].join(".");
+                    return Err(anyhow::Error::new(cfgd_core::errors::CfgdError::Config(
+                        cfgd_core::errors::ConfigError::KeyNotFound { key: partial },
+                    )));
+                }
                 let partial = segments[..i].join(".");
                 anyhow::bail!("'{}' is not a mapping", partial);
             }
@@ -244,6 +304,7 @@ pub(super) fn walk_yaml_path_mut<'a>(
     let mut current = value;
     // Walk to the parent of the final segment, creating intermediate maps
     for (i, segment) in segments[..segments.len() - 1].iter().enumerate() {
+        promote_scalar_union(current, &segments[..i]);
         let key = serde_yaml::Value::String((*segment).to_string());
         let map = current.as_mapping_mut().ok_or_else(|| {
             let partial = segments[..i].join(".");
@@ -263,9 +324,12 @@ pub(super) fn walk_yaml_path_mut<'a>(
             .ok_or_else(|| anyhow::anyhow!("failed to create intermediate mapping"))?;
     }
 
-    let parent = current
-        .as_mapping_mut()
-        .ok_or_else(|| anyhow::anyhow!("parent is not a mapping"))?;
+    promote_scalar_union(current, &segments[..segments.len() - 1]);
+    // Named rather than "parent", so a refusal reads the same on both verbs.
+    let parent = current.as_mapping_mut().ok_or_else(|| {
+        let partial = segments[..segments.len() - 1].join(".");
+        anyhow::anyhow!("'{}' is not a mapping", partial)
+    })?;
     let leaf = segments
         .last()
         .ok_or_else(|| anyhow::anyhow!("empty key path"))?
@@ -595,12 +659,12 @@ fn classify_mutate_error(e: &anyhow::Error) -> &'static str {
         return "target_not_writable";
     }
     let msg = e.to_string();
-    if msg.contains("not found") {
+    // A key whose parent holds a scalar is not a parse failure: the document
+    // read fine and the path named a child of a leaf, which is the same "no
+    // such key" the walker's absent-section arm already answers with.
+    if msg.contains("not found") || msg.contains("not a mapping") {
         "key_not_found"
-    } else if msg.contains("no 'spec' section")
-        || msg.contains("would become invalid")
-        || msg.contains("not a mapping")
-    {
+    } else if msg.contains("no 'spec' section") || msg.contains("would become invalid") {
         "parse_failed"
     } else {
         "invalid_value"

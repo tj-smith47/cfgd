@@ -28,11 +28,38 @@ fn write_config(home: &Path, theme_name: &str) {
     .unwrap();
 }
 
+/// A document whose theme block is the SCALAR arm of the union — the shape
+/// `cfgd init` and `cfgd config set theme <name>` write.
+fn write_scalar_config(home: &Path, theme_name: &str) {
+    let dir = home.join(".config").join("cfgd");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("cfgd.yaml"),
+        format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: pin\nspec:\n  \
+             output:\n    theme: {theme_name}\n"
+        ),
+    )
+    .unwrap();
+}
+
+/// The document text at the throwaway home's default config path.
+fn stored_config(home: &Path) -> String {
+    std::fs::read_to_string(home.join(".config/cfgd/cfgd.yaml")).unwrap()
+}
+
 /// The binary under that home, with every seam resolving the default config
 /// directory pointed into it.
 fn run(home: &Path, args: &[&str]) -> std::process::Output {
+    run_at(home, home, args)
+}
+
+/// The same, from a chosen working directory, for `cfgd init` — which writes
+/// its document where it is run rather than at the default config path.
+fn run_at(home: &Path, cwd: &Path, args: &[&str]) -> std::process::Output {
     Command::cargo_bin("cfgd")
         .unwrap()
+        .current_dir(cwd)
         .args(args)
         .env("HOME", home)
         // Windows resolves `~` from USERPROFILE first.
@@ -199,4 +226,167 @@ fn the_setter_refuses_a_value_of_every_shape_no_preset_answers_to() {
         after.contains("name: default") && !after.contains("123"),
         "no refused value reaches the document: {after}"
     );
+}
+
+#[test]
+fn the_documented_theme_name_setter_runs_against_the_document_init_writes() {
+    let home = tempfile::tempdir().unwrap();
+    let workspace = home.path().join("ws");
+    std::fs::create_dir_all(&workspace).unwrap();
+
+    let init = run_at(home.path(), &workspace, &["init", "--name", "pin"]);
+    assert_eq!(
+        init.status.code(),
+        Some(0),
+        "init: {}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+    let written = workspace.join("cfgd.yaml");
+    let doc = std::fs::read_to_string(&written).unwrap();
+    assert!(
+        doc.contains("theme: default"),
+        "init writes the union's scalar arm, which is what this pin drives: {doc}"
+    );
+
+    let config = written.to_string_lossy().to_string();
+    let read = run(
+        home.path(),
+        &["--config", &config, "config", "get", "theme.name"],
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&read.stdout).trim(),
+        "default",
+        "the scalar IS the name: {}",
+        String::from_utf8_lossy(&read.stderr)
+    );
+
+    let set = run(
+        home.path(),
+        &[
+            "--config",
+            &config,
+            "config",
+            "set",
+            "theme.name",
+            "minimal",
+        ],
+    );
+    assert_eq!(
+        set.status.code(),
+        Some(0),
+        "the documented setter: {}",
+        String::from_utf8_lossy(&set.stderr)
+    );
+
+    let read = run(
+        home.path(),
+        &["--config", &config, "config", "get", "theme.name"],
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&read.stdout).trim(),
+        "minimal",
+        "the write reads back: {}",
+        String::from_utf8_lossy(&read.stderr)
+    );
+}
+
+#[test]
+fn setting_the_name_over_the_scalar_arm_invents_no_overrides() {
+    let home = tempfile::tempdir().unwrap();
+    write_scalar_config(home.path(), "dracula");
+
+    let out = run(home.path(), &["config", "set", "theme.name", "minimal"]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let after = stored_config(home.path());
+    assert!(
+        after.contains("name: minimal"),
+        "the scalar was promoted to the mapping arm and the name written: {after}"
+    );
+    assert!(
+        !after.contains("overrides"),
+        "the promotion carries only the field the scalar stood for: {after}"
+    );
+}
+
+#[test]
+fn setting_an_override_over_the_scalar_arm_keeps_the_stored_name() {
+    let home = tempfile::tempdir().unwrap();
+    write_scalar_config(home.path(), "dracula");
+
+    let out = run(
+        home.path(),
+        &["config", "set", "theme.overrides.header", "#ff0000"],
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let after = stored_config(home.path());
+    assert!(
+        after.contains("name: dracula"),
+        "the scalar the document held is the promoted mapping's name: {after}"
+    );
+    assert!(
+        after.contains("header:"),
+        "the override reached the block: {after}"
+    );
+}
+
+#[test]
+fn a_field_the_scalar_arm_does_not_carry_reads_as_a_missing_key() {
+    let home = tempfile::tempdir().unwrap();
+    write_scalar_config(home.path(), "dracula");
+
+    let out = run(home.path(), &["config", "get", "theme.overrides"]);
+    assert_eq!(
+        out.status.code(),
+        Some(6),
+        "absent, not a shape error: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("not found"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn a_key_under_a_genuine_leaf_is_refused_as_a_missing_key_by_both_verbs() {
+    let home = tempfile::tempdir().unwrap();
+    write_scalar_config(home.path(), "dracula");
+    // `fileStrategy` holds a scalar in the document, so the path names a child
+    // of a leaf rather than a key the setter could create.
+    let dir = home.path().join(".config").join("cfgd");
+    let doc = std::fs::read_to_string(dir.join("cfgd.yaml")).unwrap();
+    std::fs::write(
+        dir.join("cfgd.yaml"),
+        format!("{doc}  fileStrategy: Symlink\n"),
+    )
+    .unwrap();
+
+    for args in [
+        vec!["-o", "json", "config", "get", "fileStrategy.nope"],
+        vec!["-o", "json", "config", "set", "fileStrategy.nope", "x"],
+    ] {
+        let out = run(home.path(), &args);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            stdout.contains("\"key_not_found\""),
+            "a child of a leaf is a missing key, not a parse failure: {stdout}"
+        );
+        assert!(
+            stdout.contains("fileStrategy") || out.status.code() == Some(6),
+            "the refusal names the path it walked: {stdout}"
+        );
+    }
 }
