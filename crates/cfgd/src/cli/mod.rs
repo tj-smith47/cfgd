@@ -845,10 +845,17 @@ pub fn resolve_theme_config(
 /// flag still answers first, and the read below finds the same value the
 /// binding would have.
 ///
-/// A word `T` cannot read is ignored rather than fatal, and so is a config
-/// that does not load: a printer has to exist before there is anything to
-/// report either through, which is [`resolve_theme_config`]'s reasoning and
-/// the reason every knob resolver is best-effort.
+/// A word `T` cannot read is ignored by this resolution rather than fatal,
+/// and so is a config that does not load: a printer has to exist before there
+/// is anything to report either through, which is [`resolve_theme_config`]'s
+/// reasoning and the reason every knob resolver is best-effort.
+///
+/// That leniency is this function's alone. Where the variable is ALSO bound to
+/// a flag through clap's `env =`, clap validates it against the flag's own
+/// value list while it parses, refusing an unreadable word there with the
+/// accepted spellings named, so none ever reaches here. `CFGD_USAGE_HINTS` is
+/// the one variable no flag binds, `--hints` and `--no-hints` having opposite
+/// polarities, so it is the one whose unreadable word this ignores in silence.
 pub fn resolve_knob<T>(
     config_path: &Path,
     flag: Option<T>,
@@ -1084,11 +1091,16 @@ pub struct Cli {
     /// `spec.output.maskEnvValues` does the same thing persistently; this flag
     /// wins over it, and a verb's own `--show-values` is the per-verb spelling
     /// of `none`.
+    // `spec.output.maskEnvValues` serializes PascalCase, so the flag and its
+    // env var accept that spelling as well as the lowercase one this list
+    // prints. Without the fold, an exported `CFGD_MASK_ENV_VALUES=All` is a
+    // usage error on every invocation.
     #[arg(
         long = "mask-env-values",
         global = true,
         value_name = "MODE",
         env = "CFGD_MASK_ENV_VALUES",
+        ignore_case = true,
         value_parser = clap::builder::PossibleValuesParser::new(["all", "secrets", "none"])
     )]
     pub mask_env_values: Option<String>,
@@ -1096,11 +1108,14 @@ pub struct Cli {
     /// What to do when cfgd.yaml is behind this build's schema: prompt (the
     /// default), warn, update or ignore. `spec.migrationPolicy` does the same
     /// thing persistently; this flag wins over it.
+    // `spec.migrationPolicy` serializes PascalCase, so the flag and its env
+    // var accept that spelling as well as the lowercase one this list prints.
     #[arg(
         long = "migration-policy",
         global = true,
         value_name = "POLICY",
         env = "CFGD_MIGRATION_POLICY",
+        ignore_case = true,
         value_parser = clap::builder::PossibleValuesParser::new(["prompt", "warn", "update", "ignore"])
     )]
     pub migration_policy: Option<String>,
