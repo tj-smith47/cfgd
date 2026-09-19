@@ -27,6 +27,7 @@ This file is an **INDEX**. The reasoning — why a helper exists, what breaks wi
 ## Constants
 
 - `API_VERSION` — canonical API version (`cfgd.io/v1alpha1`); never a string literal.
+- `API_VERSION_CONVERSIONS` + `config::convertible_from(table, found)` (`config/parse.rs`) — the ONE table of every `apiVersion` a document may be written under, each row landing on `API_VERSION`; `validate_api_version` is its only production reader, so no parse path compares a version string itself.
 - `CSI_DRIVER_NAME` — canonical CSI driver name (`csi.cfgd.io`).
 - `MODULES_ANNOTATION` — canonical annotation key (`cfgd.io/modules`).
 - `SKIPPED_MODULES_ANNOTATION` — the pod annotation naming what the mutating webhook declined to inject (`cfgd.io/skipped-modules`); never a raw string.

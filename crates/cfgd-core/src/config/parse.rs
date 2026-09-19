@@ -196,7 +196,39 @@ pub(super) fn warn_on_legacy_theme_keys(raw_yaml: &str) -> Vec<String> {
     messages
 }
 
-/// Reject a document whose `apiVersion` is not the version this build understands.
+/// One `apiVersion` this build can read a document written under.
+///
+/// The conversion is a table rather than a chain of `if`s because the
+/// document kinds share one validator: a version added here is accepted by
+/// `cfgd.yaml`, a profile, a module and a ConfigSource in one edit.
+#[derive(Debug, Clone, Copy)]
+pub struct ApiVersionConversion {
+    /// The version as the document spells it.
+    pub from: &'static str,
+    /// The version it is read as. Always [`crate::API_VERSION`].
+    pub to: &'static str,
+}
+
+/// Every `apiVersion` this build accepts. One entry today — the identity —
+/// because `cfgd.io/v1alpha1` is the only version cfgd has ever published;
+/// a second version adds a row plus the field rewrite it needs, and reaches
+/// every parse path through the one validator below.
+pub const API_VERSION_CONVERSIONS: &[ApiVersionConversion] = &[ApiVersionConversion {
+    from: crate::API_VERSION,
+    to: crate::API_VERSION,
+}];
+
+/// The version `found` is read as, or `None` when no entry names it.
+/// `table` is a parameter so a test can prove the route with a synthetic
+/// older version instead of waiting for one to ship.
+pub(crate) fn convertible_from(
+    table: &[ApiVersionConversion],
+    found: &str,
+) -> Option<&'static str> {
+    table.iter().find(|e| e.from == found).map(|e| e.to)
+}
+
+/// Reject a document whose `apiVersion` names no row of [`API_VERSION_CONVERSIONS`].
 ///
 /// Every document parse path ([`parse_config`], [`load_profile`], `parse_module`,
 /// [`parse_config_source`]) routes through this single check so an unknown version
@@ -205,7 +237,7 @@ pub(super) fn warn_on_legacy_theme_keys(raw_yaml: &str) -> Vec<String> {
 /// the current schema. The typed variant is the matchable hook a future
 /// version-migration path plugs into.
 pub(crate) fn validate_api_version(api_version: &str) -> Result<()> {
-    if api_version != crate::API_VERSION {
+    if convertible_from(API_VERSION_CONVERSIONS, api_version).is_none() {
         return Err(ConfigError::UnsupportedApiVersion {
             found: api_version.to_string(),
         }

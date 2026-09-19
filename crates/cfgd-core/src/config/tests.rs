@@ -37,6 +37,56 @@ fn parse_config_rejects_unknown_apiversion() {
     assert!(err.to_string().contains("cfgd.io/v1alpha1")); // names the supported version
 }
 
+/// A synthetic older version routes through the table; the shipped table's
+/// single entry is the identity. Nothing here invents a v1alpha2 schema:
+/// the claim is that the ROUTE exists and that every entry lands on the
+/// version this build reads.
+#[test]
+fn a_synthetic_older_api_version_routes_through_the_conversion_table() {
+    use super::parse::convertible_from;
+    use crate::config::{API_VERSION_CONVERSIONS, ApiVersionConversion};
+    const SYNTHETIC: &[ApiVersionConversion] = &[
+        ApiVersionConversion {
+            from: "cfgd.io/v1alpha0",
+            to: crate::API_VERSION,
+        },
+        ApiVersionConversion {
+            from: crate::API_VERSION,
+            to: crate::API_VERSION,
+        },
+    ];
+    assert_eq!(
+        convertible_from(SYNTHETIC, "cfgd.io/v1alpha0"),
+        Some(crate::API_VERSION)
+    );
+    assert_eq!(convertible_from(SYNTHETIC, "cfgd.io/v9"), None);
+    assert_eq!(
+        convertible_from(API_VERSION_CONVERSIONS, crate::API_VERSION),
+        Some(crate::API_VERSION),
+        "the shipped table's identity entry answers for the current version"
+    );
+}
+
+/// Every entry converts INTO the version this build reads, so no table row
+/// can route a document to a version nothing parses.
+#[test]
+fn every_api_version_the_table_names_converts_to_the_current_one() {
+    use crate::config::API_VERSION_CONVERSIONS;
+    assert!(
+        !API_VERSION_CONVERSIONS.is_empty(),
+        "the table always carries its identity entry"
+    );
+    for entry in API_VERSION_CONVERSIONS {
+        assert_eq!(
+            entry.to,
+            crate::API_VERSION,
+            "{} routes to {}",
+            entry.from,
+            entry.to
+        );
+    }
+}
+
 /// The global strategy is the fallback for files that declare none, and a
 /// `Patch` file is defined by its own `patch:` block — so a file inheriting
 /// the global could never satisfy it. Rejecting at load keeps that
