@@ -350,6 +350,17 @@ pub fn plugin_main() -> anyhow::Result<()> {
     .with_hints_enabled(crate::cli::resolve_hints_enabled(&config_path, None));
     tracing_writer.attach(&printer);
 
+    // The same warning the primary CLI raises for a stored name no preset
+    // answers to: both entry points read one config, so both say so.
+    if let Some(theme) = theme_config.as_ref()
+        && let Some(accepted) = crate::cli::unknown_theme_preset(&theme.name)
+    {
+        printer.alert(format!(
+            "spec.output.theme.name `{}` is not a theme preset; rendering the default palette (accepted names: {accepted})",
+            theme.name
+        ));
+    }
+
     let result = match cli.command {
         PluginCommand::Debug {
             pod,

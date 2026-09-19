@@ -428,6 +428,29 @@ pub fn cmd_config_set(cli: &Cli, printer: &Printer, key: &str, value: &str) -> a
     // the caller reached for, and the flat key it replaced is dropped with it.
     let nested = nested_output_key(key);
     let written_key = nested.clone().unwrap_or_else(|| key.to_string());
+
+    // The theme block's `name` is a free string in the document, so a name no
+    // preset answers to would be stored and every later render would silently
+    // fall back to the default palette. This setter runs with a printer in
+    // hand, which is what `Theme::from_preset`'s render-time fallback does not,
+    // so the refusal belongs here. Both spellings of the block are covered:
+    // `output.theme` carrying a scalar IS the name.
+    if matches!(written_key.as_str(), "output.theme" | "output.theme.name")
+        && let serde_yaml::Value::String(name) = &parsed_value
+        && let Some(accepted) = crate::cli::unknown_theme_preset(name)
+    {
+        return Err(crate::cli::cli_error(
+            key,
+            "invalid_value",
+            format!("`{name}` is not a theme preset; accepted names: {accepted}"),
+            serde_json::json!({
+                "path": cfgd_core::to_posix_string(config_path),
+                "value": name,
+                "accepted": cfgd_core::output::Theme::PRESET_NAMES,
+            }),
+        ));
+    }
+
     let mutate_result = mutate_config_yaml(config_path, true, |raw| {
         let spec = raw
             .get_mut("spec")
@@ -696,7 +719,7 @@ spec:
 
         let cli = test_cli_for(config_path.clone());
         let printer = test_printer();
-        let err = cmd_config_set(&cli, &printer, "theme.name", "dark")
+        let err = cmd_config_set(&cli, &printer, "theme.name", "nord")
             .expect_err("read-only config dir must reject the mutation");
 
         let cfgd_err = err
@@ -1419,7 +1442,7 @@ spec:
 
         let cli = test_cli_for(config_path.clone());
         let printer = test_printer();
-        cmd_config_set(&cli, &printer, "theme.name", "dark").unwrap();
+        cmd_config_set(&cli, &printer, "theme.name", "nord").unwrap();
 
         let after = std::fs::read_to_string(&config_path).unwrap();
         let mut lines = after.lines();
@@ -1433,13 +1456,13 @@ spec:
             "# team banner",
             "user banner must survive the rewrite"
         );
-        assert!(after.contains("name: dark"), "mutation must land: {after}");
+        assert!(after.contains("name: nord"), "mutation must land: {after}");
 
         // Second rewrite must not duplicate the block.
-        cmd_config_set(&cli, &printer, "theme.name", "light").unwrap();
+        cmd_config_set(&cli, &printer, "theme.name", "minimal").unwrap();
         let after2 = std::fs::read_to_string(&config_path).unwrap();
         assert_eq!(after2.matches("# team banner").count(), 1);
         assert_eq!(after2.matches("yaml-language-server").count(), 1);
-        assert!(after2.contains("name: light"));
+        assert!(after2.contains("name: minimal"));
     }
 }

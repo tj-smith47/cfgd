@@ -549,7 +549,7 @@ spec:
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `name` | string | No | `default` | Built-in theme name: `default`, `dracula`, `solarized-dark`, `solarized-light`, `nord`, `monokai`, `adventure-time`, `catppuccin-mocha`, `gruvbox-dark`, `tokyo-night`, `one-dark`, or `minimal`. |
+| `name` | string | No | `default` | Built-in theme name: `default`, `dracula`, `solarized-dark`, `solarized-light`, `nord`, `monokai`, `adventure-time`, `catppuccin-mocha`, `gruvbox-dark`, `tokyo-night`, `one-dark`, or `minimal`. `cfgd config set theme.name` refuses any other word; one hand-written into the file renders the default palette and cfgd warns on every run. |
 | `overrides` | object | No | | Per-colour/icon overrides. See [spec.output.theme.overrides](#specoutputthemeoverrides). |
 
 ---

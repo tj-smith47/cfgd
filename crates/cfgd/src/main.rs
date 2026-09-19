@@ -318,6 +318,19 @@ fn main() -> anyhow::Result<()> {
     .with_mask_env_values(mask_env_values);
     tracing_writer.attach(&printer);
 
+    // A stored name no preset answers to renders as the default palette, and
+    // nothing else on the surface says so. A warning rather than a refusal:
+    // the config may not be this user's to edit, and every command must still
+    // run under it.
+    if let Some(theme) = theme_config.as_ref()
+        && let Some(accepted) = cli::unknown_theme_preset(&theme.name)
+    {
+        printer.alert(format!(
+            "spec.output.theme.name `{}` is not a theme preset; rendering the default palette (accepted names: {accepted})",
+            theme.name
+        ));
+    }
+
     if jsonpath_deprecated {
         // A deprecation notice is a stderr diagnostic, not `-o` data — and
         // `--jsonpath` always forces a structured format, under which the

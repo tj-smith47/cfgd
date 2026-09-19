@@ -834,6 +834,20 @@ pub fn resolve_theme_config(
     }
 }
 
+/// The accepted preset list for a theme name no palette answers to, or `None`
+/// for one [`cfgd_core::output::Theme::preset`] resolves.
+///
+/// The ONE question every surface handling a written theme name asks, so the
+/// setter's refusal and the load-time warning cannot disagree about which
+/// names exist. Case-sensitive on purpose: `Theme::preset` matches the
+/// lowercase spelling alone, and `Theme::PRESET_NAMES` is the vocabulary
+/// `--theme`, the published schema and `docs/configuration.md` all show.
+pub fn unknown_theme_preset(name: &str) -> Option<String> {
+    cfgd_core::output::Theme::preset(name)
+        .is_none()
+        .then(|| cfgd_core::output::Theme::PRESET_NAMES.join(", "))
+}
+
 /// Resolve one per-invocation knob the way every other one resolves: the flag
 /// beats `env`, which beats the `spec.*` field `stored` reads, which beats the
 /// type's own default.

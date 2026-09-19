@@ -1018,7 +1018,21 @@
       "properties": {
         "name": {
           "default": "default",
-          "description": "Preset name (`default`, `dracula`, `solarized-dark`, `solarized-light`,\n`nord`, `monokai`, `adventure-time`, `catppuccin-mocha`, `gruvbox-dark`,\n`tokyo-night`, `one-dark`, `minimal`). Default: `default`.",
+          "description": "Preset name. `cfgd config set theme.name` refuses a word this field's\nschema does not enumerate, and one hand-written into the file renders\nthe default palette with a warning. Default: `default`.",
+          "enum": [
+            "default",
+            "dracula",
+            "solarized-dark",
+            "solarized-light",
+            "nord",
+            "monokai",
+            "adventure-time",
+            "catppuccin-mocha",
+            "gruvbox-dark",
+            "tokyo-night",
+            "one-dark",
+            "minimal"
+          ],
           "type": "string"
         },
         "overrides": {

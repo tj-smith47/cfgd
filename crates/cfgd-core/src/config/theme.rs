@@ -19,10 +19,11 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ThemeConfig {
-    /// Preset name (`default`, `dracula`, `solarized-dark`, `solarized-light`,
-    /// `nord`, `monokai`, `adventure-time`, `catppuccin-mocha`, `gruvbox-dark`,
-    /// `tokyo-night`, `one-dark`, `minimal`). Default: `default`.
+    /// Preset name. `cfgd config set theme.name` refuses a word this field's
+    /// schema does not enumerate, and one hand-written into the file renders
+    /// the default palette with a warning. Default: `default`.
     #[serde(default = "default_theme_name")]
+    #[schemars(schema_with = "theme_name_schema")]
     pub name: String,
     /// Per-color and per-icon overrides applied on top of the named preset.
     #[serde(default, skip_serializing_if = "ThemeOverrides::is_empty")]
@@ -31,6 +32,17 @@ pub struct ThemeConfig {
 
 fn default_theme_name() -> String {
     "default".to_string()
+}
+
+/// The field is a `String` because the deserializer must keep loading a
+/// document written by someone else, so the vocabulary reaches `explain`, the
+/// published schemas and an editor as a schema constraint instead.
+fn theme_name_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({
+        "type": "string",
+        "enum": crate::output::Theme::PRESET_NAMES,
+        "default": default_theme_name(),
+    })
 }
 
 impl Default for ThemeConfig {
