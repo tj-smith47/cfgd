@@ -959,8 +959,8 @@ fn status_per_module_renders_and_serializes_its_recorded_facts() {
     for row in [
         "Packages Hash  abc123def456",
         "Files Hash     789ghi012jkl",
-        "Commit         deadbeef1234",
-        "Integrity      sha256:cafef00d",
+        "Commit         deadbeef1234", // space-run-ok: a rendered kv row's own column padding.
+        "Integrity      sha256:cafef00d", // space-run-ok: a rendered kv row's own column padding.
     ] {
         assert!(human.contains(row), "missing row {row:?}: {human}");
     }

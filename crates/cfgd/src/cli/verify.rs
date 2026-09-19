@@ -574,7 +574,10 @@ mod tests {
                 .scoped_scan_stamps()
                 .unwrap()
                 .contains_key("module:test-mod"),
-            "the module it DID check must be dated, or every verdict read off that              scan cites a check no stamp can point at"
+            concat!(
+                "the module it DID check must be dated, or every verdict read off that scan ",
+                "cites a check no stamp can point at"
+            )
         );
 
         cmd_verify(&cli, &printer, None, false).unwrap();

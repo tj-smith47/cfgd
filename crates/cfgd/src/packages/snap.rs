@@ -547,7 +547,7 @@ ripgrep   14.1.0   234    latest/stable  burntsushi    classic
             // it into `held` and raises it through `snap refresh ripgrep`
             // instead of re-running `snap install ripgrep`, which would
             // no-op; `fd` is unheld and still installs.
-            let listing = "Name    Version  Rev  Tracking  Publisher  Notes\nripgrep 14.1.0   123  stable    canonical  -\n";
+            let listing = "Name    Version  Rev  Tracking  Publisher  Notes\nripgrep 14.1.0   123  stable    canonical  -\n"; // space-run-ok: a fixture reproducing the manager's own column-aligned listing.
             let s = ToolShim::install(SHIM_ENV, 0, listing, "");
             let p = test_printer();
             let st = test_state();

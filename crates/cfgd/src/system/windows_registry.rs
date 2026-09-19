@@ -522,7 +522,7 @@ mod tests {
     #[test]
     fn registry_parse_reg_value_dword_zero_prefix() {
         // Verify proper hex parsing with leading zeros
-        let output = "    Count    REG_DWORD    0x00000010\n";
+        let output = "    Count    REG_DWORD    0x00000010\n"; // space-run-ok: a fixture reproducing `reg query`'s column-aligned output.
         assert_eq!(
             RegKeySnapshot::parse(output).value("Count"),
             Some("16".to_string())
@@ -586,7 +586,7 @@ mod tests {
 
     #[test]
     fn parse_reg_value_output_dword_max_value() {
-        let output = "    MaxVal    REG_DWORD    0xffffffff\n";
+        let output = "    MaxVal    REG_DWORD    0xffffffff\n"; // space-run-ok: a fixture reproducing `reg query`'s column-aligned output.
         assert_eq!(
             RegKeySnapshot::parse(output).value("MaxVal"),
             Some("4294967295".to_string()),
@@ -717,7 +717,7 @@ mod tests {
 
     #[test]
     fn parse_reg_value_output_sz_with_spaces() {
-        let output = "    Description    REG_SZ    A long description with spaces\n";
+        let output = "    Description    REG_SZ    A long description with spaces\n"; // space-run-ok: a fixture reproducing `reg query`'s column-aligned output.
         assert_eq!(
             RegKeySnapshot::parse(output).value("Description"),
             Some("A long description with spaces".to_string()),
@@ -740,7 +740,7 @@ mod tests {
     fn registry_parse_reg_value_dword_invalid_hex_returns_raw() {
         // If the hex string after 0x is not valid, from_str_radix fails,
         // so it falls through to return the raw value
-        let output = "    BadHex    REG_DWORD    0xZZZZ\n";
+        let output = "    BadHex    REG_DWORD    0xZZZZ\n"; // space-run-ok: a fixture reproducing `reg query`'s column-aligned output.
         let result = RegKeySnapshot::parse(output).value("BadHex");
         // The DWORD hex parse fails, so the raw value "0xZZZZ" is returned
         assert_eq!(result, Some("0xZZZZ".to_string()));
@@ -749,7 +749,7 @@ mod tests {
     #[test]
     fn registry_parse_reg_value_dword_no_0x_prefix() {
         // DWORD without 0x prefix — strip_prefix returns None, falls to raw return
-        let output = "    PlainDword    REG_DWORD    42\n";
+        let output = "    PlainDword    REG_DWORD    42\n"; // space-run-ok: a fixture reproducing `reg query`'s column-aligned output.
         let result = RegKeySnapshot::parse(output).value("PlainDword");
         assert_eq!(result, Some("42".to_string()));
     }

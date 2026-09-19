@@ -2379,7 +2379,7 @@ fn cmd_module_show_table_with_lockfile_entry() {
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
-        output.contains("Source      remote"),
+        output.contains("Source      remote"), // space-run-ok: a rendered kv row's own column padding.
         "should show a remote source, got: {output}"
     );
     assert!(

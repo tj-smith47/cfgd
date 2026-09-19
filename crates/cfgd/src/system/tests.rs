@@ -485,7 +485,7 @@ fn diff_nested_mapping_passes_outer_key_to_get_actual() {
 
 #[test]
 fn parse_reg_line_typical_entry() {
-    let line = "    MyValue    REG_SZ    hello world";
+    let line = "    MyValue    REG_SZ    hello world"; // space-run-ok: a fixture reproducing `reg query`'s column-aligned output.
     let result = parse_reg_line(line);
     assert_eq!(result, Some(("MyValue", "REG_SZ", "hello world")));
 }
@@ -507,7 +507,7 @@ fn parse_reg_line_hkey_header_line() {
 
 #[test]
 fn parse_reg_line_dword_value() {
-    let line = "    Timeout    REG_DWORD    0xff";
+    let line = "    Timeout    REG_DWORD    0xff"; // space-run-ok: a fixture reproducing `reg query`'s column-aligned output.
     let result = parse_reg_line(line);
     assert_eq!(result, Some(("Timeout", "REG_DWORD", "0xff")));
 }
@@ -559,7 +559,7 @@ fn parse_reg_line_hkey_local_machine() {
 
 #[test]
 fn parse_reg_line_with_spaces_in_value() {
-    let line = "    MyPath    REG_SZ    C:\\Program Files\\App";
+    let line = "    MyPath    REG_SZ    C:\\Program Files\\App"; // space-run-ok: a fixture reproducing `reg query`'s column-aligned output.
     let result = parse_reg_line(line);
     assert_eq!(result, Some(("MyPath", "REG_SZ", "C:\\Program Files\\App")));
 }
@@ -762,7 +762,7 @@ fn parse_reg_line_hkey_users() {
 
 #[test]
 fn parse_reg_line_expand_sz_type() {
-    let line = "    Path    REG_EXPAND_SZ    %SystemRoot%\\system32";
+    let line = "    Path    REG_EXPAND_SZ    %SystemRoot%\\system32"; // space-run-ok: a fixture reproducing `reg query`'s column-aligned output.
     let result = parse_reg_line(line);
     assert_eq!(
         result,
@@ -772,7 +772,7 @@ fn parse_reg_line_expand_sz_type() {
 
 #[test]
 fn parse_reg_line_multi_sz_type() {
-    let line = "    MultiVal    REG_MULTI_SZ    val1\\0val2";
+    let line = "    MultiVal    REG_MULTI_SZ    val1\\0val2"; // space-run-ok: a fixture reproducing `reg query`'s column-aligned output.
     let result = parse_reg_line(line);
     assert_eq!(result, Some(("MultiVal", "REG_MULTI_SZ", "val1\\0val2")));
 }

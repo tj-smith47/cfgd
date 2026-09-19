@@ -5363,7 +5363,7 @@ const MANAGER_VERSION_GRAMMARS: &[(&str, VersionGrammar, SampleRead)] = &[
             floor: "133",
         },
         SampleRead::Listed {
-            fixture: "Name  Id       Version\n-----------------------\nFoo   Chrome   133.0.6943.98\n",
+            fixture: "Name  Id       Version\n-----------------------\nFoo   Chrome   133.0.6943.98\n", // space-run-ok: a fixture reproducing the manager's own column-aligned listing.
             parse: super::winget::parse_winget_list_versions,
         },
     ),

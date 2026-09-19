@@ -302,7 +302,7 @@ Git        Git.Git     2.43.0\n\
     #[test]
     fn parse_winget_list_no_id_column() {
         // If output doesn't have an "Id" column, nothing is parsed
-        let output = "Name       Version\n------\nGit        2.43.0\n";
+        let output = "Name       Version\n------\nGit        2.43.0\n"; // space-run-ok: a fixture reproducing the manager's own column-aligned listing.
         let packages = parse_winget_list(output);
         assert!(packages.is_empty());
     }
@@ -350,7 +350,7 @@ PowerShell            Microsoft.PowerShell      7.4.0                 winget\n";
 
     #[test]
     fn parse_winget_list_only_header() {
-        let output = "Name   Id      Version\n---\n";
+        let output = "Name   Id      Version\n---\n"; // space-run-ok: a fixture reproducing the manager's own column-aligned listing.
         let packages = parse_winget_list(output);
         assert!(packages.is_empty());
     }

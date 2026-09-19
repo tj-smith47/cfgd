@@ -10341,7 +10341,11 @@ mod tests {
             .collect();
         assert!(
             drift_ids.is_empty(),
-            "a row the scan could not re-check is the store's answer, never one              of this run's own findings, got: {parsed}"
+            concat!(
+                "a row the scan could not re-check is the store's answer, never one of this ",
+                "run's own findings, got: {}"
+            ),
+            parsed
         );
 
         let human_cli = test_cli_for(config_path, state_dir.path());

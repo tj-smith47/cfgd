@@ -390,6 +390,10 @@ fn every_value_taking_global_flag_is_skipped_by_the_subcommand_locator() {
     use clap::CommandFactory;
     let cmd = Cli::command();
     let mut walked = 0;
+    // `global = true` is the right filter HERE, unlike in
+    // `every_enum_valued_global_flag_accepts_its_config_spelling`: the locator
+    // skips a flag only where it may appear BEFORE the subcommand, which is
+    // what `global` grants.
     for arg in cmd
         .get_arguments()
         .filter(|a| a.is_global_set() && a.get_action().takes_values())
@@ -1318,11 +1322,11 @@ fn resolve_hints_enabled_folds_the_boolish_spellings_of_its_env_var() {
     }
 }
 
-/// Every global flag clap validates against a fixed value list, and whether the
-/// type behind it spells a variant in any case other than the one that list
-/// shows. The population is read off `Cli::command()`, which covers a
-/// `PossibleValuesParser` and a `ValueEnum` alike, and every member falls in
-/// one of three classes:
+/// Every flag `Cli` declares that clap validates against a fixed value list,
+/// and whether the type behind it spells a variant in any case other than the
+/// one that list shows. The population is read off `Cli::command()`, which
+/// covers a `PossibleValuesParser` and a `ValueEnum` alike, and every member
+/// falls in one of three classes:
 ///
 /// - DRIVEN: `--mask-env-values` and `--migration-policy` stand for
 ///   `case_insensitive_enum!` types whose `as_str` is PascalCase, which is what
@@ -1333,8 +1337,11 @@ fn resolve_hints_enabled_folds_the_boolish_spellings_of_its_env_var() {
 /// - LOWERCASE STORED TWIN: `--theme` names a preset, and `Theme::preset`
 ///   answers the lowercase spelling alone, so folding case there would have
 ///   clap accept a name the renderer then drops. Its stored twin
-///   `spec.output.theme.name` already serializes that lowercase name, so the
-///   rule is met without a fold.
+///   `spec.output.theme.name` is a free string rather than a
+///   `case_insensitive_enum!` serializing a canonical token, so what meets the
+///   rule is the documented vocabulary: `Theme::PRESET_NAMES` is the lowercase
+///   list the flag shows, the published schema enumerates, and
+///   `cfgd config set theme.name` refuses any other word against.
 /// - NO STORED TWIN: `--color` and `--scope` mirror no `spec.*` field, so
 ///   nothing can show a second casing of their words.
 ///
@@ -1392,23 +1399,25 @@ fn every_enum_valued_global_flag_accepts_its_config_spelling() {
 
     // The population is clap's own, so a list written as a `ValueEnum` joins
     // it beside one built with `PossibleValuesParser`, and a flag added to
-    // `Cli` in either shape fails here until it is classified.
+    // `Cli` in either shape fails here until it is classified. Every arg
+    // `Cli` declares counts, `global = true` or not: clap validates a
+    // `CFGD_*` env value on every top-level parse, so a word the list refuses
+    // ends the invocation before dispatch wherever the flag is accepted.
     let cmd = Cli::command();
     let listed: Vec<&clap::Arg> = cmd
         .get_arguments()
         .filter(|a| {
             // A `SetTrue` flag carries `true`/`false` as its values; it parses
             // no word of its own, so it is no spelling for a config to show.
-            a.is_global_set()
-                && a.get_action().takes_values()
-                && !a.get_possible_values().is_empty()
+            a.get_action().takes_values() && !a.get_possible_values().is_empty()
         })
         .collect();
 
-    // `--theme` names a preset whose stored twin `spec.output.theme.name`
-    // already serializes lowercase; `--color` and `--scope` mirror no `spec.*`
-    // field at all, so neither has a second casing to accept. Both classes are
-    // held to that below rather than to the fold the driven flags carry.
+    // `--theme` names a preset from the lowercase vocabulary its stored twin
+    // `spec.output.theme.name` documents and the setter enforces; `--color`
+    // and `--scope` mirror no `spec.*` field at all, so neither has a second
+    // casing to accept. Both classes are held to that below rather than to the
+    // fold the driven flags carry.
     let lowercase_stored_twin = ["theme"];
     let no_stored_twin = ["color", "scope_arg"];
     let found: std::collections::BTreeSet<String> =
@@ -1431,8 +1440,8 @@ fn every_enum_valued_global_flag_accepts_its_config_spelling() {
     assert_eq!(
         found, classified,
         concat!(
-            "every global flag clap validates against a value list is either driven below ",
-            "or named above as one whose value list is the only spelling there is"
+            "every flag `Cli` declares that clap validates against a value list is either ",
+            "driven below or named above as one whose value list is the only spelling there is"
         )
     );
 
@@ -1486,7 +1495,9 @@ fn every_enum_valued_global_flag_accepts_its_config_spelling() {
 /// would answer a different order while reading as one of the family.
 ///
 /// The population is the free `resolve_*` functions of `cli/mod.rs` whose first
-/// parameter is a `&Path`, which is the SHAPE of a resolver folding a flag, a
+/// parameter is a path (`&Path` however its reference and lifetime are spelled,
+/// `impl AsRef<Path>`, or a generic bounded by it), which is the SHAPE of a
+/// resolver folding a flag, a
 /// `CFGD_*` variable and a `spec.*` field into one answer: a parameter name is
 /// the author's to pick, so admitting on one lets the next resolver spell its
 /// way out of the rule. `resolve_color_choice` and `resolve_phase_filter` read
@@ -1500,9 +1511,20 @@ fn every_knob_resolver_routes_through_resolve_knob() {
         production_slice_of, workspace_root,
     };
 
-    /// The type of a declaration's first parameter, whitespace folded out, so
-    /// `&Path` and `& Path` read alike and a name never enters the answer.
-    fn first_param_type(code: &str) -> Option<String> {
+    /// The type of a declaration's first parameter, normalized so every
+    /// spelling of "a path this resolver reads its config from" reads alike:
+    /// the reference and a lifetime are stripped (`&'a Path`, `&'_ Path`) and
+    /// the remaining whitespace folded out. A lifetime cannot be folded away
+    /// with the whitespace, because `&'_ Path` would then read as `&'_Path`
+    /// and match no arm, so it is cut as its own token first. The generic list
+    /// travels beside the type, because a `P: AsRef<Path>` bound is the same
+    /// parameter written on the other side of the name.
+    fn first_param_type(code: &str) -> Option<(String, String)> {
+        let signature: String = code
+            .split_once('{')
+            .map_or(code, |(head, _)| head)
+            .split_whitespace()
+            .collect();
         let after = code.split_once("fn ")?.1;
         let name_len = after
             .chars()
@@ -1542,13 +1564,40 @@ fn every_knob_resolver_routes_through_resolve_knob() {
                 _ => None,
             })
             .unwrap_or(rest.len());
-        Some(
-            rest[..end]
-                .split_once(':')?
-                .1
-                .split_whitespace()
-                .collect::<String>(),
-        )
+        let mut declared = rest[..end].split_once(':')?.1.trim();
+        if let Some(stripped) = declared.strip_prefix('&') {
+            declared = stripped.trim_start();
+            if let Some(after_tick) = declared.strip_prefix('\'') {
+                let len = after_tick
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                    .count();
+                declared = after_tick[len..].trim_start();
+            }
+        }
+        Some((declared.split_whitespace().collect::<String>(), signature))
+    }
+
+    /// Whether that parameter is the config path a knob resolver reads: the
+    /// reference forms (`Path`, once the `&` and any lifetime are off), the
+    /// `impl AsRef<Path>` form, and a generic parameter the declaration bounds
+    /// by `AsRef<Path>` in its generic list or its `where` clause. All three
+    /// are admitted rather than refused, so a resolver cannot spell its way
+    /// out of the rule through its signature.
+    fn reads_a_config_path((declared, signature): &(String, String)) -> bool {
+        fn names_path(t: &str) -> bool {
+            matches!(t, "Path" | "std::path::Path")
+                || t.contains("AsRef<Path>")
+                || t.contains("AsRef<std::path::Path>")
+        }
+        names_path(declared)
+            || (!declared.is_empty()
+                && declared
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_')
+                && signature
+                    .split_once(&format!("{declared}:"))
+                    .is_some_and(|(_, rest)| names_path(rest.split(',').next().unwrap_or(rest))))
     }
 
     let source = production_slice_of(&workspace_root().join("crates/cfgd/src/cli/mod.rs"));
@@ -1566,9 +1615,7 @@ fn every_knob_resolver_routes_through_resolve_knob() {
         if owner.is_some() || !name.starts_with("resolve_") || hatched.contains(&name) {
             continue;
         }
-        if !first_param_type(&code)
-            .is_some_and(|t| matches!(t.as_str(), "&Path" | "&std::path::Path"))
-        {
+        if !first_param_type(&code).is_some_and(|t| reads_a_config_path(&t)) {
             continue;
         }
         if calls_free_fn(&code, "resolve_knob") {
@@ -18223,9 +18270,13 @@ fn no_kv_value_hand_builds_the_annotation_slot() {
                 // not one: the note is what closes the string.
                 if value_position && literal.ends_with(')') && literal.contains(" (") {
                     offenders.push(format!(
-                        "{}:{}: {literal:?} — the note beside a kv value is                          `KvPair::annotated(key, value, note)`",
+                        concat!(
+                            "{}:{}: {:?} — the note beside a kv value is ",
+                            "`KvPair::annotated(key, value, note)`"
+                        ),
                         path.display(),
-                        n + 1
+                        n + 1,
+                        literal
                     ));
                 }
             }
@@ -20031,7 +20082,11 @@ fn every_run_that_renders_the_rollup_also_renders_the_run_header() {
     }
     assert!(
         offenders.is_empty(),
-        "a function that renders a run's rollup renders the run's header too,          so a verdict counting actions is never the only thing on screen that          describes the run (a caller-rendered header takes a          `// run-header-ok:` marker):\n{}",
+        concat!(
+            "a function that renders a run's rollup renders the run's header too, so a ",
+            "verdict counting actions is never the only thing on screen that describes the ",
+            "run (a caller-rendered header takes a `// run-header-ok:` marker):\n{}"
+        ),
         offenders.join("\n")
     );
 }

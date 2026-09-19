@@ -849,7 +849,7 @@ fn explain_points_every_kind_at_its_docs_page() {
     // A capture opens no hyperlink, so the row states the URL a reader can
     // copy — release-pinned, never `master`.
     let expected = format!(
-        "Docs        https://github.com/tj-smith47/cfgd/blob/v{}/docs/spec/module.md#fields",
+        "Docs        https://github.com/tj-smith47/cfgd/blob/v{}/docs/spec/module.md#fields", // space-run-ok: a rendered kv row's own column padding.
         env!("CARGO_PKG_VERSION")
     );
     assert!(
