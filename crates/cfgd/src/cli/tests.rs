@@ -46842,6 +46842,68 @@ fn every_e2e_suite_runs_under_the_one_scratch_home() {
     );
 }
 
+/// Every integration fixture spawning the real binary opts out of the startup
+/// update check.
+///
+/// `startup_update_check` runs on the human channel of every command, so a
+/// fixture that leaves it on makes a live GitHub request per spawned process —
+/// hundreds across the suite, each one a wait and a failure mode no pin is
+/// asking about, and all of them in a test run that may have no network at all.
+/// The opt-out belongs to the spawn, so each fixture routes every
+/// `cargo_bin("cfgd")` through its own `cfgd_bin` helper and that helper sets
+/// `CFGD_NO_UPDATE_CHECK`; a second spawn spelling anywhere in the file is what
+/// this walk refuses.
+#[test]
+fn every_integration_fixture_spawning_the_binary_opts_out_of_the_update_check() {
+    const OPTOUT: &str = "CFGD_NO_UPDATE_CHECK";
+    const HELPER: &str = "fn cfgd_bin(";
+
+    let dir = cfgd_core::test_helpers::workspace_root().join("crates/cfgd/tests");
+    let mut spawning = 0usize;
+    let mut offenders: Vec<String> = Vec::new();
+    for path in cfgd_core::test_helpers::rust_sources_under(&dir) {
+        let body = walked_file_body(&path);
+        if !body.contains("cargo_bin(\"cfgd\")") {
+            continue;
+        }
+        spawning += 1;
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if !body.contains(HELPER) {
+            offenders.push(format!(
+                "{name} — spawns the binary with no `cfgd_bin` helper"
+            ));
+            continue;
+        }
+        if !body.contains(OPTOUT) {
+            offenders.push(format!(
+                "{name} — its `cfgd_bin` helper never sets {OPTOUT}"
+            ));
+        }
+        // One spawn spelling per file: the helper's own call is the only
+        // `cargo_bin` a fixture holds, so anything past it bypasses the opt-out.
+        let spawns = body.matches("cargo_bin(\"cfgd\")").count();
+        if spawns > 1 {
+            offenders.push(format!(
+                "{name} — {spawns} `cargo_bin(\"cfgd\")` call sites; only `cfgd_bin`'s own may spawn"
+            ));
+        }
+    }
+
+    assert!(
+        spawning >= 13,
+        "the fixtures spawning the real binary have shrunk to {spawning}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "every fixture spawning cfgd routes it through a `cfgd_bin` helper that sets \
+         {OPTOUT}, so no test run reaches the network for a self-update check:\n{}",
+        offenders.join("\n")
+    );
+}
+
 /// Every `--from` verb resolves its destination through
 /// `init::from_destination`, so the refusal that guards the default config
 /// directory cannot be walked around by a verb that forgot to ask.

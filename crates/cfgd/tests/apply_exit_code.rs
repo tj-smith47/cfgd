@@ -15,6 +15,16 @@ use std::path::Path;
 use assert_cmd::Command;
 use predicates::prelude::*;
 
+/// The binary under test, with cfgd's own startup update check opted out.
+/// A fixture spawning the real binary reaches GitHub over the network on every
+/// human-channel run otherwise, which is no part of what any of these pins
+/// claims.
+fn cfgd_bin() -> Result<Command, assert_cmd::cargo::CargoError> {
+    let mut cmd = Command::cargo_bin("cfgd")?;
+    cmd.env("CFGD_NO_UPDATE_CHECK", "1");
+    Ok(cmd)
+}
+
 /// Write a config + profile with two managed file actions: one whose target
 /// directory is normal (succeeds), and one whose target's parent is a regular
 /// file (so the write hits ENOTDIR at apply time). One action succeeds, one
@@ -93,7 +103,7 @@ fn apply_partial_failure_exits_with_apply_failed_code() {
     let state_tmp = tempfile::tempdir().unwrap();
     partial_failure_config(config_tmp.path());
 
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["apply", "--yes"])
         .arg("--config")
@@ -111,7 +121,7 @@ fn apply_total_failure_exits_with_apply_failed_code() {
     let state_tmp = tempfile::tempdir().unwrap();
     total_failure_config(config_tmp.path());
 
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["apply", "--yes"])
         .arg("--config")
@@ -129,7 +139,7 @@ fn apply_full_success_exits_zero() {
     let state_tmp = tempfile::tempdir().unwrap();
     success_config(config_tmp.path());
 
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["apply", "--yes"])
         .arg("--config")

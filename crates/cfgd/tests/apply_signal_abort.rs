@@ -20,6 +20,16 @@ use std::time::{Duration, Instant};
 
 use assert_cmd::cargo::CommandCargoExt;
 
+/// The binary under test, with cfgd's own startup update check opted out.
+/// A fixture spawning the real binary reaches GitHub over the network on every
+/// human-channel run otherwise, which is no part of what any of these pins
+/// claims.
+fn cfgd_bin() -> Result<Command, assert_cmd::cargo::CargoError> {
+    let mut cmd = Command::cargo_bin("cfgd")?;
+    cmd.env("CFGD_NO_UPDATE_CHECK", "1");
+    Ok(cmd)
+}
+
 /// Fixed name of the readiness sentinel written by the `preApply` script,
 /// relative to the config `dir`. Resolve via [`sentinel_path`].
 const READY_SENTINEL: &str = "ready.sentinel";
@@ -96,7 +106,7 @@ fn apply_sigint_aborts_cleanly_releases_lock_and_exits_130() {
     let state_tmp = tempfile::tempdir().unwrap();
     let target = sleeping_apply_config(config_tmp.path());
 
-    let mut child = Command::cargo_bin("cfgd")
+    let mut child = cfgd_bin()
         .unwrap()
         .args(["apply", "--yes"])
         .arg("--config")
@@ -176,7 +186,7 @@ fn apply_sigint_aborts_cleanly_releases_lock_and_exits_130() {
         tgt
     };
 
-    let second = Command::cargo_bin("cfgd")
+    let second = cfgd_bin()
         .unwrap()
         .args(["apply", "--yes"])
         .arg("--config")
@@ -201,7 +211,7 @@ fn apply_second_sigint_force_quits_via_default_disposition() {
     let state_tmp = tempfile::tempdir().unwrap();
     let _target = sleeping_apply_config(config_tmp.path());
 
-    let mut child = Command::cargo_bin("cfgd")
+    let mut child = cfgd_bin()
         .unwrap()
         .args(["apply", "--yes"])
         .arg("--config")

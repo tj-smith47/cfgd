@@ -30,6 +30,16 @@ use std::process::Command;
 
 use assert_cmd::cargo::CommandCargoExt;
 
+/// The binary under test, with cfgd's own startup update check opted out.
+/// A fixture spawning the real binary reaches GitHub over the network on every
+/// human-channel run otherwise, which is no part of what any of these pins
+/// claims.
+fn cfgd_bin() -> Result<Command, assert_cmd::cargo::CargoError> {
+    let mut cmd = Command::cargo_bin("cfgd")?;
+    cmd.env("CFGD_NO_UPDATE_CHECK", "1");
+    Ok(cmd)
+}
+
 /// Marker file the hook script writes, directly under the config directory
 /// (the resolution base a profile script uses is the directory holding
 /// `cfgd.yaml` itself, not a `scripts/` subdirectory —
@@ -85,7 +95,7 @@ fn run_matrix_cell(
 ) {
     let state_tmp = tempfile::tempdir().unwrap();
 
-    let output = Command::cargo_bin("cfgd")
+    let output = cfgd_bin()
         .unwrap()
         .current_dir(cwd)
         .env("HOME", home)

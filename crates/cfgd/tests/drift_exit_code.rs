@@ -19,6 +19,16 @@ use std::path::Path;
 use assert_cmd::Command;
 use cfgd_core::test_helpers::{ShimArm, write_tool_shim};
 
+/// The binary under test, with cfgd's own startup update check opted out.
+/// A fixture spawning the real binary reaches GitHub over the network on every
+/// human-channel run otherwise, which is no part of what any of these pins
+/// claims.
+fn cfgd_bin() -> Result<Command, assert_cmd::cargo::CargoError> {
+    let mut cmd = Command::cargo_bin("cfgd")?;
+    cmd.env("CFGD_NO_UPDATE_CHECK", "1");
+    Ok(cmd)
+}
+
 /// Every surface taking `--exit-code`, each spelled as the argv that arms it.
 const EXIT_CODE_SURFACES: [&[&str]; 3] = [
     &["status", "--scan", "--exit-code"],
@@ -120,7 +130,7 @@ fn run(
     home: &Path,
     gpg: Option<&Path>,
 ) -> std::process::Output {
-    let mut cmd = Command::cargo_bin("cfgd").unwrap();
+    let mut cmd = cfgd_bin().unwrap();
     cmd.args(args)
         .arg("--config")
         .arg(config.join("cfgd.yaml"))
@@ -274,7 +284,7 @@ fn a_manager_that_cannot_be_listed_is_one_row_on_every_exit_code_surface() {
 
     for args in EXIT_CODE_SURFACES {
         let state_tmp = tempfile::tempdir().unwrap();
-        let mut cmd = Command::cargo_bin("cfgd").unwrap();
+        let mut cmd = cfgd_bin().unwrap();
         let out = cmd
             .args(args)
             .arg("--config")
@@ -376,7 +386,7 @@ fn a_pinned_package_whose_version_cannot_be_read_escalates_on_every_exit_code_su
 
     for args in EXIT_CODE_SURFACES {
         let state_tmp = tempfile::tempdir().unwrap();
-        let mut cmd = Command::cargo_bin("cfgd").unwrap();
+        let mut cmd = cfgd_bin().unwrap();
         let out = cmd
             .args(args)
             .arg("--config")
@@ -436,7 +446,7 @@ fn a_pinned_package_whose_manager_states_no_offer_still_resolves() {
 
     let run = |args: &[&str]| {
         let state_tmp = tempfile::tempdir().unwrap();
-        let mut cmd = Command::cargo_bin("cfgd").unwrap();
+        let mut cmd = cfgd_bin().unwrap();
         let out = cmd
             .args(args)
             .arg("--config")
@@ -531,7 +541,7 @@ fn a_pinned_package_below_its_floor_exits_drift_detected_on_every_surface() {
 
     for args in EXIT_CODE_SURFACES {
         let state_tmp = tempfile::tempdir().unwrap();
-        let mut cmd = Command::cargo_bin("cfgd").unwrap();
+        let mut cmd = cfgd_bin().unwrap();
         let out = cmd
             .args(args)
             .arg("--config")
@@ -587,7 +597,7 @@ fn a_pinned_package_below_its_floor_is_drift_on_both_scoped_surfaces() {
 
     for args in SCOPED_PINNED_SURFACES {
         let state_tmp = tempfile::tempdir().unwrap();
-        let mut cmd = Command::cargo_bin("cfgd").unwrap();
+        let mut cmd = cfgd_bin().unwrap();
         let out = cmd
             .args(args)
             .arg("--config")
@@ -627,7 +637,7 @@ fn a_pinned_package_whose_version_cannot_be_read_escalates_on_both_scoped_surfac
 
     for args in SCOPED_PINNED_SURFACES {
         let state_tmp = tempfile::tempdir().unwrap();
-        let mut cmd = Command::cargo_bin("cfgd").unwrap();
+        let mut cmd = cfgd_bin().unwrap();
         let out = cmd
             .args(args)
             .arg("--config")
@@ -671,7 +681,7 @@ fn a_scoped_run_does_not_heal_a_version_row_the_machine_still_holds() {
     let (dnf, rpm) = below_floor_dnf(config_tmp.path());
 
     let run_one = |args: &[&str]| {
-        let mut cmd = Command::cargo_bin("cfgd").unwrap();
+        let mut cmd = cfgd_bin().unwrap();
         let out = cmd
             .args(args)
             .arg("--config")
@@ -1509,7 +1519,7 @@ fn a_brew_formula_clearing_its_floor_is_converged_on_every_surface() {
 
     for args in EXIT_CODE_SURFACES {
         let state_tmp = tempfile::tempdir().unwrap();
-        let mut cmd = Command::cargo_bin("cfgd").unwrap();
+        let mut cmd = cfgd_bin().unwrap();
         let out = cmd
             .args(args)
             .arg("--config")
@@ -1541,7 +1551,7 @@ fn a_brew_formula_clearing_its_floor_is_converged_on_every_surface() {
     // The same comparator decides the plan: a package the machine holds above
     // its floor is elided, so a converged machine plans nothing at all.
     let state_tmp = tempfile::tempdir().unwrap();
-    let mut cmd = Command::cargo_bin("cfgd").unwrap();
+    let mut cmd = cfgd_bin().unwrap();
     let out = cmd
         .args(["plan"])
         .arg("--config")
@@ -1584,7 +1594,7 @@ fn a_brew_formula_below_its_floor_exits_drift_detected_on_every_surface() {
 
     for args in EXIT_CODE_SURFACES {
         let state_tmp = tempfile::tempdir().unwrap();
-        let mut cmd = Command::cargo_bin("cfgd").unwrap();
+        let mut cmd = cfgd_bin().unwrap();
         let out = cmd
             .args(args)
             .arg("--config")
@@ -1639,7 +1649,7 @@ fn a_brew_formula_below_its_floor_is_drift_on_both_scoped_surfaces() {
 
     for args in SCOPED_PINNED_SURFACES {
         let state_tmp = tempfile::tempdir().unwrap();
-        let mut cmd = Command::cargo_bin("cfgd").unwrap();
+        let mut cmd = cfgd_bin().unwrap();
         let out = cmd
             .args(args)
             .arg("--config")
@@ -1686,7 +1696,7 @@ fn a_scoped_brew_run_does_not_heal_a_version_row_the_machine_still_holds() {
     let brew = below_floor_brew(config_tmp.path());
 
     let run_one = |args: &[&str]| {
-        let mut cmd = Command::cargo_bin("cfgd").unwrap();
+        let mut cmd = cfgd_bin().unwrap();
         let out = cmd
             .args(args)
             .arg("--config")

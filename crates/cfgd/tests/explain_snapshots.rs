@@ -29,6 +29,16 @@ use cfgd::cli::explain::{
 use cfgd_core::output::test_capture::assert_snapshot_at;
 use cfgd_core::output::{DocCapture, Printer, strip_ansi};
 
+/// The binary under test, with cfgd's own startup update check opted out.
+/// A fixture spawning the real binary reaches GitHub over the network on every
+/// human-channel run otherwise, which is no part of what any of these pins
+/// claims.
+fn cfgd_bin() -> Result<assert_cmd::Command, assert_cmd::cargo::CargoError> {
+    let mut cmd = assert_cmd::Command::cargo_bin("cfgd")?;
+    cmd.env("CFGD_NO_UPDATE_CHECK", "1");
+    Ok(cmd)
+}
+
 const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
 
 /// Assert a human golden with the running cfgd version folded to `<VERSION>`.
@@ -231,7 +241,7 @@ fn write_snapshot(path: &Path, contents: &str) {
 #[test]
 fn explain_profile_under_color_never_writes_no_escape() {
     let run = |color: &str| {
-        let out = assert_cmd::Command::cargo_bin("cfgd")
+        let out = cfgd_bin()
             .expect("cfgd binary builds")
             .args(["--color", color, "explain", "profile"])
             .output()

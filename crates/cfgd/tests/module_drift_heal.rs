@@ -23,6 +23,16 @@ use cfgd_core::providers::ProviderRegistry;
 use cfgd_core::reconciler::{Action, ModuleAction, ModuleActionKind, action_drift_rows};
 use cfgd_core::state::StateStore;
 
+/// The binary under test, with cfgd's own startup update check opted out.
+/// A fixture spawning the real binary reaches GitHub over the network on every
+/// human-channel run otherwise, which is no part of what any of these pins
+/// claims.
+fn cfgd_bin() -> Result<Command, assert_cmd::cargo::CargoError> {
+    let mut cmd = Command::cargo_bin("cfgd")?;
+    cmd.env("CFGD_NO_UPDATE_CHECK", "1");
+    Ok(cmd)
+}
+
 /// A config dir holding one module that deploys one file to a target which
 /// does not exist yet, so the first scan finds drift.
 fn module_fixture(dir: &Path) -> std::path::PathBuf {
@@ -55,7 +65,7 @@ fn module_fixture(dir: &Path) -> std::path::PathBuf {
 }
 
 fn run(args: &[&str], config: &Path, state: &Path, home: &Path) -> std::process::Output {
-    let mut cmd = Command::cargo_bin("cfgd").unwrap();
+    let mut cmd = cfgd_bin().unwrap();
     cmd.args(args)
         .arg("--config")
         .arg(config.join("cfgd.yaml"))

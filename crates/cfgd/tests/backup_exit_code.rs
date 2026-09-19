@@ -16,6 +16,16 @@ mod common;
 use assert_cmd::Command;
 use common::{backup_profile_setup, strand_a_snapshot};
 
+/// The binary under test, with cfgd's own startup update check opted out.
+/// A fixture spawning the real binary reaches GitHub over the network on every
+/// human-channel run otherwise, which is no part of what any of these pins
+/// claims.
+fn cfgd_bin() -> Result<Command, assert_cmd::cargo::CargoError> {
+    let mut cmd = Command::cargo_bin("cfgd")?;
+    cmd.env("CFGD_NO_UPDATE_CHECK", "1");
+    Ok(cmd)
+}
+
 #[test]
 fn backup_run_json_emits_exactly_one_document_when_a_unit_is_busy() {
     // `-o json` promises one top-level document. Reporting the busy unit as a
@@ -28,7 +38,7 @@ fn backup_run_json_emits_exactly_one_document_when_a_unit_is_busy() {
     let _held =
         cfgd_core::acquire_backup_lock(state_dir.path(), "docs").expect("hold the docs lock");
 
-    let out = Command::cargo_bin("cfgd")
+    let out = cfgd_bin()
         .unwrap()
         .args(["-o", "json", "backup", "run"])
         .arg("--config")
@@ -70,7 +80,7 @@ fn backup_run_json_emits_exactly_one_document_when_a_unit_is_busy() {
 fn backup_run_exits_zero_when_every_unit_runs_clean() {
     let (config_dir, state_dir, _source) = backup_profile_setup();
 
-    let out = Command::cargo_bin("cfgd")
+    let out = cfgd_bin()
         .unwrap()
         .args(["-o", "json", "backup", "run"])
         .arg("--config")
@@ -109,7 +119,7 @@ fn backup_gc_exits_nonzero_when_a_units_history_cannot_be_read() {
         .drop_backup_runs_table()
         .expect("take the history away");
 
-    let out = Command::cargo_bin("cfgd")
+    let out = cfgd_bin()
         .unwrap()
         .args(["-o", "json", "backup", "gc"])
         .arg("--config")
@@ -148,7 +158,7 @@ fn backup_gc_exits_nonzero_when_a_recorded_payload_cannot_be_removed() {
     let (stranded, _) = strand_a_snapshot(config_dir.path(), state_dir.path(), &source);
     let held = cfgd_core::test_helpers::hold_payload_unremovable(&stranded);
 
-    let out = Command::cargo_bin("cfgd")
+    let out = cfgd_bin()
         .unwrap()
         .args(["-o", "json", "backup", "gc"])
         .arg("--config")

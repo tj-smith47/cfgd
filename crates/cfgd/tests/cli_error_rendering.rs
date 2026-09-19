@@ -16,6 +16,16 @@
 
 use assert_cmd::Command;
 
+/// The binary under test, with cfgd's own startup update check opted out.
+/// A fixture spawning the real binary reaches GitHub over the network on every
+/// human-channel run otherwise, which is no part of what any of these pins
+/// claims.
+fn cfgd_bin() -> Result<Command, assert_cmd::cargo::CargoError> {
+    let mut cmd = Command::cargo_bin("cfgd")?;
+    cmd.env("CFGD_NO_UPDATE_CHECK", "1");
+    Ok(cmd)
+}
+
 /// Minimal valid config dir (so a command reaches its own not-found logic rather
 /// than failing earlier on missing config).
 fn create_valid_config(dir: &std::path::Path) {
@@ -33,11 +43,7 @@ fn create_valid_config(dir: &std::path::Path) {
 }
 
 fn run(args: &[&str]) -> (String, String, Option<i32>) {
-    let out = Command::cargo_bin("cfgd")
-        .unwrap()
-        .args(args)
-        .output()
-        .unwrap();
+    let out = cfgd_bin().unwrap().args(args).output().unwrap();
     (
         String::from_utf8_lossy(&out.stdout).into_owned(),
         String::from_utf8_lossy(&out.stderr).into_owned(),
@@ -186,7 +192,7 @@ fn a_refusal_names_its_fix_end_to_end_with_usage_hints_off() {
     )
     .unwrap();
 
-    let out = Command::cargo_bin("cfgd")
+    let out = cfgd_bin()
         .unwrap()
         .env("CFGD_USAGE_HINTS", "false")
         .args(["module", "show", "nope", "--config"])

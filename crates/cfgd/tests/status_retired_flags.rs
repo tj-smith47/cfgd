@@ -10,8 +10,18 @@
 
 use assert_cmd::Command;
 
+/// The binary under test, with cfgd's own startup update check opted out.
+/// A fixture spawning the real binary reaches GitHub over the network on every
+/// human-channel run otherwise, which is no part of what any of these pins
+/// claims.
+fn cfgd_bin() -> Result<Command, assert_cmd::cargo::CargoError> {
+    let mut cmd = Command::cargo_bin("cfgd")?;
+    cmd.env("CFGD_NO_UPDATE_CHECK", "1");
+    Ok(cmd)
+}
+
 fn refusal(flag: &str) -> (Option<i32>, String) {
-    let out = Command::cargo_bin("cfgd")
+    let out = cfgd_bin()
         .unwrap()
         .args(["status", flag])
         .output()
@@ -56,7 +66,7 @@ fn status_show_all_is_refused_with_the_wide_output_flag() {
 
 #[test]
 fn a_retired_status_flag_is_hidden_from_the_help() {
-    let out = Command::cargo_bin("cfgd")
+    let out = cfgd_bin()
         .unwrap()
         .args(["status", "--help"])
         .output()

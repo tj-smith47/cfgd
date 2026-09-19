@@ -14,6 +14,16 @@ use std::path::Path;
 use assert_cmd::Command;
 use predicates::prelude::*;
 
+/// The binary under test, with cfgd's own startup update check opted out.
+/// A fixture spawning the real binary reaches GitHub over the network on every
+/// human-channel run otherwise, which is no part of what any of these pins
+/// claims.
+fn cfgd_bin() -> Result<Command, assert_cmd::cargo::CargoError> {
+    let mut cmd = Command::cargo_bin("cfgd")?;
+    cmd.env("CFGD_NO_UPDATE_CHECK", "1");
+    Ok(cmd)
+}
+
 /// A committed git repository holding a `cfgd.yaml`, for `--from` to clone.
 fn source_repo(dir: &Path) {
     std::fs::create_dir_all(dir).unwrap();
@@ -36,7 +46,7 @@ fn source_repo(dir: &Path) {
 /// The binary under a throwaway home, with every seam that resolves the default
 /// config directory pointed into it.
 fn run(home: &Path, args: &[&str]) -> assert_cmd::assert::Assert {
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(args)
         .env("HOME", home)
@@ -504,7 +514,7 @@ fn init_from_refuses_an_occupied_default_dir_before_provisioning_git() {
     );
     let argv_log = shim_dir.join("argv.log");
 
-    let mut cmd = Command::cargo_bin("cfgd").unwrap();
+    let mut cmd = cfgd_bin().unwrap();
     cmd.args(["init", "--from", &src.display().to_string()])
         .env("HOME", &home)
         .env("USERPROFILE", &home)
