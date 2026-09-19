@@ -3355,7 +3355,10 @@ mod tests {
         );
         assert!(
             !blocked.can_bootstrap(),
-            "and `can_bootstrap` answers from the feasible plan, so no caller              treats the manager as provisionable"
+            concat!(
+                "and `can_bootstrap` answers from the feasible plan, so no caller treats ",
+                "the manager as provisionable"
+            )
         );
     }
 

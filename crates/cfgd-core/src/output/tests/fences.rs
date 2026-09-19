@@ -5910,3 +5910,124 @@ struct Wire {
         "the derive and the wrapped attribute, and no fragment of either: {folded:?}"
     );
 }
+
+/// The marker that exempts one literal from the fence below.
+const SPACE_RUN_HATCH: &str = "space-run-ok:";
+
+/// No string literal carries a mid-sentence run of three or more spaces.
+///
+/// A hand-wrapped assertion or panic message joined back onto one line keeps
+/// the indentation its continuation row carried, and the run prints verbatim
+/// the moment the assertion fires: `…so no caller              treats the
+/// manager as provisionable`. `cargo fmt` never touches a literal body, so
+/// nothing else catches it.
+///
+/// The run has to sit between two letters and be three or more spaces wide,
+/// because both narrower readings name something this workspace prints on
+/// purpose: two spaces is the kv renderer's own column separator, and a pad
+/// after a value (`Repository      : extra`) is a fixture reproducing another
+/// tool's columns. A column whose left cell is a WORD still reads as a
+/// sentence here, so those carry `// space-run-ok: <why>` on the line or the
+/// line above.
+#[test]
+fn no_string_literal_carries_a_mid_sentence_space_run() {
+    let mut offenders = Vec::new();
+    let mut scanned = 0usize;
+    for path in workspace_rust_files() {
+        if path.ends_with(Path::new("output/tests/fences.rs")) {
+            continue;
+        }
+        scanned += 1;
+        let body = walked_file_body(&path);
+        let lines: Vec<&str> = body.lines().collect();
+        for (i, line) in lines.iter().enumerate() {
+            if is_plain_line_comment(line) || line.trim_start().starts_with("///") {
+                continue;
+            }
+            if carries_hatch(line, SPACE_RUN_HATCH)
+                || (i > 0 && carries_hatch(lines[i - 1], SPACE_RUN_HATCH))
+            {
+                continue;
+            }
+            // The blanked line keeps every quote at its own byte offset, so a
+            // span found there indexes the raw line exactly; a trailing `//`
+            // is cut on the blanked line for the same reason.
+            let blanked = blank_string_literals(line);
+            let code = blanked.find("//").map_or(&blanked[..], |c| &blanked[..c]);
+            let bytes = code.as_bytes();
+            let mut at = 0usize;
+            while let Some(open) = bytes[at..].iter().position(|b| *b == b'"').map(|p| p + at) {
+                let Some(close) = bytes[open + 1..]
+                    .iter()
+                    .position(|b| *b == b'"')
+                    .map(|p| p + open + 1)
+                else {
+                    break;
+                };
+                if let Some(literal) = line.get(open + 1..close)
+                    && let Some(run) = mid_sentence_space_run(literal)
+                {
+                    offenders.push(format!("{}:{}: {run}", path.display(), i + 1));
+                }
+                at = close + 1;
+            }
+        }
+    }
+    assert!(
+        scanned >= 500,
+        "the walk read {scanned} sources; it has stopped seeing them"
+    );
+    assert!(
+        offenders.is_empty(),
+        concat!(
+            "a wrapped message keeps the indentation of the row it was wrapped onto; join it ",
+            "with `concat!` or hatch the padding with `// space-run-ok: <why>`:\n{}"
+        ),
+        offenders.join("\n")
+    );
+}
+
+/// The offending fragment of a literal body, or `None` when its spacing is a
+/// leading indent, a trailing pad or a column rather than a break inside a
+/// sentence.
+///
+/// A run following an escaped line break is the next line's INDENT, and an
+/// embedded YAML fixture is nothing but those, so the two bytes `\n` end a
+/// line here exactly as a real one would.
+fn mid_sentence_space_run(literal: &str) -> Option<String> {
+    let bytes = literal.as_bytes();
+    let mut at = 0usize;
+    while at < bytes.len() {
+        if bytes[at] != b' ' {
+            at += 1;
+            continue;
+        }
+        let end = at + bytes[at..].iter().take_while(|b| **b == b' ').count();
+        // The escape's own letter would otherwise read as the word a sentence
+        // broke after, and an embedded YAML fixture is nothing but those.
+        let after_break =
+            at >= 2 && bytes[at - 2] == b'\\' && matches!(bytes[at - 1], b'n' | b'r' | b't');
+        if end - at >= 3
+            && at > 0
+            && !after_break
+            && end < bytes.len()
+            && bytes[at - 1].is_ascii_alphabetic()
+            && bytes[end].is_ascii_alphabetic()
+            && literal.is_char_boundary(at)
+            && literal.is_char_boundary(end)
+        {
+            let from = literal[..at]
+                .char_indices()
+                .rev()
+                .nth(24)
+                .map_or(0, |(i, _)| i);
+            let to = literal[end..]
+                .char_indices()
+                .nth(24)
+                .map_or(literal.len(), |(i, _)| end + i);
+            return Some(literal[from..to].to_string());
+        }
+        at = end;
+    }
+    None
+}

@@ -27425,17 +27425,17 @@ fn platform_skip_renders_as_header_annotation_not_a_phase() {
     );
     assert!(
         out.contains(
-            "Modules   nvim (wsl-tools skipped: platform not matched (requires: windows))"
+            "Modules   nvim (wsl-tools skipped: platform not matched (requires: windows))" // space-run-ok: a rendered kv row's own column padding.
         ) || out.contains(
             "Modules  nvim (wsl-tools skipped: platform not matched (requires: windows))"
         ),
         "the row carries the skip's own reason string: {out}"
     );
     assert!(
-        out.contains("Phases   Packages") || out.contains("Phases  Packages"),
+        out.contains("Phases   Packages") || out.contains("Phases  Packages"), // space-run-ok: a rendered kv row's own column padding.
         "Modules is not listed among the phases: {out}"
     );
-    assert!(!out.contains("Phases   Modules"), "got: {out}");
+    assert!(!out.contains("Phases   Modules"), "got: {out}"); // space-run-ok: a rendered kv row's own column padding.
     assert!(
         out.contains("1 planned"),
         "a module skipped whole is stated by the Modules row and counted \

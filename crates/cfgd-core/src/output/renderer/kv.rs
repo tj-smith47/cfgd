@@ -453,7 +453,7 @@ mod tests {
         );
         let plain = crate::output::strip_ansi(&raw);
         assert!(
-            plain.contains(&format!("Scope    module:nvim{sep}module:git")),
+            plain.contains(&format!("Scope    module:nvim{sep}module:git")), // space-run-ok: a rendered kv row's own column padding.
             "the plain reading is unchanged: {plain:?}"
         );
         assert!(
@@ -1037,7 +1037,7 @@ mod tests {
             lines,
             vec![
                 "Checkin",
-                "  Server Status   ok",
+                "  Server Status   ok", // space-run-ok: a rendered kv row's own column padding.
                 "  Config Changed  false",
                 "",
                 "Drift",
@@ -1083,7 +1083,7 @@ mod tests {
         assert_eq!(
             lines,
             vec![
-                "Server Status   ok",
+                "Server Status   ok", // space-run-ok: a rendered kv row's own column padding.
                 "Config Changed  false",
                 "",
                 "Drift",
@@ -1112,7 +1112,7 @@ mod tests {
             lines,
             vec![
                 "module:mymod",
-                "  Commit     abc1234",
+                "  Commit     abc1234", // space-run-ok: a rendered kv row's own column padding.
                 "  Integrity  sha256:beef",
             ],
             "got: {out:?}"

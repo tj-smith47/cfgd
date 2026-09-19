@@ -1735,11 +1735,11 @@ fn header_omits_every_empty_row_and_skips_the_modules_phase() {
         "trigger row missing: {out:?}"
     );
     assert!(
-        out.contains("Phases   Files"),
+        out.contains("Phases   Files"), // space-run-ok: a rendered kv row's own column padding.
         "phases row must list only phases that render: {out:?}"
     );
     assert!(
-        !out.contains("Phases   Modules") && !out.contains("Modules, Files"),
+        !out.contains("Phases   Modules") && !out.contains("Modules, Files"), // space-run-ok: a rendered kv row's own column padding.
         "the Modules phase must never appear in the Phases row: {out:?}"
     );
 }
@@ -1803,12 +1803,12 @@ fn a_phases_row_states_only_what_the_invocation_did_not() {
 
     let unfiltered = header(None);
     assert!(
-        unfiltered.contains("Phases   Files, Post-Scripts"),
+        unfiltered.contains("Phases   Files, Post-Scripts"), // space-run-ok: a rendered kv row's own column padding.
         "an unfiltered run names every phase it will print: {unfiltered:?}"
     );
     let owners = header(Some(&PhaseFilter::ModuleOwners));
     assert!(
-        owners.contains("Phases   Files, Post-Scripts"),
+        owners.contains("Phases   Files, Post-Scripts"), // space-run-ok: a rendered kv row's own column padding.
         "`--phase modules` named no phase, so which ones held work is news: {owners:?}"
     );
 }
