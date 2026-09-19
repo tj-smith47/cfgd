@@ -1489,6 +1489,47 @@ pub fn code_line(line: &str) -> String {
     }
 }
 
+/// A whole source body as CODE, byte-for-byte: every literal body blanked
+/// (quotes kept, as [`blank_string_literals`] does per line), every `//` and
+/// `/* … */` comment blanked WHOLE (delimiters included), newlines kept, and
+/// the masking state carried across rows by [`LineMask`], so a brace or a
+/// tell found on the result indexes the raw body exactly.
+///
+/// [`code_line`] answers the same question for ONE line, and that bound is
+/// what a hand-rolled brace matcher kept re-discovering: a literal or a block
+/// comment spanning rows leaves every row below the first read as code, so a
+/// `{` written inside one grows a span past its closing brace and a statement
+/// written inside one stands in for a line that runs. Both pass silently, and
+/// are found only by whoever writes the next fixture. Reach for this wherever a
+/// walk matches braces over a whole body or asks whether a span holds a call,
+/// and slice the RAW body at the positions found here.
+pub fn blank_non_code(body: &str) -> String {
+    let mut out = body.as_bytes().to_vec();
+    let mut mask = LineMask::default();
+    let mut at = 0;
+    for row in body.split_inclusive('\n') {
+        // The terminator is excluded so the line-comment arm cannot blank it:
+        // a report reading this back by row needs the same row count.
+        let text = row
+            .strip_suffix('\n')
+            .map_or(row, |r| r.strip_suffix('\r').unwrap_or(r));
+        mask.advance_into(text, &mut out[at..at + text.len()]);
+        at += row.len();
+    }
+    // Every byte written is an ASCII space and every delimiter left standing
+    // is ASCII, so the buffer is valid UTF-8 by construction.
+    String::from_utf8(out).unwrap_or_else(|_| body.to_string())
+}
+
+/// Blank `out[from..to]`, clamped to what `out` holds. An empty `out` is the
+/// state-only caller, for whom every call is a no-op.
+fn blank(out: &mut [u8], from: usize, to: usize) {
+    let to = to.min(out.len());
+    if from < to {
+        out[from..to].fill(b' ');
+    }
+}
+
 /// Whether a source line is a plain `//` comment rather than a `///` or `//!`
 /// doc comment.
 ///
@@ -1791,6 +1832,20 @@ impl LineMask {
     /// is left alone), `//` cutting the line and `/* … */` nesting across
     /// lines.
     pub(crate) fn advance(&mut self, line: &str) {
+        self.advance_into(line, &mut []);
+    }
+
+    /// [`advance`](Self::advance) blanking as it steps: every byte it passes
+    /// over as a literal body or as comment text (delimiters included) is
+    /// written as a space in `out`, which holds that same line's bytes.
+    ///
+    /// One state machine answers both questions, so a syntax the masking
+    /// knows cannot be one the blanking misses. The hand-rolled scanners this
+    /// replaced each carried a different subset of the arms, and every round
+    /// of review found the next syntax one of them had never learned. `out`
+    /// may be shorter than the line, empty included, for a caller that wants
+    /// the state alone.
+    fn advance_into(&mut self, line: &str, out: &mut [u8]) {
         let bytes = line.as_bytes();
         let mut i = 0;
         self.resumed_at = None;
@@ -1801,33 +1856,43 @@ impl LineMask {
                     i += 1 + open;
                     self.resumed_at.get_or_insert(i);
                 } else {
+                    blank(out, i, i + 1);
                     i += 1;
                 }
                 continue;
             }
             if self.in_plain {
                 match bytes[i] {
-                    b'\\' => i += 2,
+                    b'\\' => {
+                        blank(out, i, i + 2);
+                        i += 2;
+                    }
                     b'"' => {
                         self.in_plain = false;
                         i += 1;
                         self.resumed_at.get_or_insert(i);
                     }
-                    _ => i += 1,
+                    _ => {
+                        blank(out, i, i + 1);
+                        i += 1;
+                    }
                 }
                 continue;
             }
             if self.comment_depth > 0 {
                 if bytes[i] == b'*' && bytes.get(i + 1) == Some(&b'/') {
                     self.comment_depth -= 1;
+                    blank(out, i, i + 2);
                     i += 2;
                     if self.comment_depth == 0 {
                         self.resumed_at.get_or_insert(i);
                     }
                 } else if bytes[i] == b'/' && bytes.get(i + 1) == Some(&b'*') {
                     self.comment_depth += 1;
+                    blank(out, i, i + 2);
                     i += 2;
                 } else {
+                    blank(out, i, i + 1);
                     i += 1;
                 }
                 continue;
@@ -1845,19 +1910,26 @@ impl LineMask {
                         // scan lands on the escaped byte instead of past the
                         // literal.
                         let after_escape = (i + 3).min(bytes.len());
-                        i = bytes[after_escape..]
+                        let close = bytes[after_escape..]
                             .iter()
                             .position(|b| *b == b'\'')
-                            .map_or(bytes.len(), |p| after_escape + p + 1);
+                            .map(|p| after_escape + p);
+                        blank(out, i + 1, close.unwrap_or(bytes.len()));
+                        i = close.map_or(bytes.len(), |c| c + 1);
                     } else if bytes.get(i + 2) == Some(&b'\'') {
+                        blank(out, i + 1, i + 2);
                         i += 3;
                     } else {
                         i += 1;
                     }
                 }
-                b'/' if bytes.get(i + 1) == Some(&b'/') => return,
+                b'/' if bytes.get(i + 1) == Some(&b'/') => {
+                    blank(out, i, bytes.len());
+                    return;
+                }
                 b'/' if bytes.get(i + 1) == Some(&b'*') => {
                     self.comment_depth += 1;
+                    blank(out, i, i + 2);
                     i += 2;
                 }
                 _ => {
@@ -5294,6 +5366,70 @@ mod tests {
                  position found on it indexes the wrong byte: `{raw}`"
             );
         }
+    }
+
+    /// Every shape a per-line blanker reads as code once its opening row is
+    /// behind it: a row inside a raw literal, a row inside an ordinary one, a
+    /// row inside a block comment, and a line comment carrying both a brace
+    /// and a quote.
+    ///
+    /// The claim is byte-for-byte: the result is the same length as the body
+    /// and carries the same newlines, so a brace matched on it indexes the raw
+    /// body, and no `{`, `}`, `"` or `.env(` survives inside any of the four.
+    #[test]
+    fn blank_non_code_blanks_every_row_a_literal_or_comment_spans() {
+        let body = concat!(
+            "fn helper() {\n",
+            "    let raw = r#\"\n",
+            "cmd.env(\"X\", \"1\"); {\n",
+            "\"#;\n",
+            "    let plain = \"a { and a \\\" quote\";\n",
+            "    /* a block { comment\n",
+            "       whose second row says cmd.env(\"Y\", \"2\"); */\n",
+            "    // a line } comment with a \" quote\n",
+            "    real();\n",
+            "}\n",
+        );
+        let blanked = blank_non_code(body);
+        assert_eq!(
+            blanked.len(),
+            body.len(),
+            "a blanked body is the same length as the raw one, or a position \
+             found on it indexes the wrong byte:\n{blanked}"
+        );
+        assert_eq!(
+            blanked.matches('\n').count(),
+            body.matches('\n').count(),
+            "the row count is the same, or a line number read off the result \
+             names another line:\n{blanked}"
+        );
+        assert_eq!(
+            blanked.matches('{').count(),
+            1,
+            "only the function's own brace survives:\n{blanked}"
+        );
+        assert_eq!(
+            blanked.matches('}').count(),
+            1,
+            "only the function's own closing brace survives:\n{blanked}"
+        );
+        assert!(
+            !blanked.contains("cmd.env("),
+            "a call written inside a literal or a comment is not code:\n{blanked}"
+        );
+        assert!(
+            blanked.contains("real();"),
+            "the one line that runs is left alone:\n{blanked}"
+        );
+        // The delimiters a literal is recognised BY stay, and nothing else:
+        // the raw literal's two, the plain one's two, and neither the escaped
+        // quote inside it nor the quotes inside the comment and the raw body.
+        // A caller pairs its literals off these.
+        assert_eq!(
+            blanked.matches('"').count(),
+            4,
+            "every quote left standing is a delimiter:\n{blanked}"
+        );
     }
 
     /// The shapes the fold has to tell apart, in one source.
