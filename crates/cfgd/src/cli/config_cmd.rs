@@ -1033,14 +1033,31 @@ spec:
 
         // The loop below reads its expected refusal from `config_field_shape`,
         // the same function `descent_blocked` asks, so it pins the mapping and
-        // not the oracle. These four say what the schema declares, so an oracle
+        // not the oracle. These rows say what the schema declares, so an oracle
         // that answers a child count again fails here rather than agreeing with
-        // itself: a free-form map, a declared list, a scalar and a path the
-        // schema names nothing at.
+        // itself. One row per `type_desc` spelling the reflection holds rather
+        // than one per `DeclaredShape` arm, because the spelling is what the
+        // oracle branches on: a demoted `[]string` or `boolean` arm reads as a
+        // scalar, the loop below agrees with it, and only a row named at that
+        // spelling can see it.
         for (path, expected) in [
+            // object, no children of its own
             (&["aliases"][..], DeclaredShape::Mapping),
+            // object, with children
+            (&["daemon"][..], DeclaredShape::Mapping),
+            // []object
             (&["sources"][..], DeclaredShape::Sequence),
+            (&["origin"][..], DeclaredShape::Sequence),
+            // []string
+            (
+                &["compliance", "scope", "watchPaths"][..],
+                DeclaredShape::Sequence,
+            ),
+            // string
             (&["fileStrategy"][..], DeclaredShape::Leaf),
+            // boolean
+            (&["daemon", "enabled"][..], DeclaredShape::Leaf),
+            // the schema names nothing here
             (&["nope"][..], DeclaredShape::Unknown),
         ] {
             assert_eq!(

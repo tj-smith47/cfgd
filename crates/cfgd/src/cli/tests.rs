@@ -4,7 +4,8 @@ use std::sync::{Arc, Mutex};
 
 use cfgd_core::PathDisplayExt;
 use cfgd_core::test_helpers::{
-    blank_string_literals, carries_hatch, rust_sources_under, walked_file_body,
+    blank_string_literals, carries_hatch, is_plain_line_comment, rust_sources_under,
+    walked_file_body,
 };
 
 const TEST_CONFIG_YAML: &str =
@@ -46851,7 +46852,9 @@ fn every_e2e_suite_runs_under_the_one_scratch_home() {
 /// asking about, and all of them in a test run that may have no network at all.
 /// The opt-out belongs to the spawn, so each fixture names the binary exactly
 /// once, inside its own `cfgd_bin` helper, and that helper sets
-/// `CFGD_NO_UPDATE_CHECK` on a `.env(` line of its own. Both of Cargo's
+/// `CFGD_NO_UPDATE_CHECK` on a `.env(` line that runs: the opt-out is read
+/// between `fn cfgd_bin(` and its closing brace, and a line commented out is
+/// not one of the helper's lines. Both of Cargo's
 /// spellings (`Command::cargo_bin("cfgd")`, `CARGO_BIN_EXE_cfgd`) count as the
 /// population tell and as the call sites counted, so a fixture reaching for
 /// the other one joins the rule rather than sitting outside it.
@@ -46874,22 +46877,29 @@ fn every_integration_fixture_spawning_the_binary_opts_out_of_the_update_check() 
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
-        if !body.contains(HELPER) {
+        let helper = body.find(HELPER).and_then(|at| {
+            body[at..]
+                .find('{')
+                .map(|open| brace_span(&body[at..], open))
+        });
+        let Some(helper) = helper else {
             offenders.push(format!(
                 "{name} — spawns the binary with no `cfgd_bin` helper"
             ));
             continue;
-        }
-        // The var has to be SET, not merely mentioned: read anywhere in the
-        // file, a `.env` line deleted while the name survives in the helper's
-        // own doc comment passes a walk that only asks whether the string is
-        // there.
-        if !body
+        };
+        // The opt-out is the SPAWN's, so only a line that runs inside the
+        // helper counts: read file-wide it is satisfied by the name surviving
+        // in a doc comment, by a `.env` line commented out while debugging,
+        // and by one sitting in some other function, each of which leaves
+        // every spawn reaching GitHub.
+        if !helper
             .lines()
+            .filter(|line| !is_plain_line_comment(line))
             .any(|line| line.contains(".env(") && line.contains(OPTOUT))
         {
             offenders.push(format!(
-                "{name} — no `.env(` line setting {OPTOUT}; its `cfgd_bin` helper never opts out"
+                "{name} — no `.env(` line setting {OPTOUT} inside `cfgd_bin`; its spawns never opt out"
             ));
         }
         // One spawn site per file: the helper's own is the only place a fixture
