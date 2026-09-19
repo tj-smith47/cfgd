@@ -3705,6 +3705,18 @@ fn a_plan_read_off_the_wire_takes_its_declared_manager_and_floor_from_the_module
 /// stats identical. Passing the entry through would hand
 /// `package_survives_elision` a floor of `None` and elide an outdated copy as
 /// converged, so the file is refused instead.
+/// What a refusal puts on the wire, rendered through the CLI's own error sink.
+///
+/// `restore_module_planner_inputs` runs after the file has already been read
+/// and accepted, so its two refusals are reachable only from here, and their
+/// kinds still have to be the ones a script reads.
+fn refusal_payload(err: &anyhow::Error) -> serde_json::Value {
+    let (printer, cap) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
+    let _ = crate::cli::error::render_cli_error(&printer, err);
+    drop(printer);
+    cap.json().expect("an error doc carries a payload")
+}
+
 #[test]
 fn a_plan_naming_a_package_the_modules_no_longer_route_the_same_way_is_refused() {
     let mut plan = make_plan(vec![(
@@ -3718,13 +3730,18 @@ fn a_plan_naming_a_package_the_modules_no_longer_route_the_same_way_is_refused()
     let mut module = cfgd_core::test_helpers::make_resolved_module("editor");
     module.packages = vec![resolved_package("cargo", "neovim")];
 
-    let err = super::restore_module_planner_inputs(
+    let refusal = super::restore_module_planner_inputs(
         &mut plan,
         std::slice::from_ref(&module),
         std::path::Path::new("plan.json"),
     )
-    .unwrap_err()
-    .to_string();
+    .unwrap_err();
+    let payload = refusal_payload(&refusal);
+    assert_eq!(payload["error"], "host_moved", "{payload}");
+    assert_eq!(payload["module"], "editor", "{payload}");
+    assert_eq!(payload["manager"], "brew", "{payload}");
+    assert_eq!(payload["package"], "neovim", "{payload}");
+    let err = refusal.to_string();
     assert!(
         err.contains("plan.json does not describe this host"),
         "the refusal names the file: {err}"
@@ -3796,13 +3813,16 @@ fn a_plan_naming_a_module_this_run_no_longer_resolves_is_refused() {
         )],
     )]);
 
-    let err = super::restore_module_planner_inputs(
+    let refusal = super::restore_module_planner_inputs(
         &mut plan,
         &[cfgd_core::test_helpers::make_resolved_module("shell")],
         std::path::Path::new("plan.json"),
     )
-    .unwrap_err()
-    .to_string();
+    .unwrap_err();
+    let payload = refusal_payload(&refusal);
+    assert_eq!(payload["error"], "host_moved", "{payload}");
+    assert_eq!(payload["module"], "editor", "{payload}");
+    let err = refusal.to_string();
     assert!(
         err.contains("plan.json does not describe this host"),
         "the refusal names the file: {err}"

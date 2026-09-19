@@ -37,6 +37,15 @@ fn replay_args(path: &Path) -> ApplyArgs {
     }
 }
 
+/// What a refusal puts on the wire, rendered through the CLI's own error sink
+/// rather than read off the carrier, so a pin sees the bytes a script reads.
+fn payload_of(err: &anyhow::Error) -> serde_json::Value {
+    let (printer, cap) = Printer::for_test_doc_with_format(OutputFormat::Json);
+    let _ = cfgd::cli::error::render_cli_error(&printer, err);
+    drop(printer);
+    cap.json().expect("an error doc carries a payload")
+}
+
 #[test]
 fn a_saved_plan_applies_the_actions_it_recorded() {
     let (config_dir, state_dir, target) = tiny_profile_setup();
@@ -182,13 +191,6 @@ fn a_filtered_payload_is_refused_as_a_plan_file() {
 /// untyped failure.
 #[test]
 fn every_saved_plan_refusal_names_its_own_kind_on_the_wire() {
-    fn payload_of(err: &anyhow::Error) -> serde_json::Value {
-        let (printer, cap) = Printer::for_test_doc_with_format(OutputFormat::Json);
-        let _ = cfgd::cli::error::render_cli_error(&printer, err);
-        drop(printer);
-        cap.json().expect("an error doc carries a payload")
-    }
-
     let (config_dir, state_dir, _target) = tiny_profile_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
     let printer = test_printer();
@@ -201,6 +203,12 @@ fn every_saved_plan_refusal_names_its_own_kind_on_the_wire() {
             .as_str()
             .is_some_and(|f| f.ends_with("nope.json")),
         "the payload names the file the caller passed: {missing}"
+    );
+    assert!(
+        missing["reason"]
+            .as_str()
+            .is_some_and(|r| r.contains("os error")),
+        "both io refusals carry what the OS said: {missing}"
     );
 
     let filtered_file = state_dir.path().join("filtered.json");
@@ -249,9 +257,11 @@ fn a_plan_file_whose_phases_were_reordered_is_refused() {
     std::fs::write(&plan_file, serde_json::to_string(&payload).unwrap()).unwrap();
 
     let printer = test_printer();
-    let err = run_apply(&cli, &printer, &replay_args(&plan_file))
-        .unwrap_err()
-        .to_string();
+    let refusal = run_apply(&cli, &printer, &replay_args(&plan_file)).unwrap_err();
+    let payload = payload_of(&refusal);
+    assert_eq!(payload["error"], "not_a_cfgd_plan", "{payload}");
+    assert_eq!(payload["phases"], "Files, Files", "{payload}");
+    let err = refusal.to_string();
     assert!(
         err.contains("is not a plan cfgd wrote"),
         "a duplicated phase is a shape refusal, not a staleness one: {err}"
@@ -319,9 +329,16 @@ fn a_plan_recorded_under_another_config_is_refused() {
     let foreign = cli_for(other_dir.path(), state_dir.path());
 
     let printer = test_printer();
-    let err = run_apply(&foreign, &printer, &replay_args(&plan_file))
-        .unwrap_err()
-        .to_string();
+    let refusal = run_apply(&foreign, &printer, &replay_args(&plan_file)).unwrap_err();
+    let payload = payload_of(&refusal);
+    assert_eq!(payload["error"], "foreign_config", "{payload}");
+    assert!(
+        payload["config"]
+            .as_str()
+            .is_some_and(|c| c.ends_with("cfgd.yaml")),
+        "the payload names the config this run resolved: {payload}"
+    );
+    let err = refusal.to_string();
     assert!(
         err.contains("is not a plan cfgd wrote for this config"),
         "a foreign config is a shape refusal, not a staleness one: {err}"
@@ -428,6 +445,35 @@ fn a_missing_plan_file_is_refused() {
     assert!(!target.exists(), "a refused plan runs nothing: {err}");
 }
 
+/// The io failure a reader scripts differently from a missing file: `--plan`
+/// named something cfgd cannot read as a document. `read_failed` is one kind
+/// for every io refusal but a missing file, so without the detail on the wire
+/// a permission refusal and a directory are the same answer.
+#[test]
+fn a_plan_file_cfgd_cannot_read_carries_the_io_failure_on_the_wire() {
+    let (config_dir, state_dir, target) = tiny_profile_setup();
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let unreadable = state_dir.path().join("plan-dir.json");
+    std::fs::create_dir(&unreadable).unwrap();
+
+    let printer = test_printer();
+    let refusal = run_apply(&cli, &printer, &replay_args(&unreadable)).unwrap_err();
+    let payload = payload_of(&refusal);
+    assert_eq!(payload["error"], "read_failed", "{payload}");
+    assert!(
+        payload["reason"]
+            .as_str()
+            .is_some_and(|r| r.contains("os error")),
+        "the payload carries what the OS refused the read with: {payload}"
+    );
+    let err = refusal.to_string();
+    assert!(
+        err.contains("cannot read plan file") && err.contains("plan-dir.json"),
+        "the sentence names the path the caller passed: {err}"
+    );
+    assert!(!target.exists(), "a refused plan runs nothing: {err}");
+}
+
 #[test]
 fn an_unparsable_plan_file_is_refused() {
     let (config_dir, state_dir, target) = tiny_profile_setup();
@@ -436,9 +482,16 @@ fn an_unparsable_plan_file_is_refused() {
     std::fs::write(&garbage, "{\n").unwrap();
 
     let printer = test_printer();
-    let err = run_apply(&cli, &printer, &replay_args(&garbage))
-        .unwrap_err()
-        .to_string();
+    let refusal = run_apply(&cli, &printer, &replay_args(&garbage)).unwrap_err();
+    let payload = payload_of(&refusal);
+    assert_eq!(payload["error"], "parse_failed", "{payload}");
+    assert!(
+        payload["reason"]
+            .as_str()
+            .is_some_and(|r| r.contains("EOF")),
+        "the payload carries what serde refused the document for: {payload}"
+    );
+    let err = refusal.to_string();
     assert!(
         err.contains("is not the payload of `cfgd plan -o json`"),
         "{err}"
@@ -463,9 +516,10 @@ fn a_json_document_that_is_no_plan_output_is_refused_as_one() {
         std::fs::write(&stranger, body).unwrap();
 
         let printer = test_printer();
-        let err = run_apply(&cli, &printer, &replay_args(&stranger))
-            .unwrap_err()
-            .to_string();
+        let refusal = run_apply(&cli, &printer, &replay_args(&stranger)).unwrap_err();
+        let payload = payload_of(&refusal);
+        assert_eq!(payload["error"], "parse_failed", "{payload}");
+        let err = refusal.to_string();
         assert!(
             err.contains("is not the payload of `cfgd plan -o json`"),
             "{err}"

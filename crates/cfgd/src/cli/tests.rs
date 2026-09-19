@@ -1071,7 +1071,9 @@ fn resolve_theme_config_falls_back_to_the_default_theme_when_it_cannot_read_one(
 }
 
 #[test]
+#[serial_test::serial]
 fn resolve_hints_enabled_defaults_off_with_no_config_flag_or_env() {
+    let _unset = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_USAGE_HINTS");
     let dir = tempfile::tempdir().expect("tempdir");
     assert!(
         !super::resolve_hints_enabled(&dir.path().join("absent.yaml"), None),
@@ -1082,7 +1084,9 @@ fn resolve_hints_enabled_defaults_off_with_no_config_flag_or_env() {
 /// `spec.output.usageHints: true` is a stored demand, so an invocation that
 /// mentions neither half of the pair must not overrule it.
 #[test]
+#[serial_test::serial]
 fn resolve_hints_enabled_reads_a_stored_demand_for_hints() {
+    let _unset = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_USAGE_HINTS");
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("cfgd.yaml");
     std::fs::write(
@@ -1097,7 +1101,9 @@ fn resolve_hints_enabled_reads_a_stored_demand_for_hints() {
 }
 
 #[test]
+#[serial_test::serial]
 fn resolve_hints_enabled_reads_spec_output_usage_hints() {
+    let _unset = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_USAGE_HINTS");
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("cfgd.yaml");
     std::fs::write(
@@ -1114,7 +1120,9 @@ fn resolve_hints_enabled_reads_spec_output_usage_hints() {
 /// The flat `spec.usageHints` is the pre-`spec.output` spelling and still
 /// loads, so the resolver reads a document that has not migrated yet.
 #[test]
+#[serial_test::serial]
 fn resolve_hints_enabled_reads_the_legacy_flat_usage_hints_key() {
+    let _unset = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_USAGE_HINTS");
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("cfgd.yaml");
     std::fs::write(
@@ -1129,7 +1137,9 @@ fn resolve_hints_enabled_reads_the_legacy_flat_usage_hints_key() {
 }
 
 #[test]
+#[serial_test::serial]
 fn resolve_mask_env_values_defaults_to_masking_every_value() {
+    let _unset = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_MASK_ENV_VALUES");
     let dir = tempfile::tempdir().expect("tempdir");
     assert!(
         super::resolve_mask_env_values(&dir.path().join("absent.yaml"), None).masks(),
@@ -1138,10 +1148,13 @@ fn resolve_mask_env_values_defaults_to_masking_every_value() {
 }
 
 /// Precedence for the masking knob: the flag beats what the config stores,
-/// which beats the default. `CFGD_MASK_ENV_VALUES` reaches this function as
-/// the flag value, clap having already resolved the env var into it.
+/// which beats the default. `CFGD_MASK_ENV_VALUES` sits between the two, and
+/// the resolver reads it itself rather than taking clap's `env =` binding, so
+/// the ambient value has to be cleared for the stored field to answer at all.
 #[test]
+#[serial_test::serial]
 fn resolve_mask_env_values_precedence_flag_beats_spec_beats_default() {
+    let _unset = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_MASK_ENV_VALUES");
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("cfgd.yaml");
     std::fs::write(
@@ -1162,7 +1175,9 @@ fn resolve_mask_env_values_precedence_flag_beats_spec_beats_default() {
 /// An unreadable config masks rather than failing, which is the safe
 /// direction: a config cfgd cannot parse never reveals a value.
 #[test]
+#[serial_test::serial]
 fn an_unparseable_config_still_masks_every_env_value() {
+    let _unset = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_MASK_ENV_VALUES");
     let dir = tempfile::tempdir().expect("tempdir");
     let broken = dir.path().join("broken.yaml");
     std::fs::write(&broken, "spec: 'this is not a mapping\n").expect("write broken config");
@@ -1242,6 +1257,241 @@ fn the_migration_policy_flag_outranks_the_env_var_and_the_config_field() {
         super::resolve_migration_policy(&path, Some("update")),
         MigrationPolicy::Update,
         "--migration-policy must outrank CFGD_MIGRATION_POLICY"
+    );
+    assert_eq!(
+        super::resolve_migration_policy(&dir.path().join("absent.yaml"), None),
+        MigrationPolicy::Ignore,
+        "the variable answers on its own, with no config for it to outrank"
+    );
+}
+
+/// `CFGD_USAGE_HINTS` is spelled the way every other `CFGD_*` boolean is, so
+/// `resolve_knob` folds a word `bool::from_str` refuses through
+/// `canonical_bool_str`. Each word is asserted against a config storing the
+/// OPPOSITE demand, so only the variable can have produced the answer, and a
+/// word neither reading accepts leaves the stored demand standing rather than
+/// ending the run.
+#[test]
+#[serial_test::serial]
+fn resolve_hints_enabled_folds_the_boolish_spellings_of_its_env_var() {
+    use cfgd_core::test_helpers::EnvVarGuard;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let _unset = EnvVarGuard::unset("CFGD_USAGE_HINTS");
+    let stored_config = |demand: bool| {
+        let path = dir.path().join(format!("hints-{demand}.yaml"));
+        std::fs::write(
+            &path,
+            format!(
+                "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n  output:\n    usageHints: {demand}\n"
+            ),
+        )
+        .expect("write config");
+        path
+    };
+
+    for (raw, expected) in [
+        ("1", true),
+        ("yes", true),
+        ("on", true),
+        ("true", true),
+        ("0", false),
+        ("no", false),
+        ("off", false),
+        ("false", false),
+    ] {
+        let _env = EnvVarGuard::set("CFGD_USAGE_HINTS", raw);
+        assert_eq!(
+            super::resolve_hints_enabled(&stored_config(!expected), None),
+            expected,
+            "CFGD_USAGE_HINTS={raw} must outrank the opposite stored demand"
+        );
+    }
+
+    for demand in [true, false] {
+        let _env = EnvVarGuard::set("CFGD_USAGE_HINTS", "bogus");
+        assert_eq!(
+            super::resolve_hints_enabled(&stored_config(demand), None),
+            demand,
+            "a word neither reading accepts leaves spec.output.usageHints standing"
+        );
+    }
+}
+
+/// Every global flag clap validates against a fixed value list, and whether the
+/// type behind it spells a variant in any case other than the one that list
+/// shows.
+///
+/// `--theme` names a preset, and `Theme::preset` answers the lowercase
+/// spelling alone, so folding case there would have clap accept a name the
+/// renderer then drops. The other two stand for `case_insensitive_enum!`
+/// types whose `as_str` is PascalCase, which is what `config get`, `explain`
+/// and the published schemas all show: a flag refusing that spelling makes the
+/// documented word a usage error, and an exported `CFGD_*` carrying it ends
+/// every invocation before dispatch.
+#[test]
+#[serial_test::serial]
+fn every_enum_valued_global_flag_accepts_its_config_spelling() {
+    use cfgd_core::test_helpers::{EnvVarGuard, code_line, production_slice_of, workspace_root};
+    use std::str::FromStr;
+
+    struct Knob {
+        field: &'static str,
+        flag: &'static str,
+        env: &'static str,
+        tokens: Vec<&'static str>,
+        read: fn(&Cli) -> Option<String>,
+        canonical: fn(&str) -> Option<&'static str>,
+    }
+
+    let knobs = vec![
+        Knob {
+            field: "mask_env_values",
+            flag: "--mask-env-values",
+            env: "CFGD_MASK_ENV_VALUES",
+            tokens: cfgd_core::config::MaskEnvValues::ALL
+                .iter()
+                .map(|v| v.as_str())
+                .collect(),
+            read: |cli| cli.mask_env_values.clone(),
+            canonical: |raw| {
+                cfgd_core::config::MaskEnvValues::from_str(raw)
+                    .ok()
+                    .map(|v| v.as_str())
+            },
+        },
+        Knob {
+            field: "migration_policy",
+            flag: "--migration-policy",
+            env: "CFGD_MIGRATION_POLICY",
+            tokens: cfgd_schema::MigrationPolicy::ALL
+                .iter()
+                .map(|v| v.as_str())
+                .collect(),
+            read: |cli| cli.migration_policy.clone(),
+            canonical: |raw| {
+                cfgd_schema::MigrationPolicy::from_str(raw)
+                    .ok()
+                    .map(|v| v.as_str())
+            },
+        },
+    ];
+
+    // A fourth such flag joins the population by being written into `Cli`, so
+    // the set the source shows and the set this pin classifies are compared
+    // rather than assumed.
+    let source = production_slice_of(&workspace_root().join("crates/cfgd/src/cli/mod.rs"));
+    let lines: Vec<String> = source.lines().map(code_line).collect();
+    let open = lines
+        .iter()
+        .position(|l| l.starts_with("pub struct Cli {"))
+        .expect("cli/mod.rs declares `pub struct Cli`");
+    let mut found: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut pending = false;
+    for line in &lines[open + 1..] {
+        if line.starts_with('}') {
+            break;
+        }
+        pending |= line.contains("PossibleValuesParser");
+        let Some(rest) = line.trim_start().strip_prefix("pub ") else {
+            continue;
+        };
+        let name: String = rest
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect();
+        if !rest[name.len()..].starts_with(':') {
+            continue;
+        }
+        if pending {
+            found.insert(name);
+            pending = false;
+        }
+    }
+    let classified: std::collections::BTreeSet<String> = knobs
+        .iter()
+        .map(|k| k.field.to_string())
+        .chain(std::iter::once("theme".to_string()))
+        .collect();
+    assert!(
+        found.len() >= 3,
+        "the walk found {} value-list flags on `Cli`; it has stopped seeing them",
+        found.len()
+    );
+    assert_eq!(
+        found, classified,
+        "every flag clap validates against a value list is either driven below or named as          lowercase-only above"
+    );
+
+    for knob in &knobs {
+        let _clear = EnvVarGuard::unset(knob.env);
+        for token in &knob.tokens {
+            for spelling in [(*token).to_string(), token.to_lowercase()] {
+                let cli = Cli::try_parse_from(["cfgd", knob.flag, spelling.as_str(), "status"])
+                    .unwrap_or_else(|e| panic!("`{} {spelling}` must parse: {e}", knob.flag));
+                assert_eq!(
+                    (knob.read)(&cli).as_deref().and_then(knob.canonical),
+                    Some(*token),
+                    "`{} {spelling}` must reach the resolver as {token}",
+                    knob.flag
+                );
+
+                let _env = EnvVarGuard::set(knob.env, &spelling);
+                let cli = Cli::try_parse_from(["cfgd", "status"])
+                    .unwrap_or_else(|e| panic!("`{}={spelling}` must parse: {e}", knob.env));
+                assert_eq!(
+                    (knob.read)(&cli).as_deref().and_then(knob.canonical),
+                    Some(*token),
+                    "`{}={spelling}` must reach the resolver as {token}",
+                    knob.env
+                );
+            }
+        }
+    }
+}
+
+/// Every per-invocation knob resolver is a call to `resolve_knob`: one
+/// precedence is what the catalog promises, and a resolver written by hand
+/// would answer a different order while reading as one of the family.
+///
+/// The population is the free `resolve_*` functions of `cli/mod.rs` taking a
+/// `config_path`, which is the shape of a resolver folding a flag, a `CFGD_*`
+/// variable and a `spec.*` field into one answer. `resolve_theme_config`
+/// composes a whole `ThemeConfig` block out of the stored one plus a preset
+/// name, so it has no single value for a default to stand behind, and
+/// `resolve_knob` is the resolution itself.
+#[test]
+fn every_knob_resolver_routes_through_resolve_knob() {
+    use cfgd_core::test_helpers::{
+        calls_free_fn, fn_declarations, production_slice_of, workspace_root,
+    };
+
+    let source = production_slice_of(&workspace_root().join("crates/cfgd/src/cli/mod.rs"));
+    let exempt = ["resolve_knob", "resolve_theme_config"];
+    let mut routed = Vec::new();
+    let mut hand_written = Vec::new();
+    for (name, owner, code) in fn_declarations(&source) {
+        if owner.is_some()
+            || !name.starts_with("resolve_")
+            || !code.contains("config_path: &Path")
+            || exempt.contains(&name.as_str())
+        {
+            continue;
+        }
+        if calls_free_fn(&code, "resolve_knob") {
+            routed.push(name);
+        } else {
+            hand_written.push(name);
+        }
+    }
+    assert!(
+        hand_written.is_empty(),
+        "a knob resolver must fold its flag, its `CFGD_*` variable and its `spec.*` field          through `resolve_knob`: {hand_written:?}"
+    );
+    assert!(
+        routed.len() >= 3,
+        "the walk found {} knob resolvers; it has stopped seeing them",
+        routed.len()
     );
 }
 
