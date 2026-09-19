@@ -4,8 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use cfgd_core::PathDisplayExt;
 use cfgd_core::test_helpers::{
-    blank_string_literals, carries_hatch, is_plain_line_comment, rust_sources_under,
-    walked_file_body,
+    blank_string_literals, carries_hatch, rust_sources_under, walked_file_body,
 };
 
 const TEST_CONFIG_YAML: &str =
@@ -17089,13 +17088,16 @@ fn string_literals(body: &str) -> Vec<(usize, String)> {
 }
 
 /// The text inside the brace block opened at `open`, braces inside string
-/// literals (`"{}"`) not counted.
+/// literals (`"{}"`) and `//` comments not counted.
 fn brace_span(body: &str, open: usize) -> &str {
     let bytes = body.as_bytes();
     let mut depth = 0usize;
     let mut i = open;
     while i < bytes.len() {
         match bytes[i] {
+            b'/' if bytes.get(i + 1) == Some(&b'/') => {
+                i = body[i..].find('\n').map_or(bytes.len(), |n| i + n);
+            }
             b'"' => {
                 i += 1;
                 while i < bytes.len() && bytes[i] != b'"' {
@@ -46853,11 +46855,13 @@ fn every_e2e_suite_runs_under_the_one_scratch_home() {
 /// The opt-out belongs to the spawn, so each fixture names the binary exactly
 /// once, inside its own `cfgd_bin` helper, and that helper sets
 /// `CFGD_NO_UPDATE_CHECK` on a `.env(` line that runs: the opt-out is read
-/// between `fn cfgd_bin(` and its closing brace, and a line commented out is
-/// not one of the helper's lines. Both of Cargo's
-/// spellings (`Command::cargo_bin("cfgd")`, `CARGO_BIN_EXE_cfgd`) count as the
-/// population tell and as the call sites counted, so a fixture reaching for
-/// the other one joins the rule rather than sitting outside it.
+/// between `fn cfgd_bin(` and its closing brace, which a brace inside a
+/// comment cannot move, and off the code part of each line, so an opt-out
+/// written as a comment (a whole line, a trailing one, a `///` line) sets
+/// nothing. Both of Cargo's spellings (`Command::cargo_bin("cfgd")`,
+/// `CARGO_BIN_EXE_cfgd`) count as the population tell and as the call sites
+/// counted, so a fixture reaching for the other one joins the rule rather
+/// than sitting outside it.
 #[test]
 fn every_integration_fixture_spawning_the_binary_opts_out_of_the_update_check() {
     const OPTOUT: &str = "CFGD_NO_UPDATE_CHECK";
@@ -46895,8 +46899,14 @@ fn every_integration_fixture_spawning_the_binary_opts_out_of_the_update_check() 
         // every spawn reaching GitHub.
         if !helper
             .lines()
-            .filter(|line| !is_plain_line_comment(line))
-            .any(|line| line.contains(".env(") && line.contains(OPTOUT))
+            .map(|line| {
+                // `code_line` would blank the literal the name itself lives
+                // in, so the cut point is found on a blanked copy and taken
+                // on the raw line, which the blanking indexes byte for byte.
+                let end = blank_string_literals(line).find("//").unwrap_or(line.len());
+                &line[..end]
+            })
+            .any(|code| code.contains(".env(") && code.contains(OPTOUT))
         {
             offenders.push(format!(
                 "{name} — no `.env(` line setting {OPTOUT} inside `cfgd_bin`; its spawns never opt out"
