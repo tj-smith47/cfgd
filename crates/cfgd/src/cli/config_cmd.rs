@@ -1031,6 +1031,25 @@ spec:
             );
         }
 
+        // The loop below reads its expected refusal from `config_field_shape`,
+        // the same function `descent_blocked` asks, so it pins the mapping and
+        // not the oracle. These four say what the schema declares, so an oracle
+        // that answers a child count again fails here rather than agreeing with
+        // itself: a free-form map, a declared list, a scalar and a path the
+        // schema names nothing at.
+        for (path, expected) in [
+            (&["aliases"][..], DeclaredShape::Mapping),
+            (&["sources"][..], DeclaredShape::Sequence),
+            (&["fileStrategy"][..], DeclaredShape::Leaf),
+            (&["nope"][..], DeclaredShape::Unknown),
+        ] {
+            assert_eq!(
+                crate::cli::explain::config_field_shape(path),
+                expected,
+                "the declared shape at {path:?}"
+            );
+        }
+
         let scalar = serde_yaml::Value::String("planted".into());
         let sequence = serde_yaml::Value::Sequence(vec![scalar.clone()]);
         for path in &paths {

@@ -46849,21 +46849,24 @@ fn every_e2e_suite_runs_under_the_one_scratch_home() {
 /// fixture that leaves it on makes a live GitHub request per spawned process —
 /// hundreds across the suite, each one a wait and a failure mode no pin is
 /// asking about, and all of them in a test run that may have no network at all.
-/// The opt-out belongs to the spawn, so each fixture routes every
-/// `cargo_bin("cfgd")` through its own `cfgd_bin` helper and that helper sets
-/// `CFGD_NO_UPDATE_CHECK`; a second spawn spelling anywhere in the file is what
-/// this walk refuses.
+/// The opt-out belongs to the spawn, so each fixture names the binary exactly
+/// once, inside its own `cfgd_bin` helper, and that helper sets
+/// `CFGD_NO_UPDATE_CHECK` on a `.env(` line of its own. Both of Cargo's
+/// spellings (`Command::cargo_bin("cfgd")`, `CARGO_BIN_EXE_cfgd`) count as the
+/// population tell and as the call sites counted, so a fixture reaching for
+/// the other one joins the rule rather than sitting outside it.
 #[test]
 fn every_integration_fixture_spawning_the_binary_opts_out_of_the_update_check() {
     const OPTOUT: &str = "CFGD_NO_UPDATE_CHECK";
     const HELPER: &str = "fn cfgd_bin(";
+    const SPAWNS: [&str; 2] = ["cargo_bin(\"cfgd\")", "CARGO_BIN_EXE_cfgd"];
 
     let dir = cfgd_core::test_helpers::workspace_root().join("crates/cfgd/tests");
     let mut spawning = 0usize;
     let mut offenders: Vec<String> = Vec::new();
     for path in cfgd_core::test_helpers::rust_sources_under(&dir) {
         let body = walked_file_body(&path);
-        if !body.contains("cargo_bin(\"cfgd\")") {
+        if !SPAWNS.iter().any(|tell| body.contains(tell)) {
             continue;
         }
         spawning += 1;
@@ -46877,17 +46880,24 @@ fn every_integration_fixture_spawning_the_binary_opts_out_of_the_update_check() 
             ));
             continue;
         }
-        if !body.contains(OPTOUT) {
+        // The var has to be SET, not merely mentioned: read anywhere in the
+        // file, a `.env` line deleted while the name survives in the helper's
+        // own doc comment passes a walk that only asks whether the string is
+        // there.
+        if !body
+            .lines()
+            .any(|line| line.contains(".env(") && line.contains(OPTOUT))
+        {
             offenders.push(format!(
-                "{name} — its `cfgd_bin` helper never sets {OPTOUT}"
+                "{name} — no `.env(` line setting {OPTOUT}; its `cfgd_bin` helper never opts out"
             ));
         }
-        // One spawn spelling per file: the helper's own call is the only
-        // `cargo_bin` a fixture holds, so anything past it bypasses the opt-out.
-        let spawns = body.matches("cargo_bin(\"cfgd\")").count();
+        // One spawn site per file: the helper's own is the only place a fixture
+        // names the binary, so anything past it bypasses the opt-out.
+        let spawns: usize = SPAWNS.iter().map(|tell| body.matches(tell).count()).sum();
         if spawns > 1 {
             offenders.push(format!(
-                "{name} — {spawns} `cargo_bin(\"cfgd\")` call sites; only `cfgd_bin`'s own may spawn"
+                "{name} — {spawns} spawn call sites; only `cfgd_bin`'s own may name the binary"
             ));
         }
     }
