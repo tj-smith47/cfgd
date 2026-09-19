@@ -175,3 +175,28 @@ fn a_stored_preset_raises_no_warning() {
         "a name the palette answers to says nothing"
     );
 }
+
+#[test]
+fn the_setter_refuses_a_value_of_every_shape_no_preset_answers_to() {
+    let home = tempfile::tempdir().unwrap();
+    write_config(home.path(), "default");
+
+    // The setter parses its value into a YAML scalar before writing it, so a
+    // word judged in the string arm alone lets `123`, `true`, `null` and
+    // `3.14` through; a mapping written inline names no preset either.
+    for value in ["123", "true", "null", "3.14", "{name: nord}"] {
+        let out = run(home.path(), &["config", "set", "theme.name", value]);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(1), "{value} is no preset: {stderr}");
+        assert!(
+            stderr.contains(&format!("`{value}` is not a theme preset")),
+            "the refusal names the word the caller wrote: {stderr}"
+        );
+    }
+
+    let after = std::fs::read_to_string(home.path().join(".config/cfgd/cfgd.yaml")).unwrap();
+    assert!(
+        after.contains("name: default") && !after.contains("123"),
+        "no refused value reaches the document: {after}"
+    );
+}
