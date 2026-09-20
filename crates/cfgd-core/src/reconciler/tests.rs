@@ -16012,6 +16012,110 @@ fn two_layers_of_one_subscription_share_one_block() {
     );
 }
 
+/// A source whose tiers sit on both sides of a local layer keeps a block per run.
+///
+/// `composition::compose` sorts every layer by priority, and a source at the
+/// default priority declares its standard tier BELOW the local layers and its
+/// required tier above them. Joined into the source's first block, the
+/// required declarations would sit under local's, and a reader folding the
+/// blocks the way a shell sources them would read the local value where
+/// `merge_layers` holds the required one. One block per run is what keeps the
+/// blocks and the winners answering the same question.
+#[test]
+fn a_source_whose_tiers_straddle_a_local_layer_keeps_a_block_per_run() {
+    let env = |name: &str, value: &str| crate::config::EnvVar {
+        name: name.to_string(),
+        value: value.to_string(),
+        platforms: Vec::new(),
+    };
+    let team = |priority: u32,
+                policy: crate::config::LayerPolicy,
+                env: Vec<crate::config::EnvVar>| crate::config::ProfileLayer {
+        source: "team".to_string(),
+        profile_name: format!("team-{priority}"),
+        priority,
+        policy,
+        spec: crate::config::ProfileSpec {
+            env,
+            ..Default::default()
+        },
+    };
+    let local = |env: Vec<crate::config::EnvVar>| crate::config::ProfileLayer {
+        source: crate::config::LOCAL_LAYER.to_string(),
+        profile_name: "work".to_string(),
+        priority: 1000,
+        policy: crate::config::LayerPolicy::Local,
+        spec: crate::config::ProfileSpec {
+            env,
+            ..Default::default()
+        },
+    };
+    let layers = vec![
+        team(
+            500,
+            crate::config::LayerPolicy::Recommended,
+            vec![env("EDITOR", "nano"), env("VISUAL", "nano")],
+        ),
+        local(vec![env("EDITOR", "vi"), env("VISUAL", "vi")]),
+        team(
+            1500,
+            crate::config::LayerPolicy::Required,
+            vec![env("VISUAL", "emacs")],
+        ),
+    ];
+    let merged = crate::config::merge_layers(&layers);
+    let resolved = crate::config::ResolvedProfile { layers, merged };
+
+    let layered = super::LayeredEnv::of(&resolved, &[]);
+
+    assert_eq!(
+        layered
+            .layers
+            .iter()
+            .map(|l| l.owner.as_str())
+            .collect::<Vec<_>>(),
+        ["source:team", "profile:work", "source:team"],
+        "the source's tiers straddle the local layer, so each run is its own \
+         block in precedence order",
+    );
+
+    // Fold the blocks the way a shell sources them: in order, last assignment
+    // wins. The result is the merge's own answer.
+    let mut folded: Vec<crate::config::EnvVar> = Vec::new();
+    for layer in &layered.layers {
+        crate::fold_env_layer(&mut folded, &layer.env, crate::PATH_LIST_SEPARATOR);
+    }
+    let by_name = |mut entries: Vec<crate::config::EnvVar>| {
+        entries.sort_by(|a, b| a.name.cmp(&b.name));
+        entries
+    };
+    assert_eq!(
+        by_name(folded.clone()),
+        by_name(layered.merged.clone()),
+        "the blocks fold to a different env than the merge decided",
+    );
+
+    let value = |name: &str| {
+        layered
+            .merged
+            .iter()
+            .find(|ev| ev.name == name)
+            .map(|ev| ev.value.as_str())
+    };
+    assert_eq!(
+        value("EDITOR"),
+        Some("vi"),
+        "local outranks the source's standard tier: {:?}",
+        layered.merged,
+    );
+    assert_eq!(
+        value("VISUAL"),
+        Some("emacs"),
+        "the source's required tier outranks local: {:?}",
+        layered.merged,
+    );
+}
+
 /// The blocks are the merge's inputs; the winners are the merge's answer; the
 /// shell's own last-wins takes one to the other.
 ///

@@ -548,17 +548,26 @@ fn module_layers(modules: &[ResolvedModule]) -> impl Iterator<Item = EnvLayer> +
     })
 }
 
-/// The blocks of one owner token, joined in declaration order.
+/// One CONTIGUOUS run of one owner token, joined into that run's own block.
 ///
 /// Two layers of one subscription both spell `source:<name>`
 /// (`ProfileLayer::owner_token`), and a block is headed by its token alone, so
-/// a second block under that header reads as a repeated section rather than as
-/// the layer it is. Joining keeps every declaration, outranked entries
-/// included, in the order the layers were declared in.
+/// two ADJACENT blocks under that header read as a repeated section rather
+/// than as the layers they are. Joining a run keeps every declaration,
+/// outranked entries included, in the order the layers were declared in.
+///
+/// Only a run is joined, because a subscription's tiers straddle the local
+/// layers: a source at the default priority declares its standard tier below
+/// them and its required and locked tiers above (`composition::compose` sorts
+/// the whole vec by priority). Joining a straddling owner's tiers into its
+/// lowest block would carry its highest-precedence declarations under local's,
+/// and a reader folding the blocks in order would read the local value where
+/// the merge holds the source's required one. Such an owner takes one block
+/// per run instead, in precedence order.
 fn fold_layers_of_one_owner(layers: Vec<EnvLayer>) -> Vec<EnvLayer> {
     let mut folded: Vec<EnvLayer> = Vec::with_capacity(layers.len());
     for layer in layers {
-        match folded.iter_mut().find(|held| held.owner == layer.owner) {
+        match folded.last_mut().filter(|held| held.owner == layer.owner) {
             Some(held) => {
                 held.env.extend(layer.env);
                 held.aliases.extend(layer.aliases);
@@ -583,16 +592,20 @@ fn fold_layers_of_one_owner(layers: Vec<EnvLayer>) -> Vec<EnvLayer> {
 /// The claim map is consulted for ONE thing: an entry the merge holds that no
 /// block declares, env var or alias alike. A resolved preference is folded in
 /// after the layer loop and claimed by the last layer that ranked it, so it is
-/// placed in that layer's block by its owner token and needs no header of its
-/// own.
+/// placed by its owner token and needs no header of its own — in that owner's
+/// first block where the owner holds more than one, which no block declaring
+/// the name can contradict.
 #[derive(Debug, Clone)]
 pub struct LayeredEnv {
-    /// One block per OWNER TOKEN, low precedence first, then one per module.
-    /// A subscription delivering several layers spells one token for all of
-    /// them (`ProfileLayer::owner_token`), so those layers arrive as one block
-    /// holding their declarations in declaration order; a block left holding
-    /// neither an env var nor an alias is dropped rather than carried as a
-    /// header with nothing under it.
+    /// One block per CONTIGUOUS RUN of one owner token, low precedence first,
+    /// then one per module. A subscription delivering several layers spells
+    /// one token for all of them (`ProfileLayer::owner_token`), so layers of
+    /// one owner standing next to each other arrive as one block holding their
+    /// declarations in declaration order, while an owner whose tiers sit on
+    /// both sides of another owner's layer takes one block per side — its
+    /// required tier outranks local, so that tier's block follows local's. A
+    /// block left holding neither an env var nor an alias is dropped rather
+    /// than carried as a header with nothing under it.
     pub layers: Vec<EnvLayer>,
     /// The surviving env vars, as the merge decided them.
     pub merged: Vec<crate::config::EnvVar>,
@@ -606,11 +619,14 @@ pub struct LayeredEnv {
 
 impl LayeredEnv {
     /// The layered view of a resolved profile plus its modules: one block per
-    /// owner token, in `resolved.layers`' own order, then one per module.
+    /// contiguous run of one owner token, in `resolved.layers`' own order,
+    /// then one per module.
     ///
-    /// Layers sharing a token are joined into that token's one block, and a
-    /// block declaring nothing is dropped, so the result is neither
-    /// `resolved.layers.len()` blocks nor one block per module.
+    /// Neighbouring layers sharing a token are joined into that run's one
+    /// block, an owner whose tiers straddle another owner's layer keeps a
+    /// block per run so precedence survives, and a block declaring nothing is
+    /// dropped, so the result is neither `resolved.layers.len()` blocks nor
+    /// one block per module.
     pub fn of(resolved: &ResolvedProfile, modules: &[ResolvedModule]) -> Self {
         let mut declared: Vec<EnvLayer> = resolved
             .layers
