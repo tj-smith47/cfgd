@@ -25,7 +25,6 @@ See `.claude/PLAN.md` for the phased plan. Do not add features outside the curre
 - `.claude/rules/workflows.md` — GitHub Actions SSOT map + job invariants (loads for `.github/**`)
 
 ## Reference docs (load on demand)
-- `.claude/rules/shared-utils.md` — catalog of `cfgd-core/src/lib.rs` helpers; check before adding any new helper
 - `.claude/rules/module-map.md` — full crate/module layout
 - `.claude/rules/user-layer-notes.md` — how user-level hooks layer on top of project hooks
 - `docs/` — user-facing documentation (`configuration.md` has the YAML schema reference)
