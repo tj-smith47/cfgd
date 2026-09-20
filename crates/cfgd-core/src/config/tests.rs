@@ -145,6 +145,17 @@ fn the_unsupported_api_version_refusal_names_every_readable_version() {
 /// version goes in. Such a site accepts one version while the parser accepts a
 /// set, and the two disagree in the release a second row lands in.
 ///
+/// What it asks of a site is a comparison's two halves: an identifier holding
+/// `api_version` or `apiVersion` on one side of `==`, `!=`, `matches!(`,
+/// `.starts_with(`, `.contains(`, `.eq(` or `.ne(`, and `API_VERSION` or an
+/// inline literal on the other, in either direction and at every place the
+/// operator appears in the text. The question is put to a STATEMENT rather
+/// than to a row: rows are gathered from one `;`, `{` or `}` to the next and
+/// joined, so a comparison split across rows is one text while two
+/// neighbouring statements stay two. Literals and comments are blanked before
+/// any of that, so a tell written inside either is invisible, and an offender
+/// is reported at the row its statement opened on.
+///
 /// The population is every `<crate>/src` under `crates/`, read off the
 /// directory so a crate added to the workspace joins it, and NAMED so a renamed
 /// root fails by name rather than being restored by whatever else appears. The
@@ -176,14 +187,45 @@ fn no_production_site_compares_an_api_version_by_hand() {
     const HATCH: &str = "// api-version-compare-ok:";
     const EXEMPT: &[&str] = &["validate_api_version", "convertible_from"];
 
-    // A comparison's two halves. `matches!(subject, PATTERN)` holds both
-    // operands to the right of the macro name, so its own comma is the split.
-    fn halves<'a>(code: &'a str, tell: &str) -> Option<(&'a str, &'a str)> {
-        let (left, right) = code.split_once(tell)?;
-        if tell == "matches!(" {
-            return right.split_once(',');
+    // Every statement of a masked slice, as the rows from one terminator to
+    // the next joined with a space, with the row it opened on and the row it
+    // closed on. A comparison written across rows is one expression that a
+    // per-row read sees neither half of: `if doc.api_version` carries no
+    // operator and `!= "cfgd.io/v1alpha1"` carries no field. Reading the whole
+    // slice as one text is the other failure, where two neighbouring
+    // statements answer for each other. The terminators are the ones
+    // `const_items_outside_functions` counts, taken on code the masking has
+    // already blanked, so one inside a literal or a comment ends nothing.
+    fn statements(code: &[String]) -> Vec<(usize, usize, String)> {
+        let mut out = Vec::new();
+        let mut open: Option<usize> = None;
+        for (n, line) in code.iter().enumerate() {
+            if open.is_none() && line.trim().is_empty() {
+                continue;
+            }
+            let first = *open.get_or_insert(n);
+            if line.contains([';', '{', '}']) {
+                out.push((first, n, code[first..=n].join(" ")));
+                open = None;
+            }
         }
-        Some((left, right))
+        if let Some(first) = open {
+            out.push((first, code.len() - 1, code[first..].join(" ")));
+        }
+        out
+    }
+    // A comparison's two halves, at EVERY place the tell appears: taking only
+    // the first split lets an unrelated comparison earlier in the statement
+    // hide the one the tell names. `matches!(subject, PATTERN)` holds both
+    // operands to the right of the macro name, so its own comma is the split.
+    fn halves<'a>(code: &'a str, tell: &'a str) -> impl Iterator<Item = (&'a str, &'a str)> {
+        code.match_indices(tell).filter_map(move |(at, _)| {
+            let (left, right) = (&code[..at], &code[at + tell.len()..]);
+            if tell == "matches!(" {
+                return right.split_once(',');
+            }
+            Some((left, right))
+        })
     }
     // The field a document carries is spelled one of two ways, and neither is
     // the constant: `API_VERSION` holds no lowercase `api_version`.
@@ -196,14 +238,22 @@ fn no_production_site_compares_an_api_version_by_hand() {
         part.contains("API_VERSION") || part.contains('"')
     }
     fn compares_by_hand(code: &str) -> bool {
-        ["==", "!=", "matches!(", ".starts_with(", ".contains("]
-            .iter()
-            .any(|tell| {
-                halves(code, tell).is_some_and(|(left, right)| {
-                    (names_the_field(left) && names_a_version(right))
-                        || (names_the_field(right) && names_a_version(left))
-                })
+        [
+            "==",
+            "!=",
+            "matches!(",
+            ".starts_with(",
+            ".contains(",
+            ".eq(",
+            ".ne(",
+        ]
+        .iter()
+        .any(|tell| {
+            halves(code, tell).any(|(left, right)| {
+                (names_the_field(left) && names_a_version(right))
+                    || (names_the_field(right) && names_a_version(left))
             })
+        })
     }
 
     let workspace = workspace_root();
@@ -266,22 +316,27 @@ fn no_production_site_compares_an_api_version_by_hand() {
                 })
                 .collect();
             let relative = crate::to_posix_string(path.strip_prefix(&workspace).unwrap_or(&path));
-            for (n, line) in code.iter().enumerate() {
-                if !compares_by_hand(line) || exempt.iter().any(|rows| rows.contains(&n)) {
+            for (first, last, statement) in statements(&code) {
+                if !compares_by_hand(&statement) || exempt.iter().any(|rows| rows.contains(&first))
+                {
                     continue;
                 }
-                if raw[n.saturating_sub(1)..=n]
+                // The hatch is read over the statement's own rows and the one
+                // above it, because a comparison spanning rows carries its
+                // reason wherever its author could see it.
+                if raw[first.saturating_sub(1)..=last]
                     .iter()
                     .any(|l| carries_hatch(l, HATCH))
                 {
                     continue;
                 }
+                let quoted: Vec<&str> = raw[first..=last].iter().map(|l| l.trim()).collect();
                 offenders.push(format!(
                     "{relative}:{}: compares an apiVersion by hand; ask \
                      `cfgd_core::config::validate_api_version` (or the conversion table it \
                      reads), else say why with `{HATCH} <why this site cannot ask the table>`: {}",
-                    n + 1,
-                    raw[n].trim()
+                    first + 1,
+                    quoted.join(" ")
                 ));
             }
         }
@@ -341,8 +396,13 @@ fn no_production_site_compares_an_api_version_by_hand() {
         calls_free_fn(&validator, "convertible_from"),
         "validate_api_version no longer asks the conversion table:\n{validator}"
     );
+    // Judged by the same statement grammar the walk uses, on a body
+    // `fn_declarations` already handed back blanked.
+    let validator_rows: Vec<String> = validator.lines().map(str::to_string).collect();
     assert!(
-        !validator.lines().any(compares_by_hand),
+        !statements(&validator_rows)
+            .iter()
+            .any(|(.., statement)| compares_by_hand(statement)),
         "validate_api_version compares a version string itself instead of letting \
          the table answer:\n{validator}"
     );
