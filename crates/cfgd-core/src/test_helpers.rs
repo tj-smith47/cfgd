@@ -2139,6 +2139,41 @@ pub fn two_layer_profile() -> crate::config::ResolvedProfile {
     crate::config::ResolvedProfile { layers, merged }
 }
 
+/// The env fixture the generated-file pins share, as a [`LayeredEnv`]: the
+/// [`two_layer_profile`] chain with module `nvim` (`EDITOR=nvim`, alias `v`)
+/// folded on top, beside the brew and cargo bootstrapped directories it is
+/// priced against.
+///
+/// `home` is the file's own spelling of the home directory, so a walk over
+/// several platforms gets each one's rather than Linux's everywhere.
+///
+/// [`LayeredEnv`]: crate::reconciler::LayeredEnv
+pub fn layered_fixture(
+    home: &str,
+) -> (
+    crate::reconciler::LayeredEnv,
+    Vec<crate::reconciler::ManagerPathDir>,
+) {
+    let resolved = two_layer_profile();
+    let mut module = make_resolved_module("nvim");
+    module.env = vec![crate::config::EnvVar {
+        name: "EDITOR".to_string(),
+        value: "nvim".to_string(),
+        platforms: Vec::new(),
+    }];
+    module.aliases = vec![crate::config::ShellAlias {
+        name: "v".to_string(),
+        command: "nvim".to_string(),
+        platforms: Vec::new(),
+    }];
+    let layered = crate::reconciler::LayeredEnv::of(&resolved, std::slice::from_ref(&module));
+    let path_dirs = vec![
+        crate::reconciler::ManagerPathDir::new("brew", "/home/linuxbrew/.linuxbrew/bin"),
+        crate::reconciler::ManagerPathDir::new("cargo", format!("{home}/.cargo/bin")),
+    ];
+    (layered, path_dirs)
+}
+
 /// A `platforms:` tag no host running this test is part of the desired state
 /// of, so a fixture can carry an entry the merge must filter out on every
 /// platform the suite runs on.

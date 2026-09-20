@@ -15,9 +15,10 @@ use std::path::{Path, PathBuf};
 use crate::config::{EnvScope, EnvVar, ShellAlias};
 
 use super::env_files::{
-    ENV_FILE_HEADER, fish_in_use, generate_env_file_content, generate_fish_env_content,
+    SHELL_COMMENT, banner, fish_in_use, generate_env_file_content, generate_fish_env_content,
     generate_powershell_env_content,
 };
+use super::verify::LayeredEnv;
 
 /// Source line shells evaluate to load the cfgd-managed env file. Uses the
 /// POSIX `.` builtin, not the `source` alias: `.profile` is read by `/bin/sh`
@@ -210,7 +211,8 @@ pub(super) fn env_targets(
     platform: EnvPlatform,
 ) -> Vec<EnvTarget> {
     let mut targets = Vec::new();
-    if content.env.is_empty() && content.aliases.is_empty() && content.path_dirs.is_empty() {
+    let (env, aliases, _) = content.merged();
+    if env.is_empty() && aliases.is_empty() && content.path_dirs.is_empty() {
         return targets;
     }
 
@@ -223,7 +225,7 @@ pub(super) fn env_targets(
 
     // Live-session refresh runs last, after the durable files are written.
     if reaches_all(scope) {
-        let vars = valid_export_pairs(content.env);
+        let vars = valid_export_pairs(&content.layered.merged);
         if !vars.is_empty() {
             targets.push(EnvTarget::LiveSession { vars });
         }
@@ -237,25 +239,28 @@ pub(super) fn env_targets(
 /// parallel slices that must stay in the same order at each call site.
 #[derive(Clone, Copy)]
 pub(super) struct EnvContent<'a> {
-    env: &'a [EnvVar],
-    aliases: &'a [ShellAlias],
+    layered: &'a LayeredEnv,
     path_dirs: &'a [ManagerPathDir],
-    origins: &'a EnvOrigins,
 }
 
 impl<'a> EnvContent<'a> {
-    pub(super) fn new(
-        env: &'a [EnvVar],
-        aliases: &'a [ShellAlias],
-        path_dirs: &'a [ManagerPathDir],
-        origins: &'a EnvOrigins,
-    ) -> Self {
-        Self {
-            env,
-            aliases,
-            path_dirs,
-            origins,
-        }
+    /// Every declared input but `path_dirs` comes off one value: the layered
+    /// view already carries the winner set, the per-layer blocks and the owner
+    /// claims, and passing them as parallel slices is what let a call site put
+    /// one merge's winners beside another's owners.
+    pub(super) fn of(layered: &'a LayeredEnv, path_dirs: &'a [ManagerPathDir]) -> Self {
+        Self { layered, path_dirs }
+    }
+
+    /// The winner set, the aliases and the owner claims the non-block targets
+    /// (`environment.d`, the launchd agent, the live session) publish and the
+    /// `PATH` fold is priced from.
+    fn merged(&self) -> (&'a [EnvVar], &'a [ShellAlias], &'a EnvOrigins) {
+        (
+            &self.layered.merged,
+            &self.layered.merged_aliases,
+            &self.layered.origins,
+        )
     }
 }
 
@@ -773,7 +778,10 @@ pub fn env_target_basenames() -> Vec<String> {
         for probe in &probes {
             for scope in [EnvScope::All, EnvScope::Login, EnvScope::Interactive] {
                 for target in env_targets(
-                    EnvContent::new(&env, &aliases, &path_dirs, &origins),
+                    EnvContent::of(
+                        &crate::reconciler::LayeredEnv::for_test(&env, &aliases, &origins),
+                        &path_dirs,
+                    ),
                     scope,
                     home,
                     probe,
@@ -811,18 +819,14 @@ fn unix_targets(
     platform: EnvPlatform,
     out: &mut Vec<EnvTarget>,
 ) {
-    let EnvContent {
-        env,
-        aliases,
-        path_dirs,
-        origins,
-    } = content;
+    let EnvContent { layered, path_dirs } = content;
+    let (env, aliases, origins) = content.merged();
     // Interactive (all scopes): the cfgd-owned env file + a source line in the
     // user's interactive rc, plus fish when it's in use.
     let posix_path = primary_folded_path(env, path_dirs, origins, home, platform);
     out.push(EnvTarget::ManagedFile {
         path: primary_env_file_path(home, platform),
-        content: generate_env_file_content(env, aliases, posix_path.as_ref(), origins),
+        content: generate_env_file_content(layered, posix_path.as_ref()),
         rendered: RenderedCounts::of(env, aliases, posix_path.is_some()),
     });
     let interactive_rc = interactive_rc_for(&probe.shell, home);
@@ -834,7 +838,7 @@ fn unix_targets(
         let fish_path = fold_path_line(env, path_dirs, origins, home, platform, None);
         out.push(EnvTarget::ManagedFile {
             path: home.join(".config/fish/conf.d/cfgd-env.fish"),
-            content: generate_fish_env_content(env, aliases, fish_path.as_ref(), origins),
+            content: generate_fish_env_content(layered, fish_path.as_ref()),
             rendered: RenderedCounts::of(env, aliases, fish_path.is_some()),
         });
     }
@@ -925,17 +929,13 @@ fn windows_targets(
     probe: &EnvHostProbe,
     out: &mut Vec<EnvTarget>,
 ) {
-    let EnvContent {
-        env,
-        aliases,
-        path_dirs,
-        origins,
-    } = content;
+    let EnvContent { layered, path_dirs } = content;
+    let (env, aliases, origins) = content.merged();
     // PowerShell env file + dot-source into both profile locations.
     let ps_path = primary_folded_path(env, path_dirs, origins, home, EnvPlatform::Windows);
     out.push(EnvTarget::ManagedFile {
         path: primary_env_file_path(home, EnvPlatform::Windows),
-        content: generate_powershell_env_content(env, aliases, ps_path.as_ref(), origins),
+        content: generate_powershell_env_content(layered, ps_path.as_ref()),
         rendered: RenderedCounts::of(env, aliases, ps_path.is_some()),
     });
     for dir in ["Documents/PowerShell", "Documents/WindowsPowerShell"] {
@@ -948,7 +948,7 @@ fn windows_targets(
     if probe.git_bash_present {
         out.push(EnvTarget::ManagedFile {
             path: home.join(".cfgd.env"),
-            content: generate_env_file_content(env, aliases, ps_path.as_ref(), origins),
+            content: generate_env_file_content(layered, ps_path.as_ref()),
             rendered: RenderedCounts::of(env, aliases, ps_path.is_some()),
         });
         out.push(EnvTarget::SourceLine {
@@ -1008,7 +1008,10 @@ fn valid_export_pairs(env: &[EnvVar]) -> Vec<(String, String)> {
 /// `environment.d(5)` content: `KEY=VALUE`, one per line. **Not shell** — no
 /// `export`, no quoting; values are literal (systemd expands `${OTHER}` itself).
 pub(super) fn generate_environment_d_content(env: &[EnvVar]) -> String {
-    let mut lines = vec![ENV_FILE_HEADER.to_string()];
+    // The same banner every generated file opens with, and no block header
+    // under it: systemd documents no last-wins for a repeated key, so this one
+    // publishes the winners the merge already decided rather than every layer.
+    let mut lines = banner(SHELL_COMMENT);
     for ev in env {
         if crate::validate_env_var_name(&ev.name).is_err() {
             // tracing-ok: an env var the user declared under a name no shell can carry; the generated file simply omits it and no row names it
@@ -1146,7 +1149,10 @@ mod tests {
         let origins = EnvOrigins::default();
         let probe = probe();
         env_targets(
-            EnvContent::new(&env, &[], &dirs, &origins),
+            EnvContent::of(
+                &crate::reconciler::LayeredEnv::for_test(&env, &[], &origins),
+                &dirs,
+            ),
             EnvScope::All,
             home,
             &probe,
@@ -1218,7 +1224,10 @@ mod tests {
         let dirs = dirs("C:/Users/tj");
         let origins = EnvOrigins::default();
         let targets = env_targets(
-            EnvContent::new(&env, &[], &dirs, &origins),
+            EnvContent::of(
+                &crate::reconciler::LayeredEnv::for_test(&env, &[], &origins),
+                &dirs,
+            ),
             EnvScope::All,
             home,
             &probe(),
@@ -1264,7 +1273,10 @@ mod tests {
         let dirs = dirs(&home_str);
         let origins = EnvOrigins::default();
         let targets = env_targets(
-            EnvContent::new(&env, &[], &dirs, &origins),
+            EnvContent::of(
+                &crate::reconciler::LayeredEnv::for_test(&env, &[], &origins),
+                &dirs,
+            ),
             EnvScope::All,
             home,
             &probe(),
@@ -1291,7 +1303,10 @@ mod tests {
             EnvOrigins::from_owners(&owners)
         };
         let targets = env_targets(
-            EnvContent::new(&env, &[], &dirs, &origins),
+            EnvContent::of(
+                &crate::reconciler::LayeredEnv::for_test(&env, &[], &origins),
+                &dirs,
+            ),
             EnvScope::All,
             home,
             &probe(),
@@ -1310,15 +1325,22 @@ mod tests {
         );
     }
 
-    /// Every generated file assigns each variable ONCE, whatever fed it.
+    /// Every generated file assigns each variable once per BLOCK, and `PATH`
+    /// once per file.
     ///
-    /// A file holding two `export PATH=` lines assigns one variable twice, and
-    /// every count over it then has to choose between naming written lines and
-    /// naming variables — which is how `write ~/.cfgd.env — 4 vars` came to sit
-    /// one row above `publish 3 vars to the live session`, both counting the
-    /// same file. The walk is over every dialect `env_targets` can produce on
-    /// every platform, so a sixth generator cannot quietly reintroduce the
-    /// split.
+    /// A block is one layer's own contribution, so the same name legitimately
+    /// appears in two of them — that is the inheritance the file exists to
+    /// show, and the shell's last-wins resolves it. `PATH` is the exception on
+    /// both counts: its declarations CONCATENATE into one folded line, so a
+    /// second `PATH` assignment anywhere in the file would clobber the fold
+    /// rather than layer onto it.
+    ///
+    /// A file holding two `export PATH=` lines also made every count over it
+    /// choose between naming written lines and naming variables — which is how
+    /// `write ~/.cfgd.env — 4 vars` came to sit one row above `publish 3 vars
+    /// to the live session`, both counting the same file. The walk is over
+    /// every dialect `env_targets` can produce on every platform, so a sixth
+    /// generator cannot quietly reintroduce the split.
     #[test]
     fn no_generated_env_file_assigns_one_variable_twice() {
         let cases = [
@@ -1337,7 +1359,10 @@ mod tests {
             let dirs = dirs(&crate::to_posix_string(home));
             let origins = EnvOrigins::default();
             for target in env_targets(
-                EnvContent::new(&env, &[], &dirs, &origins),
+                EnvContent::of(
+                    &crate::reconciler::LayeredEnv::for_test(&env, &[], &origins),
+                    &dirs,
+                ),
                 EnvScope::All,
                 home,
                 &probe(),
@@ -1348,17 +1373,38 @@ mod tests {
                 };
                 files_seen += 1;
                 let mut assigned: Vec<&str> = Vec::new();
+                let mut path_lines = 0;
+                let mut after_blank = false;
                 for line in content.lines() {
+                    if line.is_empty() {
+                        after_blank = true;
+                        continue;
+                    }
+                    // A block header opens a new layer's contribution, and the
+                    // names it assigns are its own.
+                    if after_blank {
+                        after_blank = false;
+                        assigned.clear();
+                        continue;
+                    }
                     let Some(name) = assigned_variable(line) else {
                         continue;
                     };
+                    if name == "PATH" {
+                        path_lines += 1;
+                    }
                     assert!(
                         !assigned.contains(&name),
-                        "{} assigns {name} twice:\n{content}",
+                        "{} assigns {name} twice in one block:\n{content}",
                         path.display()
                     );
                     assigned.push(name);
                 }
+                assert!(
+                    path_lines <= 1,
+                    "{} assigns PATH {path_lines} times:\n{content}",
+                    path.display()
+                );
             }
         }
         assert!(
@@ -1423,7 +1469,10 @@ mod tests {
                 // narrower scope must classify too.
                 for scope in [EnvScope::All, EnvScope::Login, EnvScope::Interactive] {
                     for target in env_targets(
-                        EnvContent::new(&env, &[], &dirs, &origins),
+                        EnvContent::of(
+                            &crate::reconciler::LayeredEnv::for_test(&env, &[], &origins),
+                            &dirs,
+                        ),
                         scope,
                         home,
                         probe,

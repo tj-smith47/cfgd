@@ -502,6 +502,12 @@ pub struct EnvLayer {
     /// The `kind:name` token the block header names this layer by
     /// (`profile:work`, `source:team`, `module:nvim`, `secrets`).
     pub owner: String,
+    /// The merge priority this layer holds in the fold, which its block header
+    /// states so a reader can see WHY the blocks stand in the order they do.
+    /// `None` for a layer the fold ranks by position rather than by number:
+    /// a module (it folds on top of the whole layer merge) and the resolved
+    /// secrets (they reach the file after every merge).
+    pub priority: Option<u32>,
     /// The env vars this layer declares, less `PATH`.
     pub env: Vec<crate::config::EnvVar>,
     /// The aliases this layer declares.
@@ -518,12 +524,14 @@ impl EnvLayer {
     /// layering onto it.
     fn declared(
         owner: &str,
+        priority: Option<u32>,
         env: &[crate::config::EnvVar],
         aliases: &[crate::config::ShellAlias],
     ) -> Self {
         let platform = crate::platform::Platform::current();
         Self {
             owner: owner.to_string(),
+            priority,
             env: crate::platform::applicable_here(env, platform)
                 .filter(|ev| ev.name != "PATH")
                 .cloned()
@@ -542,6 +550,9 @@ fn module_layers(modules: &[ResolvedModule]) -> impl Iterator<Item = EnvLayer> +
     modules.iter().map(|module| {
         EnvLayer::declared(
             &crate::reconciler::Owner::module(&module.name).token(),
+            // A module carries no priority: it folds on top of the whole layer
+            // merge, whatever numbers those layers held.
+            None,
             &module.env,
             &module.aliases,
         )
@@ -569,6 +580,9 @@ fn fold_layers_of_one_owner(layers: Vec<EnvLayer>) -> Vec<EnvLayer> {
     for layer in layers {
         match folded.last_mut().filter(|held| held.owner == layer.owner) {
             Some(held) => {
+                // The run's own rank is where its LAST line settles, and the
+                // layers arrive in ascending priority order.
+                held.priority = held.priority.max(layer.priority);
                 held.env.extend(layer.env);
                 held.aliases.extend(layer.aliases);
             }
@@ -595,7 +609,10 @@ fn fold_layers_of_one_owner(layers: Vec<EnvLayer>) -> Vec<EnvLayer> {
 /// placed by its owner token and needs no header of its own — in that owner's
 /// LAST block where the owner holds more than one, so that no layer declaring
 /// the same name is rendered below it: the claim records the last layer that
-/// ranked the entry, and no layer after it ranked it either.
+/// ranked the entry, and no layer after it ranked it either. An entry no claim
+/// answers for lands in the LAST block, because the generated file has to set
+/// every winner and that is the only position a shell folding the blocks in
+/// order resolves to the merge's value.
 #[derive(Debug, Clone)]
 pub struct LayeredEnv {
     /// One block per CONTIGUOUS RUN of one owner token, low precedence first,
@@ -633,7 +650,12 @@ impl LayeredEnv {
             .layers
             .iter()
             .map(|layer| {
-                EnvLayer::declared(&layer.owner_token(), &layer.spec.env, &layer.spec.aliases)
+                EnvLayer::declared(
+                    &layer.owner_token(),
+                    Some(layer.priority),
+                    &layer.spec.env,
+                    &layer.spec.aliases,
+                )
             })
             .collect();
         declared.extend(module_layers(modules));
@@ -660,7 +682,12 @@ impl LayeredEnv {
     ) -> Self {
         let mut layer_owners = crate::config::EntryOwners::default();
         layer_owners.claim(owner, env, aliases);
-        let mut declared = vec![EnvLayer::declared(owner, env, aliases)];
+        let mut declared = vec![EnvLayer::declared(
+            owner,
+            Some(crate::config::LOCAL_LAYER_PRIORITY),
+            env,
+            aliases,
+        )];
         declared.extend(module_layers(modules));
         Self::assemble(
             declared,
@@ -672,9 +699,10 @@ impl LayeredEnv {
     /// an entry the merge holds that no block declares belongs in the block of
     /// the layer that claimed it — a resolved preference is folded in after the
     /// layer loop and claimed by the last layer that ranked it, so it lands
-    /// there and needs no header of its own. Env vars and aliases are placed
-    /// the same way, each over its own half of the claim map. A block left with
-    /// nothing is dropped rather than printed empty.
+    /// there and needs no header of its own, and an entry no claim answers for
+    /// lands in the last block rather than in none. Env vars and aliases are
+    /// placed the same way, each over its own half of the claim map. A block
+    /// left with nothing is dropped rather than printed empty.
     fn assemble(
         layers: Vec<EnvLayer>,
         merged: (
@@ -689,8 +717,8 @@ impl LayeredEnv {
         // entry: the question is membership, and asking it by walking every
         // block's declarations per entry re-reads the whole declaration for
         // each of its own members.
-        let mut placed_env: Vec<(String, crate::config::EnvVar)> = Vec::new();
-        let mut placed_aliases: Vec<(String, crate::config::ShellAlias)> = Vec::new();
+        let mut placed_env: Vec<(Option<String>, crate::config::EnvVar)> = Vec::new();
+        let mut placed_aliases: Vec<(Option<String>, crate::config::ShellAlias)> = Vec::new();
         {
             let declared_env: std::collections::HashSet<&str> = layers
                 .iter()
@@ -704,17 +732,16 @@ impl LayeredEnv {
                 if declared_env.contains(ev.name.as_str()) {
                     continue;
                 }
-                if let Some(owner) = origins.env_owner(&ev.name) {
-                    placed_env.push((owner.to_string(), ev.clone()));
-                }
+                placed_env.push((origins.env_owner(&ev.name).map(str::to_string), ev.clone()));
             }
             for alias in &merged_aliases {
                 if declared_aliases.contains(alias.name.as_str()) {
                     continue;
                 }
-                if let Some(owner) = origins.alias_owner(&alias.name) {
-                    placed_aliases.push((owner.to_string(), alias.clone()));
-                }
+                placed_aliases.push((
+                    origins.alias_owner(&alias.name).map(str::to_string),
+                    alias.clone(),
+                ));
             }
         }
         // Searched from the highest-precedence block down: an owner whose
@@ -723,14 +750,24 @@ impl LayeredEnv {
         // between that claim and the owner's last block ranked it. Placing it
         // there is what keeps it from rendering below a layer declaring its
         // own name.
+        // The block a placed entry belongs in, searched from the
+        // highest-precedence one down, with the LAST block as the fallback for
+        // an entry no claim answers for: the generated file has to set every
+        // winner, and the last block is the only position a shell folding the
+        // blocks in order resolves to the merge's own value.
+        let slot = |layers: &[EnvLayer], owner: Option<&str>| {
+            owner
+                .and_then(|owner| layers.iter().rposition(|layer| layer.owner == owner))
+                .or_else(|| layers.len().checked_sub(1))
+        };
         for (owner, ev) in placed_env {
-            if let Some(layer) = layers.iter_mut().rev().find(|layer| layer.owner == owner) {
-                layer.env.push(ev);
+            if let Some(i) = slot(&layers, owner.as_deref()) {
+                layers[i].env.push(ev);
             }
         }
         for (owner, alias) in placed_aliases {
-            if let Some(layer) = layers.iter_mut().rev().find(|layer| layer.owner == owner) {
-                layer.aliases.push(alias);
+            if let Some(i) = slot(&layers, owner.as_deref()) {
+                layers[i].aliases.push(alias);
             }
         }
         layers.retain(|layer| !layer.env.is_empty() || !layer.aliases.is_empty());
@@ -739,6 +776,30 @@ impl LayeredEnv {
             merged,
             merged_aliases,
             origins,
+        }
+    }
+
+    /// A one-block view for a pin about something OTHER than layering — a
+    /// dialect's quoting, the target set, the `PATH` fold. `env` and `aliases`
+    /// are both the winner set and the single layer's declarations, and
+    /// `origins` is passed through untouched, so a pin asserting on the `PATH`
+    /// line's comment sees exactly the claims it supplied.
+    #[cfg(any(test, feature = "test-helpers"))]
+    pub(super) fn for_test(
+        env: &[crate::config::EnvVar],
+        aliases: &[crate::config::ShellAlias],
+        origins: &EnvOrigins,
+    ) -> Self {
+        Self {
+            layers: vec![EnvLayer {
+                owner: crate::reconciler::Owner::profile("test").token(),
+                priority: Some(crate::config::LOCAL_LAYER_PRIORITY),
+                env: env.iter().filter(|ev| ev.name != "PATH").cloned().collect(),
+                aliases: aliases.to_vec(),
+            }],
+            merged: env.to_vec(),
+            merged_aliases: aliases.to_vec(),
+            origins: origins.clone(),
         }
     }
 
@@ -757,6 +818,7 @@ impl LayeredEnv {
         if !env.is_empty() {
             self.layers.push(EnvLayer {
                 owner: "secrets".to_string(),
+                priority: None,
                 env,
                 aliases: Vec::new(),
             });
@@ -802,7 +864,7 @@ pub fn env_verify_results(
     let mut primary_checked = false;
     let fold = super::env_engine::primary_folded_path(merged, path_dirs, origins, &home, platform);
     for target in env_targets(
-        EnvContent::new(merged, merged_aliases, path_dirs, origins),
+        EnvContent::of(layered, path_dirs),
         scope,
         &home,
         &probe,
@@ -816,7 +878,6 @@ pub fn env_verify_results(
                         &path,
                         merged,
                         merged_aliases,
-                        origins,
                         platform,
                         fold.as_ref(),
                         &mut results,
@@ -889,7 +950,6 @@ pub fn env_item_verify_results(layered: &LayeredEnv) -> EnvItemCheck {
         .filter(|ev| ev.name != "PATH")
         .collect();
     let merged_aliases = &layered.merged_aliases;
-    let origins = &layered.origins;
     let mut check = EnvItemCheck {
         results: Vec::new(),
         check_error: None,
@@ -917,7 +977,6 @@ pub fn env_item_verify_results(layered: &LayeredEnv) -> EnvItemCheck {
         &actual,
         &merged,
         merged_aliases,
-        origins,
         platform,
         None,
         &mut check.results,
@@ -938,7 +997,6 @@ fn verify_env_items(
     path: &std::path::Path,
     env: &[crate::config::EnvVar],
     aliases: &[crate::config::ShellAlias],
-    origins: &EnvOrigins,
     platform: EnvPlatform,
     fold: Option<&super::env_engine::FoldedPath>,
     results: &mut Vec<VerifyResult>,
@@ -947,7 +1005,7 @@ fn verify_env_items(
         return;
     };
     let env: Vec<&crate::config::EnvVar> = env.iter().collect();
-    verify_env_items_in(&actual, &env, aliases, origins, platform, fold, results);
+    verify_env_items_in(&actual, &env, aliases, platform, fold, results);
 }
 
 /// The item loop of [`verify_env_items`] over content the caller already
@@ -958,7 +1016,6 @@ fn verify_env_items_in(
     actual: &str,
     env: &[&crate::config::EnvVar],
     aliases: &[crate::config::ShellAlias],
-    origins: &EnvOrigins,
     platform: EnvPlatform,
     fold: Option<&super::env_engine::FoldedPath>,
     results: &mut Vec<VerifyResult>,
@@ -966,7 +1023,7 @@ fn verify_env_items_in(
     let actual_lines: std::collections::HashSet<&str> = actual.lines().collect();
 
     for ev in env {
-        let Some(line) = super::env_files::primary_env_var_line(ev, platform, origins, fold) else {
+        let Some(line) = super::env_files::primary_env_var_line(ev, platform, fold) else {
             continue;
         };
         // Line-anchored, not a substring search: `actual.contains(&line)` would
@@ -994,7 +1051,7 @@ fn verify_env_items_in(
     }
 
     for alias in aliases {
-        let Some(line) = super::env_files::primary_alias_line(alias, platform, origins) else {
+        let Some(line) = super::env_files::primary_alias_line(alias, platform) else {
             continue;
         };
         let matches = actual_lines.contains(line.as_str());
@@ -1020,9 +1077,7 @@ fn verify_env_items_in(
 /// for that merge once per finding. It is scoped to a command's own render and
 /// never held: it is a reading of the declaration as it stands right now.
 pub struct MergedEnvItems {
-    env: Vec<crate::config::EnvVar>,
-    aliases: Vec<crate::config::ShellAlias>,
-    origins: EnvOrigins,
+    layered: LayeredEnv,
     path: Option<super::env_engine::FoldedPath>,
     // Read back only by `env_targets_for`, which exists for the tests that
     // re-render a managed env surface; a shipped build stores nothing it cannot
@@ -1041,20 +1096,15 @@ impl MergedEnvItems {
     /// line assembled from half the producers, which is not a line the file
     /// holds.
     pub fn new(layered: &LayeredEnv, path_dirs: &[ManagerPathDir]) -> Self {
-        let env = layered.merged.clone();
-        let aliases = layered.merged_aliases.clone();
-        let origins = layered.origins.clone();
         let path = super::env_engine::primary_folded_path(
-            &env,
+            &layered.merged,
             path_dirs,
-            &origins,
+            &layered.origins,
             &expand_tilde(std::path::Path::new("~")),
             EnvPlatform::current(),
         );
         Self {
-            env,
-            aliases,
-            origins,
+            layered: layered.clone(),
             path,
             #[cfg(any(test, feature = "test-helpers"))]
             path_dirs: path_dirs.to_vec(),
@@ -1134,12 +1184,7 @@ impl MergedEnvItems {
         scope: crate::config::EnvScope,
     ) -> Vec<super::env_engine::EnvTarget> {
         super::env_engine::env_targets(
-            super::env_engine::EnvContent::new(
-                &self.env,
-                &self.aliases,
-                &self.path_dirs,
-                &self.origins,
-            ),
+            super::env_engine::EnvContent::of(&self.layered, &self.path_dirs),
             scope,
             home,
             &super::env_engine::EnvHostProbe::detect(home),
@@ -1155,31 +1200,29 @@ impl MergedEnvItems {
     /// `drift_events` and the device gateway. `resource_type` is `"env-var"` or
     /// `"alias"`; any other kind (or an item no longer declared) answers `None`.
     ///
-    /// The line shown is the line the file must hold — including the
-    /// ` # module:<name>` comment a module-declared entry carries, which is
-    /// part of what verify matched on. A module's entries are not in the
-    /// profile's own `env`/`aliases` at all, so without the merge a
-    /// module-owned row could only ever answer `None`.
+    /// The line shown is the line the file must hold, which carries no
+    /// provenance of its own: the generated file states an entry's owner in
+    /// its block header, so a line re-rendered with a claim map would quote
+    /// something the file does not hold. The merge is still what holds the
+    /// entry — a module's entries are not in the profile's own `env`/`aliases`
+    /// at all, so without it a module-owned row could only ever answer `None`.
     pub fn declared_line(&self, resource_type: &str, resource_id: &str) -> Option<String> {
         let platform = EnvPlatform::current();
         match resource_type {
             super::ENV_VAR_RESOURCE_TYPE => self
-                .env
+                .layered
+                .merged
                 .iter()
                 .find(|e| e.name == resource_id)
                 .and_then(|e| {
-                    super::env_files::primary_env_var_line(
-                        e,
-                        platform,
-                        &self.origins,
-                        self.path.as_ref(),
-                    )
+                    super::env_files::primary_env_var_line(e, platform, self.path.as_ref())
                 }),
             super::ALIAS_RESOURCE_TYPE => self
-                .aliases
+                .layered
+                .merged_aliases
                 .iter()
                 .find(|a| a.name == resource_id)
-                .and_then(|a| super::env_files::primary_alias_line(a, platform, &self.origins)),
+                .and_then(|a| super::env_files::primary_alias_line(a, platform)),
             _ => None,
         }
     }
@@ -1193,12 +1236,12 @@ impl MergedEnvItems {
     /// profile. The merge is what holds it: a module's entries never reach the
     /// profile's own `env` list.
     pub fn declared_env(&self, name: &str) -> Option<&crate::config::EnvVar> {
-        self.env.iter().find(|e| e.name == name)
+        self.layered.merged.iter().find(|e| e.name == name)
     }
 
     /// The same for an alias.
     pub fn declared_alias(&self, name: &str) -> Option<&crate::config::ShellAlias> {
-        self.aliases.iter().find(|a| a.name == name)
+        self.layered.merged_aliases.iter().find(|a| a.name == name)
     }
 }
 

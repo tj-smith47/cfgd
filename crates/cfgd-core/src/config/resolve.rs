@@ -31,6 +31,11 @@ pub enum LayerPolicy {
 /// layer's owner.
 pub const LOCAL_LAYER: &str = "local";
 
+/// The merge priority every locally authored layer holds. Source layers rank
+/// against this number, so a source below it is overridden by the operator's
+/// own profile and one above it overrides them.
+pub const LOCAL_LAYER_PRIORITY: u32 = 1000;
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ProfileLayer {
     pub source: String,
@@ -346,7 +351,7 @@ pub fn resolve_profile(profile_name: &str, profiles_dir: &Path) -> Result<Resolv
         .map(|(name, doc)| ProfileLayer {
             source: LOCAL_LAYER.to_string(),
             profile_name: name,
-            priority: 1000,
+            priority: LOCAL_LAYER_PRIORITY,
             policy: LayerPolicy::Local,
             spec: doc.spec,
         })

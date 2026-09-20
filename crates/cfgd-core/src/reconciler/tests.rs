@@ -3265,10 +3265,8 @@ fn generate_env_file_quoted_and_unquoted() {
         },
     ];
     let content = super::generate_env_file_content(
-        &env,
-        &[],
+        &crate::reconciler::LayeredEnv::for_test(&env, &[], &Default::default()),
         posix_path_fold(&env).as_ref(),
-        &Default::default(),
     );
     assert!(content.starts_with("# managed by cfgd"));
     assert!(content.contains("export EDITOR=\"nvim\""));
@@ -3291,10 +3289,8 @@ fn generate_fish_env_splits_path() {
         },
     ];
     let content = super::generate_fish_env_content(
-        &env,
-        &[],
+        &crate::reconciler::LayeredEnv::for_test(&env, &[], &Default::default()),
         fish_path_fold(&env).as_ref(),
-        &Default::default(),
     );
     assert!(content.starts_with("# managed by cfgd"));
     assert!(content.contains("set -gx EDITOR 'nvim'"));
@@ -3324,28 +3320,22 @@ fn generate_env_files_expand_leading_tilde() {
             },
         ];
         let bash = super::generate_env_file_content(
-            &env,
-            &[],
+            &crate::reconciler::LayeredEnv::for_test(&env, &[], &Default::default()),
             posix_path_fold(&env).as_ref(),
-            &Default::default(),
         );
         assert!(bash.contains(&format!("export CLIFT_DIR=\"{h}/.local/share/clift\"")));
         assert!(bash.contains(&format!("export PATH=\"{h}/bin:/usr/bin\"")));
 
         let fish = super::generate_fish_env_content(
-            &env,
-            &[],
+            &crate::reconciler::LayeredEnv::for_test(&env, &[], &Default::default()),
             fish_path_fold(&env).as_ref(),
-            &Default::default(),
         );
         assert!(fish.contains(&format!("set -gx CLIFT_DIR '{h}/.local/share/clift'")));
         assert!(fish.contains(&format!("set -gx PATH '{h}/bin' '/usr/bin'")));
 
         let ps = super::generate_powershell_env_content(
-            &env,
-            &[],
+            &crate::reconciler::LayeredEnv::for_test(&env, &[], &Default::default()),
             posix_path_fold(&env).as_ref(),
-            &Default::default(),
         );
         assert!(ps.contains(&format!("$env:CLIFT_DIR = '{h}/.local/share/clift'")));
     });
@@ -3375,10 +3365,8 @@ fn generate_fish_path_keeps_colon_containing_home_intact() {
             platforms: vec![],
         }];
         let fish = super::generate_fish_env_content(
-            &env,
-            &[],
+            &crate::reconciler::LayeredEnv::for_test(&env, &[], &Default::default()),
             fish_path_fold(&env).as_ref(),
-            &Default::default(),
         );
         assert!(
             fish.contains(&format!("set -gx PATH '{h}/bin' '/usr/bin'")),
@@ -3461,7 +3449,10 @@ fn plan_env_generates_file_matching_expected() {
     // The subject is the content generation alone: `plan_env` reads the home
     // directory's own env file, so a copy planted in a tempdir was written and
     // then read by nothing.
-    let expected = super::generate_env_file_content(&env, &[], None, &Default::default());
+    let expected = super::generate_env_file_content(
+        &crate::reconciler::LayeredEnv::for_test(&env, &[], &Default::default()),
+        None,
+    );
     assert!(expected.contains("export EDITOR=\"nvim\""));
     assert!(expected.contains("# managed by cfgd"));
 }
@@ -3501,7 +3492,10 @@ fn generate_env_file_with_aliases() {
             platforms: vec![],
         },
     ];
-    let content = super::generate_env_file_content(&env, &aliases, None, &Default::default());
+    let content = super::generate_env_file_content(
+        &crate::reconciler::LayeredEnv::for_test(&env, &aliases, &Default::default()),
+        None,
+    );
     assert!(content.contains("export EDITOR=\"nvim\""));
     assert!(content.contains("alias vim=\"nvim\""));
     assert!(content.contains("alias ll=\"ls -la\""));
@@ -3519,7 +3513,10 @@ fn generate_fish_env_with_aliases() {
         command: "nvim".into(),
         platforms: vec![],
     }];
-    let content = super::generate_fish_env_content(&env, &aliases, None, &Default::default());
+    let content = super::generate_fish_env_content(
+        &crate::reconciler::LayeredEnv::for_test(&env, &aliases, &Default::default()),
+        None,
+    );
     assert!(content.contains("set -gx EDITOR 'nvim'"));
     assert!(content.contains("abbr -a vim 'nvim'"));
 }
@@ -3591,13 +3588,22 @@ fn plan_env_module_alias_wins_on_conflict() {
     // Find the WriteEnvFile action and check it has "nvim" not "vi"
     for action in &actions {
         if let Action::Env(EnvAction::WriteEnvFile { content, .. }) = action {
-            assert!(
-                content.contains("alias vim=\"nvim\""),
-                "Module alias should override profile alias"
+            // Both declarations are in the file, each under the layer that
+            // wrote it, and the module's block is last — which is what leaves
+            // a shell sourcing the file with `nvim`.
+            assert_eq!(
+                block_of(content, "alias vim=\"vi\""),
+                Some("# profile: test (priority 1000)"),
+                "{content}"
+            );
+            assert_eq!(
+                block_of(content, "alias vim=\"nvim\""),
+                Some("# module: nvim"),
+                "{content}"
             );
             assert!(
-                !content.contains("alias vim=\"vi\""),
-                "Profile alias should be overridden"
+                content.find("alias vim=\"vi\"") < content.find("alias vim=\"nvim\""),
+                "the module's alias must be resolved last: {content}"
             );
             return;
         }
@@ -3612,7 +3618,10 @@ fn generate_env_file_alias_escapes_quotes() {
         command: "echo \"hello world\"".into(),
         platforms: vec![],
     }];
-    let content = super::generate_env_file_content(&[], &aliases, None, &Default::default());
+    let content = super::generate_env_file_content(
+        &crate::reconciler::LayeredEnv::for_test(&[], &aliases, &Default::default()),
+        None,
+    );
     assert!(content.contains("alias greet=\"echo \\\"hello world\\\"\""));
 }
 
@@ -3885,10 +3894,8 @@ fn generate_powershell_env_basic() {
         },
     ];
     let content = super::generate_powershell_env_content(
-        &env,
-        &[],
+        &crate::reconciler::LayeredEnv::for_test(&env, &[], &Default::default()),
         windows_path_fold(&env).as_ref(),
-        &Default::default(),
     );
     assert!(content.starts_with("# managed by cfgd"));
     assert!(content.contains("$env:EDITOR = 'code'"));
@@ -3910,7 +3917,10 @@ fn generate_powershell_env_with_aliases() {
             platforms: vec![],
         },
     ];
-    let content = super::generate_powershell_env_content(&[], &aliases, None, &Default::default());
+    let content = super::generate_powershell_env_content(
+        &crate::reconciler::LayeredEnv::for_test(&[], &aliases, &Default::default()),
+        None,
+    );
     assert!(content.contains("Set-Alias -Name g -Value 'git'"));
     assert!(content.contains("function ll {"));
     assert!(content.contains("Get-ChildItem -Force @args"));
@@ -3923,17 +3933,31 @@ fn generate_powershell_env_escapes_quotes() {
         value: r#"say "hello""#.into(),
         platforms: vec![],
     }];
-    let content = super::generate_powershell_env_content(&env, &[], None, &Default::default());
+    let content = super::generate_powershell_env_content(
+        &crate::reconciler::LayeredEnv::for_test(&env, &[], &Default::default()),
+        None,
+    );
     // No $env: reference, so single-quoted (PS single quotes don't need escaping except ')
     assert!(content.contains("$env:GREETING = 'say \"hello\"'"));
 }
 
 #[test]
 fn generate_powershell_env_empty() {
-    let content = super::generate_powershell_env_content(&[], &[], None, &Default::default());
-    assert!(content.starts_with("# managed by cfgd"));
-    // Only header + trailing newline
-    assert_eq!(content.lines().count(), 1);
+    let content = super::generate_powershell_env_content(
+        &crate::reconciler::LayeredEnv::for_test(&[], &[], &Default::default()),
+        None,
+    );
+    // The banner and nothing else: no declaration means no block to head.
+    // Written out rather than composed through `banner`, which would compare
+    // the generator against the one function it already called.
+    assert_eq!(
+        content,
+        "# managed by cfgd \u{2014} do not edit\n\
+         # Regenerated by every `cfgd apply`; edits made here are lost.\n\
+         # To change a line, edit the profile or module its block names.\n\
+         # Blocks run low to high precedence \u{2014} the last assignment wins.\n",
+        "{content}"
+    );
 }
 
 // --- Apply execution path tests ---
@@ -4592,7 +4616,10 @@ fn apply_env_write_env_file_to_tempdir() {
             platforms: vec![],
         },
     ];
-    let content = super::generate_env_file_content(&env, &[], None, &Default::default());
+    let content = super::generate_env_file_content(
+        &crate::reconciler::LayeredEnv::for_test(&env, &[], &Default::default()),
+        None,
+    );
 
     let action = EnvAction::WriteEnvFile {
         path: env_path.clone(),
@@ -4624,7 +4651,10 @@ fn apply_env_write_skips_when_content_matches() {
         value: "nvim".into(),
         platforms: vec![],
     }];
-    let content = super::generate_env_file_content(&env, &[], None, &Default::default());
+    let content = super::generate_env_file_content(
+        &crate::reconciler::LayeredEnv::for_test(&env, &[], &Default::default()),
+        None,
+    );
 
     // Pre-write identical content
     std::fs::write(&env_path, &content).unwrap();
@@ -5467,7 +5497,10 @@ fn apply_env_write_with_aliases_produces_correct_file() {
         command: "ls -la".into(),
         platforms: vec![],
     }];
-    let content = super::generate_env_file_content(&env, &aliases, None, &Default::default());
+    let content = super::generate_env_file_content(
+        &crate::reconciler::LayeredEnv::for_test(&env, &aliases, &Default::default()),
+        None,
+    );
 
     let action = EnvAction::WriteEnvFile {
         path: env_path.clone(),
@@ -9638,7 +9671,10 @@ fn generate_powershell_env_escapes_single_quotes() {
         value: "it's a test".into(),
         platforms: vec![],
     }];
-    let content = super::generate_powershell_env_content(&env, &[], None, &Default::default());
+    let content = super::generate_powershell_env_content(
+        &crate::reconciler::LayeredEnv::for_test(&env, &[], &Default::default()),
+        None,
+    );
     // Single quotes in values are doubled in PS
     assert!(content.contains("$env:MSG = 'it''s a test'"));
 }
@@ -9650,7 +9686,10 @@ fn generate_fish_env_escapes_single_quotes() {
         value: "it's a test".into(),
         platforms: vec![],
     }];
-    let content = super::generate_fish_env_content(&env, &[], None, &Default::default());
+    let content = super::generate_fish_env_content(
+        &crate::reconciler::LayeredEnv::for_test(&env, &[], &Default::default()),
+        None,
+    );
     assert!(content.contains("set -gx MSG 'it\\'s a test'"));
 }
 
@@ -14800,7 +14839,10 @@ fn generate_fish_env_content_basic() {
         command: "git".into(),
         platforms: vec![],
     }];
-    let content = super::generate_fish_env_content(&env, &aliases, None, &Default::default());
+    let content = super::generate_fish_env_content(
+        &crate::reconciler::LayeredEnv::for_test(&env, &aliases, &Default::default()),
+        None,
+    );
     assert!(content.starts_with("# managed by cfgd"));
     assert!(content.contains("set -gx EDITOR 'nvim'"));
     assert!(content.contains("set -gx CARGO_HOME '/home/user/.cargo'"));
@@ -14814,7 +14856,10 @@ fn generate_powershell_env_content_with_env_ref() {
         value: r"C:\tools;$env:PATH".into(),
         platforms: vec![],
     }];
-    let content = super::generate_powershell_env_content(&env, &[], None, &Default::default());
+    let content = super::generate_powershell_env_content(
+        &crate::reconciler::LayeredEnv::for_test(&env, &[], &Default::default()),
+        None,
+    );
     // Contains $env: so should be double-quoted
     assert!(
         content.contains(r#"$env:MY_PATH = "C:\tools;$env:PATH""#),
@@ -14831,7 +14876,10 @@ fn generate_powershell_env_function_alias() {
         command: "Get-ChildItem -Force".into(),
         platforms: vec![],
     }];
-    let content = super::generate_powershell_env_content(&[], &aliases, None, &Default::default());
+    let content = super::generate_powershell_env_content(
+        &crate::reconciler::LayeredEnv::for_test(&[], &aliases, &Default::default()),
+        None,
+    );
     assert!(content.contains("function ll {"));
     assert!(content.contains("Get-ChildItem -Force @args"));
 }
@@ -14845,10 +14893,8 @@ fn generate_fish_env_path_splitting() {
         platforms: vec![],
     }];
     let content = super::generate_fish_env_content(
-        &env,
-        &[],
+        &crate::reconciler::LayeredEnv::for_test(&env, &[], &Default::default()),
         fish_path_fold(&env).as_ref(),
-        &Default::default(),
     );
     assert!(
         content.contains("set -gx PATH '/usr/bin' '/usr/local/bin' $PATH"),
@@ -15467,11 +15513,13 @@ fn primary_managed_env_target(home: &Path, layered: &super::LayeredEnv) -> (Path
     let probe = EnvHostProbe::detect(home);
     let platform = EnvPlatform::current();
     env_targets(
-        EnvContent::new(
-            &layered.merged,
-            &layered.merged_aliases,
+        EnvContent::of(
+            &crate::reconciler::LayeredEnv::for_test(
+                &layered.merged,
+                &layered.merged_aliases,
+                &layered.origins,
+            ),
             &[],
-            &layered.origins,
         ),
         EnvScope::All,
         home,
@@ -15560,17 +15608,15 @@ fn env_verify_results_detects_hand_edited_alias_as_drift_without_flagging_untouc
         &super::LayeredEnv::from_parts("profile:test", &env, &aliases, &[]),
     );
     let platform = EnvPlatform::current();
-    let declared_line =
-        super::env_files::primary_alias_line(&aliases[0], platform, &Default::default())
-            .expect("alias renders a declared line");
+    let declared_line = super::env_files::primary_alias_line(&aliases[0], platform)
+        .expect("alias renders a declared line");
     let hand_edited = ShellAlias {
         name: "ll".to_string(),
         command: "ls -lah".to_string(),
         platforms: vec![],
     };
-    let hand_edited_line =
-        super::env_files::primary_alias_line(&hand_edited, platform, &Default::default())
-            .expect("hand-edited alias renders a line");
+    let hand_edited_line = super::env_files::primary_alias_line(&hand_edited, platform)
+        .expect("hand-edited alias renders a line");
     let mutated = content.replace(&declared_line, &hand_edited_line);
     assert_ne!(
         content, mutated,
@@ -16034,43 +16080,7 @@ fn a_source_whose_tiers_straddle_a_local_layer_keeps_a_block_per_run() {
         value: value.to_string(),
         platforms: Vec::new(),
     };
-    let team = |priority: u32,
-                policy: crate::config::LayerPolicy,
-                env: Vec<crate::config::EnvVar>| crate::config::ProfileLayer {
-        source: "team".to_string(),
-        profile_name: format!("team-{priority}"),
-        priority,
-        policy,
-        spec: crate::config::ProfileSpec {
-            env,
-            ..Default::default()
-        },
-    };
-    let local = |env: Vec<crate::config::EnvVar>| crate::config::ProfileLayer {
-        source: crate::config::LOCAL_LAYER.to_string(),
-        profile_name: "work".to_string(),
-        priority: 1000,
-        policy: crate::config::LayerPolicy::Local,
-        spec: crate::config::ProfileSpec {
-            env,
-            ..Default::default()
-        },
-    };
-    let layers = vec![
-        team(
-            500,
-            crate::config::LayerPolicy::Recommended,
-            vec![env("EDITOR", "nano"), env("VISUAL", "nano")],
-        ),
-        local(vec![env("EDITOR", "vi"), env("VISUAL", "vi")]),
-        team(
-            1500,
-            crate::config::LayerPolicy::Required,
-            vec![env("VISUAL", "emacs")],
-        ),
-    ];
-    let merged = crate::config::merge_layers(&layers);
-    let mut resolved = crate::config::ResolvedProfile { layers, merged };
+    let mut resolved = straddling_source_profile();
     // What a resolved preference does after the layer loop: fold in and claim
     // the last layer that ranked it — here the required tier, which is the
     // owner's SECOND block.
@@ -16166,6 +16176,55 @@ fn a_source_whose_tiers_straddle_a_local_layer_keeps_a_block_per_run() {
         "the source's required tier outranks local: {:?}",
         layered.merged,
     );
+}
+
+/// One subscription whose tiers sit on BOTH sides of the local layer: its
+/// standard tier below local, its required tier above. `composition::compose`
+/// sorts the whole layer vec by priority, so the source's own token appears
+/// twice in `resolved.layers` with local's between them.
+fn straddling_source_profile() -> crate::config::ResolvedProfile {
+    let env = |name: &str, value: &str| crate::config::EnvVar {
+        name: name.to_string(),
+        value: value.to_string(),
+        platforms: Vec::new(),
+    };
+    let team = |priority: u32,
+                policy: crate::config::LayerPolicy,
+                env: Vec<crate::config::EnvVar>| crate::config::ProfileLayer {
+        source: "team".to_string(),
+        profile_name: format!("team-{priority}"),
+        priority,
+        policy,
+        spec: crate::config::ProfileSpec {
+            env,
+            ..Default::default()
+        },
+    };
+    let local = |env: Vec<crate::config::EnvVar>| crate::config::ProfileLayer {
+        source: crate::config::LOCAL_LAYER.to_string(),
+        profile_name: "work".to_string(),
+        priority: 1000,
+        policy: crate::config::LayerPolicy::Local,
+        spec: crate::config::ProfileSpec {
+            env,
+            ..Default::default()
+        },
+    };
+    let layers = vec![
+        team(
+            500,
+            crate::config::LayerPolicy::Recommended,
+            vec![env("EDITOR", "nano"), env("VISUAL", "nano")],
+        ),
+        local(vec![env("EDITOR", "vi"), env("VISUAL", "vi")]),
+        team(
+            1500,
+            crate::config::LayerPolicy::Required,
+            vec![env("VISUAL", "emacs")],
+        ),
+    ];
+    let merged = crate::config::merge_layers(&layers);
+    crate::config::ResolvedProfile { layers, merged }
 }
 
 /// The blocks are the merge's inputs; the winners are the merge's answer; the
@@ -19406,7 +19465,10 @@ fn env_targets_folded_path_dirs_render_into_the_fish_managed_file() {
         .map(|d| ManagerPathDir::new("brew", *d))
         .collect();
     let t = env_targets(
-        EnvContent::new(&[], &[], &dirs, &Default::default()),
+        EnvContent::of(
+            &crate::reconciler::LayeredEnv::for_test(&[], &[], &Default::default()),
+            &dirs,
+        ),
         EnvScope::Interactive,
         home,
         &probe,
@@ -19439,7 +19501,10 @@ fn env_targets_folded_path_dirs_render_into_the_powershell_managed_file() {
         .map(|d| ManagerPathDir::new("brew", *d))
         .collect();
     let t = env_targets(
-        EnvContent::new(&[], &[], &dirs, &Default::default()),
+        EnvContent::of(
+            &crate::reconciler::LayeredEnv::for_test(&[], &[], &Default::default()),
+            &dirs,
+        ),
         EnvScope::Interactive,
         home,
         &env_probe(""),
@@ -19499,7 +19564,10 @@ fn every_managed_env_file_counts_its_own_lines() {
         },
     ];
     let counts: std::collections::HashMap<String, (usize, usize)> = env_targets(
-        EnvContent::new(&env, &aliases, &[], &Default::default()),
+        EnvContent::of(
+            &crate::reconciler::LayeredEnv::for_test(&env, &aliases, &Default::default()),
+            &[],
+        ),
         EnvScope::All,
         Path::new("/h"),
         &env_probe(""),
@@ -22097,7 +22165,10 @@ fn one_env() -> Vec<EnvVar> {
 fn env_targets_empty_yields_nothing() {
     let home = Path::new("/h");
     let t = env_targets(
-        EnvContent::new(&[], &[], &[], &Default::default()),
+        EnvContent::of(
+            &crate::reconciler::LayeredEnv::for_test(&[], &[], &Default::default()),
+            &[],
+        ),
         EnvScope::All,
         home,
         &env_probe("/bin/bash"),
@@ -22110,7 +22181,10 @@ fn env_targets_empty_yields_nothing() {
 fn env_targets_interactive_is_env_file_plus_interactive_rc() {
     let home = Path::new("/h");
     let t = env_targets(
-        EnvContent::new(&one_env(), &[], &[], &Default::default()),
+        EnvContent::of(
+            &crate::reconciler::LayeredEnv::for_test(&one_env(), &[], &Default::default()),
+            &[],
+        ),
         EnvScope::Interactive,
         home,
         &env_probe("/bin/bash"),
@@ -22123,7 +22197,10 @@ fn env_targets_interactive_is_env_file_plus_interactive_rc() {
 fn env_targets_interactive_zsh_uses_zshrc() {
     let home = Path::new("/h");
     let t = env_targets(
-        EnvContent::new(&one_env(), &[], &[], &Default::default()),
+        EnvContent::of(
+            &crate::reconciler::LayeredEnv::for_test(&one_env(), &[], &Default::default()),
+            &[],
+        ),
         EnvScope::Interactive,
         home,
         &env_probe("/usr/bin/zsh"),
@@ -22137,7 +22214,10 @@ fn env_targets_login_adds_zshenv_only_when_zsh_present() {
     let home = Path::new("/h");
     // zsh in use ⇒ ~/.zshenv is written into the login chain.
     let t = env_targets(
-        EnvContent::new(&one_env(), &[], &[], &Default::default()),
+        EnvContent::of(
+            &crate::reconciler::LayeredEnv::for_test(&one_env(), &[], &Default::default()),
+            &[],
+        ),
         EnvScope::Login,
         home,
         &env_probe("/bin/zsh"),
@@ -22156,7 +22236,10 @@ fn env_targets_login_adds_zshenv_only_when_zsh_present() {
 
     // bash-only host ⇒ no inert ~/.zshenv for a shell it never runs.
     let t = env_targets(
-        EnvContent::new(&one_env(), &[], &[], &Default::default()),
+        EnvContent::of(
+            &crate::reconciler::LayeredEnv::for_test(&one_env(), &[], &Default::default()),
+            &[],
+        ),
         EnvScope::Login,
         home,
         &env_probe("/bin/bash"),
@@ -22181,7 +22264,10 @@ fn env_targets_login_injects_existing_bash_profile() {
     let mut probe = env_probe("/bin/bash");
     probe.bash_profile_exists = true;
     let t = env_targets(
-        EnvContent::new(&one_env(), &[], &[], &Default::default()),
+        EnvContent::of(
+            &crate::reconciler::LayeredEnv::for_test(&one_env(), &[], &Default::default()),
+            &[],
+        ),
         EnvScope::Login,
         home,
         &probe,
@@ -22198,7 +22284,10 @@ fn env_targets_login_falls_back_to_bash_login_when_only_it_exists() {
     let mut probe = env_probe("/bin/bash");
     probe.bash_login_exists = true;
     let t = env_targets(
-        EnvContent::new(&one_env(), &[], &[], &Default::default()),
+        EnvContent::of(
+            &crate::reconciler::LayeredEnv::for_test(&one_env(), &[], &Default::default()),
+            &[],
+        ),
         EnvScope::Login,
         home,
         &probe,
@@ -22213,7 +22302,10 @@ fn env_targets_login_falls_back_to_bash_login_when_only_it_exists() {
 fn env_targets_all_linux_adds_environment_d_and_session() {
     let home = Path::new("/h");
     let t = env_targets(
-        EnvContent::new(&one_env(), &[], &[], &Default::default()),
+        EnvContent::of(
+            &crate::reconciler::LayeredEnv::for_test(&one_env(), &[], &Default::default()),
+            &[],
+        ),
         EnvScope::All,
         home,
         &env_probe("/bin/bash"),
@@ -22230,7 +22322,10 @@ fn env_targets_all_linux_adds_environment_d_and_session() {
 fn env_targets_all_macos_adds_launchagent_not_environment_d() {
     let home = Path::new("/h");
     let t = env_targets(
-        EnvContent::new(&one_env(), &[], &[], &Default::default()),
+        EnvContent::of(
+            &crate::reconciler::LayeredEnv::for_test(&one_env(), &[], &Default::default()),
+            &[],
+        ),
         EnvScope::All,
         home,
         &env_probe("/bin/zsh"),
@@ -22252,7 +22347,10 @@ fn env_targets_all_freebsd_omits_environment_d_and_launchagent() {
     // (inert clutter no consumer reads) nor a macOS LaunchAgent plist.
     let home = Path::new("/h");
     let t = env_targets(
-        EnvContent::new(&one_env(), &[], &[], &Default::default()),
+        EnvContent::of(
+            &crate::reconciler::LayeredEnv::for_test(&one_env(), &[], &Default::default()),
+            &[],
+        ),
         EnvScope::All,
         home,
         &env_probe("/bin/sh"),
@@ -22271,7 +22369,10 @@ fn env_targets_all_freebsd_omits_environment_d_and_launchagent() {
 fn env_targets_windows_is_ps_profiles_plus_session_on_all() {
     let home = Path::new("/h");
     let t = env_targets(
-        EnvContent::new(&one_env(), &[], &[], &Default::default()),
+        EnvContent::of(
+            &crate::reconciler::LayeredEnv::for_test(&one_env(), &[], &Default::default()),
+            &[],
+        ),
         EnvScope::All,
         home,
         &env_probe(""),
@@ -22295,14 +22396,20 @@ fn env_targets_match_what_verify_rederives() {
     let home = Path::new("/h");
     let probe = env_probe("/bin/bash");
     let a = env_targets(
-        EnvContent::new(&one_env(), &[], &[], &Default::default()),
+        EnvContent::of(
+            &crate::reconciler::LayeredEnv::for_test(&one_env(), &[], &Default::default()),
+            &[],
+        ),
         EnvScope::All,
         home,
         &probe,
         EnvPlatform::Linux,
     );
     let b = env_targets(
-        EnvContent::new(&one_env(), &[], &[], &Default::default()),
+        EnvContent::of(
+            &crate::reconciler::LayeredEnv::for_test(&one_env(), &[], &Default::default()),
+            &[],
+        ),
         EnvScope::All,
         home,
         &probe,
@@ -22751,7 +22858,10 @@ fn env_targets_windows_with_git_bash_adds_unix_env_file_and_bashrc() {
         zsh_present: false,
     };
     let t = env_targets(
-        EnvContent::new(&one_env(), &[], &[], &Default::default()),
+        EnvContent::of(
+            &crate::reconciler::LayeredEnv::for_test(&one_env(), &[], &Default::default()),
+            &[],
+        ),
         EnvScope::All,
         home,
         &probe,
@@ -22782,7 +22892,10 @@ fn env_targets_fish_present_adds_managed_fish_file() {
         zsh_present: false,
     };
     let t = env_targets(
-        EnvContent::new(&one_env(), &[], &[], &Default::default()),
+        EnvContent::of(
+            &crate::reconciler::LayeredEnv::for_test(&one_env(), &[], &Default::default()),
+            &[],
+        ),
         EnvScope::Interactive,
         home,
         &probe,
@@ -23242,8 +23355,12 @@ fn plan_env_neutralizes_a_stale_managed_file_when_the_desired_env_empties() {
     // last generated file would otherwise keep exporting them forever.
     let home = tempfile::tempdir().unwrap();
     let env_file = home.path().join(".cfgd.env");
-    let neutral = "# managed by cfgd \u{2014} do not edit\n";
-    std::fs::write(&env_file, format!("{neutral}export FOO=\"bar\"\n")).unwrap();
+    let neutral = format!("{}\n", super::env_files::banner("#").join("\n"));
+    // What an OLDER cfgd wrote: one banner line, and the file it neutralised
+    // to was that line alone. Line 1 is the whole recognition test, so a
+    // machine upgraded across the banner change is still cfgd's to strip.
+    let legacy_banner = super::env_files::ENV_FILE_HEADER;
+    std::fs::write(&env_file, format!("{legacy_banner}\nexport FOO=\"bar\"\n")).unwrap();
     let managed = vec![crate::to_posix_string(&env_file)];
 
     let actions = Reconciler::plan_env_with_home(
@@ -23265,13 +23382,31 @@ fn plan_env_neutralizes_a_stale_managed_file_when_the_desired_env_empties() {
             aliases: 0,
         }) => {
             assert_eq!(path, &env_file);
-            assert_eq!(content, neutral);
+            assert_eq!(content, &neutral);
         }
         other => panic!("expected a managed-file rewrite, got {other:?}"),
     }
 
+    // The same file under the CURRENT banner: still stripped, and to the same
+    // bytes.
+    std::fs::write(&env_file, format!("{neutral}\nexport FOO=\"bar\"\n")).unwrap();
+    let actions = Reconciler::plan_env_with_home(
+        super::LayeredEnv::from_parts("profile:test", &[], &[], &[]),
+        EnvScope::Interactive,
+        &[],
+        &[],
+        &managed,
+        home.path(),
+    )
+    .actions;
+    assert_eq!(actions.len(), 1, "{actions:?}");
+    match &actions[0] {
+        Action::Env(EnvAction::WriteEnvFile { content, .. }) => assert_eq!(content, &neutral),
+        other => panic!("expected a managed-file rewrite, got {other:?}"),
+    }
+
     // Already neutral: nothing left to strip.
-    std::fs::write(&env_file, neutral).unwrap();
+    std::fs::write(&env_file, &neutral).unwrap();
     let actions = Reconciler::plan_env_with_home(
         super::LayeredEnv::from_parts("profile:test", &[], &[], &[]),
         EnvScope::Interactive,
@@ -30928,13 +31063,47 @@ fn an_unreserved_target_is_not_copied_aside() {
     );
 }
 
-/// EVERY line of a generated env file names its owner: a module-declared entry
-/// names its module, a profile-declared one names the LAYER that declared it,
-/// and the bootstrapped PATH line names the manager (or managers) whose
-/// directories it holds. A file that is the merge of N layers has no default
-/// owner, so an uncommented line would be the one line nobody can attribute.
+/// The header line of every block a generated env file holds, in file order.
+///
+/// Read off the blank line that separates the banner from the first block and
+/// each block from the next, so no count of the banner's rows is written down
+/// anywhere and a banner line is never read as a header.
+fn block_headers(content: &str) -> Vec<&str> {
+    content
+        .split("\n\n")
+        .skip(1)
+        .filter_map(|block| block.lines().next())
+        .collect()
+}
+
+/// The header of the block `line` sits under, or `None` when the file holds no
+/// such line.
+fn block_of<'a>(content: &'a str, line: &str) -> Option<&'a str> {
+    let mut header = None;
+    let mut after_blank = false;
+    for l in content.lines() {
+        if l.is_empty() {
+            after_blank = true;
+        } else if after_blank {
+            header = Some(l);
+            after_blank = false;
+        } else if l == line {
+            return header;
+        }
+    }
+    None
+}
+
+/// EVERY line of a generated env file sits in the block of the layer that
+/// DECLARED it, outranked lines included, and no line names an owner of its
+/// own.
+///
+/// A per-line owner comment could only ever name the layer whose value won, so
+/// on an outranked line it named the layer that beat it. The header says it
+/// once, for every line under it, and the file's order says which of two
+/// blocks the shell resolves last.
 #[test]
-fn every_generated_env_line_names_the_owner_that_declared_it() {
+fn every_generated_env_line_sits_in_the_block_that_declared_it() {
     let layer = |name: &str, env: Vec<(&str, &str)>, aliases: Vec<(&str, &str)>| {
         crate::config::ProfileLayer {
             source: crate::config::LOCAL_LAYER.to_string(),
@@ -30962,13 +31131,15 @@ fn every_generated_env_line_names_the_owner_that_declared_it() {
             },
         }
     };
-    // Two layers, and `work` overrides `base`'s PAGER: the comment has to name
-    // the layer whose VALUE survived, which is what recording owners inside the
-    // merge (rather than re-deriving them afterwards) buys.
-    let merged = crate::config::merge_layers(&[
+    // Two layers, and `work` overrides `base`'s PAGER: both values are in the
+    // file, each under the layer that wrote it, and the shell's own last-wins
+    // is what leaves `bat` set.
+    let layers = vec![
         layer("base", vec![("PAGER", "less")], vec![("catn", "cat -n")]),
         layer("work", vec![("PAGER", "bat")], vec![]),
-    ]);
+    ];
+    let merged = crate::config::merge_layers(&layers);
+    let resolved = crate::config::ResolvedProfile { layers, merged };
 
     let mut module = crate::test_helpers::make_resolved_module("nvim");
     module.env = vec![crate::config::EnvVar {
@@ -30981,100 +31152,178 @@ fn every_generated_env_line_names_the_owner_that_declared_it() {
         command: "nvim".into(),
         platforms: vec![],
     }];
-
-    let (env, aliases, origins) = super::merge_module_env_aliases(
-        &merged.env,
-        &merged.aliases,
-        &merged.entry_owners,
-        std::slice::from_ref(&module),
-    );
+    let layered = super::LayeredEnv::of(&resolved, std::slice::from_ref(&module));
     let path_dirs = vec![
         ManagerPathDir::new("brew", "/home/linuxbrew/.linuxbrew/bin"),
         ManagerPathDir::new("brew", "/home/linuxbrew/.linuxbrew/sbin"),
         ManagerPathDir::new("cargo", "/home/u/.cargo/bin"),
     ];
-    let content = super::generate_env_file_content(
-        &env,
-        &aliases,
-        Some(&FoldedPath::derived(&path_dirs)),
-        &origins,
-    );
+    let fold = FoldedPath::derived(&path_dirs);
 
-    assert!(
-        content.contains("export EDITOR=\"nvim\" # module:nvim"),
-        "a module-declared var names its module: {content}"
-    );
-    assert!(
-        content.contains("alias v=\"nvim\" # module:nvim"),
-        "a module-declared alias names its module: {content}"
-    );
-    assert!(
-        content.contains("export PAGER=\"bat\" # profile:work"),
-        "an overridden var names the layer whose value won: {content}"
-    );
-    assert!(
-        content.contains("alias catn=\"cat -n\" # profile:base"),
-        "an alias names the layer that declared it: {content}"
-    );
-    // One comment for the whole line, managers in directory order, deduped —
-    // one per directory would repeat `brew` twice and say nothing extra.
-    assert!(
-        content.contains(
-            "export PATH=\"/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:\
-             /home/u/.cargo/bin:$PATH\" # manager:brew,cargo"
-        ),
-        "the bootstrapped PATH line names its managers once each: {content}"
-    );
-    // Every DIALECT, not just the one whose exact strings are pinned above:
-    // each generator appends its own comments and dropping any one of those
-    // calls has to fail here. The assertion is on the line's TAIL so it says
-    // nothing about a dialect's own assignment syntax.
+    // Every DIALECT, not just one: each generator composes its own blocks, and
+    // dropping any one of those calls has to fail here.
     for (dialect, content) in [
-        ("bash/zsh", content),
+        (
+            "bash/zsh",
+            super::generate_env_file_content(&layered, Some(&fold)),
+        ),
         (
             "fish",
-            super::generate_fish_env_content(
-                &env,
-                &aliases,
-                Some(&FoldedPath::derived(&path_dirs)),
-                &origins,
-            ),
+            super::generate_fish_env_content(&layered, Some(&fold)),
         ),
         (
             "powershell",
-            super::env_files::generate_powershell_env_content(
-                &env,
-                &aliases,
-                Some(&FoldedPath::derived(&path_dirs)),
-                &origins,
-            ),
+            super::env_files::generate_powershell_env_content(&layered, Some(&fold)),
         ),
     ] {
+        assert_eq!(
+            block_headers(&content),
+            [
+                "# path",
+                "# profile: base (priority 1000)",
+                "# profile: work (priority 1000)",
+                "# module: nvim"
+            ],
+            "{dialect}: one block per layer, low precedence first:\n{content}"
+        );
         let body: Vec<&str> = content
             .lines()
-            .skip(1)
-            .filter(|l| !l.trim().is_empty())
+            .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
             .collect();
-        assert!(
-            body.iter().all(|l| l.contains(" # ")),
-            "{dialect}: every generated line below the header names an owner: {content}"
+        // One comment in the file, on the one line no header can own: the fold
+        // has as many producers as fed it.
+        assert_eq!(
+            body.iter().filter(|l| l.contains(" # ")).count(),
+            1,
+            "{dialect}: only the folded PATH line names its producers:\n{content}"
         );
-        for (needle, owner) in [
-            ("EDITOR", "# module:nvim"),
-            ("PAGER", "# profile:work"),
-            ("catn", "# profile:base"),
-            ("PATH", "# manager:brew,cargo"),
+        for (needle, header) in [
+            ("EDITOR", "# module: nvim"),
+            ("bat", "# profile: work (priority 1000)"),
+            ("less", "# profile: base (priority 1000)"),
+            ("catn", "# profile: base (priority 1000)"),
+            ("PATH", "# path"),
         ] {
             let line = body
                 .iter()
                 .find(|l| l.contains(needle))
                 .unwrap_or_else(|| panic!("{dialect}: no line names {needle}: {content}"));
-            assert!(
-                line.ends_with(owner),
-                "{dialect}: `{line}` must end with `{owner}`"
+            assert_eq!(
+                block_of(&content, line),
+                Some(header),
+                "{dialect}: `{line}` sits in the wrong block:\n{content}"
             );
         }
+        // One comment for the whole PATH line, managers in directory order,
+        // deduped — one per directory would repeat `brew` twice and say
+        // nothing extra.
+        let path_line = body
+            .iter()
+            .find(|l| l.contains("PATH"))
+            .expect("the fold writes a PATH line");
+        assert!(
+            path_line.ends_with(" # manager:brew,cargo"),
+            "{dialect}: the bootstrapped PATH line names its managers once each: {path_line}"
+        );
     }
+}
+
+/// Every layer's contribution is in the file, under a header naming it.
+#[test]
+fn the_primary_env_file_holds_one_block_per_layer_in_precedence_order() {
+    let (layered, path_dirs) = crate::test_helpers::layered_fixture("/home/tj");
+    let content =
+        super::generate_env_file_content(&layered, Some(&FoldedPath::derived(&path_dirs)));
+    assert_eq!(
+        block_headers(&content),
+        [
+            "# path",
+            "# profile: base (priority 100)",
+            "# profile: work (priority 1000)",
+            "# module: nvim"
+        ],
+        "one block per layer, low precedence first:\n{content}",
+    );
+    // The losing value is verbatim in its own block — the file IS the
+    // inheritance debugger, and the shell's last-wins resolves it.
+    assert_eq!(
+        block_of(&content, "export PAGER=\"less\""),
+        Some("# profile: base (priority 100)"),
+        "{content}"
+    );
+    assert_eq!(
+        block_of(&content, "export PAGER=\"bat\""),
+        Some("# profile: work (priority 1000)"),
+        "{content}"
+    );
+    // Name-sorted inside a block, env then aliases.
+    let work = content
+        .split("# profile: work (priority 1000)\n")
+        .nth(1)
+        .expect("the work block")
+        .split("\n\n")
+        .next()
+        .unwrap();
+    assert!(work.find("EDITOR") < work.find("PAGER"), "{content}");
+    let base = content
+        .split("# profile: base (priority 100)\n")
+        .nth(1)
+        .expect("the base block")
+        .split("\n\n")
+        .next()
+        .unwrap();
+    assert!(base.find("export") < base.find("alias"), "{content}");
+    // No per-line owner comment survives: the header said it once, and a
+    // shadowed layer's line would otherwise name the layer that beat it.
+    assert!(
+        !content.contains(" # profile:"),
+        "redundant per-line provenance:\n{content}"
+    );
+    assert!(
+        !content.contains(" # module:"),
+        "redundant per-line provenance:\n{content}"
+    );
+    // Except on the one line no header can own — two producers, one assignment.
+    assert!(
+        content.contains(":$PATH\" # manager:brew,cargo\n"),
+        "{content}"
+    );
+}
+
+/// Both runs of a straddling owner name that owner, and each states the
+/// priority that put it where it is.
+///
+/// The two blocks are the same source, so the owner alone cannot tell a reader
+/// why one of them sits below the local layer and the other above it. The
+/// priority is the fact that answers it: `team` subscribed at 500, the local
+/// profile ranks 1000, and the source's required tier ranks 1500.
+#[test]
+fn a_straddling_owners_two_blocks_each_state_their_own_priority() {
+    let resolved = straddling_source_profile();
+    let layered = super::LayeredEnv::of(&resolved, &[]);
+    let content = super::generate_env_file_content(&layered, None);
+    assert_eq!(
+        block_headers(&content),
+        [
+            "# source: team (priority 500)",
+            "# profile: work (priority 1000)",
+            "# source: team (priority 1500)"
+        ],
+        "the local block sits between the source's two runs, each under the \
+         owner's own header:\n{content}"
+    );
+    // The required tier's value is the one a shell sourcing this file is left
+    // with, which is the merge's own answer.
+    assert_eq!(
+        block_of(&content, "export VISUAL=\"emacs\""),
+        Some("# source: team (priority 1500)"),
+        "{content}"
+    );
+    assert!(
+        content.find("export VISUAL=\"vi\"") < content.find("export VISUAL=\"emacs\""),
+        "the required tier is below local, or the shell resolves the wrong \
+         value:\n{content}"
+    );
 }
 
 /// The `PATH` declarations that survive on a host CONCATENATE, and the one line
@@ -31151,7 +31400,10 @@ fn every_surviving_path_declaration_reaches_the_one_generated_line() {
         },
     )
     .expect("a declared PATH folds into a line");
-    let content = super::generate_env_file_content(&env, &aliases, Some(&folded), &origins);
+    let content = super::generate_env_file_content(
+        &crate::reconciler::LayeredEnv::for_test(&env, &aliases, &origins),
+        Some(&folded),
+    );
 
     let line = content
         .lines()
@@ -31187,15 +31439,14 @@ fn every_surviving_path_declaration_reaches_the_one_generated_line() {
     }
 }
 
-/// The provenance comment is part of the line `verify` matches, so a file
-/// written with it must read back as current rather than as permanent drift.
-/// Every owner kind is on the file at once — profile layer, module and the
-/// bootstrapped PATH line's manager — because the planner and the verifier
-/// share ONE merge and a comment either side rendered differently would be
-/// drift nothing can fix.
+/// A file the planner wrote must read back as current rather than as
+/// permanent drift. Every owner kind is on the file at once — profile layer,
+/// module and the bootstrapped PATH line's manager — because the planner and
+/// the verifier share ONE merge, and a line either side rendered differently
+/// would be drift nothing can fix.
 #[test]
 #[serial_test::serial]
-fn an_owner_commented_env_line_written_by_the_planner_verifies_as_current() {
+fn every_line_the_planner_wrote_verifies_as_current() {
     let tmp_home = tempfile::tempdir().unwrap();
     let _home = crate::with_test_home_guard(tmp_home.path());
 
@@ -31267,7 +31518,10 @@ fn an_owner_commented_env_line_written_by_the_planner_verifies_as_current() {
     // expected line the file is not required to hold sends the reader to fix a
     // difference that is not the difference.
     let written = std::fs::read_to_string(&primary).unwrap();
-    for (id, owner) in [("EDITOR", "# module:nvim"), ("PAGER", "# profile:base")] {
+    for (id, header) in [
+        ("EDITOR", "# module: nvim"),
+        ("PAGER", "# profile: base (priority 1000)"),
+    ] {
         let shown = super::verify::MergedEnvItems::new(
             &super::LayeredEnv::from_parts("profile:base", &profile_env, &[], &modules),
             &[],
@@ -31275,12 +31529,17 @@ fn an_owner_commented_env_line_written_by_the_planner_verifies_as_current() {
         .declared_line("env-var", id)
         .expect("a declared var renders its declared line");
         assert!(
-            shown.contains(owner),
-            "the shown line carries the provenance comment verify matched on: {shown}"
+            !shown.contains(" # "),
+            "the shown line carries provenance the file does not: {shown}"
         );
         assert!(
             written.lines().any(|line| line == shown),
             "the shown line is a line the file actually holds: {shown} in {written}"
+        );
+        assert_eq!(
+            block_of(&written, &shown),
+            Some(header),
+            "the shown line sits under the owner that declared it: {written}"
         );
     }
     // `written` is the file the planner wrote for THIS host, so the assertion
