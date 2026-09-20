@@ -43,8 +43,7 @@ fn parse_config_rejects_unknown_apiversion() {
 /// version this build reads.
 #[test]
 fn a_synthetic_older_api_version_routes_through_the_conversion_table() {
-    use super::parse::convertible_from;
-    use crate::config::{API_VERSION_CONVERSIONS, ApiVersionConversion};
+    use super::parse::{API_VERSION_CONVERSIONS, ApiVersionConversion, convertible_from};
     const SYNTHETIC: &[ApiVersionConversion] = &[
         ApiVersionConversion {
             from: "cfgd.io/v1alpha0",
@@ -71,7 +70,7 @@ fn a_synthetic_older_api_version_routes_through_the_conversion_table() {
 /// can route a document to a version nothing parses.
 #[test]
 fn every_api_version_the_table_names_converts_to_the_current_one() {
-    use crate::config::API_VERSION_CONVERSIONS;
+    use super::parse::API_VERSION_CONVERSIONS;
     assert!(
         !API_VERSION_CONVERSIONS.is_empty(),
         "the table always carries its identity entry"
@@ -85,6 +84,268 @@ fn every_api_version_the_table_names_converts_to_the_current_one() {
             entry.to
         );
     }
+}
+
+/// The refusal names every version the table holds, not the current one alone.
+///
+/// A build carrying a second conversion row accepts a document the constant
+/// does not name, so a message spelling the constant would refuse a version the
+/// same build reads. The expectation is composed from the shipped table as
+/// data: a synthetic table cannot reach the error type, which reads the
+/// shipped one.
+#[test]
+fn the_unsupported_api_version_refusal_names_every_readable_version() {
+    use super::parse::{API_VERSION_CONVERSIONS, ApiVersionConversion, readable_api_versions};
+    // The shipped table's `from` and `to` are the same bytes while the identity
+    // is its only row, so the column the composer reads is provable only
+    // against a table whose two columns differ.
+    const SYNTHETIC: &[ApiVersionConversion] = &[
+        ApiVersionConversion {
+            from: "cfgd.io/v1alpha0",
+            to: crate::API_VERSION,
+        },
+        ApiVersionConversion {
+            from: "cfgd.io/v1alpha1",
+            to: crate::API_VERSION,
+        },
+    ];
+    assert_eq!(
+        readable_api_versions(SYNTHETIC),
+        "cfgd.io/v1alpha0, cfgd.io/v1alpha1",
+        "the composer names every `from` the table holds, in table order"
+    );
+
+    assert!(
+        !API_VERSION_CONVERSIONS.is_empty(),
+        "the table always carries its identity entry"
+    );
+    let message = ConfigError::UnsupportedApiVersion {
+        found: "cfgd.io/v9".to_string(),
+    }
+    .to_string();
+    for entry in API_VERSION_CONVERSIONS {
+        assert!(
+            message.contains(entry.from),
+            "the refusal {message:?} does not name {}, which this build reads",
+            entry.from
+        );
+    }
+    assert!(
+        message.ends_with(&readable_api_versions(API_VERSION_CONVERSIONS)),
+        "the refusal {message:?} closes on something other than the table's own versions"
+    );
+}
+
+/// Every site judging an incoming document's `apiVersion` asks the conversion
+/// table, in every crate.
+///
+/// [`super::parse::validate_api_version`] is `pub(crate)` to cfgd-core, so a
+/// device gateway or CSI site parsing a document it was handed cannot reach it,
+/// and that is exactly where a hand-written comparison against the current
+/// version goes in. Such a site accepts one version while the parser accepts a
+/// set, and the two disagree in the release a second row lands in.
+///
+/// The population is every `<crate>/src` under `crates/`, read off the
+/// directory so a crate added to the workspace joins it, and NAMED so a renamed
+/// root fails by name rather than being restored by whatever else appears. The
+/// floor is stated per root: one number for the workspace is the biggest tree's
+/// count plus the rest, so `crates/cfgd/src` could go dark inside it.
+///
+/// `validate_api_version` and `convertible_from` are exempt BY NAME rather than
+/// by hatch, because they ARE the comparison every other site is routed to. The
+/// validator is judged instead by the reach check below, which is what catches
+/// a body that keeps the table call and compares anyway.
+#[test]
+fn no_production_site_compares_an_api_version_by_hand() {
+    use crate::test_helpers::{
+        blank_non_code, calls_free_fn, carries_hatch, code_line, fn_declarations,
+        production_slice_of, rust_sources_under, workspace_root,
+    };
+
+    /// Every crate root the walk must still be reading, workspace-relative,
+    /// with a floor at the production sources each holds today, so a tree going
+    /// dark fails on its own name rather than inside a total.
+    const WALK_ROOTS: &[(&str, usize)] = &[
+        ("crates/cfgd-core/src", 191),
+        ("crates/cfgd-crd/src", 1),
+        ("crates/cfgd-csi/src", 8),
+        ("crates/cfgd-operator/src", 46),
+        ("crates/cfgd-schema/src", 2),
+        ("crates/cfgd/src", 144),
+    ];
+    const HATCH: &str = "// api-version-compare-ok:";
+    const EXEMPT: &[&str] = &["validate_api_version", "convertible_from"];
+
+    // A comparison's two halves. `matches!(subject, PATTERN)` holds both
+    // operands to the right of the macro name, so its own comma is the split.
+    fn halves<'a>(code: &'a str, tell: &str) -> Option<(&'a str, &'a str)> {
+        let (left, right) = code.split_once(tell)?;
+        if tell == "matches!(" {
+            return right.split_once(',');
+        }
+        Some((left, right))
+    }
+    // The field a document carries is spelled one of two ways, and neither is
+    // the constant: `API_VERSION` holds no lowercase `api_version`.
+    fn names_the_field(part: &str) -> bool {
+        part.contains("api_version") || part.contains("apiVersion")
+    }
+    // A literal reaches this walk as its own quotes around blanks, so the quote
+    // is how a version spelled inline is seen at all.
+    fn names_a_version(part: &str) -> bool {
+        part.contains("API_VERSION") || part.contains('"')
+    }
+    fn compares_by_hand(code: &str) -> bool {
+        ["==", "!=", "matches!(", ".starts_with(", ".contains("]
+            .iter()
+            .any(|tell| {
+                halves(code, tell).is_some_and(|(left, right)| {
+                    (names_the_field(left) && names_a_version(right))
+                        || (names_the_field(right) && names_a_version(left))
+                })
+            })
+    }
+
+    let workspace = workspace_root();
+    let crates_dir = workspace.join("crates");
+    let mut roots: Vec<PathBuf> = std::fs::read_dir(&crates_dir)
+        .unwrap_or_else(|e| panic!("{}: {e}", crates_dir.display()))
+        .map(|entry| {
+            entry
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "{}: the walk must read every entry: {e}",
+                        crates_dir.display()
+                    )
+                })
+                .path()
+                .join("src")
+        })
+        .filter(|src| src.is_dir())
+        .collect();
+    roots.sort();
+    let read: Vec<String> = roots
+        .iter()
+        .map(|root| crate::to_posix_string(root.strip_prefix(&workspace).unwrap_or(root)))
+        .collect();
+
+    let mut per_root: Vec<(String, usize)> = Vec::new();
+    let mut offenders: Vec<String> = Vec::new();
+    for (root, relative_root) in roots.iter().zip(read.clone()) {
+        let mut files = 0usize;
+        for path in rust_sources_under(root) {
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            // Test scaffolding carries no `#[cfg(test)]` for the slice to cut
+            // at, and `test_helpers.rs` ships as production while holding an
+            // inline test module the slice WOULD cut at, leaving a fraction of
+            // the file behind.
+            if name.starts_with("tests")
+                || name == "test_helpers.rs"
+                || path.parent().is_some_and(|p| p.ends_with("tests"))
+            {
+                continue;
+            }
+            let production = production_slice_of(&path);
+            // `blank_non_code` carries the state a per-line read cannot: a
+            // `/* */` comment or a literal spanning rows leaves every row below
+            // it read as code. `code_line` is then the per-line cut each
+            // judgement is taken on, and both keep the row count, so the raw
+            // line beside it is the one a hatch and a report are read off.
+            let blanked = blank_non_code(&production);
+            files += 1;
+            let raw: Vec<&str> = production.lines().collect();
+            let code: Vec<String> = blanked.lines().map(code_line).collect();
+            let joined = code.join("\n");
+            let exempt: Vec<std::ops::RangeInclusive<usize>> = fn_declarations(&blanked)
+                .into_iter()
+                .filter(|(name, ..)| EXEMPT.contains(&name.as_str()))
+                .filter_map(|(_, _, body)| {
+                    let at = joined.find(&body)?;
+                    let first = joined[..at].matches('\n').count();
+                    Some(first..=first + body.matches('\n').count())
+                })
+                .collect();
+            let relative = crate::to_posix_string(path.strip_prefix(&workspace).unwrap_or(&path));
+            for (n, line) in code.iter().enumerate() {
+                if !compares_by_hand(line) || exempt.iter().any(|rows| rows.contains(&n)) {
+                    continue;
+                }
+                if raw[n.saturating_sub(1)..=n]
+                    .iter()
+                    .any(|l| carries_hatch(l, HATCH))
+                {
+                    continue;
+                }
+                offenders.push(format!(
+                    "{relative}:{}: compares an apiVersion by hand; ask \
+                     `cfgd_core::config::validate_api_version` (or the conversion table it \
+                     reads), else say why with `{HATCH} <why this site cannot ask the table>`: {}",
+                    n + 1,
+                    raw[n].trim()
+                ));
+            }
+        }
+        per_root.push((relative_root, files));
+    }
+
+    let unread: Vec<&str> = WALK_ROOTS
+        .iter()
+        .map(|(named, _)| *named)
+        .filter(|named| !read.iter().any(|seen| seen == named))
+        .collect();
+    assert!(
+        unread.is_empty(),
+        "the walk no longer reads {unread:?}; it read {read:?} — a renamed or moved \
+         crate root leaves its apiVersion comparisons judged by nobody"
+    );
+    // A root the walk never reported on reads as zero rather than as absent: a
+    // missing entry is the whole tree going dark, which is what the floor is for.
+    let short: Vec<(&str, usize, usize)> = WALK_ROOTS
+        .iter()
+        .map(|(named, floor)| {
+            let seen = per_root
+                .iter()
+                .find(|(root, _)| root == named)
+                .map_or(0, |(_, files)| *files);
+            (*named, seen, *floor)
+        })
+        .filter(|(_, seen, floor)| seen < floor)
+        .collect();
+    assert!(
+        short.is_empty() && read.len() >= WALK_ROOTS.len(),
+        "a crate root contributed fewer production sources than it holds, so its \
+         apiVersion comparisons are judged by nobody: {short:?} of {per_root:?}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "every site judging a document's apiVersion asks the conversion table:\n{}",
+        offenders.join("\n")
+    );
+
+    // The validator is exempt from the walk above, so the rule holds only while
+    // its body is seen to ASK the table and to compare nothing itself: a body
+    // that calls `convertible_from`, discards the answer and compares against
+    // the constant passes every other pin in this file.
+    let parse_rs = workspace
+        .join("crates")
+        .join("cfgd-core")
+        .join("src")
+        .join("config")
+        .join("parse.rs");
+    let validator = fn_declarations(&blank_non_code(&production_slice_of(&parse_rs)))
+        .into_iter()
+        .find(|(name, ..)| name == "validate_api_version")
+        .map(|(_, _, body)| body)
+        .expect("config/parse.rs declares the one apiVersion validator");
+    assert!(
+        calls_free_fn(&validator, "convertible_from"),
+        "validate_api_version no longer asks the conversion table:\n{validator}"
+    );
+    assert!(
+        !validator.lines().any(compares_by_hand),
+        "validate_api_version compares a version string itself instead of letting \
+         the table answer:\n{validator}"
+    );
 }
 
 /// The global strategy is the fallback for files that declare none, and a

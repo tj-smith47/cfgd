@@ -202,18 +202,18 @@ pub(super) fn warn_on_legacy_theme_keys(raw_yaml: &str) -> Vec<String> {
 /// document kinds share one validator: a version added here is accepted by
 /// `cfgd.yaml`, a profile, a module and a ConfigSource in one edit.
 #[derive(Debug, Clone, Copy)]
-pub struct ApiVersionConversion {
+pub(crate) struct ApiVersionConversion {
     /// The version as the document spells it.
-    pub from: &'static str,
+    pub(crate) from: &'static str,
     /// The version it is read as. Always [`crate::API_VERSION`].
-    pub to: &'static str,
+    pub(crate) to: &'static str,
 }
 
 /// Every `apiVersion` this build accepts. One entry today — the identity —
 /// because `cfgd.io/v1alpha1` is the only version cfgd has ever published;
 /// a second version adds a row plus the field rewrite it needs, and reaches
 /// every parse path through the one validator below.
-pub const API_VERSION_CONVERSIONS: &[ApiVersionConversion] = &[ApiVersionConversion {
+pub(crate) const API_VERSION_CONVERSIONS: &[ApiVersionConversion] = &[ApiVersionConversion {
     from: crate::API_VERSION,
     to: crate::API_VERSION,
 }];
@@ -226,6 +226,27 @@ pub(crate) fn convertible_from(
     found: &str,
 ) -> Option<&'static str> {
     table.iter().find(|e| e.from == found).map(|e| e.to)
+}
+
+/// Every `apiVersion` in `table`, in table order, joined for a refusal to name.
+///
+/// The refusal names the whole readable set rather than [`crate::API_VERSION`]:
+/// a build carrying a second conversion row accepts a document the constant
+/// does not name, and a message spelling the constant alone would call that
+/// document's version unsupported in the same breath as accepting it. `table`
+/// is a parameter for the reason [`convertible_from`]'s is, and for one more:
+/// while the shipped table is the identity alone its `from` and `to` are the
+/// same bytes, so only a synthetic table can tell a composer reading the wrong
+/// column from one reading the right one.
+///
+/// Called from the error's `Display`, so the parse path that accepts a document
+/// allocates nothing.
+pub(crate) fn readable_api_versions(table: &[ApiVersionConversion]) -> String {
+    table
+        .iter()
+        .map(|entry| entry.from)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Reject a document whose `apiVersion` names no row of [`API_VERSION_CONVERSIONS`].

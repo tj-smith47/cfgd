@@ -2,7 +2,7 @@
 //! against the live schema registry.
 //!
 //! Walks the repo docs tree, extracts each fenced ```yaml block whose body is a
-//! real cfgd resource (begins with `apiVersion: cfgd.io/v1alpha1` and carries
+//! real cfgd resource (begins with a `cfgd.io/` `apiVersion` and carries
 //! concrete values, not schema-sketch placeholders like `name: string`), and
 //! runs it through `validate_document`. A malformed example (wrong field shape,
 //! bare-string ref where an object is required, stray placeholder) fails loudly.
@@ -92,14 +92,17 @@ fn is_schema_sketch(body: &str) -> bool {
 /// A real cfgd resource block begins with the cfgd `apiVersion` and is not a
 /// schema sketch.
 ///
+/// The test is the API GROUP, never a version: the parser accepts every version
+/// the conversion table names, so an example written under a second accepted
+/// version is one this harness must validate rather than silently skip.
+///
 /// A block may open on a comment naming the layer the example belongs to
 /// (`# Cluster: fleet-wide schedule policy`), so the `apiVersion` test skips
 /// leading comment and blank lines rather than reading the block's first byte —
 /// a doc's flagship example is exactly the one most likely to be introduced
 /// that way, and it is the one that most needs validating.
 fn is_cfgd_resource(body: &str) -> bool {
-    opens_on_a_comment_or_not(body)
-        .is_some_and(|line| line.starts_with("apiVersion: cfgd.io/v1alpha1"))
+    opens_on_a_comment_or_not(body).is_some_and(|line| line.starts_with("apiVersion: cfgd.io/"))
         && !is_schema_sketch(body)
 }
 
