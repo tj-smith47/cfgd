@@ -15995,7 +15995,11 @@ fn the_layered_env_folds_back_to_the_merge() {
         command: "nvim".to_string(),
         platforms: Vec::new(),
     }];
-    let layered = super::LayeredEnv::of(&resolved, std::slice::from_ref(&module));
+    // A module declaring neither an env var nor an alias: its block would be a
+    // header with nothing under it, so the assemble drops it and the owner list
+    // below never names it.
+    let bare = crate::test_helpers::make_resolved_module("bare");
+    let layered = super::LayeredEnv::of(&resolved, &[module, bare]);
 
     assert_eq!(
         layered
@@ -16004,7 +16008,8 @@ fn the_layered_env_folds_back_to_the_merge() {
             .map(|l| l.owner.as_str())
             .collect::<Vec<_>>(),
         ["profile:base", "profile:work", "module:nvim"],
-        "blocks arrive low precedence first",
+        "blocks arrive low precedence first, and a block with nothing in it is \
+         dropped rather than printed as an empty header",
     );
     // The outranked value is in its own block, verbatim — the whole point of
     // the layered file, and the one thing a winners-only split cannot hold.

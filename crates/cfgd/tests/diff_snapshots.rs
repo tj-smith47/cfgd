@@ -80,7 +80,12 @@ fn plant_env_surface_without_aliases(
     aliases: &[cfgd_core::config::ShellAlias],
 ) -> Vec<String> {
     let merged = cfgd_core::reconciler::MergedEnvItems::new(
-        &cfgd_core::reconciler::LayeredEnv::from_parts("profile:tiny", &[], aliases, &[]),
+        &cfgd_core::reconciler::LayeredEnv::from_parts(
+            &cfgd_core::reconciler::Owner::profile("tiny").token(),
+            &[],
+            aliases,
+            &[],
+        ),
         &[],
     );
     let scope = cfgd_core::config::EnvScope::default();

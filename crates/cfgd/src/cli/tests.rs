@@ -33228,6 +33228,122 @@ fn an_adopted_file_is_copied_aside_by_a_real_apply() {
     );
 }
 
+/// The two tells, spelled once: a command file builds its env view through one
+/// of these two constructors, and both are producer names rather than a hand
+/// list of the commands that call them.
+const MERGED_ENV_VIEW_TELLS: [&str; 2] = ["MergedEnvItems::new(", "LayeredEnv::of("];
+
+/// One command file's production slice, judged for both constructions: how many
+/// of each it builds, and every one built inside a loop or a closure rather
+/// than once for the command.
+///
+/// The source is read as CODE — `blank_non_code` blanks every literal body and
+/// every comment byte for byte — so a tell written inside a string or a comment
+/// is not counted and a brace inside one does not move the scope stack. The
+/// hatch is read off the RAW line, a hatch being a comment. A tell is judged
+/// before the line's own braces are processed, so a construction written on the
+/// line that CLOSES its loop is still inside that loop.
+fn merged_env_view_builds(production: &str, hatch: &str) -> (usize, usize, Vec<String>) {
+    const LOOPY: [&str; 8] = [
+        "for ", "while ", "loop {", ".map(", ".iter(", ".retain(", ".filter(", "|",
+    ];
+    let code = cfgd_core::test_helpers::blank_non_code(production);
+    let (mut merged, mut layered) = (0usize, 0usize);
+    let mut offenders = Vec::new();
+    // Each opener is kept as both halves: the loop tells are matched on the
+    // code, and the message quotes the raw line a reader can find.
+    let mut open: Vec<(&str, &str)> = Vec::new();
+    let mut prev_raw = "";
+    for (line, raw) in code.lines().zip(production.lines()) {
+        let builds_merged = line.contains(MERGED_ENV_VIEW_TELLS[0]);
+        let builds_layered = line.contains(MERGED_ENV_VIEW_TELLS[1]);
+        if (builds_merged || builds_layered)
+            && !carries_hatch(raw, hatch)
+            && !carries_hatch(prev_raw, hatch)
+        {
+            if builds_merged {
+                merged += 1;
+            }
+            if builds_layered {
+                layered += 1;
+            }
+            if let Some((_, opener)) = open
+                .iter()
+                .find(|(o, _)| LOOPY.iter().any(|m| o.contains(m)) && !o.contains("fn "))
+            {
+                offenders.push(format!("built inside `{}`", opener.trim()));
+            }
+        }
+        for ch in line.chars() {
+            match ch {
+                '{' => open.push((line, raw)),
+                '}' => {
+                    open.pop();
+                }
+                _ => {}
+            }
+        }
+        prev_raw = raw;
+    }
+    (merged, layered, offenders)
+}
+
+/// The scan reads a tell as code and a loop as the offence.
+///
+/// One fixture per placement the walk has to get right: at fn depth, inside a
+/// string literal, inside a line comment, inside a block comment, after another
+/// statement on one line, on the line that closes its loop, and hatched. The
+/// literal also carries a `{`, so a scan that failed to blank it would both
+/// count the tells and lose the brace stack.
+#[test]
+fn the_merged_env_view_scan_reads_a_tell_as_code_and_a_loop_as_the_offence() {
+    let fixture = concat!(
+        "fn at_fn_depth() {\n",
+        "    let a = MergedEnvItems::new(&LayeredEnv::of(&r, &m), &[]);\n",
+        "    let quoted = \"MergedEnvItems::new( LayeredEnv::of( {\";\n",
+        "    // MergedEnvItems::new( in a line comment {\n",
+        "    /* LayeredEnv::of( in a block comment */\n",
+        "    step(); let c = LayeredEnv::of(&r, &m);\n",
+        "}\n",
+        "fn in_a_loop() {\n",
+        "    for m in modules {\n",
+        "        let d = MergedEnvItems::new(&layered, &[]);\n",
+        "    }\n",
+        "}\n",
+        "fn on_the_closing_line() {\n",
+        "    for m in modules {\n",
+        "        step(m); let e = LayeredEnv::of(&r, &m); }\n",
+        "}\n",
+        "fn hatched() {\n",
+        "    for m in modules {\n",
+        "        let f = MergedEnvItems::new(&layered, &[]); // per-row-merge-ok: fixture\n",
+        "    }\n",
+        "}\n",
+    );
+    let (merged, layered, offenders) = merged_env_view_builds(fixture, "per-row-merge-ok:");
+    cfgd_core::test_helpers::assert_slots_discriminate(&[("merged", merged), ("layered", layered)]);
+    assert_eq!(
+        merged, 2,
+        "only the two `MergedEnvItems` builds written as code count; the hatched \
+         one and the ones in a literal and a comment do not"
+    );
+    assert_eq!(
+        layered, 3,
+        "the fn-depth build, the one after another statement, and the one on its \
+         loop's closing line are code; the literal's and the two comments' are not"
+    );
+    assert_eq!(
+        offenders.len(),
+        2,
+        "the build inside the loop and the one on the loop's closing line are \
+         both inside it: {offenders:?}"
+    );
+    assert!(
+        offenders.iter().all(|o| o.contains("for m in modules {")),
+        "each offender quotes the loop that opened its scope: {offenders:?}"
+    );
+}
+
 /// A `MergedEnvItems` is one command's whole env/alias merge: it clones the
 /// profile's env, its aliases and both origin maps and folds every resolved
 /// module in. A `LayeredEnv` is the same fold plus a clone of every layer's own
@@ -33238,13 +33354,14 @@ fn an_adopted_file_is_copied_aside_by_a_real_apply() {
 /// keep out — and nothing but reading the code stopped a later edit from moving
 /// a construction one brace deeper.
 ///
-/// The predicate is structural: while walking a file's PRODUCTION half (the
-/// body before its `#[cfg(test)]` module — a test builds its own view per
-/// assertion and that is fine), every open `{` pushes the line that opened it,
-/// and a construction is an offender when any block still open above it was
-/// opened by a loop or a closure. The per-file COUNT is pinned beside it, so a
-/// second construction added to a command — the other way one report pays the
-/// merge twice — fails here too rather than passing for sitting at fn depth.
+/// The predicate is structural and lives in [`merged_env_view_builds`], which
+/// walks a file's PRODUCTION half (the body before its `#[cfg(test)]` module —
+/// a test builds its own view per assertion and that is fine): every open `{`
+/// pushes the line that opened it, and a construction is an offender when any
+/// block still open above it was opened by a loop or a closure. The per-file
+/// COUNT of EACH constructor is pinned beside it, so a second construction
+/// added to a command — the other way one report pays the merge twice — fails
+/// here too rather than passing for sitting at fn depth.
 ///
 /// Hatch: `// per-row-merge-ok: <why>` on the construction line or the line
 /// above it, for a site that genuinely must re-merge (a declaration that
@@ -33252,26 +33369,34 @@ fn an_adopted_file_is_copied_aside_by_a_real_apply() {
 #[test]
 fn every_merged_env_view_is_built_once_per_command() {
     const HATCH: &str = "per-row-merge-ok:";
-    // Each production `MergedEnvItems` construction, by file and count (the
-    // `LayeredEnv` builds are walked for the loop shape alone, since each sits
-    // beside one of these): `cmd_status` and
-    // `cmd_status_module`, `cmd_verify`, and `cmd_diff`'s full-machine env
-    // path plus `cmd_diff_module`'s scoped Shell section — two commands in
-    // one file, one build each. `remove.rs` is the one non-reporting member:
-    // `cfgd source remove`'s Keep arm reads the declaration behind each entry
-    // row it re-owns, once for the whole removal.
+    // Each production `MergedEnvItems` construction, by file and count:
+    // `cmd_status` and `cmd_status_module`, `cmd_verify`, and `cmd_diff`'s
+    // full-machine env path plus `cmd_diff_module`'s scoped Shell section — two
+    // commands in one file, one build each. `remove.rs` is the one
+    // non-reporting member: `cfgd source remove`'s Keep arm reads the
+    // declaration behind each entry row it re-owns, once for the whole removal.
     const EXPECTED: [(&str, usize); 4] = [
         ("status.rs", 2),
         ("verify.rs", 1),
         ("diff.rs", 2),
         ("remove.rs", 1),
     ];
-    const LOOPY: [&str; 8] = [
-        "for ", "while ", "loop {", ".map(", ".iter(", ".retain(", ".filter(", "|",
+    // The `LayeredEnv` builds, counted on their own rather than read off the
+    // list above: `live_drift.rs` builds one for the shared scoped-drift walk
+    // and hands it straight to a check, so it has a layered view and no merge
+    // of its own.
+    const EXPECTED_LAYERED: [(&str, usize); 5] = [
+        ("status.rs", 2),
+        ("verify.rs", 1),
+        ("diff.rs", 2),
+        ("remove.rs", 1),
+        ("live_drift.rs", 1),
     ];
 
     let cli_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli");
     let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    let mut layered_counts: std::collections::BTreeMap<String, usize> =
+        std::collections::BTreeMap::new();
     let mut offenders = Vec::new();
     let files: Vec<std::path::PathBuf> = rust_sources_under(&cli_dir);
     for path in files {
@@ -33287,37 +33412,18 @@ fn every_merged_env_view_is_built_once_per_command() {
             continue;
         }
         let production = cfgd_core::test_helpers::production_slice_of(&path);
-        let mut open: Vec<&str> = Vec::new();
-        let mut prev = "";
-        for line in production.lines() {
-            let builds_a_merge =
-                line.contains("MergedEnvItems::new(") || line.contains("LayeredEnv::of(");
-            if builds_a_merge && !carries_hatch(line, HATCH) && !carries_hatch(prev, HATCH) {
-                if line.contains("MergedEnvItems::new(") {
-                    *counts.entry(name.clone()).or_default() += 1;
-                }
-                if let Some(opener) = open
-                    .iter()
-                    .find(|o| LOOPY.iter().any(|m| o.contains(m)) && !o.contains("fn "))
-                {
-                    offenders.push(format!(
-                        "{}: built inside `{}`",
-                        path.display(),
-                        opener.trim()
-                    ));
-                }
-            }
-            for ch in line.chars() {
-                match ch {
-                    '{' => open.push(line),
-                    '}' => {
-                        open.pop();
-                    }
-                    _ => {}
-                }
-            }
-            prev = line;
+        let (merged, layered, found) = merged_env_view_builds(&production, HATCH);
+        if merged > 0 {
+            *counts.entry(name.clone()).or_default() += merged;
         }
+        if layered > 0 {
+            *layered_counts.entry(name.clone()).or_default() += layered;
+        }
+        offenders.extend(
+            found
+                .into_iter()
+                .map(|o| format!("{}: {o}", path.display())),
+        );
     }
     assert!(
         offenders.is_empty(),
@@ -33325,16 +33431,24 @@ fn every_merged_env_view_is_built_once_per_command() {
          (or carries `// {HATCH} <why>`):\n{}",
         offenders.join("\n")
     );
-    let found: Vec<(String, usize)> = counts.into_iter().collect();
-    let mut expected: Vec<(String, usize)> = EXPECTED
-        .iter()
-        .map(|(f, n)| ((*f).to_string(), *n))
-        .collect();
-    expected.sort();
+    let sorted = |table: &[(&str, usize)]| {
+        let mut rows: Vec<(String, usize)> =
+            table.iter().map(|(f, n)| ((*f).to_string(), *n)).collect();
+        rows.sort();
+        rows
+    };
     assert_eq!(
-        found, expected,
+        counts.into_iter().collect::<Vec<_>>(),
+        sorted(&EXPECTED),
         "every production MergedEnvItems construction is pinned here; a new one \
          means a command that merges twice until it is reviewed"
+    );
+    assert_eq!(
+        layered_counts.into_iter().collect::<Vec<_>>(),
+        sorted(&EXPECTED_LAYERED),
+        "every production LayeredEnv construction is pinned here too: it carries \
+         the same fold plus a copy of every layer's own declarations, so a \
+         second one is the same cost paid twice"
     );
 }
 

@@ -1756,7 +1756,12 @@ fn a_converged_macos_env_surface_carries_the_loader_line_and_stands_on_no_env_rc
         platforms: Vec::new(),
     }];
     let merged = cfgd_core::reconciler::MergedEnvItems::new(
-        &cfgd_core::reconciler::LayeredEnv::from_parts("profile:mac", &env, &[], &[]),
+        &cfgd_core::reconciler::LayeredEnv::from_parts(
+            &cfgd_core::reconciler::Owner::profile("mac").token(),
+            &env,
+            &[],
+            &[],
+        ),
         &[],
     );
     let scope = cfgd_core::config::EnvScope::default();
@@ -1786,7 +1791,12 @@ fn a_converged_macos_env_surface_carries_the_loader_line_and_stands_on_no_env_rc
     );
 
     let results = cfgd_core::reconciler::env_verify_results(
-        &cfgd_core::reconciler::LayeredEnv::from_parts("profile:mac", &env, &[], &[]),
+        &cfgd_core::reconciler::LayeredEnv::from_parts(
+            &cfgd_core::reconciler::Owner::profile("mac").token(),
+            &env,
+            &[],
+            &[],
+        ),
         scope,
         &[],
     );

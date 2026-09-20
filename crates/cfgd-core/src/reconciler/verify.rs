@@ -548,6 +548,27 @@ fn module_layers(modules: &[ResolvedModule]) -> impl Iterator<Item = EnvLayer> +
     })
 }
 
+/// The blocks of one owner token, joined in declaration order.
+///
+/// Two layers of one subscription both spell `source:<name>`
+/// (`ProfileLayer::owner_token`), and a block is headed by its token alone, so
+/// a second block under that header reads as a repeated section rather than as
+/// the layer it is. Joining keeps every declaration, outranked entries
+/// included, in the order the layers were declared in.
+fn fold_layers_of_one_owner(layers: Vec<EnvLayer>) -> Vec<EnvLayer> {
+    let mut folded: Vec<EnvLayer> = Vec::with_capacity(layers.len());
+    for layer in layers {
+        match folded.iter_mut().find(|held| held.owner == layer.owner) {
+            Some(held) => {
+                held.env.extend(layer.env);
+                held.aliases.extend(layer.aliases);
+            }
+            None => folded.push(layer),
+        }
+    }
+    folded
+}
+
 /// Every layer's own declared contribution, low precedence first, carried
 /// beside the winner set the merge already produced.
 ///
@@ -624,10 +645,11 @@ impl LayeredEnv {
     /// an entry the merge holds that no block declares belongs in the block of
     /// the layer that claimed it — a resolved preference is folded in after the
     /// layer loop and claimed by the last layer that ranked it, so it lands
-    /// there and needs no header of its own. A block left with nothing is
-    /// dropped rather than printed empty.
+    /// there and needs no header of its own. Env vars and aliases are placed
+    /// the same way, each over its own half of the claim map. A block left with
+    /// nothing is dropped rather than printed empty.
     fn assemble(
-        mut layers: Vec<EnvLayer>,
+        layers: Vec<EnvLayer>,
         merged: (
             Vec<crate::config::EnvVar>,
             Vec<crate::config::ShellAlias>,
@@ -635,18 +657,47 @@ impl LayeredEnv {
         ),
     ) -> Self {
         let (merged, merged_aliases, origins) = merged;
-        for ev in merged.iter().filter(|ev| ev.name != "PATH") {
-            if layers
+        let mut layers = fold_layers_of_one_owner(layers);
+        // The declared names are gathered once and then asked per merged
+        // entry: the question is membership, and asking it by walking every
+        // block's declarations per entry re-reads the whole declaration for
+        // each of its own members.
+        let mut placed_env: Vec<(String, crate::config::EnvVar)> = Vec::new();
+        let mut placed_aliases: Vec<(String, crate::config::ShellAlias)> = Vec::new();
+        {
+            let declared_env: std::collections::HashSet<&str> = layers
                 .iter()
-                .any(|layer| layer.env.iter().any(|held| held.name == ev.name))
-            {
-                continue;
+                .flat_map(|layer| layer.env.iter().map(|ev| ev.name.as_str()))
+                .collect();
+            let declared_aliases: std::collections::HashSet<&str> = layers
+                .iter()
+                .flat_map(|layer| layer.aliases.iter().map(|alias| alias.name.as_str()))
+                .collect();
+            for ev in merged.iter().filter(|ev| ev.name != "PATH") {
+                if declared_env.contains(ev.name.as_str()) {
+                    continue;
+                }
+                if let Some(owner) = origins.env_owner(&ev.name) {
+                    placed_env.push((owner.to_string(), ev.clone()));
+                }
             }
-            let Some(owner) = origins.env_owner(&ev.name) else {
-                continue;
-            };
+            for alias in &merged_aliases {
+                if declared_aliases.contains(alias.name.as_str()) {
+                    continue;
+                }
+                if let Some(owner) = origins.alias_owner(&alias.name) {
+                    placed_aliases.push((owner.to_string(), alias.clone()));
+                }
+            }
+        }
+        for (owner, ev) in placed_env {
             if let Some(layer) = layers.iter_mut().find(|layer| layer.owner == owner) {
-                layer.env.push(ev.clone());
+                layer.env.push(ev);
+            }
+        }
+        for (owner, alias) in placed_aliases {
+            if let Some(layer) = layers.iter_mut().find(|layer| layer.owner == owner) {
+                layer.aliases.push(alias);
             }
         }
         layers.retain(|layer| !layer.env.is_empty() || !layer.aliases.is_empty());
@@ -799,11 +850,10 @@ pub struct EnvItemCheck {
 /// everywhere, root included. There is no per-platform carve-out to state
 /// here: the contract is the same three answers on all four.
 pub fn env_item_verify_results(layered: &LayeredEnv) -> EnvItemCheck {
-    let merged: Vec<crate::config::EnvVar> = layered
+    let merged: Vec<&crate::config::EnvVar> = layered
         .merged
         .iter()
         .filter(|ev| ev.name != "PATH")
-        .cloned()
         .collect();
     let merged_aliases = &layered.merged_aliases;
     let origins = &layered.origins;
@@ -863,7 +913,8 @@ fn verify_env_items(
     let Ok(actual) = std::fs::read_to_string(path) else {
         return;
     };
-    verify_env_items_in(&actual, env, aliases, origins, platform, fold, results);
+    let env: Vec<&crate::config::EnvVar> = env.iter().collect();
+    verify_env_items_in(&actual, &env, aliases, origins, platform, fold, results);
 }
 
 /// The item loop of [`verify_env_items`] over content the caller already
@@ -872,7 +923,7 @@ fn verify_env_items(
 /// check compensates for.
 fn verify_env_items_in(
     actual: &str,
-    env: &[crate::config::EnvVar],
+    env: &[&crate::config::EnvVar],
     aliases: &[crate::config::ShellAlias],
     origins: &EnvOrigins,
     platform: EnvPlatform,

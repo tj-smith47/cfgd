@@ -1122,6 +1122,9 @@ ALLOWED_FN_PAIRS=(
     # drift-reporting verb COMPOSES ... once"): one name per verb so a reader
     # of either exit gate finds the same question, over different fields.
     "any_drift crates/cfgd/src/cli/verify.rs"
+    # `StatusOutput::any_drift` and `ModuleStatus::any_drift` are that same
+    # convention on `status`'s two verdicts, the fleet view's and one module's.
+    "any_drift crates/cfgd/src/cli/status.rs"
     # `Theme::arrow`/`Printer::arrow` are the output/-excused pair (the ONE
     # arrow glyph, shared-utils.md); these two CALL `Printer::arrow` to narrow
     # the surface a caller outside output/ gets, the same shape the two
@@ -1141,6 +1144,35 @@ ALLOWED_FN_PAIRS=(
     # the distinct files, three.
     "of crates/cfgd-core/src/modules/lockfile.rs"
     "of crates/cfgd/src/cli/mod.rs"
+    # `LayeredEnv::with_secret_envs` appends the resolved secret exports to a
+    # layered env view as its last block; `cli::EnvValueMasking::with_secret_envs`
+    # keeps the budget as the set of env NAMES a run masks by — different crates,
+    # different types, different argument types, one verb.
+    "with_secret_envs crates/cfgd-core/src/reconciler/verify.rs"
+    # The same `::of` constructor convention on three more unrelated types:
+    # `LayeredEnv::of` folds a resolved profile's layers into one env view,
+    # `Dialect::of` names the shell a platform writes its env file in,
+    # `PackageLayers::of` / `EntryLayers::of` build one run's claim maps, and
+    # `Tier::of` / `AfterPlanState::of` are the pair shared-utils.md already
+    # catalogs. What the gate counts is the distinct FILES, so one entry per
+    # file leaves the last one standing as the name's home.
+    "of crates/cfgd-core/src/reconciler/verify.rs"
+    "of crates/cfgd-core/src/reconciler/env_files.rs"
+    "of crates/cfgd-core/src/reconciler/apply.rs"
+    # `LayerSources::recording_layer` answers "which layer do I record this
+    # `(kind, id)` under"; `PackageLayers::recording_layer` and the free
+    # `recording_layer` beside it keep the budget as that same question asked
+    # of a `(manager, package)` row and of a settled `ActionResult`.
+    "recording_layer crates/cfgd-core/src/reconciler/apply.rs"
+    # `MaskEnvValues::masks` asks whether a POLICY masks anything at all;
+    # `EnvValueMasking::masks` keeps the budget as whether this run masks one
+    # given env NAME — the policy plus the secret names, a different question
+    # over a different argument.
+    "masks crates/cfgd/src/cli/mod.rs"
+    # `DiffSummary::check_failed` / `VerifyOutput::check_failed` are the
+    # `any_drift` convention below on the other exit gate: one name per verb so
+    # a reader of either finds the same question, over different fields.
+    "check_failed crates/cfgd/src/cli/verify.rs"
 )
 allowed_pairs_file="$STRIP_CACHE_DIR/allowed-fn-pairs"
 printf '%s\n' "${ALLOWED_FN_PAIRS[@]}" > "$allowed_pairs_file"
