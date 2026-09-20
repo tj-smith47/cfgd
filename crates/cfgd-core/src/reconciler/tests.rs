@@ -16021,6 +16021,10 @@ fn two_layers_of_one_subscription_share_one_block() {
 /// blocks the way a shell sources them would read the local value where
 /// `merge_layers` holds the required one. One block per run is what keeps the
 /// blocks and the winners answering the same question.
+///
+/// The claim map answers the same way: an entry no block declares is placed by
+/// its owner token, and an owner holding two blocks takes the LAST of them,
+/// which is where the layer that claimed the entry sits.
 #[test]
 fn a_source_whose_tiers_straddle_a_local_layer_keeps_a_block_per_run() {
     let env = |name: &str, value: &str| crate::config::EnvVar {
@@ -16064,7 +16068,25 @@ fn a_source_whose_tiers_straddle_a_local_layer_keeps_a_block_per_run() {
         ),
     ];
     let merged = crate::config::merge_layers(&layers);
-    let resolved = crate::config::ResolvedProfile { layers, merged };
+    let mut resolved = crate::config::ResolvedProfile { layers, merged };
+    // What a resolved preference does after the layer loop: fold in and claim
+    // the last layer that ranked it — here the required tier, which is the
+    // owner's SECOND block.
+    resolved.merged.env.push(env("CFGD_CLIPBOARD", "wl-copy"));
+    resolved
+        .merged
+        .entry_owners
+        .claim_env_names("source:team", ["CFGD_CLIPBOARD"]);
+    let claimed_alias = crate::config::ShellAlias {
+        name: "gs".to_string(),
+        command: "git status".to_string(),
+        platforms: Vec::new(),
+    };
+    resolved.merged.aliases.push(claimed_alias.clone());
+    resolved
+        .merged
+        .entry_owners
+        .claim("source:team", &[], std::slice::from_ref(&claimed_alias));
 
     let layered = super::LayeredEnv::of(&resolved, &[]);
 
@@ -16079,11 +16101,30 @@ fn a_source_whose_tiers_straddle_a_local_layer_keeps_a_block_per_run() {
          block in precedence order",
     );
 
+    // The claimed pair is placed by owner token, and this owner holds two
+    // blocks: the first sits under local, so an entry landing there reads as
+    // outranked by a layer that never declared it.
+    assert!(
+        layered.layers[2]
+            .env
+            .iter()
+            .any(|ev| ev.name == "CFGD_CLIPBOARD"),
+        "the claimed var is not in its claiming layer's block: {:?}",
+        layered.layers,
+    );
+    assert!(
+        layered.layers[2].aliases.iter().any(|al| al.name == "gs"),
+        "the claimed alias is not in its claiming layer's block: {:?}",
+        layered.layers,
+    );
+
     // Fold the blocks the way a shell sources them: in order, last assignment
     // wins. The result is the merge's own answer.
     let mut folded: Vec<crate::config::EnvVar> = Vec::new();
+    let mut folded_aliases: Vec<crate::config::ShellAlias> = Vec::new();
     for layer in &layered.layers {
         crate::fold_env_layer(&mut folded, &layer.env, crate::PATH_LIST_SEPARATOR);
+        crate::merge_aliases(&mut folded_aliases, &layer.aliases);
     }
     let by_name = |mut entries: Vec<crate::config::EnvVar>| {
         entries.sort_by(|a, b| a.name.cmp(&b.name));
@@ -16093,6 +16134,11 @@ fn a_source_whose_tiers_straddle_a_local_layer_keeps_a_block_per_run() {
         by_name(folded.clone()),
         by_name(layered.merged.clone()),
         "the blocks fold to a different env than the merge decided",
+    );
+    assert_eq!(
+        folded_aliases,
+        layered.merged_aliases.clone(),
+        "the blocks fold to a different alias set than the merge decided",
     );
 
     let value = |name: &str| {

@@ -593,8 +593,8 @@ fn fold_layers_of_one_owner(layers: Vec<EnvLayer>) -> Vec<EnvLayer> {
 /// block declares, env var or alias alike. A resolved preference is folded in
 /// after the layer loop and claimed by the last layer that ranked it, so it is
 /// placed by its owner token and needs no header of its own — in that owner's
-/// first block where the owner holds more than one, which no block declaring
-/// the name can contradict.
+/// LAST block where the owner holds more than one, since that is the block the
+/// claiming layer sits in.
 #[derive(Debug, Clone)]
 pub struct LayeredEnv {
     /// One block per CONTIGUOUS RUN of one owner token, low precedence first,
@@ -716,13 +716,18 @@ impl LayeredEnv {
                 }
             }
         }
+        // Searched from the highest-precedence block down: an owner whose
+        // tiers straddle another owner's layer holds more than one block, and
+        // the claim names the LAST layer that ranked the entry, so the entry
+        // belongs in that owner's last block rather than under the layer it
+        // outranks.
         for (owner, ev) in placed_env {
-            if let Some(layer) = layers.iter_mut().find(|layer| layer.owner == owner) {
+            if let Some(layer) = layers.iter_mut().rev().find(|layer| layer.owner == owner) {
                 layer.env.push(ev);
             }
         }
         for (owner, alias) in placed_aliases {
-            if let Some(layer) = layers.iter_mut().find(|layer| layer.owner == owner) {
+            if let Some(layer) = layers.iter_mut().rev().find(|layer| layer.owner == owner) {
                 layer.aliases.push(alias);
             }
         }
