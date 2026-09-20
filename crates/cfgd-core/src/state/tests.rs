@@ -4725,27 +4725,35 @@ fn a_second_apply_advances_the_module_stamp() {
     );
 }
 
-/// The answer is per (config file, apiVersion) pair and per QUESTION: a
-/// later release offering a key the recorded answer never covered asks
-/// again, which is what keeps "asked once" from meaning "never asked after
-/// the first upgrade".
+/// The four promises the store makes about a recorded answer: the same
+/// question is reused, a later answer replaces the one whose question it
+/// moved past, two spellings of one config file are one row, and a column
+/// that no longer decodes covers nothing. The answer is per (config file,
+/// apiVersion) pair and per QUESTION: a later release offering a key the
+/// recorded answer never covered asks again, which is what keeps "asked
+/// once" from meaning "never asked after the first upgrade".
 #[test]
 fn a_recorded_migration_answer_is_reused_only_for_the_keys_it_covered() {
     let store = StateStore::open_in_memory().unwrap();
     let offered = vec!["spec.migrationPolicy".to_string()];
     assert_eq!(
         store
-            .migration_answer("/c/cfgd.yaml", "cfgd.io/v1alpha1", &offered)
+            .migration_answer(Path::new("/c/cfgd.yaml"), "cfgd.io/v1alpha1", &offered)
             .unwrap(),
         None
     );
 
     store
-        .record_migration_answer("/c/cfgd.yaml", "cfgd.io/v1alpha1", false, &offered)
+        .record_migration_answer(
+            Path::new("/c/cfgd.yaml"),
+            "cfgd.io/v1alpha1",
+            false,
+            &offered,
+        )
         .unwrap();
     assert_eq!(
         store
-            .migration_answer("/c/cfgd.yaml", "cfgd.io/v1alpha1", &offered)
+            .migration_answer(Path::new("/c/cfgd.yaml"), "cfgd.io/v1alpha1", &offered)
             .unwrap(),
         Some(false),
         "the same question is not asked twice"
@@ -4757,16 +4765,52 @@ fn a_recorded_migration_answer_is_reused_only_for_the_keys_it_covered() {
     ];
     assert_eq!(
         store
-            .migration_answer("/c/cfgd.yaml", "cfgd.io/v1alpha1", &wider)
+            .migration_answer(Path::new("/c/cfgd.yaml"), "cfgd.io/v1alpha1", &wider)
             .unwrap(),
         None,
         "a key the recorded answer never covered is a new question"
     );
     assert_eq!(
         store
-            .migration_answer("/other/cfgd.yaml", "cfgd.io/v1alpha1", &offered)
+            .migration_answer(Path::new("/other/cfgd.yaml"), "cfgd.io/v1alpha1", &offered)
             .unwrap(),
         None,
         "the answer is keyed on the config file, not the machine"
+    );
+
+    store
+        .record_migration_answer(Path::new("/c/cfgd.yaml"), "cfgd.io/v1alpha1", true, &wider)
+        .unwrap();
+    assert_eq!(
+        store
+            .migration_answer(Path::new("/c/cfgd.yaml"), "cfgd.io/v1alpha1", &wider)
+            .unwrap(),
+        Some(true),
+        "a later answer replaces the one whose question it moved past"
+    );
+    assert_eq!(
+        store
+            .migration_answer(Path::new("/c/../c/cfgd.yaml"), "cfgd.io/v1alpha1", &wider)
+            .unwrap(),
+        Some(true),
+        "two spellings of one file are one row"
+    );
+    assert_eq!(
+        store
+            .migration_answer(Path::new("/c/cfgd.yaml"), "cfgd.io/v1alpha1", &[])
+            .unwrap(),
+        None,
+        "a question naming no key has no answer"
+    );
+    store
+        .conn
+        .execute("UPDATE config_migrations SET offered_keys = 'not json'", [])
+        .unwrap();
+    assert_eq!(
+        store
+            .migration_answer(Path::new("/c/cfgd.yaml"), "cfgd.io/v1alpha1", &wider)
+            .unwrap(),
+        None,
+        "a column that no longer decodes covers nothing"
     );
 }
