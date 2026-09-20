@@ -1,3 +1,6 @@
+---
+paths: ["crates/*/src/lib.rs", "crates/*/src/main.rs", "chart/**"]
+---
 # cfgd Module Map
 
 ```
