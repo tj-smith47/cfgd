@@ -202,7 +202,10 @@ fn no_production_site_compares_an_api_version_by_hand() {
     // opened at: a comma-separated `match` arm carries no other terminator, so
     // two arms would otherwise read as one statement and a version literal in
     // the first would answer for the field name in the second, while a comma
-    // between a call's arguments separates operands of one expression.
+    // between a call's arguments separates operands of one expression. A row
+    // is scanned to its end after its terminator, so a bracket opened behind
+    // one (`} => format!(`) is still open when the next statement starts and
+    // a comparison split across that call's arguments stays one statement.
     fn statements(code: &[String]) -> Vec<(usize, usize, String)> {
         let mut out = Vec::new();
         let mut open: Option<usize> = None;
@@ -221,14 +224,10 @@ fn no_production_site_compares_an_api_version_by_hand() {
                     ',' if depth <= 0 => ends = true,
                     _ => {}
                 }
-                if ends {
-                    break;
-                }
             }
             if ends {
                 out.push((first, n, code[first..=n].join(" ")));
                 open = None;
-                depth = 0;
             }
         }
         if let Some(first) = open {

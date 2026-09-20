@@ -150,7 +150,13 @@ fn prune_undeclared_defaults<T: serde::Serialize + serde::de::DeserializeOwned>(
     declared: &serde_yaml::Value,
 ) {
     let mut candidates = Vec::new();
-    collect_undeclared_scalars(tree, declared, &mut Vec::new(), &mut candidates);
+    collect_undeclared_scalars(
+        tree,
+        declared,
+        Sequences::Descend,
+        &mut Vec::new(),
+        &mut candidates,
+    );
     for path in candidates {
         let mut probe = tree.clone();
         remove_at(&mut probe, &path);
@@ -170,9 +176,21 @@ fn prune_undeclared_defaults<T: serde::Serialize + serde::de::DeserializeOwned>(
     }
 }
 
+/// Whether a traversal enters a declared list. The prune DESCENDS: a scalar
+/// carrying nothing but its default inside a declared element is droppable
+/// like any other. The report SKIPS: an element of a declared list is data,
+/// and neither key walker addresses a sequence, so a path through an index
+/// would be a key no writer could ever set.
+#[derive(Clone, Copy, PartialEq)]
+enum Sequences {
+    Descend,
+    Skip,
+}
+
 fn collect_undeclared_scalars(
     tree: &serde_yaml::Value,
     declared: &serde_yaml::Value,
+    sequences: Sequences,
     path: &mut Vec<YamlStep>,
     out: &mut Vec<Vec<YamlStep>>,
 ) {
@@ -181,31 +199,32 @@ fn collect_undeclared_scalars(
             for (key, value) in map {
                 path.push(YamlStep::Key(key.clone()));
                 // The document's own top-level keys are never candidates.
-                let is_scalar = matches!(
-                    value,
-                    serde_yaml::Value::Bool(_)
-                        | serde_yaml::Value::Number(_)
-                        | serde_yaml::Value::String(_)
-                );
-                if is_scalar {
+                if is_scalar(value) {
                     if path.len() > 1 && lookup(declared, path).is_none() {
                         out.push(path.clone());
                     }
                 } else {
-                    collect_undeclared_scalars(value, declared, path, out);
+                    collect_undeclared_scalars(value, declared, sequences, path, out);
                 }
                 path.pop();
             }
         }
-        serde_yaml::Value::Sequence(seq) => {
+        serde_yaml::Value::Sequence(seq) if sequences == Sequences::Descend => {
             for (index, value) in seq.iter().enumerate() {
                 path.push(YamlStep::Index(index));
-                collect_undeclared_scalars(value, declared, path, out);
+                collect_undeclared_scalars(value, declared, sequences, path, out);
                 path.pop();
             }
         }
         _ => {}
     }
+}
+
+fn is_scalar(value: &serde_yaml::Value) -> bool {
+    matches!(
+        value,
+        serde_yaml::Value::Bool(_) | serde_yaml::Value::Number(_) | serde_yaml::Value::String(_)
+    )
 }
 
 /// Every scalar key `value` serializes that `declared` does not name, as
@@ -215,6 +234,13 @@ fn collect_undeclared_scalars(
 /// these when they carry nothing but a default, and `cfgd config migrate`
 /// MATERIALIZES them. One traversal answers both, so a field added to a config
 /// struct later cannot be seen by one and missed by the other.
+///
+/// Every key reported is one the writer that materializes it can address:
+/// [`crate::cli::config_cmd::walk_yaml_path_mut`] resolves no sequence
+/// element, so the report walks with [`Sequences::Skip`] where the prune
+/// descends, and a union's scalar arm reads as the mapping it stands for, so
+/// a theme `cfgd init` scaffolded is not reported as a key the writer would
+/// then refuse.
 pub(in crate::cli) fn undeclared_scalar_keys<T: serde::Serialize>(
     value: &T,
     declared: &serde_yaml::Value,
@@ -224,34 +250,76 @@ pub(in crate::cli) fn undeclared_scalar_keys<T: serde::Serialize>(
     };
     prune_absent_sections(&mut tree, 0);
     let mut out = Vec::new();
-    collect_undeclared_scalars(&tree, declared, &mut Vec::new(), &mut out);
+    collect_undeclared_scalars(&tree, declared, Sequences::Skip, &mut Vec::new(), &mut out);
     let mut keys: Vec<String> = out.iter().map(|path| dotted_path(path)).collect();
     keys.sort();
-    keys.dedup();
     keys
 }
 
 fn dotted_path(path: &[YamlStep]) -> String {
     let mut out = String::new();
     for step in path {
+        // A reported path is walked with [`Sequences::Skip`], so it holds
+        // mapping keys alone.
+        let YamlStep::Key(key) = step else { continue };
         if !out.is_empty() {
             out.push('.');
         }
-        match step {
-            // A config struct serializes every mapping key as a string, so the
-            // fallback stands for a shape no cfgd document can hold.
-            YamlStep::Key(key) => out.push_str(key.as_str().unwrap_or("?")),
-            YamlStep::Index(index) => out.push_str(&index.to_string()),
-        }
+        // A config struct serializes every mapping key as a string, so the
+        // fallback stands for a shape no cfgd document can hold.
+        out.push_str(key.as_str().unwrap_or("?"));
     }
     out
 }
 
+/// Where `path` lands in the declared document, or `None` where the document
+/// declares nothing there.
+///
+/// A scalar written where the schema declares a union reads as that union's
+/// mapping arm, which is [`crate::cli::config_cmd::walk_yaml_path`]'s own
+/// reading: `theme: dracula` IS `theme: {name: dracula}`, so a document
+/// scaffolded by `cfgd init` declares `spec.output.theme.name` and the key is
+/// not reported as one the file is missing.
 fn lookup<'a>(tree: &'a serde_yaml::Value, path: &[YamlStep]) -> Option<&'a serde_yaml::Value> {
-    path.iter().try_fold(tree, |node, step| match step {
-        YamlStep::Key(key) => node.as_mapping()?.get(key),
-        YamlStep::Index(index) => node.as_sequence()?.get(*index),
-    })
+    let mut node = tree;
+    for (i, step) in path.iter().enumerate() {
+        match step {
+            YamlStep::Key(key) => match node.as_mapping() {
+                Some(map) => node = map.get(key)?,
+                None => {
+                    let field = union_arm_field(node, &path[..i])?;
+                    // The arm's one field answers from the scalar itself;
+                    // every other key beneath it is absent.
+                    return (i + 1 == path.len() && key.as_str() == Some(field)).then_some(node);
+                }
+            },
+            YamlStep::Index(index) => node = node.as_sequence()?.get(*index)?,
+        }
+    }
+    Some(node)
+}
+
+/// The union field a scalar standing at `walked` stands for, or `None` where
+/// the scalar is a genuine leaf.
+///
+/// The table is the one both key walkers read, keyed relative to `spec`,
+/// while these paths are rooted at the document, so the leading `spec` comes
+/// off before asking it.
+fn union_arm_field(scalar: &serde_yaml::Value, walked: &[YamlStep]) -> Option<&'static str> {
+    if !super::config_cmd::is_union_scalar(scalar) {
+        return None;
+    }
+    let segments: Vec<&str> = walked
+        .iter()
+        .map(|step| match step {
+            YamlStep::Key(key) => key.as_str(),
+            YamlStep::Index(_) => None,
+        })
+        .collect::<Option<_>>()?;
+    let ["spec", relative @ ..] = segments.as_slice() else {
+        return None;
+    };
+    super::config_cmd::scalar_union_field(relative)
 }
 
 fn remove_at(tree: &mut serde_yaml::Value, path: &[YamlStep]) {

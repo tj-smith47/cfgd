@@ -192,7 +192,7 @@ const SCALAR_UNION_FIELDS: &[(&str, &str)] = &[("output.theme", "name"), ("theme
 
 /// The field a bare scalar at these path segments stands for, or `None` where a
 /// scalar is genuinely a leaf.
-fn scalar_union_field(segments: &[&str]) -> Option<&'static str> {
+pub(super) fn scalar_union_field(segments: &[&str]) -> Option<&'static str> {
     SCALAR_UNION_FIELDS.iter().find_map(|(path, field)| {
         path.split('.')
             .eq(segments.iter().copied())
@@ -203,7 +203,7 @@ fn scalar_union_field(segments: &[&str]) -> Option<&'static str> {
 /// Whether this value is a scalar a union's mapping arm could have been
 /// written as. A sequence is no arm of any union here, so it stays a shape
 /// error rather than being promoted into one.
-fn is_union_scalar(value: &serde_yaml::Value) -> bool {
+pub(super) fn is_union_scalar(value: &serde_yaml::Value) -> bool {
     blocking_shape(value) == SHAPE_SCALAR
 }
 
