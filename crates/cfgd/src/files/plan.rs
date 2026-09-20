@@ -1150,7 +1150,7 @@ mod tests {
             layers: vec![ProfileLayer {
                 source: "local".to_string(),
                 profile_name: "test".to_string(),
-                priority: 1000,
+                priority: cfgd_core::config::LOCAL_LAYER_PRIORITY,
                 policy: LayerPolicy::Local,
                 spec: ProfileSpec::default(),
             }],

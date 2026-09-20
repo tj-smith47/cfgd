@@ -260,8 +260,9 @@ pub fn cmd_verify(
     // copy, rendered below into `build_verify_doc`'s human/`-o json` output.
     // Recomputing here is exactly `diff`'s "opaque markers carry neither
     // real value" rule applied to `verify`'s own render.
+    let layered = reconciler::LayeredEnv::of(&resolved, &resolved_modules);
     let merged_env_items = reconciler::MergedEnvItems::new(
-        &reconciler::LayeredEnv::of(&resolved, &resolved_modules),
+        &layered,
         &reconciler::recorded_manager_path_dirs(state, &resolved.merged, &resolved_modules),
     );
     for r in &mut results {

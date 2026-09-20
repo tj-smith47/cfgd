@@ -581,7 +581,9 @@ fn fold_layers_of_one_owner(layers: Vec<EnvLayer>) -> Vec<EnvLayer> {
         match folded.last_mut().filter(|held| held.owner == layer.owner) {
             Some(held) => {
                 // The run's own rank is where its LAST line settles, and the
-                // layers arrive in ascending priority order.
+                // layers arrive in ascending priority order. The header's
+                // number answers "why is this block HERE", and a run sits
+                // where its top layer put it.
                 held.priority = held.priority.max(layer.priority);
                 held.env.extend(layer.env);
                 held.aliases.extend(layer.aliases);
@@ -750,14 +752,19 @@ impl LayeredEnv {
         // between that claim and the owner's last block ranked it. Placing it
         // there is what keeps it from rendering below a layer declaring its
         // own name.
-        // The block a placed entry belongs in, searched from the
-        // highest-precedence one down, with the LAST block as the fallback for
-        // an entry no claim answers for: the generated file has to set every
-        // winner, and the last block is the only position a shell folding the
-        // blocks in order resolves to the merge's own value.
+        //
+        // An entry no claim answers for still has to be set, and the last
+        // block that DECLARES something is the position a shell folding the
+        // blocks in order resolves to the merge's own value: a block holding
+        // nothing renders no header and no line, so it is no position at all.
         let slot = |layers: &[EnvLayer], owner: Option<&str>| {
             owner
                 .and_then(|owner| layers.iter().rposition(|layer| layer.owner == owner))
+                .or_else(|| {
+                    layers
+                        .iter()
+                        .rposition(|layer| !layer.env.is_empty() || !layer.aliases.is_empty())
+                })
                 .or_else(|| layers.len().checked_sub(1))
         };
         for (owner, ev) in placed_env {
@@ -1076,8 +1083,8 @@ fn verify_env_items_in(
 /// drift report asks about one row at a time — built per row, one report paid
 /// for that merge once per finding. It is scoped to a command's own render and
 /// never held: it is a reading of the declaration as it stands right now.
-pub struct MergedEnvItems {
-    layered: LayeredEnv,
+pub struct MergedEnvItems<'a> {
+    layered: &'a LayeredEnv,
     path: Option<super::env_engine::FoldedPath>,
     // Read back only by `env_targets_for`, which exists for the tests that
     // re-render a managed env surface; a shipped build stores nothing it cannot
@@ -1086,7 +1093,7 @@ pub struct MergedEnvItems {
     path_dirs: Vec<ManagerPathDir>,
 }
 
-impl MergedEnvItems {
+impl<'a> MergedEnvItems<'a> {
     /// The winner set a [`LayeredEnv`] already folded, held beside the one
     /// `PATH` line the file carries so a display can ask either per row.
     ///
@@ -1095,7 +1102,7 @@ impl MergedEnvItems {
     /// `env_verify_results` is given. Without it a `PATH` row would be shown a
     /// line assembled from half the producers, which is not a line the file
     /// holds.
-    pub fn new(layered: &LayeredEnv, path_dirs: &[ManagerPathDir]) -> Self {
+    pub fn new(layered: &'a LayeredEnv, path_dirs: &[ManagerPathDir]) -> Self {
         let path = super::env_engine::primary_folded_path(
             &layered.merged,
             path_dirs,
@@ -1104,7 +1111,7 @@ impl MergedEnvItems {
             EnvPlatform::current(),
         );
         Self {
-            layered: layered.clone(),
+            layered,
             path,
             #[cfg(any(test, feature = "test-helpers"))]
             path_dirs: path_dirs.to_vec(),
@@ -1184,7 +1191,7 @@ impl MergedEnvItems {
         scope: crate::config::EnvScope,
     ) -> Vec<super::env_engine::EnvTarget> {
         super::env_engine::env_targets(
-            super::env_engine::EnvContent::of(&self.layered, &self.path_dirs),
+            super::env_engine::EnvContent::of(self.layered, &self.path_dirs),
             scope,
             home,
             &super::env_engine::EnvHostProbe::detect(home),
@@ -1252,6 +1259,11 @@ impl MergedEnvItems {
 /// claims the name — either because the file is not there at all, or because
 /// nothing in it starts with the prefix the declaration renders.
 ///
+/// Read from the END of the file: one name may be assigned by several blocks,
+/// because every layer that declared it writes its own line, and the shell
+/// sourcing the file is left with the last of them. The first claiming line is
+/// an outranked layer's, which is not what the machine holds.
+///
 /// `Err` is reserved for "I could not look": a file that exists and cannot be
 /// read (a lost `+r`, a sharing violation) says nothing about whether the entry
 /// is deployed, and answering `Missing` there would report an absence the
@@ -1279,11 +1291,12 @@ fn deployed_env_item_line(
         };
     Ok(content
         .lines()
+        .rev()
         .find(|line| claims.iter().any(|p| line.starts_with(p.as_str())))
         .map(|line| line.trim_end().to_string()))
 }
 
-impl MergedEnvItems {
+impl MergedEnvItems<'_> {
     /// The DISPLAY `(want, have)` pair for one env-var/alias row, recomputed
     /// from the machine: `want` is the line the current declaration renders as
     /// ([`Self::declared_line`]), `have` is the line the managed file actually

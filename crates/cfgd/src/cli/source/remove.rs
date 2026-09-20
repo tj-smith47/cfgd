@@ -122,10 +122,8 @@ fn keep_entry_declarations(
         false,
         composition::ConstraintMode::Report,
     )?;
-    let items = cfgd_core::reconciler::MergedEnvItems::new(
-        &cfgd_core::reconciler::LayeredEnv::of(&desired.resolved, &desired.modules),
-        &[],
-    );
+    let layered = cfgd_core::reconciler::LayeredEnv::of(&desired.resolved, &desired.modules);
+    let items = cfgd_core::reconciler::MergedEnvItems::new(&layered, &[]);
     let (own_env, own_aliases) = declared_by_source(&desired.resolved, &desired.modules, name);
 
     let profiles_dir = ctx.config_dir().join("profiles");

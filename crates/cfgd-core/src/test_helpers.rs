@@ -2069,7 +2069,7 @@ pub fn make_empty_resolved() -> crate::config::ResolvedProfile {
         layers: vec![crate::config::ProfileLayer {
             source: "local".to_string(),
             profile_name: "test".to_string(),
-            priority: 1000,
+            priority: crate::config::LOCAL_LAYER_PRIORITY,
             policy: crate::config::LayerPolicy::Local,
             spec: crate::config::ProfileSpec::default(),
         }],
@@ -4870,7 +4870,7 @@ fn parse_profile_yaml_to_resolved(yaml: &str) -> crate::config::ResolvedProfile 
     let layers = vec![crate::config::ProfileLayer {
         source: crate::config::LOCAL_LAYER.to_string(),
         profile_name: "harness-test".to_string(),
-        priority: 1000,
+        priority: crate::config::LOCAL_LAYER_PRIORITY,
         policy: crate::config::LayerPolicy::Local,
         spec,
     }];

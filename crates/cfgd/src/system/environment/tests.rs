@@ -1755,15 +1755,13 @@ fn a_converged_macos_env_surface_carries_the_loader_line_and_stands_on_no_env_rc
         value: "nvim".to_string(),
         platforms: Vec::new(),
     }];
-    let merged = cfgd_core::reconciler::MergedEnvItems::new(
-        &cfgd_core::reconciler::LayeredEnv::from_parts(
-            &cfgd_core::reconciler::Owner::profile("mac").token(),
-            &env,
-            &[],
-            &[],
-        ),
+    let layered = cfgd_core::reconciler::LayeredEnv::from_parts(
+        &cfgd_core::reconciler::Owner::profile("mac").token(),
+        &env,
+        &[],
         &[],
     );
+    let merged = cfgd_core::reconciler::MergedEnvItems::new(&layered, &[]);
     let scope = cfgd_core::config::EnvScope::default();
     let write = |path: &std::path::Path, body: String| {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();

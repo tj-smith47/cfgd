@@ -312,10 +312,9 @@ pub fn cmd_diff(
             let drop_env_file_row = cfgd_core::output::env_file_row_is_redundant(
                 results.iter().map(|r| r.resource_type.as_str()),
             );
-            let merged_env_items = cfgd_core::reconciler::MergedEnvItems::new(
-                &cfgd_core::reconciler::LayeredEnv::of(&resolved, &resolved_modules),
-                &report.path_dirs,
-            );
+            let layered = cfgd_core::reconciler::LayeredEnv::of(&resolved, &resolved_modules);
+            let merged_env_items =
+                cfgd_core::reconciler::MergedEnvItems::new(&layered, &report.path_dirs);
             for r in results {
                 drift = true;
                 // An env-var/alias row's `expected`/`actual` are opaque markers —

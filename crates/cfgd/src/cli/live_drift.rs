@@ -99,8 +99,8 @@ pub fn standing_section(
 /// loops: file and package kinds only) still passes one, and the recompute is
 /// a no-op for any other `resource_type`. The modules folded into it are what
 /// make a module-declared entry renderable at all — its entries live in the
-/// module rather than in the profile's own `env`/`aliases`, and its line
-/// carries the provenance comment the file on disk holds.
+/// module rather than in the profile's own `env`/`aliases`, and the block the
+/// file on disk holds them under is headed by the module.
 pub(super) fn drift_event_from(
     r: &VerifyResult,
     merged_env_items: &cfgd_core::reconciler::MergedEnvItems,
@@ -1166,7 +1166,7 @@ mod tests {
             layers: vec![ProfileLayer {
                 source: "local".to_string(),
                 profile_name: "test".to_string(),
-                priority: 1000,
+                priority: cfgd_core::config::LOCAL_LAYER_PRIORITY,
                 policy: LayerPolicy::Local,
                 spec: ProfileSpec::default(),
             }],
@@ -1397,7 +1397,7 @@ mod tests {
             layers: vec![ProfileLayer {
                 source: "local".to_string(),
                 profile_name: "test".to_string(),
-                priority: 1000,
+                priority: cfgd_core::config::LOCAL_LAYER_PRIORITY,
                 policy: LayerPolicy::Local,
                 spec: ProfileSpec::default(),
             }],
@@ -1786,7 +1786,7 @@ mod tests {
             layers: vec![ProfileLayer {
                 source: "local".to_string(),
                 profile_name: "test".to_string(),
-                priority: 1000,
+                priority: cfgd_core::config::LOCAL_LAYER_PRIORITY,
                 policy: LayerPolicy::Local,
                 spec: ProfileSpec::default(),
             }],

@@ -4406,7 +4406,7 @@ fn local_resolved(spec_yaml: &str) -> cfgd_core::config::ResolvedProfile {
     let layers = vec![ProfileLayer {
         source: LOCAL_LAYER.to_string(),
         profile_name: "p".to_string(),
-        priority: 1000,
+        priority: cfgd_core::config::LOCAL_LAYER_PRIORITY,
         policy: LayerPolicy::Local,
         spec,
     }];

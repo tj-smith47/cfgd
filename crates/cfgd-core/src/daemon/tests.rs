@@ -386,7 +386,7 @@ fn compute_config_hash_is_deterministic() {
         layers: vec![ProfileLayer {
             source: "local".into(),
             profile_name: "test".into(),
-            priority: 1000,
+            priority: crate::config::LOCAL_LAYER_PRIORITY,
             policy: LayerPolicy::Local,
             spec: ProfileSpec::default(),
         }],
@@ -1415,7 +1415,7 @@ fn local_profile_declaring_bat() -> crate::config::ResolvedProfile {
         layers: vec![ProfileLayer {
             source: "local".into(),
             profile_name: "default".into(),
-            priority: 1000,
+            priority: crate::config::LOCAL_LAYER_PRIORITY,
             policy: LayerPolicy::Local,
             spec: ProfileSpec {
                 packages: Some(packages.clone()),
@@ -1612,7 +1612,7 @@ fn local_profile_declaring_file(target: &str) -> crate::config::ResolvedProfile 
         layers: vec![ProfileLayer {
             source: LOCAL_LAYER.into(),
             profile_name: "default".into(),
-            priority: 1000,
+            priority: crate::config::LOCAL_LAYER_PRIORITY,
             policy: LayerPolicy::Local,
             spec: ProfileSpec {
                 files: Some(files.clone()),
@@ -2909,7 +2909,7 @@ fn compute_config_hash_differs_for_different_packages() {
         layers: vec![ProfileLayer {
             source: "local".into(),
             profile_name: "a".into(),
-            priority: 1000,
+            priority: crate::config::LOCAL_LAYER_PRIORITY,
             policy: LayerPolicy::Local,
             spec: ProfileSpec::default(),
         }],
@@ -2929,7 +2929,7 @@ fn compute_config_hash_differs_for_different_packages() {
         layers: vec![ProfileLayer {
             source: "local".into(),
             profile_name: "b".into(),
-            priority: 1000,
+            priority: crate::config::LOCAL_LAYER_PRIORITY,
             policy: LayerPolicy::Local,
             spec: ProfileSpec::default(),
         }],
@@ -3677,7 +3677,7 @@ fn compute_config_hash_with_empty_packages() {
         layers: vec![ProfileLayer {
             source: "local".into(),
             profile_name: "empty".into(),
-            priority: 1000,
+            priority: crate::config::LOCAL_LAYER_PRIORITY,
             policy: LayerPolicy::Local,
             spec: ProfileSpec::default(),
         }],
@@ -4264,7 +4264,7 @@ fn compute_config_hash_empty_vs_nonempty_differ() {
         layers: vec![ProfileLayer {
             source: "local".into(),
             profile_name: "empty".into(),
-            priority: 1000,
+            priority: crate::config::LOCAL_LAYER_PRIORITY,
             policy: LayerPolicy::Local,
             spec: ProfileSpec::default(),
         }],
@@ -4278,7 +4278,7 @@ fn compute_config_hash_empty_vs_nonempty_differ() {
         layers: vec![ProfileLayer {
             source: "local".into(),
             profile_name: "nonempty".into(),
-            priority: 1000,
+            priority: crate::config::LOCAL_LAYER_PRIORITY,
             policy: LayerPolicy::Local,
             spec: ProfileSpec::default(),
         }],
@@ -6202,7 +6202,7 @@ fn server_checkin_mock_config_changed() {
         layers: vec![ProfileLayer {
             source: "local".into(),
             profile_name: "test".into(),
-            priority: 1000,
+            priority: crate::config::LOCAL_LAYER_PRIORITY,
             policy: LayerPolicy::Local,
             spec: ProfileSpec::default(),
         }],
@@ -6243,7 +6243,7 @@ fn server_checkin_mock_no_change() {
         layers: vec![ProfileLayer {
             source: "local".into(),
             profile_name: "test".into(),
-            priority: 1000,
+            priority: crate::config::LOCAL_LAYER_PRIORITY,
             policy: LayerPolicy::Local,
             spec: ProfileSpec::default(),
         }],
@@ -6283,7 +6283,7 @@ fn server_checkin_mock_server_error() {
         layers: vec![ProfileLayer {
             source: "local".into(),
             profile_name: "test".into(),
-            priority: 1000,
+            priority: crate::config::LOCAL_LAYER_PRIORITY,
             policy: LayerPolicy::Local,
             spec: ProfileSpec::default(),
         }],
@@ -6324,7 +6324,7 @@ fn server_checkin_mock_malformed_json() {
         layers: vec![ProfileLayer {
             source: "local".into(),
             profile_name: "test".into(),
-            priority: 1000,
+            priority: crate::config::LOCAL_LAYER_PRIORITY,
             policy: LayerPolicy::Local,
             spec: ProfileSpec::default(),
         }],
@@ -6365,7 +6365,7 @@ fn server_checkin_mock_trailing_slash_url() {
         layers: vec![ProfileLayer {
             source: "local".into(),
             profile_name: "test".into(),
-            priority: 1000,
+            priority: crate::config::LOCAL_LAYER_PRIORITY,
             policy: LayerPolicy::Local,
             spec: ProfileSpec::default(),
         }],
@@ -6410,7 +6410,7 @@ fn server_checkin_mock_verifies_request_body() {
         layers: vec![ProfileLayer {
             source: "local".into(),
             profile_name: "test".into(),
-            priority: 1000,
+            priority: crate::config::LOCAL_LAYER_PRIORITY,
             policy: LayerPolicy::Local,
             spec: ProfileSpec::default(),
         }],
@@ -6478,7 +6478,7 @@ fn try_server_checkin_no_server_origin_returns_false() {
         layers: vec![ProfileLayer {
             source: "local".into(),
             profile_name: "test".into(),
-            priority: 1000,
+            priority: crate::config::LOCAL_LAYER_PRIORITY,
             policy: LayerPolicy::Local,
             spec: ProfileSpec::default(),
         }],
@@ -6545,7 +6545,7 @@ fn try_server_checkin_with_server_origin_calls_checkin() {
         layers: vec![ProfileLayer {
             source: "local".into(),
             profile_name: "test".into(),
-            priority: 1000,
+            priority: crate::config::LOCAL_LAYER_PRIORITY,
             policy: LayerPolicy::Local,
             spec: ProfileSpec::default(),
         }],
@@ -7416,7 +7416,7 @@ fn compute_config_hash_ignores_non_package_fields() {
         layers: vec![ProfileLayer {
             source: "local".into(),
             profile_name: "a".into(),
-            priority: 1000,
+            priority: crate::config::LOCAL_LAYER_PRIORITY,
             policy: LayerPolicy::Local,
             spec: ProfileSpec::default(),
         }],
@@ -7435,7 +7435,7 @@ fn compute_config_hash_ignores_non_package_fields() {
         layers: vec![ProfileLayer {
             source: "local".into(),
             profile_name: "b".into(),
-            priority: 1000,
+            priority: crate::config::LOCAL_LAYER_PRIORITY,
             policy: LayerPolicy::Local,
             spec: ProfileSpec::default(),
         }],
@@ -8243,7 +8243,7 @@ fn build_reconcile_tasks_module_with_overridden_interval_gets_dedicated_task() {
         layers: vec![config::ProfileLayer {
             source: "local".to_string(),
             profile_name: "default".to_string(),
-            priority: 0,
+            priority: crate::config::LOCAL_LAYER_PRIORITY,
             policy: config::LayerPolicy::Local,
             spec: Default::default(),
         }],
@@ -8298,7 +8298,7 @@ fn build_reconcile_tasks_module_matching_global_gets_no_dedicated_task() {
         layers: vec![config::ProfileLayer {
             source: "local".to_string(),
             profile_name: "default".to_string(),
-            priority: 0,
+            priority: crate::config::LOCAL_LAYER_PRIORITY,
             policy: config::LayerPolicy::Local,
             spec: Default::default(),
         }],
@@ -21244,7 +21244,7 @@ mod backup_timers {
             layers: vec![ProfileLayer {
                 source: "local".into(),
                 profile_name: "test".into(),
-                priority: 1000,
+                priority: crate::config::LOCAL_LAYER_PRIORITY,
                 policy: LayerPolicy::Local,
                 spec: ProfileSpec::default(),
             }],
@@ -21311,7 +21311,7 @@ mod backup_timers {
             layers: vec![ProfileLayer {
                 source: "local".into(),
                 profile_name: "test".into(),
-                priority: 1000,
+                priority: crate::config::LOCAL_LAYER_PRIORITY,
                 policy: LayerPolicy::Local,
                 spec: ProfileSpec::default(),
             }],
@@ -21377,7 +21377,7 @@ mod backup_timers {
             layers: vec![ProfileLayer {
                 source: "local".into(),
                 profile_name: "test".into(),
-                priority: 1000,
+                priority: crate::config::LOCAL_LAYER_PRIORITY,
                 policy: LayerPolicy::Local,
                 spec: ProfileSpec::default(),
             }],
@@ -21446,7 +21446,7 @@ mod backup_timers {
             layers: vec![ProfileLayer {
                 source: "local".into(),
                 profile_name: "test".into(),
-                priority: 1000,
+                priority: crate::config::LOCAL_LAYER_PRIORITY,
                 policy: LayerPolicy::Local,
                 spec: ProfileSpec::default(),
             }],
@@ -23494,7 +23494,14 @@ fn write_tick_cache_config(root: &Path) -> PathBuf {
     config_path
 }
 
+// Both counts this reads are process-global ceilings a sibling pins: a test
+// holding `ConfigReuseMaxAgeGuard::always_expired` makes every tick re-derive,
+// and one holding `EnumerationMemoTtlGuard::always_expired` makes every tick
+// re-enumerate. The claim here is that NEITHER is pinned, so it joins both
+// groups — unnamed first, named alphabetically.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial(enumeration_memo)]
+#[serial_test::serial(tick_cache_reuse)]
 async fn repeat_ticks_over_an_unchanged_config_derive_and_enumerate_once() {
     // Before the tick cache every tick re-read the config, re-resolved the
     // profile, rebuilt the registry and re-asked every manager what it had
@@ -23540,7 +23547,11 @@ async fn repeat_ticks_over_an_unchanged_config_derive_and_enumerate_once() {
     assert_eq!(enumerations, 1, "three ticks must enumerate cargo once");
 }
 
+// The derivation count is the tick cache's reuse ceiling read unpinned: a
+// sibling holding `ConfigReuseMaxAgeGuard`/`ModuleReuseTtlGuard` at
+// `always_expired` makes every tick re-derive.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial(tick_cache_reuse)]
 async fn a_touched_profile_re_derives_exactly_once() {
     // The gate is on what the derivation READ, and the profile is one of those
     // reads even though the file the daemon was pointed at never moved.
@@ -23599,8 +23610,12 @@ async fn a_touched_profile_re_derives_exactly_once() {
     );
 }
 
+// The derivation count is the tick cache's reuse ceiling read unpinned: a
+// sibling holding `ConfigReuseMaxAgeGuard`/`ModuleReuseTtlGuard` at
+// `always_expired` makes every tick re-derive.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial_test::serial]
+#[serial_test::serial(tick_cache_reuse)]
 async fn a_touched_cached_source_profile_re_derives() {
     // The composed inputs are inputs too. A source's cached profile lives
     // outside the config directory entirely, and a gate that watched only the
@@ -23691,8 +23706,12 @@ async fn a_touched_cached_source_profile_re_derives() {
     );
 }
 
+// The derivation count is the tick cache's reuse ceiling read unpinned: a
+// sibling holding `ConfigReuseMaxAgeGuard`/`ModuleReuseTtlGuard` at
+// `always_expired` makes every tick re-derive.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial_test::serial]
+#[serial_test::serial(tick_cache_reuse)]
 async fn a_never_synced_source_is_warned_about_on_every_tick() {
     // The operator-visible half of holding a composition across ticks: the
     // source is skipped, cfgd keeps reconciling without it, and nothing about
@@ -23774,8 +23793,12 @@ async fn a_never_synced_source_is_warned_about_on_every_tick() {
     );
 }
 
+// The derivation count is the tick cache's reuse ceiling read unpinned: a
+// sibling holding `ConfigReuseMaxAgeGuard`/`ModuleReuseTtlGuard` at
+// `always_expired` makes every tick re-derive.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial_test::serial]
+#[serial_test::serial(tick_cache_reuse)]
 async fn a_re_pointed_source_origin_re_derives() {
     // The origin-mismatch verdict is read out of the checkout's own git config,
     // and it is REPLAYED to the operator on every reusing tick — so the file it

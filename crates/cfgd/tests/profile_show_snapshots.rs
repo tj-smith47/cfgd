@@ -30,7 +30,7 @@ fn layer(name: &str) -> ProfileLayer {
     ProfileLayer {
         source: "local".into(),
         profile_name: name.into(),
-        priority: 1000,
+        priority: cfgd_core::config::LOCAL_LAYER_PRIORITY,
         policy: LayerPolicy::Local,
         spec: ProfileSpec::default(),
     }

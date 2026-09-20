@@ -483,8 +483,9 @@ impl<'a> super::Reconciler<'a> {
         // The generated bodies are discarded — this call is for the target
         // PATHS, which is why one placeholder variable is enough to get past
         // the "nothing to write" gate inside `env_targets`. Every generator
-        // opens with the same header, so the emptied form of all of them is
-        // that header alone.
+        // opens with the same banner, so the emptied form of all of them is
+        // that banner alone: a file with no blocks left takes the banner's
+        // block-free form.
         let placeholder = LayeredEnv::from_parts(
             &crate::reconciler::Owner::profile("cfgd").token(),
             &[crate::config::EnvVar {
@@ -495,7 +496,7 @@ impl<'a> super::Reconciler<'a> {
             &[],
             &[],
         );
-        let neutral = format!("{}\n", super::env_files::banner("#").join("\n"));
+        let neutral = format!("{}\n", super::env_files::banner("#", false).join("\n"));
         let targets = env_targets(
             EnvContent::of(&placeholder, &[]),
             scope,
@@ -656,8 +657,14 @@ mod tests {
                 [
                     super::super::env_files::ENV_FILE_HEADER.to_string(),
                     dialect.path_line(&FoldedPath::derived(&dirs)),
-                    dialect.env_line(&foo, origins).expect("a safe name"),
-                    dialect.alias_line(&catn, origins).expect("a safe name"),
+                    super::super::env_files::legacy_commented_line(
+                        &dialect.env_line(&foo).expect("a safe name"),
+                        &origins.env_comment(&foo.name),
+                    ),
+                    super::super::env_files::legacy_commented_line(
+                        &dialect.alias_line(&catn).expect("a safe name"),
+                        &origins.alias_comment(&catn.name),
+                    ),
                     String::new(),
                 ]
                 .join("\n")
@@ -727,8 +734,14 @@ mod tests {
                 [
                     super::super::env_files::ENV_FILE_HEADER.to_string(),
                     dialect.path_line(&FoldedPath::derived(&dirs)),
-                    dialect.env_line(&foo, origins).expect("a safe name"),
-                    dialect.alias_line(&catn, origins).expect("a safe name"),
+                    super::super::env_files::legacy_commented_line(
+                        &dialect.env_line(&foo).expect("a safe name"),
+                        &origins.env_comment(&foo.name),
+                    ),
+                    super::super::env_files::legacy_commented_line(
+                        &dialect.alias_line(&catn).expect("a safe name"),
+                        &origins.alias_comment(&catn.name),
+                    ),
                     String::new(),
                 ]
                 .join("\n")

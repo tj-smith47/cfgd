@@ -603,7 +603,7 @@ fn merge_env_override() {
     let layer1 = ProfileLayer {
         source: "local".into(),
         profile_name: "base".into(),
-        priority: 1000,
+        priority: crate::config::LOCAL_LAYER_PRIORITY,
         policy: LayerPolicy::Local,
         spec: ProfileSpec {
             env: vec![
@@ -624,7 +624,7 @@ fn merge_env_override() {
     let layer2 = ProfileLayer {
         source: "local".into(),
         profile_name: "work".into(),
-        priority: 1000,
+        priority: crate::config::LOCAL_LAYER_PRIORITY,
         policy: LayerPolicy::Local,
         spec: ProfileSpec {
             env: vec![EnvVar {
@@ -660,7 +660,7 @@ fn merge_packages_union() {
     let layer1 = ProfileLayer {
         source: "local".into(),
         profile_name: "base".into(),
-        priority: 1000,
+        priority: crate::config::LOCAL_LAYER_PRIORITY,
         policy: LayerPolicy::Local,
         spec: ProfileSpec {
             packages: Some(PackagesSpec {
@@ -676,7 +676,7 @@ fn merge_packages_union() {
     let layer2 = ProfileLayer {
         source: "local".into(),
         profile_name: "work".into(),
-        priority: 1000,
+        priority: crate::config::LOCAL_LAYER_PRIORITY,
         policy: LayerPolicy::Local,
         spec: ProfileSpec {
             packages: Some(PackagesSpec {
@@ -702,7 +702,7 @@ fn merge_files_overlay() {
     let layer1 = ProfileLayer {
         source: "local".into(),
         profile_name: "base".into(),
-        priority: 1000,
+        priority: crate::config::LOCAL_LAYER_PRIORITY,
         policy: LayerPolicy::Local,
         spec: ProfileSpec {
             files: Some(FilesSpec {
@@ -724,7 +724,7 @@ fn merge_files_overlay() {
     let layer2 = ProfileLayer {
         source: "local".into(),
         profile_name: "work".into(),
-        priority: 1000,
+        priority: crate::config::LOCAL_LAYER_PRIORITY,
         policy: LayerPolicy::Local,
         spec: ProfileSpec {
             files: Some(FilesSpec {
@@ -1103,7 +1103,7 @@ fn merge_manifest_file_fields() {
     let layer1 = ProfileLayer {
         source: "local".into(),
         profile_name: "base".into(),
-        priority: 1000,
+        priority: crate::config::LOCAL_LAYER_PRIORITY,
         policy: LayerPolicy::Local,
         spec: ProfileSpec {
             packages: Some(PackagesSpec {
@@ -1120,7 +1120,7 @@ fn merge_manifest_file_fields() {
     let layer2 = ProfileLayer {
         source: "local".into(),
         profile_name: "work".into(),
-        priority: 1000,
+        priority: crate::config::LOCAL_LAYER_PRIORITY,
         policy: LayerPolicy::Local,
         spec: ProfileSpec {
             packages: Some(PackagesSpec {
@@ -3550,7 +3550,7 @@ fn gated_layer(name: &str, env: Vec<EnvVar>, aliases: Vec<ShellAlias>) -> Profil
     ProfileLayer {
         source: "local".into(),
         profile_name: name.into(),
-        priority: 1000,
+        priority: crate::config::LOCAL_LAYER_PRIORITY,
         policy: LayerPolicy::Local,
         spec: ProfileSpec {
             env,

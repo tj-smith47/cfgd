@@ -7,7 +7,7 @@ fn make_local_profile() -> ResolvedProfile {
         layers: vec![ProfileLayer {
             source: "local".into(),
             profile_name: "default".into(),
-            priority: 1000,
+            priority: crate::config::LOCAL_LAYER_PRIORITY,
             policy: LayerPolicy::Local,
             spec: ProfileSpec {
                 env: vec![EnvVar {
@@ -1563,7 +1563,7 @@ fn higher_priority_source_wins_env_var() {
         layers: vec![ProfileLayer {
             source: "local".into(),
             profile_name: "default".into(),
-            priority: 1000,
+            priority: crate::config::LOCAL_LAYER_PRIORITY,
             policy: LayerPolicy::Local,
             spec: ProfileSpec::default(),
         }],
@@ -1632,7 +1632,7 @@ fn local_env_wins_over_source_env_at_same_name() {
         layers: vec![ProfileLayer {
             source: "local".into(),
             profile_name: "default".into(),
-            priority: 1000,
+            priority: crate::config::LOCAL_LAYER_PRIORITY,
             policy: LayerPolicy::Local,
             spec: ProfileSpec {
                 env: vec![EnvVar {
@@ -1695,7 +1695,7 @@ fn higher_priority_source_wins_file_content() {
         layers: vec![ProfileLayer {
             source: "local".into(),
             profile_name: "default".into(),
-            priority: 1000,
+            priority: crate::config::LOCAL_LAYER_PRIORITY,
             policy: LayerPolicy::Local,
             spec: ProfileSpec::default(),
         }],
@@ -1803,7 +1803,7 @@ fn single_source_merges_correctly() {
         layers: vec![ProfileLayer {
             source: "local".into(),
             profile_name: "default".into(),
-            priority: 1000,
+            priority: crate::config::LOCAL_LAYER_PRIORITY,
             policy: LayerPolicy::Local,
             spec: ProfileSpec {
                 packages: Some(PackagesSpec {
@@ -1879,7 +1879,7 @@ fn overlapping_packages_are_unioned_not_duplicated() {
         layers: vec![ProfileLayer {
             source: "local".into(),
             profile_name: "default".into(),
-            priority: 1000,
+            priority: crate::config::LOCAL_LAYER_PRIORITY,
             policy: LayerPolicy::Local,
             spec: ProfileSpec {
                 packages: Some(PackagesSpec {
@@ -2057,7 +2057,7 @@ fn higher_priority_source_wins_alias() {
         layers: vec![ProfileLayer {
             source: "local".into(),
             profile_name: "default".into(),
-            priority: 1000,
+            priority: crate::config::LOCAL_LAYER_PRIORITY,
             policy: LayerPolicy::Local,
             spec: ProfileSpec {
                 aliases: vec![ShellAlias {
@@ -2707,7 +2707,7 @@ fn compose_scripts_appended_in_order() {
         layers: vec![ProfileLayer {
             source: "local".into(),
             profile_name: "default".into(),
-            priority: 1000,
+            priority: crate::config::LOCAL_LAYER_PRIORITY,
             policy: LayerPolicy::Local,
             spec: ProfileSpec {
                 scripts: Some(ScriptSpec {
@@ -2772,7 +2772,7 @@ fn compose_secrets_deduplicated_by_source() {
         layers: vec![ProfileLayer {
             source: "local".into(),
             profile_name: "default".into(),
-            priority: 1000,
+            priority: crate::config::LOCAL_LAYER_PRIORITY,
             policy: LayerPolicy::Local,
             spec: ProfileSpec {
                 secrets: vec![crate::config::SecretSpec {
@@ -2846,7 +2846,7 @@ fn compose_system_deep_merges() {
         layers: vec![ProfileLayer {
             source: "local".into(),
             profile_name: "default".into(),
-            priority: 1000,
+            priority: crate::config::LOCAL_LAYER_PRIORITY,
             policy: LayerPolicy::Local,
             spec: ProfileSpec {
                 system: BTreeMap::from([(
@@ -2957,7 +2957,7 @@ fn compose_file_origins_tagged_for_source_files() {
         layers: vec![ProfileLayer {
             source: "local".into(),
             profile_name: "default".into(),
-            priority: 1000,
+            priority: crate::config::LOCAL_LAYER_PRIORITY,
             policy: LayerPolicy::Local,
             spec: ProfileSpec::default(),
         }],
@@ -3859,7 +3859,7 @@ fn override_env_stays_below_local_config() {
         layers: vec![ProfileLayer {
             source: "local".into(),
             profile_name: "default".into(),
-            priority: 1000,
+            priority: crate::config::LOCAL_LAYER_PRIORITY,
             policy: LayerPolicy::Local,
             spec: ProfileSpec {
                 env: vec![EnvVar {
@@ -4098,7 +4098,7 @@ fn compose_rejects_local_override_of_locked_resource() {
         layers: vec![ProfileLayer {
             source: "local".into(),
             profile_name: "default".into(),
-            priority: 1000,
+            priority: crate::config::LOCAL_LAYER_PRIORITY,
             policy: LayerPolicy::Local,
             spec: ProfileSpec::default(),
         }],

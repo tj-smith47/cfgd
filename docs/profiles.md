@@ -328,7 +328,7 @@ values are appended as a final `# secrets` block.
 
 A file carries exactly **one** `PATH` line, whoever produced it, and it is the one line
 with a trailing comment: it has as many authors as fed it, so no single header can name
-them. Declaring `PATH` in `spec.env` does not add a second line — the declaration and the
+them. Declaring `PATH` in `spec.env` does not add a second line: the declaration and the
 bootstrapped directories fold into one assignment, with cfgd's directories spliced in where
 the declaration reaches for the ambient `PATH`.
 
@@ -337,9 +337,10 @@ the declaration reaches for the ambient `PATH`.
 export PATH="$HOME/.cargo/bin:/opt/brewroot/bin:$HOME/.npm-global/bin:$PATH" # manager:brew,npm module:nvim
 ```
 
-`environment.d` and the macOS LaunchAgent carry the banner and the winning values alone:
-systemd documents no last-wins for a repeated key, and the plist publishes one
-`launchctl setenv` per variable, so neither can carry blocks.
+`environment.d` takes the banner's block-free form and the winning values alone: systemd
+documents no last-wins for a repeated key, so a block there would be an undefined result
+rather than something the reader resolves. The macOS LaunchAgent takes neither: it is XML,
+one `launchctl setenv` per winner, and a comment line would corrupt it.
 
 The three owner groups separate what cfgd authored from what it edited from what is not
 durable at all: `cfgd:env` writes the files a future shell reads, `cfgd:shell` plants the one

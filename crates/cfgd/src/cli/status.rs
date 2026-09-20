@@ -3066,8 +3066,9 @@ pub(super) fn cmd_status(
     // ONE merge for the whole command: every recompute below asks the same
     // declaration, and building it per drift row clones the profile's env, its
     // aliases and both origin maps once per finding.
+    let layered = cfgd_core::reconciler::LayeredEnv::of(&resolved, &resolved_modules);
     let merged_env_items = cfgd_core::reconciler::MergedEnvItems::new(
-        &cfgd_core::reconciler::LayeredEnv::of(&resolved, &resolved_modules),
+        &layered,
         &cfgd_core::reconciler::recorded_manager_path_dirs(
             state,
             &resolved.merged,

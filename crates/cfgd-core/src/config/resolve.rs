@@ -1094,7 +1094,7 @@ mod tests {
         ProfileLayer {
             source: "local".to_string(),
             profile_name: name.to_string(),
-            priority: 1000,
+            priority: LOCAL_LAYER_PRIORITY,
             policy: LayerPolicy::Local,
             spec: ProfileSpec {
                 env_scope,

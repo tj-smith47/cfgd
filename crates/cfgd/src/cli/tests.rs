@@ -2445,14 +2445,14 @@ fn build_subscription_preview_input_preserves_layer_ordering() {
         cfgd_core::config::ProfileLayer {
             source: "local".to_string(),
             profile_name: "base".to_string(),
-            priority: 0,
+            priority: cfgd_core::config::LOCAL_LAYER_PRIORITY,
             policy: cfgd_core::config::LayerPolicy::Local,
             spec: cfgd_core::config::ProfileSpec::default(),
         },
         cfgd_core::config::ProfileLayer {
             source: "local".to_string(),
             profile_name: "overlay".to_string(),
-            priority: 10,
+            priority: cfgd_core::config::LOCAL_LAYER_PRIORITY + 10,
             policy: cfgd_core::config::LayerPolicy::Local,
             spec: cfgd_core::config::ProfileSpec::default(),
         },
@@ -47423,5 +47423,73 @@ fn every_config_load_site_answers_the_migration_policy() {
         main.contains("config_schema::gate_exempt(cli.command.as_ref())"),
         "the verbs whose own subject is the migration question are withheld from the gate \
          through the one classifier, not by a `matches!` at the call site"
+    );
+}
+
+/// A local profile layer's rank is `LOCAL_LAYER_PRIORITY`, never a literal.
+///
+/// `LayerPolicy::Local` and the number the merge ranks it at are one fact:
+/// `resolve_profile` sets the constant on every layer it marks local, and a
+/// generated env file prints that number in the block header the layer's
+/// declarations sit under. A site spelling `1000` beside the policy states the
+/// same fact a second time, and the two disagree the moment the constant
+/// moves — the headers pinned elsewhere would then name a rank no layer holds.
+///
+/// A fixture whose subject IS the rank (two local layers whose ORDER is what
+/// it asserts) composes from the constant rather than dropping to a literal,
+/// or says why with `// local-rank-ok: <why>`.
+#[test]
+fn every_local_layer_ranks_through_the_one_constant() {
+    const HATCH: &str = "// local-rank-ok:";
+    /// Each crate root the walk reads, floored under the local layers its
+    /// sources build today, so a tree going dark fails on its own name rather
+    /// than quietly contributing nothing.
+    const WALK_ROOTS: &[(&str, usize)] = &[("cfgd", 10), ("cfgd-core", 55)];
+
+    let crates_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let mut offenders: Vec<String> = Vec::new();
+    for (krate, floor) in WALK_ROOTS {
+        let mut read = 0usize;
+        for segment in ["src", "tests"] {
+            let dir = crates_dir.join(krate).join(segment);
+            if !dir.is_dir() {
+                continue;
+            }
+            for path in rust_sources_under(&dir) {
+                let body = cfgd_core::test_helpers::walked_file_body(&path);
+                let lines: Vec<&str> = body.lines().collect();
+                for (i, line) in lines.iter().enumerate() {
+                    if !cfgd_core::test_helpers::code_line(line).contains("LayerPolicy::Local") {
+                        continue;
+                    }
+                    // Every `ProfileLayer` literal in the workspace writes its
+                    // fields in declaration order, so the rank is the row above
+                    // the policy.
+                    let Some(rank) = i.checked_sub(1).map(|j| lines[j]) else {
+                        continue;
+                    };
+                    if !rank.contains("priority:") {
+                        continue;
+                    }
+                    read += 1;
+                    if rank.contains("LOCAL_LAYER_PRIORITY")
+                        || cfgd_core::test_helpers::carries_hatch(rank, HATCH)
+                        || cfgd_core::test_helpers::carries_hatch(lines[i], HATCH)
+                    {
+                        continue;
+                    }
+                    offenders.push(format!("{}:{}: {}", path.posix(), i, rank.trim()));
+                }
+            }
+        }
+        assert!(
+            read >= *floor,
+            "{krate}: the walk read {read} local layers, below its floor of {floor}"
+        );
+    }
+    assert!(
+        offenders.is_empty(),
+        "a local layer ranks at `LOCAL_LAYER_PRIORITY`:\n{}",
+        offenders.join("\n")
     );
 }
