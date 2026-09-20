@@ -11,6 +11,7 @@ mod backup_runs;
 mod backups;
 mod bootstrap;
 mod compliance;
+mod config_migrations;
 mod decisions;
 mod drift;
 mod journal;
@@ -682,6 +683,23 @@ const MIGRATIONS: &[&str] = &[
                   AND resource_id LIKE '%:script'
                   AND instr(resource_id, ':') = length(resource_id) - 6
                   AND instr(resource_id, '/') = 0));",
+    // Migration 28: the answer a reader gave the load-time migration prompt.
+    // Keyed on the config file rather than the machine, because a host may
+    // hold several (`--config`, a source checkout's own), and each is a
+    // separate document with its own answer. `offered_keys` is the question
+    // itself: an answer covers a later run only when every key that run
+    // found was already on the table when the reader said yes or no, so a
+    // release that adds a field asks about it rather than inheriting a
+    // verdict on a different question.
+    // space-run-ok: a table definition's own column layout.
+    "CREATE TABLE IF NOT EXISTS config_migrations (
+        config_path  TEXT NOT NULL,
+        api_version  TEXT NOT NULL,
+        accepted     INTEGER NOT NULL,
+        offered_keys TEXT NOT NULL,
+        answered_at  TEXT NOT NULL,
+        PRIMARY KEY (config_path, api_version)
+    );",
 ];
 
 /// Make `cfgd_compliance_content_hash(snapshot_json, current_hash)` callable

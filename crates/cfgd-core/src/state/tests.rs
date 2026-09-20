@@ -4724,3 +4724,49 @@ fn a_second_apply_advances_the_module_stamp() {
         "the second apply must re-stamp the row, not leave the first-seen instant"
     );
 }
+
+/// The answer is per (config file, apiVersion) pair and per QUESTION: a
+/// later release offering a key the recorded answer never covered asks
+/// again, which is what keeps "asked once" from meaning "never asked after
+/// the first upgrade".
+#[test]
+fn a_recorded_migration_answer_is_reused_only_for_the_keys_it_covered() {
+    let store = StateStore::open_in_memory().unwrap();
+    let offered = vec!["spec.migrationPolicy".to_string()];
+    assert_eq!(
+        store
+            .migration_answer("/c/cfgd.yaml", "cfgd.io/v1alpha1", &offered)
+            .unwrap(),
+        None
+    );
+
+    store
+        .record_migration_answer("/c/cfgd.yaml", "cfgd.io/v1alpha1", false, &offered)
+        .unwrap();
+    assert_eq!(
+        store
+            .migration_answer("/c/cfgd.yaml", "cfgd.io/v1alpha1", &offered)
+            .unwrap(),
+        Some(false),
+        "the same question is not asked twice"
+    );
+
+    let wider = vec![
+        "spec.migrationPolicy".to_string(),
+        "spec.newerField".to_string(),
+    ];
+    assert_eq!(
+        store
+            .migration_answer("/c/cfgd.yaml", "cfgd.io/v1alpha1", &wider)
+            .unwrap(),
+        None,
+        "a key the recorded answer never covered is a new question"
+    );
+    assert_eq!(
+        store
+            .migration_answer("/other/cfgd.yaml", "cfgd.io/v1alpha1", &offered)
+            .unwrap(),
+        None,
+        "the answer is keyed on the config file, not the machine"
+    );
+}
