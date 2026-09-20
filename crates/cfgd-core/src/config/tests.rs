@@ -150,11 +150,14 @@ fn the_unsupported_api_version_refusal_names_every_readable_version() {
 /// `.starts_with(`, `.contains(`, `.eq(` or `.ne(`, and `API_VERSION` or an
 /// inline literal on the other, in either direction and at every place the
 /// operator appears in the text. The question is put to a STATEMENT rather
-/// than to a row: rows are gathered from one `;`, `{` or `}` to the next and
+/// than to a row: rows are gathered from one terminator to the next and
 /// joined, so a comparison split across rows is one text while two
-/// neighbouring statements stay two. Literals and comments are blanked before
-/// any of that, so a tell written inside either is invisible, and an offender
-/// is reported at the row its statement opened on.
+/// neighbouring statements stay two. A `;`, `{` or `}` terminates wherever it
+/// falls, and so does a `,` at the statement's own bracket depth, which is
+/// what keeps two comma-separated `match` arms from answering for each other.
+/// Literals and comments are blanked before any of that, so a tell written
+/// inside either is invisible, and an offender is reported at the row its
+/// statement opened on.
 ///
 /// The population is every `<crate>/src` under `crates/`, read off the
 /// directory so a crate added to the workspace joins it, and NAMED so a renamed
@@ -193,20 +196,39 @@ fn no_production_site_compares_an_api_version_by_hand() {
     // per-row read sees neither half of: `if doc.api_version` carries no
     // operator and `!= "cfgd.io/v1alpha1"` carries no field. Reading the whole
     // slice as one text is the other failure, where two neighbouring
-    // statements answer for each other. The terminators are the ones
-    // `const_items_outside_functions` counts, taken on code the masking has
-    // already blanked, so one inside a literal or a comment ends nothing.
+    // statements answer for each other. Terminators are counted on code the
+    // masking has already blanked, so one inside a literal or a comment ends
+    // nothing. A `,` ends a statement only at the bracket depth the statement
+    // opened at: a comma-separated `match` arm carries no other terminator, so
+    // two arms would otherwise read as one statement and a version literal in
+    // the first would answer for the field name in the second, while a comma
+    // between a call's arguments separates operands of one expression.
     fn statements(code: &[String]) -> Vec<(usize, usize, String)> {
         let mut out = Vec::new();
         let mut open: Option<usize> = None;
+        let mut depth = 0i32;
         for (n, line) in code.iter().enumerate() {
             if open.is_none() && line.trim().is_empty() {
                 continue;
             }
             let first = *open.get_or_insert(n);
-            if line.contains([';', '{', '}']) {
+            let mut ends = false;
+            for c in line.chars() {
+                match c {
+                    '(' | '[' => depth += 1,
+                    ')' | ']' => depth -= 1,
+                    ';' | '{' | '}' => ends = true,
+                    ',' if depth <= 0 => ends = true,
+                    _ => {}
+                }
+                if ends {
+                    break;
+                }
+            }
+            if ends {
                 out.push((first, n, code[first..=n].join(" ")));
                 open = None;
+                depth = 0;
             }
         }
         if let Some(first) = open {
