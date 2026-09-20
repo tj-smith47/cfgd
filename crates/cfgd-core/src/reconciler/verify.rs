@@ -581,12 +581,18 @@ fn fold_layers_of_one_owner(layers: Vec<EnvLayer>) -> Vec<EnvLayer> {
 /// `the_layered_env_folds_back_to_the_merge` holds.
 ///
 /// The claim map is consulted for ONE thing: an entry the merge holds that no
-/// layer declares. A resolved preference is folded in after the layer loop and
-/// claimed by the last layer that ranked it, so it is placed in that layer's
-/// block by its owner token and needs no header of its own.
+/// block declares, env var or alias alike. A resolved preference is folded in
+/// after the layer loop and claimed by the last layer that ranked it, so it is
+/// placed in that layer's block by its owner token and needs no header of its
+/// own.
 #[derive(Debug, Clone)]
 pub struct LayeredEnv {
-    /// One block per layer, low precedence first, then one per module.
+    /// One block per OWNER TOKEN, low precedence first, then one per module.
+    /// A subscription delivering several layers spells one token for all of
+    /// them (`ProfileLayer::owner_token`), so those layers arrive as one block
+    /// holding their declarations in declaration order; a block left holding
+    /// neither an env var nor an alias is dropped rather than carried as a
+    /// header with nothing under it.
     pub layers: Vec<EnvLayer>,
     /// The surviving env vars, as the merge decided them.
     pub merged: Vec<crate::config::EnvVar>,
@@ -600,7 +606,11 @@ pub struct LayeredEnv {
 
 impl LayeredEnv {
     /// The layered view of a resolved profile plus its modules: one block per
-    /// layer in `resolved.layers`' own order, then one per module.
+    /// owner token, in `resolved.layers`' own order, then one per module.
+    ///
+    /// Layers sharing a token are joined into that token's one block, and a
+    /// block declaring nothing is dropped, so the result is neither
+    /// `resolved.layers.len()` blocks nor one block per module.
     pub fn of(resolved: &ResolvedProfile, modules: &[ResolvedModule]) -> Self {
         let mut declared: Vec<EnvLayer> = resolved
             .layers

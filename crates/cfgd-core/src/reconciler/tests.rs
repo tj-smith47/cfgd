@@ -15957,6 +15957,61 @@ fn a_successful_env_apply_resolves_the_per_item_rows_it_converged() {
 
 // --- LayeredEnv tests ---
 
+/// Two layers of one subscription are one block.
+///
+/// `ProfileLayer::owner_token` spells `source:<name>` for every layer a
+/// subscription delivered, so a source contributing two layers hands the view
+/// two blocks under one header — a repeated section rather than two layers a
+/// reader could tell apart. They are joined in declaration order with every
+/// declaration kept, outranked entries included, which is what a reader opens
+/// the layered file to see.
+#[test]
+fn two_layers_of_one_subscription_share_one_block() {
+    let env = |name: &str, value: &str| crate::config::EnvVar {
+        name: name.to_string(),
+        value: value.to_string(),
+        platforms: Vec::new(),
+    };
+    let team = |priority: u32, env: Vec<crate::config::EnvVar>| crate::config::ProfileLayer {
+        source: "team".to_string(),
+        profile_name: format!("team-{priority}"),
+        priority,
+        policy: crate::config::LayerPolicy::Required,
+        spec: crate::config::ProfileSpec {
+            env,
+            ..Default::default()
+        },
+    };
+    let layers = vec![
+        team(100, vec![env("PAGER", "less")]),
+        team(1000, vec![env("PAGER", "bat"), env("EDITOR", "vi")]),
+    ];
+    let merged = crate::config::merge_layers(&layers);
+    let resolved = crate::config::ResolvedProfile { layers, merged };
+
+    let layered = super::LayeredEnv::of(&resolved, &[]);
+
+    assert_eq!(
+        layered
+            .layers
+            .iter()
+            .map(|l| l.owner.as_str())
+            .collect::<Vec<_>>(),
+        ["source:team"],
+        "both layers spell one owner token, so the view carries one block",
+    );
+    assert_eq!(
+        layered.layers[0]
+            .env
+            .iter()
+            .map(|ev| (ev.name.as_str(), ev.value.as_str()))
+            .collect::<Vec<_>>(),
+        [("PAGER", "less"), ("PAGER", "bat"), ("EDITOR", "vi")],
+        "the joined block holds both layers' declarations in declaration order, \
+         the outranked PAGER included",
+    );
+}
+
 /// The blocks are the merge's inputs; the winners are the merge's answer; the
 /// shell's own last-wins takes one to the other.
 ///
@@ -15983,6 +16038,18 @@ fn the_layered_env_folds_back_to_the_merge() {
         .merged
         .entry_owners
         .claim_env_names("profile:work", ["CFGD_CLIPBOARD"]);
+    // The alias half of the same case: an alias the merge holds that no block
+    // declares, claimed by the layer that ranked it.
+    let resolved_alias = crate::config::ShellAlias {
+        name: "gs".to_string(),
+        command: "git status".to_string(),
+        platforms: Vec::new(),
+    };
+    resolved.merged.aliases.push(resolved_alias.clone());
+    resolved
+        .merged
+        .entry_owners
+        .claim("profile:work", &[], std::slice::from_ref(&resolved_alias));
 
     let mut module = crate::test_helpers::make_resolved_module("nvim");
     module.env = vec![crate::config::EnvVar {
@@ -16029,6 +16096,13 @@ fn the_layered_env_folds_back_to_the_merge() {
             .any(|ev| ev.name == "CFGD_CLIPBOARD"),
         "the preference var is not in its claiming layer's block: {:?}",
         layered.layers[1].env,
+    );
+    // The same placement on the alias half, over its own claim map: a block
+    // holding the env var and not the alias would render half the layer.
+    assert!(
+        layered.layers[1].aliases.iter().any(|al| al.name == "gs"),
+        "the claimed alias is not in its claiming layer's block: {:?}",
+        layered.layers[1].aliases,
     );
 
     // Fold the blocks the way a shell sources them: in order, last assignment
