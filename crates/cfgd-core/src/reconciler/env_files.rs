@@ -288,10 +288,9 @@ pub(super) fn primary_alias_line(
 /// character, which is exactly the rendered line up to where the value
 /// starts. A trailing quote is stripped because PowerShell picks its quote
 /// per value (`'` normally, `"` for a `$env:`-referencing one), so the
-/// quote-free prefix claims a line rendered under either. `None` when either
-/// render refused the name, or when nothing stable precedes the value.
-fn stable_line_prefix(a: Option<String>, b: Option<String>) -> Option<String> {
-    let (a, b) = (a?, b?);
+/// quote-free prefix claims a line rendered under either. `None` when nothing
+/// stable precedes the value.
+fn stable_prefix_of(a: &str, b: &str) -> Option<String> {
     let mut n = a.bytes().zip(b.bytes()).take_while(|(x, y)| x == y).count();
     while n > 0 && !a.is_char_boundary(n) {
         n -= 1;
@@ -300,6 +299,13 @@ fn stable_line_prefix(a: Option<String>, b: Option<String>) -> Option<String> {
         .strip_suffix(|c| c == '\'' || c == '"')
         .unwrap_or(&a[..n]);
     (!prefix.is_empty()).then(|| prefix.to_string())
+}
+
+/// [`stable_prefix_of`] for the two helpers whose render can REFUSE the name
+/// it was given: a refusal on either side leaves no pair to compare, so the
+/// prefix is `None` as well.
+fn stable_line_prefix(a: Option<String>, b: Option<String>) -> Option<String> {
+    stable_prefix_of(&a?, &b?)
 }
 
 /// The dialect-rendered prefix of the line env var `name` renders as in the
@@ -374,7 +380,7 @@ pub(super) fn path_dirs_line_prefix(platform: super::env_engine::EnvPlatform) ->
     // differ, which is before any trailing provenance comment.
     let line =
         |dir: &str| dialect.path_line(&super::env_engine::FoldedPath::literal([dir.to_string()]));
-    stable_line_prefix(Some(line("0cfgdsentinel")), Some(line("1cfgdsentinel")))
+    stable_prefix_of(&line("0cfgdsentinel"), &line("1cfgdsentinel"))
 }
 
 /// Read a cfgd-generated env file for comparison against the content about to
@@ -892,6 +898,16 @@ mod tests {
             env_line: "$env:V = '$HOME'",
             alias_line: "Set-Alias -Name q -Value '$HOME'",
         },
+        Expect {
+            // The one value taking the interpolating arm: a `$env:` reference
+            // has to resolve when the profile loads, so the value is
+            // double-quoted and the reference passes through whole. An alias
+            // command is never interpolated, so the same bytes stay literal
+            // there.
+            value: "$env:OTHER",
+            env_line: "$env:V = \"$env:OTHER\"",
+            alias_line: "Set-Alias -Name q -Value '$env:OTHER'",
+        },
     ];
 
     /// A generated file's BODY: everything past its leading header block,
@@ -1335,11 +1351,15 @@ mod tests {
         assert!(!prefix.contains("cfgd"), "sentinel leaked: {prefix:?}");
     }
 
-    /// The single-line renderers and the whole-file generators cannot disagree.
+    /// The single-line renderers, the display helpers and the whole-file
+    /// generators cannot disagree.
     ///
     /// The three display helpers used to take `generated.lines().nth(…)`, which
     /// reads "the line after the header" — a fact about the banner, not about the
-    /// entry. One renderer, called by both, is what survives the banner growing.
+    /// entry. One renderer, called by all three, is what survives the banner
+    /// growing, so each helper is driven here beside the file it must match.
+    /// Fish reaches no helper: [`Dialect::of`] never yields it, since the fish
+    /// snippet is a second target chosen by the user's shell.
     #[test]
     fn every_dialect_renders_one_entry_the_same_way_alone_and_in_a_file() {
         let ev = EnvVar {
@@ -1353,15 +1373,17 @@ mod tests {
             platforms: vec![],
         };
         let origins = Default::default();
-        for (dialect, whole) in [
+        for (dialect, whole, platform) in [
             (
                 super::Dialect::Posix,
                 super::generate_env_file_content as fn(_, _, _, _) -> String,
+                Some(EnvPlatform::Linux),
             ),
-            (super::Dialect::Fish, super::generate_fish_env_content),
+            (super::Dialect::Fish, super::generate_fish_env_content, None),
             (
                 super::Dialect::PowerShell,
                 super::generate_powershell_env_content,
+                Some(EnvPlatform::Windows),
             ),
         ] {
             let body = whole(
@@ -1387,6 +1409,26 @@ mod tests {
                         .as_str(),
                 ],
                 "{dialect:?} renders an entry differently alone than in a file",
+            );
+            let Some(platform) = platform else {
+                continue;
+            };
+            assert_eq!(
+                super::primary_env_var_line(&ev, platform, &origins, None),
+                dialect.env_line(&ev, &origins),
+                "{platform:?}'s env display helper reports a line the renderer does not write",
+            );
+            assert_eq!(
+                super::primary_alias_line(&alias, platform, &origins),
+                dialect.alias_line(&alias, &origins),
+                "{platform:?}'s alias display helper reports a line the renderer does not write",
+            );
+            let fold = FoldedPath::literal(["/cfgd/sentinel/bin".to_string()]);
+            let path_line = dialect.path_line(&fold);
+            let prefix = super::path_dirs_line_prefix(platform).expect("a prefix is derivable");
+            assert!(
+                path_line.starts_with(&prefix),
+                "{platform:?}'s PATH prefix {prefix:?} does not claim {path_line:?}",
             );
         }
     }
