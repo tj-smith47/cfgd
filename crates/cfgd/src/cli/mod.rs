@@ -912,24 +912,21 @@ where
         .unwrap_or_default()
 }
 
-/// Resolve the migration policy in force for this invocation, folding
-/// `--migration-policy`, `CFGD_MIGRATION_POLICY` and `spec.migrationPolicy`
-/// into the one answer the load-time gate reads. A config cfgd cannot read
-/// falls to `Prompt`, which writes nothing on its own.
-pub fn resolve_migration_policy(
-    config_path: &Path,
-    flag: Option<&str>,
-) -> cfgd_schema::MigrationPolicy {
+/// What this invocation says the migration policy is, over whatever the
+/// document declares: `--migration-policy` first, then
+/// `CFGD_MIGRATION_POLICY`, and `None` when neither was given.
+///
+/// This is the one knob whose stored half is NOT read here. The load-time
+/// gate parses the document for itself to find out what is missing from it,
+/// and `spec.migrationPolicy` comes off that same parse — a second
+/// `load_config` would read and parse the same bytes again on every
+/// invocation, for a field already in hand.
+pub fn migration_policy_override(flag: Option<&str>) -> Option<cfgd_schema::MigrationPolicy> {
     use std::str::FromStr;
-    resolve_knob(
-        config_path,
-        flag.and_then(|raw| cfgd_schema::MigrationPolicy::from_str(raw).ok()),
-        "CFGD_MIGRATION_POLICY",
-        // The field is not optional: an absent key materializes `Prompt`
-        // through `#[serde(default)]`, which is also `T::default()`, so the
-        // two paths cannot disagree.
-        |spec| Some(spec.migration_policy),
-    )
+    if let Some(raw) = flag {
+        return cfgd_schema::MigrationPolicy::from_str(raw).ok();
+    }
+    cfgd_schema::MigrationPolicy::from_str(&std::env::var("CFGD_MIGRATION_POLICY").ok()?).ok()
 }
 
 /// Resolve whether closing `→` usage hints render, folding the

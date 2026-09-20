@@ -9,7 +9,7 @@ use cfgd_core::state::StateStore;
 use cfgd_schema::MigrationPolicy;
 
 use crate::cli::helpers::no_config_error;
-use crate::cli::{Cli, Mutation, mutate_config_yaml, success_next_step};
+use crate::cli::{Cli, Command, ConfigCommand, Mutation, mutate_config_yaml, success_next_step};
 
 /// Dotted key paths the typed value carries that the document on disk does
 /// not name.
@@ -32,6 +32,72 @@ pub(in crate::cli) fn pending_alignment(cfg: &CfgdConfig, on_disk: &str) -> Pend
     let declared = serde_yaml::from_str(on_disk).unwrap_or(serde_yaml::Value::Null);
     PendingAlignment {
         keys: crate::cli::helpers::undeclared_scalar_keys(cfg, &declared),
+    }
+}
+
+/// The `spec`-relative key `spec.migrationPolicy` is addressed by.
+const MIGRATION_POLICY_KEY: &str = "migrationPolicy";
+
+/// Whether a `config set` / `config unset` key names the knob the gate itself
+/// runs under. The key is resolved the way the setter resolves it — the
+/// optional `spec.` prefix folded away, then the nested-key resolution both
+/// verbs perform — so the exemption and the write cannot disagree about which
+/// field is being edited.
+fn names_migration_policy(key: &str) -> bool {
+    let key = crate::cli::config_cmd::spec_relative_key(key);
+    crate::cli::config_cmd::nested_output_key(key)
+        .as_deref()
+        .unwrap_or(key)
+        == MIGRATION_POLICY_KEY
+}
+
+/// Why the load-time gate is withheld from this invocation, and `None` for
+/// every invocation it runs for.
+///
+/// The gate is withheld from an invocation whose own subject IS the migration
+/// question, and from nothing else: the verb that remediates it, the two
+/// setters replacing the knob it runs under, and the hand edit it would write
+/// underneath. Every other verb is a reader the advisory is written for, or
+/// has no document for the gate to read.
+///
+/// The reasons are documentation — nothing renders them — and the match names
+/// every `config` subcommand, so one added later fails to compile until it is
+/// classified either way.
+pub fn gate_exempt(command: Option<&Command>) -> Option<&'static str> {
+    let Some(Command::Config { command }) = command else {
+        return None;
+    };
+    match command {
+        ConfigCommand::Migrate { .. } => Some(
+            "the verb is the gate's own remediation, and a write ahead of its report makes the report lie",
+        ),
+        ConfigCommand::Set { key, .. } | ConfigCommand::Unset { key }
+            if names_migration_policy(key) =>
+        {
+            Some("the reader is replacing the knob the gate runs under")
+        }
+        ConfigCommand::Edit => Some(
+            "the reader is about to open the bytes by hand, and a prompt ahead of $EDITOR rewrites the file underneath it",
+        ),
+        ConfigCommand::Show
+        | ConfigCommand::Get { .. }
+        | ConfigCommand::Set { .. }
+        | ConfigCommand::Unset { .. } => None,
+    }
+}
+
+/// The policy a run answers to once the daemon is accounted for.
+///
+/// A daemon never blocks on a prompt and never rewrites a file something else
+/// tracks, so both arms that would write fold to a report; `Warn` and
+/// `Ignore` pass through, and off the daemon nothing folds at all. The fold
+/// lives here because the reconcile loop is in `cfgd-core` and cannot call
+/// into this crate, so `main.rs` decides it for every invocation at the one
+/// call site.
+pub fn daemon_folded_policy(is_daemon: bool, policy: MigrationPolicy) -> MigrationPolicy {
+    match (is_daemon, policy) {
+        (true, MigrationPolicy::Prompt | MigrationPolicy::Update) => MigrationPolicy::Warn,
+        (_, policy) => policy,
     }
 }
 
@@ -123,7 +189,7 @@ fn recorded_answer(
     match store.migration_answer(config_path, api_version, keys) {
         Ok(answer) => answer,
         Err(e) => {
-            printer.alert(format!("Could not read config_migrations: {e}"));
+            printer.alert(format!("Could not read the recorded migration answer: {e}"));
             None
         }
     }
@@ -140,7 +206,48 @@ fn record_answer(
     keys: &[String],
 ) {
     if let Err(e) = store.record_migration_answer(config_path, api_version, accepted, keys) {
-        printer.alert(format!("Could not record config_migrations: {e}"));
+        printer.alert(format!("Could not record the migration answer: {e}"));
+    }
+}
+
+/// The recorded answer, read from a state store that ALREADY exists.
+///
+/// A state root nothing has written to holds no answer, so none is created to
+/// ask it: a read-only verb on a machine that has never applied leaves the
+/// disk exactly as it found it. The store comes back with the answer so the
+/// caller can hold a new one in the same handle; `None` for the whole pair is
+/// a state directory that could not be resolved or opened, already reported.
+fn consult_recorded(
+    printer: &Printer,
+    cli: &Cli,
+    config_path: &Path,
+    api_version: &str,
+    keys: &[String],
+) -> Option<(Option<StateStore>, Option<bool>)> {
+    let dir = match crate::cli::helpers::run_state_dir(cli.state_dir.as_deref(), cli.scope()) {
+        Ok(dir) => dir,
+        Err(e) => {
+            printer.alert(format!("Could not open the state store: {e}"));
+            return None;
+        }
+    };
+    if !dir.join(cfgd_core::state::STATE_DB_FILENAME).exists() {
+        return Some((None, None));
+    }
+    let store = open_store(printer, cli)?;
+    let answer = recorded_answer(printer, &store, config_path, api_version, keys);
+    Some((Some(store), answer))
+}
+
+/// The state store, opened to HOLD something. Every failure is reported: a
+/// reader who answered and got silence would believe the answer was kept.
+fn open_store(printer: &Printer, cli: &Cli) -> Option<StateStore> {
+    match crate::cli::registry::open_state_store(cli.state_dir.as_deref(), cli.scope()) {
+        Ok(store) => Some(store),
+        Err(e) => {
+            printer.alert(format!("Could not open the state store: {e}"));
+            None
+        }
     }
 }
 
@@ -211,18 +318,36 @@ pub fn cmd_config_migrate(cli: &Cli, printer: &Printer, write: bool) -> anyhow::
 /// The load-time gate: what a document behind this build's schema earns
 /// before dispatch, per `spec.migrationPolicy`.
 ///
-/// The state store is opened HERE, and only in the `Prompt` arm, because that
-/// is the one arm with an answer to remember: opening it at the call site
-/// would create a state root for `cfgd paths`, `cfgd explain` and every other
-/// read that records nothing.
-pub fn gate_on_load(printer: &Printer, cli: &Cli, policy: MigrationPolicy, assume_yes: bool) {
-    if policy == MigrationPolicy::Ignore {
+/// `policy_override` is what this invocation said on its own
+/// (`--migration-policy` / `CFGD_MIGRATION_POLICY`), already folded for the
+/// daemon by the caller. With nothing overridden the stored policy is read
+/// off the parse below rather than a second load of the same file, so a gate
+/// costs one read of the document whatever it decides — and an overridden
+/// `Ignore` costs none at all.
+///
+/// The state store is opened HERE rather than at the call site, and only
+/// where there is an answer to hold: `cfgd paths`, `cfgd explain` and every
+/// other read that records nothing leave the state root as they found it.
+pub fn gate_on_load(
+    printer: &Printer,
+    cli: &Cli,
+    is_daemon: bool,
+    policy_override: Option<MigrationPolicy>,
+    assume_yes: bool,
+) {
+    let overridden = policy_override.map(|policy| daemon_folded_policy(is_daemon, policy));
+    if overridden == Some(MigrationPolicy::Ignore) {
         return;
     }
     let config_path = &cli.config;
     let Some((cfg, on_disk)) = read_pair(config_path) else {
         return;
     };
+    let policy =
+        overridden.unwrap_or_else(|| daemon_folded_policy(is_daemon, cfg.spec.migration_policy));
+    if policy == MigrationPolicy::Ignore {
+        return;
+    }
     let pending = pending_alignment(&cfg, &on_disk);
     if pending.keys.is_empty() {
         return;
@@ -238,24 +363,12 @@ pub fn gate_on_load(printer: &Printer, cli: &Cli, policy: MigrationPolicy, assum
         MigrationPolicy::Update => align(printer, config_path, &cfg, &pending),
         MigrationPolicy::Warn => printer.alert(warn_message(&pending)),
         MigrationPolicy::Prompt => {
-            let store =
-                match crate::cli::registry::open_state_store(cli.state_dir.as_deref(), cli.scope())
-                {
-                    Ok(store) => store,
-                    Err(e) => {
-                        printer.alert(format!("Could not open the state store: {e}"));
-                        return;
-                    }
-                };
-            if recorded_answer(
-                printer,
-                &store,
-                config_path,
-                &cfg.api_version,
-                &pending.keys,
-            )
-            .is_some()
-            {
+            let Some((held, recorded)) =
+                consult_recorded(printer, cli, config_path, &cfg.api_version, &pending.keys)
+            else {
+                return;
+            };
+            if recorded.is_some() {
                 return;
             }
             let accepted = printer
@@ -266,15 +379,22 @@ pub fn gate_on_load(printer: &Printer, cli: &Cli, policy: MigrationPolicy, assum
             }
             // Recorded whichever way it was answered: a "no" is an answer,
             // and asking it again every run is how a knob nobody wants
-            // becomes a knob nobody can escape.
-            record_answer(
-                printer,
-                &store,
-                config_path,
-                &cfg.api_version,
-                accepted,
-                &pending.keys,
-            );
+            // becomes a knob nobody can escape. The store is the one the read
+            // held, or one opened now that there is something to put in it.
+            let store = match held {
+                Some(store) => Some(store),
+                None => open_store(printer, cli),
+            };
+            if let Some(store) = store {
+                record_answer(
+                    printer,
+                    &store,
+                    config_path,
+                    &cfg.api_version,
+                    accepted,
+                    &pending.keys,
+                );
+            }
         }
         MigrationPolicy::Ignore => {}
     }
@@ -290,6 +410,17 @@ mod tests {
     /// `state_dir` is supplied the same way, so nothing a gate does can reach
     /// the invoking user's own state root.
     fn cli_with_config(config: &std::path::Path, state_dir: Option<&std::path::Path>) -> Cli {
+        cli_running(config, state_dir, &["config", "migrate"])
+    }
+
+    /// The same fixture for an argv naming some other verb, so a test about
+    /// which invocations the gate runs for can build each one the way clap
+    /// would.
+    fn cli_running(
+        config: &std::path::Path,
+        state_dir: Option<&std::path::Path>,
+        verb: &[&str],
+    ) -> Cli {
         use clap::Parser;
         let config = config.to_string_lossy().into_owned();
         let mut argv = vec!["cfgd".to_string(), "--config".to_string(), config];
@@ -297,8 +428,7 @@ mod tests {
             argv.push("--state-dir".to_string());
             argv.push(dir.to_string_lossy().into_owned());
         }
-        argv.push("config".to_string());
-        argv.push("migrate".to_string());
+        argv.extend(verb.iter().map(|part| (*part).to_string()));
         Cli::try_parse_from(argv).expect("the fixture argv parses")
     }
 
@@ -359,7 +489,7 @@ mod tests {
         // test.
         let (printer, _stdout, stderr) = Printer::for_test_split_streams(Verbosity::Normal);
 
-        gate_on_load(&printer, &cli, MigrationPolicy::Prompt, false);
+        gate_on_load(&printer, &cli, false, Some(MigrationPolicy::Prompt), false);
         printer.flush();
 
         assert_eq!(
@@ -372,17 +502,12 @@ mod tests {
             text.contains("cfgd config migrate"),
             "the reader is told what settles it: {text}"
         );
-        let store = StateStore::open_in_dir(state.path()).unwrap();
-        assert_eq!(
-            store
-                .migration_answer(
-                    &path,
-                    cfgd_core::API_VERSION,
-                    &["spec.migrationPolicy".to_string()]
-                )
-                .unwrap(),
-            None,
-            "an unasked question is not recorded"
+        assert!(
+            !state
+                .path()
+                .join(cfgd_core::state::STATE_DB_FILENAME)
+                .exists(),
+            "an unasked question records nothing, so no state root is created to hold it"
         );
     }
 
@@ -402,60 +527,358 @@ mod tests {
             std::fs::write(&path, doc).unwrap();
             let cli = cli_with_config(&path, Some(state.path()));
             let (printer, _stdout, stderr) = Printer::for_test_split_streams(Verbosity::Normal);
-            gate_on_load(&printer, &cli, policy, assume_yes);
+            gate_on_load(&printer, &cli, false, Some(policy), assume_yes);
             printer.flush();
             let after = std::fs::read_to_string(&path).unwrap();
             (
                 after != doc,
                 cfgd_core::test_helpers::captured_text(&stderr),
+                state
+                    .path()
+                    .join(cfgd_core::state::STATE_DB_FILENAME)
+                    .exists(),
             )
         };
         assert!(written(MigrationPolicy::Update, false).0, "Update writes");
+        let (yes_wrote, _yes_said, yes_stored) = written(MigrationPolicy::Prompt, true);
         assert!(
-            written(MigrationPolicy::Prompt, true).0,
+            yes_wrote,
             "`--yes` takes the prompt, and taking it is answering yes"
         );
+        assert!(
+            !yes_stored,
+            "nobody was asked, so nothing was answered and no state root was created to hold it"
+        );
         assert!(!written(MigrationPolicy::Warn, false).0, "Warn writes not");
-        let (ignored_wrote, ignored_said) = written(MigrationPolicy::Ignore, false);
+        let (ignored_wrote, ignored_said, ignored_stored) = written(MigrationPolicy::Ignore, false);
         assert!(!ignored_wrote, "Ignore writes not");
         assert!(
             ignored_said.trim().is_empty(),
             "Ignore says nothing either: {ignored_said}"
         );
+        assert!(!ignored_stored, "Ignore opens no store either");
     }
 
-    /// A state store that cannot answer the migration question says so. The
-    /// reader is asked again either way, and a silent read failure means being
-    /// asked every run with nothing on screen to fix; a silent write failure
-    /// means the answer just given is thrown away.
+    /// The document every gate fixture below is pointed at: it declares no
+    /// `migrationPolicy`, so it is behind the schema by exactly that key.
+    const BEHIND_DOC: &str =
+        "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: t\nspec: {}\n";
+
+    /// A capture holding a scripted answer, at the verbosity an alert renders
+    /// at. `can_prompt()` is true while the queue holds something, which is
+    /// what puts the gate on its real `Prompt` path instead of the non-TTY
+    /// degrade.
+    fn prompting_printer(answers: Vec<cfgd_core::output::PromptAnswer>) -> (Printer, PromptBuffer) {
+        use cfgd_core::output::Verbosity;
+        Printer::for_test_with_prompt_responses_at(answers, Verbosity::Normal)
+    }
+
+    type PromptBuffer = std::sync::Arc<std::sync::Mutex<String>>;
+
+    /// The answer a reader gives the prompt is acted on AND remembered, both
+    /// ways round, and a remembered answer is never asked again: the second
+    /// run returns before it reaches the queue holding the opposite answer.
     #[test]
-    fn a_store_that_cannot_hold_the_answer_reports_instead_of_swallowing() {
-        use cfgd_core::output::{Printer, Verbosity};
-        let state = tempfile::tempdir().unwrap();
-        let store = StateStore::open_in_dir(state.path()).unwrap();
-        store.drop_config_migrations_table().unwrap();
-        let path = state.path().join("cfgd.yaml");
+    fn the_prompt_arm_acts_on_the_answer_and_never_asks_a_second_time() {
+        use cfgd_core::output::PromptAnswer;
         let keys = vec!["spec.migrationPolicy".to_string()];
 
-        let (printer, _stdout, stderr) = Printer::for_test_split_streams(Verbosity::Normal);
-        assert_eq!(
-            recorded_answer(&printer, &store, &path, cfgd_core::API_VERSION, &keys),
-            None,
-            "a store that cannot be read has answered nothing"
-        );
-        record_answer(&printer, &store, &path, cfgd_core::API_VERSION, true, &keys);
+        for accepted in [true, false] {
+            let dir = tempfile::tempdir().unwrap();
+            let state = tempfile::tempdir().unwrap();
+            let path = dir.path().join("cfgd.yaml");
+            std::fs::write(&path, BEHIND_DOC).unwrap();
+            let cli = cli_with_config(&path, Some(state.path()));
+
+            let (printer, _buf) = prompting_printer(vec![PromptAnswer::Confirm(accepted)]);
+            gate_on_load(&printer, &cli, false, Some(MigrationPolicy::Prompt), false);
+            printer.flush();
+
+            let after = std::fs::read_to_string(&path).unwrap();
+            assert_eq!(
+                after != BEHIND_DOC,
+                accepted,
+                "a yes writes the alignment and a no leaves the bytes alone: {after}"
+            );
+            let store = StateStore::open_in_dir(state.path()).unwrap();
+            assert_eq!(
+                store
+                    .migration_answer(&path, cfgd_core::API_VERSION, &keys)
+                    .unwrap(),
+                Some(accepted),
+                "the answer given is the answer held"
+            );
+            drop(store);
+
+            // The second run holds the OPPOSITE answer. Reaching the prompt at
+            // all would pop it; returning on the recorded one leaves it in the
+            // queue and the document exactly as the first run left it.
+            let (again, _buf2) = prompting_printer(vec![PromptAnswer::Confirm(!accepted)]);
+            gate_on_load(&again, &cli, false, Some(MigrationPolicy::Prompt), false);
+            again.flush();
+            assert_eq!(
+                std::fs::read_to_string(&path).unwrap(),
+                after,
+                "a question already answered is not asked again"
+            );
+            assert_eq!(
+                again.prompt_confirm("still queued?").ok(),
+                Some(!accepted),
+                "the queued answer was never reached"
+            );
+        }
+    }
+
+    /// A state root nothing has written to holds no answer, so the gate does
+    /// not create one to look: a read-only verb on a machine that has never
+    /// recorded anything leaves the disk as it found it. A root that DOES
+    /// hold an answer comes back with the store the caller can reuse.
+    #[test]
+    fn a_state_root_nothing_wrote_to_is_not_created_to_read_an_answer_from() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cfgd.yaml");
+        std::fs::write(&path, BEHIND_DOC).unwrap();
+        let cli = cli_with_config(&path, Some(state.path()));
+        let keys = vec!["spec.migrationPolicy".to_string()];
+        let printer = cfgd_core::test_helpers::test_printer();
+        let db = state.path().join(cfgd_core::state::STATE_DB_FILENAME);
+
+        let (held, recorded) =
+            consult_recorded(&printer, &cli, &path, cfgd_core::API_VERSION, &keys)
+                .expect("a resolvable state root answers");
+        assert!(held.is_none(), "nothing was opened");
+        assert_eq!(recorded, None, "and nothing was read");
+        assert!(!db.exists(), "no state root was created to read an answer");
+
+        let store = StateStore::open_in_dir(state.path()).unwrap();
+        store
+            .record_migration_answer(&path, cfgd_core::API_VERSION, false, &keys)
+            .unwrap();
+        drop(store);
+
+        let (held, recorded) =
+            consult_recorded(&printer, &cli, &path, cfgd_core::API_VERSION, &keys)
+                .expect("a resolvable state root answers");
+        assert!(held.is_some(), "a store that holds an answer comes back");
+        assert_eq!(recorded, Some(false), "and the answer with it");
+    }
+
+    /// A state store that cannot answer the migration question says so, on
+    /// the path a reader actually reaches it by. The reader is asked either
+    /// way: a silent read failure means being asked every run with nothing on
+    /// screen to fix, and a silent write failure means the answer just given
+    /// is thrown away.
+    #[test]
+    fn a_store_that_cannot_hold_the_answer_reports_instead_of_swallowing() {
+        use cfgd_core::output::PromptAnswer;
+        let dir = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cfgd.yaml");
+        std::fs::write(&path, BEHIND_DOC).unwrap();
+        let cli = cli_with_config(&path, Some(state.path()));
+        let keys = vec!["spec.migrationPolicy".to_string()];
+
+        // The row is recorded first so the store exists for the gate to open,
+        // and the table is then taken away under it: the migrations are gated
+        // on the schema version, so reopening does not put it back.
+        let store = StateStore::open_in_dir(state.path()).unwrap();
+        store
+            .record_migration_answer(&path, cfgd_core::API_VERSION, false, &keys)
+            .unwrap();
+        store.drop_config_migrations_table().unwrap();
+        drop(store);
+
+        let (printer, buf) = prompting_printer(vec![PromptAnswer::Confirm(false)]);
+        gate_on_load(&printer, &cli, false, Some(MigrationPolicy::Prompt), false);
         printer.flush();
 
-        let text = cfgd_core::test_helpers::captured_text(&stderr);
+        let text = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
-            text.contains("Could not read config_migrations")
-                && text.contains("Could not record config_migrations"),
-            "both the read and the write name the store and what it said: {text}"
+            text.contains("Could not read the recorded migration answer")
+                && text.contains("Could not record the migration answer"),
+            "both the read and the write say what the store said: {text}"
         );
         assert_eq!(
             text.matches("no such table").count(),
             2,
             "each half carries what the store said, not a wording of its own: {text}"
+        );
+    }
+
+    /// With nothing overriding it, the gate answers to the policy the
+    /// document itself declares — read off the one parse it already makes,
+    /// with no second load. An override outranks that field.
+    #[test]
+    #[serial_test::serial]
+    fn the_gate_reads_the_stored_policy_off_its_own_parse_and_an_override_outranks_it() {
+        use cfgd_core::output::{Printer, Verbosity};
+        let _unset = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_MIGRATION_POLICY");
+        let stored = |declared: &str, over: Option<MigrationPolicy>| {
+            let dir = tempfile::tempdir().unwrap();
+            let state = tempfile::tempdir().unwrap();
+            let path = dir.path().join("cfgd.yaml");
+            std::fs::write(
+                &path,
+                format!(
+                    "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: t\nspec:\n  {declared}\n"
+                ),
+            )
+            .unwrap();
+            let cli = cli_with_config(&path, Some(state.path()));
+            let (printer, _stdout, stderr) = Printer::for_test_split_streams(Verbosity::Normal);
+            gate_on_load(&printer, &cli, false, over, false);
+            printer.flush();
+            let after = std::fs::read_to_string(&path).unwrap();
+            (
+                after.contains("fileStrategy"),
+                cfgd_core::test_helpers::captured_text(&stderr),
+            )
+        };
+
+        let (wrote, said) = stored("migrationPolicy: Ignore", None);
+        assert!(!wrote, "a stored Ignore writes nothing");
+        assert!(said.trim().is_empty(), "and says nothing: {said}");
+
+        let (wrote, said) = stored("migrationPolicy: Warn", None);
+        assert!(!wrote, "a stored Warn writes nothing");
+        assert!(
+            said.contains("cfgd config migrate"),
+            "a stored Warn reports: {said}"
+        );
+
+        let (wrote, _said) = stored("migrationPolicy: Ignore", Some(MigrationPolicy::Update));
+        assert!(wrote, "the invocation's own policy outranks the document's");
+    }
+
+    /// A daemon never blocks on a prompt and never rewrites a file something
+    /// else tracks, so both writing arms fold to a report; off the daemon
+    /// nothing folds. Every pair is written out.
+    #[test]
+    fn a_daemon_folds_both_writing_policies_to_a_report_and_nothing_else() {
+        let expected = [
+            (false, MigrationPolicy::Prompt, MigrationPolicy::Prompt),
+            (false, MigrationPolicy::Warn, MigrationPolicy::Warn),
+            (false, MigrationPolicy::Update, MigrationPolicy::Update),
+            (false, MigrationPolicy::Ignore, MigrationPolicy::Ignore),
+            (true, MigrationPolicy::Prompt, MigrationPolicy::Warn),
+            (true, MigrationPolicy::Warn, MigrationPolicy::Warn),
+            (true, MigrationPolicy::Update, MigrationPolicy::Warn),
+            (true, MigrationPolicy::Ignore, MigrationPolicy::Ignore),
+        ];
+        for (is_daemon, policy, want) in expected {
+            assert_eq!(
+                daemon_folded_policy(is_daemon, policy),
+                want,
+                "is_daemon={is_daemon}, policy={policy:?}"
+            );
+        }
+    }
+
+    /// Every `config` subcommand clap offers says whether the load-time gate
+    /// runs for it, against a hand-written expectation: a verb added later
+    /// fails this walk until it is classified. `set` and `unset` appear twice,
+    /// because which key they name is what decides them.
+    #[test]
+    fn every_config_subcommand_says_whether_the_migration_gate_runs_for_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cfgd.yaml");
+        // (the clap name, the argv, whether the gate is withheld)
+        let cases: &[(&str, &[&str], bool)] = &[
+            ("show", &["config", "show"], false),
+            ("get", &["config", "get", "theme.name"], false),
+            ("set", &["config", "set", "theme.name", "dracula"], false),
+            ("unset", &["config", "unset", "theme.name"], false),
+            ("edit", &["config", "edit"], true),
+            ("migrate", &["config", "migrate"], true),
+            ("set", &["config", "set", "migrationPolicy", "Ignore"], true),
+            (
+                "set",
+                &["config", "set", "spec.migrationPolicy", "Ignore"],
+                true,
+            ),
+            ("unset", &["config", "unset", "migrationPolicy"], true),
+        ];
+
+        use clap::CommandFactory;
+        let command = Cli::command();
+        let config = command
+            .get_subcommands()
+            .find(|sub| sub.get_name() == "config")
+            .expect("cfgd config is a subcommand");
+        let names: Vec<&str> = config.get_subcommands().map(|sub| sub.get_name()).collect();
+        assert!(
+            names.len() >= 6,
+            "the walk found only {} config subcommands: {names:?}",
+            names.len()
+        );
+        for name in &names {
+            assert!(
+                cases.iter().any(|(case, _, _)| case == name),
+                "`cfgd config {name}` is not classified: say whether the migration gate runs for it"
+            );
+        }
+
+        for (name, argv, withheld) in cases {
+            assert!(
+                names.contains(name),
+                "the case names `cfgd config {name}`, which clap does not offer"
+            );
+            let cli = cli_running(&path, None, argv);
+            assert_eq!(
+                gate_exempt(cli.command.as_ref()).is_some(),
+                *withheld,
+                "`cfgd {}`",
+                argv.join(" ")
+            );
+        }
+
+        // A verb that is not `config` at all is never withheld.
+        let cli = cli_running(&path, None, &["paths"]);
+        assert!(
+            gate_exempt(cli.command.as_ref()).is_none(),
+            "the gate runs for every reader the advisory is written for"
+        );
+        for (name, argv, withheld) in cases {
+            if !withheld {
+                continue;
+            }
+            let cli = cli_running(&path, None, argv);
+            assert!(
+                gate_exempt(cli.command.as_ref()).is_some_and(|why| !why.is_empty()),
+                "`cfgd config {name}` is withheld without saying why"
+            );
+        }
+    }
+
+    /// The gate's write re-parses what it materialized before it replaces the
+    /// file, so a value the parser refuses leaves the document untouched
+    /// rather than half-written. `Patch` is the one global `fileStrategy` the
+    /// parser rejects, which is what makes it a value the typed config can
+    /// carry and the document cannot.
+    #[test]
+    fn a_materialized_value_the_parser_refuses_leaves_the_document_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cfgd.yaml");
+        std::fs::write(&path, BEHIND_DOC).unwrap();
+        let mut cfg = cfgd_core::config::parse_config(BEHIND_DOC, &path).unwrap();
+        let pending = pending_alignment(&cfg, BEHIND_DOC);
+        assert!(
+            pending.keys.contains(&"spec.fileStrategy".to_string()),
+            "the key the refusal lands on is pending: {:?}",
+            pending.keys
+        );
+
+        cfg.spec.file_strategy = cfgd_core::config::FileStrategy::Patch;
+        let err = write_alignment(&path, &cfg, &pending).expect_err("the parser refuses Patch");
+        assert!(
+            format!("{err}").contains("fileStrategy"),
+            "the refusal names the field: {err}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            BEHIND_DOC,
+            "a refused write replaces nothing"
         );
     }
 

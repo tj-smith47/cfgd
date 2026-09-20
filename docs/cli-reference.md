@@ -2638,6 +2638,12 @@ the answer is remembered — yes or no; a release that adds another field asks
 again, because the question changed. A run with no terminal reports instead and
 records no answer, and the daemon does the same: it never rewrites a tracked file.
 
+Four invocations are withheld from that load-time check, because the migration
+question is their own subject: this verb, `cfgd config edit`, and
+`cfgd config set` / `cfgd config unset` on `migrationPolicy`. A check that ran
+first would write the file this report is about, open the editor on bytes it had
+just rewritten, or act on the value the caller is replacing.
+
 Structured output carries `path`, `pendingKeys` and `written`.
 
 A document written under an `apiVersion` this build does not read is a different

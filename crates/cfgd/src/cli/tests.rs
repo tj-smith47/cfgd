@@ -1226,47 +1226,40 @@ fn resolve_hints_enabled_precedence_flag_beats_env_beats_spec_beats_default() {
     );
 }
 
+/// What this invocation says the migration policy is, over whatever the
+/// document declares. The stored half is not read here: the gate parses the
+/// document once for itself and takes `spec.migrationPolicy` off that parse,
+/// which
+/// `the_gate_reads_the_stored_policy_off_its_own_parse_and_an_override_outranks_it`
+/// pins.
 #[test]
 #[serial_test::serial]
-fn the_migration_policy_flag_outranks_the_env_var_and_the_config_field() {
+fn the_migration_policy_flag_outranks_the_env_var_and_says_nothing_on_its_own() {
     use cfgd_core::test_helpers::EnvVarGuard;
     use cfgd_schema::MigrationPolicy;
 
-    let dir = tempfile::tempdir().expect("tempdir");
-    let path = dir.path().join("cfgd.yaml");
-    std::fs::write(
-        &path,
-        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n  migrationPolicy: warn\n",
-    )
-    .expect("write config");
-
     let _unset = EnvVarGuard::unset("CFGD_MIGRATION_POLICY");
     assert_eq!(
-        super::resolve_migration_policy(&dir.path().join("absent.yaml"), None),
-        MigrationPolicy::Prompt,
-        "with nothing said, cfgd asks before it writes"
-    );
-    assert_eq!(
-        super::resolve_migration_policy(&path, None),
-        MigrationPolicy::Warn,
-        "spec.migrationPolicy must be read when nothing outranks it"
+        super::migration_policy_override(None),
+        None,
+        "with nothing said, the invocation overrides nothing and the document decides"
     );
 
     let _env = EnvVarGuard::set("CFGD_MIGRATION_POLICY", "ignore");
     assert_eq!(
-        super::resolve_migration_policy(&path, None),
-        MigrationPolicy::Ignore,
-        "CFGD_MIGRATION_POLICY must outrank spec.migrationPolicy"
+        super::migration_policy_override(None),
+        Some(MigrationPolicy::Ignore),
+        "CFGD_MIGRATION_POLICY answers on its own"
     );
     assert_eq!(
-        super::resolve_migration_policy(&path, Some("update")),
-        MigrationPolicy::Update,
+        super::migration_policy_override(Some("update")),
+        Some(MigrationPolicy::Update),
         "--migration-policy must outrank CFGD_MIGRATION_POLICY"
     );
     assert_eq!(
-        super::resolve_migration_policy(&dir.path().join("absent.yaml"), None),
-        MigrationPolicy::Ignore,
-        "the variable answers on its own, with no config for it to outrank"
+        super::migration_policy_override(Some("Prompt")),
+        Some(MigrationPolicy::Prompt),
+        "the PascalCase spelling the config field serializes as is accepted too"
     );
 }
 
@@ -1636,7 +1629,7 @@ fn every_knob_resolver_routes_through_resolve_knob() {
         hand_written
     );
     assert!(
-        routed.len() >= 3,
+        routed.len() >= 2,
         "the walk found {} knob resolvers; it has stopped seeing them",
         routed.len()
     );
@@ -47290,7 +47283,13 @@ fn every_config_load_site_answers_the_migration_policy() {
         "main.rs is the one caller: the gate runs before any cli boundary loads config"
     );
     assert!(
-        main.contains("is_daemon,") && main.contains("MigrationPolicy::Warn"),
-        "the daemon's fold is named at that one call site, not at a second one"
+        main.contains("config_schema::daemon_folded_policy(is_daemon"),
+        "the daemon's fold is a function that fold's own table pins, called at that one \
+         call site rather than written out as a match nothing discriminates"
+    );
+    assert!(
+        main.contains("config_schema::gate_exempt(cli.command.as_ref())"),
+        "the verbs whose own subject is the migration question are withheld from the gate \
+         through the one classifier, not by a `matches!` at the call site"
     );
 }

@@ -4,7 +4,8 @@
 //!     `inquire` self-rejects this on Unix but blocks on Windows.
 //!   - Honor a test-seeded answer queue (set via
 //!     `for_test_with_prompt_responses`) so tests can drive prompt_* past the
-//!     non-interactive guard.
+//!     non-interactive guard — including a caller that asks `can_prompt()`
+//!     before it prompts, which a queued answer satisfies too.
 
 use std::io::IsTerminal;
 
@@ -81,7 +82,20 @@ impl Printer {
     /// from a prompt that was reached and then failed — and word the two
     /// differently instead of quoting the prompt's message back inside its own.
     pub fn can_prompt(&self) -> bool {
-        !self.is_structured() && self.interactive_stdin
+        !self.is_structured() && (self.interactive_stdin || self.has_queued_prompt_answer())
+    }
+
+    /// Whether a scripted answer is waiting to be popped.
+    ///
+    /// Only a test capture ever holds a queue, so this widens nothing a
+    /// shipped binary does. What it buys is that a caller which asks
+    /// `can_prompt()` and only then prompts — rather than prompting and
+    /// reading the refusal — can be driven through its real path instead of
+    /// degrading the moment a test looks at it.
+    fn has_queued_prompt_answer(&self) -> bool {
+        self.prompt_queue
+            .as_ref()
+            .is_some_and(|queue| !queue.lock().unwrap_or_else(|e| e.into_inner()).is_empty())
     }
 
     pub fn prompt_confirm(&self, message: &str) -> Result<bool, inquire::InquireError> {
@@ -342,10 +356,14 @@ mod tests {
         assert!(format!("{err}").contains("not a TTY"), "msg: {err}");
 
         // Draining the seeded answer leaves the same printer in the same state:
-        // the second ask has nothing to pop and must refuse too.
+        // the second ask has nothing to pop and must refuse too. A caller that
+        // asks `can_prompt()` first sees the same two states, or it degrades
+        // ahead of the answer the queue is holding for it.
         let (seeded, _b) =
             Printer::for_test_with_prompt_responses(vec![PromptAnswer::Confirm(true)]);
+        assert!(seeded.can_prompt(), "a queued answer is reachable");
         assert!(seeded.prompt_confirm("first?").expect("seeded answer"));
+        assert!(!seeded.can_prompt(), "a drained queue is no answer at all");
         assert!(seeded.prompt_confirm("second?").is_err());
     }
 

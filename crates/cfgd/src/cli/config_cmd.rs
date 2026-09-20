@@ -435,6 +435,13 @@ pub(super) fn parse_yaml_value(s: &str) -> serde_yaml::Value {
     }
 }
 
+/// A caller-written config key as this module addresses it: relative to
+/// `spec`, which every path descends from and no segment names, so the
+/// `spec.` prefix the docs and `cfgd explain` print is optional.
+pub(super) fn spec_relative_key(key: &str) -> &str {
+    key.strip_prefix("spec.").unwrap_or(key)
+}
+
 /// Resolve a `spec`-relative key path onto the nested `spec.output.*` key that
 /// owns it, so `theme.name` and `output.theme.name` name one field.
 ///

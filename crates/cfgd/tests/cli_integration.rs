@@ -880,6 +880,49 @@ fn source_list_with_valid_config() {
         .success();
 }
 
+/// `cfgd config migrate` is the load-time gate's own remediation, so the gate
+/// is withheld from it: under `spec.migrationPolicy: Update` the report still
+/// writes nothing, and says so. Run before the exemption existed, the gate
+/// rewrote the document and the report then announced that the document
+/// declared every field this build reads.
+#[test]
+fn config_migrate_reports_without_writing_under_an_update_policy() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cfgd.yaml");
+    let doc = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  \
+               profile: work\n  migrationPolicy: Update\n";
+    std::fs::write(&path, doc).unwrap();
+
+    let out = cfgd_bin()
+        .unwrap()
+        .args(["config", "migrate", "-o", "json"])
+        .arg("--config")
+        .arg(&path)
+        .arg("--state-dir")
+        .arg(state.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        doc,
+        "the report writes nothing, whatever the load-time policy says"
+    );
+    let payload: serde_json::Value = serde_json::from_slice(&out).expect("the report is JSON");
+    assert_eq!(payload["written"], serde_json::Value::Bool(false));
+    let pending = payload["pendingKeys"]
+        .as_array()
+        .expect("pendingKeys is a list");
+    assert!(
+        !pending.is_empty(),
+        "the fixture is behind the schema, so the report names what it is behind by: {payload}"
+    );
+}
+
 // --- config show with valid config ---
 
 #[test]

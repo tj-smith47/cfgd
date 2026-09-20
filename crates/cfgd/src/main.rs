@@ -364,20 +364,17 @@ fn main() -> anyhow::Result<()> {
     }
 
     // The load-time migration gate, reached once per invocation, after the
-    // config path has settled and before dispatch. A daemon never blocks on a
-    // prompt and never rewrites a file something else tracks, so both arms
-    // that would write fold to a report; the fold is decided here because the
-    // reconcile loop lives in cfgd-core and cannot call into this crate.
-    let migration_policy = match (
-        is_daemon,
-        cli::resolve_migration_policy(&cli.config, cli.migration_policy.as_deref()),
-    ) {
-        (true, cfgd_schema::MigrationPolicy::Prompt | cfgd_schema::MigrationPolicy::Update) => {
-            cfgd_schema::MigrationPolicy::Warn
-        }
-        (_, policy) => policy,
-    };
-    cli::config_schema::gate_on_load(&printer, &cli, migration_policy, assume_yes);
+    // config path has settled and before dispatch. It is withheld from the
+    // verbs whose own subject is the migration question, and the override
+    // this invocation named is folded for the daemon here, because the
+    // reconcile loop lives in cfgd-core and cannot call into this crate. With
+    // nothing overridden the gate reads `spec.migrationPolicy` off the one
+    // parse it makes of the document.
+    if cli::config_schema::gate_exempt(cli.command.as_ref()).is_none() {
+        let migration_override = cli::migration_policy_override(cli.migration_policy.as_deref())
+            .map(|policy| cli::config_schema::daemon_folded_policy(is_daemon, policy));
+        cli::config_schema::gate_on_load(&printer, &cli, is_daemon, migration_override, assume_yes);
+    }
 
     // Policy-driven self-update check (interval-gated, cheap when within
     // interval). Skipped for the daemon (its own loop runs the check), for
