@@ -27,9 +27,154 @@ pub(super) fn shell_var_indicates_fish(shell: Option<&str>) -> bool {
     shell.unwrap_or("").contains("fish")
 }
 
-/// Generate bash/zsh env file content from merged env vars, aliases, and the
-/// PATH directories contributed by bootstrappable package managers.
-pub(super) fn generate_env_file_content(
+/// The shell dialect a generated env file is written in, and the ONE renderer
+/// of a single declared entry in it. The whole-file generators below and the
+/// single-line display helpers further down both call it, so the line a file
+/// holds and the line a helper reports cannot drift, and neither is derived
+/// from where the file's header ends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Dialect {
+    Posix,
+    Fish,
+    PowerShell,
+}
+
+impl Dialect {
+    /// The dialect cfgd's PRIMARY managed env file is written in for
+    /// `platform` — bash/zsh syntax on Unix, PowerShell on Windows. Fish is
+    /// never that file: it is a second target chosen by [`fish_in_use`], not
+    /// by the platform.
+    pub(super) fn of(platform: super::env_engine::EnvPlatform) -> Self {
+        if platform == super::env_engine::EnvPlatform::Windows {
+            Self::PowerShell
+        } else {
+            Self::Posix
+        }
+    }
+
+    /// The one line a declared env var renders as, its provenance comment
+    /// included. `None` for a name no shell can carry, which is exactly what
+    /// the generated file omits.
+    pub(super) fn env_line(
+        &self,
+        ev: &crate::config::EnvVar,
+        origins: &super::env_engine::EnvOrigins,
+    ) -> Option<String> {
+        if crate::validate_env_var_name(&ev.name).is_err() {
+            return None;
+        }
+        // Every dialect quotes the value literally (fish single quotes suppress
+        // tilde expansion, PowerShell performs none at all), so a surviving `~`
+        // would reach the shell as a directory of that name.
+        let value = crate::expand_env_value_tilde(&ev.value);
+        let comment = origins.env_comment(&ev.name);
+        Some(match self {
+            Dialect::Posix => format!(
+                "export {}={}{comment}",
+                ev.name,
+                crate::posix_double_quoted(&value)
+            ),
+            // Single-quoted to prevent fish command substitution via `()`.
+            // (A `$VAR` in a fish single-quoted value is a separate gap.)
+            Dialect::Fish => format!(
+                "set -gx {} {}{comment}",
+                ev.name,
+                crate::fish_single_quoted(&value)
+            ),
+            // A value naming other env vars is double-quoted so those
+            // references still resolve, with subexpressions neutralized.
+            Dialect::PowerShell if value.contains("$env:") => format!(
+                "$env:{} = {}{comment}",
+                ev.name,
+                crate::powershell_double_quoted(&value)
+            ),
+            // Single quotes prevent all PowerShell interpolation.
+            Dialect::PowerShell => format!(
+                "$env:{} = {}{comment}",
+                ev.name,
+                crate::powershell_single_quoted(&value)
+            ),
+        })
+    }
+
+    /// The alias counterpart of [`Dialect::env_line`].
+    pub(super) fn alias_line(
+        &self,
+        alias: &crate::config::ShellAlias,
+        origins: &super::env_engine::EnvOrigins,
+    ) -> Option<String> {
+        if crate::validate_alias_name(&alias.name).is_err() {
+            return None;
+        }
+        let comment = origins.alias_comment(&alias.name);
+        Some(match self {
+            // The body is quoted, not interpolated: a `$(…)` in the command
+            // becomes part of the alias and runs when the user invokes it,
+            // instead of running once while the login shell is still sourcing
+            // this file.
+            Dialect::Posix => format!(
+                "alias {}={}{comment}",
+                alias.name,
+                crate::posix_double_quoted(&alias.command)
+            ),
+            Dialect::Fish => format!(
+                "abbr -a {} {}{comment}",
+                alias.name,
+                crate::fish_single_quoted(&alias.command)
+            ),
+            Dialect::PowerShell if alias.command.split_whitespace().count() == 1 => format!(
+                "Set-Alias -Name {} -Value {}{comment}",
+                alias.name,
+                crate::powershell_single_quoted(&alias.command)
+            ),
+            // A multi-word command needs a function wrapper. The command is
+            // carried as a quoted string and turned into a script block at CALL
+            // time: pasted into the braces directly, a `}` in the command closes
+            // the function early and everything after it runs while the profile
+            // is still loading.
+            Dialect::PowerShell => format!(
+                "function {} {{ & ([scriptblock]::Create({})) @args }}{comment}",
+                alias.name,
+                crate::powershell_single_quoted(&format!("{} @args", alias.command))
+            ),
+        })
+    }
+
+    /// The one `PATH` assignment a generated file carries, however many
+    /// producers fed the fold. The fold decides which entries and in what
+    /// order; this writes them in one dialect's syntax.
+    pub(super) fn path_line(&self, path: &super::env_engine::FoldedPath) -> String {
+        match self {
+            Dialect::Posix => format!(
+                "export PATH=\"{}\"{}",
+                path.value(crate::escape_double_quoted, "$PATH", ":"),
+                path.comment
+            ),
+            // Fish uses a space-separated list for PATH, not colon-separated,
+            // and a bare `$PATH` splices its existing list variable in place;
+            // single quotes suppress fish expansion of each entry, which is why
+            // the fold spelled every directory literally.
+            Dialect::Fish => format!(
+                "set -gx PATH {}{}",
+                path.value(crate::fish_single_quoted, "$PATH", " "),
+                path.comment
+            ),
+            // Double-quoted so `$env:PATH` and `$HOME` interpolate; `;` is the
+            // Windows PATH separator. Backtick is PowerShell's escape character
+            // inside "".
+            Dialect::PowerShell => format!(
+                "$env:PATH = \"{}\"{}",
+                path.value(crate::escape_powershell_double_quoted, "$env:PATH", ";"),
+                path.comment
+            ),
+        }
+    }
+}
+
+/// The body of every whole-file generator below: one header, the folded PATH
+/// assignment, then one [`Dialect`] line per declared entry.
+fn generate_content(
+    dialect: Dialect,
     env: &[crate::config::EnvVar],
     aliases: &[crate::config::ShellAlias],
     path: Option<&super::env_engine::FoldedPath>,
@@ -39,47 +184,41 @@ pub(super) fn generate_env_file_content(
     if let Some(path) = path {
         // Ahead of the user's own exports so a `spec.env` value may reference a
         // binary that only exists on the bootstrapped manager's PATH.
-        lines.push(format!(
-            "export PATH=\"{}\"{}",
-            path.value(crate::escape_double_quoted, "$PATH", ":"),
-            path.comment
-        ));
+        lines.push(dialect.path_line(path));
     }
     for ev in env {
-        if crate::validate_env_var_name(&ev.name).is_err() {
-            // tracing-ok: an env var the user declared under a name no shell can carry; the generated file simply omits it and no row names it
-            tracing::warn!("skipping env var with unsafe name: {}", ev.name);
-            continue;
-        }
         // `PATH` is written once, by the fold above, whichever producers fed it.
         if ev.name == "PATH" {
             continue;
         }
-        lines.push(format!(
-            "export {}={}{}",
-            ev.name,
-            crate::posix_double_quoted(&crate::expand_env_value_tilde(&ev.value)),
-            origins.env_comment(&ev.name)
-        ));
+        let Some(line) = dialect.env_line(ev, origins) else {
+            // tracing-ok: an env var the user declared under a name no shell can carry; the generated file simply omits it and no row names it
+            tracing::warn!("skipping env var with unsafe name: {}", ev.name);
+            continue;
+        };
+        lines.push(line);
     }
     for alias in aliases {
-        if crate::validate_alias_name(&alias.name).is_err() {
+        let Some(line) = dialect.alias_line(alias, origins) else {
             // tracing-ok: an alias the user declared under a name no shell can carry; same omission
             tracing::warn!("skipping alias with unsafe name: {}", alias.name);
             continue;
-        }
-        // The body is quoted, not interpolated: a `$(…)` in the command becomes
-        // part of the alias and runs when the user invokes it, instead of
-        // running once while the login shell is still sourcing this file.
-        lines.push(format!(
-            "alias {}={}{}",
-            alias.name,
-            crate::posix_double_quoted(&alias.command),
-            origins.alias_comment(&alias.name)
-        ));
+        };
+        lines.push(line);
     }
     lines.push(String::new()); // trailing newline
     lines.join("\n")
+}
+
+/// Generate bash/zsh env file content from merged env vars, aliases, and the
+/// PATH directories contributed by bootstrappable package managers.
+pub(super) fn generate_env_file_content(
+    env: &[crate::config::EnvVar],
+    aliases: &[crate::config::ShellAlias],
+    path: Option<&super::env_engine::FoldedPath>,
+    origins: &super::env_engine::EnvOrigins,
+) -> String {
+    generate_content(Dialect::Posix, env, aliases, path, origins)
 }
 
 /// Generate fish env file content from merged env vars, aliases, and the PATH
@@ -90,56 +229,7 @@ pub(super) fn generate_fish_env_content(
     path: Option<&super::env_engine::FoldedPath>,
     origins: &super::env_engine::EnvOrigins,
 ) -> String {
-    let mut lines = vec![ENV_FILE_HEADER.to_string()];
-    if let Some(path) = path {
-        // Fish uses a space-separated list for PATH, not colon-separated, and
-        // a bare `$PATH` splices its existing list variable in place; single
-        // quotes suppress fish expansion of each entry, which is why the fold
-        // spelled every directory literally.
-        lines.push(format!(
-            "set -gx PATH {}{}",
-            path.value(crate::fish_single_quoted, "$PATH", " "),
-            path.comment
-        ));
-    }
-    for ev in env {
-        if crate::validate_env_var_name(&ev.name).is_err() {
-            // tracing-ok: an env var the user declared under a name no shell can carry; the generated file simply omits it and no row names it
-            tracing::warn!("skipping env var with unsafe name: {}", ev.name);
-            continue;
-        }
-        // `PATH` is written once, by the fold above, whichever producers fed it.
-        if ev.name == "PATH" {
-            continue;
-        }
-        // Expand a leading/`:`-prefixed `~` to home before single-quoting:
-        // fish single quotes suppress tilde expansion, so a literal `~` would
-        // break the path. (`$VAR` in a fish single-quoted value is a separate
-        // gap.)
-        let value = crate::expand_env_value_tilde(&ev.value);
-        // Single-quote to prevent fish command substitution via ()
-        lines.push(format!(
-            "set -gx {} {}{}",
-            ev.name,
-            crate::fish_single_quoted(&value),
-            origins.env_comment(&ev.name)
-        ));
-    }
-    for alias in aliases {
-        if crate::validate_alias_name(&alias.name).is_err() {
-            // tracing-ok: an alias the user declared under a name no shell can carry; same omission
-            tracing::warn!("skipping alias with unsafe name: {}", alias.name);
-            continue;
-        }
-        lines.push(format!(
-            "abbr -a {} {}{}",
-            alias.name,
-            crate::fish_single_quoted(&alias.command),
-            origins.alias_comment(&alias.name)
-        ));
-    }
-    lines.push(String::new());
-    lines.join("\n")
+    generate_content(Dialect::Fish, env, aliases, path, origins)
 }
 
 /// Generate PowerShell env file content from merged env vars, aliases, and the
@@ -150,90 +240,18 @@ pub(super) fn generate_powershell_env_content(
     path: Option<&super::env_engine::FoldedPath>,
     origins: &super::env_engine::EnvOrigins,
 ) -> String {
-    let mut lines = vec![ENV_FILE_HEADER.to_string()];
-    if let Some(path) = path {
-        // Double-quoted so `$env:PATH` and `$HOME` interpolate; `;` is the
-        // Windows PATH separator. Backtick is PowerShell's escape character
-        // inside "".
-        lines.push(format!(
-            "$env:PATH = \"{}\"{}",
-            path.value(crate::escape_powershell_double_quoted, "$env:PATH", ";"),
-            path.comment
-        ));
-    }
-    for ev in env {
-        if crate::validate_env_var_name(&ev.name).is_err() {
-            // tracing-ok: an env var the user declared under a name no shell can carry; the generated file simply omits it and no row names it
-            tracing::warn!("skipping env var with unsafe name: {}", ev.name);
-            continue;
-        }
-        // `PATH` is written once, by the fold above, whichever producers fed it.
-        if ev.name == "PATH" {
-            continue;
-        }
-        // Expand a leading/`:`-prefixed `~` to home before quoting (PowerShell
-        // does not perform Unix tilde expansion on env values).
-        let value = crate::expand_env_value_tilde(&ev.value);
-        if value.contains("$env:") {
-            // Value references other env vars — double-quote so those
-            // references still resolve, with subexpressions neutralized.
-            lines.push(format!(
-                "$env:{} = {}{}",
-                ev.name,
-                crate::powershell_double_quoted(&value),
-                origins.env_comment(&ev.name)
-            ));
-        } else {
-            // Single-quote prevents all PS interpolation
-            lines.push(format!(
-                "$env:{} = {}{}",
-                ev.name,
-                crate::powershell_single_quoted(&value),
-                origins.env_comment(&ev.name)
-            ));
-        }
-    }
-    for alias in aliases {
-        if crate::validate_alias_name(&alias.name).is_err() {
-            // tracing-ok: an alias the user declared under a name no shell can carry; same omission
-            tracing::warn!("skipping alias with unsafe name: {}", alias.name);
-            continue;
-        }
-        if alias.command.split_whitespace().count() == 1 {
-            // Simple alias — use Set-Alias
-            lines.push(format!(
-                "Set-Alias -Name {} -Value {}{}",
-                alias.name,
-                crate::powershell_single_quoted(&alias.command),
-                origins.alias_comment(&alias.name)
-            ));
-        } else {
-            // Complex alias — a function wrapper. The command is carried as a
-            // quoted string and turned into a script block at CALL time: pasted
-            // into the braces directly, a `}` in the command closes the
-            // function early and everything after it runs while the profile is
-            // still loading.
-            lines.push(format!(
-                "function {} {{ & ([scriptblock]::Create({})) @args }}{}",
-                alias.name,
-                crate::powershell_single_quoted(&format!("{} @args", alias.command)),
-                origins.alias_comment(&alias.name)
-            ));
-        }
-    }
-    lines.push(String::new()); // trailing newline
-    lines.join("\n")
+    generate_content(Dialect::PowerShell, env, aliases, path, origins)
 }
 
 /// The one line a single env var renders as in cfgd's PRIMARY managed env
 /// file for `platform` — bash/zsh syntax on Unix, PowerShell on Windows, the
 /// dialect of the first `EnvTarget::ManagedFile` `env_targets` always
-/// produces when there is anything to write. Built by calling the same
-/// generator that writes the real file with a one-item slice, so a verify
+/// produces when there is anything to write. Rendered through the same
+/// [`Dialect`] the whole-file generator writes that line with, so a verify
 /// pass can attribute a content mismatch to the declared item that caused it
 /// without re-deriving that dialect's quoting rules. `None` when the name
-/// fails the generator's own safety check, matching what a real write
-/// silently skips.
+/// fails the dialect's own safety check, matching what a real write silently
+/// skips.
 ///
 /// `path` is the file's folded `PATH` assignment, which the caller must supply
 /// for `PATH` itself: that one variable's line is written by the fold and not
@@ -246,18 +264,14 @@ pub(super) fn primary_env_var_line(
     origins: &super::env_engine::EnvOrigins,
     path: Option<&super::env_engine::FoldedPath>,
 ) -> Option<String> {
-    let one = std::slice::from_ref(ev);
-    let path = if ev.name == "PATH" { path } else { None };
-    let generated = if platform == super::env_engine::EnvPlatform::Windows {
-        generate_powershell_env_content(one, &[], path, origins)
-    } else {
-        generate_env_file_content(one, &[], path, origins)
-    };
-    generated
-        .lines()
-        .nth(1)
-        .filter(|l| !l.is_empty())
-        .map(str::to_string)
+    let dialect = Dialect::of(platform);
+    // `PATH` has one line however many producers fed it, and the fold writes
+    // it — a declaration alone renders nothing.
+    match (ev.name.as_str(), path) {
+        ("PATH", Some(path)) => Some(dialect.path_line(path)),
+        ("PATH", None) => None,
+        _ => dialect.env_line(ev, origins),
+    }
 }
 
 /// The alias counterpart of `primary_env_var_line`.
@@ -266,17 +280,7 @@ pub(super) fn primary_alias_line(
     platform: super::env_engine::EnvPlatform,
     origins: &super::env_engine::EnvOrigins,
 ) -> Option<String> {
-    let one = std::slice::from_ref(alias);
-    let generated = if platform == super::env_engine::EnvPlatform::Windows {
-        generate_powershell_env_content(&[], one, None, origins)
-    } else {
-        generate_env_file_content(&[], one, None, origins)
-    };
-    generated
-        .lines()
-        .nth(1)
-        .filter(|l| !l.is_empty())
-        .map(str::to_string)
+    Dialect::of(platform).alias_line(alias, origins)
 }
 
 /// The shared derivation behind the `*_line_prefix` helpers below: the common
@@ -365,22 +369,12 @@ pub(super) fn alias_line_prefixes(
 /// directories is claimed as cfgd's own scaffolding rather than read as some
 /// layer's deleted entry.
 pub(super) fn path_dirs_line_prefix(platform: super::env_engine::EnvPlatform) -> Option<String> {
-    let line = |dir: &str| {
-        // Nothing is named: the prefix ends where the two sentinel DIRS first
-        // differ, which is before any trailing provenance comment.
-        let fold = super::env_engine::FoldedPath::literal([dir.to_string()]);
-        let content = if platform == super::env_engine::EnvPlatform::Windows {
-            generate_powershell_env_content(&[], &[], Some(&fold), &Default::default())
-        } else {
-            generate_env_file_content(&[], &[], Some(&fold), &Default::default())
-        };
-        content
-            .lines()
-            .nth(1)
-            .filter(|l| !l.is_empty())
-            .map(str::to_string)
-    };
-    stable_line_prefix(line("0cfgdsentinel"), line("1cfgdsentinel"))
+    let dialect = Dialect::of(platform);
+    // Nothing is named: the prefix ends where the two sentinel DIRS first
+    // differ, which is before any trailing provenance comment.
+    let line =
+        |dir: &str| dialect.path_line(&super::env_engine::FoldedPath::literal([dir.to_string()]));
+    stable_line_prefix(Some(line("0cfgdsentinel")), Some(line("1cfgdsentinel")))
 }
 
 /// Read a cfgd-generated env file for comparison against the content about to
@@ -900,13 +894,23 @@ mod tests {
         },
     ];
 
+    /// A generated file's BODY: everything past its leading header block,
+    /// which is however many comment lines the header takes — so nothing
+    /// here counts them, and a value carrying a newline still reads as one
+    /// whole rendering rather than its first physical row.
+    fn generated_body(content: &str) -> &str {
+        let header: usize = content
+            .split_inclusive('\n')
+            .take_while(|l| l.starts_with('#'))
+            .map(str::len)
+            .sum();
+        content[header..].trim_matches('\n')
+    }
+
     fn assert_line(generated: &str, expected: &str, value: &str, shell: &str) {
-        let body = generated
-            .strip_prefix(super::ENV_FILE_HEADER)
-            .unwrap_or(generated)
-            .trim_matches('\n');
         assert_eq!(
-            body, expected,
+            generated_body(generated),
+            expected,
             "{shell} emitted the wrong line for value {value:?}"
         );
     }
@@ -1251,7 +1255,7 @@ mod tests {
                 &Default::default(),
             ),
         ] {
-            let path_line = content.lines().nth(1).expect("a PATH line is rendered");
+            let path_line = generated_body(&content);
             assert!(
                 path_line.ends_with(" # manager:brew,cargo"),
                 "the PATH line names each manager once, in dir order: {path_line}"
@@ -1285,7 +1289,7 @@ mod tests {
                     &Default::default(),
                 )
             };
-            let path_line = content.lines().nth(1).unwrap();
+            let path_line = generated_body(&content);
             let prefix = super::path_dirs_line_prefix(platform).unwrap();
             assert!(
                 path_line.contains(" # manager:brew"),
@@ -1310,7 +1314,7 @@ mod tests {
         );
         let prefix = super::path_dirs_line_prefix(EnvPlatform::Linux).unwrap();
         assert!(
-            unix.lines().nth(1).unwrap().starts_with(&prefix),
+            generated_body(&unix).starts_with(&prefix),
             "{prefix:?} must prefix the unix PATH line: {unix}"
         );
         assert!(!prefix.contains("cfgd"), "sentinel leaked: {prefix:?}");
@@ -1325,9 +1329,65 @@ mod tests {
         );
         let prefix = super::path_dirs_line_prefix(EnvPlatform::Windows).unwrap();
         assert!(
-            ps.lines().nth(1).unwrap().starts_with(&prefix),
+            generated_body(&ps).starts_with(&prefix),
             "{prefix:?} must prefix the PowerShell PATH line: {ps}"
         );
         assert!(!prefix.contains("cfgd"), "sentinel leaked: {prefix:?}");
+    }
+
+    /// The single-line renderers and the whole-file generators cannot disagree.
+    ///
+    /// The three display helpers used to take `generated.lines().nth(…)`, which
+    /// reads "the line after the header" — a fact about the banner, not about the
+    /// entry. One renderer, called by both, is what survives the banner growing.
+    #[test]
+    fn every_dialect_renders_one_entry_the_same_way_alone_and_in_a_file() {
+        let ev = EnvVar {
+            name: "EDITOR".into(),
+            value: "nvim".into(),
+            platforms: vec![],
+        };
+        let alias = ShellAlias {
+            name: "v".into(),
+            command: "nvim".into(),
+            platforms: vec![],
+        };
+        let origins = Default::default();
+        for (dialect, whole) in [
+            (
+                super::Dialect::Posix,
+                super::generate_env_file_content as fn(_, _, _, _) -> String,
+            ),
+            (super::Dialect::Fish, super::generate_fish_env_content),
+            (
+                super::Dialect::PowerShell,
+                super::generate_powershell_env_content,
+            ),
+        ] {
+            let body = whole(
+                std::slice::from_ref(&ev),
+                std::slice::from_ref(&alias),
+                None,
+                &origins,
+            );
+            let lines: Vec<&str> = body
+                .lines()
+                .filter(|l| !l.is_empty() && !l.starts_with('#'))
+                .collect();
+            assert_eq!(
+                lines,
+                vec![
+                    dialect
+                        .env_line(&ev, &origins)
+                        .expect("a safe name renders")
+                        .as_str(),
+                    dialect
+                        .alias_line(&alias, &origins)
+                        .expect("a safe name renders")
+                        .as_str(),
+                ],
+                "{dialect:?} renders an entry differently alone than in a file",
+            );
+        }
     }
 }

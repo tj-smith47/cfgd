@@ -1327,6 +1327,10 @@ fn no_core_env_file_fixture_hardcodes_the_primary_env_files_name_or_dialect() {
     // dialect-emitting generator itself may spell the dialect it just called.
     let generator_calls = [
         "env_targets",
+        // The dialect ITSELF: `Dialect`'s arms are where each generator's
+        // assignment syntax lives, so the methods spelling it are the
+        // generator for this purpose.
+        "Dialect",
         "generate_env_file_content",
         "generate_fish_env_content",
         "generate_powershell_env_content",
