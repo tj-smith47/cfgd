@@ -16023,8 +16023,10 @@ fn two_layers_of_one_subscription_share_one_block() {
 /// blocks and the winners answering the same question.
 ///
 /// The claim map answers the same way: an entry no block declares is placed by
-/// its owner token, and an owner holding two blocks takes the LAST of them,
-/// which is where the layer that claimed the entry sits.
+/// its owner token, and an owner holding two blocks takes the LAST of them.
+/// The claim records the last layer that ranked the entry, so nothing between
+/// it and that block ranked it, and the entry is never rendered below a layer
+/// declaring its own name.
 #[test]
 fn a_source_whose_tiers_straddle_a_local_layer_keeps_a_block_per_run() {
     let env = |name: &str, value: &str| crate::config::EnvVar {
@@ -16135,9 +16137,13 @@ fn a_source_whose_tiers_straddle_a_local_layer_keeps_a_block_per_run() {
         by_name(layered.merged.clone()),
         "the blocks fold to a different env than the merge decided",
     );
+    let aliases_by_name = |mut entries: Vec<crate::config::ShellAlias>| {
+        entries.sort_by(|a, b| a.name.cmp(&b.name));
+        entries
+    };
     assert_eq!(
-        folded_aliases,
-        layered.merged_aliases.clone(),
+        aliases_by_name(folded_aliases),
+        aliases_by_name(layered.merged_aliases.clone()),
         "the blocks fold to a different alias set than the merge decided",
     );
 
