@@ -12,7 +12,7 @@ use super::env_engine::{
 use super::env_files::detect_rc_env_conflicts;
 use super::format::LIVE_SESSION_RESOURCE_ID;
 use super::types::{Action, EnvAction};
-use super::verify::merge_module_env_aliases;
+use super::verify::LayeredEnv;
 
 /// PATH directories cfgd recorded as its own for a package manager, narrowed
 /// to the managers the desired state still names and deduped.
@@ -277,31 +277,24 @@ fn has_unclaimed_disappearing_line(
 }
 
 impl<'a> super::Reconciler<'a> {
-    /// Plan env file generation from merged profile + module env vars and aliases.
-    /// The outcome's warnings are shell rc conflicts.
+    /// Plan env file generation from the layered env view of a profile and its
+    /// modules. The outcome's warnings are shell rc conflicts.
     ///
     /// A method, not a free function, because the home directory the env
     /// surfaces hang off is the reconciler's — resolved once at construction.
     /// The moment a planning entry point resolves `~` for itself, a caller that
     /// pinned a home no longer controls where the plan writes.
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn plan_env(
         &self,
-        profile_env: &[crate::config::EnvVar],
-        profile_aliases: &[crate::config::ShellAlias],
-        layer_owners: &crate::config::EntryOwners,
+        layered: LayeredEnv,
         scope: EnvScope,
-        modules: &[ResolvedModule],
         secret_envs: &[(String, String)],
         path_dirs: &[ManagerPathDir],
         managed_env_ids: &[String],
     ) -> EnvPlanOutcome {
         Self::plan_env_with_home(
-            profile_env,
-            profile_aliases,
-            layer_owners,
+            layered,
             scope,
-            modules,
             secret_envs,
             path_dirs,
             managed_env_ids,
@@ -309,23 +302,23 @@ impl<'a> super::Reconciler<'a> {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn plan_env_with_home(
-        profile_env: &[crate::config::EnvVar],
-        profile_aliases: &[crate::config::ShellAlias],
-        layer_owners: &crate::config::EntryOwners,
+        layered: LayeredEnv,
         scope: EnvScope,
-        modules: &[ResolvedModule],
         secret_envs: &[(String, String)],
         path_dirs: &[ManagerPathDir],
         managed_env_ids: &[String],
         home: &std::path::Path,
     ) -> EnvPlanOutcome {
-        let (mut merged, merged_aliases, origins) =
-            merge_module_env_aliases(profile_env, profile_aliases, layer_owners, modules);
-
-        // Append secret-backed env vars after regular envs.
-        // These are resolved secret values injected into the env file.
+        // The secret exports are a layer of their own AND winners of the merge:
+        // their values exist only once a backend has resolved them, so they
+        // reach both halves here rather than through the layer merge.
+        let LayeredEnv {
+            mut merged,
+            merged_aliases,
+            origins,
+            ..
+        } = layered.with_secret_envs(secret_envs);
         for (name, value) in secret_envs {
             merged.push(crate::config::EnvVar {
                 name: name.clone(),

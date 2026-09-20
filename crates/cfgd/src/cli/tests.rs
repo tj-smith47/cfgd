@@ -33230,10 +33230,13 @@ fn an_adopted_file_is_copied_aside_by_a_real_apply() {
 
 /// A `MergedEnvItems` is one command's whole env/alias merge: it clones the
 /// profile's env, its aliases and both origin maps and folds every resolved
-/// module in. Built once per command it costs that once; built inside the loop
-/// that renders a drift report it costs that per FINDING, which is the shape
-/// this fence exists to keep out — and nothing but reading the code stopped a
-/// later edit from moving a construction one brace deeper.
+/// module in. A `LayeredEnv` is the same fold plus a clone of every layer's own
+/// declarations, and it is what a `MergedEnvItems` is now built from, so both
+/// constructions carry the same cost and both are walked here. Built once per
+/// command either costs that once; built inside the loop that renders a drift
+/// report it costs that per FINDING, which is the shape this fence exists to
+/// keep out — and nothing but reading the code stopped a later edit from moving
+/// a construction one brace deeper.
 ///
 /// The predicate is structural: while walking a file's PRODUCTION half (the
 /// body before its `#[cfg(test)]` module — a test builds its own view per
@@ -33249,7 +33252,9 @@ fn an_adopted_file_is_copied_aside_by_a_real_apply() {
 #[test]
 fn every_merged_env_view_is_built_once_per_command() {
     const HATCH: &str = "per-row-merge-ok:";
-    // Each production construction, by file and count: `cmd_status` and
+    // Each production `MergedEnvItems` construction, by file and count (the
+    // `LayeredEnv` builds are walked for the loop shape alone, since each sits
+    // beside one of these): `cmd_status` and
     // `cmd_status_module`, `cmd_verify`, and `cmd_diff`'s full-machine env
     // path plus `cmd_diff_module`'s scoped Shell section — two commands in
     // one file, one build each. `remove.rs` is the one non-reporting member:
@@ -33285,11 +33290,12 @@ fn every_merged_env_view_is_built_once_per_command() {
         let mut open: Vec<&str> = Vec::new();
         let mut prev = "";
         for line in production.lines() {
-            if line.contains("MergedEnvItems::new(")
-                && !carries_hatch(line, HATCH)
-                && !carries_hatch(prev, HATCH)
-            {
-                *counts.entry(name.clone()).or_default() += 1;
+            let builds_a_merge =
+                line.contains("MergedEnvItems::new(") || line.contains("LayeredEnv::of(");
+            if builds_a_merge && !carries_hatch(line, HATCH) && !carries_hatch(prev, HATCH) {
+                if line.contains("MergedEnvItems::new(") {
+                    *counts.entry(name.clone()).or_default() += 1;
+                }
                 if let Some(opener) = open
                     .iter()
                     .find(|o| LOOPY.iter().any(|m| o.contains(m)) && !o.contains("fn "))

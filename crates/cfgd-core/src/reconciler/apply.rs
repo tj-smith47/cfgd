@@ -1934,11 +1934,8 @@ impl<'a> super::Reconciler<'a> {
             tracing::debug!("env surface withheld: skipping post-phase regeneration");
         } else if !secret_env_collector.is_empty() || path_dirs_changed {
             let env_plan = self.plan_env(
-                &resolved.merged.env,
-                &resolved.merged.aliases,
-                &resolved.merged.entry_owners,
+                super::LayeredEnv::of(resolved, module_actions),
                 resolved.merged.env_scope,
-                module_actions,
                 &secret_env_collector,
                 &path_dirs_now,
                 &super::env::recorded_managed_env_files(self.state),
@@ -2593,12 +2590,12 @@ impl<'a> super::Reconciler<'a> {
         resolved: &ResolvedProfile,
         modules: &[ResolvedModule],
     ) -> Vec<(&'static str, String, String)> {
-        let (env, aliases, origins) = super::verify::merge_module_env_aliases(
-            &resolved.merged.env,
-            &resolved.merged.aliases,
-            &resolved.merged.entry_owners,
-            modules,
-        );
+        let super::LayeredEnv {
+            merged: env,
+            merged_aliases: aliases,
+            origins,
+            ..
+        } = super::LayeredEnv::of(resolved, modules);
         let layers = EntryLayers::of(resolved, modules);
         let mut items = Vec::with_capacity(env.len() + aliases.len());
         for ev in &env {

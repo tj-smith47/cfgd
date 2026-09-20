@@ -1755,13 +1755,10 @@ fn a_converged_macos_env_surface_carries_the_loader_line_and_stands_on_no_env_rc
         value: "nvim".to_string(),
         platforms: Vec::new(),
     }];
-    let mut owners = cfgd_core::config::EntryOwners::default();
-    owners.claim(
-        &cfgd_core::reconciler::Owner::profile("mac").token(),
-        &env,
+    let merged = cfgd_core::reconciler::MergedEnvItems::new(
+        &cfgd_core::reconciler::LayeredEnv::from_parts("profile:mac", &env, &[], &[]),
         &[],
     );
-    let merged = cfgd_core::reconciler::MergedEnvItems::new(&env, &[], &owners, &[], &[]);
     let scope = cfgd_core::config::EnvScope::default();
     let write = |path: &std::path::Path, body: String| {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -1788,7 +1785,11 @@ fn a_converged_macos_env_surface_carries_the_loader_line_and_stands_on_no_env_rc
         "the loader line lands once and a second run appends no duplicate:\n{body}"
     );
 
-    let results = cfgd_core::reconciler::env_verify_results(&env, &[], &owners, scope, &[], &[]);
+    let results = cfgd_core::reconciler::env_verify_results(
+        &cfgd_core::reconciler::LayeredEnv::from_parts("profile:mac", &env, &[], &[]),
+        scope,
+        &[],
+    );
     let rc_rows: Vec<&cfgd_core::reconciler::VerifyResult> = results
         .iter()
         .filter(|r| r.resource_type == cfgd_core::reconciler::ENV_RC_RESOURCE_TYPE)

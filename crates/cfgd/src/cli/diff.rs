@@ -313,10 +313,7 @@ pub fn cmd_diff(
                 results.iter().map(|r| r.resource_type.as_str()),
             );
             let merged_env_items = cfgd_core::reconciler::MergedEnvItems::new(
-                &resolved.merged.env,
-                &resolved.merged.aliases,
-                &resolved.merged.entry_owners,
-                &resolved_modules,
+                &cfgd_core::reconciler::LayeredEnv::of(&resolved, &resolved_modules),
                 &report.path_dirs,
             );
             for r in results {
@@ -754,12 +751,11 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
         // lines and the folded `PATH` line stay the machine-wide walk's — the
         // whole profile's shared artifacts, which one module's fragment can
         // neither vouch for nor blame.
-        let check = cfgd_core::reconciler::env_item_verify_results(
-            &resolved.merged.env,
-            &resolved.merged.aliases,
-            &resolved.merged.entry_owners,
-            &resolved_modules,
-        );
+        // The isolate's own layered view, built once for both halves of this
+        // section: the per-item check and the display recompute below read one
+        // merge.
+        let layered = cfgd_core::reconciler::LayeredEnv::of(&resolved, &resolved_modules);
+        let check = cfgd_core::reconciler::env_item_verify_results(&layered);
         // The ONE ownership answer, asked once for the whole block: which
         // layer's declaration each checked name belongs to — the same fold
         // the isolate's merge just applied.
@@ -795,13 +791,7 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
         {
             // `path_dirs` feeds only the folded `PATH` line, which the scoped
             // check never renders a row for.
-            let merged_env_items = cfgd_core::reconciler::MergedEnvItems::new(
-                &resolved.merged.env,
-                &resolved.merged.aliases,
-                &resolved.merged.entry_owners,
-                &resolved_modules,
-                &[],
-            );
+            let merged_env_items = cfgd_core::reconciler::MergedEnvItems::new(&layered, &[]);
             // One pass: every finding lands in exactly one bucket — the
             // fold's recorded winner when that token names a chain module,
             // else the module under report (the only module the caller asked
@@ -1415,10 +1405,12 @@ mod tests {
             platforms: vec![],
         };
         let hand_edited_line = cfgd_core::reconciler::MergedEnvItems::new(
-            &[],
-            std::slice::from_ref(&hand_edited),
-            &Default::default(),
-            &[],
+            &cfgd_core::reconciler::LayeredEnv::from_parts(
+                "profile:test",
+                &[],
+                std::slice::from_ref(&hand_edited),
+                &[],
+            ),
             &[],
         )
         .declared_line("alias", "ll")
@@ -1454,19 +1446,13 @@ mod tests {
             command: "ls -la".to_string(),
             platforms: vec![],
         };
-        // The owners the profile-layer merge records: the declared line names
-        // the layer that declared it, so a needle rendered with no owner is a
-        // line production never renders.
-        let declared_owners = {
-            let mut o = cfgd_core::config::EntryOwners::default();
-            o.claim("profile:default", &[], std::slice::from_ref(&declared));
-            o
-        };
         let declared_line = cfgd_core::reconciler::MergedEnvItems::new(
-            &[],
-            std::slice::from_ref(&declared),
-            &declared_owners,
-            &[],
+            &cfgd_core::reconciler::LayeredEnv::from_parts(
+                "profile:default",
+                &[],
+                std::slice::from_ref(&declared),
+                &[],
+            ),
             &[],
         )
         .declared_line("alias", "ll")
@@ -1515,20 +1501,13 @@ mod tests {
             command: "ls -la".to_string(),
             platforms: vec![],
         };
-        let declared_owners = {
-            let mut o = cfgd_core::config::EntryOwners::default();
-            o.claim(
+        let declared_line = cfgd_core::reconciler::MergedEnvItems::new(
+            &cfgd_core::reconciler::LayeredEnv::from_parts(
                 "profile:default",
                 &[],
                 std::slice::from_ref(&declared_alias),
-            );
-            o
-        };
-        let declared_line = cfgd_core::reconciler::MergedEnvItems::new(
-            &[],
-            std::slice::from_ref(&declared_alias),
-            &declared_owners,
-            &[],
+                &[],
+            ),
             &[],
         )
         .declared_line("alias", "ll")
@@ -1611,10 +1590,7 @@ mod tests {
             "/opt/scoop/bin",
         )];
         let written: Vec<String> = cfgd_core::reconciler::MergedEnvItems::new(
-            &[],
-            &[],
-            &Default::default(),
-            &[],
+            &cfgd_core::reconciler::LayeredEnv::from_parts("profile:test", &[], &[], &[]),
             &path_dirs,
         )
         .managed_env_files(tmp_home.path(), cfgd_core::config::EnvScope::Interactive)
@@ -1962,16 +1938,13 @@ mod tests {
             value: "vim".to_string(),
             platforms: vec![],
         }];
-        let declared_owners = {
-            let mut o = cfgd_core::config::EntryOwners::default();
-            o.claim("module:env-mod", &declared_env, &[]);
-            o
-        };
         let declared_line = cfgd_core::reconciler::MergedEnvItems::new(
-            &declared_env,
-            &[],
-            &declared_owners,
-            &[],
+            &cfgd_core::reconciler::LayeredEnv::from_parts(
+                "module:env-mod",
+                &declared_env,
+                &[],
+                &[],
+            ),
             &[],
         )
         .declared_line("env-var", "EDITOR")

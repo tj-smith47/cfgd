@@ -870,11 +870,8 @@ fn live_drift_results_inner(
         cfgd_core::reconciler::recorded_manager_path_dirs(state, &resolved.merged, modules);
     drift.extend(
         cfgd_core::reconciler::env_verify_results(
-            &resolved.merged.env,
-            &resolved.merged.aliases,
-            &resolved.merged.entry_owners,
+            &cfgd_core::reconciler::LayeredEnv::of(resolved, modules),
             resolved.merged.env_scope,
-            modules,
             &path_dirs,
         )
         .into_iter()
@@ -1380,10 +1377,12 @@ mod tests {
             platforms: vec![],
         };
         let hand_edited_line = cfgd_core::reconciler::MergedEnvItems::new(
-            &[],
-            std::slice::from_ref(&hand_edited),
-            &Default::default(),
-            &[],
+            &cfgd_core::reconciler::LayeredEnv::from_parts(
+                "profile:test",
+                &[],
+                std::slice::from_ref(&hand_edited),
+                &[],
+            ),
             &[],
         )
         .declared_line("alias", "ll")

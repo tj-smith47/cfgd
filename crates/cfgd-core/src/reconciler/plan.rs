@@ -235,11 +235,8 @@ impl<'a> super::Reconciler<'a> {
             super::env::recorded_manager_path_dirs(self.state, &resolved.merged, &module_actions),
         );
         let env_plan = self.plan_env(
-            &resolved.merged.env,
-            &resolved.merged.aliases,
-            &resolved.merged.entry_owners,
+            super::LayeredEnv::of(resolved, &module_actions),
             resolved.merged.env_scope,
-            &module_actions,
             &[], // Secret envs are not yet resolved at plan time; they are
             // injected during the apply phase after ResolveEnv actions run.
             &path_dirs,

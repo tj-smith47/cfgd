@@ -123,10 +123,7 @@ fn keep_entry_declarations(
         composition::ConstraintMode::Report,
     )?;
     let items = cfgd_core::reconciler::MergedEnvItems::new(
-        &desired.resolved.merged.env,
-        &desired.resolved.merged.aliases,
-        &desired.resolved.merged.entry_owners,
-        &desired.modules,
+        &cfgd_core::reconciler::LayeredEnv::of(&desired.resolved, &desired.modules),
         &[],
     );
     let (own_env, own_aliases) = declared_by_source(&desired.resolved, &desired.modules, name);

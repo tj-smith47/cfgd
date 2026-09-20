@@ -2086,6 +2086,70 @@ pub fn test_state() -> crate::state::StateStore {
     crate::state::StateStore::open_in_memory().expect("open in-memory state store")
 }
 
+/// The env fixture the layered-env pins share: profile `base` (`PAGER=less`,
+/// alias `catn`, and a windows-only `WINONLY` no Linux host is part of the
+/// desired state of) inherited by `work` (`PAGER=bat`, `EDITOR=vi`), merged
+/// through the production `merge_layers` so the winner set and every owner
+/// claim on it are the merge's own. A hand-built `MergedProfile` is one a pin
+/// can agree with while production disagrees.
+pub fn two_layer_profile() -> crate::config::ResolvedProfile {
+    let env = |name: &str, value: &str| crate::config::EnvVar {
+        name: name.to_string(),
+        value: value.to_string(),
+        platforms: Vec::new(),
+    };
+    let alias = |name: &str, command: &str| crate::config::ShellAlias {
+        name: name.to_string(),
+        command: command.to_string(),
+        platforms: Vec::new(),
+    };
+    let layer = |name: &str,
+                 priority: u32,
+                 env: Vec<crate::config::EnvVar>,
+                 aliases: Vec<crate::config::ShellAlias>| {
+        crate::config::ProfileLayer {
+            source: crate::config::LOCAL_LAYER.to_string(),
+            profile_name: name.to_string(),
+            priority,
+            policy: crate::config::LayerPolicy::Local,
+            spec: crate::config::ProfileSpec {
+                env,
+                aliases,
+                ..Default::default()
+            },
+        }
+    };
+    let mut off_host = env("WINONLY", "1");
+    off_host.platforms = vec![gated_off_tag().to_string()];
+    let layers = vec![
+        layer(
+            "base",
+            100,
+            vec![env("PAGER", "less"), off_host],
+            vec![alias("catn", "cat -n")],
+        ),
+        layer(
+            "work",
+            1000,
+            vec![env("EDITOR", "vi"), env("PAGER", "bat")],
+            Vec::new(),
+        ),
+    ];
+    let merged = crate::config::merge_layers(&layers);
+    crate::config::ResolvedProfile { layers, merged }
+}
+
+/// A `platforms:` tag no host running this test is part of the desired state
+/// of, so a fixture can carry an entry the merge must filter out on every
+/// platform the suite runs on.
+fn gated_off_tag() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "macos"
+    } else {
+        "windows"
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Module helpers
 // ---------------------------------------------------------------------------

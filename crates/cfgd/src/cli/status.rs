@@ -3067,10 +3067,7 @@ pub(super) fn cmd_status(
     // declaration, and building it per drift row clones the profile's env, its
     // aliases and both origin maps once per finding.
     let merged_env_items = cfgd_core::reconciler::MergedEnvItems::new(
-        &resolved.merged.env,
-        &resolved.merged.aliases,
-        &resolved.merged.entry_owners,
-        &resolved_modules,
+        &cfgd_core::reconciler::LayeredEnv::of(&resolved, &resolved_modules),
         &cfgd_core::reconciler::recorded_manager_path_dirs(
             state,
             &resolved.merged,
@@ -3579,13 +3576,13 @@ pub(super) fn cmd_status_module(
         let pkg_cx = ctx.package_context()?;
         let resolved_modules = resolve_chain(Some(&pkg_cx))?;
         let resolved = empty_resolved_profile(&[mod_name.to_string()], &ctx.active_profile_name());
+        // The isolate's one layered view, read by the display recompute here
+        // and by the per-item shell check inside the scan below.
+        let layered = cfgd_core::reconciler::LayeredEnv::of(&resolved, &resolved_modules);
         // File and package rows only — the recompute is a no-op for both, but
         // `drift_event_from` takes the merge rather than deciding per row.
         let merged_env_items = cfgd_core::reconciler::MergedEnvItems::new(
-            &resolved.merged.env,
-            &resolved.merged.aliases,
-            &resolved.merged.entry_owners,
-            &resolved_modules,
+            &layered,
             &cfgd_core::reconciler::recorded_manager_path_dirs(
                 state,
                 &resolved.merged,
@@ -3743,12 +3740,7 @@ pub(super) fn cmd_status_module(
                 // recorded winner is a layer outside this chain stays out of
                 // `checked`: a scoped "clean" may not heal a claim it never
                 // re-checked.
-                let env_check = cfgd_core::reconciler::env_item_verify_results(
-                    &resolved.merged.env,
-                    &resolved.merged.aliases,
-                    &resolved.merged.entry_owners,
-                    &resolved_modules,
-                );
+                let env_check = cfgd_core::reconciler::env_item_verify_results(&layered);
                 let owners =
                     cfgd_core::reconciler::merged_entry_owners(&resolved, &resolved_modules);
                 let tokens: std::collections::HashMap<String, &str> = resolved_modules
@@ -7504,19 +7496,13 @@ mod tests {
             value: "vim".to_string(),
             platforms: vec![],
         }];
-        // The owners the profile-layer merge records for this profile: the
-        // generated line names its layer, so a needle rendered with no owner
-        // is a line the file never holds.
-        let declared_owners = {
-            let mut o = cfgd_core::config::EntryOwners::default();
-            o.claim("profile:default", &declared_env, &[]);
-            o
-        };
         let declared_line = cfgd_core::reconciler::MergedEnvItems::new(
-            &declared_env,
-            &[],
-            &declared_owners,
-            &[],
+            &cfgd_core::reconciler::LayeredEnv::from_parts(
+                "profile:default",
+                &declared_env,
+                &[],
+                &[],
+            ),
             &[],
         )
         .declared_line("env-var", "EDITOR")
@@ -7646,19 +7632,13 @@ mod tests {
             value: "vim".to_string(),
             platforms: vec![],
         }];
-        // The owners the profile-layer merge records for this profile: the
-        // generated line names its layer, so a needle rendered with no owner
-        // is a line the file never holds.
-        let declared_owners = {
-            let mut o = cfgd_core::config::EntryOwners::default();
-            o.claim("profile:default", &declared_env, &[]);
-            o
-        };
         let declared_line = cfgd_core::reconciler::MergedEnvItems::new(
-            &declared_env,
-            &[],
-            &declared_owners,
-            &[],
+            &cfgd_core::reconciler::LayeredEnv::from_parts(
+                "profile:default",
+                &declared_env,
+                &[],
+                &[],
+            ),
             &[],
         )
         .declared_line("env-var", "EDITOR")
@@ -7754,21 +7734,15 @@ mod tests {
             value: "vim".to_string(),
             platforms: vec![],
         }];
-        // The owners the profile-layer merge records for this profile: the
-        // generated line names its layer, so a needle rendered with no owner
-        // is a line the file never holds.
-        let declared_owners = {
-            let mut o = cfgd_core::config::EntryOwners::default();
-            o.claim("profile:default", &declared_env, &[]);
-            o
-        };
         let tmp_home = tempfile::tempdir().unwrap();
         let _home = cfgd_core::with_test_home_guard(tmp_home.path());
         let declared_line = cfgd_core::reconciler::MergedEnvItems::new(
-            &declared_env,
-            &[],
-            &declared_owners,
-            &[],
+            &cfgd_core::reconciler::LayeredEnv::from_parts(
+                "profile:default",
+                &declared_env,
+                &[],
+                &[],
+            ),
             &[],
         )
         .declared_line("env-var", "EDITOR")
@@ -10438,16 +10412,13 @@ mod tests {
             value: "vim".to_string(),
             platforms: vec![],
         }];
-        let declared_owners = {
-            let mut o = cfgd_core::config::EntryOwners::default();
-            o.claim("module:test-mod", &declared_env, &[]);
-            o
-        };
         let declared_line = cfgd_core::reconciler::MergedEnvItems::new(
-            &declared_env,
-            &[],
-            &declared_owners,
-            &[],
+            &cfgd_core::reconciler::LayeredEnv::from_parts(
+                "module:test-mod",
+                &declared_env,
+                &[],
+                &[],
+            ),
             &[],
         )
         .declared_line("env-var", "EDITOR")

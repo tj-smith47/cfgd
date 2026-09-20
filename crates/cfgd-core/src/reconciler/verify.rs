@@ -181,11 +181,8 @@ pub fn verify(
     // Verify env: re-derive the same targets the planner wrote and check each.
     let path_dirs = super::env::recorded_manager_path_dirs(state, &resolved.merged, modules);
     results.extend(env_verify_results(
-        &resolved.merged.env,
-        &resolved.merged.aliases,
-        &resolved.merged.entry_owners,
+        &LayeredEnv::of(resolved, modules),
         resolved.merged.env_scope,
-        modules,
         &path_dirs,
     ));
 
@@ -492,6 +489,198 @@ pub(super) fn merge_module_env_aliases(
     (merged, merged_aliases, origins)
 }
 
+/// One layer's OWN declared contribution to the generated env surface, under
+/// the owner token the block header names it by — outranked entries included,
+/// because the file IS the inheritance debugger and the shell's own last-wins
+/// is what resolves it.
+///
+/// Platform-filtered exactly as `merge_layers` filters before folding: an
+/// entry this host is not part of the desired state of must not be printed
+/// into a file the shell then actually runs.
+#[derive(Debug, Clone)]
+pub struct EnvLayer {
+    /// The `kind:name` token the block header names this layer by
+    /// (`profile:work`, `source:team`, `module:nvim`, `secrets`).
+    pub owner: String,
+    /// The env vars this layer declares, less `PATH`.
+    pub env: Vec<crate::config::EnvVar>,
+    /// The aliases this layer declares.
+    pub aliases: Vec<crate::config::ShellAlias>,
+}
+
+impl EnvLayer {
+    /// One layer's declarations, platform-filtered exactly as `merge_layers`
+    /// filters before folding.
+    ///
+    /// `PATH` is in no block: its declarations CONCATENATE, so it has as many
+    /// authors as contributed to it and one composed line of its own. N
+    /// verbatim `export PATH=` lines would each clobber the last instead of
+    /// layering onto it.
+    fn declared(
+        owner: &str,
+        env: &[crate::config::EnvVar],
+        aliases: &[crate::config::ShellAlias],
+    ) -> Self {
+        let platform = crate::platform::Platform::current();
+        Self {
+            owner: owner.to_string(),
+            env: crate::platform::applicable_here(env, platform)
+                .filter(|ev| ev.name != "PATH")
+                .cloned()
+                .collect(),
+            aliases: crate::platform::applicable_here(aliases, platform)
+                .cloned()
+                .collect(),
+        }
+    }
+}
+
+/// One block per module, in resolution order. A module's entries were already
+/// filtered when it resolved, so the filter above runs twice rather than
+/// stating a second policy.
+fn module_layers(modules: &[ResolvedModule]) -> impl Iterator<Item = EnvLayer> + '_ {
+    modules.iter().map(|module| {
+        EnvLayer::declared(
+            &crate::reconciler::Owner::module(&module.name).token(),
+            &module.env,
+            &module.aliases,
+        )
+    })
+}
+
+/// Every layer's own declared contribution, low precedence first, carried
+/// beside the winner set the merge already produced.
+///
+/// The blocks read the merge's INPUTS — each `ProfileLayer`'s own `spec.env` /
+/// `spec.aliases`, then each module's — and the winners stay the merge's own
+/// answer, taken off `resolved.merged` through [`merge_module_env_aliases`].
+/// Neither half re-derives the other, so nothing here is a second
+/// implementation of last-writer-wins; what could still drift is the two
+/// halves disagreeing about the result, which is what
+/// `the_layered_env_folds_back_to_the_merge` holds.
+///
+/// The claim map is consulted for ONE thing: an entry the merge holds that no
+/// layer declares. A resolved preference is folded in after the layer loop and
+/// claimed by the last layer that ranked it, so it is placed in that layer's
+/// block by its owner token and needs no header of its own.
+#[derive(Debug, Clone)]
+pub struct LayeredEnv {
+    /// One block per layer, low precedence first, then one per module.
+    pub layers: Vec<EnvLayer>,
+    /// The surviving env vars, as the merge decided them.
+    pub merged: Vec<crate::config::EnvVar>,
+    /// The surviving aliases, as the merge decided them.
+    pub merged_aliases: Vec<crate::config::ShellAlias>,
+    // `pub(super)`, not `pub`: `EnvOrigins` is `pub(super)` in `env_engine`,
+    // and a `pub` field may not carry a type this crate's consumers cannot
+    // name. Every reader of it is inside `reconciler`.
+    pub(super) origins: EnvOrigins,
+}
+
+impl LayeredEnv {
+    /// The layered view of a resolved profile plus its modules: one block per
+    /// layer in `resolved.layers`' own order, then one per module.
+    pub fn of(resolved: &ResolvedProfile, modules: &[ResolvedModule]) -> Self {
+        let mut declared: Vec<EnvLayer> = resolved
+            .layers
+            .iter()
+            .map(|layer| {
+                EnvLayer::declared(&layer.owner_token(), &layer.spec.env, &layer.spec.aliases)
+            })
+            .collect();
+        declared.extend(module_layers(modules));
+        Self::assemble(
+            declared,
+            merge_module_env_aliases(
+                &resolved.merged.env,
+                &resolved.merged.aliases,
+                &resolved.merged.entry_owners,
+                modules,
+            ),
+        )
+    }
+
+    /// The same view for a caller holding one layer's declarations and no
+    /// [`ResolvedProfile`]: `owner` is that layer's `kind:name` token, taken as
+    /// spelled rather than rebuilt from a profile name, `env`/`aliases` are
+    /// what it declares, and the modules follow it.
+    pub fn from_parts(
+        owner: &str,
+        env: &[crate::config::EnvVar],
+        aliases: &[crate::config::ShellAlias],
+        modules: &[ResolvedModule],
+    ) -> Self {
+        let mut layer_owners = crate::config::EntryOwners::default();
+        layer_owners.claim(owner, env, aliases);
+        let mut declared = vec![EnvLayer::declared(owner, env, aliases)];
+        declared.extend(module_layers(modules));
+        Self::assemble(
+            declared,
+            merge_module_env_aliases(env, aliases, &layer_owners, modules),
+        )
+    }
+
+    /// The blocks and the merge, joined. The ONE thing the claim map answers:
+    /// an entry the merge holds that no block declares belongs in the block of
+    /// the layer that claimed it — a resolved preference is folded in after the
+    /// layer loop and claimed by the last layer that ranked it, so it lands
+    /// there and needs no header of its own. A block left with nothing is
+    /// dropped rather than printed empty.
+    fn assemble(
+        mut layers: Vec<EnvLayer>,
+        merged: (
+            Vec<crate::config::EnvVar>,
+            Vec<crate::config::ShellAlias>,
+            EnvOrigins,
+        ),
+    ) -> Self {
+        let (merged, merged_aliases, origins) = merged;
+        for ev in merged.iter().filter(|ev| ev.name != "PATH") {
+            if layers
+                .iter()
+                .any(|layer| layer.env.iter().any(|held| held.name == ev.name))
+            {
+                continue;
+            }
+            let Some(owner) = origins.env_owner(&ev.name) else {
+                continue;
+            };
+            if let Some(layer) = layers.iter_mut().find(|layer| layer.owner == owner) {
+                layer.env.push(ev.clone());
+            }
+        }
+        layers.retain(|layer| !layer.env.is_empty() || !layer.aliases.is_empty());
+        Self {
+            layers,
+            merged,
+            merged_aliases,
+            origins,
+        }
+    }
+
+    /// The resolved secret exports, appended as the last layer: a secret's
+    /// VALUE exists only once a backend has resolved it, so it reaches the file
+    /// here rather than through the merge.
+    pub fn with_secret_envs(mut self, secret_envs: &[(String, String)]) -> Self {
+        let env: Vec<crate::config::EnvVar> = secret_envs
+            .iter()
+            .map(|(name, value)| crate::config::EnvVar {
+                name: name.clone(),
+                value: value.clone(),
+                platforms: Vec::new(),
+            })
+            .collect();
+        if !env.is_empty() {
+            self.layers.push(EnvLayer {
+                owner: "secrets".to_string(),
+                env,
+                aliases: Vec::new(),
+            });
+        }
+        self
+    }
+}
+
 /// Re-derive the exact env targets the planner would write for this scope
 /// and check each against what is actually on disk. Never touches the state
 /// store — recording is the caller's, per scope (`verify`'s doc above). Every
@@ -504,16 +693,14 @@ pub(super) fn merge_module_env_aliases(
 // may report env file drift after secret envs are written. This will be addressed
 // when compliance snapshots track secret env metadata.
 pub fn env_verify_results(
-    profile_env: &[crate::config::EnvVar],
-    profile_aliases: &[crate::config::ShellAlias],
-    layer_owners: &crate::config::EntryOwners,
+    layered: &LayeredEnv,
     scope: EnvScope,
-    modules: &[ResolvedModule],
     path_dirs: &[ManagerPathDir],
 ) -> Vec<VerifyResult> {
     let mut results = Vec::new();
-    let (merged, merged_aliases, origins) =
-        merge_module_env_aliases(profile_env, profile_aliases, layer_owners, modules);
+    let merged = &layered.merged;
+    let merged_aliases = &layered.merged_aliases;
+    let origins = &layered.origins;
 
     if merged.is_empty() && merged_aliases.is_empty() && path_dirs.is_empty() {
         return results;
@@ -529,10 +716,9 @@ pub fn env_verify_results(
     // to write, so the first `ManagedFile` this loop sees is the one file
     // whose dialect `verify_env_items` is built to read.
     let mut primary_checked = false;
-    let fold =
-        super::env_engine::primary_folded_path(&merged, path_dirs, &origins, &home, platform);
+    let fold = super::env_engine::primary_folded_path(merged, path_dirs, origins, &home, platform);
     for target in env_targets(
-        EnvContent::new(&merged, &merged_aliases, path_dirs, &origins),
+        EnvContent::new(merged, merged_aliases, path_dirs, origins),
         scope,
         &home,
         &probe,
@@ -544,9 +730,9 @@ pub fn env_verify_results(
                     primary_checked = true;
                     verify_env_items(
                         &path,
-                        &merged,
-                        &merged_aliases,
-                        &origins,
+                        merged,
+                        merged_aliases,
+                        origins,
                         platform,
                         fold.as_ref(),
                         &mut results,
@@ -612,15 +798,15 @@ pub struct EnvItemCheck {
 /// DIRECTORY at the path fails the read with something other than `NotFound`
 /// everywhere, root included. There is no per-platform carve-out to state
 /// here: the contract is the same three answers on all four.
-pub fn env_item_verify_results(
-    profile_env: &[crate::config::EnvVar],
-    profile_aliases: &[crate::config::ShellAlias],
-    layer_owners: &crate::config::EntryOwners,
-    modules: &[ResolvedModule],
-) -> EnvItemCheck {
-    let (mut merged, merged_aliases, origins) =
-        merge_module_env_aliases(profile_env, profile_aliases, layer_owners, modules);
-    merged.retain(|ev| ev.name != "PATH");
+pub fn env_item_verify_results(layered: &LayeredEnv) -> EnvItemCheck {
+    let merged: Vec<crate::config::EnvVar> = layered
+        .merged
+        .iter()
+        .filter(|ev| ev.name != "PATH")
+        .cloned()
+        .collect();
+    let merged_aliases = &layered.merged_aliases;
+    let origins = &layered.origins;
     let mut check = EnvItemCheck {
         results: Vec::new(),
         check_error: None,
@@ -647,8 +833,8 @@ pub fn env_item_verify_results(
     verify_env_items_in(
         &actual,
         &merged,
-        &merged_aliases,
-        &origins,
+        merged_aliases,
+        origins,
         platform,
         None,
         &mut check.results,
@@ -762,22 +948,18 @@ pub struct MergedEnvItems {
 }
 
 impl MergedEnvItems {
-    /// Merge `env`/`aliases` (the profile's own) with every module's, exactly
-    /// as the write and the verify pass do.
+    /// The winner set a [`LayeredEnv`] already folded, held beside the one
+    /// `PATH` line the file carries so a display can ask either per row.
     ///
     /// `path_dirs` is the second producer of the file's one `PATH` line — the
     /// recorded bootstrapped-manager directories, the same slice
     /// `env_verify_results` is given. Without it a `PATH` row would be shown a
     /// line assembled from half the producers, which is not a line the file
     /// holds.
-    pub fn new(
-        env: &[crate::config::EnvVar],
-        aliases: &[crate::config::ShellAlias],
-        layer_owners: &crate::config::EntryOwners,
-        modules: &[ResolvedModule],
-        path_dirs: &[ManagerPathDir],
-    ) -> Self {
-        let (env, aliases, origins) = merge_module_env_aliases(env, aliases, layer_owners, modules);
+    pub fn new(layered: &LayeredEnv, path_dirs: &[ManagerPathDir]) -> Self {
+        let env = layered.merged.clone();
+        let aliases = layered.merged_aliases.clone();
+        let origins = layered.origins.clone();
         let path = super::env_engine::primary_folded_path(
             &env,
             path_dirs,

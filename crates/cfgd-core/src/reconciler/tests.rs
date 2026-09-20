@@ -3391,11 +3391,8 @@ fn generate_fish_path_keeps_colon_containing_home_intact() {
 fn plan_env_empty_when_no_env() {
     let tmp = tempfile::tempdir().unwrap();
     let actions = Reconciler::plan_env_with_home(
-        &[],
-        &[],
-        &Default::default(),
+        super::LayeredEnv::from_parts("profile:test", &[], &[], &[]),
         crate::config::EnvScope::Interactive,
-        &[],
         &[],
         &[],
         &[],
@@ -3438,11 +3435,8 @@ fn plan_env_module_wins_on_conflict() {
     // plan_env merges and generates actions — the merged env should have EDITOR=nvim
     let tmp = tempfile::tempdir().unwrap();
     let actions = Reconciler::plan_env_with_home(
-        &profile_env,
-        &[],
-        &Default::default(),
+        super::LayeredEnv::from_parts("profile:test", &profile_env, &[], &modules),
         crate::config::EnvScope::Interactive,
-        &modules,
         &[],
         &[],
         &[],
@@ -3539,11 +3533,8 @@ fn plan_env_aliases_only() {
     }];
     let tmp = tempfile::tempdir().unwrap();
     let actions = Reconciler::plan_env_with_home(
-        &[],
-        &aliases,
-        &Default::default(),
+        super::LayeredEnv::from_parts("profile:test", &[], &aliases, &[]),
         crate::config::EnvScope::Interactive,
-        &[],
         &[],
         &[],
         &[],
@@ -3589,11 +3580,8 @@ fn plan_env_module_alias_wins_on_conflict() {
     }];
     let tmp = tempfile::tempdir().unwrap();
     let actions = Reconciler::plan_env_with_home(
-        &[],
-        &profile_aliases,
-        &Default::default(),
+        super::LayeredEnv::from_parts("profile:test", &[], &profile_aliases, &modules),
         crate::config::EnvScope::Interactive,
-        &modules,
         &[],
         &[],
         &[],
@@ -3701,11 +3689,8 @@ fn plan_env_with_secret_envs_includes_them() {
     ];
     let tmp = tempfile::tempdir().unwrap();
     let actions = Reconciler::plan_env_with_home(
-        &[],
-        &[],
-        &Default::default(),
+        super::LayeredEnv::from_parts("profile:test", &[], &[], &[]),
         crate::config::EnvScope::Interactive,
-        &[],
         &secret_envs,
         &[],
         &[],
@@ -3730,11 +3715,8 @@ fn plan_env_secret_envs_appear_in_generated_content() {
     let secret_envs = vec![("GITHUB_TOKEN".to_string(), "ghp_abc123".to_string())];
     let tmp = tempfile::tempdir().unwrap();
     let actions = Reconciler::plan_env_with_home(
-        &regular_env,
-        &[],
-        &Default::default(),
+        super::LayeredEnv::from_parts("profile:test", &regular_env, &[], &[]),
         crate::config::EnvScope::Interactive,
-        &[],
         &secret_envs,
         &[],
         &[],
@@ -7907,12 +7889,14 @@ fn a_refused_env_regeneration_is_recorded_as_an_after_plan_failure() {
     let tmp = tempfile::tempdir().unwrap();
     let _home = crate::with_test_home_guard(tmp.path());
 
-    let targets: Vec<std::path::PathBuf> =
-        MergedEnvItems::new(&resolved.merged.env, &[], &Default::default(), &[], &[])
-            .managed_env_files(tmp.path(), resolved.merged.env_scope)
-            .into_iter()
-            .map(|(path, _)| path)
-            .collect();
+    let targets: Vec<std::path::PathBuf> = MergedEnvItems::new(
+        &super::LayeredEnv::from_parts("profile:test", &resolved.merged.env, &[], &[]),
+        &[],
+    )
+    .managed_env_files(tmp.path(), resolved.merged.env_scope)
+    .into_iter()
+    .map(|(path, _)| path)
+    .collect();
     assert!(
         !targets.is_empty(),
         "this host's generator writes at least one managed env file, or the \
@@ -15479,15 +15463,16 @@ fn verify_env_file_missing_when_file_absent() {
 /// `env_targets`) — so a fixture seeded from it can never drift from what the
 /// verifier treats as the primary file: bash/zsh's `.cfgd.env` on Unix,
 /// PowerShell's `.cfgd-env.ps1` on Windows.
-fn primary_managed_env_target(
-    home: &Path,
-    env: &[EnvVar],
-    aliases: &[ShellAlias],
-) -> (PathBuf, String) {
+fn primary_managed_env_target(home: &Path, layered: &super::LayeredEnv) -> (PathBuf, String) {
     let probe = EnvHostProbe::detect(home);
     let platform = EnvPlatform::current();
     env_targets(
-        EnvContent::new(env, aliases, &[], &Default::default()),
+        EnvContent::new(
+            &layered.merged,
+            &layered.merged_aliases,
+            &[],
+            &layered.origins,
+        ),
         EnvScope::All,
         home,
         &probe,
@@ -15520,15 +15505,15 @@ fn env_verify_results_reports_matching_alias_and_env_var_as_current() {
 
     // Seed the primary managed file exactly as `apply` would generate it, so
     // the per-item check reads a real, matching baseline.
-    let (path, content) = primary_managed_env_target(tmp_home.path(), &env, &aliases);
+    let (path, content) = primary_managed_env_target(
+        tmp_home.path(),
+        &super::LayeredEnv::from_parts("profile:test", &env, &aliases, &[]),
+    );
     std::fs::write(path, content).unwrap();
 
     let results = super::verify::env_verify_results(
-        &env,
-        &aliases,
-        &Default::default(),
+        &super::LayeredEnv::from_parts("profile:test", &env, &aliases, &[]),
         EnvScope::All,
-        &[],
         &[],
     );
 
@@ -15570,7 +15555,10 @@ fn env_verify_results_detects_hand_edited_alias_as_drift_without_flagging_untouc
     // `primary_alias_line` (the real declared line vs. the line a hand-edited
     // command would render), never a hardcoded POSIX literal — so the
     // mutation is meaningful on whichever dialect this platform writes.
-    let (path, content) = primary_managed_env_target(tmp_home.path(), &env, &aliases);
+    let (path, content) = primary_managed_env_target(
+        tmp_home.path(),
+        &super::LayeredEnv::from_parts("profile:test", &env, &aliases, &[]),
+    );
     let platform = EnvPlatform::current();
     let declared_line =
         super::env_files::primary_alias_line(&aliases[0], platform, &Default::default())
@@ -15591,11 +15579,8 @@ fn env_verify_results_detects_hand_edited_alias_as_drift_without_flagging_untouc
     std::fs::write(path, mutated).unwrap();
 
     let results = super::verify::env_verify_results(
-        &env,
-        &aliases,
-        &Default::default(),
+        &super::LayeredEnv::from_parts("profile:test", &env, &aliases, &[]),
         EnvScope::All,
-        &[],
         &[],
     );
 
@@ -15654,15 +15639,15 @@ fn env_verify_results_carry_only_the_opaque_markers_never_the_declared_value() {
     // exercise the "missing or changed" arm. `ENV_FILE_HEADER` is the one
     // line every dialect's generator opens with, so the header alone is a
     // legal (if incomplete) managed file on any platform.
-    let (path, _) = primary_managed_env_target(tmp_home.path(), &env, &aliases);
+    let (path, _) = primary_managed_env_target(
+        tmp_home.path(),
+        &super::LayeredEnv::from_parts("profile:test", &env, &aliases, &[]),
+    );
     std::fs::write(path, format!("{ENV_FILE_HEADER}\n")).unwrap();
 
     let results = super::verify::env_verify_results(
-        &env,
-        &aliases,
-        &Default::default(),
+        &super::LayeredEnv::from_parts("profile:test", &env, &aliases, &[]),
         EnvScope::All,
-        &[],
         &[],
     );
 
@@ -15706,22 +15691,32 @@ fn a_drifted_env_row_shows_the_line_the_file_holds_against_the_declared_one() {
     }];
     // Both lines come from production's own renderer rather than a POSIX
     // literal, so the fixture holds whatever dialect this platform writes.
-    let edited_line =
-        super::verify::MergedEnvItems::new(&edited, &[], &Default::default(), &[], &[])
-            .declared_line("env-var", "EDITOR")
-            .expect("the edited var renders a line");
-    let (path, _) = primary_managed_env_target(tmp_home.path(), &declared, &[]);
+    let edited_line = super::verify::MergedEnvItems::new(
+        &super::LayeredEnv::from_parts("profile:test", &edited, &[], &[]),
+        &[],
+    )
+    .declared_line("env-var", "EDITOR")
+    .expect("the edited var renders a line");
+    let (path, _) = primary_managed_env_target(
+        tmp_home.path(),
+        &super::LayeredEnv::from_parts("profile:test", &declared, &[], &[]),
+    );
     std::fs::write(path, format!("{ENV_FILE_HEADER}\n{edited_line}\n")).unwrap();
 
-    let (want, have) =
-        super::verify::MergedEnvItems::new(&declared, &[], &Default::default(), &[], &[])
-            .display_values("env-var", "EDITOR")
-            .expect("a declared env var recomputes both operands");
+    let (want, have) = super::verify::MergedEnvItems::new(
+        &super::LayeredEnv::from_parts("profile:test", &declared, &[], &[]),
+        &[],
+    )
+    .display_values("env-var", "EDITOR")
+    .expect("a declared env var recomputes both operands");
     assert_eq!(
         want,
-        super::verify::MergedEnvItems::new(&declared, &[], &Default::default(), &[], &[])
-            .declared_line("env-var", "EDITOR")
-            .unwrap(),
+        super::verify::MergedEnvItems::new(
+            &super::LayeredEnv::from_parts("profile:test", &declared, &[], &[]),
+            &[]
+        )
+        .declared_line("env-var", "EDITOR")
+        .unwrap(),
         "want is the line the declaration renders as"
     );
     assert_eq!(
@@ -15749,7 +15744,10 @@ fn one_merged_env_view_answers_every_row_of_a_report() {
         command: "ls -lah".to_string(),
         platforms: vec![],
     }];
-    let view = super::verify::MergedEnvItems::new(&env, &aliases, &Default::default(), &[], &[]);
+    let view = super::verify::MergedEnvItems::new(
+        &super::LayeredEnv::from_parts("profile:test", &env, &aliases, &[]),
+        &[],
+    );
 
     let editor = view
         .declared_line("env-var", "EDITOR")
@@ -15782,25 +15780,36 @@ fn an_env_item_the_file_does_not_hold_reads_as_the_shared_absence_word() {
         value: "nvim".to_string(),
         platforms: vec![],
     }];
-    let (path, _) = primary_managed_env_target(tmp_home.path(), &declared, &[]);
+    let (path, _) = primary_managed_env_target(
+        tmp_home.path(),
+        &super::LayeredEnv::from_parts("profile:test", &declared, &[], &[]),
+    );
     std::fs::write(path, format!("{ENV_FILE_HEADER}\n")).unwrap();
 
-    let (_, have) =
-        super::verify::MergedEnvItems::new(&declared, &[], &Default::default(), &[], &[])
-            .display_values("env-var", "EDITOR")
-            .expect("a declared env var recomputes both operands");
+    let (_, have) = super::verify::MergedEnvItems::new(
+        &super::LayeredEnv::from_parts("profile:test", &declared, &[], &[]),
+        &[],
+    )
+    .display_values("env-var", "EDITOR")
+    .expect("a declared env var recomputes both operands");
     assert_eq!(have, crate::Absence::Missing.as_str());
 
     assert!(
-        super::verify::MergedEnvItems::new(&declared, &[], &Default::default(), &[], &[])
-            .display_values("file", "~/.zshrc")
-            .is_none(),
+        super::verify::MergedEnvItems::new(
+            &super::LayeredEnv::from_parts("profile:test", &declared, &[], &[]),
+            &[]
+        )
+        .display_values("file", "~/.zshrc")
+        .is_none(),
         "a kind with no managed env line recomputes nothing"
     );
     assert!(
-        super::verify::MergedEnvItems::new(&declared, &[], &Default::default(), &[], &[])
-            .display_values("env-var", "PAGER")
-            .is_none(),
+        super::verify::MergedEnvItems::new(
+            &super::LayeredEnv::from_parts("profile:test", &declared, &[], &[]),
+            &[]
+        )
+        .display_values("env-var", "PAGER")
+        .is_none(),
         "an item no longer declared recomputes nothing"
     );
 }
@@ -15829,13 +15838,18 @@ fn an_unreadable_managed_env_file_recomputes_nothing_rather_than_claiming_absenc
         value: "nvim".to_string(),
         platforms: vec![],
     }];
-    let (path, _) = primary_managed_env_target(tmp_home.path(), &declared, &[]);
+    let (path, _) = primary_managed_env_target(
+        tmp_home.path(),
+        &super::LayeredEnv::from_parts("profile:test", &declared, &[], &[]),
+    );
     std::fs::write(&path, format!("{ENV_FILE_HEADER}\n")).unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
 
-    let recomputed =
-        super::verify::MergedEnvItems::new(&declared, &[], &Default::default(), &[], &[])
-            .display_values("env-var", "EDITOR");
+    let recomputed = super::verify::MergedEnvItems::new(
+        &super::LayeredEnv::from_parts("profile:test", &declared, &[], &[]),
+        &[],
+    )
+    .display_values("env-var", "EDITOR");
 
     // Restore before asserting so a failure does not leave the tempdir
     // undeletable.
@@ -15938,6 +15952,109 @@ fn a_successful_env_apply_resolves_the_per_item_rows_it_converged() {
         (pager.expected.as_deref(), pager.actual.as_deref()),
         (Some("current"), Some("missing or changed")),
         "resolution never rewrites an operand: {pager:?}"
+    );
+}
+
+// --- LayeredEnv tests ---
+
+/// The blocks are the merge's inputs; the winners are the merge's answer; the
+/// shell's own last-wins takes one to the other.
+///
+/// The layered view holds every layer verbatim, outranked lines included, so
+/// the blocks deliberately say more than the winner set does. What must never
+/// differ is where they LAND: folding the blocks in precedence order is what a
+/// shell does when it sources the file, and the result has to be the set
+/// `merge_layers` and `merge_module_env_aliases` already decided. Derived apart
+/// and never compared, the two disagree the first time a platform gate is read
+/// by one and not the other, or an entry no layer declares is placed by
+/// neither.
+#[test]
+fn the_layered_env_folds_back_to_the_merge() {
+    let mut resolved = crate::test_helpers::two_layer_profile();
+    // What a resolved preference does after the layer loop: fold in and claim
+    // the last layer that ranked it. Written here rather than resolved for
+    // real, so this pin needs no session probe.
+    resolved.merged.env.push(crate::config::EnvVar {
+        name: "CFGD_CLIPBOARD".to_string(),
+        value: "xclip".to_string(),
+        platforms: Vec::new(),
+    });
+    resolved
+        .merged
+        .entry_owners
+        .claim_env_names("profile:work", ["CFGD_CLIPBOARD"]);
+
+    let mut module = crate::test_helpers::make_resolved_module("nvim");
+    module.env = vec![crate::config::EnvVar {
+        name: "EDITOR".to_string(),
+        value: "nvim".to_string(),
+        platforms: Vec::new(),
+    }];
+    module.aliases = vec![crate::config::ShellAlias {
+        name: "v".to_string(),
+        command: "nvim".to_string(),
+        platforms: Vec::new(),
+    }];
+    let layered = super::LayeredEnv::of(&resolved, std::slice::from_ref(&module));
+
+    assert_eq!(
+        layered
+            .layers
+            .iter()
+            .map(|l| l.owner.as_str())
+            .collect::<Vec<_>>(),
+        ["profile:base", "profile:work", "module:nvim"],
+        "blocks arrive low precedence first",
+    );
+    // The outranked value is in its own block, verbatim — the whole point of
+    // the layered file, and the one thing a winners-only split cannot hold.
+    assert!(
+        layered.layers[0]
+            .env
+            .iter()
+            .any(|ev| ev.name == "PAGER" && ev.value == "less"),
+        "base's block dropped its outranked PAGER: {:?}",
+        layered.layers[0].env,
+    );
+    // The entry no layer declares sits in the block its claim names.
+    assert!(
+        layered.layers[1]
+            .env
+            .iter()
+            .any(|ev| ev.name == "CFGD_CLIPBOARD"),
+        "the preference var is not in its claiming layer's block: {:?}",
+        layered.layers[1].env,
+    );
+
+    // Fold the blocks the way a shell sources them: in order, last assignment
+    // wins. The result is the merge's own answer.
+    let mut folded: Vec<crate::config::EnvVar> = Vec::new();
+    let mut folded_aliases: Vec<crate::config::ShellAlias> = Vec::new();
+    for layer in &layered.layers {
+        crate::fold_env_layer(&mut folded, &layer.env, crate::PATH_LIST_SEPARATOR);
+        crate::merge_aliases(&mut folded_aliases, &layer.aliases);
+    }
+    let by_name = |mut entries: Vec<crate::config::EnvVar>| {
+        entries.sort_by(|a, b| a.name.cmp(&b.name));
+        entries
+    };
+    let aliases_by_name = |mut entries: Vec<crate::config::ShellAlias>| {
+        entries.sort_by(|a, b| a.name.cmp(&b.name));
+        entries
+    };
+    // `PATH` is the one name with no block to fold: the composed `PATH` line
+    // assembles it from every producer instead.
+    let mut winners = layered.merged.clone();
+    winners.retain(|ev| ev.name != "PATH");
+    assert_eq!(
+        by_name(folded),
+        by_name(winners),
+        "the blocks fold to a different env than the merge decided",
+    );
+    assert_eq!(
+        aliases_by_name(folded_aliases),
+        aliases_by_name(layered.merged_aliases.clone()),
+        "the blocks fold to a different alias set than the merge decided",
     );
 }
 
@@ -22088,11 +22205,8 @@ fn launchd_plist_xml_escapes_values() {
 fn plan_env_all_scope_emits_live_session_action() {
     let tmp = tempfile::tempdir().unwrap();
     let actions = Reconciler::plan_env_with_home(
-        &one_env(),
-        &[],
-        &Default::default(),
+        super::LayeredEnv::from_parts("profile:test", &one_env(), &[], &[]),
         EnvScope::All,
-        &[],
         &[],
         &[],
         &[],
@@ -22111,11 +22225,8 @@ fn plan_env_all_scope_emits_live_session_action() {
 fn plan_env_interactive_scope_has_no_live_session_action() {
     let tmp = tempfile::tempdir().unwrap();
     let actions = Reconciler::plan_env_with_home(
-        &one_env(),
-        &[],
-        &Default::default(),
+        super::LayeredEnv::from_parts("profile:test", &one_env(), &[], &[]),
         EnvScope::Interactive,
-        &[],
         &[],
         &[],
         &[],
@@ -22901,11 +23012,8 @@ fn plan_env_neutralizes_a_stale_managed_file_when_the_desired_env_empties() {
     let managed = vec![crate::to_posix_string(&env_file)];
 
     let actions = Reconciler::plan_env_with_home(
-        &[],
-        &[],
-        &Default::default(),
+        super::LayeredEnv::from_parts("profile:test", &[], &[], &[]),
         EnvScope::Interactive,
-        &[],
         &[],
         &[],
         &managed,
@@ -22930,11 +23038,8 @@ fn plan_env_neutralizes_a_stale_managed_file_when_the_desired_env_empties() {
     // Already neutral: nothing left to strip.
     std::fs::write(&env_file, neutral).unwrap();
     let actions = Reconciler::plan_env_with_home(
-        &[],
-        &[],
-        &Default::default(),
+        super::LayeredEnv::from_parts("profile:test", &[], &[], &[]),
         EnvScope::Interactive,
-        &[],
         &[],
         &[],
         &managed,
@@ -22946,11 +23051,8 @@ fn plan_env_neutralizes_a_stale_managed_file_when_the_desired_env_empties() {
     // A file cfgd's generator did not write is not cfgd's to strip.
     std::fs::write(&env_file, "export FOO=\"user-authored\"\n").unwrap();
     let actions = Reconciler::plan_env_with_home(
-        &[],
-        &[],
-        &Default::default(),
+        super::LayeredEnv::from_parts("profile:test", &[], &[], &[]),
         EnvScope::Interactive,
-        &[],
         &[],
         &[],
         &managed,
@@ -22972,11 +23074,8 @@ fn plan_env_leaves_a_generated_file_this_state_store_never_recorded() {
     std::fs::write(&env_file, body).unwrap();
 
     let actions = Reconciler::plan_env_with_home(
-        &[],
-        &[],
-        &Default::default(),
+        super::LayeredEnv::from_parts("profile:test", &[], &[], &[]),
         EnvScope::Interactive,
-        &[],
         &[],
         &[],
         &[],
@@ -23006,11 +23105,8 @@ fn reconciler_env_surfaces_resolve_against_the_home_it_was_built_with() {
 
     let actions = reconciler
         .plan_env(
-            &env,
-            &[],
-            &Default::default(),
+            super::LayeredEnv::from_parts("profile:test", &env, &[], &[]),
             EnvScope::Interactive,
-            &[],
             &[],
             &[],
             &[],
@@ -29920,11 +30016,8 @@ fn a_converged_env_surface_plans_no_env_actions() {
     }];
     let plan = || {
         Reconciler::plan_env_with_home(
-            &env,
-            &aliases,
-            &Default::default(),
+            super::LayeredEnv::from_parts("profile:test", &env, &aliases, &[]),
             crate::config::EnvScope::Interactive,
-            &[],
             &[],
             &[],
             &[],
@@ -30876,11 +30969,6 @@ fn an_owner_commented_env_line_written_by_the_planner_verifies_as_current() {
         value: "less".into(),
         platforms: vec![],
     }];
-    let layer_owners = {
-        let mut o = crate::config::EntryOwners::default();
-        o.claim("profile:base", &profile_env, &[]);
-        o
-    };
     let path_dirs = vec![ManagerPathDir::new("brew", "/opt/homebrew/bin")];
 
     let mut module = crate::test_helpers::make_resolved_module("nvim");
@@ -30900,11 +30988,8 @@ fn an_owner_commented_env_line_written_by_the_planner_verifies_as_current() {
     // real apply writes rather than a literal that can drift from them.
     let mut primary: Option<std::path::PathBuf> = None;
     for action in Reconciler::plan_env_with_home(
-        &profile_env,
-        &[],
-        &layer_owners,
+        super::LayeredEnv::from_parts("profile:base", &profile_env, &[], &modules),
         crate::config::EnvScope::Interactive,
-        &modules,
         &[],
         &path_dirs,
         &[],
@@ -30922,11 +31007,8 @@ fn an_owner_commented_env_line_written_by_the_planner_verifies_as_current() {
     let primary = primary.expect("the planner writes a primary managed env file");
 
     let results = super::verify::env_verify_results(
-        &profile_env,
-        &[],
-        &layer_owners,
+        &super::LayeredEnv::from_parts("profile:base", &profile_env, &[], &modules),
         crate::config::EnvScope::Interactive,
-        &modules,
         &path_dirs,
     );
     // Only the seeded managed file is under test; the rc source line the test
@@ -30951,10 +31033,12 @@ fn an_owner_commented_env_line_written_by_the_planner_verifies_as_current() {
     // difference that is not the difference.
     let written = std::fs::read_to_string(&primary).unwrap();
     for (id, owner) in [("EDITOR", "# module:nvim"), ("PAGER", "# profile:base")] {
-        let shown =
-            super::verify::MergedEnvItems::new(&profile_env, &[], &layer_owners, &modules, &[])
-                .declared_line("env-var", id)
-                .expect("a declared var renders its declared line");
+        let shown = super::verify::MergedEnvItems::new(
+            &super::LayeredEnv::from_parts("profile:base", &profile_env, &[], &modules),
+            &[],
+        )
+        .declared_line("env-var", id)
+        .expect("a declared var renders its declared line");
         assert!(
             shown.contains(owner),
             "the shown line carries the provenance comment verify matched on: {shown}"

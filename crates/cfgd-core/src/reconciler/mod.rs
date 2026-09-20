@@ -101,9 +101,9 @@ pub use types::{
     split_package_drift_resource_id,
 };
 pub use verify::{
-    EnvItemCheck, MergedEnvItems, SystemCheckError, VerifyReport, VerifyResult, VersionFloor,
-    env_item_verify_results, env_verify_results, package_version_drift, package_version_floor,
-    verify,
+    EnvItemCheck, EnvLayer, LayeredEnv, MergedEnvItems, SystemCheckError, VerifyReport,
+    VerifyResult, VersionFloor, env_item_verify_results, env_verify_results, package_version_drift,
+    package_version_floor, verify,
 };
 
 pub(crate) use env::all_recorded_path_dirs;

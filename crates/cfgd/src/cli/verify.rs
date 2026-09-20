@@ -261,10 +261,7 @@ pub fn cmd_verify(
     // Recomputing here is exactly `diff`'s "opaque markers carry neither
     // real value" rule applied to `verify`'s own render.
     let merged_env_items = reconciler::MergedEnvItems::new(
-        &resolved.merged.env,
-        &resolved.merged.aliases,
-        &resolved.merged.entry_owners,
-        &resolved_modules,
+        &reconciler::LayeredEnv::of(&resolved, &resolved_modules),
         &reconciler::recorded_manager_path_dirs(state, &resolved.merged, &resolved_modules),
     );
     for r in &mut results {
@@ -637,19 +634,13 @@ mod tests {
             value: "vim".to_string(),
             platforms: vec![],
         }];
-        // The owners the profile-layer merge records for this profile: the
-        // generated line names its layer, so a needle rendered with no owner
-        // is a line the file never holds.
-        let declared_owners = {
-            let mut o = cfgd_core::config::EntryOwners::default();
-            o.claim("profile:default", &declared_env, &[]);
-            o
-        };
         let declared_line = cfgd_core::reconciler::MergedEnvItems::new(
-            &declared_env,
-            &[],
-            &declared_owners,
-            &[],
+            &cfgd_core::reconciler::LayeredEnv::from_parts(
+                "profile:default",
+                &declared_env,
+                &[],
+                &[],
+            ),
             &[],
         )
         .declared_line("env-var", "EDITOR")
