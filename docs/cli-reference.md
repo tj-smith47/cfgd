@@ -2614,6 +2614,36 @@ cfgd config unset daemon.reconcile.autoApply    # reset single field
 cfgd config unset aliases.deploy                 # remove an alias
 ```
 
+### `cfgd config migrate`
+
+Bring `cfgd.yaml` up to the schema this build reads. A document is behind the
+schema when this build carries a field the document never names: the field has a
+default, so cfgd reads it either way, but nothing in the file says what the value
+is or that the knob exists.
+
+```sh
+cfgd config migrate           # report what the document does not declare
+cfgd config migrate --write   # materialize those fields with their defaults
+```
+
+The report writes nothing. `--write` materializes each reported key with the
+value the typed config already carries, through the same write path
+`cfgd config set` uses: the leading comment block and the schema modeline are
+re-prepended, and the result is re-validated before it replaces the file.
+
+The same check runs at load time under `spec.migrationPolicy` (`--migration-policy`
+/ `CFGD_MIGRATION_POLICY` override it for one invocation). Under the default
+`Prompt` an interactive run is asked once per config file and `apiVersion`, and
+the answer is remembered — yes or no; a release that adds another field asks
+again, because the question changed. A run with no terminal reports instead and
+records no answer, and the daemon does the same: it never rewrites a tracked file.
+
+Structured output carries `path`, `pendingKeys` and `written`.
+
+A document written under an `apiVersion` this build does not read is a different
+refusal, reported where it happens: the load names the version it found and the
+ones this build accepts.
+
 ### `cfgd workflow generate`
 
 Generate GitHub Actions workflows for config repo releases.

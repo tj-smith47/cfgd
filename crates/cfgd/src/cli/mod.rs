@@ -246,6 +246,10 @@ pub(in crate::cli) enum Mutation<'a> {
     /// rollback stays recoverable only until something else displaces that
     /// sidecar. `unit` is the `spec.backups[]` name to snapshot.
     BackupRolledBack { unit: &'a str },
+    /// `config migrate --write` materialized the fields this build's schema
+    /// carries that the document did not declare. Every one of them is a knob
+    /// the composition reads, so the edit is a composition edit.
+    ConfigMigrated,
 }
 
 /// The next step a mutating `source`, `module`, `profile`, `secret` or
@@ -272,6 +276,7 @@ pub(in crate::cli) fn success_next_step(mutation: Mutation<'_>) -> HintCommands 
         | Mutation::SourceUpdated {
             trust_changed: false,
         }
+        | Mutation::ConfigMigrated
         | Mutation::SourceRemoved
         | Mutation::SourceReplaced
         | Mutation::SourceOverridden
@@ -1652,7 +1657,7 @@ pub enum Command {
 
     /// View or edit the cfgd configuration
     #[command(
-        long_about = "Show, edit, get, set, or unset config values.\n\nExamples:\n  cfgd config show\n  cfgd config ls\n  cfgd config get theme\n  cfgd config set theme dracula\n  cfgd config unset theme\n  cfgd config rm theme"
+        long_about = "Show, edit, get, set, unset, or migrate config values.\n\nExamples:\n  cfgd config show\n  cfgd config ls\n  cfgd config get theme\n  cfgd config set theme dracula\n  cfgd config unset theme\n  cfgd config rm theme\n  cfgd config migrate\n  cfgd config migrate --write"
     )]
     Config {
         #[command(subcommand)]
@@ -2171,6 +2176,16 @@ pub enum ConfigCommand {
     Unset {
         /// Dotted key path to remove
         key: String,
+    },
+    /// Bring cfgd.yaml up to the schema this build reads
+    #[command(
+        long_about = "Report the fields this build's schema carries that cfgd.yaml does not declare, and materialize them under --write.\n\nExamples:\n  cfgd config migrate\n  cfgd config migrate --write"
+    )]
+    Migrate {
+        /// Write the alignment to cfgd.yaml (without this, the pending
+        /// changes are reported and nothing is written)
+        #[arg(long)]
+        write: bool,
     },
 }
 
@@ -3559,6 +3574,9 @@ pub fn execute(
                 config_cmd::cmd_config_set(cli, printer, key, value)
             }
             ConfigCommand::Unset { key } => config_cmd::cmd_config_unset(cli, printer, key),
+            ConfigCommand::Migrate { write } => {
+                config_schema::cmd_config_migrate(cli, printer, *write)
+            }
         },
         Command::Alias { command } => {
             // cmd_config_* peels `spec` first before walking the dotted path, so the

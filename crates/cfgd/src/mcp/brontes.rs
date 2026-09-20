@@ -63,6 +63,7 @@ const INTERACTIVE: &[&str] = &[
 const ADDITIVE: &[&str] = &[
     "alias set",
     "compliance export",
+    "config migrate",
     "config set",
     "daemon install",
     "generate module",

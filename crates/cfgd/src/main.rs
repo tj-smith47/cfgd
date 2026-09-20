@@ -363,6 +363,22 @@ fn main() -> anyhow::Result<()> {
         cli.config = cfgd_core::config::resolve_config_path(&new_config);
     }
 
+    // The load-time migration gate, reached once per invocation, after the
+    // config path has settled and before dispatch. A daemon never blocks on a
+    // prompt and never rewrites a file something else tracks, so both arms
+    // that would write fold to a report; the fold is decided here because the
+    // reconcile loop lives in cfgd-core and cannot call into this crate.
+    let migration_policy = match (
+        is_daemon,
+        cli::resolve_migration_policy(&cli.config, cli.migration_policy.as_deref()),
+    ) {
+        (true, cfgd_schema::MigrationPolicy::Prompt | cfgd_schema::MigrationPolicy::Update) => {
+            cfgd_schema::MigrationPolicy::Warn
+        }
+        (_, policy) => policy,
+    };
+    cli::config_schema::gate_on_load(&printer, &cli, migration_policy, assume_yes);
+
     // Policy-driven self-update check (interval-gated, cheap when within
     // interval). Skipped for the daemon (its own loop runs the check), for
     // `upgrade` itself (which checks explicitly), and when no subcommand was

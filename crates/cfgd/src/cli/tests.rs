@@ -19272,6 +19272,7 @@ fn walked_mutations() -> &'static [(Mutation<'static>, &'static [&'static str])]
             Mutation::BackupRolledBack { unit: "notes" },
             &["cfgd backup rollback"],
         ),
+        (Mutation::ConfigMigrated, &["cfgd config migrate"]),
     ]
 }
 
@@ -19325,7 +19326,7 @@ fn every_composed_next_step_names_a_command() {
         })
         .count();
     assert_eq!(
-        declared, 23,
+        declared, 24,
         "a new Mutation variant is walked here with every shape it can take"
     );
     for (mutation, own_verbs) in mutations {
@@ -47240,5 +47241,56 @@ fn no_source_walk_in_this_file_scans_syntax_by_hand() {
         "these lines scan Rust syntax by hand; reach for `blank_non_code`, \
          `code_line` or `commentless` instead, or say why with `{HATCH} <why>`:\n{}",
         offenders.join("\n")
+    );
+}
+
+/// Every command boundary that loads the user's real config answers the
+/// migration policy, or a reader on an out-of-date document is told by some
+/// verbs and not others. The population is derived from the call graph rather
+/// than listed, so a boundary added later joins it by being compiled.
+///
+/// The gate runs once per process, in `main.rs`, above every boundary under
+/// `cli/` — so the claim this pin holds is that nothing under `cli/` opens a
+/// second path into it, which is what makes the `main.rs` call the whole
+/// population. The daemon is inside that one call: `cfgd-core` cannot reach a
+/// function of this crate, so the policy it runs under is folded there by
+/// `is_daemon` rather than at a second call site.
+#[test]
+fn every_config_load_site_answers_the_migration_policy() {
+    use cfgd_core::test_helpers::{
+        callers_reaching, fn_declarations, production_slice_of, rust_sources_under, workspace_root,
+    };
+    let root = workspace_root().join("crates/cfgd/src/cli");
+    let sources = rust_sources_under(&root);
+    assert!(
+        sources.len() >= 40,
+        "the walk read only {} sources",
+        sources.len()
+    );
+    let mut declarations = Vec::new();
+    for path in &sources {
+        declarations.extend(fn_declarations(&production_slice_of(path)));
+    }
+    assert!(
+        declarations.len() >= 400,
+        "the walk found {} functions",
+        declarations.len()
+    );
+    // `callers_reaching` returns the seed with its callers, so a set of one IS
+    // the claim: nothing under `cli/` reaches the gate.
+    let gated = callers_reaching(&declarations, &[("gate_on_load".to_string(), None)]);
+    assert_eq!(
+        gated.len(),
+        1,
+        "the gate runs once, above every command boundary: {gated:?}"
+    );
+    let main = production_slice_of(&workspace_root().join("crates/cfgd/src/main.rs"));
+    assert!(
+        main.contains("config_schema::gate_on_load"),
+        "main.rs is the one caller: the gate runs before any cli boundary loads config"
+    );
+    assert!(
+        main.contains("is_daemon,") && main.contains("MigrationPolicy::Warn"),
+        "the daemon's fold is named at that one call site, not at a second one"
     );
 }

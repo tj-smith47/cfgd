@@ -84,4 +84,19 @@ impl StateStore {
             .all(|k| recorded.contains(k))
             .then_some(accepted))
     }
+
+    /// Remove the `config_migrations` table so the next read or write of it
+    /// fails.
+    ///
+    /// The seam for a caller's state-store-failure arm, which in production is
+    /// reached only by a refused query (a full disk, a locked or corrupt DB)
+    /// and is otherwise untestable: the connection is private to this module,
+    /// so a consumer's test cannot break the schema by hand. The migrations
+    /// are gated on the schema version, so a reopen does not put the table
+    /// back.
+    #[cfg(any(test, feature = "test-helpers"))]
+    pub fn drop_config_migrations_table(&self) -> Result<()> {
+        self.conn.execute("DROP TABLE config_migrations", [])?;
+        Ok(())
+    }
 }

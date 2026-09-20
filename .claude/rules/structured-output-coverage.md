@@ -29,6 +29,7 @@ keys while carrying six). The keys live in the builder and its golden.
 | compliance_snapshot          | yes               | snapshot consumed by scripts                       |
 | config_edit                  | yes               | post-edit validation verdict (path + valid flag), the shape `source_edit` already puts on the wire |
 | config_get                   | yes               | key/value queried by scripts                       |
+| config_migrate               | yes               | what the document is behind by, and whether this run wrote it |
 | configpolicy_validate        | yes               | validation result consumed by scripts/CI           |
 | config_set                   | yes               | mutation records                                   |
 | config_show                  | yes               | inspector consumed by scripts                      |
