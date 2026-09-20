@@ -2315,6 +2315,15 @@ const SERIAL_PINS: &[(&str, &str, &str, usize)] = &[
         "BackoffConfig::rate_limited(",
         3,
     ),
+    // The needle opens on `(` so it matches the fixture's CONSTRUCTION alone:
+    // the type's own `struct` and `impl` lines sit outside every function and
+    // would each read as a pin no attribute can carry.
+    (
+        "(TickCountingHooks {",
+        "tick_cache_reuse",
+        "(TickCountingHooks {",
+        5,
+    ),
     (
         "fn reset_daemon_log",
         "tracing_dispatcher",
@@ -3250,23 +3259,21 @@ fn names_a_hatch_marker(name: &str) -> bool {
 }
 
 /// The region of a source a test lives in: the whole file where the file IS
-/// test scaffolding, and everything from its first `#[cfg(test)]` otherwise.
+/// test scaffolding, and otherwise the complement of
+/// [`crate::test_helpers::production_slice`] — every inline test module kept,
+/// every other line blanked.
 ///
 /// The half this walk judges: a marker-shaped name in production code names
 /// something else entirely, and a production file has no business carrying a
-/// walk's hatch. The cut is deliberately WIDER than the one
-/// [`crate::test_helpers::production_slice`] makes, which anchors on the
-/// TRAILING test module: a file whose production code sits after an early
-/// `#[cfg(test)]` item has that code read here too. Over-reading can only add
-/// an offender a human then judges, never hide one, so the cheap anchor is the
-/// right one for a walk whose failure mode is a population it never read.
+/// walk's hatch.
 ///
-/// The cut moves line numbers, so the region arrives with the count of lines
-/// that precede it: an offender a reader cannot open at the line it names is a
-/// report they have to go looking for. The count is of COMPLETED lines, since
-/// an indented anchor (or one inside a comment) leaves the prefix ending
-/// mid-line, where a segment count would be one too high.
-fn test_region(path: &Path, body: &str) -> (usize, String) {
+/// The complement is what makes PLACEMENT stop mattering. A cut at a file's
+/// first `#[cfg(test)]` reads every production line below a test-only item as
+/// test text, so moving an item from beside the production code it serves to
+/// the foot of the file changed a walk's verdict; blanking instead of cutting
+/// also keeps a line's number its own, so an offender can be opened where it is
+/// reported.
+fn test_region(path: &Path, body: &str) -> String {
     let scaffolding = path
         .components()
         .any(|c| c.as_os_str() == std::ffi::OsStr::new("tests"))
@@ -3275,45 +3282,90 @@ fn test_region(path: &Path, body: &str) -> (usize, String) {
             Some("tests" | "test_helpers")
         );
     if scaffolding {
-        return (0, body.to_string());
+        return body.to_string();
     }
-    match body.find("#[cfg(test)]") {
-        Some(at) => (body[..at].matches('\n').count(), body[at..].to_string()),
-        None => (0, String::new()),
-    }
+    crate::test_helpers::test_region_mask(body)
 }
 
-/// An offender's line number is the file's, so the cut reports what it skipped.
+/// The region is every inline test module and nothing else, wherever the
+/// modules and the test-only items sit.
+///
+/// Each leg is a tell the old cut got wrong: it opened at the FIRST
+/// `#[cfg(test)]` in the file, so a test-only item standing beside the
+/// production code it serves pulled every production line below it into the
+/// region, an item below the test module read as region too, and a
+/// `#[cfg(test)]` inside a comment opened one where no test lives at all.
 #[test]
-fn the_test_region_reports_the_lines_its_cut_skipped() {
-    let (skipped, region) = test_region(Path::new("src/thing.rs"), "a\nb\n#[cfg(test)]\nc\n");
-    assert_eq!(
-        skipped, 2,
-        "the lines above the cut are what an offender is offset by"
+fn the_test_region_is_every_inline_test_module_and_nothing_else() {
+    // Assembled rather than spelled: a `#[cfg(test)]` written out here would
+    // read as this scaffolding file declaring a second test region of its own.
+    let gate = concat!("#[cfg", "(test)]");
+    let file = format!(
+        "fn production() {{}}\n\
+         {gate}\n\
+         const ITEM_BEFORE: usize = 1;\n\
+         fn production_below_the_item() {{}}\n\
+         {gate}\n\
+         mod tests {{\n\
+         \x20   fn a_pin() {{}}\n\
+         }}\n\
+         fn production_below_the_module() {{}}\n\
+         {gate}\n\
+         const ITEM_AFTER: usize = 2;\n\
+         // {gate} in a comment opens nothing\n"
     );
-    assert!(
-        region.starts_with("#[cfg(test)]"),
-        "the region opens on the cut: {region:?}"
+    let file = file.as_str();
+    let region = test_region(Path::new("src/thing.rs"), file);
+    let held: Vec<(usize, &str)> = region
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| !line.is_empty())
+        .map(|(at, line)| (at + 1, line))
+        .collect();
+    assert_eq!(
+        held,
+        vec![
+            (5, gate),
+            (6, "mod tests {"),
+            (7, "    fn a_pin() {}"),
+            (8, "}"),
+        ],
+        "only the inline test module is the region, at the file's own line numbers:\n{region}"
+    );
+    for held in [
+        "fn production()",
+        "const ITEM_BEFORE",
+        "fn production_below_the_item()",
+        "fn production_below_the_module()",
+        "const ITEM_AFTER",
+        "in a comment",
+    ] {
+        assert!(
+            !region.contains(held),
+            "{held} is production text, whichever side of the module it sits on:\n{region}"
+        );
+    }
+    assert_eq!(
+        region.lines().count(),
+        file.lines().count(),
+        "a blanked line still occupies its own row, or an offender cannot be opened where it is reported"
+    );
+    assert_eq!(
+        // unfloored-slice-ok: the subject is one fixture held in memory, not a source on disk
+        crate::test_helpers::production_slice(file)
+            .lines()
+            .filter(|line| !line.is_empty())
+            .count()
+            + held.len(),
+        file.lines().filter(|line| !line.is_empty()).count(),
+        "the region and the production slice partition the file:\n{region}"
     );
 
-    let (skipped, region) = test_region(Path::new("src/thing.rs"), "a\nb\n    #[cfg(test)]\nc\n");
+    let scaffolding = format!("a\n{gate}\nb\n");
+    let whole = test_region(Path::new("src/tests.rs"), &scaffolding);
     assert_eq!(
-        skipped, 2,
-        "an indented anchor leaves the prefix ending mid-line, and the cut skipped two lines all the same"
-    );
-    assert!(
-        region.starts_with("#[cfg(test)]"),
-        "the region opens on the cut: {region:?}"
-    );
-
-    let (skipped, region) = test_region(Path::new("src/tests.rs"), "a\n#[cfg(test)]\nb\n");
-    assert_eq!(
-        skipped, 0,
-        "a scaffolding file is read whole, so nothing is skipped"
-    );
-    assert!(
-        region.starts_with('a'),
-        "the region opens on the file: {region:?}"
+        whole, scaffolding,
+        "a scaffolding file is test text end to end"
     );
 }
 
@@ -3361,7 +3413,7 @@ fn every_hatch_a_walk_reads_comes_from_the_one_line_reader() {
     let mut per_crate: std::collections::BTreeMap<String, usize> =
         std::collections::BTreeMap::new();
     for path in workspace_rust_files() {
-        let (skipped, body) = test_region(&path, &walked_file_body(&path));
+        let body = test_region(&path, &walked_file_body(&path));
         let lines: Vec<&str> = body.lines().collect();
         let mut read_here = 0usize;
         for (n, line) in lines.iter().enumerate() {
@@ -3418,12 +3470,7 @@ fn every_hatch_a_walk_reads_comes_from_the_one_line_reader() {
             if carries_hatch(line, hatch) || carries_hatch(above, hatch) {
                 continue;
             }
-            offenders.push(format!(
-                "{}:{}: {}",
-                path.display(),
-                skipped + n + 1,
-                line.trim()
-            ));
+            offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
         }
         if read_here > 0 {
             let owner = path

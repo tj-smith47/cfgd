@@ -7737,24 +7737,24 @@ mod tests {
         }];
         let tmp_home = tempfile::tempdir().unwrap();
         let _home = cfgd_core::with_test_home_guard(tmp_home.path());
-        let declared_line = cfgd_core::reconciler::MergedEnvItems::new(
-            &cfgd_core::reconciler::LayeredEnv::from_parts(
-                "profile:default",
-                &declared_env,
-                &[],
-                &[],
-            ),
+        let layered = cfgd_core::reconciler::LayeredEnv::from_parts(
+            "profile:default",
+            &declared_env,
             &[],
-        )
-        .declared_line("env-var", "EDITOR")
-        .expect("EDITOR renders a declared line");
+            &[],
+        );
+        let merged = cfgd_core::reconciler::MergedEnvItems::new(&layered, &[]);
+        let declared_line = merged
+            .declared_line("env-var", "EDITOR")
+            .expect("EDITOR renders a declared line");
         // The machine HOLDS the declared line: whatever the recorded row says,
-        // this entry is converged right now.
-        std::fs::write(
-            cfgd_core::reconciler::primary_env_file(tmp_home.path()),
-            format!("# managed by cfgd \u{2014} do not edit\n{declared_line}\n"),
-        )
-        .unwrap();
+        // this entry is converged right now. Planted from the generator, so
+        // the file is the shape a reader of it has to resolve.
+        cfgd_core::test_helpers::plant_managed_env_files(
+            &merged,
+            tmp_home.path(),
+            cfgd_core::config::EnvScope::Interactive,
+        );
 
         let state_dir = tmp.path().join("state");
         std::fs::create_dir_all(&state_dir).unwrap();
@@ -10413,22 +10413,17 @@ mod tests {
             value: "vim".to_string(),
             platforms: vec![],
         }];
-        let declared_line = cfgd_core::reconciler::MergedEnvItems::new(
-            &cfgd_core::reconciler::LayeredEnv::from_parts(
-                "module:test-mod",
-                &declared_env,
-                &[],
-                &[],
-            ),
+        let layered = cfgd_core::reconciler::LayeredEnv::from_parts(
+            "module:test-mod",
+            &declared_env,
             &[],
-        )
-        .declared_line("env-var", "EDITOR")
-        .expect("EDITOR renders a declared line");
-        std::fs::write(
-            cfgd_core::reconciler::primary_env_file(tmp_home.path()),
-            format!("# managed by cfgd \u{2014} do not edit\n{declared_line}\n"),
-        )
-        .unwrap();
+            &[],
+        );
+        cfgd_core::test_helpers::plant_managed_env_files(
+            &cfgd_core::reconciler::MergedEnvItems::new(&layered, &[]),
+            tmp_home.path(),
+            cfgd_core::config::EnvScope::default(),
+        );
         let printer = cfgd_core::test_helpers::test_printer();
         cmd_status_module(
             &RunContext::new(&cli, &printer),

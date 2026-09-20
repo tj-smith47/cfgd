@@ -31425,22 +31425,19 @@ fn the_primary_env_file_holds_one_block_per_layer_in_precedence_order() {
         Some("# profile: work (priority 1000)"),
         "{content}"
     );
-    // Name-sorted inside a block, env then aliases.
-    let work = content
-        .split("# profile: work (priority 1000)\n")
-        .nth(1)
-        .expect("the work block")
-        .split("\n\n")
-        .next()
-        .unwrap();
+    // Name-sorted inside a block, env then aliases, read off the boundaries
+    // the generator returned.
+    let body = |header: &str| {
+        blocks
+            .iter()
+            .find(|block| block.header == header)
+            .unwrap_or_else(|| panic!("no {header} block:\n{content}"))
+            .lines
+            .join("\n")
+    };
+    let work = body("# profile: work (priority 1000)");
     assert!(work.find("EDITOR") < work.find("PAGER"), "{content}");
-    let base = content
-        .split("# profile: base (priority 100)\n")
-        .nth(1)
-        .expect("the base block")
-        .split("\n\n")
-        .next()
-        .unwrap();
+    let base = body("# profile: base (priority 100)");
     assert!(base.find("export") < base.find("alias"), "{content}");
     // No per-line owner comment survives: the header said it once, and a
     // shadowed layer's line would otherwise name the layer that beat it.

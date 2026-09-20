@@ -683,6 +683,135 @@ mod tests {
         );
     }
 
+    /// A converged machine's `-o json` agrees with itself when its managed env
+    /// file holds SEVERAL blocks claiming one name.
+    ///
+    /// The file the generator writes is the inheritance debugger: a profile's
+    /// own `EDITOR` line stands in its block and the module's overriding one in
+    /// the block below it, and the value a shell folding the blocks in order
+    /// resolves to is the LAST of them. `cmd_verify` recomputes both operands
+    /// of every row through `display_values`, matching rows included, so a
+    /// reader taking the FIRST line that claims the name reported a converged
+    /// machine as drifted against itself — through a green workspace run, since
+    /// every other CLI fixture plants the one-block shape by hand.
+    #[test]
+    #[serial]
+    fn cmd_verify_reports_equal_operands_for_a_converged_multi_block_env_file() {
+        use crate::cli::helpers::tests::make_cli;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n",
+        )
+        .unwrap();
+        let profiles_dir = tmp.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        std::fs::write(
+            profiles_dir.join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  envScope: Interactive\n  modules: [test-mod]\n  env:\n    - name: EDITOR\n      value: vim\n",
+        )
+        .unwrap();
+        let mod_dir = tmp.path().join("modules").join("test-mod");
+        std::fs::create_dir_all(&mod_dir).unwrap();
+        std::fs::write(
+            mod_dir.join("module.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: test-mod\nspec:\n  env:\n    - name: EDITOR\n      value: nvim\n",
+        )
+        .unwrap();
+
+        let tmp_home = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp_home.path());
+
+        // The files the planner would write for the same two layers, taken
+        // from the generator rather than spelled here: the module's line has to
+        // stand in its own block below the profile's for the premise to hold.
+        let profile_env = vec![cfgd_core::config::EnvVar {
+            name: "EDITOR".to_string(),
+            value: "vim".to_string(),
+            platforms: vec![],
+        }];
+        let module = cfgd_core::modules::ResolvedModule {
+            name: "test-mod".to_string(),
+            packages: Vec::new(),
+            files: Vec::new(),
+            env: vec![cfgd_core::config::EnvVar {
+                name: "EDITOR".to_string(),
+                value: "nvim".to_string(),
+                platforms: vec![],
+            }],
+            aliases: Vec::new(),
+            system: std::collections::BTreeMap::new(),
+            pre_apply_scripts: Vec::new(),
+            post_apply_scripts: Vec::new(),
+            pre_reconcile_scripts: Vec::new(),
+            post_reconcile_scripts: Vec::new(),
+            on_change_scripts: Vec::new(),
+            on_drift_scripts: Vec::new(),
+            depends: Vec::new(),
+            dep_pulled: false,
+            dir: mod_dir.clone(),
+            platform_skip_reason: None,
+            origin: None,
+        };
+        let layered = cfgd_core::reconciler::LayeredEnv::from_parts(
+            "profile:default",
+            &profile_env,
+            &[],
+            std::slice::from_ref(&module),
+        );
+        let files = cfgd_core::test_helpers::plant_managed_env_files(
+            &cfgd_core::reconciler::MergedEnvItems::new(&layered, &[]),
+            tmp_home.path(),
+            cfgd_core::config::EnvScope::Interactive,
+        );
+        let mut claiming = 0usize;
+        for (_, content) in &files {
+            let lines: Vec<&str> = content
+                .lines()
+                .filter(|line| !line.starts_with('#') && line.contains("EDITOR"))
+                .collect();
+            claiming = claiming.max(lines.len());
+            if lines.len() > 1 {
+                assert_ne!(
+                    lines.first(),
+                    lines.last(),
+                    "the premise is two DIFFERENT lines claiming one name:\n{content}"
+                );
+            }
+        }
+        assert!(
+            claiming > 1,
+            "a profile and a module declaring one name must write two blocks claiming it"
+        );
+
+        let state_dir = tmp.path().join("state");
+        let mut cli = make_cli(config_path);
+        cli.state_dir = Some(state_dir);
+        cli.cache_dir = Some(tmp.path().join("cache"));
+
+        let (printer, cap) = Printer::for_test_doc();
+        cmd_verify(&cli, &printer, None, false).unwrap();
+        drop(printer);
+
+        let json = cap.json().expect("verify emits a data payload");
+        let results = json["results"].as_array().expect("results array");
+        let editor_row = results
+            .iter()
+            .find(|r| r["resourceType"] == "env-var" && r["resourceId"] == "EDITOR")
+            .unwrap_or_else(|| panic!("expected an EDITOR result row: {json}"));
+        assert_eq!(
+            editor_row["expected"], editor_row["actual"],
+            "a converged machine's operands must agree: {editor_row}"
+        );
+        assert_eq!(
+            editor_row["matches"],
+            serde_json::json!(true),
+            "the row itself must read as converged: {editor_row}"
+        );
+    }
+
     /// A fleet-wide `cfgd verify` is a FULL-machine live check: every finding
     /// lands as a `drift_events` row (in the producer's own literals — a
     /// declared env value never reaches the store), every recorded row it

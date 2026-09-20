@@ -41814,22 +41814,24 @@ fn no_test_fixture_writes_a_native_path_into_a_declared_document() {
         let body = cfgd_core::test_helpers::walked_file_body(&path);
         let in_tests = path.components().any(|c| c.as_os_str() == "tests")
             || path.file_name().is_some_and(|n| n == "tests.rs");
-        let Some(region) = (if in_tests {
-            Some(0)
+        // The complement of the production slice, so which end of a file a
+        // test-only item sits at cannot change what is judged; blanked rather
+        // than cut, so a line's number stays the file's own and an offender can
+        // be opened where it is reported.
+        let region = if in_tests {
+            body.clone()
         } else {
-            body.find("#[cfg(test)]")
-        }) else {
-            continue;
+            cfgd_core::test_helpers::test_region_mask(&body)
         };
+        if region.lines().all(|line| line.is_empty()) {
+            continue;
+        }
         files += 1;
-        // Line numbers are the file's own, so an offender can be opened where
-        // it is reported.
-        let skipped = body[..region].lines().count();
         let label = cfgd_core::to_posix_string(path.strip_prefix(&crates_dir).unwrap_or(&path));
-        let (found, count) = native_paths_in_declared_documents(&body[region..]);
+        let (found, count) = native_paths_in_declared_documents(&region);
         folded += count;
         for (n, line) in found {
-            offenders.push(format!("{label}:{}: {}", skipped + n + 1, line.trim()));
+            offenders.push(format!("{label}:{}: {}", n + 1, line.trim()));
         }
     }
     assert!(

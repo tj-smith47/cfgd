@@ -1500,22 +1500,20 @@ mod tests {
             command: "ls -la".to_string(),
             platforms: vec![],
         };
-        let declared_line = cfgd_core::reconciler::MergedEnvItems::new(
-            &cfgd_core::reconciler::LayeredEnv::from_parts(
-                "profile:default",
-                &[],
-                std::slice::from_ref(&declared_alias),
-                &[],
-            ),
+        // The converged machine, planted from the generator: a hand-written
+        // file is one headerless block, which is not the shape the planner
+        // writes nor the shape a reader of the file has to resolve.
+        let layered = cfgd_core::reconciler::LayeredEnv::from_parts(
+            "profile:default",
             &[],
-        )
-        .declared_line("alias", "ll")
-        .expect("alias renders a declared line");
-        std::fs::write(
-            cfgd_core::reconciler::primary_env_file(tmp_home.path()),
-            format!("# managed by cfgd \u{2014} do not edit\n{declared_line}\n"),
-        )
-        .unwrap();
+            std::slice::from_ref(&declared_alias),
+            &[],
+        );
+        cfgd_core::test_helpers::plant_managed_env_files(
+            &cfgd_core::reconciler::MergedEnvItems::new(&layered, &[]),
+            tmp_home.path(),
+            cfgd_core::config::EnvScope::default(),
+        );
 
         let mut cli = make_cli(config_path);
         cli.state_dir = Some(tmp.path().join("state"));
@@ -1588,22 +1586,15 @@ mod tests {
             "scoop",
             "/opt/scoop/bin",
         )];
-        let written: Vec<String> = cfgd_core::reconciler::MergedEnvItems::new(
-            &cfgd_core::reconciler::LayeredEnv::from_parts("profile:test", &[], &[], &[]),
-            &path_dirs,
+        let layered = cfgd_core::reconciler::LayeredEnv::from_parts("profile:test", &[], &[], &[]);
+        let written: Vec<String> = cfgd_core::test_helpers::plant_managed_env_files(
+            &cfgd_core::reconciler::MergedEnvItems::new(&layered, &path_dirs),
+            tmp_home.path(),
+            cfgd_core::config::EnvScope::Interactive,
         )
-        .managed_env_files(tmp_home.path(), cfgd_core::config::EnvScope::Interactive)
-        .into_iter()
-        .map(|(path, content)| {
-            cfgd_core::ensure_parent_dir(&path).unwrap();
-            std::fs::write(&path, content).unwrap();
-            cfgd_core::to_posix_string(&path)
-        })
+        .iter()
+        .map(|(path, _)| cfgd_core::to_posix_string(path))
         .collect();
-        assert!(
-            !written.is_empty(),
-            "a recorded bootstrap dir alone must produce a managed env file"
-        );
 
         let state_dir = tmp.path().join("state");
         let mut cli = make_cli(config_path);
@@ -1937,22 +1928,17 @@ mod tests {
             value: "vim".to_string(),
             platforms: vec![],
         }];
-        let declared_line = cfgd_core::reconciler::MergedEnvItems::new(
-            &cfgd_core::reconciler::LayeredEnv::from_parts(
-                "module:env-mod",
-                &declared_env,
-                &[],
-                &[],
-            ),
+        let layered = cfgd_core::reconciler::LayeredEnv::from_parts(
+            "module:env-mod",
+            &declared_env,
             &[],
-        )
-        .declared_line("env-var", "EDITOR")
-        .expect("EDITOR renders a declared line");
-        std::fs::write(
-            cfgd_core::reconciler::primary_env_file(tmp_home.path()),
-            format!("# managed by cfgd \u{2014} do not edit\n{declared_line}\n"),
-        )
-        .unwrap();
+            &[],
+        );
+        cfgd_core::test_helpers::plant_managed_env_files(
+            &cfgd_core::reconciler::MergedEnvItems::new(&layered, &[]),
+            tmp_home.path(),
+            cfgd_core::config::EnvScope::default(),
+        );
 
         let mut cli = make_cli(config_path);
         let state_dir = tmp.path().join("state");

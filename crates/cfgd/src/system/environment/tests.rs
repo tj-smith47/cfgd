@@ -1767,9 +1767,7 @@ fn a_converged_macos_env_surface_carries_the_loader_line_and_stands_on_no_env_rc
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, body).unwrap();
     };
-    for (path, content) in merged.managed_env_files(home.path(), scope) {
-        write(&path, content);
-    }
+    cfgd_core::test_helpers::plant_managed_env_files(&merged, home.path(), scope);
     for (rc_path, line) in merged.managed_env_source_lines(home.path(), scope) {
         write(&rc_path, format!("{line}\n"));
     }

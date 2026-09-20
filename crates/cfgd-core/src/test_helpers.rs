@@ -5021,33 +5021,99 @@ pub fn hold_payload_unremovable(payload: &Path) -> UnremovablePayload {
 /// which owns the read and the per-file floor that keeps a re-blinding from
 /// passing quietly.
 pub fn production_slice(src: &str) -> String {
-    let mut out = String::with_capacity(src.len());
-    let mut lines = src.lines();
-    while let Some(line) = lines.next() {
-        if line == "#[cfg(test)]" {
-            let mut rest = lines.clone();
-            while rest.clone().next().is_some_and(|m| m.starts_with('#')) {
-                rest.next();
+    let blocks = inline_test_module_ranges(src);
+    src.lines()
+        .enumerate()
+        .filter(|(at, _)| !blocks.iter().any(|(from, to)| (*from..*to).contains(at)))
+        .fold(String::with_capacity(src.len()), |mut out, (_, line)| {
+            out.push_str(line);
+            out.push('\n');
+            out
+        })
+}
+
+/// The complement of [`production_slice`]: every line inside an inline test
+/// module kept, every other line blanked.
+///
+/// Blanked rather than cut, so a line's number in the mask is its number in the
+/// file and a walk reporting an offender names a line its reader can open. A
+/// file's test text is therefore whatever `production_slice` drops, WHEREVER it
+/// sits — a walk over the mask gives the same verdict whether a `#[cfg(test)]`
+/// item stands beside the production code it serves or above the trailing test
+/// module.
+pub fn test_region_mask(src: &str) -> String {
+    let blocks = inline_test_module_ranges(src);
+    src.lines()
+        .enumerate()
+        .fold(String::with_capacity(src.len()), |mut out, (at, line)| {
+            if blocks.iter().any(|(from, to)| (*from..*to).contains(&at)) {
+                out.push_str(line);
             }
-            if rest
-                .clone()
-                .next()
-                .is_some_and(|m| m.starts_with("mod ") && m.trim_end().ends_with('{'))
+            out.push('\n');
+            out
+        })
+}
+
+/// The half-open line range each inline `#[cfg(test)] mod … { … }` block
+/// occupies, attribute line through closing brace.
+///
+/// The ONE reader of rustfmt's shape, so the production half and the test half
+/// cannot disagree about where a file's test text begins:
+/// [`production_slice`] drops these ranges and [`test_region_mask`] keeps them.
+fn inline_test_module_ranges(src: &str) -> Vec<(usize, usize)> {
+    let lines: Vec<&str> = src.lines().collect();
+    let mut blocks: Vec<(usize, usize)> = Vec::new();
+    let mut at = 0usize;
+    while at < lines.len() {
+        if lines[at] == "#[cfg(test)]" {
+            // A platform gate stacks a second attribute between the marker and
+            // the `mod` line.
+            let mut mod_line = at + 1;
+            while lines.get(mod_line).is_some_and(|l| l.starts_with('#')) {
+                mod_line += 1;
+            }
+            if lines
+                .get(mod_line)
+                .is_some_and(|l| l.starts_with("mod ") && l.trim_end().ends_with('{'))
             {
-                rest.next();
-                lines = rest;
-                for inner in lines.by_ref() {
-                    if inner == "}" {
-                        break;
-                    }
+                let mut close = mod_line + 1;
+                while lines.get(close).is_some_and(|l| *l != "}") {
+                    close += 1;
                 }
+                let end = lines.len().min(close + 1);
+                blocks.push((at, end));
+                at = end;
                 continue;
             }
         }
-        out.push_str(line);
-        out.push('\n');
+        at += 1;
     }
-    out
+    blocks
+}
+
+/// Put the managed env files a CONVERGED machine holds onto `home`, taken from
+/// the generator rather than spelled by hand, and hand them back.
+///
+/// The one way a CLI fixture reproduces a converged machine: a hand-written
+/// file is one block with no header, which is not the shape the planner writes
+/// and not the shape a reader of that file has to resolve. A fixture whose
+/// subject is a MISSING or hand-edited entry writes its own bytes instead —
+/// there is no converged form of the state it is about.
+pub fn plant_managed_env_files(
+    merged: &crate::reconciler::MergedEnvItems,
+    home: &Path,
+    scope: crate::config::EnvScope,
+) -> Vec<(std::path::PathBuf, String)> {
+    let planted = merged.managed_env_files(home, scope);
+    for (path, content) in &planted {
+        crate::ensure_parent_dir(path).expect("a planted env file needs its directory");
+        std::fs::write(path, content).expect("planting a managed env file");
+    }
+    assert!(
+        !planted.is_empty(),
+        "a fixture planting a converged machine must write at least one managed file"
+    );
+    planted
 }
 
 /// The whole text of a file a walk ENUMERATED, read here so the read failure

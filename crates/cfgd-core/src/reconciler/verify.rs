@@ -612,9 +612,10 @@ fn fold_layers_of_one_owner(layers: Vec<EnvLayer>) -> Vec<EnvLayer> {
 /// LAST block where the owner holds more than one, so that no layer declaring
 /// the same name is rendered below it: the claim records the last layer that
 /// ranked the entry, and no layer after it ranked it either. An entry no claim
-/// answers for lands in the LAST block, because the generated file has to set
-/// every winner and that is the only position a shell folding the blocks in
-/// order resolves to the merge's value.
+/// answers for lands in the last block that DECLARES something, because the
+/// generated file has to set every winner and a block holding nothing renders
+/// no header and no line, so it is no position a shell folding the blocks in
+/// order resolves at.
 #[derive(Debug, Clone)]
 pub struct LayeredEnv {
     /// One block per CONTIGUOUS RUN of one owner token, low precedence first,
@@ -702,7 +703,7 @@ impl LayeredEnv {
     /// the layer that claimed it — a resolved preference is folded in after the
     /// layer loop and claimed by the last layer that ranked it, so it lands
     /// there and needs no header of its own, and an entry no claim answers for
-    /// lands in the last block rather than in none. Env vars and aliases are
+    /// lands in the last block that DECLARES something rather than in none. Env vars and aliases are
     /// placed the same way, each over its own half of the claim map. A block
     /// left with nothing is dropped rather than printed empty.
     fn assemble(

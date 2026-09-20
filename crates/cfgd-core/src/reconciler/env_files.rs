@@ -220,21 +220,18 @@ pub(super) struct EnvFileBlock {
     pub(super) lines: Vec<String>,
 }
 
-/// The body of every whole-file generator below: the banner, the folded PATH
+/// The blocks every whole-file generator below is built from: the folded PATH
 /// assignment under a header of its own, then one block per layer of
 /// `layered` — low precedence first, each entry rendered by `dialect`.
 ///
 /// A block carries no per-line provenance. Its header names the owner once,
 /// and a line inside an outranked layer's block that named an owner would name
 /// the layer whose value WON rather than the one that wrote the line.
-///
-/// The banner's two sentences about blocks are written only once the blocks
-/// are in hand, so a file that ends up holding none does not describe them.
-fn generate_content(
+fn compose_blocks(
     dialect: Dialect,
     layered: &super::verify::LayeredEnv,
     path: Option<&super::env_engine::FoldedPath>,
-) -> (String, Vec<EnvFileBlock>) {
+) -> Vec<EnvFileBlock> {
     let mut blocks: Vec<EnvFileBlock> = Vec::with_capacity(layered.layers.len() + 1);
     if let Some(path) = path {
         // Ahead of the user's own exports so a `spec.env` value may reference a
@@ -279,18 +276,38 @@ fn generate_content(
             lines,
         });
     }
-    // The `path` fold is a block with a header of its own, but it states no
-    // layer's precedence, so the banner's block sentences answer to the LAYER
-    // blocks alone.
-    let layer_blocks = blocks.len() - usize::from(path.is_some());
+    blocks
+}
+
+/// The finished file: the banner, then each block headed and spaced.
+///
+/// `layer_blocks` is how many of `blocks` state a layer's precedence — the
+/// `path` fold has a header of its own but states none, so the banner's two
+/// sentences about blocks answer to the layer blocks alone and a file holding
+/// none does not describe them.
+///
+/// Consumes `blocks`, so no line is copied on the way to the file.
+fn render(blocks: Vec<EnvFileBlock>, layer_blocks: usize) -> String {
     let mut content = banner(SHELL_COMMENT, layer_blocks > 0);
-    for block in &blocks {
+    for block in blocks {
         content.push(String::new());
-        content.push(block.header.clone());
-        content.extend(block.lines.iter().cloned());
+        content.push(block.header);
+        content.extend(block.lines);
     }
     content.push(String::new()); // trailing newline
-    (content.join("\n"), blocks)
+    content.join("\n")
+}
+
+/// The whole file one dialect renders for `layered`, the shape every public
+/// generator below is one line of.
+fn generate_content(
+    dialect: Dialect,
+    layered: &super::verify::LayeredEnv,
+    path: Option<&super::env_engine::FoldedPath>,
+) -> String {
+    let blocks = compose_blocks(dialect, layered, path);
+    let layer_blocks = blocks.len() - usize::from(path.is_some());
+    render(blocks, layer_blocks)
 }
 
 /// One layer's entries as its block renders them: sorted by name, and one line
@@ -313,7 +330,7 @@ pub(super) fn generate_env_file_content(
     layered: &super::verify::LayeredEnv,
     path: Option<&super::env_engine::FoldedPath>,
 ) -> String {
-    generate_content(Dialect::Posix, layered, path).0
+    generate_content(Dialect::Posix, layered, path)
 }
 
 /// Generate fish env file content from the layered env view and the PATH
@@ -322,7 +339,7 @@ pub(super) fn generate_fish_env_content(
     layered: &super::verify::LayeredEnv,
     path: Option<&super::env_engine::FoldedPath>,
 ) -> String {
-    generate_content(Dialect::Fish, layered, path).0
+    generate_content(Dialect::Fish, layered, path)
 }
 
 /// Generate PowerShell env file content from the layered env view and the PATH
@@ -331,7 +348,7 @@ pub(super) fn generate_powershell_env_content(
     layered: &super::verify::LayeredEnv,
     path: Option<&super::env_engine::FoldedPath>,
 ) -> String {
-    generate_content(Dialect::PowerShell, layered, path).0
+    generate_content(Dialect::PowerShell, layered, path)
 }
 
 /// The one line a single env var renders as in cfgd's PRIMARY managed env
@@ -839,7 +856,7 @@ pub(super) fn generate_blocks(
     layered: &super::verify::LayeredEnv,
     path: Option<&super::env_engine::FoldedPath>,
 ) -> Vec<EnvFileBlock> {
-    generate_content(dialect, layered, path).1
+    compose_blocks(dialect, layered, path)
 }
 
 /// One entry as a cfgd BEFORE the layered blocks wrote it: the dialect's line
