@@ -5,6 +5,7 @@ pub mod checkin;
 pub mod compliance;
 pub mod config_cmd;
 pub mod config_migration;
+pub mod config_schema;
 pub mod daemon;
 pub mod decide;
 pub mod diff;

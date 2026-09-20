@@ -208,6 +208,45 @@ fn collect_undeclared_scalars(
     }
 }
 
+/// Every scalar key `value` serializes that `declared` does not name, as
+/// dotted paths.
+///
+/// The read half of the prune above: [`prune_undeclared_defaults`] DELETES
+/// these when they carry nothing but a default, and `cfgd config migrate`
+/// MATERIALIZES them. One traversal answers both, so a field added to a config
+/// struct later cannot be seen by one and missed by the other.
+pub(in crate::cli) fn undeclared_scalar_keys<T: serde::Serialize>(
+    value: &T,
+    declared: &serde_yaml::Value,
+) -> Vec<String> {
+    let Ok(mut tree) = serde_yaml::to_value(value) else {
+        return Vec::new();
+    };
+    prune_absent_sections(&mut tree, 0);
+    let mut out = Vec::new();
+    collect_undeclared_scalars(&tree, declared, &mut Vec::new(), &mut out);
+    let mut keys: Vec<String> = out.iter().map(|path| dotted_path(path)).collect();
+    keys.sort();
+    keys.dedup();
+    keys
+}
+
+fn dotted_path(path: &[YamlStep]) -> String {
+    let mut out = String::new();
+    for step in path {
+        if !out.is_empty() {
+            out.push('.');
+        }
+        match step {
+            // A config struct serializes every mapping key as a string, so the
+            // fallback stands for a shape no cfgd document can hold.
+            YamlStep::Key(key) => out.push_str(key.as_str().unwrap_or("?")),
+            YamlStep::Index(index) => out.push_str(&index.to_string()),
+        }
+    }
+    out
+}
+
 fn lookup<'a>(tree: &'a serde_yaml::Value, path: &[YamlStep]) -> Option<&'a serde_yaml::Value> {
     path.iter().try_fold(tree, |node, step| match step {
         YamlStep::Key(key) => node.as_mapping()?.get(key),
