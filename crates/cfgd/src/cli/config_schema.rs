@@ -92,8 +92,9 @@ pub fn gate_exempt(command: Option<&Command>) -> Option<&'static str> {
 /// tracks, so both arms that would write fold to a report; `Warn` and
 /// `Ignore` pass through, and off the daemon nothing folds at all. The fold
 /// lives here because the reconcile loop is in `cfgd-core` and cannot call
-/// into this crate, so `main.rs` decides it for every invocation at the one
-/// call site.
+/// into this crate, and [`gate_on_load`] is its one caller: the override and
+/// the stored policy fold at the same site, so the two halves of one decision
+/// cannot be taken in two places.
 pub fn daemon_folded_policy(is_daemon: bool, policy: MigrationPolicy) -> MigrationPolicy {
     match (is_daemon, policy) {
         (true, MigrationPolicy::Prompt | MigrationPolicy::Update) => MigrationPolicy::Warn,
@@ -227,7 +228,7 @@ fn consult_recorded(
     let dir = match crate::cli::helpers::run_state_dir(cli.state_dir.as_deref(), cli.scope()) {
         Ok(dir) => dir,
         Err(e) => {
-            printer.alert(format!("Could not open the state store: {e}"));
+            printer.alert(format!("Could not resolve the state directory: {e}"));
             return None;
         }
     };
@@ -319,8 +320,10 @@ pub fn cmd_config_migrate(cli: &Cli, printer: &Printer, write: bool) -> anyhow::
 /// before dispatch, per `spec.migrationPolicy`.
 ///
 /// `policy_override` is what this invocation said on its own
-/// (`--migration-policy` / `CFGD_MIGRATION_POLICY`), already folded for the
-/// daemon by the caller. With nothing overridden the stored policy is read
+/// (`--migration-policy` / `CFGD_MIGRATION_POLICY`), unfolded: the daemon
+/// fold is taken here, over the override and the stored policy alike, because
+/// the stored half never passes through the caller at all. With nothing
+/// overridden the stored policy is read
 /// off the parse below rather than a second load of the same file, so a gate
 /// costs one read of the document whatever it decides — and an overridden
 /// `Ignore` costs none at all.
@@ -662,6 +665,57 @@ mod tests {
                 .expect("a resolvable state root answers");
         assert!(held.is_some(), "a store that holds an answer comes back");
         assert_eq!(recorded, Some(false), "and the answer with it");
+    }
+
+    /// The two failures `consult_recorded` can report are worded apart: a
+    /// state directory that could not be RESOLVED never reached a store, so
+    /// calling it an open failure sends the reader to a file that was never
+    /// named. Resolution is what fails when nothing overrides the state
+    /// directory and no home can be found for the default.
+    #[test]
+    #[serial_test::serial]
+    fn a_state_directory_that_cannot_be_resolved_is_not_reported_as_a_store_that_would_not_open() {
+        use cfgd_core::output::{Printer, Verbosity};
+        use cfgd_core::test_helpers::EnvVarGuard;
+
+        let _state = EnvVarGuard::unset("CFGD_STATE_DIR");
+        let _systemd = EnvVarGuard::unset("STATE_DIRECTORY");
+        let _home = EnvVarGuard::unset("HOME");
+        let _profile = EnvVarGuard::unset("USERPROFILE");
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cfgd.yaml");
+        std::fs::write(&path, BEHIND_DOC).unwrap();
+        let cli = cli_with_config(&path, None);
+        let (printer, _stdout, stderr) = Printer::for_test_split_streams(Verbosity::Normal);
+
+        let answered = consult_recorded(
+            &printer,
+            &cli,
+            &path,
+            cfgd_core::API_VERSION,
+            &["spec.migrationPolicy".to_string()],
+        );
+        printer.flush();
+
+        assert!(
+            answered.is_none(),
+            "a state directory that cannot be resolved answers nothing"
+        );
+        let text = cfgd_core::test_helpers::captured_text(&stderr);
+        assert!(
+            text.contains("Could not resolve the state directory"),
+            "the resolution failure names resolution: {text}"
+        );
+        assert!(
+            !text.contains("Could not open the state store"),
+            "nothing was opened, so nothing reports an open failure: {text}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            BEHIND_DOC,
+            "a gate that could not read an answer wrote nothing"
+        );
     }
 
     /// A state store that cannot answer the migration question says so, on

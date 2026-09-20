@@ -47246,8 +47246,9 @@ fn no_source_walk_in_this_file_scans_syntax_by_hand() {
 /// `cli/` — so the claim this pin holds is that nothing under `cli/` opens a
 /// second path into it, which is what makes the `main.rs` call the whole
 /// population. The daemon is inside that one call: `cfgd-core` cannot reach a
-/// function of this crate, so the policy it runs under is folded there by
-/// `is_daemon` rather than at a second call site.
+/// function of this crate, so the policy it runs under is folded by
+/// `is_daemon` — once, inside `gate_on_load`, which is the only site holding
+/// both the override and the stored policy the fold applies to.
 #[test]
 fn every_config_load_site_answers_the_migration_policy() {
     use cfgd_core::test_helpers::{
@@ -47283,9 +47284,20 @@ fn every_config_load_site_answers_the_migration_policy() {
         "main.rs is the one caller: the gate runs before any cli boundary loads config"
     );
     assert!(
-        main.contains("config_schema::daemon_folded_policy(is_daemon"),
-        "the daemon's fold is a function that fold's own table pins, called at that one \
-         call site rather than written out as a match nothing discriminates"
+        !main.contains("daemon_folded_policy"),
+        "the daemon fold runs once: `gate_on_load` folds the override and the stored policy \
+         at one site, so main.rs must not fold the override on its way in"
+    );
+    let schema =
+        production_slice_of(&workspace_root().join("crates/cfgd/src/cli/config_schema.rs"));
+    let gate = fn_declarations(&schema)
+        .into_iter()
+        .find(|(name, owner, _)| name == "gate_on_load" && owner.is_none())
+        .map(|(_, _, code)| code)
+        .expect("`gate_on_load` is declared in config_schema.rs");
+    assert!(
+        cfgd_core::test_helpers::calls_free_fn(&gate, "daemon_folded_policy"),
+        "`gate_on_load` is where the fold lives, over the override and the stored policy alike"
     );
     assert!(
         main.contains("config_schema::gate_exempt(cli.command.as_ref())"),

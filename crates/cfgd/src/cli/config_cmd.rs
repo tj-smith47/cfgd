@@ -478,6 +478,10 @@ pub(super) fn flat_output_key(key: &str) -> Option<String> {
 }
 
 pub fn cmd_config_get(cli: &Cli, printer: &Printer, key: &str) -> anyhow::Result<()> {
+    // The `spec.` prefix the docs and `cfgd explain` print is folded away
+    // first, so every later read of the key — the walk, the confirmation, the
+    // `-o json` payload and the error — names one field.
+    let key = spec_relative_key(key);
     let config_path = &cli.config;
     if !config_path.exists() {
         return Err(no_config_error(printer, config_path));
@@ -579,6 +583,10 @@ pub fn cmd_config_get(cli: &Cli, printer: &Printer, key: &str) -> anyhow::Result
 }
 
 pub fn cmd_config_set(cli: &Cli, printer: &Printer, key: &str, value: &str) -> anyhow::Result<()> {
+    // The `spec.` prefix the docs and `cfgd explain` print is folded away
+    // first, so every later read of the key — the walk, the confirmation, the
+    // `-o json` payload and the error — names one field.
+    let key = spec_relative_key(key);
     let config_path = &cli.config;
     if !config_path.exists() {
         return Err(no_config_error(printer, config_path));
@@ -672,6 +680,10 @@ pub fn cmd_config_set(cli: &Cli, printer: &Printer, key: &str, value: &str) -> a
 }
 
 pub fn cmd_config_unset(cli: &Cli, printer: &Printer, key: &str) -> anyhow::Result<()> {
+    // The `spec.` prefix the docs and `cfgd explain` print is folded away
+    // first, so every later read of the key — the walk, the confirmation, the
+    // `-o json` payload and the error — names one field.
+    let key = spec_relative_key(key);
     let config_path = &cli.config;
     if !config_path.exists() {
         return Err(no_config_error(printer, config_path));
@@ -1822,5 +1834,88 @@ spec:
         assert_eq!(after2.matches("# team banner").count(), 1);
         assert_eq!(after2.matches("yaml-language-server").count(), 1);
         assert!(after2.contains("name: minimal"));
+    }
+    /// The `spec.` prefix the docs and `cfgd explain` print names the same
+    /// field on every key verb, so a reader who copies a path out of
+    /// `cfgd explain` can paste it into any of the three.
+    #[test]
+    fn every_config_key_verb_accepts_the_spec_prefix_the_docs_print() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // get: the prefixed spelling answers with the same value the bare one
+        // does, and the `-o json` envelope keys it the folded way.
+        let cli = test_cli_for(write_sample_config(dir.path()));
+        let (printer, cap) = Printer::for_test_doc();
+        cmd_config_get(&cli, &printer, "spec.theme.name").unwrap();
+        drop(printer);
+        assert_eq!(cap.human().trim(), "monokai");
+
+        let (printer, cap) = Printer::for_test_doc_with_format(OutputFormat::Json);
+        cmd_config_get(&cli, &printer, "spec.output.theme.name").unwrap();
+        drop(printer);
+        let parsed = cap.json().expect("doc captured json");
+        assert_eq!(parsed["key"], "output.theme.name");
+        assert_eq!(parsed["value"], "monokai");
+
+        // set: the prefixed key writes the field it names and nothing else.
+        let printer = test_printer();
+        cmd_config_set(&cli, &printer, "spec.migrationPolicy", "Ignore").unwrap();
+        let after = std::fs::read_to_string(&cli.config).unwrap();
+        assert!(
+            after.contains("  migrationPolicy: Ignore\n"),
+            "the prefixed key writes `spec.migrationPolicy`: {after}"
+        );
+        assert!(
+            !after.contains("spec:\n  spec:") && !after.contains("\n  spec:"),
+            "nothing named `spec` is written underneath `spec`: {after}"
+        );
+        assert!(
+            after.contains("name: monokai"),
+            "the write touches nothing else: {after}"
+        );
+
+        // unset: the prefixed key clears the field the bare one addresses.
+        cmd_config_unset(&cli, &printer, "spec.theme.name").unwrap();
+        let cleared = std::fs::read_to_string(&cli.config).unwrap();
+        assert!(
+            !cleared.contains("name: monokai"),
+            "the prefixed unset clears `spec.output.theme.name`: {cleared}"
+        );
+    }
+
+    /// Every `cmd_config_*` taking a caller-written key folds the `spec.`
+    /// prefix before anything reads it. The population is read off the source
+    /// rather than listed, so a fourth key verb joins it by being compiled.
+    #[test]
+    fn every_config_key_verb_folds_the_spec_prefix_before_it_reads_the_key() {
+        use cfgd_core::test_helpers::{calls_free_fn, fn_declarations, production_slice_of};
+
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli/config_cmd.rs");
+        let declarations = fn_declarations(&production_slice_of(&path));
+        let mut verbs = Vec::new();
+        let mut missing = Vec::new();
+        for (name, owner, code) in &declarations {
+            let signature = code.split_once(')').map_or(code.as_str(), |(head, _)| head);
+            if owner.is_some()
+                || !name.starts_with("cmd_config_")
+                || !signature.contains("key: &str")
+            {
+                continue;
+            }
+            verbs.push(name.clone());
+            if !calls_free_fn(code, "spec_relative_key") {
+                missing.push(name.clone());
+            }
+        }
+        assert!(
+            verbs.len() >= 3,
+            "the walk found {} key verbs: {verbs:?}",
+            verbs.len()
+        );
+        assert!(
+            missing.is_empty(),
+            "these key verbs never fold the `spec.` prefix, so the spelling the docs print \
+             is a usage error there: {missing:?}"
+        );
     }
 }

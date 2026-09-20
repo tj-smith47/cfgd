@@ -916,6 +916,16 @@ where
 /// document declares: `--migration-policy` first, then
 /// `CFGD_MIGRATION_POLICY`, and `None` when neither was given.
 ///
+/// The env var has two readers, and which one answers depends on who built
+/// the `Cli`. In the binary clap reads it first, through the
+/// `env = "CFGD_MIGRATION_POLICY"` the flag declares, so `flag` already
+/// carries the variable's word and clap has validated it against the flag's
+/// value list — a bogus word is a usage error rather than a silently dropped
+/// setting. The branch below answers for a `Cli` built in-process (a test, a
+/// library caller), which clap never parsed. That is the same shape
+/// `CFGD_THEME`, `CFGD_COLOR` and `CFGD_MASK_ENV_VALUES` carry beside
+/// [`resolve_knob`]'s own env read.
+///
 /// This is the one knob whose stored half is NOT read here. The load-time
 /// gate parses the document for itself to find out what is missing from it,
 /// and `spec.migrationPolicy` comes off that same parse — a second

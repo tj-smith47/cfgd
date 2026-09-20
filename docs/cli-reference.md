@@ -2580,8 +2580,13 @@ Open cfgd.yaml in `$EDITOR`.
 
 Get a config value by dotted key path. Outputs raw value to stdout (suitable for scripting).
 
+A key is relative to `spec`, and `get`, `set` and `unset` all accept the
+`spec.` prefix that `cfgd explain` prints, so `spec.theme.name` and
+`theme.name` name one field.
+
 ```sh
 cfgd config get profile                      # → work
+cfgd config get spec.theme.name              # → dracula (the prefixed spelling)
 cfgd config get theme.name                   # → dracula
 cfgd config get theme                        # prints the theme block (name + overrides)
 cfgd config get daemon.reconcile.interval    # → 5m
