@@ -4988,9 +4988,9 @@ pub fn hold_payload_unremovable(payload: &Path) -> UnremovablePayload {
 }
 
 /// The production region of a Rust source file a walk-style pin reads: the file
-/// with EVERY top-level inline test module removed.
+/// with EVERY column-0 `#[cfg(test)]` item removed, module or not.
 ///
-/// A pin that scans source has to drop the file's own `#[cfg(test)]` blocks,
+/// A pin that scans source has to drop the file's own `#[cfg(test)]` items,
 /// which describe the surface rather than rendering it. What it must not drop is
 /// production code, and both cheaper spellings do: cutting at the first bare
 /// `#[cfg(test)]` blinds the walk below a mid-file `#[cfg(test)] use` import or
@@ -5001,27 +5001,25 @@ pub fn hold_payload_unremovable(payload: &Path) -> UnremovablePayload {
 ///
 /// So this is a strip, not a suffix cut: a trailing test module is only the
 /// common case, and a file may hold several inline siblings (`output/mod.rs` has
-/// six). A declaration survives — it carries no test text — and so does every
-/// line between and after the blocks.
+/// six). A `mod tests;` declaration survives — it carries no test text — and so
+/// does every line between and after the items.
 ///
 /// The shape relied on is rustfmt's, which every file in this workspace is
-/// formatted by: the attribute alone at column 0, and the module's closing `}`
-/// alone at column 0. Each anchor drops through the next such line. A platform
-/// gate stacks a second attribute (`#[cfg(test)]` / `#[cfg(unix)]` /
-/// `mod tests {`) between the marker and the `mod` line, so the scan skips
-/// every column-0 attribute line before checking for `mod ` — three daemon
-/// service files and `cli/kubectl.rs` carry exactly this shape, and without
-/// the skip their whole test module read as production text. The one way the
-/// rustfmt assumption breaks is a multi-line raw string inside a test module
-/// whose body carries a bare `}` at column 0, which would end the strip early
-/// — no such literal exists today, and `cli::tests::production_body` assumes
-/// the same shape.
+/// formatted by: the attribute alone at column 0, and the item's own closing
+/// `}` alone at column 0. A platform gate stacks a second attribute
+/// (`#[cfg(test)]` / `#[cfg(unix)]` / `mod tests {`) between the marker and the
+/// item, so the scan skips every column-0 attribute line before reading the
+/// item — three daemon service files and `cli/kubectl.rs` carry exactly this
+/// shape, and without the skip their whole test module read as production text.
+/// A brace written inside a string or a comment closes nothing, because
+/// [`inline_test_item_ranges`] reads the body through [`blank_non_code`];
+/// `cli::tests::production_body` still assumes the plainer shape.
 ///
 /// A walk over several files reads through [`production_slice_of`] instead,
 /// which owns the read and the per-file floor that keeps a re-blinding from
 /// passing quietly.
 pub fn production_slice(src: &str) -> String {
-    let blocks = inline_test_module_ranges(src);
+    let blocks = inline_test_item_ranges(src);
     src.lines()
         .enumerate()
         .filter(|(at, _)| !blocks.iter().any(|(from, to)| (*from..*to).contains(at)))
@@ -5032,17 +5030,17 @@ pub fn production_slice(src: &str) -> String {
         })
 }
 
-/// The complement of [`production_slice`]: every line inside an inline test
-/// module kept, every other line blanked.
+/// The complement of [`production_slice`]: every line inside a column-0
+/// `#[cfg(test)]` item kept, every other line blanked.
 ///
 /// Blanked rather than cut, so a line's number in the mask is its number in the
 /// file and a walk reporting an offender names a line its reader can open. A
 /// file's test text is therefore whatever `production_slice` drops, WHEREVER it
-/// sits — a walk over the mask gives the same verdict whether a `#[cfg(test)]`
-/// item stands beside the production code it serves or above the trailing test
-/// module.
+/// sits and whatever item carries the marker — a walk over the mask gives the
+/// same verdict whether a `#[cfg(test)] fn` stands beside the production code it
+/// serves or inside the trailing test module.
 pub fn test_region_mask(src: &str) -> String {
-    let blocks = inline_test_module_ranges(src);
+    let blocks = inline_test_item_ranges(src);
     src.lines()
         .enumerate()
         .fold(String::with_capacity(src.len()), |mut out, (at, line)| {
@@ -5054,33 +5052,44 @@ pub fn test_region_mask(src: &str) -> String {
         })
 }
 
-/// The half-open line range each inline `#[cfg(test)] mod … { … }` block
-/// occupies, attribute line through closing brace.
+/// The half-open line range each column-0 `#[cfg(test)]` item occupies,
+/// attribute line through the item's own terminator.
 ///
 /// The ONE reader of rustfmt's shape, so the production half and the test half
-/// cannot disagree about where a file's test text begins:
+/// cannot disagree about where a file's test text is:
 /// [`production_slice`] drops these ranges and [`test_region_mask`] keeps them.
-fn inline_test_module_ranges(src: &str) -> Vec<(usize, usize)> {
-    let lines: Vec<&str> = src.lines().collect();
+///
+/// A `mod` is not the only item the marker carries. A `#[cfg(test)] fn`,
+/// `const`, `struct` or `impl` written beside the production code it serves is
+/// test text too, and reading only `mod` left it in BOTH halves' production
+/// side: a walk judging test text skipped it, so a marker lookup or a native
+/// path interpolated there answered to nothing. The item's end is read off its
+/// own brace depth — a `;`-terminated item ends on its last line, a braced one
+/// on the `}` that returns the depth to zero — over a body whose literals and
+/// comments are blanked by [`blank_non_code`], so a brace inside either one
+/// neither opens nor closes a range.
+fn inline_test_item_ranges(src: &str) -> Vec<(usize, usize)> {
+    let code = blank_non_code(src);
+    let lines: Vec<&str> = code.lines().collect();
     let mut blocks: Vec<(usize, usize)> = Vec::new();
     let mut at = 0usize;
     while at < lines.len() {
         if lines[at] == "#[cfg(test)]" {
             // A platform gate stacks a second attribute between the marker and
-            // the `mod` line.
-            let mut mod_line = at + 1;
-            while lines.get(mod_line).is_some_and(|l| l.starts_with('#')) {
-                mod_line += 1;
+            // the item it applies to.
+            let mut item = at + 1;
+            while lines.get(item).is_some_and(|l| l.starts_with('#')) {
+                item += 1;
             }
-            if lines
-                .get(mod_line)
-                .is_some_and(|l| l.starts_with("mod ") && l.trim_end().ends_with('{'))
-            {
-                let mut close = mod_line + 1;
-                while lines.get(close).is_some_and(|l| *l != "}") {
-                    close += 1;
-                }
-                let end = lines.len().min(close + 1);
+            let head = lines.get(item).copied().unwrap_or_default();
+            // A `mod tests;` DECLARATION carries no test text of its own — the
+            // tests live in another file — so dropping it takes the production
+            // lines below it with nothing to show for it.
+            if head.starts_with("mod ") && head.trim_end().ends_with(';') {
+                at += 1;
+                continue;
+            }
+            if let Some(end) = item_end(&lines, item) {
                 blocks.push((at, end));
                 at = end;
                 continue;
@@ -5089,6 +5098,22 @@ fn inline_test_module_ranges(src: &str) -> Vec<(usize, usize)> {
         at += 1;
     }
     blocks
+}
+
+/// The line after the item starting at `from` ends, over lines already blanked
+/// of their literals and comments; `None` for an item the file never
+/// terminates.
+fn item_end(lines: &[&str], from: usize) -> Option<usize> {
+    let mut depth = 0i64;
+    for (at, line) in lines.iter().enumerate().skip(from) {
+        depth += line.matches('{').count() as i64;
+        depth -= line.matches('}').count() as i64;
+        let tail = line.trim_end();
+        if depth <= 0 && (tail.ends_with(';') || tail.ends_with('}')) {
+            return Some(at + 1);
+        }
+    }
+    None
 }
 
 /// Put the managed env files a CONVERGED machine holds onto `home`, taken from

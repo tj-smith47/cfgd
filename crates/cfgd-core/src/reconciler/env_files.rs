@@ -287,7 +287,7 @@ fn compose_blocks(
 /// none does not describe them.
 ///
 /// Consumes `blocks`, so no line is copied on the way to the file.
-fn render(blocks: Vec<EnvFileBlock>, layer_blocks: usize) -> String {
+fn render_blocks(blocks: Vec<EnvFileBlock>, layer_blocks: usize) -> String {
     let mut content = banner(SHELL_COMMENT, layer_blocks > 0);
     for block in blocks {
         content.push(String::new());
@@ -307,7 +307,7 @@ fn generate_content(
 ) -> String {
     let blocks = compose_blocks(dialect, layered, path);
     let layer_blocks = blocks.len() - usize::from(path.is_some());
-    render(blocks, layer_blocks)
+    render_blocks(blocks, layer_blocks)
 }
 
 /// One layer's entries as its block renders them: sorted by name, and one line

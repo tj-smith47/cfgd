@@ -703,9 +703,10 @@ impl LayeredEnv {
     /// the layer that claimed it — a resolved preference is folded in after the
     /// layer loop and claimed by the last layer that ranked it, so it lands
     /// there and needs no header of its own, and an entry no claim answers for
-    /// lands in the last block that DECLARES something rather than in none. Env vars and aliases are
-    /// placed the same way, each over its own half of the claim map. A block
-    /// left with nothing is dropped rather than printed empty.
+    /// lands in the last block that DECLARES something rather than in none.
+    /// Env vars and aliases are placed the same way, each over its own half of
+    /// the claim map. A block left with nothing is dropped rather than printed
+    /// empty.
     fn assemble(
         layers: Vec<EnvLayer>,
         merged: (

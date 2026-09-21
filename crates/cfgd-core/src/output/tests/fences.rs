@@ -399,6 +399,41 @@ fn the_folding_writer_fence_recognizes_every_spelling() {
     }
 }
 
+/// Whether this code line DECLARES a type rather than reaching one: the first
+/// word after any `pub` / `unsafe` / `default` lead is `struct`, `enum`,
+/// `union`, `trait` or `impl`.
+///
+/// A roster needle naming a fixture TYPE matches its `struct` line and every
+/// `impl` block written for it as readily as the fixtures that construct it,
+/// and those lines sit outside every function, where no attribute can be hung
+/// on them. Skipping them is what lets a needle be spelled as the type is
+/// really written, rather than narrowed until it dodges them and misses a
+/// construction with it.
+fn declares_a_type(code: &str) -> bool {
+    const TYPE_KEYWORDS: [&str; 5] = ["struct", "enum", "union", "trait", "impl"];
+    let mut rest = code.trim_start();
+    loop {
+        let word: String = rest
+            .chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .collect();
+        if TYPE_KEYWORDS.contains(&word.as_str()) {
+            return true;
+        }
+        if !matches!(word.as_str(), "pub" | "unsafe" | "default") {
+            return false;
+        }
+        rest = rest[word.len()..].trim_start();
+        // `pub(crate)` / `pub(super)` / `pub(in path)`.
+        if let Some(tail) = rest.strip_prefix('(') {
+            match tail.find(')') {
+                Some(at) => rest = tail[at + 1..].trim_start(),
+                None => return false,
+            }
+        }
+    }
+}
+
 /// The code half of a line: what is left once its comments are gone, judged
 /// on the literal-blanked line so a `//` inside a string (a URL in an
 /// argument) cannot truncate the code half, and so parens or the word
@@ -2315,13 +2350,10 @@ const SERIAL_PINS: &[(&str, &str, &str, usize)] = &[
         "BackoffConfig::rate_limited(",
         3,
     ),
-    // The needle opens on `(` so it matches the fixture's CONSTRUCTION alone:
-    // the type's own `struct` and `impl` lines sit outside every function and
-    // would each read as a pin no attribute can carry.
     (
-        "(TickCountingHooks {",
+        "TickCountingHooks {",
         "tick_cache_reuse",
-        "(TickCountingHooks {",
+        "TickCountingHooks {",
         5,
     ),
     (
@@ -2470,10 +2502,17 @@ fn every_test_pinning_a_serialized_seam_joins_its_own_group() {
             }
         }
         // A pin written outside every declaration is serialized by no attribute
-        // at all, and the pass above reads declarations only.
+        // at all, and the pass above reads declarations only. A type's own
+        // declaration is not one: a needle naming a fixture TYPE matches the
+        // `struct` line that defines it and every `impl` block written for it,
+        // none of which a `#[serial_test::serial…]` can be hung on, and
+        // narrowing the needle to dodge them (`(TickCountingHooks {`) leaves
+        // the construction spelled without the call — `let hooks =
+        // TickCountingHooks { … }` — matching nothing at all.
         let loose: usize = crate::test_helpers::logical_source_lines(&body)
             .into_iter()
             .map(|(_, line)| code_half(&line))
+            .filter(|code| !declares_a_type(code))
             .map(|code| {
                 SERIAL_PINS
                     .iter()
@@ -3287,31 +3326,40 @@ fn test_region(path: &Path, body: &str) -> String {
     crate::test_helpers::test_region_mask(body)
 }
 
-/// The region is every inline test module and nothing else, wherever the
-/// modules and the test-only items sit.
+/// The region is every column-0 `#[cfg(test)]` item and nothing else, wherever
+/// the items sit and whatever kind of item carries the marker.
 ///
-/// Each leg is a tell the old cut got wrong: it opened at the FIRST
-/// `#[cfg(test)]` in the file, so a test-only item standing beside the
-/// production code it serves pulled every production line below it into the
-/// region, an item below the test module read as region too, and a
-/// `#[cfg(test)]` inside a comment opened one where no test lives at all.
+/// Each leg is a tell one of the two cuts this walk has had got wrong. The
+/// first opened at the FIRST `#[cfg(test)]` in the file, so a test-only item
+/// standing beside the production code it serves pulled every production line
+/// below it into the region. The second read `mod` alone, so that same item was
+/// in NEITHER half's test text: a marker lookup or a declared-document
+/// interpolation written in a `#[cfg(test)] fn` answered to no walk. And a
+/// `#[cfg(test)]` row inside a multi-line literal is a row of a string, which
+/// opens a region in a file that may hold no test at all.
 #[test]
-fn the_test_region_is_every_inline_test_module_and_nothing_else() {
+fn the_test_region_is_every_inline_test_item_and_nothing_else() {
     // Assembled rather than spelled: a `#[cfg(test)]` written out here would
     // read as this scaffolding file declaring a second test region of its own.
     let gate = concat!("#[cfg", "(test)]");
     let file = format!(
         "fn production() {{}}\n\
          {gate}\n\
-         const ITEM_BEFORE: usize = 1;\n\
+         fn item_before() {{\n\
+         \x20   let held = \"x\";\n\
+         }}\n\
          fn production_below_the_item() {{}}\n\
+         {gate}\n\
+         const ITEM_CONST: usize = 2;\n\
          {gate}\n\
          mod tests {{\n\
          \x20   fn a_pin() {{}}\n\
          }}\n\
          fn production_below_the_module() {{}}\n\
+         const IN_A_LITERAL: &str = \"\n\
          {gate}\n\
-         const ITEM_AFTER: usize = 2;\n\
+         fn not_in_the_region() {{}}\n\
+         \";\n\
          // {gate} in a comment opens nothing\n"
     );
     let file = file.as_str();
@@ -3325,24 +3373,30 @@ fn the_test_region_is_every_inline_test_module_and_nothing_else() {
     assert_eq!(
         held,
         vec![
-            (5, gate),
-            (6, "mod tests {"),
-            (7, "    fn a_pin() {}"),
-            (8, "}"),
+            (2, gate),
+            (3, "fn item_before() {"),
+            (4, "    let held = \"x\";"),
+            (5, "}"),
+            (7, gate),
+            (8, "const ITEM_CONST: usize = 2;"),
+            (9, gate),
+            (10, "mod tests {"),
+            (11, "    fn a_pin() {}"),
+            (12, "}"),
         ],
-        "only the inline test module is the region, at the file's own line numbers:\n{region}"
+        "every marked item is the region, module or not, at the file's own line numbers:\n{region}"
     );
     for held in [
         "fn production()",
-        "const ITEM_BEFORE",
         "fn production_below_the_item()",
         "fn production_below_the_module()",
-        "const ITEM_AFTER",
+        "IN_A_LITERAL",
+        "fn not_in_the_region()",
         "in a comment",
     ] {
         assert!(
             !region.contains(held),
-            "{held} is production text, whichever side of the module it sits on:\n{region}"
+            "{held} is production text, whichever side of a marked item it sits on:\n{region}"
         );
     }
     assert_eq!(
