@@ -3435,20 +3435,41 @@ const ITEM_LEAD_KEYWORDS: [&str; 11] = [
     "fn", "mod", "struct", "enum", "union", "trait", "impl", "type", "const", "static", "use",
 ];
 
+/// The readers that match a needle against the START or the END of a line,
+/// where a needle carrying no boundary of its own still folds a lead.
+const ITEM_LEAD_PREFIX_READERS: [&str; 4] = [
+    ".starts_with(",
+    ".strip_prefix(",
+    ".trim_start_matches(",
+    ".strip_suffix(",
+];
+
 /// Whether a string literal's content is a hand-written item-lead fold.
 ///
-/// The NEEDLE's shape is the tell, never the name of the reader it was handed
-/// to: a needle that folds a lead is the lead itself plus at most the item
-/// keyword behind it (`"pub "`, `"pub("`, `"pub fn "`, `"unsafe fn "`), and a
-/// needle carrying anything item-SPECIFIC after that names one declaration this
-/// tree really holds rather than folding a lead off any. So
-/// `contains("pub fn ")` is a fold and `find("pub enum BackupCommand {")` is
-/// not, and neither is an assertion message opening on the word `default`.
-fn needle_folds_an_item_lead(content: &str) -> bool {
-    // A bare lead word carrying no boundary at all is a VALUE — `"default"` is
-    // the name of a profile in a few hundred fixtures — where a fold always
-    // spells the boundary it folds at.
-    if !content.trim_start().contains([' ', '(']) {
+/// The NEEDLE's shape is the tell, not the name of the reader it was handed to:
+/// a needle that folds a lead is the lead itself plus at most the item keyword
+/// behind it (`"pub "`, `"pub("`, `"pub fn "`, `"unsafe fn "`), and a needle
+/// carrying anything item-SPECIFIC after that names one declaration this tree
+/// really holds rather than folding a lead off any. So `contains("pub fn ")` is
+/// a fold and `find("pub enum BackupCommand {")` is not.
+///
+/// The reader decides ONE case: a bare lead word carrying no boundary at all.
+/// `"default"` is the name of a profile in a few hundred fixtures, so compared,
+/// searched for or stored it is a value — but handed to a PREFIX reader
+/// (`prefix_reader`) it is the buggy fold itself, the one whose `pub` also
+/// matches `publish` and whose `default` also matches `defaults`.
+fn needle_folds_an_item_lead(content: &str, prefix_reader: bool) -> bool {
+    // A `\`-continued literal spells one needle across two rows: the compiler
+    // eats the backslash, the newline and the next row's indent, so the needle
+    // the code really carries is the joined one.
+    if content.contains("\\\n") {
+        let mut joined = String::new();
+        for (n, part) in content.split("\\\n").enumerate() {
+            joined.push_str(if n == 0 { part } else { part.trim_start() });
+        }
+        return needle_folds_an_item_lead(&joined, prefix_reader);
+    }
+    if !prefix_reader && !content.trim_start().contains([' ', '(']) {
         return false;
     }
     let (lead, rest) = crate::test_helpers::item_lead(content);
@@ -3485,7 +3506,11 @@ fn hand_folded_lead_offsets(body: &str, code: &str) -> Vec<usize> {
         };
         let close = open + 1 + close;
         from = close + 1;
-        if needle_folds_an_item_lead(&body[open + 1..close]) {
+        // rustfmt puts a long call's argument on the row below it, so the
+        // reader is looked for past the whitespace before the quote.
+        let before = code[..open].trim_end();
+        let prefix_reader = ITEM_LEAD_PREFIX_READERS.iter().any(|r| before.ends_with(r));
+        if needle_folds_an_item_lead(&body[open + 1..close], prefix_reader) {
             hits.push(open);
         }
     }
@@ -3521,6 +3546,13 @@ fn lead_fold_offenders(rel: &str, body: &str) -> Vec<String> {
 fn the_item_lead_tell_reads_a_fold_and_not_a_mention() {
     let folds = [
         r#"if code.contains("pub fn ") {}"#,
+        // A bare lead word under a prefix reader: the fold whose `pub` also
+        // matches `publish`.
+        r#"if code.starts_with("pub") {}"#,
+        r#"let rest = code.strip_prefix("default");"#,
+        r#"if line.strip_suffix("unsafe").is_some() {}"#,
+        // One needle across two rows, the way the compiler reads it.
+        "if code.contains(\"pub \\\n    fn \") {}",
         r#"if code.starts_with("pub ") {}"#,
         r#"if code.starts_with("pub(") {}"#,
         r#"let rest = code.strip_prefix("pub(crate) ");"#,
@@ -3549,6 +3581,12 @@ fn the_item_lead_tell_reads_a_fold_and_not_a_mention() {
         r#"let n = 1; let fixture = "pub fn kept() {}";"#,
         r#"let profile = "default";"#,
         r#"assert_eq!(name, "pub");"#,
+        r#"if name == "default" {}"#,
+        r#"if code.contains("pub") {}"#,
+        r#"let by_name = map.get("default");"#,
+        // A continued literal the walk must read without panicking, and which
+        // joins to a needle that names one declaration rather than a lead.
+        "let held = \"pub enum \\\n    BackupCommand {\";",
         "let held = 1;\nlet fixture = \"pub fn kept() {}\";",
     ];
     for mention in mentions {
