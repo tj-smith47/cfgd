@@ -3456,7 +3456,9 @@ fn join_package_state(
                         Ok(Some(modules::PackageResolution::Package(resolved))) => {
                             Some(resolved.manager)
                         }
-                        _ => None,
+                        Ok(Some(modules::PackageResolution::Bootstrap(_))) | Ok(None) | Err(_) => {
+                            None
+                        }
                     },
                     state: ModulePackagePresence::NotScanned,
                 },
