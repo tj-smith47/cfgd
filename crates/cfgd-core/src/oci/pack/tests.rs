@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use super::*;
 use crate::oci::test_helpers::registry_from_url;
 
@@ -688,13 +690,13 @@ fn build_layered_manifest_appends_new_layer_last() {
             media_type: "application/vnd.oci.image.layer.v1.tar+gzip".to_string(),
             digest: "sha256:base-layer-1".to_string(),
             size: 111,
-            annotations: HashMap::new(),
+            annotations: BTreeMap::new(),
         },
         OciDescriptor {
             media_type: "application/vnd.docker.image.rootfs.diff.tar.gzip".to_string(),
             digest: "sha256:base-layer-2".to_string(),
             size: 222,
-            annotations: HashMap::new(),
+            annotations: BTreeMap::new(),
         },
     ];
     let manifest = build_layered_manifest(
@@ -1112,5 +1114,58 @@ fn pack_image_base_index_no_matching_platform_errors() {
     assert!(
         msg.contains("no manifest for linux/arm64"),
         "error must name the missing platform: {msg}"
+    );
+}
+
+// R6: annotations must serialize in a fixed key order so two packs of
+// identical input produce byte-equal manifests. A HashMap iterates in an
+// order that varies by insertion and by process, so a `created` timestamp
+// fixed by the caller was not enough on its own to make two packs agree.
+#[test]
+fn build_image_manifest_is_byte_equal_across_differently_ordered_inputs() {
+    let fixed_created = "2026-01-01T00:00:00Z".to_string();
+
+    let mut annotations_a = BTreeMap::new();
+    annotations_a.insert("zeta".to_string(), "1".to_string());
+    annotations_a.insert("alpha".to_string(), "2".to_string());
+    annotations_a.insert(
+        crate::OCI_ANNOTATION_CREATED.to_string(),
+        fixed_created.clone(),
+    );
+
+    let mut annotations_b = BTreeMap::new();
+    annotations_b.insert(crate::OCI_ANNOTATION_CREATED.to_string(), fixed_created);
+    annotations_b.insert("alpha".to_string(), "2".to_string());
+    annotations_b.insert("zeta".to_string(), "1".to_string());
+
+    let opts_a = PackOptions {
+        annotations: annotations_a,
+        ..Default::default()
+    };
+    let opts_b = PackOptions {
+        annotations: annotations_b,
+        ..Default::default()
+    };
+
+    let manifest_a = build_image_manifest(
+        "sha256:cfg".to_string(),
+        10,
+        "sha256:layer".to_string(),
+        20,
+        &opts_a,
+    );
+    let manifest_b = build_image_manifest(
+        "sha256:cfg".to_string(),
+        10,
+        "sha256:layer".to_string(),
+        20,
+        &opts_b,
+    );
+
+    let json_a = serde_json::to_string(&manifest_a).unwrap();
+    let json_b = serde_json::to_string(&manifest_b).unwrap();
+    assert_eq!(
+        json_a, json_b,
+        "two packs of identical annotations in different insertion order must serialize byte-equal"
     );
 }

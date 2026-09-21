@@ -1,7 +1,7 @@
 // Push: single-platform module push, multi-platform OCI index push,
 // platform-target parsing and Rust→OCI arch mapping.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -119,7 +119,7 @@ pub(super) fn push_module_inner(
     let layer_digest = upload_blob(agent, oci_ref, auth, &layer_data, MEDIA_TYPE_MODULE_LAYER)?;
 
     // Build manifest
-    let mut annotations = HashMap::new();
+    let mut annotations = BTreeMap::new();
     annotations.insert(
         crate::OCI_ANNOTATION_PLATFORM.to_string(),
         platform.to_string(),
@@ -136,13 +136,13 @@ pub(super) fn push_module_inner(
             media_type: MEDIA_TYPE_MODULE_CONFIG.to_string(),
             digest: config_digest,
             size: config_blob.len() as u64,
-            annotations: HashMap::new(),
+            annotations: BTreeMap::new(),
         },
         layers: vec![OciDescriptor {
             media_type: MEDIA_TYPE_MODULE_LAYER.to_string(),
             digest: layer_digest,
             size: layer_data.len() as u64,
-            annotations: HashMap::new(),
+            annotations: BTreeMap::new(),
         }],
         annotations,
     };

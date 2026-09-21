@@ -4,7 +4,7 @@
 // Supports pushing/pulling module archives with custom media types,
 // registry authentication via Docker config.json, credential helpers, and env vars.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
@@ -249,8 +249,8 @@ pub(super) struct OciManifest {
     pub(super) media_type: String,
     pub(super) config: OciDescriptor,
     pub(super) layers: Vec<OciDescriptor>,
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub(super) annotations: HashMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(super) annotations: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -259,8 +259,8 @@ pub(super) struct OciDescriptor {
     pub(super) media_type: String,
     pub(super) digest: String,
     pub(super) size: u64,
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub(super) annotations: HashMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(super) annotations: BTreeMap<String, String>,
 }
 
 // ---------------------------------------------------------------------------

@@ -4,7 +4,7 @@
 // config / layer media types so the result is mountable as a Kubernetes
 // volume.image.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use crate::errors::OciError;
@@ -117,7 +117,7 @@ pub(super) fn build_image_manifest(
     layer_size: u64,
     opts: &PackOptions,
 ) -> OciManifest {
-    let mut annotations: HashMap<String, String> = opts
+    let mut annotations: BTreeMap<String, String> = opts
         .annotations
         .iter()
         .map(|(k, v)| (k.clone(), v.clone()))
@@ -133,13 +133,13 @@ pub(super) fn build_image_manifest(
             media_type: MEDIA_TYPE_OCI_IMAGE_CONFIG.to_string(),
             digest: config_digest,
             size: config_size,
-            annotations: HashMap::new(),
+            annotations: BTreeMap::new(),
         },
         layers: vec![OciDescriptor {
             media_type: MEDIA_TYPE_OCI_IMAGE_LAYER.to_string(),
             digest: layer_digest,
             size: layer_size,
-            annotations: HashMap::new(),
+            annotations: BTreeMap::new(),
         }],
         annotations,
     }
@@ -238,7 +238,7 @@ pub(super) fn build_layered_manifest(
     new_layer_size: u64,
     opts: &PackOptions,
 ) -> OciManifest {
-    let mut annotations: HashMap<String, String> = opts
+    let mut annotations: BTreeMap<String, String> = opts
         .annotations
         .iter()
         .map(|(k, v)| (k.clone(), v.clone()))
@@ -253,14 +253,14 @@ pub(super) fn build_layered_manifest(
             media_type: d.media_type.clone(),
             digest: d.digest.clone(),
             size: d.size,
-            annotations: HashMap::new(),
+            annotations: BTreeMap::new(),
         })
         .collect();
     layers.push(OciDescriptor {
         media_type: MEDIA_TYPE_OCI_IMAGE_LAYER.to_string(),
         digest: new_layer_digest,
         size: new_layer_size,
-        annotations: HashMap::new(),
+        annotations: BTreeMap::new(),
     });
 
     OciManifest {
@@ -270,7 +270,7 @@ pub(super) fn build_layered_manifest(
             media_type: MEDIA_TYPE_OCI_IMAGE_CONFIG.to_string(),
             digest: config_digest,
             size: config_size,
-            annotations: HashMap::new(),
+            annotations: BTreeMap::new(),
         },
         layers,
         annotations,
