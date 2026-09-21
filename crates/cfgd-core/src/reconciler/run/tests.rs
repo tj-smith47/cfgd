@@ -806,7 +806,7 @@ fn a_pre_skipped_action_is_priced_outside_the_counted_rollup() {
     );
     assert_eq!(
         outcome_counts(&tally),
-        "2 actions succeeded, 1 skipped, 1 not attempted: no session manager"
+        "2 actions succeeded; 1 skipped; 1 not attempted: no session manager"
     );
 
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
@@ -842,7 +842,7 @@ fn a_pre_skipped_action_is_priced_outside_the_counted_rollup() {
     // A second reason is a second clause, not a second count; one reason twice
     // is one clause over a count of two.
     tally_with_reasons(&["a", "a", "b"], |counts| {
-        assert_eq!(counts, "2 actions succeeded, 3 not attempted: a; b");
+        assert_eq!(counts, "2 actions succeeded; 3 not attempted: a; b");
     });
 }
 
@@ -943,8 +943,8 @@ fn work_a_run_learned_it_had_to_do_states_itself_under_the_headers_count() {
     assert_eq!(
         outcome_counts(&tally),
         format!(
-            "{} actions succeeded, {converged} env surfaces converged after the \
-             plan, {hooks} onChange hook ran after the plan",
+            "{} actions succeeded; {converged} env surfaces converged after the \
+             plan; {hooks} onChange hook ran after the plan",
             tally.succeeded
         ),
         "the daemon's one-line account names the class too"
@@ -1147,8 +1147,8 @@ fn an_after_plan_surface_that_changed_nothing_is_skipped_and_never_converged() {
     assert_eq!(
         outcome_counts(&tally),
         format!(
-            "{succeeded} actions succeeded, {} env surfaces converged after the \
-             plan, {} env surface changed nothing after the plan, {} env surfaces \
+            "{succeeded} actions succeeded; {} env surfaces converged after the \
+             plan; {} env surface changed nothing after the plan; {} env surfaces \
              failed after the plan",
             class[0].1, class[1].1, class[2].1
         )

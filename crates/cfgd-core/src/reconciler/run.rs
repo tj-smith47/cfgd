@@ -1429,9 +1429,14 @@ pub fn report_trailing_allowance(
 }
 
 /// What a run's actions came to, as ONE line: `13 actions succeeded`, or
-/// `12 actions succeeded, 1 skipped` — every clause `outcome_clauses`
-/// produced, joined. So no closing line can claim a skipped action as a
-/// success, and silent about outcomes that did not occur: a clean run's line
+/// `12 actions succeeded; 1 skipped`: every clause `outcome_clauses`
+/// produced, joined through [`crate::join_clauses`], because a clause carries
+/// commas of its own (`3 of 5 sources, 1 skipped`) and a comma between them
+/// would read as a fourth item. The withheld clause is the one whose own
+/// reasons are a list, and `outcome_clauses` pushes it last, after a colon:
+/// everything past that colon is a reason, so the two levels stay apart
+/// without a second separator. So no closing line can claim a skipped action as
+/// a success, and silent about outcomes that did not occur: a clean run's line
 /// does not name skips it has none of. No path panics, so the function is safe
 /// in core and testable without a `Printer` — and it reads a [`RunTally`], so a
 /// backup run reaches it without an [`ApplyResult`].
@@ -1444,11 +1449,7 @@ pub fn report_trailing_allowance(
 /// line has no glyph column, which is why this joined form exists beside the
 /// rollup's one-line-per-clause layout rather than being replaced by it.
 pub fn outcome_counts(tally: &RunTally) -> String {
-    outcome_clauses(tally)
-        .into_iter()
-        .map(|(_, clause)| clause)
-        .collect::<Vec<_>>()
-        .join(", ")
+    crate::join_clauses(outcome_clauses(tally).into_iter().map(|(_, clause)| clause))
 }
 
 /// One clause per outcome CLASS the run produced, each carrying the role that

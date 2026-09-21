@@ -24069,7 +24069,7 @@ mod log_dialect {
         crate::test_helpers::assert_slots_discriminate(&slots);
         let logs = run_tick(&config_path, &state_dir, None).await;
         let expected = format!(
-            "reconcile: complete — {} actions succeeded, {} onChange hook ran after the plan",
+            "reconcile: complete — {} actions succeeded; {} onChange hook ran after the plan",
             slots[0].1, slots[1].1
         );
         assert!(logs.contains(&expected), "want {expected:?}, got: {logs}");
