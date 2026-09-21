@@ -8342,9 +8342,20 @@ fn module_show_resolved_rows_states_each_of_the_three_resolutions() {
     let mut unsatisfiable = make_pkg("obscure-tool");
     unsatisfiable.prefer = vec!["nix".to_string()];
     unsatisfiable.min_version = Some("1.0".to_string());
+    // Gated ON for the fixture's own platform AND unsatisfiable, which is the
+    // only shape that can carry the gate twice: `declared_package_clauses`
+    // puts it inside the parenthetical, and the row used to append it again.
+    let mut gated_unsatisfiable = make_pkg("gated-tool");
+    gated_unsatisfiable.platforms = vec!["linux".to_string()];
+    gated_unsatisfiable.prefer = vec!["nix".to_string()];
 
     let spec = cfgd_core::config::ModuleSpec {
-        packages: vec![make_pkg("ripgrep"), gated, unsatisfiable],
+        packages: vec![
+            make_pkg("ripgrep"),
+            gated,
+            unsatisfiable,
+            gated_unsatisfiable,
+        ],
         ..Default::default()
     };
 
@@ -8359,7 +8370,7 @@ fn module_show_resolved_rows_states_each_of_the_three_resolutions() {
         Some(&cx),
     );
 
-    assert_eq!(rows.len(), 3, "one row per declared package: {rows:#?}");
+    assert_eq!(rows.len(), 4, "one row per declared package: {rows:#?}");
     match &rows[0] {
         super::list_show::PackageDisplay::Resolved {
             name,
@@ -8414,8 +8425,35 @@ fn module_show_resolved_rows_states_each_of_the_three_resolutions() {
                      not produce; it must read {summary:?}",
                     path.display()
                 );
+                // Containment alone passes a page holding the right bytes in
+                // one block and the spelling the composer stopped producing in
+                // another, which is the state both pages were actually in.
+                assert!(
+                    !body.contains("(prefer: nix), min"),
+                    "{} still shows the comma-separated spelling no composer \
+                     produces",
+                    path.display()
+                );
             }
         }
         other => panic!("an entry no available manager can satisfy is unresolved: {other:#?}"),
+    }
+    match &rows[3] {
+        super::list_show::PackageDisplay::Unresolved { summary, .. } => {
+            assert_eq!(
+                summary, "gated-tool (platforms: linux; prefer: nix)",
+                "the gate is one of the declared clauses, so the row names it \
+                 once rather than appending it a second time"
+            );
+            assert_eq!(
+                summary.matches("platforms:").count(),
+                1,
+                "an unresolved row states its platform gate exactly once: \
+                 {summary:?}"
+            );
+        }
+        other => {
+            panic!("an entry gated ON for this host but unsatisfiable is unresolved: {other:#?}")
+        }
     }
 }
