@@ -690,13 +690,13 @@ fn build_layered_manifest_appends_new_layer_last() {
             media_type: "application/vnd.oci.image.layer.v1.tar+gzip".to_string(),
             digest: "sha256:base-layer-1".to_string(),
             size: 111,
-            annotations: BTreeMap::new(),
+            annotations: Annotations::new(),
         },
         OciDescriptor {
             media_type: "application/vnd.docker.image.rootfs.diff.tar.gzip".to_string(),
             digest: "sha256:base-layer-2".to_string(),
             size: 222,
-            annotations: BTreeMap::new(),
+            annotations: Annotations::new(),
         },
     ];
     let manifest = build_layered_manifest(
@@ -1117,55 +1117,127 @@ fn pack_image_base_index_no_matching_platform_errors() {
     );
 }
 
-// R6: annotations must serialize in a fixed key order so two packs of
-// identical input produce byte-equal manifests. A HashMap iterates in an
-// order that varies by insertion and by process, so a `created` timestamp
-// fixed by the caller was not enough on its own to make two packs agree.
+/// The nine annotations every determinism pin below packs, written in an
+/// order no sort would produce. Nine keys give an unordered map one chance in
+/// `9!` of reproducing the sorted sequence the expected literal spells, so a
+/// green run cannot be a lucky hash seed; a two-key fixture is a coin flip.
+fn anti_sorted_annotations() -> Vec<(String, String)> {
+    [
+        ("zulu", "1"),
+        ("yankee", "2"),
+        ("xray", "3"),
+        ("whiskey", "4"),
+        ("victor", "5"),
+        ("uniform", "6"),
+        ("tango", "7"),
+        ("sierra", "8"),
+        (crate::OCI_ANNOTATION_CREATED, FIXED_CREATED),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), v.to_string()))
+    .collect()
+}
+
+/// A `created` stamp the caller supplies, so the only thing left varying
+/// between two serializations is the key order under test.
+const FIXED_CREATED: &str = "2026-01-01T00:00:00Z";
+
+/// The nine annotations as the JSON object body a sorted map writes.
+fn sorted_annotations_json() -> String {
+    format!(
+        r#""{}":"{FIXED_CREATED}","sierra":"8","tango":"7","uniform":"6","victor":"5","whiskey":"4","xray":"3","yankee":"2","zulu":"1""#,
+        crate::OCI_ANNOTATION_CREATED
+    )
+}
+
+/// A packed manifest's annotations serialize in one key order, whatever order
+/// the caller built them in, so two packs of identical input produce one
+/// digest.
+///
+/// Compared against a LITERAL rather than against a second call: two calls
+/// built from one value agree however wrongly they both order it, which makes
+/// a self-comparison green under the very regression it exists to catch. The
+/// literal spells the sorted sequence, so an unordered map fails it.
 #[test]
-fn build_image_manifest_is_byte_equal_across_differently_ordered_inputs() {
-    let fixed_created = "2026-01-01T00:00:00Z".to_string();
-
-    let mut annotations_a = BTreeMap::new();
-    annotations_a.insert("zeta".to_string(), "1".to_string());
-    annotations_a.insert("alpha".to_string(), "2".to_string());
-    annotations_a.insert(
-        crate::OCI_ANNOTATION_CREATED.to_string(),
-        fixed_created.clone(),
-    );
-
-    let mut annotations_b = BTreeMap::new();
-    annotations_b.insert(crate::OCI_ANNOTATION_CREATED.to_string(), fixed_created);
-    annotations_b.insert("alpha".to_string(), "2".to_string());
-    annotations_b.insert("zeta".to_string(), "1".to_string());
-
-    let opts_a = PackOptions {
-        annotations: annotations_a,
-        ..Default::default()
-    };
-    let opts_b = PackOptions {
-        annotations: annotations_b,
+fn build_image_manifest_serializes_its_annotations_in_sorted_key_order() {
+    let opts = PackOptions {
+        annotations: anti_sorted_annotations().into_iter().collect(),
         ..Default::default()
     };
 
-    let manifest_a = build_image_manifest(
+    let manifest = build_image_manifest(
         "sha256:cfg".to_string(),
         10,
         "sha256:layer".to_string(),
         20,
-        &opts_a,
+        &opts,
     );
-    let manifest_b = build_image_manifest(
+
+    let expected = format!(
+        r#"{{"schemaVersion":2,"mediaType":"{manifest_type}","config":{{"mediaType":"{config_type}","digest":"sha256:cfg","size":10}},"layers":[{{"mediaType":"{layer_type}","digest":"sha256:layer","size":20}}],"annotations":{{{annotations}}}}}"#,
+        manifest_type = MEDIA_TYPE_OCI_MANIFEST,
+        config_type = MEDIA_TYPE_OCI_IMAGE_CONFIG,
+        layer_type = MEDIA_TYPE_OCI_IMAGE_LAYER,
+        annotations = sorted_annotations_json(),
+    );
+    assert_eq!(serde_json::to_string(&manifest).unwrap(), expected);
+}
+
+/// The layered path carries the same contract: `cfgd module push --base` is
+/// the surface that re-pushes an unchanged directory on top of an unchanged
+/// base and must land on the digest it landed on last time.
+#[test]
+fn build_layered_manifest_serializes_its_annotations_in_sorted_key_order() {
+    let opts = PackOptions {
+        annotations: anti_sorted_annotations().into_iter().collect(),
+        ..Default::default()
+    };
+    let base_layers = [OciDescriptor {
+        media_type: MEDIA_TYPE_OCI_IMAGE_LAYER.to_string(),
+        digest: "sha256:base".to_string(),
+        size: 111,
+        annotations: Annotations::new(),
+    }];
+
+    let manifest = build_layered_manifest(
+        &base_layers,
         "sha256:cfg".to_string(),
         10,
         "sha256:layer".to_string(),
         20,
-        &opts_b,
+        &opts,
     );
 
-    let json_a = serde_json::to_string(&manifest_a).unwrap();
-    let json_b = serde_json::to_string(&manifest_b).unwrap();
-    assert_eq!(
-        json_a, json_b,
-        "two packs of identical annotations in different insertion order must serialize byte-equal"
+    let expected = format!(
+        r#"{{"schemaVersion":2,"mediaType":"{manifest_type}","config":{{"mediaType":"{config_type}","digest":"sha256:cfg","size":10}},"layers":[{{"mediaType":"{layer_type}","digest":"sha256:base","size":111}},{{"mediaType":"{layer_type}","digest":"sha256:layer","size":20}}],"annotations":{{{annotations}}}}}"#,
+        manifest_type = MEDIA_TYPE_OCI_MANIFEST,
+        config_type = MEDIA_TYPE_OCI_IMAGE_CONFIG,
+        layer_type = MEDIA_TYPE_OCI_IMAGE_LAYER,
+        annotations = sorted_annotations_json(),
     );
+    assert_eq!(serde_json::to_string(&manifest).unwrap(), expected);
+}
+
+/// A descriptor's own annotation slot answers to the same contract.
+///
+/// Every production construction leaves it empty today and `skip_serializing_if`
+/// elides it, which is exactly why the field's ordering cannot be read off any
+/// manifest pin: an empty map serializes identically whatever its type. The
+/// descriptor is a wire shape a registry reads, so the guarantee belongs to the
+/// type rather than to today's callers, and it is asserted here directly.
+#[test]
+fn an_oci_descriptor_serializes_its_annotations_in_sorted_key_order() {
+    let descriptor = OciDescriptor {
+        media_type: MEDIA_TYPE_OCI_IMAGE_LAYER.to_string(),
+        digest: "sha256:layer".to_string(),
+        size: 20,
+        annotations: anti_sorted_annotations().into_iter().collect(),
+    };
+
+    let expected = format!(
+        r#"{{"mediaType":"{layer_type}","digest":"sha256:layer","size":20,"annotations":{{{annotations}}}}}"#,
+        layer_type = MEDIA_TYPE_OCI_IMAGE_LAYER,
+        annotations = sorted_annotations_json(),
+    );
+    assert_eq!(serde_json::to_string(&descriptor).unwrap(), expected);
 }
