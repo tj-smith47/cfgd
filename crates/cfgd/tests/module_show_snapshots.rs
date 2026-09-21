@@ -183,7 +183,7 @@ fn happy_packages() -> Vec<PackageDisplay> {
             platforms: ", platforms: windows".into(),
         },
         PackageDisplay::Unresolved {
-            summary: "obscure-tool (prefer: nix), min: 1.0".into(),
+            summary: "obscure-tool (prefer: nix; min: 1.0)".into(),
             error: "no manager available on this platform".into(),
         },
     ]

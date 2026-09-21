@@ -8337,8 +8337,11 @@ fn module_show_resolved_rows_states_each_of_the_three_resolutions() {
 
     let mut gated = make_pkg("mas-cli");
     gated.platforms = vec!["darwin".to_string()];
-    let mut unsatisfiable = make_pkg("ghostty");
-    unsatisfiable.prefer = vec!["brew".to_string()];
+    // The entry the golden and the reference page both show, so the bytes
+    // asserted below are the bytes those two pages promise.
+    let mut unsatisfiable = make_pkg("obscure-tool");
+    unsatisfiable.prefer = vec!["nix".to_string()];
+    unsatisfiable.min_version = Some("1.0".to_string());
 
     let spec = cfgd_core::config::ModuleSpec {
         packages: vec![make_pkg("ripgrep"), gated, unsatisfiable],
@@ -8388,8 +8391,30 @@ fn module_show_resolved_rows_states_each_of_the_three_resolutions() {
     }
     match &rows[2] {
         super::list_show::PackageDisplay::Unresolved { summary, error } => {
-            assert!(summary.starts_with("ghostty"), "summary: {summary}");
+            assert_eq!(
+                summary, "obscure-tool (prefer: nix; min: 1.0)",
+                "every declared clause sits inside the ONE parenthetical, \
+                 separated as clauses rather than as a comma list"
+            );
             assert!(!error.is_empty(), "the row states why it could not resolve");
+            // A page showing this row was typed by hand once and went on
+            // promising `(prefer: nix), min: 1.0` for the two releases after
+            // the composer stopped producing it. Both copies are read here, so
+            // a shape change fails beside the code that made it.
+            let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+            let shipped = [
+                root.join("tests/output_snapshots/module_show/resolved.txt"),
+                root.join("../../docs/cli-reference.md"),
+            ];
+            for path in shipped {
+                let body = cfgd_core::test_helpers::walked_file_body(&path);
+                assert!(
+                    body.contains(summary.as_str()),
+                    "{} shows a `module show --resolved` row the composer does \
+                     not produce; it must read {summary:?}",
+                    path.display()
+                );
+            }
         }
         other => panic!("an entry no available manager can satisfy is unresolved: {other:#?}"),
     }

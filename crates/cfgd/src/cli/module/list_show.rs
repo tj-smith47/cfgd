@@ -491,6 +491,10 @@ pub(super) fn module_show_resolved_rows(
             } else {
                 format!("{} ({})", entry.name, clauses)
             };
+            // The gated-off row names no clauses of its own, so it is the one
+            // arm that has to spell the gate itself; the two unresolved arms
+            // read it off `declared`, where `declared_package_clauses` already
+            // put it.
             let platform_str = if entry.platforms.is_empty() {
                 String::new()
             } else {
@@ -515,7 +519,7 @@ pub(super) fn module_show_resolved_rows(
                 // same package earned a refusal.
                 Ok(Some(modules::PackageResolution::Bootstrap(route))) => {
                     PackageDisplay::Unresolved {
-                        summary: format!("{declared}{platform_str}"),
+                        summary: declared,
                         error: route.offer_clause(),
                     }
                 }
@@ -524,7 +528,7 @@ pub(super) fn module_show_resolved_rows(
                     platforms: platform_str,
                 },
                 Err(e) => PackageDisplay::Unresolved {
-                    summary: format!("{declared}{platform_str}"),
+                    summary: declared,
                     error: e.to_string(),
                 },
             }

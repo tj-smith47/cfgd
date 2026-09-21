@@ -1861,7 +1861,7 @@ platform gate skipped, and the ones no available manager can satisfy.
 Packages
   ✓ ripgrep → 14.1.0 via brew
   ◉ winget-only-tool, platforms: windows — skipped (platform filter)
-  ⚠ obscure-tool (prefer: nix), min: 1.0 — unresolved: no manager available on this platform
+  ⚠ obscure-tool (prefer: nix; min: 1.0) — unresolved: no manager available on this platform
 ```
 
 What the machine and the state store say about the module (whether it is
