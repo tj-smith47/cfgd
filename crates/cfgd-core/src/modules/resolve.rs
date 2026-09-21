@@ -40,23 +40,32 @@ pub struct FloorBootstrap {
 }
 
 impl FloorBootstrap {
+    /// The tail every sentence naming a version short of a declared floor ends
+    /// on, so the offer this route states and the failure an install settles
+    /// with cannot word the same shortfall two ways. A sentence built anywhere
+    /// but this module composes it from here.
+    pub const BELOW_DECLARED_FLOOR: &'static str = "below the declared minVersion";
+
     /// What this host offers and why it falls short, as ONE clause: the
     /// confirmation that asks whether to take the route, the plan row that
     /// states it and `cfgd doctor`'s unresolved row all read it, so one offer
     /// cannot be worded three ways.
     pub fn offer_clause(&self) -> String {
         format!(
-            "{} offers {} {}, below the declared minVersion {}",
-            self.found_in, self.package, self.found, self.floor
+            "{} offers {} {}, {} {}",
+            self.found_in,
+            self.package,
+            self.found,
+            Self::BELOW_DECLARED_FLOOR,
+            self.floor
         )
     }
 }
 
 /// What one declared package entry resolves to: the manager it lands on, or the
 /// route a floor no available manager meets could be met by.
-///
-/// `Debug` because a resolver test panics with the arm it did not expect;
-/// `ResolvedPackage` already derives it.
+// `Debug` because a resolver test panics with the arm it did not expect;
+// `ResolvedPackage` already derives it.
 #[derive(Debug)]
 pub enum PackageResolution {
     Package(Box<ResolvedPackage>),
@@ -241,7 +250,7 @@ pub fn resolve_package(
                         proven_below = true;
                         // First candidate wins, matching `prefer` order: the
                         // author's own ordering decides which offer is quoted.
-                        best_found.get_or_insert((candidate.clone(), ver));
+                        best_found.get_or_insert_with(|| (candidate.clone(), ver));
                         continue;
                     }
                     return Ok(Some(
@@ -264,7 +273,7 @@ pub fn resolve_package(
                 // Neither says the floor is unmet, so the candidate stands by
                 // in case nothing better is found.
                 Ok(None) | Err(_) => {
-                    unproven.get_or_insert(ResolvedPackage {
+                    unproven.get_or_insert_with(|| ResolvedPackage {
                         canonical_name: entry.name.clone(),
                         resolved_name,
                         manager: candidate.clone(),
@@ -332,7 +341,10 @@ pub fn resolve_package(
 /// [`resolve_modules`] turns a route back into that same refusal, so the two
 /// cannot state the floor differently.
 fn proven_below_reason(floor: &str) -> String {
-    format!("every available manager offers a version below the declared minVersion {floor}")
+    format!(
+        "every available manager offers a version {} {floor}",
+        FloorBootstrap::BELOW_DECLARED_FLOOR
+    )
 }
 
 /// The route a proven-below floor could be met by: the package names a
@@ -344,41 +356,49 @@ fn floor_bootstrap_route(
     managers: &HashMap<String, &dyn PackageManager>,
     found: &Option<(String, String)>,
 ) -> Option<FloorBootstrap> {
-    let route = floor_bootstrap_via(&entry.name, entry, module_name, managers, found)?;
-    // A manager already on this host has nothing left to bootstrap: a second
-    // copy of it would not raise what it offers, so the refusal stands.
-    let already_here = managers
-        .get(entry.name.as_str())
-        .is_some_and(|mgr| mgr.is_available());
-    (!already_here).then_some(route)
+    let (mgr, route) = floor_bootstrap_via(&entry.name, entry, module_name, managers, found)?;
+    // The manager the route runs through, asked of the value the derivation
+    // resolved rather than of a second lookup: a manager already on this host
+    // has nothing left to bootstrap, because a second copy of it would not
+    // raise what it offers, and the refusal stands.
+    (!mgr.is_available()).then_some(route)
 }
 
 /// That route through ONE named manager, asked without regard to whether this
 /// host already has it, so a caller walking the registry can price every
-/// manager that declares the package.
+/// manager that declares the package. The resolved manager comes back with the
+/// route so its caller asks the host question of that same value.
+///
+/// `manager` is the package's own name wherever the resolver calls this, which
+/// is what makes the route's `package` field name a registered manager: a
+/// caller walking the registry passes the declaring manager's name as the
+/// entry's name too, so the field stays the manager a reader can act on.
 ///
 /// `bootstrap_plan_given(&|_| false)` prices the cascade against the host as it
 /// stands, so a manager whose only arm is a mediator this host lacks offers
 /// nothing and the refusal stands.
-fn floor_bootstrap_via(
+fn floor_bootstrap_via<'m>(
     manager: &str,
     entry: &ModulePackageEntry,
     module_name: &str,
-    managers: &HashMap<String, &dyn PackageManager>,
+    managers: &HashMap<String, &'m dyn PackageManager>,
     found: &Option<(String, String)>,
-) -> Option<FloorBootstrap> {
+) -> Option<(&'m dyn PackageManager, FloorBootstrap)> {
     let mgr = *managers.get(manager)?;
     let floor = entry.min_version.clone()?;
     let via = mgr.bootstrap_plan_given(&|_| false)?.method;
     let (found_in, found) = found.clone()?;
-    Some(FloorBootstrap {
-        package: entry.name.clone(),
-        module: module_name.to_string(),
-        found_in,
-        found,
-        floor,
-        via,
-    })
+    Some((
+        mgr,
+        FloorBootstrap {
+            package: entry.name.clone(),
+            module: module_name.to_string(),
+            found_in,
+            found,
+            floor,
+            via,
+        },
+    ))
 }
 
 /// The available manager that already holds a bare entry's package, when one

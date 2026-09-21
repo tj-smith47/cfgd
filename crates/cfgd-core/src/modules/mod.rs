@@ -172,8 +172,9 @@ pub struct ResolvedModule {
     pub packages: Vec<ResolvedPackage>,
     /// Declared floors no available manager meets, each naming the manager this
     /// host could bootstrap to meet one. Empty for every module
-    /// [`resolve_modules`] hands back: that walk turns a route back into the
-    /// refusal it has always been, because nothing there asks the reader first.
+    /// [`resolve_modules`] hands back: that resolution turns a route back into
+    /// the refusal it has always been, because nothing there asks the reader
+    /// first.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub floor_bootstraps: Vec<FloorBootstrap>,
     pub files: Vec<ResolvedFile>,
