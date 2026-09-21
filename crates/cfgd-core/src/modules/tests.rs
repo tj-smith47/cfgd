@@ -4300,25 +4300,11 @@ fn an_offered_body_that_has_not_arrived_is_still_a_recorded_input() {
     );
 }
 
-/// Write a source module body carrying a `preApply` lifecycle script; returns
-/// the `modules/` directory path.
-fn write_source_module_with_script(root: &Path, name: &str) -> std::path::PathBuf {
-    let modules_dir = root.join("modules");
-    let mod_dir = modules_dir.join(name);
-    std::fs::create_dir_all(&mod_dir).unwrap();
-    std::fs::write(
-        mod_dir.join("module.yaml"),
-        format!(
-            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: {name}\nspec:\n  scripts:\n    preApply:\n      - run: \"echo hi\"\n"
-        ),
-    )
-    .unwrap();
-    modules_dir
-}
-
-/// Write a source module body carrying a `preApply` lifecycle script, gated
-/// to only the platform tags given; returns the `modules/` directory path.
-fn write_source_module_with_script_for_platforms(
+/// Write a source module body carrying a `preApply` lifecycle script, gated to
+/// the platform tags given (an empty slice writes no `platforms:` key at all,
+/// which is a module every platform runs); returns the `modules/` directory
+/// path.
+fn write_source_module_with_script(
     root: &Path,
     name: &str,
     platforms: &[&str],
@@ -4326,14 +4312,16 @@ fn write_source_module_with_script_for_platforms(
     let modules_dir = root.join("modules");
     let mod_dir = modules_dir.join(name);
     std::fs::create_dir_all(&mod_dir).unwrap();
-    let platforms_yaml = platforms
-        .iter()
-        .map(|p| format!("    - {p}\n"))
-        .collect::<String>();
+    let gate = if platforms.is_empty() {
+        String::new()
+    } else {
+        let tags: String = platforms.iter().map(|p| format!("    - {p}\n")).collect();
+        format!("  platforms:\n{tags}")
+    };
     std::fs::write(
         mod_dir.join("module.yaml"),
         format!(
-            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: {name}\nspec:\n  platforms:\n{platforms_yaml}  scripts:\n    preApply:\n      - run: \"echo hi\"\n"
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: {name}\nspec:\n{gate}  scripts:\n    preApply:\n      - run: \"echo hi\"\n"
         ),
     )
     .unwrap();
@@ -4364,7 +4352,7 @@ fn load_source_modules_loads_a_script_body_from_a_not_permitted_source() {
     // references — see `resolve_modules_rejects_a_referenced_script_module`
     // and `resolve_modules_allows_an_unreferenced_script_module`).
     let source = tempfile::tempdir().unwrap();
-    let modules_dir = write_source_module_with_script(source.path(), "dev-tools");
+    let modules_dir = write_source_module_with_script(source.path(), "dev-tools", &[]);
 
     let root = SourceModuleRoot {
         source_name: "team".into(),
@@ -4385,7 +4373,7 @@ fn load_source_modules_loads_a_script_body_from_a_not_permitted_source() {
 #[test]
 fn load_source_modules_allows_script_body_when_subscriber_opted_in() {
     let source = tempfile::tempdir().unwrap();
-    let modules_dir = write_source_module_with_script(source.path(), "dev-tools");
+    let modules_dir = write_source_module_with_script(source.path(), "dev-tools", &[]);
 
     let root = SourceModuleRoot {
         source_name: "team".into(),
@@ -4495,7 +4483,7 @@ fn load_source_modules_script_gating_does_not_touch_local_modules() {
     // not-permitted source root leaves it untouched (and loads nothing else).
     let source = tempfile::tempdir().unwrap();
     // Source offers a module name that already exists locally — must be skipped.
-    let modules_dir = write_source_module_with_script(source.path(), "shared");
+    let modules_dir = write_source_module_with_script(source.path(), "shared", &[]);
 
     let root = SourceModuleRoot {
         source_name: "team".into(),
@@ -4532,7 +4520,7 @@ fn resolve_modules_rejects_a_referenced_script_module() {
     // subscriber's own request pulls in.
     let consumer = tempfile::tempdir().unwrap();
     let source = tempfile::tempdir().unwrap();
-    let modules_dir = write_source_module_with_script(source.path(), "risky");
+    let modules_dir = write_source_module_with_script(source.path(), "risky", &[]);
 
     let root = SourceModuleRoot {
         source_name: "team".into(),
@@ -4580,7 +4568,7 @@ fn resolve_modules_allows_an_unreferenced_script_module_beside_a_referenced_one(
     let consumer = tempfile::tempdir().unwrap();
     let source = tempfile::tempdir().unwrap();
     let modules_dir = write_source_module(source.path(), "safe", "safepkg");
-    write_source_module_with_script(source.path(), "risky");
+    write_source_module_with_script(source.path(), "risky", &[]);
 
     let root = SourceModuleRoot {
         source_name: "team".into(),
@@ -4611,11 +4599,6 @@ fn resolve_modules_allows_an_unreferenced_script_module_beside_a_referenced_one(
     assert_eq!(resolved[0].name, "safe");
 }
 
-// R2 (F3 class sweep): the two tests above pin the REFUSAL and the
-// unreferenced-sibling exemption over a not-permitted source. Neither one
-// pins the two arms a positive case and a platform gate add to the same
-// predicate:
-
 #[test]
 fn resolve_modules_allows_a_referenced_script_module_from_a_permitted_source() {
     // A source whose subscriber permits scripts (scripts_permitted: true) must
@@ -4623,7 +4606,7 @@ fn resolve_modules_allows_a_referenced_script_module_from_a_permitted_source() {
     // ScriptsNotAllowed gate is conditioned on the source, not the module.
     let consumer = tempfile::tempdir().unwrap();
     let source = tempfile::tempdir().unwrap();
-    let modules_dir = write_source_module_with_script(source.path(), "risky");
+    let modules_dir = write_source_module_with_script(source.path(), "risky", &[]);
 
     let root = SourceModuleRoot {
         source_name: "team".into(),
@@ -4651,6 +4634,14 @@ fn resolve_modules_allows_a_referenced_script_module_from_a_permitted_source() {
 
     assert_eq!(resolved.len(), 1);
     assert_eq!(resolved[0].name, "risky");
+    // Resolving the module is only half of "allowed": a gate that resolved it
+    // and dropped the script body would pass a name-and-count assertion while
+    // the `preApply` the permission was granted for never ran.
+    assert!(
+        !resolved[0].pre_apply_scripts.is_empty(),
+        "a permitted source's script module keeps the preApply body it declared"
+    );
+    assert!(resolved[0].platform_skip_reason.is_none());
 }
 
 #[test]
@@ -4662,8 +4653,7 @@ fn resolve_modules_does_not_refuse_a_referenced_script_module_the_platform_gate_
     // than refused.
     let consumer = tempfile::tempdir().unwrap();
     let source = tempfile::tempdir().unwrap();
-    let modules_dir =
-        write_source_module_with_script_for_platforms(source.path(), "risky", &["windows"]);
+    let modules_dir = write_source_module_with_script(source.path(), "risky", &["windows"]);
 
     let root = SourceModuleRoot {
         source_name: "team".into(),
