@@ -83,13 +83,13 @@ pub struct SubscriptionSpec {
     pub require_signed_commits: bool,
     /// Local values to deep-merge on top of what the source delivers, applied
     /// after composition.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "serde_yaml::Value::is_null")]
     #[schemars(with = "serde_json::Value")]
     pub overrides: serde_yaml::Value,
     /// Items from the source's `recommended` tier to drop entirely rather than
     /// accept. A mapping under `packages`, `env`, `aliases`, and/or `modules`;
     /// any other top-level key is rejected as a typo.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "serde_yaml::Value::is_null")]
     #[schemars(with = "serde_json::Value")]
     pub reject: serde_yaml::Value,
 }
@@ -708,5 +708,57 @@ subscription:
         let spec: SubscriptionSpec =
             serde_yaml::from_str(yaml).expect("default priority path must not be broken");
         assert_eq!(spec.priority, 500);
+    }
+
+    // R9: `overrides`/`reject` default to `Value::Null`, and without
+    // `skip_serializing_if` a saved source entry that never set either one
+    // wrote explicit `overrides: null` / `reject: null` into the config
+    // document. `profile` and `pinVersion` are the sibling `Option` fields in
+    // this same population and already carried the guard; this pins that
+    // `overrides`/`reject` now do too, round-tripping through a real
+    // `SourceSpec` the way `source add` writes one.
+    #[test]
+    fn a_saved_source_entry_with_no_overrides_or_reject_writes_neither_as_null() {
+        let spec = SourceSpec {
+            name: "team".to_string(),
+            origin: serde_yaml::from_str("type: Git\nurl: https://example.com/x.git\n").unwrap(),
+            subscription: SubscriptionSpec::default(),
+            sync: SourceSyncSpec::default(),
+        };
+        let yaml = serde_yaml::to_string(&spec).unwrap();
+        assert!(
+            !yaml.contains("overrides:"),
+            "an unset overrides must not serialize at all, got:\n{yaml}"
+        );
+        assert!(
+            !yaml.contains("reject:"),
+            "an unset reject must not serialize at all, got:\n{yaml}"
+        );
+
+        let round_tripped: SourceSpec = serde_yaml::from_str(&yaml).unwrap();
+        assert!(round_tripped.subscription.overrides.is_null());
+        assert!(round_tripped.subscription.reject.is_null());
+    }
+
+    #[test]
+    fn a_saved_source_entry_with_overrides_set_still_writes_it() {
+        let subscription = SubscriptionSpec {
+            overrides: serde_yaml::from_str("env:\n  FOO: bar\n").unwrap(),
+            ..SubscriptionSpec::default()
+        };
+        let spec = SourceSpec {
+            name: "team".to_string(),
+            origin: serde_yaml::from_str("type: Git\nurl: https://example.com/x.git\n").unwrap(),
+            subscription,
+            sync: SourceSyncSpec::default(),
+        };
+        let yaml = serde_yaml::to_string(&spec).unwrap();
+        assert!(
+            yaml.contains("overrides:"),
+            "a set overrides must still serialize, got:\n{yaml}"
+        );
+
+        let round_tripped: SourceSpec = serde_yaml::from_str(&yaml).unwrap();
+        assert!(!round_tripped.subscription.overrides.is_null());
     }
 }
