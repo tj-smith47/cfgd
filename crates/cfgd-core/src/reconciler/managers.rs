@@ -176,6 +176,7 @@ pub fn plan_managers(
         package_actions,
         module_routed,
         &declared,
+        &BTreeMap::new(),
         &[],
         &[],
     )
@@ -196,6 +197,12 @@ pub fn plan_managers(
 /// package the elision dropped delivered by nothing. The elision names the
 /// mediators its own pairs were installed through, and they stay members.
 ///
+/// `floors`, keyed by manager, is the `minVersion` a confirmed
+/// `modules::FloorBootstrap` route asked this run to deliver. It decides
+/// nothing about membership (the caller widens `extra_wanted` for that): it
+/// rides the node the manager gets either way, so a manager wanted for a
+/// second reason still has exactly one provision.
+///
 /// `extra_tools` names the tools consumers OUTSIDE the manager graph need — a
 /// system configurator's binary, a secret backend's CLI — each paired with the
 /// token naming the consumer. Those phases run after `Bootstrap`, so the tool
@@ -207,6 +214,7 @@ pub(super) fn plan_managers_with_routes(
     package_actions: &[PackageAction],
     module_routed: &[(PhaseName, Action)],
     declared: &BTreeMap<String, DeclaredProvision>,
+    floors: &BTreeMap<String, String>,
     extra_wanted: &[String],
     extra_tools: &[(String, String)],
 ) -> Vec<Action> {
@@ -350,7 +358,7 @@ pub(super) fn plan_managers_with_routes(
 
     refuse_provisions_with_no_usable_installer(&mut graph);
     drop_prerequisites_nothing_still_needs(&mut graph);
-    build_actions(registry, &graph)
+    build_actions(registry, &graph, floors)
 }
 
 /// The packages a provision node DELIVERS, under the manager that installs
@@ -538,7 +546,11 @@ fn drop_prerequisites_nothing_still_needs(graph: &mut Graph) {
 
 /// Assemble the nodes in topological order, wiring each edge to the id of the
 /// node that satisfies it.
-fn build_actions(registry: &ProviderRegistry, graph: &Graph) -> Vec<Action> {
+fn build_actions(
+    registry: &ProviderRegistry,
+    graph: &Graph,
+    floors: &BTreeMap<String, String>,
+) -> Vec<Action> {
     let mut actions: Vec<Action> = Vec::new();
 
     for (manager, state) in &graph.members {
@@ -596,7 +608,7 @@ fn build_actions(registry: &ProviderRegistry, graph: &Graph) -> Vec<Action> {
             depends_on,
         });
     }
-    actions.extend(batch_provisions(registry, graph, provisions));
+    actions.extend(batch_provisions(registry, graph, provisions, floors));
 
     // Last: a refusal blocks nothing and carries no edge, so it reads after the
     // work the run will actually do.
@@ -950,6 +962,7 @@ fn batch_provisions<'g>(
     registry: &ProviderRegistry,
     graph: &'g Graph,
     provisions: Vec<Provisioning<'g>>,
+    floors: &BTreeMap<String, String>,
 ) -> Vec<Action> {
     // A manager another provision installs through keeps its own node, because
     // that other node's `depends_on` names it.
@@ -967,7 +980,13 @@ fn batch_provisions<'g>(
                 .and_then(|pm| pm.mediated_packages(p.via))
                 .is_some_and(|pkgs| !pkgs.is_empty())
     };
-    let can_join = |p: &Provisioning<'_>| can_lead(p) && !depended_on.contains(p.manager);
+    // A confirmed floor rides the node its manager gets, and joining a batch
+    // dissolves that node: the member would be delivered by a command nothing
+    // then checks against the version the confirmation asked for. It keeps its
+    // own node instead. Leading one is fine, the leader keeping its identity.
+    let can_join = |p: &Provisioning<'_>| {
+        can_lead(p) && !depended_on.contains(p.manager) && !floors.contains_key(p.manager)
+    };
 
     let mut actions: Vec<Action> = Vec::with_capacity(provisions.len());
     // Where in `actions` the open batch for a given `via` lives, so a later
@@ -997,6 +1016,7 @@ fn batch_provisions<'g>(
             manager: provisioning.manager.to_string(),
             via: provisioning.via.to_string(),
             declared: provisioning.declared.cloned(),
+            floor: floors.get(provisioning.manager).cloned(),
             batched: Vec::new(),
             depends_on: provisioning.depends_on,
         }));
@@ -1258,6 +1278,7 @@ mod tests {
             manager: "tool".to_string(),
             via: "sys".to_string(),
             declared: None,
+            floor: None,
             batched: vec!["mate".to_string()],
             depends_on: Vec::new(),
         };
@@ -1277,6 +1298,7 @@ mod tests {
                 installer: "alt".to_string(),
                 package: "tool-alias".to_string(),
             }),
+            floor: None,
             batched: Vec::new(),
             depends_on: Vec::new(),
         };
@@ -2363,6 +2385,7 @@ mod tests {
             manager: "pipx".to_string(),
             via: "pipx installer".to_string(),
             declared: None,
+            floor: None,
             batched: vec![],
             depends_on: vec![ManagerAction::prereq_node("curl")],
         });
@@ -2395,6 +2418,7 @@ mod tests {
             manager: manager.to_string(),
             via: via.to_string(),
             declared: None,
+            floor: None,
             batched: batched.iter().map(|m| (*m).to_string()).collect(),
             depends_on: Vec::new(),
         })
@@ -2497,6 +2521,7 @@ mod tests {
             manager: "pnpm".to_string(),
             via: "npm".to_string(),
             declared: None,
+            floor: None,
             batched: Vec::new(),
             depends_on: vec![ManagerAction::provision_node("npm")],
         });

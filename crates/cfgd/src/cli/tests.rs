@@ -12258,6 +12258,7 @@ fn action_type_str_manager_variants() {
             manager: "brew".to_string(),
             via: "homebrew installer".to_string(),
             declared: None,
+            floor: None,
             batched: vec![],
             depends_on: vec![],
         })),
@@ -24973,6 +24974,7 @@ fn action_path_manager_provision() {
         manager: "brew".into(),
         via: "homebrew installer".into(),
         declared: None,
+        floor: None,
         batched: vec![],
         depends_on: vec![],
     });
@@ -29474,6 +29476,7 @@ fn every_legacy_phase_token_is_rewritten_by_both_deprecation_sites() {
                     manager: "brew".to_string(),
                     via: "homebrew installer".to_string(),
                     declared: None,
+                    floor: None,
                     batched: vec![],
                     depends_on: vec![],
                 })],

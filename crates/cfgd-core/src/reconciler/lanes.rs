@@ -1634,6 +1634,7 @@ mod tests {
                 manager: manager.to_string(),
                 via: via.to_string(),
                 declared: None,
+                floor: None,
                 batched: Vec::new(),
                 depends_on,
             })
@@ -1809,6 +1810,7 @@ mod tests {
                 manager: "brew".into(),
                 via: "homebrew installer".into(),
                 declared: None,
+                floor: None,
                 batched: vec![],
                 depends_on: vec![],
             },
@@ -2392,6 +2394,7 @@ mod tests {
             manager: manager.to_string(),
             via: via.to_string(),
             declared: None,
+            floor: None,
             batched: vec![],
             depends_on: depends_on.to_vec(),
         })
@@ -2570,6 +2573,7 @@ mod tests {
             manager: "brew-cask".to_string(),
             via: "brew".to_string(),
             declared: None,
+            floor: None,
             batched: vec![],
             depends_on: vec![ManagerAction::provision_node("brew")],
         });

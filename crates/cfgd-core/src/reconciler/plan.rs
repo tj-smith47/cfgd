@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -196,12 +196,33 @@ impl<'a> super::Reconciler<'a> {
         // after this one, so the tools they need are collected here and
         // installed as prerequisites of the same run.
         let deferred_tools = self.deferred_tools(&resolved.merged, &module_actions);
+        // A floor no available manager met, confirmed at resolution time: the
+        // manager itself joins the run's membership, and `plan_managers` mints
+        // its own cascade node. The module's entry resolved to no package at
+        // all, so nothing here has to be elided afterwards. Two modules may
+        // ask for one manager, and the run can only deliver one copy of it, so
+        // the higher floor is what the node carries: it satisfies both, where
+        // the lower one leaves the stricter module quietly short.
+        let mut floor_routes: BTreeMap<String, String> = BTreeMap::new();
+        for route in module_actions
+            .iter()
+            .flat_map(|m| m.floor_bootstraps.iter())
+        {
+            let held = floor_routes
+                .entry(route.package.clone())
+                .or_insert_with(|| route.floor.clone());
+            if !crate::version_meets_floor(held, &route.floor) {
+                held.clone_from(&route.floor);
+            }
+        }
+        let floor_wanted: Vec<String> = floor_routes.keys().cloned().collect();
         let mut manager_actions = super::managers::plan_managers_with_routes(
             self.registry,
             &profile_packages,
             &module_routed,
             &declared_routes,
-            &[],
+            &floor_routes,
+            &floor_wanted,
             &deferred_tools,
         );
         // A tool this plan's own cascade provisions as a MANAGER is already
@@ -219,7 +240,8 @@ impl<'a> super::Reconciler<'a> {
                 &profile_packages,
                 &module_routed,
                 &declared_routes,
-                &relied_on,
+                &floor_routes,
+                &[relied_on, floor_wanted].concat(),
                 &deferred_tools,
             );
         }

@@ -2626,6 +2626,7 @@ mod tests {
                 manager: "pipx".into(),
                 via: "pip install pipx".into(),
                 declared: None,
+                floor: None,
                 batched: vec![],
                 depends_on: vec![],
             },

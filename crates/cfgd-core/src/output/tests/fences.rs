@@ -5922,7 +5922,7 @@ fn the_validator_tell_reads_a_whole_field_token_outside_the_call_name() {
 /// wire form of what a derivation read, written so a plan file can carry the
 /// set beside the actions it produced.
 const PLAN_FORMAT_FILES: [(&str, usize); 5] = [
-    ("crates/cfgd-core/src/reconciler/types.rs", 4),
+    ("crates/cfgd-core/src/reconciler/types.rs", 5),
     ("crates/cfgd-core/src/providers/mod.rs", 3),
     ("crates/cfgd-core/src/modules/mod.rs", 2),
     ("crates/cfgd-core/src/util/config_inputs.rs", 1),

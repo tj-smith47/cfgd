@@ -584,7 +584,13 @@ impl<'x> PackageExec<'x> {
                     changed = false;
                 }
             }
-            ManagerAction::Provision { via, declared, .. } => {
+            ManagerAction::Provision {
+                manager,
+                via,
+                declared,
+                floor,
+                ..
+            } => {
                 let members = action.provisioned_managers();
                 // An earlier node may have provisioned one already. What the
                 // node promises is an available manager, not a second run of
@@ -679,6 +685,24 @@ impl<'x> PackageExec<'x> {
                     if pending.contains(name)
                         && let Some(version) = pm.tool_version()
                     {
+                        // The confirmation named a floor; the node is what
+                        // checks it. Without this cfgd asks "may I install a
+                        // cargo at 1.85?", installs something, and never looks.
+                        // The floor was asked of THIS node's manager, so a
+                        // batched sibling delivered by the same command is
+                        // judged by nothing here.
+                        if let Some(floor) = floor
+                            && *name == manager.as_str()
+                            && !crate::version_meets_floor(&version, floor)
+                        {
+                            return Err(crate::errors::PackageError::BootstrapFailed {
+                                manager: (*name).to_string(),
+                                message: crate::modules::FloorBootstrap::delivery_shortfall(
+                                    via, name, &version, floor,
+                                ),
+                            }
+                            .into());
+                        }
                         delivered.push(((*name).to_string(), version));
                     }
                 }

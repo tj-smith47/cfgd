@@ -2920,6 +2920,7 @@ fn hero_plan(home: &std::path::Path) -> Plan {
             manager: manager.to_string(),
             via: via.to_string(),
             declared: None,
+            floor: None,
             batched: Vec::new(),
             // The hero's own edges: both brew-mediated provisions wait on brew.
             depends_on: if via == "brew" {

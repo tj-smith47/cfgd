@@ -60,6 +60,21 @@ impl FloorBootstrap {
             self.floor
         )
     }
+
+    /// What a provision settles with when the route it took delivered a version
+    /// still short of the floor the confirmation was given for.
+    ///
+    /// An associated function rather than a method: the node holds the four
+    /// values as plain strings by then, the route itself having been folded
+    /// into the plan. It shares [`Self::BELOW_DECLARED_FLOOR`] with
+    /// [`Self::offer_clause`], so the question cfgd asked and the failure it
+    /// answers with cannot word one shortfall two ways.
+    pub fn delivery_shortfall(via: &str, package: &str, delivered: &str, floor: &str) -> String {
+        format!(
+            "{via} delivered {package} {delivered}, {} {floor}",
+            Self::BELOW_DECLARED_FLOOR
+        )
+    }
 }
 
 /// What one declared package entry resolves to: the manager it lands on, or the

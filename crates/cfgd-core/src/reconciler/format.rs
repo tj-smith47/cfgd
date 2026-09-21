@@ -1962,6 +1962,10 @@ mod tests {
                 manager,
                 via,
                 declared,
+                // A version, not a name: the subject accounts for the manager
+                // the floor was asked of, and the confirmation that asked
+                // states the version itself.
+                floor: _,
                 batched,
                 depends_on: _,
             } => std::iter::once(manager.as_str())
@@ -2008,6 +2012,7 @@ mod tests {
                     installer: "sentinel-via".into(),
                     package: "sentinel-package".into(),
                 }),
+                floor: None,
                 batched: Vec::new(),
                 depends_on: Vec::new(),
             },
@@ -2015,6 +2020,7 @@ mod tests {
                 manager: "sentinel-manager".into(),
                 via: "sentinel-via".into(),
                 declared: None,
+                floor: None,
                 batched: vec!["sentinel-batched".into()],
                 depends_on: Vec::new(),
             },
@@ -2053,6 +2059,7 @@ mod tests {
                 installer: "brew".into(),
                 package: "cargo".into(),
             }),
+            floor: None,
             batched: Vec::new(),
             depends_on: Vec::new(),
         });

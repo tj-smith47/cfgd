@@ -3174,6 +3174,7 @@ fn action_resource_info_manager_provision() {
         manager: "brew".into(),
         via: "homebrew installer".into(),
         declared: None,
+        floor: None,
         batched: vec![],
         depends_on: vec![],
     });
@@ -13312,6 +13313,7 @@ spec:
             manager: "pip".to_string(),
             via: "apt".to_string(),
             declared: None,
+            floor: None,
             batched: vec!["npm".to_string()],
             depends_on: vec![],
         });

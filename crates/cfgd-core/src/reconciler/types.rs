@@ -205,6 +205,17 @@ pub enum ManagerAction {
         /// names, not the alias the module wrote.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         declared: Option<DeclaredProvision>,
+        /// The `minVersion` a `modules::FloorBootstrap` confirmation was given
+        /// for; `None` for every other provision. The node checks what it
+        /// delivered against this before settling, so a run cannot ask "may I
+        /// install a cargo at 1.85?", install something older and report
+        /// success.
+        ///
+        /// Optional on the wire, so `Plan::to_hash_string` (and every
+        /// `applies.plan_hash` already stored) is byte-identical for a plan
+        /// that carries no floor.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        floor: Option<String>,
         /// The other managers this node's ONE `via` command provisions
         /// alongside `manager`, in provision order and never naming `manager`
         /// itself.

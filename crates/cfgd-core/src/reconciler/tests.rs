@@ -7554,6 +7554,7 @@ fn a_manager_nodes_description_parses_back_to_the_id_it_is_recorded_under() {
             manager: "npm".to_string(),
             via: "brew".to_string(),
             declared: None,
+            floor: None,
             batched: vec![],
             depends_on: vec![ManagerAction::refresh_node("brew")],
         }),
@@ -7618,6 +7619,7 @@ fn both_producers_mint_one_identity_for_a_provision_finding() {
         manager: "npm".to_string(),
         via: "brew".to_string(),
         declared: None,
+        floor: None,
         batched: vec![],
         depends_on: vec![],
     });
@@ -8297,6 +8299,7 @@ fn every_row_the_tick_records_is_healed_by_the_apply_that_converges_it() {
         manager: "snap".to_string(),
         via: "stub".to_string(),
         declared: None,
+        floor: None,
         batched: vec![],
         depends_on: vec![],
     })];
@@ -8653,6 +8656,7 @@ fn every_action_variant() -> Vec<Action> {
             manager: "npm".to_string(),
             via: "brew".to_string(),
             declared: None,
+            floor: None,
             batched: vec![],
             depends_on: vec![],
         }),
@@ -9875,6 +9879,7 @@ fn apply_manager_provision_makes_manager_available() {
                 manager: "snap".to_string(),
                 via: "stub".to_string(),
                 declared: None,
+                floor: None,
                 batched: vec![],
                 depends_on: vec![],
             })],
@@ -9975,6 +9980,7 @@ fn an_apply_that_provisions_a_manager_resolves_both_provision_findings() {
                 manager: "snap".to_string(),
                 via: "stub".to_string(),
                 declared: None,
+                floor: None,
                 batched: vec![],
                 depends_on: vec![],
             })],
@@ -10021,6 +10027,7 @@ fn a_provisioned_manager_appears_in_the_registrys_next_availability_sweep() {
                 manager: "snap".to_string(),
                 via: "stub".to_string(),
                 declared: None,
+                floor: None,
                 batched: vec![],
                 depends_on: vec![],
             })],
@@ -10202,6 +10209,7 @@ fn apply_manager_provision_unknown_manager_errors() {
                 manager: "nonexistent".to_string(),
                 via: "stub".to_string(),
                 declared: None,
+                floor: None,
                 batched: vec![],
                 depends_on: vec![],
             })],
@@ -10247,6 +10255,7 @@ fn a_declared_routes_verification_failure_names_the_package_it_installed() {
                     installer: "apt".to_string(),
                     package: "rustc".to_string(),
                 }),
+                floor: None,
                 batched: vec![],
                 depends_on: vec![],
             })],
@@ -10274,6 +10283,308 @@ fn a_declared_routes_verification_failure_names_the_package_it_installed() {
     );
 }
 
+/// One confirmed route, as the resolver hands it over: the package names a
+/// manager, and `floor` is the `minVersion` the confirmation was given for.
+fn floor_route(package: &str, module: &str, floor: &str) -> crate::modules::FloorBootstrap {
+    crate::modules::FloorBootstrap {
+        package: package.to_string(),
+        module: module.to_string(),
+        found_in: "apt".to_string(),
+        found: "1.75".to_string(),
+        floor: floor.to_string(),
+        via: "rustup".to_string(),
+    }
+}
+
+/// A module whose entry for `package` resolved to no `ResolvedPackage` at all,
+/// leaving the confirmed route as the only thing it asks for.
+fn module_routing_a_floor(name: &str, package: &str, floor: &str) -> ResolvedModule {
+    let mut module = resolved_module_with_package(name, "unused", package);
+    module.packages.clear();
+    module.floor_bootstraps = vec![floor_route(package, name, floor)];
+    module
+}
+
+/// The provision nodes a plan's `Bootstrap` phase holds, in plan order.
+fn bootstrap_provisions(plan: &Plan) -> Vec<&ManagerAction> {
+    plan.phases
+        .iter()
+        .filter(|p| p.name == PhaseName::Bootstrap)
+        .flat_map(|p| p.actions())
+        .filter_map(|action| match action {
+            Action::Manager(node @ ManagerAction::Provision { .. }) => Some(node),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A confirmed floor route provisions the manager in `Bootstrap` and plans NO
+/// install for the entry that asked: the provision IS the delivery, and a
+/// `Packages` row beside it promises a second copy nothing delivered.
+#[test]
+fn a_confirmed_floor_route_provisions_the_manager_ahead_of_the_module() {
+    let cargo = crate::test_helpers::MockPackageManager::new("cargo")
+        .unavailable()
+        .bootstrappable_via("rustup")
+        .bootstrap_succeeds()
+        .reporting_version("1.90.0");
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(cargo));
+
+    let module = module_routing_a_floor("nvim", "cargo", "1.85");
+
+    let plan = Reconciler::new(&registry, &state)
+        .plan(
+            &make_empty_resolved(),
+            Vec::new(),
+            Vec::new(),
+            vec![module],
+            ReconcileContext::Apply,
+        )
+        .unwrap();
+
+    let bootstrap: Vec<&Action> = plan
+        .phases
+        .iter()
+        .find(|p| p.name == PhaseName::Bootstrap)
+        .expect("a confirmed route opens a Bootstrap phase")
+        .actions()
+        .collect();
+    assert!(
+        matches!(
+            bootstrap.as_slice(),
+            [Action::Manager(ManagerAction::Provision { manager, via, floor, .. })]
+                if manager == "cargo" && via == "rustup" && floor.as_deref() == Some("1.85")
+        ),
+        "the provision carries the floor it was confirmed for: {bootstrap:#?}"
+    );
+    // Counted rather than matched on the phase's presence: an empty phase is
+    // pruned, so "absent" and "present with no action" are the same answer.
+    let installs = plan
+        .phases
+        .iter()
+        .filter(|p| p.name == PhaseName::Packages)
+        .flat_map(|p| p.actions())
+        .count();
+    assert_eq!(
+        installs, 0,
+        "the provision delivers it; nothing installs it a second time: {:#?}",
+        plan.phases
+    );
+}
+
+/// A bootstrap that lands BELOW the floor it was confirmed for fails the node.
+/// cfgd asked for a cargo at 1.85; delivering 1.80 and settling green would make
+/// the question it asked meaningless.
+#[test]
+fn a_provision_landing_below_its_confirmed_floor_fails_the_node() {
+    let cargo = crate::test_helpers::MockPackageManager::new("cargo")
+        .unavailable()
+        .bootstrappable_via("rustup")
+        .bootstrap_succeeds()
+        .reporting_version("1.80.0");
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(cargo));
+
+    let plan = Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::Bootstrap,
+            &Owner::cfgd("managers"),
+            vec![Action::Manager(ManagerAction::Provision {
+                manager: "cargo".to_string(),
+                via: "rustup".to_string(),
+                declared: None,
+                floor: Some("1.85".to_string()),
+                batched: vec![],
+                depends_on: vec![],
+            })],
+        )],
+        warnings: vec![],
+    };
+    let (result, _) = apply_manager_plan(&registry, &state, &plan);
+
+    assert_eq!(result.failed(), 1);
+    let err = result.action_results[0]
+        .error
+        .clone()
+        .expect("a delivery below the confirmed floor fails the node");
+    assert!(
+        err.contains("rustup delivered cargo 1.80.0, below the declared minVersion 1.85"),
+        "{err}"
+    );
+}
+
+/// Two modules asking one manager for two different floors get ONE copy of it,
+/// so the node carries the higher: it satisfies both, where the lower leaves
+/// the stricter module short of what its confirmation promised. Asked in both
+/// orders, because a fold that keeps whichever route came last answers one of
+/// them correctly by accident.
+#[test]
+fn two_modules_flooring_one_manager_provision_it_at_the_higher_floor() {
+    for (first, second) in [("1.80", "1.85"), ("1.85", "1.80")] {
+        let state = test_state();
+        let mut registry = ProviderRegistry::new();
+        registry.add_package_manager(Box::new(
+            crate::test_helpers::MockPackageManager::new("cargo")
+                .unavailable()
+                .bootstrappable_via("rustup"),
+        ));
+
+        let plan = Reconciler::new(&registry, &state)
+            .plan(
+                &make_empty_resolved(),
+                Vec::new(),
+                Vec::new(),
+                vec![
+                    module_routing_a_floor("nvim", "cargo", first),
+                    module_routing_a_floor("tools", "cargo", second),
+                ],
+                ReconcileContext::Apply,
+            )
+            .unwrap();
+
+        let provisions = bootstrap_provisions(&plan);
+        assert!(
+            matches!(
+                provisions.as_slice(),
+                [ManagerAction::Provision { manager, floor, .. }]
+                    if manager == "cargo" && floor.as_deref() == Some("1.85")
+            ),
+            "one node at the higher floor, asked as ({first}, {second}): {provisions:#?}"
+        );
+    }
+}
+
+/// A manager the run already wanted for another reason keeps its ONE provision
+/// node, and the floor rides it. A second node would run the cascade twice and
+/// leave the DAG with two ids for one manager.
+#[test]
+fn a_floor_rides_the_provision_a_manager_was_already_getting() {
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(
+        crate::test_helpers::MockPackageManager::new("cargo")
+            .unavailable()
+            .bootstrappable_via("rustup"),
+    ));
+
+    // The package makes cargo a member on its own: this run installs `ripgrep`
+    // through it whether or not any floor was confirmed.
+    let mut module = resolved_module_with_package("nvim", "ripgrep", "cargo");
+    module.floor_bootstraps = vec![floor_route("cargo", "nvim", "1.85")];
+
+    let plan = Reconciler::new(&registry, &state)
+        .plan(
+            &make_empty_resolved(),
+            Vec::new(),
+            Vec::new(),
+            vec![module],
+            ReconcileContext::Apply,
+        )
+        .unwrap();
+
+    let provisions = bootstrap_provisions(&plan);
+    assert!(
+        matches!(
+            provisions.as_slice(),
+            [ManagerAction::Provision { manager, floor, .. }]
+                if manager == "cargo" && floor.as_deref() == Some("1.85")
+        ),
+        "one node, carrying the floor: {provisions:#?}"
+    );
+}
+
+/// A manager a batch WOULD have swallowed keeps its own node once a floor is
+/// confirmed for it. Joining dissolves the member's node, and the floor rides
+/// that node: the batch would deliver it through one `apt-get install` that
+/// nothing then checks against the version the confirmation asked for.
+#[test]
+fn a_floored_manager_keeps_its_own_node_instead_of_joining_a_batch() {
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(crate::test_helpers::MockPackageManager::new(
+        "apt",
+    )));
+    for (manager, package) in [("npm", "nodejs"), ("pipx", "pipx")] {
+        registry.add_package_manager(Box::new(
+            crate::test_helpers::MockPackageManager::new(manager)
+                .unavailable()
+                .bootstrappable_via("apt")
+                .mediated_by("apt", &[package]),
+        ));
+    }
+
+    // npm sorts first and leads the batch; pipx is the member that would join
+    // it, and the one the floor was confirmed for.
+    let mut asking = module_routing_a_floor("tools", "pipx", "1.85");
+    asking.packages = resolved_module_with_package("tools", "prettier", "npm").packages;
+
+    let plan = Reconciler::new(&registry, &state)
+        .plan(
+            &make_empty_resolved(),
+            Vec::new(),
+            Vec::new(),
+            vec![asking],
+            ReconcileContext::Apply,
+        )
+        .unwrap();
+
+    let provisions = bootstrap_provisions(&plan);
+    let floored: Vec<&ManagerAction> = provisions
+        .iter()
+        .copied()
+        .filter(
+            |node| matches!(node, ManagerAction::Provision { manager, .. } if manager == "pipx"),
+        )
+        .collect();
+    assert!(
+        matches!(
+            floored.as_slice(),
+            [ManagerAction::Provision { floor, batched, .. }]
+                if floor.as_deref() == Some("1.85") && batched.is_empty()
+        ),
+        "pipx holds a node of its own, carrying the floor: {provisions:#?}"
+    );
+    assert!(
+        !provisions.iter().any(|node| matches!(
+            node,
+            ManagerAction::Provision { manager, batched, .. }
+                if manager != "pipx" && batched.iter().any(|m| m == "pipx")
+        )),
+        "no other node swallows it: {provisions:#?}"
+    );
+}
+
+/// `applies.plan_hash` is a serialization of the actions, so a provision
+/// carrying no floor has to hash to the bytes it hashed to before the field
+/// existed. Without `skip_serializing_if`, every stored hash re-reads as a
+/// change nobody made and every converged host re-plans.
+#[test]
+fn a_provision_with_no_floor_hashes_to_the_bytes_it_always_did() {
+    let plan = Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::Bootstrap,
+            &Owner::cfgd("managers"),
+            vec![Action::Manager(ManagerAction::Provision {
+                manager: "npm".to_string(),
+                via: "apt".to_string(),
+                declared: None,
+                floor: None,
+                batched: vec![],
+                depends_on: vec![],
+            })],
+        )],
+        warnings: vec![],
+    };
+    assert_eq!(
+        plan.to_hash_string().expect("the plan hashes"),
+        r#"{"Manager":{"provision":{"manager":"npm","via":"apt","batched":[],"depends_on":[]}}}"#,
+        "a floor-less provision writes no floor key"
+    );
+}
+
 #[test]
 fn an_unprovisioned_managers_install_names_a_recovery_that_holds_off_a_filter() {
     // The reach path the error's own comment once denied: no phase filter, a
@@ -10296,6 +10607,7 @@ fn an_unprovisioned_managers_install_names_a_recovery_that_holds_off_a_filter() 
                     manager: "stub".to_string(),
                     via: "mock".to_string(),
                     declared: None,
+                    floor: None,
                     batched: vec![],
                     depends_on: vec![],
                 })],
@@ -12936,6 +13248,7 @@ fn a_package_a_prerequisite_landed_is_not_installed_again_by_the_packages_phase(
                     manager: "npm".to_string(),
                     via: "sys".to_string(),
                     declared: None,
+                    floor: None,
                     batched: vec!["pipx".to_string()],
                     depends_on: Vec::new(),
                 })],
@@ -13074,6 +13387,7 @@ fn an_install_that_landed_fewer_than_it_named_says_so_on_its_row() {
                     manager: "npm".to_string(),
                     via: "sys".to_string(),
                     declared: None,
+                    floor: None,
                     batched: vec!["pipx".to_string()],
                     depends_on: Vec::new(),
                 })],
@@ -13285,6 +13599,7 @@ fn every_manager_node_states_what_it_produced() {
         manager: "brew".to_string(),
         via: "homebrew installer".to_string(),
         declared: None,
+        floor: None,
         batched: Vec::new(),
         depends_on: Vec::new(),
     });
@@ -13303,6 +13618,7 @@ fn every_manager_node_states_what_it_produced() {
         manager: "cargo".to_string(),
         via: "apt".to_string(),
         declared: None,
+        floor: None,
         batched: vec!["npm".to_string()],
         depends_on: Vec::new(),
     };
@@ -13313,6 +13629,7 @@ fn every_manager_node_states_what_it_produced() {
             installer: "apt".to_string(),
             package: "npm".to_string(),
         }),
+        floor: None,
         batched: Vec::new(),
         depends_on: Vec::new(),
     };
@@ -13456,6 +13773,7 @@ fn no_produced_detail_restates_a_total_the_subject_already_gives() {
             manager: names[0].clone(),
             via: "apt".to_string(),
             declared: None,
+            floor: None,
             batched: names[1..].to_vec(),
             depends_on: Vec::new(),
         }),
@@ -15424,6 +15742,7 @@ fn format_action_description_manager_provision() {
         manager: "brew".to_string(),
         via: "homebrew installer".to_string(),
         declared: None,
+        floor: None,
         batched: vec![],
         depends_on: vec![],
     });
@@ -18307,6 +18626,7 @@ fn format_plan_items_manager_provision() {
             manager: "brew".into(),
             via: "curl | bash".into(),
             declared: None,
+            floor: None,
             batched: vec![],
             depends_on: vec![],
         })],
@@ -19098,6 +19418,7 @@ fn provision_only_plan(manager: &str, via: &str) -> Plan {
                 manager: manager.to_string(),
                 via: via.to_string(),
                 declared: None,
+                floor: None,
                 batched: vec![],
                 depends_on: vec![],
             })],
@@ -21846,6 +22167,7 @@ fn action_matches_phase_filter_table() {
         manager: "brew".to_string(),
         via: "curl".to_string(),
         declared: None,
+        floor: None,
         batched: vec![],
         depends_on: vec![],
     });
@@ -24586,6 +24908,7 @@ fn managers_group_is_built_at_rank_one() {
                 manager: "brew".to_string(),
                 via: "homebrew installer".to_string(),
                 declared: None,
+                floor: None,
                 batched: vec![],
                 depends_on: vec![],
             }),
@@ -24661,6 +24984,7 @@ fn apply_manager_provision_is_skipped_when_already_available() {
                 manager: "brew".to_string(),
                 via: "homebrew installer".to_string(),
                 declared: None,
+                floor: None,
                 batched: vec![],
                 depends_on: vec![],
             })],
@@ -24705,6 +25029,7 @@ fn a_package_action_for_a_manager_whose_provision_failed_is_never_spawned() {
                     manager: "brew".to_string(),
                     via: "stub".to_string(),
                     declared: None,
+                    floor: None,
                     batched: vec![],
                     depends_on: vec![],
                 })],
@@ -24761,6 +25086,7 @@ fn action_index_is_the_plan_position_not_the_dispatch_counter() {
                     manager: "brew".to_string(),
                     via: "homebrew installer".to_string(),
                     declared: None,
+                    floor: None,
                     batched: vec![],
                     depends_on: vec![],
                 })],
@@ -26142,6 +26468,7 @@ fn retain_actions_drops_the_groups_it_empties() {
                 manager: "brew".to_string(),
                 via: "homebrew installer".to_string(),
                 declared: None,
+                floor: None,
                 batched: vec![],
                 depends_on: vec![],
             }),
@@ -26273,6 +26600,7 @@ fn retain_groups_keeps_the_surviving_owners_in_sort_key_order() {
                 manager: "brew".to_string(),
                 via: "homebrew installer".to_string(),
                 declared: None,
+                floor: None,
                 batched: vec![],
                 depends_on: vec![],
             }),
@@ -26704,6 +27032,7 @@ fn provision_node(manager: &str, via: &str, depends_on: &[String]) -> Action {
         manager: manager.to_string(),
         via: via.to_string(),
         declared: None,
+        floor: None,
         batched: vec![],
         depends_on: depends_on.to_vec(),
     })
@@ -27428,6 +27757,7 @@ fn manager_action_renders_in_cfgd_managers_group() {
             manager: "brew".to_string(),
             via: "homebrew installer".to_string(),
             declared: None,
+            floor: None,
             batched: vec![],
             depends_on: vec![],
         }),
@@ -27472,6 +27802,7 @@ fn manager_action_group_is_display_only() {
         manager: "brew".to_string(),
         via: "homebrew installer".to_string(),
         declared: None,
+        floor: None,
         batched: vec![],
         depends_on: vec![],
     });
@@ -29325,6 +29656,7 @@ fn a_provisions_planned_via_reaches_the_bootstrap_that_executes_it() {
                 manager: "npm".to_string(),
                 via: "apt".to_string(),
                 declared: None,
+                floor: None,
                 batched: vec![],
                 depends_on: vec![],
             })],

@@ -1853,7 +1853,12 @@ pub(in crate::cli) fn filter_plan(
                 // for both and no shape where they can disagree.
                 if let reconciler::Action::Manager(
                     ma @ reconciler::ManagerAction::Provision {
-                        via, depends_on, ..
+                        manager,
+                        via,
+                        declared,
+                        floor,
+                        depends_on,
+                        ..
                     },
                 ) = &action
                 {
@@ -1886,11 +1891,20 @@ pub(in crate::cli) fn filter_plan(
                         }
                     }
                     if let Some((first, rest)) = kept.split_first() {
+                        // The module's declared route and the floor a
+                        // confirmation asked for belong to the node's own
+                        // manager: filtering that manager away promotes a
+                        // batched member, which those two say nothing about.
+                        // A surviving manager keeps both, so `--only` cannot
+                        // turn a declared route into a cascade or drop the
+                        // check the confirmation earned.
+                        let survives = first == manager;
                         filtered_actions.push(reconciler::Action::Manager(
                             reconciler::ManagerAction::Provision {
                                 manager: first.clone(),
                                 via: via.clone(),
-                                declared: None,
+                                declared: survives.then(|| declared.clone()).flatten(),
+                                floor: survives.then(|| floor.clone()).flatten(),
                                 batched: rest.to_vec(),
                                 depends_on: depends_on.clone(),
                             },

@@ -296,6 +296,7 @@ fn action_type_str_manager_variants() {
             manager: "brew".to_string(),
             via: "homebrew installer".to_string(),
             declared: None,
+            floor: None,
             batched: vec![],
             depends_on: vec![],
         })),
@@ -344,6 +345,7 @@ fn manager_action_output_provision_carries_via_and_requires() {
         manager: "pipx".to_string(),
         via: "pip install pipx".to_string(),
         declared: None,
+        floor: None,
         batched: vec![],
         depends_on: vec!["manager:prereq:curl".to_string()],
     }))
@@ -639,6 +641,7 @@ fn skip_and_only_patterns_reach_a_prerequisite_by_tool_not_installer() {
         manager: "brew".to_string(),
         via: "curl".to_string(),
         declared: None,
+        floor: None,
         batched: vec![],
         depends_on: vec![],
     });
@@ -811,6 +814,7 @@ fn batched_provision_plan() -> cfgd_core::reconciler::Plan {
                 manager: "npm".to_string(),
                 via: "apt".to_string(),
                 declared: None,
+                floor: None,
                 batched: vec!["pipx".to_string()],
                 depends_on: vec![],
             })],
@@ -882,12 +886,103 @@ fn a_phase_selector_naming_one_batch_member_provisions_only_that_manager() {
     );
 }
 
+/// The same batch, carrying the two facts that belong to its own manager: the
+/// module's declared route to npm, and a floor a confirmation was given for.
+fn routed_provision_plan() -> cfgd_core::reconciler::Plan {
+    make_plan(vec![
+        (
+            PhaseName::Bootstrap,
+            vec![Action::Manager(ManagerAction::Provision {
+                manager: "npm".to_string(),
+                via: "apt".to_string(),
+                declared: Some(cfgd_core::reconciler::DeclaredProvision {
+                    installer: "apt".to_string(),
+                    package: "nodejs".to_string(),
+                }),
+                floor: Some("1.85".to_string()),
+                batched: vec!["pipx".to_string()],
+                depends_on: vec![],
+            })],
+        ),
+        (
+            PhaseName::Packages,
+            vec![
+                pkg_install("npm", vec!["prettier"]),
+                pkg_install("pipx", vec!["ruff"]),
+            ],
+        ),
+    ])
+}
+
+fn provision_nodes(plan: &cfgd_core::reconciler::Plan) -> Vec<&ManagerAction> {
+    plan.phases
+        .iter()
+        .flat_map(|phase| phase.actions())
+        .filter_map(|a| match a {
+            Action::Manager(node @ ManagerAction::Provision { .. }) => Some(node),
+            _ => None,
+        })
+        .collect()
+}
+
+/// `declared` and `floor` are the node MANAGER's own: the route the module
+/// wrote to that tool, and the floor its confirmation asked for. A filter
+/// keeping the manager keeps both, so `--only` cannot quietly turn a declared
+/// route into a cascade or drop the check the confirmation earned; a filter
+/// dropping it promotes a batched member, which neither fact describes.
+#[test]
+fn a_filtered_provision_keeps_the_facts_of_its_own_manager_and_lends_them_to_nobody() {
+    let (printer, _buf) = Printer::for_test();
+    let mut kept = routed_provision_plan();
+    filter_plan(
+        &mut kept,
+        &["bootstrap.pipx".to_string()],
+        &[],
+        None,
+        &printer,
+        &ProviderRegistry::new(),
+        &std::collections::HashSet::new(),
+    );
+    let nodes = provision_nodes(&kept);
+    assert!(
+        matches!(
+            nodes.as_slice(),
+            [ManagerAction::Provision { manager, declared, floor, .. }]
+                if manager == "npm"
+                    && declared.as_ref().is_some_and(|route| route.package == "nodejs")
+                    && floor.as_deref() == Some("1.85")
+        ),
+        "the surviving manager keeps its route and its floor: {nodes:#?}"
+    );
+
+    let mut promoted = routed_provision_plan();
+    filter_plan(
+        &mut promoted,
+        &["bootstrap.npm".to_string()],
+        &[],
+        None,
+        &printer,
+        &ProviderRegistry::new(),
+        &std::collections::HashSet::new(),
+    );
+    let nodes = provision_nodes(&promoted);
+    assert!(
+        matches!(
+            nodes.as_slice(),
+            [ManagerAction::Provision { manager, declared, floor, .. }]
+                if manager == "pipx" && declared.is_none() && floor.is_none()
+        ),
+        "the promoted member inherits neither: {nodes:#?}"
+    );
+}
+
 #[test]
 fn a_batched_provision_names_every_manager_it_delivers_in_the_json_payload() {
     let out = manager_action_output(&Action::Manager(ManagerAction::Provision {
         manager: "npm".to_string(),
         via: "apt".to_string(),
         declared: None,
+        floor: None,
         batched: vec!["pipx".to_string()],
         depends_on: vec![],
     }))
@@ -910,6 +1005,7 @@ fn filter_plan_warns_when_a_skipped_provision_strands_the_installs_that_needed_i
                 manager: "brew".to_string(),
                 via: "homebrew installer".to_string(),
                 declared: None,
+                floor: None,
                 batched: vec![],
                 depends_on: vec![],
             })],
@@ -955,6 +1051,7 @@ fn filter_plan_skip_bootstrap_session_removes_only_the_broadcast_and_strands_not
                     manager: "brew".to_string(),
                     via: "homebrew installer".to_string(),
                     declared: None,
+                    floor: None,
                     batched: vec![],
                     depends_on: vec![],
                 }),
@@ -1013,6 +1110,7 @@ fn filter_plan_skip_bootstrap_shell_removes_only_the_injects_and_keeps_the_write
                 manager: "brew".to_string(),
                 via: "homebrew installer".to_string(),
                 declared: None,
+                floor: None,
                 batched: vec![],
                 depends_on: vec![],
             }),
@@ -1106,6 +1204,7 @@ fn filter_plan_skip_bootstrap_managers_strands_every_manager_it_removes() {
                     manager: "brew".to_string(),
                     via: "homebrew installer".to_string(),
                     declared: None,
+                    floor: None,
                     batched: vec![],
                     depends_on: vec![],
                 }),
@@ -1113,6 +1212,7 @@ fn filter_plan_skip_bootstrap_managers_strands_every_manager_it_removes() {
                     manager: "npm".to_string(),
                     via: "node installer".to_string(),
                     declared: None,
+                    floor: None,
                     batched: vec![],
                     depends_on: vec![],
                 }),
@@ -1166,6 +1266,7 @@ fn filter_plan_skip_bootstrap_brew_leaves_other_managers_untouched() {
                     manager: "brew".to_string(),
                     via: "homebrew installer".to_string(),
                     declared: None,
+                    floor: None,
                     batched: vec![],
                     depends_on: vec![],
                 }),
@@ -1235,6 +1336,7 @@ fn filter_plan_skip_last_package_consumer_silently_prunes_its_now_purposeless_ma
                 manager: "brew".to_string(),
                 via: "homebrew installer".to_string(),
                 declared: None,
+                floor: None,
                 batched: vec![],
                 depends_on: vec![],
             })],
@@ -1321,6 +1423,7 @@ fn filter_plan_only_bootstrap_managers_keeps_every_manager_node() {
                     manager: "brew".to_string(),
                     via: "homebrew installer".to_string(),
                     declared: None,
+                    floor: None,
                     batched: vec![],
                     depends_on: vec![],
                 }),
@@ -1384,6 +1487,7 @@ fn filter_plan_only_cfgd_managers_keeps_every_manager_node() {
                     manager: "brew".to_string(),
                     via: "homebrew installer".to_string(),
                     declared: None,
+                    floor: None,
                     batched: vec![],
                     depends_on: vec![],
                 }),
@@ -1921,6 +2025,7 @@ fn build_plan_output_orders_groups_profile_first() {
                 manager: "brew".to_string(),
                 via: "homebrew installer".to_string(),
                 declared: None,
+                floor: None,
                 batched: vec![],
                 depends_on: vec![],
             }),
@@ -1986,6 +2091,7 @@ fn build_plan_output_manager_action_carries_the_structured_manager_payload() {
                 manager: "pipx".to_string(),
                 via: "pip install pipx".to_string(),
                 declared: None,
+                floor: None,
                 batched: vec![],
                 depends_on: vec!["manager:prereq:curl".to_string()],
             }),
@@ -3911,6 +4017,7 @@ fn brew_provision_plan() -> Plan {
                 manager: "brew".to_string(),
                 via: "homebrew installer".to_string(),
                 declared: None,
+                floor: None,
                 batched: vec![],
                 depends_on: vec![],
             })],
@@ -4227,6 +4334,7 @@ fn stranded_warning_counts_actions_not_distinct_managers() {
                 manager: "brew".to_string(),
                 via: "homebrew installer".to_string(),
                 declared: None,
+                floor: None,
                 batched: vec![],
                 depends_on: vec![],
             }),
