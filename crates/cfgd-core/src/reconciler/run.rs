@@ -1437,7 +1437,7 @@ pub fn report_trailing_allowance(
 /// everything past that colon is a reason, so the two levels stay apart
 /// without a second separator. So no closing line can claim a skipped action as
 /// a success, and silent about outcomes that did not occur: a clean run's line
-/// does not name skips it has none of. No path panics, so the function is safe
+/// does not name failures or skips it has none of. No path panics, so the function is safe
 /// in core and testable without a `Printer` — and it reads a [`RunTally`], so a
 /// backup run reaches it without an [`ApplyResult`].
 ///
@@ -1489,6 +1489,27 @@ fn outcome_clauses(tally: &RunTally) -> Vec<(Role, String)> {
         if tally.skipped > 0 {
             clauses.push((Role::Skipped, format!("{} skipped", tally.skipped)));
         }
+    }
+    // `Role::Fail`, not `Role::Accent`: these are status lines in a status
+    // block, and `Accent` reserves no glyph column. The failure count hung one
+    // column left of the two lines above it, the only unmarked line in a
+    // report where every failed action row carries a red glyph, so the bad
+    // news read as a stray fragment of the green line above it.
+    //
+    // Directly under the lead clause, ahead of every other class: a failure is
+    // what the reader acts on, and a skip, an after-plan outcome and what did
+    // not happen at all are the footnotes. Drawn only when a PLANNED action
+    // failed: a run turned partial by an after-plan failure alone has that
+    // failure stated by the class's own clause below, and `0 actions failed`
+    // over it names a failure nothing had.
+    if tally.failed > 0 {
+        clauses.insert(
+            1,
+            (
+                Role::Fail,
+                format!("{} failed", pluralize(tally.failed, "action")),
+            ),
+        );
     }
     // After the planned classes and before the withheld footnote: this work
     // HAPPENED, so it belongs with the outcomes, while the withheld clause
@@ -1582,26 +1603,6 @@ fn rollup_lines(tally: &RunTally, title: RunTitle) -> Vec<(Role, String, Option<
                     .first()
                     .map(|(role, clause)| (*role, clause.clone(), None)),
             );
-            // `Role::Fail`, not `Role::Accent`: these are status lines in a
-            // status block, and `Accent` reserves no glyph column. The failure
-            // count hung one column left of the two lines above it — the only
-            // unmarked line in a report where every failed action row carries
-            // a red glyph — so the bad news read as a stray fragment of the
-            // green line above it.
-            //
-            // It sits above the withheld clauses because a failure is what the
-            // reader acts on, and what did not happen is the footnote. Drawn
-            // only when a PLANNED action failed: a run turned partial by an
-            // after-plan failure alone has that failure stated by the class's
-            // own clause below, and `0 actions failed` over it names a failure
-            // nothing had.
-            if tally.failed > 0 {
-                lines.push((
-                    Role::Fail,
-                    format!("{} failed", pluralize(tally.failed, "action")),
-                    None,
-                ));
-            }
             lines.extend(trailing(1));
             lines
         }

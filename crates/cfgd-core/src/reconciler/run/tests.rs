@@ -154,7 +154,12 @@ impl RunExecutor for StubExecutor {
 #[test]
 fn rollup_lines_covers_every_apply_status() {
     let cases: Vec<(ApplyStatus, usize, Vec<Role>)> = vec![
-        (ApplyStatus::Success, 1, vec![Role::Ok]),
+        // The tally below carries a failure under every status, this one
+        // included. A `Success` holding one is a tally no apply path produces,
+        // and the clause list states it rather than dropping it: the one
+        // decomposition is what every arm reads, so a surface cannot lose an
+        // outcome by which status word happens to sit above it.
+        (ApplyStatus::Success, 2, vec![Role::Ok, Role::Fail]),
         (
             ApplyStatus::Partial,
             3,
@@ -1143,13 +1148,15 @@ fn an_after_plan_surface_that_changed_nothing_is_skipped_and_never_converged() {
          from its success flag"
     );
     // The daemon keeps the one account the rendered rollup does, so a skip
-    // cannot read as converged on the journal line either.
+    // cannot read as converged on the journal line either, and the planned
+    // failures are a clause of that same list rather than a tail appended
+    // after it.
     assert_eq!(
         outcome_counts(&tally),
         format!(
-            "{succeeded} actions succeeded; {} env surfaces converged after the \
-             plan; {} env surface changed nothing after the plan; {} env surfaces \
-             failed after the plan",
+            "{succeeded} actions succeeded; {planned_failed} actions failed; {} \
+             env surfaces converged after the plan; {} env surface changed \
+             nothing after the plan; {} env surfaces failed after the plan",
             class[0].1, class[1].1, class[2].1
         )
     );

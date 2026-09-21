@@ -24022,6 +24022,55 @@ mod log_dialect {
         );
     }
 
+    /// A failure is a clause of the same list, so the whole line carries one
+    /// separator. The failure count used to be appended by hand with `", "`
+    /// onto a list joined with `"; "`, which made a failing tick's line read
+    /// `1 action succeeded; 1 skipped, 1 failed`: three clauses under two
+    /// separators, the inner comma inviting the last two to read as one item.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial_test::serial]
+    async fn a_failing_tick_logs_its_failure_as_a_clause_of_the_same_list() {
+        let (tmp, config_path, state_dir) = min_fixture();
+        let _home = crate::with_test_home_guard(tmp.path());
+        std::fs::write(
+            tmp.path().join("profiles").join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  modules:\n    - mymod\n    - badmod\n",
+        )
+        .unwrap();
+        // `badmod` deploys under a path whose parent is a regular file, which
+        // no uid and no platform can create a directory over, so the tick
+        // reaches the mixed tally this line is about.
+        let blocker = tmp.path().join("blocker");
+        std::fs::write(&blocker, "not a directory\n").unwrap();
+        for (module, target) in [
+            ("mymod", tmp.path().join("app.conf")),
+            ("badmod", blocker.join("app.conf")),
+        ] {
+            let module_dir = tmp.path().join("modules").join(module);
+            std::fs::create_dir_all(&module_dir).unwrap();
+            std::fs::write(module_dir.join("app.conf"), format!("from {module}\n")).unwrap();
+            std::fs::write(
+                module_dir.join("module.yaml"),
+                format!(
+                    "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: {module}\nspec:\n  files:\n    - source: app.conf\n      target: {}\n      strategy: Copy\n",
+                    crate::to_posix_string(&target)
+                ),
+            )
+            .unwrap();
+        }
+
+        let logs = run_tick(&config_path, &state_dir, None).await;
+        assert!(
+            logs.contains("reconcile: complete — 1 action succeeded; 1 action failed"),
+            "got: {logs}"
+        );
+        assert!(
+            !logs.contains("succeeded, 1"),
+            "the failure clause joins the list rather than being appended with \
+             a comma: {logs}"
+        );
+    }
+
     /// The log line accounts for work the tick's plan could not name too: an
     /// `onChange` hook fires on whether this very tick changed anything. Folded
     /// into `succeeded` it reported two actions for a plan of one, on the one

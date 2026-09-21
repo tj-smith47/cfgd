@@ -1243,20 +1243,12 @@ fn reconcile_tick(
 
                         // The tally the on-screen rollup above this line was
                         // built from, so the log and the rollup cannot disagree
-                        // about how many actions succeeded. `outcome_counts` is
-                        // silent about failures — the rollup gives them their
-                        // own line — but a single-line log has no second line,
-                        // so it names them here or hides them entirely. That
-                        // failure clause is the ONLY one composed here: every
-                        // other outcome class, the after-plan work included,
+                        // about how many actions succeeded. Every outcome
+                        // class, the failures and the after-plan work included,
                         // reaches the journal through `outcome_counts`, so a
-                        // class the rollup gains is logged without an edit.
-                        let tally = result.tally();
-                        let counts = crate::reconciler::outcome_counts(&tally);
-                        Some(match tally.failed {
-                            0 => counts,
-                            failed => format!("{counts}, {failed} failed"),
-                        })
+                        // class the rollup gains is logged without an edit and
+                        // the whole line carries one separator.
+                        Some(crate::reconciler::outcome_counts(&result.tally()))
                     }
                     Err(e) => {
                         tracing::error!(error = %e, "reconcile: auto-apply failed");
