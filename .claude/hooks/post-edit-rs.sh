@@ -3,6 +3,9 @@
 set -euo pipefail
 
 FILE="${1:-}"
+# `git -C <dir> ls-files <relative path>` resolves the path against <dir>, so a
+# relative argument reads as untracked and the whole file is scanned.
+[ -n "$FILE" ] && [ -f "$FILE" ] && FILE=$(realpath "$FILE")
 [[ -z "$FILE" ]] && exit 0
 [[ ! -f "$FILE" ]] && exit 0
 
@@ -111,7 +114,7 @@ fi
 # two-or-more spaces, a real tab byte (0x09), or a backslash-t escape — the
 # three canonical indent-hack shapes. Plain `grep -E` does NOT interpret \t
 # inside a normal single-quoted pattern, hence the $'...'.
-EDITED_FILE="${1:-}"
+EDITED_FILE="$FILE"
 if [ -n "$EDITED_FILE" ] && [ -f "$EDITED_FILE" ]; then
     # Defense in depth: only inspect Rust source. The harness already
     # filters by *.rs at settings.json before invoking the hook, but
