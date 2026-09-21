@@ -60,17 +60,11 @@ pub fn sources_table(entries: &[SourceListEntry], wide: bool, now: &str) -> Tabl
         ),
         (
             "Source",
-            // A local source's origin is a directory, folded like every
-            // display slot; the payload keeps the absolute path.
+            // A bare local path folds under $HOME; a URL (file:// included)
+            // renders as stored, via the one composer both list and show reach for.
             entries
                 .iter()
-                .map(|e| {
-                    cell(
-                        e.url
-                            .as_deref()
-                            .map(|u| cfgd_core::fold_home_in_text(&cfgd_core::display_url(u))),
-                    )
-                })
+                .map(|e| cell(e.url.as_deref().map(cfgd_core::display_source_origin)))
                 .collect(),
         ),
         (
