@@ -26579,6 +26579,54 @@ fn build_doctor_doc_module_with_a_package_no_manager_can_deliver_emits_fail() {
     );
 }
 
+/// A route's shortfall opens on the package it is about, like every other
+/// member of the list it joins.
+#[test]
+fn a_doctor_route_shortfall_opens_on_the_package_that_fell_short() {
+    let route = cfgd_core::modules::FloorBootstrap {
+        package: "cargo".into(),
+        module: "rust".into(),
+        found_in: "apt".into(),
+        found: "1.75".into(),
+        floor: "1.85".into(),
+        via: "rustup".into(),
+    };
+    assert_eq!(
+        super::doctor::unresolved_route_row(&route),
+        "cargo: apt offers cargo 1.75, below the declared minVersion 1.85"
+    );
+}
+
+/// A shortfall states a sentence its producer worded, and a route's carries a
+/// comma, so the members are separated by something a reader cannot read as
+/// punctuation inside one of them.
+#[test]
+fn build_doctor_doc_module_separates_shortfalls_that_carry_a_comma() {
+    let mut output = base_doctor_output();
+    output.modules = vec![super::output_types::DoctorModuleCheck {
+        name: "rust".into(),
+        valid: true,
+        error: None,
+        managers: vec![],
+        unresolved: vec![
+            "cargo: apt offers cargo 1.75, below the declared minVersion 1.85".into(),
+            "package 'neovim' in module 'rust' cannot be resolved: every available manager \
+             offers a version below the declared minVersion 0.9"
+                .into(),
+        ],
+    }];
+    let extras = super::doctor::DoctorExtras::default();
+    let text = emit_doc(&output, &extras);
+    assert!(
+        text.contains("minVersion 1.85; package 'neovim'"),
+        "the two shortfalls are separated by `; `, got: {text}"
+    );
+    assert!(
+        !text.contains("minVersion 1.85, package 'neovim'"),
+        "`, ` cannot separate members that carry commas of their own, got: {text}"
+    );
+}
+
 #[test]
 fn build_doctor_doc_module_whose_managers_are_all_here_emits_ok() {
     let mut output = base_doctor_output();
