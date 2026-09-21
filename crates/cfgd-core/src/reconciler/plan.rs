@@ -203,7 +203,17 @@ impl<'a> super::Reconciler<'a> {
         // ask for one manager, and the run can only deliver one copy of it, so
         // the higher floor is what the node carries: it satisfies both, where
         // the lower one leaves the stricter module quietly short.
-        let floor_managers = self.registry.manager_map();
+        // Built only where a route exists to judge: the map allocates a key per
+        // registered manager, and the overwhelmingly common plan carries no
+        // confirmed floor at all and never reads it.
+        let floor_managers = if module_actions
+            .iter()
+            .any(|m| !m.floor_bootstraps.is_empty())
+        {
+            self.registry.manager_map()
+        } else {
+            HashMap::new()
+        };
         let mut floor_routes: BTreeMap<String, String> = BTreeMap::new();
         for route in module_actions
             .iter()
