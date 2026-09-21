@@ -172,7 +172,7 @@ spec:
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `name` | string | Yes | | Name of this profile. Must match the filename (without extension). |
+| `name` | string | Yes | — | Name of this profile. Must match the filename (without extension). |
 
 ---
 
@@ -185,11 +185,11 @@ spec:
 | `env` | list | No | `[]` | Environment variables to export, each optionally gated to named platforms. See [spec.env[]](#specenv). |
 | `envScope` | string | No | `All` | How far `spec.env` exports reach for the current user. See [spec.envScope](#specenvscope). |
 | `aliases` | list | No | `[]` | Shell aliases to install, each optionally gated to named platforms. See [spec.aliases[]](#specaliases). |
-| `packages` | object | No | | Package declarations by manager. See [spec.packages](#specpackages). |
-| `files` | object | No | | Managed files and permissions. See [spec.files](#specfiles). |
+| `packages` | object | No | — | Package declarations by manager. See [spec.packages](#specpackages). |
+| `files` | object | No | — | Managed files and permissions. See [spec.files](#specfiles). |
 | `system` | map | No | `{}` | System configurator settings. Keys map to configurator names; values are configurator-specific. See [spec.system](#specsystem). |
 | `secrets` | list | No | `[]` | Secret references to decrypt and place on disk. See [spec.secrets[]](#specsecrets). |
-| `scripts` | object | No | | Lifecycle scripts (pre/post apply, pre/post reconcile, onChange, onDrift). See [spec.scripts](#specscripts). |
+| `scripts` | object | No | — | Lifecycle scripts (pre/post apply, pre/post reconcile, onChange, onDrift). See [spec.scripts](#specscripts). |
 | `backups` | list | No | `[]` | Declarative file/directory snapshot backups. See [spec.backups[]](#specbackups). |
 
 ---
@@ -222,8 +222,8 @@ instead; the two differ by *scope of affected users*, not by which shells.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `name` | string | Yes | | Environment variable name (e.g. `EDITOR`). |
-| `value` | string | Yes | | Value to assign. |
+| `name` | string | Yes | — | Environment variable name (e.g. `EDITOR`). |
+| `value` | string | Yes | — | Value to assign. |
 | `platforms` | list of string | No | `[]` | Platform tags gating this entry alone. Same vocabulary as a module's [`spec.platforms`](module.md#specplatforms). |
 
 When profiles are merged via `inherits`, a variable defined in a child profile overrides the same
@@ -318,8 +318,8 @@ Shell aliases to install.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `name` | string | Yes | | Alias name (the command you type). |
-| `command` | string | Yes | | Shell command the alias expands to. |
+| `name` | string | Yes | — | Alias name (the command you type). |
+| `command` | string | Yes | — | Shell command the alias expands to. |
 | `platforms` | list of string | No | `[]` | Platform tags gating this entry alone. Same vocabulary as a module's [`spec.platforms`](module.md#specplatforms). |
 
 `platforms` gates one alias rather than the whole profile, exactly as [`spec.env[]`](#specenv)'s
@@ -348,10 +348,10 @@ already present. When multiple profiles are merged, package lists are unioned (n
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `brew` | object or list | No | | Homebrew packages. See [spec.packages.brew](#specpackagesbrew). |
-| `apt` | object or list | No | | APT packages (Debian/Ubuntu). See [spec.packages.apt](#specpackagesapt). |
-| `cargo` | object or list | No | | Cargo (Rust) packages. See [spec.packages.cargo](#specpackagescargo). |
-| `npm` | object or list | No | | npm global packages. See [spec.packages.npm](#specpackagesnpm). |
+| `brew` | object or list | No | — | Homebrew packages. See [spec.packages.brew](#specpackagesbrew). |
+| `apt` | object or list | No | — | APT packages (Debian/Ubuntu). See [spec.packages.apt](#specpackagesapt). |
+| `cargo` | object or list | No | — | Cargo (Rust) packages. See [spec.packages.cargo](#specpackagescargo). |
+| `npm` | object or list | No | — | npm global packages. See [spec.packages.npm](#specpackagesnpm). |
 | `pipx` | list of string or object | No | `[]` | pipx packages (isolated Python tools). |
 | `dnf` | list of string or object | No | `[]` | DNF packages (Fedora/RHEL). |
 | `apk` | list of string or object | No | `[]` | apk packages (Alpine Linux). |
@@ -361,8 +361,8 @@ already present. When multiple profiles are merged, package lists are unioned (n
 | `pkg` | list of string or object | No | `[]` | pkg packages (FreeBSD). |
 | `nix` | list of string or object | No | `[]` | Nix packages (nix-env). |
 | `go` | list of string or object | No | `[]` | Go packages installed via `go install`. |
-| `snap` | object or list | No | | Snap packages (Ubuntu). See [spec.packages.snap](#specpackagessnap). |
-| `flatpak` | object or list | No | | Flatpak packages. See [spec.packages.flatpak](#specpackagesflatpak). |
+| `snap` | object or list | No | — | Snap packages (Ubuntu). See [spec.packages.snap](#specpackagessnap). |
+| `flatpak` | object or list | No | — | Flatpak packages. See [spec.packages.flatpak](#specpackagesflatpak). |
 | `winget` | list of string or object | No | `[]` | winget packages (Windows). |
 | `chocolatey` | list of string or object | No | `[]` | Chocolatey packages (Windows). |
 | `scoop` | list of string or object | No | `[]` | Scoop packages (Windows). |
@@ -409,7 +409,7 @@ Homebrew packages for macOS (and Linux Homebrew). A bare list of names is the sh
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `file` | string | No | | Path to a `Brewfile` to install from, relative to the config root. When set, cfgd runs `brew bundle`. |
+| `file` | string | No | — | Path to a `Brewfile` to install from, relative to the config root. When set, cfgd runs `brew bundle`. |
 | `taps` | list of string | No | `[]` | Homebrew taps to add before installing formulae/casks. |
 | `formulae` | list of string | No | `[]` | Homebrew formulae to install. |
 | `casks` | list of string | No | `[]` | Homebrew casks to install (macOS GUI apps). |
@@ -437,7 +437,7 @@ APT packages for Debian and Ubuntu. A bare list of names is the short form and f
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `file` | string | No | | Path to a file listing packages (one per line), relative to the config root. |
+| `file` | string | No | — | Path to a file listing packages (one per line), relative to the config root. |
 | `packages` | list of string | No | `[]` | APT package names to install. |
 
 ---
@@ -449,7 +449,7 @@ form.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `file` | string | No | | Path to a `Cargo.toml` (installs all `[dependencies]`), relative to the config root. |
+| `file` | string | No | — | Path to a `Cargo.toml` (installs all `[dependencies]`), relative to the config root. |
 | `packages` | list of string | No | `[]` | Crate names to install via `cargo install`. |
 
 **List shorthand** (when no `file` is needed):
@@ -478,7 +478,7 @@ npm global packages. A bare list of names is the short form and folds into `glob
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `file` | string | No | | Path to a `package.json` to install from, relative to the config root. |
+| `file` | string | No | — | Path to a `package.json` to install from, relative to the config root. |
 | `global` | list of string | No | `[]` | npm package names to install globally (`npm install -g`). |
 
 ---
@@ -501,7 +501,7 @@ Flatpak packages. A bare list of names is the short form and folds into `package
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `packages` | list of string | No | `[]` | Flatpak application IDs to install. |
-| `remote` | string | No | | Flatpak remote to use (e.g. `flathub`). Defaults to system remote when omitted. |
+| `remote` | string | No | — | Flatpak remote to use (e.g. `flathub`). Defaults to system remote when omitted. |
 
 ---
 
@@ -512,12 +512,12 @@ package manager backend.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `name` | string | Yes | | Identifier for this custom manager (used in plan output). |
-| `check` | string | Yes | | Shell command to verify the manager itself is installed. Exit code 0 = present. |
-| `listInstalled` | string | Yes | | Shell command that prints one installed package name per line. |
-| `install` | string | Yes | | Shell command to install a package. The package name is appended. |
-| `uninstall` | string | Yes | | Shell command to uninstall a package. The package name is appended. |
-| `update` | string | No | | Shell command to update a package. When omitted, updates are skipped. |
+| `name` | string | Yes | — | Identifier for this custom manager (used in plan output). |
+| `check` | string | Yes | — | Shell command to verify the manager itself is installed. Exit code 0 = present. |
+| `listInstalled` | string | Yes | — | Shell command that prints one installed package name per line. |
+| `install` | string | Yes | — | Shell command to install a package. The package name is appended. |
+| `uninstall` | string | Yes | — | Shell command to uninstall a package. The package name is appended. |
+| `update` | string | No | — | Shell command to update a package. When omitted, updates are skipped. |
 | `packages` | list of string | No | `[]` | Package names managed by this custom manager. |
 
 **Example:**
@@ -555,13 +555,13 @@ on the machine.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `source` | string | Only when `strategy` is not `Patch` | | Path to the source file or directory, relative to the config root. Not required when `strategy: Patch`. |
-| `target` | string | Yes | | Absolute destination path on the machine. Supports `~/` expansion. |
+| `source` | string | Only when `strategy` is not `Patch` | — | Path to the source file or directory, relative to the config root. Not required when `strategy: Patch`. |
+| `target` | string | Yes | — | Absolute destination path on the machine. Supports `~/` expansion. |
 | `strategy` | enum | No | Global `fileStrategy` | Deployment strategy for this file. Overrides the global default. See [FileStrategy values](#filestrategy-values). |
 | `private` | bool | No | `false` | When `true`, the source file is local-only: automatically added to `.gitignore` and silently skipped on machines where it does not exist. |
-| `permissions` | string | No | | Octal permission mode to enforce on the deployed file (e.g. `"600"`). With `strategy: Symlink` the mode is set on the source file the link points at, which is what the link resolves to. Distinct from `files.permissions`, which enforces permissions on paths not managed as file entries. |
-| `encryption` | object | No | | Encryption enforcement for this file. Has `backend` (`"sops"` or `"age"`) and `mode` (`InRepo` or `Always`). Rejected with `strategy: Patch`, which has no source to enforce it on. See [encryption fields](#managed-file-encryption-fields). |
-| `patch` | object | Only when `strategy: Patch` | | Structured merge or script configuration, used only when `strategy: Patch`. Has `format` (`Ini`/`Json`/`Yaml`/`Toml`, inferred from `target`'s extension when omitted), `ensure` (keys/values to deep-merge into the target), and `script` (a script that receives the target's current content on stdin and writes the new content to stdout). Exactly one of `ensure` or `script` must be set. See [FileStrategy values](#filestrategy-values). |
+| `permissions` | string | No | — | Octal permission mode to enforce on the deployed file (e.g. `"600"`). With `strategy: Symlink` the mode is set on the source file the link points at, which is what the link resolves to. Distinct from `files.permissions`, which enforces permissions on paths not managed as file entries. |
+| `encryption` | object | No | — | Encryption enforcement for this file. Has `backend` (`"sops"` or `"age"`) and `mode` (`InRepo` or `Always`). Rejected with `strategy: Patch`, which has no source to enforce it on. See [encryption fields](#managed-file-encryption-fields). |
+| `patch` | object | Only when `strategy: Patch` | — | Structured merge or script configuration, used only when `strategy: Patch`. Has `format` (`Ini`/`Json`/`Yaml`/`Toml`, inferred from `target`'s extension when omitted), `ensure` (keys/values to deep-merge into the target), and `script` (a script that receives the target's current content on stdin and writes the new content to stdout). Exactly one of `ensure` or `script` must be set. See [FileStrategy values](#filestrategy-values). |
 
 **Example:**
 ```yaml
@@ -601,7 +601,7 @@ files:
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `encryption.backend` | string | Yes (when `encryption` present) | | Encryption backend: `"sops"` or `"age"`. Same values as `spec.secrets.backend` in `cfgd.yaml`. |
+| `encryption.backend` | string | Yes (when `encryption` present) | — | Encryption backend: `"sops"` or `"age"`. Same values as `spec.secrets.backend` in `cfgd.yaml`. |
 | `encryption.mode` | enum | No | `InRepo` | `InRepo`: source must be encrypted in the repo, deployed decrypted. `Always`: encrypted in repo and encrypted at the target path. `Always` is incompatible with `strategy: Symlink` and `strategy: Hardlink`; the whole `encryption` block is incompatible with `strategy: Patch`. |
 
 **Example:**
@@ -692,11 +692,11 @@ config repository in plaintext.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `source` | string | Yes | | Secret reference URI. Format depends on backend: SOPS file path, `1password://vault/item/field` (`op://`), `bitwarden://item/field` (`bw://`), `lastpass://folder/item/field` (`lpass://`, `lp://`), or `vault://path/key`. |
-| `target` | string | No | | Absolute path to write the decrypted secret. Supports `~/` expansion. At least one of `target` or `envs` must be set; both may be set. |
-| `envs` | list | No | | Environment variable names to inject with the resolved secret value. At least one of `target` or `envs` must be set; both may be set. See [Environment variable injection from secrets](#environment-variable-injection-from-secrets). |
-| `template` | string | No | | Wraps a provider-resolved value: `${secret:value}` is replaced with the secret, the rest is written verbatim, for `target` and `envs` alike. Must contain `${secret:value}`; refused on an encrypted-file `source`. |
-| `backend` | string | No | | Override the secret backend for this entry. Defaults to `spec.secrets.backend` in `cfgd.yaml`. |
+| `source` | string | Yes | — | Secret reference URI. Format depends on backend: SOPS file path, `1password://vault/item/field` (`op://`), `bitwarden://item/field` (`bw://`), `lastpass://folder/item/field` (`lpass://`, `lp://`), or `vault://path/key`. |
+| `target` | string | No | — | Absolute path to write the decrypted secret. Supports `~/` expansion. At least one of `target` or `envs` must be set; both may be set. |
+| `envs` | list | No | — | Environment variable names to inject with the resolved secret value. At least one of `target` or `envs` must be set; both may be set. See [Environment variable injection from secrets](#environment-variable-injection-from-secrets). |
+| `template` | string | No | — | Wraps a provider-resolved value: `${secret:value}` is replaced with the secret, the rest is written verbatim, for `target` and `envs` alike. Must contain `${secret:value}`; refused on an encrypted-file `source`. |
+| `backend` | string | No | — | Override the secret backend for this entry. Defaults to `spec.secrets.backend` in `cfgd.yaml`. |
 
 **Example:**
 ```yaml
@@ -840,11 +840,11 @@ A schedule-less entry runs during `cfgd apply`; a scheduled one runs on the
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `name` | string | Yes | | Unique identifier for this backup within `spec.backups`. Keys the `destination` default, run records, and CLI selection. It becomes the directory component `<state_dir>/backups/<name>/` and the lock file `<state_dir>/locks/backup-<name>.lock`, so it must be unique across the list, non-empty/non-blank, a single segment (no `/` or `\`), not a directory reference (`.`, `..`), not rooted (`/daily`, `C:/daily`), and free of `:` anywhere — a drive and NTFS data-stream separator on Windows. Windows shapes are rejected on every platform so a name written on one OS stays valid on the others. Validated at parse time. |
-| `source` | string (path) | Yes | | File or directory to snapshot; a leading `~` expands to the home directory. Must not contain, or sit inside, the resolved `destination` — a nested pair is rejected before any copy, with symlinks resolved on both sides. Its filename is what `{filename}` interpolates, so a source whose filename contains `:` (legal on Unix, a drive/data-stream separator on Windows) needs an explicit `namePattern` that omits `{filename}`. |
+| `name` | string | Yes | — | Unique identifier for this backup within `spec.backups`. Keys the `destination` default, run records, and CLI selection. It becomes the directory component `<state_dir>/backups/<name>/` and the lock file `<state_dir>/locks/backup-<name>.lock`, so it must be unique across the list, non-empty/non-blank, a single segment (no `/` or `\`), not a directory reference (`.`, `..`), not rooted (`/daily`, `C:/daily`), and free of `:` anywhere — a drive and NTFS data-stream separator on Windows. Windows shapes are rejected on every platform so a name written on one OS stays valid on the others. Validated at parse time. |
+| `source` | string (path) | Yes | — | File or directory to snapshot; a leading `~` expands to the home directory. Must not contain, or sit inside, the resolved `destination` — a nested pair is rejected before any copy, with symlinks resolved on both sides. Its filename is what `{filename}` interpolates, so a source whose filename contains `:` (legal on Unix, a drive/data-stream separator on Windows) needs an explicit `namePattern` that omits `{filename}`. |
 | `destination` | string (path) | No | `<state_dir>/backups/<name>/` | Where snapshots are written; a leading `~` expands to the home directory. The default is resolved by the backup engine at run time, not at parse time. |
 | `namePattern` | string | No | `"{filename}.{timestamp}"` | Filename template for each snapshot. Supports `{name}`, `{filename}`, and `{timestamp}` (UTC, `%Y%m%dT%H%M%SZ`). Unknown `{var}` tokens are rejected at parse time. A literal `/` nests the snapshot under the destination; the rendered value must be relative and every segment must name something (`.`, `..`, empty segments, rooted values like `/daily` or `C:/daily`, and `:` anywhere are rejected at run time — the rejection names the `{filename}` it interpolated so a colon in the source filename points at itself). |
-| `schedule` | string | No | | When to run this backup: a duration interval (e.g. `6h`) or a cron expression, validated at parse time. Cron accepts 5-field (`minute hour day month weekday`, e.g. `0 3 * * *`) or 6-field with a leading seconds field (`second minute hour day month weekday`, e.g. `30 0 3 * * *`), evaluated in the machine's **local** timezone like a crontab entry. Setting it hands the backup to the daemon's timers and takes it out of apply; omitted means "run on every apply". |
+| `schedule` | string | No | — | When to run this backup: a duration interval (e.g. `6h`) or a cron expression, validated at parse time. Cron accepts 5-field (`minute hour day month weekday`, e.g. `0 3 * * *`) or 6-field with a leading seconds field (`second minute hour day month weekday`, e.g. `30 0 3 * * *`), evaluated in the machine's **local** timezone like a crontab entry. Setting it hands the backup to the daemon's timers and takes it out of apply; omitted means "run on every apply". |
 | `scheduleOwner` | enum | No | `Cluster` | Which layer owns this unit's schedule. `Cluster` lets the cluster's `BackupPolicy` set or replace this unit's `schedule` and `retention`; `Local` pins the unit to the machine, so a policy reports it but projects no schedule onto it. Parsed case-insensitively. |
 | `retention` | integer | No | `10` | Number of newest snapshots to keep; older snapshots are pruned from disk and from the run history. Counted per outcome, so failed runs never evict good snapshots. Must be at least 1 — `0` is rejected at parse time as a misconfiguration, not an "unlimited" mode. |
 | `preBackup` | list | No | `[]` | Scripts run before the snapshot is taken. Same shape as [spec.scripts](#specscripts) entries. A failure skips the copy and records a failed run; `postBackup` still runs. |

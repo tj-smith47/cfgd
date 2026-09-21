@@ -927,28 +927,28 @@ These flags work with any subcommand:
 
 | Flag | Short | Env Var | Description |
 |---|---|---|---|
-| `--config <path>` | | `CFGD_CONFIG` | Path to `cfgd.yaml` (or a directory — cfgd infers `cfgd.yaml`, then `cfgd.toml`, inside it) |
-| `--config-dir <dir>` | | `CFGD_CONFIG_DIR` | Override the config directory (`--config` wins over it) |
-| `--state-dir <dir>` | | `CFGD_STATE_DIR` | Override the state directory (`state.db`, history, `apply.lock`) |
-| `--cache-dir <dir>` | | `CFGD_CACHE_DIR` | Override the cache directory (source, module, and update-check caches) |
-| `--runtime-dir <dir>` | | `CFGD_RUNTIME_DIR` | Override the runtime directory (daemon socket, locks) |
-| `--profile <name>` | | `CFGD_PROFILE` | Override the active profile |
+| `--config <path>` | — | `CFGD_CONFIG` | Path to `cfgd.yaml` (or a directory — cfgd infers `cfgd.yaml`, then `cfgd.toml`, inside it) |
+| `--config-dir <dir>` | — | `CFGD_CONFIG_DIR` | Override the config directory (`--config` wins over it) |
+| `--state-dir <dir>` | — | `CFGD_STATE_DIR` | Override the state directory (`state.db`, history, `apply.lock`) |
+| `--cache-dir <dir>` | — | `CFGD_CACHE_DIR` | Override the cache directory (source, module, and update-check caches) |
+| `--runtime-dir <dir>` | — | `CFGD_RUNTIME_DIR` | Override the runtime directory (daemon socket, locks) |
+| `--profile <name>` | — | `CFGD_PROFILE` | Override the active profile |
 | `--verbose` | `-v` | `CFGD_VERBOSE` | Show debug output (`-vv` = trace) |
 | `--quiet` | `-q` | `CFGD_QUIET` | Suppress all non-error output |
 | `--yes` | `-y` | `CFGD_YES` | Skip confirmation prompts (answer yes to every question). Accepted before or after the subcommand; what each command does under it is described on that command |
-| `--color <auto\|always\|never>` | | `CFGD_COLOR` | When to colorize terminal output. `auto` (default) follows the terminal, `NO_COLOR` and `TERM=dumb`; `always` colorizes even when stderr is not a terminal, for a pager that renders escapes (`less -R`) or a captured transcript; `never` disables it. Colour is never emitted under `-o json`/`name`/`jsonpath`/`template` whatever this says — an escape inside a payload string is corrupt data. `-o yaml` is the exception and follows this flag: its payload is syntax-highlighted when colour is on, and plain bytes under `never`, `NO_COLOR`, `TERM=dumb` or a non-terminal stdout |
-| `--no-color` | | `NO_COLOR` | Disable colored terminal output (alias for `--color never`) |
-| `--theme <name>` | | `CFGD_THEME` | Theme preset for this invocation. Replaces `spec.output.theme.name` only; `spec.output.theme.overrides` still apply on top. Unknown names are rejected at the flag with the preset list |
-| `--output <format>` | `-o` | | Output format: `table` (default), `wide`, `json`, `yaml`, `name`, `jsonpath=EXPR`, `template=TMPL`, `template-file=PATH` |
-| `--list-envelope` | | `CFGD_LIST_ENVELOPE` | Under `-o json`/`-o yaml`, wrap a top-level array in a KRM `List` envelope (`{apiVersion, kind: List, items}`) |
-| `--hints` | | `CFGD_USAGE_HINTS` | Render closing `→` usage hints for this invocation. They are off until something asks for them: this flag, `CFGD_USAGE_HINTS=true`, or `spec.output.usageHints: true`. Either flag outranks `CFGD_USAGE_HINTS`, which outranks `spec.output.usageHints` |
-| `--no-hints` | | `CFGD_USAGE_HINTS` | Suppress them again for this invocation, over a config or env var that turned them on; a suppressed hint drops its leading blank line with it. Note the polarity: the env var and the config field name what stays ON, so `CFGD_USAGE_HINTS=false` is the persistent form of this flag |
-| `--mask-env-values <all\|secrets\|none>` | | `CFGD_MASK_ENV_VALUES` | Which declared env values render masked. `all` (default) masks every value as `***` plus its last three characters; `secrets` masks only the values a declared secret exports (every name listed in a `spec.secrets[].envs` of the resolved chain) and renders the rest in full; `none` renders them all in full. The flag outranks `CFGD_MASK_ENV_VALUES`, which outranks `spec.output.maskEnvValues`. `--show-values` is the per-verb alias for `none` and conflicts with this flag |
-| `--migration-policy <prompt\|warn\|update\|ignore>` | | `CFGD_MIGRATION_POLICY` | What to do when `cfgd.yaml` is behind this build's schema. The flag outranks `CFGD_MIGRATION_POLICY`, which outranks `spec.migrationPolicy`; the default is `prompt`. A run with no terminal degrades `prompt` to `warn` and records no answer, and the daemon degrades both `prompt` and `update` to `warn` — it never rewrites a tracked file. `--yes` / `CFGD_YES` takes the prompt |
-| `--scope <user\|system>` | | `CFGD_SCOPE` | Installation scope: `user` (default) or `system`. `system` switches all four directory roots to system/FHS defaults (`/etc/cfgd`, `/var/lib/cfgd`, …). See [System scope](configuration.md#system-scope). |
-| | | `CFGD_NO_UPDATE_CHECK` | Silence the automatic update check (see [Suppressing the automatic check](#suppressing-the-automatic-check)) |
-| | | `NO_UPDATE_NOTIFIER` | Same, via npm's `update-notifier` convention |
-| | | `DO_NOT_TRACK` | Same, via the [consoledonottrack.com](https://consoledonottrack.com) convention |
+| `--color <auto\|always\|never>` | — | `CFGD_COLOR` | When to colorize terminal output. `auto` (default) follows the terminal, `NO_COLOR` and `TERM=dumb`; `always` colorizes even when stderr is not a terminal, for a pager that renders escapes (`less -R`) or a captured transcript; `never` disables it. Colour is never emitted under `-o json`/`name`/`jsonpath`/`template` whatever this says — an escape inside a payload string is corrupt data. `-o yaml` is the exception and follows this flag: its payload is syntax-highlighted when colour is on, and plain bytes under `never`, `NO_COLOR`, `TERM=dumb` or a non-terminal stdout |
+| `--no-color` | — | `NO_COLOR` | Disable colored terminal output (alias for `--color never`) |
+| `--theme <name>` | — | `CFGD_THEME` | Theme preset for this invocation. Replaces `spec.output.theme.name` only; `spec.output.theme.overrides` still apply on top. Unknown names are rejected at the flag with the preset list |
+| `--output <format>` | `-o` | — | Output format: `table` (default), `wide`, `json`, `yaml`, `name`, `jsonpath=EXPR`, `template=TMPL`, `template-file=PATH` |
+| `--list-envelope` | — | `CFGD_LIST_ENVELOPE` | Under `-o json`/`-o yaml`, wrap a top-level array in a KRM `List` envelope (`{apiVersion, kind: List, items}`) |
+| `--hints` | — | `CFGD_USAGE_HINTS` | Render closing `→` usage hints for this invocation. They are off until something asks for them: this flag, `CFGD_USAGE_HINTS=true`, or `spec.output.usageHints: true`. Either flag outranks `CFGD_USAGE_HINTS`, which outranks `spec.output.usageHints` |
+| `--no-hints` | — | `CFGD_USAGE_HINTS` | Suppress them again for this invocation, over a config or env var that turned them on; a suppressed hint drops its leading blank line with it. Note the polarity: the env var and the config field name what stays ON, so `CFGD_USAGE_HINTS=false` is the persistent form of this flag |
+| `--mask-env-values <all\|secrets\|none>` | — | `CFGD_MASK_ENV_VALUES` | Which declared env values render masked. `all` (default) masks every value as `***` plus its last three characters; `secrets` masks only the values a declared secret exports (every name listed in a `spec.secrets[].envs` of the resolved chain) and renders the rest in full; `none` renders them all in full. The flag outranks `CFGD_MASK_ENV_VALUES`, which outranks `spec.output.maskEnvValues`. `--show-values` is the per-verb alias for `none` and conflicts with this flag |
+| `--migration-policy <prompt\|warn\|update\|ignore>` | — | `CFGD_MIGRATION_POLICY` | What to do when `cfgd.yaml` is behind this build's schema. The flag outranks `CFGD_MIGRATION_POLICY`, which outranks `spec.migrationPolicy`; the default is `prompt`. A run with no terminal degrades `prompt` to `warn` and records no answer, and the daemon degrades both `prompt` and `update` to `warn` — it never rewrites a tracked file. `--yes` / `CFGD_YES` takes the prompt |
+| `--scope <user\|system>` | — | `CFGD_SCOPE` | Installation scope: `user` (default) or `system`. `system` switches all four directory roots to system/FHS defaults (`/etc/cfgd`, `/var/lib/cfgd`, …). See [System scope](configuration.md#system-scope). |
+| — | — | `CFGD_NO_UPDATE_CHECK` | Silence the automatic update check (see [Suppressing the automatic check](#suppressing-the-automatic-check)) |
+| — | — | `NO_UPDATE_NOTIFIER` | Same, via npm's `update-notifier` convention |
+| — | — | `DO_NOT_TRACK` | Same, via the [consoledonottrack.com](https://consoledonottrack.com) convention |
 
 Usage hints are off unless something asks for them, and the knob reaches the closing
 tutorial pointers only (the "run this next" lines). Three kinds of line ignore it and

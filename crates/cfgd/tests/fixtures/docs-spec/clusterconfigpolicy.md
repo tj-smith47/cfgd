@@ -71,7 +71,7 @@ status:
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `name` | string | Yes | | Resource name. `ClusterConfigPolicy` is cluster-scoped, so it has no `namespace`. |
+| `name` | string | Yes | — | Resource name. `ClusterConfigPolicy` is cluster-scoped, so it has no `namespace`. |
 
 ---
 

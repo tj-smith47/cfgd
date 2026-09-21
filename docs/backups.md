@@ -329,7 +329,7 @@ out of apply.
 | Duration | `6h`, `30m`, `1d` | a plain period between runs, measured from the last recorded run; no wall-clock alignment |
 | Cron, 5-field | `0 3 * * *` | machine-**local** timezone, same as a crontab entry: 3am where the machine sits, not 3am UTC |
 | Cron, 6-field | `30 0 3 * * *` | leading seconds field |
-| Omitted | | the backup runs on every `cfgd apply` |
+| Omitted | — | the backup runs on every `cfgd apply` |
 
 A duration is measured from the unit's **last recorded run**, not from the daemon's start, so it
 survives restarts: a `schedule: 1d` backup on a laptop rebooted every morning still fires once a

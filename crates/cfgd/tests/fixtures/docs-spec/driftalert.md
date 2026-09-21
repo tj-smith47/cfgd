@@ -57,8 +57,8 @@ status:
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `name` | string | Yes | | Resource name. Conventionally `<device-id>-<timestamp>` to make each alert uniquely addressable. |
-| `namespace` | string | Yes | | Kubernetes namespace. Typically the same namespace as the associated `MachineConfig`. |
+| `name` | string | Yes | — | Resource name. Conventionally `<device-id>-<timestamp>` to make each alert uniquely addressable. |
+| `namespace` | string | Yes | — | Kubernetes namespace. Typically the same namespace as the associated `MachineConfig`. |
 
 ---
 
@@ -66,9 +66,9 @@ status:
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `deviceId` | string | Yes | | Unique identifier for the device that reported the drifted settings. Matches the device's enrollment ID in the gateway database. |
-| `machineConfigRef` | object | Yes | | Typed reference to the `MachineConfig` resource that the device is reconciled against. See [spec.machineConfigRef](#specmachineconfigref). |
-| `severity` | enum | Yes | | Severity classification of this drift event. See [DriftSeverity values](#driftseverity-values). |
+| `deviceId` | string | Yes | — | Unique identifier for the device that reported the drifted settings. Matches the device's enrollment ID in the gateway database. |
+| `machineConfigRef` | object | Yes | — | Typed reference to the `MachineConfig` resource that the device is reconciled against. See [spec.machineConfigRef](#specmachineconfigref). |
+| `severity` | enum | Yes | — | Severity classification of this drift event. See [DriftSeverity values](#driftseverity-values). |
 | `driftDetails` | list | No | `[]` | Itemised list of system settings that are out of sync. See [spec.driftDetails[]](#specdriftdetails). |
 
 #### DriftSeverity values
@@ -90,8 +90,8 @@ Typed reference to a `MachineConfig` resource.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `name` | string | Yes | | Name of the `MachineConfig` resource. |
-| `namespace` | string | No | | Namespace of the `MachineConfig`. When omitted, the alert's own namespace is assumed. |
+| `name` | string | Yes | — | Name of the `MachineConfig` resource. |
+| `namespace` | string | No | — | Namespace of the `MachineConfig`. When omitted, the alert's own namespace is assumed. |
 
 **Example:**
 ```yaml
@@ -108,9 +108,9 @@ Each entry describes a single system setting whose live value differs from its d
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `field` | string | Yes | | The drifted setting, named `<configurator>.<key>` as the device reported it (e.g. `sysctl.net.ipv4.ip_forward`). The configurator qualifies the key because a key names a setting only within its own configurator, and this list merges by this field. |
-| `expected` | string | Yes | | The value declared in the `MachineConfig` (desired state). |
-| `actual` | string | Yes | | The value reported by the device (actual state). |
+| `field` | string | Yes | — | The drifted setting, named `<configurator>.<key>` as the device reported it (e.g. `sysctl.net.ipv4.ip_forward`). The configurator qualifies the key because a key names a setting only within its own configurator, and this list merges by this field. |
+| `expected` | string | Yes | — | The value declared in the `MachineConfig` (desired state). |
+| `actual` | string | Yes | — | The value reported by the device (actual state). |
 
 **Example:**
 ```yaml
