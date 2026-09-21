@@ -623,9 +623,11 @@ pub fn join_clauses(clauses: impl IntoIterator<Item = impl AsRef<str>>) -> Strin
     let Some(first) = iter.next() else {
         return String::new();
     };
-    let first = first.as_ref();
-    let mut out = String::with_capacity(first.len());
-    out.push_str(first);
+    // No capacity hint: a streaming iterator cannot state a total without a
+    // second pass, and a hint sized from the first member alone would read as
+    // one the whole join has. The growth is amortized instead.
+    let mut out = String::new();
+    out.push_str(first.as_ref());
     for clause in iter {
         out.push_str(SEPARATOR);
         out.push_str(clause.as_ref());
