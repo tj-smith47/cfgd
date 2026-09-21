@@ -842,7 +842,7 @@ fn a_pre_skipped_action_is_priced_outside_the_counted_rollup() {
     // A second reason is a second clause, not a second count; one reason twice
     // is one clause over a count of two.
     tally_with_reasons(&["a", "a", "b"], |counts| {
-        assert_eq!(counts, "2 actions succeeded, 3 not attempted: a, b");
+        assert_eq!(counts, "2 actions succeeded, 3 not attempted: a; b");
     });
 }
 

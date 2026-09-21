@@ -32203,7 +32203,7 @@ fn a_failing_write_over_an_adopted_target_still_names_the_copy_it_took() {
     );
     // The error first, the copy after: both facts on one row, in the order
     // they happened, rather than either replacing the other.
-    let (before, after) = row.split_once(", backed up to ").unwrap();
+    let (before, after) = row.split_once("; backed up to ").unwrap();
     assert!(
         before.contains('—') && before.len() > before.find('—').unwrap() + 3,
         "the error keeps its own place ahead of the copy, got: {row}"

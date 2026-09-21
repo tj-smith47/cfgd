@@ -605,6 +605,34 @@ pub fn agreeing_verb(count: usize, verb: &str) -> String {
     }
 }
 
+/// The ONE separator between free-text clauses a surface joins into one line.
+///
+/// A comma joins members a reader can tell apart by the comma alone: names,
+/// identifiers, paths, a count and its noun. A CLAUSE carries punctuation of its
+/// own: `3 of 5 sources, 1 skipped` is one fact, and `, ` glues it to the next
+/// fact into `3 of 5 sources, 1 skipped, local repo not pulled`, three items
+/// where the run reported two. A semicolon is the boundary a comma cannot be,
+/// so every joiner whose members are sentences, `Display`ed errors, or
+/// `format!`s carrying commas reads from here and none spells `"; "` itself.
+///
+/// The rule is about the MEMBERS, not the surface: a list of package names on
+/// the same report keeps its comma, because no name can hold one.
+pub fn join_clauses(clauses: impl IntoIterator<Item = impl AsRef<str>>) -> String {
+    const SEPARATOR: &str = "; ";
+    let mut iter = clauses.into_iter();
+    let Some(first) = iter.next() else {
+        return String::new();
+    };
+    let first = first.as_ref();
+    let mut out = String::with_capacity(first.len());
+    out.push_str(first);
+    for clause in iter {
+        out.push_str(SEPARATOR);
+        out.push_str(clause.as_ref());
+    }
+    out
+}
+
 /// Escape a string for safe inclusion in XML/plist content (single pass).
 pub fn xml_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + s.len() / 8);
@@ -765,6 +793,26 @@ pub fn display_url(url: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The whole point of the helper is that a member carrying a comma of its
+    /// own stays one item, so the pin joins exactly that shape and reads the
+    /// separator back.
+    #[test]
+    fn join_clauses_separates_members_a_comma_could_not() {
+        assert_eq!(
+            join_clauses(["3 of 5 sources, 1 skipped", "local repo not pulled"]),
+            "3 of 5 sources, 1 skipped; local repo not pulled"
+        );
+        // One member is the whole string: nothing is appended to a list of one.
+        assert_eq!(join_clauses(["only this"]), "only this");
+        // An empty list renders nothing rather than a bare separator.
+        assert_eq!(join_clauses(Vec::<String>::new()), "");
+        // Owned members and borrowed ones reach the same bytes.
+        assert_eq!(
+            join_clauses(vec!["a, b".to_string(), "c".to_string()]),
+            join_clauses(["a, b", "c"])
+        );
+    }
 
     #[test]
     fn display_url_strips_userinfo_and_leaves_every_other_shape_alone() {

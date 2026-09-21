@@ -384,7 +384,7 @@ resolution added nothing beyond the declared list. See [Profiles → Inheritance
 for the `Profile` row's identical rule.
 
 A module the resolution gated off this host follows the `depends:` one as a further clause in the
-same annotation: `Modules  git, nvim (depends: plugins, rectangle skipped: platform not matched
+same annotation: `Modules  git, nvim (depends: plugins; rectangle skipped: platform not matched
 (requires: macos))` — the name leaves the list, so the clause is where the reader is told why it
 is missing. The run itself lists the module as a planned, skipped action carrying the same reason;
 nothing is installed for it and no drift row is recorded against it.

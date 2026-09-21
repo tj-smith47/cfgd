@@ -1509,7 +1509,7 @@ fn outcome_clauses(tally: &RunTally) -> Vec<(Role, String)> {
             format!(
                 "{} not attempted: {}",
                 tally.not_attempted.len(),
-                reasons.join(", ")
+                crate::join_clauses(&reasons)
             ),
         ));
     }

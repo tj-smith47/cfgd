@@ -567,7 +567,11 @@ pub fn modules_header_row_for(modules: &[HeaderModule]) -> Option<KvPair> {
     if named.is_empty() && clauses.is_empty() {
         return None;
     }
-    Some(KvPair::annotated("Modules", named, clauses.join(", ")))
+    Some(KvPair::annotated(
+        "Modules",
+        named,
+        crate::join_clauses(&clauses),
+    ))
 }
 
 /// A `command_list` row: a shell command (or a `name <type>` pair) and its

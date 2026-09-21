@@ -504,19 +504,13 @@ impl ActionRun {
 /// half alone when it is the only one.
 fn join_detail(first: Option<String>, second: Option<String>) -> Option<String> {
     match (first, second) {
-        (Some(a), Some(b)) => Some(format!("{a}, {b}")),
+        (Some(a), Some(b)) => Some(crate::join_clauses([a, b])),
         (a, b) => a.or(b),
     }
 }
 
 fn sidecar_detail(sidecars: &[SidecarOutcome]) -> Option<String> {
-    (!sidecars.is_empty()).then(|| {
-        sidecars
-            .iter()
-            .map(SidecarOutcome::detail)
-            .collect::<Vec<_>>()
-            .join(", ")
-    })
+    (!sidecars.is_empty()).then(|| crate::join_clauses(sidecars.iter().map(SidecarOutcome::detail)))
 }
 
 /// One finished action, as its collection point hands it over.
@@ -3031,7 +3025,7 @@ mod detail_tests {
                 Some("unchanged".into()),
                 Some("backed up to ~/x.cfgd-backup".into())
             ),
-            Some("unchanged, backed up to ~/x.cfgd-backup".to_string())
+            Some("unchanged; backed up to ~/x.cfgd-backup".to_string())
         );
         assert_eq!(
             j(Some("unchanged".into()), None),
