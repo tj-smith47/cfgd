@@ -511,6 +511,110 @@ mod tests {
         );
     }
 
+    /// R1 (class sweep): `migrate_write_does_not_duplicate_a_legacy_theme_into_the_nested_key`
+    /// above only exercised `spec.theme`. This walks every member of
+    /// `LEGACY_OUTPUT_KEYS` (`spec.theme` and `spec.usageHints` today), so a
+    /// third legacy key added later must supply a fixture value here before
+    /// this test can pass, rather than riding on `spec.theme`'s coverage
+    /// alone.
+    #[test]
+    fn migrate_write_does_not_duplicate_any_legacy_output_key_into_its_nested_key() {
+        for (old, new) in cfgd_core::config::LEGACY_OUTPUT_KEYS {
+            let leaf = old
+                .strip_prefix("spec.")
+                .expect("legacy key is spec-relative");
+            let value = match leaf {
+                "theme" => "dracula",
+                "usageHints" => "true",
+                other => panic!(
+                    "LEGACY_OUTPUT_KEYS gained {other} with no fixture value in this walk; add one"
+                ),
+            };
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("cfgd.yaml");
+            let doc = format!(
+                "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  {leaf}: {value}\n"
+            );
+            std::fs::write(&path, &doc).unwrap();
+            let cli = cli_with_config(&path, None);
+            let printer = cfgd_core::test_helpers::test_printer();
+
+            cmd_config_migrate(&cli, &printer, true).unwrap();
+            let after = std::fs::read_to_string(&path).unwrap();
+
+            let reloaded = cfgd_core::config::parse_config(&after, &path)
+                .unwrap_or_else(|e| panic!("{old}: the written document must re-parse: {e}"));
+            assert!(
+                !reloaded
+                    .deprecations
+                    .iter()
+                    .any(|d| d.contains("are both set")),
+                "{old}: a document declaring only one spelling must not be told {old} and {new} conflict: {:?}",
+                reloaded.deprecations
+            );
+            assert!(
+                pending_alignment(&reloaded, &after).keys.is_empty(),
+                "{old}: a second run must have nothing left to do"
+            );
+        }
+    }
+
+    /// R1 (class sweep, second axis): the F2 fix generalized `config
+    /// migrate`'s write path to walk the whole `LEGACY_OUTPUT_KEYS` table,
+    /// but nothing pinned a REAL mutating command outside `config migrate`.
+    /// `source add` writes through `mutate_config_yaml`, a different path
+    /// that only appends to `spec.sources` and never touches
+    /// `pending_alignment`/`write_alignment`. This proves that write path is
+    /// safe too: a document declaring only the legacy `spec.theme`, after a
+    /// `source add`, still reloads with no folded twin and no "both set"
+    /// advisory.
+    #[test]
+    fn a_source_add_write_does_not_materialize_a_legacy_output_keys_folded_twin() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cfgd.yaml");
+        let doc = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  theme: dracula\n";
+        std::fs::write(&path, doc).unwrap();
+
+        crate::cli::mutate_config_yaml(&path, false, |raw| {
+            let sources = raw
+                .as_mapping_mut()
+                .unwrap()
+                .entry(serde_yaml::Value::String("spec".to_string()))
+                .or_insert_with(|| serde_yaml::Value::Mapping(Default::default()))
+                .as_mapping_mut()
+                .unwrap()
+                .entry(serde_yaml::Value::String("sources".to_string()))
+                .or_insert_with(|| serde_yaml::Value::Sequence(Vec::new()));
+            sources.as_sequence_mut().unwrap().push(
+                serde_yaml::from_str(
+                    "name: acme\norigin:\n  type: Git\n  url: https://example.com/x.git\n",
+                )
+                .unwrap(),
+            );
+            Ok(())
+        })
+        .expect("source add's write path succeeds");
+
+        let after = std::fs::read_to_string(&path).unwrap();
+        let reloaded = cfgd_core::config::parse_config(&after, &path)
+            .expect("the document source add wrote must re-parse");
+        assert!(
+            !reloaded
+                .deprecations
+                .iter()
+                .any(|d| d.contains("are both set")),
+            "a source add must not fold spec.theme into spec.output.theme: {:?}",
+            reloaded.deprecations
+        );
+        assert!(
+            !pending_alignment(&reloaded, &after)
+                .keys
+                .iter()
+                .any(|k| k == "spec.output.theme"),
+            "a source add must not leave spec.output.theme pending as a folded twin"
+        );
+    }
+
     /// A non-interactive `Prompt` degrades to `Warn`: the reader is told, the
     /// file is untouched, and NOTHING is recorded — recording an unasked
     /// question would answer it forever.
