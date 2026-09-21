@@ -406,23 +406,33 @@ fn abort_rollup_keeps_the_lowercase_cli_sentence() {
 fn an_abort_that_killed_an_action_names_the_failure_too() {
     // The signal reaches the child: `brew install` dies with the run. Without
     // the failure clause that action is in neither the applied count nor the
-    // not-attempted line, and the closing line reads as a clean stop.
-    let tally = RunTally {
-        after_plan: Vec::new(),
-        succeeded: 2,
-        skipped: 0,
-        not_attempted: Vec::new(),
-        failed: 1,
-        planned_total: 3,
-        status: ApplyStatus::Aborted,
-        aborted: Some(130),
-    };
-    let lines = rollup_lines(&tally, RunTitle::Apply);
-    assert_eq!(lines[0].1, "apply aborted by signal");
-    assert_eq!(
-        lines[0].2.as_deref(),
-        Some("2 of 3 actions applied, 1 failed; no partial writes")
-    );
+    // not-attempted line, and the closing line reads as a clean stop. The
+    // clause is the counted rollup's own, count and noun alike, so one run
+    // cannot be read as two.
+    for (failed, detail) in [
+        (
+            1,
+            "2 of 4 actions applied; 1 action failed; no partial writes",
+        ),
+        (
+            2,
+            "2 of 4 actions applied; 2 actions failed; no partial writes",
+        ),
+    ] {
+        let tally = RunTally {
+            after_plan: Vec::new(),
+            succeeded: 2,
+            skipped: 0,
+            not_attempted: Vec::new(),
+            failed,
+            planned_total: 4,
+            status: ApplyStatus::Aborted,
+            aborted: Some(130),
+        };
+        let lines = rollup_lines(&tally, RunTitle::Apply);
+        assert_eq!(lines[0].1, "apply aborted by signal");
+        assert_eq!(lines[0].2.as_deref(), Some(detail));
+    }
 }
 
 /// The wall total measures the RUN, so it belongs to the line that names the

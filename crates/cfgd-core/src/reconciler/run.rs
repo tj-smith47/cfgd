@@ -1437,9 +1437,9 @@ pub fn report_trailing_allowance(
 /// everything past that colon is a reason, so the two levels stay apart
 /// without a second separator. So no closing line can claim a skipped action as
 /// a success, and silent about outcomes that did not occur: a clean run's line
-/// does not name failures or skips it has none of. No path panics, so the function is safe
-/// in core and testable without a `Printer` — and it reads a [`RunTally`], so a
-/// backup run reaches it without an [`ApplyResult`].
+/// does not name failures or skips it has none of. No path panics, so the
+/// function is safe in core and testable without a `Printer`, and it reads a
+/// [`RunTally`], so a backup run reaches it without an [`ApplyResult`].
 ///
 /// Public because the daemon's `reconcile: complete — …` log line accounts for
 /// the same run the rollup above it does, and a tick whose log and whose
@@ -1502,14 +1502,8 @@ fn outcome_clauses(tally: &RunTally) -> Vec<(Role, String)> {
     // failed: a run turned partial by an after-plan failure alone has that
     // failure stated by the class's own clause below, and `0 actions failed`
     // over it names a failure nothing had.
-    if tally.failed > 0 {
-        clauses.insert(
-            1,
-            (
-                Role::Fail,
-                format!("{} failed", pluralize(tally.failed, "action")),
-            ),
-        );
+    if let Some(clause) = failed_clause(tally.failed) {
+        clauses.insert(1, (Role::Fail, clause));
     }
     // After the planned classes and before the withheld footnote: this work
     // HAPPENED, so it belongs with the outcomes, while the withheld clause
@@ -1536,6 +1530,15 @@ fn outcome_clauses(tally: &RunTally) -> Vec<(Role, String)> {
         ));
     }
     clauses
+}
+
+/// What a run's failed actions come to, as the clause every summary states them
+/// in, or `None` where none failed. Two surfaces word this count: the counted
+/// rollup's own list and the aborted verdict's detail, and a second spelling
+/// (`1 failed` beside `1 action failed`) reads as two different facts about the
+/// same run.
+fn failed_clause(failed: usize) -> Option<String> {
+    (failed > 0).then(|| format!("{} failed", pluralize(failed, "action")))
 }
 
 /// One clause per [`AfterPlan`] member per [`AfterPlanState`] the run has
@@ -1670,15 +1673,18 @@ fn rollup_lines(tally: &RunTally, title: RunTitle) -> Vec<(Role, String, Option<
         ApplyStatus::Aborted => vec![(
             Role::Warn,
             format!("{} aborted by signal", title.as_str().to_ascii_lowercase()),
-            Some(format!(
-                "{} of {} applied{}; no partial writes",
-                tally.succeeded,
-                pluralize(tally.planned_total, "action"),
-                if tally.failed > 0 {
-                    format!(", {} failed", tally.failed)
-                } else {
-                    String::new()
-                }
+            Some(crate::join_clauses(
+                [
+                    Some(format!(
+                        "{} of {} applied",
+                        tally.succeeded,
+                        pluralize(tally.planned_total, "action")
+                    )),
+                    failed_clause(tally.failed),
+                    Some("no partial writes".to_string()),
+                ]
+                .into_iter()
+                .flatten(),
             )),
         )],
     }
