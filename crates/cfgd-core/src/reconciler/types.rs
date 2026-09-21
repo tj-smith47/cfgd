@@ -469,6 +469,47 @@ impl ManagerAction {
         }
     }
 
+    /// This provision re-led by `leader`, delivering `batched` beside it;
+    /// `None` for every other variant.
+    ///
+    /// The ONE rebuild of a provision node, for every site that narrows a batch
+    /// or promotes a member: the elision that drops a leader nobody consumes
+    /// any more, the `--phase` selector that asks for one member's
+    /// provisioning, and the `--skip`/`--only` split. Each of those used to
+    /// overwrite `manager` in place, which left every field scoped to ONE
+    /// manager riding the `..` onto whoever was promoted.
+    ///
+    /// A field scoped to one manager travels only while that manager still
+    /// leads: the module's declared route describes the entry somebody wrote
+    /// for THAT tool, and the floor is the version a confirmation asked of it,
+    /// so handing either to a promoted member fails a node over a demand
+    /// nobody made of it. `via`, the edges and the batch describe the COMMAND,
+    /// which is the same command whoever leads it. The destructure below names
+    /// every field, so a field added later has to be classified here before
+    /// this file compiles.
+    pub fn provision_led_by(&self, leader: &str, batched: Vec<String>) -> Option<ManagerAction> {
+        let ManagerAction::Provision {
+            manager,
+            via,
+            declared,
+            floor,
+            batched: _,
+            depends_on,
+        } = self
+        else {
+            return None;
+        };
+        let leads_as_stated = leader == manager;
+        Some(ManagerAction::Provision {
+            manager: leader.to_string(),
+            via: via.clone(),
+            declared: leads_as_stated.then(|| declared.clone()).flatten(),
+            floor: leads_as_stated.then(|| floor.clone()).flatten(),
+            batched,
+            depends_on: depends_on.clone(),
+        })
+    }
+
     /// Every manager this node FAILING leaves unusable for the rest of the run.
     ///
     /// A provision speaks for its whole batch, and a refusal speaks for the one

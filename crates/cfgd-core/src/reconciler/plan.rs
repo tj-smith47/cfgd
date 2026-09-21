@@ -203,16 +203,23 @@ impl<'a> super::Reconciler<'a> {
         // ask for one manager, and the run can only deliver one copy of it, so
         // the higher floor is what the node carries: it satisfies both, where
         // the lower one leaves the stricter module quietly short.
+        let floor_managers = self.registry.manager_map();
         let mut floor_routes: BTreeMap<String, String> = BTreeMap::new();
         for route in module_actions
             .iter()
             .flat_map(|m| m.floor_bootstraps.iter())
         {
-            let held = floor_routes
-                .entry(route.package.clone())
-                .or_insert_with(|| route.floor.clone());
-            if !crate::version_meets_floor(held, &route.floor) {
-                held.clone_from(&route.floor);
+            // The same dedup the effective set makes when two modules floor one
+            // package, so a floor cannot survive here and lose there: judged in
+            // the grammar of the manager being provisioned, since that is whose
+            // versions both floors are written in.
+            let kept = crate::effective::stricter_floor(
+                &floor_routes.remove(&route.package),
+                &Some(route.floor.clone()),
+                floor_managers.get(&route.package).copied(),
+            );
+            if let Some(kept) = kept {
+                floor_routes.insert(route.package.clone(), kept);
             }
         }
         let floor_wanted: Vec<String> = floor_routes.keys().cloned().collect();

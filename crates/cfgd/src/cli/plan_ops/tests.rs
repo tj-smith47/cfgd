@@ -976,6 +976,85 @@ fn a_filtered_provision_keeps_the_facts_of_its_own_manager_and_lends_them_to_nob
     );
 }
 
+/// The whole chain a floor has to survive: the confirmation is made while the
+/// plan is written, and the check runs while it is applied, which for `cfgd
+/// apply --plan` are two invocations with a file in between. Dropped on the
+/// wire, the replay installs whatever the cascade hands it and settles green
+/// over the question the recorded run asked.
+#[test]
+fn a_floor_survives_the_saved_plan_file_and_still_fails_a_short_delivery() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = tmp.path().join("cfgd.yaml");
+    std::fs::write(&config, "# what the derivation read\n").unwrap();
+    let state = StateStore::open_in_memory().unwrap();
+    let plan = make_plan(vec![(
+        PhaseName::Bootstrap,
+        vec![Action::Manager(ManagerAction::Provision {
+            manager: "cargo".to_string(),
+            via: "rustup".to_string(),
+            declared: None,
+            floor: Some("1.85".to_string()),
+            batched: vec![],
+            depends_on: vec![],
+        })],
+    )]);
+
+    // The producer's own gate and its own writer: a structured run, no filter,
+    // no isolate, nothing withheld.
+    let (printer, _buf) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
+    let recorder = cfgd_core::ConfigInputRecorder::start();
+    cfgd_core::record_config_input(&config);
+    let withheld = reconciler::WithheldDecisions::default();
+    let saved = saved_plan_for(
+        &printer,
+        &plan,
+        &state,
+        false,
+        &[],
+        &withheld,
+        recorder.finish(),
+    )
+    .unwrap()
+    .expect("an unfiltered structured run records its plan");
+    let payload = build_plan_output(&plan, "apply", None, &[], &withheld, &[], Some(saved));
+    let file = tmp.path().join("plan.json");
+    std::fs::write(&file, serde_json::to_string(&payload).unwrap()).unwrap();
+
+    let loaded = load_saved_plan(&file, &config, &state).expect("the file reads back");
+    let nodes = provision_nodes(&loaded.plan);
+    assert!(
+        matches!(
+            nodes.as_slice(),
+            [ManagerAction::Provision { floor, .. }] if floor.as_deref() == Some("1.85")
+        ),
+        "the floor came back off the wire: {nodes:#?}"
+    );
+
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(
+        cfgd_core::test_helpers::MockPackageManager::new("cargo").reporting_version("1.80.0"),
+    ));
+    let result = reconciler::Reconciler::new(&registry, &state)
+        .apply(
+            &loaded.plan,
+            &cfgd_core::test_helpers::make_empty_resolved(),
+            tmp.path(),
+            &cfgd_core::test_helpers::test_printer(),
+            None,
+            &[],
+            reconciler::ReconcileContext::Apply,
+            false,
+            None,
+            &cfgd_core::AbortFlag::new(),
+        )
+        .expect("the replay runs the file's own actions");
+    let error = result.action_results[0].error.clone().unwrap_or_default();
+    assert!(
+        error.contains("below the declared minVersion 1.85"),
+        "the replayed node checks what it found against the recorded floor: {error}"
+    );
+}
+
 #[test]
 fn a_batched_provision_names_every_manager_it_delivers_in_the_json_payload() {
     let out = manager_action_output(&Action::Manager(ManagerAction::Provision {

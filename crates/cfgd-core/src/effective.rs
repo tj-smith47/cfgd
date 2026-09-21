@@ -145,9 +145,7 @@ pub fn effective_system_map(
 /// `2.30`. One it cannot read WINS, whichever side declared it, and travels to
 /// the seam that reports it: `1:2.30` against `>=1.2` must settle on `>=1.2` in
 /// both declaration orders, or the malformed floor vanishes with no check error
-/// in one of them. When it can read NEITHER, the CLAIMED floor is the one
-/// carried: both spellings error identically at verify, so the choice is
-/// stated rather than left to fall out of the comparison.
+/// in one of them.
 ///
 /// Without a manager the dedup judges no readability of its own, and the same
 /// carry-the-doubt rule falls to the shared parser
@@ -155,9 +153,14 @@ pub fn effective_system_map(
 /// unparseable floor here would answer `false` for the parse rather than for
 /// the constraint, and the readable floor would quietly outrank a declaration
 /// that — claimed alone by one module — is a check error the reader must see.
-/// Between two floors neither parses, the CLAIMED one stays: both error
-/// identically at the manager.
-fn stricter_floor(
+///
+/// Every answer is the same in both argument orders. Neither floor being
+/// stricter is an ordinary outcome, not an edge case: `1.85` and `1.85.0` are
+/// one floor spelled twice, and two floors nothing can read are two typos.
+/// Keeping the CLAIMED one there hands the survivor to whichever module the
+/// resolution happened to reach first, and the spelling that survives is the
+/// one the plan carries, the provision asks for and every refusal prints.
+pub(crate) fn stricter_floor(
     claimed: &Option<String>,
     candidate: &Option<String>,
     mgr: Option<&dyn crate::providers::PackageManager>,
@@ -165,36 +168,46 @@ fn stricter_floor(
     match (claimed, candidate) {
         (_, None) => claimed.clone(),
         (None, Some(_)) => candidate.clone(),
-        (Some(a), Some(b)) => {
-            let winner = match mgr {
-                Some(m) => match (m.floor_comparable(a), m.floor_comparable(b)) {
-                    (true, true) => match m.version_meets_minimum_checked(a, b) {
-                        Ok(true) => a,
-                        Ok(false) => b,
-                        // The manager's own comparator failed to spawn (FreeBSD
-                        // `pkg version -t`) rather than answering — fall to the
-                        // order-independent shared comparator so a transient
-                        // spawn failure cannot make this dedup depend on which
-                        // module happened to be scanned first.
-                        Err(_) => {
-                            if crate::version_meets_floor(a, b) {
-                                a
-                            } else {
-                                b
-                            }
-                        }
-                    },
-                    (false, _) => a,
-                    (_, false) => b,
-                },
-                None if !crate::declared_floor_parses(a) => a,
-                None if !crate::declared_floor_parses(b) => b,
-                None if crate::version_meets_floor(a, b) => a,
-                None => b,
-            };
-            Some(winner.clone())
-        }
+        (Some(a), Some(b)) => Some(stricter_of(a, b, mgr).to_string()),
     }
+}
+
+/// [`stricter_floor`]'s answer for two floors that are both declared.
+fn stricter_of<'a>(
+    a: &'a str,
+    b: &'a str,
+    mgr: Option<&dyn crate::providers::PackageManager>,
+) -> &'a str {
+    let readable = |floor: &str| match mgr {
+        Some(m) => m.floor_comparable(floor),
+        None => crate::declared_floor_parses(floor),
+    };
+    match (readable(a), readable(b)) {
+        (false, true) => return a,
+        (true, false) => return b,
+        (false, false) => return first_by_spelling(a, b),
+        (true, true) => {}
+    }
+    let meets = |x: &str, y: &str| match mgr {
+        // A comparator that failed to spawn (FreeBSD `pkg version -t`) answered
+        // nothing, so the shared comparator stands in rather than one side
+        // winning on a transient failure.
+        Some(m) => m
+            .version_meets_minimum_checked(x, y)
+            .unwrap_or_else(|_| crate::version_meets_floor(x, y)),
+        None => crate::version_meets_floor(x, y),
+    };
+    match (meets(a, b), meets(b, a)) {
+        (true, false) => a,
+        (false, true) => b,
+        _ => first_by_spelling(a, b),
+    }
+}
+
+/// The survivor where neither floor is stricter: the earlier spelling, so the
+/// dedup answers one way whatever order the two declarations arrived in.
+fn first_by_spelling<'a>(a: &'a str, b: &'a str) -> &'a str {
+    if a <= b { a } else { b }
 }
 
 /// Build the effective desired package set: the profile's packages combined with

@@ -10416,6 +10416,138 @@ fn a_provision_landing_below_its_confirmed_floor_fails_the_node() {
     );
 }
 
+/// One `Bootstrap` node provisioning `manager` for a confirmed floor, as the
+/// planner mints it.
+fn floored_provision_plan(manager: &str, via: &str, floor: &str) -> Plan {
+    Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::Bootstrap,
+            &Owner::cfgd("managers"),
+            vec![Action::Manager(ManagerAction::Provision {
+                manager: manager.to_string(),
+                via: via.to_string(),
+                declared: None,
+                floor: Some(floor.to_string()),
+                batched: vec![],
+                depends_on: vec![],
+            })],
+        )],
+        warnings: vec![],
+    }
+}
+
+/// The error one applied node settled with, or `None` where it succeeded.
+fn provision_failure(
+    registry: &ProviderRegistry,
+    state: &StateStore,
+    plan: &Plan,
+) -> Option<String> {
+    let (result, _) = apply_manager_plan(registry, state, plan);
+    result.action_results[0].error.clone()
+}
+
+/// The floor is judged in the grammar of the family that packages the tool: an
+/// apt epoch, a cask build, a winget fourth component are all versions their own
+/// manager reads and the shared parser refuses. Asked of the shared parser, a
+/// delivery that clears its floor fails the node it satisfied.
+#[test]
+fn a_delivered_version_is_judged_in_its_own_managers_grammar() {
+    for (delivered, fails) in [("1:2.31", false), ("1:2.29", true)] {
+        let state = test_state();
+        let mut registry = ProviderRegistry::new();
+        registry.add_package_manager(Box::new(
+            crate::test_helpers::MockPackageManager::new("cargo")
+                .unavailable()
+                .bootstrappable_via("rustup")
+                .bootstrap_succeeds()
+                .reading_its_own_version_grammar()
+                .reporting_version(delivered),
+        ));
+
+        let error = provision_failure(
+            &registry,
+            &state,
+            &floored_provision_plan("cargo", "rustup", "1:2.30"),
+        );
+        assert_eq!(
+            error.is_some(),
+            fails,
+            "{delivered} against 1:2.30, as the manager reads both: {error:?}"
+        );
+    }
+}
+
+/// A floor is checked whether or not THIS run installed the manager. A replay
+/// over a machine already carrying an older copy asked the same question, and
+/// the run that settles green over it answers it with an install it never made.
+#[test]
+fn a_manager_already_present_below_its_confirmed_floor_fails_the_node() {
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(
+        crate::test_helpers::MockPackageManager::new("cargo").reporting_version("1.80.0"),
+    ));
+
+    let error = provision_failure(
+        &registry,
+        &state,
+        &floored_provision_plan("cargo", "rustup", "1.85"),
+    )
+    .expect("a manager already here below the floor fails the node");
+    assert!(
+        error.contains("cargo was already present at 1.80.0, below the declared minVersion 1.85"),
+        "the sentence credits the run with no install it never made: {error}"
+    );
+}
+
+/// A comparator that could not judge its operands answered nothing. Settling
+/// green there reports success for a question cfgd asked and never read, so the
+/// node fails and says which half it could not read.
+#[test]
+fn a_floor_nothing_could_judge_fails_the_node_rather_than_settling_green() {
+    for (manager, floor, cause) in [
+        (
+            crate::test_helpers::MockPackageManager::new("cargo"),
+            "1.85",
+            "it reports no version",
+        ),
+        (
+            crate::test_helpers::MockPackageManager::new("cargo").reporting_version("nightly-2026"),
+            "1.85",
+            "cargo reports nightly-2026, which it cannot compare",
+        ),
+        (
+            crate::test_helpers::MockPackageManager::new("cargo").reporting_version("1.90.0"),
+            ">=1.85",
+            "cargo cannot read that floor",
+        ),
+        (
+            crate::test_helpers::MockPackageManager::new("cargo")
+                .reporting_version("1.90.0")
+                .failing_version_comparisons(),
+            "1.85",
+            "mock comparator failed to spawn",
+        ),
+    ] {
+        let state = test_state();
+        let mut registry = ProviderRegistry::new();
+        registry.add_package_manager(Box::new(manager));
+
+        let error = provision_failure(
+            &registry,
+            &state,
+            &floored_provision_plan("cargo", "rustup", floor),
+        )
+        .unwrap_or_else(|| panic!("an unproven floor fails the node: {cause}"));
+        assert!(
+            error.contains(&format!(
+                "cannot judge cargo against the declared minVersion {floor}"
+            )) && error.contains(cause),
+            "the failure says the floor is unproven and why: {error}"
+        );
+    }
+}
+
 /// Two modules asking one manager for two different floors get ONE copy of it,
 /// so the node carries the higher: it satisfies both, where the lower leaves
 /// the stricter module short of what its confirmation promised. Asked in both
@@ -10424,36 +10556,59 @@ fn a_provision_landing_below_its_confirmed_floor_fails_the_node() {
 #[test]
 fn two_modules_flooring_one_manager_provision_it_at_the_higher_floor() {
     for (first, second) in [("1.80", "1.85"), ("1.85", "1.80")] {
-        let state = test_state();
-        let mut registry = ProviderRegistry::new();
-        registry.add_package_manager(Box::new(
-            crate::test_helpers::MockPackageManager::new("cargo")
-                .unavailable()
-                .bootstrappable_via("rustup"),
-        ));
-
-        let plan = Reconciler::new(&registry, &state)
-            .plan(
-                &make_empty_resolved(),
-                Vec::new(),
-                Vec::new(),
-                vec![
-                    module_routing_a_floor("nvim", "cargo", first),
-                    module_routing_a_floor("tools", "cargo", second),
-                ],
-                ReconcileContext::Apply,
-            )
-            .unwrap();
-
-        let provisions = bootstrap_provisions(&plan);
-        assert!(
-            matches!(
-                provisions.as_slice(),
-                [ManagerAction::Provision { manager, floor, .. }]
-                    if manager == "cargo" && floor.as_deref() == Some("1.85")
-            ),
-            "one node at the higher floor, asked as ({first}, {second}): {provisions:#?}"
+        assert_eq!(
+            floor_two_modules_settle_on(first, second).as_deref(),
+            Some("1.85"),
+            "one node at the higher floor, asked as ({first}, {second})"
         );
+    }
+}
+
+/// The floor the single provision node carries when `first` and `second` are
+/// declared, in that order, by two modules asking for one manager.
+fn floor_two_modules_settle_on(first: &str, second: &str) -> Option<String> {
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(
+        crate::test_helpers::MockPackageManager::new("cargo")
+            .unavailable()
+            .bootstrappable_via("rustup"),
+    ));
+
+    let plan = Reconciler::new(&registry, &state)
+        .plan(
+            &make_empty_resolved(),
+            Vec::new(),
+            Vec::new(),
+            vec![
+                module_routing_a_floor("nvim", "cargo", first),
+                module_routing_a_floor("tools", "cargo", second),
+            ],
+            ReconcileContext::Apply,
+        )
+        .unwrap();
+
+    match bootstrap_provisions(&plan).as_slice() {
+        [ManagerAction::Provision { manager, floor, .. }] if manager == "cargo" => floor.clone(),
+        other => panic!("one cargo node carries the settled floor: {other:#?}"),
+    }
+}
+
+/// The dedup two modules force is the effective set's own, so it answers the
+/// same way whichever module the resolution reached first. Neither floor being
+/// stricter is ordinary: a floor nothing can read has to survive to the check
+/// that reports it, and one floor spelled two ways is still one floor. The
+/// spelling that survives is what the plan carries and every refusal prints.
+#[test]
+fn two_floors_neither_stricter_settle_the_same_way_in_both_orders() {
+    for (a, b, settled) in [(">=1.2", "1.85", ">=1.2"), ("1.85", "1.85.0", "1.85")] {
+        for (first, second) in [(a, b), (b, a)] {
+            assert_eq!(
+                floor_two_modules_settle_on(first, second).as_deref(),
+                Some(settled),
+                "({first}, {second}) settles on {settled}"
+            );
+        }
     }
 }
 
@@ -10561,6 +10716,13 @@ fn a_floored_manager_keeps_its_own_node_instead_of_joining_a_batch() {
 /// carrying no floor has to hash to the bytes it hashed to before the field
 /// existed. Without `skip_serializing_if`, every stored hash re-reads as a
 /// change nobody made and every converged host re-plans.
+///
+/// The literal is the string a run of the hash produced before the field was
+/// added, kept byte for byte rather than retyped from the struct: it holds the
+/// variant's own field ORDER, and `depends_on` in the snake_case spelling serde
+/// gives it, since `rename_all = "camelCase"` on the enum renames variants and
+/// not fields. A literal composed from the type by hand would agree with
+/// whatever the type says today and prove nothing about the stored hashes.
 #[test]
 fn a_provision_with_no_floor_hashes_to_the_bytes_it_always_did() {
     let plan = Plan {

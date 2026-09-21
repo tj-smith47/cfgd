@@ -4240,6 +4240,10 @@ pub struct MockPackageManager {
     /// OFFERS, which is a different question from what it holds installed and
     /// is the one `fill_available_versions` asks.
     offered: std::collections::BTreeMap<String, String>,
+    /// Whether this manager reads its family's own version grammar rather than
+    /// the shared loose-semver one. See
+    /// [`reading_its_own_version_grammar`](MockPackageManager::reading_its_own_version_grammar).
+    own_grammar: bool,
 }
 
 impl MockPackageManager {
@@ -4274,7 +4278,21 @@ impl MockPackageManager {
             no_upgrade_verb: false,
             listing_error: None,
             offered: std::collections::BTreeMap::new(),
+            own_grammar: false,
         }
+    }
+
+    /// The shape of every family whose versions the SHARED parser refuses and
+    /// whose own comparator reads them: an apt epoch (`1:2.30`), a cask build
+    /// (`1.2.3,4567`), a winget fourth component (`2.2.2.0`).
+    ///
+    /// This mock compares the integer runs of both operands in order, which is
+    /// enough for a claim about WHICH comparator a caller asked; a claim about
+    /// one family's real rules belongs to that family's own tests.
+    #[must_use]
+    pub fn reading_its_own_version_grammar(mut self) -> Self {
+        self.own_grammar = true;
+        self
     }
 
     /// The version this manager OFFERS for a package, for a surface that
@@ -4667,6 +4685,31 @@ impl crate::providers::PackageManager for MockPackageManager {
         }
         Ok(self.version_meets_minimum(available, min_version))
     }
+
+    fn version_comparable(&self, version: &str) -> bool {
+        if self.own_grammar {
+            return integer_runs(version).next().is_some();
+        }
+        crate::parse_loose_version(version).is_some()
+    }
+
+    fn version_meets_minimum(&self, available: &str, min_version: &str) -> bool {
+        if self.own_grammar {
+            return integer_runs(available).ge(integer_runs(min_version));
+        }
+        crate::version_meets_floor(available, min_version)
+    }
+}
+
+/// Every run of digits in a version, in order, for
+/// [`MockPackageManager::reading_its_own_version_grammar`]. A non-digit is a
+/// separator whatever it is, which is what lets one reading stand in for three
+/// families' punctuation.
+fn integer_runs(version: &str) -> impl Iterator<Item = u64> + Clone + '_ {
+    version
+        .split(|c: char| !c.is_ascii_digit())
+        .filter(|part| !part.is_empty())
+        .filter_map(|part| part.parse::<u64>().ok())
 }
 
 // ---------------------------------------------------------------------------

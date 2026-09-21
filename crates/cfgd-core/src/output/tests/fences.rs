@@ -6411,6 +6411,85 @@ fn no_production_site_outside_the_resolver_composes_a_floor_shortfall_sentence()
     );
 }
 
+/// The fields of a `Provision` node that belong to the manager LEADING it:
+/// the route that manager's own module declared, and the floor its own
+/// confirmation asked for. Written onto a node another manager now leads, each
+/// makes the run act on one manager's facts in another's name.
+const LEADER_SCOPED_PROVISION_FIELDS: &[&str] = &["*manager =", "*declared =", "*floor ="];
+
+/// Every production site that hands a provision node to a different leader
+/// goes through [`crate::reconciler::ManagerAction::provision_led_by`].
+///
+/// Two of them exist: the prune that drops a batch member nothing installs any
+/// more, and the `--phase`/`--skip`/`--only` rebuild. Both used to overwrite
+/// `manager` in place and let every other field ride a `..`, which handed npm's
+/// declared route and npm's confirmed floor to pipx: the run then installed
+/// `nodejs` in pipx's name and checked what it delivered against a version
+/// nobody asked of pipx.
+///
+/// The helper destructures exhaustively, so a field added to the variant stops
+/// the build until it is classified as the leader's or the node's. This holds
+/// the other half: that a third site cannot re-lead a node without reaching it.
+#[test]
+fn every_production_site_re_leading_a_provision_goes_through_the_one_helper() {
+    let helper = Path::new("reconciler").join("types.rs");
+    let mut offenders = Vec::new();
+    let mut read = 0usize;
+    let mut callers = 0usize;
+    for path in workspace_rust_files() {
+        // A whole test FILE carries no inner `#[cfg(test)]` for the slice to
+        // cut, so its fixtures would be judged as production sites.
+        let is_test_source = path.ends_with(Path::new("tests.rs"))
+            || path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("tests_"))
+            || path.components().any(|c| c.as_os_str() == "tests");
+        let production = crate::test_helpers::production_slice_of(&path);
+        if path.ends_with(&helper)
+            || is_test_source
+            || !production.contains("ManagerAction::Provision")
+        {
+            continue;
+        }
+        read += 1;
+        for (name, owner, code) in crate::test_helpers::fn_declarations(&production) {
+            let code = crate::test_helpers::blank_non_code(&code);
+            if crate::test_helpers::calls_free_fn(&code, "provision_led_by")
+                || code.contains(".provision_led_by(")
+            {
+                callers += 1;
+                continue;
+            }
+            for field in LEADER_SCOPED_PROVISION_FIELDS {
+                if code.contains(field) {
+                    offenders.push(format!(
+                        "{}: {owner}{name} writes `{field}` itself",
+                        path.display(),
+                        owner = owner.as_deref().map_or(String::new(), |o| format!("{o}::"))
+                    ));
+                }
+            }
+        }
+    }
+    assert!(
+        read >= 6,
+        "fewer files mention a provision node than the workspace holds, so the \
+         walk judged a population smaller than it claims: {read}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "call `ManagerAction::provision_led_by(leader, batched)`, which settles \
+         every manager-scoped field for the new leader:\n{}",
+        offenders.join("\n")
+    );
+    assert!(
+        callers >= 3,
+        "the two narrowing sites and the CLI rebuild reach the helper; \
+         {callers} declarations call it"
+    );
+}
+
 /// The floor-sentence matcher reads a composed sentence and nothing else.
 ///
 /// One case per placement the tells can take: inside a literal, inside a line

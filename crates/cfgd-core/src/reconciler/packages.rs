@@ -679,30 +679,44 @@ impl<'x> PackageExec<'x> {
                         }
                         .into());
                     }
+                    // The floor was asked of THIS node's manager, so a batched
+                    // sibling delivered by the same command is judged by
+                    // nothing here. A member nothing floored and nothing
+                    // installed is read for no version at all, which would cost
+                    // a spawn per member for a fact no row states.
+                    let installed_now = pending.contains(name);
+                    let asked_floor = (*name == manager.as_str())
+                        .then_some(floor.as_deref())
+                        .flatten();
+                    let version = (installed_now || asked_floor.is_some())
+                        .then(|| pm.tool_version())
+                        .flatten();
+                    // The confirmation named a floor; the node is what checks
+                    // it, whether or not this run is what installed the
+                    // manager. Without this cfgd asks "may I install a cargo at
+                    // 1.85?", installs something, and never looks; with the
+                    // check gated on the install, a replay over a machine that
+                    // already carries an older cargo never looks either.
+                    if let Some(floor) = asked_floor
+                        && let Some(message) = floor_verdict(
+                            pm.as_ref(),
+                            name,
+                            via,
+                            floor,
+                            version.as_deref(),
+                            installed_now,
+                        )
+                    {
+                        return Err(crate::errors::PackageError::BootstrapFailed {
+                            manager: (*name).to_string(),
+                            message,
+                        }
+                        .into());
+                    }
                     // What the run PUT here, read off the binary it just
                     // verified; a member that was here already produced
                     // nothing this row can claim.
-                    if pending.contains(name)
-                        && let Some(version) = pm.tool_version()
-                    {
-                        // The confirmation named a floor; the node is what
-                        // checks it. Without this cfgd asks "may I install a
-                        // cargo at 1.85?", installs something, and never looks.
-                        // The floor was asked of THIS node's manager, so a
-                        // batched sibling delivered by the same command is
-                        // judged by nothing here.
-                        if let Some(floor) = floor
-                            && *name == manager.as_str()
-                            && !crate::version_meets_floor(&version, floor)
-                        {
-                            return Err(crate::errors::PackageError::BootstrapFailed {
-                                manager: (*name).to_string(),
-                                message: crate::modules::FloorBootstrap::delivery_shortfall(
-                                    via, name, &version, floor,
-                                ),
-                            }
-                            .into());
-                        }
+                    if let (true, Some(version)) = (installed_now, version) {
                         delivered.push(((*name).to_string(), version));
                     }
                 }
@@ -942,6 +956,59 @@ impl<'x> PackageExec<'x> {
             Some(landed) => run.installed(landed, delivered),
             None => run,
         })
+    }
+}
+
+/// How a provision's delivery answers the floor its confirmation was given for:
+/// `None` when it clears, otherwise the sentence the node fails with.
+///
+/// The question is asked of the MANAGER, never of the shared parser: a floor
+/// verdict belongs to the family that packages the tool, and `1:2.30`,
+/// `1.2.3,4567` and `2.2.2.0` are all versions a family reads and the shared
+/// parser refuses. A comparator that could not judge its operands has answered
+/// nothing, so the node says the floor is unproven rather than settling green
+/// on a check that never ran or claiming a shortfall it never measured.
+fn floor_verdict(
+    pm: &dyn crate::providers::PackageManager,
+    package: &str,
+    via: &str,
+    floor: &str,
+    version: Option<&str>,
+    installed_now: bool,
+) -> Option<String> {
+    use crate::modules::FloorBootstrap;
+    let Some(version) = version else {
+        return Some(FloorBootstrap::floor_unproven(
+            package,
+            floor,
+            "it reports no version",
+        ));
+    };
+    if !pm.version_comparable(version) {
+        return Some(FloorBootstrap::floor_unproven(
+            package,
+            floor,
+            &format!("{package} reports {version}, which it cannot compare"),
+        ));
+    }
+    if !pm.floor_comparable(floor) {
+        return Some(FloorBootstrap::floor_unproven(
+            package,
+            floor,
+            &format!("{package} cannot read that floor"),
+        ));
+    }
+    match pm.version_meets_minimum_checked(version, floor) {
+        Ok(true) => None,
+        Ok(false) if installed_now => Some(FloorBootstrap::delivery_shortfall(
+            via, package, version, floor,
+        )),
+        Ok(false) => Some(FloorBootstrap::present_shortfall(package, version, floor)),
+        Err(e) => Some(FloorBootstrap::floor_unproven(
+            package,
+            floor,
+            &crate::output::collapse_to_subject_line(&e),
+        )),
     }
 }
 

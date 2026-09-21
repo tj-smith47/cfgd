@@ -759,26 +759,24 @@ fn shrink_provision_batches(plan: &mut Plan, consumers: &BTreeSet<String>) {
                     continue;
                 }
                 let node_id = node.node_id();
-                let ManagerAction::Provision {
-                    manager, batched, ..
-                } = node
-                else {
-                    continue;
-                };
                 let leader_pinned = depended.contains(&node_id);
-                let mut kept: Vec<String> = std::iter::once(manager.clone())
-                    .chain(batched.iter().cloned())
+                let mut kept: Vec<String> = node
+                    .provisioned_managers()
+                    .into_iter()
                     .enumerate()
-                    .filter(|(i, m)| consumers.contains(m) || (*i == 0 && leader_pinned))
-                    .map(|(_, m)| m)
+                    .filter(|(i, m)| consumers.contains(*m) || (*i == 0 && leader_pinned))
+                    .map(|(_, m)| m.to_string())
                     .collect();
                 // Nothing left to serve: leave the node whole and let the
                 // keep-set below delete it, rather than half-deleting it here.
                 if kept.is_empty() {
                     continue;
                 }
-                *manager = kept.remove(0);
-                *batched = kept;
+                let leader = kept.remove(0);
+                let reled = node.provision_led_by(&leader, kept);
+                if let Some(reled) = reled {
+                    *node = reled;
+                }
             }
         }
     }
@@ -862,19 +860,19 @@ pub fn restrict_provision_batches(plan: &mut Plan, phase: &PhaseName, selector: 
     for target in plan.phases.iter_mut().filter(|p| p.name == *phase) {
         for (_, actions) in target.groups_mut() {
             for action in actions.iter_mut() {
-                let Action::Manager(ManagerAction::Provision {
-                    manager, batched, ..
-                }) = action
-                else {
+                let Action::Manager(node) = action else {
                     continue;
                 };
-                if batched.is_empty()
-                    || (manager != selector && !batched.iter().any(|m| m == selector))
-                {
+                // A node provisioning one manager answers the selector as it
+                // stands, and every other variant provisions none.
+                let members = node.provisioned_managers();
+                if members.len() < 2 || !members.contains(&selector) {
                     continue;
                 }
-                *manager = selector.to_string();
-                batched.clear();
+                let reled = node.provision_led_by(selector, Vec::new());
+                if let Some(reled) = reled {
+                    *node = reled;
+                }
             }
         }
     }
@@ -2434,6 +2432,34 @@ mod tests {
             .collect()
     }
 
+    /// One batched node whose LEADER carries facts of its own: a route npm's
+    /// module declared, and a floor a confirmation gave npm.
+    fn batched_provision_with_leader_facts() -> Action {
+        Action::Manager(ManagerAction::Provision {
+            manager: "npm".to_string(),
+            via: "apt".to_string(),
+            declared: Some(DeclaredProvision {
+                installer: "apt".to_string(),
+                package: "nodejs".to_string(),
+            }),
+            floor: Some("1.85".to_string()),
+            batched: vec!["pipx".to_string()],
+            depends_on: Vec::new(),
+        })
+    }
+
+    /// Every provision node the plan still carries.
+    fn provision_nodes(plan: &Plan) -> Vec<&ManagerAction> {
+        plan.phases
+            .iter()
+            .flat_map(|phase| phase.actions())
+            .filter_map(|action| match action {
+                Action::Manager(node @ ManagerAction::Provision { .. }) => Some(node),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// Every provision node's persisted id.
     fn provision_ids(plan: &Plan) -> Vec<String> {
         plan.phases
@@ -2509,6 +2535,56 @@ mod tests {
             !edges.contains(&ManagerAction::provision_node("npm")),
             "promotion may only retire an id nothing waits on: {edges:?}"
         );
+    }
+
+    #[test]
+    fn a_promoted_batch_member_takes_none_of_the_leaders_own_facts() {
+        // A floor was confirmed for npm and a module declared npm's route; both
+        // are facts about npm. Carried onto pipx by the promotion, the run
+        // installs `nodejs` in pipx's name and checks what it delivered against
+        // a version nobody asked of pipx.
+        let mut plan = one_phase_plan(
+            vec![batched_provision_with_leader_facts()],
+            vec![pkg_install("pipx", "black")],
+        );
+
+        let registry = crate::providers::ProviderRegistry::new();
+        prune_to_surviving_consumers(&mut plan, &registry);
+
+        let provisions = provision_nodes(&plan);
+        assert!(
+            matches!(
+                provisions.as_slice(),
+                [ManagerAction::Provision { manager, declared, floor, .. }]
+                    if manager == "pipx" && declared.is_none() && floor.is_none()
+            ),
+            "pipx leads the command with nothing of npm's on it: {provisions:#?}"
+        );
+    }
+
+    #[test]
+    fn narrowing_a_batch_keeps_the_leaders_facts_only_while_the_leader_leads() {
+        // Both directions of the same rule, on the selector path: `--phase
+        // bootstrap.npm` asks for the manager the facts belong to and they
+        // stay, `--phase bootstrap.pipx` hands the node to a manager they were
+        // never about.
+        for (selector, kept) in [("npm", true), ("pipx", false)] {
+            let mut plan = one_phase_plan(vec![batched_provision_with_leader_facts()], Vec::new());
+            restrict_provision_batches(&mut plan, &PhaseName::Bootstrap, selector);
+
+            let provisions = provision_nodes(&plan);
+            assert!(
+                matches!(
+                    provisions.as_slice(),
+                    [ManagerAction::Provision { manager, declared, floor, batched, .. }]
+                        if manager == selector
+                            && declared.is_some() == kept
+                            && floor.is_some() == kept
+                            && batched.is_empty()
+                ),
+                "narrowed to {selector}, the leader's facts are kept={kept}: {provisions:#?}"
+            );
+        }
     }
 
     #[test]

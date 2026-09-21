@@ -1852,14 +1852,7 @@ pub(in crate::cli) fn filter_plan(
                 // A solo provision runs the same path, so there is one rule
                 // for both and no shape where they can disagree.
                 if let reconciler::Action::Manager(
-                    ma @ reconciler::ManagerAction::Provision {
-                        manager,
-                        via,
-                        declared,
-                        floor,
-                        depends_on,
-                        ..
-                    },
+                    ma @ reconciler::ManagerAction::Provision { .. },
                 ) = &action
                 {
                     let mut kept: Vec<String> = Vec::new();
@@ -1890,25 +1883,10 @@ pub(in crate::cli) fn filter_plan(
                             removals.record(member, matching_skips.first().map(|s| s.as_str()));
                         }
                     }
-                    if let Some((first, rest)) = kept.split_first() {
-                        // The module's declared route and the floor a
-                        // confirmation asked for belong to the node's own
-                        // manager: filtering that manager away promotes a
-                        // batched member, which those two say nothing about.
-                        // A surviving manager keeps both, so `--only` cannot
-                        // turn a declared route into a cascade or drop the
-                        // check the confirmation earned.
-                        let survives = first == manager;
-                        filtered_actions.push(reconciler::Action::Manager(
-                            reconciler::ManagerAction::Provision {
-                                manager: first.clone(),
-                                via: via.clone(),
-                                declared: survives.then(|| declared.clone()).flatten(),
-                                floor: survives.then(|| floor.clone()).flatten(),
-                                batched: rest.to_vec(),
-                                depends_on: depends_on.clone(),
-                            },
-                        ));
+                    if let Some((first, rest)) = kept.split_first()
+                        && let Some(node) = ma.provision_led_by(first, rest.to_vec())
+                    {
+                        filtered_actions.push(reconciler::Action::Manager(node));
                     }
                     continue;
                 }

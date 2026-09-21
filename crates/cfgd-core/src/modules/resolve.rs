@@ -75,6 +75,27 @@ impl FloorBootstrap {
             Self::BELOW_DECLARED_FLOOR
         )
     }
+
+    /// The same shortfall where this run installed NOTHING: the manager was on
+    /// the machine already, below the floor a confirmation asked for. A
+    /// replayed plan reaches it, and wording it as a delivery would credit the
+    /// run with an install it never performed.
+    pub fn present_shortfall(package: &str, found: &str, floor: &str) -> String {
+        format!(
+            "{package} was already present at {found}, {} {floor}",
+            Self::BELOW_DECLARED_FLOOR
+        )
+    }
+
+    /// A floor the run could not judge at all, and why.
+    ///
+    /// A comparator that cannot read its operands answers no question, so the
+    /// node says the floor is unproven rather than settling green or claiming
+    /// a shortfall it did not measure: cfgd asked for a version and must not
+    /// report success for an answer it never read.
+    pub fn floor_unproven(package: &str, floor: &str, cause: &str) -> String {
+        format!("cannot judge {package} against the declared minVersion {floor}: {cause}")
+    }
 }
 
 /// What one declared package entry resolves to: the manager it lands on, or the
