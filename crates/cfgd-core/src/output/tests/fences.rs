@@ -3436,12 +3436,17 @@ const ITEM_LEAD_KEYWORDS: [&str; 11] = [
 ];
 
 /// The readers that match a needle against the START or the END of a line,
-/// where a needle carrying no boundary of its own still folds a lead.
-const ITEM_LEAD_PREFIX_READERS: [&str; 4] = [
+/// where a needle carrying no boundary of its own still folds a lead. Both
+/// halves of every pair are here, because an end reader folds the same lead as
+/// well as its start twin: `ends_with("pub")` also matches `sub`.
+const ITEM_LEAD_EDGE_READERS: [&str; 7] = [
     ".starts_with(",
+    ".ends_with(",
     ".strip_prefix(",
-    ".trim_start_matches(",
     ".strip_suffix(",
+    ".trim_start_matches(",
+    ".trim_end_matches(",
+    ".trim_matches(",
 ];
 
 /// Whether a string literal's content is a hand-written item-lead fold.
@@ -3455,10 +3460,15 @@ const ITEM_LEAD_PREFIX_READERS: [&str; 4] = [
 ///
 /// The reader decides ONE case: a bare lead word carrying no boundary at all.
 /// `"default"` is the name of a profile in a few hundred fixtures, so compared,
-/// searched for or stored it is a value — but handed to a PREFIX reader
-/// (`prefix_reader`) it is the buggy fold itself, the one whose `pub` also
+/// searched for or stored it is a value — but handed to an EDGE reader
+/// (`edge_reader`) it is the buggy fold itself, the one whose `pub` also
 /// matches `publish` and whose `default` also matches `defaults`.
-fn needle_folds_an_item_lead(content: &str, prefix_reader: bool) -> bool {
+fn needle_folds_an_item_lead(content: &str, edge_reader: bool) -> bool {
+    // A file with CRLF endings spells the same continuation with a `\r` the
+    // compiler eats alongside the newline.
+    if content.contains("\\\r\n") {
+        return needle_folds_an_item_lead(&content.replace("\\\r\n", "\\\n"), edge_reader);
+    }
     // A `\`-continued literal spells one needle across two rows: the compiler
     // eats the backslash, the newline and the next row's indent, so the needle
     // the code really carries is the joined one.
@@ -3467,9 +3477,9 @@ fn needle_folds_an_item_lead(content: &str, prefix_reader: bool) -> bool {
         for (n, part) in content.split("\\\n").enumerate() {
             joined.push_str(if n == 0 { part } else { part.trim_start() });
         }
-        return needle_folds_an_item_lead(&joined, prefix_reader);
+        return needle_folds_an_item_lead(&joined, edge_reader);
     }
-    if !prefix_reader && !content.trim_start().contains([' ', '(']) {
+    if !edge_reader && !content.trim_start().contains([' ', '(']) {
         return false;
     }
     let (lead, rest) = crate::test_helpers::item_lead(content);
@@ -3509,8 +3519,8 @@ fn hand_folded_lead_offsets(body: &str, code: &str) -> Vec<usize> {
         // rustfmt puts a long call's argument on the row below it, so the
         // reader is looked for past the whitespace before the quote.
         let before = code[..open].trim_end();
-        let prefix_reader = ITEM_LEAD_PREFIX_READERS.iter().any(|r| before.ends_with(r));
-        if needle_folds_an_item_lead(&body[open + 1..close], prefix_reader) {
+        let edge_reader = ITEM_LEAD_EDGE_READERS.iter().any(|r| before.ends_with(r));
+        if needle_folds_an_item_lead(&body[open + 1..close], edge_reader) {
             hits.push(open);
         }
     }
@@ -3546,13 +3556,20 @@ fn lead_fold_offenders(rel: &str, body: &str) -> Vec<String> {
 fn the_item_lead_tell_reads_a_fold_and_not_a_mention() {
     let folds = [
         r#"if code.contains("pub fn ") {}"#,
-        // A bare lead word under a prefix reader: the fold whose `pub` also
+        // A bare lead word under an edge reader: the fold whose `pub` also
         // matches `publish`.
         r#"if code.starts_with("pub") {}"#,
         r#"let rest = code.strip_prefix("default");"#,
+        // The end half of every reader pair folds the same lead as its start
+        // twin: `ends_with("pub")` also matches `sub`.
+        r#"if head.ends_with("pub") {}"#,
+        r#"let t = name.trim_end_matches("unsafe");"#,
+        r#"let t = name.trim_matches("default");"#,
         r#"if line.strip_suffix("unsafe").is_some() {}"#,
         // One needle across two rows, the way the compiler reads it.
         "if code.contains(\"pub \\\n    fn \") {}",
+        // The same continuation as a CRLF file spells it.
+        "if code.contains(\"pub \\\r\n    fn \") {}",
         r#"if code.starts_with("pub ") {}"#,
         r#"if code.starts_with("pub(") {}"#,
         r#"let rest = code.strip_prefix("pub(crate) ");"#,
