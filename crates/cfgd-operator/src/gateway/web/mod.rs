@@ -4,7 +4,7 @@ use axum::http::HeaderMap;
 use axum::response::Html;
 use axum::routing::get;
 
-use cfgd_core::{sha256_hex, xml_escape};
+use cfgd_core::{join_clauses, sha256_hex, xml_escape};
 use subtle::ConstantTimeEq;
 
 use super::api::{SharedState, extract_bearer_token};
@@ -644,21 +644,17 @@ async fn fleet_events(State(state): State<SharedState>) -> Result<Html<String>, 
             if parsed.is_empty() {
                 xml_escape(&e.summary)
             } else {
-                parsed
-                    .iter()
-                    .map(|d| {
-                        let field = d.get("field").and_then(|v| v.as_str()).unwrap_or("?");
-                        let expected = d.get("expected").and_then(|v| v.as_str()).unwrap_or("?");
-                        let actual = d.get("actual").and_then(|v| v.as_str()).unwrap_or("?");
-                        format!(
-                            "{}: {} &rarr; {}",
-                            xml_escape(field),
-                            xml_escape(expected),
-                            xml_escape(actual)
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join(", ")
+                join_clauses(parsed.iter().map(|d| {
+                    let field = d.get("field").and_then(|v| v.as_str()).unwrap_or("?");
+                    let expected = d.get("expected").and_then(|v| v.as_str()).unwrap_or("?");
+                    let actual = d.get("actual").and_then(|v| v.as_str()).unwrap_or("?");
+                    format!(
+                        "{}: {} &rarr; {}",
+                        xml_escape(field),
+                        xml_escape(expected),
+                        xml_escape(actual)
+                    )
+                }))
             }
         } else {
             format!("<code>{}</code>", xml_escape(&e.summary))
