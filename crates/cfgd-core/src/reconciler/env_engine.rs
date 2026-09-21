@@ -1720,9 +1720,28 @@ mod tests {
     /// name the engine has stopped writing fails here too. `environment.d`
     /// reads `KEY=VALUE` with no documented last-wins for a repeated key, and
     /// a LaunchAgent is XML; both publish the winners alone.
+    ///
+    /// The floor is the (platform, file) MATRIX, not the set of file names: a
+    /// name three platform arms produce would otherwise let the fourth stop
+    /// producing it with nothing going red.
     #[test]
     fn every_generated_env_dialect_renders_through_the_one_block_composer() {
         const NO_BLOCKS: [&str; 2] = ["cfgd.conf", MACOS_USER_PLIST_NAME];
+        // Which generated file each platform writes: the floor every arm is
+        // held to. A dialect that joins one platform adds a row here, and an
+        // arm that stops producing one fails on the row it left behind.
+        const MATRIX: [(&str, &str); 10] = [
+            ("FreeBsd", ".cfgd.env"),
+            ("FreeBsd", "cfgd-env.fish"),
+            ("Linux", ".cfgd.env"),
+            ("Linux", "cfgd-env.fish"),
+            ("Linux", "cfgd.conf"),
+            ("MacOs", ".cfgd.env"),
+            ("MacOs", "cfgd-env.fish"),
+            ("MacOs", MACOS_USER_PLIST_NAME),
+            ("Windows", ".cfgd-env.ps1"),
+            ("Windows", ".cfgd.env"),
+        ];
         // The engine's own roster, less the rc files it injects a source line
         // into. Only the blockless names are written down; which dialects must
         // carry blocks is whatever this leaves.
@@ -1751,7 +1770,7 @@ mod tests {
             git_bash_present: true,
             zsh_present: true,
         };
-        let mut seen: Vec<String> = Vec::new();
+        let mut seen: Vec<(String, String)> = Vec::new();
         for (platform, home) in [
             (EnvPlatform::Linux, Path::new("/home/tj")),
             (EnvPlatform::MacOs, Path::new("/Users/tj")),
@@ -1787,19 +1806,29 @@ mod tests {
                         "{name} renders no layer blocks:\n{content}",
                     );
                 }
-                if !seen.contains(&name) {
-                    seen.push(name);
+                let row = (format!("{platform:?}"), name);
+                if !seen.contains(&row) {
+                    seen.push(row);
                 }
             }
         }
         seen.sort();
-        // The floor is per DIALECT, not per file: every generated file the
-        // engine names has to be one this matrix actually produced, so a probe
-        // or platform that stopped yielding one fails here instead of leaving
-        // it unwalked.
+        let expected: Vec<(String, String)> = MATRIX
+            .iter()
+            .map(|(platform, name)| ((*platform).to_string(), (*name).to_string()))
+            .collect();
         assert_eq!(
-            seen, written,
-            "the walk read a different set of generated files than the engine names",
+            seen, expected,
+            "the walk read a different (platform, file) matrix than this pin's floor",
+        );
+        // And the names in that matrix are exactly the ones the engine rosters,
+        // so a sixth dialect cannot be held by a floor that never heard of it.
+        let mut names: Vec<String> = seen.into_iter().map(|(_, name)| name).collect();
+        names.sort();
+        names.dedup();
+        assert_eq!(
+            names, written,
+            "the matrix and the engine's own roster name different files",
         );
     }
 }

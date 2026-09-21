@@ -231,6 +231,9 @@ does not decide it.
 # To change a line, edit the profile or module its block names.
 # Blocks run low to high precedence — the last assignment wins.
 
+# path
+export PATH="$HOME/.local/bin:$PATH" # profile:work
+
 # source: team (priority 500)
 export EDITOR="vim"
 export LANG="en_US.UTF-8"
@@ -257,13 +260,15 @@ alias v="nvim"
 - Blocks run low precedence to high, so the shell's own last-wins resolves them
   exactly as cfgd's merge does. A value you did not expect is traceable to the
   block it came from without running `cfgd profile show --resolved`.
-- Layers of one owner that stand next to each other (a source's own profile and
-  the [overrides](sources.md) you set for it) share one block, headed by the rank
-  the last of them holds, and that owner's last word for a name is the line you
-  see.
+- A source's own tiers each keep their own block: the standard tier at the
+  subscription's priority, a [subscriber override](sources.md) one step above it,
+  a required tier above your local profiles. Each states its own number, so a
+  value an override replaced is still in the file, above the line that beat it.
 - `PATH` is the one exception: its declarations concatenate rather than displace,
   so it is one composed line in its own `# path` block, ahead of everything else
-  so a declared value may name a binary on a bootstrapped manager's `PATH`.
+  so a declared value may name a binary on a bootstrapped manager's `PATH`. It is
+  also the one line that still carries a trailing `# kind:name` comment, because
+  it can have several producers and no single header can name them.
 - `~/.config/environment.d/cfgd.conf` and the macOS LaunchAgent carry the
   resolved values alone: `environment.d` is `KEY=VALUE` with no last-wins to
   layer on, and the LaunchAgent is a plist.

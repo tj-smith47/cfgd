@@ -313,10 +313,13 @@ fn generate_content(
 /// One layer's entries as its block renders them: sorted by name, and one line
 /// per name.
 ///
-/// A block is one contiguous run of one owner, so a subscription's two tiers
-/// can both declare a name inside it. The LAST of them is what that owner
-/// contributes, and two assignments of one name under one header would also
-/// read as the file setting it twice.
+/// A block is one contiguous run of one owner at one rank, and a source can
+/// deliver several layers at its own priority, so two of them can declare a
+/// name inside it. The LAST of them is what that owner contributes at that
+/// rank, and two assignments of one name under one header would also read as
+/// the file setting it twice. A tier of a different rank is a block of its
+/// own, so its declaration of the same name survives verbatim above or below
+/// this one.
 fn block_entries<T>(entries: &[T], name: impl Fn(&T) -> &String) -> Vec<&T> {
     let mut sorted: Vec<&T> = entries.iter().rev().collect();
     sorted.sort_by(|a, b| name(a).cmp(name(b)));

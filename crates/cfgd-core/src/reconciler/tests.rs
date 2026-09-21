@@ -16103,22 +16103,18 @@ fn a_successful_env_apply_resolves_the_per_item_rows_it_converged() {
 
 // --- LayeredEnv tests ---
 
-/// Two layers of one subscription are one block.
-///
-/// `ProfileLayer::owner_token` spells `source:<name>` for every layer a
-/// subscription delivered, so a source contributing two layers hands the view
-/// two blocks under one header — a repeated section rather than two layers a
-/// reader could tell apart. They are joined in declaration order with every
-/// declaration kept, outranked entries included, which is what a reader opens
-/// the layered file to see.
-#[test]
-fn two_layers_of_one_subscription_share_one_block() {
-    let env = |name: &str, value: &str| crate::config::EnvVar {
+/// An env var for the subscription pins below.
+fn team_env(name: &str, value: &str) -> crate::config::EnvVar {
+    crate::config::EnvVar {
         name: name.to_string(),
         value: value.to_string(),
         platforms: Vec::new(),
-    };
-    let team = |priority: u32, env: Vec<crate::config::EnvVar>| crate::config::ProfileLayer {
+    }
+}
+
+/// One layer a subscription named `team` delivered at `priority`.
+fn team_layer(priority: u32, env: Vec<crate::config::EnvVar>) -> crate::config::ProfileLayer {
+    crate::config::ProfileLayer {
         source: "team".to_string(),
         profile_name: format!("team-{priority}"),
         priority,
@@ -16127,13 +16123,25 @@ fn two_layers_of_one_subscription_share_one_block() {
             env,
             ..Default::default()
         },
-    };
-    // Adjacent ranks, so the header states a number only the HIGHEST of the
-    // joined layers spells: taking the first layer's rank instead would print
-    // 500 and the difference would be one digit rather than nothing.
+    }
+}
+
+/// Two layers one subscription delivered AT ONE RANK are one block.
+///
+/// `ProfileLayer::owner_token` spells `source:<name>` for every layer a
+/// subscription delivered, and its recommended tier, its opted-in profiles and
+/// its standard profiles all take the subscription's own number, so a source
+/// contributing two such layers would hand the view two blocks with identical
+/// headers — a repeated section rather than two layers a reader could tell
+/// apart. They are joined in declaration order with every declaration kept.
+#[test]
+fn two_layers_of_one_subscription_at_one_rank_share_one_block() {
     let layers = vec![
-        team(500, vec![env("PAGER", "less")]),
-        team(501, vec![env("PAGER", "bat"), env("EDITOR", "vi")]),
+        team_layer(500, vec![team_env("PAGER", "less")]),
+        team_layer(
+            500,
+            vec![team_env("PAGER", "bat"), team_env("EDITOR", "vi")],
+        ),
     ];
     let merged = crate::config::merge_layers(&layers);
     let resolved = crate::config::ResolvedProfile { layers, merged };
@@ -16144,15 +16152,10 @@ fn two_layers_of_one_subscription_share_one_block() {
         layered
             .layers
             .iter()
-            .map(|l| l.owner.as_str())
+            .map(|l| (l.owner.as_str(), l.priority))
             .collect::<Vec<_>>(),
-        ["source:team"],
-        "both layers spell one owner token, so the view carries one block",
-    );
-    assert_eq!(
-        layered.layers[0].priority,
-        Some(501),
-        "a joined block ranks where its highest layer put it",
+        [("source:team", Some(500))],
+        "one owner at one rank is one block",
     );
     assert_eq!(
         layered.layers[0]
@@ -16161,19 +16164,18 @@ fn two_layers_of_one_subscription_share_one_block() {
             .map(|ev| (ev.name.as_str(), ev.value.as_str()))
             .collect::<Vec<_>>(),
         [("PAGER", "less"), ("PAGER", "bat"), ("EDITOR", "vi")],
-        "the joined block holds both layers' declarations in declaration order, \
-         the outranked PAGER included",
+        "the joined block holds both layers' declarations in declaration order",
     );
 
-    // The rendered file says the same: one header carrying the joined block's
-    // own rank, and ONE assignment per name inside it — two `export PAGER=`
-    // lines under one header would read as the file setting it twice.
+    // The rendered file says the same: one header, and ONE assignment per name
+    // inside it — two `export PAGER=` lines under one header would read as the
+    // file setting it twice.
     let content = super::generate_env_file_content(&layered, None);
     let blocks =
         super::env_files::generate_blocks(super::env_files::Dialect::Posix, &layered, None);
     assert_eq!(
         block_headers(&blocks),
-        ["# source: team (priority 501)"],
+        ["# source: team (priority 500)"],
         "{content}"
     );
     assert_eq!(
@@ -16186,8 +16188,82 @@ fn two_layers_of_one_subscription_share_one_block() {
     );
     assert_eq!(
         block_of(&blocks, "export PAGER=\"bat\""),
+        Some("# source: team (priority 500)"),
+        "the surviving value is the one the later layer wrote:\n{content}"
+    );
+}
+
+/// Two ADJACENT tiers of one subscription each keep their own block.
+///
+/// A subscriber override rides one step above the source's own items
+/// (`composition::layers`), so the two tiers share an owner token and stand
+/// next to each other with no third owner between them. A header states the
+/// rank that put its block where it is, so joining them would print a line
+/// declared at 500 under a header saying 501 and drop the outranked line
+/// altogether. Whether an outranked declaration survives cannot depend on
+/// whether some unrelated owner's layer happens to sit between the two tiers,
+/// which is what `a_straddling_owners_two_blocks_each_state_their_own_priority`
+/// holds for the case where one does.
+#[test]
+fn two_adjacent_tiers_of_one_subscription_each_keep_their_own_block() {
+    let layers = vec![
+        team_layer(
+            500,
+            vec![team_env("PAGER", "less"), team_env("LANG", "en_US.UTF-8")],
+        ),
+        team_layer(
+            501,
+            vec![team_env("PAGER", "bat"), team_env("EDITOR", "vi")],
+        ),
+    ];
+    let merged = crate::config::merge_layers(&layers);
+    let resolved = crate::config::ResolvedProfile { layers, merged };
+
+    let layered = super::LayeredEnv::of(&resolved, &[]);
+
+    assert_eq!(
+        layered
+            .layers
+            .iter()
+            .map(|l| (l.owner.as_str(), l.priority))
+            .collect::<Vec<_>>(),
+        [("source:team", Some(500)), ("source:team", Some(501))],
+        "one owner at two ranks is two blocks, each stating its own",
+    );
+
+    let content = super::generate_env_file_content(&layered, None);
+    let blocks =
+        super::env_files::generate_blocks(super::env_files::Dialect::Posix, &layered, None);
+    assert_eq!(
+        block_headers(&blocks),
+        [
+            "# source: team (priority 500)",
+            "# source: team (priority 501)"
+        ],
+        "{content}"
+    );
+    // The outranked value is verbatim in the tier that declared it, ABOVE the
+    // tier that beat it — the order is what proves the precedence.
+    assert_eq!(
+        block_of(&blocks, "export PAGER=\"less\""),
+        Some("# source: team (priority 500)"),
+        "{content}"
+    );
+    assert_eq!(
+        block_of(&blocks, "export PAGER=\"bat\""),
         Some("# source: team (priority 501)"),
-        "the surviving value is the one the higher layer wrote:\n{content}"
+        "{content}"
+    );
+    assert!(
+        content.find("export PAGER=\"less\"") < content.find("export PAGER=\"bat\""),
+        "the shell's own last-wins resolves the two in file order:\n{content}"
+    );
+    // A name only the lower tier declares stays under the lower tier's header:
+    // a joined block would have printed it under the higher number.
+    assert_eq!(
+        block_of(&blocks, "export LANG=\"en_US.UTF-8\""),
+        Some("# source: team (priority 500)"),
+        "{content}"
     );
 }
 
