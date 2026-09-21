@@ -867,9 +867,7 @@
             "acceptRecommended": false,
             "allowScripts": false,
             "optIn": [],
-            "overrides": null,
             "priority": 500,
-            "reject": null,
             "requireSignedCommits": false
           },
           "description": "What this machine accepts from the source and how it applies."
@@ -962,7 +960,6 @@
           "type": "array"
         },
         "overrides": {
-          "default": null,
           "description": "Local values to deep-merge on top of what the source delivers, applied\nafter composition."
         },
         "priority": {
@@ -980,7 +977,6 @@
           ]
         },
         "reject": {
-          "default": null,
           "description": "Items from the source's `recommended` tier to drop entirely rather than\naccept. A mapping under `packages`, `env`, `aliases`, and/or `modules`;\nany other top-level key is rejected as a typo."
         },
         "requireSignedCommits": {
