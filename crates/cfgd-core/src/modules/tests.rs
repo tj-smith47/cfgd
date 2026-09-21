@@ -18,6 +18,19 @@ use crate::test_helpers::{
 // Cross-cutting tests reach into private helpers of submodules; expose them.
 use super::git::resolve_subdir;
 
+/// The package a resolution that must not have routed produced. A test whose
+/// subject IS a bootstrap route matches the arm itself; every other one reads
+/// its package through here, so an unexpected route fails by name rather than
+/// as an absent field.
+fn package_of(resolution: PackageResolution) -> ResolvedPackage {
+    match resolution {
+        PackageResolution::Package(pkg) => *pkg,
+        PackageResolution::Bootstrap(route) => {
+            panic!("the package resolves to a manager, not to a route: {route:?}")
+        }
+    }
+}
+
 // --- Module loading tests ---
 
 #[test]
@@ -362,6 +375,7 @@ fn resolve_package_simple_native() {
 
     let mut result = resolve_package(&entry, "test", &platform, &managers, None)
         .unwrap()
+        .map(package_of)
         .unwrap();
     assert_eq!(result.canonical_name, "ripgrep");
     assert_eq!(result.resolved_name, "ripgrep");
@@ -395,6 +409,7 @@ fn a_bare_entry_resolves_to_the_available_manager_that_already_holds_it() {
 
     let result = resolve_package(&entry, "nvim", &platform, &managers, Some(&cx))
         .unwrap()
+        .map(package_of)
         .unwrap();
     assert_eq!(result.manager, "brew", "the manager that holds npm wins");
     assert!(
@@ -405,6 +420,7 @@ fn a_bare_entry_resolves_to_the_available_manager_that_already_holds_it() {
     // Nothing to read from: the platform default stands, as it always has.
     let unread = resolve_package(&entry, "nvim", &platform, &managers, None)
         .unwrap()
+        .map(package_of)
         .unwrap();
     assert_eq!(unread.manager, "apt");
 }
@@ -430,6 +446,7 @@ fn an_authored_prefer_list_outranks_the_manager_that_holds_the_package() {
 
     let result = resolve_package(&entry, "nvim", &platform, &managers, Some(&cx))
         .unwrap()
+        .map(package_of)
         .unwrap();
     assert_eq!(result.manager, "apt", "an authored prefer list is honoured");
     assert!(result.manager_declared);
@@ -457,6 +474,7 @@ fn a_holder_is_asked_under_its_alias_and_never_when_denied() {
     };
     let result = resolve_package(&aliased, "nvim", &platform, &managers, Some(&cx))
         .unwrap()
+        .map(package_of)
         .unwrap();
     assert_eq!(
         (result.manager.as_str(), result.resolved_name.as_str()),
@@ -469,6 +487,7 @@ fn a_holder_is_asked_under_its_alias_and_never_when_denied() {
     };
     let result = resolve_package(&denied, "nvim", &platform, &managers, Some(&cx))
         .unwrap()
+        .map(package_of)
         .unwrap();
     assert_eq!(result.manager, "apt");
 }
@@ -502,6 +521,7 @@ fn resolve_package_with_prefer_list() {
     // brew is unavailable, so snap should be tried next
     let result = resolve_package(&entry, "nvim", &platform, &managers, None)
         .unwrap()
+        .map(package_of)
         .unwrap();
     assert_eq!(result.manager, "snap");
     assert_eq!(result.resolved_name, "nvim"); // alias applied
@@ -531,6 +551,7 @@ fn resolve_package_min_version_check() {
     // apt has 0.6.1 which is < 0.9, so snap (0.10.3) should be chosen
     let result = resolve_package(&entry, "nvim", &platform, &managers, None)
         .unwrap()
+        .map(package_of)
         .unwrap();
     assert_eq!(result.manager, "snap");
     assert_eq!(result.version, Some("0.10.3".into()));
@@ -559,6 +580,7 @@ fn resolve_package_keeps_a_candidate_a_malformed_floor_could_not_judge() {
 
     let result = resolve_package(&entry, "nvim", &platform, &managers, None)
         .unwrap()
+        .map(package_of)
         .expect("the package still resolves");
     assert_eq!(result.manager, "apt");
     assert_eq!(
@@ -587,6 +609,7 @@ fn resolve_package_keeps_a_candidate_whose_manager_states_no_version() {
 
     let result = resolve_package(&entry, "nvim", &platform, &managers, None)
         .unwrap()
+        .map(package_of)
         .expect("the package still resolves");
     assert_eq!(result.manager, "quiet-mgr");
     assert_eq!(result.version, None, "nothing was proven about the offer");
@@ -616,6 +639,7 @@ fn resolve_package_prefers_a_proven_candidate_over_an_earlier_silent_one() {
 
     let result = resolve_package(&entry, "nvim", &platform, &managers, None)
         .unwrap()
+        .map(package_of)
         .expect("the package resolves");
     assert_eq!(result.manager, "loud-second");
     assert_eq!(result.version, Some("1.4.0".into()));
@@ -639,6 +663,7 @@ fn resolve_package_falls_back_to_the_silent_candidate_when_the_proven_one_is_bel
 
     let result = resolve_package(&entry, "nvim", &platform, &managers, None)
         .unwrap()
+        .map(package_of)
         .expect("the package resolves");
     assert_eq!(result.manager, "quiet-ahead");
     assert_eq!(result.version, None);
@@ -671,6 +696,162 @@ fn resolve_package_unresolvable() {
     );
 }
 
+/// A floor every available manager is proven below, for a package that names a
+/// manager this host can bootstrap, is a DECISION rather than a refusal.
+#[test]
+fn a_floor_no_manager_meets_resolves_to_a_bootstrap_route() {
+    let apt = MockManager::new("apt").with_package("cargo", "1.75");
+    // `MockManager` hardcodes its method, and the claim below is about WHICH
+    // method the route reads, so the stand-in for the absent manager is the
+    // mock that names one. Both implement `PackageManager`, so one map holds
+    // them.
+    let cargo = crate::test_helpers::MockPackageManager::new("cargo")
+        .unavailable()
+        .bootstrappable_via("rustup");
+    let managers = make_manager_map(&[("apt", &apt), ("cargo", &cargo)]);
+    let entry = ModulePackageEntry {
+        name: "cargo".into(),
+        min_version: Some("1.85".into()),
+        prefer: vec!["apt".into()],
+        ..Default::default()
+    };
+
+    let route = match resolve_package(&entry, "nvim", &linux_ubuntu_platform(), &managers, None) {
+        Ok(Some(PackageResolution::Bootstrap(route))) => route,
+        other => panic!("a bootstrappable manager is a route, not a refusal: {other:?}"),
+    };
+    assert_eq!(route.package, "cargo");
+    assert_eq!(route.module, "nvim");
+    assert_eq!(
+        (route.found_in.as_str(), route.found.as_str()),
+        ("apt", "1.75")
+    );
+    assert_eq!(route.floor, "1.85");
+    assert_eq!(
+        route.via, "rustup",
+        "the route is the manager's OWN cascade"
+    );
+}
+
+/// A package that is not a manager, or one no host can bootstrap, keeps the
+/// refusal.
+#[test]
+fn a_floor_on_a_package_that_names_no_bootstrappable_manager_still_refuses() {
+    let apt = MockManager::new("apt").with_package("neovim", "0.6.1");
+    // Registered, bootstrappable and not a candidate: the only thing between
+    // this entry and a route is that `neovim` names no manager, so the claim
+    // rests on the lookup by name rather than on an empty registry.
+    let cargo = crate::test_helpers::MockPackageManager::new("cargo")
+        .unavailable()
+        .bootstrappable_via("rustup");
+    let managers = make_manager_map(&[("apt", &apt), ("cargo", &cargo)]);
+    let entry = ModulePackageEntry {
+        name: "neovim".into(),
+        min_version: Some("0.9".into()),
+        prefer: vec!["apt".into()],
+        ..Default::default()
+    };
+    let err = resolve_package(&entry, "nvim", &linux_ubuntu_platform(), &managers, None)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("every available manager offers a version below the declared minVersion 0.9"),
+        "{err}"
+    );
+}
+
+/// A manager already on this host has nothing left to bootstrap, so a floor it
+/// falls short of is the plain refusal: installing a second copy of a manager
+/// the machine already has would not raise what it offers.
+#[test]
+fn a_floor_an_available_manager_falls_short_of_still_refuses() {
+    let cargo = crate::test_helpers::MockPackageManager::new("cargo")
+        .offering("cargo", "1.75")
+        .bootstrappable_via("rustup");
+    let managers = make_manager_map(&[("cargo", &cargo)]);
+    let entry = ModulePackageEntry {
+        name: "cargo".into(),
+        min_version: Some("1.85".into()),
+        prefer: vec!["cargo".into()],
+        ..Default::default()
+    };
+    let err = resolve_package(&entry, "nvim", &linux_ubuntu_platform(), &managers, None)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("every available manager offers a version below the declared minVersion 1.85"),
+        "a manager the host already has offers no route: {err}"
+    );
+}
+
+/// Nothing in a module resolution asks the reader whether to take a route, so
+/// the run still refuses with the sentence it always gave.
+#[test]
+fn a_module_resolution_refuses_the_floor_a_route_could_meet() {
+    let dir = tempfile::tempdir().unwrap();
+    let module_dir = dir.path().join("modules").join("rust");
+    std::fs::create_dir_all(&module_dir).unwrap();
+    std::fs::write(
+        module_dir.join("module.yaml"),
+        r#"
+apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: rust
+spec:
+  packages:
+    - name: cargo
+      minVersion: "1.85"
+      prefer: [apt]
+"#,
+    )
+    .unwrap();
+
+    let apt = MockManager::new("apt").with_package("cargo", "1.75");
+    let cargo = crate::test_helpers::MockPackageManager::new("cargo")
+        .unavailable()
+        .bootstrappable_via("rustup");
+    let managers = make_manager_map(&[("apt", &apt), ("cargo", &cargo)]);
+    let cache_dir = tempfile::tempdir().unwrap();
+    let printer = test_printer();
+
+    let err = resolve_modules(
+        &["rust".into()],
+        dir.path(),
+        cache_dir.path(),
+        &[],
+        &linux_ubuntu_platform(),
+        &managers,
+        None,
+        &printer,
+    )
+    .unwrap_err()
+    .to_string();
+    assert_eq!(
+        err,
+        "package 'cargo' in module 'rust' cannot be resolved: every available manager offers \
+         a version below the declared minVersion 1.85"
+    );
+}
+
+/// One clause for one offer: every surface naming a route reads this, so the
+/// confirmation, the plan row and `cfgd doctor` cannot word it three ways.
+#[test]
+fn a_routes_offer_clause_names_the_manager_the_package_and_both_versions() {
+    let route = FloorBootstrap {
+        package: "cargo".into(),
+        module: "rust".into(),
+        found_in: "apt".into(),
+        found: "1.75".into(),
+        floor: "1.85".into(),
+        via: "rustup".into(),
+    };
+    assert_eq!(
+        route.offer_clause(),
+        "apt offers cargo 1.75, below the declared minVersion 1.85"
+    );
+}
+
 #[test]
 fn resolve_package_alias_applied() {
     let apt = MockManager::new("apt").with_package("fd-find", "8.7.0");
@@ -692,6 +873,7 @@ fn resolve_package_alias_applied() {
 
     let result = resolve_package(&entry, "test", &platform, &managers, None)
         .unwrap()
+        .map(package_of)
         .unwrap();
     assert_eq!(result.canonical_name, "fd");
     assert_eq!(result.resolved_name, "fd-find");
@@ -715,6 +897,7 @@ fn resolve_package_records_whether_the_author_named_the_manager() {
     let resolve = |entry: ModulePackageEntry| {
         resolve_package(&entry, "test", &platform, &managers, None)
             .unwrap()
+            .map(package_of)
             .unwrap()
     };
 
@@ -776,6 +959,7 @@ fn resolve_package_alias_winget() {
 
     let result = resolve_package(&entry, "editor", &platform, &managers, None)
         .unwrap()
+        .map(package_of)
         .unwrap();
     assert_eq!(result.canonical_name, "vscode");
     assert_eq!(result.resolved_name, "Microsoft.VisualStudioCode");
@@ -803,6 +987,7 @@ fn resolve_package_alias_chocolatey() {
 
     let result = resolve_package(&entry, "runtime", &platform, &managers, None)
         .unwrap()
+        .map(package_of)
         .unwrap();
     assert_eq!(result.canonical_name, "node");
     assert_eq!(result.resolved_name, "nodejs.install");
@@ -830,6 +1015,7 @@ fn resolve_package_alias_scoop() {
 
     let result = resolve_package(&entry, "tools", &platform, &managers, None)
         .unwrap()
+        .map(package_of)
         .unwrap();
     assert_eq!(result.canonical_name, "ripgrep");
     assert_eq!(result.resolved_name, "rg");
@@ -1453,6 +1639,7 @@ fn resolve_package_script_manager() {
 
     let result = resolve_package(&entry, "test", &platform, &managers, None)
         .unwrap()
+        .map(package_of)
         .unwrap();
     assert_eq!(result.manager, "script");
     assert_eq!(result.canonical_name, "rustup");
@@ -1482,6 +1669,7 @@ fn resolve_package_script_fallback() {
 
     let result = resolve_package(&entry, "nvim", &platform, &managers, None)
         .unwrap()
+        .map(package_of)
         .unwrap();
     assert_eq!(result.manager, "script");
     assert_eq!(result.script, Some("scripts/install-neovim.sh".into()));
@@ -1507,6 +1695,7 @@ fn resolve_package_script_preferred_over_manager() {
 
     let result = resolve_package(&entry, "nvim", &platform, &managers, None)
         .unwrap()
+        .map(package_of)
         .unwrap();
     assert_eq!(result.manager, "script");
 }
@@ -1558,7 +1747,7 @@ fn resolve_package_platform_match_os() {
 
     let result = resolve_package(&entry, "test", &platform, &managers, None).unwrap();
     assert!(result.is_some());
-    assert_eq!(result.unwrap().manager, "apt");
+    assert_eq!(result.map(package_of).unwrap().manager, "apt");
 }
 
 #[test]
@@ -1687,7 +1876,9 @@ fn resolve_module_packages_skips_filtered() {
         origin: None,
     };
 
-    let resolved = resolve_module_packages(&module, &platform, &managers, None).unwrap();
+    let resolved = resolve_module_packages(&module, &platform, &managers, None)
+        .unwrap()
+        .0;
     // Only ripgrep should be resolved; apt-only-tool is filtered out on macOS
     assert_eq!(resolved.len(), 1);
     assert_eq!(resolved[0].canonical_name, "ripgrep");
@@ -3316,6 +3507,7 @@ fn resolve_package_deny_skips_manager() {
 
     let result = resolve_package(&entry, "test", &platform, &managers, None)
         .unwrap()
+        .map(package_of)
         .unwrap();
     // brew is denied, so apt should be used
     assert_eq!(result.manager, "apt");
@@ -3361,6 +3553,7 @@ fn resolve_package_script_manager_with_deny() {
 
     let result = resolve_package(&entry, "test", &platform, &managers, None)
         .unwrap()
+        .map(package_of)
         .unwrap();
     assert_eq!(result.manager, "script");
     assert!(result.script.is_some());
@@ -5300,7 +5493,9 @@ fn a_resolution_that_renders_no_version_asks_no_manager_for_one() {
         origin: None,
     };
 
-    let resolved = resolve_module_packages(&module, &platform, &managers, None).unwrap();
+    let resolved = resolve_module_packages(&module, &platform, &managers, None)
+        .unwrap()
+        .0;
     assert_eq!(resolved.len(), 2);
     assert!(resolved.iter().all(|p| p.version.is_none()));
     assert_eq!(
@@ -5424,7 +5619,9 @@ fn resolve_module_packages_multiple_packages() {
         origin: None,
     };
 
-    let resolved = resolve_module_packages(&module, &platform, &managers, None).unwrap();
+    let resolved = resolve_module_packages(&module, &platform, &managers, None)
+        .unwrap()
+        .0;
     assert_eq!(resolved.len(), 3);
     assert_eq!(resolved[0].canonical_name, "ripgrep");
     assert_eq!(resolved[1].canonical_name, "fd");
@@ -5448,7 +5645,9 @@ fn resolve_module_packages_empty_packages() {
         origin: None,
     };
 
-    let resolved = resolve_module_packages(&module, &platform, &managers, None).unwrap();
+    let resolved = resolve_module_packages(&module, &platform, &managers, None)
+        .unwrap()
+        .0;
     assert!(
         resolved.is_empty(),
         "module with no packages should resolve to empty"
@@ -5491,7 +5690,9 @@ fn resolve_module_packages_mixed_platforms() {
         origin: None,
     };
 
-    let resolved = resolve_module_packages(&module, &platform, &managers, None).unwrap();
+    let resolved = resolve_module_packages(&module, &platform, &managers, None)
+        .unwrap()
+        .0;
     assert_eq!(
         resolved.len(),
         2,
@@ -5684,6 +5885,7 @@ fn module_resolution_keeps_a_manager_whose_bootstrap_plan_is_satisfiable() {
 
     let result = resolve_package(&entry, "test", &platform, &managers, None)
         .unwrap()
+        .map(package_of)
         .unwrap();
     assert_eq!(result.manager, "cargo");
     assert_eq!(result.canonical_name, "ripgrep");
@@ -5712,6 +5914,7 @@ fn resolve_package_skips_an_unavailable_manager_that_plans_no_bootstrap() {
 
     let result = resolve_package(&entry, "test", &platform, &managers, None)
         .unwrap()
+        .map(package_of)
         .unwrap();
     assert_eq!(result.manager, "brew");
 }
@@ -5737,6 +5940,7 @@ fn resolve_package_deny_script_still_works() {
 
     let result = resolve_package(&entry, "test", &platform, &managers, None)
         .unwrap()
+        .map(package_of)
         .unwrap();
     assert_eq!(result.manager, "script", "should fall through to script");
 }

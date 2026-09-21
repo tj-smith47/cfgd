@@ -675,6 +675,7 @@ fn a_manager_that_cannot_list_is_one_erroring_check_and_the_rest_still_reports()
     // The npm entry pins a floor too, so BOTH package passes meet the same
     // unlistable manager and the reader is still told once.
     let modules = vec![ResolvedModule {
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "web".to_string(),
         packages: vec![ResolvedPackage {
@@ -999,6 +1000,7 @@ fn plan_module_with_files() {
     std::fs::write(&source, "config").unwrap();
 
     let modules = vec![ResolvedModule {
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "nvim".to_string(),
         packages: vec![],
@@ -1067,6 +1069,7 @@ fn plan_module_with_scripts() {
     let resolved = make_empty_resolved();
 
     let modules = vec![ResolvedModule {
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "nvim".to_string(),
         packages: vec![],
@@ -1128,6 +1131,7 @@ fn plan_multiple_modules_in_dependency_order() {
 
     let modules = vec![
         ResolvedModule {
+            floor_bootstraps: Vec::new(),
             dep_pulled: false,
             name: "node".to_string(),
             packages: vec![ResolvedPackage {
@@ -1158,6 +1162,7 @@ fn plan_multiple_modules_in_dependency_order() {
             platform_skip_reason: None,
         },
         ResolvedModule {
+            floor_bootstraps: Vec::new(),
             dep_pulled: false,
             name: "nvim".to_string(),
             packages: vec![ResolvedPackage {
@@ -1238,6 +1243,7 @@ fn plan_package_actions_order_ties_by_manager_name_every_run() {
     let resolved = make_empty_resolved();
 
     let module = ResolvedModule {
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "toolchain".to_string(),
         packages: vec![
@@ -1330,6 +1336,7 @@ fn plan_routes_module_work_to_the_phase_of_its_kind() {
     std::fs::write(&source, "config").unwrap();
 
     let modules = vec![ResolvedModule {
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "nvim".to_string(),
         packages: vec![ResolvedPackage {
@@ -1436,6 +1443,7 @@ fn plan_routes_module_work_to_the_phase_of_its_kind() {
 /// helper keeps package identities disjoint so both modules' phases survive.
 fn resolved_module_with_package(name: &str, pkg: &str, manager: &str) -> ResolvedModule {
     ResolvedModule {
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: name.to_string(),
         packages: vec![ResolvedPackage {
@@ -1932,6 +1940,7 @@ fn verify_routes_through_package_identity_for_name_remapping_manager() {
     let printer = test_printer();
 
     let modules = vec![ResolvedModule {
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "gotools".to_string(),
         packages: vec![ResolvedPackage {
@@ -1999,6 +2008,7 @@ fn verify_module_script_packages_not_false_drift() {
     let printer = test_printer();
 
     let modules = vec![ResolvedModule {
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "rustup".to_string(),
         packages: vec![ResolvedPackage {
@@ -2796,6 +2806,7 @@ fn plan_module_with_script_packages() {
     let resolved = make_empty_resolved();
 
     let modules = vec![ResolvedModule {
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "rustup".to_string(),
         packages: vec![ResolvedPackage {
@@ -2935,6 +2946,7 @@ fn conflict_detection_different_content() {
     }];
 
     let modules = vec![ResolvedModule {
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "mymod".to_string(),
         packages: vec![],
@@ -3057,6 +3069,7 @@ fn conflict_detection_identical_content_ok() {
     }];
 
     let modules = vec![ResolvedModule {
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "mymod".to_string(),
         packages: vec![],
@@ -3094,6 +3107,7 @@ fn conflict_detection_identical_content_ok() {
     let file_c = dir.path().join("c.txt");
     std::fs::write(&file_c, "different content").unwrap();
     let conflicting_modules = vec![ResolvedModule {
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "mymod".to_string(),
         packages: vec![],
@@ -3146,6 +3160,7 @@ fn conflict_detection_no_overlap_ok() {
     }];
 
     let modules = vec![ResolvedModule {
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "mymod".to_string(),
         packages: vec![],
@@ -3181,6 +3196,7 @@ fn conflict_detection_no_overlap_ok() {
     );
     // Prove this is meaningful: same target with different content WOULD conflict
     let overlapping_modules = vec![ResolvedModule {
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "mymod".to_string(),
         packages: vec![],
@@ -3398,6 +3414,7 @@ fn plan_env_module_wins_on_conflict() {
         platforms: vec![],
     }];
     let modules = vec![ResolvedModule {
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "nvim".into(),
         packages: vec![],
@@ -3553,6 +3570,7 @@ fn plan_env_module_alias_wins_on_conflict() {
         platforms: vec![],
     }];
     let modules = vec![ResolvedModule {
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "nvim".into(),
         packages: vec![],
@@ -7202,6 +7220,7 @@ fn apply_guard_skipped_module_script_does_not_fire_on_change() {
     let resolved = make_empty_resolved();
 
     let modules = vec![ResolvedModule {
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "testmod".to_string(),
         packages: vec![],
@@ -7303,6 +7322,7 @@ fn apply_guard_permitted_module_script_fires_on_change() {
     let resolved = make_empty_resolved();
 
     let modules = vec![ResolvedModule {
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "testmod".to_string(),
         packages: vec![],
@@ -7392,6 +7412,7 @@ fn apply_skipped_module_does_not_fire_on_change() {
     // planned Skip (the upcoming module-platforms scenario: a whole module is
     // skipped). The skip did nothing, so onChange must not fire.
     let modules = vec![ResolvedModule {
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "skippedmod".to_string(),
         packages: vec![],
@@ -9291,6 +9312,7 @@ fn plan_modules_reconcile_context_uses_pre_post_reconcile() {
     let reconciler = Reconciler::new(&registry, &state);
 
     let modules = vec![ResolvedModule {
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "test".to_string(),
         packages: vec![],
@@ -9539,6 +9561,7 @@ fn detect_file_conflicts_skip_and_delete_actions_ignored() {
     // Module targets the same path as Skip — should NOT conflict because
     // Skip/Delete actions are excluded from conflict detection
     let modules = vec![ResolvedModule {
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "mymod".to_string(),
         packages: vec![],
@@ -9619,6 +9642,7 @@ fn merge_module_env_aliases_merges_correctly() {
         platforms: vec![],
     }];
     let modules = vec![ResolvedModule {
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "mod1".into(),
         packages: vec![],
@@ -11899,6 +11923,7 @@ fn apply_module_install_packages_calls_manager() {
     let resolved = make_empty_resolved();
 
     let modules = vec![ResolvedModule {
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "nvim".to_string(),
         packages: vec![ResolvedPackage {
@@ -12004,6 +12029,7 @@ fn apply_module_deploy_files_creates_target() {
     let resolved = make_empty_resolved();
 
     let modules = vec![ResolvedModule {
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "mymod".to_string(),
         packages: vec![],
@@ -12116,6 +12142,7 @@ fn apply_module_deploy_files_leaves_a_target_that_already_holds_the_source_bytes
         patch: None,
     };
     let modules = vec![ResolvedModule {
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "mymod".to_string(),
         packages: vec![],
@@ -12215,6 +12242,7 @@ fn deploy_one_module_file_under_global_copy(
     let resolved = make_empty_resolved();
 
     let modules = vec![ResolvedModule {
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "mymod".to_string(),
         packages: vec![],
@@ -12383,6 +12411,7 @@ fn apply_module_deploy_files_patch_merges_into_the_target() {
     };
 
     let modules = vec![ResolvedModule {
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "mymod".to_string(),
         packages: vec![],
@@ -12471,6 +12500,7 @@ fn deploy_patch_module_file(module_dir: &std::path::Path, target: &std::path::Pa
     };
 
     let modules = vec![ResolvedModule {
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "mymod".to_string(),
         packages: vec![],
@@ -12589,6 +12619,7 @@ fn apply_module_deploy_files_symlink_strategy() {
     let resolved = make_empty_resolved();
 
     let modules = vec![ResolvedModule {
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "linkmod".to_string(),
         packages: vec![],
@@ -12729,6 +12760,7 @@ fn apply_module_install_packages_provisions_manager_when_needed() {
     let resolved = make_empty_resolved();
 
     let modules = vec![ResolvedModule {
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "tools".to_string(),
         packages: vec![ResolvedPackage {
@@ -12875,6 +12907,7 @@ fn a_package_a_prerequisite_landed_is_not_installed_again_by_the_packages_phase(
         min_version: None,
     };
     let modules = vec![ResolvedModule {
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "tools".to_string(),
         packages: vec![declared()],
@@ -13012,6 +13045,7 @@ fn an_install_that_landed_fewer_than_it_named_says_so_on_its_row() {
         min_version: None,
     };
     let modules = vec![ResolvedModule {
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "tools".to_string(),
         packages: vec![declared("npm"), declared("jq")],
@@ -13680,6 +13714,7 @@ fn a_tool_this_run_provisioned_is_not_installed_again_by_a_module_entry() {
     );
 
     let modules = vec![ResolvedModule {
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "tools".to_string(),
         packages: vec![defaulted_tool.clone(), widget.clone()],
@@ -14169,6 +14204,7 @@ fn a_tool_a_module_declares_is_provisioned_by_the_modules_own_route() {
     );
 
     let modules = vec![ResolvedModule {
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "tools".to_string(),
         packages: vec![declared_tool.clone(), widget.clone()],
@@ -14318,6 +14354,7 @@ fn plan_modules_encryption_always_with_symlink_skips() {
     let reconciler = Reconciler::new(&registry, &state);
 
     let modules = vec![ResolvedModule {
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "secrets-mod".to_string(),
         packages: vec![],
@@ -14376,6 +14413,7 @@ fn plan_modules_platform_skipped_emits_single_skip_and_no_other_actions() {
     // A platform-gated module carries a skip reason plus (defensively) packages
     // and scripts. plan_modules must emit exactly one Skip and nothing else.
     let modules = vec![ResolvedModule {
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "macstuff".to_string(),
         packages: vec![crate::modules::ResolvedPackage {
@@ -14441,6 +14479,7 @@ fn plan_modules_encryption_always_with_copy_proceeds() {
     let reconciler = Reconciler::new(&registry, &state);
 
     let modules = vec![ResolvedModule {
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "secrets-mod".to_string(),
         packages: vec![],
@@ -14502,6 +14541,7 @@ fn plan_modules_encryption_check_err_skips_with_error_reason() {
     let reconciler = Reconciler::new(&registry, &state);
 
     let modules = vec![ResolvedModule {
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "gpg-mod".to_string(),
         packages: vec![],
@@ -14563,6 +14603,7 @@ fn plan_modules_encryption_check_err_breaks_after_first_file() {
     let reconciler = Reconciler::new(&registry, &state);
 
     let modules = vec![ResolvedModule {
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "multi".to_string(),
         packages: vec![],
@@ -14643,6 +14684,7 @@ fn plan_modules_encryption_file_not_encrypted_skips() {
     let reconciler = Reconciler::new(&registry, &state);
 
     let modules = vec![ResolvedModule {
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "secrets-mod".to_string(),
         packages: vec![],
@@ -14759,6 +14801,7 @@ fn apply_module_run_script_executes_in_module_dir() {
     let resolved = make_empty_resolved();
 
     let modules = vec![ResolvedModule {
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "testmod".to_string(),
         packages: vec![],
@@ -15116,6 +15159,7 @@ fn verify_module_files_produce_no_reconciler_rows() {
     let resolved = make_empty_resolved();
 
     let modules = vec![ResolvedModule {
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "test-mod".to_string(),
         packages: vec![],
@@ -16661,6 +16705,7 @@ fn merge_module_env_aliases_combines_profile_and_modules() {
         platforms: vec![],
     }];
     let modules = vec![ResolvedModule {
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "test".to_string(),
         packages: vec![],
@@ -16712,6 +16757,7 @@ fn merge_module_env_aliases_module_overrides_profile() {
         platforms: vec![],
     }];
     let modules = vec![ResolvedModule {
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "test".to_string(),
         packages: vec![],
@@ -16790,6 +16836,7 @@ fn apply_module_deploy_files_hardlink_strategy() {
     };
 
     let modules = vec![ResolvedModule {
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "hardmod".to_string(),
         packages: vec![],
@@ -16897,6 +16944,7 @@ fn apply_module_deploy_files_copy_strategy() {
     };
 
     let modules = vec![ResolvedModule {
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "copymod".to_string(),
         packages: vec![],
@@ -17006,6 +17054,7 @@ fn apply_module_deploy_files_applies_permissions() {
     };
 
     let modules = vec![ResolvedModule {
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "permmod".to_string(),
         packages: vec![],
@@ -17105,6 +17154,7 @@ fn a_symlinked_module_files_declared_mode_lands_on_its_source() {
     };
 
     let modules = vec![ResolvedModule {
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "linkmod".to_string(),
         packages: vec![],
@@ -17204,6 +17254,7 @@ fn apply_module_deploy_files_directory_copy_strategy() {
     };
 
     let modules = vec![ResolvedModule {
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "dirmod".to_string(),
         packages: vec![],
@@ -17306,6 +17357,7 @@ fn apply_module_deploy_files_overwrites_existing_file() {
     };
 
     let modules = vec![ResolvedModule {
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "overmod".to_string(),
         packages: vec![],
@@ -17396,6 +17448,7 @@ fn apply_module_on_change_script_runs_when_module_has_changes() {
     };
 
     let modules = vec![ResolvedModule {
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "changemod".to_string(),
         packages: vec![],
@@ -17459,6 +17512,7 @@ fn apply_module_on_change_script_does_not_run_when_no_changes() {
     };
 
     let modules = vec![ResolvedModule {
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "nochangemod".to_string(),
         packages: vec![],
@@ -19361,6 +19415,7 @@ fn brew_install_fixture() -> (Vec<ResolvedModule>, ModuleAction) {
         min_version: None,
     };
     let modules = vec![ResolvedModule {
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "tools".to_string(),
         packages: vec![package.clone()],
@@ -20037,6 +20092,7 @@ fn brew_and_npm_module_fixture() -> Vec<ResolvedModule> {
         min_version: None,
     };
     vec![ResolvedModule {
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "tools".to_string(),
         packages: vec![brew_package, npm_package],
@@ -20439,6 +20495,7 @@ fn apply_module_install_packages_no_op_when_manager_not_in_registry() {
     let resolved = make_empty_resolved();
 
     let modules = vec![ResolvedModule {
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "ghost".to_string(),
         packages: vec![ResolvedPackage {
@@ -20535,6 +20592,7 @@ fn apply_module_install_packages_script_manager_runs_per_package_script() {
     let resolved = make_empty_resolved();
 
     let modules = vec![ResolvedModule {
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "scripted".to_string(),
         packages: vec![],
@@ -20625,6 +20683,7 @@ fn apply_module_install_packages_script_manager_failure_returns_err() {
 
     let dir = tempfile::tempdir().unwrap();
     let modules = vec![ResolvedModule {
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "bad-script".to_string(),
         packages: vec![],
@@ -20709,6 +20768,7 @@ fn run_guarded_script_install(
     let resolved = make_empty_resolved();
 
     let modules = vec![ResolvedModule {
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "guarded".to_string(),
         packages: vec![],
@@ -20897,6 +20957,7 @@ fn apply_module_on_change_script_runs_when_module_changed() {
     let resolved = make_empty_resolved();
 
     let module_actions = vec![ResolvedModule {
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "mymod".to_string(),
         packages: vec![],
@@ -20981,6 +21042,7 @@ fn apply_module_on_change_script_does_not_run_when_module_unchanged() {
     let resolved = make_empty_resolved();
 
     let module_actions = vec![ResolvedModule {
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "mymod".to_string(),
         packages: vec![],
@@ -21044,6 +21106,7 @@ fn apply_module_on_change_skip_scripts_flag_bypasses_module_on_change() {
     let resolved = make_empty_resolved();
 
     let module_actions = vec![ResolvedModule {
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "skipmod".to_string(),
         packages: vec![],
@@ -21233,6 +21296,7 @@ fn plan_modules_sorts_bootstrappable_managers_after_native_ones() {
     let reconciler = Reconciler::new(&registry, &state);
 
     let module = ResolvedModule {
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "multimgr".to_string(),
         packages: vec![
@@ -21335,6 +21399,7 @@ fn apply_module_with_git_source_file_serializes_into_module_state() {
     let resolved = make_empty_resolved();
 
     let module_actions = vec![ResolvedModule {
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "gitmod".to_string(),
         packages: vec![],
@@ -21441,6 +21506,7 @@ fn apply_module_on_change_failure_continues_with_default_continue_on_error() {
 
     // ScriptEntry::Simple defaults continueOnError=true for OnChange phase
     let module_actions = vec![ResolvedModule {
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "failmod".to_string(),
         packages: vec![],
@@ -21527,6 +21593,7 @@ fn apply_module_on_change_failure_aborts_when_continue_on_error_false() {
     let resolved = make_empty_resolved();
 
     let module_actions = vec![ResolvedModule {
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "abortmod".to_string(),
         packages: vec![],
@@ -22019,6 +22086,7 @@ fn apply_post_scripts_filter_runs_module_post_scripts() {
     let resolved = make_empty_resolved();
 
     let module = crate::modules::ResolvedModule {
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "nvim".to_string(),
         packages: vec![],
@@ -22118,6 +22186,7 @@ fn apply_pre_scripts_filter_runs_module_pre_scripts() {
     let resolved = make_empty_resolved();
 
     let module = crate::modules::ResolvedModule {
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "nvim".to_string(),
         packages: vec![],
@@ -22214,6 +22283,7 @@ fn apply_modules_phase_filter_runs_all_module_actions() {
     let resolved = make_empty_resolved();
 
     let module = crate::modules::ResolvedModule {
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "nvim".to_string(),
         packages: vec![],
@@ -22312,6 +22382,7 @@ fn apply_post_scripts_filter_skips_other_phases() {
     let resolved = make_empty_resolved();
 
     let module = crate::modules::ResolvedModule {
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "nvim".to_string(),
         packages: vec![],
@@ -29308,6 +29379,7 @@ fn the_post_apply_snapshot_covers_only_the_files_the_run_touched() {
     let resolved = make_empty_resolved();
 
     let modules = vec![ResolvedModule {
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "mymod".to_string(),
         packages: vec![],
@@ -29509,6 +29581,10 @@ fn a_bare_entry_another_manager_holds_is_neither_re_resolved_nor_planned() {
         let pkg = crate::modules::resolve_package(&entry, "nvim", &platform, &managers, Some(&cx))
             .unwrap()
             .unwrap();
+        let pkg = match pkg {
+            crate::modules::PackageResolution::Package(pkg) => *pkg,
+            other => panic!("the package resolves to a manager: {other:?}"),
+        };
         let manager = pkg.manager.clone();
         let mut module = make_resolved_module("nvim");
         module.packages = vec![pkg];

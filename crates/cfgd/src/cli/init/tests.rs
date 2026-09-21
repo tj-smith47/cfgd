@@ -2959,6 +2959,7 @@ fn apply_plan_records_module_state_for_the_modules_it_was_handed() {
     };
 
     let module = cfgd_core::modules::ResolvedModule {
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "demo".to_string(),
         packages: Vec::new(),

@@ -5,6 +5,8 @@ use std::path::{Path, PathBuf};
 
 use std::collections::HashSet;
 
+use serde::Serialize;
+
 use crate::config::ModulePackageEntry;
 use crate::errors::{ModuleError, Result};
 use crate::platform::Platform;
@@ -21,6 +23,51 @@ use super::{LoadedModule, ResolvedFile, ResolvedModule, ResolvedPackage, SourceM
 // ---------------------------------------------------------------------------
 // Package resolution
 // ---------------------------------------------------------------------------
+
+/// A declared floor no available manager meets, for a package that is ALSO a
+/// registered manager this host can bootstrap.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FloorBootstrap {
+    pub package: String,
+    pub module: String,
+    /// The manager that offered the best proven-below version, and what it offered.
+    pub found_in: String,
+    pub found: String,
+    pub floor: String,
+    /// `BootstrapPlan::method`: `rustup`, `nvm`, `homebrew installer`, or a mediator's name.
+    pub via: String,
+}
+
+impl FloorBootstrap {
+    /// What this host offers and why it falls short, as ONE clause: the
+    /// confirmation that asks whether to take the route, the plan row that
+    /// states it and `cfgd doctor`'s unresolved row all read it, so one offer
+    /// cannot be worded three ways.
+    pub fn offer_clause(&self) -> String {
+        format!(
+            "{} offers {} {}, below the declared minVersion {}",
+            self.found_in, self.package, self.found, self.floor
+        )
+    }
+}
+
+/// What one declared package entry resolves to: the manager it lands on, or the
+/// route a floor no available manager meets could be met by.
+///
+/// `Debug` because a resolver test panics with the arm it did not expect;
+/// `ResolvedPackage` already derives it.
+#[derive(Debug)]
+pub enum PackageResolution {
+    Package(Box<ResolvedPackage>),
+    Bootstrap(FloorBootstrap),
+}
+
+impl From<ResolvedPackage> for PackageResolution {
+    fn from(pkg: ResolvedPackage) -> Self {
+        PackageResolution::Package(Box::new(pkg))
+    }
+}
 
 /// Resolve a single module package entry to a concrete (manager, name, version).
 ///
@@ -65,7 +112,7 @@ pub fn resolve_package(
     platform: &Platform,
     managers: &HashMap<String, &dyn PackageManager>,
     installed: Option<&crate::providers::PackageContext<'_>>,
-) -> Result<Option<ResolvedPackage>> {
+) -> Result<Option<PackageResolution>> {
     // Platform filter: skip entirely if platforms is non-empty and doesn't match
     if !crate::platform::PlatformGated::applies_to(entry, platform) {
         return Ok(None);
@@ -97,6 +144,9 @@ pub fn resolve_package(
     // Whether some candidate proved it offers below the floor, which is the
     // only way a floor can make a package genuinely unresolvable.
     let mut proven_below = false;
+    // The (manager, version) of the first candidate PROVEN below the floor, the
+    // operands a route's own clause quotes. `None` until one proves it.
+    let mut best_found: Option<(String, String)> = None;
 
     for candidate in &candidates {
         // Special "script" manager — always available, uses custom install script
@@ -111,20 +161,23 @@ pub fn resolve_package(
                         entry.name
                     ),
                 })?;
-            return Ok(Some(ResolvedPackage {
-                canonical_name: entry.name.clone(),
-                resolved_name: entry.name.clone(),
-                manager: crate::SCRIPT_SENTINEL.to_string(),
-                // `script` only ever reaches a candidate list the author
-                // wrote: it is not any platform's native manager.
-                manager_declared: true,
-                version: None,
-                script: Some(script.clone()),
-                creates: entry.creates.clone(),
-                only_if: entry.only_if.clone(),
-                unless: entry.unless.clone(),
-                min_version: entry.min_version.clone(),
-            }));
+            return Ok(Some(
+                ResolvedPackage {
+                    canonical_name: entry.name.clone(),
+                    resolved_name: entry.name.clone(),
+                    manager: crate::SCRIPT_SENTINEL.to_string(),
+                    // `script` only ever reaches a candidate list the author
+                    // wrote: it is not any platform's native manager.
+                    manager_declared: true,
+                    version: None,
+                    script: Some(script.clone()),
+                    creates: entry.creates.clone(),
+                    only_if: entry.only_if.clone(),
+                    unless: entry.unless.clone(),
+                    min_version: entry.min_version.clone(),
+                }
+                .into(),
+            ));
         }
 
         let mgr = match managers.get(candidate.as_str()) {
@@ -153,18 +206,21 @@ pub fn resolve_package(
         // If the manager isn't installed yet but can be bootstrapped, resolve
         // optimistically — versions cannot be queried until it's installed.
         if bootstrappable {
-            return Ok(Some(ResolvedPackage {
-                canonical_name: entry.name.clone(),
-                resolved_name,
-                manager: candidate.clone(),
-                manager_declared,
-                version: None,
-                script: None,
-                creates: None,
-                only_if: None,
-                unless: None,
-                min_version: entry.min_version.clone(),
-            }));
+            return Ok(Some(
+                ResolvedPackage {
+                    canonical_name: entry.name.clone(),
+                    resolved_name,
+                    manager: candidate.clone(),
+                    manager_declared,
+                    version: None,
+                    script: None,
+                    creates: None,
+                    only_if: None,
+                    unless: None,
+                    min_version: entry.min_version.clone(),
+                }
+                .into(),
+            ));
         }
 
         // A floor the manager cannot read rejects nothing: making every
@@ -183,20 +239,26 @@ pub fn resolve_package(
                     // through to the loose-semver default.
                     if !mgr.version_meets_minimum(&ver, min_ver) {
                         proven_below = true;
+                        // First candidate wins, matching `prefer` order: the
+                        // author's own ordering decides which offer is quoted.
+                        best_found.get_or_insert((candidate.clone(), ver));
                         continue;
                     }
-                    return Ok(Some(ResolvedPackage {
-                        canonical_name: entry.name.clone(),
-                        resolved_name,
-                        manager: candidate.clone(),
-                        manager_declared,
-                        version: Some(ver),
-                        script: None,
-                        creates: None,
-                        only_if: None,
-                        unless: None,
-                        min_version: entry.min_version.clone(),
-                    }));
+                    return Ok(Some(
+                        ResolvedPackage {
+                            canonical_name: entry.name.clone(),
+                            resolved_name,
+                            manager: candidate.clone(),
+                            manager_declared,
+                            version: Some(ver),
+                            script: None,
+                            creates: None,
+                            only_if: None,
+                            unless: None,
+                            min_version: entry.min_version.clone(),
+                        }
+                        .into(),
+                    ));
                 }
                 // The manager answered nothing, or could not be asked at all.
                 // Neither says the floor is unmet, so the candidate stands by
@@ -221,30 +283,39 @@ pub fn resolve_package(
             // that choice depends on what the manager currently offers — so the
             // version query is left to `fill_available_versions`, which the
             // paths that DISPLAY a version call and the read paths do not.
-            return Ok(Some(ResolvedPackage {
-                canonical_name: entry.name.clone(),
-                resolved_name,
-                manager: candidate.clone(),
-                manager_declared,
-                version: None,
-                script: None,
-                creates: None,
-                only_if: None,
-                unless: None,
-                min_version: entry.min_version.clone(),
-            }));
+            return Ok(Some(
+                ResolvedPackage {
+                    canonical_name: entry.name.clone(),
+                    resolved_name,
+                    manager: candidate.clone(),
+                    manager_declared,
+                    version: None,
+                    script: None,
+                    creates: None,
+                    only_if: None,
+                    unless: None,
+                    min_version: entry.min_version.clone(),
+                }
+                .into(),
+            ));
         }
     }
 
     if let Some(pkg) = unproven {
-        return Ok(Some(pkg));
+        return Ok(Some(pkg.into()));
+    }
+
+    if proven_below
+        // Only a proven-below floor can be rescued this way. "No manager at
+        // all" is already answered by the optimistic `bootstrappable` arm
+        // above, which resolves rather than refusing.
+        && let Some(route) = floor_bootstrap_route(entry, module_name, managers, &best_found)
+    {
+        return Ok(Some(PackageResolution::Bootstrap(route)));
     }
 
     let reason = if proven_below {
-        format!(
-            "every available manager offers a version below the declared minVersion {}",
-            entry.min_version.as_deref().unwrap_or("any")
-        )
+        proven_below_reason(entry.min_version.as_deref().unwrap_or("any"))
     } else {
         "no manager for it is available on this host, and none can be bootstrapped".to_string()
     };
@@ -254,6 +325,60 @@ pub fn resolve_package(
         reason,
     }
     .into())
+}
+
+/// Why a package every available manager proved itself below the floor of
+/// cannot be resolved. Read by `resolve_package` and by the one spot
+/// [`resolve_modules`] turns a route back into that same refusal, so the two
+/// cannot state the floor differently.
+fn proven_below_reason(floor: &str) -> String {
+    format!("every available manager offers a version below the declared minVersion {floor}")
+}
+
+/// The route a proven-below floor could be met by: the package names a
+/// REGISTERED manager that is not on this host, and that manager's own cascade
+/// runs here.
+fn floor_bootstrap_route(
+    entry: &ModulePackageEntry,
+    module_name: &str,
+    managers: &HashMap<String, &dyn PackageManager>,
+    found: &Option<(String, String)>,
+) -> Option<FloorBootstrap> {
+    let route = floor_bootstrap_via(&entry.name, entry, module_name, managers, found)?;
+    // A manager already on this host has nothing left to bootstrap: a second
+    // copy of it would not raise what it offers, so the refusal stands.
+    let already_here = managers
+        .get(entry.name.as_str())
+        .is_some_and(|mgr| mgr.is_available());
+    (!already_here).then_some(route)
+}
+
+/// That route through ONE named manager, asked without regard to whether this
+/// host already has it, so a caller walking the registry can price every
+/// manager that declares the package.
+///
+/// `bootstrap_plan_given(&|_| false)` prices the cascade against the host as it
+/// stands, so a manager whose only arm is a mediator this host lacks offers
+/// nothing and the refusal stands.
+fn floor_bootstrap_via(
+    manager: &str,
+    entry: &ModulePackageEntry,
+    module_name: &str,
+    managers: &HashMap<String, &dyn PackageManager>,
+    found: &Option<(String, String)>,
+) -> Option<FloorBootstrap> {
+    let mgr = *managers.get(manager)?;
+    let floor = entry.min_version.clone()?;
+    let via = mgr.bootstrap_plan_given(&|_| false)?.method;
+    let (found_in, found) = found.clone()?;
+    Some(FloorBootstrap {
+        package: entry.name.clone(),
+        module: module_name.to_string(),
+        found_in,
+        found,
+        floor,
+        via,
+    })
 }
 
 /// The available manager that already holds a bare entry's package, when one
@@ -306,14 +431,17 @@ pub fn resolve_module_packages(
     platform: &Platform,
     managers: &HashMap<String, &dyn PackageManager>,
     installed: Option<&crate::providers::PackageContext<'_>>,
-) -> Result<Vec<ResolvedPackage>> {
-    let mut resolved = Vec::new();
+) -> Result<(Vec<ResolvedPackage>, Vec<FloorBootstrap>)> {
+    let mut resolved = Vec::with_capacity(module.spec.packages.len());
+    let mut routes = Vec::new();
     for entry in &module.spec.packages {
-        if let Some(pkg) = resolve_package(entry, &module.name, platform, managers, installed)? {
-            resolved.push(pkg);
+        match resolve_package(entry, &module.name, platform, managers, installed)? {
+            Some(PackageResolution::Package(pkg)) => resolved.push(*pkg),
+            Some(PackageResolution::Bootstrap(route)) => routes.push(route),
+            None => {}
         }
     }
-    Ok(resolved)
+    Ok((resolved, routes))
 }
 
 /// Price every resolved package that does not already carry a version, so a
@@ -594,7 +722,8 @@ pub fn resolve_modules(
                 continue;
             }
 
-            let packages = resolve_module_packages(module, platform, managers, installed)?;
+            let (packages, floor_bootstraps) =
+                resolve_module_packages(module, platform, managers, installed)?;
             let files = resolve_module_files(module, cache_base, printer)?;
 
             let scripts = module.spec.scripts.as_ref();
@@ -611,6 +740,7 @@ pub fn resolve_modules(
             resolved.push(ResolvedModule {
                 name: name.clone(),
                 packages,
+                floor_bootstraps,
                 files,
                 // Filtered here, beside the package filter above: a gated
                 // entry is not part of this host's desired state, so it
@@ -637,6 +767,20 @@ pub fn resolve_modules(
         }
         Ok(())
     })?;
+
+    // Nothing here asks the reader whether to take a route, and putting a
+    // manager on the machine unasked is not this resolution's call to make, so
+    // a module that found one is refused exactly as it was before routes
+    // existed. Every module handed back therefore carries an empty
+    // `floor_bootstraps`.
+    if let Some(route) = resolved.iter().find_map(|m| m.floor_bootstraps.first()) {
+        return Err(ModuleError::UnresolvablePackage {
+            module: route.module.clone(),
+            package: route.package.clone(),
+            reason: proven_below_reason(&route.floor),
+        }
+        .into());
+    }
 
     Ok(resolved)
 }

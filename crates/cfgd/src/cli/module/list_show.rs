@@ -498,7 +498,8 @@ pub(super) fn module_show_resolved_rows(
             };
 
             match modules::resolve_package(entry, name, platform, mgr_map, installed) {
-                Ok(Some(mut resolved)) => {
+                Ok(Some(modules::PackageResolution::Package(resolved))) => {
+                    let mut resolved = *resolved;
                     // `module show --resolved` prints the version beside each
                     // package, so it is one of the surfaces that asks for one.
                     modules::fill_available_versions(std::slice::from_mut(&mut resolved), mgr_map);
@@ -507,6 +508,15 @@ pub(super) fn module_show_resolved_rows(
                         manager: resolved.manager.clone(),
                         resolved_name: resolved.resolved_name.clone(),
                         version: resolved.version.clone(),
+                    }
+                }
+                // A floor no available manager meets: the row states what the
+                // host offers and how far short it falls, as it did when the
+                // same package earned a refusal.
+                Ok(Some(modules::PackageResolution::Bootstrap(route))) => {
+                    PackageDisplay::Unresolved {
+                        summary: format!("{declared}{platform_str}"),
+                        error: route.offer_clause(),
                     }
                 }
                 Ok(None) => PackageDisplay::Skipped {

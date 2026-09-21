@@ -3443,10 +3443,21 @@ fn join_package_state(
                 },
                 None => ModulePackageStatus {
                     name: p.name.clone(),
-                    manager: modules::resolve_package(p, module_name, here, managers, installed)
-                        .ok()
-                        .flatten()
-                        .map(|resolved| resolved.manager),
+                    // A route names a manager this host does not have, so the
+                    // column states nothing, exactly as it did for the refusal
+                    // that route replaced.
+                    manager: match modules::resolve_package(
+                        p,
+                        module_name,
+                        here,
+                        managers,
+                        installed,
+                    ) {
+                        Ok(Some(modules::PackageResolution::Package(resolved))) => {
+                            Some(resolved.manager)
+                        }
+                        _ => None,
+                    },
                     state: ModulePackagePresence::NotScanned,
                 },
             }

@@ -41,8 +41,8 @@ pub use registry::{
     latest_module_version_remote, parse_registry_ref, resolve_profile_module_name,
 };
 pub use resolve::{
-    fill_available_versions, resolve_module_files, resolve_module_packages, resolve_modules,
-    resolve_package,
+    FloorBootstrap, PackageResolution, fill_available_versions, resolve_module_files,
+    resolve_module_packages, resolve_modules, resolve_package,
 };
 pub(crate) use resolve::{price_package, priceable_manager};
 pub use surfaces::post_apply_change_body;
@@ -170,6 +170,12 @@ pub struct SourceModuleRoot {
 pub struct ResolvedModule {
     pub name: String,
     pub packages: Vec<ResolvedPackage>,
+    /// Declared floors no available manager meets, each naming the manager this
+    /// host could bootstrap to meet one. Empty for every module
+    /// [`resolve_modules`] hands back: that walk turns a route back into the
+    /// refusal it has always been, because nothing there asks the reader first.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub floor_bootstraps: Vec<FloorBootstrap>,
     pub files: Vec<ResolvedFile>,
     pub env: Vec<EnvVar>,
     pub aliases: Vec<ShellAlias>,
@@ -223,6 +229,7 @@ impl ResolvedModule {
             on_change_scripts,
             name: _,
             packages: _,
+            floor_bootstraps: _,
             files: _,
             env: _,
             aliases: _,
@@ -259,6 +266,7 @@ impl ResolvedModule {
         ResolvedModule {
             name,
             packages: Vec::new(),
+            floor_bootstraps: Vec::new(),
             files: Vec::new(),
             env: Vec::new(),
             aliases: Vec::new(),

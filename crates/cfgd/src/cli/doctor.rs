@@ -156,7 +156,7 @@ fn build_module_routes(
             let mut unresolved: Vec<String> = Vec::new();
             for entry in &module.spec.packages {
                 match modules::resolve_package(entry, mod_name, platform, mgr_map, cx) {
-                    Ok(Some(resolved)) => {
+                    Ok(Some(modules::PackageResolution::Package(resolved))) => {
                         let count = counts.entry(resolved.manager.clone()).or_insert(0);
                         if *count == 0 {
                             order.push(resolved.manager.clone());
@@ -166,6 +166,12 @@ fn build_module_routes(
                             .entry(resolved.manager)
                             .or_default()
                             .insert(mod_name.clone());
+                    }
+                    // A floor no available manager meets: this report states
+                    // what the host offers and how far short it falls, in the
+                    // row the same package earned before the route existed.
+                    Ok(Some(modules::PackageResolution::Bootstrap(route))) => {
+                        unresolved.push(route.offer_clause());
                     }
                     // Gated off this platform: the package is not declared
                     // here, so it routes nowhere and states nothing.

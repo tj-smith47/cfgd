@@ -2195,6 +2195,7 @@ pub fn make_resolved_module(name: &str) -> crate::modules::ResolvedModule {
     crate::modules::ResolvedModule {
         dep_pulled: false,
         name: name.to_string(),
+        floor_bootstraps: Vec::new(),
         packages: vec![
             crate::modules::ResolvedPackage {
                 canonical_name: "neovim".to_string(),
