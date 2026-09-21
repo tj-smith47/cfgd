@@ -200,7 +200,10 @@ fn collect_undeclared_scalars(
                 path.push(YamlStep::Key(key.clone()));
                 // The document's own top-level keys are never candidates.
                 if is_scalar(value) {
-                    if path.len() > 1 && lookup(declared, path).is_none() {
+                    if path.len() > 1
+                        && lookup(declared, path).is_none()
+                        && !legacy_output_key_declared(declared, path)
+                    {
                         out.push(path.clone());
                     }
                 } else {
@@ -320,6 +323,41 @@ fn union_arm_field(scalar: &serde_yaml::Value, walked: &[YamlStep]) -> Option<&'
         return None;
     };
     super::config_cmd::scalar_union_field(relative)
+}
+
+/// Whether `path` (rooted at the document) falls under a
+/// [`cfgd_core::config::LEGACY_OUTPUT_KEYS`] NEW spelling for which the
+/// document already declares the OLD flat key. `spec.theme` folds into
+/// `spec.output.theme` at parse time (`fold_legacy_output`), so a typed
+/// value built from a legacy-only document carries `spec.output.theme`
+/// whether or not the document itself names it — without this check that
+/// reads as a field `cfgd config migrate` should materialize, and writing it
+/// alongside a `spec.theme` the fold never clears is what put both keys on
+/// disk and made the next load report them as conflicting.
+fn legacy_output_key_declared(declared: &serde_yaml::Value, path: &[YamlStep]) -> bool {
+    let dotted = dotted_path(path);
+    cfgd_core::config::LEGACY_OUTPUT_KEYS
+        .iter()
+        .any(|(old, new)| {
+            (dotted == *new || dotted.starts_with(&format!("{new}.")))
+                && declared_flat_key(declared, old)
+        })
+}
+
+/// Whether the dot-separated flat key `old` (e.g. `spec.theme`) is a mapping
+/// key the document declares, whatever its value.
+fn declared_flat_key(declared: &serde_yaml::Value, old: &str) -> bool {
+    let mut node = declared;
+    for segment in old.split('.') {
+        let Some(next) = node
+            .as_mapping()
+            .and_then(|m| m.get(serde_yaml::Value::String(segment.to_string())))
+        else {
+            return false;
+        };
+        node = next;
+    }
+    true
 }
 
 fn remove_at(tree: &mut serde_yaml::Value, path: &[YamlStep]) {

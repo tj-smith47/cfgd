@@ -19927,7 +19927,10 @@ fn names_a_url(label: &str) -> bool {
 /// stored value, the value cfgd clones from and every `-o json` payload keep
 /// the URL whole, which
 /// `a_credentialed_registry_url_renders_stripped_and_serializes_whole` pins
-/// from the other side.
+/// from the other side. [`cfgd_core::display_source_origin`] (`source
+/// show`/`source list`'s composer) folds a bare local path under `$HOME` and
+/// otherwise composes `display_url` itself, so a slot calling it strips the
+/// same way one calling `display_url` directly does.
 ///
 /// Judged on the SLOT's own call expression: a function rendering two URLs was
 /// exempted whole by whichever one of them folded, so a second row beside a
@@ -19979,7 +19982,10 @@ fn every_rendered_url_is_stripped_of_its_userinfo() {
                     None => String::new(),
                 }
             };
-            if judged.contains("display_url") || label_hatched(&lines, n, "// raw-url-ok:") {
+            if judged.contains("display_url")
+                || judged.contains("display_source_origin")
+                || label_hatched(&lines, n, "// raw-url-ok:")
+            {
                 continue;
             }
             offenders.push(format!("{}:{}: {label:?}", path.display(), n + 1));

@@ -474,6 +474,43 @@ mod tests {
         );
     }
 
+    /// `cfgd config migrate --write` against a document declaring ONLY the
+    /// legacy `spec.theme` must not add `spec.output.theme` beside it. A
+    /// document declaring only one spelling must never be told on reload
+    /// that `spec.theme` and `spec.output.theme` are both set; that advisory
+    /// traces to exactly this write path materializing the fold-derived
+    /// nested key onto a document `pending_alignment` should have reported
+    /// nothing new for. Proven end to end: load, write, reload — no
+    /// advisory, no duplicated key.
+    #[test]
+    fn migrate_write_does_not_duplicate_a_legacy_theme_into_the_nested_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cfgd.yaml");
+        let doc = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  theme: dracula\n";
+        std::fs::write(&path, doc).unwrap();
+        let cli = cli_with_config(&path, None);
+        let printer = cfgd_core::test_helpers::test_printer();
+
+        cmd_config_migrate(&cli, &printer, true).unwrap();
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !after.contains("output:") || !after.contains("theme:\n"),
+            "the write must not add a nested output.theme block: {after}"
+        );
+
+        let reloaded =
+            cfgd_core::config::parse_config(&after, &path).expect("the written document re-parses");
+        assert!(
+            !reloaded.deprecations.iter().any(|d| d.contains("both set")),
+            "a document that only ever declared one spelling must not be told they conflict: {:?}",
+            reloaded.deprecations
+        );
+        assert_eq!(
+            reloaded.spec.theme().map(|t| t.name.clone()),
+            Some("dracula".to_string())
+        );
+    }
+
     /// A non-interactive `Prompt` degrades to `Warn`: the reader is told, the
     /// file is untouched, and NOTHING is recorded — recording an unasked
     /// question would answer it forever.
@@ -1059,5 +1096,48 @@ mod tests {
             "a document carrying every reported key is behind by nothing: {:?}",
             pending.keys
         );
+    }
+
+    /// A document declaring the LEGACY flat `spec.theme` (no `spec.output`
+    /// block at all) already declares the fact `spec.output.theme` would
+    /// restate. `pending_alignment` must not offer to materialize it: the
+    /// prior defect wrote `spec.output.theme` onto exactly this document
+    /// without removing `spec.theme`, which is what made the next load
+    /// report `spec.theme and spec.output.theme are both set` for a document
+    /// that only ever declared one of them.
+    #[test]
+    fn a_legacy_flat_key_is_not_reported_as_a_pending_nested_one() {
+        // One fixture value per LEGACY_OUTPUT_KEYS entry, keyed by the flat
+        // spelling, so a key added to the table trips this walk until it
+        // gains a fixture rather than passing by omission.
+        let legacy_values: &[(&str, &str)] =
+            &[("spec.theme", "dracula"), ("spec.usageHints", "true")];
+        for (old, _) in cfgd_core::config::LEGACY_OUTPUT_KEYS {
+            let value = legacy_values
+                .iter()
+                .find(|(k, _)| k == old)
+                .map(|(_, v)| *v)
+                .unwrap_or_else(|| panic!("no fixture value for legacy key {old}"));
+            let flat_key = old.strip_prefix("spec.").unwrap_or(old);
+            let doc = format!(
+                "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  {flat_key}: {value}\n"
+            );
+            let cfg =
+                cfgd_core::config::parse_config(&doc, std::path::Path::new("cfgd.yaml")).unwrap();
+            let pending = pending_alignment(&cfg, &doc);
+            let (_, new) = cfgd_core::config::LEGACY_OUTPUT_KEYS
+                .iter()
+                .find(|(o, _)| o == old)
+                .unwrap();
+            assert!(
+                !pending
+                    .keys
+                    .iter()
+                    .any(|k| k == new || k.starts_with(&format!("{new}."))),
+                "a legacy {old} document already declares the fact {new} would restate; \
+                 the writer must not add it beside {old}: {:?}",
+                pending.keys
+            );
+        }
     }
 }
