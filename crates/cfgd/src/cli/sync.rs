@@ -560,7 +560,7 @@ fn sync_verdict(payload: &SyncOutput) -> (Role, &'static str, Option<String>) {
             } else {
                 "Synced"
             },
-            Some(detail.join(", ")),
+            Some(cfgd_core::join_clauses(&detail)),
         );
     }
     if total == 0 {

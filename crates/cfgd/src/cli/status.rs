@@ -5087,7 +5087,7 @@ mod tests {
 
         // `core` is `editor`'s dependency, so it is the row's ANNOTATION, not
         // one of its names — the `Profile` row's own `inherits:` shape.
-        let expected = "Modules editor (depends: core, off-host skipped: platform not matched \
+        let expected = "Modules editor (depends: core; off-host skipped: platform not matched \
                         (requires: windows))";
         let expected = if cfg!(windows) {
             expected.replace("windows", "linux")

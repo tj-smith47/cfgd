@@ -187,7 +187,7 @@ fn declared_package_clauses(entry: &cfgd_core::config::ModulePackageEntry) -> St
         aliases.sort();
         clauses.push(format!("aliases: {}", aliases.join(", ")));
     }
-    clauses.join(", ")
+    cfgd_core::join_clauses(&clauses)
 }
 
 /// One `--resolved` package row: what this host RESOLVED the declared entry to,
@@ -679,7 +679,7 @@ mod role_mapping_tests {
         entry.min_version = Some("1.0".to_string());
         assert_eq!(
             declared_package_clauses(&entry),
-            "platforms: windows, prefer: nix, min: 1.0"
+            "platforms: windows; prefer: nix; min: 1.0"
         );
 
         let ungated = cfgd_core::config::ModulePackageEntry {
