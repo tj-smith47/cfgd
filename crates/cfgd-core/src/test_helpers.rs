@@ -5135,25 +5135,23 @@ fn item_end(lines: &[&str], from: usize) -> Option<usize> {
     None
 }
 
-/// The keyword a code line declares its item with — `mod`, `fn`, `struct`,
-/// `impl`, … — with any `pub` / `pub(crate)` / `pub(in …)` / `unsafe` /
-/// `default` lead folded off first; the empty string for a line that opens no
-/// item.
+/// A code line with any `pub` / `pub(crate)` / `pub(in …)` / `unsafe` /
+/// `default` lead folded off, leading whitespace included; the empty string for
+/// a `pub(` whose scope never closes.
 ///
-/// The ONE place that lead list is spelled. A reader asking WHAT KIND of item a
-/// line declares has to ask it of the keyword, and every reader that asked it
-/// of the raw line instead read `pub(crate) mod tests;` as something other than
-/// a `mod` declaration. The word is taken whole, so `impl_something!(…)` is
-/// `impl_something` and never `impl`.
-pub fn item_keyword(code: &str) -> &str {
+/// The ONE place that lead list is spelled, in this crate or the other. Every
+/// reader asking what a line declares — the keyword, the name, whether it opens
+/// a function — asks past the lead, and each that spelled its own list read
+/// `pub(crate) mod tests;` as something other than a `mod` declaration, or
+/// missed `pub(in path) fn` and `unsafe fn` outright.
+pub fn strip_item_lead(code: &str) -> &str {
     let mut rest = code.trim_start();
     loop {
         let end = rest
             .find(|c: char| !(c.is_alphanumeric() || c == '_'))
             .unwrap_or(rest.len());
-        let word = &rest[..end];
-        if !matches!(word, "pub" | "unsafe" | "default") {
-            return word;
+        if !matches!(&rest[..end], "pub" | "unsafe" | "default") {
+            return rest;
         }
         rest = rest[end..].trim_start();
         // `pub(crate)` / `pub(super)` / `pub(in path)`.
@@ -5163,6 +5161,53 @@ pub fn item_keyword(code: &str) -> &str {
                 None => return "",
             }
         }
+    }
+}
+
+/// The keyword a code line declares its item with — `mod`, `fn`, `struct`,
+/// `impl`, … — read past the lead [`strip_item_lead`] folds off; the empty
+/// string for a line that opens no item.
+///
+/// A reader asking WHAT KIND of item a line declares has to ask it of the
+/// keyword. The word is taken whole, so `impl_something!(…)` is
+/// `impl_something` and never `impl`.
+pub fn item_keyword(code: &str) -> &str {
+    let rest = strip_item_lead(code);
+    let end = rest
+        .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .unwrap_or(rest.len());
+    &rest[..end]
+}
+
+/// Whether a code line opens a FUNCTION, whatever qualifiers stand in front of
+/// it and in whatever order.
+///
+/// The cost of a missed opener is silent: the function's body folds into the
+/// PRECEDING slice, so it is judged under another function's exemptions and
+/// reported, if at all, at that function's line. An enumerated list of
+/// qualifier orderings is how `pub(super) async fn` was missed, so this
+/// consumes qualifiers one at a time instead and accepts any order — a superset
+/// of the grammar, which for a recognizer only errs toward opening a slice too
+/// eagerly. The visibility half of the list is [`strip_item_lead`]'s; `const`,
+/// `async` and `extern "abi"` are the three this adds, because they qualify a
+/// function and nothing else a walk here reads.
+pub fn opens_function(code: &str) -> bool {
+    let mut t = strip_item_lead(code);
+    loop {
+        if t.starts_with("fn ") {
+            return true;
+        }
+        if let Some(abi) = t.strip_prefix("extern ").map(str::trim_start) {
+            t = match abi.strip_prefix('"').and_then(|a| a.split_once('"')) {
+                Some((_, tail)) => tail.trim_start(),
+                None => abi,
+            };
+        } else if let Some(rest) = ["const ", "async "].iter().find_map(|q| t.strip_prefix(q)) {
+            t = rest.trim_start();
+        } else {
+            return false;
+        }
+        t = strip_item_lead(t);
     }
 }
 

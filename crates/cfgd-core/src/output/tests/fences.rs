@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 
 use crate::test_helpers::{
     KNOWN_GOLDEN_ROOTS, blank_string_literals, carries_hatch, folded_literal_lines,
-    is_plain_line_comment, rust_sources_under, snapshot_golden_roots, snapshot_goldens,
-    snapshot_root_files, walked_file_body, workspace_root,
+    is_plain_line_comment, item_keyword, opens_function, rust_sources_under, snapshot_golden_roots,
+    snapshot_goldens, snapshot_root_files, walked_file_body, workspace_root,
 };
 
 /// Every `.rs` file under every crate's `src/`.
@@ -988,44 +988,6 @@ fn the_daemon_log_dialect_matcher_reads_both_call_shapes() {
     assert_eq!(first_string_literal(&calls[1].1).as_deref(), Some("pulled"));
 }
 
-/// Whether a source line opens a function item, whatever qualifiers stand
-/// between its indent and `fn` (`pub(super) async fn`, `const unsafe extern
-/// "C" fn`, …).
-///
-/// The cost of a missed opener is silent: the function's body folds into the
-/// PRECEDING slice, so it is judged under another function's exemptions and
-/// reported, if at all, at that function's line. An enumerated list of
-/// qualifier orderings is how `pub(super) async fn` was missed, so this
-/// consumes qualifiers one at a time instead and accepts any order — a
-/// superset of the grammar, which for a recognizer only errs toward opening
-/// a slice too eagerly.
-fn opens_function(line: &str) -> bool {
-    let mut t = line.trim_start();
-    loop {
-        if t.starts_with("fn ") {
-            return true;
-        }
-        if let Some(scope) = t.strip_prefix("pub(") {
-            let Some((_, tail)) = scope.split_once(')') else {
-                return false;
-            };
-            t = tail.trim_start();
-        } else if let Some(abi) = t.strip_prefix("extern ").map(str::trim_start) {
-            t = match abi.strip_prefix('"').and_then(|a| a.split_once('"')) {
-                Some((_, tail)) => tail.trim_start(),
-                None => abi,
-            };
-        } else if let Some(rest) = ["pub ", "default ", "const ", "async ", "unsafe "]
-            .iter()
-            .find_map(|q| t.strip_prefix(q))
-        {
-            t = rest.trim_start();
-        } else {
-            return false;
-        }
-    }
-}
-
 /// Whether `func` mentions `ident` as a whole identifier — flanked by no
 /// `[A-Za-z0-9_]` on either side.
 ///
@@ -1209,16 +1171,7 @@ fn source_functions(source: &SourceLabel, body: &str) -> Vec<(usize, String)> {
 /// Whether a line's code half opens a `const` or `static` ITEM rather than a
 /// `const fn`, whatever visibility stands in front of it.
 fn opens_const_item(code: &str) -> bool {
-    let mut t = code.trim_start();
-    if let Some(scope) = t.strip_prefix("pub(") {
-        let Some((_, tail)) = scope.split_once(')') else {
-            return false;
-        };
-        t = tail.trim_start();
-    } else if let Some(rest) = t.strip_prefix("pub ") {
-        t = rest.trim_start();
-    }
-    !opens_function(code) && (t.starts_with("const ") || t.starts_with("static "))
+    !opens_function(code) && matches!(item_keyword(code), "const" | "static")
 }
 
 /// The `const` and `static` items a source declares outside every function
@@ -3076,6 +3029,7 @@ fn every_env_mutating_test_helper_is_named_in_the_mutator_roster() {
                 None => name.clone(),
             });
             names.push(name);
+            // item-lead-ok: the subject is the visibility itself, not an item head
             exported.push(lines[open - 1].trim_start().starts_with("pub"));
             sources.push(slice);
             opens.push(open);
@@ -3308,6 +3262,45 @@ fn test_region(path: &Path, body: &str) -> String {
     crate::test_helpers::test_region_mask(body)
 }
 
+/// The partition of `file` into its test region and its production slice,
+/// rebuilt into the file again: each row takes the region's line where a marked
+/// item claims the row and the next production line where none does.
+///
+/// Membership is the RANGES, never the mask's content. A blank line inside a
+/// test item is blank in the mask exactly as a blanked production row is, so a
+/// reader asking `is_empty()` hands that row to the production half, takes a
+/// line that belongs further down, and every row after it is off by one.
+fn assert_reassembles(file: &str) {
+    let region = test_region(Path::new("src/thing.rs"), file);
+    // unfloored-slice-ok: the subject is one fixture held in memory, not a source on disk
+    let slice = crate::test_helpers::production_slice(file);
+    let production: Vec<&str> = slice.lines().collect();
+    let ranges = crate::test_helpers::inline_test_item_ranges(file);
+    let mask: Vec<&str> = region.lines().collect();
+    let mut spent = 0usize;
+    let rebuilt: Vec<&str> = (0..file.lines().count())
+        .map(|at| {
+            if ranges.iter().any(|(from, to)| (*from..*to).contains(&at)) {
+                mask.get(at).copied().unwrap_or_default()
+            } else {
+                let line = production.get(spent).copied().unwrap_or_default();
+                spent += 1;
+                line
+            }
+        })
+        .collect();
+    assert_eq!(
+        rebuilt,
+        file.lines().collect::<Vec<_>>(),
+        "the region and the production slice reassemble the file line for line:\n{region}"
+    );
+    assert_eq!(
+        spent,
+        production.len(),
+        "every production line lands in a row no marked item claims:\n{region}"
+    );
+}
+
 /// The region is every column-0 `#[cfg(test)]` item and nothing else, wherever
 /// the items sit and whatever kind of item carries the marker.
 ///
@@ -3398,63 +3391,34 @@ fn the_test_region_is_every_inline_test_item_and_nothing_else() {
     // production line where it does not, and the result has to be the file
     // again with every production line spent. A count is satisfied by two lines
     // that swapped halves in opposite directions; this is not.
-    //
-    // Membership is the RANGES, never the mask's content. A blank line inside a
-    // test item is blank in the mask exactly as a blanked production row is, so
-    // a reader asking `is_empty()` hands that row to the production half, takes
-    // a line that belongs further down, and every row after it is off by one.
-    // unfloored-slice-ok: the subject is one fixture held in memory, not a source on disk
-    let slice = crate::test_helpers::production_slice(file);
-    let production: Vec<&str> = slice.lines().collect();
-    let ranges = crate::test_helpers::inline_test_item_ranges(file);
-    let mask: Vec<&str> = region.lines().collect();
-    let mut spent = 0usize;
-    let rebuilt: Vec<&str> = (0..file.lines().count())
-        .map(|at| {
-            if ranges.iter().any(|(from, to)| (*from..*to).contains(&at)) {
-                mask.get(at).copied().unwrap_or_default()
-            } else {
-                let line = production.get(spent).copied().unwrap_or_default();
-                spent += 1;
-                line
-            }
-        })
-        .collect();
+    assert_reassembles(file);
     assert_eq!(
-        rebuilt,
-        file.lines().collect::<Vec<_>>(),
-        "the region and the production slice reassemble the file line for line:\n{region}"
-    );
-    assert_eq!(
-        spent,
-        production.len(),
-        "every production line lands in a row no marked item claims:\n{region}"
-    );
-    assert_eq!(
-        production.iter().filter(|line| line.is_empty()).count(),
+        // unfloored-slice-ok: the subject is one fixture held in memory, not a source on disk
+        crate::test_helpers::production_slice(file)
+            .lines()
+            .filter(|line| line.is_empty())
+            .count(),
         1,
-        "a blank line between two production lines is KEPT, at its own position:\n{slice}"
+        "a blank line between two production lines is KEPT, at its own position"
     );
 
     // An item the file never terminates runs to the end of the file, and the
     // range is still yielded: handing an unclosed tail back to the production
-    // half is the blinding this scan exists to prevent, arriving silently.
+    // half is the blinding this scan exists to prevent, arriving silently. The
+    // range says which half the tail landed in — a reassembly holds either way,
+    // since a file whose tail went wholly to production rebuilds too.
     let truncated = format!(
         "fn production() {{}}\n\
          {gate}\n\
          fn never_closes() {{\n\
          \x20   let held = 1;\n"
     );
-    let cut = test_region(Path::new("src/thing.rs"), &truncated);
-    assert!(
-        cut.contains("fn never_closes() {") && cut.contains("let held = 1;"),
-        "an unterminated item is test text to the end of the file:\n{cut}"
+    assert_eq!(
+        crate::test_helpers::inline_test_item_ranges(&truncated),
+        vec![(1, truncated.lines().count())],
+        "an unterminated item is one range, its marker through the end of the file"
     );
-    assert!(
-        // unfloored-slice-ok: the subject is one fixture held in memory, not a source on disk
-        !crate::test_helpers::production_slice(&truncated).contains("never_closes"),
-        "an unterminated item is not returned to the production half"
-    );
+    assert_reassembles(&truncated);
 
     let scaffolding = format!("a\n{gate}\nb\n");
     let whole = test_region(Path::new("src/tests.rs"), &scaffolding);
@@ -3463,6 +3427,174 @@ fn the_test_region_is_every_inline_test_item_and_nothing_else() {
         "a scaffolding file is test text end to end"
     );
 }
+
+/// The four readers a hand-written lead fold is spelled with, and the three
+/// words it folds.
+///
+/// `contains`, `find` and `split` are not readers here: those take a source
+/// NEEDLE (`pub enum Foo {`), which names a declaration rather than folding a
+/// lead off one, and reading them as folds is what made forty assertion
+/// messages and source needles look like offenders. Both lists are spelled in
+/// parts, or this file's own needles are the walk's first offenders.
+const ITEM_LEAD_READERS: [&str; 4] = [
+    concat!(".starts_with", "("),
+    concat!(".ends_with", "("),
+    concat!(".strip_prefix", "("),
+    concat!(".trim_start_matches", "("),
+];
+const ITEM_LEAD_WORDS: [&str; 3] = [
+    concat!("pu", "b"),
+    concat!("unsaf", "e"),
+    concat!("defaul", "t"),
+];
+
+/// Every place a source body folds an item's visibility or qualifier lead by
+/// hand, as the byte offset of the reader call.
+///
+/// The body is read as CODE, so a reader named in a comment or standing inside
+/// a literal is not one, and the literal that reader was handed is read back
+/// off the RAW body at the same offset — [`crate::test_helpers::blank_non_code`]
+/// preserves every position, which is what lets the two views be indexed
+/// together. rustfmt puts a long call's argument on the line below it, so the
+/// scan skips whitespace between the two rather than demanding one line, and
+/// steps over a raw literal's `r` and `#` lead.
+fn hand_folded_lead_offsets(body: &str) -> Vec<usize> {
+    let code = crate::test_helpers::blank_non_code(body);
+    let mut hits = Vec::new();
+    for reader in ITEM_LEAD_READERS {
+        let mut from = 0;
+        while let Some(at) = code[from..].find(reader) {
+            let call = from + at;
+            from = call + reader.len();
+            let tail = &code[from..];
+            let mut quote = from + (tail.len() - tail.trim_start().len());
+            while code[quote..].starts_with(['r', '#']) {
+                quote += 1;
+            }
+            if !code[quote..].starts_with('"') {
+                continue;
+            }
+            let word: String = body[quote + 1..]
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            if ITEM_LEAD_WORDS.contains(&word.as_str()) {
+                hits.push(call);
+            }
+        }
+    }
+    hits.sort_unstable();
+    hits
+}
+
+/// The lead-fold tell reads a FOLD, and never a mention of one.
+///
+/// The walk below judges a population of two, so what proves it can still see
+/// a fold is this fixture rather than its floors: one case per placement the
+/// tell has to tell apart, each taken from a real line of this tree.
+#[test]
+fn the_item_lead_tell_reads_a_fold_and_not_a_mention() {
+    let folds = [
+        r#"if code.starts_with("pub ") {}"#,
+        r#"let rest = code.strip_prefix("pub(crate) ");"#,
+        r#"if head.ends_with("unsafe ") {}"#,
+        r#"let t = code.trim_start_matches("default ");"#,
+        "if code.starts_with(\n    \"pub \",\n) {}",
+    ];
+    for fold in folds {
+        assert_eq!(
+            hand_folded_lead_offsets(fold).len(),
+            1,
+            "a hand-written lead fold is one hit:\n{fold}"
+        );
+    }
+
+    let mentions = [
+        r#"// code.starts_with("pub ") is how this used to be written"#,
+        r##"let sample = r#"a.starts_with("pub ")"#;"##,
+        r#"let needle = "pub enum BackupCommand {";"#,
+        r#"let at = body.find("pub struct SourceListEntry {");"#,
+        r#"if !line.contains("pub const SOURCES_SECTION") {}"#,
+        r#"if name.starts_with("public_api") {}"#,
+        r#"assert!(ok, "default registry backend must be sops");"#,
+        r#"let n = 1;
+let s = "pub ";"#,
+    ];
+    for mention in mentions {
+        assert!(
+            hand_folded_lead_offsets(mention).is_empty(),
+            "a lead word that folds nothing is not a fold:\n{mention}"
+        );
+    }
+}
+
+/// No walk folds an item's visibility or qualifier lead off by hand.
+///
+/// `starts_with("pub ")` misses `pub(crate)`, `pub(super)` and `pub(in path)`;
+/// a list of four spellings misses the fifth; and none of them see `unsafe fn`
+/// or `default fn`. Each miss is silent — the scanner reads the item as
+/// something other than what it is and walks on — and the tree held eleven such
+/// folds, one of which let every `pub(crate) mod tests;` declaration out of the
+/// production half. [`crate::test_helpers::strip_item_lead`] is the one
+/// spelling of the list; [`item_keyword`] asks what the item is,
+/// [`crate::test_helpers::opens_function`] whether it is a function, and
+/// `declared_fn_name` what it is called.
+///
+/// A site whose subject is not an item's HEAD says so with
+/// `// item-lead-ok: <why>` on the line or the one above. Both of today's are
+/// the same question: whether a declaration is public, which the shared
+/// stripper folds away rather than reports, since it folds `unsafe` and
+/// `default` with the three visibility spellings.
+#[test]
+fn no_test_scope_scanner_folds_an_item_lead_by_hand() {
+    let hatch = concat!("item-lead", "-ok:");
+    let mut offenders = Vec::new();
+    let mut per_file: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    for path in workspace_rust_files() {
+        let body = test_region(&path, &walked_file_body(&path));
+        let lines: Vec<&str> = body.lines().collect();
+        let rel = path
+            .strip_prefix(workspace_root())
+            .unwrap_or(&path)
+            .display()
+            .to_string()
+            .replace('\\', "/");
+        for at in hand_folded_lead_offsets(&body) {
+            let n = body[..at].matches('\n').count();
+            *per_file.entry(rel.clone()).or_default() += 1;
+            let line = lines.get(n).copied().unwrap_or_default();
+            let above = n.checked_sub(1).and_then(|p| lines.get(p).copied());
+            if carries_hatch(line, hatch) || above.is_some_and(|a| carries_hatch(a, hatch)) {
+                continue;
+            }
+            offenders.push(format!("{rel}:{}: {}", n + 1, line.trim()));
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "read the item head through `cfgd_core::test_helpers::{{item_keyword, \
+         opens_function, declared_fn_name, strip_item_lead}}`, which fold every \
+         visibility and qualifier lead once — or say why this lead word is not \
+         an item head with `// item-lead-ok: <why>`:\n{}",
+        offenders.join("\n")
+    );
+    for (file, floor) in ITEM_LEAD_FLOORS {
+        let found = per_file.get(file).copied().unwrap_or_default();
+        assert!(
+            found >= floor,
+            "the walk read {found} lead folds in {file}, below its floor of \
+             {floor}; it has stopped reading the population it judges"
+        );
+    }
+}
+
+/// The lead folds each holder file still carries, so a walk that stopped
+/// reading one of them fails by that file's name rather than by a total the
+/// other fills.
+const ITEM_LEAD_FLOORS: [(&str, usize); 2] = [
+    ("crates/cfgd-core/src/daemon/tests.rs", 1),
+    ("crates/cfgd-core/src/output/tests/fences.rs", 1),
+];
 
 /// A hatch is read off a source line through
 /// [`crate::test_helpers::carries_hatch`], never through a bare `contains`.
@@ -4319,10 +4451,7 @@ fn labelled_schema_types() -> Vec<(&'static str, Vec<(&'static str, &'static str
 /// called `owner_label` or `phase_label` joins the population without editing
 /// this walk.
 fn declares_a_display_label(line: &str) -> bool {
-    line.trim_start()
-        .strip_prefix("pub fn ")
-        .and_then(|rest| rest.split_once('('))
-        .is_some_and(|(name, _)| name.ends_with("label"))
+    crate::test_helpers::declared_fn_name(line).is_some_and(|name| name.ends_with("label"))
 }
 
 /// A display label is the ASCII-lowercase of the canonical token beside it, on
@@ -5495,17 +5624,18 @@ const SCRIPT_BODY_TYPES: &[&str] = &["ScriptSpec", "ModuleScripts"];
 ///
 /// A field is the shape that DESERIALIZES one: a struct literal, a function
 /// parameter and a return type all name the type without accepting YAML, so
-/// only a `pub` field ending its own declaration answers.
+/// only a field carrying a visibility lead and ending its own declaration
+/// answers.
 fn declares_a_script_body_field(line: &str) -> Option<&str> {
     let code = line.split("//").next().unwrap_or(line).trim();
     if !code.ends_with(',') {
         return None;
     }
-    let mut words = code.splitn(2, char::is_whitespace);
-    if !words.next()?.starts_with("pub") {
+    let declared = crate::test_helpers::strip_item_lead(code);
+    if declared == code {
         return None;
     }
-    let (name, ty) = words.next()?.split_once(':')?;
+    let (name, ty) = declared.split_once(':')?;
     SCRIPT_BODY_TYPES
         .iter()
         .any(|holder| ty.contains(holder))

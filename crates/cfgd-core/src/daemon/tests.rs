@@ -19764,6 +19764,7 @@ mod ipc_socket_security {
         let mut judged = Vec::new();
         let mut undocumented = Vec::new();
         for (i, line) in lines.iter().enumerate() {
+            // item-lead-ok: the subject is the visibility itself, not an item head
             if !line.starts_with("pub(crate) ") && !line.starts_with("pub ") {
                 continue;
             }

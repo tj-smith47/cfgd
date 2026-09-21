@@ -3733,17 +3733,19 @@ fn every_list_or_map_package_field_declares_both_shapes_in_its_schema() {
         if !widening {
             continue;
         }
-        // The field name is on the next `pub` line; the paired attribute sits
-        // between the two.
+        // The field name is on the next line carrying a visibility lead; the
+        // paired attribute sits between the two.
         let mut m = n + 1;
         let mut paired = false;
-        while m < lines.len() && !lines[m].trim_start().starts_with("pub ") {
+        let declares_field = |line: &str| {
+            let code = line.trim_start();
+            crate::test_helpers::strip_item_lead(code) != code
+        };
+        while m < lines.len() && !declares_field(lines[m]) {
             paired |= lines[m].contains("schema_with");
             m += 1;
         }
-        let field = lines[m]
-            .trim_start()
-            .trim_start_matches("pub ")
+        let field = crate::test_helpers::strip_item_lead(lines[m].trim_start())
             .split(':')
             .next()
             .unwrap()

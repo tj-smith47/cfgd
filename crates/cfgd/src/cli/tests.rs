@@ -16296,11 +16296,8 @@ fn no_kv_row_sits_between_two_result_lines() {
         let mut heads: Vec<usize> = body
             .match_indices("fn ")
             .filter(|(at, _)| {
-                *at == 0
-                    || body[..*at].ends_with('\n')
-                    || body[..*at].ends_with(") ")
-                    || body[..*at].ends_with("pub ")
-                    || body[..*at].ends_with("    ")
+                let from = body[..*at].rfind('\n').map_or(0, |nl| nl + 1);
+                cfgd_core::test_helpers::opens_function(&body[from..])
             })
             .map(|(at, _)| at)
             .collect();
@@ -17570,35 +17567,25 @@ fn production_body(body: &str) -> String {
             // bound on a comma with every bracket and angle bracket closed, and
             // reading that as the end hands the braced body below it to every
             // walk here as production text.
-            let head_is_item = {
-                let bare = head.trim_start();
-                let bare = bare.strip_prefix("pub").map_or(bare, str::trim_start);
-                let bare = bare
-                    .strip_prefix('(')
-                    .and_then(|rest| rest.split_once(')'))
-                    .map_or(bare, |(_, after)| after.trim_start());
-                matches!(
-                    bare.split(|c: char| !c.is_alphanumeric() && c != '_')
-                        .next(),
-                    Some(
-                        "fn" | "impl"
-                            | "struct"
-                            | "enum"
-                            | "trait"
-                            | "union"
-                            | "mod"
-                            | "use"
-                            | "type"
-                            | "static"
-                            | "const"
-                            | "let"
-                            | "macro_rules"
-                            | "unsafe"
-                            | "async"
-                            | "extern"
-                    )
-                )
-            };
+            // `unsafe` and `default` are gone from the list because the lead
+            // reader folds them off: `unsafe fn` arrives here as `fn`.
+            let head_is_item = matches!(
+                cfgd_core::test_helpers::item_keyword(&head),
+                "fn" | "impl"
+                    | "struct"
+                    | "enum"
+                    | "trait"
+                    | "union"
+                    | "mod"
+                    | "use"
+                    | "type"
+                    | "static"
+                    | "const"
+                    | "let"
+                    | "macro_rules"
+                    | "async"
+                    | "extern"
+            );
             let mut depth = 0i64;
             let mut angle = 0i64;
             while end < lines.len() {
@@ -21004,9 +20991,7 @@ fn bool_field_names() -> std::collections::BTreeSet<String> {
             let Some((name, ty)) = code.split_once(": ") else {
                 continue;
             };
-            let name = name
-                .trim_start_matches("pub ")
-                .trim_start_matches("pub(crate) ");
+            let name = cfgd_core::test_helpers::strip_item_lead(name);
             if !name
                 .chars()
                 .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
@@ -35414,25 +35399,12 @@ fn every_attestation_type_this_crate_names_is_one_the_reader_can_produce() {
 /// attributed to the function that declared the closure.
 fn enclosing_fn_name(lines: &[&str], n: usize) -> Option<String> {
     lines[..=n].iter().rev().find_map(|line| {
-        let trimmed = line.trim_start();
-        // `fn`, `pub fn`, `pub(crate) fn`, `async fn`: the declaration is
-        // whatever precedes the first `fn ` token on a line that opens with
-        // a visibility or the keyword itself.
-        let at = trimmed.find("fn ")?;
-        let qualifiers = &trimmed[..at];
-        if !(qualifiers.is_empty()
-            || qualifiers.starts_with("pub")
-            || qualifiers.starts_with("async")
-            || qualifiers.starts_with("const"))
-        {
+        // The qualifier reader accepts every ordering, so `pub(in path) fn`
+        // and `unsafe fn` are declarations here as much as `pub fn` is.
+        if !cfgd_core::test_helpers::opens_function(line) {
             return None;
         }
-        let after = &trimmed[at + "fn ".len()..];
-        let name: String = after
-            .chars()
-            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
-            .collect();
-        (!name.is_empty()).then_some(name)
+        cfgd_core::test_helpers::declared_fn_name(line.trim_start())
     })
 }
 
@@ -37074,9 +37046,10 @@ fn every_catalog_sourced_sources_column_can_be_absent() {
     let mut offenders = Vec::new();
     for line in body.lines() {
         let trimmed = line.trim();
-        let Some(field) = trimmed.strip_prefix("pub ") else {
+        let field = cfgd_core::test_helpers::strip_item_lead(trimmed);
+        if field == trimmed {
             continue;
-        };
+        }
         let Some((name, ty)) = field.split_once(':') else {
             continue;
         };
@@ -38370,14 +38343,13 @@ fn every_config_and_profile_header_row_comes_from_the_one_builder() {
         // The builder IS the exception, and it is exempted by NAME: skipping
         // its whole file would let a second hand-built header row anywhere
         // else in `output/component.rs` through.
-        let mut current_fn = "";
+        let mut current_fn = String::new();
         for (n, line) in lines.iter().enumerate() {
             let code = line.trim_start();
-            if let Some(rest) = code
-                .strip_prefix("pub fn ")
-                .or_else(|| code.strip_prefix("fn "))
+            if cfgd_core::test_helpers::opens_function(code)
+                && let Some(name) = cfgd_core::test_helpers::declared_fn_name(code)
             {
-                current_fn = rest.split(['(', '<']).next().unwrap_or("");
+                current_fn = name;
             }
             if code.starts_with("//") || current_fn == "config_header_rows" {
                 continue;
@@ -38574,8 +38546,9 @@ fn every_verb_reporting_on_a_resolved_configuration_opens_on_the_header_block() 
             .iter()
             .position(|l| {
                 let code = l.trim_start();
-                code.contains(&format!("fn {entry}("))
-                    && (code.starts_with("fn ") || code.starts_with("pub"))
+                cfgd_core::test_helpers::opens_function(code)
+                    && cfgd_core::test_helpers::declared_fn_name(code)
+                        .is_some_and(|name| name == *entry)
             })
             .unwrap_or_else(|| panic!("{file} no longer declares `{entry}`"));
         let is_hatched = carries_hatch(lines[at], HATCH)
@@ -39728,13 +39701,10 @@ fn no_production_site_hand_rolls_the_v_strip_or_the_owner_token_split() {
             let mut enclosing_fn = String::new();
             for (i, (n, line)) in lines.iter().enumerate() {
                 let code = line.trim_start();
-                if let Some(rest) = code.strip_prefix("fn ").or_else(|| {
-                    code.strip_prefix("pub fn ").or_else(|| {
-                        code.strip_prefix("pub(crate) fn ")
-                            .or_else(|| code.strip_prefix("pub(super) fn "))
-                    })
-                }) {
-                    enclosing_fn = rest.split(['(', '<']).next().unwrap_or("").to_string();
+                if cfgd_core::test_helpers::opens_function(code)
+                    && let Some(name) = cfgd_core::test_helpers::declared_fn_name(code)
+                {
+                    enclosing_fn = name;
                 }
                 if code.starts_with("//") {
                     continue;
@@ -42165,12 +42135,7 @@ fn every_manager_spawn_under_packages_inherits_the_bootstrapped_dirs() {
         "spawn_child(",
         "spawn_past_a_transient_refusal(",
     ];
-    let is_fn_head = |line: &str| {
-        let t = line.trim_start();
-        t.starts_with("fn ")
-            || t.starts_with("pub fn ")
-            || t.starts_with("pub(") && t.contains(" fn ")
-    };
+    let is_fn_head = |line: &str| cfgd_core::test_helpers::opens_function(line);
     let mut offenders = Vec::new();
     let mut judged = 0usize;
     for path in files
@@ -43776,7 +43741,11 @@ fn provisioning_dispatch_tells() -> Vec<(String, Option<&'static str>)> {
     let lines: Vec<&str> = body.lines().collect();
     let open = lines
         .iter()
-        .position(|l| l.trim_start().starts_with("pub fn execute("))
+        .position(|l| {
+            cfgd_core::test_helpers::opens_function(l)
+                && cfgd_core::test_helpers::declared_fn_name(l)
+                    .is_some_and(|name| name == "execute")
+        })
         .expect("cli/mod.rs no longer declares `execute`");
     // The span is read from a line INSIDE the body: `enclosing_fn_span` answers
     // for the block a line sits in, and a signature line sits in the file.
@@ -44780,7 +44749,7 @@ fn every_fleet_drift_field_comes_from_the_one_composer() {
             );
             // A struct's own declaration names a TYPE where a construction
             // names a value, and it is the only `field:` line that does.
-            let named = line.trim_start().trim_start_matches("pub ");
+            let named = cfgd_core::test_helpers::strip_item_lead(line.trim_start());
             if !line.contains("field:") || named.starts_with("field: String") {
                 continue;
             }
@@ -45328,9 +45297,11 @@ fn no_command_paints_its_heading_before_the_wait_that_fills_it() {
         let lines: Vec<&str> = body.lines().collect();
         // Function spans, read off rustfmt's indentation: a `fn` at column 0
         // runs until the next one.
+        // Column 0 is the rule, not a spelling of the lead: an indented `fn`
+        // is a method or a nested helper and belongs to the span above it.
         let starts: Vec<usize> = (0..lines.len())
-            .filter(|&i| lines[i].starts_with("fn ") || lines[i].starts_with("pub"))
-            .filter(|&i| lines[i].contains("fn "))
+            .filter(|&i| !lines[i].starts_with(char::is_whitespace))
+            .filter(|&i| cfgd_core::test_helpers::opens_function(lines[i]))
             .collect();
         for (n, &start) in starts.iter().enumerate() {
             let end = starts.get(n + 1).copied().unwrap_or(lines.len());
@@ -45500,9 +45471,11 @@ fn every_mutating_verbs_next_step_renders_at_the_runs_own_depth() {
     let mut offenders = Vec::new();
     for (path, body) in cli_production_sources() {
         let lines: Vec<&str> = body.lines().collect();
+        // Column 0 is the rule, not a spelling of the lead: an indented `fn`
+        // is a method or a nested helper and belongs to the span above it.
         let starts: Vec<usize> = (0..lines.len())
-            .filter(|&i| lines[i].starts_with("fn ") || lines[i].starts_with("pub"))
-            .filter(|&i| lines[i].contains("fn "))
+            .filter(|&i| !lines[i].starts_with(char::is_whitespace))
+            .filter(|&i| cfgd_core::test_helpers::opens_function(lines[i]))
             .collect();
         for (n, &start) in starts.iter().enumerate() {
             let end = starts.get(n + 1).copied().unwrap_or(lines.len());
@@ -45862,8 +45835,9 @@ fn every_scripts_inventory_a_surface_renders_comes_from_the_one_composer() {
                 // The cfgd-core root is reached through `..`, so the walked
                 // path carries that hop and the match is on the tail.
                 if !rel.ends_with(COMPOSER) {
-                    // A re-export names the types without reading one.
-                    let exporting = code.trim_start().starts_with("pub use");
+                    // An import or a re-export names the types without
+                    // reading one.
+                    let exporting = cfgd_core::test_helpers::item_keyword(code) == "use";
                     if !exporting && INVENTORY_TELLS.iter().any(|t| code.contains(t)) {
                         stray_inventory.push(format!("{rel}:{}: {}", n + 1, line.trim()));
                     }
@@ -46564,22 +46538,12 @@ fn declared_fn_spans(lines: &[&str]) -> Vec<(String, usize, usize)> {
     let mut spans = Vec::new();
     for (i, line) in lines.iter().enumerate() {
         let code = code_line(line);
-        let Some(at) = code.find("fn ") else { continue };
-        let qualifiers = code[..at].trim();
-        if !(qualifiers.is_empty()
-            || qualifiers.starts_with("pub")
-            || qualifiers.starts_with("async")
-            || qualifiers.starts_with("const"))
-        {
+        if !cfgd_core::test_helpers::opens_function(&code) {
             continue;
         }
-        let rest = &code[at + 3..];
-        let end = rest
-            .find(|c: char| !(c.is_alphanumeric() || c == '_'))
-            .unwrap_or(rest.len());
-        if end == 0 || !rest[end..].starts_with(['(', '<']) {
+        let Some(name) = cfgd_core::test_helpers::declared_fn_name(&code) else {
             continue;
-        }
+        };
         let mut depth = 0i32;
         let mut opened = false;
         let mut last = i;
@@ -46592,7 +46556,7 @@ fn declared_fn_spans(lines: &[&str]) -> Vec<(String, usize, usize)> {
                 break;
             }
         }
-        spans.push((rest[..end].to_string(), i, last));
+        spans.push((name, i, last));
     }
     spans
 }

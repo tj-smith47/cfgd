@@ -5934,12 +5934,11 @@ fn every_checkout_row_spells_its_revision_through_the_one_derivation() {
                 .iter()
                 .rev()
                 .find_map(|l| {
-                    l.trim()
-                        .strip_prefix("fn ")
-                        .or(l.trim().strip_prefix("pub(super) fn "))
+                    cfgd_core::test_helpers::opens_function(l)
+                        .then(|| cfgd_core::test_helpers::declared_fn_name(l))
+                        .flatten()
                 })
-                .unwrap_or("")
-                .to_string();
+                .unwrap_or_default();
             if enclosing.starts_with("checkout_detail") {
                 continue;
             }
