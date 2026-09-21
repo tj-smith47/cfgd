@@ -276,6 +276,11 @@ The full resolution logic for each package entry:
    ✗ package 'neovim' in module 'demo' cannot be resolved: every available manager offers a version below the declared minVersion 99.0
    ```
    A manager that could not be asked successfully is neither of those, and never ends the run.
+   A proven-below floor on a package that names a manager cfgd can put on this host (`cargo`, `npm`, `pipx`) has a third answer: the resolver states the route that manager's own bootstrap would take. `cfgd apply` and `cfgd plan` still refuse such a configuration with the sentence above, because nothing there asks whether to install a toolchain; the read surfaces state what the host offers instead. `cfgd doctor` puts it in the module's row:
+   ```
+   ✗ rust — cargo: apt offers cargo 1.75, below the declared minVersion 1.85
+   ```
+   and `cfgd module show --resolved` states the same clause against the package's declared entry.
    A candidate cfgd can bootstrap counts as satisfying: it resolves optimistically (no version can be queried before the manager itself exists), and `cfgd diff` names the route the bootstrap would take:
    ```
    ⚠ chocolatey: not installed — can provision via system
