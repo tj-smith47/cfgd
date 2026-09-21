@@ -45965,29 +45965,6 @@ fn every_hook_table_a_production_site_builds_reads_the_one_hook_set() {
         ("cfgd-operator", 40),
         ("cfgd-schema", 2),
     ];
-    /// The qualifiers a function declaration may open on.
-    const FN_QUALIFIERS: &[&str] = &[
-        "pub",
-        "pub(crate)",
-        "pub(super)",
-        "async",
-        "const",
-        "unsafe",
-        "extern",
-        "default",
-    ];
-
-    let declares_a_function = |code: &str| {
-        let trimmed = code.trim_start();
-        let Some(before) = trimmed.split("fn ").next() else {
-            return false;
-        };
-        trimmed.contains("fn ")
-            && before
-                .split_whitespace()
-                .all(|word| FN_QUALIFIERS.contains(&word))
-    };
-
     let crates_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("the cfgd crate sits under crates/");
@@ -46028,7 +46005,7 @@ fn every_hook_table_a_production_site_builds_reads_the_one_hook_set() {
             // judged by the same arm as every other.
             for n in 0..=lines.len() {
                 let line = lines.get(n).copied().unwrap_or("fn ");
-                if declares_a_function(line) {
+                if cfgd_core::test_helpers::opens_function(line) {
                     if named.len() >= 3 {
                         if hatched {
                             spared += 1;

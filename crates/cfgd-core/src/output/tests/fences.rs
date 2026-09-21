@@ -3029,8 +3029,10 @@ fn every_env_mutating_test_helper_is_named_in_the_mutator_roster() {
                 None => name.clone(),
             });
             names.push(name);
-            // item-lead-ok: the subject is the visibility itself, not an item head
-            exported.push(lines[open - 1].trim_start().starts_with("pub"));
+            exported.push(
+                crate::test_helpers::item_lead(lines[open - 1]).0
+                    == crate::test_helpers::ItemLead::Visible,
+            );
             sources.push(slice);
             opens.push(open);
         }
@@ -3428,102 +3430,148 @@ fn the_test_region_is_every_inline_test_item_and_nothing_else() {
     );
 }
 
-/// The four readers a hand-written lead fold is spelled with, and the three
-/// words it folds.
-///
-/// `contains`, `find` and `split` are not readers here: those take a source
-/// NEEDLE (`pub enum Foo {`), which names a declaration rather than folding a
-/// lead off one, and reading them as folds is what made forty assertion
-/// messages and source needles look like offenders. Both lists are spelled in
-/// parts, or this file's own needles are the walk's first offenders.
-const ITEM_LEAD_READERS: [&str; 4] = [
-    concat!(".starts_with", "("),
-    concat!(".ends_with", "("),
-    concat!(".strip_prefix", "("),
-    concat!(".trim_start_matches", "("),
-];
-const ITEM_LEAD_WORDS: [&str; 3] = [
-    concat!("pu", "b"),
-    concat!("unsaf", "e"),
-    concat!("defaul", "t"),
+/// The item keywords a lead-folding needle may name, and nothing else.
+const ITEM_LEAD_KEYWORDS: [&str; 11] = [
+    "fn", "mod", "struct", "enum", "union", "trait", "impl", "type", "const", "static", "use",
 ];
 
-/// Every place a source body folds an item's visibility or qualifier lead by
-/// hand, as the byte offset of the reader call.
+/// Whether a string literal's content is a hand-written item-lead fold.
 ///
-/// The body is read as CODE, so a reader named in a comment or standing inside
-/// a literal is not one, and the literal that reader was handed is read back
-/// off the RAW body at the same offset — [`crate::test_helpers::blank_non_code`]
-/// preserves every position, which is what lets the two views be indexed
-/// together. rustfmt puts a long call's argument on the line below it, so the
-/// scan skips whitespace between the two rather than demanding one line, and
-/// steps over a raw literal's `r` and `#` lead.
-fn hand_folded_lead_offsets(body: &str) -> Vec<usize> {
-    let code = crate::test_helpers::blank_non_code(body);
+/// The NEEDLE's shape is the tell, never the name of the reader it was handed
+/// to: a needle that folds a lead is the lead itself plus at most the item
+/// keyword behind it (`"pub "`, `"pub("`, `"pub fn "`, `"unsafe fn "`), and a
+/// needle carrying anything item-SPECIFIC after that names one declaration this
+/// tree really holds rather than folding a lead off any. So
+/// `contains("pub fn ")` is a fold and `find("pub enum BackupCommand {")` is
+/// not, and neither is an assertion message opening on the word `default`.
+fn needle_folds_an_item_lead(content: &str) -> bool {
+    // A bare lead word carrying no boundary at all is a VALUE — `"default"` is
+    // the name of a profile in a few hundred fixtures — where a fold always
+    // spells the boundary it folds at.
+    if !content.trim_start().contains([' ', '(']) {
+        return false;
+    }
+    let (lead, rest) = crate::test_helpers::item_lead(content);
+    if lead == crate::test_helpers::ItemLead::Bare {
+        return false;
+    }
+    let rest = rest.trim();
+    rest.is_empty() || ITEM_LEAD_KEYWORDS.contains(&rest)
+}
+
+/// Every place a source body folds an item's visibility or qualifier lead by
+/// hand, as the byte offset of the literal that spells the fold.
+///
+/// `code` is the body read as CODE
+/// ([`crate::test_helpers::blank_non_code`]), which blanks every literal's
+/// BODY and every comment while keeping each byte's position, so the quotes
+/// left standing in it are exactly the literal delimiters of real code — a
+/// needle written in a comment, or nested inside another literal, has no quotes
+/// of its own there. Each pair's content is then read back off the RAW body
+/// between the same two offsets. The caller passes the mask in, so a file is
+/// read as code once however many literals it holds.
+fn hand_folded_lead_offsets(body: &str, code: &str) -> Vec<usize> {
+    debug_assert_eq!(
+        body.len(),
+        code.len(),
+        "the code view indexes the raw body, so the two must agree byte for byte"
+    );
     let mut hits = Vec::new();
-    for reader in ITEM_LEAD_READERS {
-        let mut from = 0;
-        while let Some(at) = code[from..].find(reader) {
-            let call = from + at;
-            from = call + reader.len();
-            let tail = &code[from..];
-            let mut quote = from + (tail.len() - tail.trim_start().len());
-            while code[quote..].starts_with(['r', '#']) {
-                quote += 1;
-            }
-            if !code[quote..].starts_with('"') {
-                continue;
-            }
-            let word: String = body[quote + 1..]
-                .chars()
-                .take_while(|c| c.is_alphanumeric() || *c == '_')
-                .collect();
-            if ITEM_LEAD_WORDS.contains(&word.as_str()) {
-                hits.push(call);
-            }
+    let mut from = 0;
+    while let Some(open) = code[from..].find('"') {
+        let open = from + open;
+        let Some(close) = code[open + 1..].find('"') else {
+            break;
+        };
+        let close = open + 1 + close;
+        from = close + 1;
+        if needle_folds_an_item_lead(&body[open + 1..close]) {
+            hits.push(open);
         }
     }
-    hits.sort_unstable();
     hits
+}
+
+/// The lead folds one file's test region spells by hand, each as
+/// `<rel>:<line>: <text>`, less the ones a hatch exempts.
+fn lead_fold_offenders(rel: &str, body: &str) -> Vec<String> {
+    let hatch = concat!("item-lead", "-ok:");
+    let code = crate::test_helpers::blank_non_code(body);
+    let lines: Vec<&str> = body.lines().collect();
+    let mut offenders = Vec::new();
+    for at in hand_folded_lead_offsets(body, &code) {
+        let n = body[..at].matches('\n').count();
+        let line = lines.get(n).copied().unwrap_or_default();
+        let above = n.checked_sub(1).and_then(|p| lines.get(p).copied());
+        if carries_hatch(line, hatch) || above.is_some_and(|a| carries_hatch(a, hatch)) {
+            continue;
+        }
+        offenders.push(format!("{rel}:{}: {}", n + 1, line.trim()));
+    }
+    offenders
 }
 
 /// The lead-fold tell reads a FOLD, and never a mention of one.
 ///
-/// The walk below judges a population of two, so what proves it can still see
-/// a fold is this fixture rather than its floors: one case per placement the
-/// tell has to tell apart, each taken from a real line of this tree.
+/// The walk below judges a population that is now EMPTY — every fold the tree
+/// held is routed — so what proves the tell can still see one is this fixture:
+/// one case per placement it has to tell apart, each taken from a real line
+/// this tree held before the sweep, plus both halves of the hatch.
 #[test]
 fn the_item_lead_tell_reads_a_fold_and_not_a_mention() {
     let folds = [
+        r#"if code.contains("pub fn ") {}"#,
         r#"if code.starts_with("pub ") {}"#,
+        r#"if code.starts_with("pub(") {}"#,
         r#"let rest = code.strip_prefix("pub(crate) ");"#,
-        r#"if head.ends_with("unsafe ") {}"#,
+        r#"if head.ends_with("unsafe fn ") {}"#,
         r#"let t = code.trim_start_matches("default ");"#,
-        "if code.starts_with(\n    \"pub \",\n) {}",
+        r#"let n = 1; if code.contains("pub fn ") {}"#,
+        "if code.contains(\n    \"pub fn \",\n) {}",
     ];
     for fold in folds {
+        let code = crate::test_helpers::blank_non_code(fold);
         assert_eq!(
-            hand_folded_lead_offsets(fold).len(),
+            hand_folded_lead_offsets(fold, &code).len(),
             1,
             "a hand-written lead fold is one hit:\n{fold}"
         );
     }
 
     let mentions = [
-        r#"// code.starts_with("pub ") is how this used to be written"#,
-        r##"let sample = r#"a.starts_with("pub ")"#;"##,
-        r#"let needle = "pub enum BackupCommand {";"#,
+        r#"if code.contains("pub enum BackupCommand {") {}"#,
         r#"let at = body.find("pub struct SourceListEntry {");"#,
         r#"if !line.contains("pub const SOURCES_SECTION") {}"#,
         r#"if name.starts_with("public_api") {}"#,
         r#"assert!(ok, "default registry backend must be sops");"#,
-        r#"let n = 1;
-let s = "pub ";"#,
+        r#"// code.contains("pub fn ") is how this used to be written"#,
+        r##"let sample = r#"a.contains("pub fn ")"#;"##,
+        r#"let n = 1; let fixture = "pub fn kept() {}";"#,
+        r#"let profile = "default";"#,
+        r#"assert_eq!(name, "pub");"#,
+        "let held = 1;\nlet fixture = \"pub fn kept() {}\";",
     ];
     for mention in mentions {
+        let code = crate::test_helpers::blank_non_code(mention);
         assert!(
-            hand_folded_lead_offsets(mention).is_empty(),
+            hand_folded_lead_offsets(mention, &code).is_empty(),
             "a lead word that folds nothing is not a fold:\n{mention}"
+        );
+    }
+
+    let bare = r#"let e = line.starts_with("pub ");"#;
+    assert_eq!(
+        lead_fold_offenders("fixture.rs", bare).len(),
+        1,
+        "an unhatched fold is reported: {bare}"
+    );
+    let above = "// item-lead-ok: the subject is the visibility itself\nlet e = line.starts_with(\"pub \");";
+    let trailing =
+        "let e = line.starts_with(\"pub \"); // item-lead-ok: the subject is the visibility itself";
+    for hatched in [above, trailing] {
+        assert!(
+            lead_fold_offenders("fixture.rs", hatched).is_empty(),
+            "a hatch on the line or the one above exempts the fold:\n{hatched}"
         );
     }
 }
@@ -3533,68 +3581,39 @@ let s = "pub ";"#,
 /// `starts_with("pub ")` misses `pub(crate)`, `pub(super)` and `pub(in path)`;
 /// a list of four spellings misses the fifth; and none of them see `unsafe fn`
 /// or `default fn`. Each miss is silent — the scanner reads the item as
-/// something other than what it is and walks on — and the tree held eleven such
-/// folds, one of which let every `pub(crate) mod tests;` declaration out of the
-/// production half. [`crate::test_helpers::strip_item_lead`] is the one
-/// spelling of the list; [`item_keyword`] asks what the item is,
-/// [`crate::test_helpers::opens_function`] whether it is a function, and
+/// something other than what it is and walks on — and the tree held such folds
+/// in six files, one of which let every `pub(crate) mod tests;` declaration out
+/// of the production half. [`crate::test_helpers::item_lead`] is the one
+/// spelling of the list: it folds the lead and says whether that lead was a
+/// VISIBILITY, which is what a reader asking whether a declaration is public
+/// reads instead of spelling `pub` itself. [`item_keyword`] asks what the item
+/// is, [`crate::test_helpers::opens_function`] whether it is a function, and
 /// `declared_fn_name` what it is called.
 ///
-/// A site whose subject is not an item's HEAD says so with
-/// `// item-lead-ok: <why>` on the line or the one above. Both of today's are
-/// the same question: whether a declaration is public, which the shared
-/// stripper folds away rather than reports, since it folds `unsafe` and
-/// `default` with the three visibility spellings.
+/// A site whose subject is genuinely not an item's lead says so with
+/// `// item-lead-ok: <why>` on the line or the one above. There are none today.
 #[test]
 fn no_test_scope_scanner_folds_an_item_lead_by_hand() {
-    let hatch = concat!("item-lead", "-ok:");
     let mut offenders = Vec::new();
-    let mut per_file: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
     for path in workspace_rust_files() {
         let body = test_region(&path, &walked_file_body(&path));
-        let lines: Vec<&str> = body.lines().collect();
         let rel = path
             .strip_prefix(workspace_root())
             .unwrap_or(&path)
             .display()
             .to_string()
             .replace('\\', "/");
-        for at in hand_folded_lead_offsets(&body) {
-            let n = body[..at].matches('\n').count();
-            *per_file.entry(rel.clone()).or_default() += 1;
-            let line = lines.get(n).copied().unwrap_or_default();
-            let above = n.checked_sub(1).and_then(|p| lines.get(p).copied());
-            if carries_hatch(line, hatch) || above.is_some_and(|a| carries_hatch(a, hatch)) {
-                continue;
-            }
-            offenders.push(format!("{rel}:{}: {}", n + 1, line.trim()));
-        }
+        offenders.extend(lead_fold_offenders(&rel, &body));
     }
     assert!(
         offenders.is_empty(),
-        "read the item head through `cfgd_core::test_helpers::{{item_keyword, \
-         opens_function, declared_fn_name, strip_item_lead}}`, which fold every \
-         visibility and qualifier lead once — or say why this lead word is not \
-         an item head with `// item-lead-ok: <why>`:\n{}",
+        "read the item head through `cfgd_core::test_helpers::{{item_lead, \
+         item_keyword, opens_function, declared_fn_name}}`, which fold every \
+         visibility and qualifier lead once — or say why this needle is not an \
+         item lead with `// item-lead-ok: <why>`:\n{}",
         offenders.join("\n")
     );
-    for (file, floor) in ITEM_LEAD_FLOORS {
-        let found = per_file.get(file).copied().unwrap_or_default();
-        assert!(
-            found >= floor,
-            "the walk read {found} lead folds in {file}, below its floor of \
-             {floor}; it has stopped reading the population it judges"
-        );
-    }
 }
-
-/// The lead folds each holder file still carries, so a walk that stopped
-/// reading one of them fails by that file's name rather than by a total the
-/// other fills.
-const ITEM_LEAD_FLOORS: [(&str, usize); 2] = [
-    ("crates/cfgd-core/src/daemon/tests.rs", 1),
-    ("crates/cfgd-core/src/output/tests/fences.rs", 1),
-];
 
 /// A hatch is read off a source line through
 /// [`crate::test_helpers::carries_hatch`], never through a bare `contains`.

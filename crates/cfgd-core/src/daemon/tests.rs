@@ -19764,8 +19764,11 @@ mod ipc_socket_security {
         let mut judged = Vec::new();
         let mut undocumented = Vec::new();
         for (i, line) in lines.iter().enumerate() {
-            // item-lead-ok: the subject is the visibility itself, not an item head
-            if !line.starts_with("pub(crate) ") && !line.starts_with("pub ") {
+            // Column 0 is the rule, not a spelling of the lead: an indented
+            // item belongs to the block above it.
+            if line.starts_with(char::is_whitespace)
+                || crate::test_helpers::item_lead(line).0 != crate::test_helpers::ItemLead::Visible
+            {
                 continue;
             }
             judged.push(format!("{}: {}", i + 1, line));

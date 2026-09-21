@@ -5135,33 +5135,63 @@ fn item_end(lines: &[&str], from: usize) -> Option<usize> {
     None
 }
 
-/// A code line with any `pub` / `pub(crate)` / `pub(in …)` / `unsafe` /
-/// `default` lead folded off, leading whitespace included; the empty string for
-/// a `pub(` whose scope never closes.
+/// Which lead [`item_lead`] folded off a code line.
+///
+/// A reader asking whether a declaration is PUBLIC cannot ask
+/// [`strip_item_lead`], which folds `unsafe` and `default` alongside the three
+/// visibility spellings and so answers yes for a private `unsafe fn`. This is
+/// the half of the fold that question reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ItemLead {
+    /// Nothing was folded: the line carries no visibility and no qualifier.
+    Bare,
+    /// A qualifier (`unsafe`, `default`) and no visibility, so the item is
+    /// private.
+    Qualified,
+    /// A visibility spelling, whatever qualifiers stand beside it.
+    Visible,
+}
+
+/// A code line's `pub` / `pub(crate)` / `pub(in …)` / `unsafe` / `default` lead
+/// folded off, leading whitespace included, and which lead that was; the empty
+/// string for a `pub(` whose scope never closes.
 ///
 /// The ONE place that lead list is spelled, in this crate or the other. Every
 /// reader asking what a line declares — the keyword, the name, whether it opens
-/// a function — asks past the lead, and each that spelled its own list read
-/// `pub(crate) mod tests;` as something other than a `mod` declaration, or
-/// missed `pub(in path) fn` and `unsafe fn` outright.
-pub fn strip_item_lead(code: &str) -> &str {
+/// a function, whether it is public — asks past the lead, and each that spelled
+/// its own list read `pub(crate) mod tests;` as something other than a `mod`
+/// declaration, or missed `pub(in path) fn` and `unsafe fn` outright.
+pub fn item_lead(code: &str) -> (ItemLead, &str) {
     let mut rest = code.trim_start();
+    let mut lead = ItemLead::Bare;
     loop {
         let end = rest
             .find(|c: char| !(c.is_alphanumeric() || c == '_'))
             .unwrap_or(rest.len());
-        if !matches!(&rest[..end], "pub" | "unsafe" | "default") {
-            return rest;
+        let word = &rest[..end];
+        if !matches!(word, "pub" | "unsafe" | "default") {
+            return (lead, rest);
+        }
+        if word == "pub" {
+            lead = ItemLead::Visible;
+        } else if lead == ItemLead::Bare {
+            lead = ItemLead::Qualified;
         }
         rest = rest[end..].trim_start();
         // `pub(crate)` / `pub(super)` / `pub(in path)`.
         if let Some(tail) = rest.strip_prefix('(') {
             match tail.find(')') {
                 Some(at) => rest = tail[at + 1..].trim_start(),
-                None => return "",
+                None => return (ItemLead::Visible, ""),
             }
         }
     }
+}
+
+/// [`item_lead`]'s fold alone, for a reader that asks what the item IS rather
+/// than who can see it.
+pub fn strip_item_lead(code: &str) -> &str {
+    item_lead(code).1
 }
 
 /// The keyword a code line declares its item with — `mod`, `fn`, `struct`,
