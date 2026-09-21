@@ -20024,6 +20024,64 @@ fn every_rendered_url_is_stripped_of_its_userinfo() {
     );
 }
 
+/// A rendered source URL folds `$HOME` through one composer, never by hand.
+///
+/// [`cfgd_core::display_source_origin`] is the ONE place a bare local path
+/// origin folds under `~/`; every other URL-labeled slot renders through it or
+/// through [`cfgd_core::display_url`] (which folds nothing). A second site
+/// calling [`cfgd_core::fold_home_in_text`] on a URL-labeled slot would fold a
+/// scheme'd URL's authority into an unresolvable `file://~/...`-shaped string,
+/// or would simply duplicate the composer's decision in a second place that
+/// can drift from it.
+///
+/// Shares its population and gather with
+/// `every_rendered_url_is_stripped_of_its_userinfo`: every URL-labeled
+/// `rendered_labels` site plus the `URL_RENDERING_COMPOSERS` roster, across
+/// both crates' production sources. Judged on the SLOT's own call expression
+/// (or the whole function for a named composer), so a hand-rolled fold
+/// anywhere in that expression is caught whether or not the slot also calls
+/// `display_source_origin`.
+#[test]
+fn no_rendered_url_folds_the_home_directory_outside_display_source_origin() {
+    let mut offenders = Vec::new();
+    for (path, body) in cli_production_sources()
+        .into_iter()
+        .chain(core_production_sources())
+    {
+        let lines: Vec<&str> = body.lines().collect();
+        let mut sites: Vec<(usize, String, bool)> = rendered_labels(&body)
+            .into_iter()
+            .filter(|(_, label)| names_a_url(label))
+            .map(|(at, label)| (at, label, false))
+            .collect();
+        for composer in URL_RENDERING_COMPOSERS {
+            if let Some(at) = body.find(composer) {
+                sites.push((at, (*composer).to_string(), true));
+            }
+        }
+        for (at, label, whole_fn) in sites {
+            let n = body[..at].matches('\n').count();
+            let judged = if whole_fn {
+                enclosing_fn_text(&lines, n)
+            } else {
+                match body[at..].find('(') {
+                    Some(rel) => bracketed_span(&body, at + rel).1.to_string(),
+                    None => String::new(),
+                }
+            };
+            if judged.contains("fold_home_in_text") && !judged.contains("display_source_origin") {
+                offenders.push(format!("{}:{}: {label:?}", path.display(), n + 1));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "a URL-labeled slot folds `$HOME` only through `display_source_origin`, \
+         never by calling `fold_home_in_text` itself:\n{}",
+        offenders.join("\n")
+    );
+}
+
 /// A run that closes with the shared rollup opens with the shared header.
 ///
 /// `cfgd backup restore` took `render_run_rollup`'s footer — the `✓ Restore

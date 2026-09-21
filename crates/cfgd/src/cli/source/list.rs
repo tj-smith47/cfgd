@@ -61,7 +61,7 @@ pub fn sources_table(entries: &[SourceListEntry], wide: bool, now: &str) -> Tabl
         (
             "Source",
             // A bare local path folds under $HOME; a URL (file:// included)
-            // renders as stored, via the one composer both list and show reach for.
+            // renders as stored, userinfo stripped.
             entries
                 .iter()
                 .map(|e| cell(e.url.as_deref().map(cfgd_core::display_source_origin)))
