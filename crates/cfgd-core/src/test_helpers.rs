@@ -5068,6 +5068,13 @@ pub fn test_region_mask(src: &str) -> String {
 /// on the `}` that returns the depth to zero — over a body whose literals and
 /// comments are blanked by [`blank_non_code`], so a brace inside either one
 /// neither opens nor closes a range.
+///
+/// An item the file never TERMINATES runs to the end of the file and is still
+/// yielded. A source truncated mid-write, or read while an editor holds it half
+/// saved, would otherwise hand its whole unclosed tail back to the production
+/// half, where a walk would judge test text as production — the failure this
+/// scan exists to prevent, arriving silently. Returning the tail as test text
+/// can only cost a walk lines it never had to read.
 fn inline_test_item_ranges(src: &str) -> Vec<(usize, usize)> {
     let code = blank_non_code(src);
     let lines: Vec<&str> = code.lines().collect();
@@ -5076,24 +5083,30 @@ fn inline_test_item_ranges(src: &str) -> Vec<(usize, usize)> {
     while at < lines.len() {
         if lines[at] == "#[cfg(test)]" {
             // A platform gate stacks a second attribute between the marker and
-            // the item it applies to.
+            // the item, and a doc comment between them is blanked to spaces by
+            // the fold above, so neither is the head this reads.
             let mut item = at + 1;
-            while lines.get(item).is_some_and(|l| l.starts_with('#')) {
+            while lines
+                .get(item)
+                .is_some_and(|l| l.starts_with('#') || l.trim().is_empty())
+            {
                 item += 1;
             }
             let head = lines.get(item).copied().unwrap_or_default();
             // A `mod tests;` DECLARATION carries no test text of its own — the
             // tests live in another file — so dropping it takes the production
-            // lines below it with nothing to show for it.
-            if head.starts_with("mod ") && head.trim_end().ends_with(';') {
+            // lines below it with nothing to show for it. Its visibility is
+            // folded off first: 6 of the tree's 74 declarations are written
+            // `pub(crate) mod …;`, and reading the bare spelling alone let each
+            // of them leave the production half.
+            if item_keyword(head) == "mod" && head.trim_end().ends_with(';') {
                 at += 1;
                 continue;
             }
-            if let Some(end) = item_end(&lines, item) {
-                blocks.push((at, end));
-                at = end;
-                continue;
-            }
+            let end = item_end(&lines, item).unwrap_or(lines.len());
+            blocks.push((at, end));
+            at = end;
+            continue;
         }
         at += 1;
     }
@@ -5102,7 +5115,8 @@ fn inline_test_item_ranges(src: &str) -> Vec<(usize, usize)> {
 
 /// The line after the item starting at `from` ends, over lines already blanked
 /// of their literals and comments; `None` for an item the file never
-/// terminates.
+/// terminates, which [`inline_test_item_ranges`] reads as running to the end of
+/// the file.
 fn item_end(lines: &[&str], from: usize) -> Option<usize> {
     let mut depth = 0i64;
     for (at, line) in lines.iter().enumerate().skip(from) {
@@ -5114,6 +5128,37 @@ fn item_end(lines: &[&str], from: usize) -> Option<usize> {
         }
     }
     None
+}
+
+/// The keyword a code line declares its item with — `mod`, `fn`, `struct`,
+/// `impl`, … — with any `pub` / `pub(crate)` / `pub(in …)` / `unsafe` /
+/// `default` lead folded off first; the empty string for a line that opens no
+/// item.
+///
+/// The ONE place that lead list is spelled. A reader asking WHAT KIND of item a
+/// line declares has to ask it of the keyword, and every reader that asked it
+/// of the raw line instead read `pub(crate) mod tests;` as something other than
+/// a `mod` declaration. The word is taken whole, so `impl_something!(…)` is
+/// `impl_something` and never `impl`.
+pub fn item_keyword(code: &str) -> &str {
+    let mut rest = code.trim_start();
+    loop {
+        let end = rest
+            .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+            .unwrap_or(rest.len());
+        let word = &rest[..end];
+        if !matches!(word, "pub" | "unsafe" | "default") {
+            return word;
+        }
+        rest = rest[end..].trim_start();
+        // `pub(crate)` / `pub(super)` / `pub(in path)`.
+        if let Some(tail) = rest.strip_prefix('(') {
+            match tail.find(')') {
+                Some(at) => rest = tail[at + 1..].trim_start(),
+                None => return "",
+            }
+        }
+    }
 }
 
 /// Put the managed env files a CONVERGED machine holds onto `home`, taken from
@@ -5750,49 +5795,81 @@ mod tests {
     /// DECLARATION sitting beside its sibling `mod x;` lines, and the file's
     /// real content follows it. Cutting there is the blinding the helper exists
     /// to prevent, so the whole source survives.
+    ///
+    /// Each spelling is one a real file carries. A declaration is as often
+    /// written `pub(crate) mod test_support;` (6 of this tree's 74), and a
+    /// visibility lead read as part of the keyword made every one of them leave
+    /// the production half; a doc comment between the marker and the
+    /// declaration is blanked to spaces by the fold the scan reads through, so
+    /// a head taken from the line after the attribute run is a blank line
+    /// rather than the declaration.
     #[test]
     fn production_slice_keeps_a_file_whose_test_module_is_a_mid_file_declaration() {
         let attr = format!("#[cfg({})]", "test");
-        let src = format!(
-            "mod plan;\nmod verify;\n{attr}\nmod tests;\n\
-             pub use plan::Plan;\n\
+        for declaration in [
+            "mod tests;",
+            "pub(crate) mod test_support;",
+            "pub mod test_support;",
+        ] {
+            let src = format!(
+                "mod plan;\nmod verify;\n{attr}\n{declaration}\n\
+                 pub use plan::Plan;\n\
+                 pub const RENDERED: &str = \"a literal a walk must see\";\n"
+            );
+            assert_eq!(
+                production_slice(&src),
+                src,
+                "a `{declaration}` declaration is not the end of the file, so \
+                 nothing below it may be cut away"
+            );
+        }
+        let documented = format!(
+            "mod plan;\n{attr}\n/// what the tests cover\nmod tests;\n\
              pub const RENDERED: &str = \"a literal a walk must see\";\n"
         );
         assert_eq!(
-            production_slice(&src),
-            src,
-            "a `mod tests;` declaration is not the end of the file, so nothing \
-             below it may be cut away"
+            production_slice(&documented),
+            documented,
+            "a doc comment between the marker and the declaration does not make \
+             the declaration something else"
         );
     }
 
     /// Both shapes in one file: the declaration is skipped and the search
-    /// continues to the inline block, which is where the cut lands.
+    /// continues to the inline block, which is where the cut lands. Run over
+    /// every declaration spelling, so a lead the scan cannot fold takes the
+    /// production line between the two anchors with it.
     #[test]
     fn production_slice_cuts_at_the_inline_block_past_a_mid_file_declaration() {
         let attr = format!("#[cfg({})]", "test");
-        let src = format!(
-            "mod plan;\n{attr}\nmod tests;\n\
-             pub const RENDERED: &str = \"a literal a walk must see\";\n\
-             {attr}\nmod inline_tests #OPEN#\n    fn hidden() #OPEN##CLOSE#\n#CLOSE#\n"
-        )
-        .replace("#OPEN#", "{")
-        .replace("#CLOSE#", "}");
-        let production = production_slice(&src);
-        assert!(
-            production.contains("a literal a walk must see"),
-            "the code between the declaration and the inline block must \
-             survive: {production}"
-        );
-        assert!(
-            production.contains("mod tests;"),
-            "the declaration itself is production text, not a cut point: \
-             {production}"
-        );
-        assert!(
-            !production.contains("fn hidden"),
-            "the inline test module is where the cut lands: {production}"
-        );
+        for (declaration, between) in [
+            ("mod tests;", ""),
+            ("pub(crate) mod test_support;", ""),
+            ("mod tests;", "/// what the tests cover\n"),
+        ] {
+            let src = format!(
+                "mod plan;\n{attr}\n{between}{declaration}\n\
+                 pub const RENDERED: &str = \"a literal a walk must see\";\n\
+                 {attr}\nmod inline_tests #OPEN#\n    fn hidden() #OPEN##CLOSE#\n#CLOSE#\n"
+            )
+            .replace("#OPEN#", "{")
+            .replace("#CLOSE#", "}");
+            let production = production_slice(&src);
+            assert!(
+                production.contains("a literal a walk must see"),
+                "the code between the `{declaration}` declaration and the \
+                 inline block must survive: {production}"
+            );
+            assert!(
+                production.contains(declaration),
+                "the `{declaration}` declaration itself is production text, \
+                 not a cut point: {production}"
+            );
+            assert!(
+                !production.contains("fn hidden"),
+                "the inline test module is where the cut lands: {production}"
+            );
+        }
     }
 
     /// The strip is not a suffix cut. Here the inline block comes FIRST and a

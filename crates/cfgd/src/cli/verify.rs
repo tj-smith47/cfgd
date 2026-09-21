@@ -693,11 +693,12 @@ mod tests {
     /// of every row through `display_values`, matching rows included, so a
     /// reader taking the FIRST line that claims the name reported a converged
     /// machine as drifted against itself — through a green workspace run, since
-    /// every other CLI fixture plants a ONE-block file: four of them through
-    /// `plant_managed_env_files`, which writes whatever the generator composes
-    /// and composes one block for a fixture declaring one layer, and nine by
-    /// hand, whose subject is a missing or hand-edited entry and so has no
-    /// converged form to plant.
+    /// every other CLI fixture plants a ONE-block file. Which way a fixture
+    /// plants it follows from its subject: one reproducing convergence calls
+    /// `plant_managed_env_files` and gets whatever the generator composes,
+    /// which is one block for a fixture declaring one layer, while one whose
+    /// subject is a missing or hand-edited entry writes its own bytes, that
+    /// state having no converged form to plant.
     #[test]
     #[serial]
     fn cmd_verify_reports_equal_operands_for_a_converged_multi_block_env_file() {

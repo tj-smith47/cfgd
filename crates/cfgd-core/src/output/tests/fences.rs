@@ -399,8 +399,8 @@ fn the_folding_writer_fence_recognizes_every_spelling() {
     }
 }
 
-/// Whether this code line DECLARES a type rather than reaching one: the first
-/// word after any `pub` / `unsafe` / `default` lead is `struct`, `enum`,
+/// Whether this code line DECLARES a type rather than reaching one: the keyword
+/// [`crate::test_helpers::item_keyword`] reads off it is `struct`, `enum`,
 /// `union`, `trait` or `impl`.
 ///
 /// A roster needle naming a fixture TYPE matches its `struct` line and every
@@ -410,28 +410,10 @@ fn the_folding_writer_fence_recognizes_every_spelling() {
 /// really written, rather than narrowed until it dodges them and misses a
 /// construction with it.
 fn declares_a_type(code: &str) -> bool {
-    const TYPE_KEYWORDS: [&str; 5] = ["struct", "enum", "union", "trait", "impl"];
-    let mut rest = code.trim_start();
-    loop {
-        let word: String = rest
-            .chars()
-            .take_while(|c| c.is_alphanumeric() || *c == '_')
-            .collect();
-        if TYPE_KEYWORDS.contains(&word.as_str()) {
-            return true;
-        }
-        if !matches!(word.as_str(), "pub" | "unsafe" | "default") {
-            return false;
-        }
-        rest = rest[word.len()..].trim_start();
-        // `pub(crate)` / `pub(super)` / `pub(in path)`.
-        if let Some(tail) = rest.strip_prefix('(') {
-            match tail.find(')') {
-                Some(at) => rest = tail[at + 1..].trim_start(),
-                None => return false,
-            }
-        }
-    }
+    matches!(
+        crate::test_helpers::item_keyword(code),
+        "struct" | "enum" | "union" | "trait" | "impl"
+    )
 }
 
 /// The code half of a line: what is left once its comments are gone, judged
@@ -3404,15 +3386,62 @@ fn the_test_region_is_every_inline_test_item_and_nothing_else() {
         file.lines().count(),
         "a blanked line still occupies its own row, or an offender cannot be opened where it is reported"
     );
+    // The partition stated as a REASSEMBLY rather than a count: each row takes
+    // the region's line where the region holds one and the next production line
+    // where it does not, and the result has to be the file again with every
+    // production line spent. A count is satisfied by two lines that swapped
+    // halves in opposite directions; this is not.
+    // unfloored-slice-ok: the subject is one fixture held in memory, not a source on disk
+    let production: Vec<&str> = crate::test_helpers::production_slice(file)
+        .lines()
+        .map(|line| {
+            file.lines()
+                .find(|own| *own == line)
+                .unwrap_or_else(|| panic!("the slice invented a line: {line}"))
+        })
+        .collect();
+    let mut spent = 0usize;
+    let rebuilt: Vec<&str> = region
+        .lines()
+        .map(|held| {
+            if held.is_empty() {
+                let line = production.get(spent).copied().unwrap_or_default();
+                spent += 1;
+                line
+            } else {
+                held
+            }
+        })
+        .collect();
     assert_eq!(
+        rebuilt,
+        file.lines().collect::<Vec<_>>(),
+        "the region and the production slice reassemble the file line for line:\n{region}"
+    );
+    assert_eq!(
+        spent,
+        production.len(),
+        "every production line lands in a row the region left blank:\n{region}"
+    );
+
+    // An item the file never terminates runs to the end of the file, and the
+    // range is still yielded: handing an unclosed tail back to the production
+    // half is the blinding this scan exists to prevent, arriving silently.
+    let truncated = format!(
+        "fn production() {{}}\n\
+         {gate}\n\
+         fn never_closes() {{\n\
+         \x20   let held = 1;\n"
+    );
+    let cut = test_region(Path::new("src/thing.rs"), &truncated);
+    assert!(
+        cut.contains("fn never_closes() {") && cut.contains("let held = 1;"),
+        "an unterminated item is test text to the end of the file:\n{cut}"
+    );
+    assert!(
         // unfloored-slice-ok: the subject is one fixture held in memory, not a source on disk
-        crate::test_helpers::production_slice(file)
-            .lines()
-            .filter(|line| !line.is_empty())
-            .count()
-            + held.len(),
-        file.lines().filter(|line| !line.is_empty()).count(),
-        "the region and the production slice partition the file:\n{region}"
+        !crate::test_helpers::production_slice(&truncated).contains("never_closes"),
+        "an unterminated item is not returned to the production half"
     );
 
     let scaffolding = format!("a\n{gate}\nb\n");
