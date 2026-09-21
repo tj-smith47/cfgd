@@ -5075,7 +5075,12 @@ pub fn test_region_mask(src: &str) -> String {
 /// half, where a walk would judge test text as production — the failure this
 /// scan exists to prevent, arriving silently. Returning the tail as test text
 /// can only cost a walk lines it never had to read.
-fn inline_test_item_ranges(src: &str) -> Vec<(usize, usize)> {
+///
+/// Public because MEMBERSHIP is a different question from the text either half
+/// holds: a blank line inside a test item is blank in the mask and absent from
+/// the slice, so a reader deciding membership from the mask's content reads it
+/// as production. A caller that has to partition a file by index asks here.
+pub fn inline_test_item_ranges(src: &str) -> Vec<(usize, usize)> {
     let code = blank_non_code(src);
     let lines: Vec<&str> = code.lines().collect();
     let mut blocks: Vec<(usize, usize)> = Vec::new();

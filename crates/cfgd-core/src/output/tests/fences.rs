@@ -3324,18 +3324,25 @@ fn the_test_region_is_every_inline_test_item_and_nothing_else() {
     // Assembled rather than spelled: a `#[cfg(test)]` written out here would
     // read as this scaffolding file declaring a second test region of its own.
     let gate = concat!("#[cfg", "(test)]");
+    // Line 5 and line 14 are blank INSIDE a test item and line 8 is blank
+    // between two production lines: the three rows a partition deciding
+    // membership from the mask's own content reads the same way and gets two
+    // of them wrong.
     let file = format!(
         "fn production() {{}}\n\
          {gate}\n\
          fn item_before() {{\n\
          \x20   let held = \"x\";\n\
+         \n\
          }}\n\
          fn production_below_the_item() {{}}\n\
+         \n\
          {gate}\n\
          const ITEM_CONST: usize = 2;\n\
          {gate}\n\
          mod tests {{\n\
          \x20   fn a_pin() {{}}\n\
+         \n\
          }}\n\
          fn production_below_the_module() {{}}\n\
          const IN_A_LITERAL: &str = \"\n\
@@ -3358,13 +3365,13 @@ fn the_test_region_is_every_inline_test_item_and_nothing_else() {
             (2, gate),
             (3, "fn item_before() {"),
             (4, "    let held = \"x\";"),
-            (5, "}"),
-            (7, gate),
-            (8, "const ITEM_CONST: usize = 2;"),
+            (6, "}"),
             (9, gate),
-            (10, "mod tests {"),
-            (11, "    fn a_pin() {}"),
-            (12, "}"),
+            (10, "const ITEM_CONST: usize = 2;"),
+            (11, gate),
+            (12, "mod tests {"),
+            (13, "    fn a_pin() {}"),
+            (15, "}"),
         ],
         "every marked item is the region, module or not, at the file's own line numbers:\n{region}"
     );
@@ -3387,29 +3394,29 @@ fn the_test_region_is_every_inline_test_item_and_nothing_else() {
         "a blanked line still occupies its own row, or an offender cannot be opened where it is reported"
     );
     // The partition stated as a REASSEMBLY rather than a count: each row takes
-    // the region's line where the region holds one and the next production line
-    // where it does not, and the result has to be the file again with every
-    // production line spent. A count is satisfied by two lines that swapped
-    // halves in opposite directions; this is not.
+    // the region's line where the row belongs to a marked item and the next
+    // production line where it does not, and the result has to be the file
+    // again with every production line spent. A count is satisfied by two lines
+    // that swapped halves in opposite directions; this is not.
+    //
+    // Membership is the RANGES, never the mask's content. A blank line inside a
+    // test item is blank in the mask exactly as a blanked production row is, so
+    // a reader asking `is_empty()` hands that row to the production half, takes
+    // a line that belongs further down, and every row after it is off by one.
     // unfloored-slice-ok: the subject is one fixture held in memory, not a source on disk
-    let production: Vec<&str> = crate::test_helpers::production_slice(file)
-        .lines()
-        .map(|line| {
-            file.lines()
-                .find(|own| *own == line)
-                .unwrap_or_else(|| panic!("the slice invented a line: {line}"))
-        })
-        .collect();
+    let slice = crate::test_helpers::production_slice(file);
+    let production: Vec<&str> = slice.lines().collect();
+    let ranges = crate::test_helpers::inline_test_item_ranges(file);
+    let mask: Vec<&str> = region.lines().collect();
     let mut spent = 0usize;
-    let rebuilt: Vec<&str> = region
-        .lines()
-        .map(|held| {
-            if held.is_empty() {
+    let rebuilt: Vec<&str> = (0..file.lines().count())
+        .map(|at| {
+            if ranges.iter().any(|(from, to)| (*from..*to).contains(&at)) {
+                mask.get(at).copied().unwrap_or_default()
+            } else {
                 let line = production.get(spent).copied().unwrap_or_default();
                 spent += 1;
                 line
-            } else {
-                held
             }
         })
         .collect();
@@ -3421,7 +3428,12 @@ fn the_test_region_is_every_inline_test_item_and_nothing_else() {
     assert_eq!(
         spent,
         production.len(),
-        "every production line lands in a row the region left blank:\n{region}"
+        "every production line lands in a row no marked item claims:\n{region}"
+    );
+    assert_eq!(
+        production.iter().filter(|line| line.is_empty()).count(),
+        1,
+        "a blank line between two production lines is KEPT, at its own position:\n{slice}"
     );
 
     // An item the file never terminates runs to the end of the file, and the
