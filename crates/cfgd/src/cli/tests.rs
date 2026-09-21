@@ -17078,17 +17078,6 @@ fn span_literals<'a>(blanked: &str, raw: &'a str) -> Vec<(usize, &'a str)> {
     out
 }
 
-/// One line with its trailing `//` comment cut but its literals intact.
-///
-/// [`code_line`] answers where the code ends, on a copy whose literals are
-/// blanked so a `//` written inside one does not cut; the cut is then taken on
-/// the raw line, which that copy indexes byte for byte. Reach for it where the
-/// tell the walk looks for is written INSIDE a literal, which [`code_line`]'s
-/// own return would have spaced out.
-fn commentless(line: &str) -> &str {
-    &line[..code_line(line).len()]
-}
-
 /// The text of the brace block opened at `open`, matched on `blanked` and
 /// sliced off `raw`.
 ///
@@ -39877,7 +39866,7 @@ fn no_production_slot_hardcodes_the_arrow_glyph() {
                 let code = line.trim_start();
                 // A trailing `// old → new` on a code line is still a
                 // comment: only the part before the FIRST `//` is code.
-                let code_only = commentless(code);
+                let code_only = cfgd_core::test_helpers::code_span(code);
                 if !code_only.contains('→') {
                     continue;
                 }
@@ -40112,7 +40101,7 @@ fn no_production_site_joins_the_module_cache_segment_by_hand() {
             let lines = cfgd_core::test_helpers::logical_source_lines(&production);
             let in_git_rs = path.ends_with("modules/git.rs");
             for (i, (n, line)) in lines.iter().enumerate() {
-                let code = commentless(line);
+                let code = cfgd_core::test_helpers::code_span(line);
                 let is_offender = code.contains("join(\"modules\")")
                     || code.contains(".module-cache")
                     || (!in_git_rs && code.contains("join(crate::MODULE_CACHE_SEGMENT)"));
@@ -46077,7 +46066,7 @@ fn every_scripts_inventory_a_surface_renders_comes_from_the_one_composer() {
             let body = cfgd_core::test_helpers::production_slice_of(&path);
             let lines: Vec<&str> = body.lines().collect();
             for (n, line) in lines.iter().enumerate() {
-                let code = commentless(line);
+                let code = cfgd_core::test_helpers::code_span(line);
                 // The cfgd-core root is reached through `..`, so the walked
                 // path carries that hop and the match is on the tail.
                 if !rel.ends_with(COMPOSER) {
@@ -46094,7 +46083,7 @@ fn every_scripts_inventory_a_surface_renders_comes_from_the_one_composer() {
                         lines[..n]
                             .iter()
                             .rev()
-                            .map(|l| commentless(l).trim_end())
+                            .map(|l| cfgd_core::test_helpers::code_span(l).trim_end())
                             .find(|c| !c.trim().is_empty())
                             .is_some_and(|c| SECTION_SLOTS.iter().any(|s| c.ends_with(s)))
                     };
@@ -46273,7 +46262,7 @@ fn every_hook_table_a_production_site_builds_reads_the_one_hook_set() {
                 if carries_hatch(line, HATCH) {
                     hatched = true;
                 }
-                let code = commentless(line);
+                let code = cfgd_core::test_helpers::code_span(line);
                 for hook in HOOKS {
                     if code.contains(hook) && !named.contains(hook) {
                         named.push(hook);
@@ -47526,7 +47515,7 @@ fn no_source_walk_in_this_file_scans_syntax_by_hand() {
         // Judged with the trailing comment cut but the literals kept: every
         // tell but one is itself written inside a literal, which `code_line`'s
         // own return would have spaced out.
-        let code = commentless(line);
+        let code = cfgd_core::test_helpers::code_span(line);
         let Some(tell) = tells.iter().find(|t| code.contains(t.as_str())) else {
             continue;
         };

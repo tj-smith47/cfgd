@@ -1489,6 +1489,20 @@ pub fn code_line(line: &str) -> String {
     }
 }
 
+/// The same span of the RAW line: everything before the trailing `//` comment,
+/// with the literals still readable.
+///
+/// [`code_line`] answers where the code ends, on a copy whose literal bodies
+/// are blanked so a `//` written inside one does not cut early; that copy
+/// indexes the raw line byte for byte, so its length is the cut. Reach for this
+/// one where the tell a walk looks for is written INSIDE a literal, which
+/// [`code_line`]'s own return would have spaced out, and for [`code_line`]
+/// where a tell inside a literal must NOT count.
+#[must_use]
+pub fn code_span(line: &str) -> &str {
+    &line[..code_line(line).len()]
+}
+
 /// A whole source body as CODE, byte-for-byte: every literal body blanked
 /// (quotes kept, as [`blank_string_literals`] does per line), every `//` and
 /// `/* … */` comment blanked WHOLE (delimiters included), newlines kept, and
@@ -1779,8 +1793,7 @@ pub fn folded_literal_lines(body: &str) -> Vec<(usize, String)> {
 /// opener carries its `r` and its hashes ahead of the quote, which is what
 /// tells the two apart.
 fn leaves_a_plain_literal_open(line: &str) -> bool {
-    let blanked = blank_string_literals(line);
-    let code = blanked.find("//").map_or(&blanked[..], |c| &blanked[..c]);
+    let code = code_line(line);
     if code.bytes().filter(|b| *b == b'"').count() % 2 == 0 {
         return false;
     }
