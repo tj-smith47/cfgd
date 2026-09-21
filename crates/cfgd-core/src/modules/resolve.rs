@@ -532,6 +532,39 @@ pub fn resolve_modules(
         (&spec.depends, &spec.platforms)
     })?;
 
+    // Fail-closed: a source not permitted to run scripts may not deliver a
+    // module body carrying lifecycle scripts or `prefer: [script]` package
+    // installs. Judged over `order` — the modules THIS resolution actually
+    // references, requested or depends-pulled — never over everything a
+    // source's manifest merely offers: an unreferenced sibling module in the
+    // same source carrying a script is not this subscriber's problem, and a
+    // platform-skipped one never runs its body at all.
+    let scripts_permitted_by_source: HashMap<&str, bool> = source_roots
+        .iter()
+        .map(|root| (root.source_name.as_str(), root.scripts_permitted))
+        .collect();
+    for name in &order {
+        if skipped.contains(name.as_str()) {
+            continue;
+        }
+        let module = &all_modules[name];
+        let Some(source_name) = module.origin.as_deref() else {
+            continue;
+        };
+        let permitted = scripts_permitted_by_source
+            .get(source_name)
+            .copied()
+            .unwrap_or(false);
+        if !permitted && let Some(kind) = super::lockfile::module_script_kind(module) {
+            return Err(ModuleError::ScriptsNotAllowed {
+                source_name: source_name.to_string(),
+                module: name.clone(),
+                kind,
+            }
+            .into());
+        }
+    }
+
     let mut resolved = Vec::new();
     // A module's own resolution is where this walk waits: a git file source
     // is cloned or fetched here and every manifest is read off disk. Narrated

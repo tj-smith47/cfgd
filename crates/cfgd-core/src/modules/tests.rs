@@ -4333,7 +4333,12 @@ fn write_source_module_with_prefer_script(root: &Path, name: &str) -> std::path:
 }
 
 #[test]
-fn load_source_modules_rejects_script_body_when_not_permitted() {
+fn load_source_modules_loads_a_script_body_from_a_not_permitted_source() {
+    // The noScripts gate no longer runs at load time: `load_source_modules`
+    // loads every offered body unconditionally (`resolve_modules` enforces
+    // the gate afterward, over only the modules a resolution actually
+    // references — see `resolve_modules_rejects_a_referenced_script_module`
+    // and `resolve_modules_allows_an_unreferenced_script_module`).
     let source = tempfile::tempdir().unwrap();
     let modules_dir = write_source_module_with_script(source.path(), "dev-tools");
 
@@ -4346,22 +4351,10 @@ fn load_source_modules_rejects_script_body_when_not_permitted() {
     };
 
     let mut modules = std::collections::HashMap::new();
-    let err = load_source_modules(std::slice::from_ref(&root), &mut modules).unwrap_err();
-    let msg = format!("{err}");
+    load_source_modules(std::slice::from_ref(&root), &mut modules).unwrap();
     assert!(
-        matches!(
-            err,
-            CfgdError::Module(ModuleError::ScriptsNotAllowed { .. })
-        ),
-        "expected ScriptsNotAllowed, got: {msg}"
-    );
-    assert!(
-        msg.contains("team") && msg.contains("dev-tools") && msg.contains("preApply"),
-        "error must name source + module + script kind: {msg}"
-    );
-    assert!(
-        !modules.contains_key("dev-tools"),
-        "rejected body must not be inserted"
+        modules.contains_key("dev-tools"),
+        "the body loads regardless of scripts_permitted; enforcement is deferred"
     );
 }
 
@@ -4404,10 +4397,11 @@ fn write_source_module_with_patch_script(root: &Path, name: &str) -> std::path::
 }
 
 #[test]
-fn load_source_modules_rejects_patch_script_body_when_not_permitted() {
-    // A patch filter runs on every command that evaluates the file, read-only
-    // ones included — it is the same delivered-code surface as a lifecycle
-    // script and must be gated the same way.
+fn load_source_modules_loads_a_patch_script_body_from_a_not_permitted_source() {
+    // Same deferral as the lifecycle-script case above: the load never gates
+    // on scripts_permitted, whatever surface the body's script reaches
+    // through. `resolve_modules_rejects_a_referenced_script_module` covers
+    // the actual gate.
     let source = tempfile::tempdir().unwrap();
     let modules_dir = write_source_module_with_patch_script(source.path(), "dev-tools");
 
@@ -4420,22 +4414,10 @@ fn load_source_modules_rejects_patch_script_body_when_not_permitted() {
     };
 
     let mut modules = std::collections::HashMap::new();
-    let err = load_source_modules(std::slice::from_ref(&root), &mut modules).unwrap_err();
-    let msg = format!("{err}");
+    load_source_modules(std::slice::from_ref(&root), &mut modules).unwrap();
     assert!(
-        matches!(
-            err,
-            CfgdError::Module(ModuleError::ScriptsNotAllowed { .. })
-        ),
-        "expected ScriptsNotAllowed for a patch filter, got: {msg}"
-    );
-    assert!(
-        msg.contains("team") && msg.contains("dev-tools") && msg.contains("~/.config/app/x.ini"),
-        "error must name source + module + the patched target: {msg}"
-    );
-    assert!(
-        !modules.contains_key("dev-tools"),
-        "rejected body must not be inserted"
+        modules.contains_key("dev-tools"),
+        "the body loads regardless of scripts_permitted; enforcement is deferred"
     );
 }
 
@@ -4461,7 +4443,7 @@ fn load_source_modules_allows_patch_script_body_when_subscriber_opted_in() {
 }
 
 #[test]
-fn load_source_modules_rejects_prefer_script_package_when_not_permitted() {
+fn load_source_modules_loads_a_prefer_script_package_from_a_not_permitted_source() {
     let source = tempfile::tempdir().unwrap();
     let modules_dir = write_source_module_with_prefer_script(source.path(), "dev-tools");
 
@@ -4474,18 +4456,10 @@ fn load_source_modules_rejects_prefer_script_package_when_not_permitted() {
     };
 
     let mut modules = std::collections::HashMap::new();
-    let err = load_source_modules(std::slice::from_ref(&root), &mut modules).unwrap_err();
-    let msg = format!("{err}");
+    load_source_modules(std::slice::from_ref(&root), &mut modules).unwrap();
     assert!(
-        matches!(
-            err,
-            CfgdError::Module(ModuleError::ScriptsNotAllowed { .. })
-        ),
-        "expected ScriptsNotAllowed for prefer:[script] package, got: {msg}"
-    );
-    assert!(
-        msg.contains("customtool"),
-        "error must name the prefer:[script] package: {msg}"
+        modules.contains_key("dev-tools"),
+        "the body loads regardless of scripts_permitted; enforcement is deferred"
     );
 }
 
@@ -4526,6 +4500,91 @@ fn load_source_modules_script_gating_does_not_touch_local_modules() {
         modules["shared"].origin, None,
         "local module must be untouched"
     );
+}
+
+#[test]
+fn resolve_modules_rejects_a_referenced_script_module() {
+    // A source's noScripts constraint must still block a module the
+    // subscriber's own request pulls in.
+    let consumer = tempfile::tempdir().unwrap();
+    let source = tempfile::tempdir().unwrap();
+    let modules_dir = write_source_module_with_script(source.path(), "risky");
+
+    let root = SourceModuleRoot {
+        source_name: "team".into(),
+        priority: 500,
+        modules_dir,
+        offered: vec!["risky".into()],
+        scripts_permitted: false,
+    };
+
+    let managers = make_manager_map(&[]);
+    let cache_dir = tempfile::tempdir().unwrap();
+    let printer = test_printer();
+
+    let err = resolve_modules(
+        &["risky".into()],
+        consumer.path(),
+        cache_dir.path(),
+        std::slice::from_ref(&root),
+        &macos_platform(),
+        &managers,
+        None,
+        &printer,
+    )
+    .expect_err("a referenced script module from a not-permitted source must error");
+    let msg = err.to_string();
+    assert!(
+        matches!(
+            err,
+            CfgdError::Module(ModuleError::ScriptsNotAllowed { .. })
+        ),
+        "expected ScriptsNotAllowed, got: {msg}"
+    );
+    assert!(
+        msg.contains("team") && msg.contains("risky") && msg.contains("preApply"),
+        "error must name source + module + script kind: {msg}"
+    );
+}
+
+#[test]
+fn resolve_modules_allows_an_unreferenced_script_module_beside_a_referenced_one() {
+    // The same not-permitted source offers a script module ("risky") and a
+    // plain one ("safe"). The subscriber requests only "safe" — noScripts
+    // must not fail an apply over a sibling module nothing in this
+    // resolution references.
+    let consumer = tempfile::tempdir().unwrap();
+    let source = tempfile::tempdir().unwrap();
+    let modules_dir = write_source_module(source.path(), "safe", "safepkg");
+    write_source_module_with_script(source.path(), "risky");
+
+    let root = SourceModuleRoot {
+        source_name: "team".into(),
+        priority: 500,
+        modules_dir,
+        offered: vec!["safe".into(), "risky".into()],
+        scripts_permitted: false,
+    };
+
+    let brew = MockManager::new("brew").with_package("safepkg", "1.0.0");
+    let managers = make_manager_map(&[("brew", &brew)]);
+    let cache_dir = tempfile::tempdir().unwrap();
+    let printer = test_printer();
+
+    let resolved = resolve_modules(
+        &["safe".into()],
+        consumer.path(),
+        cache_dir.path(),
+        std::slice::from_ref(&root),
+        &macos_platform(),
+        &managers,
+        None,
+        &printer,
+    )
+    .unwrap();
+
+    assert_eq!(resolved.len(), 1, "only the referenced module resolves");
+    assert_eq!(resolved[0].name, "safe");
 }
 
 /// Write `<root>/modules/<name>/module.yaml` for a module with one package and a
