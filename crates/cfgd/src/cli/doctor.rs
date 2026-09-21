@@ -112,6 +112,14 @@ pub struct DoctorConfigSource {
     pub cached_path: Option<String>,
 }
 
+/// One member of a module's unresolved list, for a floor a bootstrap route
+/// could meet. Every other member of that list opens on the package it is
+/// about, so this one does too: a module declaring several packages would
+/// otherwise state an offer the reader has to guess the subject of.
+pub(super) fn unresolved_route_row(route: &modules::FloorBootstrap) -> String {
+    format!("{}: {}", route.package, route.offer_clause())
+}
+
 /// Gather every doctor check into the stable JSON payload + display-only extras.
 /// The lib call to `modules::load_all_modules` takes a `Printer`.
 /// The per-module prerequisite rows, and the manager-to-modules routing the
@@ -168,10 +176,12 @@ fn build_module_routes(
                             .insert(mod_name.clone());
                     }
                     // A floor no available manager meets: this report states
-                    // what the host offers and how far short it falls, in the
-                    // row the same package earned before the route existed.
+                    // what the host offers and how far short it falls, under
+                    // the package name every other member of this list opens
+                    // on, so a module declaring several says which one fell
+                    // short.
                     Ok(Some(modules::PackageResolution::Bootstrap(route))) => {
-                        unresolved.push(route.offer_clause());
+                        unresolved.push(unresolved_route_row(&route));
                     }
                     // Gated off this platform: the package is not declared
                     // here, so it routes nowhere and states nothing.
@@ -818,8 +828,11 @@ fn build_modules_section(s: SectionBuilder, modules: &[DoctorModuleCheck]) -> Se
             let detail = format!("{} available", names.join(", "));
             return s.status_with(Role::Ok, m.name.clone(), |sf| sf.detail(detail));
         }
+        // A shortfall states a sentence a producer worded, and one of them
+        // carries a comma of its own, so the separator between them is the one
+        // a reader cannot mistake for punctuation inside a member.
         s.status_with(Role::Fail, m.name.clone(), |sf| {
-            sf.detail(shortfalls.join(", "))
+            sf.detail(shortfalls.join("; "))
         })
     })
 }
