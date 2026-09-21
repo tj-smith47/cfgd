@@ -834,6 +834,110 @@ spec:
     );
 }
 
+/// Write one module body under `root/modules/<name>`, for a resolution fixture
+/// whose subject is which package a refusal names rather than the body itself.
+fn write_module_packages(root: &std::path::Path, name: &str, packages: &str) {
+    let module_dir = root.join("modules").join(name);
+    std::fs::create_dir_all(&module_dir).unwrap();
+    std::fs::write(
+        module_dir.join("module.yaml"),
+        format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: {name}\nspec:\n  packages:\n{packages}"
+        ),
+    )
+    .unwrap();
+}
+
+/// A routeable floor and a hard refusal in one module: the package nothing can
+/// answer is the one the run names, because a reader asked to approve a
+/// toolchain install for a configuration that cannot resolve anyway is being
+/// asked the wrong question.
+#[test]
+fn a_refusal_outranks_a_route_within_one_module() {
+    let dir = tempfile::tempdir().unwrap();
+    write_module_packages(
+        dir.path(),
+        "rust",
+        concat!(
+            "    - name: cargo\n      minVersion: \"1.85\"\n      prefer: [apt]\n",
+            "    - name: neovim\n      minVersion: \"0.9\"\n      prefer: [apt]\n",
+        ),
+    );
+
+    let apt = MockManager::new("apt")
+        .with_package("cargo", "1.75")
+        .with_package("neovim", "0.6.1");
+    let cargo = crate::test_helpers::MockPackageManager::new("cargo")
+        .unavailable()
+        .bootstrappable_via("rustup");
+    let managers = make_manager_map(&[("apt", &apt), ("cargo", &cargo)]);
+    let cache_dir = tempfile::tempdir().unwrap();
+    let printer = test_printer();
+
+    let err = resolve_modules(
+        &["rust".into()],
+        dir.path(),
+        cache_dir.path(),
+        &[],
+        &linux_ubuntu_platform(),
+        &managers,
+        None,
+        &printer,
+    )
+    .unwrap_err()
+    .to_string();
+    assert_eq!(
+        err,
+        "package 'neovim' in module 'rust' cannot be resolved: every available manager offers \
+         a version below the declared minVersion 0.9"
+    );
+}
+
+/// The same order across modules: a route in the first module does not end the
+/// walk, so a later module's hard refusal is what the run reports.
+#[test]
+fn a_refusal_in_a_later_module_outranks_an_earlier_modules_route() {
+    let dir = tempfile::tempdir().unwrap();
+    write_module_packages(
+        dir.path(),
+        "rust",
+        "    - name: cargo\n      minVersion: \"1.85\"\n      prefer: [apt]\n",
+    );
+    write_module_packages(
+        dir.path(),
+        "tools",
+        "    - name: neovim\n      minVersion: \"0.9\"\n      prefer: [apt]\n",
+    );
+
+    let apt = MockManager::new("apt")
+        .with_package("cargo", "1.75")
+        .with_package("neovim", "0.6.1");
+    let cargo = crate::test_helpers::MockPackageManager::new("cargo")
+        .unavailable()
+        .bootstrappable_via("rustup");
+    let managers = make_manager_map(&[("apt", &apt), ("cargo", &cargo)]);
+    let cache_dir = tempfile::tempdir().unwrap();
+    let printer = test_printer();
+
+    let err = resolve_modules(
+        &["rust".into(), "tools".into()],
+        dir.path(),
+        cache_dir.path(),
+        &[],
+        &linux_ubuntu_platform(),
+        &managers,
+        None,
+        &printer,
+    )
+    .unwrap_err()
+    .to_string();
+    assert_eq!(
+        err,
+        "package 'neovim' in module 'tools' cannot be resolved: every available manager offers \
+         a version below the declared minVersion 0.9"
+    );
+}
+
 /// One clause for one offer: every surface naming a route reads this, so the
 /// confirmation, the plan row and `cfgd doctor` cannot word it three ways.
 #[test]

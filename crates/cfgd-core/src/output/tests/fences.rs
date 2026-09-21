@@ -6294,3 +6294,168 @@ fn mid_sentence_space_run(literal: &str) -> Option<String> {
     }
     None
 }
+
+/// The crate roots the floor-sentence walk reads, workspace-relative, each
+/// with a floor under the production sources it holds today, so a tree going
+/// dark fails on its own name rather than inside a total.
+const FLOOR_SENTENCE_ROOTS: &[(&str, usize)] = &[
+    ("crates/cfgd-core/src", 150),
+    ("crates/cfgd-crd/src", 1),
+    ("crates/cfgd-csi/src", 5),
+    ("crates/cfgd-operator/src", 30),
+    ("crates/cfgd-schema/src", 2),
+    ("crates/cfgd/src", 100),
+];
+
+/// The hatch for a line whose `offers` sentence is about something other than
+/// a version short of a declared floor.
+const FLOOR_SENTENCE_HATCH: &str = "floor-sentence-ok:";
+
+/// The code of one source line, with any trailing `//` comment cut.
+///
+/// The blanked line keeps every byte at its own offset, so a `//` found there
+/// indexes the raw line exactly and a `//` inside a literal (a URL) is not
+/// mistaken for the start of a comment.
+fn line_code_before_comment(line: &str) -> &str {
+    let blanked = blank_string_literals(line);
+    blanked.find("//").map_or(line, |at| &line[..at])
+}
+
+/// Which floor-sentence span one source line composes, if any.
+///
+/// `below the declared minVersion` is the tail every such sentence ends on and
+/// belongs to nobody but the constant. ` offers ` is the offer clause's own
+/// verb, and it is judged only where an operand is interpolated after it: a
+/// sentence saying a form "offers a sample" is ordinary English, while
+/// `{mgr} offers {pkg}` is this clause being respelled.
+fn composes_a_floor_sentence(line: &str) -> Option<&'static str> {
+    let trimmed = line.trim_start();
+    if is_plain_line_comment(line) || trimmed.starts_with("///") || trimmed.starts_with("//!") {
+        return None;
+    }
+    let code = line_code_before_comment(line);
+    if code.contains(crate::modules::FloorBootstrap::BELOW_DECLARED_FLOOR) {
+        return Some(crate::modules::FloorBootstrap::BELOW_DECLARED_FLOOR);
+    }
+    let after = code.split_once(" offers ")?.1;
+    after.contains('{').then_some(" offers ")
+}
+
+/// One wording for one shortfall, held across both crates.
+///
+/// [`crate::modules::FloorBootstrap::offer_clause`] states what a host offers
+/// and how far short it falls, and
+/// [`crate::modules::FloorBootstrap::BELOW_DECLARED_FLOOR`] is the tail it
+/// shares with the failure an install settles with, so a second sentence about
+/// the same shortfall can be composed only by spelling one of them out. The
+/// pin behind the clause holds its TEXT; this holds the population, which is
+/// what "nothing else composes that sentence" actually claims.
+///
+/// `modules/resolve.rs` declares both and is the one exemption. A line whose
+/// `offers` is about something else carries `// floor-sentence-ok: <why>`.
+#[test]
+fn no_production_site_outside_the_resolver_composes_a_floor_shortfall_sentence() {
+    let declarations = Path::new("modules").join("resolve.rs");
+    let mut offenders = Vec::new();
+    let mut per_root: Vec<(&str, usize)> =
+        FLOOR_SENTENCE_ROOTS.iter().map(|(r, _)| (*r, 0)).collect();
+    for path in workspace_rust_files() {
+        let is_test_source = path.ends_with(Path::new("tests.rs"))
+            || path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("tests_"))
+            || path.components().any(|c| c.as_os_str() == "tests");
+        if path.ends_with(&declarations) || is_test_source {
+            continue;
+        }
+        let relative = path
+            .strip_prefix(workspace_root())
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        if let Some((_, read)) = per_root
+            .iter_mut()
+            .find(|(root, _)| relative.starts_with(root))
+        {
+            *read += 1;
+        }
+        let production = crate::test_helpers::production_slice_of(&path);
+        let rows: Vec<&str> = production.lines().collect();
+        for (i, line) in rows.iter().enumerate() {
+            if carries_hatch(line, FLOOR_SENTENCE_HATCH)
+                || (i > 0 && carries_hatch(rows[i - 1], FLOOR_SENTENCE_HATCH))
+            {
+                continue;
+            }
+            if let Some(tell) = composes_a_floor_sentence(line) {
+                offenders.push(format!(
+                    "{}:{}: composes `{tell}` — {}",
+                    path.display(),
+                    i + 1,
+                    line.trim()
+                ));
+            }
+        }
+    }
+    let short: Vec<&(&str, usize)> = per_root
+        .iter()
+        .zip(FLOOR_SENTENCE_ROOTS)
+        .filter(|((_, read), (_, floor))| read < floor)
+        .map(|(read, _)| read)
+        .collect();
+    assert!(
+        short.is_empty(),
+        "a crate root contributed fewer production sources than it holds, so its \
+         sentences are judged by nobody: {short:?} of {FLOOR_SENTENCE_ROOTS:?}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "read `FloorBootstrap::offer_clause()` for the whole clause, or compose \
+         from `FloorBootstrap::BELOW_DECLARED_FLOOR` for a sentence that only \
+         shares its tail:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// The floor-sentence matcher reads a composed sentence and nothing else.
+///
+/// One case per placement the tells can take: inside a literal, inside a line
+/// comment, after a statement that ends in one, and on the row a multi-row
+/// literal closes on. Each was written from the matcher's own tells before the
+/// walk above was believed.
+#[test]
+fn the_floor_sentence_matcher_reads_a_literal_and_not_a_comment() {
+    assert_eq!(
+        composes_a_floor_sentence(
+            r#"    let s = format!("{mgr} offers {pkg} {found}, below the declared minVersion {floor}");"#
+        ),
+        Some("below the declared minVersion"),
+        "a composed sentence in a literal is the whole point of the walk"
+    );
+    assert_eq!(
+        composes_a_floor_sentence("    // the tail reads below the declared minVersion <floor>"),
+        None,
+        "a comment explains the rule rather than breaking it"
+    );
+    assert_eq!(
+        composes_a_floor_sentence("    let n = 1; // {mgr} offers {pkg} is the clause"),
+        None,
+        "a trailing comment is cut before the line is judged"
+    );
+    assert_eq!(
+        composes_a_floor_sentence(r#"        "{} offers {} {}","#),
+        Some(" offers "),
+        "the row a multi-row literal opens its clause on is read like any other"
+    );
+    assert_eq!(
+        composes_a_floor_sentence(r#"             below the declared minVersion {floor}","#),
+        Some("below the declared minVersion"),
+        "the row a multi-row literal closes on is read like any other"
+    );
+    assert_eq!(
+        composes_a_floor_sentence(r#"    let s = "the form offers a sample of every kind";"#),
+        None,
+        "an `offers` with no interpolated operand after it is ordinary English"
+    );
+}
