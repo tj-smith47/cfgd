@@ -1709,4 +1709,97 @@ mod tests {
             "the file's variables and the session publish's are one count"
         );
     }
+
+    /// Every generated env file either renders the layer blocks or is rostered
+    /// as a dialect that cannot carry them.
+    ///
+    /// The population is `env_target_basenames()` narrowed to the files this
+    /// engine WRITES, so a sixth generated file joins the walk with the
+    /// dialect that added it instead of being classified by omission: it
+    /// either carries the blocks or is named in `NO_BLOCKS`, and a `NO_BLOCKS`
+    /// name the engine has stopped writing fails here too. `environment.d`
+    /// reads `KEY=VALUE` with no documented last-wins for a repeated key, and
+    /// a LaunchAgent is XML; both publish the winners alone.
+    #[test]
+    fn every_generated_env_dialect_renders_through_the_one_block_composer() {
+        const NO_BLOCKS: [&str; 2] = ["cfgd.conf", MACOS_USER_PLIST_NAME];
+        // The engine's own roster, less the rc files it injects a source line
+        // into. Only the blockless names are written down; which dialects must
+        // carry blocks is whatever this leaves.
+        let mut written: Vec<String> = env_target_basenames()
+            .into_iter()
+            .filter(|name| recorded_env_method(name) == ENV_VERB_WRITE)
+            .collect();
+        written.sort();
+        assert!(
+            !written.is_empty(),
+            "the engine named no generated file, so this walk would read nothing",
+        );
+        for name in NO_BLOCKS {
+            assert!(
+                written.iter().any(|known| known == name),
+                "{name} is no longer a file this engine writes: {written:?}",
+            );
+        }
+        // Every optional dialect present, so the walk reaches the fish file and
+        // the Git Bash one rather than reading fewer targets than it claims.
+        let probe = EnvHostProbe {
+            shell: "/bin/zsh".to_string(),
+            fish_present: true,
+            bash_profile_exists: true,
+            bash_login_exists: false,
+            git_bash_present: true,
+            zsh_present: true,
+        };
+        let mut seen: Vec<String> = Vec::new();
+        for (platform, home) in [
+            (EnvPlatform::Linux, Path::new("/home/tj")),
+            (EnvPlatform::MacOs, Path::new("/Users/tj")),
+            (EnvPlatform::FreeBsd, Path::new("/home/tj")),
+            (EnvPlatform::Windows, Path::new("C:/Users/tj")),
+        ] {
+            let (layered, path_dirs) =
+                crate::test_helpers::layered_fixture(&crate::to_posix_string(home));
+            for target in env_targets(
+                EnvContent::of(&layered, &path_dirs),
+                EnvScope::All,
+                home,
+                &probe,
+                platform,
+            ) {
+                let EnvTarget::ManagedFile { path, content, .. } = target else {
+                    continue;
+                };
+                let name = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or_default()
+                    .to_string();
+                if NO_BLOCKS.contains(&name.as_str()) {
+                    assert!(
+                        !content.contains("\n# profile: ") && !content.contains("\n# module: "),
+                        "{name} is rostered blockless yet renders layer blocks:\n{content}",
+                    );
+                } else {
+                    assert!(
+                        content.contains("\n# profile: work (priority 1000)\n")
+                            && content.contains("\n# module: nvim\n"),
+                        "{name} renders no layer blocks:\n{content}",
+                    );
+                }
+                if !seen.contains(&name) {
+                    seen.push(name);
+                }
+            }
+        }
+        seen.sort();
+        // The floor is per DIALECT, not per file: every generated file the
+        // engine names has to be one this matrix actually produced, so a probe
+        // or platform that stopped yielding one fails here instead of leaving
+        // it unwalked.
+        assert_eq!(
+            seen, written,
+            "the walk read a different set of generated files than the engine names",
+        );
+    }
 }

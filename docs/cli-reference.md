@@ -1151,7 +1151,11 @@ Per-item rows are labelled `env:` or `alias:` (`env: EDITOR`); the whole-file ro
 is labelled `env file:` (`env file: /home/you/.cfgd.env`), so the file and the
 entries inside it do not read as one kind. The whole-file row is omitted whenever
 the item rows below it already name which entry the file is missing, and the
-closing tally counts only the rows the report showed.
+closing tally counts only the rows the report showed. A drifted env var's
+`want` / `have` is recomputed from the declaration, so it names the winning
+block's value rather than the first line in the file that mentions the name (the
+file holds one block per layer, so an outranked layer's line for the same name
+is above it).
 
 `cfgd:managers` reports package **managers** the plan itself would provision or
 refuse: not something the profile declared missing, but something `apply` would

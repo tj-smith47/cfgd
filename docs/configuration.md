@@ -414,6 +414,12 @@ the rest.
 > finding drift on a target that never converges. Keep the rc file under one
 > writer: put the loader line in the rc source you deploy, or leave the rc
 > file out of `files.managed` and let `spec.env` own it.
+>
+> The file that line loads is cfgd's alone. It opens with a banner saying it is
+> regenerated on every apply, and every line sits under a `# profile:` /
+> `# source:` / `# module:` / `# secrets` block header naming what to edit
+> instead of the file (see
+> [What the file looks like](profiles.md#what-the-file-looks-like)).
 
 Any `spec.env` or `spec.aliases` entry can be gated to named platforms with the
 same `platforms:` list a module and a package take; an entry gated off the

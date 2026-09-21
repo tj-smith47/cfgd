@@ -237,6 +237,12 @@ impl PrimaryEnvWrite {
 /// Only a line whose name no current layer declares at all goes unclaimed.
 /// Confined to the primary MANAGED file's content, which cfgd authors in
 /// full; user-authored rc files never pass through here.
+///
+/// A block header is scaffolding, its `(priority N)` suffix included: it is
+/// the generator's own text naming the layer the lines below it came from,
+/// never a declaration's rendering, so it is skipped with the banner and the
+/// blank lines. A layer that disappears takes its header with it, and the
+/// entries under it are what answer for the change.
 fn has_unclaimed_disappearing_line(
     baseline: &str,
     desired: &str,
@@ -245,8 +251,9 @@ fn has_unclaimed_disappearing_line(
     platform: EnvPlatform,
 ) -> bool {
     let desired_lines: HashSet<&str> = desired.lines().collect();
-    // Blank and comment lines are the generator's fixed scaffolding (header,
-    // trailing newline), never a declaration's rendering.
+    // Blank and comment lines are the generator's own scaffolding (the banner,
+    // each block header, the trailing newline), never a declaration's
+    // rendering.
     let disappeared: Vec<&str> = baseline
         .lines()
         .filter(|l| !l.is_empty() && !l.starts_with('#') && !desired_lines.contains(l))
