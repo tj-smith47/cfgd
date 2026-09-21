@@ -4316,6 +4316,30 @@ fn write_source_module_with_script(root: &Path, name: &str) -> std::path::PathBu
     modules_dir
 }
 
+/// Write a source module body carrying a `preApply` lifecycle script, gated
+/// to only the platform tags given; returns the `modules/` directory path.
+fn write_source_module_with_script_for_platforms(
+    root: &Path,
+    name: &str,
+    platforms: &[&str],
+) -> std::path::PathBuf {
+    let modules_dir = root.join("modules");
+    let mod_dir = modules_dir.join(name);
+    std::fs::create_dir_all(&mod_dir).unwrap();
+    let platforms_yaml = platforms
+        .iter()
+        .map(|p| format!("    - {p}\n"))
+        .collect::<String>();
+    std::fs::write(
+        mod_dir.join("module.yaml"),
+        format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: {name}\nspec:\n  platforms:\n{platforms_yaml}  scripts:\n    preApply:\n      - run: \"echo hi\"\n"
+        ),
+    )
+    .unwrap();
+    modules_dir
+}
+
 /// Write a source module body whose package is installed via `prefer: [script]`;
 /// returns the `modules/` directory path.
 fn write_source_module_with_prefer_script(root: &Path, name: &str) -> std::path::PathBuf {
@@ -4585,6 +4609,92 @@ fn resolve_modules_allows_an_unreferenced_script_module_beside_a_referenced_one(
 
     assert_eq!(resolved.len(), 1, "only the referenced module resolves");
     assert_eq!(resolved[0].name, "safe");
+}
+
+// R2 (F3 class sweep): the two tests above pin the REFUSAL and the
+// unreferenced-sibling exemption over a not-permitted source. Neither one
+// pins the two arms a positive case and a platform gate add to the same
+// predicate:
+
+#[test]
+fn resolve_modules_allows_a_referenced_script_module_from_a_permitted_source() {
+    // A source whose subscriber permits scripts (scripts_permitted: true) must
+    // never be refused for a referenced script-bearing module — the whole
+    // ScriptsNotAllowed gate is conditioned on the source, not the module.
+    let consumer = tempfile::tempdir().unwrap();
+    let source = tempfile::tempdir().unwrap();
+    let modules_dir = write_source_module_with_script(source.path(), "risky");
+
+    let root = SourceModuleRoot {
+        source_name: "team".into(),
+        priority: 500,
+        modules_dir,
+        offered: vec!["risky".into()],
+        scripts_permitted: true,
+    };
+
+    let managers = make_manager_map(&[]);
+    let cache_dir = tempfile::tempdir().unwrap();
+    let printer = test_printer();
+
+    let resolved = resolve_modules(
+        &["risky".into()],
+        consumer.path(),
+        cache_dir.path(),
+        std::slice::from_ref(&root),
+        &macos_platform(),
+        &managers,
+        None,
+        &printer,
+    )
+    .expect("a referenced script module from a permitted source must resolve");
+
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(resolved[0].name, "risky");
+}
+
+#[test]
+fn resolve_modules_does_not_refuse_a_referenced_script_module_the_platform_gate_skips() {
+    // Same not-permitted source as resolve_modules_rejects_a_referenced_script_module,
+    // but the script module is gated to a platform ("windows") the resolution
+    // is not running on (macos). A platform-skipped module never runs its
+    // body, so it must be excluded from the noScripts gate entirely rather
+    // than refused.
+    let consumer = tempfile::tempdir().unwrap();
+    let source = tempfile::tempdir().unwrap();
+    let modules_dir =
+        write_source_module_with_script_for_platforms(source.path(), "risky", &["windows"]);
+
+    let root = SourceModuleRoot {
+        source_name: "team".into(),
+        priority: 500,
+        modules_dir,
+        offered: vec!["risky".into()],
+        scripts_permitted: false,
+    };
+
+    let managers = make_manager_map(&[]);
+    let cache_dir = tempfile::tempdir().unwrap();
+    let printer = test_printer();
+
+    let resolved = resolve_modules(
+        &["risky".into()],
+        consumer.path(),
+        cache_dir.path(),
+        std::slice::from_ref(&root),
+        &macos_platform(),
+        &managers,
+        None,
+        &printer,
+    )
+    .expect("a platform-skipped script module must not be refused by noScripts");
+
+    assert_eq!(resolved.len(), 1);
+    assert!(
+        resolved[0].platform_skip_reason.is_some(),
+        "a platform-skipped module resolves to its skip placeholder, not a refusal"
+    );
+    assert!(resolved[0].pre_apply_scripts.is_empty());
 }
 
 /// Write `<root>/modules/<name>/module.yaml` for a module with one package and a
