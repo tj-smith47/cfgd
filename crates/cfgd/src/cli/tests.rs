@@ -19914,6 +19914,69 @@ fn names_a_url(label: &str) -> bool {
     label == "URL" || label.ends_with(" URL")
 }
 
+/// Every URL-labeled slot in one source body, as `(byte offset, label, judged
+/// whole-function)` — the ONE gather both URL walks below gather from, so a
+/// composer added for one of them cannot be invisible to the other.
+///
+/// `code` is `body` read as CODE ([`cfgd_core::test_helpers::blank_non_code`],
+/// byte for byte), and a site whose opener lands on a blanked byte is dropped:
+/// a `.kv("URL", …)` written inside a string literal or a comment renders
+/// nothing, so judging it reports an offence nobody can commit and clearing it
+/// hides one somebody did. Every occurrence of a roster composer is a site
+/// rather than the first per file, so a file naming one twice contributes both.
+fn url_rendering_sites(body: &str, code: &str) -> Vec<(usize, String, bool)> {
+    let mut sites: Vec<(usize, String, bool)> = rendered_labels(body)
+        .into_iter()
+        .filter(|(at, label)| names_a_url(label) && code.as_bytes()[*at] != b' ')
+        .map(|(at, label)| (at, label, false))
+        .collect();
+    for composer in URL_RENDERING_COMPOSERS {
+        for (at, _) in code.match_indices(composer) {
+            sites.push((at, (*composer).to_string(), true));
+        }
+    }
+    sites
+}
+
+/// The text one URL slot is judged on: the slot's own call expression, or the
+/// whole function when the slot IS a named composer.
+///
+/// Read off the CODE view for the same reason the gather is: a tell written in
+/// a doc comment above the slot, or inside the string the slot renders, is not
+/// a call the product makes.
+fn url_slot_span<'a>(
+    code: &'a str,
+    code_lines: &[&'a str],
+    at: usize,
+    whole_fn: bool,
+) -> std::borrow::Cow<'a, str> {
+    if whole_fn {
+        return enclosing_fn_text(code_lines, code[..at].matches('\n').count()).into();
+    }
+    match code[at..].find('(') {
+        Some(rel) => bracketed_span(code, at + rel).1.into(),
+        None => std::borrow::Cow::Borrowed(""),
+    }
+}
+
+/// Whether one judged span folds `$HOME` by hand.
+///
+/// Each `fold_home_in_text(` in the span is judged by what IT is applied to:
+/// the call is cleared only when `display_source_origin` sits inside that
+/// call's OWN argument list, the composer having already made the fold
+/// decision for the value being folded. A `display_source_origin` elsewhere in
+/// the span is a neighbour, not an exemption — `format!("{} {}",
+/// display_source_origin(a), fold_home_in_text(b))` renders one value through
+/// the composer and folds the other by hand, and a span read as a whole clears
+/// both.
+fn folds_home_by_hand(judged: &str) -> bool {
+    judged.match_indices("fold_home_in_text(").any(|(at, m)| {
+        !bracketed_span(judged, at + m.len() - 1)
+            .1
+            .contains("display_source_origin")
+    })
+}
+
 /// A rendered URL carries no userinfo.
 ///
 /// A git remote may legitimately hold credentials in its authority
@@ -19937,7 +20000,8 @@ fn names_a_url(label: &str) -> bool {
 /// folded one could carry a token. A composer named in the roster above is the
 /// exception and keeps whole-function judgement, because the composer IS the
 /// slot. A slot rendering a URL that genuinely must keep its userinfo says so
-/// with a `// raw-url-ok: <why>` marker.
+/// with a `// raw-url-ok: <why>` marker, read off the RAW line, a hatch being
+/// a comment.
 ///
 /// The population is every production `.rs` of BOTH crates: a URL row reaches a
 /// scrollback the same way whichever crate composed it, and cfgd-core renders
@@ -19955,36 +20019,25 @@ fn every_rendered_url_is_stripped_of_its_userinfo() {
         if path.components().any(|c| c.as_os_str() == "cfgd-core") {
             core_files += 1;
         }
-        let lines: Vec<&str> = body.lines().collect();
-        let mut sites: Vec<(usize, String, bool)> = rendered_labels(&body)
-            .into_iter()
-            .filter(|(_, label)| names_a_url(label))
-            .map(|(at, label)| (at, label, false))
-            .collect();
-        for composer in URL_RENDERING_COMPOSERS {
-            if let Some(at) = body.find(composer) {
-                composers_found.push(composer);
-                sites.push((at, (*composer).to_string(), true));
+        let code = cfgd_core::test_helpers::blank_non_code(&body);
+        let code_lines: Vec<&str> = code.lines().collect();
+        let raw_lines: Vec<&str> = body.lines().collect();
+        for (at, label, whole_fn) in url_rendering_sites(&body, &code) {
+            if whole_fn {
+                composers_found.push(
+                    URL_RENDERING_COMPOSERS
+                        .iter()
+                        .copied()
+                        .find(|c| *c == label)
+                        .expect("a whole-fn site is a roster composer"),
+                );
             }
-        }
-        for (at, label, whole_fn) in sites {
             seen.push(label.clone());
-            let n = body[..at].matches('\n').count();
-            // The SLOT's own expression, not the function holding it: a
-            // function rendering two URLs was exempted whole by whichever one
-            // of them folded. A named composer is the exception and is judged
-            // whole, because the composer IS the slot.
-            let judged = if whole_fn {
-                enclosing_fn_text(&lines, n)
-            } else {
-                match body[at..].find('(') {
-                    Some(rel) => bracketed_span(&body, at + rel).1.to_string(),
-                    None => String::new(),
-                }
-            };
+            let n = code[..at].matches('\n').count();
+            let judged = url_slot_span(&code, &code_lines, at, whole_fn);
             if judged.contains("display_url")
                 || judged.contains("display_source_origin")
-                || label_hatched(&lines, n, "// raw-url-ok:")
+                || label_hatched(&raw_lines, n, "// raw-url-ok:")
             {
                 continue;
             }
@@ -20024,6 +20077,100 @@ fn every_rendered_url_is_stripped_of_its_userinfo() {
     );
 }
 
+/// Every URL-labeled slot in one body that folds `$HOME` by hand, as `(1-based
+/// line, label)`, beside the roster composers that body defines.
+///
+/// The scan and the walk that reports it are split so the scan can be driven
+/// by a fixture: a walk reporting nothing over a clean tree cannot tell a
+/// detector that fires from one that never could.
+fn hand_folded_url_slots(body: &str) -> (Vec<(usize, String)>, Vec<&'static str>) {
+    let code = cfgd_core::test_helpers::blank_non_code(body);
+    let code_lines: Vec<&str> = code.lines().collect();
+    let mut composers = Vec::new();
+    let mut offenders = Vec::new();
+    for (at, label, whole_fn) in url_rendering_sites(body, &code) {
+        if whole_fn {
+            composers.push(
+                URL_RENDERING_COMPOSERS
+                    .iter()
+                    .copied()
+                    .find(|c| *c == label)
+                    .expect("a whole-fn site is a roster composer"),
+            );
+        }
+        if folds_home_by_hand(&url_slot_span(&code, &code_lines, at, whole_fn)) {
+            offenders.push((code[..at].matches('\n').count() + 1, label));
+        }
+    }
+    (offenders, composers)
+}
+
+/// The scan reads a fold as code, a neighbour as no exemption, and the roster
+/// as a population.
+///
+/// One fixture per placement the scan has to get right: at fn depth, inside a
+/// raw string literal, inside a line comment, inside a block comment, after
+/// another statement on one line, on the line that closes its loop, cleared by
+/// the composer inside the fold's own argument list, and NOT cleared by a
+/// composer call sitting beside it. The literal also carries brackets, so a
+/// scan that failed to blank it would both count the tell and lose the depth.
+#[test]
+fn the_hand_folded_url_scan_reads_a_fold_as_code_and_a_neighbour_as_no_exemption() {
+    let fixture = concat!(
+        "fn at_fn_depth(p: Printer, s: Source) {\n",
+        "    p.kv(\"URL\", &fold_home_in_text(&s.origin_url));\n",
+        "}\n",
+        "fn in_a_raw_literal() {\n",
+        "    let doc = r#\"p.kv(\"URL\", &fold_home_in_text(&s.origin_url));\"#;\n",
+        "}\n",
+        "fn in_a_line_comment() {\n",
+        "    // p.kv(\"URL\", &fold_home_in_text(&s.origin_url));\n",
+        "}\n",
+        "fn in_a_block_comment() {\n",
+        "    /* p.kv(\"URL\", &fold_home_in_text(&s.origin_url)); */\n",
+        "}\n",
+        "fn after_a_statement(p: Printer, r: Registry) {\n",
+        "    step(); p.kv(\"Registry URL\", &fold_home_in_text(&r.url));\n",
+        "}\n",
+        "fn on_the_closing_line(p: Printer, rows: Vec<Row>) {\n",
+        "    for r in rows {\n",
+        "        step(&r); p.kv(\"Source URL\", &fold_home_in_text(&r.url)); }\n",
+        "}\n",
+        "fn cleared_by_the_composer(p: Printer, s: Source) {\n",
+        "    p.kv(\"URL\", &fold_home_in_text(&display_source_origin(&s.origin_url)));\n",
+        "}\n",
+        "fn cleared_by_a_neighbour(p: Printer, a: &str, b: &str) {\n",
+        "    p.kv(\"URL\", &format!(\"{} {}\", display_source_origin(a), fold_home_in_text(b)));\n",
+        "}\n",
+        "fn sources_table(rows: &[Row]) -> Table {\n",
+        "    Table::new(rows.iter().map(|r| fold_home_in_text(&r.origin)))\n",
+        "}\n",
+    );
+
+    let (offenders, composers) = hand_folded_url_slots(fixture);
+    let lines: Vec<usize> = offenders.iter().map(|(line, _)| *line).collect();
+    assert_eq!(
+        lines,
+        vec![2, 14, 18, 24, 26],
+        "the fn-depth fold, the one after another statement, the one on its \
+         loop's closing line, the one a composer call merely sits beside, and \
+         the roster composer's own body are offences; the raw literal's, the \
+         two comments' and the one the composer wraps are not: {offenders:?}"
+    );
+    assert_eq!(
+        composers,
+        vec!["fn sources_table("],
+        "the fixture defines the roster's one composer, so the walk's roster \
+         check has something to find"
+    );
+    assert!(
+        folds_home_by_hand("kv(\"URL\", &fold_home_in_text(x))")
+            && !folds_home_by_hand("kv(\"URL\", &fold_home_in_text(display_source_origin(x)))")
+            && !folds_home_by_hand("kv(\"URL\", &display_source_origin(x))"),
+        "the fold rule itself must separate the calls it exists to judge"
+    );
+}
+
 /// A rendered source URL folds `$HOME` through one composer, never by hand.
 ///
 /// [`cfgd_core::display_source_origin`] is the ONE place a bare local path
@@ -20037,42 +20184,29 @@ fn every_rendered_url_is_stripped_of_its_userinfo() {
 /// Shares its population and gather with
 /// `every_rendered_url_is_stripped_of_its_userinfo`: every URL-labeled
 /// `rendered_labels` site plus the `URL_RENDERING_COMPOSERS` roster, across
-/// both crates' production sources. Judged on the SLOT's own call expression
-/// (or the whole function for a named composer), so a hand-rolled fold
-/// anywhere in that expression is caught whether or not the slot also calls
-/// `display_source_origin`.
+/// both crates' production sources, read as CODE. The scan itself lives in
+/// [`hand_folded_url_slots`], driven by the fixture above.
 #[test]
 fn no_rendered_url_folds_the_home_directory_outside_display_source_origin() {
     let mut offenders = Vec::new();
+    let mut composers_found: Vec<&str> = Vec::new();
     for (path, body) in cli_production_sources()
         .into_iter()
         .chain(core_production_sources())
     {
-        let lines: Vec<&str> = body.lines().collect();
-        let mut sites: Vec<(usize, String, bool)> = rendered_labels(&body)
-            .into_iter()
-            .filter(|(_, label)| names_a_url(label))
-            .map(|(at, label)| (at, label, false))
-            .collect();
-        for composer in URL_RENDERING_COMPOSERS {
-            if let Some(at) = body.find(composer) {
-                sites.push((at, (*composer).to_string(), true));
-            }
-        }
-        for (at, label, whole_fn) in sites {
-            let n = body[..at].matches('\n').count();
-            let judged = if whole_fn {
-                enclosing_fn_text(&lines, n)
-            } else {
-                match body[at..].find('(') {
-                    Some(rel) => bracketed_span(&body, at + rel).1.to_string(),
-                    None => String::new(),
-                }
-            };
-            if judged.contains("fold_home_in_text") && !judged.contains("display_source_origin") {
-                offenders.push(format!("{}:{}: {label:?}", path.display(), n + 1));
-            }
-        }
+        let (slots, composers) = hand_folded_url_slots(&body);
+        composers_found.extend(composers);
+        offenders.extend(
+            slots
+                .into_iter()
+                .map(|(line, label)| format!("{}:{line}: {label:?}", path.display())),
+        );
+    }
+    for composer in URL_RENDERING_COMPOSERS {
+        assert!(
+            composers_found.contains(composer),
+            "the roster names a composer neither crate holds: {composer}"
+        );
     }
     assert!(
         offenders.is_empty(),
