@@ -10452,7 +10452,18 @@ fn provision_failure(
 /// delivery that clears its floor fails the node it satisfied.
 #[test]
 fn a_delivered_version_is_judged_in_its_own_managers_grammar() {
-    for (delivered, fails) in [("1:2.31", false), ("1:2.29", true)] {
+    for (floor, delivered, fails) in [
+        ("1:2.30", "1:2.31", false),
+        ("1:2.30", "1:2.29", true),
+        ("1.2.3,4567", "1.2.3,4568", false),
+        ("1.2.3,4567", "1.2.3,4566", true),
+        ("2.2.2.0", "2.2.2.1", false),
+        ("2.2.2.0", "2.2.1.9", true),
+    ] {
+        assert!(
+            !crate::declared_floor_parses(floor),
+            "{floor} is a floor only its own family reads, or this arm asks nothing"
+        );
         let state = test_state();
         let mut registry = ProviderRegistry::new();
         registry.add_package_manager(Box::new(
@@ -10467,12 +10478,12 @@ fn a_delivered_version_is_judged_in_its_own_managers_grammar() {
         let error = provision_failure(
             &registry,
             &state,
-            &floored_provision_plan("cargo", "rustup", "1:2.30"),
+            &floored_provision_plan("cargo", "rustup", floor),
         );
         assert_eq!(
             error.is_some(),
             fails,
-            "{delivered} against 1:2.30, as the manager reads both: {error:?}"
+            "{delivered} against {floor}, as the manager reads both: {error:?}"
         );
     }
 }
