@@ -817,6 +817,124 @@ mod tests {
         );
     }
 
+    /// Two tiers of ONE subscription are read the same way two owners are.
+    ///
+    /// A subscriber override rides one step above the source's own items, so
+    /// both blocks carry `source:<name>` and only their rank tells them apart.
+    /// `deployed_env_item_line` takes the LAST line claiming a name, so the
+    /// outranked tier's value standing verbatim above the winner's is never
+    /// read as what the machine holds: a converged file reports equal operands,
+    /// and a hand-edited override reports the OVERRIDE tier's line as `have`,
+    /// never the standard tier's. Nothing else exercises this shape — the
+    /// sibling pin above plants a profile and a module, which are two owners.
+    #[test]
+    #[serial]
+    fn cmd_verify_reads_the_override_tier_of_one_owners_two_blocks() {
+        use crate::cli::helpers::tests::make_cli;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n",
+        )
+        .unwrap();
+        let profiles_dir = tmp.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        // The winner the subscription's override settled on, which is what the
+        // run resolves for itself and compares the file against.
+        std::fs::write(
+            profiles_dir.join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  envScope: Interactive\n  env:\n    - name: EDITOR\n      value: nvim\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(tmp.path().join("modules")).unwrap();
+
+        let tmp_home = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp_home.path());
+
+        // The file a converged machine holds for those two tiers, composed by
+        // the generator rather than spelled here.
+        let tier = |priority: u32, value: &str| cfgd_core::config::ProfileLayer {
+            source: "team".to_string(),
+            profile_name: format!("team-{priority}"),
+            priority,
+            policy: cfgd_core::config::LayerPolicy::Required,
+            spec: cfgd_core::config::ProfileSpec {
+                env: vec![cfgd_core::config::EnvVar {
+                    name: "EDITOR".to_string(),
+                    value: value.to_string(),
+                    platforms: Vec::new(),
+                }],
+                ..Default::default()
+            },
+        };
+        let layers = vec![tier(500, "vim"), tier(501, "nvim")];
+        let merged = cfgd_core::config::merge_layers(&layers);
+        let resolved = cfgd_core::config::ResolvedProfile { layers, merged };
+        let layered = cfgd_core::reconciler::LayeredEnv::of(&resolved, &[]);
+        let files = cfgd_core::test_helpers::plant_managed_env_files(
+            &cfgd_core::reconciler::MergedEnvItems::new(&layered, &[]),
+            tmp_home.path(),
+            cfgd_core::config::EnvScope::Interactive,
+        );
+        let primary = cfgd_core::reconciler::primary_env_file(tmp_home.path());
+        let body = files
+            .iter()
+            .find(|(path, _)| path == &primary)
+            .map(|(_, body)| body.clone())
+            .unwrap_or_else(|| panic!("the generator wrote no {}", primary.display()));
+        assert!(
+            body.find("export EDITOR=\"vim\"") < body.find("export EDITOR=\"nvim\""),
+            "the premise is the outranked tier's line standing ABOVE the winner's:\n{body}"
+        );
+
+        let state_dir = tmp.path().join("state");
+        let mut cli = make_cli(config_path);
+        cli.state_dir = Some(state_dir);
+        cli.cache_dir = Some(tmp.path().join("cache"));
+
+        let editor_row = |cap: &cfgd_core::output::DocCapture| {
+            let json = cap.json().expect("verify emits a data payload");
+            json["results"]
+                .as_array()
+                .expect("results array")
+                .iter()
+                .find(|r| r["resourceType"] == "env-var" && r["resourceId"] == "EDITOR")
+                .cloned()
+                .unwrap_or_else(|| panic!("expected an EDITOR result row: {json}"))
+        };
+
+        let (printer, cap) = Printer::for_test_doc();
+        cmd_verify(&cli, &printer, None, false).unwrap();
+        drop(printer);
+        let converged = editor_row(&cap);
+        assert_eq!(
+            converged["expected"], converged["actual"],
+            "a converged two-tier file must report equal operands: {converged}"
+        );
+
+        // Edit the OVERRIDE tier's line alone: the outranked `"vim"` is a
+        // different token, so it stays exactly where the generator put it.
+        for (path, content) in &files {
+            std::fs::write(path, content.replace("\"nvim\"", "\"emacs\"")).unwrap();
+        }
+        let (printer, cap) = Printer::for_test_doc();
+        cmd_verify(&cli, &printer, None, false).unwrap();
+        drop(printer);
+        let drifted = editor_row(&cap);
+        assert_eq!(
+            drifted["actual"],
+            serde_json::json!("export EDITOR=\"emacs\""),
+            "the reader must report the override tier's line: {drifted}"
+        );
+        assert_eq!(
+            drifted["expected"],
+            serde_json::json!("export EDITOR=\"nvim\""),
+            "the expectation is the profile's own winner: {drifted}"
+        );
+    }
+
     /// A fleet-wide `cfgd verify` is a FULL-machine live check: every finding
     /// lands as a `drift_events` row (in the producer's own literals — a
     /// declared env value never reaches the store), every recorded row it

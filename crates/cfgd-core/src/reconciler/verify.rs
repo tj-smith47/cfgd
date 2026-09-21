@@ -578,6 +578,32 @@ fn module_layers(modules: &[ResolvedModule]) -> impl Iterator<Item = EnvLayer> +
 /// exactly as the tiers of an owner whose layers straddle a local one already
 /// do — whether some third owner's layer happens to sit between them is no
 /// longer what decides whether an outranked line survives.
+/// Which block an entry the merge settled but no layer declares is written to.
+///
+/// An owner holds one block per rank it declares at, so naming the owner does
+/// not name a block. The entry belongs with the declarations it was resolved
+/// against, which is the owner's highest-ranked block that declares anything:
+/// the last position a shell folding the blocks in order reads before the next
+/// owner's. Taking the owner's last block instead would print the entry under
+/// a header stating a rank at which the owner declared nothing.
+///
+/// An owner whose blocks all declare nothing states no rank at all, so the last
+/// of them is the only position left. An entry no claim answers for falls to
+/// whichever block declares last, a block holding nothing rendering neither a
+/// header nor a line and so being no position at all.
+fn placement_slot(layers: &[EnvLayer], owner: Option<&str>) -> Option<usize> {
+    let declares = |layer: &EnvLayer| !layer.env.is_empty() || !layer.aliases.is_empty();
+    owner
+        .and_then(|owner| {
+            layers
+                .iter()
+                .rposition(|layer| layer.owner == owner && declares(layer))
+                .or_else(|| layers.iter().rposition(|layer| layer.owner == owner))
+        })
+        .or_else(|| layers.iter().rposition(declares))
+        .or_else(|| layers.len().checked_sub(1))
+}
+
 fn fold_layers_of_one_owner(layers: Vec<EnvLayer>) -> Vec<EnvLayer> {
     let mut folded: Vec<EnvLayer> = Vec::with_capacity(layers.len());
     for layer in layers {
@@ -749,33 +775,13 @@ impl LayeredEnv {
                 ));
             }
         }
-        // Searched from the highest-precedence block down: an owner holds one
-        // block per rank it declares at, and the claim records the LAST layer
-        // that ranked the entry, so no layer between that claim and the
-        // owner's last block ranked it. Placing it there is what keeps it from
-        // rendering below a layer declaring its own name.
-        //
-        // An entry no claim answers for still has to be set, and the last
-        // block that DECLARES something is the position a shell folding the
-        // blocks in order resolves to the merge's own value: a block holding
-        // nothing renders no header and no line, so it is no position at all.
-        let slot = |layers: &[EnvLayer], owner: Option<&str>| {
-            owner
-                .and_then(|owner| layers.iter().rposition(|layer| layer.owner == owner))
-                .or_else(|| {
-                    layers
-                        .iter()
-                        .rposition(|layer| !layer.env.is_empty() || !layer.aliases.is_empty())
-                })
-                .or_else(|| layers.len().checked_sub(1))
-        };
         for (owner, ev) in placed_env {
-            if let Some(i) = slot(&layers, owner.as_deref()) {
+            if let Some(i) = placement_slot(&layers, owner.as_deref()) {
                 layers[i].env.push(ev);
             }
         }
         for (owner, alias) in placed_aliases {
-            if let Some(i) = slot(&layers, owner.as_deref()) {
+            if let Some(i) = placement_slot(&layers, owner.as_deref()) {
                 layers[i].aliases.push(alias);
             }
         }

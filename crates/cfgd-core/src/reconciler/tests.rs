@@ -16267,6 +16267,56 @@ fn two_adjacent_tiers_of_one_subscription_each_keep_their_own_block() {
     );
 }
 
+/// An entry no layer declares is placed in the block of the tier that DID declare.
+///
+/// A subscription's tiers are separate layers, and a tier can declare packages
+/// alone, so an owner routinely holds one block with declarations and another
+/// with none. Placing a claimed-but-undeclared entry in the owner's LAST block
+/// would put it under a header stating a rank at which that owner declared
+/// nothing, and would keep an otherwise empty block alive to print it -- the
+/// rank misstatement `fold_layers_of_one_owner` stopped making.
+#[test]
+fn an_entry_no_layer_declares_lands_in_its_owners_declaring_block() {
+    let mut empty_override = team_layer(501, Vec::new());
+    empty_override.policy = crate::config::LayerPolicy::Required;
+    let layers = vec![
+        team_layer(500, vec![team_env("LANG", "en_US.UTF-8")]),
+        empty_override,
+    ];
+    let merged = crate::config::merge_layers(&layers);
+    let mut resolved = crate::config::ResolvedProfile { layers, merged };
+    // What a resolved preference does after the layer loop: fold the entry into
+    // the merge and claim it for the owner, which names no rank of its own.
+    resolved
+        .merged
+        .env
+        .push(team_env("CFGD_CLIPBOARD", "wl-copy"));
+    resolved
+        .merged
+        .entry_owners
+        .claim_env_names("source:team", ["CFGD_CLIPBOARD"]);
+
+    let layered = super::LayeredEnv::of(&resolved, &[]);
+
+    assert_eq!(
+        layered
+            .layers
+            .iter()
+            .map(|l| (l.owner.as_str(), l.priority))
+            .collect::<Vec<_>>(),
+        [("source:team", Some(500))],
+        "the tier that declares nothing must not be kept alive to hold the entry",
+    );
+    let content = super::generate_env_file_content(&layered, None);
+    let blocks =
+        super::env_files::generate_blocks(super::env_files::Dialect::Posix, &layered, None);
+    assert_eq!(
+        block_of(&blocks, "export CFGD_CLIPBOARD=\"wl-copy\""),
+        Some("# source: team (priority 500)"),
+        "the entry states the rank its owner declared at:\n{content}"
+    );
+}
+
 /// A source whose tiers sit on both sides of a local layer keeps a block per run.
 ///
 /// `composition::compose` sorts every layer by priority, and a source at the
