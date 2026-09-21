@@ -459,15 +459,16 @@ fn code_half(line: &str) -> String {
 
 /// Whether the construction on `lines[at]` is exempted by a `// <marker> <why>`
 /// comment on its own line or the line above, with a reason written after it.
-/// The comment start is located on the literal-blanked line and the marker is
-/// read from the true comment, so a line cannot claim the hatch by carrying the
-/// marker inside a string literal.
+/// The code span's length IS the offset the comment opens at, and it answers
+/// `line.len()` where there is no comment at all, so the marker is read from
+/// the true comment and a line cannot claim the hatch by carrying the marker
+/// inside a string literal.
 fn hatched(lines: &[&str], at: usize, marker: &str) -> bool {
     let marked = |line: &str| {
         carries_hatch(line, marker)
-            && blank_string_literals(line)
-                .find("//")
-                .and_then(|pos| line[pos + 2..].split_once(marker))
+            && line
+                .get(crate::test_helpers::code_span(line).len() + 2..)
+                .and_then(|comment| comment.split_once(marker))
                 .is_some_and(|(_, why)| !why.trim().is_empty())
     };
     marked(lines[at]) || (at > 0 && marked(lines[at - 1]))

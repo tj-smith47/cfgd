@@ -47467,24 +47467,28 @@ fn every_declared_env_value_a_surface_masks_is_decided_by_the_one_masking() {
     );
 }
 
-/// No walk in this file reads Rust syntax with a scanner of its own.
+/// No walk-bearing source reads Rust syntax with a scanner of its own.
 ///
-/// Every scanner here answers one question (where does the code on this line
-/// end, which brace closes this one, is this `"` a delimiter), and each answer
+/// Every scanner answers one question (where does the code on this line end,
+/// which brace closes this one, is this `"` a delimiter), and each answer
 /// needs the same arms: raw literals with their hash counts, escapes, `\`
 /// continuations, char literals against lifetimes, `//`, and nested `/* */`
 /// that a literal or a comment may open on one row and close on another. A
-/// scanner grown here learns those arms one review round at a time, and the
-/// rounds in between ship a walk that reads a commented-out statement as code
-/// or loses a brace inside a literal, both of which pass green.
+/// scanner grown in a walk file learns those arms one review round at a time,
+/// and the rounds in between ship a walk that reads a commented-out statement
+/// as code or loses a brace inside a literal, both of which pass green.
 ///
 /// `cfgd_core::test_helpers` already carries the arms once, in `LineMask`, and
 /// reaches them through `blank_non_code` (a whole body), `code_line` (one
-/// line's code part) and this file's `commentless` (that cut taken on the raw
-/// line). Those three are the whole vocabulary; a tell below is a fourth being
-/// born.
+/// line's code part) and `code_span` (that cut taken on the raw line). Those
+/// three are the whole vocabulary; a tell below is a fourth being born.
+///
+/// Both files that hold walks are read, each floored at its own length: the
+/// rule is about the SHAPE of a walk, not about which crate it happens to be
+/// written in, and `fences.rs` grew a hand-rolled comment cut of its own while
+/// this walk read one file.
 #[test]
-fn no_source_walk_in_this_file_scans_syntax_by_hand() {
+fn no_walk_bearing_source_scans_syntax_by_hand() {
     const HATCH: &str = "// hand-scan-ok:";
     // Each tell is the opening move of one hand-rolled scanner: cutting a
     // comment by searching for its delimiter, and stepping bytes with the
@@ -47502,38 +47506,57 @@ fn no_source_walk_in_this_file_scans_syntax_by_hand() {
         format!("b{q}/{q} if"),
     ];
 
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli/tests.rs");
-    // The whole file, not its production slice: the scanners this closes are
-    // test code, so a slice cut at the first `#[cfg(test)]` reads none of them.
-    let body = cfgd_core::test_helpers::walked_file_body(&path);
-    let lines: Vec<&str> = body.lines().collect();
-    assert!(
-        lines.len() >= 40_000,
-        "the walk read {} lines of its own file; the population is the whole file",
-        lines.len()
-    );
+    // One row per walk-bearing file, each with the count its own tree holds:
+    // an aggregate floor would let either file stop being read while the sum
+    // still cleared it.
+    const WALK_FLOORS: [(&str, &str, usize); 2] = [
+        ("cfgd", "src/cli/tests.rs", 40_000),
+        ("cfgd-core", "src/output/tests/fences.rs", 5_000),
+    ];
+    let crates_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("the crate root sits under crates/");
 
     let mut offenders = Vec::new();
-    for (n, line) in lines.iter().enumerate() {
-        // Judged with the trailing comment cut but the literals kept: every
-        // tell but one is itself written inside a literal, which `code_line`'s
-        // own return would have spaced out.
-        let code = cfgd_core::test_helpers::code_span(line);
-        let Some(tell) = tells.iter().find(|t| code.contains(t.as_str())) else {
-            continue;
-        };
-        if lines[n.saturating_sub(1)..=n]
-            .iter()
-            .any(|l| carries_hatch(l, HATCH))
-        {
-            continue;
+    for (krate, relative, floor) in WALK_FLOORS {
+        let path = crates_dir.join(krate).join(relative);
+        // The whole file, not its production slice: the scanners this closes
+        // are test code, so a slice cut at the first `#[cfg(test)]` reads none
+        // of them.
+        let body = cfgd_core::test_helpers::walked_file_body(&path);
+        let lines: Vec<&str> = body.lines().collect();
+        assert!(
+            lines.len() >= floor,
+            "the walk read {} lines of `{krate}`'s {relative}, fewer than it holds",
+            lines.len()
+        );
+
+        for (n, line) in lines.iter().enumerate() {
+            // Judged with the trailing comment cut but the literals kept:
+            // every tell but one is itself written inside a literal, which
+            // `code_line`'s own return would have spaced out.
+            let code = cfgd_core::test_helpers::code_span(line);
+            let Some(tell) = tells.iter().find(|t| code.contains(t.as_str())) else {
+                continue;
+            };
+            if lines[n.saturating_sub(1)..=n]
+                .iter()
+                .any(|l| carries_hatch(l, HATCH))
+            {
+                continue;
+            }
+            offenders.push(format!(
+                "{krate}/{relative}:{}: {}: {}",
+                n + 1,
+                tell,
+                line.trim()
+            ));
         }
-        offenders.push(format!("{}: {}: {}", n + 1, tell, line.trim()));
     }
     assert!(
         offenders.is_empty(),
         "these lines scan Rust syntax by hand; reach for `blank_non_code`, \
-         `code_line` or `commentless` instead, or say why with `{HATCH} <why>`:\n{}",
+         `code_line` or `code_span` instead, or say why with `{HATCH} <why>`:\n{}",
         offenders.join("\n")
     );
 }
