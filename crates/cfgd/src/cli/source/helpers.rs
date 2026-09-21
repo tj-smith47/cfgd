@@ -219,9 +219,12 @@ fn find_source_in_config<'a>(
 /// Loads the YAML at `config_path`, hands the mutable root `serde_yaml::Value`
 /// to `f`, then serializes and atomically writes the result. When `validate`
 /// is `true`, the serialized output is round-tripped through
-/// `config::parse_config` before write — callers that could produce schema-invalid
-/// documents (`set`, `unset`) pass `true`; mechanical add/remove-by-key
-/// operations pass `false` so the write path is free of the typed-parse cost.
+/// `config::parse_config` before write, so a closure that could produce a
+/// schema-invalid document cannot leave one on disk. Every caller that writes
+/// a VALUE — `config set`/`unset`, `source add`/`remove`, the registry verbs —
+/// passes `true`. The one `false` is [`with_source_config`], which edits a
+/// field inside an entry the document already carries and pays no typed-parse
+/// cost for it.
 ///
 /// Use this instead of open-coding the `read_to_string → from_str → mutate →
 /// to_string → atomic_write_str` pattern, which diverged in validation
