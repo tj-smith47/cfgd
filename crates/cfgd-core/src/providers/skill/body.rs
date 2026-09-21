@@ -116,7 +116,7 @@ comment beside each included one.** Omit a field the subject does not use or who
 would equal the default; note a non-obvious omission in a comment too."
     );
     let _ = writeln!(
-        out,
+        out, // floor-sentence-ok: what a script KIND offers the author, not what a manager offers for a package
         "4. **Draft.** Declare every dependency the subject needs at run time, transitive \
 ones included. Set a version floor only where a feature needs it, and say which. Gate \
 platform-specific entries with `platforms`. Make each script step safe to re-run (`onlyIf` \

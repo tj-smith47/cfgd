@@ -3718,8 +3718,7 @@ fn every_hatch_a_walk_reads_comes_from_the_one_line_reader() {
         let lines: Vec<&str> = body.lines().collect();
         let mut read_here = 0usize;
         for (n, line) in lines.iter().enumerate() {
-            let code = blank_string_literals(line);
-            let code = code.split("//").next().unwrap_or_default();
+            let code = crate::test_helpers::code_line(line);
             let mut reads_a_marker = false;
             for read in reads {
                 let mut from = 0;
@@ -5701,7 +5700,7 @@ const SCRIPT_BODY_TYPES: &[&str] = &["ScriptSpec", "ModuleScripts"];
 /// only a field carrying a visibility lead and ending its own declaration
 /// answers.
 fn declares_a_script_body_field(line: &str) -> Option<&str> {
-    let code = line.split("//").next().unwrap_or(line).trim();
+    let code = crate::test_helpers::code_span(line).trim();
     if !code.ends_with(',') {
         return None;
     }
@@ -6213,10 +6212,8 @@ fn no_string_literal_carries_a_mid_sentence_space_run() {
                 continue;
             }
             // The blanked line keeps every quote at its own byte offset, so a
-            // span found there indexes the raw line exactly; a trailing `//`
-            // is cut on the blanked line for the same reason.
-            let blanked = blank_string_literals(&line);
-            let code = blanked.find("//").map_or(&blanked[..], |c| &blanked[..c]);
+            // span found there indexes the raw line exactly.
+            let code = crate::test_helpers::code_line(&line);
             let bytes = code.as_bytes();
             let mut at = 0usize;
             while let Some(open) = bytes[at..].iter().position(|b| *b == b'"').map(|p| p + at) {
@@ -6311,34 +6308,24 @@ const FLOOR_SENTENCE_ROOTS: &[(&str, usize)] = &[
 /// a version short of a declared floor.
 const FLOOR_SENTENCE_HATCH: &str = "floor-sentence-ok:";
 
-/// The code of one source line, with any trailing `//` comment cut.
-///
-/// The blanked line keeps every byte at its own offset, so a `//` found there
-/// indexes the raw line exactly and a `//` inside a literal (a URL) is not
-/// mistaken for the start of a comment.
-fn line_code_before_comment(line: &str) -> &str {
-    let blanked = blank_string_literals(line);
-    blanked.find("//").map_or(line, |at| &line[..at])
-}
-
 /// Which floor-sentence span one source line composes, if any.
 ///
 /// `below the declared minVersion` is the tail every such sentence ends on and
 /// belongs to nobody but the constant. ` offers ` is the offer clause's own
-/// verb, and it is judged only where an operand is interpolated after it: a
-/// sentence saying a form "offers a sample" is ordinary English, while
-/// `{mgr} offers {pkg}` is this clause being respelled.
+/// verb, read as the bare literal: a respell that hard-codes its operands
+/// (`"apt offers cargo 1.75, too old"`) carries no interpolation to look for,
+/// and it is exactly the sentence the rule exists to refuse. An `offers` about
+/// something else is ordinary English and says so with the hatch.
 fn composes_a_floor_sentence(line: &str) -> Option<&'static str> {
     let trimmed = line.trim_start();
     if is_plain_line_comment(line) || trimmed.starts_with("///") || trimmed.starts_with("//!") {
         return None;
     }
-    let code = line_code_before_comment(line);
+    let code = crate::test_helpers::code_span(line);
     if code.contains(crate::modules::FloorBootstrap::BELOW_DECLARED_FLOOR) {
         return Some(crate::modules::FloorBootstrap::BELOW_DECLARED_FLOOR);
     }
-    let after = code.split_once(" offers ")?.1;
-    after.contains('{').then_some(" offers ")
+    code.contains(" offers ").then_some(" offers ")
 }
 
 /// One wording for one shortfall, held across both crates.
@@ -6352,7 +6339,9 @@ fn composes_a_floor_sentence(line: &str) -> Option<&'static str> {
 /// what "nothing else composes that sentence" actually claims.
 ///
 /// `modules/resolve.rs` declares both and is the one exemption. A line whose
-/// `offers` is about something else carries `// floor-sentence-ok: <why>`.
+/// `offers` is about something else carries `// floor-sentence-ok: <why>`, on
+/// itself or on the line above; a literal spanning rows is judged on the row it
+/// opens on, which is the row a hatch above it covers.
 #[test]
 fn no_production_site_outside_the_resolver_composes_a_floor_shortfall_sentence() {
     let declarations = Path::new("modules").join("resolve.rs");
@@ -6382,17 +6371,20 @@ fn no_production_site_outside_the_resolver_composes_a_floor_shortfall_sentence()
         }
         let production = crate::test_helpers::production_slice_of(&path);
         let rows: Vec<&str> = production.lines().collect();
-        for (i, line) in rows.iter().enumerate() {
-            if carries_hatch(line, FLOOR_SENTENCE_HATCH)
-                || (i > 0 && carries_hatch(rows[i - 1], FLOOR_SENTENCE_HATCH))
+        // A literal spanning rows is read as the one line it opens on: a row
+        // in the middle of one can carry no comment, so a hatch would be
+        // unreachable there, and a clause wrapped over two rows would be
+        // unreadable to the matcher.
+        for (n, line) in folded_literal_lines(&production) {
+            if carries_hatch(&line, FLOOR_SENTENCE_HATCH)
+                || (n > 1 && carries_hatch(rows[n - 2], FLOOR_SENTENCE_HATCH))
             {
                 continue;
             }
-            if let Some(tell) = composes_a_floor_sentence(line) {
+            if let Some(tell) = composes_a_floor_sentence(&line) {
                 offenders.push(format!(
-                    "{}:{}: composes `{tell}` — {}",
+                    "{}:{n}: composes `{tell}` — {}",
                     path.display(),
-                    i + 1,
                     line.trim()
                 ));
             }
@@ -6454,8 +6446,13 @@ fn the_floor_sentence_matcher_reads_a_literal_and_not_a_comment() {
         "the row a multi-row literal closes on is read like any other"
     );
     assert_eq!(
+        composes_a_floor_sentence(r#"    let s = "apt offers cargo 1.75, too old";"#),
+        Some(" offers "),
+        "a respell that hard-codes its operands and rewords the tail is still the clause"
+    );
+    assert_eq!(
         composes_a_floor_sentence(r#"    let s = "the form offers a sample of every kind";"#),
-        None,
-        "an `offers` with no interpolated operand after it is ordinary English"
+        Some(" offers "),
+        "the bare verb is the tell; an `offers` about something else takes the hatch"
     );
 }
