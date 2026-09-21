@@ -298,6 +298,7 @@ A package declared in more than one scope (the profile and a module, or two modu
 - **Same manager + same name across scopes** → installed once; the duplicates are dropped.
 - **Different managers** → both install. `ripgrep` via `brew` in the profile and via `cargo` in a module are two distinct installs.
 - **Module installs win** over profile duplicates, and an **earlier module wins** over a later one. Module-owned package work is dispatched ahead of profile-owned work inside the Packages phase, so a module's own `postApply` script can rely on the package already being present.
+- **The strictest `minVersion` survives.** Two modules declaring one package with different floors keep the higher one, judged in the owning manager's own version grammar. Where neither floor is stricter (`1.85` and `1.85.0` are one floor spelled twice, and two floors the manager cannot read are two typos), the spelling that sorts first is kept, so the answer does not depend on which module was read first.
 - **`prefer: [script]` entries are never deduped.** Two same-named install scripts may differ, so both always run (subject to each entry's own `creates`/`onlyIf`/`unless` guards).
 - Dedup is **silent**: no warning is emitted for a dropped duplicate.
 

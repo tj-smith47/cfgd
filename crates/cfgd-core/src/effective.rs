@@ -502,6 +502,66 @@ mod tests {
         assert_eq!(stricter_floor(&b, &a, Some(&mgr)), Some("1.9".to_string()));
     }
 
+    /// Two modules flooring one package at the same version have written one
+    /// floor twice, and the survivor is what every live check compares against
+    /// and prints. Keeping whichever arrived first hands that spelling to the
+    /// order the resolution happened to read the modules in, so the same two
+    /// declarations answer two ways; the earlier spelling answers one way.
+    #[test]
+    fn two_spellings_of_one_floor_dedup_to_the_same_survivor_in_both_orders() {
+        let mgr = crate::test_helpers::MockPackageManager::new("brew");
+        let map: std::collections::HashMap<String, &dyn crate::providers::PackageManager> = [(
+            "brew".to_string(),
+            &mgr as &dyn crate::providers::PackageManager,
+        )]
+        .into_iter()
+        .collect();
+
+        for (first, second, kept) in [
+            ("1.85", "v1.85", "1.85"),
+            ("1.85", "1.85.0", "1.85"),
+            ("v1.85", "1.85.0", "1.85.0"),
+        ] {
+            // Both readings of the dedup: the one a caller holding a registry
+            // makes, and the manager-agnostic one every other caller makes.
+            for managers in [None, Some(&map)] {
+                let forward = deduped_floor(first, second, managers);
+                let backward = deduped_floor(second, first, managers);
+
+                assert_eq!(
+                    forward.as_deref(),
+                    Some(kept),
+                    "({first}, {second}) keeps {kept}"
+                );
+                assert_eq!(
+                    backward, forward,
+                    "({second}, {first}) answers as ({first}, {second})"
+                );
+            }
+        }
+    }
+
+    /// The floor surviving the dedup of two modules declaring one package.
+    fn deduped_floor(
+        first: &str,
+        second: &str,
+        managers: Option<&std::collections::HashMap<String, &dyn crate::providers::PackageManager>>,
+    ) -> Option<String> {
+        let floored = |name: &str, floor: &str| {
+            let mut module = module(name);
+            let mut entry = pkg("brew", "ripgrep");
+            entry.min_version = Some(floor.to_string());
+            module.packages = vec![entry];
+            module
+        };
+        let modules = [floored("a", first), floored("b", second)];
+
+        let packages = effective_desired_packages(&empty_profile(), &modules, managers);
+
+        assert_eq!(packages.len(), 1, "one package survives the dedup");
+        packages[0].min_version.clone()
+    }
+
     // --- effective_system_map ------------------------------------------------
 
     #[test]
