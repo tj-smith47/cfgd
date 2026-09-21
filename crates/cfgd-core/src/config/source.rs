@@ -710,13 +710,11 @@ subscription:
         assert_eq!(spec.priority, 500);
     }
 
-    // R9: `overrides`/`reject` default to `Value::Null`, and without
+    // `overrides`/`reject` default to `Value::Null`, so without
     // `skip_serializing_if` a saved source entry that never set either one
-    // wrote explicit `overrides: null` / `reject: null` into the config
-    // document. `profile` and `pinVersion` are the sibling `Option` fields in
-    // this same population and already carried the guard; this pins that
-    // `overrides`/`reject` now do too, round-tripping through a real
-    // `SourceSpec` the way `source add` writes one.
+    // wrote explicit `overrides: null` / `reject: null` into the user's
+    // document. `profile` and `pinVersion` are the sibling optional fields in
+    // the same struct and already carried the guard.
     #[test]
     fn a_saved_source_entry_with_no_overrides_or_reject_writes_neither_as_null() {
         let spec = SourceSpec {
@@ -760,5 +758,37 @@ subscription:
 
         let round_tripped: SourceSpec = serde_yaml::from_str(&yaml).unwrap();
         assert!(!round_tripped.subscription.overrides.is_null());
+    }
+
+    // A document an older cfgd wrote still carries the explicit nulls, and
+    // `SubscriptionSpec` denies unknown fields — so "it obviously still
+    // parses" is an assumption until something reads one back.
+    #[test]
+    fn a_saved_source_entry_written_with_explicit_nulls_still_loads() {
+        let yaml = concat!(
+            "name: team\n",
+            "origin:\n",
+            "  type: Git\n",
+            "  url: https://example.com/x.git\n",
+            "subscription:\n",
+            "  priority: 500\n",
+            "  overrides: null\n",
+            "  reject: null\n",
+        );
+
+        let spec: SourceSpec =
+            serde_yaml::from_str(yaml).expect("a document carrying explicit nulls still loads");
+        assert_eq!(spec.name, "team");
+        assert!(spec.subscription.overrides.is_null());
+        assert!(spec.subscription.reject.is_null());
+
+        // And the load is lossless in the direction that matters: writing it
+        // back drops the nulls rather than preserving them, so one `source
+        // update` migrates the document to the shape the writer now emits.
+        let rewritten = serde_yaml::to_string(&spec).unwrap();
+        assert!(
+            !rewritten.contains("overrides:") && !rewritten.contains("reject:"),
+            "a re-written entry must not carry the nulls it was loaded with, got:\n{rewritten}"
+        );
     }
 }
