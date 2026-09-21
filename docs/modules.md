@@ -276,6 +276,11 @@ The full resolution logic for each package entry:
    ✗ package 'neovim' in module 'demo' cannot be resolved: every available manager offers a version below the declared minVersion 99.0
    ```
    A manager that could not be asked successfully is neither of those, and never ends the run.
+   A proven-below floor on a package that NAMES a registered manager this host already holds is not a refusal either. No listing offers the copy a manager's own installer delivered (a `cargo` that rustup put on the machine is in no `apt` index), so the resolver asks that manager's own binary what version it reports, judged in that manager's version grammar. At or above the floor, the entry is satisfied: the manager is the delivery, nothing is planned, and every read surface states what is here.
+   ```
+   ✓ rust — apt available; cargo 1.90 is on this host, at or above the declared minVersion 1.85
+   ```
+   Below the floor, the run still refuses, and the sentence names what the host actually holds rather than claiming every listing fell short: `cargo 1.80 is on this host, below the declared minVersion 1.85`. A binary that states no version, or one its own comparator cannot read, is a check that could not run: `cannot judge cargo against the declared minVersion 1.85: it reports no version`. That floor is re-checked live, against the binary rather than the listing, by `cfgd verify`, `cfgd diff` and `cfgd status --scan`, so a toolchain that later slips below it is reported as drift.
    A proven-below floor on a package that names a manager cfgd can put on this host (`cargo`, `npm`, `pipx`) has a third answer: the resolver states the route that manager's own bootstrap would take. `cfgd apply` and `cfgd plan` still refuse such a configuration with the sentence above, because nothing there asks whether to install a toolchain; the read surfaces state what the host offers instead. `cfgd doctor` puts it in the module's row:
    ```
    ✗ rust — cargo: apt offers cargo 1.75, below the declared minVersion 1.85

@@ -1188,6 +1188,16 @@ pub fn module_scope(
                 managers.get(p.manager.as_str()).copied(),
             )
         })
+        // A held manager's floor row is one this module's own scan answers
+        // (`held_manager_version_drift`), so the scope claims it too or a
+        // scoped run that found the machine converged leaves the row standing.
+        .chain(module.held_managers.iter().map(|h| {
+            super::package_entry_drift_id(
+                &h.package,
+                &h.package,
+                managers.get(h.package.as_str()).copied(),
+            )
+        }))
         .collect();
     ModuleScope {
         packages,

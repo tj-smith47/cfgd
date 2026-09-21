@@ -19,6 +19,16 @@ pub enum PackageDisplay {
         resolved_name: String,
         version: Option<String>,
     },
+    /// The entry names a manager this host already holds at the declared
+    /// floor. A resolution like the one above it, and a satisfied one: the
+    /// version is what the manager's own binary reports rather than what a
+    /// listing offers, which is why it is a variant of its own.
+    #[serde(rename = "held", rename_all = "camelCase")]
+    Held {
+        name: String,
+        version: String,
+        min_version: String,
+    },
     #[serde(rename = "skipped", rename_all = "camelCase")]
     Skipped { name: String, platforms: String },
     #[serde(rename = "unresolved", rename_all = "camelCase")]
@@ -242,6 +252,17 @@ fn build_module_show_resolved_packages(doc: Doc, packages: &[PackageDisplay], ar
                 Role::Ok,
                 resolved_package_row(name, manager, resolved_name, version.as_deref(), arrow),
             ),
+            PackageDisplay::Held {
+                name,
+                version,
+                min_version,
+            } => s.status_with(Role::Ok, name.clone(), |f| {
+                f.detail(cfgd_core::modules::HeldManager::held_clause(
+                    name,
+                    version,
+                    min_version,
+                ))
+            }),
             PackageDisplay::Skipped { name, platforms } => {
                 s.status_with(Role::Info, format!("{}{}", name, platforms), |f| {
                     f.detail(crate::cli::status::PLATFORM_SKIPPED)
@@ -521,6 +542,16 @@ pub(super) fn module_show_resolved_rows(
                     PackageDisplay::Unresolved {
                         summary: declared,
                         error: route.offer_clause(),
+                    }
+                }
+                // The manager the entry names is here and clears the floor:
+                // the row states what this host holds, as satisfied as the
+                // resolution above it.
+                Ok(Some(modules::PackageResolution::HeldByManager(entry))) => {
+                    PackageDisplay::Held {
+                        name: entry.package,
+                        version: entry.version,
+                        min_version: entry.floor,
                     }
                 }
                 Ok(None) => PackageDisplay::Skipped {

@@ -66,6 +66,7 @@ fn doctor_output_roundtrips_through_emit() {
             used_by_modules: 0,
         }],
         modules: vec![DoctorModuleCheck {
+            held: Vec::new(),
             name: "base".into(),
             valid: true,
             error: None,

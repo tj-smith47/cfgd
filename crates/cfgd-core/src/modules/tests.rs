@@ -28,6 +28,9 @@ fn package_of(resolution: PackageResolution) -> ResolvedPackage {
         PackageResolution::Bootstrap(route) => {
             panic!("the package resolves to a manager, not to a route: {route:?}")
         }
+        PackageResolution::HeldByManager(held) => {
+            panic!("the package resolves to a manager, not to a held one: {held:?}")
+        }
     }
 }
 
@@ -761,12 +764,14 @@ fn a_floor_on_a_package_that_names_no_bootstrappable_manager_still_refuses() {
 }
 
 /// A manager already on this host has nothing left to bootstrap, so a floor it
-/// falls short of is the plain refusal: installing a second copy of a manager
-/// the machine already has would not raise what it offers.
+/// falls short of is a refusal. The sentence names the manager and the version
+/// it reports: the machine holds cargo, and what makes the declaration
+/// unsatisfiable is that copy, not what some listing offers.
 #[test]
 fn a_floor_an_available_manager_falls_short_of_still_refuses() {
     let cargo = crate::test_helpers::MockPackageManager::new("cargo")
         .offering("cargo", "1.75")
+        .reporting_version("1.80")
         .bootstrappable_via("rustup");
     let managers = make_manager_map(&[("cargo", &cargo)]);
     let entry = ModulePackageEntry {
@@ -779,9 +784,95 @@ fn a_floor_an_available_manager_falls_short_of_still_refuses() {
         .unwrap_err()
         .to_string();
     assert!(
-        err.contains("every available manager offers a version below the declared minVersion 1.85"),
-        "a manager the host already has offers no route: {err}"
+        err.contains("cargo 1.80 is on this host, below the declared minVersion 1.85"),
+        "a manager the host already has offers no route, and the refusal says \
+         what the host actually holds: {err}"
     );
+}
+
+/// The converged machine: the run provisioned cargo through rustup, so every
+/// listing still offers 1.75 while the binary on the host reports 1.90. The
+/// manager the entry names IS the delivery, so the declaration is satisfied
+/// where the listings alone would refuse it on every run after the first.
+#[test]
+fn a_floor_the_manager_this_host_already_holds_meets_resolves_as_held() {
+    let apt = MockManager::new("apt").with_package("cargo", "1.75");
+    let cargo = crate::test_helpers::MockPackageManager::new("cargo")
+        .reporting_version("1.90")
+        .bootstrappable_via("rustup");
+    let managers = make_manager_map(&[("apt", &apt), ("cargo", &cargo)]);
+    let entry = ModulePackageEntry {
+        name: "cargo".into(),
+        min_version: Some("1.85".into()),
+        prefer: vec!["apt".into()],
+        ..Default::default()
+    };
+
+    let held = match resolve_package(&entry, "rust", &linux_ubuntu_platform(), &managers, None) {
+        Ok(Some(PackageResolution::HeldByManager(held))) => held,
+        other => panic!("the manager on this host answers the floor: {other:?}"),
+    };
+    assert_eq!(held.package, "cargo");
+    assert_eq!(held.module, "rust");
+    assert_eq!(
+        held.version, "1.90",
+        "the version is what the manager's own binary reports, not what a listing offers"
+    );
+    assert_eq!(held.floor, "1.85");
+}
+
+/// A manager whose binary states no version has answered nothing, so the run
+/// refuses and says so rather than claiming a shortfall it never measured.
+#[test]
+fn a_floor_a_held_manager_states_no_version_for_is_refused_as_unproven() {
+    let cargo = crate::test_helpers::MockPackageManager::new("cargo").offering("cargo", "1.75");
+    let managers = make_manager_map(&[("cargo", &cargo)]);
+    let entry = ModulePackageEntry {
+        name: "cargo".into(),
+        min_version: Some("1.85".into()),
+        prefer: vec!["cargo".into()],
+        ..Default::default()
+    };
+    let err = resolve_package(&entry, "nvim", &linux_ubuntu_platform(), &managers, None)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains(
+            "cannot judge cargo against the declared minVersion 1.85: it reports no version"
+        ),
+        "a version nothing could read is a question that was never answered: {err}"
+    );
+}
+
+/// The held version is judged in the MANAGER's own grammar. A winget-family
+/// fourth component is a version semver refuses outright, so the shared
+/// comparer would call a converged machine short of its floor.
+#[test]
+fn a_held_managers_floor_is_judged_in_its_own_version_grammar() {
+    let held_version = "133.0.6943.98";
+    assert!(
+        !crate::version_meets_floor(held_version, "133"),
+        "the premise: the shared comparer cannot read a fourth component, so \
+         the two answers really do disagree"
+    );
+    let apt = MockManager::new("apt").with_package("choco", "1.0");
+    let choco = crate::test_helpers::MockPackageManager::new("choco")
+        .reading_its_own_version_grammar()
+        .reporting_version(held_version);
+    let managers = make_manager_map(&[("apt", &apt), ("choco", &choco)]);
+    let entry = ModulePackageEntry {
+        name: "choco".into(),
+        min_version: Some("133".into()),
+        prefer: vec!["apt".into()],
+        ..Default::default()
+    };
+
+    let held = match resolve_package(&entry, "win", &linux_ubuntu_platform(), &managers, None) {
+        Ok(Some(PackageResolution::HeldByManager(held))) => held,
+        other => panic!("the manager's own grammar clears the floor: {other:?}"),
+    };
+    assert_eq!(held.version, held_version);
+    assert_eq!(held.floor, "133");
 }
 
 /// Nothing in a module resolution asks the reader whether to take a route, so

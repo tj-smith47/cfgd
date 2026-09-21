@@ -26512,6 +26512,7 @@ fn build_doctor_doc_manager_undeclared_unavailable_emits_nothing_for_that_entry(
 fn build_doctor_doc_module_invalid_emits_fail_with_detail() {
     let mut output = base_doctor_output();
     output.modules = vec![super::output_types::DoctorModuleCheck {
+        held: Vec::new(),
         name: "broken-mod".into(),
         valid: false,
         error: Some("YAML parse error".into()),
@@ -26534,6 +26535,7 @@ fn build_doctor_doc_module_invalid_emits_fail_with_detail() {
 fn build_doctor_doc_module_valid_no_packages_emits_ok() {
     let mut output = base_doctor_output();
     output.modules = vec![super::output_types::DoctorModuleCheck {
+        held: Vec::new(),
         name: "empty-mod".into(),
         valid: true,
         error: None,
@@ -26552,6 +26554,7 @@ fn build_doctor_doc_module_valid_no_packages_emits_ok() {
 fn build_doctor_doc_module_with_a_package_no_manager_can_deliver_emits_fail() {
     let mut output = base_doctor_output();
     output.modules = vec![super::output_types::DoctorModuleCheck {
+        held: Vec::new(),
         name: "mod-a".into(),
         valid: true,
         error: None,
@@ -26595,6 +26598,7 @@ fn a_doctor_route_shortfall_opens_on_the_package_that_fell_short() {
 fn build_doctor_doc_module_separates_shortfalls_that_carry_a_comma() {
     let mut output = base_doctor_output();
     output.modules = vec![super::output_types::DoctorModuleCheck {
+        held: Vec::new(),
         name: "rust".into(),
         valid: true,
         error: None,
@@ -26622,6 +26626,7 @@ fn build_doctor_doc_module_separates_shortfalls_that_carry_a_comma() {
 fn build_doctor_doc_module_whose_managers_are_all_here_emits_ok() {
     let mut output = base_doctor_output();
     output.modules = vec![super::output_types::DoctorModuleCheck {
+        held: Vec::new(),
         name: "nvim".into(),
         valid: true,
         error: None,
@@ -26655,10 +26660,48 @@ fn build_doctor_doc_module_whose_managers_are_all_here_emits_ok() {
     );
 }
 
+/// A declared package whose delivery is a manager this host already holds at
+/// the declared floor is a satisfied fact: it joins the module's own row
+/// beside the managers its other packages route to, never the shortfall list,
+/// and the verdict still passes.
+#[test]
+fn build_doctor_doc_module_holding_a_manager_at_its_floor_states_what_is_here() {
+    let mut output = base_doctor_output();
+    output.modules = vec![super::output_types::DoctorModuleCheck {
+        held: vec![cfgd_core::modules::HeldManager::held_clause(
+            "cargo", "1.90", "1.85",
+        )],
+        name: "rust".into(),
+        valid: true,
+        error: None,
+        managers: vec![super::output_types::DoctorModuleManagerRoute {
+            name: "apt".into(),
+            available: true,
+            package_count: 1,
+        }],
+        unresolved: vec![],
+    }];
+    let extras = super::doctor::DoctorExtras::default();
+    let text = emit_doc(&output, &extras);
+    let row = text
+        .lines()
+        .find(|l| l.contains("rust"))
+        .unwrap_or_else(|| panic!("the module has a row: {text}"));
+    assert_eq!(
+        row.trim(),
+        "✓ rust — apt available; cargo 1.90 is on this host, at or above the declared minVersion 1.85"
+    );
+    assert!(
+        text.contains("Passed every check"),
+        "a manager the host already holds is nothing to fix, got: {text}"
+    );
+}
+
 #[test]
 fn build_doctor_doc_module_missing_a_manager_names_it_and_what_routes_to_it() {
     let mut output = base_doctor_output();
     output.modules = vec![super::output_types::DoctorModuleCheck {
+        held: Vec::new(),
         name: "jarvis".into(),
         valid: true,
         error: None,
@@ -33817,8 +33860,9 @@ fn every_core_minted_package_drift_id_comes_from_its_composer() {
     ];
     // Each production anchor, by file and count, hatched lines excluded:
     // `apply.rs`'s two provision batch-member heals, `types.rs`'s manager-node
-    // and per-package rows, `verify.rs`'s missing and below-the-floor rows.
-    const EXPECTED: [(&str, usize); 3] = [("apply.rs", 2), ("types.rs", 2), ("verify.rs", 2)];
+    // and per-package rows, `verify.rs`'s missing row, its below-the-floor row
+    // and the one a held manager's own binary answers for.
+    const EXPECTED: [(&str, usize); 3] = [("apply.rs", 2), ("types.rs", 2), ("verify.rs", 3)];
 
     let core_src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../cfgd-core/src");
     let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();

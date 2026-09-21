@@ -54,6 +54,9 @@ pub fn verify(
     // `<manager>:<name>` id, and a second row under it would answer the same
     // key twice — `installed` beside `want: 2, have: 1.0.0`.
     let (mut results, mut check_errors) = package_version_drift(&effective, registry, cx)?;
+    let (held_results, held_errors) = held_manager_version_drift(modules, registry);
+    results.extend(held_results);
+    check_errors.extend(held_errors);
     // Only the ids the floor pass gave a VERDICT for. A package whose floor
     // could not be read has no verdict, so its presence — which this run did
     // answer — stands beside the error row rather than disappearing from the
@@ -434,6 +437,76 @@ pub fn package_version_drift(
         }
     }
     Ok((results, check_errors))
+}
+
+/// The declared-floor pass over the managers a host already HOLDS — the answer
+/// [`crate::modules::PackageResolution::HeldByManager`] resolved a declared
+/// package to.
+///
+/// [`package_version_drift`] asks a manager's LISTING, which knows nothing
+/// about a manager delivered by its own installer (a rustup cargo appears in
+/// no apt listing), so a held entry checked that way is checked by nobody. The
+/// binary's own `tool_version()` is the fact that answers it: a toolchain
+/// downgraded below the declared floor is reported as drift, and a healthy one
+/// is green.
+///
+/// Rows carry the same `<manager>:<name>` id every other package row carries,
+/// so a converged scan heals one. One row per id, because two modules flooring
+/// the same manager are one fact about the machine; the version is read once
+/// per manager for the same reason.
+pub fn held_manager_version_drift(
+    modules: &[ResolvedModule],
+    registry: &ProviderRegistry,
+) -> (Vec<VerifyResult>, Vec<SystemCheckError>) {
+    let mut results: Vec<VerifyResult> = Vec::new();
+    let mut check_errors: Vec<SystemCheckError> = Vec::new();
+    let available = registry.available_package_managers();
+    let mut versions: std::collections::HashMap<&str, Option<String>> =
+        std::collections::HashMap::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for held in modules.iter().flat_map(|m| m.held_managers.iter()) {
+        // A manager that has since left the host can report neither version
+        // nor package, exactly as the listing pass skips an absent manager.
+        let Some(mgr) = available.iter().find(|m| m.name() == held.package) else {
+            continue;
+        };
+        let version = versions
+            .entry(mgr.name())
+            .or_insert_with(|| mgr.tool_version())
+            .clone();
+        let verdict = crate::modules::judge_declared_floor(
+            *mgr,
+            &held.package,
+            &held.floor,
+            version.as_deref(),
+        );
+        let id = super::package_entry_drift_id(&held.package, &held.package, Some(*mgr));
+        if !seen.insert(id.clone()) {
+            continue;
+        }
+        match verdict {
+            crate::modules::FloorJudgment::Met { .. } => {}
+            crate::modules::FloorJudgment::Short { version } => results.push(VerifyResult {
+                resource_type: "package".to_string(),
+                resource_id: id,
+                matches: false,
+                expected: held.floor.clone(),
+                actual: version,
+                unmanaged: false,
+            }),
+            crate::modules::FloorJudgment::Unproven { cause } => {
+                check_errors.push(SystemCheckError {
+                    key: id,
+                    error: crate::modules::FloorBootstrap::floor_unproven(
+                        &held.package,
+                        &held.floor,
+                        &cause,
+                    ),
+                })
+            }
+        }
+    }
+    (results, check_errors)
 }
 
 /// Result of verifying a single resource.

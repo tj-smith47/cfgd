@@ -102,8 +102,8 @@ pub use types::{
 };
 pub use verify::{
     EnvItemCheck, EnvLayer, LayeredEnv, MergedEnvItems, SystemCheckError, VerifyReport,
-    VerifyResult, VersionFloor, env_item_verify_results, env_verify_results, package_version_drift,
-    package_version_floor, verify,
+    VerifyResult, VersionFloor, env_item_verify_results, env_verify_results,
+    held_manager_version_drift, package_version_drift, package_version_floor, verify,
 };
 
 pub(crate) use env::all_recorded_path_dirs;

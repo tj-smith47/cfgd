@@ -437,6 +437,7 @@ mod tests {
 
     fn module(name: &str) -> ResolvedModule {
         ResolvedModule {
+            held_managers: Vec::new(),
             floor_bootstraps: Vec::new(),
             dep_pulled: false,
             name: name.to_string(),

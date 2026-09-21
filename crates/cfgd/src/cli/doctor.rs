@@ -154,6 +154,7 @@ fn build_module_routes(
                     error: Some(format!("module {}", cfgd_core::Absence::NotFound)),
                     managers: Vec::new(),
                     unresolved: Vec::new(),
+                    held: Vec::new(),
                 };
             };
             // First-seen order, which is the module's own package order: the
@@ -162,6 +163,7 @@ fn build_module_routes(
             let mut counts: std::collections::HashMap<String, usize> =
                 std::collections::HashMap::new();
             let mut unresolved: Vec<String> = Vec::new();
+            let mut held: Vec<String> = Vec::new();
             for entry in &module.spec.packages {
                 match modules::resolve_package(entry, mod_name, platform, mgr_map, cx) {
                     Ok(Some(modules::PackageResolution::Package(resolved))) => {
@@ -183,6 +185,17 @@ fn build_module_routes(
                     Ok(Some(modules::PackageResolution::Bootstrap(route))) => {
                         unresolved.push(unresolved_route_row(&route));
                     }
+                    // The package names a manager this host already holds at
+                    // the declared floor, so nothing is missing: the row
+                    // states what is here beside the managers the rest of the
+                    // module routes to.
+                    Ok(Some(modules::PackageResolution::HeldByManager(entry))) => {
+                        held.push(modules::HeldManager::held_clause(
+                            &entry.package,
+                            &entry.version,
+                            &entry.floor,
+                        ));
+                    }
                     // Gated off this platform: the package is not declared
                     // here, so it routes nowhere and states nothing.
                     Ok(None) => {}
@@ -203,6 +216,7 @@ fn build_module_routes(
                 error: None,
                 managers,
                 unresolved,
+                held,
             }
         })
         .collect();
@@ -807,7 +821,7 @@ fn build_modules_section(s: SectionBuilder, modules: &[DoctorModuleCheck]) -> Se
             let detail = m.error.clone().unwrap_or_else(|| "invalid".into());
             return s.status_with(Role::Fail, m.name.clone(), |sf| sf.detail(detail));
         }
-        if m.managers.is_empty() && m.unresolved.is_empty() {
+        if m.managers.is_empty() && m.unresolved.is_empty() && m.held.is_empty() {
             return s.status(Role::Ok, m.name.clone());
         }
         let mut shortfalls: Vec<String> = m
@@ -824,8 +838,16 @@ fn build_modules_section(s: SectionBuilder, modules: &[DoctorModuleCheck]) -> Se
             .collect();
         shortfalls.extend(m.unresolved.iter().cloned());
         if shortfalls.is_empty() {
+            // The two satisfied facts are one detail: a manager the module's
+            // packages route to, and a manager that IS one of them. Joined at
+            // the producer, because a held clause carries a comma of its own.
             let names: Vec<&str> = m.managers.iter().map(|r| r.name.as_str()).collect();
-            let detail = format!("{} available", names.join(", "));
+            let mut clauses = Vec::new();
+            if !names.is_empty() {
+                clauses.push(format!("{} available", names.join(", ")));
+            }
+            clauses.extend(m.held.iter().cloned());
+            let detail = cfgd_core::join_clauses(&clauses);
             return s.status_with(Role::Ok, m.name.clone(), |sf| sf.detail(detail));
         }
         // A shortfall states a sentence a producer worded, and one of them

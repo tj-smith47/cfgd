@@ -730,6 +730,11 @@ pub struct DoctorModuleCheck {
     /// One message per declared package no manager on this host can deliver.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unresolved: Vec<String>,
+    /// One clause per declared package whose delivery is a manager this host
+    /// already holds at the declared floor. A satisfied fact, so it never
+    /// reaches the unresolved list above and never fails the verdict.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub held: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2077,6 +2082,7 @@ mod tests {
                 used_by_modules: 0,
             }],
             modules: vec![DoctorModuleCheck {
+                held: Vec::new(),
                 name: "shell".to_string(),
                 valid: true,
                 error: None,
@@ -2212,6 +2218,7 @@ mod tests {
     #[test]
     fn doctor_module_check_emits_its_manager_routes_and_null_error() {
         let v = DoctorModuleCheck {
+            held: Vec::new(),
             name: "git".to_string(),
             valid: true,
             error: None,
@@ -2240,6 +2247,7 @@ mod tests {
     #[test]
     fn doctor_module_check_lists_a_package_no_manager_can_deliver() {
         let v = DoctorModuleCheck {
+            held: Vec::new(),
             name: "jarvis".to_string(),
             valid: true,
             error: None,

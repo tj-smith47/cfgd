@@ -738,6 +738,7 @@ mod tests {
             platforms: vec![],
         }];
         let module = cfgd_core::modules::ResolvedModule {
+            held_managers: Vec::new(),
             floor_bootstraps: Vec::new(),
             name: "test-mod".to_string(),
             packages: Vec::new(),

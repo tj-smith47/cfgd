@@ -962,12 +962,11 @@ impl<'x> PackageExec<'x> {
 /// How a provision's delivery answers the floor its confirmation was given for:
 /// `None` when it clears, otherwise the sentence the node fails with.
 ///
-/// The question is asked of the MANAGER, never of the shared parser: a floor
-/// verdict belongs to the family that packages the tool, and `1:2.30`,
-/// `1.2.3,4567` and `2.2.2.0` are all versions a family reads and the shared
-/// parser refuses. A comparator that could not judge its operands has answered
-/// nothing, so the node says the floor is unproven rather than settling green
-/// on a check that never ran or claiming a shortfall it never measured.
+/// The four questions behind the verdict are asked by
+/// [`crate::modules::judge_declared_floor`], which every site judging a
+/// declared floor against a manager's own version reads; what this function
+/// owns is the WORDING, which differs by what the run did — a delivery this
+/// run made, a manager that was here already, or a question nobody could ask.
 fn floor_verdict(
     pm: &dyn crate::providers::PackageManager,
     package: &str,
@@ -976,39 +975,18 @@ fn floor_verdict(
     version: Option<&str>,
     installed_now: bool,
 ) -> Option<String> {
-    use crate::modules::FloorBootstrap;
-    let Some(version) = version else {
-        return Some(FloorBootstrap::floor_unproven(
-            package,
-            floor,
-            "it reports no version",
-        ));
-    };
-    if !pm.version_comparable(version) {
-        return Some(FloorBootstrap::floor_unproven(
-            package,
-            floor,
-            &format!("{package} reports {version}, which it cannot compare"),
-        ));
-    }
-    if !pm.floor_comparable(floor) {
-        return Some(FloorBootstrap::floor_unproven(
-            package,
-            floor,
-            &format!("{package} cannot read that floor"),
-        ));
-    }
-    match pm.version_meets_minimum_checked(version, floor) {
-        Ok(true) => None,
-        Ok(false) if installed_now => Some(FloorBootstrap::delivery_shortfall(
-            via, package, version, floor,
-        )),
-        Ok(false) => Some(FloorBootstrap::present_shortfall(package, version, floor)),
-        Err(e) => Some(FloorBootstrap::floor_unproven(
-            package,
-            floor,
-            &crate::output::collapse_to_subject_line(&e),
-        )),
+    use crate::modules::{FloorBootstrap, FloorJudgment};
+    match crate::modules::judge_declared_floor(pm, package, floor, version) {
+        FloorJudgment::Met { .. } => None,
+        FloorJudgment::Short { version } if installed_now => Some(
+            FloorBootstrap::delivery_shortfall(via, package, &version, floor),
+        ),
+        FloorJudgment::Short { version } => {
+            Some(FloorBootstrap::present_shortfall(package, &version, floor))
+        }
+        FloorJudgment::Unproven { cause } => {
+            Some(FloorBootstrap::floor_unproven(package, floor, &cause))
+        }
     }
 }
 

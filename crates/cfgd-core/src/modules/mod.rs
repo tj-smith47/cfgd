@@ -41,8 +41,9 @@ pub use registry::{
     latest_module_version_remote, parse_registry_ref, resolve_profile_module_name,
 };
 pub use resolve::{
-    FloorBootstrap, PackageResolution, fill_available_versions, resolve_module_files,
-    resolve_module_packages, resolve_modules, resolve_package,
+    FloorBootstrap, FloorJudgment, HeldManager, PackageResolution, fill_available_versions,
+    judge_declared_floor, resolve_module_files, resolve_module_packages, resolve_modules,
+    resolve_package,
 };
 pub(crate) use resolve::{price_package, priceable_manager};
 pub use surfaces::post_apply_change_body;
@@ -177,6 +178,11 @@ pub struct ResolvedModule {
     /// first.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub floor_bootstraps: Vec<FloorBootstrap>,
+    /// Declared floors met by the package's OWN manager, already on this host.
+    /// Nothing is planned for one: the manager is the delivery, so the entry
+    /// is satisfied where it would once have been refused.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub held_managers: Vec<HeldManager>,
     pub files: Vec<ResolvedFile>,
     pub env: Vec<EnvVar>,
     pub aliases: Vec<ShellAlias>,
@@ -231,6 +237,7 @@ impl ResolvedModule {
             name: _,
             packages: _,
             floor_bootstraps: _,
+            held_managers: _,
             files: _,
             env: _,
             aliases: _,
@@ -268,6 +275,7 @@ impl ResolvedModule {
             name,
             packages: Vec::new(),
             floor_bootstraps: Vec::new(),
+            held_managers: Vec::new(),
             files: Vec::new(),
             env: Vec::new(),
             aliases: Vec::new(),

@@ -87,6 +87,19 @@ impl FloorBootstrap {
         )
     }
 
+    /// The shortfall of a manager the entry NAMES and this host already holds,
+    /// found while the entry was being resolved rather than while a confirmed
+    /// route was settling. A bootstrap cannot raise a manager already on the
+    /// machine, so this sentence is the whole answer: it states which manager
+    /// is here and what it reports, where the plain refusal claimed every
+    /// available manager offered too little and named none of them.
+    pub fn held_shortfall(manager: &str, version: &str, floor: &str) -> String {
+        format!(
+            "{manager} {version} is on this host, {} {floor}",
+            Self::BELOW_DECLARED_FLOOR
+        )
+    }
+
     /// A floor the run could not judge at all, and why.
     ///
     /// A comparator that cannot read its operands answers no question, so the
@@ -98,14 +111,104 @@ impl FloorBootstrap {
     }
 }
 
-/// What one declared package entry resolves to: the manager it lands on, or the
-/// route a floor no available manager meets could be met by.
+/// A declared floor the entry's OWN manager already meets: the package names a
+/// registered manager this host holds, and the version that manager's binary
+/// reports clears the floor in its own grammar.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HeldManager {
+    /// The package, which is also the registered manager's name.
+    pub package: String,
+    pub module: String,
+    /// What the manager's own binary reports ([`PackageManager::tool_version`]).
+    pub version: String,
+    pub floor: String,
+}
+
+impl HeldManager {
+    /// What this host holds and why the declaration is already satisfied, as
+    /// ONE clause: `cfgd doctor`'s satisfied row, `module show --resolved`'s
+    /// package row and `status <module>`'s package row all read it, so one
+    /// held manager cannot be worded three ways. An associated function, like
+    /// the shortfall sentences it sits beside, because a surface serializing
+    /// the facts holds three strings rather than this node.
+    pub fn held_clause(manager: &str, version: &str, floor: &str) -> String {
+        format!("{manager} {version} is on this host, at or above the declared minVersion {floor}")
+    }
+}
+
+/// What a manager's own version answers a declared floor with.
+///
+/// The four questions in the ONE order they must be asked: is there a version
+/// at all, can this manager compare it, can it read the floor, and does the
+/// comparison it then runs say yes. A comparator that could not judge its
+/// operands has answered nothing, so [`Unproven`](Self::Unproven) is neither a
+/// pass nor a shortfall — every caller words its own verdict from the answer
+/// and none of them re-asks the questions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FloorJudgment {
+    /// Comparable, and at or above the floor.
+    Met { version: String },
+    /// Comparable, and below the floor. The version is carried back because
+    /// every caller's sentence names it.
+    Short { version: String },
+    /// The question could not be asked, and why.
+    Unproven { cause: String },
+}
+
+/// Judge `version` against a declared `floor` in `mgr`'s own version grammar.
+///
+/// The comparison belongs to the family that packages the tool: `1:2.30`,
+/// `1.2.3,4567` and `2.2.2.0` are all versions a family reads and the shared
+/// parser refuses, so a `false` from the shared parser would be an artifact of
+/// the parse rather than a fact about the machine.
+pub fn judge_declared_floor(
+    mgr: &dyn PackageManager,
+    subject: &str,
+    floor: &str,
+    version: Option<&str>,
+) -> FloorJudgment {
+    let Some(version) = version else {
+        return FloorJudgment::Unproven {
+            cause: "it reports no version".to_string(),
+        };
+    };
+    if !mgr.version_comparable(version) {
+        return FloorJudgment::Unproven {
+            cause: format!("{subject} reports {version}, which it cannot compare"),
+        };
+    }
+    if !mgr.floor_comparable(floor) {
+        return FloorJudgment::Unproven {
+            cause: format!("{subject} cannot read that floor"),
+        };
+    }
+    match mgr.version_meets_minimum_checked(version, floor) {
+        Ok(true) => FloorJudgment::Met {
+            version: version.to_string(),
+        },
+        Ok(false) => FloorJudgment::Short {
+            version: version.to_string(),
+        },
+        Err(e) => FloorJudgment::Unproven {
+            cause: crate::output::collapse_to_subject_line(&e),
+        },
+    }
+}
+
+/// What one declared package entry resolves to: the manager it lands on, the
+/// route a floor no available manager meets could be met by, or the manager
+/// this host already holds at that floor.
 // `Debug` because a resolver test panics with the arm it did not expect;
 // `ResolvedPackage` already derives it.
 #[derive(Debug)]
 pub enum PackageResolution {
     Package(Box<ResolvedPackage>),
     Bootstrap(FloorBootstrap),
+    /// The entry names a manager this host holds at or above the floor: the
+    /// manager itself is the delivery, so there is nothing to install and
+    /// nothing to ask.
+    HeldByManager(HeldManager),
 }
 
 impl From<ResolvedPackage> for PackageResolution {
@@ -350,6 +453,23 @@ pub fn resolve_package(
         return Ok(Some(pkg.into()));
     }
 
+    // Asked before the route and before the refusal, and only here: a run that
+    // provisioned this manager to meet the floor leaves a machine where every
+    // LISTING is still below it, so the walk above proves below on every later
+    // run and the entry that converged the machine is the one that refuses.
+    // What the manager's own binary reports is the fact that answers it.
+    if proven_below && let Some(held) = held_manager_answer(entry, module_name, managers) {
+        return match held {
+            Ok(held) => Ok(Some(PackageResolution::HeldByManager(held))),
+            Err(reason) => Err(ModuleError::UnresolvablePackage {
+                module: module_name.to_string(),
+                package: entry.name.clone(),
+                reason,
+            }
+            .into()),
+        };
+    }
+
     if proven_below
         // Only a proven-below floor can be rescued this way. "No manager at
         // all" is already answered by the optimistic `bootstrappable` arm
@@ -380,6 +500,44 @@ fn proven_below_reason(floor: &str) -> String {
     format!(
         "every available manager offers a version {} {floor}",
         FloorBootstrap::BELOW_DECLARED_FLOOR
+    )
+}
+
+/// What the manager this entry NAMES, already on this host, answers the
+/// declared floor with: `Ok` when its own binary clears the floor, `Err` with
+/// the refusal's reason when it does not or when the question could not be
+/// asked at all. `None` where the rule does not apply — the entry names no
+/// registered manager, that manager is not here, or nothing declared a floor.
+///
+/// `tool_version()` spawns, so this runs on the proven-below exit alone and
+/// asks once: every entry reaching it has already failed every listing.
+fn held_manager_answer(
+    entry: &ModulePackageEntry,
+    module_name: &str,
+    managers: &HashMap<String, &dyn PackageManager>,
+) -> Option<std::result::Result<HeldManager, String>> {
+    let floor = entry.min_version.as_deref()?;
+    let mgr = *managers.get(entry.name.as_str())?;
+    if !mgr.is_available() {
+        return None;
+    }
+    let name = entry.name.as_str();
+    let version = mgr.tool_version();
+    Some(
+        match judge_declared_floor(mgr, name, floor, version.as_deref()) {
+            FloorJudgment::Met { version } => Ok(HeldManager {
+                package: name.to_string(),
+                module: module_name.to_string(),
+                version,
+                floor: floor.to_string(),
+            }),
+            FloorJudgment::Short { version } => {
+                Err(FloorBootstrap::held_shortfall(name, &version, floor))
+            }
+            FloorJudgment::Unproven { cause } => {
+                Err(FloorBootstrap::floor_unproven(name, floor, &cause))
+            }
+        },
     )
 }
 
@@ -487,17 +645,21 @@ pub fn resolve_module_packages(
     platform: &Platform,
     managers: &HashMap<String, &dyn PackageManager>,
     installed: Option<&crate::providers::PackageContext<'_>>,
-) -> Result<(Vec<ResolvedPackage>, Vec<FloorBootstrap>)> {
+) -> Result<(Vec<ResolvedPackage>, Vec<FloorBootstrap>, Vec<HeldManager>)> {
     let mut resolved = Vec::with_capacity(module.spec.packages.len());
     let mut routes = Vec::new();
+    let mut held = Vec::new();
     for entry in &module.spec.packages {
         match resolve_package(entry, &module.name, platform, managers, installed)? {
             Some(PackageResolution::Package(pkg)) => resolved.push(*pkg),
             Some(PackageResolution::Bootstrap(route)) => routes.push(route),
+            // Nothing to install and nothing to plan: the delivery is the
+            // manager, and it is already here.
+            Some(PackageResolution::HeldByManager(entry)) => held.push(entry),
             None => {}
         }
     }
-    Ok((resolved, routes))
+    Ok((resolved, routes, held))
 }
 
 /// Price every resolved package that does not already carry a version, so a
@@ -778,7 +940,7 @@ pub fn resolve_modules(
                 continue;
             }
 
-            let (packages, floor_bootstraps) =
+            let (packages, floor_bootstraps, held_managers) =
                 resolve_module_packages(module, platform, managers, installed)?;
             let files = resolve_module_files(module, cache_base, printer)?;
 
@@ -797,6 +959,7 @@ pub fn resolve_modules(
                 name: name.clone(),
                 packages,
                 floor_bootstraps,
+                held_managers,
                 files,
                 // Filtered here, beside the package filter above: a gated
                 // entry is not part of this host's desired state, so it

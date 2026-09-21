@@ -468,6 +468,37 @@ fn module_show_resolved_renders_what_this_host_made_of_the_declaration() {
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "module_show/resolved.txt");
 }
 
+/// A package this host reads as a manager it already holds at the declared
+/// floor is a SATISFIED row, not an unresolved one: the manager is the
+/// delivery, so the row states the version its binary reports and the floor
+/// that version clears.
+#[test]
+fn module_show_resolved_states_what_a_held_manager_answers_the_floor_with() {
+    let mut output = happy_show_output();
+    output.resolved = Some(vec![PackageDisplay::Held {
+        name: "cargo".into(),
+        version: "1.90".into(),
+        min_version: "1.85".into(),
+    }]);
+    let (printer, cap) = Printer::for_test_doc();
+    printer.emit(build_module_show_doc(
+        &output,
+        None,
+        InventoryDetail::default(),
+        printer.arrow(),
+    ));
+    drop(printer);
+    let human = cap.human();
+    let row = human
+        .lines()
+        .find(|l| l.contains("cargo"))
+        .unwrap_or_else(|| panic!("the package has a row: {human}"));
+    assert_eq!(
+        row.trim(),
+        "✓ cargo — cargo 1.90 is on this host, at or above the declared minVersion 1.85"
+    );
+}
+
 #[test]
 fn module_show_not_found_human() {
     // `module show` of a missing module returns a not-found error; the central sink

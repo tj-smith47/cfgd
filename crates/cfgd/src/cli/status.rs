@@ -695,6 +695,13 @@ pub struct ModulePackageStatus {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub manager: Option<String>,
     pub state: ModulePackagePresence,
+    /// The clause for an entry whose delivery IS the manager it names, already
+    /// on this host at the declared floor: what that manager reports and the
+    /// floor it clears, worded by the one composer every surface naming a held
+    /// manager reads. `None` for every other row, whose state is the whole
+    /// answer.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub held: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -2653,10 +2660,14 @@ fn render_module_inventories(
                 // after it — one name may be declared twice under two
                 // managers, and two rows reading `neovim — not scanned` say
                 // nothing about which entry is which.
-                let detail = match (&pkg.manager, pkg.state) {
-                    (Some(m), ModulePackagePresence::Installed) => m.clone(),
-                    (Some(m), state) => format!("{} ({m})", state.label()),
-                    (None, state) => state.label().to_string(),
+                let detail = match (&pkg.held, &pkg.manager, pkg.state) {
+                    // A held manager's row names the version it reports and
+                    // the floor it clears: the manager alone would say only
+                    // that the package is itself.
+                    (Some(held), _, _) => held.clone(),
+                    (None, Some(m), ModulePackagePresence::Installed) => m.clone(),
+                    (None, Some(m), state) => format!("{} ({m})", state.label()),
+                    (None, None, state) => state.label().to_string(),
                 };
                 s.status_with(pkg.state.role(), &pkg.name, |f| f.detail(detail))
             });
@@ -3415,6 +3426,7 @@ fn join_package_state(
                     name: p.name.clone(),
                     manager: None,
                     state: ModulePackagePresence::PlatformSkipped,
+                    held: None,
                 };
             }
             // A package the Drift section names never reads `not scanned`:
@@ -3440,28 +3452,41 @@ fn join_package_state(
                     name: p.name.clone(),
                     manager: Some(manager),
                     state,
+                    held: None,
                 },
-                None => ModulePackageStatus {
-                    name: p.name.clone(),
+                None => {
                     // A route names a manager this host does not have, so the
                     // column states nothing, exactly as it did for the refusal
-                    // that route replaced.
-                    manager: match modules::resolve_package(
-                        p,
-                        module_name,
-                        here,
-                        managers,
-                        installed,
-                    ) {
-                        Ok(Some(modules::PackageResolution::Package(resolved))) => {
-                            Some(resolved.manager)
-                        }
-                        Ok(Some(modules::PackageResolution::Bootstrap(_))) | Ok(None) | Err(_) => {
-                            None
-                        }
-                    },
-                    state: ModulePackagePresence::NotScanned,
-                },
+                    // that route replaced. A HELD manager is the opposite: it
+                    // is on this host at the floor the entry declared, so the
+                    // row is installed and states what answers for it.
+                    let (manager, state, held) =
+                        match modules::resolve_package(p, module_name, here, managers, installed) {
+                            Ok(Some(modules::PackageResolution::Package(resolved))) => (
+                                Some(resolved.manager),
+                                ModulePackagePresence::NotScanned,
+                                None,
+                            ),
+                            Ok(Some(modules::PackageResolution::HeldByManager(entry))) => (
+                                Some(entry.package.clone()),
+                                ModulePackagePresence::Installed,
+                                Some(modules::HeldManager::held_clause(
+                                    &entry.package,
+                                    &entry.version,
+                                    &entry.floor,
+                                )),
+                            ),
+                            Ok(Some(modules::PackageResolution::Bootstrap(_)))
+                            | Ok(None)
+                            | Err(_) => (None, ModulePackagePresence::NotScanned, None),
+                        };
+                    ModulePackageStatus {
+                        name: p.name.clone(),
+                        manager,
+                        state,
+                        held,
+                    }
+                }
             }
         })
         .collect()
@@ -6107,6 +6132,7 @@ mod tests {
             last_applied: None,
             scope: None,
             package_state: vec![ModulePackageStatus {
+                held: None,
                 name: "fd".to_string(),
                 manager: Some("npm".to_string()),
                 state: ModulePackagePresence::Installed,
@@ -6167,6 +6193,65 @@ mod tests {
             editor_row,
             vec!["EDITOR", "vim"],
             "the clean env row is the kv pair `--show-values` asks for: {rendered}"
+        );
+    }
+
+    /// A package whose delivery is a manager this host already holds states
+    /// the version that manager reports and the floor it clears. Its manager
+    /// name IS the package name, so the ordinary installed row would read
+    /// `cargo — cargo` and say nothing.
+    #[test]
+    fn a_held_managers_package_row_names_the_version_and_the_floor_it_clears() {
+        let output = ModuleStatus {
+            packages_hash: None,
+            files_hash: None,
+            commit: None,
+            integrity: None,
+            name: "rust".to_string(),
+            packages: 1,
+            files: 0,
+            env: 0,
+            aliases: 0,
+            scripts: Vec::new(),
+            system: Vec::new(),
+            depends: Vec::new(),
+            declared: cfgd_core::modules::ModuleSurfaces::default(),
+            status: "installed".to_string(),
+            last_applied: None,
+            scope: None,
+            package_state: vec![ModulePackageStatus {
+                held: Some(cfgd_core::modules::HeldManager::held_clause(
+                    "cargo", "1.90", "1.85",
+                )),
+                name: "cargo".to_string(),
+                manager: Some("cargo".to_string()),
+                state: ModulePackagePresence::Installed,
+            }],
+            deployed_files: Vec::new(),
+            drift_checked_live: true,
+            last_scan_at: None,
+            scoped_scans: Default::default(),
+            system_errors: Vec::new(),
+            standing: Vec::new(),
+            drift: Vec::new(),
+        };
+        let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+        printer.emit(build_module_status_doc(
+            &output,
+            ModuleStatusView::Inventory {
+                masking: crate::cli::EnvValueMasking::revealing(),
+            },
+            "2026-05-14T10:05:00Z",
+        ));
+        drop(printer);
+        let rendered = cfgd_core::test_helpers::captured_text(&buf);
+        let row = rendered
+            .lines()
+            .find(|l| l.contains("cargo"))
+            .unwrap_or_else(|| panic!("the package has a row: {rendered}"));
+        assert_eq!(
+            row.trim(),
+            "✓ cargo — cargo 1.90 is on this host, at or above the declared minVersion 1.85"
         );
     }
 

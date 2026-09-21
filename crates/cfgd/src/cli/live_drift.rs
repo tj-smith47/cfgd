@@ -312,7 +312,15 @@ pub(super) fn scoped_version_drift(
         modules,
         Some(&registry.manager_map()),
     );
-    cfgd_core::reconciler::package_version_drift(&effective, registry, cx)
+    let (mut results, mut check_errors) =
+        cfgd_core::reconciler::package_version_drift(&effective, registry, cx)?;
+    // The floor of a manager this chain's own entry names is answered by the
+    // binary rather than by a listing, and a scoped run that skipped it would
+    // heal a version row nothing re-examined.
+    let (held, held_errors) = cfgd_core::reconciler::held_manager_version_drift(modules, registry);
+    results.extend(held);
+    check_errors.extend(held_errors);
+    Ok((results, check_errors))
 }
 
 /// One [`cfgd_core::reconciler::ModuleScope`] per member of `chain`, in
@@ -800,6 +808,14 @@ fn live_drift_results_inner(
         cfgd_core::reconciler::package_version_drift(&effective, registry, cx)?;
     drift.extend(version_drift);
     extend_check_errors(&mut package_check_errors, version_check_errors);
+    // A manager the machine already holds at a declared floor answers for
+    // itself: no listing holds a tool its own installer delivered, so this
+    // pass reads the binary and is the only thing that can report a toolchain
+    // that slipped below the floor a module declared.
+    let (held_drift, held_check_errors) =
+        cfgd_core::reconciler::held_manager_version_drift(modules, registry);
+    drift.extend(held_drift);
+    extend_check_errors(&mut package_check_errors, held_check_errors);
 
     // Managers: a manager the plan would provision or refuse is itself drift —
     // the same signal `diff`'s `cfgd:managers` group renders, from the same
@@ -1443,6 +1459,7 @@ mod tests {
         target: std::path::PathBuf,
     ) -> ResolvedModule {
         ResolvedModule {
+            held_managers: Vec::new(),
             floor_bootstraps: Vec::new(),
             dep_pulled: false,
             name: name.to_string(),
@@ -1798,6 +1815,7 @@ mod tests {
     /// A `ResolvedModule` carrying a single package, no files.
     fn module_with_package(name: &str, manager: &str, pkg: &str) -> ResolvedModule {
         ResolvedModule {
+            held_managers: Vec::new(),
             floor_bootstraps: Vec::new(),
             dep_pulled: false,
             name: name.to_string(),
