@@ -2130,7 +2130,10 @@ fn a_per_module_tick_keeps_only_the_held_floor_its_own_module_declared() {
         Action::Manager(ManagerAction::HeldFloor {
             manager: manager.to_string(),
             floor: "1.85".to_string(),
-            modules: vec![module.to_string()],
+            declared: vec![crate::reconciler::DeclaredFloor {
+                module: module.to_string(),
+                floor: "1.85".to_string(),
+            }],
         })
     };
     let plan_of = || Plan {
@@ -2184,8 +2187,17 @@ fn a_held_floor_is_drift_for_every_module_that_declared_it() {
             &Owner::profile("default"),
             vec![Action::Manager(ManagerAction::HeldFloor {
                 manager: "cargo".to_string(),
-                floor: "1.85".to_string(),
-                modules: vec!["rust".to_string(), "tools".to_string()],
+                floor: "1.90".to_string(),
+                declared: vec![
+                    crate::reconciler::DeclaredFloor {
+                        module: "rust".to_string(),
+                        floor: "1.85".to_string(),
+                    },
+                    crate::reconciler::DeclaredFloor {
+                        module: "tools".to_string(),
+                        floor: "1.90".to_string(),
+                    },
+                ],
             })],
         )],
         warnings: Vec::new(),

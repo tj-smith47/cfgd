@@ -90,14 +90,15 @@ pub(crate) use sidecar::is_stamped_sidecar_name;
 pub use sidecar::{CFGD_BACKUP_SUFFIX, SidecarOutcome, backup_file, cfgd_backup_path};
 pub use types::{
     ALIAS_RESOURCE_TYPE, Action, ActionResult, AfterPlan, AfterPlanOutcome, AfterPlanState,
-    ApplyResult, CFGD_GROUP_ORDER, DeclaredProvision, DriftRow, ENV_GROUP, ENV_RC_RESOURCE_TYPE,
-    ENV_RESOURCE_TYPE, ENV_SESSION_RESOURCE_TYPE, ENV_VAR_RESOURCE_TYPE, EnvAction, MANAGERS_GROUP,
-    MODULE_FACET_FILES_REFUSED, ManagerAction, ModuleAction, ModuleActionKind, Owner, OwnerGroup,
-    OwnerKind, PREREQUISITE_NOT_IN_RUN, Phase, PhaseFilter, PhaseName, Plan, ReconcileContext,
-    RollbackResult, SESSION_GROUP, SHELL_GROUP, ScriptAction, ScriptPhase, SystemAction, Tier,
-    WithheldFloor, action_counts_as_drift, action_drift_rows, apply_heals_action_rows,
-    attempted_count, module_files_unprobed, module_skipped_whole, package_action_drift_rows,
-    package_drift_resource_id, package_entry_drift_id, recorded_source_layers, records_an_env_item,
+    ApplyResult, CFGD_GROUP_ORDER, DeclaredFloor, DeclaredProvision, DriftRow, ENV_GROUP,
+    ENV_RC_RESOURCE_TYPE, ENV_RESOURCE_TYPE, ENV_SESSION_RESOURCE_TYPE, ENV_VAR_RESOURCE_TYPE,
+    EnvAction, MANAGERS_GROUP, MODULE_FACET_FILES_REFUSED, ManagerAction, ModuleAction,
+    ModuleActionKind, Owner, OwnerGroup, OwnerKind, PREREQUISITE_NOT_IN_RUN, Phase, PhaseFilter,
+    PhaseName, Plan, ReconcileContext, RollbackResult, SESSION_GROUP, SHELL_GROUP, ScriptAction,
+    ScriptPhase, SystemAction, Tier, WithheldFloor, action_counts_as_drift, action_drift_rows,
+    apply_heals_action_rows, attempted_count, declared_by_clause, module_files_unprobed,
+    module_skipped_whole, package_action_drift_rows, package_drift_resource_id,
+    package_entry_drift_id, recorded_source_layers, records_an_env_item,
     split_package_drift_resource_id,
 };
 pub use verify::{

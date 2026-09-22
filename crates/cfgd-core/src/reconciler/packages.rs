@@ -409,14 +409,15 @@ impl<'x> PackageExec<'x> {
             return Err(self.package_manager_missing_error(name));
         }
         if let Some(module) = module
-            && let Some(held) = self
+            && let Some(message) = self
                 .withheld_floors
                 .iter()
-                .find(|f| f.manager == name && f.withholds_from(module))
+                .filter(|f| f.manager == name)
+                .find_map(|f| f.refusal(module))
         {
             return Err(crate::errors::PackageError::ManagerBelowFloor {
                 manager: name.to_string(),
-                message: held.refusal(),
+                message,
             }
             .into());
         }
@@ -780,7 +781,7 @@ impl<'x> PackageExec<'x> {
             ManagerAction::HeldFloor {
                 manager,
                 floor,
-                modules,
+                declared,
             } => {
                 let pm = lookup(manager)?;
                 let judgment = crate::modules::judge_declared_floor(
@@ -792,7 +793,7 @@ impl<'x> PackageExec<'x> {
                 if !judgment.met() {
                     let held = crate::modules::HeldManager {
                         package: manager.clone(),
-                        module: modules.join(", "),
+                        module: crate::reconciler::declared_by_clause(declared),
                         floor: floor.clone(),
                         judgment,
                     };

@@ -8822,7 +8822,10 @@ fn every_action_variant() -> Vec<Action> {
         Action::Manager(ManagerAction::HeldFloor {
             manager: "cargo".to_string(),
             floor: "1.85".to_string(),
-            modules: vec!["rust".to_string()],
+            declared: vec![DeclaredFloor {
+                module: "rust".to_string(),
+                floor: "1.85".to_string(),
+            }],
         }),
         Action::File(FileAction::Create {
             source: PathBuf::from("/cache/conf"),
@@ -30301,7 +30304,7 @@ fn a_module_whose_only_entry_is_held_plans_no_action() {
 /// for as long as one toolchain stays short.
 #[test]
 fn a_held_manager_below_its_floor_is_planned_as_a_step_of_its_own() {
-    fn held_nodes(version: Option<&str>) -> Vec<(String, String, Vec<String>)> {
+    fn held_nodes(version: Option<&str>) -> Vec<(String, String, Vec<DeclaredFloor>)> {
         let mut registry = ProviderRegistry::new();
         let mut cargo = crate::test_helpers::MockPackageManager::new("cargo");
         if let Some(version) = version {
@@ -30339,8 +30342,8 @@ fn a_held_manager_below_its_floor_is_planned_as_a_step_of_its_own() {
                 Action::Manager(ManagerAction::HeldFloor {
                     manager,
                     floor,
-                    modules,
-                }) => Some((manager.clone(), floor.clone(), modules.clone())),
+                    declared,
+                }) => Some((manager.clone(), floor.clone(), declared.clone())),
                 _ => None,
             })
             .collect()
@@ -30353,9 +30356,15 @@ fn a_held_manager_below_its_floor_is_planned_as_a_step_of_its_own() {
     for version in [Some("1.80"), None] {
         let nodes = held_nodes(version);
         assert_eq!(nodes.len(), 1, "{version:?}: {nodes:?}");
-        let (manager, floor, modules) = &nodes[0];
+        let (manager, floor, declared) = &nodes[0];
         assert_eq!((manager.as_str(), floor.as_str()), ("cargo", "1.85"));
-        assert_eq!(modules, &vec!["rust".to_string()]);
+        assert_eq!(
+            declared,
+            &vec![DeclaredFloor {
+                module: "rust".to_string(),
+                floor: "1.85".to_string(),
+            }]
+        );
     }
 }
 
@@ -30394,14 +30403,14 @@ fn two_modules_flooring_one_held_manager_plan_one_node_at_the_stricter_floor() {
             ReconcileContext::Apply,
         )
         .expect("plan");
-    let nodes: Vec<(&String, &Vec<String>)> = plan
+    let nodes: Vec<(&String, &Vec<DeclaredFloor>)> = plan
         .phases
         .iter()
         .flat_map(Phase::actions)
         .filter_map(|a| match a {
-            Action::Manager(ManagerAction::HeldFloor { floor, modules, .. }) => {
-                Some((floor, modules))
-            }
+            Action::Manager(ManagerAction::HeldFloor {
+                floor, declared, ..
+            }) => Some((floor, declared)),
             _ => None,
         })
         .collect();
@@ -30410,7 +30419,21 @@ fn two_modules_flooring_one_held_manager_plan_one_node_at_the_stricter_floor() {
         nodes[0].0, "1.85",
         "the stricter floor satisfies both modules"
     );
-    assert_eq!(nodes[0].1, &vec!["rust".to_string(), "tools".to_string()]);
+    // The fold answers for the machine; each entry keeps the number its own
+    // module wrote, so a sentence addressed to `rust` can still say 1.80.
+    assert_eq!(
+        nodes[0].1,
+        &vec![
+            DeclaredFloor {
+                module: "rust".to_string(),
+                floor: "1.80".to_string(),
+            },
+            DeclaredFloor {
+                module: "tools".to_string(),
+                floor: "1.85".to_string(),
+            },
+        ]
+    );
 }
 
 /// The step installs nothing and judges the BINARY when it runs: a host whose
@@ -30429,7 +30452,10 @@ fn a_held_floor_step_fails_against_the_binary_and_names_the_raise() {
             vec![Action::Manager(ManagerAction::HeldFloor {
                 manager: "cargo".to_string(),
                 floor: "1.85".to_string(),
-                modules: vec!["rust".to_string()],
+                declared: vec![DeclaredFloor {
+                    module: "rust".to_string(),
+                    floor: "1.85".to_string(),
+                }],
             })],
         )],
         warnings: vec![],
@@ -30490,7 +30516,10 @@ fn a_held_floor_step_fails_against_the_binary_and_names_the_raise() {
                 vec![Action::Manager(ManagerAction::HeldFloor {
                     manager: "cargo".to_string(),
                     floor: "1.85".to_string(),
-                    modules: vec!["rust".to_string()],
+                    declared: vec![DeclaredFloor {
+                        module: "rust".to_string(),
+                        floor: "1.85".to_string(),
+                    }],
                 })],
             ),
             Phase::from_actions(
@@ -30553,7 +30582,10 @@ fn a_failed_floor_withholds_the_manager_from_the_declaring_module_alone() {
                 vec![Action::Manager(ManagerAction::HeldFloor {
                     manager: "cargo".to_string(),
                     floor: "1.85".to_string(),
-                    modules: vec!["rust".to_string()],
+                    declared: vec![DeclaredFloor {
+                        module: "rust".to_string(),
+                        floor: "1.85".to_string(),
+                    }],
                 })],
             ),
             Phase::from_actions(
@@ -30586,6 +30618,194 @@ fn a_failed_floor_withholds_the_manager_from_the_declaring_module_alone() {
         row_for("just").error,
         None,
         "the module that declared no floor installs through the same manager"
+    );
+}
+
+/// Two modules flooring one manager at different numbers are one node at the
+/// stricter fold, and the fold is an answer about the MACHINE. Each refused
+/// row still quotes the number its own module wrote: a reader told their
+/// module asks for 1.90 goes looking for a line their file does not contain,
+/// and the sibling that raised the fold is invisible from where they are
+/// standing.
+#[test]
+fn each_refused_row_names_the_floor_its_own_module_declared() {
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(
+        crate::test_helpers::MockPackageManager::new("cargo").reporting_version("1.82"),
+    ));
+    let module_install = |module: &str, package: &str| {
+        Action::Module(ModuleAction::local(
+            module,
+            ModuleActionKind::InstallPackages {
+                resolved: vec![ResolvedPackage {
+                    canonical_name: package.to_string(),
+                    resolved_name: package.to_string(),
+                    manager: "cargo".to_string(),
+                    manager_declared: false,
+                    version: None,
+                    script: None,
+                    creates: None,
+                    only_if: None,
+                    unless: None,
+                    min_version: None,
+                }],
+            },
+        ))
+    };
+    let node = Action::Manager(ManagerAction::HeldFloor {
+        manager: "cargo".to_string(),
+        floor: "1.90".to_string(),
+        declared: vec![
+            DeclaredFloor {
+                module: "rust".to_string(),
+                floor: "1.85".to_string(),
+            },
+            DeclaredFloor {
+                module: "tools".to_string(),
+                floor: "1.90".to_string(),
+            },
+        ],
+    });
+    assert_eq!(
+        format_plan_item(&node, "-"),
+        "check cargo against minVersion 1.90 — declared by rust (1.85), tools (1.90)",
+        "the plan row pairs each declarant with its own number"
+    );
+
+    let plan = Plan {
+        phases: vec![
+            Phase::from_actions(PhaseName::Bootstrap, &Owner::profile("test"), vec![node]),
+            Phase::from_actions(
+                PhaseName::Packages,
+                &Owner::profile("test"),
+                vec![
+                    module_install("rust", "ripgrep"),
+                    module_install("tools", "just"),
+                ],
+            ),
+        ],
+        warnings: vec![],
+    };
+
+    let state = test_state();
+    let (result, out) = apply_manager_plan(&registry, &state, &plan);
+    let row_for = |package: &str| {
+        result
+            .action_results
+            .iter()
+            .find(|r| r.description.contains(package))
+            .unwrap_or_else(|| panic!("{package}: the package row settled: {out}"))
+    };
+    assert_eq!(
+        row_for("ripgrep").error.as_deref(),
+        Some("cargo is below the minVersion 1.85 module 'rust' declared"),
+        "the module that wrote 1.85 hears 1.85, not the fold"
+    );
+    assert_eq!(
+        row_for("just").error.as_deref(),
+        Some("cargo is below the minVersion 1.90 module 'tools' declared"),
+        "and the module that raised the fold hears its own number"
+    );
+}
+
+/// The `Phase: Packages` block `docs/modules.md` prints for a held floor is
+/// what a run renders, taken from the run here rather than typed there.
+///
+/// A page showing rows nobody produced is how a glyph, a column or a sentence
+/// drifts out from under a reader who is matching the page against their own
+/// terminal. The block is reproduced from the same three modules the page
+/// describes, so a change to any of the three producers reaching those lines
+/// (the subject, the refusal sentence, the report's one column) fails here
+/// before it reaches a reader.
+#[test]
+fn the_docs_packages_block_for_a_held_floor_is_what_the_run_renders() {
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(
+        crate::test_helpers::MockPackageManager::new("cargo").reporting_version("1.98.1"),
+    ));
+    let module_install = |module: &str, package: &str| {
+        Action::Module(ModuleAction::local(
+            module,
+            ModuleActionKind::InstallPackages {
+                resolved: vec![ResolvedPackage {
+                    canonical_name: package.to_string(),
+                    resolved_name: package.to_string(),
+                    manager: "cargo".to_string(),
+                    manager_declared: false,
+                    version: None,
+                    script: None,
+                    creates: None,
+                    only_if: None,
+                    unless: None,
+                    min_version: None,
+                }],
+            },
+        ))
+    };
+    let node = Action::Manager(ManagerAction::HeldFloor {
+        manager: "cargo".to_string(),
+        floor: "100.0".to_string(),
+        declared: vec![
+            DeclaredFloor {
+                module: "rust".to_string(),
+                floor: "99.0".to_string(),
+            },
+            DeclaredFloor {
+                module: "tools".to_string(),
+                floor: "100.0".to_string(),
+            },
+        ],
+    });
+    let plan_row = format!("       - {}", format_plan_item(&node, "-"));
+    let plan = Plan {
+        phases: vec![
+            Phase::from_actions(PhaseName::Bootstrap, &Owner::profile("default"), vec![node]),
+            Phase::from_actions(
+                PhaseName::Packages,
+                &Owner::profile("default"),
+                vec![
+                    module_install("dotfiles", "just"),
+                    module_install("rust", "ripgrep"),
+                    module_install("tools", "bat"),
+                ],
+            ),
+        ],
+        warnings: vec![],
+    };
+
+    let state = test_state();
+    let (_, out) =
+        apply_manager_plan_at(&registry, &state, &plan, crate::output::Verbosity::Normal);
+    let block: String = out
+        .lines()
+        .skip_while(|l| !l.starts_with("Phase: Packages"))
+        .take_while(|l| !l.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_eq!(
+        block.lines().count(),
+        7,
+        "the rendered block is the phase head, three owners and their rows: {out}"
+    );
+
+    let page = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/modules.md");
+    let body = crate::test_helpers::walked_file_body(&page);
+    // The page indents its fenced blocks under a numbered list item, so the
+    // comparison is per line against the same indent the neighbouring blocks
+    // carry rather than against the raw capture.
+    let indented: String = block
+        .lines()
+        .map(|l| format!("   {l}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        body.contains(&indented),
+        "docs/modules.md does not carry the block this run renders:\n{indented}"
+    );
+
+    assert!(
+        body.contains(&plan_row),
+        "docs/modules.md does not carry the plan row the composer builds:\n{plan_row}"
     );
 }
 

@@ -276,12 +276,50 @@ pub enum ManagerAction {
         /// is: one copy of the manager satisfies both, and the lower floor
         /// leaves the stricter module quietly short.
         floor: String,
-        /// The modules whose declared floor this node judges, in resolution
-        /// order. Two modules flooring one manager are one fact and one node,
-        /// and a module-scoped run reads this to tell whether the fact is its
-        /// own.
-        modules: Vec<String>,
+        /// The modules whose declared floor this node judges, each beside the
+        /// number IT wrote, in resolution order. Two modules flooring one
+        /// manager are one fact and one node, and a module-scoped run reads
+        /// this to tell whether the fact is its own.
+        ///
+        /// The per-module numbers are carried rather than folded away because
+        /// the fold above answers a question about the MACHINE (one copy of
+        /// the manager satisfies every declarant) while a sentence addressed
+        /// to one module answers a question about that module's own file. A
+        /// node folded to 1.90 telling the author of `minVersion: 1.85` that
+        /// their floor is 1.90 states a number they never wrote.
+        ///
+        /// Optional on the wire, so `Plan::to_hash_string` and every stored
+        /// `applies.plan_hash` are byte-identical for a plan carrying no held
+        /// floor.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        declared: Vec<DeclaredFloor>,
     },
+}
+
+/// One module's own `minVersion` for a manager this host already holds.
+///
+/// Paired with the module rather than folded into the node's `floor`, because
+/// the two answer different questions: see
+/// [`ManagerAction::HeldFloor::declared`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeclaredFloor {
+    pub module: String,
+    pub floor: String,
+}
+
+/// The `declared by` clause every surface naming a held node's declarants
+/// spells: each module with the floor it itself wrote.
+///
+/// One composer, because a row that lists the modules alone reads as though
+/// they all asked for the node's folded number, and two surfaces answering
+/// that differently is how one of them ends up lying.
+pub fn declared_by_clause(declared: &[DeclaredFloor]) -> String {
+    declared
+        .iter()
+        .map(|d| format!("{} ({})", d.module, d.floor))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// A floor check this run failed, and the modules it holds to that floor.
@@ -292,29 +330,23 @@ pub enum ManagerAction {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WithheldFloor {
     pub manager: String,
-    pub floor: String,
-    pub modules: Vec<String>,
+    pub declared: Vec<DeclaredFloor>,
 }
 
 impl WithheldFloor {
-    /// Whether a package action declared by `module` may still reach the
-    /// manager.
-    pub fn withholds_from(&self, module: &str) -> bool {
-        self.modules.iter().any(|m| m == module)
-    }
-
-    /// Why the action is refused, as ONE sentence: the refused row is read by
-    /// someone who has not opened the file the floor is written in, so it names
-    /// the floor and whose it is.
-    pub fn refusal(&self) -> String {
-        let names: Vec<String> = self.modules.iter().map(|m| format!("'{m}'")).collect();
-        format!(
-            "{} is below the minVersion {} {} {} declared",
-            self.manager,
-            self.floor,
-            crate::plural_noun(names.len(), "module"),
-            names.join(", ")
-        )
+    /// Why a package action belonging to `module` is refused, or `None` where
+    /// this node holds that module to nothing.
+    ///
+    /// ONE sentence, and it quotes the module's OWN number: the row is read by
+    /// someone who has not opened the file the floor is written in, so a floor
+    /// folded up by a stricter sibling would send them looking for a line
+    /// their module does not contain.
+    pub fn refusal(&self, module: &str) -> Option<String> {
+        let declared = self.declared.iter().find(|d| d.module == module)?;
+        Some(format!(
+            "{} is below the minVersion {} module '{}' declared",
+            self.manager, declared.floor, declared.module
+        ))
     }
 }
 
@@ -612,13 +644,10 @@ impl ManagerAction {
     pub fn withheld_floor(&self) -> Option<WithheldFloor> {
         match self {
             ManagerAction::HeldFloor {
-                manager,
-                floor,
-                modules,
+                manager, declared, ..
             } => Some(WithheldFloor {
                 manager: manager.clone(),
-                floor: floor.clone(),
-                modules: modules.clone(),
+                declared: declared.clone(),
             }),
             _ => None,
         }

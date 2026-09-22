@@ -247,7 +247,8 @@ impl<'a> super::Reconciler<'a> {
         // flooring one copy of a toolchain are one fact about the machine, and
         // the node judges the binary again at execution rather than trusting a
         // version read while the plan was being built.
-        let mut held_floors: BTreeMap<String, (String, Vec<String>)> = BTreeMap::new();
+        let mut held_floors: BTreeMap<String, (String, Vec<super::types::DeclaredFloor>)> =
+            BTreeMap::new();
         for held in unmet_held() {
             let entry = held_floors
                 .entry(held.package.clone())
@@ -259,8 +260,15 @@ impl<'a> super::Reconciler<'a> {
             ) {
                 entry.0 = kept;
             }
-            if !entry.1.contains(&held.module) {
-                entry.1.push(held.module.clone());
+            // Kept beside the fold rather than replaced by it: the fold says
+            // what one copy of the manager has to reach, each entry says what
+            // its own module asked for, and a refusal addressed to a module
+            // quotes the second.
+            if !entry.1.iter().any(|d| d.module == held.module) {
+                entry.1.push(super::types::DeclaredFloor {
+                    module: held.module.clone(),
+                    floor: held.floor.clone(),
+                });
             }
         }
         let floor_wanted: Vec<String> = floor_routes.keys().cloned().collect();
@@ -296,11 +304,11 @@ impl<'a> super::Reconciler<'a> {
 
         // Appended after the elision rebuild: these nodes install nothing, so
         // no consumer of theirs can be dropped and no rebuild can retire them.
-        manager_actions.extend(held_floors.into_iter().map(|(manager, (floor, modules))| {
+        manager_actions.extend(held_floors.into_iter().map(|(manager, (floor, declared))| {
             Action::Manager(ManagerAction::HeldFloor {
                 manager,
                 floor,
-                modules,
+                declared,
             })
         }));
 

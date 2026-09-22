@@ -278,7 +278,7 @@ pub(in crate::cli) fn manager_action_output(
         reconciler::ManagerAction::HeldFloor {
             manager,
             floor,
-            modules,
+            declared,
         } => ManagerActionOutput {
             manager: manager.clone(),
             state: "held".to_string(),
@@ -288,7 +288,10 @@ pub(in crate::cli) fn manager_action_output(
             // The modules whose floor this node judges, in the slot that
             // already carries why a node is in the plan: a consumer reading a
             // failed check needs to know whose declaration asked for it.
-            reason: Some(format!("declared by {}", modules.join(", "))),
+            reason: Some(format!(
+                "declared by {}",
+                reconciler::declared_by_clause(declared)
+            )),
             floor: Some(floor.clone()),
         },
     })

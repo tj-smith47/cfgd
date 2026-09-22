@@ -280,21 +280,25 @@ The full resolution logic for each package entry:
    ```
    ✓ rust — apt available; cargo 1.90 is on this host, at or above the declared minVersion 1.85
    ```
-   Below the floor, the entry still resolves and the shortfall is reported rather than refused: the sentence names what the host actually holds instead of claiming every listing fell short, and names the raise, so `cfgd verify`, `cfgd diff`, `cfgd status --scan`, `cfgd doctor` and `cfgd module show --resolved` all state ``cargo 1.80 is on this host, below the declared minVersion 1.85; raise it with `rustup update` ``, and the live check records it as drift wanting the floor. The raise is the family's own (`rustup update` for cargo, `brew update` for brew), because the binary on PATH is a shim and installing the package over itself would leave a second copy beside the one in use. A binary that states no version, or one its own comparator cannot read, is a check that could not run, and the sentence names what to look at: `cannot judge cargo against the declared minVersion 1.85: it reports no version; check that cargo is on this process's PATH and that CARGO_HOME and RUSTUP_HOME are set for it`. `cfgd plan` and `cfgd apply` carry the same fact as a step of their own: the `Bootstrap` phase gets one row per held manager below its floor, naming the floor and every module that declared it, and that step installs nothing (a bootstrap cannot raise a manager already on the machine). The check runs at execution, against the binary rather than the version read while the plan was built, so an apply fails that one step with the same sentence. A floor is the declaring module's own statement about what its packages need, so the failure withholds that manager from the packages of the modules the row names and from nobody else: another module installing through the same copy asked for nothing this host fails to offer, and its packages go in. A host whose cargo is 1.98.1 shows the same two rows against a floor of 99.0, with a second module's install through cargo untouched beside the refusal:
+   Below the floor, the entry still resolves and the shortfall is reported rather than refused: the sentence names what the host actually holds instead of claiming every listing fell short, and names the raise, so `cfgd verify`, `cfgd diff`, `cfgd status --scan`, `cfgd doctor` and `cfgd module show --resolved` all state ``cargo 1.80 is on this host, below the declared minVersion 1.85; raise it with `rustup update` ``, and the live check records it as drift wanting the floor. The raise is the family's own (`rustup update` for cargo, `brew update` for brew), because the binary on PATH is a shim and installing the package over itself would leave a second copy beside the one in use. A binary that states no version, or one its own comparator cannot read, is a check that could not run, and the sentence names what to look at: `cannot judge cargo against the declared minVersion 1.85: it reports no version; check that cargo is on this process's PATH and that CARGO_HOME and RUSTUP_HOME are set for it`. `cfgd plan` and `cfgd apply` carry the same fact as a step of their own: the `Bootstrap` phase gets one row per held manager below its floor, naming the floor and every module that declared it, and that step installs nothing (a bootstrap cannot raise a manager already on the machine). The check runs at execution, against the binary rather than the version read while the plan was built, so an apply fails that one step with the same sentence. A floor is the declaring module's own statement about what its packages need, so the failure withholds that manager from the packages of the modules the row names and from nobody else: another module installing through the same copy asked for nothing this host fails to offer, and its packages go in. A host whose cargo is 1.98.1, with module `rust` asking for 99.0 and module `tools` for 100.0, plans one row at the stricter of the two, naming each declarant beside the number it wrote:
    ```
    Phase: Bootstrap
      cfgd:managers
-       - check cargo against minVersion 99.0 — declared by rust
+       - check cargo against minVersion 100.0 — declared by rust (99.0), tools (100.0)
    ```
+   The apply refuses each module's packages with the number that module wrote, and a third module installing through the same cargo is untouched:
    ```
-   ✗ check cargo against minVersion 99.0 — declared by rust — cargo 1.98.1 is on this host, below the declared minVersion 99.0; raise it with `rustup update` (<0.1s)
-   ```
-   ```
+   Phase: Bootstrap
+     cfgd:managers
+       ✗ check cargo against minVersion 100.0 — declared by rust (99.0), tools (100.0) — cargo 1.98.1 is on this host, below the declared minVersion 100.0; raise it with `rustup update` (<0.1s)
+
    Phase: Packages
+     module:dotfiles
+       ✓ cargo install just                                                            (<0.1s)
      module:rust
-       ✗ cargo install ripgrep                                  — cargo is below the minVersion 99.0 module 'rust' declared (<0.1s)
+       ✗ cargo install ripgrep                                                         — cargo is below the minVersion 99.0 module 'rust' declared (<0.1s)
      module:tools
-       ✓ cargo install just                                     (<0.1s)
+       ✗ cargo install bat                                                             — cargo is below the minVersion 100.0 module 'tools' declared (<0.1s)
    ```
    A daemon tick plans the same way, so the finding is recorded as drift wanting the floor (one row, `cargo:cargo`, shared with the live re-check so the two never stand two rows for one toolchain), each module the row names fires its own `onDrift` hook, on a full tick and on that module's own scoped tick alike, and every other module the tick looked at is still reported. That floor is re-checked live, against the binary rather than the listing, so a toolchain that later slips below it is reported as drift.
    A proven-below floor on a package that names a package manager cfgd can bootstrap on this host (`brew`, `cargo`, `npm`, `pipx`, `go`, `nix`, `snap`, `flatpak`, `chocolatey`, `scoop`) has a third answer: cfgd asks instead of refusing. The question names the version found, the floor, and the route that would satisfy it; on yes cfgd provisions that manager in the `Bootstrap` phase rather than installing the package, and the plan row states the floor the answer was given for.

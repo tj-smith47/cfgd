@@ -1438,9 +1438,9 @@ pub(super) fn narrow_to_module(
     for phase in &mut plan.phases {
         phase.retain_actions(|action| match action {
             crate::reconciler::Action::Manager(crate::reconciler::ManagerAction::HeldFloor {
-                modules,
+                declared,
                 ..
-            }) => modules.iter().any(|m| m == module),
+            }) => declared.iter().any(|d| d.module == module),
             _ => true,
         });
     }
@@ -1491,8 +1491,8 @@ pub(crate) fn module_has_drift(
     plan.phases.iter().flat_map(|p| p.actions()).any(|a| {
         let names_module = match a {
             Action::Module(ma) => ma.module_name == module_name,
-            Action::Manager(ManagerAction::HeldFloor { modules, .. }) => {
-                modules.iter().any(|m| m == module_name)
+            Action::Manager(ManagerAction::HeldFloor { declared, .. }) => {
+                declared.iter().any(|d| d.module == module_name)
             }
             _ => false,
         };

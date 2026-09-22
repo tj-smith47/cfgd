@@ -26680,6 +26680,15 @@ fn build_doctor_doc_module_whose_managers_are_all_here_emits_ok() {
 /// sentence typed beside it: a rendering that still matches a wording the
 /// producer stopped writing is a pin on nothing.
 pub(crate) fn held_manager_clause(judgment: cfgd_core::modules::FloorJudgment) -> String {
+    held_manager_clause_at("1.85", judgment)
+}
+
+/// The same bytes against a caller-chosen floor, for a surface whose own
+/// example states a different number.
+pub(crate) fn held_manager_clause_at(
+    floor: &str,
+    judgment: cfgd_core::modules::FloorJudgment,
+) -> String {
     let registered = crate::packages::all_package_managers();
     let cargo = registered
         .iter()
@@ -26688,7 +26697,7 @@ pub(crate) fn held_manager_clause(judgment: cfgd_core::modules::FloorJudgment) -
     cfgd_core::modules::HeldManager {
         package: "cargo".into(),
         module: "rust".into(),
-        floor: "1.85".into(),
+        floor: floor.into(),
         judgment,
     }
     .clause(Some(cargo.as_ref()))
@@ -48541,5 +48550,19 @@ fn the_held_manager_sentences_the_docs_promise_come_from_the_one_composer() {
     assert!(
         body.contains(&met),
         "the page states the satisfied case the composer words: {met}"
+    );
+
+    // The page's apply block states the same sentence against the floor its own
+    // example declares, so the number in the block and the number in the prose
+    // are answered by one producer.
+    let block = held_manager_clause_at(
+        "100.0",
+        cfgd_core::modules::FloorJudgment::Short {
+            version: "1.98.1".into(),
+        },
+    );
+    assert!(
+        body.contains(&block),
+        "the page's apply row states the shortfall the composer words: {block}"
     );
 }

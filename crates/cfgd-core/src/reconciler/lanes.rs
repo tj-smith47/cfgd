@@ -1833,7 +1833,10 @@ mod tests {
             ManagerAction::HeldFloor {
                 manager: "cargo".into(),
                 floor: "1.85".into(),
-                modules: vec!["rust".into()],
+                declared: vec![crate::reconciler::DeclaredFloor {
+                    module: "rust".into(),
+                    floor: "1.85".into(),
+                }],
             },
         ];
         for node in variants {

@@ -891,14 +891,16 @@ fn format_manager_action_item(action: &ManagerAction) -> String {
         // The floor's own vocabulary, as a confirmed route's row states it
         // (`provision cargo via rustup (minVersion 1.85)`), and the modules
         // that asked for it, as a prerequisite names who needed it: the node
-        // installs nothing, so what it is FOR is the whole line.
+        // installs nothing, so what it is FOR is the whole line. Each module
+        // carries its own number, because the checked floor is the fold and a
+        // bare name beside it claims that module wrote the folded one.
         ManagerAction::HeldFloor {
             manager,
             floor,
-            modules,
+            declared,
         } => format!(
             "check {manager} against minVersion {floor} — declared by {}",
-            modules.join(", ")
+            super::declared_by_clause(declared)
         ),
     }
 }
@@ -1403,8 +1405,8 @@ pub(super) fn parse_package_description(desc: &str) -> Option<(String, String, V
 mod tests {
     use super::super::types::PREREQUISITE_NOT_IN_RUN;
     use super::super::types::{
-        Action, DeclaredProvision, EnvAction, ManagerAction, ModuleAction, ModuleActionKind,
-        SystemAction,
+        Action, DeclaredFloor, DeclaredProvision, EnvAction, ManagerAction, ModuleAction,
+        ModuleActionKind, SystemAction,
     };
     use crate::providers::PackageAction;
 
@@ -2030,10 +2032,14 @@ mod tests {
             ManagerAction::HeldFloor {
                 manager,
                 floor,
-                modules,
+                declared,
             } => std::iter::once(manager.as_str())
                 .chain(std::iter::once(floor.as_str()))
-                .chain(modules.iter().map(String::as_str))
+                .chain(
+                    declared
+                        .iter()
+                        .flat_map(|d| [d.module.as_str(), d.floor.as_str()]),
+                )
                 .collect(),
         }
     }
@@ -2113,7 +2119,16 @@ mod tests {
             ManagerAction::HeldFloor {
                 manager: "sentinel-manager".into(),
                 floor: "sentinel-floor".into(),
-                modules: vec!["sentinel-module".into(), "sentinel-other-module".into()],
+                declared: vec![
+                    DeclaredFloor {
+                        module: "sentinel-module".into(),
+                        floor: "sentinel-declared-floor".into(),
+                    },
+                    DeclaredFloor {
+                        module: "sentinel-other-module".into(),
+                        floor: "sentinel-other-declared-floor".into(),
+                    },
+                ],
             },
         ];
         for action in &cases {
