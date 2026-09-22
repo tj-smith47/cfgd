@@ -408,12 +408,14 @@ fn per_module_output() -> ModuleStatus {
         package_state: vec![
             ModulePackageStatus {
                 held: None,
+                route: None,
                 name: "neovim".into(),
                 manager: None,
                 state: ModulePackagePresence::NotScanned,
             },
             ModulePackageStatus {
                 held: None,
+                route: None,
                 name: "ripgrep".into(),
                 manager: None,
                 state: ModulePackagePresence::NotScanned,
@@ -468,12 +470,14 @@ fn per_module_scanned_output() -> ModuleStatus {
         package_state: vec![
             ModulePackageStatus {
                 held: None,
+                route: None,
                 name: "neovim".into(),
                 manager: Some("brew".into()),
                 state: ModulePackagePresence::Installed,
             },
             ModulePackageStatus {
                 held: None,
+                route: None,
                 name: "ripgrep".into(),
                 manager: Some("brew".into()),
                 state: ModulePackagePresence::NotInstalled,
@@ -590,12 +594,14 @@ fn per_module_clean_scanned_output() -> ModuleStatus {
     output.package_state = vec![
         ModulePackageStatus {
             held: None,
+            route: None,
             name: "neovim".into(),
             manager: Some("brew".into()),
             state: ModulePackagePresence::Installed,
         },
         ModulePackageStatus {
             held: None,
+            route: None,
             name: "ripgrep".into(),
             manager: Some("brew".into()),
             state: ModulePackagePresence::Installed,

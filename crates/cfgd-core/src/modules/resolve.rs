@@ -45,7 +45,7 @@ pub struct FloorBootstrap {
     /// one package into the question it asks: the run can deliver one copy of
     /// a manager, so it asks once, and the reader is owed the whole list of
     /// modules that answer rides on.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub also_declared_by: Vec<String>,
 }
 
@@ -122,8 +122,9 @@ impl FloorBootstrap {
 
     /// The route as a NOTE rather than a question: what this host offers, and
     /// the bootstrap that would meet the floor. The surfaces that state a
-    /// route without asking about it — `cfgd doctor`, `cfgd module show
-    /// --resolved` — read this, so neither can turn a fact into a prompt.
+    /// route without asking about it (`cfgd doctor`, `cfgd module show
+    /// --resolved`, `cfgd status <module>`) read this, so none of them can
+    /// turn a fact into a prompt.
     pub fn provisionable_clause(&self) -> String {
         crate::join_clauses([
             self.offer_clause(),
@@ -1173,13 +1174,29 @@ fn confirm_floor_bootstraps(
             question.also_declared_by.push(route.module.clone());
         }
         // Judged in the grammar of the manager being provisioned, since that
-        // is whose versions both floors are written in.
-        if let Some(kept) = crate::effective::stricter_floor(
-            &Some(std::mem::take(&mut question.floor)),
+        // is whose versions both floors are written in. Read from borrows: a
+        // comparator that answers `None` must leave the floor exactly as it
+        // was, and a floor moved out first is gone by then.
+        let kept = crate::effective::stricter_floor(
+            &Some(question.floor.clone()),
             &Some(route.floor.clone()),
             managers.get(&route.package).copied(),
-        ) {
+        );
+        // The offer travels with the floor it falls short of. Two modules
+        // naming one package can price it against different candidate sets
+        // (their own `prefer` lists), so the best proven-below offer is per
+        // ROUTE, and a sentence pairing one module's floor with the other's
+        // offer states a shortfall neither module declared. `via` is the
+        // manager's own bootstrap method and is identical on every route
+        // naming it, so it has nothing to move. `stricter_floor` answers with
+        // the earlier spelling where neither floor is stricter, which is what
+        // leaves the offer already on the question in place.
+        if let Some(kept) = kept
+            && kept != question.floor
+        {
             question.floor = kept;
+            question.found_in = route.found_in.clone();
+            question.found = route.found.clone();
         }
     }
     for question in &questions {

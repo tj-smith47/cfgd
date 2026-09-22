@@ -1099,6 +1099,62 @@ fn a_run_asks_one_question_per_package_at_the_strictest_floor() {
     );
 }
 
+/// The offer the one question quotes is the one belonging to the floor that
+/// won it.
+///
+/// Two modules naming one package price it against their own `prefer` lists,
+/// so each route carries the best proven-below offer ITS candidates made. A
+/// question pairing `tools`' floor with `rust`' offer would state a shortfall
+/// neither module declared: apt never offered anything against 1.85.
+#[test]
+fn the_folded_question_quotes_the_offer_of_the_floor_that_won() {
+    let dir = tempfile::tempdir().unwrap();
+    write_module_packages(
+        dir.path(),
+        "rust",
+        "    - name: cargo\n      minVersion: \"1.80\"\n      prefer: [apt]\n",
+    );
+    write_module_packages(
+        dir.path(),
+        "tools",
+        "    - name: cargo\n      minVersion: \"1.85\"\n      prefer: [snap]\n",
+    );
+
+    let apt = MockManager::new("apt").with_package("cargo", "1.75");
+    let snap = MockManager::new("snap").with_package("cargo", "1.78");
+    let cargo = crate::test_helpers::MockPackageManager::new("cargo")
+        .unavailable()
+        .bootstrappable_via("rustup");
+    let managers = make_manager_map(&[("apt", &apt), ("snap", &snap), ("cargo", &cargo)]);
+    let cache_dir = tempfile::tempdir().unwrap();
+    let printer = test_printer();
+
+    let asked = std::sync::Mutex::new(Vec::<FloorBootstrap>::new());
+    resolve_modules(
+        &["rust".into(), "tools".into()],
+        dir.path(),
+        cache_dir.path(),
+        &[],
+        &linux_ubuntu_platform(),
+        &managers,
+        None,
+        &printer,
+        &|route| {
+            asked.lock().unwrap().push(route.clone());
+            FloorAnswer::Yes
+        },
+    )
+    .unwrap();
+
+    let asked = asked.into_inner().unwrap();
+    assert_eq!(asked.len(), 1, "one question per package: {asked:?}");
+    assert_eq!(
+        asked[0].offer_clause(),
+        "snap offers cargo 1.78, below the declared minVersion 1.85",
+        "the offer moved with the floor it falls short of"
+    );
+}
+
 /// The two refusals are not one refusal: a reader who answered no has already
 /// been asked, so nothing tells them to re-run on a terminal.
 #[test]

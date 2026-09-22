@@ -171,9 +171,12 @@ impl CliTestHarnessBuilder {
         // rendered output (Quiet would suppress headings/sections). Structured
         // formats route through `for_test_with_format`, which auto-quiets.
         let (printer, buf) = if !self.prompt_responses.is_empty() {
-            cfgd_core::output::Printer::for_test_with_prompt_responses_at(
+            // Both halves, or a fixture asking for a format AND an answer gets
+            // a table printer and pins the wrong run.
+            cfgd_core::output::Printer::for_test_with_prompt_responses_in_format(
                 self.prompt_responses.clone(),
                 cfgd_core::output::Verbosity::Normal,
+                self.output_format.clone(),
             )
         } else if self.output_format == cfgd_core::output::OutputFormat::Table {
             cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal)
@@ -26594,17 +26597,8 @@ fn build_doctor_doc_module_with_a_package_no_manager_can_deliver_emits_fail() {
 /// reachable and by what method.
 #[test]
 fn a_doctor_route_shortfall_opens_on_the_package_that_fell_short() {
-    let route = cfgd_core::modules::FloorBootstrap {
-        package: "cargo".into(),
-        module: "rust".into(),
-        found_in: "apt".into(),
-        found: "1.75".into(),
-        floor: "1.85".into(),
-        via: "rustup".into(),
-        also_declared_by: Vec::new(),
-    };
     assert_eq!(
-        super::doctor::unresolved_route_row(&route),
+        super::doctor::unresolved_route_row(&floor_route()),
         "cargo: apt offers cargo 1.75, below the declared minVersion 1.85; provisionable via rustup"
     );
 }
@@ -26698,6 +26692,28 @@ pub(crate) fn held_manager_clause(judgment: cfgd_core::modules::FloorJudgment) -
         judgment,
     }
     .clause(Some(cargo.as_ref()))
+}
+
+/// A floor no manager on the host meets, on a package that is itself a
+/// bootstrappable manager: the one route every surface naming one is pinned
+/// against.
+pub(crate) fn floor_route() -> cfgd_core::modules::FloorBootstrap {
+    cfgd_core::modules::FloorBootstrap {
+        package: "cargo".into(),
+        module: "rust".into(),
+        found_in: "apt".into(),
+        found: "1.75".into(),
+        floor: "1.85".into(),
+        via: "rustup".into(),
+        also_declared_by: Vec::new(),
+    }
+}
+
+/// The bytes the one composer words for that route on a surface that STATES
+/// it rather than asking about it, read the same way `held_manager_clause` is
+/// read: a surface pin that types the sentence beside itself pins nothing.
+pub(crate) fn floor_route_clause() -> String {
+    floor_route().provisionable_clause()
 }
 
 /// The floor that composer's `Met` and `Short` arms are judged against.
@@ -42775,6 +42791,69 @@ fn every_multi_arm_bootstrap_honours_the_planned_method() {
     );
 }
 
+/// Every production `.rs` under `src/packages/` that declares a manager, test
+/// scaffolding excluded. The population both bootstrap-arm walks read.
+fn manager_production_sources() -> Vec<std::path::PathBuf> {
+    let packages_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/packages");
+    rust_sources_under(&packages_dir)
+        .into_iter()
+        .filter(|p| p.file_name().is_none_or(|n| n != "tests.rs"))
+        .filter(|p| !p.components().any(|c| c.as_os_str() == "tests"))
+        .collect()
+}
+
+/// Each `bootstrap_plan_given` a source declares, as the lines from its
+/// signature to the closing brace at its own indent.
+fn bootstrap_plan_bodies<'a>(lines: &'a [&'a str]) -> Vec<(usize, &'a [&'a str])> {
+    lines
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| line.contains(" fn bootstrap_plan_given("))
+        .map(|(n, line)| {
+            let indent = line.len() - line.trim_start().len();
+            let closer = format!("{}}}", " ".repeat(indent));
+            let end = (n + 1..lines.len())
+                .find(|&i| lines[i] == closer)
+                .unwrap_or(lines.len());
+            (n, &lines[n..end])
+        })
+        .collect()
+}
+
+/// Whether some manager source declares `name` and gates a bootstrap arm that
+/// this platform withholds.
+///
+/// Only the source can answer for the platforms this host is not: a plan's arm
+/// is `cfg`-selected, so a documented name nothing offers here is judged
+/// against the body that would offer it elsewhere rather than against a typed
+/// list of exceptions. The name declaration and the plan body must sit in one
+/// `impl`, because a file can hold several managers (`brew`, `brew-tap` and
+/// `brew-cask` share one) and only one of them may carry the arm.
+fn a_withheld_bootstrap_arm_declares(name: &str) -> bool {
+    use cfgd_core::test_helpers::{code_line, impl_owner};
+
+    let literal = format!("\"{name}\"");
+    manager_production_sources().iter().any(|path| {
+        let production = floored_production_body(path);
+        let lines: Vec<&str> = production.lines().collect();
+        let code: Vec<String> = lines.iter().map(|l| code_line(l)).collect();
+        let declaring: Vec<Option<String>> = lines
+            .iter()
+            .enumerate()
+            .filter(|(n, line)| {
+                line.contains(" fn name(&self) -> &str")
+                    && lines.get(n + 1).is_some_and(|b| b.trim() == literal)
+            })
+            .map(|(n, _)| impl_owner(&code, n))
+            .collect();
+        bootstrap_plan_bodies(&lines).into_iter().any(|(n, body)| {
+            plan_body_can_offer_a_plan(body)
+                && plan_body_decides_by_platform(body)
+                && declaring.contains(&impl_owner(&code, n))
+        })
+    })
+}
+
 /// Whether a `bootstrap_plan_given` body can hand back a plan at all. A body
 /// that only ever answers `None` describes a manager cfgd installs nowhere, so
 /// no platform question arises.
@@ -42807,28 +42886,13 @@ fn plan_body_decides_by_platform(body: &[&str]) -> bool {
 /// `// every-platform-ok: <why>` that its arm runs on all of them.
 #[test]
 fn every_offered_bootstrap_plan_says_which_platforms_run_its_arm() {
-    let packages_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/packages");
-    let files = rust_sources_under(&packages_dir);
     let mut offering = 0usize;
     let mut gated = 0usize;
     let mut offenders = Vec::new();
-    for path in files
-        .into_iter()
-        .filter(|p| p.file_name().is_none_or(|n| n != "tests.rs"))
-        .filter(|p| !p.components().any(|c| c.as_os_str() == "tests"))
-    {
+    for path in manager_production_sources() {
         let production = floored_production_body(&path);
         let lines: Vec<&str> = production.lines().collect();
-        for (n, line) in lines.iter().enumerate() {
-            if !line.contains(" fn bootstrap_plan_given(") {
-                continue;
-            }
-            let indent = line.len() - line.trim_start().len();
-            let closer = format!("{}}}", " ".repeat(indent));
-            let end = (n + 1..lines.len())
-                .find(|&i| lines[i] == closer)
-                .unwrap_or(lines.len());
-            let body = &lines[n..end];
+        for (n, body) in bootstrap_plan_bodies(&lines) {
             if !plan_body_can_offer_a_plan(body) {
                 continue;
             }
@@ -47929,6 +47993,13 @@ impl FloorFixture {
         Self::shaped(true, Vec::new())
     }
 
+    /// The same machine under `-o json` with an answer already seated: the
+    /// only thing standing between the route and that answer is the structured
+    /// format itself.
+    fn cargo_below_floor_json_answered(answer: bool) -> Self {
+        Self::shaped(true, vec![cfgd_core::output::PromptAnswer::Confirm(answer)])
+    }
+
     /// The same machine with a human at the terminal, answering the floor
     /// question with `answer`.
     fn cargo_below_floor_answered(answer: bool) -> Self {
@@ -47983,6 +48054,67 @@ impl FloorFixture {
 
     fn run_plan(&self, yes: bool) -> anyhow::Result<()> {
         self.run("plan", yes)
+    }
+
+    /// What `cfgd plan -o json --yes` produced for this machine, written out as
+    /// a shell redirect would write it.
+    ///
+    /// On a printer of its own, so the harness's own capture still belongs to
+    /// the replay under test rather than to the recording that set it up.
+    fn record_plan_file(&self) -> PathBuf {
+        let (printer, capture) = cfgd_core::output::Printer::for_test_doc_with_format(
+            cfgd_core::output::OutputFormat::Json,
+        );
+        let cli = Cli {
+            yes: true,
+            ..self.h.cli()
+        };
+        super::plan::cmd_plan(&cli, &printer, &self.plan_args()).unwrap();
+        drop(printer);
+        let payload = capture.json().expect("a plan doc carries a payload");
+        // The state directory, never the config directory: a file written
+        // inside the config directory is itself a move in what the derivation
+        // read, which is the refusal the replay would then hit instead.
+        let dest = self.h.state_path().join("plan.json");
+        std::fs::write(&dest, serde_json::to_string(&payload).unwrap()).unwrap();
+        dest
+    }
+
+    fn plan_args(&self) -> PlanArgs {
+        PlanArgs {
+            from: None,
+            phase: None,
+            skip: vec![],
+            only: vec![],
+            module: vec![],
+            with_profile: false,
+            skip_scripts: false,
+            context: "apply".to_string(),
+        }
+    }
+
+    /// Replay `path` through the real `cfgd apply --plan` read path, with no
+    /// `--yes` anywhere: the file is the only approval in the run.
+    fn run_replay(&self, path: &Path) -> anyhow::Result<()> {
+        super::apply::cmd_apply(
+            &self.h.cli(),
+            self.h.printer(),
+            &ApplyArgs {
+                plan: Some(path.to_path_buf()),
+                on_conflict: crate::cli::OnConflict::Ask,
+                from: None,
+                dry_run: true,
+                phase: None,
+                yes: false,
+                skip: vec![],
+                only: vec![],
+                module: vec![],
+                with_profile: false,
+                skip_scripts: false,
+                context: "apply".to_string(),
+                shell: None,
+            },
+        )
     }
 
     /// The named verb, with `--yes` answering the confirmation or not. `apply`
@@ -48050,6 +48182,26 @@ fn a_floor_route_is_refused_with_no_yes_and_no_terminal() {
     assert!(
         err.contains("cargo can be provisioned via rustup: re-run with --yes, or on a terminal"),
         "a refusal that knows the route says so: {err}"
+    );
+}
+
+/// A structured format is nobody to ask, whatever else the run could reach.
+///
+/// The answer below is already seated, so the terminal arm of the
+/// interactivity probe would take the route; what keeps the refusal is the
+/// format, whose payload a script reads and whose stream carries no question.
+#[test]
+fn a_floor_route_is_refused_under_a_structured_format_with_an_answer_waiting() {
+    let fx = FloorFixture::cargo_below_floor_json_answered(true);
+    let err = fx.run_plan(/* yes */ false).unwrap_err().to_string();
+    assert!(
+        err.contains("cargo can be provisioned via rustup: re-run with --yes, or on a terminal"),
+        "a payload reader is asked nothing: {err}"
+    );
+    let out = fx.h.output();
+    assert!(
+        !out.contains("Provision cargo via rustup instead?"),
+        "and no question reached the stream: {out}"
     );
 }
 
@@ -48134,6 +48286,83 @@ fn plan_json_carries_a_confirmed_floor_route_on_its_provision() {
     );
 }
 
+/// A replay takes the route its own file approved, with nobody asked: the
+/// terminal seated here would have said no, and the run goes through anyway.
+#[test]
+fn a_replay_takes_the_floor_route_its_saved_plan_approved() {
+    let fx = FloorFixture::cargo_below_floor_answered(false);
+    let plan_file = fx.record_plan_file();
+
+    fx.run_replay(&plan_file)
+        .unwrap_or_else(|e| panic!("the file already approved this route: {e}"));
+
+    let out = fx.h.output();
+    assert!(
+        !out.contains("Provision cargo via rustup instead?"),
+        "a replay asks nobody: {out}"
+    );
+    assert!(
+        out.contains("provision cargo via rustup"),
+        "and it runs the provision the file carried: {out}"
+    );
+}
+
+/// A saved plan that carries no provision for the package approved nothing for
+/// it, so the replay refuses even with a human seated who would say yes.
+#[test]
+fn a_replay_refuses_a_floor_route_its_saved_plan_never_carried() {
+    let fx = FloorFixture::cargo_below_floor_answered(true);
+    let plan_file = fx.record_plan_file();
+    drop_bootstrap_phase(&plan_file);
+
+    let err = fx.run_replay(&plan_file).unwrap_err().to_string();
+
+    assert!(
+        err.contains("cargo can be provisioned via rustup: re-run with --yes, or on a terminal"),
+        "the file approved no route for cargo: {err}"
+    );
+    let out = fx.h.output();
+    assert!(
+        !out.contains("Provision cargo via rustup instead?"),
+        "and the seated reader was never asked to widen it: {out}"
+    );
+}
+
+/// The floor moved above what the file approved, so the approval no longer
+/// covers the question and the replay refuses rather than installing under it.
+#[test]
+fn a_replay_refuses_a_floor_route_approved_at_a_lower_floor() {
+    let fx = FloorFixture::cargo_below_floor_answered(true);
+    let plan_file = fx.record_plan_file();
+    let body = std::fs::read_to_string(&plan_file).unwrap();
+    let lowered = body.replace(r#""floor":"1.85""#, r#""floor":"1.80""#);
+    assert_ne!(body, lowered, "the node carries the floor it was given");
+    std::fs::write(&plan_file, lowered).unwrap();
+
+    let err = fx.run_replay(&plan_file).unwrap_err().to_string();
+
+    assert!(
+        err.contains("cargo can be provisioned via rustup: re-run with --yes, or on a terminal"),
+        "an approval at 1.80 does not answer a question about 1.85: {err}"
+    );
+}
+
+/// Take the `Bootstrap` phase out of a recorded plan, leaving a file that
+/// approves everything else the run does and no provision at all. Dropping a
+/// whole phase keeps the phase list a subsequence of the execution order,
+/// which is what the reader refuses a hand-reordered file on.
+fn drop_bootstrap_phase(path: &Path) {
+    let mut payload: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let phases = payload["savedPlan"]["plan"]["phases"]
+        .as_array_mut()
+        .expect("the saved plan carries its typed phases");
+    let before = phases.len();
+    phases.retain(|p| p["name"] != "Bootstrap");
+    assert_eq!(before - 1, phases.len(), "one bootstrap phase was dropped");
+    std::fs::write(path, serde_json::to_string(&payload).unwrap()).unwrap();
+}
+
 /// A verb that installs nothing answers nothing: `--yes` on `verify` still
 /// refuses the route, and plans no provision. A status surface that prompted
 /// would be a trap in scripts.
@@ -48175,18 +48404,17 @@ fn a_floor_the_host_now_holds_resolves_with_no_question_and_no_provision() {
 /// the ones the registry can actually bootstrap, derived here rather than typed
 /// there.
 ///
-/// `bootstrap_plan_given` is `cfg`-gated per manager — a PowerShell installer
-/// is withheld off Windows and a POSIX one on it — so the documented list is
-/// the UNION across platforms and this host's set is a subset of it. The walk
-/// holds both directions it can judge from here: nothing this host offers is
-/// missing from the docs, and no documented name is a manager the registry does
-/// not register at all. The CI matrix closes the union from the other side.
+/// `bootstrap_plan_given` is `cfg`-gated per manager (a PowerShell installer is
+/// withheld off Windows and a POSIX one on it), so the documented list is the
+/// UNION across platforms and this host's set is a subset of it. The walk holds
+/// both directions it can judge from here: nothing this host offers is missing
+/// from the docs, and every documented name is one a bootstrap plan can route,
+/// either here or on the platform whose arm this one withholds. Registration
+/// alone is not that claim: `apt` is registered everywhere and cfgd installs it
+/// nowhere, so a sentence naming it would promise a route no host can take.
+/// The CI matrix closes the union from the other side.
 #[test]
 fn every_manager_the_registry_can_bootstrap_is_named_in_the_docs_list() {
-    let registered: Vec<String> = crate::packages::all_package_managers()
-        .iter()
-        .map(|m| m.name().to_string())
-        .collect();
     let offered: Vec<String> = crate::packages::all_package_managers()
         .iter()
         .filter(|m| m.bootstrap_plan_given(&|_| true).is_some())
@@ -48218,13 +48446,14 @@ fn every_manager_the_registry_can_bootstrap_is_named_in_the_docs_list() {
         missing.is_empty(),
         "this host can bootstrap {missing:?}, which the docs list does not name: {documented:?}"
     );
-    let unregistered: Vec<&String> = documented
+    let unroutable: Vec<&String> = documented
         .iter()
-        .filter(|m| !registered.contains(m))
+        .filter(|m| !offered.contains(m) && !a_withheld_bootstrap_arm_declares(m))
         .collect();
     assert!(
-        unregistered.is_empty(),
-        "the docs list names {unregistered:?}, which no registered manager answers to"
+        unroutable.is_empty(),
+        "the docs list names {unroutable:?}, which no manager offers a bootstrap plan for \
+         here and whose source declares no arm another platform runs"
     );
 }
 

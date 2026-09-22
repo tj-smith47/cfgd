@@ -700,6 +700,12 @@ pub struct ModulePackageStatus {
     /// whole answer.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub held: Option<HeldFloor>,
+    /// The route a declared floor no available manager meets could take, from
+    /// the one composer every surface that STATES a route reads. A `status`
+    /// installs nothing, so the row carries the route as a fact and the
+    /// question stays with the verbs that can act on the answer.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub route: Option<String>,
 }
 
 /// What the declared floor of a held manager came to on this host.
@@ -2671,20 +2677,26 @@ fn render_module_inventories(
                 // after it — one name may be declared twice under two
                 // managers, and two rows reading `neovim — not scanned` say
                 // nothing about which entry is which.
-                let detail = match (&pkg.held, &pkg.manager, pkg.state) {
+                let detail = match (&pkg.held, &pkg.route, &pkg.manager, pkg.state) {
                     // A held manager's row names what its own binary reports
                     // against the declared floor: the manager alone would say
                     // only that the package is itself.
-                    (Some(held), _, _) => held.clause.clone(),
-                    (None, Some(m), ModulePackagePresence::Installed) => m.clone(),
-                    (None, Some(m), state) => format!("{} ({m})", state.label()),
-                    (None, None, state) => state.label().to_string(),
+                    (Some(held), _, _, _) => held.clause.clone(),
+                    // A route names a manager this host does not have, so the
+                    // manager column states nothing and the shortfall plus the
+                    // bootstrap that would meet it is the whole row.
+                    (None, Some(route), _, _) => route.clone(),
+                    (None, None, Some(m), ModulePackagePresence::Installed) => m.clone(),
+                    (None, None, Some(m), state) => format!("{} ({m})", state.label()),
+                    (None, None, None, state) => state.label().to_string(),
                 };
                 // Presence says the manager is here, which a shortfall and an
                 // unreadable version both leave true, so a held row takes its
-                // verdict from the floor answer instead.
-                let role = match &pkg.held {
-                    Some(held) if !held.met => Role::Warn,
+                // verdict from the floor answer instead. A route is a floor
+                // nothing on this host meets, so its row reads the same way.
+                let role = match (&pkg.held, &pkg.route) {
+                    (Some(held), _) if !held.met => Role::Warn,
+                    (_, Some(_)) => Role::Warn,
                     _ => pkg.state.role(),
                 };
                 s.status_with(role, &pkg.name, |f| f.detail(detail))
@@ -3446,6 +3458,7 @@ fn join_package_state(
                     manager: None,
                     state: ModulePackagePresence::PlatformSkipped,
                     held: None,
+                    route: None,
                 };
             }
             // A package the Drift section names never reads `not scanned`:
@@ -3472,6 +3485,7 @@ fn join_package_state(
                     manager: Some(manager),
                     state,
                     held: None,
+                    route: None,
                 },
                 None => {
                     // A route names a manager this host does not have, so the
@@ -3479,11 +3493,12 @@ fn join_package_state(
                     // that route replaced. A HELD manager is the opposite: it
                     // is on this host, so the row is installed and states what
                     // its own binary reports against the declared floor.
-                    let (manager, state, held) =
+                    let (manager, state, held, route) =
                         match modules::resolve_package(p, module_name, here, managers, installed) {
                             Ok(Some(modules::PackageResolution::Package(resolved))) => (
                                 Some(resolved.manager),
                                 ModulePackagePresence::NotScanned,
+                                None,
                                 None,
                             ),
                             Ok(Some(modules::PackageResolution::HeldByManager(held))) => {
@@ -3495,17 +3510,30 @@ fn join_package_state(
                                         clause,
                                         met: held.judgment.met(),
                                     }),
+                                    None,
                                 )
                             }
-                            Ok(Some(modules::PackageResolution::Bootstrap(_)))
-                            | Ok(None)
-                            | Err(_) => (None, ModulePackagePresence::NotScanned, None),
+                            // Nothing on this host delivers the declared floor,
+                            // and a route could. The row says so in the words
+                            // `doctor` and `module show --resolved` use, so a
+                            // reader who meets the floor question on one
+                            // surface meets the same sentence on the others.
+                            Ok(Some(modules::PackageResolution::Bootstrap(route))) => (
+                                None,
+                                ModulePackagePresence::NotScanned,
+                                None,
+                                Some(route.provisionable_clause()),
+                            ),
+                            Ok(None) | Err(_) => {
+                                (None, ModulePackagePresence::NotScanned, None, None)
+                            }
                         };
                     ModulePackageStatus {
                         name: p.name.clone(),
                         manager,
                         state,
                         held,
+                        route,
                     }
                 }
             }
@@ -6155,6 +6183,7 @@ mod tests {
             last_applied: None,
             scope: None,
             package_state: vec![ModulePackageStatus {
+                route: None,
                 held: None,
                 name: "fd".to_string(),
                 manager: Some("npm".to_string()),
@@ -6243,6 +6272,7 @@ mod tests {
             last_applied: None,
             scope: None,
             package_state: vec![ModulePackageStatus {
+                route: None,
                 held: Some(HeldFloor {
                     clause: crate::cli::tests::held_manager_clause(
                         crate::cli::tests::floor_met_at("1.90"),
@@ -6304,6 +6334,7 @@ mod tests {
             last_applied: None,
             scope: None,
             package_state: vec![ModulePackageStatus {
+                route: None,
                 held: Some(HeldFloor {
                     clause: crate::cli::tests::held_manager_clause(
                         cfgd_core::modules::FloorJudgment::Short {
@@ -6346,6 +6377,64 @@ mod tests {
                     version: "1.80".into()
                 })
             )
+        );
+    }
+
+    /// A floor no available manager meets is a row this surface states, in the
+    /// words `doctor` and `module show --resolved` state it in. A blank detail
+    /// beside a bare package name told a reader the entry was simply unscanned,
+    /// which is the one thing it is not.
+    #[test]
+    fn a_floor_route_row_states_the_route_the_other_surfaces_name() {
+        let output = ModuleStatus {
+            packages_hash: None,
+            files_hash: None,
+            commit: None,
+            integrity: None,
+            name: "rust".to_string(),
+            packages: 1,
+            files: 0,
+            env: 0,
+            aliases: 0,
+            scripts: Vec::new(),
+            system: Vec::new(),
+            depends: Vec::new(),
+            declared: cfgd_core::modules::ModuleSurfaces::default(),
+            status: "installed".to_string(),
+            last_applied: None,
+            scope: None,
+            package_state: vec![ModulePackageStatus {
+                route: Some(crate::cli::tests::floor_route_clause()),
+                held: None,
+                name: "cargo".to_string(),
+                manager: None,
+                state: ModulePackagePresence::NotScanned,
+            }],
+            deployed_files: Vec::new(),
+            drift_checked_live: true,
+            last_scan_at: None,
+            scoped_scans: Default::default(),
+            system_errors: Vec::new(),
+            standing: Vec::new(),
+            drift: Vec::new(),
+        };
+        let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+        printer.emit(build_module_status_doc(
+            &output,
+            ModuleStatusView::Inventory {
+                masking: crate::cli::EnvValueMasking::revealing(),
+            },
+            "2026-05-14T10:05:00Z",
+        ));
+        drop(printer);
+        let rendered = cfgd_core::test_helpers::captured_text(&buf);
+        let row = rendered
+            .lines()
+            .find(|l| l.contains("cargo"))
+            .unwrap_or_else(|| panic!("the package has a row: {rendered}"));
+        assert_eq!(
+            row.trim(),
+            format!("⚠ cargo — {}", crate::cli::tests::floor_route_clause())
         );
     }
 
