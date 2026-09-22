@@ -247,30 +247,8 @@ impl<'a> super::Reconciler<'a> {
         // flooring one copy of a toolchain are one fact about the machine, and
         // the node judges the binary again at execution rather than trusting a
         // version read while the plan was being built.
-        let mut held_floors: BTreeMap<String, (String, Vec<super::types::DeclaredFloor>)> =
-            BTreeMap::new();
-        for held in unmet_held() {
-            let entry = held_floors
-                .entry(held.package.clone())
-                .or_insert_with(|| (held.floor.clone(), Vec::new()));
-            if let Some(kept) = crate::effective::stricter_floor(
-                &Some(entry.0.clone()),
-                &Some(held.floor.clone()),
-                floor_managers.get(&held.package).copied(),
-            ) {
-                entry.0 = kept;
-            }
-            // Kept beside the fold rather than replaced by it: the fold says
-            // what one copy of the manager has to reach, each entry says what
-            // its own module asked for, and a refusal addressed to a module
-            // quotes the second.
-            if !entry.1.iter().any(|d| d.module == held.module) {
-                entry.1.push(super::types::DeclaredFloor {
-                    module: held.module.clone(),
-                    floor: held.floor.clone(),
-                });
-            }
-        }
+        let held_floors =
+            super::types::fold_held_floors(unmet_held(), |name| floor_managers.get(name).copied());
         let floor_wanted: Vec<String> = floor_routes.keys().cloned().collect();
         let mut manager_actions = super::managers::plan_managers_with_routes(
             self.registry,
@@ -304,11 +282,11 @@ impl<'a> super::Reconciler<'a> {
 
         // Appended after the elision rebuild: these nodes install nothing, so
         // no consumer of theirs can be dropped and no rebuild can retire them.
-        manager_actions.extend(held_floors.into_iter().map(|(manager, (floor, declared))| {
+        manager_actions.extend(held_floors.into_iter().map(|(manager, fold)| {
             Action::Manager(ManagerAction::HeldFloor {
                 manager,
-                floor,
-                declared,
+                floor: fold.floor,
+                declared: fold.declared,
             })
         }));
 

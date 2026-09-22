@@ -1559,7 +1559,7 @@ fn after_plan_clauses(tally: &RunTally) -> Vec<(Role, String)> {
                 .filter(|o| o.subject == subject && o.state == state)
                 .count();
             if count > 0 {
-                clauses.push(state.clause(subject, count));
+                clauses.push(state.counted_clause(subject, count));
             }
         }
     }

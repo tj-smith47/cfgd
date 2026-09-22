@@ -9254,6 +9254,69 @@ fn plan_to_hash_string_multiple_phases() {
     assert!(hash.contains("jq"));
 }
 
+/// The bytes this composition writes are what `applies.plan_hash` stores, and
+/// every surface asking whether a machine's plan changed compares those
+/// digests. A field that starts serializing while absent re-hashes every plan
+/// on every machine at once: the next run reads its own stored hash as a
+/// different plan and reports work nobody asked for.
+///
+/// Held against bytes written here rather than against a second call of the
+/// producer, which agrees with itself however the fields are spelled. Two
+/// arms, because the two shapes break separately: an ordinary plan, whose
+/// nodes leave their optional fields absent, and a held-floor node with no
+/// declarants, which is what that field's `skip_serializing_if` promises
+/// hashes as it did before the field existed.
+#[test]
+fn the_plan_hash_holds_the_bytes_a_stored_hash_was_taken_over() {
+    let ordinary = Plan {
+        phases: vec![
+            Phase::from_actions(
+                PhaseName::Bootstrap,
+                &Owner::profile("test"),
+                vec![Action::Manager(ManagerAction::Provision {
+                    manager: "npm".to_string(),
+                    via: "brew".to_string(),
+                    declared: None,
+                    floor: None,
+                    batched: vec![],
+                    depends_on: vec![],
+                })],
+            ),
+            Phase::from_actions(
+                PhaseName::Packages,
+                &Owner::profile("test"),
+                vec![Action::Package(PackageAction::Install {
+                    manager: "brew".into(),
+                    packages: vec!["jq".into()],
+                    origin: "local".into(),
+                })],
+            ),
+        ],
+        warnings: vec![],
+    };
+    assert_eq!(
+        ordinary.to_hash_string().expect("the plan hashes"),
+        r#"{"Manager":{"provision":{"manager":"npm","via":"brew","batched":[],"depends_on":[]}}}|{"Package":{"Install":{"manager":"brew","packages":["jq"],"origin":"local"}}}"#
+    );
+
+    let held = Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::Bootstrap,
+            &Owner::profile("test"),
+            vec![Action::Manager(ManagerAction::HeldFloor {
+                manager: "cargo".to_string(),
+                floor: "1.85".to_string(),
+                declared: vec![],
+            })],
+        )],
+        warnings: vec![],
+    };
+    assert_eq!(
+        held.to_hash_string().expect("the plan hashes"),
+        r#"{"Manager":{"heldFloor":{"manager":"cargo","floor":"1.85"}}}"#
+    );
+}
+
 #[test]
 fn plan_total_actions_sums_across_phases() {
     let plan = Plan {
@@ -30436,6 +30499,77 @@ fn two_modules_flooring_one_held_manager_plan_one_node_at_the_stricter_floor() {
     );
 }
 
+/// The planner's node and the live re-check both answer for `cargo:cargo`, and
+/// the drift store UPSERTs on that id, so the two fold the declarants the same
+/// way or the row's `expected` flips with whichever pass wrote last.
+///
+/// The lower floor here is one this host MEETS, which is what a per-declarant
+/// walk gets wrong: it reads the first module as green, records nothing, and
+/// leaves the node's finding unbacked by any row.
+#[test]
+fn the_live_recheck_and_the_planned_node_hold_one_floor_for_one_manager() {
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(
+        crate::test_helpers::MockPackageManager::new("cargo").reporting_version("99.5"),
+    ));
+    let held_module = |name: &str, floor: &str| {
+        let mut module = make_resolved_module(name);
+        module.packages = Vec::new();
+        module.held_managers = vec![crate::modules::HeldManager {
+            package: "cargo".to_string(),
+            module: name.to_string(),
+            floor: floor.to_string(),
+            judgment: crate::modules::judge_declared_floor(
+                registry.package_managers()[0].as_ref(),
+                "cargo",
+                floor,
+                Some("99.5"),
+            ),
+        }];
+        module
+    };
+    let modules = vec![held_module("rust", "99.0"), held_module("tools", "100.0")];
+
+    let state = test_state();
+    let reconciler = Reconciler::new(&registry, &state);
+    let plan = reconciler
+        .plan(
+            &make_empty_resolved(),
+            Vec::new(),
+            Vec::new(),
+            modules.clone(),
+            ReconcileContext::Apply,
+        )
+        .expect("plan");
+    let node_floor = plan
+        .phases
+        .iter()
+        .flat_map(Phase::actions)
+        .find_map(|a| match a {
+            Action::Manager(ManagerAction::HeldFloor { floor, .. }) => Some(floor.clone()),
+            _ => None,
+        })
+        .expect("the unmet floor rides in the plan as a node");
+
+    let (results, check_errors) =
+        crate::reconciler::held_manager_version_drift(&modules, &registry, &[]);
+    assert!(
+        check_errors.is_empty(),
+        "a version the manager stated is not a check error: {check_errors:?}"
+    );
+    assert_eq!(results.len(), 1, "one row per held manager: {results:?}");
+    assert_eq!(results[0].resource_id, "cargo:cargo");
+    assert_eq!(
+        results[0].expected, "100.0",
+        "the row wants what one copy of cargo has to reach"
+    );
+    assert_eq!(
+        results[0].expected, node_floor,
+        "both producers of cargo:cargo write one expected"
+    );
+    assert_eq!(results[0].actual, "99.5");
+}
+
 /// The step installs nothing and judges the BINARY when it runs: a host whose
 /// toolchain still falls short fails that one node, with the clause every read
 /// surface words the same fact in, and the rest of the run goes on.
@@ -30708,20 +30842,25 @@ fn each_refused_row_names_the_floor_its_own_module_declared() {
     );
 }
 
-/// The `Phase: Packages` block `docs/modules.md` prints for a held floor is
+/// Both blocks of the apply fence `docs/modules.md` prints for a held floor are
 /// what a run renders, taken from the run here rather than typed there.
 ///
 /// A page showing rows nobody produced is how a glyph, a column or a sentence
 /// drifts out from under a reader who is matching the page against their own
-/// terminal. The block is reproduced from the same three modules the page
-/// describes, so a change to any of the three producers reaching those lines
-/// (the subject, the refusal sentence, the report's one column) fails here
-/// before it reaches a reader.
+/// terminal. Both are reproduced from the same three modules the page
+/// describes, so a change to any producer reaching those lines (the node's
+/// subject, the shortfall sentence and the raise it names, the refusal
+/// sentence, the report's one column) fails here before it reaches a reader.
 #[test]
-fn the_docs_packages_block_for_a_held_floor_is_what_the_run_renders() {
+fn the_docs_apply_fence_for_a_held_floor_is_what_the_run_renders() {
     let mut registry = ProviderRegistry::new();
     registry.add_package_manager(Box::new(
-        crate::test_helpers::MockPackageManager::new("cargo").reporting_version("1.98.1"),
+        crate::test_helpers::MockPackageManager::new("cargo")
+            .reporting_version("1.98.1")
+            // The raise the page's own row names: cargo is rustup's shim, and a
+            // manager stating no raise of its own would word the sentence
+            // around `cargo install cargo` instead.
+            .raising_itself_with("rustup update"),
     ));
     let module_install = |module: &str, package: &str| {
         Action::Module(ModuleAction::local(
@@ -30776,14 +30915,22 @@ fn the_docs_packages_block_for_a_held_floor_is_what_the_run_renders() {
     let state = test_state();
     let (_, out) =
         apply_manager_plan_at(&registry, &state, &plan, crate::output::Verbosity::Normal);
-    let block: String = out
-        .lines()
-        .skip_while(|l| !l.starts_with("Phase: Packages"))
-        .take_while(|l| !l.trim().is_empty())
-        .collect::<Vec<_>>()
-        .join("\n");
+    let block = |head: &str| -> String {
+        out.lines()
+            .skip_while(|l| !l.starts_with(head))
+            .take_while(|l| !l.trim().is_empty())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let bootstrap = block("Phase: Bootstrap");
+    let packages = block("Phase: Packages");
     assert_eq!(
-        block.lines().count(),
+        bootstrap.lines().count(),
+        3,
+        "the rendered block is the phase head, one owner and its row: {out}"
+    );
+    assert_eq!(
+        packages.lines().count(),
         7,
         "the rendered block is the phase head, three owners and their rows: {out}"
     );
@@ -30793,15 +30940,20 @@ fn the_docs_packages_block_for_a_held_floor_is_what_the_run_renders() {
     // The page indents its fenced blocks under a numbered list item, so the
     // comparison is per line against the same indent the neighbouring blocks
     // carry rather than against the raw capture.
-    let indented: String = block
-        .lines()
-        .map(|l| format!("   {l}"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(
-        body.contains(&indented),
-        "docs/modules.md does not carry the block this run renders:\n{indented}"
-    );
+    let indented = |block: &str| -> String {
+        block
+            .lines()
+            .map(|l| format!("   {l}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    for rendered in [&bootstrap, &packages] {
+        let rendered = indented(rendered);
+        assert!(
+            body.contains(&rendered),
+            "docs/modules.md does not carry the block this run renders:\n{rendered}"
+        );
+    }
 
     assert!(
         body.contains(&plan_row),

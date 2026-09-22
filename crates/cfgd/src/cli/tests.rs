@@ -48112,10 +48112,12 @@ impl FloorFixture {
     /// The plan object that same replay resolved, as the run itself serialized
     /// it.
     ///
-    /// `apply` writes the `savedPlan` block from the very `Plan` value it goes
-    /// on to hand `run.execute`, so what comes back here is that object rather
-    /// than a reading of the preview drawn beside it. On a printer of its own,
-    /// because only a structured run records the block.
+    /// The block is the plan as the file carried it and the replay restored it,
+    /// before the executing branch rewrites an adopted file's action and
+    /// outside the backup units, which live in no `Plan` at all. That is the
+    /// set the replay may install from, and what comes back here is that
+    /// object rather than a reading of the preview drawn beside it. On a
+    /// printer of its own, because only a structured run records the block.
     fn replayed_plan(&self, path: &Path) -> cfgd_core::reconciler::Plan {
         let (printer, capture) = cfgd_core::output::Printer::for_test_doc_with_format(
             cfgd_core::output::OutputFormat::Json,

@@ -453,7 +453,9 @@ pub fn package_version_drift(
 /// Rows carry the same `<manager>:<name>` id every other package row carries,
 /// so a converged scan heals one. One row per id, because two modules flooring
 /// the same manager are one fact about the machine; the version is read once
-/// per manager for the same reason.
+/// per manager for the same reason, and the floor comes from
+/// [`super::types::fold_held_floors`], the same fold the planner's node takes,
+/// so the row this pass writes and the row a tick writes hold one number.
 ///
 /// `claimed` is the rows [`package_version_drift`] already minted. A package
 /// whose name equals its manager's (`npm install -g npm`, a `brew` formula of
@@ -469,6 +471,13 @@ pub fn held_manager_version_drift(
     let mut results: Vec<VerifyResult> = Vec::new();
     let mut check_errors: Vec<SystemCheckError> = Vec::new();
     let available = registry.available_package_managers();
+    // Every declarant of one manager folds to the number the planner's node
+    // carries, before anything is judged: the two passes write one drift row
+    // under one id, and the store keeps whichever answered last.
+    let folded = super::types::fold_held_floors(
+        modules.iter().flat_map(|m| m.held_managers.iter()),
+        |name| available.iter().find(|m| m.name() == name).copied(),
+    );
     let mut versions: std::collections::HashMap<&str, Option<String>> =
         std::collections::HashMap::new();
     let mut seen: std::collections::HashSet<String> = claimed
@@ -485,14 +494,21 @@ pub fn held_manager_version_drift(
             .entry(mgr.name())
             .or_insert_with(|| mgr.tool_version())
             .clone();
+        let floor = folded
+            .get(&held.package)
+            .map(|f| f.floor.as_str())
+            .unwrap_or(held.floor.as_str());
         // Judged again rather than read off the node: an operator who changed
         // toolchains since the resolution changed the answer, and this pass
-        // exists to see that.
+        // exists to see that. Judged against the FOLDED floor, so every
+        // declarant of one manager reaches the same verdict and the dedup
+        // below cannot pick a weaker one by walk order.
         let live = crate::modules::HeldManager {
+            floor: floor.to_string(),
             judgment: crate::modules::judge_declared_floor(
                 *mgr,
                 &held.package,
-                &held.floor,
+                floor,
                 version.as_deref(),
             ),
             ..held.clone()
@@ -509,7 +525,7 @@ pub fn held_manager_version_drift(
                 resource_type: "package".to_string(),
                 resource_id: id,
                 matches: false,
-                expected: held.floor.clone(),
+                expected: floor.to_string(),
                 actual: version.clone(),
                 unmanaged: false,
             }),

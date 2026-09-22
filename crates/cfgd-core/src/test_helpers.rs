@@ -4228,6 +4228,9 @@ pub struct MockPackageManager {
     /// the FreeBSD `pkg version -t` shape, whose comparator genuinely shells
     /// out and can fail to spawn.
     comparisons_fail: bool,
+    /// The command `own_raise()` answers with, for a family whose own copy is
+    /// raised by the tool behind its shim rather than by its package verb.
+    own_raise: Option<String>,
     /// Whether `upgrade_verb()` answers `None` — a manager that cannot raise
     /// a package in place at all, so a below-floor package is a check error
     /// rather than a planned raise. `false` by default: every manager that
@@ -4276,6 +4279,7 @@ impl MockPackageManager {
             registers_sources: false,
             versions: std::collections::BTreeMap::new(),
             comparisons_fail: false,
+            own_raise: None,
             no_upgrade_verb: false,
             listing_error: None,
             offered: std::collections::BTreeMap::new(),
@@ -4422,6 +4426,15 @@ impl MockPackageManager {
         self
     }
 
+    /// Answer `own_raise()` with this command, the shape of a family whose
+    /// binary is a shim (`rustup update` behind cargo). Without it a held
+    /// manager's shortfall names the package's own upgrade verb, so a pin whose
+    /// subject is a rendered raise cannot reproduce a real manager's sentence.
+    pub fn raising_itself_with(mut self, command: &str) -> Self {
+        self.own_raise = Some(command.to_string());
+        self
+    }
+
     /// Make `bootstrap()` leave this manager available, so a `Provision` node
     /// driven through a real `apply()` settles as a success instead of the
     /// `BootstrapFailed` a manager stuck `unavailable()` always yields.
@@ -4527,6 +4540,10 @@ impl crate::providers::PackageManager for MockPackageManager {
 
     fn upgrade_verb(&self) -> Option<&'static str> {
         (!self.no_upgrade_verb).then_some("upgrade")
+    }
+
+    fn own_raise(&self) -> Option<std::borrow::Cow<'static, str>> {
+        self.own_raise.clone().map(std::borrow::Cow::Owned)
     }
 
     fn is_available(&self) -> bool {

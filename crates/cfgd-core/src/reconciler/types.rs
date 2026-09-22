@@ -322,6 +322,56 @@ pub fn declared_by_clause(declared: &[DeclaredFloor]) -> String {
         .join(", ")
 }
 
+/// One manager's folded held floor: the number a single copy of it has to
+/// reach, and each declarant beside the number it itself wrote.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeldFloorFold {
+    pub floor: String,
+    pub declared: Vec<DeclaredFloor>,
+}
+
+/// Fold every declarant of one held manager into that manager's one floor.
+///
+/// Two passes answer for the same `<manager>:<manager>` row (the planner
+/// through [`ManagerAction::HeldFloor`], the live re-check through
+/// [`crate::reconciler::held_manager_version_drift`]), and the drift store
+/// UPSERTs on that id, so a second producer folding differently overwrites the
+/// first with a number some other module wrote. The strictest floor is what
+/// one copy of the manager has to reach; the per-module numbers ride beside it
+/// because a refusal addressed to a module quotes its own.
+///
+/// `manager_for` answers with the manager whose version grammar both floors
+/// are written in, or `None` where this host holds none.
+pub fn fold_held_floors<'h, 'm>(
+    held: impl IntoIterator<Item = &'h crate::modules::HeldManager>,
+    manager_for: impl Fn(&str) -> Option<&'m dyn crate::providers::PackageManager>,
+) -> std::collections::BTreeMap<String, HeldFloorFold> {
+    let mut folded: std::collections::BTreeMap<String, HeldFloorFold> =
+        std::collections::BTreeMap::new();
+    for held in held {
+        let entry = folded
+            .entry(held.package.clone())
+            .or_insert_with(|| HeldFloorFold {
+                floor: held.floor.clone(),
+                declared: Vec::new(),
+            });
+        if let Some(kept) = crate::effective::stricter_floor(
+            &Some(entry.floor.clone()),
+            &Some(held.floor.clone()),
+            manager_for(&held.package),
+        ) {
+            entry.floor = kept;
+        }
+        if !entry.declared.iter().any(|d| d.module == held.module) {
+            entry.declared.push(DeclaredFloor {
+                module: held.module.clone(),
+                floor: held.floor.clone(),
+            });
+        }
+    }
+    folded
+}
+
 /// A floor check this run failed, and the modules it holds to that floor.
 ///
 /// The cross-phase twin of `Reconciler::unprovisioned` for a manager that IS on
@@ -1775,7 +1825,7 @@ impl AfterPlanState {
     /// The clause naming `count` of `subject` that settled in this state, with
     /// the role it renders at. The ONE composer: the noun names the unit the
     /// count is in, and the count comes first so the line reads as a result.
-    pub fn clause(self, subject: AfterPlan, count: usize) -> (crate::output::Role, String) {
+    pub fn counted_clause(self, subject: AfterPlan, count: usize) -> (crate::output::Role, String) {
         (
             self.clause_role(),
             format!(
