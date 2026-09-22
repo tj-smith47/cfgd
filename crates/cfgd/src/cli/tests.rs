@@ -15924,7 +15924,7 @@ fn every_result_line_is_sentence_case() {
     // `Role::Info` row sat beside sentence-case siblings with nothing to say
     // it was on the wrong side of a split nobody had written down.
     let is_run_body = |path: &std::path::Path| {
-        let p = path.to_string_lossy().replace('\\', "/");
+        let p = cfgd_core::to_posix_string(path);
         p.contains("/reconciler/") || p.contains("/backup/")
     };
     let core = core_production_sources();
@@ -16014,7 +16014,7 @@ fn every_action_row_subject_opens_on_a_lowercase_verb() {
     let sources: Vec<SourceBody> = core_production_sources()
         .into_iter()
         .filter(|(path, _)| {
-            let p = path.to_string_lossy().replace('\\', "/");
+            let p = cfgd_core::to_posix_string(path);
             p.contains("/reconciler/") || p.contains("/backup/")
         })
         .map(|(path, body)| {
@@ -21079,7 +21079,7 @@ fn no_apply_path_warn_restates_a_printer_line() {
     let sources: Vec<(std::path::PathBuf, String)> = core_production_sources()
         .into_iter()
         .filter(|(path, _)| {
-            let p = path.to_string_lossy().replace('\\', "/");
+            let p = cfgd_core::to_posix_string(path);
             p.contains("/reconciler/")
         })
         .chain(
@@ -34244,6 +34244,49 @@ fn same_argument_mints(production: &str, open: &str) -> Vec<SameArgumentMint> {
     mints
 }
 
+/// The scanner behind the walk below reads a call's arguments as they are
+/// WRITTEN, after one fold: a let-bound alias becomes the initializer that
+/// bound it. Two distinct literals of one length are two arguments, two
+/// spellings of one field are two arguments, a comparison inside an argument
+/// does not swallow the arguments after it, a second call on a line is read
+/// like the first, and a mint is attributed to the innermost function around
+/// it.
+#[test]
+fn the_same_argument_scanner_reads_every_argument_as_written_after_folding_an_alias() {
+    let fixture = r#"
+fn outer() {
+    let manager = &held.package;
+    let entry = &held.package;
+    id(manager, entry, pm);
+    id(&h.package, h.package.as_str(), pm);
+    id("aa", "bb", pm);
+    id(x < y, x < y, pm);
+    id("aa", "aa", pm); id(&h.name, &h.name, pm);
+    fn inner() {
+        id(&h.name, &h.name, pm);
+    }
+}
+"#;
+    let mints = same_argument_mints(fixture, "id(");
+    let found: Vec<(usize, Option<&str>)> = mints
+        .iter()
+        .map(|m| (m.first, m.owner.as_deref()))
+        .collect();
+    assert_eq!(
+        found,
+        vec![
+            (4, Some("outer")),
+            (7, Some("outer")),
+            (8, Some("outer")),
+            (8, Some("outer")),
+            (10, Some("inner")),
+        ],
+        "line 4 is one value under two names, line 5 is one field under two spellings, \
+         line 6 is two literals of one length, line 7 compares inside each argument, \
+         line 8 holds two calls and line 10 sits inside the nested function"
+    );
+}
+
 /// The `<mgr>:<mgr>` row a held manager below its declared floor stands for is
 /// minted by passing one manager name to both halves of
 /// `package_entry_drift_id`. Every production site of that shape is either
@@ -34283,9 +34326,11 @@ fn every_held_floor_row_id_comes_from_the_composer_that_owns_it() {
         for path in rust_sources_under(&root) {
             let production = cfgd_core::test_helpers::production_slice_of(&path);
             let raw: Vec<&str> = production.lines().collect();
+            // Compared against the `/`-spelled rows below, so the key folds
+            // rather than carrying whatever separator this host writes.
             let file = format!(
                 "{krate}/src/{}",
-                path.strip_prefix(&root).unwrap_or(&path).display()
+                cfgd_core::to_posix_string(path.strip_prefix(&root).unwrap_or(&path))
             );
             for mint in same_argument_mints(&production, MINT) {
                 *counts.entry(file.clone()).or_default() += 1;
@@ -34944,11 +34989,7 @@ fn every_two_root_walk_guards_each_root_it_reads() {
             }
             let relative = format!("{krate}/{segment}/{}", {
                 let root = crates_dir.join(krate).join(segment);
-                path.strip_prefix(&root)
-                    .unwrap_or(&path)
-                    .display()
-                    .to_string()
-                    .replace('\\', "/")
+                cfgd_core::to_posix_string(path.strip_prefix(&root).unwrap_or(&path))
             });
             for (start, end) in spans {
                 let body = lines[start..=end].join("\n");
@@ -37611,11 +37652,7 @@ fn every_hint_composer_the_workspace_declares_is_classified() {
         let mut found = 0usize;
         let mut minted = 0usize;
         for (path, production) in sources {
-            let rel = path
-                .strip_prefix(&crates_dir)
-                .unwrap_or(path)
-                .to_string_lossy()
-                .replace('\\', "/");
+            let rel = cfgd_core::to_posix_string(path.strip_prefix(&crates_dir).unwrap_or(path));
             for (name, owner, code) in fn_declarations(production) {
                 let Some(signature) = code.split('{').next() else {
                     continue;
@@ -43294,11 +43331,8 @@ fn every_bootstrap_route_a_plan_withholds_is_one_no_manager_could_drive() {
         .filter(|p| p.file_name().is_none_or(|n| n != "tests.rs"))
         .filter(|p| !p.components().any(|c| c.as_os_str() == "tests"))
     {
-        let relative = path
-            .strip_prefix(&packages_dir)
-            .unwrap_or(&path)
-            .to_string_lossy()
-            .replace('\\', "/");
+        let relative =
+            cfgd_core::to_posix_string(path.strip_prefix(&packages_dir).unwrap_or(&path));
         let production = cfgd_core::test_helpers::production_slice_of(&path);
         let lines: Vec<&str> = production.lines().collect();
         for (n, line) in lines.iter().enumerate() {

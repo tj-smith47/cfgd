@@ -2395,9 +2395,7 @@ fn the_windows_pip_arm_declares_a_scripts_dir_under_roaming_appdata() {
     match plan {
         None => assert!(!pip_present, "a resolvable pip owes the pip arm a plan"),
         Some(p) if p.method == "pip" => {
-            let appdata = std::env::var("APPDATA")
-                .unwrap_or_default()
-                .replace('\\', "/");
+            let appdata = cfgd_core::to_posix_string(std::env::var("APPDATA").unwrap_or_default());
             assert!(!appdata.is_empty(), "a Windows host without APPDATA");
             assert_eq!(
                 p.creates_path_dirs.len(),

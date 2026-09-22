@@ -2282,7 +2282,7 @@ fn the_env_gate_and_the_module_gate_share_one_predicate() {
             if line.contains("\"linux\"") && !line.contains("target_os") {
                 tag_sites.push(format!(
                     "{}:{}",
-                    path.strip_prefix(&root).unwrap_or(&path).display(),
+                    cfgd_core::to_posix_string(path.strip_prefix(&root).unwrap_or(&path)),
                     n + 1
                 ));
             }

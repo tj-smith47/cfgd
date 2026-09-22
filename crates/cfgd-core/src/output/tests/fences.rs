@@ -3653,12 +3653,7 @@ fn no_test_scope_scanner_folds_an_item_lead_by_hand() {
     let mut offenders = Vec::new();
     for path in workspace_rust_files() {
         let body = test_region(&path, &walked_file_body(&path));
-        let rel = path
-            .strip_prefix(workspace_root())
-            .unwrap_or(&path)
-            .display()
-            .to_string()
-            .replace('\\', "/");
+        let rel = crate::to_posix_string(path.strip_prefix(workspace_root()).unwrap_or(&path));
         offenders.extend(lead_fold_offenders(&rel, &body));
     }
     assert!(
@@ -6359,11 +6354,7 @@ fn no_production_site_outside_the_resolver_composes_a_floor_shortfall_sentence()
         if path.ends_with(&declarations) || is_test_source {
             continue;
         }
-        let relative = path
-            .strip_prefix(workspace_root())
-            .unwrap_or(&path)
-            .to_string_lossy()
-            .replace('\\', "/");
+        let relative = crate::to_posix_string(path.strip_prefix(workspace_root()).unwrap_or(&path));
         if let Some((_, read)) = per_root
             .iter_mut()
             .find(|(root, _)| relative.starts_with(root))
