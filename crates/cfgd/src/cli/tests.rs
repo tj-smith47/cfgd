@@ -34026,10 +34026,9 @@ fn every_core_minted_package_drift_id_comes_from_its_composer() {
     ];
     // Each production anchor, by file and count, hatched lines excluded:
     // `apply.rs`'s two provision batch-member heals, `types.rs`'s manager-node
-    // row, its per-package rows and the floor node's, `verify.rs`'s missing row,
-    // its below-the-floor row and the one a held manager's own binary answers
-    // for.
-    const EXPECTED: [(&str, usize); 3] = [("apply.rs", 2), ("types.rs", 3), ("verify.rs", 3)];
+    // row, its per-package rows and the held-floor row its composer mints for
+    // both producers, `verify.rs`'s missing row and its below-the-floor row.
+    const EXPECTED: [(&str, usize); 3] = [("apply.rs", 2), ("types.rs", 3), ("verify.rs", 2)];
 
     let core_src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../cfgd-core/src");
     let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
@@ -34087,160 +34086,236 @@ fn every_core_minted_package_drift_id_comes_from_its_composer() {
     );
 }
 
-/// The call spans starting at `open`, as `(first line, last line, arguments)`,
-/// read off code whose literals and comments are already blanked so a `(` or a
-/// `,` inside either cannot end an argument. A declaration of the function is
-/// not a call and does not answer.
-fn call_argument_spans(code: &[&str], open: &str) -> Vec<(usize, usize, Vec<String>)> {
+/// The call spans starting at `open`, as `(first line, last line, arguments)`.
+///
+/// Structure is read off `code`, whose literals and comments are already
+/// blanked, so a `(` or a `,` inside either cannot end an argument; each
+/// argument's TEXT is taken from `raw` at the same byte positions, so two
+/// literals of one length stay two arguments rather than two runs of the same
+/// blanks. Only the bracket pairs count toward depth: `<` and `>` are
+/// comparisons as often as they are generics, and a lone one swallows the rest
+/// of the call. Every occurrence on a line answers, and a declaration of the
+/// function is not a call.
+fn call_argument_spans(
+    code: &[&str],
+    raw: &[&str],
+    open: &str,
+) -> Vec<(usize, usize, Vec<String>)> {
     let mut spans = Vec::new();
     for (i, line) in code.iter().enumerate() {
-        let Some(at) = line.find(open) else { continue };
         if cfgd_core::test_helpers::opens_function(line) {
             continue;
         }
-        let mut depth = 0i32;
-        let mut args = vec![String::new()];
-        let mut rest = &line[at + open.len() - 1..];
-        for j in i..code.len() {
-            for c in rest.chars() {
-                match c {
-                    '(' | '[' | '<' => depth += 1,
-                    ')' | ']' | '>' if depth > 0 => depth -= 1,
-                    _ => {}
+        for (at, _) in line.match_indices(open) {
+            let mut depth = 0i32;
+            let mut args: Vec<Vec<u8>> = vec![Vec::new()];
+            let mut from = at + open.len() - 1;
+            for (j, row) in code.iter().enumerate().skip(i) {
+                let scanned = row.as_bytes();
+                let written = raw.get(j).copied().unwrap_or_default().as_bytes();
+                for (k, byte) in scanned.iter().enumerate().skip(from) {
+                    let c = char::from(*byte);
+                    match c {
+                        '(' | '[' | '{' => depth += 1,
+                        ')' | ']' | '}' if depth > 0 => depth -= 1,
+                        _ => {}
+                    }
+                    if depth == 0 {
+                        spans.push((
+                            i,
+                            j,
+                            args.iter()
+                                .map(|a| String::from_utf8_lossy(a).trim().to_string())
+                                .collect(),
+                        ));
+                        break;
+                    }
+                    if c == ',' && depth == 1 {
+                        args.push(Vec::new());
+                    } else if let Some(last) = args.last_mut()
+                        && (depth > 1 || c != '(')
+                    {
+                        last.push(*written.get(k).unwrap_or(&b' '));
+                    }
                 }
                 if depth == 0 {
-                    spans.push((i, j, args.iter().map(|a| a.trim().to_string()).collect()));
                     break;
                 }
-                if c == ',' && depth == 1 {
-                    args.push(String::new());
-                } else if let Some(last) = args.last_mut()
-                    && (depth > 1 || c != '(')
-                {
-                    last.push(c);
-                }
+                from = 0;
             }
-            if depth == 0 {
-                break;
-            }
-            rest = code.get(j + 1).copied().unwrap_or_default();
         }
     }
     spans
 }
 
+/// The line range a function opened at `at` occupies, its closing brace
+/// included, matched on code whose literals and comments are blanked.
+fn function_span(code: &[&str], at: usize) -> std::ops::RangeInclusive<usize> {
+    let mut depth = 0i32;
+    let mut opened = false;
+    let mut end = at;
+    for (j, line) in code.iter().enumerate().skip(at) {
+        depth += line.matches('{').count() as i32 - line.matches('}').count() as i32;
+        opened |= depth > 0;
+        end = j;
+        if opened && depth <= 0 {
+            break;
+        }
+    }
+    at..=end
+}
+
+/// An argument's text with a let-bound alias folded to the initializer it was
+/// bound to in `body`, so one value spelled two ways reads as one argument.
+///
+/// Anything that is not a bare identifier is left as written, and the compare
+/// after this fold is TEXTUAL: `&h.package` and `h.package.as_str()` read one
+/// field and stay two arguments, because judging what two spellings evaluate to
+/// is a type-checker's job, and a walk that guessed at it would claim a pair
+/// its reader cannot tell apart from a genuine second subject.
+fn resolved_argument(arg: &str, body: &[&str]) -> String {
+    if arg.is_empty() || !arg.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return arg.to_string();
+    }
+    for line in body {
+        let Some(rest) = cfgd_core::test_helpers::code_span(line)
+            .trim_start()
+            .strip_prefix("let ")
+        else {
+            continue;
+        };
+        let Some((bound, initializer)) = rest.split_once('=') else {
+            continue;
+        };
+        let name = bound
+            .trim()
+            .trim_start_matches("mut ")
+            .split(':')
+            .next()
+            .unwrap_or_default()
+            .trim();
+        if name == arg {
+            return initializer.trim().trim_end_matches(';').trim().to_string();
+        }
+    }
+    arg.to_string()
+}
+
+/// One call of `open` whose first two arguments name one value.
+struct SameArgumentMint {
+    first: usize,
+    last: usize,
+    owner: Option<String>,
+}
+
+/// Every call of `open` in one production body whose first two arguments name
+/// one value, each with the INNERMOST function enclosing it: a mint inside a
+/// nested function belongs to that function, not to the one it sits in.
+fn same_argument_mints(production: &str, open: &str) -> Vec<SameArgumentMint> {
+    let masked = blank_non_code(production);
+    let code: Vec<&str> = masked.lines().collect();
+    let raw: Vec<&str> = production.lines().collect();
+    let mut owner_of: Vec<Option<usize>> = vec![None; code.len()];
+    for (i, line) in code.iter().enumerate() {
+        if !cfgd_core::test_helpers::opens_function(line) {
+            continue;
+        }
+        for j in function_span(&code, i) {
+            owner_of[j] = Some(i);
+        }
+    }
+    let mut mints = Vec::new();
+    for (first, last, args) in call_argument_spans(&code, &raw, open) {
+        if args.len() < 2 || args[0].is_empty() {
+            continue;
+        }
+        let owner = owner_of.get(first).copied().flatten();
+        let body: Vec<&str> =
+            owner.map_or_else(Vec::new, |at| raw[function_span(&code, at)].to_vec());
+        if resolved_argument(&args[0], &body) != resolved_argument(&args[1], &body) {
+            continue;
+        }
+        mints.push(SameArgumentMint {
+            first,
+            last,
+            owner: owner.and_then(|at| cfgd_core::test_helpers::declared_fn_name(code[at])),
+        });
+    }
+    mints
+}
+
 /// The `<mgr>:<mgr>` row a held manager below its declared floor stands for is
 /// minted by passing one manager name to both halves of
-/// `package_entry_drift_id`. Every production site of that shape either has the
-/// fold that settled the floor behind it, or says it only MATCHES the id.
+/// `package_entry_drift_id`. Every production site of that shape is either
+/// inside `held_floor_drift_row`, the composer both producers of the row reach
+/// it through, or says it only MATCHES the id.
 ///
 /// Two modules flooring one manager reach one row, at the stricter number
 /// `fold_held_floors` picks, and the operand a producer writes into `expected`
 /// has to be that number: the planner's node and the live re-check UPSERT on
 /// the same id, so a producer wording its own module's floor there overwrites
-/// the other's answer with a weaker one. A reader asks a different question
-/// (is this recorded row one my scope owns) and needs no floor at all.
-///
-/// The fold reaches a producer two ways, and the walk reads both off the code:
-/// `held_manager_version_drift` calls `fold_held_floors` itself, while
-/// `action_drift_rows` reads `ManagerAction::HeldFloor`, whose `floor` field
-/// the planner filled from that same fold. A site with neither carries
-/// `// held-id-reader-ok: <why>`.
+/// the other's answer with a weaker one. One composer is what makes the two
+/// rows one row; a second mint beside either producer is invisible to the other
+/// until a machine holds two answers under one key. A reader asks a different
+/// question (is this recorded row one my scope owns) and needs no floor at all,
+/// so it carries `// held-id-reader-ok: <why>`.
 #[test]
-fn every_held_floor_row_id_is_minted_beside_the_fold_that_set_its_floor() {
+fn every_held_floor_row_id_comes_from_the_composer_that_owns_it() {
     const HATCH: &str = "held-id-reader-ok:";
     const MINT: &str = "package_entry_drift_id(";
-    const FOLDED: [&str; 2] = ["fold_held_floors(", "ManagerAction::HeldFloor"];
+    const COMPOSER: &str = "held_floor_drift_row";
     /// Every file holding a mint of this shape today, and how many, so a file
     /// that stops minting one fails on its own name rather than shrinking the
     /// walk in silence. Each root contributes its own rows, so neither tree
     /// can go dark behind the other's count.
-    const HELD_ID_FLOOR: [(&str, usize); 4] = [
+    const HELD_ID_FLOOR: [(&str, usize); 3] = [
         ("cfgd-core/src/reconciler/format.rs", 1),
         ("cfgd-core/src/reconciler/types.rs", 1),
-        ("cfgd-core/src/reconciler/verify.rs", 1),
         ("cfgd/src/cli/status.rs", 1),
     ];
 
     let crates_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
     let mut offenders: Vec<String> = Vec::new();
-    let mut folded_sites = 0usize;
+    let mut composed = 0usize;
     for krate in ["cfgd", "cfgd-core"] {
         let root = crates_dir.join(krate).join("src");
         for path in rust_sources_under(&root) {
             let production = cfgd_core::test_helpers::production_slice_of(&path);
             let raw: Vec<&str> = production.lines().collect();
-            let masked = blank_non_code(&production);
-            let code: Vec<&str> = masked.lines().collect();
-            // The function each line sits in, so the fold tell is asked of the
-            // body that mints the id rather than of the whole file.
-            let mut owner_of: Vec<Option<usize>> = vec![None; code.len()];
-            for (i, line) in code.iter().enumerate() {
-                if !cfgd_core::test_helpers::opens_function(line) {
-                    continue;
-                }
-                let mut depth = 0i32;
-                let mut opened = false;
-                for (j, body) in code.iter().enumerate().skip(i) {
-                    depth += body.matches('{').count() as i32 - body.matches('}').count() as i32;
-                    opened |= depth > 0;
-                    if owner_of[j].is_none() {
-                        owner_of[j] = Some(i);
-                    }
-                    if opened && depth <= 0 {
-                        break;
-                    }
-                }
-            }
-            for (first, last, args) in call_argument_spans(&code, MINT) {
-                if args.len() < 2 || args[0] != args[1] || args[0].is_empty() {
-                    continue;
-                }
-                let file = format!(
-                    "{krate}/src/{}",
-                    path.strip_prefix(&root).unwrap_or(&path).display()
-                );
+            let file = format!(
+                "{krate}/src/{}",
+                path.strip_prefix(&root).unwrap_or(&path).display()
+            );
+            for mint in same_argument_mints(&production, MINT) {
                 *counts.entry(file.clone()).or_default() += 1;
-                let body = owner_of[first].map(|at| {
-                    let mut depth = 0i32;
-                    let mut opened = false;
-                    let mut end = at;
-                    for (j, line) in code.iter().enumerate().skip(at) {
-                        depth +=
-                            line.matches('{').count() as i32 - line.matches('}').count() as i32;
-                        opened |= depth > 0;
-                        end = j;
-                        if opened && depth <= 0 {
-                            break;
-                        }
-                    }
-                    code[at..=end].join("\n")
-                });
-                if body.is_some_and(|b| FOLDED.iter().any(|tell| b.contains(tell))) {
-                    folded_sites += 1;
+                if mint.owner.as_deref() == Some(COMPOSER) {
+                    composed += 1;
                     continue;
                 }
-                let window = raw[first.saturating_sub(1)..=last.min(raw.len() - 1)].to_vec();
+                let window = &raw[mint.first.saturating_sub(1)..=mint.last.min(raw.len() - 1)];
                 if window.iter().any(|l| carries_hatch(l, HATCH)) {
                     continue;
                 }
-                offenders.push(format!("{file}:{}: {}", first + 1, code[first].trim()));
+                offenders.push(format!(
+                    "{file}:{}: {}",
+                    mint.first + 1,
+                    raw[mint.first].trim()
+                ));
             }
         }
     }
     assert!(
         offenders.is_empty(),
-        "these mint a held manager's floor row without the fold that picked its floor, \
-         so the number they write into `expected` is one module's rather than the \
-         stricter of every declarant's (or they carry `// {HATCH} <why they only match \
-         the id>`):\n{}",
+        "these mint a held manager's floor row outside `{COMPOSER}`, so the planned node \
+         and the live re-check can write two rows under one id and the weaker floor wins \
+         by walk order (or they carry `// {HATCH} <why they only match the id>`):\n{}",
         offenders.join("\n")
     );
     assert!(
-        folded_sites >= 2,
-        "the two producers of this row are what the fold has to reach; the walk found \
-         {folded_sites} of them"
+        composed >= 1,
+        "both producers of this row reach it through `{COMPOSER}`, whose own body the walk \
+         found {composed} mints in"
     );
     let short: Vec<String> = HELD_ID_FLOOR
         .iter()

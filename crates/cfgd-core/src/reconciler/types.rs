@@ -2072,6 +2072,35 @@ pub fn package_entry_drift_id(
     package_drift_resource_id(manager, std::slice::from_ref(&identity))
 }
 
+/// The `<manager>:<manager>` drift row a held manager standing below its
+/// declared floor is recorded as, composed once for the two producers that
+/// mint it.
+///
+/// The planner's [`ManagerAction::HeldFloor`] node and the live re-check
+/// ([`super::verify::held_manager_version_drift`]) both write this row, and the
+/// store UPSERTs on its id, so the two have to agree on every part of it: the
+/// manager name passed to both halves of [`package_entry_drift_id`], the
+/// `package` type, and the FOLDED floor in `expected` rather than whichever
+/// module's own number the producer happened to be holding. Composed apart from
+/// either of them because a second mint beside one producer is invisible to the
+/// other until a machine records two rows.
+///
+/// `actual` is left empty: the planned node states the floor alone, the version
+/// being what the machine answers when the node runs, and `record_drift`
+/// COALESCEs the empty side over whatever a re-check already measured.
+pub(crate) fn held_floor_drift_row(
+    manager: &str,
+    floor: &str,
+    pm: Option<&dyn crate::providers::PackageManager>,
+) -> DriftRow {
+    DriftRow {
+        resource_type: "package".to_string(),
+        resource_id: package_entry_drift_id(manager, manager, pm),
+        expected: Some(floor.to_string()),
+        actual: None,
+    }
+}
+
 /// The `<manager>:<a>,<b>` identity of a BATCHING package action.
 ///
 /// Never a drift row and never recorded as one — [`action_drift_rows`] mints
@@ -2387,12 +2416,7 @@ pub fn action_drift_rows(
                 .iter()
                 .find(|m| m.name() == manager)
                 .map(std::convert::AsRef::as_ref);
-            vec![DriftRow {
-                resource_type: "package".to_string(),
-                resource_id: package_entry_drift_id(manager, manager, pm),
-                expected: Some(floor.clone()),
-                actual: None,
-            }]
+            vec![held_floor_drift_row(manager, floor, pm)]
         }
         // A Skip names the bare manager whose whole block was withheld — a
         // finding about the TOOLING, not about any package in it.

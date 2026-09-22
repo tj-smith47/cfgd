@@ -513,24 +513,31 @@ pub fn held_manager_version_drift(
             ),
             ..held.clone()
         };
-        // The id the presence pass mints for the same manager, so a verdict
-        // that pass already reported keeps its own row and this one adds none.
-        let id = super::package_entry_drift_id(&held.package, &held.package, Some(*mgr));
-        if !seen.insert(id.clone()) {
+        // The row the planner's node stands for, composed where both producers
+        // reach it: the id is the one the presence pass mints for the same
+        // manager, so a verdict that pass already reported keeps its own row
+        // and this one adds none. The operands are this pass's own: it
+        // measured a version, which the planned node cannot.
+        let super::types::DriftRow {
+            resource_type,
+            resource_id,
+            ..
+        } = super::types::held_floor_drift_row(&held.package, floor, Some(*mgr));
+        if !seen.insert(resource_id.clone()) {
             continue;
         }
         match &live.judgment {
             crate::modules::FloorJudgment::Met { .. } => {}
             crate::modules::FloorJudgment::Short { version } => results.push(VerifyResult {
-                resource_type: "package".to_string(),
-                resource_id: id,
+                resource_type,
+                resource_id,
                 matches: false,
                 expected: floor.to_string(),
                 actual: version.clone(),
                 unmanaged: false,
             }),
             crate::modules::FloorJudgment::Unproven { .. } => check_errors.push(SystemCheckError {
-                key: id,
+                key: resource_id,
                 error: live.clause(Some(*mgr)),
             }),
         }
