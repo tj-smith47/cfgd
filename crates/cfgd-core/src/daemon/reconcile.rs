@@ -1469,6 +1469,13 @@ pub(super) fn narrow_to_module(
 /// same way: the header counts it, both trees draw it, and the tick's closing
 /// sentence names it.
 ///
+/// A [`crate::reconciler::ManagerAction::HeldFloor`] counts for every module
+/// it names. The node belongs to the managers phase rather than to any one
+/// module, but the floor it failed is the declaring modules' own statement
+/// about what their packages need, and the run answers it by withholding that
+/// manager from exactly those modules: that is a divergence each of them asked
+/// to hear about.
+///
 /// The caller passes the plan the tick will act on, which the reconcile loop
 /// has already pruned of every resource awaiting a source decision. A module
 /// whose only drifting resource is excluded therefore reports no drift and
@@ -1480,9 +1487,16 @@ pub(crate) fn module_has_drift(
     registry: &crate::providers::ProviderRegistry,
 ) -> bool {
     use crate::reconciler::Action;
+    use crate::reconciler::ManagerAction;
     plan.phases.iter().flat_map(|p| p.actions()).any(|a| {
-        matches!(a, Action::Module(ma) if ma.module_name == module_name)
-            && crate::reconciler::action_counts_as_drift(a, registry)
+        let names_module = match a {
+            Action::Module(ma) => ma.module_name == module_name,
+            Action::Manager(ManagerAction::HeldFloor { modules, .. }) => {
+                modules.iter().any(|m| m == module_name)
+            }
+            _ => false,
+        };
+        names_module && crate::reconciler::action_counts_as_drift(a, registry)
     })
 }
 

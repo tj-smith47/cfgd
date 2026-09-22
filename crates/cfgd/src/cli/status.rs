@@ -750,6 +750,11 @@ pub struct HeldFloor {
     /// manager is here, which stays true below the floor and while its version
     /// cannot be read, so the row's own verdict is decided here.
     pub met: bool,
+    /// The version the manager's own binary reported, `null` where the
+    /// judgment could read none. A consumer comparing the two operands reads
+    /// them as fields; the clause is the sentence for a person.
+    pub version: Option<String>,
+    pub min_version: String,
 }
 
 #[derive(Serialize)]
@@ -3540,6 +3545,8 @@ fn join_package_state(
                                     Some(HeldFloor {
                                         clause,
                                         met: held.judgment.met(),
+                                        version: held.judgment.version().map(str::to_string),
+                                        min_version: held.floor.clone(),
                                     }),
                                     None,
                                 )
@@ -6371,6 +6378,8 @@ mod tests {
                         crate::cli::tests::floor_met_at("1.90"),
                     ),
                     met: true,
+                    version: Some("1.90".to_string()),
+                    min_version: "1.85".to_string(),
                 }),
                 name: "cargo".to_string(),
                 manager: Some("cargo".to_string()),
@@ -6435,6 +6444,8 @@ mod tests {
                         },
                     ),
                     met: false,
+                    version: Some("1.80".to_string()),
+                    min_version: "1.85".to_string(),
                 }),
                 name: "cargo".to_string(),
                 manager: Some("cargo".to_string()),
@@ -8779,6 +8790,26 @@ mod tests {
             !held.met,
             "a manager below its declared floor has not met it"
         );
+        // The two operands the sentence compares also travel as fields, under
+        // the names `cfgd module show` already publishes: a consumer deciding
+        // how far short a host is should read numbers, not parse prose, and
+        // two surfaces answering one question in different shapes is the drift
+        // this half pins.
+        assert_eq!(
+            held.version.as_deref(),
+            Some("1.80"),
+            "the row states what the binary reported"
+        );
+        assert_eq!(
+            held.min_version, "1.85",
+            "and the floor it was judged against"
+        );
+        let wire = serde_json::to_value(held).expect("the held answer serializes");
+        assert_eq!(
+            wire["version"], "1.80",
+            "under the name module show publishes"
+        );
+        assert_eq!(wire["minVersion"], "1.85", "and so does the floor");
     }
 
     /// A package the module's own `platforms` gate rules out is not "not

@@ -264,6 +264,11 @@ pub enum ManagerAction {
     /// every drift policy crosses `Reconciler::plan`, the daemon included, so a
     /// refusal there left a tick that records nothing, heals nothing and fires
     /// no hook for as long as one toolchain stays short.
+    ///
+    /// For a package whose name is its manager's, the listing pass and the
+    /// binary's own answer can disagree: `verify` reports the listing's verdict
+    /// and suppresses the held row, while this node re-asks the binary and
+    /// fails on what it says. Apply believes the binary.
     HeldFloor {
         manager: String,
         /// The strictest floor any module declared for it, folded with
@@ -277,6 +282,40 @@ pub enum ManagerAction {
         /// own.
         modules: Vec<String>,
     },
+}
+
+/// A floor check this run failed, and the modules it holds to that floor.
+///
+/// The cross-phase twin of `Reconciler::unprovisioned` for a manager that IS on
+/// the machine: no DAG edge reaches from the `Bootstrap` node to the `Packages`
+/// work it forbids, and the forbidding is per module rather than per run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WithheldFloor {
+    pub manager: String,
+    pub floor: String,
+    pub modules: Vec<String>,
+}
+
+impl WithheldFloor {
+    /// Whether a package action declared by `module` may still reach the
+    /// manager.
+    pub fn withholds_from(&self, module: &str) -> bool {
+        self.modules.iter().any(|m| m == module)
+    }
+
+    /// Why the action is refused, as ONE sentence: the refused row is read by
+    /// someone who has not opened the file the floor is written in, so it names
+    /// the floor and whose it is.
+    pub fn refusal(&self) -> String {
+        let names: Vec<String> = self.modules.iter().map(|m| format!("'{m}'")).collect();
+        format!(
+            "{} is below the minVersion {} {} {} declared",
+            self.manager,
+            self.floor,
+            crate::plural_noun(names.len(), "module"),
+            names.join(", ")
+        )
+    }
 }
 
 /// The route a module declared to a tool cfgd also needs as a MANAGER.
@@ -547,18 +586,41 @@ impl ManagerAction {
     /// nothing: `apt install curl` failing says nothing about apt, and a stale
     /// index is not a missing binary.
     ///
-    /// An unmet floor speaks for its manager too. The binary is on the machine
-    /// and would run, which is the trap: installing the rest of the module
-    /// through a toolchain below the floor is the one thing the floor forbids,
-    /// so the run withholds it exactly as it withholds a manager that failed to
-    /// arrive.
+    /// An unmet floor speaks for nothing here. The binary is on the machine and
+    /// would run for anybody; what forbids it is one module's declaration, so
+    /// the withholding is that module's and travels as a
+    /// [`WithheldFloor`] instead.
     pub fn managers_left_unavailable(&self) -> Vec<&str> {
         match self {
             ManagerAction::Provision { .. } => self.provisioned_managers(),
-            ManagerAction::Refuse { manager, .. } | ManagerAction::HeldFloor { manager, .. } => {
-                vec![manager.as_str()]
-            }
-            ManagerAction::Prerequisite { .. } | ManagerAction::RefreshIndex { .. } => Vec::new(),
+            ManagerAction::Refuse { manager, .. } => vec![manager.as_str()],
+            ManagerAction::Prerequisite { .. }
+            | ManagerAction::RefreshIndex { .. }
+            | ManagerAction::HeldFloor { .. } => Vec::new(),
+        }
+    }
+
+    /// The floor this node FAILING holds its declaring modules to, for the rest
+    /// of the run.
+    ///
+    /// Installing the rest of a declaring module through a toolchain below the
+    /// floor is the one thing that module's floor forbids, so its package
+    /// actions are withheld exactly as a manager that failed to arrive withholds
+    /// them. Another module's are not: a floor is the declaring module's
+    /// statement about the toolchain its OWN packages need, and a module that
+    /// declared none has nothing forbidding it.
+    pub fn withheld_floor(&self) -> Option<WithheldFloor> {
+        match self {
+            ManagerAction::HeldFloor {
+                manager,
+                floor,
+                modules,
+            } => Some(WithheldFloor {
+                manager: manager.clone(),
+                floor: floor.clone(),
+                modules: modules.clone(),
+            }),
+            _ => None,
         }
     }
 

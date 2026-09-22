@@ -14,9 +14,9 @@ pub struct CheckinPayload {
     /// gateway that predates the field already parses. An observed map is sent
     /// whole, empty included, so the gateway can retire a key the machine
     /// stopped reporting.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub package_versions: Option<std::collections::BTreeMap<String, String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub backup_schedule_owners: Option<std::collections::BTreeMap<String, String>>,
 }
 

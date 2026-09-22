@@ -1525,6 +1525,7 @@ impl<'a> super::Reconciler<'a> {
                 // Taken before the dispatch opens, since `settle` below keeps
                 // writing to the list while these lanes run.
                 let unprovisioned = self.unprovisioned.borrow().clone();
+                let withheld_floors = self.withheld_floors.borrow().clone();
                 let provisioned = self.provisioned.borrow().clone();
                 let provisioned_packages = self.provisioned_packages.borrow().clone();
                 let run = super::lanes::LaneRun {
@@ -1540,6 +1541,7 @@ impl<'a> super::Reconciler<'a> {
                     plan_index_base,
                     action_depth: phase_section.as_ref().map_or(0, |s| s.depth + 1),
                     unprovisioned: &unprovisioned,
+                    withheld_floors: &withheld_floors,
                     provisioned: &provisioned,
                     provisioned_packages: &provisioned_packages,
                 };
@@ -2788,6 +2790,15 @@ impl<'a> super::Reconciler<'a> {
                         for manager in node.managers_left_unavailable() {
                             if !withheld.iter().any(|m| m == manager) {
                                 withheld.push(manager.to_string());
+                            }
+                        }
+                        // The same carry for a manager that IS on the machine
+                        // and is forbidden only to the modules whose floor this
+                        // node just failed: see `Reconciler::withheld_floors`.
+                        if let Some(floor) = node.withheld_floor() {
+                            let mut floors = self.withheld_floors.borrow_mut();
+                            if !floors.contains(&floor) {
+                                floors.push(floor);
                             }
                         }
                     }

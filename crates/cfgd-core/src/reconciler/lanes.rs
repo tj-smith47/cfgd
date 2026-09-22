@@ -111,6 +111,10 @@ pub(super) struct LaneRun<'x> {
     /// into that list while these workers run, and a failure inside THIS phase
     /// is `fail_dependents`' to withhold, not this list's.
     pub(super) unprovisioned: &'x [String],
+    /// Floor checks an EARLIER phase of this run judged unmet, taken with the
+    /// snapshot above and for the same reason: see
+    /// `Reconciler::withheld_floors`.
+    pub(super) withheld_floors: &'x [super::types::WithheldFloor],
     /// Managers an EARLIER phase of this run already PUT on the machine, taken
     /// with the snapshot above and for the same reason: see
     /// `Reconciler::provisioned`.
@@ -1529,6 +1533,7 @@ fn run_one_action(
     let exec = PackageExec::new(registry, &proxy, run.printer, &notes)
         .in_lane(lane)
         .withholding_managers(run.unprovisioned)
+        .withholding_floors(run.withheld_floors)
         .delivered_by(run.provisioned_packages);
     let executed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match action {
         Action::Package(pkg) => exec.apply_package_action(pkg),

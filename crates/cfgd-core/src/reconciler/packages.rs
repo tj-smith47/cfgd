@@ -137,6 +137,10 @@ pub(super) struct PackageExec<'x> {
     /// Managers an earlier phase of this run already failed to provision, which
     /// no action of this one may reach: see `super::Reconciler::unprovisioned`.
     unprovisioned: &'x [String],
+    /// Floor checks an earlier phase failed, each withholding its manager from
+    /// the modules that declared the floor: see
+    /// `super::types::WithheldFloor`.
+    withheld_floors: &'x [crate::reconciler::WithheldFloor],
     /// The `(installer, package)` pairs this run's provisions installed, for a
     /// profile install row's `provisioned by this run` count: see
     /// `super::Reconciler::provisioned_packages`.
@@ -161,6 +165,7 @@ impl<'x> PackageExec<'x> {
             notes,
             lane: None,
             unprovisioned: &[],
+            withheld_floors: &[],
             provisioned_packages: &[],
             bootstrapped: RefCell::new(Vec::new()),
         }
@@ -179,6 +184,17 @@ impl<'x> PackageExec<'x> {
     #[must_use]
     pub(super) fn withholding_managers(mut self, managers: &'x [String]) -> Self {
         self.unprovisioned = managers;
+        self
+    }
+
+    /// Refuse a declaring module's actions naming a manager whose floor this
+    /// run judged unmet.
+    #[must_use]
+    pub(super) fn withholding_floors(
+        mut self,
+        floors: &'x [crate::reconciler::WithheldFloor],
+    ) -> Self {
+        self.withheld_floors = floors;
         self
     }
 
@@ -384,9 +400,25 @@ impl<'x> PackageExec<'x> {
     /// live availability probe: a manager that is merely unavailable right now
     /// is still dispatched — alone, the phase draining around it — because the
     /// action ahead of it in the drain may be what delivers it.
-    fn refuse_withheld_manager(&self, name: &str) -> Result<()> {
+    /// `module` is the module the action belongs to, or `None` for the
+    /// profile's own packages: a floor is one module's statement and withholds
+    /// the manager from that module alone, while a failed provision withholds
+    /// it from everybody.
+    fn refuse_withheld_manager(&self, name: &str, module: Option<&str>) -> Result<()> {
         if self.unprovisioned.iter().any(|m| m == name) {
             return Err(self.package_manager_missing_error(name));
+        }
+        if let Some(module) = module
+            && let Some(held) = self
+                .withheld_floors
+                .iter()
+                .find(|f| f.manager == name && f.withholds_from(module))
+        {
+            return Err(crate::errors::PackageError::ManagerBelowFloor {
+                manager: name.to_string(),
+                message: held.refusal(),
+            }
+            .into());
         }
         Ok(())
     }
@@ -394,7 +426,8 @@ impl<'x> PackageExec<'x> {
     /// The manager `name` names, or the reason a profile-owned action may not
     /// reach it: this run's own failed provision first, then availability.
     fn usable_manager(&self, name: &str) -> Result<&'x dyn PackageManager> {
-        self.refuse_withheld_manager(name)?;
+        // The profile's own packages, which no module's floor speaks for.
+        self.refuse_withheld_manager(name, None)?;
         for pm in self.registry.available_package_managers() {
             if pm.name() == name {
                 return Ok(pm);
@@ -915,12 +948,13 @@ impl<'x> PackageExec<'x> {
                     }
                 }
             } else {
-                // A manager this run already failed to provision is refused in
+                // A manager this run already failed to provision, or whose floor
+                // this module declared and this run judged unmet, is refused in
                 // cfgd's own words rather than spawned into an errno. Merely
                 // unavailable is not refused here: an action naming one is
                 // dispatched alone and the drain around it may be what delivers
                 // the manager (`unavailable_manager_action_drains_the_phase`).
-                self.refuse_withheld_manager(&first.manager)?;
+                self.refuse_withheld_manager(&first.manager, Some(&action.module_name))?;
                 // Find the manager — check all registered, not just available
                 let pm = self
                     .registry

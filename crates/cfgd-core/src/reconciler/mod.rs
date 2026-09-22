@@ -95,8 +95,8 @@ pub use types::{
     MODULE_FACET_FILES_REFUSED, ManagerAction, ModuleAction, ModuleActionKind, Owner, OwnerGroup,
     OwnerKind, PREREQUISITE_NOT_IN_RUN, Phase, PhaseFilter, PhaseName, Plan, ReconcileContext,
     RollbackResult, SESSION_GROUP, SHELL_GROUP, ScriptAction, ScriptPhase, SystemAction, Tier,
-    action_counts_as_drift, action_drift_rows, apply_heals_action_rows, attempted_count,
-    module_files_unprobed, module_skipped_whole, package_action_drift_rows,
+    WithheldFloor, action_counts_as_drift, action_drift_rows, apply_heals_action_rows,
+    attempted_count, module_files_unprobed, module_skipped_whole, package_action_drift_rows,
     package_drift_resource_id, package_entry_drift_id, recorded_source_layers, records_an_env_item,
     split_package_drift_resource_id,
 };
@@ -222,6 +222,11 @@ pub struct Reconciler<'a> {
     /// already withholds the downstream work; this is the same withholding
     /// carried ACROSS phases, where no DAG edge reaches.
     unprovisioned: std::cell::RefCell<Vec<String>>,
+    /// Floor checks a node of THIS run judged unmet, each withholding its
+    /// manager from the modules that declared the floor and from nobody else:
+    /// see [`crate::reconciler::WithheldFloor`]. The same cross-phase carry as
+    /// [`Self::unprovisioned`], for a manager that IS on the machine.
+    withheld_floors: std::cell::RefCell<Vec<crate::reconciler::WithheldFloor>>,
     /// Managers a node of THIS run has already PUT on the machine — the
     /// mirror of [`Self::unprovisioned`], and the answer to "did this run's
     /// own `Bootstrap` phase already deliver this tool".
@@ -286,6 +291,7 @@ impl<'a> Reconciler<'a> {
             installed: None,
             sidecar_backups: std::collections::HashSet::new(),
             unprovisioned: std::cell::RefCell::new(Vec::new()),
+            withheld_floors: std::cell::RefCell::new(Vec::new()),
             provisioned: std::cell::RefCell::new(Vec::new()),
             provisioned_packages: std::cell::RefCell::new(Vec::new()),
             prune_rows: true,
@@ -408,6 +414,7 @@ impl<'a> Reconciler<'a> {
             installed: None,
             sidecar_backups: std::collections::HashSet::new(),
             unprovisioned: std::cell::RefCell::new(Vec::new()),
+            withheld_floors: std::cell::RefCell::new(Vec::new()),
             provisioned: std::cell::RefCell::new(Vec::new()),
             provisioned_packages: std::cell::RefCell::new(Vec::new()),
             prune_rows: true,

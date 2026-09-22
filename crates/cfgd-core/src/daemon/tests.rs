@@ -2168,6 +2168,59 @@ fn a_per_module_tick_keeps_only_the_held_floor_its_own_module_declared() {
     );
 }
 
+/// The floor a module declared is that module's own divergence, so the tick
+/// that judged it unmet fires the module's `onDrift`. The node lives in the
+/// managers phase and names no module action, which is why it once fired
+/// nothing at all: a module could declare a floor, watch the run withhold the
+/// manager from its packages, and never hear about it from the hook it wrote
+/// for exactly that.
+#[test]
+fn a_held_floor_is_drift_for_every_module_that_declared_it() {
+    use crate::reconciler::{Action, ManagerAction, Owner, Phase, PhaseName, Plan};
+
+    let plan_of = || Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::Bootstrap,
+            &Owner::profile("default"),
+            vec![Action::Manager(ManagerAction::HeldFloor {
+                manager: "cargo".to_string(),
+                floor: "1.85".to_string(),
+                modules: vec!["rust".to_string(), "tools".to_string()],
+            })],
+        )],
+        warnings: Vec::new(),
+    };
+    let registry = crate::providers::ProviderRegistry::new();
+
+    let plan = plan_of();
+    assert!(
+        module_has_drift(&plan, "rust", &registry),
+        "the full tick answers for the first module the node names"
+    );
+    assert!(
+        module_has_drift(&plan, "tools", &registry),
+        "and for the second: a floor two modules declared is both of theirs"
+    );
+    assert!(
+        !module_has_drift(&plan, "dotfiles", &registry),
+        "a module the node does not name has nothing to react to"
+    );
+
+    let mut plan = plan_of();
+    super::reconcile::narrow_to_module(&mut plan, "rust", &registry);
+    assert!(
+        module_has_drift(&plan, "rust", &registry),
+        "the module's own interval tick reports it too"
+    );
+
+    let mut plan = plan_of();
+    super::reconcile::narrow_to_module(&mut plan, "dotfiles", &registry);
+    assert!(
+        !module_has_drift(&plan, "dotfiles", &registry),
+        "an unrelated module's tick keeps nothing and so fires nothing"
+    );
+}
+
 #[test]
 fn a_per_module_tick_for_a_module_with_no_packages_plans_no_refresh() {
     // The same rule from the other side: keeping the managers group through

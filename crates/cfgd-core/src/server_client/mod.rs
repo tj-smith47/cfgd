@@ -100,9 +100,9 @@ struct CheckinRequest {
     /// device sends and a gateway that predates the field parses. An observed
     /// map is sent whole, empty included: that is what lets the gateway retire
     /// a key this machine no longer reports.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     package_versions: Option<BTreeMap<String, String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     backup_schedule_owners: Option<BTreeMap<String, String>>,
 }
 

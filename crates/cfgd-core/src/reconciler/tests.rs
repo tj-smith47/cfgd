@@ -30477,10 +30477,12 @@ fn a_held_floor_step_fails_against_the_binary_and_names_the_raise() {
         "a binary that meets the floor settles the step having changed nothing"
     );
 
-    // Installing the rest of a module through a toolchain below the floor is
-    // the one thing the floor forbids, so the manager is withheld for the rest
-    // of the run exactly as one that failed to arrive is.
-    let withheld = Plan {
+    // The failed node forbids the declaring module's packages and nothing
+    // else. A floor is `rust`'s statement about what `rust` needs, so the
+    // profile's own package through the same toolchain is installed: a manager
+    // that failed to ARRIVE is missing for everybody, while one that is merely
+    // short is only short of what somebody asked for.
+    let profile_owned = Plan {
         phases: vec![
             Phase::from_actions(
                 PhaseName::Bootstrap,
@@ -30500,19 +30502,90 @@ fn a_held_floor_step_fails_against_the_binary_and_names_the_raise() {
         warnings: vec![],
     };
     let state = test_state();
-    let (after, out) = apply_manager_plan(&registry, &state, &withheld);
+    let (after, out) = apply_manager_plan(&registry, &state, &profile_owned);
     let install = after
         .action_results
         .iter()
         .find(|r| r.phase == PhaseName::Packages.as_str())
         .unwrap_or_else(|| panic!("the package row settled: {out}"));
-    assert!(
-        install
-            .error
-            .as_deref()
-            .unwrap_or_default()
-            .contains("cargo is not provisioned"),
-        "a package action through the short toolchain is refused, not spawned: {install:?}"
+    assert_eq!(
+        install.error, None,
+        "the profile declared no floor, so nothing withholds the manager from \
+         its packages: {install:?}"
+    );
+}
+
+/// A floor belongs to the module that wrote it. When the node judging it fails,
+/// the manager is withheld from that module's packages and from no others: a
+/// second module installing through the same copy of cargo asked for nothing
+/// the host fails to offer, and refusing it would take a whole machine down
+/// over one module's minVersion.
+#[test]
+fn a_failed_floor_withholds_the_manager_from_the_declaring_module_alone() {
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(
+        crate::test_helpers::MockPackageManager::new("cargo").reporting_version("1.80"),
+    ));
+    let module_install = |module: &str, package: &str| {
+        Action::Module(ModuleAction::local(
+            module,
+            ModuleActionKind::InstallPackages {
+                resolved: vec![ResolvedPackage {
+                    canonical_name: package.to_string(),
+                    resolved_name: package.to_string(),
+                    manager: "cargo".to_string(),
+                    manager_declared: false,
+                    version: None,
+                    script: None,
+                    creates: None,
+                    only_if: None,
+                    unless: None,
+                    min_version: None,
+                }],
+            },
+        ))
+    };
+    let plan = Plan {
+        phases: vec![
+            Phase::from_actions(
+                PhaseName::Bootstrap,
+                &Owner::profile("test"),
+                vec![Action::Manager(ManagerAction::HeldFloor {
+                    manager: "cargo".to_string(),
+                    floor: "1.85".to_string(),
+                    modules: vec!["rust".to_string()],
+                })],
+            ),
+            Phase::from_actions(
+                PhaseName::Packages,
+                &Owner::profile("test"),
+                vec![
+                    module_install("rust", "ripgrep"),
+                    module_install("tools", "just"),
+                ],
+            ),
+        ],
+        warnings: vec![],
+    };
+
+    let state = test_state();
+    let (result, out) = apply_manager_plan(&registry, &state, &plan);
+    let row_for = |package: &str| {
+        result
+            .action_results
+            .iter()
+            .find(|r| r.description.contains(package))
+            .unwrap_or_else(|| panic!("{package}: the package row settled: {out}"))
+    };
+    assert_eq!(
+        row_for("ripgrep").error.as_deref(),
+        Some("cargo is below the minVersion 1.85 module 'rust' declared"),
+        "the declaring module's packages are refused, in cfgd's own words"
+    );
+    assert_eq!(
+        row_for("just").error,
+        None,
+        "the module that declared no floor installs through the same manager"
     );
 }
 

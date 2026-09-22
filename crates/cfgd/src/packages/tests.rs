@@ -5710,6 +5710,19 @@ fn every_registered_manager_declares_how_its_family_raises_a_held_package() {
              upgrade_verb()",
             mgr.name()
         );
+        // A manager naming home env vars has a SHIM on PATH, and a shim's own
+        // copy is not what its package verb installs: `cargo install cargo`
+        // fetches a second crate and leaves the toolchain the shim resolves
+        // exactly where it was. So the family that needs those variables also
+        // needs a raise command of its own, and classifying it `PackageVerb`
+        // would word a held floor with advice that cannot clear it.
+        assert!(
+            mgr.home_env_vars().is_empty() || !matches!(own, OwnRaise::PackageVerb),
+            "{}: a manager whose binary is a shim (it names {:?}) cannot raise \
+             its own copy through its package verb",
+            mgr.name(),
+            mgr.home_env_vars()
+        );
         let expected_own = match own {
             OwnRaise::Command(c) => Some(*c),
             OwnRaise::PackageVerb => None,

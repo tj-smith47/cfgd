@@ -114,7 +114,7 @@ pub enum Component {
     },
     Hint {
         text: String,
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        #[serde(skip_serializing_if = "Vec::is_empty")]
         commands: Vec<String>,
         /// Render-only: the class decides whether the renderer prints the row,
         /// never what `-o json` says about it. Skipped so no `.json` golden
@@ -152,7 +152,7 @@ pub enum Component {
         /// Per-cell role tags, parallel to `rows`. Skipped from JSON when all
         /// cells are plain — keeps the structured-output shape stable for
         /// consumers that don't care about presentation styling.
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        #[serde(skip_serializing_if = "Vec::is_empty")]
         row_roles: Vec<Vec<Option<Role>>>,
         /// Set by `Table::wrapping`: a cell too wide for its column wraps
         /// instead of truncating. Never serialized — display-only, so the

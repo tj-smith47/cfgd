@@ -309,6 +309,14 @@ pub enum PackageError {
     #[error("{message}")]
     BootstrapFailed { manager: String, message: String },
 
+    // The manager IS on the machine and would run; what forbids it is the
+    // declaring module's own floor, which this run already judged unmet. The
+    // message carries the whole reason because `ManagerNotAvailable`'s recovery
+    // (run the Bootstrap phase) is the wrong advice here: no phase raises a
+    // toolchain, the operator does.
+    #[error("{message}")]
+    ManagerBelowFloor { manager: String, message: String },
+
     // The manager is not registered at all — no phase can provision a name
     // that does not exist, so this carries no phase-run guidance (unlike
     // `ManagerNotAvailable`, whose recovery is always the `Bootstrap`
