@@ -516,11 +516,12 @@ pub fn held_manager_version_drift(
         // The row the planner's node stands for, composed where both producers
         // reach it: the id is the one the presence pass mints for the same
         // manager, so a verdict that pass already reported keeps its own row
-        // and this one adds none. The operands are this pass's own: it
-        // measured a version, which the planned node cannot.
+        // and this one adds none. `actual` is the one part left to this pass,
+        // which measured a version the planned node cannot.
         let super::types::DriftRow {
             resource_type,
             resource_id,
+            expected,
             ..
         } = super::types::held_floor_drift_row(&held.package, floor, Some(*mgr));
         if !seen.insert(resource_id.clone()) {
@@ -532,7 +533,7 @@ pub fn held_manager_version_drift(
                 resource_type,
                 resource_id,
                 matches: false,
-                expected: floor.to_string(),
+                expected: expected.unwrap_or_else(|| floor.to_string()),
                 actual: version.clone(),
                 unmanaged: false,
             }),
