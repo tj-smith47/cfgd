@@ -29,6 +29,11 @@ pub enum PackageDisplay {
         name: String,
         clause: String,
         met: bool,
+        /// The version the manager's own binary reported, `null` where the
+        /// judgment could read none. A consumer comparing the two operands
+        /// reads them as fields; the clause is the sentence for a person.
+        version: Option<String>,
+        min_version: String,
     },
     #[serde(rename = "skipped", rename_all = "camelCase")]
     Skipped { name: String, platforms: String },
@@ -253,7 +258,9 @@ fn build_module_show_resolved_packages(doc: Doc, packages: &[PackageDisplay], ar
                 Role::Ok,
                 resolved_package_row(name, manager, resolved_name, version.as_deref(), arrow),
             ),
-            PackageDisplay::Held { name, clause, met } => s.status_with(
+            PackageDisplay::Held {
+                name, clause, met, ..
+            } => s.status_with(
                 if *met { Role::Ok } else { Role::Warn },
                 name.clone(),
                 |f| f.detail(clause.clone()),
@@ -550,6 +557,8 @@ pub(super) fn module_show_resolved_rows(
                         name: held.package.clone(),
                         clause: held.clause(mgr),
                         met: held.judgment.met(),
+                        version: held.judgment.version().map(str::to_string),
+                        min_version: held.floor.clone(),
                     }
                 }
                 Ok(None) => PackageDisplay::Skipped {

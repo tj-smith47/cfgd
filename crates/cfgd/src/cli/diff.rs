@@ -1072,7 +1072,9 @@ pub(super) fn print_package_drift(
                             actual: None,
                         });
                     }
-                    ManagerAction::RefreshIndex { .. } | ManagerAction::Prerequisite { .. } => {}
+                    ManagerAction::RefreshIndex { .. }
+                    | ManagerAction::Prerequisite { .. }
+                    | ManagerAction::HeldFloor { .. } => {}
                 }
             }
             continue;

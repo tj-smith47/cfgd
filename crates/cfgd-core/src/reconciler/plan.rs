@@ -14,8 +14,8 @@ use crate::providers::{
 use super::env::EnvPlanOutcome;
 use super::restore::content_hash_if_exists;
 use super::types::{
-    Action, ModuleAction, ModuleActionKind, Owner, Phase, PhaseName, Plan, ReconcileContext,
-    ScriptAction, ScriptPhase, SystemAction,
+    Action, ManagerAction, ModuleAction, ModuleActionKind, Owner, Phase, PhaseName, Plan,
+    ReconcileContext, ScriptAction, ScriptPhase, SystemAction,
 };
 
 /// Actions tagged with the phase each is routed to.
@@ -196,6 +196,27 @@ impl<'a> super::Reconciler<'a> {
         // after this one, so the tools they need are collected here and
         // installed as prerequisites of the same run.
         let deferred_tools = self.deferred_tools(&resolved.merged, &module_actions);
+        // A manager this host HOLDS, below the floor its module declared or at a
+        // version nothing could read. Judged in this grammar too, and only
+        // built where one of the two folds below has something to judge: the map
+        // allocates a key per registered manager, and the overwhelmingly common
+        // plan carries neither a confirmed floor nor a held one.
+        let unmet_held = || {
+            module_actions
+                .iter()
+                .filter(|m| m.platform_skip_reason.is_none())
+                .flat_map(|m| m.held_managers.iter())
+                .filter(|h| !h.judgment.met())
+        };
+        let floor_managers = if module_actions
+            .iter()
+            .any(|m| !m.floor_bootstraps.is_empty())
+            || unmet_held().next().is_some()
+        {
+            self.registry.manager_map()
+        } else {
+            HashMap::new()
+        };
         // A floor no available manager met, confirmed at resolution time: the
         // manager itself joins the run's membership, and `plan_managers` mints
         // its own cascade node. The module's entry resolved to no package at
@@ -203,44 +224,6 @@ impl<'a> super::Reconciler<'a> {
         // ask for one manager, and the run can only deliver one copy of it, so
         // the higher floor is what the node carries: it satisfies both, where
         // the lower one leaves the stricter module quietly short.
-        // A manager this host holds BELOW the floor its module declared, or one
-        // whose version nothing could read, refuses that module's work here
-        // rather than at resolution: reading the machine is exactly what a
-        // reader does once a toolchain slips, and resolution is atomic, so a
-        // refusal there took every other module down with it. Installing is the
-        // case that cannot go on (a bootstrap cannot raise a manager already
-        // present, and provisioning the rest of the module on a toolchain below
-        // the floor is what the floor forbids), and `plan` is atomic, so the
-        // whole run ends here.
-        if let Some(unmet) = module_actions
-            .iter()
-            .filter(|m| m.platform_skip_reason.is_none())
-            .flat_map(|m| m.held_managers.iter())
-            .find(|h| !h.judgment.met())
-        {
-            let mgr = self
-                .registry
-                .available_package_managers()
-                .into_iter()
-                .find(|m| m.name() == unmet.package);
-            return Err(crate::errors::ModuleError::UnresolvablePackage {
-                module: unmet.module.clone(),
-                package: unmet.package.clone(),
-                reason: unmet.clause(mgr),
-            }
-            .into());
-        }
-        // Built only where a route exists to judge: the map allocates a key per
-        // registered manager, and the overwhelmingly common plan carries no
-        // confirmed floor at all and never reads it.
-        let floor_managers = if module_actions
-            .iter()
-            .any(|m| !m.floor_bootstraps.is_empty())
-        {
-            self.registry.manager_map()
-        } else {
-            HashMap::new()
-        };
         let mut floor_routes: BTreeMap<String, String> = BTreeMap::new();
         for route in module_actions
             .iter()
@@ -257,6 +240,27 @@ impl<'a> super::Reconciler<'a> {
             );
             if let Some(kept) = kept {
                 floor_routes.insert(route.package.clone(), kept);
+            }
+        }
+        // The same fold over the managers already ON this host, whose floor no
+        // bootstrap can raise. One node per manager, because two modules
+        // flooring one copy of a toolchain are one fact about the machine, and
+        // the node judges the binary again at execution rather than trusting a
+        // version read while the plan was being built.
+        let mut held_floors: BTreeMap<String, (String, Vec<String>)> = BTreeMap::new();
+        for held in unmet_held() {
+            let entry = held_floors
+                .entry(held.package.clone())
+                .or_insert_with(|| (held.floor.clone(), Vec::new()));
+            if let Some(kept) = crate::effective::stricter_floor(
+                &Some(entry.0.clone()),
+                &Some(held.floor.clone()),
+                floor_managers.get(&held.package).copied(),
+            ) {
+                entry.0 = kept;
+            }
+            if !entry.1.contains(&held.module) {
+                entry.1.push(held.module.clone());
             }
         }
         let floor_wanted: Vec<String> = floor_routes.keys().cloned().collect();
@@ -289,6 +293,16 @@ impl<'a> super::Reconciler<'a> {
                 &deferred_tools,
             );
         }
+
+        // Appended after the elision rebuild: these nodes install nothing, so
+        // no consumer of theirs can be dropped and no rebuild can retire them.
+        manager_actions.extend(held_floors.into_iter().map(|(manager, (floor, modules))| {
+            Action::Manager(ManagerAction::HeldFloor {
+                manager,
+                floor,
+                modules,
+            })
+        }));
 
         // The env file publishes where a manager's binaries live, so it has to
         // know about a manager this very run is about to provision, not only

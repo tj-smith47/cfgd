@@ -2119,6 +2119,55 @@ fn a_per_module_tick_keeps_the_refresh_its_own_packages_read() {
     );
 }
 
+/// A held manager's floor belongs to the modules that declared it, and to no
+/// other: a tick scoped to one module must not report a shortfall another
+/// module asked about, nor lose its own because no install names the manager.
+#[test]
+fn a_per_module_tick_keeps_only_the_held_floor_its_own_module_declared() {
+    use crate::reconciler::{Action, ManagerAction, Owner, Phase, PhaseName, Plan};
+
+    let held = |manager: &str, module: &str| {
+        Action::Manager(ManagerAction::HeldFloor {
+            manager: manager.to_string(),
+            floor: "1.85".to_string(),
+            modules: vec![module.to_string()],
+        })
+    };
+    let plan_of = || Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::Bootstrap,
+            &Owner::profile("default"),
+            vec![held("cargo", "rust"), held("npm", "web")],
+        )],
+        warnings: Vec::new(),
+    };
+    let registry = crate::providers::ProviderRegistry::new();
+
+    let mut plan = plan_of();
+    super::reconcile::narrow_to_module(&mut plan, "rust", &registry);
+    let managers: Vec<&str> = plan
+        .phases
+        .iter()
+        .flat_map(|p| p.actions())
+        .filter_map(|a| match a {
+            Action::Manager(node) => Some(node.manager()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        managers,
+        vec!["cargo"],
+        "the module's own floor survives a narrow no install could keep"
+    );
+
+    let mut plan = plan_of();
+    super::reconcile::narrow_to_module(&mut plan, "dotfiles", &registry);
+    assert!(
+        plan.phases.iter().flat_map(|p| p.actions()).count() == 0,
+        "a module that declared no floor reports neither of theirs"
+    );
+}
+
 #[test]
 fn a_per_module_tick_for_a_module_with_no_packages_plans_no_refresh() {
     // The same rule from the other side: keeping the managers group through
@@ -13852,6 +13901,131 @@ spec:
             vec![("module", declared_id.as_str())],
             "the tick re-records the planned file's row and nothing else, so \
              the undeclared file's row resolves and no bare module id is minted"
+        );
+    }
+
+    /// A daemon whose host holds cargo at a version below the floor a module
+    /// declares for it, with the listing manager offering less again — the
+    /// shape a toolchain that slipped after an apply really has.
+    struct SlippedToolchainHooks;
+
+    impl DaemonHooks for SlippedToolchainHooks {
+        fn build_registry(&self, _: &config::CfgdConfig) -> crate::providers::ProviderRegistry {
+            let mut registry = crate::providers::ProviderRegistry::new();
+            registry.add_package_manager(Box::new(
+                crate::providers::StubPackageManager::new("apt").with_package("cargo", "1.75"),
+            ));
+            registry.add_package_manager(Box::new(
+                crate::test_helpers::MockPackageManager::new("cargo").reporting_version("1.80"),
+            ));
+            registry
+        }
+
+        fn plan_files(
+            &self,
+            _: &Path,
+            _: &config::ResolvedProfile,
+        ) -> crate::errors::Result<Vec<crate::providers::FileAction>> {
+            Ok(vec![])
+        }
+
+        fn plan_packages(
+            &self,
+            _: &config::MergedProfile,
+            _: &[&dyn crate::providers::PackageManager],
+            _: &std::collections::HashSet<String>,
+            _: &crate::providers::PackageContext<'_>,
+        ) -> crate::errors::Result<Vec<crate::providers::PackageAction>> {
+            Ok(vec![])
+        }
+
+        fn extend_registry_custom_managers(
+            &self,
+            _: &mut crate::providers::ProviderRegistry,
+            _: &config::PackagesSpec,
+        ) {
+        }
+
+        fn expand_tilde(&self, path: &Path) -> PathBuf {
+            crate::expand_tilde(path)
+        }
+    }
+
+    /// A manager this host holds that has slipped below the floor a module
+    /// declares for it is a finding the tick records, beside every other
+    /// module's finding: the plan carries it as a step of its own, so the
+    /// machine still hears about the unrelated module's missing file and the
+    /// `onDrift` route still has a tick that found drift to fire on.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_tick_records_a_held_managers_floor_beside_another_modules_drift() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  profile: default\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(tmp.path().join("profiles")).unwrap();
+        std::fs::write(
+            tmp.path().join("profiles").join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  modules:\n    - rust\n    - dotfiles\n",
+        )
+        .unwrap();
+
+        let rust_dir = tmp.path().join("modules").join("rust");
+        std::fs::create_dir_all(&rust_dir).unwrap();
+        std::fs::write(
+            rust_dir.join("module.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: rust\nspec:\n  \
+             packages:\n    - name: cargo\n      minVersion: \"1.85\"\n      prefer: [apt]\n",
+        )
+        .unwrap();
+
+        let dotfiles_dir = tmp.path().join("modules").join("dotfiles");
+        std::fs::create_dir_all(&dotfiles_dir).unwrap();
+        std::fs::write(dotfiles_dir.join("app.conf"), "from the module\n").unwrap();
+        let target = tmp.path().join("deploy").join("app.conf");
+        std::fs::write(
+            dotfiles_dir.join("module.yaml"),
+            format!(
+                "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: dotfiles\nspec:\n  files:\n    - source: app.conf\n      target: {}\n      strategy: Copy\n",
+                crate::to_posix_string(&target)
+            ),
+        )
+        .unwrap();
+
+        let (mut ctx, _state, buf) = make_test_ctx(&tmp, false, false, None);
+        ctx.config_path = config_path;
+        ctx.hooks = Arc::new(SlippedToolchainHooks);
+        let mut tasks = vec![ReconcileTask {
+            entity: "__default__".to_string(),
+            interval: StdDuration::from_secs(60),
+            auto_apply: false,
+            drift_policy: config::DriftPolicy::NotifyOnly,
+            last_reconciled: None,
+        }];
+        runner::handle_reconcile_tick(&ctx, &mut tasks)
+            .await
+            .unwrap();
+
+        let store = StateStore::open_in_dir(tmp.path()).unwrap();
+        let rows = store.unresolved_drift().unwrap();
+        let mut standing: Vec<(&str, &str)> = rows
+            .iter()
+            .map(|e| (e.resource_type.as_str(), e.resource_id.as_str()))
+            .collect();
+        standing.sort_unstable();
+        let deployed_id = format!(
+            "dotfiles/{}",
+            crate::to_posix_string(&target).trim_start_matches('/')
+        );
+        assert_eq!(
+            standing,
+            vec![("module", deployed_id.as_str()), ("package", "cargo:cargo"),],
+            "the slipped toolchain is recorded as a finding of its own and the \
+             unrelated module's file is still reported: {}",
+            harness::captured_text(&buf)
         );
     }
 

@@ -7906,8 +7906,14 @@ fn no_daemon_action_row_wears_the_live_checks_separator() {
                     assert_eq!(rid, ManagerAction::refuse_resource_id(manager));
                 }
                 // cfgd's own scaffolding keeps the `manager` type
-                // `record_managed_resources` refuses to manage.
-                ManagerAction::RefreshIndex { .. } | ManagerAction::Prerequisite { .. } => {
+                // `record_managed_resources` refuses to manage. A floor check
+                // joins them: cfgd never installed the manager whose version
+                // it is judging, so it manages no resource here, and the
+                // PACKAGE row that finding stands for is minted by
+                // `action_drift_rows` instead.
+                ManagerAction::RefreshIndex { .. }
+                | ManagerAction::Prerequisite { .. }
+                | ManagerAction::HeldFloor { .. } => {
                     assert_eq!(rtype, "manager");
                 }
             },
@@ -8812,6 +8818,11 @@ fn every_action_variant() -> Vec<Action> {
         Action::Manager(ManagerAction::Refuse {
             manager: "npm".to_string(),
             reason: "provision failed".to_string(),
+        }),
+        Action::Manager(ManagerAction::HeldFloor {
+            manager: "cargo".to_string(),
+            floor: "1.85".to_string(),
+            modules: vec!["rust".to_string()],
         }),
         Action::File(FileAction::Create {
             source: PathBuf::from("/cache/conf"),
@@ -30281,47 +30292,189 @@ fn a_module_whose_only_entry_is_held_plans_no_action() {
     );
 }
 
-/// A read surface reports a held manager below its floor; a surface that
-/// INSTALLS cannot, because everything it is about to run through that manager
-/// runs through a copy the declaration says is too old. The refusal names the
-/// module holding it, the package and the raise, and it is the planner's, so
-/// every other module in the run is unaffected only in the sense that the run
-/// stops before any of them is touched.
+/// A module whose held manager is below its floor, or whose floor nothing
+/// could judge, carries that fact INTO the plan as a step of its own, and a
+/// module whose floor is met carries nothing.
+///
+/// The planner refusing instead is what the daemon crosses on every tick: a
+/// plan that ends in an error records no row, heals nothing and fires no hook
+/// for as long as one toolchain stays short.
 #[test]
-fn a_held_manager_below_its_floor_refuses_the_plan_and_names_the_raise() {
+fn a_held_manager_below_its_floor_is_planned_as_a_step_of_its_own() {
+    fn held_nodes(version: Option<&str>) -> Vec<(String, String, Vec<String>)> {
+        let mut registry = ProviderRegistry::new();
+        let mut cargo = crate::test_helpers::MockPackageManager::new("cargo");
+        if let Some(version) = version {
+            cargo = cargo.reporting_version(version);
+        }
+        registry.add_package_manager(Box::new(cargo));
+        let mut module = make_resolved_module("rust");
+        module.packages = Vec::new();
+        module.held_managers = vec![crate::modules::HeldManager {
+            package: "cargo".to_string(),
+            module: "rust".to_string(),
+            floor: "1.85".to_string(),
+            judgment: crate::modules::judge_declared_floor(
+                registry.package_managers()[0].as_ref(),
+                "cargo",
+                "1.85",
+                version,
+            ),
+        }];
+        let state = test_state();
+        let reconciler = Reconciler::new(&registry, &state);
+        let plan = reconciler
+            .plan(
+                &make_empty_resolved(),
+                Vec::new(),
+                Vec::new(),
+                vec![module],
+                ReconcileContext::Apply,
+            )
+            .expect("a held floor rides in the plan rather than ending it");
+        plan.phases
+            .iter()
+            .flat_map(Phase::actions)
+            .filter_map(|a| match a {
+                Action::Manager(ManagerAction::HeldFloor {
+                    manager,
+                    floor,
+                    modules,
+                }) => Some((manager.clone(), floor.clone(), modules.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    assert!(
+        held_nodes(Some("1.90")).is_empty(),
+        "a floor this host meets asks for nothing"
+    );
+    for version in [Some("1.80"), None] {
+        let nodes = held_nodes(version);
+        assert_eq!(nodes.len(), 1, "{version:?}: {nodes:?}");
+        let (manager, floor, modules) = &nodes[0];
+        assert_eq!((manager.as_str(), floor.as_str()), ("cargo", "1.85"));
+        assert_eq!(modules, &vec!["rust".to_string()]);
+    }
+}
+
+/// Two modules flooring one manager are ONE fact about the machine: one copy
+/// of cargo answers both, so the plan carries one node, at the stricter floor,
+/// naming both declarants.
+#[test]
+fn two_modules_flooring_one_held_manager_plan_one_node_at_the_stricter_floor() {
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(
+        crate::test_helpers::MockPackageManager::new("cargo").reporting_version("1.70"),
+    ));
+    let held = |module: &str, floor: &str| crate::modules::HeldManager {
+        package: "cargo".to_string(),
+        module: module.to_string(),
+        floor: floor.to_string(),
+        judgment: crate::modules::FloorJudgment::Short {
+            version: "1.70".to_string(),
+        },
+    };
+    let mut first = make_resolved_module("rust");
+    first.packages = Vec::new();
+    first.held_managers = vec![held("rust", "1.80")];
+    let mut second = make_resolved_module("tools");
+    second.packages = Vec::new();
+    second.held_managers = vec![held("tools", "1.85")];
+
+    let state = test_state();
+    let reconciler = Reconciler::new(&registry, &state);
+    let plan = reconciler
+        .plan(
+            &make_empty_resolved(),
+            Vec::new(),
+            Vec::new(),
+            vec![first, second],
+            ReconcileContext::Apply,
+        )
+        .expect("plan");
+    let nodes: Vec<(&String, &Vec<String>)> = plan
+        .phases
+        .iter()
+        .flat_map(Phase::actions)
+        .filter_map(|a| match a {
+            Action::Manager(ManagerAction::HeldFloor { floor, modules, .. }) => {
+                Some((floor, modules))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(nodes.len(), 1, "{nodes:?}");
+    assert_eq!(
+        nodes[0].0, "1.85",
+        "the stricter floor satisfies both modules"
+    );
+    assert_eq!(nodes[0].1, &vec!["rust".to_string(), "tools".to_string()]);
+}
+
+/// The step installs nothing and judges the BINARY when it runs: a host whose
+/// toolchain still falls short fails that one node, with the clause every read
+/// surface words the same fact in, and the rest of the run goes on.
+#[test]
+fn a_held_floor_step_fails_against_the_binary_and_names_the_raise() {
     let mut registry = ProviderRegistry::new();
     registry.add_package_manager(Box::new(
         crate::test_helpers::MockPackageManager::new("cargo").reporting_version("1.80"),
     ));
-    let mut module = make_resolved_module("rust");
-    module.packages = Vec::new();
-    module.held_managers = vec![crate::modules::HeldManager {
+    let plan = Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::Bootstrap,
+            &Owner::profile("test"),
+            vec![Action::Manager(ManagerAction::HeldFloor {
+                manager: "cargo".to_string(),
+                floor: "1.85".to_string(),
+                modules: vec!["rust".to_string()],
+            })],
+        )],
+        warnings: vec![],
+    };
+
+    let state = test_state();
+    let (result, out) = apply_manager_plan(&registry, &state, &plan);
+    assert_eq!(result.failed(), 1, "apply output:\n{out}");
+    let failure = result
+        .action_results
+        .iter()
+        .find_map(|a| a.error.clone())
+        .unwrap_or_else(|| panic!("the failed node carries its reason: {out}"));
+    let expected = crate::modules::HeldManager {
         package: "cargo".to_string(),
         module: "rust".to_string(),
         floor: "1.85".to_string(),
         judgment: crate::modules::FloorJudgment::Short {
             version: "1.80".to_string(),
         },
-    }];
-
-    let state = test_state();
-    let reconciler = Reconciler::new(&registry, &state);
-    let err = reconciler
-        .plan(
-            &make_empty_resolved(),
-            Vec::new(),
-            Vec::new(),
-            vec![module],
-            ReconcileContext::Apply,
-        )
-        .expect_err("an install path cannot run through a manager below its floor")
-        .to_string();
-    assert!(err.contains("rust"), "{err}");
-    assert!(err.contains("cargo"), "{err}");
+    }
+    .clause(Some(registry.package_managers()[0].as_ref()));
     assert!(
-        err.contains("below the declared minVersion 1.85")
-            && err.contains("raise it with cargo's own upgrade"),
-        "the refusal carries the same clause every read surface states: {err}"
+        failure.contains(&expected),
+        "the failure is worded by the one composer every read surface reads: \
+         {failure} / {expected}"
+    );
+    assert!(
+        expected.contains("below the declared minVersion 1.85"),
+        "the premise: that composer states the shortfall: {expected}"
+    );
+
+    let met = {
+        let mut registry = ProviderRegistry::new();
+        registry.add_package_manager(Box::new(
+            crate::test_helpers::MockPackageManager::new("cargo").reporting_version("1.90"),
+        ));
+        let state = test_state();
+        apply_manager_plan(&registry, &state, &plan).0
+    };
+    assert_eq!(met.failed(), 0);
+    assert_eq!(
+        met.skipped(),
+        1,
+        "a binary that meets the floor settles the step having changed nothing"
     );
 }
 

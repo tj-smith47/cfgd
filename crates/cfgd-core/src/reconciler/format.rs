@@ -888,6 +888,18 @@ fn format_manager_action_item(action: &ManagerAction) -> String {
         ManagerAction::Refuse { manager, reason } => {
             format!("cannot provision {manager} — {reason}")
         }
+        // The floor's own vocabulary, as a confirmed route's row states it
+        // (`provision cargo via rustup (minVersion 1.85)`), and the modules
+        // that asked for it, as a prerequisite names who needed it: the node
+        // installs nothing, so what it is FOR is the whole line.
+        ManagerAction::HeldFloor {
+            manager,
+            floor,
+            modules,
+        } => format!(
+            "check {manager} against minVersion {floor} — declared by {}",
+            modules.join(", ")
+        ),
     }
 }
 
@@ -2015,6 +2027,14 @@ mod tests {
                 .chain(required_by.iter().map(String::as_str))
                 .collect(),
             ManagerAction::Refuse { manager, reason } => vec![manager.as_str(), reason.as_str()],
+            ManagerAction::HeldFloor {
+                manager,
+                floor,
+                modules,
+            } => std::iter::once(manager.as_str())
+                .chain(std::iter::once(floor.as_str()))
+                .chain(modules.iter().map(String::as_str))
+                .collect(),
         }
     }
 
@@ -2086,6 +2106,14 @@ mod tests {
             ManagerAction::Refuse {
                 manager: "sentinel-manager".into(),
                 reason: "sentinel-reason".into(),
+            },
+            // Two modules flooring one manager are one node, so the subject
+            // accounts for both: a line naming one of them tells the other's
+            // reader the floor they declared is nobody's business.
+            ManagerAction::HeldFloor {
+                manager: "sentinel-manager".into(),
+                floor: "sentinel-floor".into(),
+                modules: vec!["sentinel-module".into(), "sentinel-other-module".into()],
             },
         ];
         for action in &cases {

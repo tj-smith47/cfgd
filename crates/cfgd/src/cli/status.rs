@@ -567,7 +567,7 @@ fn classify_recorded_drift_for_chain(
                         .unwrap_or_default();
                 // The declared name of the resolved package whose drift id IS
                 // this row, minted through the same composer the scope was.
-                let declared = owner
+                let resolved = owner
                     .packages
                     .iter()
                     .find(|p| {
@@ -577,13 +577,34 @@ fn classify_recorded_drift_for_chain(
                             cx.managers.get(p.manager.as_str()).copied(),
                         ) == event.resource_id
                     })
-                    .map_or_else(|| event.resource_id.clone(), |p| p.canonical_name.clone());
+                    .map(|p| p.canonical_name.clone());
+                // A held manager's floor row is minted under the same package
+                // grammar with the manager on both sides, and the scope claims
+                // it there too, so it reaches this arm with no resolved
+                // package to name it: the entry the reader wrote is the
+                // manager.
+                let declared = resolved.clone().or_else(|| {
+                    owner
+                        .held_managers
+                        .iter()
+                        .find(|h| {
+                            cfgd_core::reconciler::package_entry_drift_id(
+                                &h.package,
+                                &h.package,
+                                cx.managers.get(h.package.as_str()).copied(),
+                            ) == event.resource_id
+                        })
+                        .map(|h| h.package.clone())
+                });
+                let declared = declared.unwrap_or_else(|| event.resource_id.clone());
                 // The recorded verdict seeds the same joined package state a
                 // live scan fills, so the wide inventory row for a package
                 // this report's Drift section names can never read `not
                 // scanned` beside the finding — the file rows' rule, applied
-                // to every resource kind.
-                if owner.name == cx.mod_name {
+                // to every resource kind. A held manager is on the machine and
+                // nothing installs it, so its row seeds nothing: its inventory
+                // row states the floor verdict instead of an absence.
+                if owner.name == cx.mod_name && resolved.is_some() {
                     scanned_packages
                         .entry(declared.clone())
                         .or_default()
@@ -4103,6 +4124,66 @@ mod tests {
         assert!(
             LEGACY_STATUS_FLAGS.len() >= 2,
             "the table has stopped holding the spellings this command retired"
+        );
+    }
+
+    /// A held manager's floor row is minted under the package grammar with the
+    /// manager on both sides (`cargo:cargo`), and the module declares no
+    /// package of that name — so the name the row prints comes from the held
+    /// entry, or a reader who wrote `cargo` is shown `cargo:cargo`. Nothing
+    /// installs a manager the host already has, so the row seeds no inventory
+    /// absence either: the package row states the floor verdict.
+    #[test]
+    fn a_recorded_held_manager_row_is_named_by_the_manager_the_module_declared() {
+        let mut module = cfgd_core::test_helpers::make_resolved_module("rust");
+        module.packages = Vec::new();
+        module.held_managers = vec![cfgd_core::modules::HeldManager {
+            package: "cargo".to_string(),
+            module: "rust".to_string(),
+            floor: "1.85".to_string(),
+            judgment: cfgd_core::modules::FloorJudgment::Short {
+                version: "1.80".to_string(),
+            },
+        }];
+        let chain = vec![module];
+        let managers = std::collections::HashMap::new();
+        let scopes = super::super::live_drift::chain_scopes(&chain, &managers);
+        let event = cfgd_core::state::DriftEvent {
+            id: 1,
+            timestamp: cfgd_core::utc_now_iso8601(),
+            resource_type: "package".to_string(),
+            resource_id: cfgd_core::reconciler::package_entry_drift_id("cargo", "cargo", None),
+            expected: Some("1.85".to_string()),
+            actual: None,
+            resolved_by: None,
+            source: cfgd_core::config::LOCAL_LAYER.to_string(),
+            want: None,
+            have: None,
+        };
+        let mut drift = Vec::new();
+        let mut drifted_ids = std::collections::HashSet::new();
+        let mut scanned_packages = std::collections::HashMap::new();
+        super::classify_recorded_drift_for_chain(
+            [event],
+            &super::ChainOwnership {
+                chain: &chain,
+                scopes: &scopes,
+                managers: &managers,
+                mod_name: "rust",
+            },
+            &mut drift,
+            &mut drifted_ids,
+            &mut scanned_packages,
+        );
+        assert_eq!(drift.len(), 1, "the module's own scope claims the row");
+        assert_eq!(
+            (drift[0].surface, drift[0].item.as_str()),
+            (super::SURFACE_PACKAGES, "cargo"),
+            "the row prints the manager the module declared, not the minted id"
+        );
+        assert!(
+            scanned_packages.is_empty(),
+            "a manager this host holds is not a package an apply would install"
         );
     }
 

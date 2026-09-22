@@ -1001,7 +1001,13 @@ pub(in crate::cli) struct ManagerDriftPhrase {
 /// optimisation instead of a precondition a second caller has to know about.
 pub(in crate::cli) fn manager_drift_phrase(action: &ManagerAction) -> Option<ManagerDriftPhrase> {
     match action {
-        ManagerAction::RefreshIndex { .. } | ManagerAction::Prerequisite { .. } => None,
+        // A held manager below its floor is on the machine, so it is no absence
+        // to report here: `held_manager_version_drift` already gives it a
+        // version row on the very same surfaces, and a second line would name
+        // one fact twice in two grammars.
+        ManagerAction::RefreshIndex { .. }
+        | ManagerAction::Prerequisite { .. }
+        | ManagerAction::HeldFloor { .. } => None,
         ManagerAction::Provision { via, .. } => Some(ManagerDriftPhrase {
             state: cfgd_core::Absence::NotInstalled.as_str(),
             detail: format!("can provision via {via}"),

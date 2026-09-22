@@ -210,6 +210,7 @@ pub(in crate::cli) fn action_type_str(action: &reconciler::Action) -> &'static s
             reconciler::ManagerAction::Provision { .. } => "provision",
             reconciler::ManagerAction::Prerequisite { .. } => "prerequisite",
             reconciler::ManagerAction::Refuse { .. } => "refuse",
+            reconciler::ManagerAction::HeldFloor { .. } => "check",
         },
     }
 }
@@ -273,6 +274,22 @@ pub(in crate::cli) fn manager_action_output(
             batched: Vec::new(),
             reason: Some(reason.clone()),
             floor: None,
+        },
+        reconciler::ManagerAction::HeldFloor {
+            manager,
+            floor,
+            modules,
+        } => ManagerActionOutput {
+            manager: manager.clone(),
+            state: "held".to_string(),
+            via: None,
+            requires,
+            batched: Vec::new(),
+            // The modules whose floor this node judges, in the slot that
+            // already carries why a node is in the plan: a consumer reading a
+            // failed check needs to know whose declaration asked for it.
+            reason: Some(format!("declared by {}", modules.join(", "))),
+            floor: Some(floor.clone()),
         },
     })
 }

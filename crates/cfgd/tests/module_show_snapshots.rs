@@ -501,6 +501,8 @@ fn module_show_resolved_states_what_a_held_manager_answers_the_floor_with() {
         name: "cargo".into(),
         clause: clause.clone(),
         met: true,
+        version: Some("1.90".into()),
+        min_version: "1.85".into(),
     }]);
     let (printer, cap) = Printer::for_test_doc();
     printer.emit(build_module_show_doc(
@@ -531,6 +533,8 @@ fn module_show_resolved_does_not_call_a_held_manager_below_its_floor_satisfied()
         name: "cargo".into(),
         clause: clause.clone(),
         met: false,
+        version: Some("1.80".into()),
+        min_version: "1.85".into(),
     }]);
     let (printer, cap) = Printer::for_test_doc();
     printer.emit(build_module_show_doc(

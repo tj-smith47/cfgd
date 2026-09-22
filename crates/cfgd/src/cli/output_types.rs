@@ -566,9 +566,11 @@ impl PlanGroupOutput {
 #[serde(rename_all = "camelCase")]
 pub struct ManagerActionOutput {
     pub manager: String,
-    /// The `state` enum is `present`|`provisioned`|`prerequisite`|`refused`.
+    /// The `state` enum is `present`|`provisioned`|`prerequisite`|`refused`|`held`.
     /// `Action::Manager` names `Refuse` as a node that must give a payload,
     /// and a state enum a refusal cannot express in would silently drop it.
+    /// `held` is the manager this host already has, whose declared floor the
+    /// apply judges against the binary.
     pub state: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub via: Option<String>,
@@ -582,15 +584,15 @@ pub struct ManagerActionOutput {
     /// `apt-get install` covering both.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub batched: Vec<String>,
-    /// Why this host cannot provision the manager. `Some` only when
-    /// `state == "refused"`.
+    /// Why this host cannot provision the manager when `state == "refused"`,
+    /// and which modules declared the floor when `state == "held"`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
-    /// The `minVersion` a floor confirmation was given for, from
-    /// [`cfgd_core::reconciler::ManagerAction::Provision`]'s own field. `Some`
-    /// only for a provision a confirmed floor route produced, and omitted from
-    /// the wire otherwise, so a consumer reading a plan that asked nothing
-    /// sees exactly what it always saw.
+    /// The `minVersion` this node was given for, from
+    /// [`cfgd_core::reconciler::ManagerAction::Provision`]'s own field or from
+    /// the held floor the apply checks. `Some` only for those two, and omitted
+    /// from the wire otherwise, so a consumer reading a plan that asked
+    /// nothing sees exactly what it always saw.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub floor: Option<String>,
 }

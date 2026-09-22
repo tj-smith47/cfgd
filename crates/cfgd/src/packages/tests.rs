@@ -5619,36 +5619,66 @@ enum RaiseVerb {
     None { listing_seam: &'static str },
 }
 
+/// What raises a manager's OWN copy, where its package verb does not.
+///
+/// `cargo install cargo` is not how a rust toolchain moves and `brew upgrade
+/// brew` is not how brew moves, so a shortfall sentence about the manager
+/// itself cannot be worded from [`RaiseVerb`] alone. [`OwnRaise::PackageVerb`]
+/// is the statement that this family really does raise itself the way it
+/// raises a package, or that nothing cfgd can run raises it at all.
+enum OwnRaise {
+    Command(&'static str),
+    PackageVerb,
+}
+
 /// Every registered manager against the verb it raises an already-held
-/// package with, read off each manager's own `upgrade_verb()` at HEAD. A
-/// newly registered manager fails this walk until it is classified here,
-/// which is the mechanism that keeps the next family honest.
-const MANAGER_RAISE_VERBS: &[(&str, RaiseVerb)] = &[
-    ("brew", RaiseVerb::Verb("upgrade")),
-    ("brew-cask", RaiseVerb::Verb("upgrade")),
+/// package with, and the command that raises its own copy, both read off the
+/// manager's own answers at HEAD. A newly registered manager fails this walk
+/// until it is classified here, which is the mechanism that keeps the next
+/// family honest.
+const MANAGER_RAISE_VERBS: &[(&str, RaiseVerb, OwnRaise)] = &[
+    (
+        "brew",
+        RaiseVerb::Verb("upgrade"),
+        OwnRaise::Command("brew update"),
+    ),
+    (
+        "brew-cask",
+        RaiseVerb::Verb("upgrade"),
+        OwnRaise::Command("brew update"),
+    ),
     (
         "brew-tap",
         RaiseVerb::None {
             listing_seam: "CFGD_BREW_BIN",
         },
+        OwnRaise::PackageVerb,
     ),
-    ("apt", RaiseVerb::Verb("install")),
-    ("cargo", RaiseVerb::Verb("install")),
-    ("npm", RaiseVerb::Verb("install")),
-    ("pipx", RaiseVerb::Verb("upgrade")),
-    ("dnf", RaiseVerb::Verb("install")),
-    ("apk", RaiseVerb::Verb("upgrade")),
-    ("pacman", RaiseVerb::Verb("-S")),
-    ("zypper", RaiseVerb::Verb("install")),
-    ("yum", RaiseVerb::Verb("install")),
-    ("pkg", RaiseVerb::Verb("install")),
-    ("snap", RaiseVerb::Verb("refresh")),
-    ("flatpak", RaiseVerb::Verb("update")),
-    ("nix", RaiseVerb::Verb("upgrade")),
-    ("go", RaiseVerb::Verb("install")),
-    ("winget", RaiseVerb::Verb("install")),
-    ("chocolatey", RaiseVerb::Verb("upgrade")),
-    ("scoop", RaiseVerb::Verb("update")),
+    ("apt", RaiseVerb::Verb("install"), OwnRaise::PackageVerb),
+    (
+        "cargo",
+        RaiseVerb::Verb("install"),
+        OwnRaise::Command("rustup update"),
+    ),
+    ("npm", RaiseVerb::Verb("install"), OwnRaise::PackageVerb),
+    ("pipx", RaiseVerb::Verb("upgrade"), OwnRaise::PackageVerb),
+    ("dnf", RaiseVerb::Verb("install"), OwnRaise::PackageVerb),
+    ("apk", RaiseVerb::Verb("upgrade"), OwnRaise::PackageVerb),
+    ("pacman", RaiseVerb::Verb("-S"), OwnRaise::PackageVerb),
+    ("zypper", RaiseVerb::Verb("install"), OwnRaise::PackageVerb),
+    ("yum", RaiseVerb::Verb("install"), OwnRaise::PackageVerb),
+    ("pkg", RaiseVerb::Verb("install"), OwnRaise::PackageVerb),
+    ("snap", RaiseVerb::Verb("refresh"), OwnRaise::PackageVerb),
+    ("flatpak", RaiseVerb::Verb("update"), OwnRaise::PackageVerb),
+    ("nix", RaiseVerb::Verb("upgrade"), OwnRaise::PackageVerb),
+    ("go", RaiseVerb::Verb("install"), OwnRaise::PackageVerb),
+    ("winget", RaiseVerb::Verb("install"), OwnRaise::PackageVerb),
+    (
+        "chocolatey",
+        RaiseVerb::Verb("upgrade"),
+        OwnRaise::PackageVerb,
+    ),
+    ("scoop", RaiseVerb::Verb("update"), OwnRaise::PackageVerb),
 ];
 
 #[test]
@@ -5658,9 +5688,9 @@ fn every_registered_manager_declares_how_its_family_raises_a_held_package() {
     let state = cfgd_core::test_helpers::test_state();
     let cx = PackageContext::new(&printer, &state);
     for mgr in all_package_managers() {
-        let (_, verb) = MANAGER_RAISE_VERBS
+        let (_, verb, own) = MANAGER_RAISE_VERBS
             .iter()
-            .find(|(name, _)| *name == mgr.name())
+            .find(|(name, _, _)| *name == mgr.name())
             .unwrap_or_else(|| {
                 panic!(
                     "{}: classify this manager's raise verb — an uninventoried \
@@ -5678,6 +5708,17 @@ fn every_registered_manager_declares_how_its_family_raises_a_held_package() {
             expected,
             "{}: MANAGER_RAISE_VERBS disagrees with the manager's own \
              upgrade_verb()",
+            mgr.name()
+        );
+        let expected_own = match own {
+            OwnRaise::Command(c) => Some(*c),
+            OwnRaise::PackageVerb => None,
+        };
+        assert_eq!(
+            mgr.own_raise().as_deref(),
+            expected_own,
+            "{}: MANAGER_RAISE_VERBS disagrees with the manager's own \
+             own_raise()",
             mgr.name()
         );
         if let RaiseVerb::None { listing_seam } = verb {
@@ -5704,6 +5745,40 @@ fn every_registered_manager_declares_how_its_family_raises_a_held_package() {
             );
         }
     }
+}
+
+/// The sentence a reader gets when the toolchain on this host has slipped
+/// below a declared floor names the command that moves it. `cargo install
+/// cargo` fetches a second copy from crates.io and leaves the toolchain where
+/// it was, so the clause is worded from the manager's own raise and held here
+/// against the REGISTERED cargo rather than a mock that could answer anything.
+#[test]
+fn a_held_cargo_below_its_floor_names_rustup_as_the_raise() {
+    let managers = all_package_managers();
+    let cargo = managers
+        .iter()
+        .find(|m| m.name() == "cargo")
+        .expect("cargo is a registered manager");
+    let held = cfgd_core::modules::HeldManager {
+        package: "cargo".to_string(),
+        module: "rust".to_string(),
+        floor: "1.85".to_string(),
+        judgment: cfgd_core::modules::judge_declared_floor(
+            cargo.as_ref(),
+            "cargo",
+            "1.85",
+            Some("1.80"),
+        ),
+    };
+    let clause = held.clause(Some(cargo.as_ref()));
+    assert!(
+        clause.contains("cargo 1.80 is on this host, below the declared minVersion 1.85"),
+        "the shortfall states both operands: {clause}"
+    );
+    assert!(
+        clause.contains("raise it with `rustup update`"),
+        "a slipped toolchain is raised by rustup, not by cargo's package verb: {clause}"
+    );
 }
 
 /// The half of the floor-dedup rule a "simplification" would break. Both

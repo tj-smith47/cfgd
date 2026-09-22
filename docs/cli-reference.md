@@ -547,9 +547,13 @@ A `Bootstrap` action carries a structured `manager` sub-object beside its
 sentence: `state` is `present` (an already-installed manager's index refresh),
 `provisioned` (a manager this run installs, `via` naming its bootstrap method),
 `prerequisite` (a tool a provision's installer shells out to; `manager` names
-the tool, `via` names the installer), or `refused` (a manager that can't be
+the tool, `via` names the installer), `refused` (a manager that can't be
 provisioned, `reason` naming why: a refusal is still something the run
-decided, so `-o json` carries it rather than dropping it silently).
+decided, so `-o json` carries it rather than dropping it silently), or `held`
+(a manager this host already has, below the `minVersion` a module declared for
+it; `floor` carries that floor and `reason` names the modules that declared it).
+A `held` action installs nothing: it re-reads the manager's own binary when the
+run reaches it, and fails that one step when the floor is still unmet.
 A provision a floor confirmation produced also carries `floor`, the
 `minVersion` the question was asked for; it is absent from every other
 provision, so a plan that asked nothing carries exactly what it always did.
@@ -597,6 +601,16 @@ resolving one-to-one against a sibling action's own `description`:
             "manager": "snap",
             "state": "refused",
             "reason": "no available system manager"
+          }
+        },
+        {
+          "type": "check",
+          "description": "check cargo against minVersion 99.0 — declared by rust",
+          "manager": {
+            "manager": "cargo",
+            "state": "held",
+            "floor": "99.0",
+            "reason": "declared by rust"
           }
         }
       ]

@@ -1431,6 +1431,20 @@ pub(super) fn narrow_to_module(
     // phases too so drift recording and `reconciler.apply` only ever see the
     // filtered module's own work.
     plan.phases.retain(|p| !p.is_empty());
+    // A held manager's floor is one fact for every module that declared it, so
+    // the node survives the `is_managers()` retain above whoever asked for it.
+    // A tick scoped to one module must not report another module's shortfall:
+    // the node names the modules it judges, and that is the question asked.
+    for phase in &mut plan.phases {
+        phase.retain_actions(|action| match action {
+            crate::reconciler::Action::Manager(crate::reconciler::ManagerAction::HeldFloor {
+                modules,
+                ..
+            }) => modules.iter().any(|m| m == module),
+            _ => true,
+        });
+    }
+    plan.phases.retain(|p| !p.is_empty());
     crate::reconciler::prune_to_surviving_consumers(plan, registry);
 }
 

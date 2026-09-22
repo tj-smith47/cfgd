@@ -34017,9 +34017,10 @@ fn every_core_minted_package_drift_id_comes_from_its_composer() {
     ];
     // Each production anchor, by file and count, hatched lines excluded:
     // `apply.rs`'s two provision batch-member heals, `types.rs`'s manager-node
-    // and per-package rows, `verify.rs`'s missing row, its below-the-floor row
-    // and the one a held manager's own binary answers for.
-    const EXPECTED: [(&str, usize); 3] = [("apply.rs", 2), ("types.rs", 2), ("verify.rs", 3)];
+    // row, its per-package rows and the floor node's, `verify.rs`'s missing row,
+    // its below-the-floor row and the one a held manager's own binary answers
+    // for.
+    const EXPECTED: [(&str, usize); 3] = [("apply.rs", 2), ("types.rs", 3), ("verify.rs", 3)];
 
     let core_src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../cfgd-core/src");
     let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();

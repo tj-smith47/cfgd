@@ -1825,6 +1825,11 @@ mod tests {
                 manager: "nix".into(),
                 reason: "curl is missing".into(),
             },
+            ManagerAction::HeldFloor {
+                manager: "cargo".into(),
+                floor: "1.85".into(),
+                modules: vec!["rust".into()],
+            },
         ];
         for node in variants {
             let action = Action::Manager(node);
@@ -1848,7 +1853,8 @@ mod tests {
                 }
                 ManagerAction::RefreshIndex { .. }
                 | ManagerAction::Provision { .. }
-                | ManagerAction::Refuse { .. } => assert_eq!(
+                | ManagerAction::Refuse { .. }
+                | ManagerAction::HeldFloor { .. } => assert_eq!(
                     named, rendered,
                     "a blocker is named by the row the reader can see"
                 ),

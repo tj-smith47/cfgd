@@ -152,6 +152,13 @@ impl PackageManager for CargoManager {
         super::shared::tool_version_from(cargo_cmd().arg("--version"))
     }
 
+    fn own_raise(&self) -> Option<std::borrow::Cow<'static, str>> {
+        // The binary on PATH is rustup's shim, so the toolchain behind it is
+        // what a raise has to move; `cargo install cargo` would put a second
+        // copy beside the one in use.
+        Some("rustup update".into())
+    }
+
     fn home_env_vars(&self) -> &'static [&'static str] {
         // `~/.cargo/bin/cargo` is rustup's shim: it resolves the toolchain
         // through these two and exits non-zero without them, so a process that

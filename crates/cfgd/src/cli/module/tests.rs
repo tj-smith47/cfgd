@@ -8522,16 +8522,43 @@ fn module_show_resolved_rows_state_a_held_managers_floor_judgment() {
     }
     .clause(Some(&cargo));
     match &rows[0] {
-        super::list_show::PackageDisplay::Held { name, clause, met } => {
+        super::list_show::PackageDisplay::Held {
+            name,
+            clause,
+            met,
+            version,
+            min_version,
+        } => {
             assert_eq!(name, "cargo");
             assert_eq!(clause, &expected_short);
             assert!(!met, "a floor this host falls short of is not met");
+            assert_eq!(
+                version.as_deref(),
+                Some("1.80"),
+                "the operand the verdict was measured against rides as a field"
+            );
+            assert_eq!(
+                min_version, "1.85",
+                "and so does the floor it was measured against"
+            );
         }
         other => panic!("an entry naming a held manager renders its judgment: {other:#?}"),
     }
     match &rows[1] {
-        super::list_show::PackageDisplay::Held { name, clause, met } => {
+        super::list_show::PackageDisplay::Held {
+            name,
+            clause,
+            met,
+            version,
+            min_version,
+        } => {
             assert_eq!(name, "npm");
+            assert_eq!(
+                version.as_deref(),
+                None,
+                "a floor nothing could judge names no version"
+            );
+            assert_eq!(min_version, "10.0");
             let unproven = cfgd_core::modules::HeldManager {
                 package: "npm".into(),
                 module: "dev-tools".into(),
@@ -8544,4 +8571,17 @@ fn module_show_resolved_rows_state_a_held_managers_floor_judgment() {
         }
         other => panic!("a floor nothing could judge is still a held row: {other:#?}"),
     }
+
+    let wire = serde_json::to_value(&rows).expect("the rows serialize");
+    assert_eq!(wire[0]["state"], "held");
+    assert_eq!(
+        (&wire[0]["version"], &wire[0]["minVersion"]),
+        (&serde_json::json!("1.80"), &serde_json::json!("1.85")),
+        "a consumer reads both operands as fields, camelCase like every other key"
+    );
+    assert!(
+        wire[1]["version"].is_null() && wire[1]["minVersion"] == "10.0",
+        "a floor nothing could judge states the floor and a null version: {}",
+        wire[1]
+    );
 }

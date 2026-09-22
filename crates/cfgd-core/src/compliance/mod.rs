@@ -649,8 +649,13 @@ pub fn collect_package_checks(
     // delivery IS the manager, so nothing installs it and no listing lists it.
     // Without a row of its own the control plane sees a module declaring
     // nothing at all. The name and the manager are the same word, which is the
-    // fact the row reports.
-    let mgr_map = registry.manager_map();
+    // fact the row reports. The map allocates a key per registered manager and
+    // is read only here, so a profile declaring no held manager never builds it.
+    let mgr_map = if modules.iter().any(|m| !m.held_managers.is_empty()) {
+        registry.manager_map()
+    } else {
+        std::collections::HashMap::new()
+    };
     for module in modules {
         for held in &module.held_managers {
             let suffix = origin_suffix(&Origin::Module(module.name.clone()));

@@ -738,6 +738,41 @@ impl<'x> PackageExec<'x> {
                 }
                 .into());
             }
+            // Nothing to install: the node is the CHECK. Asked here rather than
+            // read off the resolution, for the reason the floored provision
+            // asks it here too: an operator who raised the toolchain between
+            // the plan and the apply has changed the answer, and a run that
+            // failed on the older one would be reporting a machine that no
+            // longer exists.
+            ManagerAction::HeldFloor {
+                manager,
+                floor,
+                modules,
+            } => {
+                let pm = lookup(manager)?;
+                let judgment = crate::modules::judge_declared_floor(
+                    pm.as_ref(),
+                    manager,
+                    floor,
+                    pm.tool_version().as_deref(),
+                );
+                if !judgment.met() {
+                    let held = crate::modules::HeldManager {
+                        package: manager.clone(),
+                        module: modules.join(", "),
+                        floor: floor.clone(),
+                        judgment,
+                    };
+                    return Err(crate::errors::PackageError::BootstrapFailed {
+                        manager: manager.clone(),
+                        message: held.clause(Some(pm.as_ref())),
+                    }
+                    .into());
+                }
+                // A floor that was already met changed nothing, and the row
+                // says so: the node settles rather than claiming work.
+                changed = false;
+            }
         }
         let run = ActionRun::new(action.node_id(), changed).delivering(delivered);
         Ok(match provisioned_now {

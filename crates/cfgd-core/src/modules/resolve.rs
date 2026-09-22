@@ -248,10 +248,18 @@ impl HeldManager {
 
     /// How the manager itself is raised. A bootstrap cannot raise a manager
     /// already on the machine and nothing cfgd plans installs one over itself,
-    /// so the sentence names the family's own raise
-    /// ([`PackageManager::upgrade_verb`]) and stops there rather than composing
-    /// a command that would put a second copy beside the one in use.
+    /// so the sentence names a real raise and stops there rather than
+    /// composing a command that would put a second copy beside the one in use.
+    ///
+    /// The manager answers for its own copy first
+    /// ([`PackageManager::own_raise`]), because a family whose binary is a
+    /// shim is raised by the tool behind the shim; only a manager that raises
+    /// itself the way it raises a package falls to
+    /// [`PackageManager::upgrade_verb`].
     fn raise_clause(&self, mgr: Option<&dyn PackageManager>) -> String {
+        if let Some(command) = mgr.and_then(PackageManager::own_raise) {
+            return format!("raise it with `{command}`");
+        }
         match mgr.and_then(PackageManager::upgrade_verb) {
             Some(verb) => format!("raise it with {}'s own {verb}", self.package),
             None => format!(
@@ -311,6 +319,17 @@ impl FloorJudgment {
     /// floor unmet.
     pub fn met(&self) -> bool {
         matches!(self, Self::Met { .. })
+    }
+
+    /// The version the judgment was made against, or `None` where nothing
+    /// could be read. A surface rendering the operand takes it from here
+    /// rather than re-reading the binary, which would answer a later moment
+    /// than the verdict beside it.
+    pub fn version(&self) -> Option<&str> {
+        match self {
+            Self::Met { version } | Self::Short { version } => Some(version),
+            Self::Unproven { .. } => None,
+        }
     }
 }
 

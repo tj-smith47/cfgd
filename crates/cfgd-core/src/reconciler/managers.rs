@@ -697,6 +697,12 @@ pub fn prune_to_surviving_consumers(plan: &mut Plan, registry: &ProviderRegistry
                 ManagerAction::Prerequisite { required_by, .. } => required_by
                     .iter()
                     .any(|consumer| consumer.contains(':') && consumers.contains(consumer)),
+                // A held manager's floor is the module's whole declaration
+                // about it: the manager IS the delivery, so no install names
+                // it and no consumer can keep it. Dropping it here would take
+                // the fact out of every narrowed run that still holds the
+                // module that declared it.
+                ManagerAction::HeldFloor { .. } => true,
                 _ => node
                     .provisioned_managers()
                     .iter()

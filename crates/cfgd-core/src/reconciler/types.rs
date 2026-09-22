@@ -256,6 +256,27 @@ pub enum ManagerAction {
     /// phase the user is told to look at, instead of being a manager that
     /// quietly never appears.
     Refuse { manager: String, reason: String },
+    /// A manager this host already holds, against the floor a module declared
+    /// for it. It installs nothing (a bootstrap cannot raise a manager that is
+    /// already present) and the check runs at execution, against the binary.
+    ///
+    /// The fact rides in the plan rather than ending the run that builds one:
+    /// every drift policy crosses `Reconciler::plan`, the daemon included, so a
+    /// refusal there left a tick that records nothing, heals nothing and fires
+    /// no hook for as long as one toolchain stays short.
+    HeldFloor {
+        manager: String,
+        /// The strictest floor any module declared for it, folded with
+        /// `crate::effective::stricter_floor` exactly as a confirmed route's
+        /// is: one copy of the manager satisfies both, and the lower floor
+        /// leaves the stricter module quietly short.
+        floor: String,
+        /// The modules whose declared floor this node judges, in resolution
+        /// order. Two modules flooring one manager are one fact and one node,
+        /// and a module-scoped run reads this to tell whether the fact is its
+        /// own.
+        modules: Vec<String>,
+    },
 }
 
 /// The route a module declared to a tool cfgd also needs as a MANAGER.
@@ -340,6 +361,10 @@ fn refuse_id(manager: &str) -> String {
     format!("refuse:{manager}")
 }
 
+fn held_floor_id(manager: &str) -> String {
+    format!("floor:{manager}")
+}
+
 fn node_of(resource_id: &str) -> String {
     format!("{MANAGER_RESOURCE_TYPE}:{resource_id}")
 }
@@ -358,6 +383,7 @@ impl ManagerAction {
             ManagerAction::Provision { manager, .. } => provision_id(manager),
             ManagerAction::Prerequisite { tool, .. } => prereq_id(tool),
             ManagerAction::Refuse { manager, .. } => refuse_id(manager),
+            ManagerAction::HeldFloor { manager, .. } => held_floor_id(manager),
         }
     }
 
@@ -414,7 +440,9 @@ impl ManagerAction {
     /// Empty for a refresh, which is always a root.
     pub fn depends_on(&self) -> &[String] {
         match self {
-            ManagerAction::RefreshIndex { .. } | ManagerAction::Refuse { .. } => &[],
+            ManagerAction::RefreshIndex { .. }
+            | ManagerAction::Refuse { .. }
+            | ManagerAction::HeldFloor { .. } => &[],
             ManagerAction::Provision { depends_on, .. }
             | ManagerAction::Prerequisite { depends_on, .. } => depends_on,
         }
@@ -427,7 +455,8 @@ impl ManagerAction {
         match self {
             ManagerAction::RefreshIndex { manager }
             | ManagerAction::Provision { manager, .. }
-            | ManagerAction::Refuse { manager, .. } => manager,
+            | ManagerAction::Refuse { manager, .. }
+            | ManagerAction::HeldFloor { manager, .. } => manager,
             ManagerAction::Prerequisite { installer, .. } => installer,
         }
     }
@@ -447,7 +476,8 @@ impl ManagerAction {
         match self {
             ManagerAction::RefreshIndex { manager }
             | ManagerAction::Provision { manager, .. }
-            | ManagerAction::Refuse { manager, .. } => manager,
+            | ManagerAction::Refuse { manager, .. }
+            | ManagerAction::HeldFloor { manager, .. } => manager,
             ManagerAction::Prerequisite { tool, .. } => tool,
         }
     }
@@ -516,10 +546,18 @@ impl ManagerAction {
     /// manager it refuses. A prerequisite install and an index refresh name
     /// nothing: `apt install curl` failing says nothing about apt, and a stale
     /// index is not a missing binary.
+    ///
+    /// An unmet floor speaks for its manager too. The binary is on the machine
+    /// and would run, which is the trap: installing the rest of the module
+    /// through a toolchain below the floor is the one thing the floor forbids,
+    /// so the run withholds it exactly as it withholds a manager that failed to
+    /// arrive.
     pub fn managers_left_unavailable(&self) -> Vec<&str> {
         match self {
             ManagerAction::Provision { .. } => self.provisioned_managers(),
-            ManagerAction::Refuse { manager, .. } => vec![manager.as_str()],
+            ManagerAction::Refuse { manager, .. } | ManagerAction::HeldFloor { manager, .. } => {
+                vec![manager.as_str()]
+            }
             ManagerAction::Prerequisite { .. } | ManagerAction::RefreshIndex { .. } => Vec::new(),
         }
     }
@@ -2023,7 +2061,15 @@ pub(crate) fn action_resource_info(action: &Action) -> (String, String) {
             ManagerAction::Provision { .. } | ManagerAction::Refuse { .. } => {
                 ("package".to_string(), ma.resource_id())
             }
-            ManagerAction::RefreshIndex { .. } | ManagerAction::Prerequisite { .. } => {
+            // A floor check keeps the scaffolding type although its FINDING is a
+            // package one: cfgd does not manage the version of a manager it
+            // never installed, so `record_managed_resources` must not write a
+            // row claiming it does. The drift row the same node stands for is
+            // minted by `action_drift_rows`, which has the registry in hand and
+            // words it in the identity the live floor re-check already uses.
+            ManagerAction::RefreshIndex { .. }
+            | ManagerAction::Prerequisite { .. }
+            | ManagerAction::HeldFloor { .. } => {
                 (MANAGER_RESOURCE_TYPE.to_string(), ma.resource_id())
             }
         },
@@ -2188,6 +2234,25 @@ pub fn action_drift_rows(
                     .collect()
             }
         },
+        // The row the live floor re-check (`held_manager_version_drift`) mints
+        // for the same manager, so whichever side looks next settles the other's
+        // row instead of standing a second one beside it. The version is what
+        // the machine answers at execution, so the operand this side states is
+        // the floor alone; `record_drift` COALESCEs the empty side over
+        // whatever a re-check already wrote.
+        Action::Manager(ManagerAction::HeldFloor { manager, floor, .. }) => {
+            let pm = registry
+                .package_managers()
+                .iter()
+                .find(|m| m.name() == manager)
+                .map(std::convert::AsRef::as_ref);
+            vec![DriftRow {
+                resource_type: "package".to_string(),
+                resource_id: package_entry_drift_id(manager, manager, pm),
+                expected: Some(floor.clone()),
+                actual: None,
+            }]
+        }
         // A Skip names the bare manager whose whole block was withheld — a
         // finding about the TOOLING, not about any package in it.
         Action::Package(PackageAction::Skip { .. }) => {
