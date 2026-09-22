@@ -588,6 +588,7 @@ fn classify_recorded_drift_for_chain(
                         .held_managers
                         .iter()
                         .find(|h| {
+                            // held-id-reader-ok: matched against a recorded row, no floor read
                             cfgd_core::reconciler::package_entry_drift_id(
                                 &h.package,
                                 &h.package,

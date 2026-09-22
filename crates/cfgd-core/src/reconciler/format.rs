@@ -1225,6 +1225,7 @@ pub fn module_scope(
         // (`held_manager_version_drift`), so the scope claims it too or a
         // scoped run that found the machine converged leaves the row standing.
         .chain(module.held_managers.iter().map(|h| {
+            // held-id-reader-ok: a scope claims the id, never the floor behind it
             super::package_entry_drift_id(
                 &h.package,
                 &h.package,
