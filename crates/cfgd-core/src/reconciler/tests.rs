@@ -30476,6 +30476,44 @@ fn a_held_floor_step_fails_against_the_binary_and_names_the_raise() {
         1,
         "a binary that meets the floor settles the step having changed nothing"
     );
+
+    // Installing the rest of a module through a toolchain below the floor is
+    // the one thing the floor forbids, so the manager is withheld for the rest
+    // of the run exactly as one that failed to arrive is.
+    let withheld = Plan {
+        phases: vec![
+            Phase::from_actions(
+                PhaseName::Bootstrap,
+                &Owner::profile("test"),
+                vec![Action::Manager(ManagerAction::HeldFloor {
+                    manager: "cargo".to_string(),
+                    floor: "1.85".to_string(),
+                    modules: vec!["rust".to_string()],
+                })],
+            ),
+            Phase::from_actions(
+                PhaseName::Packages,
+                &Owner::profile("test"),
+                vec![install_action("cargo", &["ripgrep"])],
+            ),
+        ],
+        warnings: vec![],
+    };
+    let state = test_state();
+    let (after, out) = apply_manager_plan(&registry, &state, &withheld);
+    let install = after
+        .action_results
+        .iter()
+        .find(|r| r.phase == PhaseName::Packages.as_str())
+        .unwrap_or_else(|| panic!("the package row settled: {out}"));
+    assert!(
+        install
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("cargo is not provisioned"),
+        "a package action through the short toolchain is refused, not spawned: {install:?}"
+    );
 }
 
 #[test]
