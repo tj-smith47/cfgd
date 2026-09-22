@@ -48548,6 +48548,104 @@ fn every_manager_the_registry_can_bootstrap_is_named_in_the_docs_list() {
     );
 }
 
+/// The managers that declare a bootstrap plan on EVERY host running this
+/// platform: their arm is the one this platform's `cfg` selects, and it hands
+/// back a plan without asking what else is installed.
+///
+/// Every other declarer names a mediator it has to find first (`go`, `snap`
+/// and `flatpak` everywhere, `cargo` and `npm` on Windows), so whether it
+/// declares is a fact about the machine, and a count over the whole registry
+/// would hold on the box it was written on and nowhere else. These names are
+/// the floor the walk below can hold on any runner; the registry is what says
+/// who else joins them here.
+const UNCONDITIONALLY_DECLARING: &[&str] = if cfg!(windows) {
+    &["pipx", "chocolatey", "scoop"]
+} else {
+    &["brew", "cargo", "npm", "pipx", "nix"]
+};
+
+/// Every registered manager that declares a bootstrap plan is reachable from
+/// the floor-confirmation route, and the route names that manager's own
+/// cascade.
+///
+/// The route is derived from `bootstrap_plan_given` off the registry rather
+/// than from a per-manager table, so a manager added later joins the population
+/// by existing, and one whose arm stops handing back a plan leaves it the same
+/// way.
+///
+/// It is asked through `floor_bootstrap_via`, the host-INDEPENDENT half:
+/// `floor_bootstrap_route` withholds a route for a manager this host already
+/// holds, which is right for the resolver and wrong for a population question:
+/// judging `brew` unreachable on a machine that has brew would make the pin a
+/// statement about the runner. The entry names the manager itself, which is the
+/// shape the resolver reaches this with, so the route comes back naming a
+/// package a reader can act on.
+#[test]
+fn every_manager_declaring_a_bootstrap_plan_is_reachable_from_the_floor_route() {
+    // Several arms probe PATH for their mediator, so a sibling's mutation
+    // window opening between the plan read here and the one the route reads
+    // would compare two different hosts.
+    let _path_lock = cfgd_core::test_helpers::path_env_read_guard();
+    let managers = crate::packages::all_package_managers();
+    let map: std::collections::HashMap<String, &dyn cfgd_core::providers::PackageManager> =
+        managers
+            .iter()
+            .map(|m| (m.name().to_string(), m.as_ref()))
+            .collect();
+    // The proven-below finding the resolver would be carrying by the time it
+    // asks: some manager offered a version, and it fell short.
+    let found = Some(("apt".to_string(), "0.1".to_string()));
+    let mut declaring: Vec<String> = Vec::new();
+    let mut unreachable = Vec::new();
+    for mgr in &managers {
+        let Some(plan) = mgr.bootstrap_plan_given(&|_| false) else {
+            continue;
+        };
+        declaring.push(mgr.name().to_string());
+        let entry = cfgd_core::config::ModulePackageEntry {
+            name: mgr.name().to_string(),
+            min_version: Some("999.0".to_string()),
+            ..Default::default()
+        };
+        match cfgd_core::modules::floor_bootstrap_via(mgr.name(), &entry, "walk", &map, &found) {
+            Some((resolved, route)) => {
+                assert_eq!(
+                    resolved.name(),
+                    mgr.name(),
+                    "the route resolves the manager it was asked about"
+                );
+                assert_eq!(
+                    route.via,
+                    plan.method,
+                    "{} routes through its own cascade",
+                    mgr.name()
+                );
+                assert_eq!(
+                    (route.package.as_str(), route.floor.as_str()),
+                    (mgr.name(), "999.0"),
+                    "the route names the package asked about and the floor it fell short of"
+                );
+            }
+            None => unreachable.push(mgr.name().to_string()),
+        }
+    }
+    assert!(
+        unreachable.is_empty(),
+        "these managers declare a bootstrap plan and no floor question can reach them, \
+         so a module flooring one is refused with nothing to offer: {unreachable:#?}"
+    );
+    let missing: Vec<&&str> = UNCONDITIONALLY_DECLARING
+        .iter()
+        .filter(|name| !declaring.iter().any(|d| d == *name))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "the walk judged {} managers declaring a bootstrap plan ({declaring:?}), and this \
+         platform's arm hands one back for {missing:?} on every host",
+        declaring.len()
+    );
+}
+
 /// The two sentences `docs/modules.md` promises for a held manager that does
 /// not clear its floor are the composer's own bytes, taken from it here rather
 /// than typed there: a reader who finds the page's words in their terminal has

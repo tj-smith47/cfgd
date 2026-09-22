@@ -734,7 +734,7 @@ fn floor_bootstrap_route(
 /// `bootstrap_plan_given(&|_| false)` prices the cascade against the host as it
 /// stands, so a manager whose only arm is a mediator this host lacks offers
 /// nothing and the refusal stands.
-fn floor_bootstrap_via<'m>(
+pub fn floor_bootstrap_via<'m>(
     manager: &str,
     entry: &ModulePackageEntry,
     module_name: &str,

@@ -22,6 +22,10 @@ mod surfaces;
 
 #[cfg(any(test, feature = "test-helpers"))]
 pub(crate) use git::set_repo_refresh_ttl_override;
+// The host-INDEPENDENT half of the floor route, exported for the registry walk
+// that lives in the binary crate because only that crate builds the registry.
+// Gated so no production caller outside `resolve.rs` can reach past
+// `floor_bootstrap_route`, which is the one that asks the host question.
 pub use git::{
     GitSource, TagSignatureStatus, check_tag_signature, default_module_cache_dir,
     default_module_cache_dir_for, fetch_git_source, get_head_commit_sha, git_cache_dir,
@@ -40,6 +44,8 @@ pub use registry::{
     fetch_registry_modules, fetch_remote_module, is_registry_ref, latest_module_version,
     latest_module_version_remote, parse_registry_ref, resolve_profile_module_name,
 };
+#[cfg(any(test, feature = "test-helpers"))]
+pub use resolve::floor_bootstrap_via;
 pub use resolve::{
     FloorAnswer, FloorBootstrap, FloorConfirm, FloorJudgment, HeldManager, PackageResolution,
     fill_available_versions, judge_declared_floor, refuse_floor_bootstrap, resolve_module_files,
