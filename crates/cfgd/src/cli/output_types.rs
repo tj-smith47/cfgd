@@ -663,7 +663,7 @@ pub struct DoctorConfigCheck {
     /// as `config::LEGACY_OUTPUT_KEYS` names them. Empty for a migrated
     /// config, which is what lets a consumer gate on the list rather than
     /// matching a rendered sentence.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub legacy_output_keys: Vec<String>,
     /// Typed classification driving rendering and verdict scoring. Skipped
     /// from serialization: the consumer-facing JSON field set stays frozen —
@@ -732,15 +732,16 @@ pub struct DoctorModuleCheck {
     pub error: Option<String>,
     /// The managers this module's packages resolve to on this host, in the
     /// order its package list reaches them, with whether each one is here.
-    #[serde(default)]
     pub managers: Vec<DoctorModuleManagerRoute>,
     /// One message per declared package no manager on this host can deliver.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub unresolved: Vec<String>,
     /// One clause per declared package whose delivery is a manager this host
-    /// already holds at the declared floor. A satisfied fact, so it never
-    /// reaches the unresolved list above and never fails the verdict.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// already holds AT the declared floor. A satisfied fact, so it never
+    /// reaches the unresolved list above and never fails the verdict; a held
+    /// manager below its floor, or one whose version cannot be read, is a
+    /// shortfall and goes in that list instead.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub held: Vec<String>,
 }
 
@@ -1219,7 +1220,7 @@ pub struct SourceShowOutput {
     /// `spec.provides.modules` allow-list (the module bodies it offers to
     /// subscribers). Empty (and omitted from the wire) when the source delivers
     /// no modules or its manifest could not be loaded.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub modules: Vec<String>,
     /// What this source enforces, combining the manifest's own
     /// `policy.constraints` with this subscriber's overrides
@@ -1228,13 +1229,13 @@ pub struct SourceShowOutput {
     /// would combine with are unknown. Omitted from the wire in that case
     /// (matches the envelope discipline of dropping empty fields), rather
     /// than serializing as a `null` a consumer has to special-case.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub policy: Option<SourcePolicyOutput>,
     /// What the source's own manifest DECLARES — the same facts the human
     /// render's `Manifest` and `Profiles` sections read. `None` when the
     /// manifest could not be loaded, and omitted from the wire in that case
     /// rather than serializing a `null` a consumer has to special-case.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub manifest: Option<SourceManifestOutput>,
 }
 
@@ -1276,7 +1277,7 @@ pub struct SourcePolicyOutput {
     /// Whether `spec.security.allowUnsigned` bypasses `require_signed_commits`
     /// for this subscriber — always `false` when the demand above is itself
     /// `false`, since there is nothing to bypass.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub signed_commits_bypassed: bool,
     /// Whether this source's lifecycle scripts run — the subscriber's
     /// `allowScripts` opt-in OR the manifest not constraining scripts at all.
@@ -1287,11 +1288,11 @@ pub struct SourcePolicyOutput {
     pub system_changes_allowed: bool,
     /// Glob patterns restricting which file targets this source may deploy
     /// to. Empty means no restriction.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub allowed_target_paths: Vec<String>,
     /// Encryption the manifest's `policy.constraints.encryption` imposes on
     /// files this source delivers. `None` when the manifest declares none.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub encryption: Option<SourceEncryptionOutput>,
 }
 
@@ -1304,9 +1305,9 @@ pub struct SourcePolicyOutput {
 pub struct SourceEncryptionOutput {
     /// Glob patterns or explicit paths that must be encrypted.
     pub required_targets: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub backend: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub mode: Option<String>,
 }
 

@@ -26678,6 +26678,35 @@ fn build_doctor_doc_module_whose_managers_are_all_here_emits_ok() {
     );
 }
 
+/// The bytes the one composer words for a held `cargo` against a `1.85` floor,
+/// read through the registry's own cargo so the raise the sentence names is the
+/// verb that manager declares.
+///
+/// Every surface pin below states its row against this rather than against a
+/// sentence typed beside it: a rendering that still matches a wording the
+/// producer stopped writing is a pin on nothing.
+pub(crate) fn held_manager_clause(judgment: cfgd_core::modules::FloorJudgment) -> String {
+    let registered = crate::packages::all_package_managers();
+    let cargo = registered
+        .iter()
+        .find(|m| m.name() == "cargo")
+        .unwrap_or_else(|| panic!("the registry registers cargo"));
+    cfgd_core::modules::HeldManager {
+        package: "cargo".into(),
+        module: "rust".into(),
+        floor: "1.85".into(),
+        judgment,
+    }
+    .clause(Some(cargo.as_ref()))
+}
+
+/// The floor that composer's `Met` and `Short` arms are judged against.
+pub(crate) fn floor_met_at(version: &str) -> cfgd_core::modules::FloorJudgment {
+    cfgd_core::modules::FloorJudgment::Met {
+        version: version.to_string(),
+    }
+}
+
 /// A declared package whose delivery is a manager this host already holds at
 /// the declared floor is a satisfied fact: it joins the module's own row
 /// beside the managers its other packages route to, never the shortfall list,
@@ -26686,9 +26715,7 @@ fn build_doctor_doc_module_whose_managers_are_all_here_emits_ok() {
 fn build_doctor_doc_module_holding_a_manager_at_its_floor_states_what_is_here() {
     let mut output = base_doctor_output();
     output.modules = vec![super::output_types::DoctorModuleCheck {
-        held: vec![cfgd_core::modules::HeldManager::held_clause(
-            "cargo", "1.90", "1.85",
-        )],
+        held: vec![held_manager_clause(floor_met_at("1.90"))],
         name: "rust".into(),
         valid: true,
         error: None,
@@ -26707,11 +26734,86 @@ fn build_doctor_doc_module_holding_a_manager_at_its_floor_states_what_is_here() 
         .unwrap_or_else(|| panic!("the module has a row: {text}"));
     assert_eq!(
         row.trim(),
-        "✓ rust — apt available; cargo 1.90 is on this host, at or above the declared minVersion 1.85"
+        format!(
+            "✓ rust — apt available; {}",
+            held_manager_clause(floor_met_at("1.90"))
+        )
     );
     assert!(
         text.contains("Passed every check"),
         "a manager the host already holds is nothing to fix, got: {text}"
+    );
+}
+
+/// A shortfall used to take the satisfied halves of a module's row away with
+/// it, so a module with one missing manager stopped saying what the rest of it
+/// had. Every clause the module holds is on the row, satisfied facts first,
+/// and the verdict is the shortfall's.
+#[test]
+fn build_doctor_doc_module_states_what_is_here_beside_what_falls_short() {
+    let mut output = base_doctor_output();
+    output.modules = vec![super::output_types::DoctorModuleCheck {
+        held: vec![held_manager_clause(floor_met_at("1.90"))],
+        name: "rust".into(),
+        valid: true,
+        error: None,
+        managers: vec![super::output_types::DoctorModuleManagerRoute {
+            name: "apt".into(),
+            available: true,
+            package_count: 1,
+        }],
+        unresolved: vec!["no manager on this host can deliver 'ripgrep'".into()],
+    }];
+    let extras = super::doctor::DoctorExtras::default();
+    let text = emit_doc(&output, &extras);
+    let row = text
+        .lines()
+        .find(|l| l.contains("rust"))
+        .unwrap_or_else(|| panic!("the module has a row: {text}"));
+    assert_eq!(
+        row.trim(),
+        format!(
+            "✗ rust — apt available; {}; no manager on this host can deliver 'ripgrep'",
+            held_manager_clause(floor_met_at("1.90"))
+        )
+    );
+}
+
+/// A held manager below its declared floor is a shortfall, so it renders where
+/// every other shortfall does and the module's verdict is its.
+#[test]
+fn build_doctor_doc_module_holding_a_manager_below_its_floor_renders_the_shortfall() {
+    let mut output = base_doctor_output();
+    output.modules = vec![super::output_types::DoctorModuleCheck {
+        held: Vec::new(),
+        name: "rust".into(),
+        valid: true,
+        error: None,
+        managers: Vec::new(),
+        unresolved: vec![held_manager_clause(
+            cfgd_core::modules::FloorJudgment::Short {
+                version: "1.80".into(),
+            },
+        )],
+    }];
+    let extras = super::doctor::DoctorExtras::default();
+    let text = emit_doc(&output, &extras);
+    let row = text
+        .lines()
+        .find(|l| l.contains("rust"))
+        .unwrap_or_else(|| panic!("the module has a row: {text}"));
+    assert_eq!(
+        row.trim(),
+        format!(
+            "✗ rust — {}",
+            held_manager_clause(cfgd_core::modules::FloorJudgment::Short {
+                version: "1.80".into()
+            })
+        )
+    );
+    assert!(
+        !text.contains("Passed every check"),
+        "a manager below its declared floor is something to fix, got: {text}"
     );
 }
 
@@ -26737,15 +26839,36 @@ fn build_doctor_doc_module_missing_a_manager_names_it_and_what_routes_to_it() {
         ],
         unresolved: vec![],
     }];
+    output.modules.push(super::output_types::DoctorModuleCheck {
+        held: Vec::new(),
+        name: "solo".into(),
+        valid: true,
+        error: None,
+        managers: vec![super::output_types::DoctorModuleManagerRoute {
+            name: "brew".into(),
+            available: false,
+            package_count: 1,
+        }],
+        unresolved: vec![],
+    });
     let extras = super::doctor::DoctorExtras::default();
     let text = emit_doc(&output, &extras);
-    assert!(
-        text.contains("jarvis") && text.contains("brew missing (14 packages route to it)"),
-        "should name the missing manager and its share, got: {text}"
+    let row = text
+        .lines()
+        .find(|l| l.contains("jarvis"))
+        .unwrap_or_else(|| panic!("the module has a row: {text}"));
+    assert_eq!(
+        row.trim(),
+        "✗ jarvis — apt available; brew missing (14 packages route to it)",
+        "the manager that is here leads, and the one that is not is the shortfall"
     );
+    let solo = text
+        .lines()
+        .find(|l| l.contains("solo"))
+        .unwrap_or_else(|| panic!("the module has a row: {text}"));
     assert!(
-        !text.contains("apt"),
-        "a manager that is here is not a shortfall clause, got: {text}"
+        solo.contains("brew missing (1 package routes to it)"),
+        "the verb agrees with the count the clause states: {solo}"
     );
     assert!(
         text.contains("Some checks failed"),
@@ -48102,5 +48225,35 @@ fn every_manager_the_registry_can_bootstrap_is_named_in_the_docs_list() {
     assert!(
         unregistered.is_empty(),
         "the docs list names {unregistered:?}, which no registered manager answers to"
+    );
+}
+
+/// The two sentences `docs/modules.md` promises for a held manager that does
+/// not clear its floor are the composer's own bytes, taken from it here rather
+/// than typed there: a reader who finds the page's words in their terminal has
+/// to find them exactly.
+#[test]
+fn the_held_manager_sentences_the_docs_promise_come_from_the_one_composer() {
+    let page = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/modules.md");
+    let body = cfgd_core::test_helpers::walked_file_body(&page);
+
+    let short = held_manager_clause(cfgd_core::modules::FloorJudgment::Short {
+        version: "1.80".into(),
+    });
+    assert!(
+        body.contains(&short),
+        "the page states the shortfall the composer words: {short}"
+    );
+    let unproven = held_manager_clause(cfgd_core::modules::FloorJudgment::Unproven {
+        cause: "it reports no version".into(),
+    });
+    assert!(
+        body.contains(&unproven),
+        "the page states the unreadable case the composer words: {unproven}"
+    );
+    let met = held_manager_clause(floor_met_at("1.90"));
+    assert!(
+        body.contains(&met),
+        "the page states the satisfied case the composer words: {met}"
     );
 }

@@ -2190,21 +2190,14 @@ fn a_comparator_that_fails_to_spawn_is_unreadable_not_below() {
 /// toolchain which later slipped below it.
 #[test]
 fn a_held_managers_floor_is_checked_against_the_binary_this_host_holds() {
-    let mut module = make_resolved_module("rust");
-    module.packages = Vec::new();
-    module.held_managers = vec![crate::modules::HeldManager {
-        package: "cargo".to_string(),
-        module: "rust".to_string(),
-        version: "1.90".to_string(),
-        floor: "1.85".to_string(),
-    }];
+    let module = held_module("rust", "cargo", "1.85");
 
     let mut met = ProviderRegistry::new();
     met.add_package_manager(Box::new(
         crate::test_helpers::MockPackageManager::new("cargo").reporting_version("1.90"),
     ));
     let (results, check_errors) =
-        crate::reconciler::held_manager_version_drift(std::slice::from_ref(&module), &met);
+        crate::reconciler::held_manager_version_drift(std::slice::from_ref(&module), &met, &[]);
     assert!(
         results.is_empty() && check_errors.is_empty(),
         "a binary at or above the floor is no finding: {results:?} {check_errors:?}"
@@ -2215,7 +2208,7 @@ fn a_held_managers_floor_is_checked_against_the_binary_this_host_holds() {
         crate::test_helpers::MockPackageManager::new("cargo").reporting_version("1.80"),
     ));
     let (results, check_errors) =
-        crate::reconciler::held_manager_version_drift(std::slice::from_ref(&module), &slipped);
+        crate::reconciler::held_manager_version_drift(std::slice::from_ref(&module), &slipped, &[]);
     assert!(
         check_errors.is_empty(),
         "a version the manager stated is not a check error: {check_errors:?}"
@@ -2231,6 +2224,84 @@ fn a_held_managers_floor_is_checked_against_the_binary_this_host_holds() {
     assert_eq!(
         (row.expected.as_str(), row.actual.as_str()),
         ("1.85", "1.80")
+    );
+}
+
+/// A module whose only package declaration is the manager that delivers it.
+fn held_module(module: &str, manager: &str, floor: &str) -> ResolvedModule {
+    let mut resolved = make_resolved_module(module);
+    resolved.packages = Vec::new();
+    resolved.held_managers = vec![crate::modules::HeldManager {
+        package: manager.to_string(),
+        module: module.to_string(),
+        floor: floor.to_string(),
+        // The stored verdict, which this pass re-asks rather than trusts.
+        judgment: crate::modules::FloorJudgment::Met {
+            version: "1.90".to_string(),
+        },
+    }];
+    resolved
+}
+
+/// A binary that states no version has answered nothing, so the pass reports a
+/// check that could not run rather than a shortfall it never measured, and the
+/// error carries the clause naming what a reader would look at.
+#[test]
+fn a_held_manager_whose_version_cannot_be_read_is_a_check_that_could_not_run() {
+    let module = held_module("rust", "cargo", "1.85");
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(crate::test_helpers::MockPackageManager::new(
+        "cargo",
+    )));
+
+    let (results, check_errors) = crate::reconciler::held_manager_version_drift(
+        std::slice::from_ref(&module),
+        &registry,
+        &[],
+    );
+    assert!(
+        results.is_empty(),
+        "a floor nothing judged is no drift finding: {results:?}"
+    );
+    assert_eq!(check_errors.len(), 1, "{check_errors:?}");
+    assert_eq!(check_errors[0].key, "cargo:cargo");
+    assert!(
+        check_errors[0]
+            .error
+            .contains("cannot judge cargo against the declared minVersion 1.85"),
+        "{:?}",
+        check_errors[0].error
+    );
+}
+
+/// `npm install -g npm` is one package name and one manager name, so the
+/// listing pass and this pass reach the same `<mgr>:<pkg>` key. The store
+/// UPSERTs on it, so two answers would silently overwrite each other; the
+/// listing's wins, because it measured the copy an apply can raise.
+#[test]
+fn a_held_manager_the_listing_pass_already_reported_mints_no_second_row() {
+    let module = held_module("node", "npm", "10.0.0");
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(
+        crate::test_helpers::MockPackageManager::new("npm").reporting_version("9.0.0"),
+    ));
+    let claimed = vec![VerifyResult {
+        resource_type: "package".to_string(),
+        resource_id: "npm:npm".to_string(),
+        matches: false,
+        expected: "10.0.0".to_string(),
+        actual: "9.5.0".to_string(),
+        unmanaged: false,
+    }];
+
+    let (results, check_errors) = crate::reconciler::held_manager_version_drift(
+        std::slice::from_ref(&module),
+        &registry,
+        &claimed,
+    );
+    assert!(
+        results.is_empty() && check_errors.is_empty(),
+        "the listing's row already holds the key: {results:?} {check_errors:?}"
     );
 }
 
@@ -30207,6 +30278,50 @@ fn a_module_whose_only_entry_is_held_plans_no_action() {
         plan.is_empty(),
         "a held entry asks for nothing: {:?}",
         all_plan_items(&plan)
+    );
+}
+
+/// A read surface reports a held manager below its floor; a surface that
+/// INSTALLS cannot, because everything it is about to run through that manager
+/// runs through a copy the declaration says is too old. The refusal names the
+/// module holding it, the package and the raise, and it is the planner's, so
+/// every other module in the run is unaffected only in the sense that the run
+/// stops before any of them is touched.
+#[test]
+fn a_held_manager_below_its_floor_refuses_the_plan_and_names_the_raise() {
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(
+        crate::test_helpers::MockPackageManager::new("cargo").reporting_version("1.80"),
+    ));
+    let mut module = make_resolved_module("rust");
+    module.packages = Vec::new();
+    module.held_managers = vec![crate::modules::HeldManager {
+        package: "cargo".to_string(),
+        module: "rust".to_string(),
+        floor: "1.85".to_string(),
+        judgment: crate::modules::FloorJudgment::Short {
+            version: "1.80".to_string(),
+        },
+    }];
+
+    let state = test_state();
+    let reconciler = Reconciler::new(&registry, &state);
+    let err = reconciler
+        .plan(
+            &make_empty_resolved(),
+            Vec::new(),
+            Vec::new(),
+            vec![module],
+            ReconcileContext::Apply,
+        )
+        .expect_err("an install path cannot run through a manager below its floor")
+        .to_string();
+    assert!(err.contains("rust"), "{err}");
+    assert!(err.contains("cargo"), "{err}");
+    assert!(
+        err.contains("below the declared minVersion 1.85")
+            && err.contains("raise it with cargo's own upgrade"),
+        "the refusal carries the same clause every read surface states: {err}"
     );
 }
 

@@ -182,19 +182,6 @@ impl FloorBootstrap {
         )
     }
 
-    /// The shortfall of a manager the entry NAMES and this host already holds,
-    /// found while the entry was being resolved rather than while a confirmed
-    /// route was settling. A bootstrap cannot raise a manager already on the
-    /// machine, so this sentence is the whole answer: it states which manager
-    /// is here and what it reports, where the plain refusal claimed every
-    /// available manager offered too little and named none of them.
-    pub fn held_shortfall(manager: &str, version: &str, floor: &str) -> String {
-        format!(
-            "{manager} {version} is on this host, {} {floor}",
-            Self::BELOW_DECLARED_FLOOR
-        )
-    }
-
     /// A floor the run could not judge at all, and why.
     ///
     /// A comparator that cannot read its operands answers no question, so the
@@ -206,29 +193,89 @@ impl FloorBootstrap {
     }
 }
 
-/// A declared floor the entry's OWN manager already meets: the package names a
-/// registered manager this host holds, and the version that manager's binary
-/// reports clears the floor in its own grammar.
+/// A declared floor answered by the entry's OWN manager: the package names a
+/// registered manager this host holds, and [`judgment`](Self::judgment) is what
+/// that manager's binary reports, judged against the floor in its own grammar.
+///
+/// The judgment travels on the node rather than deciding, at resolution time,
+/// whether the entry resolves at all. A manager below its floor is a fact about
+/// the machine, so every read surface reports it and only the install paths
+/// refuse: the alternative ended `status`, `verify`, `diff` and every daemon
+/// tick for every module the moment one toolchain slipped.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HeldManager {
     /// The package, which is also the registered manager's name.
     pub package: String,
     pub module: String,
-    /// What the manager's own binary reports ([`PackageManager::tool_version`]).
-    pub version: String,
     pub floor: String,
+    pub judgment: FloorJudgment,
 }
 
 impl HeldManager {
-    /// What this host holds and why the declaration is already satisfied, as
-    /// ONE clause: `cfgd doctor`'s satisfied row, `module show --resolved`'s
-    /// package row and `status <module>`'s package row all read it, so one
-    /// held manager cannot be worded three ways. An associated function, like
-    /// the shortfall sentences it sits beside, because a surface serializing
-    /// the facts holds three strings rather than this node.
-    pub fn held_clause(manager: &str, version: &str, floor: &str) -> String {
-        format!("{manager} {version} is on this host, at or above the declared minVersion {floor}")
+    /// What this host holds and what that says about the declared floor, as ONE
+    /// clause: `cfgd doctor`'s module row, `module show --resolved`'s package
+    /// row, `status <module>`'s package row and the planner's refusal all read
+    /// it, so one held manager cannot be worded four ways.
+    ///
+    /// `mgr` is the registered manager this entry names, where the caller has
+    /// the registry in hand. It is read only to word the raise a shortfall
+    /// names and the home variables an unreadable version asks about; `None`
+    /// keeps both generic rather than dropping them, because a surface with no
+    /// registry still has to say what is wrong.
+    pub fn clause(&self, mgr: Option<&dyn PackageManager>) -> String {
+        match &self.judgment {
+            FloorJudgment::Met { version } => format!(
+                "{} {version} is on this host, at or above the declared minVersion {}",
+                self.package, self.floor
+            ),
+            FloorJudgment::Short { version } => crate::join_clauses([
+                format!(
+                    "{} {version} is on this host, {} {}",
+                    self.package,
+                    FloorBootstrap::BELOW_DECLARED_FLOOR,
+                    self.floor
+                ),
+                self.raise_clause(mgr),
+            ]),
+            FloorJudgment::Unproven { cause } => crate::join_clauses([
+                FloorBootstrap::floor_unproven(&self.package, &self.floor, cause),
+                self.readable_version_clause(mgr),
+            ]),
+        }
+    }
+
+    /// How the manager itself is raised. A bootstrap cannot raise a manager
+    /// already on the machine and nothing cfgd plans installs one over itself,
+    /// so the sentence names the family's own raise
+    /// ([`PackageManager::upgrade_verb`]) and stops there rather than composing
+    /// a command that would put a second copy beside the one in use.
+    fn raise_clause(&self, mgr: Option<&dyn PackageManager>) -> String {
+        match mgr.and_then(PackageManager::upgrade_verb) {
+            Some(verb) => format!("raise it with {}'s own {verb}", self.package),
+            None => format!(
+                "nothing cfgd can run raises {}, so it must be raised by hand",
+                self.package
+            ),
+        }
+    }
+
+    /// What has to be true for the binary to answer at all, for a version the
+    /// run could not read.
+    ///
+    /// A manager's binary is reached through `PATH`, and a shim resolves the
+    /// copy it stands for through the family's own home variables, and a
+    /// systemd unit carries neither unless the unit sets them, which is exactly
+    /// where this verdict is reached. The variables are named by the manager
+    /// ([`PackageManager::home_env_vars`]) rather than listed here, so a family
+    /// that gains one joins the sentence with it.
+    fn readable_version_clause(&self, mgr: Option<&dyn PackageManager>) -> String {
+        let vars = mgr.map(PackageManager::home_env_vars).unwrap_or(&[]);
+        let reach = format!("check that {} is on this process's PATH", self.package);
+        if vars.is_empty() {
+            return reach;
+        }
+        format!("{reach} and that {} are set for it", vars.join(" and "))
     }
 }
 
@@ -240,7 +287,12 @@ impl HeldManager {
 /// operands has answered nothing, so [`Unproven`](Self::Unproven) is neither a
 /// pass nor a shortfall — every caller words its own verdict from the answer
 /// and none of them re-asks the questions.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// It rides on [`HeldManager`], so it reaches the wire: internally tagged under
+/// the same `state` key `PackageDisplay` names its own arms with, which keeps a
+/// reader's match on one string rather than on which key a map happens to hold.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "state", rename_all = "camelCase")]
 pub enum FloorJudgment {
     /// Comparable, and at or above the floor.
     Met { version: String },
@@ -249,6 +301,16 @@ pub enum FloorJudgment {
     Short { version: String },
     /// The question could not be asked, and why.
     Unproven { cause: String },
+}
+
+impl FloorJudgment {
+    /// Whether the floor was measured and cleared. The two other answers are
+    /// different facts but one decision for a caller that has to act: a version
+    /// below the floor and a version nothing could read both leave a declared
+    /// floor unmet.
+    pub fn met(&self) -> bool {
+        matches!(self, Self::Met { .. })
+    }
 }
 
 /// Judge `version` against a declared `floor` in `mgr`'s own version grammar.
@@ -554,15 +616,7 @@ pub fn resolve_package(
     // run and the entry that converged the machine is the one that refuses.
     // What the manager's own binary reports is the fact that answers it.
     if proven_below && let Some(held) = held_manager_answer(entry, module_name, managers) {
-        return match held {
-            Ok(held) => Ok(Some(PackageResolution::HeldByManager(held))),
-            Err(reason) => Err(ModuleError::UnresolvablePackage {
-                module: module_name.to_string(),
-                package: entry.name.clone(),
-                reason,
-            }
-            .into()),
-        };
+        return Ok(Some(PackageResolution::HeldByManager(held)));
     }
 
     if proven_below
@@ -598,10 +652,15 @@ fn proven_below_reason(floor: &str) -> String {
 }
 
 /// What the manager this entry NAMES, already on this host, answers the
-/// declared floor with: `Ok` when its own binary clears the floor, `Err` with
-/// the refusal's reason when it does not or when the question could not be
-/// asked at all. `None` where the rule does not apply — the entry names no
-/// registered manager, that manager is not here, or nothing declared a floor.
+/// declared floor with. `None` where the rule does not apply: the entry names
+/// no registered manager, that manager is not here, or nothing declared a
+/// floor.
+///
+/// Never a refusal, whatever the verdict: resolution is atomic, so refusing
+/// here takes every other module's answer down with this one, and the surfaces
+/// that only READ the machine are exactly the ones a reader reaches for when a
+/// toolchain has slipped. The install paths refuse instead, at the planner,
+/// for the one module holding the unmet floor.
 ///
 /// `tool_version()` spawns, so this runs on the proven-below exit alone and
 /// asks once: every entry reaching it has already failed every listing.
@@ -609,7 +668,7 @@ fn held_manager_answer(
     entry: &ModulePackageEntry,
     module_name: &str,
     managers: &HashMap<String, &dyn PackageManager>,
-) -> Option<std::result::Result<HeldManager, String>> {
+) -> Option<HeldManager> {
     let floor = entry.min_version.as_deref()?;
     let mgr = *managers.get(entry.name.as_str())?;
     if !mgr.is_available() {
@@ -617,22 +676,12 @@ fn held_manager_answer(
     }
     let name = entry.name.as_str();
     let version = mgr.tool_version();
-    Some(
-        match judge_declared_floor(mgr, name, floor, version.as_deref()) {
-            FloorJudgment::Met { version } => Ok(HeldManager {
-                package: name.to_string(),
-                module: module_name.to_string(),
-                version,
-                floor: floor.to_string(),
-            }),
-            FloorJudgment::Short { version } => {
-                Err(FloorBootstrap::held_shortfall(name, &version, floor))
-            }
-            FloorJudgment::Unproven { cause } => {
-                Err(FloorBootstrap::floor_unproven(name, floor, &cause))
-            }
-        },
-    )
+    Some(HeldManager {
+        package: name.to_string(),
+        module: module_name.to_string(),
+        floor: floor.to_string(),
+        judgment: judge_declared_floor(mgr, name, floor, version.as_deref()),
+    })
 }
 
 /// The route a proven-below floor could be met by: the package names a

@@ -152,6 +152,13 @@ impl PackageManager for CargoManager {
         super::shared::tool_version_from(cargo_cmd().arg("--version"))
     }
 
+    fn home_env_vars(&self) -> &'static [&'static str] {
+        // `~/.cargo/bin/cargo` is rustup's shim: it resolves the toolchain
+        // through these two and exits non-zero without them, so a process that
+        // inherited neither reads no version at all.
+        &["CARGO_HOME", "RUSTUP_HOME"]
+    }
+
     fn is_available(&self) -> bool {
         cargo_available()
     }
@@ -828,5 +835,26 @@ tokei v12.1.2:
                 "error must surface bootstrap context: {msg}"
             );
         }
+    }
+
+    /// A cargo whose version cannot be read is most often a rustup shim whose
+    /// home variables are missing, so the clause a reader gets names them
+    /// beside the PATH rather than leaving them to guess.
+    #[test]
+    fn an_unreadable_cargo_floor_names_the_homes_its_shim_reads() {
+        let held = cfgd_core::modules::HeldManager {
+            package: "cargo".into(),
+            module: "rust".into(),
+            floor: "1.85".into(),
+            judgment: cfgd_core::modules::FloorJudgment::Unproven {
+                cause: "it reports no version".into(),
+            },
+        };
+        assert_eq!(
+            held.clause(Some(&CargoManager)),
+            "cannot judge cargo against the declared minVersion 1.85: it reports no version; \
+             check that cargo is on this process's PATH and that CARGO_HOME and RUSTUP_HOME \
+             are set for it"
+        );
     }
 }

@@ -8457,3 +8457,91 @@ fn module_show_resolved_rows_states_each_of_the_three_resolutions() {
         }
     }
 }
+
+/// A declared package that NAMES a manager this host already holds renders the
+/// one composer's sentence, and the row's `met` flag carries the judgment.
+///
+/// The rows a reader sees for the two answers differ only in that flag and in
+/// the clause, and both come from `HeldManager::clause`. Built by hand once,
+/// the row promised a shortfall the resolution never made: the clause is
+/// asserted here as the composer produces it, over the real resolution.
+#[test]
+fn module_show_resolved_rows_state_a_held_managers_floor_judgment() {
+    use cfgd_core::providers::PackageManager;
+    use cfgd_core::test_helpers::MockPackageManager;
+
+    let cargo = MockPackageManager::new("cargo")
+        .offering("cargo", "1.75")
+        .reporting_version("1.80");
+    let npm = MockPackageManager::new("npm").offering("npm", "9.0.0");
+    let mgr_map: std::collections::HashMap<String, &dyn PackageManager> = [
+        ("cargo".to_string(), &cargo as &dyn PackageManager),
+        ("npm".to_string(), &npm as &dyn PackageManager),
+    ]
+    .into_iter()
+    .collect();
+    let platform = cfgd_core::platform::Platform {
+        os: cfgd_core::platform::Os::Linux,
+        distro: cfgd_core::platform::Distro::Debian,
+        version: "12".to_string(),
+        arch: cfgd_core::platform::Arch::X86_64,
+    };
+
+    let mut held_short = make_pkg("cargo");
+    held_short.min_version = Some("1.85".to_string());
+    held_short.prefer = vec!["cargo".to_string()];
+    // The manager states no version at all, which is neither a pass nor a
+    // shortfall: the row carries the unproven clause and fails the flag.
+    let mut held_unproven = make_pkg("npm");
+    held_unproven.min_version = Some("10.0".to_string());
+    held_unproven.prefer = vec!["npm".to_string()];
+
+    let spec = cfgd_core::config::ModuleSpec {
+        packages: vec![held_short, held_unproven],
+        ..Default::default()
+    };
+
+    let (printer, _cap) = cfgd_core::output::Printer::for_test_doc();
+    let state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+    let cx = cfgd_core::providers::PackageContext::new(&printer, &state);
+    let rows = super::list_show::module_show_resolved_rows(
+        &spec,
+        "dev-tools",
+        &platform,
+        &mgr_map,
+        Some(&cx),
+    );
+
+    let expected_short = cfgd_core::modules::HeldManager {
+        package: "cargo".into(),
+        module: "dev-tools".into(),
+        floor: "1.85".into(),
+        judgment: cfgd_core::modules::FloorJudgment::Short {
+            version: "1.80".into(),
+        },
+    }
+    .clause(Some(&cargo));
+    match &rows[0] {
+        super::list_show::PackageDisplay::Held { name, clause, met } => {
+            assert_eq!(name, "cargo");
+            assert_eq!(clause, &expected_short);
+            assert!(!met, "a floor this host falls short of is not met");
+        }
+        other => panic!("an entry naming a held manager renders its judgment: {other:#?}"),
+    }
+    match &rows[1] {
+        super::list_show::PackageDisplay::Held { name, clause, met } => {
+            assert_eq!(name, "npm");
+            let unproven = cfgd_core::modules::HeldManager {
+                package: "npm".into(),
+                module: "dev-tools".into(),
+                floor: "10.0".into(),
+                judgment: cfgd_core::modules::judge_declared_floor(&npm, "npm", "10.0", None),
+            }
+            .clause(Some(&npm));
+            assert_eq!(clause, &unproven);
+            assert!(!met, "a floor nothing could judge is not met");
+        }
+        other => panic!("a floor nothing could judge is still a held row: {other:#?}"),
+    }
+}

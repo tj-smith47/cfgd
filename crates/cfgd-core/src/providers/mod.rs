@@ -869,6 +869,20 @@ pub trait PackageManager: Send + Sync {
     /// "has no upgrade verb" error and elide the raise from the plan.
     fn upgrade_verb(&self) -> Option<&'static str>;
 
+    /// The environment variables this manager's binary needs set before it can
+    /// answer for itself, beyond being on `PATH`.
+    ///
+    /// Empty (the default) for a manager whose binary is the tool. A family
+    /// whose binary is a SHIM is the exception: `~/.cargo/bin/cargo` is rustup's
+    /// shim and exits non-zero without `CARGO_HOME` / `RUSTUP_HOME`, which is
+    /// the ordinary environment of a systemd unit, so a floor judged against it
+    /// there reads as unmeasurable. The names belong to the family that needs
+    /// them so the sentence reporting that outcome cannot list a variable no
+    /// manager asked for.
+    fn home_env_vars(&self) -> &'static [&'static str] {
+        &[]
+    }
+
     /// Directories to add to PATH after bootstrap. Empty for managers
     /// that are already on the system PATH (apt, dnf, etc.).
     ///

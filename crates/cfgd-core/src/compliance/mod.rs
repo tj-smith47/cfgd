@@ -645,6 +645,46 @@ pub fn collect_package_checks(
         }
     }
 
+    // A held manager is a declaration no desired-package set can carry: its
+    // delivery IS the manager, so nothing installs it and no listing lists it.
+    // Without a row of its own the control plane sees a module declaring
+    // nothing at all. The name and the manager are the same word, which is the
+    // fact the row reports.
+    let mgr_map = registry.manager_map();
+    for module in modules {
+        for held in &module.held_managers {
+            let suffix = origin_suffix(&Origin::Module(module.name.clone()));
+            let (status, detail) = match &held.judgment {
+                crate::modules::FloorJudgment::Met { version } => (
+                    ComplianceStatus::Compliant,
+                    format!("held at {version}{suffix}"),
+                ),
+                crate::modules::FloorJudgment::Short { .. } => (
+                    ComplianceStatus::Violation,
+                    format!(
+                        "{}{suffix}",
+                        held.clause(mgr_map.get(&held.package).copied())
+                    ),
+                ),
+                crate::modules::FloorJudgment::Unproven { .. } => (
+                    ComplianceStatus::Warning,
+                    format!(
+                        "{}{suffix}",
+                        held.clause(mgr_map.get(&held.package).copied())
+                    ),
+                ),
+            };
+            checks.push(ComplianceCheck {
+                category: "package".into(),
+                name: Some(held.package.clone()),
+                manager: Some(held.package.clone()),
+                status,
+                detail: Some(detail),
+                ..Default::default()
+            });
+        }
+    }
+
     Ok(checks)
 }
 
@@ -770,6 +810,24 @@ pub fn declared_package_versions(
             reported.insert(
                 crate::state::package_resource_id(pm.name(), package),
                 version.to_string(),
+            );
+        }
+    }
+    // A held manager answers for itself: no listing carries the copy its own
+    // installer delivered, so the version comes from the judgment the
+    // resolution already made. An unproven floor contributes no key, for the
+    // same reason a manager stating no version for a package contributes none:
+    // a placeholder is a version a policy would compare against.
+    for module in modules {
+        for held in &module.held_managers {
+            let version = match &held.judgment {
+                crate::modules::FloorJudgment::Met { version }
+                | crate::modules::FloorJudgment::Short { version } => version,
+                crate::modules::FloorJudgment::Unproven { .. } => continue,
+            };
+            reported.insert(
+                crate::state::package_resource_id(&held.package, &held.package),
+                version.clone(),
             );
         }
     }

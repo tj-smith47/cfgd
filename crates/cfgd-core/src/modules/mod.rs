@@ -179,10 +179,12 @@ pub struct ResolvedModule {
     /// carrying one is a module whose route was confirmed.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub floor_bootstraps: Vec<FloorBootstrap>,
-    /// Declared floors met by the package's OWN manager, already on this host.
-    /// Nothing is planned for one: the manager is the delivery, so the entry
-    /// is satisfied where it would once have been refused.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// Declared floors judged against the package's OWN manager, already on
+    /// this host. Nothing is planned for one: the manager is the delivery, so
+    /// an entry whose floor is met is satisfied where it would once have been
+    /// refused, and one below its floor or with no readable version is a fact
+    /// the read surfaces report rather than a refusal of every command.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub held_managers: Vec<HeldManager>,
     pub files: Vec<ResolvedFile>,
     pub env: Vec<EnvVar>,

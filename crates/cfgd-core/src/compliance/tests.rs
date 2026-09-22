@@ -576,6 +576,113 @@ fn collect_package_checks_installed_package_compliant() {
     assert_eq!(checks[0].manager.as_deref(), Some("pipx"));
 }
 
+/// A module whose only declaration is the manager that delivers it used to be
+/// invisible to the control plane: nothing installs a held manager, so it is
+/// in no desired-package set and the fleet saw a module declaring nothing at
+/// all. It gets a row of its own, under the manager's own name, and the row
+/// carries the floor verdict rather than a presence nobody measured.
+#[test]
+fn collect_package_checks_gives_a_held_manager_a_row_under_its_own_name() {
+    use crate::config::MergedProfile;
+
+    let mut module = empty_module("rust");
+    module.held_managers = vec![crate::modules::HeldManager {
+        package: "cargo".into(),
+        module: "rust".into(),
+        floor: "1.85".into(),
+        judgment: crate::modules::FloorJudgment::Met {
+            version: "1.90".into(),
+        },
+    }];
+    let registry = ProviderRegistry::new();
+    let printer = crate::test_helpers::test_printer();
+    let state = crate::test_helpers::test_state();
+    let cx = crate::providers::PackageContext::new(&printer, &state);
+
+    let checks = collect_package_checks(
+        &MergedProfile::default(),
+        std::slice::from_ref(&module),
+        &registry,
+        &cx,
+    )
+    .unwrap();
+    assert_eq!(checks.len(), 1, "{checks:?}");
+    assert_eq!(checks[0].name.as_deref(), Some("cargo"));
+    assert_eq!(checks[0].manager.as_deref(), Some("cargo"));
+    assert_eq!(checks[0].status, ComplianceStatus::Compliant);
+    assert_eq!(
+        checks[0].detail.as_deref(),
+        Some("held at 1.90 (module: rust)")
+    );
+
+    module.held_managers[0].judgment = crate::modules::FloorJudgment::Short {
+        version: "1.80".into(),
+    };
+    let checks = collect_package_checks(
+        &MergedProfile::default(),
+        std::slice::from_ref(&module),
+        &registry,
+        &cx,
+    )
+    .unwrap();
+    assert_eq!(checks[0].status, ComplianceStatus::Violation);
+    assert_eq!(
+        checks[0].detail.as_deref(),
+        Some(
+            "cargo 1.80 is on this host, below the declared minVersion 1.85; \
+             nothing cfgd can run raises cargo, so it must be raised by hand (module: rust)"
+        ),
+        "no manager is registered here, so nothing states a raise verb"
+    );
+}
+
+/// The check-in reports what this machine holds for what it declares, and a
+/// held manager is a declaration no listing answers for: its version comes
+/// from the judgment the resolution already made. A floor nothing could judge
+/// contributes no key rather than a placeholder a policy would compare.
+#[test]
+fn declared_package_versions_reports_a_held_manager_under_its_own_name() {
+    use crate::config::MergedProfile;
+
+    let mut module = empty_module("rust");
+    module.held_managers = vec![crate::modules::HeldManager {
+        package: "cargo".into(),
+        module: "rust".into(),
+        floor: "1.85".into(),
+        judgment: crate::modules::FloorJudgment::Met {
+            version: "1.90".into(),
+        },
+    }];
+    let registry = ProviderRegistry::new();
+    let printer = crate::test_helpers::test_printer();
+    let state = crate::test_helpers::test_state();
+    let cx = crate::providers::PackageContext::new(&printer, &state);
+
+    let reported = declared_package_versions(
+        &MergedProfile::default(),
+        std::slice::from_ref(&module),
+        &registry,
+        &cx,
+    )
+    .expect("nothing failed to be queried");
+    assert_eq!(
+        reported.get("cargo/cargo").map(String::as_str),
+        Some("1.90")
+    );
+
+    module.held_managers[0].judgment = crate::modules::FloorJudgment::Unproven {
+        cause: "it reports no version".into(),
+    };
+    let reported = declared_package_versions(
+        &MergedProfile::default(),
+        std::slice::from_ref(&module),
+        &registry,
+        &cx,
+    )
+    .expect("nothing failed to be queried");
+    assert!(reported.is_empty(), "{reported:?}");
+}
+
 #[test]
 fn collect_package_checks_routes_through_package_identity_for_case_insensitive_manager() {
     use crate::config::MergedProfile;

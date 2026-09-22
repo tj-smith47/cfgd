@@ -468,6 +468,25 @@ fn module_show_resolved_renders_what_this_host_made_of_the_declaration() {
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "module_show/resolved.txt");
 }
 
+/// The bytes the one composer words for a held `cargo` against a `1.85` floor,
+/// read through the registry's own cargo. The rows below state their detail
+/// against this rather than against a sentence typed beside them: a rendering
+/// that still matches a wording the producer stopped writing pins nothing.
+fn held_manager_clause(judgment: cfgd_core::modules::FloorJudgment) -> String {
+    let registered = cfgd::packages::all_package_managers();
+    let cargo = registered
+        .iter()
+        .find(|m| m.name() == "cargo")
+        .unwrap_or_else(|| panic!("the registry registers cargo"));
+    cfgd_core::modules::HeldManager {
+        package: "cargo".into(),
+        module: "rust".into(),
+        floor: "1.85".into(),
+        judgment,
+    }
+    .clause(Some(cargo.as_ref()))
+}
+
 /// A package this host reads as a manager it already holds at the declared
 /// floor is a SATISFIED row, not an unresolved one: the manager is the
 /// delivery, so the row states the version its binary reports and the floor
@@ -475,10 +494,13 @@ fn module_show_resolved_renders_what_this_host_made_of_the_declaration() {
 #[test]
 fn module_show_resolved_states_what_a_held_manager_answers_the_floor_with() {
     let mut output = happy_show_output();
+    let clause = held_manager_clause(cfgd_core::modules::FloorJudgment::Met {
+        version: "1.90".into(),
+    });
     output.resolved = Some(vec![PackageDisplay::Held {
         name: "cargo".into(),
-        version: "1.90".into(),
-        min_version: "1.85".into(),
+        clause: clause.clone(),
+        met: true,
     }]);
     let (printer, cap) = Printer::for_test_doc();
     printer.emit(build_module_show_doc(
@@ -493,10 +515,37 @@ fn module_show_resolved_states_what_a_held_manager_answers_the_floor_with() {
         .lines()
         .find(|l| l.contains("cargo"))
         .unwrap_or_else(|| panic!("the package has a row: {human}"));
-    assert_eq!(
-        row.trim(),
-        "✓ cargo — cargo 1.90 is on this host, at or above the declared minVersion 1.85"
-    );
+    assert_eq!(row.trim(), format!("✓ cargo — {clause}"));
+}
+
+/// The same row below the floor is not satisfied, so it does not wear the
+/// satisfied glyph: the resolution stands, and what the row reports is that
+/// the copy this host holds is too old for what the module declared.
+#[test]
+fn module_show_resolved_does_not_call_a_held_manager_below_its_floor_satisfied() {
+    let mut output = happy_show_output();
+    let clause = held_manager_clause(cfgd_core::modules::FloorJudgment::Short {
+        version: "1.80".into(),
+    });
+    output.resolved = Some(vec![PackageDisplay::Held {
+        name: "cargo".into(),
+        clause: clause.clone(),
+        met: false,
+    }]);
+    let (printer, cap) = Printer::for_test_doc();
+    printer.emit(build_module_show_doc(
+        &output,
+        None,
+        InventoryDetail::default(),
+        printer.arrow(),
+    ));
+    drop(printer);
+    let human = cap.human();
+    let row = human
+        .lines()
+        .find(|l| l.contains("cargo"))
+        .unwrap_or_else(|| panic!("the package has a row: {human}"));
+    assert_eq!(row.trim(), format!("⚠ cargo — {clause}"));
 }
 
 #[test]

@@ -203,6 +203,33 @@ impl<'a> super::Reconciler<'a> {
         // ask for one manager, and the run can only deliver one copy of it, so
         // the higher floor is what the node carries: it satisfies both, where
         // the lower one leaves the stricter module quietly short.
+        // A manager this host holds BELOW the floor its module declared, or one
+        // whose version nothing could read, refuses that module's work here
+        // rather than at resolution: reading the machine is exactly what a
+        // reader does once a toolchain slips, and resolution is atomic, so a
+        // refusal there took every other module down with it. Installing is the
+        // case that cannot go on (a bootstrap cannot raise a manager already
+        // present, and provisioning the rest of the module on a toolchain below
+        // the floor is what the floor forbids), and `plan` is atomic, so the
+        // whole run ends here.
+        if let Some(unmet) = module_actions
+            .iter()
+            .filter(|m| m.platform_skip_reason.is_none())
+            .flat_map(|m| m.held_managers.iter())
+            .find(|h| !h.judgment.met())
+        {
+            let mgr = self
+                .registry
+                .available_package_managers()
+                .into_iter()
+                .find(|m| m.name() == unmet.package);
+            return Err(crate::errors::ModuleError::UnresolvablePackage {
+                module: unmet.module.clone(),
+                package: unmet.package.clone(),
+                reason: unmet.clause(mgr),
+            }
+            .into());
+        }
         // Built only where a route exists to judge: the map allocates a key per
         // registered manager, and the overwhelmingly common plan carries no
         // confirmed floor at all and never reads it.

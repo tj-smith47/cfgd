@@ -19,15 +19,16 @@ pub enum PackageDisplay {
         resolved_name: String,
         version: Option<String>,
     },
-    /// The entry names a manager this host already holds at the declared
-    /// floor. A resolution like the one above it, and a satisfied one: the
-    /// version is what the manager's own binary reports rather than what a
-    /// listing offers, which is why it is a variant of its own.
+    /// The entry names a manager this host already holds. A resolution like the
+    /// one above it, judged against the declared floor by the manager's own
+    /// binary rather than by a listing, which is why it is a variant of its
+    /// own. `met` is whether that judgment cleared the floor; `clause` words
+    /// it either way.
     #[serde(rename = "held", rename_all = "camelCase")]
     Held {
         name: String,
-        version: String,
-        min_version: String,
+        clause: String,
+        met: bool,
     },
     #[serde(rename = "skipped", rename_all = "camelCase")]
     Skipped { name: String, platforms: String },
@@ -252,17 +253,11 @@ fn build_module_show_resolved_packages(doc: Doc, packages: &[PackageDisplay], ar
                 Role::Ok,
                 resolved_package_row(name, manager, resolved_name, version.as_deref(), arrow),
             ),
-            PackageDisplay::Held {
-                name,
-                version,
-                min_version,
-            } => s.status_with(Role::Ok, name.clone(), |f| {
-                f.detail(cfgd_core::modules::HeldManager::held_clause(
-                    name,
-                    version,
-                    min_version,
-                ))
-            }),
+            PackageDisplay::Held { name, clause, met } => s.status_with(
+                if *met { Role::Ok } else { Role::Warn },
+                name.clone(),
+                |f| f.detail(clause.clone()),
+            ),
             PackageDisplay::Skipped { name, platforms } => {
                 s.status_with(Role::Info, format!("{}{}", name, platforms), |f| {
                     f.detail(crate::cli::status::PLATFORM_SKIPPED)
@@ -544,14 +539,17 @@ pub(super) fn module_show_resolved_rows(
                         error: route.provisionable_clause(),
                     }
                 }
-                // The manager the entry names is here and clears the floor:
-                // the row states what this host holds, as satisfied as the
-                // resolution above it.
-                Ok(Some(modules::PackageResolution::HeldByManager(entry))) => {
+                // The manager the entry names is on this host: the row states
+                // what this host holds against the declared floor, satisfied
+                // like the resolution above it where the floor is met and
+                // carrying the shortfall or the unreadable cause where it is
+                // not.
+                Ok(Some(modules::PackageResolution::HeldByManager(held))) => {
+                    let mgr = mgr_map.get(&held.package).copied();
                     PackageDisplay::Held {
-                        name: entry.package,
-                        version: entry.version,
-                        min_version: entry.floor,
+                        name: held.package.clone(),
+                        clause: held.clause(mgr),
+                        met: held.judgment.met(),
                     }
                 }
                 Ok(None) => PackageDisplay::Skipped {

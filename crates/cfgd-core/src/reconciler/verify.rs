@@ -54,7 +54,7 @@ pub fn verify(
     // `<manager>:<name>` id, and a second row under it would answer the same
     // key twice — `installed` beside `want: 2, have: 1.0.0`.
     let (mut results, mut check_errors) = package_version_drift(&effective, registry, cx)?;
-    let (held_results, held_errors) = held_manager_version_drift(modules, registry);
+    let (held_results, held_errors) = held_manager_version_drift(modules, registry, &results);
     results.extend(held_results);
     check_errors.extend(held_errors);
     // Only the ids the floor pass gave a VERDICT for. A package whose floor
@@ -454,16 +454,27 @@ pub fn package_version_drift(
 /// so a converged scan heals one. One row per id, because two modules flooring
 /// the same manager are one fact about the machine; the version is read once
 /// per manager for the same reason.
+///
+/// `claimed` is the rows [`package_version_drift`] already minted. A package
+/// whose name equals its manager's (`npm install -g npm`, a `brew` formula of
+/// brew) is one key two passes can both reach, and the store UPSERTs on it, so
+/// one answer would silently overwrite the other. The listing's verdict wins:
+/// it measured the copy the manager itself installed, which is the one an
+/// apply can raise.
 pub fn held_manager_version_drift(
     modules: &[ResolvedModule],
     registry: &ProviderRegistry,
+    claimed: &[VerifyResult],
 ) -> (Vec<VerifyResult>, Vec<SystemCheckError>) {
     let mut results: Vec<VerifyResult> = Vec::new();
     let mut check_errors: Vec<SystemCheckError> = Vec::new();
     let available = registry.available_package_managers();
     let mut versions: std::collections::HashMap<&str, Option<String>> =
         std::collections::HashMap::new();
-    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut seen: std::collections::HashSet<String> = claimed
+        .iter()
+        .map(|r| r.resource_id.clone())
+        .collect::<std::collections::HashSet<String>>();
     for held in modules.iter().flat_map(|m| m.held_managers.iter()) {
         // A manager that has since left the host can report neither version
         // nor package, exactly as the listing pass skips an absent manager.
@@ -474,36 +485,38 @@ pub fn held_manager_version_drift(
             .entry(mgr.name())
             .or_insert_with(|| mgr.tool_version())
             .clone();
-        let verdict = crate::modules::judge_declared_floor(
-            *mgr,
-            &held.package,
-            &held.floor,
-            version.as_deref(),
-        );
+        // Judged again rather than read off the node: an operator who changed
+        // toolchains since the resolution changed the answer, and this pass
+        // exists to see that.
+        let live = crate::modules::HeldManager {
+            judgment: crate::modules::judge_declared_floor(
+                *mgr,
+                &held.package,
+                &held.floor,
+                version.as_deref(),
+            ),
+            ..held.clone()
+        };
+        // The id the presence pass mints for the same manager, so a verdict
+        // that pass already reported keeps its own row and this one adds none.
         let id = super::package_entry_drift_id(&held.package, &held.package, Some(*mgr));
         if !seen.insert(id.clone()) {
             continue;
         }
-        match verdict {
+        match &live.judgment {
             crate::modules::FloorJudgment::Met { .. } => {}
             crate::modules::FloorJudgment::Short { version } => results.push(VerifyResult {
                 resource_type: "package".to_string(),
                 resource_id: id,
                 matches: false,
                 expected: held.floor.clone(),
-                actual: version,
+                actual: version.clone(),
                 unmanaged: false,
             }),
-            crate::modules::FloorJudgment::Unproven { cause } => {
-                check_errors.push(SystemCheckError {
-                    key: id,
-                    error: crate::modules::FloorBootstrap::floor_unproven(
-                        &held.package,
-                        &held.floor,
-                        &cause,
-                    ),
-                })
-            }
+            crate::modules::FloorJudgment::Unproven { .. } => check_errors.push(SystemCheckError {
+                key: id,
+                error: live.clause(Some(*mgr)),
+            }),
         }
     }
     (results, check_errors)

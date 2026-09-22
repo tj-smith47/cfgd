@@ -189,16 +189,19 @@ fn build_module_routes(
                     Ok(Some(modules::PackageResolution::Bootstrap(route))) => {
                         unresolved.push(unresolved_route_row(&route));
                     }
-                    // The package names a manager this host already holds at
-                    // the declared floor, so nothing is missing: the row
-                    // states what is here beside the managers the rest of the
-                    // module routes to.
+                    // The package names a manager this host already holds. At
+                    // the declared floor nothing is missing and the row states
+                    // what is here beside the managers the rest of the module
+                    // routes to; below it, or with a version nothing could
+                    // read, the same clause is a shortfall and joins the list
+                    // that fails the verdict.
                     Ok(Some(modules::PackageResolution::HeldByManager(entry))) => {
-                        held.push(modules::HeldManager::held_clause(
-                            &entry.package,
-                            &entry.version,
-                            &entry.floor,
-                        ));
+                        let clause = entry.clause(mgr_map.get(&entry.package).copied());
+                        if entry.judgment.met() {
+                            held.push(clause);
+                        } else {
+                            unresolved.push(clause);
+                        }
                     }
                     // Gated off this platform: the package is not declared
                     // here, so it routes nowhere and states nothing.
@@ -834,32 +837,40 @@ fn build_modules_section(s: SectionBuilder, modules: &[DoctorModuleCheck]) -> Se
             .filter(|r| !r.available)
             .map(|r| {
                 format!(
-                    "{} missing ({} route to it)",
+                    "{} missing ({} {} to it)",
                     r.name,
-                    cfgd_core::pluralize(r.package_count, "package")
+                    cfgd_core::pluralize(r.package_count, "package"),
+                    cfgd_core::agreeing_verb(r.package_count, "route")
                 )
             })
             .collect();
         shortfalls.extend(m.unresolved.iter().cloned());
-        if shortfalls.is_empty() {
-            // The two satisfied facts are one detail: a manager the module's
-            // packages route to, and a manager that IS one of them. Joined at
-            // the producer, because a held clause carries a comma of its own.
-            let names: Vec<&str> = m.managers.iter().map(|r| r.name.as_str()).collect();
-            let mut clauses = Vec::new();
-            if !names.is_empty() {
-                clauses.push(format!("{} available", names.join(", ")));
-            }
-            clauses.extend(m.held.iter().cloned());
-            let detail = cfgd_core::join_clauses(&clauses);
-            return s.status_with(Role::Ok, m.name.clone(), |sf| sf.detail(detail));
+        // Every clause of the module in one detail, satisfied facts first: a
+        // manager its packages route to, a manager that IS one of them, then
+        // whatever falls short. A shortfall used to take the satisfied halves
+        // away with it, so a module with one missing manager stopped saying
+        // what the rest of it had. Joined at the producer, because a held
+        // clause carries a comma of its own and the separator between members
+        // must not read as punctuation inside one.
+        let names: Vec<&str> = m
+            .managers
+            .iter()
+            .filter(|r| r.available)
+            .map(|r| r.name.as_str())
+            .collect();
+        let mut clauses = Vec::with_capacity(1 + m.held.len() + shortfalls.len());
+        if !names.is_empty() {
+            clauses.push(format!("{} available", names.join(", ")));
         }
-        // A shortfall states a sentence a producer worded, and one of them
-        // carries a comma of its own, so the separator between them is the one
-        // a reader cannot mistake for punctuation inside a member.
-        s.status_with(Role::Fail, m.name.clone(), |sf| {
-            sf.detail(shortfalls.join("; "))
-        })
+        clauses.extend(m.held.iter().cloned());
+        let role = if shortfalls.is_empty() {
+            Role::Ok
+        } else {
+            Role::Fail
+        };
+        clauses.append(&mut shortfalls);
+        let detail = cfgd_core::join_clauses(&clauses);
+        s.status_with(role, m.name.clone(), |sf| sf.detail(detail))
     })
 }
 
@@ -993,6 +1004,110 @@ mod tests {
             version: None,
             origin: None,
         }
+    }
+
+    /// A module whose declared package IS a manager this host holds, with the
+    /// floor that manager's own binary answers.
+    fn holding_a_manager(
+        name: &str,
+        package: &str,
+        floor: &str,
+    ) -> cfgd_core::modules::LoadedModule {
+        let yaml = format!(
+            "packages:\n  - name: {package}\n    minVersion: \"{floor}\"\n    prefer: [{package}]\n"
+        );
+        cfgd_core::modules::LoadedModule {
+            name: name.to_string(),
+            spec: serde_yaml::from_str(&yaml).expect("a module spec of declared packages"),
+            dir: std::path::PathBuf::from("/nonexistent"),
+            version: None,
+            origin: None,
+        }
+    }
+
+    /// The row reads the ONE composer whatever the floor answer is, and a
+    /// manager below its floor is something to fix: the clause goes where every
+    /// other shortfall goes, so the module's verdict fails on it instead of the
+    /// row claiming a satisfied fact nobody measured.
+    #[test]
+    fn a_held_manager_below_its_floor_is_a_shortfall_on_the_doctor_row() {
+        let cargo = cfgd_core::test_helpers::MockPackageManager::new("cargo")
+            .offering("cargo", "1.75")
+            .reporting_version("1.80");
+        let mgr_map: std::collections::HashMap<String, &dyn cfgd_core::providers::PackageManager> =
+            std::collections::HashMap::from([(
+                "cargo".to_string(),
+                &cargo as &dyn cfgd_core::providers::PackageManager,
+            )]);
+        let all_modules = std::collections::HashMap::from([(
+            "rust".to_string(),
+            holding_a_manager("rust", "cargo", "1.85"),
+        )]);
+
+        let (checks, _routes) = build_module_routes(
+            &["rust".to_string()],
+            &all_modules,
+            &mgr_map,
+            Platform::current(),
+            None,
+        );
+        let expected = cfgd_core::modules::HeldManager {
+            package: "cargo".into(),
+            module: "rust".into(),
+            floor: "1.85".into(),
+            judgment: cfgd_core::modules::FloorJudgment::Short {
+                version: "1.80".into(),
+            },
+        }
+        .clause(Some(&cargo));
+        assert_eq!(checks[0].unresolved, vec![expected]);
+        assert!(
+            checks[0].held.is_empty(),
+            "a floor nothing meets is no satisfied fact: {:?}",
+            checks[0].held
+        );
+    }
+
+    /// The same row at the floor is the satisfied half: the clause is the same
+    /// composer's, and it joins the facts the module states rather than the
+    /// list its verdict fails on.
+    #[test]
+    fn a_held_manager_at_its_floor_states_what_is_here_on_the_doctor_row() {
+        let cargo = cfgd_core::test_helpers::MockPackageManager::new("cargo")
+            .offering("cargo", "1.75")
+            .reporting_version("1.90");
+        let mgr_map: std::collections::HashMap<String, &dyn cfgd_core::providers::PackageManager> =
+            std::collections::HashMap::from([(
+                "cargo".to_string(),
+                &cargo as &dyn cfgd_core::providers::PackageManager,
+            )]);
+        let all_modules = std::collections::HashMap::from([(
+            "rust".to_string(),
+            holding_a_manager("rust", "cargo", "1.85"),
+        )]);
+
+        let (checks, _routes) = build_module_routes(
+            &["rust".to_string()],
+            &all_modules,
+            &mgr_map,
+            Platform::current(),
+            None,
+        );
+        let expected = cfgd_core::modules::HeldManager {
+            package: "cargo".into(),
+            module: "rust".into(),
+            floor: "1.85".into(),
+            judgment: cfgd_core::modules::FloorJudgment::Met {
+                version: "1.90".into(),
+            },
+        }
+        .clause(Some(&cargo));
+        assert_eq!(checks[0].held, vec![expected]);
+        assert!(
+            checks[0].unresolved.is_empty(),
+            "a met floor is nothing to fix: {:?}",
+            checks[0].unresolved
+        );
     }
 
     /// One question per manager for the whole module walk, however many

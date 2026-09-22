@@ -695,13 +695,24 @@ pub struct ModulePackageStatus {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub manager: Option<String>,
     pub state: ModulePackagePresence,
-    /// The clause for an entry whose delivery IS the manager it names, already
-    /// on this host at the declared floor: what that manager reports and the
-    /// floor it clears, worded by the one composer every surface naming a held
-    /// manager reads. `None` for every other row, whose state is the whole
-    /// answer.
+    /// The floor answer for an entry whose delivery IS the manager it names,
+    /// already on this host. `None` for every other row, whose state is the
+    /// whole answer.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub held: Option<String>,
+    pub held: Option<HeldFloor>,
+}
+
+/// What the declared floor of a held manager came to on this host.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HeldFloor {
+    /// The whole answer in words, from the one composer every surface naming a
+    /// held manager reads.
+    pub clause: String,
+    /// Whether that answer cleared the floor. The presence state says the
+    /// manager is here, which stays true below the floor and while its version
+    /// cannot be read, so the row's own verdict is decided here.
+    pub met: bool,
 }
 
 #[derive(Serialize)]
@@ -2661,15 +2672,22 @@ fn render_module_inventories(
                 // managers, and two rows reading `neovim — not scanned` say
                 // nothing about which entry is which.
                 let detail = match (&pkg.held, &pkg.manager, pkg.state) {
-                    // A held manager's row names the version it reports and
-                    // the floor it clears: the manager alone would say only
-                    // that the package is itself.
-                    (Some(held), _, _) => held.clone(),
+                    // A held manager's row names what its own binary reports
+                    // against the declared floor: the manager alone would say
+                    // only that the package is itself.
+                    (Some(held), _, _) => held.clause.clone(),
                     (None, Some(m), ModulePackagePresence::Installed) => m.clone(),
                     (None, Some(m), state) => format!("{} ({m})", state.label()),
                     (None, None, state) => state.label().to_string(),
                 };
-                s.status_with(pkg.state.role(), &pkg.name, |f| f.detail(detail))
+                // Presence says the manager is here, which a shortfall and an
+                // unreadable version both leave true, so a held row takes its
+                // verdict from the floor answer instead.
+                let role = match &pkg.held {
+                    Some(held) if !held.met => Role::Warn,
+                    _ => pkg.state.role(),
+                };
+                s.status_with(role, &pkg.name, |f| f.detail(detail))
             });
             // The same row the compact Drift section and `diff` render for the
             // identical check, so `--exit-code`'s Error exit is never invisible
@@ -3459,8 +3477,8 @@ fn join_package_state(
                     // A route names a manager this host does not have, so the
                     // column states nothing, exactly as it did for the refusal
                     // that route replaced. A HELD manager is the opposite: it
-                    // is on this host at the floor the entry declared, so the
-                    // row is installed and states what answers for it.
+                    // is on this host, so the row is installed and states what
+                    // its own binary reports against the declared floor.
                     let (manager, state, held) =
                         match modules::resolve_package(p, module_name, here, managers, installed) {
                             Ok(Some(modules::PackageResolution::Package(resolved))) => (
@@ -3468,15 +3486,17 @@ fn join_package_state(
                                 ModulePackagePresence::NotScanned,
                                 None,
                             ),
-                            Ok(Some(modules::PackageResolution::HeldByManager(entry))) => (
-                                Some(entry.package.clone()),
-                                ModulePackagePresence::Installed,
-                                Some(modules::HeldManager::held_clause(
-                                    &entry.package,
-                                    &entry.version,
-                                    &entry.floor,
-                                )),
-                            ),
+                            Ok(Some(modules::PackageResolution::HeldByManager(held))) => {
+                                let clause = held.clause(managers.get(&held.package).copied());
+                                (
+                                    Some(held.package.clone()),
+                                    ModulePackagePresence::Installed,
+                                    Some(HeldFloor {
+                                        clause,
+                                        met: held.judgment.met(),
+                                    }),
+                                )
+                            }
                             Ok(Some(modules::PackageResolution::Bootstrap(_)))
                             | Ok(None)
                             | Err(_) => (None, ModulePackagePresence::NotScanned, None),
@@ -6223,9 +6243,12 @@ mod tests {
             last_applied: None,
             scope: None,
             package_state: vec![ModulePackageStatus {
-                held: Some(cfgd_core::modules::HeldManager::held_clause(
-                    "cargo", "1.90", "1.85",
-                )),
+                held: Some(HeldFloor {
+                    clause: crate::cli::tests::held_manager_clause(
+                        crate::cli::tests::floor_met_at("1.90"),
+                    ),
+                    met: true,
+                }),
                 name: "cargo".to_string(),
                 manager: Some("cargo".to_string()),
                 state: ModulePackagePresence::Installed,
@@ -6255,6 +6278,74 @@ mod tests {
         assert_eq!(
             row.trim(),
             "✓ cargo — cargo 1.90 is on this host, at or above the declared minVersion 1.85"
+        );
+    }
+
+    /// Presence says the manager is here, which stays true below the declared
+    /// floor, so the row cannot take its verdict from presence alone: a ✓
+    /// beside a sentence saying the copy is too old contradicts itself.
+    #[test]
+    fn a_held_manager_below_its_floor_does_not_wear_the_installed_check() {
+        let output = ModuleStatus {
+            packages_hash: None,
+            files_hash: None,
+            commit: None,
+            integrity: None,
+            name: "rust".to_string(),
+            packages: 1,
+            files: 0,
+            env: 0,
+            aliases: 0,
+            scripts: Vec::new(),
+            system: Vec::new(),
+            depends: Vec::new(),
+            declared: cfgd_core::modules::ModuleSurfaces::default(),
+            status: "installed".to_string(),
+            last_applied: None,
+            scope: None,
+            package_state: vec![ModulePackageStatus {
+                held: Some(HeldFloor {
+                    clause: crate::cli::tests::held_manager_clause(
+                        cfgd_core::modules::FloorJudgment::Short {
+                            version: "1.80".into(),
+                        },
+                    ),
+                    met: false,
+                }),
+                name: "cargo".to_string(),
+                manager: Some("cargo".to_string()),
+                state: ModulePackagePresence::Installed,
+            }],
+            deployed_files: Vec::new(),
+            drift_checked_live: true,
+            last_scan_at: None,
+            scoped_scans: Default::default(),
+            system_errors: Vec::new(),
+            standing: Vec::new(),
+            drift: Vec::new(),
+        };
+        let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+        printer.emit(build_module_status_doc(
+            &output,
+            ModuleStatusView::Inventory {
+                masking: crate::cli::EnvValueMasking::revealing(),
+            },
+            "2026-05-14T10:05:00Z",
+        ));
+        drop(printer);
+        let rendered = cfgd_core::test_helpers::captured_text(&buf);
+        let row = rendered
+            .lines()
+            .find(|l| l.contains("cargo"))
+            .unwrap_or_else(|| panic!("the package has a row: {rendered}"));
+        assert_eq!(
+            row.trim(),
+            format!(
+                "⚠ cargo — {}",
+                crate::cli::tests::held_manager_clause(cfgd_core::modules::FloorJudgment::Short {
+                    version: "1.80".into()
+                })
+            )
         );
     }
 
@@ -8450,6 +8541,60 @@ mod tests {
         assert_eq!(rows[0].manager, None);
         assert_eq!(rows[1].manager.as_deref(), Some("brew"));
         assert_eq!(rows[1].state, ModulePackagePresence::Installed);
+    }
+
+    /// A declared package naming a manager this host holds is an installed row
+    /// carrying the one composer's sentence and the judgment behind it.
+    ///
+    /// The row states presence, which stays true below the floor, so the
+    /// verdict a reader acts on lives in `met` and the words come from
+    /// `HeldManager::clause`. Asserted against the composer over the real
+    /// resolution, because the bytes this surface shows were typed by hand
+    /// once and promised a raise the resolution never named.
+    #[test]
+    fn a_held_managers_floor_judgment_rides_on_its_status_row() {
+        let cargo = cfgd_core::test_helpers::MockPackageManager::new("cargo")
+            .offering("cargo", "1.75")
+            .reporting_version("1.80");
+        let managers: std::collections::HashMap<String, &dyn cfgd_core::providers::PackageManager> =
+            [(
+                "cargo".to_string(),
+                &cargo as &dyn cfgd_core::providers::PackageManager,
+            )]
+            .into_iter()
+            .collect();
+        let mut entry = declared_under("cargo", "cargo");
+        entry.min_version = Some("1.85".to_string());
+
+        let rows = join_package_state(
+            &[entry],
+            &mut std::collections::HashMap::new(),
+            Platform::current(),
+            "rust",
+            &managers,
+            None,
+        );
+
+        let expected = cfgd_core::modules::HeldManager {
+            package: "cargo".into(),
+            module: "rust".into(),
+            floor: "1.85".into(),
+            judgment: cfgd_core::modules::FloorJudgment::Short {
+                version: "1.80".into(),
+            },
+        }
+        .clause(Some(&cargo));
+        assert_eq!(rows[0].manager.as_deref(), Some("cargo"));
+        assert_eq!(rows[0].state, ModulePackagePresence::Installed);
+        let held = rows[0]
+            .held
+            .as_ref()
+            .unwrap_or_else(|| panic!("the row carries the floor answer: {:?}", rows[0].state));
+        assert_eq!(held.clause, expected);
+        assert!(
+            !held.met,
+            "a manager below its declared floor has not met it"
+        );
     }
 
     /// A package the module's own `platforms` gate rules out is not "not

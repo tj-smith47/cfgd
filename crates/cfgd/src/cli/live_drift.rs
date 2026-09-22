@@ -317,7 +317,8 @@ pub(super) fn scoped_version_drift(
     // The floor of a manager this chain's own entry names is answered by the
     // binary rather than by a listing, and a scoped run that skipped it would
     // heal a version row nothing re-examined.
-    let (held, held_errors) = cfgd_core::reconciler::held_manager_version_drift(modules, registry);
+    let (held, held_errors) =
+        cfgd_core::reconciler::held_manager_version_drift(modules, registry, &results);
     results.extend(held);
     check_errors.extend(held_errors);
     Ok((results, check_errors))
@@ -806,14 +807,14 @@ fn live_drift_results_inner(
     );
     let (version_drift, version_check_errors) =
         cfgd_core::reconciler::package_version_drift(&effective, registry, cx)?;
-    drift.extend(version_drift);
     extend_check_errors(&mut package_check_errors, version_check_errors);
     // A manager the machine already holds at a declared floor answers for
     // itself: no listing holds a tool its own installer delivered, so this
     // pass reads the binary and is the only thing that can report a toolchain
     // that slipped below the floor a module declared.
     let (held_drift, held_check_errors) =
-        cfgd_core::reconciler::held_manager_version_drift(modules, registry);
+        cfgd_core::reconciler::held_manager_version_drift(modules, registry, &version_drift);
+    drift.extend(version_drift);
     drift.extend(held_drift);
     extend_check_errors(&mut package_check_errors, held_check_errors);
 

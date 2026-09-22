@@ -764,11 +764,12 @@ fn a_floor_on_a_package_that_names_no_bootstrappable_manager_still_refuses() {
 }
 
 /// A manager already on this host has nothing left to bootstrap, so a floor it
-/// falls short of is a refusal. The sentence names the manager and the version
-/// it reports: the machine holds cargo, and what makes the declaration
-/// unsatisfiable is that copy, not what some listing offers.
+/// falls short of is a verdict about the machine rather than a refusal of the
+/// declaration. The clause names the manager, the version it reports and the
+/// raise, and a reader asking what the machine looks like gets an answer for
+/// every other entry beside it.
 #[test]
-fn a_floor_an_available_manager_falls_short_of_still_refuses() {
+fn a_floor_a_held_manager_falls_short_of_resolves_and_names_the_raise() {
     let cargo = crate::test_helpers::MockPackageManager::new("cargo")
         .offering("cargo", "1.75")
         .reporting_version("1.80")
@@ -780,13 +781,43 @@ fn a_floor_an_available_manager_falls_short_of_still_refuses() {
         prefer: vec!["cargo".into()],
         ..Default::default()
     };
-    let err = resolve_package(&entry, "nvim", &linux_ubuntu_platform(), &managers, None)
-        .unwrap_err()
-        .to_string();
-    assert!(
-        err.contains("cargo 1.80 is on this host, below the declared minVersion 1.85"),
-        "a manager the host already has offers no route, and the refusal says \
-         what the host actually holds: {err}"
+    let held = match resolve_package(&entry, "nvim", &linux_ubuntu_platform(), &managers, None) {
+        Ok(Some(PackageResolution::HeldByManager(held))) => held,
+        other => panic!("a held manager below its floor is reported, not refused: {other:?}"),
+    };
+    assert!(!held.judgment.met());
+    assert_eq!(
+        held.clause(managers.get("cargo").copied()),
+        "cargo 1.80 is on this host, below the declared minVersion 1.85; \
+         raise it with cargo's own upgrade",
+        "the clause says what the host actually holds and what raises it"
+    );
+}
+
+/// A held manager nothing on this host can raise is still reported, and the
+/// clause says the raise is the reader's to perform: pointing at a verb no
+/// manager declares would name a command that does not exist.
+#[test]
+fn a_held_manager_with_no_raise_verb_says_the_raise_is_by_hand() {
+    let cargo = crate::test_helpers::MockPackageManager::new("cargo")
+        .offering("cargo", "1.75")
+        .reporting_version("1.80")
+        .without_upgrade_verb();
+    let managers = make_manager_map(&[("cargo", &cargo)]);
+    let entry = ModulePackageEntry {
+        name: "cargo".into(),
+        min_version: Some("1.85".into()),
+        prefer: vec!["cargo".into()],
+        ..Default::default()
+    };
+    let held = match resolve_package(&entry, "nvim", &linux_ubuntu_platform(), &managers, None) {
+        Ok(Some(PackageResolution::HeldByManager(held))) => held,
+        other => panic!("a held manager below its floor is reported, not refused: {other:?}"),
+    };
+    assert_eq!(
+        held.clause(managers.get("cargo").copied()),
+        "cargo 1.80 is on this host, below the declared minVersion 1.85; \
+         nothing cfgd can run raises cargo, so it must be raised by hand"
     );
 }
 
@@ -815,16 +846,20 @@ fn a_floor_the_manager_this_host_already_holds_meets_resolves_as_held() {
     assert_eq!(held.package, "cargo");
     assert_eq!(held.module, "rust");
     assert_eq!(
-        held.version, "1.90",
+        held.judgment,
+        crate::modules::FloorJudgment::Met {
+            version: "1.90".into()
+        },
         "the version is what the manager's own binary reports, not what a listing offers"
     );
     assert_eq!(held.floor, "1.85");
 }
 
-/// A manager whose binary states no version has answered nothing, so the run
-/// refuses and says so rather than claiming a shortfall it never measured.
+/// A manager whose binary states no version has answered nothing, so the
+/// verdict says so rather than claiming a shortfall it never measured, and the
+/// clause names what a reader would look at to make the version readable.
 #[test]
-fn a_floor_a_held_manager_states_no_version_for_is_refused_as_unproven() {
+fn a_floor_a_held_manager_states_no_version_for_resolves_as_unproven() {
     let cargo = crate::test_helpers::MockPackageManager::new("cargo").offering("cargo", "1.75");
     let managers = make_manager_map(&[("cargo", &cargo)]);
     let entry = ModulePackageEntry {
@@ -833,14 +868,16 @@ fn a_floor_a_held_manager_states_no_version_for_is_refused_as_unproven() {
         prefer: vec!["cargo".into()],
         ..Default::default()
     };
-    let err = resolve_package(&entry, "nvim", &linux_ubuntu_platform(), &managers, None)
-        .unwrap_err()
-        .to_string();
-    assert!(
-        err.contains(
-            "cannot judge cargo against the declared minVersion 1.85: it reports no version"
-        ),
-        "a version nothing could read is a question that was never answered: {err}"
+    let held = match resolve_package(&entry, "nvim", &linux_ubuntu_platform(), &managers, None) {
+        Ok(Some(PackageResolution::HeldByManager(held))) => held,
+        other => panic!("a floor nothing could judge is reported, not refused: {other:?}"),
+    };
+    assert!(!held.judgment.met());
+    assert_eq!(
+        held.clause(managers.get("cargo").copied()),
+        "cannot judge cargo against the declared minVersion 1.85: it reports no version; \
+         check that cargo is on this process's PATH",
+        "a version nothing could read is a question that was never answered"
     );
 }
 
@@ -871,7 +908,12 @@ fn a_held_managers_floor_is_judged_in_its_own_version_grammar() {
         Ok(Some(PackageResolution::HeldByManager(held))) => held,
         other => panic!("the manager's own grammar clears the floor: {other:?}"),
     };
-    assert_eq!(held.version, held_version);
+    assert_eq!(
+        held.judgment,
+        crate::modules::FloorJudgment::Met {
+            version: held_version.into()
+        }
+    );
     assert_eq!(held.floor, "133");
 }
 
