@@ -8761,7 +8761,7 @@ mod tests {
         let mut entry = declared_under("cargo", "cargo");
         entry.min_version = Some("1.85".to_string());
 
-        let rows = join_package_state(
+        let mut rows = join_package_state(
             &[entry],
             &mut std::collections::HashMap::new(),
             Platform::current(),
@@ -8804,12 +8804,62 @@ mod tests {
             held.min_version, "1.85",
             "and the floor it was judged against"
         );
-        let wire = serde_json::to_value(held).expect("the held answer serializes");
+        // Serialized where the documentation says to look for it, rather than
+        // off the inner value alone: a consumer reaches these numbers down
+        // `packageState[].held`, so a rename anywhere along that path breaks
+        // the promise even while the inner struct still serializes. The route
+        // a floor nothing met would take is published beside them, down its
+        // own documented path, and is added here as a row of its own because
+        // this host holds the manager and so can never produce one.
+        let routed = ModulePackageStatus {
+            route: Some(FloorRoute {
+                clause: crate::cli::tests::floor_route_clause(),
+            }),
+            held: None,
+            name: "ripgrep".to_string(),
+            manager: None,
+            state: ModulePackagePresence::NotScanned,
+        };
+        let published = ModuleStatus {
+            packages_hash: None,
+            files_hash: None,
+            commit: None,
+            integrity: None,
+            name: "rust".to_string(),
+            packages: 2,
+            files: 0,
+            env: 0,
+            aliases: 0,
+            scripts: Vec::new(),
+            system: Vec::new(),
+            depends: Vec::new(),
+            declared: cfgd_core::modules::ModuleSurfaces::default(),
+            status: "installed".to_string(),
+            last_applied: None,
+            scope: None,
+            package_state: vec![rows.remove(0), routed],
+            deployed_files: Vec::new(),
+            drift_checked_live: true,
+            last_scan_at: None,
+            scoped_scans: Default::default(),
+            system_errors: Vec::new(),
+            standing: Vec::new(),
+            drift: Vec::new(),
+        };
+        let wire = serde_json::to_value(&published).expect("the status payload serializes");
         assert_eq!(
-            wire["version"], "1.80",
+            wire["packageState"][0]["held"]["version"], "1.80",
             "under the name module show publishes"
         );
-        assert_eq!(wire["minVersion"], "1.85", "and so does the floor");
+        assert_eq!(
+            wire["packageState"][0]["held"]["minVersion"], "1.85",
+            "and so does the floor"
+        );
+        assert_eq!(
+            wire["packageState"][1]["route"]["clause"],
+            serde_json::Value::String(crate::cli::tests::floor_route_clause()),
+            "and a route rides under the key path the reference documents"
+        );
     }
 
     /// A package the module's own `platforms` gate rules out is not "not

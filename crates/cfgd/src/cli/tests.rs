@@ -48335,26 +48335,73 @@ fn assert_replay_took_the_route(fx: &FloorFixture) {
 /// A replay executes the file's actions and only those.
 ///
 /// This machine's cargo is below the declared floor, so a fresh resolution
-/// states the route on every run; the file here carries no provision for it.
-/// The replay neither mints one from the resolution nor refuses over it.
+/// states the route on every run. The claim is an equality over the whole SET
+/// rather than the absence of that one row: any minter reachable on the replay
+/// path puts an extra action into the run, so comparing what the run printed
+/// against what the file carries catches the class at one site. Both shapes of
+/// the file are driven (as recorded, and with its bootstrap phase taken out),
+/// because a mint restoring exactly what was dropped would otherwise pass.
 #[test]
 fn a_replay_executes_only_the_actions_its_file_carries() {
-    let fx = FloorFixture::cargo_below_floor_answered(true);
-    let plan_file = fx.record_plan_file();
-    drop_bootstrap_phase(&plan_file);
+    for dropped in [false, true] {
+        let fx = FloorFixture::cargo_below_floor_answered(true);
+        let plan_file = fx.record_plan_file();
+        if dropped {
+            drop_bootstrap_phase(&plan_file);
+        }
 
-    fx.run_replay(&plan_file)
-        .unwrap_or_else(|e| panic!("what the file carries is what runs: {e}"));
+        fx.run_replay(&plan_file)
+            .unwrap_or_else(|e| panic!("what the file carries is what runs: {e}"));
 
-    let out = fx.h.output();
-    assert!(
-        !out.contains("provision cargo via rustup"),
-        "an action the file does not carry does not come back: {out}"
-    );
-    assert!(
-        !out.contains("Provision cargo via rustup instead?"),
-        "and the seated reader was never asked to widen it: {out}"
-    );
+        let out = fx.h.output();
+        let carried = recorded_action_rows(&plan_file, fx.h.printer().arrow());
+        assert_eq!(
+            carried.is_empty(),
+            dropped,
+            "the recorded file carries the provision and dropping its phase takes it away, \
+             so neither iteration compares one empty set against another by accident"
+        );
+        assert_eq!(
+            executed_action_rows(&out),
+            carried,
+            "the run executes the file's action set and no other (bootstrap dropped: \
+             {dropped}):\n{out}"
+        );
+        assert!(
+            !out.contains("Provision cargo via rustup instead?"),
+            "and the seated reader was never asked to widen it: {out}"
+        );
+    }
+}
+
+/// The action rows a run put on the terminal, read off the bullets of its plan
+/// tree. Sorted, because the claim is about the SET rather than the order the
+/// phases happen to run in.
+fn executed_action_rows(out: &str) -> Vec<String> {
+    let mut rows: Vec<String> = out
+        .lines()
+        .filter_map(|line| line.trim_start().strip_prefix("- ").map(str::to_owned))
+        .collect();
+    rows.sort();
+    rows
+}
+
+/// The actions a recorded plan file carries, worded through the composer every
+/// preview row reads, so the two sides of the comparison speak one vocabulary.
+fn recorded_action_rows(path: &Path, arrow: &str) -> Vec<String> {
+    let payload: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let plan: cfgd_core::reconciler::Plan =
+        serde_json::from_value(payload["savedPlan"]["plan"].clone())
+            .expect("a plan cfgd wrote reads back as its own type");
+    let mut rows: Vec<String> = plan
+        .phases
+        .iter()
+        .flat_map(cfgd_core::reconciler::Phase::actions)
+        .map(|action| cfgd_core::reconciler::format_plan_item(action, arrow))
+        .collect();
+    rows.sort();
+    rows
 }
 
 /// Take the `Bootstrap` phase out of a recorded plan, leaving a file that
