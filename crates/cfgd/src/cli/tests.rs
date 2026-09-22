@@ -48858,9 +48858,10 @@ const UNCONDITIONALLY_DECLARING: &[&str] = if cfg!(windows) {
 /// `floor_bootstrap_route` withholds a route for a manager this host already
 /// holds, which is right for the resolver and wrong for a population question:
 /// judging `brew` unreachable on a machine that has brew would make the pin a
-/// statement about the runner. The entry names the manager itself, which is the
-/// shape the resolver reaches this with, so the route comes back naming a
-/// package a reader can act on.
+/// statement about the runner. The entry is named APART from the manager it is
+/// asked through, so the route's `package` field is judged against the entry it
+/// was derived from rather than against the name it was looked up by, which the
+/// two would share if the walk spelled them the same.
 #[test]
 fn every_manager_declaring_a_bootstrap_plan_is_reachable_from_the_floor_route() {
     // Several arms probe PATH for their mediator, so a sibling's mutation
@@ -48883,8 +48884,9 @@ fn every_manager_declaring_a_bootstrap_plan_is_reachable_from_the_floor_route() 
             continue;
         };
         declaring.push(mgr.name().to_string());
+        let package = format!("{}-probe-pkg", mgr.name());
         let entry = cfgd_core::config::ModulePackageEntry {
-            name: mgr.name().to_string(),
+            name: package.clone(),
             min_version: Some("999.0".to_string()),
             ..Default::default()
         };
@@ -48903,7 +48905,7 @@ fn every_manager_declaring_a_bootstrap_plan_is_reachable_from_the_floor_route() 
                 );
                 assert_eq!(
                     (route.package.as_str(), route.floor.as_str()),
-                    (mgr.name(), "999.0"),
+                    (package.as_str(), "999.0"),
                     "the route names the package asked about and the floor it fell short of"
                 );
             }

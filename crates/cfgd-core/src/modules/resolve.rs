@@ -727,9 +727,9 @@ fn floor_bootstrap_route(
 /// route so its caller asks the host question of that same value.
 ///
 /// `manager` is the package's own name wherever the resolver calls this, which
-/// is what makes the route's `package` field name a registered manager: a
-/// caller walking the registry passes the declaring manager's name as the
-/// entry's name too, so the field stays the manager a reader can act on.
+/// is what makes the route's `package` field name a registered manager. The
+/// field is the ENTRY's name either way, so a caller naming a manager the entry
+/// does not gets a route naming that entry.
 ///
 /// `bootstrap_plan_given(&|_| false)` prices the cascade against the host as it
 /// stands, so a manager whose only arm is a mediator this host lacks offers
