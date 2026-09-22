@@ -34092,7 +34092,11 @@ fn every_core_minted_package_drift_id_comes_from_its_composer() {
 /// blanked, so a `(` or a `,` inside either cannot end an argument; each
 /// argument's TEXT is taken from `raw` at the same byte positions, so two
 /// literals of one length stay two arguments rather than two runs of the same
-/// blanks. Only the bracket pairs count toward depth: `<` and `>` are
+/// blanks. Each raw row is cut at its code end first: a comment is blanked
+/// WHOLE in `code`, delimiters included, so its raw bytes would otherwise be
+/// pushed into whichever argument follows it and a call carrying one would read
+/// as two arguments that differ. Only the bracket pairs count toward depth: `<`
+/// and `>` are
 /// comparisons as often as they are generics, and a lone one swallows the rest
 /// of the call. Every occurrence on a line answers, and a declaration of the
 /// function is not a call.
@@ -34112,7 +34116,9 @@ fn call_argument_spans(
             let mut from = at + open.len() - 1;
             for (j, row) in code.iter().enumerate().skip(i) {
                 let scanned = row.as_bytes();
-                let written = raw.get(j).copied().unwrap_or_default().as_bytes();
+                let written =
+                    cfgd_core::test_helpers::code_span(raw.get(j).copied().unwrap_or_default())
+                        .as_bytes();
                 for (k, byte) in scanned.iter().enumerate().skip(from) {
                     let c = char::from(*byte);
                     match c {
@@ -34166,25 +34172,29 @@ fn function_span(code: &[&str], at: usize) -> std::ops::RangeInclusive<usize> {
 }
 
 /// An argument's text with a let-bound alias folded to the initializer it was
-/// bound to in `body`, so one value spelled two ways reads as one argument.
+/// bound to in the owning function, so one value spelled two ways reads as one
+/// argument.
 ///
 /// Anything that is not a bare identifier is left as written, and the compare
 /// after this fold is TEXTUAL: `&h.package` and `h.package.as_str()` read one
 /// field and stay two arguments, because judging what two spellings evaluate to
 /// is a type-checker's job, and a walk that guessed at it would claim a pair
 /// its reader cannot tell apart from a genuine second subject.
-fn resolved_argument(arg: &str, body: &[&str]) -> String {
+///
+/// `code` and `raw` are that function's lines masked and as written, in step.
+/// The binding is found on the masked line, so a `let` standing inside a string
+/// literal or a block comment supplies no initializer, and its TEXT is read off
+/// the raw line at the same byte offsets, because the argument it is compared
+/// against was read as written too.
+fn resolved_argument(arg: &str, code: &[&str], raw: &[&str]) -> String {
     if arg.is_empty() || !arg.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
         return arg.to_string();
     }
-    for line in body {
-        let Some(rest) = cfgd_core::test_helpers::code_span(line)
-            .trim_start()
-            .strip_prefix("let ")
-        else {
+    for (masked, written) in code.iter().zip(raw) {
+        let Some(rest) = masked.trim_start().strip_prefix("let ") else {
             continue;
         };
-        let Some((bound, initializer)) = rest.split_once('=') else {
+        let Some((bound, _)) = rest.split_once('=') else {
             continue;
         };
         let name = bound
@@ -34194,9 +34204,18 @@ fn resolved_argument(arg: &str, body: &[&str]) -> String {
             .next()
             .unwrap_or_default()
             .trim();
-        if name == arg {
-            return initializer.trim().trim_end_matches(';').trim().to_string();
+        if name != arg {
+            continue;
         }
+        let at = masked.len() - rest.len() + bound.len() + 1;
+        let end = at + masked.get(at..).unwrap_or_default().trim_end().len();
+        return written
+            .get(at..end)
+            .unwrap_or_default()
+            .trim()
+            .trim_end_matches(';')
+            .trim()
+            .to_string();
     }
     arg.to_string()
 }
@@ -34230,9 +34249,12 @@ fn same_argument_mints(production: &str, open: &str) -> Vec<SameArgumentMint> {
             continue;
         }
         let owner = owner_of.get(first).copied().flatten();
-        let body: Vec<&str> =
-            owner.map_or_else(Vec::new, |at| raw[function_span(&code, at)].to_vec());
-        if resolved_argument(&args[0], &body) != resolved_argument(&args[1], &body) {
+        let span = owner.map(|at| function_span(&code, at));
+        let (body_code, body_raw) =
+            span.map_or((&[][..], &[][..]), |s| (&code[s.clone()], &raw[s.clone()]));
+        if resolved_argument(&args[0], body_code, body_raw)
+            != resolved_argument(&args[1], body_code, body_raw)
+        {
             continue;
         }
         mints.push(SameArgumentMint {
@@ -34249,12 +34271,16 @@ fn same_argument_mints(production: &str, open: &str) -> Vec<SameArgumentMint> {
 /// bound it. Two distinct literals of one length are two arguments, two
 /// spellings of one field are two arguments, a comparison inside an argument
 /// does not swallow the arguments after it, a second call on a line is read
-/// like the first, and a mint is attributed to the innermost function around
-/// it.
+/// like the first, a comment written between two arguments belongs to neither,
+/// a binding standing inside a comment folds no alias, and a mint is attributed
+/// to the innermost function around it.
 #[test]
 fn the_same_argument_scanner_reads_every_argument_as_written_after_folding_an_alias() {
     let fixture = r#"
 fn outer() {
+    /*
+    let entry = &nothing.at.all;
+    */
     let manager = &held.package;
     let entry = &held.package;
     id(manager, entry, pm);
@@ -34265,6 +34291,8 @@ fn outer() {
     fn inner() {
         id(&h.name, &h.name, pm);
     }
+    id(&h.name, // one value, with a comment standing between the arguments
+       &h.name, pm);
 }
 "#;
     let mints = same_argument_mints(fixture, "id(");
@@ -34275,15 +34303,18 @@ fn outer() {
     assert_eq!(
         found,
         vec![
-            (4, Some("outer")),
             (7, Some("outer")),
-            (8, Some("outer")),
-            (8, Some("outer")),
-            (10, Some("inner")),
+            (10, Some("outer")),
+            (11, Some("outer")),
+            (11, Some("outer")),
+            (13, Some("inner")),
+            (15, Some("outer")),
         ],
-        "line 4 is one value under two names, line 5 is one field under two spellings, \
-         line 6 is two literals of one length, line 7 compares inside each argument, \
-         line 8 holds two calls and line 10 sits inside the nested function"
+        "line 3 binds a decoy inside a block comment, line 7 is one value under two \
+         names, line 8 is one field under two spellings, line 9 is two literals of one \
+         length, line 10 compares inside each argument, line 11 holds two calls, line 13 \
+         sits inside the nested function and line 15 writes a comment between the two \
+         arguments"
     );
 }
 
@@ -34316,11 +34347,20 @@ fn every_held_floor_row_id_comes_from_the_composer_that_owns_it() {
         ("cfgd-core/src/reconciler/types.rs", 1),
         ("cfgd/src/cli/status.rs", 1),
     ];
+    /// The two producers of this row, each named by its own file, so the walk
+    /// itself witnesses both taking the composer rather than leaving that to
+    /// the censuses beside it. A producer that stopped calling it fails here
+    /// even while its hand-built row carries the reader hatch.
+    const COMPOSER_CALLERS: [(&str, usize); 2] = [
+        ("cfgd-core/src/reconciler/types.rs", 1),
+        ("cfgd-core/src/reconciler/verify.rs", 1),
+    ];
 
     let crates_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
     let mut offenders: Vec<String> = Vec::new();
     let mut composed = 0usize;
+    let mut taken: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
     for krate in ["cfgd", "cfgd-core"] {
         let root = crates_dir.join(krate).join("src");
         for path in rust_sources_under(&root) {
@@ -34332,6 +34372,15 @@ fn every_held_floor_row_id_comes_from_the_composer_that_owns_it() {
                 "{krate}/src/{}",
                 cfgd_core::to_posix_string(path.strip_prefix(&root).unwrap_or(&path))
             );
+            // The declaration line spells the name too, so a call is read past
+            // it: the composer would otherwise count as its own caller.
+            for line in blank_non_code(&production).lines() {
+                if !cfgd_core::test_helpers::opens_function(line)
+                    && cfgd_core::test_helpers::calls_free_fn(line, COMPOSER)
+                {
+                    *taken.entry(file.clone()).or_default() += 1;
+                }
+            }
             for mint in same_argument_mints(&production, MINT) {
                 *counts.entry(file.clone()).or_default() += 1;
                 if mint.owner.as_deref() == Some(COMPOSER) {
@@ -34361,6 +34410,23 @@ fn every_held_floor_row_id_comes_from_the_composer_that_owns_it() {
         composed >= 1,
         "both producers of this row reach it through `{COMPOSER}`, whose own body the walk \
          found {composed} mints in"
+    );
+    let unreached: Vec<String> = COMPOSER_CALLERS
+        .iter()
+        .filter(|(file, floor)| taken.get(*file).copied().unwrap_or_default() < *floor)
+        .map(|(file, floor)| {
+            format!(
+                "{file} takes it {} times, not {floor}",
+                taken.get(*file).copied().unwrap_or_default()
+            )
+        })
+        .collect();
+    assert!(
+        unreached.is_empty(),
+        "the planned node and the live re-check both compose this row through `{COMPOSER}`, \
+         and a producer that stopped is one this walk has to name rather than leaving it to \
+         the censuses beside it; found {taken:#?}\n{}",
+        unreached.join("\n")
     );
     let short: Vec<String> = HELD_ID_FLOOR
         .iter()
