@@ -143,7 +143,7 @@ declarations fold together rather than replace one another); on Linux only the f
 | Field | Required | Type | Description |
 |---|---|---|---|
 | `name` | yes | string | Canonical package name |
-| `minVersion` | no | string | Minimum acceptable version (semver). Also checked LIVE, by the whole-machine surfaces (`cfgd diff`, `cfgd status --scan`, `cfgd verify`) and by their `--module` scoped forms alike: an installed copy below the floor is drift (`want: 0.9, have: 0.8.3`), and a version the manager cannot state (or states in a form nothing can compare against, or fails to spawn its own comparator) is a check that could not run. A manager that cannot raise a package in place at all (`brew-tap`, a config-declared scripted installer) reports a below-floor package as a check error rather than drift, since no apply could ever heal it; every other manager raises through its own upgrade or install verb. `apk`, `pacman`, `zypper` and FreeBSD `pkg` list installed names only, and `brew-tap` entries are repositories with no version to state — a `minVersion` against any of these is always such a check |
+| `minVersion` | no | string | Minimum acceptable version (semver). A floor no available manager can meet, on a package that names a manager cfgd can bootstrap, is a question rather than a failure: see the resolution algorithm. Also checked LIVE, by the whole-machine surfaces (`cfgd diff`, `cfgd status --scan`, `cfgd verify`) and by their `--module` scoped forms alike: an installed copy below the floor is drift (`want: 0.9, have: 0.8.3`), and a version the manager cannot state (or states in a form nothing can compare against, or fails to spawn its own comparator) is a check that could not run. A manager that cannot raise a package in place at all (`brew-tap`, a config-declared scripted installer) reports a below-floor package as a check error rather than drift, since no apply could ever heal it; every other manager raises through its own upgrade or install verb. `apk`, `pacman`, `zypper` and FreeBSD `pkg` list installed names only, and `brew-tap` entries are repositories with no version to state — a `minVersion` against any of these is always such a check |
 | `prefer` | no | list | Ordered list of managers to try. `"script"` uses the `script` field as a custom installer. If omitted, the available manager that already holds the package wins (the platform's native manager is asked first), and a package nobody holds installs through the native manager. |
 | `deny` | no | list | Managers to never use for this package, even if available and preferred |
 | `aliases` | no | map | Per-manager name overrides when the package name differs |
@@ -281,9 +281,23 @@ The full resolution logic for each package entry:
    ✓ rust — apt available; cargo 1.90 is on this host, at or above the declared minVersion 1.85
    ```
    Below the floor, the run still refuses, and the sentence names what the host actually holds rather than claiming every listing fell short: `cargo 1.80 is on this host, below the declared minVersion 1.85`. A binary that states no version, or one its own comparator cannot read, is a check that could not run: `cannot judge cargo against the declared minVersion 1.85: it reports no version`. That floor is re-checked live, against the binary rather than the listing, by `cfgd verify`, `cfgd diff` and `cfgd status --scan`, so a toolchain that later slips below it is reported as drift.
-   A proven-below floor on a package that names a manager cfgd can put on this host (`cargo`, `npm`, `pipx`) has a third answer: the resolver states the route that manager's own bootstrap would take. `cfgd apply` and `cfgd plan` still refuse such a configuration with the sentence above, because nothing there asks whether to install a toolchain; the read surfaces state what the host offers instead. `cfgd doctor` puts it in the module's row:
+   A proven-below floor on a package that names a package manager cfgd can bootstrap on this host (`brew`, `cargo`, `npm`, `pipx`, `go`, `nix`, `snap`, `flatpak`, `chocolatey`, `scoop`, `winget`) has a third answer: cfgd asks instead of refusing. The question names the version found, the floor, and the route that would satisfy it; on yes cfgd provisions that manager in the `Bootstrap` phase rather than installing the package, and the plan row states the floor the answer was given for.
    ```
-   ✗ rust — cargo: apt offers cargo 1.75, below the declared minVersion 1.85
+   ⚠ apt offers nix 2.18.1, below the declared minVersion 99.0 that module 'rust' asks for
+   ? Provision nix via nix installer instead? (y/N) y
+   > Provision nix via nix installer instead? Yes
+
+   Phase: Bootstrap
+     cfgd:managers
+       - provision nix via nix installer (minVersion 99.0)
+   ```
+   `--yes` (or `CFGD_YES=1`) answers yes without asking, on `cfgd plan` and `cfgd apply` alike: the question is asked while modules resolve, so both verbs reach it. A run with nobody to ask (a pipe, CI, `-o json`, the daemon) keeps the refusal, and says what would have let a later run take the route:
+   ```
+   ✗ package 'nix' in module 'rust' cannot be resolved: apt offers nix 2.18.1, below the declared minVersion 99.0; nix can be provisioned via nix installer: re-run with --yes, or on a terminal
+   ```
+   A reader who was asked and said no is told their answer stood, never to re-run somewhere they already are: `the nix installer provision of nix was declined`. Every other verb answers "nobody to ask" whatever `--yes` says: `cfgd status`, `cfgd verify`, `cfgd diff`, `cfgd decide`, `cfgd init`, the `cfgd module` verbs and the daemon install nothing, so none of them prompts. `cfgd doctor` states the route as a fact in the module's row instead:
+   ```
+   ✗ rust — nix: apt offers nix 2.18.1, below the declared minVersion 99.0; provisionable via nix installer
    ```
    and `cfgd module show --resolved` states the same clause against the package's declared entry.
    A candidate cfgd can bootstrap counts as satisfying: it resolves optimistically (no version can be queried before the manager itself exists), and `cfgd diff` names the route the bootstrap would take:

@@ -54,6 +54,7 @@ pub fn cmd_verify(
                 &mgr_map,
                 Some(&pkg_cx),
                 printer,
+                &modules::refuse_floor_bootstrap,
             ) {
                 Ok(mods) => mods,
                 // "not found" is reserved for a genuinely unknown module name and
@@ -94,6 +95,7 @@ pub fn cmd_verify(
                 printer,
                 false,
                 composition::ConstraintMode::Report,
+                &cfgd_core::modules::refuse_floor_bootstrap,
             )?;
             // Taken before the other fields, because a partial move out of
             // `desired` would block the `&mut self` this accessor needs.

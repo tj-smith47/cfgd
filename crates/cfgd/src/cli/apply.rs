@@ -250,6 +250,7 @@ pub fn run_apply(
         printer,
         !replaying,
         composition::ConstraintMode::Enforce,
+        &floor_bootstrap_confirm(cli.yes, printer),
     )?;
     // Taken before the other fields, because a partial move out of `desired`
     // would block the `&mut self` this accessor needs.

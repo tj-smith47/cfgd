@@ -186,6 +186,19 @@ pub(crate) fn resolve_daemon_modules(
         &mgr_map,
         installed,
         printer,
+        &|route| {
+            // Unattended: a tick that installs a toolchain nobody asked about
+            // is the opposite of a confirmation, so no flag, environment
+            // variable or config field reaches this answer. Logged once per
+            // tick per route, at the one seam that already reports a failed
+            // resolution.
+            tracing::warn!(
+                module = %route.module, package = %route.package, via = %route.via,
+                floor = %route.floor, found = %route.found,
+                "daemon: declared minVersion needs a manager bootstrap; run `cfgd apply --yes`"
+            );
+            crate::modules::FloorAnswer::NobodyToAsk
+        },
     ) {
         Ok(m) => m,
         Err(e) => {

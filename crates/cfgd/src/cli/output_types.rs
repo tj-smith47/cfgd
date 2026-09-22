@@ -586,6 +586,13 @@ pub struct ManagerActionOutput {
     /// `state == "refused"`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// The `minVersion` a floor confirmation was given for, from
+    /// [`cfgd_core::reconciler::ManagerAction::Provision`]'s own field. `Some`
+    /// only for a provision a confirmed floor route produced, and omitted from
+    /// the wire otherwise, so a consumer reading a plan that asked nothing
+    /// sees exactly what it always saw.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub floor: Option<String>,
 }
 
 #[derive(Debug, Serialize)]

@@ -1134,6 +1134,7 @@ fn resolve_desired_state_read_path_sees_source_package_and_module() {
         &printer,
         false,
         composition::ConstraintMode::Enforce,
+        &cfgd_core::modules::refuse_floor_bootstrap,
     )
     .unwrap();
 
@@ -1204,6 +1205,7 @@ fn resolve_desired_state_read_path_cache_miss_falls_back_to_local() {
         &printer,
         false,
         composition::ConstraintMode::Enforce,
+        &cfgd_core::modules::refuse_floor_bootstrap,
     )
     .unwrap();
 
@@ -1259,6 +1261,7 @@ fn resolve_desired_state_apply_and_read_compute_same_module_set() {
         &printer,
         true,
         composition::ConstraintMode::Enforce,
+        &cfgd_core::modules::refuse_floor_bootstrap,
     )
     .unwrap();
     // refresh = false (read path) on the now-primed cache.
@@ -1271,6 +1274,7 @@ fn resolve_desired_state_apply_and_read_compute_same_module_set() {
         &printer,
         false,
         composition::ConstraintMode::Enforce,
+        &cfgd_core::modules::refuse_floor_bootstrap,
     )
     .unwrap();
 
@@ -1321,6 +1325,7 @@ fn resolve_desired_state_no_sources_resolves_local_only() {
         &printer,
         false,
         composition::ConstraintMode::Enforce,
+        &cfgd_core::modules::refuse_floor_bootstrap,
     )
     .unwrap();
     assert!(desired.modules.is_empty());
@@ -1433,6 +1438,7 @@ fn resolve_desired_state_module_only_isolates_every_profile_owned_field() {
         &printer,
         false,
         composition::ConstraintMode::Enforce,
+        &cfgd_core::modules::refuse_floor_bootstrap,
     )
     .unwrap();
 
@@ -1539,6 +1545,7 @@ fn resolve_desired_state_with_profile_unions_module_and_keeps_every_profile_owne
         &printer,
         false,
         composition::ConstraintMode::Enforce,
+        &cfgd_core::modules::refuse_floor_bootstrap,
     )
     .unwrap();
 
@@ -1655,6 +1662,7 @@ fn resolve_desired_state_module_blocked_by_scripts_not_allowed_surfaces_the_real
         &printer,
         true,
         composition::ConstraintMode::Enforce,
+        &cfgd_core::modules::refuse_floor_bootstrap,
     );
     let err = match result {
         Ok(_) => panic!("expected ScriptsNotAllowed, got Ok"),
@@ -1707,6 +1715,7 @@ fn a_module_free_resolution_builds_no_registry_until_one_is_asked_for() {
         &printer,
         false,
         composition::ConstraintMode::Report,
+        &cfgd_core::modules::refuse_floor_bootstrap,
     )
     .unwrap();
     assert!(
@@ -1737,6 +1746,7 @@ fn a_module_free_resolution_builds_no_registry_until_one_is_asked_for() {
         &printer,
         false,
         composition::ConstraintMode::Report,
+        &cfgd_core::modules::refuse_floor_bootstrap,
     )
     .unwrap();
     assert!(
@@ -2028,6 +2038,7 @@ fn the_desired_state_registers_each_custom_manager_exactly_once() {
         &printer,
         false,
         composition::ConstraintMode::Report,
+        &cfgd_core::modules::refuse_floor_bootstrap,
     )
     .unwrap();
 

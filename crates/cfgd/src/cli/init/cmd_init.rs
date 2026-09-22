@@ -267,6 +267,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                 &mgr_map,
                 Some(&pkg_cx),
                 printer,
+                &modules::refuse_floor_bootstrap,
             )?;
             let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &store)
                 .with_config_dir(&target_dir)
@@ -396,6 +397,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                     &mgr_map,
                     Some(&pkg_cx),
                     printer,
+                    &modules::refuse_floor_bootstrap,
                 )?
             } else {
                 Vec::new()

@@ -41,9 +41,9 @@ pub use registry::{
     latest_module_version_remote, parse_registry_ref, resolve_profile_module_name,
 };
 pub use resolve::{
-    FloorBootstrap, FloorJudgment, HeldManager, PackageResolution, fill_available_versions,
-    judge_declared_floor, resolve_module_files, resolve_module_packages, resolve_modules,
-    resolve_package,
+    FloorAnswer, FloorBootstrap, FloorConfirm, FloorJudgment, HeldManager, PackageResolution,
+    fill_available_versions, judge_declared_floor, refuse_floor_bootstrap, resolve_module_files,
+    resolve_module_packages, resolve_modules, resolve_package,
 };
 pub(crate) use resolve::{price_package, priceable_manager};
 pub use surfaces::post_apply_change_body;
@@ -172,10 +172,11 @@ pub struct ResolvedModule {
     pub name: String,
     pub packages: Vec<ResolvedPackage>,
     /// Declared floors no available manager meets, each naming the manager this
-    /// host could bootstrap to meet one. Empty for every module
-    /// [`resolve_modules`] hands back: that resolution turns a route back into
-    /// the refusal it has always been, because nothing there asks the reader
-    /// first.
+    /// host could bootstrap to meet one. A route survives
+    /// [`resolve_modules`] only where the caller's own
+    /// [`FloorConfirm`] policy answered [`FloorAnswer::Yes`] for that package;
+    /// either refusal ends the resolution instead, so a module handed back
+    /// carrying one is a module whose route was confirmed.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub floor_bootstraps: Vec<FloorBootstrap>,
     /// Declared floors met by the package's OWN manager, already on this host.

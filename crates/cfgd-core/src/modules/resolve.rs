@@ -37,6 +37,44 @@ pub struct FloorBootstrap {
     pub floor: String,
     /// `BootstrapPlan::method`: `rustup`, `nvm`, `homebrew installer`, or a mediator's name.
     pub via: String,
+    /// The other modules whose declaration of this package the ONE question
+    /// asked about it also answers for.
+    ///
+    /// Empty on every route [`resolve_package`] mints, which is about a single
+    /// entry. Filled only where [`resolve_modules`] folds a run's routes for
+    /// one package into the question it asks: the run can deliver one copy of
+    /// a manager, so it asks once, and the reader is owed the whole list of
+    /// modules that answer rides on.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub also_declared_by: Vec<String>,
+}
+
+/// What a caller's policy answers a [`FloorBootstrap`] question with.
+///
+/// Three-way rather than a bool because the two refusals are not one refusal:
+/// a person who answered no has already been asked, and telling them to re-run
+/// on a terminal is nonsense.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FloorAnswer {
+    /// Take the route: the manager joins the run and the floor rides with it.
+    Yes,
+    /// A human was asked and said no, or the prompt failed before it could be
+    /// answered.
+    Declined,
+    /// There was nobody to ask: no `--yes`, and no human at a terminal.
+    NobodyToAsk,
+}
+
+/// A caller's policy on floor bootstrap routes, taken by [`resolve_modules`].
+///
+/// Every call site states its own rather than inheriting a default: `plan` and
+/// `apply` may ask, and a read-only or scaffolding verb installs nothing, so a
+/// `status` that prompted would be a trap in scripts.
+pub type FloorConfirm<'a> = dyn Fn(&FloorBootstrap) -> FloorAnswer + 'a;
+
+/// The policy of every surface that installs nothing, and of the daemon.
+pub fn refuse_floor_bootstrap(_: &FloorBootstrap) -> FloorAnswer {
+    FloorAnswer::NobodyToAsk
 }
 
 impl FloorBootstrap {
@@ -59,6 +97,63 @@ impl FloorBootstrap {
             Self::BELOW_DECLARED_FLOOR,
             self.floor
         )
+    }
+
+    /// Every module the answer to this question applies to, the one that
+    /// declared it first.
+    pub fn asking_modules(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(self.module.as_str())
+            .chain(self.also_declared_by.iter().map(String::as_str))
+    }
+
+    /// What the confirmation opens on: the offer, and every module whose
+    /// declared floor it falls short of. One question covers every module
+    /// naming the package, so the sentence agrees with however many asked.
+    pub fn asking_clause(&self) -> String {
+        let names: Vec<String> = self.asking_modules().map(|m| format!("'{m}'")).collect();
+        format!(
+            "{} that {} {} {} for",
+            self.offer_clause(),
+            crate::plural_noun(names.len(), "module"),
+            names.join(", "),
+            crate::agreeing_verb(names.len(), "ask"),
+        )
+    }
+
+    /// The route as a NOTE rather than a question: what this host offers, and
+    /// the bootstrap that would meet the floor. The surfaces that state a
+    /// route without asking about it — `cfgd doctor`, `cfgd module show
+    /// --resolved` — read this, so neither can turn a fact into a prompt.
+    pub fn provisionable_clause(&self) -> String {
+        crate::join_clauses([
+            self.offer_clause(),
+            format!("provisionable via {}", self.via),
+        ])
+    }
+
+    /// Why a route nobody could be asked about is still a refusal, and what
+    /// would let a later run take it.
+    pub fn unasked_refusal(&self) -> String {
+        crate::join_clauses([
+            self.offer_clause(),
+            format!(
+                "{} can be provisioned via {}: re-run with --yes, or on a terminal",
+                self.package, self.via
+            ),
+        ])
+    }
+
+    /// Why a route a person turned down is a refusal. It never tells a reader
+    /// at a terminal to re-run on a terminal: they were asked, and the answer
+    /// was no.
+    pub fn declined_refusal(&self) -> String {
+        crate::join_clauses([
+            self.offer_clause(),
+            format!(
+                "the {} provision of {} was declined",
+                self.via, self.package
+            ),
+        ])
     }
 
     /// What a provision settles with when the route it took delivered a version
@@ -493,9 +588,8 @@ pub fn resolve_package(
 }
 
 /// Why a package every available manager proved itself below the floor of
-/// cannot be resolved. Read by `resolve_package` and by the one spot
-/// [`resolve_modules`] turns a route back into that same refusal, so the two
-/// cannot state the floor differently.
+/// cannot be resolved, for the entry no bootstrap route and no manager on this
+/// host can answer.
 fn proven_below_reason(floor: &str) -> String {
     format!(
         "every available manager offers a version {} {floor}",
@@ -591,6 +685,7 @@ fn floor_bootstrap_via<'m>(
             found,
             floor,
             via,
+            also_declared_by: Vec::new(),
         },
     ))
 }
@@ -844,6 +939,7 @@ pub fn resolve_modules(
     managers: &HashMap<String, &dyn PackageManager>,
     installed: Option<&crate::providers::PackageContext<'_>>,
     printer: &crate::output::Printer,
+    confirm: &FloorConfirm<'_>,
 ) -> Result<Vec<ResolvedModule>> {
     let all_modules = load_all_modules(config_dir, cache_base, source_roots, printer)?;
 
@@ -987,21 +1083,70 @@ pub fn resolve_modules(
         Ok(())
     })?;
 
-    // Nothing here asks the reader whether to take a route, and putting a
-    // manager on the machine unasked is not this resolution's call to make, so
-    // a module that found one is refused exactly as it was before routes
-    // existed. Every module handed back therefore carries an empty
-    // `floor_bootstraps`.
-    if let Some(route) = resolved.iter().find_map(|m| m.floor_bootstraps.first()) {
+    // Asked after the narrate block closes, never inside it: `inquire` writes
+    // straight to the terminal past the renderer, so a confirm drawn under a
+    // live spinner is painted over by the next tick. Asked after every module
+    // resolved, too — a hard refusal has already ended the run by then, which
+    // is what keeps anybody from being asked to approve a toolchain install
+    // for a configuration that cannot resolve anyway.
+    confirm_floor_bootstraps(&resolved, managers, confirm)?;
+
+    Ok(resolved)
+}
+
+/// Ask once per package about the floors a manager bootstrap would meet, and
+/// let every route for that package stand or refuse the run on the one answer.
+///
+/// Two modules naming one manager are one question: the run can deliver a
+/// single copy of it, so the question quotes the strictest floor any of them
+/// asked for — the same [`crate::effective::stricter_floor`] the planner folds
+/// the confirmed routes with, so a floor cannot survive here and lose there —
+/// and names every module that asked.
+///
+/// The questions are matched by package through a linear scan: a run carries
+/// at most a handful of floored packages, and the overwhelmingly common one
+/// carries none and leaves before anything is allocated.
+fn confirm_floor_bootstraps(
+    resolved: &[ResolvedModule],
+    managers: &HashMap<String, &dyn PackageManager>,
+    confirm: &FloorConfirm<'_>,
+) -> Result<()> {
+    if resolved.iter().all(|m| m.floor_bootstraps.is_empty()) {
+        return Ok(());
+    }
+    let mut questions: Vec<FloorBootstrap> = Vec::new();
+    for route in resolved.iter().flat_map(|m| m.floor_bootstraps.iter()) {
+        let Some(question) = questions.iter_mut().find(|q| q.package == route.package) else {
+            questions.push(route.clone());
+            continue;
+        };
+        if !question.asking_modules().any(|m| m == route.module) {
+            question.also_declared_by.push(route.module.clone());
+        }
+        // Judged in the grammar of the manager being provisioned, since that
+        // is whose versions both floors are written in.
+        if let Some(kept) = crate::effective::stricter_floor(
+            &Some(std::mem::take(&mut question.floor)),
+            &Some(route.floor.clone()),
+            managers.get(&route.package).copied(),
+        ) {
+            question.floor = kept;
+        }
+    }
+    for question in &questions {
+        let reason = match confirm(question) {
+            FloorAnswer::Yes => continue,
+            FloorAnswer::Declined => question.declined_refusal(),
+            FloorAnswer::NobodyToAsk => question.unasked_refusal(),
+        };
         return Err(ModuleError::UnresolvablePackage {
-            module: route.module.clone(),
-            package: route.package.clone(),
-            reason: proven_below_reason(&route.floor),
+            module: question.module.clone(),
+            package: question.package.clone(),
+            reason,
         }
         .into());
     }
-
-    Ok(resolved)
+    Ok(())
 }
 
 /// Enrich a `ModuleError::NotFound` raised during dependency resolution: when the

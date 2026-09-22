@@ -15998,6 +15998,76 @@ spec: {}
         );
     }
 
+    /// A tick that installed a toolchain because an environment variable was
+    /// exported is the opposite of a confirmation, so the daemon's answer is
+    /// "nobody to ask" whatever `CFGD_YES` says, and the module it could not
+    /// resolve stays out of the tick. The journal is where a machine nobody is
+    /// watching reports itself, so the route it declined is named there with
+    /// the command that would take it.
+    #[test]
+    #[serial_test::serial]
+    #[serial_test::serial(tracing_dispatcher)]
+    fn a_daemon_tick_takes_no_floor_route_even_with_cfgd_yes_exported() {
+        let _yes = crate::test_helpers::EnvVarGuard::set("CFGD_YES", "1");
+        crate::test_helpers::reset_tracing_journal();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+
+        let config_dir = tmp.path().join("config");
+        let module_dir = config_dir.join("modules").join("rust");
+        std::fs::create_dir_all(&module_dir).unwrap();
+        std::fs::write(
+            module_dir.join("module.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: rust\nspec:\n  \
+             packages:\n    - name: cargo\n      minVersion: \"1.85\"\n      prefer: [apt]\n",
+        )
+        .unwrap();
+
+        let resolved = ResolvedProfile {
+            layers: vec![],
+            merged: MergedProfile {
+                modules: vec!["rust".into()],
+                ..Default::default()
+            },
+        };
+
+        let mut registry = ProviderRegistry::new();
+        registry.set_package_managers(vec![
+            Box::new(
+                crate::providers::StubPackageManager::new("apt").with_package("cargo", "1.75"),
+            ),
+            Box::new(
+                crate::test_helpers::MockPackageManager::new("cargo")
+                    .unavailable()
+                    .bootstrappable_via("rustup"),
+            ),
+        ]);
+
+        let resolved_modules = resolve_daemon_modules(
+            &registry,
+            &resolved,
+            &config_dir,
+            &[],
+            None,
+            &Printer::for_test().0,
+            crate::Scope::User,
+            None,
+        );
+
+        assert!(
+            resolved_modules.is_empty(),
+            "the tick refuses the route rather than taking it: {resolved_modules:?}"
+        );
+        let journal = crate::test_helpers::tracing_journal();
+        assert!(
+            journal.contains("daemon: declared minVersion needs a manager bootstrap")
+                && journal.contains("package=cargo")
+                && journal.contains("via=rustup")
+                && journal.contains("WARN"),
+            "the tick names the route it declined, at warn: {journal}"
+        );
+    }
+
     #[test]
     #[serial_test::serial]
     fn resolve_daemon_modules_resolves_the_module_cache_under_the_callers_cache_dir_override() {

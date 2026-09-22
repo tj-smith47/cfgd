@@ -1581,9 +1581,48 @@ pub(in crate::cli) fn resolve_desired_state(
     printer: &Printer,
     refresh: bool,
     mode: composition::ConstraintMode,
+    confirm: &modules::FloorConfirm<'_>,
 ) -> anyhow::Result<DesiredState> {
     let composition = compose_with_sources(ctx, cfg, local_resolved, printer, refresh, mode)?;
-    resolve_desired_from_composition(ctx, cfg, composition, module_filter, with_profile, printer)
+    resolve_desired_from_composition(
+        ctx,
+        cfg,
+        composition,
+        module_filter,
+        with_profile,
+        printer,
+        confirm,
+    )
+}
+
+/// Who may answer a floor bootstrap question: `--yes` / `CFGD_YES` outright,
+/// otherwise a human at a terminal.
+///
+/// [`Printer::can_prompt`] is the ONE interactivity probe — false under
+/// `-o json` / `-o yaml` as well as off a TTY, read once at printer
+/// construction, so a capture printer answers "nobody" whatever terminal the
+/// suite ran from. A prompt that fails or is interrupted is a decline: the
+/// reader was reached, and nothing about their terminal is the problem.
+pub(in crate::cli) fn floor_bootstrap_confirm<'a>(
+    yes: bool,
+    printer: &'a Printer,
+) -> impl Fn(&modules::FloorBootstrap) -> modules::FloorAnswer + 'a {
+    move |route| {
+        if yes {
+            return modules::FloorAnswer::Yes;
+        }
+        if !printer.can_prompt() {
+            return modules::FloorAnswer::NobodyToAsk;
+        }
+        printer.status_simple(Role::Warn, route.asking_clause());
+        match printer.prompt_confirm(&format!(
+            "Provision {} via {} instead?",
+            route.package, route.via
+        )) {
+            Ok(true) => modules::FloorAnswer::Yes,
+            Ok(false) | Err(_) => modules::FloorAnswer::Declined,
+        }
+    }
 }
 
 /// The resolution half of [`resolve_desired_state`], over a composition the
@@ -1595,6 +1634,7 @@ pub(in crate::cli) fn resolve_desired_state(
 /// that question is not free: `compose_with_sources` renders the
 /// `Source Conflicts` section and records every conflict it found, so a retry
 /// prints the section twice and doubles the conflict history.
+#[allow(clippy::too_many_arguments)]
 pub(in crate::cli) fn resolve_desired_from_composition(
     ctx: &RunContext<'_>,
     cfg: &config::CfgdConfig,
@@ -1602,6 +1642,7 @@ pub(in crate::cli) fn resolve_desired_from_composition(
     module_filter: &[String],
     with_profile: bool,
     printer: &Printer,
+    confirm: &modules::FloorConfirm<'_>,
 ) -> anyhow::Result<DesiredState> {
     let cli = ctx.cli();
     let composition::CompositionResult {
@@ -1708,6 +1749,7 @@ pub(in crate::cli) fn resolve_desired_from_composition(
             &mgr_map,
             pkg_cx.as_ref(),
             printer,
+            confirm,
         )?
     };
 

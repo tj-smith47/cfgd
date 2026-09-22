@@ -118,6 +118,7 @@ pub fn cmd_diff(
         printer,
         false,
         composition::ConstraintMode::Report,
+        &cfgd_core::modules::refuse_floor_bootstrap,
     )?;
     // The registry built from this config and these composed packages, taken
     // before the other fields because a partial move out of `desired` would
@@ -562,6 +563,7 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
         &mgr_map,
         Some(&pkg_cx),
         printer,
+        &modules::refuse_floor_bootstrap,
     );
     printer.heading_title(&TitleLabel::new("Diff", mod_name));
     let resolved_modules = match resolution {

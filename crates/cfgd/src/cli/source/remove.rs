@@ -121,6 +121,7 @@ fn keep_entry_declarations(
         &quiet,
         false,
         composition::ConstraintMode::Report,
+        &cfgd_core::modules::refuse_floor_bootstrap,
     )?;
     let layered = cfgd_core::reconciler::LayeredEnv::of(&desired.resolved, &desired.modules);
     let items = cfgd_core::reconciler::MergedEnvItems::new(&layered, &[]);

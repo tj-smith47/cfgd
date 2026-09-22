@@ -296,6 +296,7 @@ pub fn cmd_module_create(
             &mgr_map,
             Some(&pkg_cx),
             printer,
+            &modules::refuse_floor_bootstrap,
         )?;
         let resolved = config::ResolvedProfile {
             layers: Vec::new(),

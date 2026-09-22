@@ -30,6 +30,7 @@ pub(super) fn collect_and_store_compliance_snapshot<'a>(
         &quiet_printer,
         false,
         composition::ConstraintMode::Report,
+        &cfgd_core::modules::refuse_floor_bootstrap,
     )?;
     // Taken before the other fields, because a partial move out of `desired`
     // would block the `&mut self` this accessor needs.

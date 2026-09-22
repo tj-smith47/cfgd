@@ -90,6 +90,7 @@ struct CliTestHarnessBuilder {
     profiles: Vec<(String, String)>,
     modules: Vec<(String, String)>,
     output_format: cfgd_core::output::OutputFormat,
+    prompt_responses: Vec<cfgd_core::output::PromptAnswer>,
 }
 
 impl CliTestHarnessBuilder {
@@ -102,6 +103,7 @@ impl CliTestHarnessBuilder {
             ],
             modules: Vec::new(),
             output_format: cfgd_core::output::OutputFormat::Table,
+            prompt_responses: Vec::new(),
         }
     }
 
@@ -136,6 +138,14 @@ impl CliTestHarnessBuilder {
         self
     }
 
+    /// Seat a human at the terminal, answering the run's prompts in order.
+    /// `Printer::can_prompt` reads the queue, so a command asking the real
+    /// question reaches its real branch instead of the non-interactive one.
+    fn prompt_responses(mut self, responses: Vec<cfgd_core::output::PromptAnswer>) -> Self {
+        self.prompt_responses = responses;
+        self
+    }
+
     fn build(self) -> CliTestHarness {
         let config_dir = tempfile::tempdir().unwrap();
         let state_dir = tempfile::tempdir().unwrap();
@@ -160,7 +170,12 @@ impl CliTestHarnessBuilder {
         // For human formats, use Normal verbosity so tests can assert on
         // rendered output (Quiet would suppress headings/sections). Structured
         // formats route through `for_test_with_format`, which auto-quiets.
-        let (printer, buf) = if self.output_format == cfgd_core::output::OutputFormat::Table {
+        let (printer, buf) = if !self.prompt_responses.is_empty() {
+            cfgd_core::output::Printer::for_test_with_prompt_responses_at(
+                self.prompt_responses.clone(),
+                cfgd_core::output::Verbosity::Normal,
+            )
+        } else if self.output_format == cfgd_core::output::OutputFormat::Table {
             cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal)
         } else {
             cfgd_core::output::Printer::for_test_with_format(self.output_format.clone())
@@ -26574,7 +26589,9 @@ fn build_doctor_doc_module_with_a_package_no_manager_can_deliver_emits_fail() {
 }
 
 /// A route's shortfall opens on the package it is about, like every other
-/// member of the list it joins.
+/// member of the list it joins, and states the route as a fact rather than as
+/// a question: `doctor` installs nothing, so the reader is told the floor is
+/// reachable and by what method.
 #[test]
 fn a_doctor_route_shortfall_opens_on_the_package_that_fell_short() {
     let route = cfgd_core::modules::FloorBootstrap {
@@ -26584,10 +26601,11 @@ fn a_doctor_route_shortfall_opens_on_the_package_that_fell_short() {
         found: "1.75".into(),
         floor: "1.85".into(),
         via: "rustup".into(),
+        also_declared_by: Vec::new(),
     };
     assert_eq!(
         super::doctor::unresolved_route_row(&route),
-        "cargo: apt offers cargo 1.75, below the declared minVersion 1.85"
+        "cargo: apt offers cargo 1.75, below the declared minVersion 1.85; provisionable via rustup"
     );
 }
 
@@ -47739,5 +47757,350 @@ fn every_local_layer_ranks_through_the_one_constant() {
         offenders.is_empty(),
         "a local layer ranks at `LOCAL_LAYER_PRIORITY`:\n{}",
         offenders.join("\n")
+    );
+}
+
+/// The module every [`FloorFixture`] run resolves: one `cargo` entry whose
+/// floor no manager on the fixture's host meets.
+const FLOOR_MODULE_YAML: &str = r#"apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: nvim
+spec:
+  packages:
+    - name: cargo
+      minVersion: '1.85'
+"#;
+
+const FLOOR_PROFILE_YAML: &str = r#"apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: default
+spec:
+  modules:
+    - nvim
+"#;
+
+/// A harness on the floor-route machine: the host's native manager offers
+/// `cargo` at [`crate::cli::registry::NATIVE_OFFERS_CARGO`], the module
+/// declares `minVersion: '1.85'`, and the registered `cargo` manager is absent
+/// but bootstrappable via rustup.
+///
+/// The factory guard is held for the fixture's whole life rather than the
+/// builder call: a command rebuilds its registry several times per run.
+struct FloorFixture {
+    h: CliTestHarness,
+    /// The name the fake native manager took — the host's own — which is what
+    /// the refusal quotes as the manager that made the offer.
+    native: String,
+    _pm_guard: crate::cli::registry::PackageManagerFactoryGuard,
+}
+
+impl FloorFixture {
+    fn cargo_below_floor() -> Self {
+        Self::shaped(false, Vec::new())
+    }
+
+    /// The same machine under `-o json`, for the payload test.
+    fn cargo_below_floor_json() -> Self {
+        Self::shaped(true, Vec::new())
+    }
+
+    /// The same machine with a human at the terminal, answering the floor
+    /// question with `answer`.
+    fn cargo_below_floor_answered(answer: bool) -> Self {
+        Self::shaped(
+            false,
+            vec![cfgd_core::output::PromptAnswer::Confirm(answer)],
+        )
+    }
+
+    /// The machine one run later: rustup was taken, so the registered `cargo`
+    /// is here and reports above the floor.
+    fn cargo_above_floor() -> Self {
+        Self::with_guard(
+            crate::cli::registry::PackageManagerFactoryGuard::hermetic_native_beside_a_cargo_above_the_floor(),
+            false,
+            Vec::new(),
+        )
+    }
+
+    fn shaped(json: bool, prompts: Vec<cfgd_core::output::PromptAnswer>) -> Self {
+        Self::with_guard(
+            crate::cli::registry::PackageManagerFactoryGuard::hermetic_native_below_a_cargo_floor(),
+            json,
+            prompts,
+        )
+    }
+
+    fn with_guard(
+        guard: crate::cli::registry::PackageManagerFactoryGuard,
+        json: bool,
+        prompts: Vec<cfgd_core::output::PromptAnswer>,
+    ) -> Self {
+        let mut builder = CliTestHarness::builder()
+            .profile("default", FLOOR_PROFILE_YAML)
+            .module("nvim", FLOOR_MODULE_YAML);
+        if json {
+            builder = builder.json();
+        }
+        if !prompts.is_empty() {
+            builder = builder.prompt_responses(prompts);
+        }
+        Self {
+            h: builder.build(),
+            // `Platform::current()` is the ONE detection per process, and it is
+            // the same answer `hermetic_managers_with` built the fake from.
+            native: cfgd_core::platform::Platform::current()
+                .native_manager()
+                .to_string(),
+            _pm_guard: guard,
+        }
+    }
+
+    fn run_plan(&self, yes: bool) -> anyhow::Result<()> {
+        self.run("plan", yes)
+    }
+
+    /// The named verb, with `--yes` answering the confirmation or not. `apply`
+    /// runs `--dry-run`: the question is asked while modules RESOLVE, so both
+    /// verbs reach it before either writes anything.
+    fn run(&self, verb: &str, yes: bool) -> anyhow::Result<()> {
+        let cli = Cli {
+            yes,
+            ..self.h.cli()
+        };
+        match verb {
+            "plan" => super::plan::cmd_plan(
+                &cli,
+                self.h.printer(),
+                &PlanArgs {
+                    from: None,
+                    phase: None,
+                    skip: vec![],
+                    only: vec![],
+                    module: vec![],
+                    with_profile: false,
+                    skip_scripts: false,
+                    context: "apply".to_string(),
+                },
+            ),
+            "apply" => super::apply::cmd_apply(
+                &cli,
+                self.h.printer(),
+                &ApplyArgs {
+                    plan: None,
+                    on_conflict: crate::cli::OnConflict::Ask,
+                    from: None,
+                    dry_run: true,
+                    phase: None,
+                    yes,
+                    skip: vec![],
+                    only: vec![],
+                    module: vec![],
+                    with_profile: false,
+                    skip_scripts: false,
+                    context: "apply".to_string(),
+                    shell: None,
+                },
+            ),
+            "verify" => super::verify::cmd_verify(&cli, self.h.printer(), None, false),
+            other => panic!("the fixture drives plan, apply and verify, not {other}"),
+        }
+    }
+}
+
+/// No `--yes` and no terminal keeps the refusal, and the refusal now names the
+/// route the operator could have taken.
+#[test]
+fn a_floor_route_is_refused_with_no_yes_and_no_terminal() {
+    let fx = FloorFixture::cargo_below_floor();
+    let err = fx.run_plan(/* yes */ false).unwrap_err().to_string();
+    assert!(
+        err.contains(&format!(
+            "{} offers cargo {}, below the declared minVersion 1.85",
+            fx.native,
+            crate::cli::registry::NATIVE_OFFERS_CARGO
+        )),
+        "{err}"
+    );
+    assert!(
+        err.contains("cargo can be provisioned via rustup: re-run with --yes, or on a terminal"),
+        "a refusal that knows the route says so: {err}"
+    );
+}
+
+/// A person who was asked and said no is told their answer stood, never to
+/// re-run somewhere they already are.
+#[test]
+fn a_floor_route_declined_at_the_prompt_says_it_was_declined() {
+    let fx = FloorFixture::cargo_below_floor_answered(false);
+    let err = fx.run_plan(/* yes */ false).unwrap_err().to_string();
+    assert!(
+        err.contains("the rustup provision of cargo was declined"),
+        "{err}"
+    );
+    assert!(
+        !err.contains("re-run with --yes"),
+        "nothing tells a reader at a terminal to find a terminal: {err}"
+    );
+    let out = fx.h.output();
+    assert!(
+        out.contains(&format!(
+            "{} offers cargo {}, below the declared minVersion 1.85 that module 'nvim' asks for",
+            fx.native,
+            crate::cli::registry::NATIVE_OFFERS_CARGO
+        )),
+        "the question states the offer it is about: {out}"
+    );
+}
+
+/// A yes at the terminal takes the route, exactly as `--yes` does.
+#[test]
+fn a_floor_route_confirmed_at_the_prompt_is_taken() {
+    let fx = FloorFixture::cargo_below_floor_answered(true);
+    fx.run_plan(/* yes */ false)
+        .unwrap_or_else(|e| panic!("a yes at the prompt answers the question: {e}"));
+    let out = fx.h.output();
+    assert!(
+        out.contains("provision cargo via rustup (minVersion 1.85)"),
+        "the row states the floor the reader approved: {out}"
+    );
+}
+
+/// `--yes` takes it, on `plan` as on `apply`: the question is asked at
+/// resolution time, so both verbs reach it. The row a reader approves states
+/// the floor the question was asked for.
+#[test]
+fn yes_takes_the_floor_route_on_both_plan_and_apply() {
+    for verb in ["plan", "apply"] {
+        let fx = FloorFixture::cargo_below_floor();
+        fx.run(verb, /* yes */ true)
+            .unwrap_or_else(|e| panic!("--yes answers the question for {verb}: {e}"));
+        let out = fx.h.output();
+        assert!(
+            out.contains("provision cargo via rustup (minVersion 1.85)"),
+            "{verb} plans the confirmed provision with its floor: {out}"
+        );
+    }
+}
+
+/// `plan -o json --yes` carries the decision as the provision node's own floor.
+#[test]
+fn plan_json_carries_a_confirmed_floor_route_on_its_provision() {
+    let fx = FloorFixture::cargo_below_floor_json();
+    fx.run_plan(/* yes */ true).unwrap();
+    let payload = fx.h.json_output();
+    let node = payload["phases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["phase"] == "Bootstrap")
+        .expect("a bootstrap phase")["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|g| g["actions"].as_array().unwrap())
+        .find(|a| a["type"] == "provision")
+        .expect("a provision action")
+        .clone();
+    assert_eq!(node["manager"]["manager"], "cargo");
+    assert_eq!(
+        node["manager"]["floor"], "1.85",
+        "the decision is on the wire: {payload}"
+    );
+}
+
+/// A verb that installs nothing answers nothing: `--yes` on `verify` still
+/// refuses the route, and plans no provision. A status surface that prompted
+/// would be a trap in scripts.
+#[test]
+fn yes_on_a_verb_that_provisions_nothing_still_refuses_the_route() {
+    let fx = FloorFixture::cargo_below_floor();
+    let err = fx.run("verify", /* yes */ true).unwrap_err().to_string();
+    assert!(
+        err.contains("cargo can be provisioned via rustup: re-run with --yes, or on a terminal"),
+        "{err}"
+    );
+    let out = fx.h.output();
+    assert!(
+        !out.contains("provision cargo via rustup"),
+        "a read-only verb plans no provision: {out}"
+    );
+}
+
+/// The run after a confirmed provision: the manager the route delivered is on
+/// the machine at or above the floor, so the entry resolves as held. Nothing is
+/// asked, and nothing is planned.
+#[test]
+fn a_floor_the_host_now_holds_resolves_with_no_question_and_no_provision() {
+    let fx = FloorFixture::cargo_above_floor();
+    fx.run_plan(/* yes */ false)
+        .unwrap_or_else(|e| panic!("a held manager meets the floor: {e}"));
+    let out = fx.h.output();
+    assert!(
+        !out.contains("provision cargo"),
+        "nothing is provisioned for a floor the host already meets: {out}"
+    );
+    assert!(
+        !out.contains("cargo install"),
+        "and the entry is the manager, not a package to install: {out}"
+    );
+}
+
+/// The managers `docs/modules.md` says a floor question can be answered by are
+/// the ones the registry can actually bootstrap, derived here rather than typed
+/// there.
+///
+/// `bootstrap_plan_given` is `cfg`-gated per manager — a PowerShell installer
+/// is withheld off Windows and a POSIX one on it — so the documented list is
+/// the UNION across platforms and this host's set is a subset of it. The walk
+/// holds both directions it can judge from here: nothing this host offers is
+/// missing from the docs, and no documented name is a manager the registry does
+/// not register at all. The CI matrix closes the union from the other side.
+#[test]
+fn every_manager_the_registry_can_bootstrap_is_named_in_the_docs_list() {
+    let registered: Vec<String> = crate::packages::all_package_managers()
+        .iter()
+        .map(|m| m.name().to_string())
+        .collect();
+    let offered: Vec<String> = crate::packages::all_package_managers()
+        .iter()
+        .filter(|m| m.bootstrap_plan_given(&|_| true).is_some())
+        .map(|m| m.name().to_string())
+        .collect();
+    assert!(
+        !offered.is_empty(),
+        "a host that can bootstrap nothing reads the docs sentence against an empty set"
+    );
+
+    let page = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/modules.md");
+    let body = cfgd_core::test_helpers::walked_file_body(&page);
+    let sentence = body
+        .lines()
+        .find(|l| l.contains("cfgd can bootstrap on this host ("))
+        .unwrap_or_else(|| panic!("the resolution algorithm names the bootstrappable managers"));
+    let inner = sentence
+        .split_once("cfgd can bootstrap on this host (")
+        .and_then(|(_, rest)| rest.split_once(')'))
+        .map(|(names, _)| names)
+        .unwrap_or_else(|| panic!("the list is parenthesised: {sentence}"));
+    let documented: Vec<String> = inner
+        .split(',')
+        .map(|n| n.trim().trim_matches('`').to_string())
+        .collect();
+
+    let missing: Vec<&String> = offered.iter().filter(|m| !documented.contains(m)).collect();
+    assert!(
+        missing.is_empty(),
+        "this host can bootstrap {missing:?}, which the docs list does not name: {documented:?}"
+    );
+    let unregistered: Vec<&String> = documented
+        .iter()
+        .filter(|m| !registered.contains(m))
+        .collect();
+    assert!(
+        unregistered.is_empty(),
+        "the docs list names {unregistered:?}, which no registered manager answers to"
     );
 }

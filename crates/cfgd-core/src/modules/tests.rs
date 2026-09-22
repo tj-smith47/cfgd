@@ -875,10 +875,11 @@ fn a_held_managers_floor_is_judged_in_its_own_version_grammar() {
     assert_eq!(held.floor, "133");
 }
 
-/// Nothing in a module resolution asks the reader whether to take a route, so
-/// the run still refuses with the sentence it always gave.
+/// The policy every verb that installs nothing hands the resolver refuses the
+/// route, and the refusal names it: the reader is told what would have met the
+/// floor and how to let a later run take it.
 #[test]
-fn a_module_resolution_refuses_the_floor_a_route_could_meet() {
+fn the_refusing_policy_names_the_route_it_would_not_take() {
     let dir = tempfile::tempdir().unwrap();
     let module_dir = dir.path().join("modules").join("rust");
     std::fs::create_dir_all(&module_dir).unwrap();
@@ -915,13 +916,15 @@ spec:
         &managers,
         None,
         &printer,
+        &refuse_floor_bootstrap,
     )
     .unwrap_err()
     .to_string();
     assert_eq!(
         err,
-        "package 'cargo' in module 'rust' cannot be resolved: every available manager offers \
-         a version below the declared minVersion 1.85"
+        "package 'cargo' in module 'rust' cannot be resolved: apt offers cargo 1.75, below \
+         the declared minVersion 1.85; cargo can be provisioned via rustup: re-run with --yes, \
+         or on a terminal"
     );
 }
 
@@ -974,6 +977,7 @@ fn a_refusal_outranks_a_route_within_one_module() {
         &managers,
         None,
         &printer,
+        &refuse_floor_bootstrap,
     )
     .unwrap_err()
     .to_string();
@@ -981,6 +985,123 @@ fn a_refusal_outranks_a_route_within_one_module() {
         err,
         "package 'neovim' in module 'rust' cannot be resolved: every available manager offers \
          a version below the declared minVersion 0.9"
+    );
+}
+
+/// A run can deliver one copy of a manager, so two modules flooring one package
+/// are one question: asked once, at the strictest of the two floors, naming
+/// both modules the answer rides on.
+#[test]
+fn a_run_asks_one_question_per_package_at_the_strictest_floor() {
+    let dir = tempfile::tempdir().unwrap();
+    write_module_packages(
+        dir.path(),
+        "rust",
+        "    - name: cargo\n      minVersion: \"1.80\"\n      prefer: [apt]\n",
+    );
+    write_module_packages(
+        dir.path(),
+        "tools",
+        "    - name: cargo\n      minVersion: \"1.85\"\n      prefer: [apt]\n",
+    );
+
+    let apt = MockManager::new("apt").with_package("cargo", "1.75");
+    let cargo = crate::test_helpers::MockPackageManager::new("cargo")
+        .unavailable()
+        .bootstrappable_via("rustup");
+    let managers = make_manager_map(&[("apt", &apt), ("cargo", &cargo)]);
+    let cache_dir = tempfile::tempdir().unwrap();
+    let printer = test_printer();
+
+    let asked = std::sync::Mutex::new(Vec::<FloorBootstrap>::new());
+    let resolved = resolve_modules(
+        &["rust".into(), "tools".into()],
+        dir.path(),
+        cache_dir.path(),
+        &[],
+        &linux_ubuntu_platform(),
+        &managers,
+        None,
+        &printer,
+        &|route| {
+            asked.lock().unwrap().push(route.clone());
+            FloorAnswer::Yes
+        },
+    )
+    .unwrap();
+
+    let asked = asked.into_inner().unwrap();
+    assert_eq!(asked.len(), 1, "one question per package: {asked:?}");
+    assert_eq!(
+        asked[0].floor, "1.85",
+        "the strictest floor is the one asked"
+    );
+    assert_eq!(
+        asked[0].asking_modules().collect::<Vec<_>>(),
+        vec!["rust", "tools"],
+        "the reader is owed every module the answer rides on"
+    );
+    assert_eq!(
+        asked[0].asking_clause(),
+        "apt offers cargo 1.75, below the declared minVersion 1.85 that modules \'rust\', \'tools\' ask for"
+    );
+    let routed: Vec<&str> = resolved
+        .iter()
+        .filter(|m| !m.floor_bootstraps.is_empty())
+        .map(|m| m.name.as_str())
+        .collect();
+    assert_eq!(
+        routed,
+        vec!["rust", "tools"],
+        "one yes answers for every module that asked"
+    );
+}
+
+/// The two refusals are not one refusal: a reader who answered no has already
+/// been asked, so nothing tells them to re-run on a terminal.
+#[test]
+fn a_declined_route_reads_differently_from_one_nobody_could_be_asked_about() {
+    let dir = tempfile::tempdir().unwrap();
+    write_module_packages(
+        dir.path(),
+        "rust",
+        "    - name: cargo\n      minVersion: \"1.85\"\n      prefer: [apt]\n",
+    );
+
+    let apt = MockManager::new("apt").with_package("cargo", "1.75");
+    let cargo = crate::test_helpers::MockPackageManager::new("cargo")
+        .unavailable()
+        .bootstrappable_via("rustup");
+    let managers = make_manager_map(&[("apt", &apt), ("cargo", &cargo)]);
+    let cache_dir = tempfile::tempdir().unwrap();
+    let printer = test_printer();
+
+    let refusal = |answer: FloorAnswer| {
+        resolve_modules(
+            &["rust".into()],
+            dir.path(),
+            cache_dir.path(),
+            &[],
+            &linux_ubuntu_platform(),
+            &managers,
+            None,
+            &printer,
+            &|_| answer,
+        )
+        .unwrap_err()
+        .to_string()
+    };
+
+    assert_eq!(
+        refusal(FloorAnswer::Declined),
+        "package \'cargo\' in module \'rust\' cannot be resolved: apt offers cargo 1.75, below \
+         the declared minVersion 1.85; the rustup provision of cargo was declined"
+    );
+    assert_eq!(
+        refusal(FloorAnswer::NobodyToAsk),
+        "package \'cargo\' in module \'rust\' cannot be resolved: apt offers cargo 1.75, below \
+         the declared minVersion 1.85; cargo can be provisioned via rustup: re-run with --yes, \
+         or on a terminal"
     );
 }
 
@@ -1019,6 +1140,7 @@ fn a_refusal_in_a_later_module_outranks_an_earlier_modules_route() {
         &managers,
         None,
         &printer,
+        &refuse_floor_bootstrap,
     )
     .unwrap_err()
     .to_string();
@@ -1040,6 +1162,7 @@ fn a_routes_offer_clause_names_the_manager_the_package_and_both_versions() {
         found: "1.75".into(),
         floor: "1.85".into(),
         via: "rustup".into(),
+        also_declared_by: Vec::new(),
     };
     assert_eq!(
         route.offer_clause(),
@@ -1459,6 +1582,7 @@ spec:
         &managers,
         None,
         &printer,
+        &refuse_floor_bootstrap,
     )
     .unwrap();
 
@@ -1517,6 +1641,7 @@ spec:
         &managers,
         None,
         &printer,
+        &refuse_floor_bootstrap,
     )
     .unwrap();
 
@@ -1585,6 +1710,7 @@ spec:
         &managers,
         None,
         &printer,
+        &refuse_floor_bootstrap,
     )
     .unwrap();
     assert_eq!(resolved.len(), 1);
@@ -1613,6 +1739,7 @@ spec:
         &mac_managers,
         None,
         &printer,
+        &refuse_floor_bootstrap,
     )
     .unwrap();
     assert_eq!(resolved.len(), 1);
@@ -1667,6 +1794,7 @@ spec:
         &managers,
         None,
         &printer,
+        &refuse_floor_bootstrap,
     )
     .expect_err("active module depending on a skipped module must be a config error");
     let msg = format!("{err}");
@@ -4392,6 +4520,7 @@ fn resolve_modules_loads_source_delivered_body_and_tags_origin() {
         &managers,
         None,
         &printer,
+        &refuse_floor_bootstrap,
     )
     .unwrap();
 
@@ -4443,6 +4572,7 @@ fn resolve_modules_consumer_local_shadows_source_offered() {
         &managers,
         None,
         &printer,
+        &refuse_floor_bootstrap,
     )
     .unwrap();
 
@@ -4496,6 +4626,7 @@ fn resolve_modules_higher_priority_source_wins() {
         &managers,
         None,
         &printer,
+        &refuse_floor_bootstrap,
     )
     .unwrap();
 
@@ -4537,6 +4668,7 @@ fn resolve_modules_offered_but_body_missing_names_source() {
         &managers,
         None,
         &printer,
+        &refuse_floor_bootstrap,
     )
     .expect_err("a declared-but-missing module body must error");
     let msg = err.to_string();
@@ -4573,6 +4705,7 @@ fn resolve_modules_unknown_module_is_plain_not_found() {
         &managers,
         None,
         &printer,
+        &refuse_floor_bootstrap,
     )
     .expect_err("an unknown module must be NotFound");
     let msg = err.to_string();
@@ -4609,6 +4742,7 @@ fn resolve_modules_body_present_but_not_offered_is_gated_out() {
         &managers,
         None,
         &printer,
+        &refuse_floor_bootstrap,
     )
     .expect_err("an undeclared body must not be loaded (allow-list gate)");
     let msg = err.to_string();
@@ -4931,6 +5065,7 @@ fn resolve_modules_rejects_a_referenced_script_module() {
         &managers,
         None,
         &printer,
+        &refuse_floor_bootstrap,
     )
     .expect_err("a referenced script module from a not-permitted source must error");
     let msg = err.to_string();
@@ -4980,6 +5115,7 @@ fn resolve_modules_allows_an_unreferenced_script_module_beside_a_referenced_one(
         &managers,
         None,
         &printer,
+        &refuse_floor_bootstrap,
     )
     .unwrap();
 
@@ -5017,6 +5153,7 @@ fn resolve_modules_allows_a_referenced_script_module_from_a_permitted_source() {
         &managers,
         None,
         &printer,
+        &refuse_floor_bootstrap,
     )
     .expect("a referenced script module from a permitted source must resolve");
 
@@ -5064,6 +5201,7 @@ fn resolve_modules_does_not_refuse_a_referenced_script_module_the_platform_gate_
         &managers,
         None,
         &printer,
+        &refuse_floor_bootstrap,
     )
     .expect("a platform-skipped script module must not be refused by noScripts");
 
@@ -5180,6 +5318,7 @@ fn enrich_not_found_names_highest_priority_offering_source() {
         &managers,
         None,
         &printer,
+        &refuse_floor_bootstrap,
     )
     .expect_err("a declared-but-missing body offered by several sources must error");
     let msg = err.to_string();
@@ -5222,6 +5361,7 @@ fn resolve_modules_source_module_depends_on_source_module() {
         &managers,
         None,
         &printer,
+        &refuse_floor_bootstrap,
     )
     .unwrap();
 
@@ -5274,6 +5414,7 @@ fn resolve_modules_source_module_depends_on_consumer_local_module() {
         &managers,
         None,
         &printer,
+        &refuse_floor_bootstrap,
     )
     .unwrap();
 
@@ -5320,6 +5461,7 @@ fn resolve_modules_source_module_with_unoffered_transitive_dep_is_missing_depend
         &managers,
         None,
         &printer,
+        &refuse_floor_bootstrap,
     )
     .expect_err("a dependent on an unoffered transitive dep must error");
     let msg = err.to_string();
@@ -7571,6 +7713,7 @@ spec:
         &managers,
         None,
         &test_printer(),
+        &refuse_floor_bootstrap,
     )
     .unwrap();
 

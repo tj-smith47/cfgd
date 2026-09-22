@@ -130,7 +130,15 @@ fn restoring_verb_state(
     let sources = cfgd_core::reconciler::ComposedSource::from_declared(&cfg.spec.sources);
     let backups = composition.resolved.merged.backups.clone();
 
-    match resolve_desired_from_composition(ctx, cfg, composition, &[], false, printer) {
+    match resolve_desired_from_composition(
+        ctx,
+        cfg,
+        composition,
+        &[],
+        false,
+        printer,
+        &cfgd_core::modules::refuse_floor_bootstrap,
+    ) {
         Ok(desired) => Ok((
             sources,
             cfgd_core::output::HeaderModule::of_resolved(&desired.modules),
@@ -1009,6 +1017,7 @@ pub fn run_backup_run(
         printer,
         false,
         composition::ConstraintMode::Enforce,
+        &cfgd_core::modules::refuse_floor_bootstrap,
     )?;
     let sources = desired.sources;
     let header_modules = cfgd_core::output::HeaderModule::of_resolved(&desired.modules);

@@ -237,11 +237,13 @@ pub(in crate::cli) fn manager_action_output(
             requires,
             batched: Vec::new(),
             reason: None,
+            floor: None,
         },
         reconciler::ManagerAction::Provision {
             manager,
             via,
             batched,
+            floor,
             ..
         } => ManagerActionOutput {
             manager: manager.clone(),
@@ -250,6 +252,7 @@ pub(in crate::cli) fn manager_action_output(
             requires,
             batched: batched.clone(),
             reason: None,
+            floor: floor.clone(),
         },
         reconciler::ManagerAction::Prerequisite {
             tool, installer, ..
@@ -260,6 +263,7 @@ pub(in crate::cli) fn manager_action_output(
             requires,
             batched: Vec::new(),
             reason: None,
+            floor: None,
         },
         reconciler::ManagerAction::Refuse { manager, reason } => ManagerActionOutput {
             manager: manager.clone(),
@@ -268,6 +272,7 @@ pub(in crate::cli) fn manager_action_output(
             requires,
             batched: Vec::new(),
             reason: Some(reason.clone()),
+            floor: None,
         },
     })
 }

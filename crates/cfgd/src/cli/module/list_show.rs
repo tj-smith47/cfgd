@@ -536,12 +536,12 @@ pub(super) fn module_show_resolved_rows(
                     }
                 }
                 // A floor no available manager meets: the row states what the
-                // host offers and how far short it falls, as it did when the
-                // same package earned a refusal.
+                // host offers, how far short it falls, and the bootstrap that
+                // would meet it. A `show` performs nothing, so it never asks.
                 Ok(Some(modules::PackageResolution::Bootstrap(route))) => {
                     PackageDisplay::Unresolved {
                         summary: declared,
-                        error: route.offer_clause(),
+                        error: route.provisionable_clause(),
                     }
                 }
                 // The manager the entry names is here and clears the floor:

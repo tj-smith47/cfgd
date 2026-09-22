@@ -3059,6 +3059,7 @@ pub(super) fn cmd_status(
         printer,
         false,
         composition::ConstraintMode::Report,
+        &cfgd_core::modules::refuse_floor_bootstrap,
     )?;
     // Taken ONLY for the live scan below, the one half that reads a registry: a
     // plain `cfgd status` is an offline dashboard, and building a registry it
@@ -3606,6 +3607,7 @@ pub(super) fn cmd_status_module(
             &mgr_map,
             installed,
             printer,
+            &modules::refuse_floor_bootstrap,
         )
     };
     if do_scan {
@@ -5271,6 +5273,7 @@ mod tests {
             &probe,
             false,
             cfgd_core::composition::ConstraintMode::Report,
+            &cfgd_core::modules::refuse_floor_bootstrap,
         )
         .unwrap();
         let mut response = crate::cli::daemon::placeholder_status();

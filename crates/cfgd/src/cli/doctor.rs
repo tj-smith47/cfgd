@@ -116,8 +116,12 @@ pub struct DoctorConfigSource {
 /// could meet. Every other member of that list opens on the package it is
 /// about, so this one does too: a module declaring several packages would
 /// otherwise state an offer the reader has to guess the subject of.
+///
+/// It STATES the route and never asks about it: `doctor` checks prerequisites
+/// and installs nothing, so the row says the floor is provisionable and how,
+/// and leaves the question to the verbs that can act on the answer.
 pub(super) fn unresolved_route_row(route: &modules::FloorBootstrap) -> String {
-    format!("{}: {}", route.package, route.offer_clause())
+    format!("{}: {}", route.package, route.provisionable_clause())
 }
 
 /// Gather every doctor check into the stable JSON payload + display-only extras.

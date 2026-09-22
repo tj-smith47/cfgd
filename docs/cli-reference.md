@@ -550,6 +550,9 @@ sentence: `state` is `present` (an already-installed manager's index refresh),
 the tool, `via` names the installer), or `refused` (a manager that can't be
 provisioned, `reason` naming why: a refusal is still something the run
 decided, so `-o json` carries it rather than dropping it silently).
+A provision a floor confirmation produced also carries `floor`, the
+`minVersion` the question was asked for; it is absent from every other
+provision, so a plan that asked nothing carries exactly what it always did.
 `requires` holds the full node ids of the actions this one depends on,
 resolving one-to-one against a sibling action's own `description`:
 
@@ -575,6 +578,16 @@ resolving one-to-one against a sibling action's own `description`:
             "state": "provisioned",
             "via": "pip install pipx",
             "requires": ["manager:prereq:curl"]
+          }
+        },
+        {
+          "type": "provision",
+          "description": "provision nix via nix installer (minVersion 99.0)",
+          "manager": {
+            "manager": "nix",
+            "state": "provisioned",
+            "via": "nix installer",
+            "floor": "99.0"
           }
         },
         {

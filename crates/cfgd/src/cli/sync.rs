@@ -120,6 +120,7 @@ pub fn run_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
         printer,
         false,
         composition::ConstraintMode::Report,
+        &cfgd_core::modules::refuse_floor_bootstrap,
     );
     let config_dir = ctx.config_dir().to_path_buf();
     // The pull is this run's first wait, and it narrates with NOTHING else on

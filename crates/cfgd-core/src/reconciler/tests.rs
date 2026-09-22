@@ -10367,6 +10367,7 @@ fn floor_route(package: &str, module: &str, floor: &str) -> crate::modules::Floo
         found: "1.75".to_string(),
         floor: floor.to_string(),
         via: "rustup".to_string(),
+        also_declared_by: Vec::new(),
     }
 }
 

@@ -305,7 +305,35 @@ impl PackageManagerFactoryGuard {
     pub(in crate::cli) fn hermetic_native_beside_a_brew_holding_a_tool() -> Self {
         Self::install(hermetic_managers_beside_a_holder)
     }
+
+    /// The hermetic set where the host's native manager offers a `cargo` below
+    /// any modern floor and the registered `cargo` manager is absent but
+    /// bootstrappable via rustup: the machine a floor bootstrap route is about,
+    /// on every runner.
+    pub(in crate::cli) fn hermetic_native_below_a_cargo_floor() -> Self {
+        Self::install(hermetic_managers_below_a_cargo_floor)
+    }
+
+    /// The same machine one run later: rustup has been taken, so `cargo` is
+    /// here and its own binary reports [`CARGO_REPORTS_ABOVE_FLOOR`] — above
+    /// the floor every listing is still short of.
+    pub(in crate::cli) fn hermetic_native_beside_a_cargo_above_the_floor() -> Self {
+        Self::install(hermetic_managers_beside_a_held_cargo)
+    }
 }
+
+/// The version the fake native manager offers for every package it is asked
+/// about under the two floor-route sets below. Under the floor
+/// `FLOOR_MODULE_YAML` declares, and under every cargo a real host ships, so
+/// the refusal is the same sentence on every runner.
+#[cfg(test)]
+pub(in crate::cli) const NATIVE_OFFERS_CARGO: &str = "1.75";
+
+/// What the fake `cargo` manager's own binary reports once this host holds it.
+/// Above `FLOOR_MODULE_YAML`'s floor, which is what makes the entry resolve as
+/// held rather than as a route.
+#[cfg(test)]
+pub(in crate::cli) const CARGO_REPORTS_ABOVE_FLOOR: &str = "1.90.0";
 
 /// The package the fake `brew` of
 /// [`PackageManagerFactoryGuard::hermetic_native_beside_a_brew_holding_a_tool`]
@@ -347,7 +375,50 @@ fn hermetic_managers_beside_a_holder() -> Vec<Box<dyn cfgd_core::providers::Pack
         name: "brew".to_string(),
         version: None,
         installed: &[HELD_BY_BREW],
+        available: true,
+        tool_version: None,
+        bootstrap_via: None,
     }));
+    managers
+}
+
+/// The registered `cargo` manager is REPLACED rather than dropped: a floor
+/// route is looked up BY NAME in the registry's `manager_map`, which holds
+/// every registered manager whether or not this host has it.
+#[cfg(test)]
+fn hermetic_managers_below_a_cargo_floor() -> Vec<Box<dyn cfgd_core::providers::PackageManager>> {
+    hermetic_managers_with_cargo(FakeNativeManager {
+        name: "cargo".to_string(),
+        version: None,
+        installed: &[],
+        available: false,
+        tool_version: None,
+        bootstrap_via: Some("rustup"),
+    })
+}
+
+#[cfg(test)]
+fn hermetic_managers_beside_a_held_cargo() -> Vec<Box<dyn cfgd_core::providers::PackageManager>> {
+    hermetic_managers_with_cargo(FakeNativeManager {
+        name: "cargo".to_string(),
+        version: None,
+        installed: &[],
+        available: true,
+        tool_version: Some(CARGO_REPORTS_ABOVE_FLOOR),
+        bootstrap_via: None,
+    })
+}
+
+#[cfg(test)]
+fn hermetic_managers_with_cargo(
+    cargo: FakeNativeManager,
+) -> Vec<Box<dyn cfgd_core::providers::PackageManager>> {
+    let mut managers: Vec<Box<dyn cfgd_core::providers::PackageManager>> =
+        hermetic_managers_with(Some(NATIVE_OFFERS_CARGO))
+            .into_iter()
+            .filter(|m| m.name() != "cargo")
+            .collect();
+    managers.push(Box::new(cargo));
     managers
 }
 
@@ -367,6 +438,9 @@ fn hermetic_managers_with(
         name: native,
         version,
         installed: &[],
+        available: true,
+        tool_version: None,
+        bootstrap_via: None,
     }));
     managers
 }
@@ -384,6 +458,17 @@ struct FakeNativeManager {
     /// What it reports installed, for the tests whose subject is a bare entry
     /// another manager already holds.
     installed: &'static [&'static str],
+    /// Whether the host has this manager. `false` is the absent-but-registered
+    /// shape a floor's bootstrap route is offered for; every other fake is
+    /// present, which is the whole point of a hermetic native manager.
+    available: bool,
+    /// What its OWN binary reports, which is what a declared floor on a package
+    /// that names this manager is judged against. `None` for a fake nothing
+    /// asks that question of.
+    tool_version: Option<&'static str>,
+    /// The method `bootstrap_plan_given` names, or `None` for a manager
+    /// nothing on this host can provision.
+    bootstrap_via: Option<&'static str>,
 }
 
 #[cfg(test)]
@@ -395,13 +480,17 @@ impl cfgd_core::providers::PackageManager for FakeNativeManager {
         Some("upgrade")
     }
     fn is_available(&self) -> bool {
-        true
+        self.available
+    }
+    fn tool_version(&self) -> Option<String> {
+        self.tool_version.map(str::to_string)
     }
     fn bootstrap_plan_given(
         &self,
         _delivered: &dyn Fn(&str) -> bool,
     ) -> Option<cfgd_core::providers::BootstrapPlan> {
-        None
+        self.bootstrap_via
+            .map(cfgd_core::providers::BootstrapPlan::new)
     }
     fn bootstrap(
         &self,

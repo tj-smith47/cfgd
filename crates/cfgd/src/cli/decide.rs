@@ -258,6 +258,7 @@ fn source_classification(
         ctx.printer(),
         false,
         composition::ConstraintMode::Report,
+        &cfgd_core::modules::refuse_floor_bootstrap,
     )
     .context("source composition failed")?;
     // Built before the classification so both halves — the withheld rows and

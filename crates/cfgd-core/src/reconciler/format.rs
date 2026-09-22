@@ -837,15 +837,34 @@ fn format_manager_action_item(action: &ManagerAction) -> String {
         // the entry they wrote. Suppressed when the route's package IS the
         // manager's name — there the operand is already in the sentence, and
         // `provision cargo via brew (cargo)` says one word twice.
-        ManagerAction::Provision { via, declared, .. } => {
+        // A confirmed floor route joins the same parenthetical: a reader who
+        // answered "provision cargo via rustup instead?" for a 1.85 floor is
+        // approving a row, and a row that does not say 1.85 is not the thing
+        // they were asked about.
+        ManagerAction::Provision {
+            via,
+            declared,
+            floor,
+            ..
+        } => {
             let managers = action.provisioned_managers().join(", ");
-            match declared
+            let mut annotations: Vec<String> = Vec::new();
+            if let Some(package) = declared
                 .as_ref()
                 .map(|route| route.package.as_str())
                 .filter(|package| *package != managers)
             {
-                Some(package) => format!("provision {managers} via {via} ({package})"),
-                None => format!("provision {managers} via {via}"),
+                annotations.push(package.to_string());
+            }
+            if let Some(floor) = floor {
+                annotations.push(format!("minVersion {floor}"));
+            }
+            match annotations.is_empty() {
+                true => format!("provision {managers} via {via}"),
+                false => format!(
+                    "provision {managers} via {via} ({})",
+                    annotations.join(", ")
+                ),
             }
         }
         // The PACKAGE is what the command runs, and the tool is what the
@@ -1972,16 +1991,17 @@ mod tests {
                 manager,
                 via,
                 declared,
-                // A version, not a name: the subject accounts for the manager
-                // the floor was asked of, and the confirmation that asked
-                // states the version itself.
-                floor: _,
+                // A version rather than a name, and still an operand: the
+                // reader approved a floor, and a row that does not state it is
+                // not the row they answered about.
+                floor,
                 batched,
                 depends_on: _,
             } => std::iter::once(manager.as_str())
                 .chain(std::iter::once(via.as_str()))
                 .chain(batched.iter().map(String::as_str))
                 .chain(declared.iter().map(|route| route.package.as_str()))
+                .chain(floor.iter().map(String::as_str))
                 .collect(),
             ManagerAction::Prerequisite {
                 tool,
@@ -2034,6 +2054,28 @@ mod tests {
                 batched: vec!["sentinel-batched".into()],
                 depends_on: Vec::new(),
             },
+            // A confirmed floor, with and without the declared route it can
+            // ride beside: both annotations share one parenthetical, so a
+            // subject that can hold two must still name each.
+            ManagerAction::Provision {
+                manager: "sentinel-manager".into(),
+                via: "sentinel-via".into(),
+                declared: None,
+                floor: Some("sentinel-floor".into()),
+                batched: Vec::new(),
+                depends_on: Vec::new(),
+            },
+            ManagerAction::Provision {
+                manager: "sentinel-manager".into(),
+                via: "sentinel-via".into(),
+                declared: Some(DeclaredProvision {
+                    installer: "sentinel-via".into(),
+                    package: "sentinel-package".into(),
+                }),
+                floor: Some("sentinel-floor".into()),
+                batched: Vec::new(),
+                depends_on: Vec::new(),
+            },
             ManagerAction::Prerequisite {
                 tool: "sentinel-tool".into(),
                 package: "sentinel-package".to_string(),
@@ -2074,6 +2116,44 @@ mod tests {
             depends_on: Vec::new(),
         });
         assert_eq!(subject, "provision cargo via brew");
+    }
+
+    /// A reader who answered "provision cargo via rustup instead?" for a 1.85
+    /// floor is approving this row, so the row states 1.85 — beside the
+    /// declared package where an entry named one, in the same parenthetical
+    /// rather than a second one.
+    #[test]
+    fn a_confirmed_floor_rides_the_same_parenthetical_as_the_declared_package() {
+        let floored = |package: &str| ManagerAction::Provision {
+            manager: "cargo".into(),
+            via: "rustup".into(),
+            declared: Some(DeclaredProvision {
+                installer: "rustup".into(),
+                package: package.into(),
+            }),
+            floor: Some("1.85".into()),
+            batched: Vec::new(),
+            depends_on: Vec::new(),
+        };
+        assert_eq!(
+            format_manager_action_item(&floored("cargo")),
+            "provision cargo via rustup (minVersion 1.85)"
+        );
+        assert_eq!(
+            format_manager_action_item(&floored("rustc")),
+            "provision cargo via rustup (rustc, minVersion 1.85)"
+        );
+        assert_eq!(
+            format_manager_action_item(&ManagerAction::Provision {
+                manager: "cargo".into(),
+                via: "rustup".into(),
+                declared: None,
+                floor: Some("1.85".into()),
+                batched: Vec::new(),
+                depends_on: Vec::new(),
+            }),
+            "provision cargo via rustup (minVersion 1.85)"
+        );
     }
 
     #[test]
