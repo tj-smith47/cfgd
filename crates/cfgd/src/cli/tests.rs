@@ -34090,19 +34090,19 @@ fn every_core_minted_package_drift_id_comes_from_its_composer() {
 ///
 /// Structure is read off `code`, whose literals and comments are already
 /// blanked, so a `(` or a `,` inside either cannot end an argument; each
-/// argument's TEXT is taken from `raw` at the same byte positions, so two
+/// argument's TEXT is taken from `written` at the same byte positions, so two
 /// literals of one length stay two arguments rather than two runs of the same
-/// blanks. Each raw row is cut at its code end first: a comment is blanked
-/// WHOLE in `code`, delimiters included, so its raw bytes would otherwise be
-/// pushed into whichever argument follows it and a call carrying one would read
-/// as two arguments that differ. Only the bracket pairs count toward depth: `<`
-/// and `>` are
-/// comparisons as often as they are generics, and a lone one swallows the rest
-/// of the call. Every occurrence on a line answers, and a declaration of the
-/// function is not a call.
+/// blanks. `written` is the same body with its comments alone blanked
+/// ([`cfgd_core::test_helpers::blank_comments`]): a comment belongs to no
+/// argument, and left standing its bytes are pushed into whichever argument
+/// follows it, so a call carrying one between two spellings of one value reads
+/// as two arguments that differ. Only the bracket pairs count toward depth:
+/// `<` and `>` are comparisons as often as they are generics, and a lone one
+/// swallows the rest of the call. Every occurrence on a line answers, and a
+/// declaration of the function is not a call.
 fn call_argument_spans(
     code: &[&str],
-    raw: &[&str],
+    written: &[&str],
     open: &str,
 ) -> Vec<(usize, usize, Vec<String>)> {
     let mut spans = Vec::new();
@@ -34116,9 +34116,7 @@ fn call_argument_spans(
             let mut from = at + open.len() - 1;
             for (j, row) in code.iter().enumerate().skip(i) {
                 let scanned = row.as_bytes();
-                let written =
-                    cfgd_core::test_helpers::code_span(raw.get(j).copied().unwrap_or_default())
-                        .as_bytes();
+                let text = written.get(j).copied().unwrap_or_default().as_bytes();
                 for (k, byte) in scanned.iter().enumerate().skip(from) {
                     let c = char::from(*byte);
                     match c {
@@ -34141,7 +34139,7 @@ fn call_argument_spans(
                     } else if let Some(last) = args.last_mut()
                         && (depth > 1 || c != '(')
                     {
-                        last.push(*written.get(k).unwrap_or(&b' '));
+                        last.push(*text.get(k).unwrap_or(&b' '));
                     }
                 }
                 if depth == 0 {
@@ -34181,16 +34179,21 @@ fn function_span(code: &[&str], at: usize) -> std::ops::RangeInclusive<usize> {
 /// is a type-checker's job, and a walk that guessed at it would claim a pair
 /// its reader cannot tell apart from a genuine second subject.
 ///
-/// `code` and `raw` are that function's lines masked and as written, in step.
-/// The binding is found on the masked line, so a `let` standing inside a string
-/// literal or a block comment supplies no initializer, and its TEXT is read off
-/// the raw line at the same byte offsets, because the argument it is compared
-/// against was read as written too.
-fn resolved_argument(arg: &str, code: &[&str], raw: &[&str]) -> String {
+/// `code` and `written` are that function's lines masked and as written, in
+/// step. The binding is found on the masked line, so a `let` standing inside a
+/// string literal or a block comment supplies no initializer, and its TEXT is
+/// read off the written line at the same byte offsets, because the argument it
+/// is compared against was read as written too.
+///
+/// The initializer runs to the binding's own `;`, whatever row that lands on
+/// and however deep the rows between it go: rustfmt breaks a long one after
+/// the `=`, and a fold that stopped at the row the name is on would answer
+/// with the empty string, under which two such aliases read as one value.
+fn resolved_argument(arg: &str, code: &[&str], written: &[&str]) -> String {
     if arg.is_empty() || !arg.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
         return arg.to_string();
     }
-    for (masked, written) in code.iter().zip(raw) {
+    for (i, masked) in code.iter().enumerate() {
         let Some(rest) = masked.trim_start().strip_prefix("let ") else {
             continue;
         };
@@ -34207,15 +34210,30 @@ fn resolved_argument(arg: &str, code: &[&str], raw: &[&str]) -> String {
         if name != arg {
             continue;
         }
-        let at = masked.len() - rest.len() + bound.len() + 1;
-        let end = at + masked.get(at..).unwrap_or_default().trim_end().len();
-        return written
-            .get(at..end)
-            .unwrap_or_default()
-            .trim()
-            .trim_end_matches(';')
-            .trim()
-            .to_string();
+        let mut initializer: Vec<u8> = Vec::new();
+        let mut depth = 0i32;
+        let mut from = masked.len() - rest.len() + bound.len() + 1;
+        for (j, row) in code.iter().enumerate().skip(i) {
+            let text = written.get(j).copied().unwrap_or_default().as_bytes();
+            let mut closed = false;
+            for (k, byte) in row.as_bytes().iter().enumerate().skip(from) {
+                match byte {
+                    b'(' | b'[' | b'{' => depth += 1,
+                    b')' | b']' | b'}' if depth > 0 => depth -= 1,
+                    b';' if depth == 0 => {
+                        closed = true;
+                        break;
+                    }
+                    _ => {}
+                }
+                initializer.push(*text.get(k).unwrap_or(&b' '));
+            }
+            if closed {
+                break;
+            }
+            from = 0;
+        }
+        return String::from_utf8_lossy(&initializer).trim().to_string();
     }
     arg.to_string()
 }
@@ -34230,10 +34248,14 @@ struct SameArgumentMint {
 /// Every call of `open` in one production body whose first two arguments name
 /// one value, each with the INNERMOST function enclosing it: a mint inside a
 /// nested function belongs to that function, not to the one it sits in.
-fn same_argument_mints(production: &str, open: &str) -> Vec<SameArgumentMint> {
-    let masked = blank_non_code(production);
+///
+/// `masked` is `production` under `blank_non_code`, taken as an argument
+/// because a caller walking whole files reads the same mask for its own
+/// counting and one file is masked once.
+fn same_argument_mints(production: &str, masked: &str, open: &str) -> Vec<SameArgumentMint> {
+    let commentless = cfgd_core::test_helpers::blank_comments(production);
     let code: Vec<&str> = masked.lines().collect();
-    let raw: Vec<&str> = production.lines().collect();
+    let raw: Vec<&str> = commentless.lines().collect();
     let mut owner_of: Vec<Option<usize>> = vec![None; code.len()];
     for (i, line) in code.iter().enumerate() {
         if !cfgd_core::test_helpers::opens_function(line) {
@@ -34271,9 +34293,10 @@ fn same_argument_mints(production: &str, open: &str) -> Vec<SameArgumentMint> {
 /// bound it. Two distinct literals of one length are two arguments, two
 /// spellings of one field are two arguments, a comparison inside an argument
 /// does not swallow the arguments after it, a second call on a line is read
-/// like the first, a comment written between two arguments belongs to neither,
-/// a binding standing inside a comment folds no alias, and a mint is attributed
-/// to the innermost function around it.
+/// like the first, a comment of either spelling written between two arguments
+/// belongs to neither, a binding standing inside a comment folds no alias, an
+/// initializer broken onto the row below its name still folds, and a mint is
+/// attributed to the innermost function around it.
 #[test]
 fn the_same_argument_scanner_reads_every_argument_as_written_after_folding_an_alias() {
     let fixture = r#"
@@ -34283,7 +34306,10 @@ fn outer() {
     */
     let manager = &held.package;
     let entry = &held.package;
+    let wrapped =
+        &held.package;
     id(manager, entry, pm);
+    id(wrapped, &held.package, pm);
     id(&h.package, h.package.as_str(), pm);
     id("aa", "bb", pm);
     id(x < y, x < y, pm);
@@ -34291,11 +34317,12 @@ fn outer() {
     fn inner() {
         id(&h.name, &h.name, pm);
     }
-    id(&h.name, // one value, with a comment standing between the arguments
+    id(&h.name, // one value, with a line comment between the arguments
        &h.name, pm);
+    id(&h.name, /* one value, with a block comment between them */ &h.name, pm);
 }
 "#;
-    let mints = same_argument_mints(fixture, "id(");
+    let mints = same_argument_mints(fixture, &blank_non_code(fixture), "id(");
     let found: Vec<(usize, Option<&str>)> = mints
         .iter()
         .map(|m| (m.first, m.owner.as_deref()))
@@ -34303,18 +34330,21 @@ fn outer() {
     assert_eq!(
         found,
         vec![
-            (7, Some("outer")),
+            (9, Some("outer")),
             (10, Some("outer")),
-            (11, Some("outer")),
-            (11, Some("outer")),
-            (13, Some("inner")),
-            (15, Some("outer")),
+            (13, Some("outer")),
+            (14, Some("outer")),
+            (14, Some("outer")),
+            (16, Some("inner")),
+            (18, Some("outer")),
+            (20, Some("outer")),
         ],
-        "line 3 binds a decoy inside a block comment, line 7 is one value under two \
-         names, line 8 is one field under two spellings, line 9 is two literals of one \
-         length, line 10 compares inside each argument, line 11 holds two calls, line 13 \
-         sits inside the nested function and line 15 writes a comment between the two \
-         arguments"
+        "line 3 binds a decoy inside a block comment, line 9 is one value under two \
+         names, line 10 folds an alias whose initializer sits on the row below its \
+         name, line 11 is one field under two spellings, line 12 is two literals of one \
+         length, line 13 compares inside each argument, line 14 holds two calls, line 16 \
+         sits inside the nested function, line 18 writes a line comment between the two \
+         arguments and line 20 a block comment"
     );
 }
 
@@ -34372,16 +34402,17 @@ fn every_held_floor_row_id_comes_from_the_composer_that_owns_it() {
                 "{krate}/src/{}",
                 cfgd_core::to_posix_string(path.strip_prefix(&root).unwrap_or(&path))
             );
+            let masked = blank_non_code(&production);
             // The declaration line spells the name too, so a call is read past
             // it: the composer would otherwise count as its own caller.
-            for line in blank_non_code(&production).lines() {
+            for line in masked.lines() {
                 if !cfgd_core::test_helpers::opens_function(line)
                     && cfgd_core::test_helpers::calls_free_fn(line, COMPOSER)
                 {
                     *taken.entry(file.clone()).or_default() += 1;
                 }
             }
-            for mint in same_argument_mints(&production, MINT) {
+            for mint in same_argument_mints(&production, &masked, MINT) {
                 *counts.entry(file.clone()).or_default() += 1;
                 if mint.owner.as_deref() == Some(COMPOSER) {
                     composed += 1;

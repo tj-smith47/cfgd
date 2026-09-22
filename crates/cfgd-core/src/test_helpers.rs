@@ -1518,6 +1518,33 @@ pub fn code_span(line: &str) -> &str {
 /// walk matches braces over a whole body or asks whether a span holds a call,
 /// and slice the RAW body at the positions found here.
 pub fn blank_non_code(body: &str) -> String {
+    mask_body(body, Blanked::NonCode)
+}
+
+/// The same body with its COMMENTS alone blanked, delimiters included, and
+/// every literal body left as it stands.
+///
+/// [`blank_non_code`] answers where the code is; this one answers which bytes
+/// a reader of the raw text must not see. A walk reading an argument, a
+/// message or a name AS WRITTEN needs the literals: two literals of one length
+/// are two values, and blanked they are one run of spaces. A comment is the
+/// opposite: it belongs to nothing around it, so bytes left standing inside a
+/// call are pushed into whichever argument follows and make one value written
+/// twice read as two that differ.
+pub fn blank_comments(body: &str) -> String {
+    mask_body(body, Blanked::CommentsOnly)
+}
+
+/// Which bytes a masking pass writes as spaces.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Blanked {
+    /// Every literal body and every comment.
+    NonCode,
+    /// Comments alone.
+    CommentsOnly,
+}
+
+fn mask_body(body: &str, blanked: Blanked) -> String {
     let mut out = body.as_bytes().to_vec();
     let mut mask = LineMask::default();
     let mut at = 0;
@@ -1527,7 +1554,7 @@ pub fn blank_non_code(body: &str) -> String {
         let text = row
             .strip_suffix('\n')
             .map_or(row, |r| r.strip_suffix('\r').unwrap_or(r));
-        mask.advance_into(text, &mut out[at..at + text.len()]);
+        mask.advance_into(text, &mut out[at..at + text.len()], blanked);
         at += row.len();
     }
     // Every byte written is an ASCII space and every delimiter left standing
@@ -1541,6 +1568,13 @@ fn blank(out: &mut [u8], from: usize, to: usize) {
     let to = to.min(out.len());
     if from < to {
         out[from..to].fill(b' ');
+    }
+}
+
+/// [`blank`] where this pass blanks literal bodies at all.
+fn blank_literal(blanked: Blanked, out: &mut [u8], from: usize, to: usize) {
+    if blanked == Blanked::NonCode {
+        blank(out, from, to);
     }
 }
 
@@ -1845,12 +1879,13 @@ impl LineMask {
     /// is left alone), `//` cutting the line and `/* … */` nesting across
     /// lines.
     pub(crate) fn advance(&mut self, line: &str) {
-        self.advance_into(line, &mut []);
+        self.advance_into(line, &mut [], Blanked::NonCode);
     }
 
     /// [`advance`](Self::advance) blanking as it steps: every byte it passes
-    /// over as a literal body or as comment text (delimiters included) is
-    /// written as a space in `out`, which holds that same line's bytes.
+    /// over as comment text (delimiters included) is written as a space in
+    /// `out`, which holds that same line's bytes, and so is every literal body
+    /// unless the caller asked for [`Blanked::CommentsOnly`].
     ///
     /// One state machine answers both questions, so a syntax the masking
     /// knows cannot be one the blanking misses. The hand-rolled scanners this
@@ -1858,7 +1893,7 @@ impl LineMask {
     /// of review found the next syntax one of them had never learned. `out`
     /// may be shorter than the line, empty included, for a caller that wants
     /// the state alone.
-    fn advance_into(&mut self, line: &str, out: &mut [u8]) {
+    fn advance_into(&mut self, line: &str, out: &mut [u8], blanked: Blanked) {
         let bytes = line.as_bytes();
         let mut i = 0;
         self.resumed_at = None;
@@ -1869,7 +1904,7 @@ impl LineMask {
                     i += 1 + open;
                     self.resumed_at.get_or_insert(i);
                 } else {
-                    blank(out, i, i + 1);
+                    blank_literal(blanked, out, i, i + 1);
                     i += 1;
                 }
                 continue;
@@ -1877,7 +1912,7 @@ impl LineMask {
             if self.in_plain {
                 match bytes[i] {
                     b'\\' => {
-                        blank(out, i, i + 2);
+                        blank_literal(blanked, out, i, i + 2);
                         i += 2;
                     }
                     b'"' => {
@@ -1886,7 +1921,7 @@ impl LineMask {
                         self.resumed_at.get_or_insert(i);
                     }
                     _ => {
-                        blank(out, i, i + 1);
+                        blank_literal(blanked, out, i, i + 1);
                         i += 1;
                     }
                 }
@@ -1927,10 +1962,10 @@ impl LineMask {
                             .iter()
                             .position(|b| *b == b'\'')
                             .map(|p| after_escape + p);
-                        blank(out, i + 1, close.unwrap_or(bytes.len()));
+                        blank_literal(blanked, out, i + 1, close.unwrap_or(bytes.len()));
                         i = close.map_or(bytes.len(), |c| c + 1);
                     } else if bytes.get(i + 2) == Some(&b'\'') {
-                        blank(out, i + 1, i + 2);
+                        blank_literal(blanked, out, i + 1, i + 2);
                         i += 3;
                     } else {
                         i += 1;
