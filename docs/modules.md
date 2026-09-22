@@ -292,7 +292,7 @@ The full resolution logic for each package entry:
    A daemon tick plans the same way, so the finding is recorded as drift wanting the floor (one row, `cargo:cargo`, shared with the live re-check so the two never stand two rows for one toolchain), the tick's `onDrift` route fires on it, and every other module the tick looked at is still reported. That floor is re-checked live, against the binary rather than the listing, so a toolchain that later slips below it is reported as drift.
    A proven-below floor on a package that names a package manager cfgd can bootstrap on this host (`brew`, `cargo`, `npm`, `pipx`, `go`, `nix`, `snap`, `flatpak`, `chocolatey`, `scoop`) has a third answer: cfgd asks instead of refusing. The question names the version found, the floor, and the route that would satisfy it; on yes cfgd provisions that manager in the `Bootstrap` phase rather than installing the package, and the plan row states the floor the answer was given for.
    ```
-   ⚠ apt offers nix 2.18.1, below the declared minVersion 99.0 that module 'rust' asks for
+   ⚠ snap offers nix 2.18.1, below the declared minVersion 99.0 that module 'rust' asks for
    ? Provision nix via nix installer instead? (y/N) y
    > Provision nix via nix installer instead? Yes
 
@@ -302,15 +302,15 @@ The full resolution logic for each package entry:
    ```
    `--yes` (or `CFGD_YES=1`) answers yes without asking, on `cfgd plan` and `cfgd apply` alike: the question is asked while modules resolve, so both verbs reach it. A run with nobody to ask (a pipe, CI, `-o json`, the daemon) keeps the refusal, and says what would have let a later run take the route:
    ```
-   ✗ package 'nix' in module 'rust' cannot be resolved: apt offers nix 2.18.1, below the declared minVersion 99.0; nix can be provisioned via nix installer: re-run with --yes, or on a terminal
+   ✗ package 'nix' in module 'rust' cannot be resolved: snap offers nix 2.18.1, below the declared minVersion 99.0; nix can be provisioned via nix installer: re-run with --yes, or on a terminal
    ```
    A reader who was asked and said no is told their answer stood, never to re-run somewhere they already are: `the nix installer provision of nix was declined`. Every other verb answers "nobody to ask" whatever `--yes` says: `cfgd status`, `cfgd verify`, `cfgd diff`, `cfgd decide`, `cfgd init`, the `cfgd module` verbs and the daemon install nothing, so none of them prompts. `cfgd doctor` states the route as a fact in the module's row instead:
    ```
-   ✗ rust — nix: apt offers nix 2.18.1, below the declared minVersion 99.0; provisionable via nix installer
+   ✗ rust — nix: snap offers nix 2.18.1, below the declared minVersion 99.0; provisionable via nix installer
    ```
    and `cfgd module show --resolved` states the same clause against the package's declared entry, as does the package's row under `cfgd status <module>`:
    ```
-   ⚠ nix — apt offers nix 2.18.1, below the declared minVersion 99.0; provisionable via nix installer
+   ⚠ nix — snap offers nix 2.18.1, below the declared minVersion 99.0; provisionable via nix installer
    ```
    A candidate cfgd can bootstrap counts as satisfying: it resolves optimistically (no version can be queried before the manager itself exists), and `cfgd diff` names the route the bootstrap would take:
    ```

@@ -298,7 +298,10 @@ while `plan` withholds it read-only.
 `cfgd apply --plan <file>` runs the plan a `cfgd plan -o json` recorded, with no
 second planning pass and no confirmation prompt. The file is the approval, which
 is what makes it reviewable: hand it to whoever signs off, and apply the bytes
-they read.
+they read. Nothing else in the run is asked either. The recording answered every
+question once, a `minVersion` no available manager meets included, so a replay
+takes what the file carries and neither re-asks nor refuses over an answer it
+already holds. What runs is the file's actions, and only those.
 
 ```console
 $ cfgd plan -o json > plan.json
@@ -1006,10 +1009,19 @@ content, so every package row and every present file reads `not scanned`
 (absence is still definite: a file the module deployed and that is gone reads
 `missing` either way). A package row names the manager it resolves to in every
 state, the same one `cfgd module show` names, so two entries declaring one name
-under two managers are told apart. A package the module's own `platforms` gate
-rules out on this host reads `skipped (platform filter)` instead, with no
-manager named, the same words `cfgd module show` uses for it: nothing was ever
-going to install it, scan or no scan. `-o json` carries the same verdicts as
+under two managers are told apart. Two kinds of row name none. A package the
+module's own `platforms` gate rules out on this host reads
+`skipped (platform filter)`, the same words `cfgd module show` uses for it:
+nothing was ever going to install it, scan or no scan. And a package whose
+declared `minVersion` no available manager meets, where a bootstrap could
+deliver a manager that does, reads that route in place of a manager, because the
+manager the entry would land on is not on this host yet:
+
+```console
+⚠ nix — snap offers nix 2.18.1, below the declared minVersion 99.0; provisionable via nix installer
+```
+
+`-o json` carries that clause as `packageState[].route.clause`, the same verdicts as
 `packageState[].state` (`installed`, `notInstalled`, `notScanned`,
 `platformSkipped`) and
 `deployedFiles[].state` (`deployed`, `drifted`, `missing`, `notScanned`), and

@@ -721,12 +721,22 @@ pub struct ModulePackageStatus {
     /// whole answer.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub held: Option<HeldFloor>,
-    /// The route a declared floor no available manager meets could take, from
-    /// the one composer every surface that STATES a route reads. A `status`
-    /// installs nothing, so the row carries the route as a fact and the
-    /// question stays with the verbs that can act on the answer.
+    /// The bootstrap route a declared floor no available manager meets could
+    /// take. `None` for every row whose floor nothing has to be provisioned
+    /// for.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub route: Option<String>,
+    pub route: Option<FloorRoute>,
+}
+
+/// The route a declared floor no available manager meets could take.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FloorRoute {
+    /// The whole answer in words, from the one composer every surface that
+    /// STATES a route reads. A `status` installs nothing, so the row carries
+    /// the route as a fact and the question stays with the verbs that can act
+    /// on the answer.
+    pub clause: String,
 }
 
 /// What the declared floor of a held manager came to on this host.
@@ -2706,7 +2716,7 @@ fn render_module_inventories(
                     // A route names a manager this host does not have, so the
                     // manager column states nothing and the shortfall plus the
                     // bootstrap that would meet it is the whole row.
-                    (None, Some(route), _, _) => route.clone(),
+                    (None, Some(route), _, _) => route.clause.clone(),
                     (None, None, Some(m), ModulePackagePresence::Installed) => m.clone(),
                     (None, None, Some(m), state) => format!("{} ({m})", state.label()),
                     (None, None, None, state) => state.label().to_string(),
@@ -3543,7 +3553,9 @@ fn join_package_state(
                                 None,
                                 ModulePackagePresence::NotScanned,
                                 None,
-                                Some(route.provisionable_clause()),
+                                Some(FloorRoute {
+                                    clause: route.provisionable_clause(),
+                                }),
                             ),
                             Ok(None) | Err(_) => {
                                 (None, ModulePackagePresence::NotScanned, None, None)
@@ -6485,7 +6497,9 @@ mod tests {
             last_applied: None,
             scope: None,
             package_state: vec![ModulePackageStatus {
-                route: Some(crate::cli::tests::floor_route_clause()),
+                route: Some(FloorRoute {
+                    clause: crate::cli::tests::floor_route_clause(),
+                }),
                 held: None,
                 name: "cargo".to_string(),
                 manager: None,

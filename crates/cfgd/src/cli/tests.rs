@@ -48287,16 +48287,40 @@ fn plan_json_carries_a_confirmed_floor_route_on_its_provision() {
     );
 }
 
-/// A replay takes the route its own file approved, with nobody asked: the
-/// terminal seated here would have said no, and the run goes through anyway.
+/// A replay carries out the file with a reader seated who would say no.
+///
+/// Reaching the interactive policy here answers `Declined` and ends the run,
+/// so the reader's own answer never comes into it: the file was approved once,
+/// by whoever produced it, and this invocation is carrying that out.
 #[test]
-fn a_replay_takes_the_floor_route_its_saved_plan_approved() {
+fn a_replay_at_a_terminal_runs_the_provision_its_file_carries() {
     let fx = FloorFixture::cargo_below_floor_answered(false);
     let plan_file = fx.record_plan_file();
 
     fx.run_replay(&plan_file)
-        .unwrap_or_else(|e| panic!("the file already approved this route: {e}"));
+        .unwrap_or_else(|e| panic!("the file is the approval, and nobody else is asked: {e}"));
 
+    assert_replay_took_the_route(&fx);
+}
+
+/// The same replay with nobody to ask and no `--yes` anywhere.
+///
+/// Reaching the interactive policy here answers `NobodyToAsk` and ends the run,
+/// which is what a pipe or a CI job would hit; the file answers instead.
+#[test]
+fn a_replay_in_a_pipe_runs_the_provision_its_file_carries() {
+    let fx = FloorFixture::cargo_below_floor();
+    let plan_file = fx.record_plan_file();
+
+    fx.run_replay(&plan_file)
+        .unwrap_or_else(|e| panic!("no terminal is needed to carry out a file: {e}"));
+
+    assert_replay_took_the_route(&fx);
+}
+
+/// What both replays leave behind: the provision the file carried, and no
+/// question on the stream.
+fn assert_replay_took_the_route(fx: &FloorFixture) {
     let out = fx.h.output();
     assert!(
         !out.contains("Provision cargo via rustup instead?"),
@@ -48308,43 +48332,28 @@ fn a_replay_takes_the_floor_route_its_saved_plan_approved() {
     );
 }
 
-/// A saved plan that carries no provision for the package approved nothing for
-/// it, so the replay refuses even with a human seated who would say yes.
+/// A replay executes the file's actions and only those.
+///
+/// This machine's cargo is below the declared floor, so a fresh resolution
+/// states the route on every run; the file here carries no provision for it.
+/// The replay neither mints one from the resolution nor refuses over it.
 #[test]
-fn a_replay_refuses_a_floor_route_its_saved_plan_never_carried() {
+fn a_replay_executes_only_the_actions_its_file_carries() {
     let fx = FloorFixture::cargo_below_floor_answered(true);
     let plan_file = fx.record_plan_file();
     drop_bootstrap_phase(&plan_file);
 
-    let err = fx.run_replay(&plan_file).unwrap_err().to_string();
+    fx.run_replay(&plan_file)
+        .unwrap_or_else(|e| panic!("what the file carries is what runs: {e}"));
 
-    assert!(
-        err.contains("cargo can be provisioned via rustup: re-run with --yes, or on a terminal"),
-        "the file approved no route for cargo: {err}"
-    );
     let out = fx.h.output();
+    assert!(
+        !out.contains("provision cargo via rustup"),
+        "an action the file does not carry does not come back: {out}"
+    );
     assert!(
         !out.contains("Provision cargo via rustup instead?"),
         "and the seated reader was never asked to widen it: {out}"
-    );
-}
-
-/// The floor moved above what the file approved, so the approval no longer
-/// covers the question and the replay refuses rather than installing under it.
-#[test]
-fn a_replay_refuses_a_floor_route_approved_at_a_lower_floor() {
-    let fx = FloorFixture::cargo_below_floor_answered(true);
-    let plan_file = fx.record_plan_file();
-    let body = std::fs::read_to_string(&plan_file).unwrap();
-    let lowered = body.replace(r#""floor":"1.85""#, r#""floor":"1.80""#);
-    assert_ne!(body, lowered, "the node carries the floor it was given");
-    std::fs::write(&plan_file, lowered).unwrap();
-
-    let err = fx.run_replay(&plan_file).unwrap_err().to_string();
-
-    assert!(
-        err.contains("cargo can be provisioned via rustup: re-run with --yes, or on a terminal"),
-        "an approval at 1.80 does not answer a question about 1.85: {err}"
     );
 }
 
