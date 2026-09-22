@@ -6417,6 +6417,15 @@ fn no_production_site_outside_the_resolver_composes_a_floor_shortfall_sentence()
 /// makes the run act on one manager's facts in another's name.
 const LEADER_SCOPED_PROVISION_FIELDS: &[&str] = &["*manager =", "*declared =", "*floor ="];
 
+/// Whether `code` ASSIGNS through one of those tells rather than comparing
+/// through it. A match arm reading `if *manager == route.package` carries the
+/// assignment's own bytes as a prefix, and a reader that stops at the first
+/// `=` calls a guard a re-lead.
+fn assigns_leader_scoped_field(code: &str, field: &str) -> bool {
+    code.match_indices(field)
+        .any(|(at, _)| !code[at + field.len()..].starts_with('='))
+}
+
 /// Every production site that hands a provision node to a different leader
 /// goes through [`crate::reconciler::ManagerAction::provision_led_by`].
 ///
@@ -6462,7 +6471,7 @@ fn every_production_site_re_leading_a_provision_goes_through_the_one_helper() {
                 continue;
             }
             for field in LEADER_SCOPED_PROVISION_FIELDS {
-                if code.contains(field) {
+                if assigns_leader_scoped_field(&code, field) {
                     offenders.push(format!(
                         "{}: {owner}{name} writes `{field}` itself",
                         path.display(),

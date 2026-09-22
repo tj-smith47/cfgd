@@ -238,6 +238,20 @@ pub fn run_apply(
         None => flag_context,
     };
 
+    // A replay's floor answers come from the file it is replaying, so the
+    // registry the grammar needs is built here rather than waited for: the
+    // resolution below takes the policy as an argument, and nothing it builds
+    // exists yet. Construction is cheap, every availability sweep behind it
+    // being lazy and memoized, and only a replay pays for it.
+    let replay_registry = saved_plan
+        .as_ref()
+        .map(|_| build_registry_with_config(Some(&cfg)));
+    let replay_managers = replay_registry.as_ref().map(ProviderRegistry::manager_map);
+    let floor_confirm: Box<modules::FloorConfirm<'_>> = match (&saved_plan, &replay_managers) {
+        (Some((plan, _)), Some(managers)) => Box::new(saved_plan_floor_confirm(plan, managers)),
+        _ => Box::new(floor_bootstrap_confirm(cli.yes, printer)),
+    };
+
     // Compose with sources (network refresh) and resolve modules through the one
     // desired-state resolver every command shares, so apply and the read paths
     // compute an identical effective module set for the same config.
@@ -250,8 +264,11 @@ pub fn run_apply(
         printer,
         !replaying,
         composition::ConstraintMode::Enforce,
-        &floor_bootstrap_confirm(cli.yes, printer),
+        &*floor_confirm,
     )?;
+    // The replay policy reads the saved plan, which the run below takes by
+    // value; the resolution is the last thing that asks it anything.
+    drop(floor_confirm);
     // Taken before the other fields, because a partial move out of `desired`
     // would block the `&mut self` this accessor needs.
     // Built from the same config and composed packages this path would have

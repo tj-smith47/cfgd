@@ -1625,6 +1625,55 @@ pub(in crate::cli) fn floor_bootstrap_confirm<'a>(
     }
 }
 
+/// Who answers a floor bootstrap question while `cfgd apply --plan` replays a
+/// saved plan: the FILE, and nobody else.
+///
+/// The plan is the approval, given once and whole by whoever produced it, and
+/// the replay is carrying it out. Asking the terminal again would let this
+/// invocation approve a route the file never carried: the reader who typed
+/// `--plan` is answering for a plan they did not write, and `--yes` on a
+/// replay would approve every route the resolution happens to mint now.
+///
+/// So a route is taken only where the plan already carries a provision node
+/// for that package whose confirmed floor covers the floor the route asks for
+/// now, judged in the manager's own grammar
+/// ([`modules::judge_declared_floor`]): `1.85` covers `1.85.0`, a distro's
+/// `1:2.30` is no semver at all, and a string compare would answer both
+/// wrong. Everything else is [`modules::FloorAnswer::NobodyToAsk`]: the file
+/// approved nothing for it, including a node the plan carries with no floor,
+/// which was approved as an ordinary provision and never as a floor route.
+pub(in crate::cli) fn saved_plan_floor_confirm<'a>(
+    plan: &'a reconciler::Plan,
+    managers: &'a HashMap<String, &'a dyn cfgd_core::providers::PackageManager>,
+) -> impl Fn(&modules::FloorBootstrap) -> modules::FloorAnswer + 'a {
+    move |route| {
+        let Some(mgr) = managers.get(route.package.as_str()).copied() else {
+            return modules::FloorAnswer::NobodyToAsk;
+        };
+        let approved = plan
+            .phases
+            .iter()
+            .flat_map(reconciler::Phase::actions)
+            .filter_map(|action| match action {
+                reconciler::Action::Manager(reconciler::ManagerAction::Provision {
+                    manager,
+                    floor: Some(floor),
+                    ..
+                }) if *manager == route.package => Some(floor.as_str()),
+                _ => None,
+            })
+            .any(|approved| {
+                modules::judge_declared_floor(mgr, &route.package, &route.floor, Some(approved))
+                    .met()
+            });
+        if approved {
+            modules::FloorAnswer::Yes
+        } else {
+            modules::FloorAnswer::NobodyToAsk
+        }
+    }
+}
+
 /// The resolution half of [`resolve_desired_state`], over a composition the
 /// caller already holds.
 ///
