@@ -388,6 +388,14 @@ pub struct ManagedResource {
     pub source: String,
     pub last_hash: Option<String>,
     pub last_applied: Option<i64>,
+    /// What the row is, in the resource-type words drift rows use (`package`,
+    /// `file`, `env-rc`, …); `resource_type` names only the engine that wrote
+    /// it. `None` only on a row inserted outside the store's writers.
+    pub kind: Option<String>,
+    /// The package manager that installed the row's packages; `None` for a
+    /// row that is not a package install, and for a module package row
+    /// recorded before the store kept the manager.
+    pub manager: Option<String>,
 }
 
 /// A tracked config source.

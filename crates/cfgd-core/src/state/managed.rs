@@ -47,23 +47,36 @@ pub fn split_package_resource_id(id: &str) -> Option<(&str, &str)> {
 
 impl StateStore {
     /// Upsert a managed resource record.
+    ///
+    /// `kind` is the resource-type token the row is reported under
+    /// ([`crate::reconciler::recorded_resource_kind`]) and `manager` the
+    /// package manager that installed it, when the writer knows one.
+    ///
+    /// A `None` manager keeps the one already recorded: a writer that does not
+    /// know the manager (a `source remove` re-assigning the row's layer) must
+    /// not erase what the install recorded.
+    #[allow(clippy::too_many_arguments)]
     pub fn upsert_managed_resource(
         &self,
         resource_type: &str,
         resource_id: &str,
+        kind: &str,
+        manager: Option<&str>,
         source: &str,
         hash: Option<&str>,
         apply_id: Option<i64>,
     ) -> Result<()> {
         self.conn
             .execute(
-                "INSERT INTO managed_resources (resource_type, resource_id, source, last_hash, last_applied)
-                 VALUES (?1, ?2, ?3, ?4, ?5)
+                "INSERT INTO managed_resources (resource_type, resource_id, kind, manager, source, last_hash, last_applied)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
                  ON CONFLICT(resource_type, resource_id) DO UPDATE SET
+                    kind = excluded.kind,
+                    manager = COALESCE(excluded.manager, managed_resources.manager),
                     source = excluded.source,
                     last_hash = excluded.last_hash,
                     last_applied = excluded.last_applied",
-                params![resource_type, resource_id, source, hash, apply_id],
+                params![resource_type, resource_id, kind, manager, source, hash, apply_id],
             )
             ?;
         Ok(())
@@ -120,18 +133,21 @@ impl StateStore {
     pub fn upsert_package_resource(
         &self,
         resource_id: &str,
+        manager: &str,
         source: &str,
         apply_id: Option<i64>,
         uninstall_cmd: Option<&str>,
     ) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO managed_resources (resource_type, resource_id, source, last_hash, last_applied, uninstall_cmd)
-                 VALUES ('package', ?1, ?2, NULL, ?3, ?4)
+            "INSERT INTO managed_resources (resource_type, resource_id, kind, manager, source, last_hash, last_applied, uninstall_cmd)
+                 VALUES ('package', ?1, 'package', ?2, ?3, NULL, ?4, ?5)
                  ON CONFLICT(resource_type, resource_id) DO UPDATE SET
+                    kind = excluded.kind,
+                    manager = excluded.manager,
                     source = excluded.source,
                     last_applied = excluded.last_applied,
                     uninstall_cmd = excluded.uninstall_cmd",
-            params![resource_id, source, apply_id, uninstall_cmd],
+            params![resource_id, manager, source, apply_id, uninstall_cmd],
         )?;
         Ok(())
     }
@@ -265,7 +281,7 @@ impl StateStore {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT resource_type, resource_id, source, last_hash, last_applied FROM managed_resources ORDER BY resource_type, resource_id",
+                "SELECT resource_type, resource_id, source, last_hash, last_applied, kind, manager FROM managed_resources ORDER BY resource_type, resource_id",
             )
             ?;
 
@@ -277,6 +293,8 @@ impl StateStore {
                     source: row.get(2)?,
                     last_hash: row.get(3)?,
                     last_applied: row.get(4)?,
+                    kind: row.get(5)?,
+                    manager: row.get(6)?,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -307,7 +325,7 @@ impl StateStore {
                 .replace('_', "\\_")
         );
         let mut stmt = self.conn.prepare(
-            "SELECT resource_type, resource_id, source, last_hash, last_applied \
+            "SELECT resource_type, resource_id, source, last_hash, last_applied, kind, manager \
              FROM managed_resources \
              WHERE source = ?1 OR source LIKE ?2 ESCAPE '\\' \
              ORDER BY resource_type, resource_id",
@@ -320,6 +338,8 @@ impl StateStore {
                     source: row.get(2)?,
                     last_hash: row.get(3)?,
                     last_applied: row.get(4)?,
+                    kind: row.get(5)?,
+                    manager: row.get(6)?,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;

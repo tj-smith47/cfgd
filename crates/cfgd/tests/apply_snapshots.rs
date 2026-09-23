@@ -365,6 +365,7 @@ fn apply_after_plan_work_human_and_json() {
             .into_iter()
             .map(|(success, skipped)| ActionResult {
                 origin: None,
+                manager: None,
                 after_plan: Some(AfterPlan::EnvSurface),
                 phase: "bootstrap".to_string(),
                 description: "env:write:/home/me/.cfgd.env".to_string(),

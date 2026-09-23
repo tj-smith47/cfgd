@@ -1900,6 +1900,13 @@ pub struct ActionResult {
     /// under the plan, and this is the recording half of the same fact.
     #[serde(skip)]
     pub origin: Option<String>,
+    /// The package manager whose command this action ran, read off the action
+    /// the same way as [`Self::origin`], so the tracking row a module's
+    /// package install writes records the manager `description` never spells.
+    ///
+    /// Not serialized: the apply payload names the manager under the plan.
+    #[serde(skip)]
+    pub manager: Option<String>,
     /// What this result is, when the plan never named it — see [`AfterPlan`].
     /// `None` for every planned action, and the ONE thing that keeps such a
     /// result out of the three counts the header's `Actions N planned` is

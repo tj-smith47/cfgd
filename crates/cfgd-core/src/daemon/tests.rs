@@ -860,7 +860,7 @@ fn an_installed_item_with_no_decision_row_is_still_asked_about() {
     let store = test_state();
     let policy = AutoApplyPolicyConfig::default(); // new_recommended: Notify
     store
-        .upsert_managed_resource("package", "cargo/bat", "acme", None, None)
+        .upsert_managed_resource("package", "cargo/bat", "package", None, "acme", None, None)
         .unwrap();
     store
         .set_source_config_hash("acme", "hash-of-an-older-delivered-set")
@@ -9055,6 +9055,8 @@ async fn a_tick_that_refreshed_a_deployed_file_says_so_instead_of_reading_idle()
         .upsert_managed_resource(
             "file",
             &resource_id,
+            "file",
+            None,
             "local",
             Some(&crate::sha256_hex(b"as the apply deployed it")),
             None,
@@ -11262,10 +11264,18 @@ async fn handle_reconcile_auto_policy_prunes_tracked_dropped_package() {
     // Pre-seed: cfgd previously installed cargo/bat (tracked) and cargo/ripgrep.
     {
         let seed = StateStore::open_in_dir(&state_dir).unwrap();
-        seed.upsert_managed_resource("package", "cargo/bat", "local", None, None)
+        seed.upsert_managed_resource("package", "cargo/bat", "package", None, "local", None, None)
             .unwrap();
-        seed.upsert_managed_resource("package", "cargo/ripgrep", "local", None, None)
-            .unwrap();
+        seed.upsert_managed_resource(
+            "package",
+            "cargo/ripgrep",
+            "package",
+            None,
+            "local",
+            None,
+            None,
+        )
+        .unwrap();
     }
 
     let config_path = tmp.path().join("cfgd.yaml");
@@ -11407,10 +11417,18 @@ async fn handle_reconcile_auto_policy_gcs_stale_tracking_row() {
     {
         let seed = StateStore::open_in_dir(&state_dir).unwrap();
         // bat is installed (kept); phantom is tracked but NOT installed (stale).
-        seed.upsert_managed_resource("package", "cargo/bat", "local", None, None)
+        seed.upsert_managed_resource("package", "cargo/bat", "package", None, "local", None, None)
             .unwrap();
-        seed.upsert_managed_resource("package", "cargo/phantom", "local", None, None)
-            .unwrap();
+        seed.upsert_managed_resource(
+            "package",
+            "cargo/phantom",
+            "package",
+            None,
+            "local",
+            None,
+            None,
+        )
+        .unwrap();
     }
 
     let config_path = tmp.path().join("cfgd.yaml");
@@ -19121,8 +19139,16 @@ async fn handle_reconcile_compose_error_skips_tick_and_preserves_source_package(
     // cfgd previously installed the source-delivered package (tracked in state).
     {
         let seed = StateStore::open_in_dir(&state_dir).unwrap();
-        seed.upsert_managed_resource("package", "cargo/source-pkg", "test-src", None, None)
-            .unwrap();
+        seed.upsert_managed_resource(
+            "package",
+            "cargo/source-pkg",
+            "package",
+            None,
+            "test-src",
+            None,
+            None,
+        )
+        .unwrap();
     }
 
     let config_path = tmp.path().join("cfgd.yaml");
@@ -19339,8 +19365,16 @@ async fn handle_reconcile_required_uncached_source_skips_tick_and_preserves_pack
     // cfgd previously installed the required source's package (tracked in state).
     {
         let seed = StateStore::open_in_dir(&state_dir).unwrap();
-        seed.upsert_managed_resource("package", "cargo/source-pkg", "req-src", None, None)
-            .unwrap();
+        seed.upsert_managed_resource(
+            "package",
+            "cargo/source-pkg",
+            "package",
+            None,
+            "req-src",
+            None,
+            None,
+        )
+        .unwrap();
     }
 
     let config_path = tmp.path().join("cfgd.yaml");

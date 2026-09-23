@@ -59,6 +59,27 @@ fn kept_source(recorded: &str, departing: &str) -> String {
     layers.join(cfgd_core::reconciler::Owner::TOKEN_SEPARATOR)
 }
 
+/// Re-record one row under the layers left once `name` goes, keeping every
+/// other recorded fact the row carries.
+fn keep_locally(
+    state: &cfgd_core::state::StateStore,
+    r: &cfgd_core::state::ManagedResource,
+    name: &str,
+) -> cfgd_core::errors::Result<()> {
+    let kind = r.kind.as_deref().unwrap_or_else(|| {
+        cfgd_core::reconciler::recorded_resource_kind(&r.resource_type, &r.resource_id)
+    });
+    state.upsert_managed_resource(
+        &r.resource_type,
+        &r.resource_id,
+        kind,
+        r.manager.as_deref(),
+        &kept_source(&r.source, name),
+        r.last_hash.as_deref(),
+        r.last_applied,
+    )
+}
+
 /// What the departing source itself declares, folded across its own layers and
 /// the modules it delivered, in the merge's order.
 ///
@@ -281,13 +302,7 @@ pub(super) fn run_source_remove(
         if choice.starts_with("Keep") {
             // Re-assign resources to local
             for r in &resources {
-                state.upsert_managed_resource(
-                    &r.resource_type,
-                    &r.resource_id,
-                    &kept_source(&r.source, name),
-                    r.last_hash.as_deref(),
-                    r.last_applied,
-                )?;
+                keep_locally(&state, r, name)?;
             }
             printer.status_simple(Role::Info, "Resources transferred to local management");
             disposition = "kept";
@@ -296,13 +311,7 @@ pub(super) fn run_source_remove(
         }
     } else if keep_all {
         for r in &resources {
-            state.upsert_managed_resource(
-                &r.resource_type,
-                &r.resource_id,
-                &kept_source(&r.source, name),
-                r.last_hash.as_deref(),
-                r.last_applied,
-            )?;
+            keep_locally(&state, r, name)?;
         }
         disposition = "kept";
     } else if remove_all {
@@ -624,7 +633,7 @@ mod tests {
             })
             .expect("seed config_source");
         state
-            .upsert_managed_resource("file", "/etc/foo", "acme", None, None)
+            .upsert_managed_resource("file", "/etc/foo", "file", None, "acme", None, None)
             .expect("seed managed resource");
         drop(state);
 
@@ -687,7 +696,7 @@ mod tests {
             })
             .expect("seed config_source");
         state
-            .upsert_managed_resource("file", &id, "acme", recorded_hash, None)
+            .upsert_managed_resource("file", &id, "file", None, "acme", recorded_hash, None)
             .expect("seed managed resource");
         id
     }
@@ -829,7 +838,7 @@ mod tests {
             })
             .expect("seed config_source");
         state
-            .upsert_managed_resource("file", "/etc/bar", "acme", None, None)
+            .upsert_managed_resource("file", "/etc/bar", "file", None, "acme", None, None)
             .expect("seed managed resource");
         drop(state);
 
@@ -961,7 +970,15 @@ mod tests {
             (cfgd_core::reconciler::ALIAS_RESOURCE_TYPE, "ll", "local"),
         ] {
             state
-                .upsert_managed_resource(rtype, id, owner, None, None)
+                .upsert_managed_resource(
+                    rtype,
+                    id,
+                    cfgd_core::reconciler::recorded_resource_kind(rtype, id),
+                    None,
+                    owner,
+                    None,
+                    None,
+                )
                 .expect("seed entry row");
         }
         drop(state);
@@ -1106,7 +1123,7 @@ mod tests {
             })
             .expect("seed config_source");
         state
-            .upsert_managed_resource("file", "/etc/baz", "acme", None, None)
+            .upsert_managed_resource("file", "/etc/baz", "file", None, "acme", None, None)
             .expect("seed managed resource");
         drop(state);
 
@@ -1147,7 +1164,7 @@ mod tests {
             })
             .expect("seed config_source");
         state
-            .upsert_managed_resource("file", "/etc/keepme", "acme", None, None)
+            .upsert_managed_resource("file", "/etc/keepme", "file", None, "acme", None, None)
             .expect("seed managed resource");
         drop(state);
 

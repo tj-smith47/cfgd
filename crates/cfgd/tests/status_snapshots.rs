@@ -34,6 +34,7 @@ use cfgd::cli::status::{
 use cfgd_core::config::{EnvVar, ShellAlias};
 use cfgd_core::modules::{DeclaredScript, HookScripts, ModuleSurfaces};
 use cfgd_core::output::Printer;
+use cfgd_core::reconciler::recorded_resource_kind;
 use cfgd_core::state::{
     ApplyRecord, ApplyStatus, ConfigSourceRecord, DriftEvent, ManagedResource, PendingDecision,
 };
@@ -101,6 +102,11 @@ fn managed_resources() -> Vec<ManagedResourceRow> {
             source: "local".into(),
             last_hash: Some("hash1".into()),
             last_applied: Some(1_715_680_800),
+            kind: Some(recorded_resource_kind(resource_type, resource_id).into()),
+            manager: (resource_type == "package")
+                .then(|| cfgd_core::state::split_package_resource_id(resource_id))
+                .flatten()
+                .map(|(manager, _)| manager.into()),
         })
         .collect(),
         Some("default"),
@@ -184,6 +190,11 @@ fn env_entry_resources() -> Vec<ManagedResourceRow> {
             source: source.into(),
             last_hash: Some("hash1".into()),
             last_applied: Some(1_715_680_800),
+            kind: Some(recorded_resource_kind(resource_type, resource_id).into()),
+            manager: (resource_type == "package")
+                .then(|| cfgd_core::state::split_package_resource_id(resource_id))
+                .flatten()
+                .map(|(manager, _)| manager.into()),
         })
         .collect(),
         Some("default"),

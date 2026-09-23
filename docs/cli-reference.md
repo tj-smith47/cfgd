@@ -873,6 +873,21 @@ column `cfgd source remove` looks a subscription's resources up by, so
 removing a source can offer to keep them (they become `local`) or take them off
 the machine. `-o json` carries it as `source` on every `managedResources[]` row.
 
+Each `managedResources[]` row also carries two facts the table prints:
+
+- `kind`: what the row is, the fact the `Type` column words (`package`, `file`, `env`, `env-rc`,
+  `env-session`, `env-var`, `alias`). It uses the same words as `drift[].resourceType`, so a drift
+  row and the resource it is about match on it. `resourceType` names the engine that recorded the
+  row (`module`, `env`) and stays the key the row is stored under.
+- `manager`: the package manager that installed a package row (`npm` for the row the table prints
+  as `npm: cowsay`), and `null` for every other row. A module's package row recorded before cfgd
+  kept the manager reads `null` until the next apply records it; the table then names the manager
+  the module's current declaration resolves to.
+
+```bash
+cfgd status -o json | jq '.managedResources[] | select(.kind == "package") | {manager, resourceId}'
+```
+
 A generated env file, its rc line and the live session are surfaces cfgd writes
 whole out of every layer, so those three rows record `local` whatever delivered
 the entries in them. The entries themselves are separate rows: each env var is

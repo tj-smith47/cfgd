@@ -23,6 +23,8 @@ const ADDED_COLUMNS: &[(usize, &str, &str)] = &[
     (17, "pending_decisions", "content_hash"),
     (18, "config_sources", "last_commit_signed"),
     (19, "managed_resources", "file_hashes"),
+    (29, "managed_resources", "kind"),
+    (29, "managed_resources", "manager"),
 ];
 
 /// Every `ADD COLUMN` migration must be listed in [`ADDED_COLUMNS`].
@@ -530,7 +532,15 @@ fn snapshot_reset_resolves_healed_resource() {
 fn upsert_managed_resource() {
     let store = StateStore::open_in_memory().unwrap();
     store
-        .upsert_managed_resource("file", "/home/.zshrc", "local", Some("hash1"), None)
+        .upsert_managed_resource(
+            "file",
+            "/home/.zshrc",
+            "file",
+            None,
+            "local",
+            Some("hash1"),
+            None,
+        )
         .unwrap();
 
     let resources = store.managed_resources().unwrap();
@@ -541,7 +551,15 @@ fn upsert_managed_resource() {
 
     // Update with new hash
     store
-        .upsert_managed_resource("file", "/home/.zshrc", "local", Some("hash2"), None)
+        .upsert_managed_resource(
+            "file",
+            "/home/.zshrc",
+            "file",
+            None,
+            "local",
+            Some("hash2"),
+            None,
+        )
         .unwrap();
 
     let resources = store.managed_resources().unwrap();
@@ -554,7 +572,15 @@ fn refresh_managed_resource_hash_writes_only_when_the_hash_moved() {
     use super::HashRefresh;
     let store = StateStore::open_in_memory().unwrap();
     store
-        .upsert_managed_resource("file", "/home/.zshrc", "acme", Some("hash1"), None)
+        .upsert_managed_resource(
+            "file",
+            "/home/.zshrc",
+            "file",
+            None,
+            "acme",
+            Some("hash1"),
+            None,
+        )
         .unwrap();
 
     assert_eq!(
@@ -606,7 +632,15 @@ fn a_row_with_no_breakdown_is_backfilled_once_and_silently() {
     use super::HashRefresh;
     let store = StateStore::open_in_memory().unwrap();
     store
-        .upsert_managed_resource("file", "/home/.zshrc", "local", Some("hash1"), None)
+        .upsert_managed_resource(
+            "file",
+            "/home/.zshrc",
+            "file",
+            None,
+            "local",
+            Some("hash1"),
+            None,
+        )
         .unwrap();
     assert_eq!(
         store
@@ -656,6 +690,7 @@ fn upsert_package_resource_persists_uninstall_cmd() {
     store
         .upsert_package_resource(
             "widgetmgr/widget",
+            "widgetmgr",
             "local",
             None,
             Some("widgetmgr rm {package}"),
@@ -663,7 +698,7 @@ fn upsert_package_resource_persists_uninstall_cmd() {
         .unwrap();
     // Built-in package — no persisted command (NULL).
     store
-        .upsert_package_resource("cargo/foo", "local", None, None)
+        .upsert_package_resource("cargo/foo", "cargo", "local", None, None)
         .unwrap();
 
     let known: std::collections::HashSet<String> = ["cargo".to_string(), "apt".to_string()]
@@ -690,11 +725,23 @@ fn upsert_package_resource_persists_uninstall_cmd() {
 fn upsert_package_resource_refreshes_changed_uninstall_cmd() {
     let store = StateStore::open_in_memory().unwrap();
     store
-        .upsert_package_resource("widgetmgr/widget", "local", None, Some("old rm {package}"))
+        .upsert_package_resource(
+            "widgetmgr/widget",
+            "widgetmgr",
+            "local",
+            None,
+            Some("old rm {package}"),
+        )
         .unwrap();
     // Re-install with a changed script must update the persisted command.
     store
-        .upsert_package_resource("widgetmgr/widget", "local", None, Some("new rm {package}"))
+        .upsert_package_resource(
+            "widgetmgr/widget",
+            "widgetmgr",
+            "local",
+            None,
+            Some("new rm {package}"),
+        )
         .unwrap();
 
     let known = std::collections::HashSet::new();
@@ -711,7 +758,13 @@ fn upsert_package_resource_refreshes_changed_uninstall_cmd() {
 fn orphaned_package_resources_empty_when_manager_known() {
     let store = StateStore::open_in_memory().unwrap();
     store
-        .upsert_package_resource("widgetmgr/widget", "local", None, Some("widgetmgr rm"))
+        .upsert_package_resource(
+            "widgetmgr/widget",
+            "widgetmgr",
+            "local",
+            None,
+            Some("widgetmgr rm"),
+        )
         .unwrap();
 
     let known: std::collections::HashSet<String> = ["widgetmgr".to_string()].into_iter().collect();
@@ -728,7 +781,7 @@ fn orphaned_package_resources_reports_null_cmd_rows() {
     // A custom-manager package tracked before the persisted-uninstall column
     // existed: NULL command, but still orphaned and must be reported.
     store
-        .upsert_package_resource("legacymgr/legacypkg", "local", None, None)
+        .upsert_package_resource("legacymgr/legacypkg", "legacymgr", "local", None, None)
         .unwrap();
 
     let known = std::collections::HashSet::new();
@@ -748,7 +801,15 @@ fn generic_upsert_managed_resource_leaves_uninstall_cmd_null() {
     // The generic upsert (used for files/system resources) must not touch the
     // new column — it stays NULL.
     store
-        .upsert_managed_resource("package", "widgetmgr/widget", "local", None, None)
+        .upsert_managed_resource(
+            "package",
+            "widgetmgr/widget",
+            "package",
+            None,
+            "local",
+            None,
+            None,
+        )
         .unwrap();
     let known = std::collections::HashSet::new();
     let orphans = store.orphaned_package_resources(&known).unwrap();
@@ -763,7 +824,15 @@ fn is_resource_managed() {
     assert!(!store.is_resource_managed("file", "/home/.zshrc").unwrap());
 
     store
-        .upsert_managed_resource("file", "/home/.zshrc", "local", Some("hash1"), None)
+        .upsert_managed_resource(
+            "file",
+            "/home/.zshrc",
+            "file",
+            None,
+            "local",
+            Some("hash1"),
+            None,
+        )
         .unwrap();
 
     assert!(store.is_resource_managed("file", "/home/.zshrc").unwrap());
@@ -779,7 +848,15 @@ fn is_resource_managed() {
 fn remove_managed_resource_deletes_tracked_row() {
     let store = StateStore::open_in_memory().unwrap();
     store
-        .upsert_managed_resource("package", "apt/fd-find", "local", None, None)
+        .upsert_managed_resource(
+            "package",
+            "apt/fd-find",
+            "package",
+            None,
+            "local",
+            None,
+            None,
+        )
         .unwrap();
     assert!(store.is_resource_managed("package", "apt/fd-find").unwrap());
 
@@ -802,14 +879,30 @@ fn remove_managed_resource_is_idempotent_on_missing_row() {
 fn managed_package_ids_round_trip() {
     let store = StateStore::open_in_memory().unwrap();
     store
-        .upsert_managed_resource("package", "apt/fd-find", "local", None, None)
+        .upsert_managed_resource(
+            "package",
+            "apt/fd-find",
+            "package",
+            None,
+            "local",
+            None,
+            None,
+        )
         .unwrap();
     store
-        .upsert_managed_resource("package", "cargo/ripgrep", "local", None, None)
+        .upsert_managed_resource(
+            "package",
+            "cargo/ripgrep",
+            "package",
+            None,
+            "local",
+            None,
+            None,
+        )
         .unwrap();
     // A non-package resource must never appear in the package id list.
     store
-        .upsert_managed_resource("file", "/home/.zshrc", "local", None, None)
+        .upsert_managed_resource("file", "/home/.zshrc", "file", None, "local", None, None)
         .unwrap();
 
     let mut ids = store.managed_package_ids().unwrap();
@@ -833,10 +926,10 @@ fn managed_package_ids_round_trip() {
 fn managed_resources_unique_constraint() {
     let store = StateStore::open_in_memory().unwrap();
     store
-        .upsert_managed_resource("file", "/a", "local", None, None)
+        .upsert_managed_resource("file", "/a", "file", None, "local", None, None)
         .unwrap();
     store
-        .upsert_managed_resource("package", "/a", "local", None, None)
+        .upsert_managed_resource("package", "/a", "package", None, "local", None, None)
         .unwrap();
 
     let resources = store.managed_resources().unwrap();
@@ -1114,32 +1207,48 @@ fn record_source_conflict() {
 fn managed_resources_by_source() {
     let store = StateStore::open_in_memory().unwrap();
     store
-        .upsert_managed_resource("file", "/a", "local", None, None)
+        .upsert_managed_resource("file", "/a", "file", None, "local", None, None)
         .unwrap();
     store
-        .upsert_managed_resource("file", "/b", "acme", None, None)
+        .upsert_managed_resource("file", "/b", "file", None, "acme", None, None)
         .unwrap();
     store
-        .upsert_managed_resource("package", "git-secrets", "acme", None, None)
+        .upsert_managed_resource(
+            "package",
+            "git-secrets",
+            "package",
+            None,
+            "acme",
+            None,
+            None,
+        )
         .unwrap();
 
     // A row several layers built together names all of them, and belongs to
     // each.
     store
-        .upsert_managed_resource("env-var", "PATH", "local, acme", None, None)
+        .upsert_managed_resource(
+            "env-var",
+            "PATH",
+            "env-var",
+            None,
+            "local, acme",
+            None,
+            None,
+        )
         .unwrap();
     // A name that CONTAINS another layer's name, and one carrying the
     // characters `LIKE` reads as its own wildcards.
     store
-        .upsert_managed_resource("file", "/c", "acme-dev", None, None)
+        .upsert_managed_resource("file", "/c", "file", None, "acme-dev", None, None)
         .unwrap();
     store
-        .upsert_managed_resource("file", "/d", "ac%e_1", None, None)
+        .upsert_managed_resource("file", "/d", "file", None, "ac%e_1", None, None)
         .unwrap();
     // A backslash is the escape character the pattern declares, so a name
     // carrying one is the case an unescaped pattern loses outright.
     store
-        .upsert_managed_resource("file", "/e", r"ac\me", None, None)
+        .upsert_managed_resource("file", "/e", "file", None, r"ac\me", None, None)
         .unwrap();
 
     let acme_resources = store.managed_resources_by_source("acme").unwrap();
@@ -2014,7 +2123,13 @@ fn migration_adds_uninstall_cmd_column() {
     // package-resource helper, rather than pinning a fragile version number.
     let store = StateStore::open_in_memory().unwrap();
     store
-        .upsert_package_resource("widgetmgr/widget", "local", None, Some("widgetmgr rm"))
+        .upsert_package_resource(
+            "widgetmgr/widget",
+            "widgetmgr",
+            "local",
+            None,
+            Some("widgetmgr rm"),
+        )
         .unwrap();
     let known = std::collections::HashSet::new();
     let orphans = store.orphaned_package_resources(&known).unwrap();
@@ -2528,33 +2643,63 @@ fn migration_9_drops_stale_managed_resource_ids_and_apply_recreates_them() {
         let store = StateStore::open(&path).unwrap();
         // Every module collapsed onto the bare verb, so the module name was lost.
         store
-            .upsert_managed_resource("module", "script", "local", None, None)
+            .upsert_managed_resource("module", "script", "module", None, "local", None, None)
             .unwrap();
         // Truncated at the colon inside the script body.
         store
-            .upsert_managed_resource("Running script", " curl https", "local", None, None)
+            .upsert_managed_resource(
+                "Running script",
+                " curl https",
+                "Running script",
+                None,
+                "local",
+                None,
+                None,
+            )
             .unwrap();
         // Truncated at the colon inside the configurator value.
         store
-            .upsert_managed_resource("system", "path.value (a", "local", None, None)
+            .upsert_managed_resource(
+                "system",
+                "path.value (a",
+                "system",
+                None,
+                "local",
+                None,
+                None,
+            )
             .unwrap();
         // Native-separator secret key, as a Windows host would have written it.
         store
-            .upsert_managed_resource("secret", r"C:\Users\me\.env", "local", None, None)
+            .upsert_managed_resource(
+                "secret",
+                r"C:\Users\me\.env",
+                "secret",
+                None,
+                "local",
+                None,
+                None,
+            )
             .unwrap();
         // Every manager's bootstrap/skip collapsed onto the bare verb, losing
         // the manager name. These go through upsert_managed_resource, so they
         // carry no uninstall_cmd.
         store
-            .upsert_managed_resource("package", "skip", "local", None, None)
+            .upsert_managed_resource("package", "skip", "package", None, "local", None, None)
             .unwrap();
         store
-            .upsert_managed_resource("package", "bootstrap", "local", None, None)
+            .upsert_managed_resource("package", "bootstrap", "package", None, "local", None, None)
             .unwrap();
         // A real package row must NOT be swept — it is the one shape carrying an
         // uninstall_cmd that cannot be re-derived once its manager leaves config.
         store
-            .upsert_package_resource("widgetmgr/widget", "local", None, Some("widgetmgr rm"))
+            .upsert_package_resource(
+                "widgetmgr/widget",
+                "widgetmgr",
+                "local",
+                None,
+                Some("widgetmgr rm"),
+            )
             .unwrap();
         // Hardcoded, not `MIGRATIONS.len() - 1`: this test means "replay the
         // id-shape sweep", so appending a later migration must not silently
@@ -3127,13 +3272,13 @@ fn legacy_chmod_tracking_rows_carrying_their_mode_are_swept_on_open() {
             "/etc/config.yaml",
         ] {
             store
-                .upsert_managed_resource("file", rid, "local", None, None)
+                .upsert_managed_resource("file", rid, "file", None, "local", None, None)
                 .unwrap();
         }
         // A path that merely LOOKS mode-prefixed is another type's row and a
         // legal filename either way; the sweep is scoped to `file`.
         store
-            .upsert_managed_resource("env", "0o600:/etc/env", "local", None, None)
+            .upsert_managed_resource("env", "0o600:/etc/env", "env-rc", None, "local", None, None)
             .unwrap();
         rewind_schema_version(&store, 22);
     }
@@ -3347,7 +3492,15 @@ fn a_module_skip_row_from_a_pre_fix_daemon_is_resolved_and_its_tracking_row_drop
                 .record_drift("module", rid, None, None, "local")
                 .unwrap();
             store
-                .upsert_managed_resource("module", rid, "local", None, None)
+                .upsert_managed_resource(
+                    "module",
+                    rid,
+                    crate::reconciler::recorded_resource_kind("module", rid),
+                    None,
+                    "local",
+                    None,
+                    None,
+                )
                 .unwrap();
         }
         // Another type carrying the same tail: the sweep is scoped to `module`.
@@ -3424,7 +3577,15 @@ fn every_script_row_from_a_pre_fix_daemon_is_resolved_and_its_tracking_row_kept(
                 .record_drift("module", rid, None, None, "local")
                 .unwrap();
             store
-                .upsert_managed_resource("module", rid, "local", None, None)
+                .upsert_managed_resource(
+                    "module",
+                    rid,
+                    crate::reconciler::recorded_resource_kind("module", rid),
+                    None,
+                    "local",
+                    None,
+                    None,
+                )
                 .unwrap();
         }
         for rtype in ["script", "Running script"] {
@@ -3432,7 +3593,15 @@ fn every_script_row_from_a_pre_fix_daemon_is_resolved_and_its_tracking_row_kept(
                 .record_drift(rtype, "echo hi", None, None, "local")
                 .unwrap();
             store
-                .upsert_managed_resource(rtype, "echo hi", "local", None, None)
+                .upsert_managed_resource(
+                    rtype,
+                    "echo hi",
+                    crate::reconciler::recorded_resource_kind(rtype, "echo hi"),
+                    None,
+                    "local",
+                    None,
+                    None,
+                )
                 .unwrap();
         }
         store
@@ -3648,6 +3817,8 @@ fn migration_14_undoubles_the_configurator_name_in_persisted_system_ids() {
             .upsert_managed_resource(
                 "system",
                 "sshKeys.sshKeys.default.exists",
+                "system",
+                None,
                 "local",
                 None,
                 Some(apply_id),
@@ -3716,6 +3887,8 @@ fn migration_14_undoubles_the_configurator_name_in_persisted_system_ids() {
             .upsert_managed_resource(
                 "system",
                 "certificates.cert.kubelet-client.cert",
+                "system",
+                None,
                 "local",
                 None,
                 Some(apply_id),
@@ -3725,6 +3898,8 @@ fn migration_14_undoubles_the_configurator_name_in_persisted_system_ids() {
             .upsert_managed_resource(
                 "system",
                 "containerd.containerdx",
+                "system",
+                None,
                 "local",
                 None,
                 Some(apply_id),
@@ -3734,6 +3909,8 @@ fn migration_14_undoubles_the_configurator_name_in_persisted_system_ids() {
             .upsert_managed_resource(
                 "system",
                 "sshkeys.sshkeys.default.exists",
+                "system",
+                None,
                 "local",
                 None,
                 Some(apply_id),
@@ -4500,8 +4677,24 @@ fn in_transaction_batches_every_write_into_one_commit() {
 
     store
         .in_transaction(|| {
-            store.upsert_managed_resource("file", "~/.a", "profile:test", None, None)?;
-            store.upsert_managed_resource("file", "~/.b", "profile:test", None, None)?;
+            store.upsert_managed_resource(
+                "file",
+                "~/.a",
+                "file",
+                None,
+                "profile:test",
+                None,
+                None,
+            )?;
+            store.upsert_managed_resource(
+                "file",
+                "~/.b",
+                "file",
+                None,
+                "profile:test",
+                None,
+                None,
+            )?;
             // Committed per statement, both rows would already be visible to
             // another connection here; inside one transaction neither is.
             assert!(reader.managed_resources().unwrap().is_empty());
@@ -4517,7 +4710,7 @@ fn in_transaction_rolls_back_when_the_batch_fails() {
     let store = StateStore::open_in_memory().unwrap();
 
     let err: Result<()> = store.in_transaction(|| {
-        store.upsert_managed_resource("file", "~/.a", "profile:test", None, None)?;
+        store.upsert_managed_resource("file", "~/.a", "file", None, "profile:test", None, None)?;
         Err(crate::errors::StateError::MigrationFailed {
             message: "batch aborted".to_string(),
         }
@@ -4529,7 +4722,7 @@ fn in_transaction_rolls_back_when_the_batch_fails() {
     // left inside an open transaction: the next write commits on its own.
     assert!(store.managed_resources().unwrap().is_empty());
     store
-        .upsert_managed_resource("file", "~/.c", "profile:test", None, None)
+        .upsert_managed_resource("file", "~/.c", "file", None, "profile:test", None, None)
         .unwrap();
     assert_eq!(store.managed_resources().unwrap().len(), 1);
 }
@@ -4546,7 +4739,7 @@ fn a_failed_bookkeeping_batch_leaves_the_apply_row_in_progress() {
 
     let err: Result<()> = store.in_transaction(|| {
         store.update_apply_status(apply_id, ApplyStatus::Success, Some("{}"))?;
-        store.upsert_managed_resource("file", "~/.a", "profile:work", None, None)?;
+        store.upsert_managed_resource("file", "~/.a", "file", None, "profile:work", None, None)?;
         Err(crate::errors::StateError::MigrationFailed {
             message: "tail aborted".to_string(),
         }
@@ -4567,7 +4760,15 @@ fn in_transaction_rolls_back_when_the_batch_panics() {
     std::panic::set_hook(Box::new(|_| {}));
     let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         store.in_transaction::<()>(|| {
-            store.upsert_managed_resource("file", "~/.a", "profile:test", None, None)?;
+            store.upsert_managed_resource(
+                "file",
+                "~/.a",
+                "file",
+                None,
+                "profile:test",
+                None,
+                None,
+            )?;
             panic!("batch panicked");
         })
     }));
@@ -4576,7 +4777,7 @@ fn in_transaction_rolls_back_when_the_batch_panics() {
 
     assert!(store.managed_resources().unwrap().is_empty());
     store
-        .upsert_managed_resource("file", "~/.c", "profile:test", None, None)
+        .upsert_managed_resource("file", "~/.c", "file", None, "profile:test", None, None)
         .unwrap();
     assert_eq!(store.managed_resources().unwrap().len(), 1);
 }
@@ -4589,7 +4790,7 @@ fn sequential_transactions_after_a_failed_one_still_pass_the_assert() {
     let store = StateStore::open_in_memory().unwrap();
 
     let err: Result<()> = store.in_transaction(|| {
-        store.upsert_managed_resource("file", "~/.a", "profile:test", None, None)?;
+        store.upsert_managed_resource("file", "~/.a", "file", None, "profile:test", None, None)?;
         Err(crate::errors::StateError::MigrationFailed {
             message: "batch aborted".to_string(),
         }
@@ -4601,7 +4802,7 @@ fn sequential_transactions_after_a_failed_one_still_pass_the_assert() {
     // above had left the nesting flag set.
     store
         .in_transaction(|| {
-            store.upsert_managed_resource("file", "~/.c", "profile:test", None, None)
+            store.upsert_managed_resource("file", "~/.c", "file", None, "profile:test", None, None)
         })
         .unwrap();
     assert_eq!(store.managed_resources().unwrap().len(), 1);
@@ -4813,4 +5014,103 @@ fn a_recorded_migration_answer_is_reused_only_for_the_keys_it_covered() {
         None,
         "a column that no longer decodes covers nothing"
     );
+}
+
+/// Tracking rows as real stores hold them, with the `kind` and `manager`
+/// migration 29 must backfill for each. The first eleven are copied from real
+/// stores: the dev host's live store, the FreeBSD npm run's `status -o json`,
+/// and the legacy copy `migrate_state_db` left behind. The rest cover the arms
+/// no real store held a row for.
+const KIND_BACKFILL_ROWS: &[(&str, &str, &str, Option<&str>)] = &[
+    ("env", "/root/.bashrc", "env-rc", None),
+    ("env", "/root/.bashrc:skipped", "env-rc", None),
+    ("env", "/root/.zshenv", "env-rc", None),
+    ("env", "/root/.cfgd.env", "env", None),
+    ("env", "/root/.config/environment.d/cfgd.conf", "env", None),
+    ("env", "refresh", "env-session", None),
+    ("module", "test-mod:files:1", "file", None),
+    ("module", "npmtest:packages:cowsay", "package", None),
+    // A pre-grammar id with no module name: its facet is the package list,
+    // so nothing names it a package.
+    (
+        "module",
+        "packages:neovim,fd,zoxide,node,pipx,go,sops,age",
+        "module",
+        None,
+    ),
+    ("package", "npm/cowsay", "package", Some("npm")),
+    (
+        "file",
+        "/tmp/tmp.oJsVi0REHk/init-home/.gitconfig",
+        "file",
+        None,
+    ),
+    ("module", "nvim:script", "script", None),
+    (
+        "env",
+        "/Users/me/Library/LaunchAgents/com.cfgd.user-environment.plist",
+        "env",
+        None,
+    ),
+    (
+        "env",
+        "/home/me/.config/fish/conf.d/cfgd-env.fish",
+        "env",
+        None,
+    ),
+    (
+        "env",
+        "C:/Users/me/Documents/PowerShell/.cfgd-env.ps1",
+        "env",
+        None,
+    ),
+    // A package id with no manager half records no manager.
+    ("package", "/orphan", "package", None),
+];
+
+/// Migration 29 gives every existing tracking row the kind and manager a fresh
+/// apply would record, so `status -o json` and the table agree on rows written
+/// before the columns existed.
+#[test]
+fn migration_29_backfills_kind_and_manager_as_the_writer_records_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    {
+        let store = StateStore::open(&path).unwrap();
+        // Hardcoded, not `MIGRATIONS.len() - 1`: this test means "replay the
+        // kind backfill", so a later migration must not re-point it.
+        rewind_schema_version(&store, 29);
+        for (rtype, rid, _, _) in KIND_BACKFILL_ROWS {
+            store
+                .conn
+                .execute(
+                    "INSERT INTO managed_resources (resource_type, resource_id, source)
+                     VALUES (?1, ?2, 'local')",
+                    params![rtype, rid],
+                )
+                .unwrap();
+        }
+    }
+
+    let state = StateStore::open(&path).unwrap();
+    assert_eq!(state.schema_version().unwrap(), MIGRATIONS.len());
+    let rows = state.managed_resources().unwrap();
+    assert_eq!(rows.len(), KIND_BACKFILL_ROWS.len(), "{rows:?}");
+    for (rtype, rid, kind, manager) in KIND_BACKFILL_ROWS {
+        let row = rows
+            .iter()
+            .find(|r| r.resource_type == *rtype && r.resource_id == *rid)
+            .unwrap_or_else(|| panic!("row ({rtype}, {rid}) survives the migration"));
+        assert_eq!(row.kind.as_deref(), Some(*kind), "kind of ({rtype}, {rid})");
+        assert_eq!(
+            row.kind.as_deref(),
+            Some(crate::reconciler::recorded_resource_kind(rtype, rid)),
+            "the backfill and the apply-time writer disagree on ({rtype}, {rid})"
+        );
+        assert_eq!(
+            row.manager.as_deref(),
+            *manager,
+            "manager of ({rtype}, {rid})"
+        );
+    }
 }

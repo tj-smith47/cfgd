@@ -1011,6 +1011,7 @@ pub(super) fn merge_env_result(
         // A generated env file folds every layer at once, so no single
         // subscription delivered it.
         origin: None,
+        manager: None,
         after_plan: Some(AfterPlan::EnvSurface),
     });
 }
@@ -1971,6 +1972,7 @@ impl<'a> super::Reconciler<'a> {
                                 versions: Default::default(),
                                 drift_rows: Vec::new(),
                                 origin: None,
+                                manager: None,
                                 after_plan: Some(AfterPlan::EnvSurface),
                             });
                         }
@@ -2086,6 +2088,7 @@ impl<'a> super::Reconciler<'a> {
                             versions: Default::default(),
                             drift_rows: Vec::new(),
                             origin: None,
+                            manager: None,
                             after_plan: Some(AfterPlan::ChangeHook),
                         });
                     }
@@ -2104,6 +2107,7 @@ impl<'a> super::Reconciler<'a> {
                             versions: Default::default(),
                             drift_rows: Vec::new(),
                             origin: None,
+                            manager: None,
                             after_plan: Some(AfterPlan::ChangeHook),
                         });
                         if !continue_on_err {
@@ -2161,6 +2165,7 @@ impl<'a> super::Reconciler<'a> {
                                 versions: Default::default(),
                                 drift_rows: Vec::new(),
                                 origin: module.origin.clone(),
+                                manager: None,
                                 after_plan: Some(AfterPlan::ChangeHook),
                             });
                         }
@@ -2183,6 +2188,7 @@ impl<'a> super::Reconciler<'a> {
                                 versions: Default::default(),
                                 drift_rows: Vec::new(),
                                 origin: module.origin.clone(),
+                                manager: None,
                                 after_plan: Some(AfterPlan::ChangeHook),
                             });
                             if !continue_on_err {
@@ -2375,6 +2381,7 @@ impl<'a> super::Reconciler<'a> {
                                 .and_then(|m| m.persisted_uninstall());
                             self.state.upsert_package_resource(
                                 &rid,
+                                &manager,
                                 package_layers.recording_layer(&manager, pkg, recording_layer),
                                 Some(apply_id),
                                 uninstall_cmd.as_deref(),
@@ -2456,6 +2463,8 @@ impl<'a> super::Reconciler<'a> {
             self.state.upsert_managed_resource(
                 &rtype,
                 &rid,
+                super::recorded_resource_kind(&rtype, &rid),
+                result.manager.as_deref(),
                 recording_layer,
                 None,
                 Some(apply_id),
@@ -2635,8 +2644,15 @@ impl<'a> super::Reconciler<'a> {
     ) -> Result<()> {
         let items = self.declared_env_items(resolved, modules);
         for (rtype, name, layer) in &items {
-            self.state
-                .upsert_managed_resource(rtype, name, layer, None, Some(apply_id))?;
+            self.state.upsert_managed_resource(
+                rtype,
+                name,
+                super::recorded_resource_kind(rtype, name),
+                None,
+                layer,
+                None,
+                Some(apply_id),
+            )?;
         }
         // Retiring a row is a claim about the WHOLE desired set: an entry this
         // run's scope never resolved is not an entry that left the config.
@@ -2861,6 +2877,7 @@ impl<'a> super::Reconciler<'a> {
             // Off the action itself, so the layer the plan printed beside
             // this row is the layer its tracking row records.
             origin: action.origin().map(str::to_string),
+            manager: super::packages::action_manager(action).map(str::to_string),
             // The plan named this action, so the header already promised it.
             after_plan: None,
         });

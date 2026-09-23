@@ -5,8 +5,9 @@ use crate::to_posix_string;
 
 use super::env_engine::{ENV_VERB_INJECT, ENV_VERB_WRITE};
 use super::types::{
-    Action, EnvAction, ManagerAction, ModuleAction, ModuleActionKind, OwnerGroup, ScriptAction,
-    ScriptPhase, SystemAction,
+    Action, ENV_RC_RESOURCE_TYPE, ENV_RESOURCE_TYPE, ENV_SESSION_RESOURCE_TYPE, EnvAction,
+    ManagerAction, ModuleAction, ModuleActionKind, OwnerGroup, ScriptAction, ScriptPhase,
+    SystemAction,
 };
 
 /// Resource id of the live-session env refresh. The planner and
@@ -1170,6 +1171,35 @@ pub fn module_row_facet(resource_id: &str) -> Option<&str> {
     match resource_id.find(['/', ':']) {
         Some(at) if resource_id.as_bytes()[at] == b':' => Some(&resource_id[at + 1..]),
         _ => None,
+    }
+}
+
+/// The `managed_resources.kind` token a tracking row is recorded under: the
+/// resource type the drift rows name the same resource by (`package`, `file`,
+/// `script`, `env`, `env-rc`, `env-session`), where the row's own
+/// `resource_type` names only the engine that wrote it (`module`, `env`).
+///
+/// Migration 29 backfills the column with the same rules in SQL, and a pin
+/// holds the two equal over real rows, so a row recorded before the column
+/// existed reads the kind a fresh apply would write.
+#[must_use]
+pub fn recorded_resource_kind<'a>(resource_type: &'a str, resource_id: &str) -> &'a str {
+    match resource_type {
+        "module" => match module_row_facet(resource_id)
+            .map(|facet| facet.split_once(':').map_or(facet, |(surface, _)| surface))
+        {
+            Some("packages") => "package",
+            Some("files") => "file",
+            Some("script") => "script",
+            _ => resource_type,
+        },
+        ENV_RESOURCE_TYPE if resource_id == crate::state::ENV_SESSION_RESOURCE_ID => {
+            ENV_SESSION_RESOURCE_TYPE
+        }
+        ENV_RESOURCE_TYPE if super::recorded_env_method(resource_id) == ENV_VERB_INJECT => {
+            ENV_RC_RESOURCE_TYPE
+        }
+        _ => resource_type,
     }
 }
 

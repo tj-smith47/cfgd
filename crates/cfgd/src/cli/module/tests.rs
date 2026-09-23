@@ -3399,7 +3399,15 @@ fn module_create_apply_keeps_the_rows_its_scope_never_resolved() {
         }
         for (rtype, id) in foreign {
             state
-                .upsert_managed_resource(rtype, id, "acme", None, None)
+                .upsert_managed_resource(
+                    rtype,
+                    id,
+                    cfgd_core::reconciler::recorded_resource_kind(rtype, id),
+                    None,
+                    "acme",
+                    None,
+                    None,
+                )
                 .expect("seed tracking row");
         }
         for (rtype, id) in foreign.iter().chain(declared.iter()) {

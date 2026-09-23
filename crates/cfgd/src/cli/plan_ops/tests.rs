@@ -2621,6 +2621,8 @@ fn is_unmanaged_file_managed_path_returns_false() {
         .upsert_managed_resource(
             "file",
             &cfgd_core::to_posix_string(&file_path),
+            "file",
+            None,
             "test",
             None,
             None,
@@ -2918,7 +2920,7 @@ fn a_managed_target_is_recognised_by_the_id_the_reconciler_actually_mints() {
         .strip_prefix("file:update:")
         .expect("a file Update description carries the file:update: prefix");
     state
-        .upsert_managed_resource("file", id, "local", None, None)
+        .upsert_managed_resource("file", id, "file", None, "local", None, None)
         .unwrap();
 
     assert!(
@@ -3185,6 +3187,7 @@ fn env_apply_result(descriptions: &[&str]) -> ApplyResult {
             .iter()
             .map(|d| ActionResult {
                 origin: None,
+                manager: None,
                 after_plan: None,
                 phase: "env".to_string(),
                 description: (*d).to_string(),

@@ -700,6 +700,55 @@ const MIGRATIONS: &[&str] = &[
         answered_at  TEXT NOT NULL,
         PRIMARY KEY (config_path, api_version)
     );",
+    // Migration 29: what a tracking row IS and which manager installed it.
+    // `resource_type` names the engine that wrote the row (`module`, `env`), so
+    // every reader re-derived the resource from the id's shape and one that did
+    // not (`-o json status`) reported a module's npm package as a `module`.
+    // Both columns are written at apply time from here on; the backfill below
+    // is `reconciler::recorded_resource_kind` in SQL, held equal to it by a pin
+    // over real rows. A module package row's manager stays NULL: its id never
+    // carried one. A `package` row's id is `<manager>/<package>`, so its
+    // manager is the part before the first `/`, as
+    // `state::split_package_resource_id` reads it.
+    "ALTER TABLE managed_resources ADD COLUMN kind TEXT;
+     ALTER TABLE managed_resources ADD COLUMN manager TEXT;
+     UPDATE managed_resources SET
+       kind = CASE
+         WHEN resource_type = 'module'
+              AND instr(resource_id, ':') > 0
+              AND (instr(resource_id, '/') = 0
+                   OR instr(resource_id, ':') < instr(resource_id, '/'))
+         THEN CASE
+           WHEN substr(resource_id, instr(resource_id, ':') + 1) = 'packages'
+                OR substr(resource_id, instr(resource_id, ':') + 1) GLOB 'packages:*'
+             THEN 'package'
+           WHEN substr(resource_id, instr(resource_id, ':') + 1) = 'files'
+                OR substr(resource_id, instr(resource_id, ':') + 1) GLOB 'files:*'
+             THEN 'file'
+           WHEN substr(resource_id, instr(resource_id, ':') + 1) = 'script'
+                OR substr(resource_id, instr(resource_id, ':') + 1) GLOB 'script:*'
+             THEN 'script'
+           ELSE resource_type
+         END
+         WHEN resource_type = 'env' AND resource_id = 'refresh' THEN 'env-session'
+         WHEN resource_type = 'env'
+              AND (resource_id IN ('.cfgd.env', '.cfgd-env.ps1', 'cfgd-env.fish', 'cfgd.conf',
+                                   'com.cfgd.user-environment.plist')
+                   OR resource_id GLOB '*/.cfgd.env'
+                   OR resource_id GLOB '*/.cfgd-env.ps1'
+                   OR resource_id GLOB '*/cfgd-env.fish'
+                   OR resource_id GLOB '*/cfgd.conf'
+                   OR resource_id GLOB '*/com.cfgd.user-environment.plist')
+           THEN 'env'
+         WHEN resource_type = 'env' THEN 'env-rc'
+         ELSE resource_type
+       END,
+       manager = CASE
+         WHEN resource_type = 'package'
+              AND instr(resource_id, '/') > 1
+              AND length(resource_id) > instr(resource_id, '/')
+         THEN substr(resource_id, 1, instr(resource_id, '/') - 1)
+       END;",
 ];
 
 /// Make `cfgd_compliance_content_hash(snapshot_json, current_hash)` callable

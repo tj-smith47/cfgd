@@ -1328,13 +1328,16 @@ fn managed_resource_rows(
             } else {
                 cfgd_core::fold_home_in_text(&r.resource_id)
             };
-            // An `env` row's own type names all three env surfaces at once;
-            // the verb it was written under is what says which one it is.
-            let kind = if r.resource_type == ENV_RESOURCE_TYPE {
-                recorded_env_drift_type(r)
-            } else {
-                r.resource_type.as_str()
-            };
+            // The recorded kind. Only a row inserted outside the store's
+            // writers lacks one, and for an `env` row the verb it was written
+            // under then says which of the three env surfaces it is.
+            let kind = r.kind.as_deref().unwrap_or_else(|| {
+                if r.resource_type == ENV_RESOURCE_TYPE {
+                    recorded_env_drift_type(r)
+                } else {
+                    r.resource_type.as_str()
+                }
+            });
             rows.push([
                 display_type(kind).to_string(),
                 r.owner.clone(),
@@ -1350,6 +1353,7 @@ fn managed_resource_rows(
             .find(|m| m.name == module)
             .map(|m| &m.declared);
         let (surface, item) = rest.split_once(':').unwrap_or((rest, ""));
+        let kind = r.kind.as_deref().unwrap_or(surface);
         if surface == "files" {
             let manifest = detail
                 .module_files
@@ -1361,7 +1365,7 @@ fn managed_resource_rows(
                 // file with the strategy that row itself carries.
                 for rec in manifest {
                     rows.push([
-                        display_type(surface).to_string(),
+                        display_type(kind).to_string(),
                         owner.clone(),
                         cfgd_core::fold_home_in_text(&rec.file_path),
                         cfgd_core::config::FileStrategy::from_recorded(&rec.strategy)
@@ -1373,7 +1377,7 @@ fn managed_resource_rows(
                 continue;
             }
             rows.push([
-                display_type(surface).to_string(),
+                display_type(kind).to_string(),
                 owner,
                 module_files_resource(item, declared, manifest),
                 NO_DETAIL.to_string(),
@@ -1382,12 +1386,12 @@ fn managed_resource_rows(
             continue;
         }
         let resource = match surface {
-            "packages" => module_packages_resource(item, declared),
+            "packages" => module_packages_resource(item, r.manager.as_deref(), declared),
             _ if item.is_empty() => NO_DETAIL.to_string(),
             _ => item.to_string(),
         };
         rows.push([
-            display_type(surface).to_string(),
+            display_type(kind).to_string(),
             owner,
             resource,
             NO_DETAIL.to_string(),
@@ -1662,16 +1666,21 @@ fn module_files_resource(
 /// by the manager that installs them.
 ///
 /// One recorded row is one manager's group (the planner groups them that way),
-/// but the manager itself is not part of the id — it is recovered from the
+/// and the manager is the one the apply recorded beside the row. A row recorded
+/// before the store kept it has none, and only then is it recovered from the
 /// resolution, and only when every name in the row agrees on one, so the row
 /// can never name a manager that installs some other part of its own list.
-fn module_packages_resource(recorded: &str, declared: Option<&ModuleDeclared>) -> String {
+fn module_packages_resource(
+    recorded: &str,
+    recorded_manager: Option<&str>,
+    declared: Option<&ModuleDeclared>,
+) -> String {
     let names = module_package_names(recorded);
     if names.is_empty() {
         return NO_DETAIL.to_string();
     }
     let list = names.join(", ");
-    match row_manager(&names, declared) {
+    match recorded_manager.or_else(|| row_manager(&names, declared)) {
         Some(manager) => format!("{manager}: {list}"),
         None => list,
     }
@@ -4309,6 +4318,8 @@ mod tests {
                 source: "local".to_string(),
                 last_hash: None,
                 last_applied: None,
+                kind: None,
+                manager: None,
             }],
             profile,
         )
@@ -4678,6 +4689,8 @@ mod tests {
                     source: "local".to_string(),
                     last_hash: None,
                     last_applied: None,
+                    kind: None,
+                    manager: None,
                 },
                 cfgd_core::state::ManagedResource {
                     resource_type: "package".to_string(),
@@ -4685,6 +4698,8 @@ mod tests {
                     source: "local".to_string(),
                     last_hash: None,
                     last_applied: None,
+                    kind: None,
+                    manager: None,
                 },
                 cfgd_core::state::ManagedResource {
                     resource_type: "file".to_string(),
@@ -4692,6 +4707,8 @@ mod tests {
                     source: "local".to_string(),
                     last_hash: None,
                     last_applied: None,
+                    kind: None,
+                    manager: None,
                 },
             ],
             Some("base"),
@@ -4899,13 +4916,13 @@ mod tests {
         // name alone, the canonical row finds nothing and renders bare.
         for recorded_names in ["gcc,pip", "build-essential,python3-pip"] {
             assert_eq!(
-                module_packages_resource(recorded_names, Some(&declared)),
+                module_packages_resource(recorded_names, None, Some(&declared)),
                 format!("apt: {}", module_package_names(recorded_names).join(", ")),
                 "the row spells the manager for `{recorded_names}`"
             );
         }
         assert_eq!(
-            module_packages_resource("curl,ghost", Some(&declared)),
+            module_packages_resource("curl,ghost", None, Some(&declared)),
             "apt: curl, ghost",
             "a name the module no longer declares does not veto the prefix"
         );
@@ -5701,6 +5718,8 @@ mod tests {
                         source: "local".to_string(),
                         last_hash: Some("hash1".to_string()),
                         last_applied: Some(1_715_680_800),
+                        kind: None,
+                        manager: None,
                     }],
                     Some("base"),
                 ),
@@ -7682,7 +7701,15 @@ mod tests {
         let (_cfg_dir, state_dir, config_path) = setup_env();
         let store = open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
         store
-            .upsert_managed_resource("file", "/etc/managed.conf", "local", Some("hashval"), None)
+            .upsert_managed_resource(
+                "file",
+                "/etc/managed.conf",
+                "file",
+                None,
+                "local",
+                Some("hashval"),
+                None,
+            )
             .unwrap();
 
         let cli = test_cli_for(config_path, state_dir.path());
@@ -7714,7 +7741,15 @@ mod tests {
         let store = open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
         let raw_body = " echo one\necho two\necho three";
         store
-            .upsert_managed_resource("Running script", raw_body, "local", None, None)
+            .upsert_managed_resource(
+                "Running script",
+                raw_body,
+                "Running script",
+                None,
+                "local",
+                None,
+                None,
+            )
             .unwrap();
 
         let cli = test_cli_for(config_path, state_dir.path());
@@ -7736,7 +7771,15 @@ mod tests {
         let store = open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
         let raw_body = " echo one\necho two\necho three";
         store
-            .upsert_managed_resource("Running script", raw_body, "local", None, None)
+            .upsert_managed_resource(
+                "Running script",
+                raw_body,
+                "Running script",
+                None,
+                "local",
+                None,
+                None,
+            )
             .unwrap();
 
         let cli = test_cli_for(config_path, state_dir.path());
@@ -7752,6 +7795,93 @@ mod tests {
             resources[0]["resourceId"], raw_body,
             "JSON payload must preserve the raw multi-line resource_id byte-identical, got: {output}"
         );
+    }
+
+    /// The table and `-o json` name one recorded row the same way: the Type
+    /// cell is `-o json`'s `kind` in the table's words, and the manager the
+    /// Resource cell leads with is `-o json`'s `manager`. The config here
+    /// declares no module at all, so a manager the table prints can only come
+    /// from the row the store recorded.
+    #[test]
+    fn cmd_status_table_and_json_agree_on_a_rows_kind_and_manager() {
+        let (_cfg_dir, state_dir, config_path) = setup_env();
+        let store = open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
+        store
+            .upsert_managed_resource(
+                "module",
+                "npmtest:packages:cowsay",
+                "package",
+                Some("npm"),
+                "local",
+                None,
+                None,
+            )
+            .unwrap();
+        store
+            .upsert_managed_resource(
+                ENV_RESOURCE_TYPE,
+                "/home/u/.bashrc",
+                ENV_RC_RESOURCE_TYPE,
+                None,
+                "local",
+                None,
+                None,
+            )
+            .unwrap();
+        drop(store);
+
+        let render = |json: bool| {
+            let cli = test_cli_for(config_path.clone(), state_dir.path());
+            let (printer, buf) = if json {
+                test_printers_json()
+            } else {
+                test_printers()
+            };
+            cmd_status(&cli, &printer, None, StatusRun::default()).unwrap();
+            drop(printer);
+            cfgd_core::test_helpers::captured_text(&buf)
+        };
+        let table = render(false);
+        let parsed: serde_json::Value = serde_json::from_str(&render(true)).unwrap();
+        let rows = parsed["managedResources"].as_array().unwrap();
+
+        for (resource_id, resource_cell) in [
+            ("npmtest:packages:cowsay", "cowsay"),
+            ("/home/u/.bashrc", ".bashrc"),
+        ] {
+            let row = rows
+                .iter()
+                .find(|r| r["resourceId"] == resource_id)
+                .unwrap_or_else(|| panic!("`-o json` carries {resource_id}: {parsed}"));
+            let kind = row["kind"]
+                .as_str()
+                .unwrap_or_else(|| panic!("{resource_id} carries a kind: {row}"));
+            let line = table
+                .lines()
+                .find(|l| l.contains(resource_cell) && !l.contains("—"))
+                .unwrap_or_else(|| panic!("the table shows {resource_id}: {table}"));
+            assert_eq!(
+                line.split_whitespace().next(),
+                Some(display_type(kind)),
+                "the Type cell words `-o json`'s kind `{kind}`: {line}"
+            );
+            match row["manager"].as_str() {
+                Some(manager) => assert!(
+                    line.contains(&format!("{manager}: {resource_cell}")),
+                    "the Resource cell leads with `-o json`'s manager `{manager}`: {line}"
+                ),
+                None => assert!(
+                    !line.contains(&format!(": {resource_cell}")),
+                    "the table names no manager `-o json` does not: {line}"
+                ),
+            }
+        }
+        let npm = rows
+            .iter()
+            .find(|r| r["resourceId"] == "npmtest:packages:cowsay")
+            .unwrap();
+        assert_eq!(npm["kind"], "package", "{npm}");
+        assert_eq!(npm["manager"], "npm", "{npm}");
     }
 
     #[test]

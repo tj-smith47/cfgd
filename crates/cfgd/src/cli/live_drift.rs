@@ -1242,6 +1242,8 @@ mod tests {
             .upsert_managed_resource(
                 "file",
                 &cfgd_core::to_posix_string(&target),
+                "file",
+                None,
                 "test",
                 None,
                 None,

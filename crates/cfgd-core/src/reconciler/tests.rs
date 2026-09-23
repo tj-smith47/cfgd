@@ -910,6 +910,7 @@ fn apply_result_counts() {
         action_results: vec![
             ActionResult {
                 origin: None,
+                manager: None,
                 after_plan: None,
                 phase: "files".to_string(),
                 description: "test".to_string(),
@@ -924,6 +925,7 @@ fn apply_result_counts() {
             },
             ActionResult {
                 origin: None,
+                manager: None,
                 after_plan: None,
                 phase: "files".to_string(),
                 description: "test2".to_string(),
@@ -4600,7 +4602,15 @@ fn apply_package_uninstall_untracks_managed_resource() {
     let state = test_state();
     // Pre-track a package as cfgd-installed.
     state
-        .upsert_managed_resource("package", "brew/ripgrep", "local", None, None)
+        .upsert_managed_resource(
+            "package",
+            "brew/ripgrep",
+            "package",
+            None,
+            "local",
+            None,
+            None,
+        )
         .unwrap();
 
     let mut registry = ProviderRegistry::new();
@@ -8229,6 +8239,7 @@ fn a_withheld_session_publish_leaves_no_env_session_row_while_its_siblings_recor
                   rows: Vec<(String, String)>,
                   not_attempted: Option<String>| ActionResult {
         origin: None,
+        manager: None,
         after_plan: None,
         phase: phase.as_str().to_string(),
         description: crate::reconciler::format_action_description(action),
@@ -8320,6 +8331,7 @@ fn a_result_the_run_never_attempted_writes_no_row_and_heals_none() {
             apply_id,
             &[ActionResult {
                 origin: None,
+                manager: None,
                 after_plan: None,
                 phase: PhaseName::Files.as_str().to_string(),
                 description: crate::reconciler::format_action_description(&action),
@@ -13878,6 +13890,75 @@ fn an_install_that_landed_fewer_than_it_named_says_so_on_its_row() {
 /// package arm's is, and a node whose members were all available already ran
 /// nothing — the run's own `Bootstrap` phase, or an earlier node, may have
 /// delivered one between the plan being priced and the node being dispatched.
+/// A module's package install records the manager that ran it and the kind
+/// of resource it is. The tracking id (`npmtest:packages:cowsay`) never spells
+/// the manager, so a row without the column named its installer only while the
+/// module's current declaration still resolved one.
+#[test]
+fn a_module_package_install_records_its_manager_and_kind() {
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(crate::test_helpers::MockPackageManager::new(
+        "npm",
+    )));
+    let state = test_state();
+    let reconciler = Reconciler::new(&registry, &state);
+
+    let module = ResolvedModule {
+        packages: vec![ResolvedPackage {
+            canonical_name: "cowsay".to_string(),
+            resolved_name: "cowsay".to_string(),
+            manager: "npm".to_string(),
+            manager_declared: true,
+            version: None,
+            script: None,
+            creates: None,
+            only_if: None,
+            unless: None,
+            min_version: None,
+        }],
+        files: vec![],
+        ..crate::test_helpers::make_resolved_module("npmtest")
+    };
+    let plan = Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::Packages,
+            &Owner::module("npmtest"),
+            vec![Action::Module(ModuleAction {
+                module_name: "npmtest".to_string(),
+                kind: ModuleActionKind::InstallPackages {
+                    resolved: module.packages.clone(),
+                },
+                origin: None,
+            })],
+        )],
+        warnings: vec![],
+    };
+
+    let result = reconciler
+        .apply(
+            &plan,
+            &make_empty_resolved(),
+            Path::new("."),
+            &test_printer(),
+            None,
+            std::slice::from_ref(&module),
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .expect("apply");
+    assert_eq!(result.status, ApplyStatus::Success);
+
+    let rows = state.managed_resources().unwrap();
+    let row = rows
+        .iter()
+        .find(|r| r.resource_type == "module" && r.resource_id == "npmtest:packages:cowsay")
+        .unwrap_or_else(|| panic!("the install records its tracking row: {rows:?}"));
+    assert_eq!(row.kind.as_deref(), Some("package"), "{row:?}");
+    assert_eq!(row.manager.as_deref(), Some("npm"), "{row:?}");
+}
+
 #[test]
 fn a_provision_whose_manager_was_already_delivered_states_the_count_that_says_so() {
     let provisioned = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -33694,7 +33775,15 @@ fn a_module_deploying_a_directory_by_symlink_reports_the_file_that_moved_inside_
         &super::format::module_files_description("nvim", 1),
     );
     state
-        .upsert_managed_resource(&rtype, &rid, "local", None, None)
+        .upsert_managed_resource(
+            &rtype,
+            &rid,
+            crate::reconciler::recorded_resource_kind(&rtype, &rid),
+            None,
+            "local",
+            None,
+            None,
+        )
         .unwrap();
 
     let modules = vec![module];
@@ -33774,7 +33863,15 @@ fn a_one_file_edit_inside_a_module_tree_is_counted_as_one() {
         &super::format::module_files_description("nvim", 2),
     );
     state
-        .upsert_managed_resource(&rtype, &rid, "local", None, None)
+        .upsert_managed_resource(
+            &rtype,
+            &rid,
+            crate::reconciler::recorded_resource_kind(&rtype, &rid),
+            None,
+            "local",
+            None,
+            None,
+        )
         .unwrap();
 
     let refreshed = reconciler
@@ -33897,7 +33994,15 @@ fn an_apply_records_each_declared_env_entry_under_the_layer_that_declared_it() {
     // A row for an entry no layer declares any more: the rewrite that drops
     // its line from the file is what drops the row.
     state
-        .upsert_managed_resource(super::ENV_VAR_RESOURCE_TYPE, "RETIRED", "acme", None, None)
+        .upsert_managed_resource(
+            super::ENV_VAR_RESOURCE_TYPE,
+            "RETIRED",
+            super::ENV_VAR_RESOURCE_TYPE,
+            None,
+            "acme",
+            None,
+            None,
+        )
         .unwrap();
 
     let mut resolved = make_empty_resolved();
@@ -34100,13 +34205,23 @@ fn a_scoped_apply_leaves_another_layers_env_row_standing() {
         .upsert_managed_resource(
             super::ENV_VAR_RESOURCE_TYPE,
             "ACME_HOME",
+            super::ENV_VAR_RESOURCE_TYPE,
+            None,
             "acme",
             None,
             None,
         )
         .unwrap();
     state
-        .upsert_managed_resource(super::ALIAS_RESOURCE_TYPE, "acmeup", "acme", None, None)
+        .upsert_managed_resource(
+            super::ALIAS_RESOURCE_TYPE,
+            "acmeup",
+            super::ALIAS_RESOURCE_TYPE,
+            None,
+            "acme",
+            None,
+            None,
+        )
         .unwrap();
 
     // The desired set this run resolved: the operator's own layer alone, as an

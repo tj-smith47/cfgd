@@ -4550,7 +4550,7 @@ fn is_unmanaged_file_tracked_in_state() {
     // `is_unmanaged_file` folds its lookup the same way.
     let target_str = cfgd_core::to_posix_string(&target);
     state
-        .upsert_managed_resource("file", &target_str, "local", None, None)
+        .upsert_managed_resource("file", &target_str, "file", None, "local", None, None)
         .unwrap();
     assert!(!is_unmanaged_file(
         &target,
@@ -21392,6 +21392,8 @@ fn cmd_source_remove_with_keep_all_transfers_resources_to_local_management() {
         .upsert_managed_resource(
             "file",
             "/etc/managed-by-team-config",
+            "file",
+            None,
             "team-config",
             Some("h1"),
             None,
@@ -25524,7 +25526,15 @@ fn cmd_source_show_renders_no_recorded_state_or_managed_resources() {
         })
         .unwrap();
     state
-        .upsert_managed_resource("package", "brew/curl", "team-config", None, None)
+        .upsert_managed_resource(
+            "package",
+            "brew/curl",
+            "package",
+            None,
+            "team-config",
+            None,
+            None,
+        )
         .unwrap();
     drop(state);
 
@@ -25562,7 +25572,7 @@ fn cmd_source_show_json_carries_no_recorded_state_or_managed_resources() {
     let h = CliTestHarness::builder().rich_config().json().build();
     let state = super::open_state_store(Some(h.state_path()), cfgd_core::Scope::User).unwrap();
     state
-        .upsert_managed_resource("env", "EDITOR", "team-config", None, None)
+        .upsert_managed_resource("env", "EDITOR", "env-rc", None, "team-config", None, None)
         .unwrap();
     drop(state);
 
@@ -25590,10 +25600,26 @@ fn cmd_source_remove_keep_all_reassigns_resources_to_local() {
     let state = super::open_state_store(Some(h.state_path()), cfgd_core::Scope::User).unwrap();
     // Pre-populate managed resources owned by team-config
     state
-        .upsert_managed_resource("package", "brew/curl", "team-config", Some("hash1"), None)
+        .upsert_managed_resource(
+            "package",
+            "brew/curl",
+            "package",
+            None,
+            "team-config",
+            Some("hash1"),
+            None,
+        )
         .unwrap();
     state
-        .upsert_managed_resource("env", "EDITOR", "team-config", Some("hash2"), None)
+        .upsert_managed_resource(
+            "env",
+            "EDITOR",
+            "env-rc",
+            None,
+            "team-config",
+            Some("hash2"),
+            None,
+        )
         .unwrap();
 
     let result = super::source::cmd_source_remove(
@@ -25635,7 +25661,15 @@ fn cmd_source_remove_remove_all_does_not_reassign() {
     let h = CliTestHarness::builder().rich_config().build();
     let state = super::open_state_store(Some(h.state_path()), cfgd_core::Scope::User).unwrap();
     state
-        .upsert_managed_resource("package", "brew/curl", "team-config", None, None)
+        .upsert_managed_resource(
+            "package",
+            "brew/curl",
+            "package",
+            None,
+            "team-config",
+            None,
+            None,
+        )
         .unwrap();
 
     let result = super::source::cmd_source_remove(
@@ -38592,6 +38626,8 @@ fn component_health_fixture() -> super::status::StatusOutput {
                     source: "local".into(),
                     last_hash: Some("hash1".into()),
                     last_applied: Some(1_715_680_800),
+                    kind: None,
+                    manager: None,
                 },
             )
             .collect(),
@@ -38972,6 +39008,8 @@ fn component_health_nests_the_recorded_drift_under_its_owner() {
                 source: "local".into(),
                 last_hash: Some("hash1".into()),
                 last_applied: Some(1_715_680_800),
+                kind: None,
+                manager: None,
             }],
             Some("base"),
         ));
@@ -41673,6 +41711,8 @@ fn no_report_slot_spells_the_home_directory_absolutely() {
                     source: "local".into(),
                     last_hash: None,
                     last_applied: None,
+                    kind: None,
+                    manager: None,
                 },
                 cfgd_core::state::ManagedResource {
                     resource_type: "module".into(),
@@ -41680,6 +41720,8 @@ fn no_report_slot_spells_the_home_directory_absolutely() {
                     source: "local".into(),
                     last_hash: None,
                     last_applied: None,
+                    kind: None,
+                    manager: None,
                 },
             ],
             Some("default"),
