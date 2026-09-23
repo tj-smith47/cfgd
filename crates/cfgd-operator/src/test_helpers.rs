@@ -35,12 +35,6 @@ impl GatewayTestApp {
         &self.state.db
     }
 
-    /// Access the shared state (for direct AppState manipulation in tests).
-    #[allow(dead_code)]
-    pub fn state(&self) -> &SharedState {
-        &self.state
-    }
-
     /// Build the router wired to this app's state.
     fn router(&self) -> Router {
         crate::gateway::api::router(self.state.clone()).with_state(self.state.clone())
@@ -79,7 +73,6 @@ impl GatewayTestApp {
     }
 
     /// Send a POST request with a JSON body and Bearer token.
-    #[allow(dead_code)]
     pub async fn post_with_bearer(
         &self,
         uri: &str,
@@ -97,7 +90,6 @@ impl GatewayTestApp {
     }
 
     /// Send a DELETE request with a Bearer token.
-    #[allow(dead_code)]
     pub async fn delete_with_bearer(&self, uri: &str, token: &str) -> TestResponse {
         let req = Request::builder()
             .method("DELETE")
@@ -137,12 +129,6 @@ impl TestResponse {
     /// Parse the response body as JSON.
     pub fn json(&self) -> serde_json::Value {
         serde_json::from_slice(&self.body).expect("response body is valid JSON")
-    }
-
-    /// Raw body bytes.
-    #[allow(dead_code)]
-    pub fn body_bytes(&self) -> &[u8] {
-        &self.body
     }
 }
 
@@ -261,5 +247,45 @@ mod tests {
 
         let resp = app.get("/api/v1/devices").await;
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[serial]
+    async fn gateway_test_app_admin_token_create_then_delete() {
+        let _g = EnvVarGuard::set("CFGD_API_KEY", TEST_ADMIN_KEY);
+        let app = GatewayTestApp::new();
+
+        let created = app
+            .post_with_bearer(
+                "/api/v1/admin/tokens",
+                TEST_ADMIN_KEY,
+                serde_json::json!({ "username": "tokenuser", "team": "platform", "expiresIn": 3600 }),
+            )
+            .await;
+        assert_eq!(created.status(), StatusCode::CREATED);
+        let body = created.json();
+        let id = body["id"]
+            .as_str()
+            .expect("the created token carries an id");
+        assert!(
+            body["token"].as_str().unwrap_or("").starts_with("cfgd_bs_"),
+            "a bootstrap token carries the cfgd_bs_ prefix"
+        );
+
+        let listed = app
+            .get_with_bearer("/api/v1/admin/tokens", TEST_ADMIN_KEY)
+            .await;
+        assert_eq!(listed.status(), StatusCode::OK);
+        assert_eq!(listed.json().as_array().expect("token list").len(), 1);
+
+        let deleted = app
+            .delete_with_bearer(&format!("/api/v1/admin/tokens/{id}"), TEST_ADMIN_KEY)
+            .await;
+        assert_eq!(deleted.status(), StatusCode::NO_CONTENT);
+
+        let after = app
+            .get_with_bearer("/api/v1/admin/tokens", TEST_ADMIN_KEY)
+            .await;
+        assert!(after.json().as_array().expect("token list").is_empty());
     }
 }
