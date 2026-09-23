@@ -974,6 +974,11 @@ tasks:
       - bash demo/scripts/record.sh connect
       - bash demo/scripts/make-gif-flat.sh connect
 
+  demo:check:
+    desc: Flag every demo GIF whose render inputs changed since the commit it was recorded at.
+    cmds:
+      - bash demo/scripts/check-sync.sh
+
   # --- Deploy ---
 
   deploy:operator:

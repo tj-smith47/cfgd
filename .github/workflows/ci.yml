@@ -253,6 +253,22 @@ jobs:
       - name: Chart image tag guard
         run: task chart:tags:check
 
+  # A demo GIF shows what the binary rendered when it was recorded, and nothing
+  # else notices when a later change moves that output.
+  demo-sync:
+    name: Demo GIFs in sync
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          # Each GIF is diffed from the commit it was recorded at, which a
+          # shallow clone does not hold.
+          fetch-depth: 0
+
+      - name: Check demo GIFs against their render inputs
+        run: bash demo/scripts/check-sync.sh
+
   msrv:
     name: MSRV check
     runs-on: ubuntu-latest

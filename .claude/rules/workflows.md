@@ -136,6 +136,13 @@ single-source-of-truth wiring.
   on work that had already passed (run 34556958882). No later step reads a
   guest file, so there is nothing to bring home. A step that needs one turns
   the copy back on and says which file it reads.
+- The `demo-sync` job in ci.yml runs `demo/scripts/check-sync.sh` (the same
+  script `task demo:check` runs) on every PR and master push, with no Rust
+  toolchain: it only diffs each GIF's stamped commit in `demo/recorded.txt`
+  against HEAD, which is why its checkout carries `fetch-depth: 0`. A flag is
+  cleared only by re-recording the GIF (the encode step rewrites its stamp);
+  there is no allow-list. `every_demo_gif_is_stamped_and_checked` fails if the
+  job loses the script, its `pull_request` trigger, or gains a job-level `if:`.
 - The `test-thread-model` job in ci.yml runs `task test:threads` — plain
   `cargo test --test-threads=16`, not nextest. It is not redundant with the
   `test` job: nextest runs one process per test, so each test gets its own

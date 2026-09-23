@@ -1,0 +1,9 @@
+# gif                    tape                 commit-recorded-at
+cfgd-author.gif          author.tape          2e4a0ae5e25d983859ca68b8ed1849b55fd7023a
+cfgd-backup.gif          backup.tape          2e4a0ae5e25d983859ca68b8ed1849b55fd7023a
+cfgd-connect.gif         connect.tape         2e4a0ae5e25d983859ca68b8ed1849b55fd7023a
+cfgd-demo.gif            init.tape            2e4a0ae5e25d983859ca68b8ed1849b55fd7023a
+cfgd-drift.gif           drift.tape           2e4a0ae5e25d983859ca68b8ed1849b55fd7023a
+cfgd-k8s.gif             k8s.tape             2e4a0ae5e25d983859ca68b8ed1849b55fd7023a
+cfgd-source-trust.gif    source-trust.tape    2e4a0ae5e25d983859ca68b8ed1849b55fd7023a
+cfgd-sync.gif            sync.tape            2e4a0ae5e25d983859ca68b8ed1849b55fd7023a
