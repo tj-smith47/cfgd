@@ -48,6 +48,11 @@ pub const STATE_DB_FILENAME: &str = "state.db";
 /// a statement fails with `database is locked`.
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// The debug event a connection logs when another connection's write lock
+/// stops it switching the database to WAL, just before it waits for that lock.
+pub const WAL_LOCK_WAIT: &str =
+    "another connection holds the write lock; waiting for it to switch the database to WAL";
+
 /// Set `conn`'s busy timeout and switch its database to WAL journaling,
 /// waiting out another connection's write lock the way every other statement
 /// on `conn` does. A lock held past `busy_timeout` fails with `SQLITE_BUSY`,
@@ -72,9 +77,7 @@ fn switch_to_wal(conn: &Connection) -> rusqlite::Result<()> {
     loop {
         match conn.execute_batch("PRAGMA journal_mode=WAL;") {
             Err(e) if e.sqlite_error_code() == Some(rusqlite::ErrorCode::DatabaseBusy) => {
-                tracing::debug!(
-                    "another connection holds the write lock; waiting for it to switch the database to WAL"
-                );
+                tracing::debug!("{WAL_LOCK_WAIT}");
                 conn.execute_batch("BEGIN IMMEDIATE; ROLLBACK;")?;
             }
             done => return done,

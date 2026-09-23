@@ -48696,6 +48696,36 @@ fn every_integration_test_spawns_the_binary_through_the_one_isolating_constructo
     );
 }
 
+/// The lock-wait test in `tests/cli_integration.rs` recognises the state
+/// store's debug event by `cfgd_core::state::WAL_LOCK_WAIT` itself, so a
+/// reword of the event changes the text the test waits for with it. A copy of
+/// the text, whole or a phrase of it, keeps matching the old wording and hangs
+/// the test until the child exits.
+#[test]
+fn the_lock_wait_test_matches_the_state_store_event_by_its_constant() {
+    use cfgd_core::state::WAL_LOCK_WAIT;
+
+    let path =
+        cfgd_core::test_helpers::workspace_root().join("crates/cfgd/tests/cli_integration.rs");
+    let body = walked_file_body(&path);
+    let blanked = blank_non_code(&body);
+    assert!(
+        blanked.contains("WAL_LOCK_WAIT"),
+        "{} no longer waits for the state store's event by its constant",
+        path.display()
+    );
+    let copies: Vec<&str> = span_literals(&blanked, &body)
+        .into_iter()
+        .map(|(_, literal)| literal)
+        .filter(|literal| literal.split_whitespace().count() > 1 && WAL_LOCK_WAIT.contains(literal))
+        .collect();
+    assert!(
+        copies.is_empty(),
+        "{} spells the event's text instead of naming WAL_LOCK_WAIT: {copies:?}",
+        path.display()
+    );
+}
+
 /// Every `--from` verb resolves its destination through
 /// `init::from_destination`, so the refusal that guards the default config
 /// directory cannot be walked around by a verb that forgot to ask.

@@ -132,8 +132,6 @@ fn a_real_binary_run_opens_the_calling_tests_own_state_store() {
 fn apply_dry_run_waits_for_another_process_creating_the_state_store() {
     use std::io::{BufRead, Read};
 
-    const WAITING: &str = "another connection holds the write lock";
-
     let dir = tempfile::tempdir().unwrap();
     create_valid_config(dir.path());
 
@@ -164,7 +162,7 @@ fn apply_dry_run_waits_for_another_process_creating_the_state_store() {
         if stderr.read_line(&mut seen).unwrap() == 0 {
             break;
         }
-        waited = seen[before..].contains(WAITING);
+        waited = seen[before..].contains(cfgd_core::state::WAL_LOCK_WAIT);
     }
     holder.execute_batch("COMMIT").unwrap();
     stderr.read_to_string(&mut seen).unwrap();
