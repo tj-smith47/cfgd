@@ -47973,6 +47973,99 @@ fn every_resolved_and_show_values_flag_reads_one_help() {
     );
 }
 
+/// A real-host script proves what no unit pin can, and only while something
+/// runs it. Each is named by a Taskfile target and that target by a workflow
+/// step, so deleting either half fails here rather than silently retiring the
+/// proof its doc page promises.
+#[test]
+fn every_real_host_script_is_reachable_from_ci() {
+    /// The workflows present today; a directory reading fewer went blind or
+    /// lost a file the scripts may have been reached through.
+    const WORKFLOW_FLOOR: usize = 8;
+    let root = cfgd_core::test_helpers::workspace_root();
+    let taskfile = walked_file_body(&root.join("Taskfile.yml"));
+    let entries_of = |dir: &std::path::Path| -> Vec<std::path::PathBuf> {
+        let mut paths: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
+            .unwrap_or_else(|e| panic!("cannot read {}: {e}", dir.display()))
+            .map(|entry| {
+                entry
+                    .unwrap_or_else(|e| panic!("cannot read an entry of {}: {e}", dir.display()))
+                    .path()
+            })
+            .collect();
+        paths.sort();
+        paths
+    };
+    let workflows: Vec<String> = entries_of(&root.join(".github/workflows"))
+        .iter()
+        .filter(|p| p.extension().is_some_and(|x| x == "yml" || x == "yaml"))
+        .map(|p| walked_file_body(p))
+        .collect();
+    assert!(
+        workflows.len() >= WORKFLOW_FLOOR,
+        "the walk read {} workflows, fewer than the {WORKFLOW_FLOOR} the directory holds",
+        workflows.len()
+    );
+    let scripts: Vec<std::path::PathBuf> = entries_of(&root.join("tests/real-host"))
+        .into_iter()
+        .filter(|p| p.extension().is_some_and(|x| x == "sh"))
+        .collect();
+    assert!(
+        !scripts.is_empty(),
+        "the walk read no real-host script, so it judges nothing"
+    );
+    let mut offenders = Vec::new();
+    for script in &scripts {
+        let rel = format!(
+            "tests/real-host/{}",
+            script.file_name().unwrap_or_default().to_string_lossy()
+        );
+        match target_naming(&taskfile, &rel) {
+            None => offenders.push(format!("{rel}: no Taskfile target runs it")),
+            Some(target) => {
+                if !workflows.iter().any(|w| runs_task(w, &target)) {
+                    offenders.push(format!("{rel}: `task {target}` is named by no workflow"));
+                }
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "a real-host proof nothing runs: {offenders:?}"
+    );
+}
+
+/// The Taskfile target whose body names `rel`: the nearest two-space-indented
+/// `<name>:` header above the line that runs the script. Read off the file
+/// rather than a table, so renaming a target moves the pin with it.
+fn target_naming(taskfile: &str, rel: &str) -> Option<String> {
+    let lines: Vec<&str> = taskfile.lines().collect();
+    let at = lines.iter().position(|l| l.contains(rel))?;
+    lines[..at].iter().rev().find_map(|l| {
+        let trimmed = l.strip_prefix("  ")?;
+        (!trimmed.starts_with(' ') && trimmed.ends_with(':'))
+            .then(|| trimmed.trim_end_matches(':').to_string())
+    })
+}
+
+/// Whether `workflow` runs `task <target>` on an uncommented line. The name
+/// must end where a target name cannot continue, or `task test:x` would count
+/// as running `test:x2`, and a commented-out step runs nothing.
+fn runs_task(workflow: &str, target: &str) -> bool {
+    let call = format!("task {target}");
+    workflow
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .any(|l| {
+            l.match_indices(&call).any(|(i, _)| {
+                l[i + call.len()..]
+                    .chars()
+                    .next()
+                    .is_none_or(|c| !(c.is_alphanumeric() || matches!(c, ':' | '-' | '_')))
+            })
+        })
+}
+
 /// Every e2e suite runs under the one scratch-home redirect.
 ///
 /// The shell suites run the real binary as the invoking user, so a suite whose
