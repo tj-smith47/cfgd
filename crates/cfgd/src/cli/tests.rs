@@ -48116,9 +48116,10 @@ fn every_declared_env_value_a_surface_masks_is_decided_by_the_one_masking() {
 /// as code or loses a brace inside a literal, both of which pass green.
 ///
 /// `cfgd_core::test_helpers` already carries the arms once, in `LineMask`, and
-/// reaches them through `blank_non_code` (a whole body), `code_line` (one
-/// line's code part) and `code_span` (that cut taken on the raw line). Those
-/// three are the whole vocabulary; a tell below is a fourth being born.
+/// reaches them through `blank_non_code` (a whole body), `blank_comments`
+/// (a whole body with its literals kept as written), `code_line` (one line's
+/// code part) and `code_span` (that cut taken on the raw line). Those four are
+/// the whole vocabulary; a tell below is a fifth being born.
 ///
 /// Both files that hold walks are read, each floored at its own length: the
 /// rule is about the SHAPE of a walk, not about which crate it happens to be
@@ -48193,7 +48194,8 @@ fn no_walk_bearing_source_scans_syntax_by_hand() {
     assert!(
         offenders.is_empty(),
         "these lines scan Rust syntax by hand; reach for `blank_non_code`, \
-         `code_line` or `code_span` instead, or say why with `{HATCH} <why>`:\n{}",
+         `blank_comments`, `code_line` or `code_span` instead, or say why with \
+         `{HATCH} <why>`:\n{}",
         offenders.join("\n")
     );
 }

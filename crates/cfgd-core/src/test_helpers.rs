@@ -1537,7 +1537,7 @@ pub fn blank_comments(body: &str) -> String {
 
 /// Which bytes a masking pass writes as spaces.
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Blanked {
+enum Blanked {
     /// Every literal body and every comment.
     NonCode,
     /// Comments alone.
