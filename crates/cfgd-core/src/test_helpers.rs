@@ -2350,6 +2350,7 @@ spec:
 "#;
 
 /// A base profile with env vars and packages.
+// module-package-id-ok: test fixture YAML, not a composed id
 pub const SAMPLE_PROFILE_YAML: &str = r#"
 apiVersion: cfgd.io/v1alpha1
 kind: Profile
@@ -2371,6 +2372,7 @@ spec:
 "#;
 
 /// A minimal module YAML for the "nvim" module.
+// module-package-id-ok: test fixture YAML, not a composed id
 pub const SAMPLE_MODULE_YAML: &str = r#"
 apiVersion: cfgd.io/v1alpha1
 kind: Module

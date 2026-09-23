@@ -8,6 +8,7 @@ pub fn get_schema(kind: SchemaKind) -> &'static str {
     }
 }
 
+// module-package-id-ok: published schema doc text, not a composed id
 const MODULE_SCHEMA: &str = r#"# cfgd Module schema — cfgd.io/v1alpha1
 # A Module is a self-contained, portable configuration package.
 # It bundles packages, config files, env vars, aliases, and scripts for one tool.
@@ -134,6 +135,7 @@ spec:
       - nvim --headless -c "MasonInstallAll" -c "qa"
 "#;
 
+// module-package-id-ok: published schema doc text, not a composed id
 const PROFILE_SCHEMA: &str = r#"# cfgd Profile schema — cfgd.io/v1alpha1
 # A Profile declares the desired state of a machine: packages, files, env, system settings.
 # Profiles can inherit from other profiles to share common configuration.
@@ -516,6 +518,7 @@ spec:
         - run: sqlite3 ~/.local/share/notes/notes.db "PRAGMA quick_check"
 "#;
 
+// module-package-id-ok: published schema doc text, not a composed id
 const CONFIG_SCHEMA: &str = r#"# cfgd Config schema — cfgd.io/v1alpha1
 # The root configuration file (cfgd.yaml). Entry point for cfgd.
 # Tells cfgd which profile to activate, where config is stored, and how the daemon behaves.
