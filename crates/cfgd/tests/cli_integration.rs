@@ -3097,3 +3097,116 @@ fn each_half_of_the_hints_pair_outranks_the_stored_value_end_to_end() {
         "the verdict line must be the last line, with no leftover blank, got:\n{out:?}"
     );
 }
+
+/// A config carrying the same single-file profile
+/// `cfgd_test_fixtures::tiny_profile_setup` builds, for a suite that spawns
+/// the real binary rather than calling `cmd_plan` in-process.
+fn config_with_tiny_profile(dir: &std::path::Path) {
+    std::fs::create_dir_all(dir.join("files")).unwrap();
+    std::fs::write(dir.join("files/hello.txt"), "hello world").unwrap();
+    std::fs::create_dir_all(dir.join("profiles")).unwrap();
+    std::fs::write(
+        dir.join("profiles/tiny.yaml"),
+        format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: tiny\nspec:\n  inherits: []\n  modules: []\n  files:\n    managed:\n      - source: files/hello.txt\n        target: {}\n        strategy: Copy\n",
+            cfgd_core::to_posix_string(dir.join("out").join("hello.txt"))
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("cfgd.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: tiny\n",
+    )
+    .unwrap();
+}
+
+/// Record `cfgd plan -o json` under `state_dir` to `dest`, exactly the bytes
+/// a shell redirect would capture.
+fn record_plan_via_binary(
+    config_dir: &std::path::Path,
+    state_dir: &std::path::Path,
+    dest: &std::path::Path,
+) {
+    let out = cfgd_bin()
+        .unwrap()
+        .args(["-o", "json", "plan"])
+        .arg("--config")
+        .arg(config_dir.join("cfgd.yaml"))
+        .arg("--state-dir")
+        .arg(state_dir)
+        .assert()
+        .success();
+    std::fs::write(dest, &out.get_output().stdout).unwrap();
+}
+
+/// Run `apply --plan <file>` under `state_dir` and assert it is refused as
+/// `stale` through the real exit code and the real JSON error payload — the
+/// half no in-process pin (`apply_plan_file.rs`) checks, because those go
+/// through `render_cli_error` and never through the process the field
+/// actually exits from.
+fn assert_stale_apply_exits_1(
+    config_dir: &std::path::Path,
+    state_dir: &std::path::Path,
+    plan_file: &std::path::Path,
+) -> serde_json::Value {
+    let assert = cfgd_bin()
+        .unwrap()
+        .arg("--config")
+        .arg(config_dir.join("cfgd.yaml"))
+        .arg("--state-dir")
+        .arg(state_dir)
+        .args(["-o", "json", "apply"])
+        .arg("--plan")
+        .arg(plan_file)
+        .assert()
+        .code(1);
+    let payload: serde_json::Value =
+        serde_json::from_slice(&assert.get_output().stdout).expect("stdout carries the error doc");
+    assert_eq!(payload["error"], "stale", "{payload}");
+    payload
+}
+
+#[test]
+fn apply_plan_stale_by_store_exits_1_through_the_real_binary() {
+    let config_dir = tempfile::tempdir().unwrap();
+    config_with_tiny_profile(config_dir.path());
+    let state_a = tempfile::tempdir().unwrap();
+    let state_b = tempfile::tempdir().unwrap();
+
+    let plan_file = state_a.path().join("plan.json");
+    record_plan_via_binary(config_dir.path(), state_a.path(), &plan_file);
+
+    let payload = assert_stale_apply_exits_1(config_dir.path(), state_b.path(), &plan_file);
+    let recorded = payload["recordedStoreId"]
+        .as_str()
+        .expect("the store the plan was derived against");
+    let opened = payload["storeId"]
+        .as_str()
+        .expect("the store this run opened");
+    assert_ne!(recorded, opened, "two state dirs, two store identities");
+}
+
+#[test]
+fn apply_plan_stale_by_serial_exits_1_through_the_real_binary() {
+    let config_dir = tempfile::tempdir().unwrap();
+    config_with_tiny_profile(config_dir.path());
+    let state_dir = tempfile::tempdir().unwrap();
+
+    let plan_file = state_dir.path().join("plan.json");
+    record_plan_via_binary(config_dir.path(), state_dir.path(), &plan_file);
+
+    // Someone applied for real in the window between the plan and the replay.
+    cfgd_bin()
+        .unwrap()
+        .arg("--config")
+        .arg(config_dir.path().join("cfgd.yaml"))
+        .arg("--state-dir")
+        .arg(state_dir.path())
+        .args(["apply", "--yes"])
+        .assert()
+        .success();
+
+    let payload = assert_stale_apply_exits_1(config_dir.path(), state_dir.path(), &plan_file);
+    assert_eq!(payload["recordedSerial"], 0, "{payload}");
+    assert!(payload["serial"].as_i64().unwrap_or(0) >= 1, "{payload}");
+}

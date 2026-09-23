@@ -5150,6 +5150,26 @@ fn migration_30_mints_one_store_identity_and_reopening_keeps_it() {
         id,
         "a fresh store mints its own"
     );
+
+    // The guard keeps a replayed migration from minting a second row: rewind
+    // past it without dropping the table this time, so the INSERT's own
+    // WHERE NOT EXISTS is what stands between one row and two.
+    rewind_schema_version(&reopened, 30);
+    drop(reopened);
+    let replayed = StateStore::open(&path).unwrap();
+    let rows_after_replay: i64 = replayed
+        .conn
+        .query_row("SELECT COUNT(*) FROM store_identity", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(
+        rows_after_replay, 1,
+        "a replayed migration mints no second identity"
+    );
+    assert_eq!(
+        replayed.store_id().unwrap(),
+        id,
+        "the replayed migration keeps the original identity"
+    );
 }
 
 /// A store whose identity row is gone reports it rather than minting one on

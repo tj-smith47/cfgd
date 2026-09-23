@@ -760,7 +760,7 @@ const MIGRATIONS: &[&str] = &[
      INSERT INTO store_identity (id)
      SELECT lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4'
             || substr(lower(hex(randomblob(2))), 2) || '-'
-            || substr('89ab', 1 + (abs(random()) % 4), 1)
+            || substr('89ab', 1 + (random() & 3), 1)
             || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))
       WHERE NOT EXISTS (SELECT 1 FROM store_identity);",
 ];

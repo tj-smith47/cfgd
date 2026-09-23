@@ -653,6 +653,49 @@ fn a_plan_saved_under_another_state_dir_is_refused() {
 }
 
 #[test]
+fn a_store_mismatch_is_refused_by_store_even_when_the_serial_also_differs() {
+    // Store B has run an apply of its own, so BOTH facts the refusal could
+    // name disagree; the store check runs first and must be the one that
+    // speaks, or a plan from another store could be refused for "an apply
+    // has run" naming an apply that store never recorded.
+    let (config_dir, state_dir, target) = tiny_profile_setup();
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let plan_file = state_dir.path().join("plan.json");
+    record_plan_file(&cli, &plan_args(), &plan_file);
+
+    let other_state = tempfile::tempdir().unwrap();
+    let elsewhere = cli_for(config_dir.path(), other_state.path());
+    {
+        let state = StateStore::open(&other_state.path().join("state.db")).unwrap();
+        state
+            .record_apply("tiny", "deadbeef", ApplyStatus::Success, None)
+            .unwrap();
+    }
+
+    let printer = test_printer();
+    let refusal = run_apply(&elsewhere, &printer, &replay_args(&plan_file)).unwrap_err();
+
+    let recorded = store_id_of(state_dir.path());
+    let opened = store_id_of(other_state.path());
+    let payload = payload_of(&refusal);
+    assert_eq!(payload["error"], "stale", "{payload}");
+    assert_eq!(payload["storeId"], opened.as_str(), "{payload}");
+    assert_eq!(payload["recordedStoreId"], recorded.as_str(), "{payload}");
+    let err = refusal.to_string();
+    assert!(
+        err.contains(&format!(
+            "it was derived against state store {recorded}, and this run opened store {opened}"
+        )),
+        "the store wording speaks, not the serial wording: {err}"
+    );
+    assert!(
+        !err.contains("has run since it was written"),
+        "the serial check never gets a turn: {err}"
+    );
+    assert!(!target.exists(), "a refused plan runs nothing: {err}");
+}
+
+#[test]
 fn a_plan_file_naming_no_store_is_refused_as_written_before_the_key() {
     let (config_dir, state_dir, target) = tiny_profile_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
