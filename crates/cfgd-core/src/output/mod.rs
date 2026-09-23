@@ -610,7 +610,7 @@ pub fn env_file_row_is_redundant<'a>(kinds: impl IntoIterator<Item = &'a str>) -
 /// Rendered width cap for [`condense_script_label`], in `char`s.
 ///
 /// Eighty columns is the terminal width a status subject can assume without
-/// wrapping on a standard, unresized terminal; `render_status_immediate`
+/// wrapping on a standard, unresized terminal; `Renderer::render_status`
 /// still appends a role glyph and an optional `(Ns)` duration suffix after
 /// the subject, so the cap leaves that trailing room rather than filling the
 /// full width with script text alone.

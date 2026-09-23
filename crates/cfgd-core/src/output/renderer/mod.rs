@@ -5,11 +5,6 @@
 //! - glyph + style lookup via Theme
 //!
 //! Every other module routes terminal writes through here.
-//!
-//! `RenderState::{depth,push,pop}` and `indent_prefix` are reachable only
-//! from tests and from inside the renderer module; the narrow `dead_code`
-//! allow keeps them addressable without a workspace-wide warning.
-#![allow(dead_code)]
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
@@ -31,9 +26,8 @@ pub use table::Table;
 
 /// The ONE `"  ".repeat(depth)` in the workspace. Every surface that indents
 /// by depth — the renderer's own line pusher, kv blocks, and the three live
-/// primitives (`Spinner`, `OutputWindow`, `LiveRow`) that cannot reach a
-/// `Renderer` to call [`Renderer::indent_prefix`] — calls through here rather
-/// than re-deriving the multiplication at its own site.
+/// primitives (`Spinner`, `OutputWindow`, `LiveRow`) — calls through here
+/// rather than re-deriving the multiplication at its own site.
 pub(crate) fn indent_prefix(depth: usize) -> String {
     "  ".repeat(depth)
 }
@@ -512,11 +506,6 @@ impl Renderer {
     pub(crate) fn continuation_seed(&self) -> RenderState {
         let s = self.state.lock().unwrap_or_else(|e| e.into_inner());
         RenderState::continued_from(&s)
-    }
-
-    /// Build the indent prefix for the current depth.
-    pub(crate) fn indent_prefix(&self, depth: usize) -> String {
-        indent_prefix(depth)
     }
 
     /// Called by every top-level emit before writing. Returns the depth at
@@ -1062,18 +1051,6 @@ impl Renderer {
         s.last_top_group = None;
     }
 
-    /// Set blank-pending iff at the root group level (no open section).
-    /// Called at the end of every top-level group emission (heading, kv_block,
-    /// status, hint, note, table) so the next top-level emit gets one blank.
-    /// One blank line precedes every top-level GROUP after the first —
-    /// `open_top_group` decides what continues a group rather than starting one.
-    pub(crate) fn mark_top_level_group(&self, kind: TopGroup) {
-        self.state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .mark_top_level_group(kind);
-    }
-
     /// Enter buffered `Doc` rendering. Paired with `exit_doc`; nests because a
     /// Doc may render a nested Doc through a component.
     pub(crate) fn enter_doc(&self) {
@@ -1085,16 +1062,6 @@ impl Renderer {
     pub(crate) fn exit_doc(&self) {
         let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
         s.doc_depth = s.doc_depth.saturating_sub(1);
-    }
-
-    /// Drop the pending blank when this emission continues the previous group
-    /// rather than starting a new one. Call before writing, from every
-    /// top-level emitter.
-    pub(crate) fn open_top_group(&self, kind: TopGroup) {
-        self.state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .open_top_group(kind);
     }
 
     /// Heading: bold styled by Theme::header. No `=== ===` decoration. Always depth 0.
@@ -1396,10 +1363,9 @@ mod tests {
 
     #[test]
     fn indent_prefix_uses_two_spaces_per_level() {
-        let r = Renderer::new(Theme::default(), Verbosity::Normal);
-        assert_eq!(r.indent_prefix(0), "");
-        assert_eq!(r.indent_prefix(1), "  ");
-        assert_eq!(r.indent_prefix(3), "      ");
+        assert_eq!(indent_prefix(0), "");
+        assert_eq!(indent_prefix(1), "  ");
+        assert_eq!(indent_prefix(3), "      ");
     }
 
     use std::sync::{Arc, Mutex};

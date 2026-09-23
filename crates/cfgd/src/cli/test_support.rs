@@ -2,7 +2,7 @@
 //! shipped binary — every item here is `#[cfg(test)]`.
 
 /// Assert that `needle`'s line sits exactly one section level (2 spaces —
-/// see `Renderer::indent_prefix`) deeper than `header`'s own line: the shape
+/// see `renderer::indent_prefix`) deeper than `header`'s own line: the shape
 /// every depth-nested spinner must hold, a settled action line nesting DIRECTLY
 /// under the section/owner header that introduced it, not merely somewhere
 /// deeper than it. `output` is ANSI-stripped human text.

@@ -50,22 +50,13 @@ pub(crate) fn available_width(sink: &dyn Writer, depth: usize) -> usize {
 ///
 /// The ONE formula shared by the group alignment column
 /// (`status.rs`'s `group_column`, via its `wrap_budget`) and the live repaint
-/// clamp (`line_width`, below). A group's padded subject reaches at most this
+/// clamp (`live_row.rs`). A group's padded subject reaches at most this
 /// budget, so a clamp read from any tighter formula — `available_width`'s,
 /// say, which is two columns narrower because it measures the room left AFTER
 /// the glyph — amputates the tail of the duration the padding just
 /// right-aligned.
 pub(crate) fn line_budget(cols: usize, depth: usize) -> usize {
     cols.saturating_sub(depth * 2)
-}
-
-/// `line_budget` against the sink a live repaint is drawn to, with the same
-/// fallback and floor `available_width` applies. This is the clamp for a
-/// complete composed line that must stay one physical line — a live row's own
-/// repaint — not for a wrapped body, which keeps `available_width`.
-pub(crate) fn line_width(sink: &dyn Writer, depth: usize) -> usize {
-    let cols = sink.wrap_columns().unwrap_or(FALLBACK_WIDTH);
-    line_budget(cols, depth).max(MIN_WRAP_WIDTH)
 }
 
 /// Display width of `s` in terminal columns, ignoring characters that occupy
