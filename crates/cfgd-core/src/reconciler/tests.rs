@@ -26228,10 +26228,9 @@ fn a_dispatch_stall_fails_the_run_and_names_the_stuck_action() {
 fn a_lane_worker_blocks_behind_an_exclusively_held_path_lock() {
     // The write half of `PATH_ENV_LOCK` is taken here, on the TEST thread,
     // before `ConcurrentApply` ever spawns the worker that runs
-    // `dispatch_package_lanes` — so `path_env_exclusive_guard_held()`'s
-    // own-thread precondition check (evaluated on the worker thread) never
-    // trips, and the write guard is provably held for the worker's entire
-    // dispatch window. If the lane worker takes its own
+    // `dispatch_package_lanes` — so that worker holds no window to lend its
+    // lane workers, and the write guard is provably held by another thread for
+    // the worker's entire dispatch window. If the lane worker takes its own
     // `path_env_read_guard()` before running the action (the fix), it blocks
     // on `PATH_ENV_LOCK` for as long as this thread holds the write half, so
     // `install` cannot have recorded anything by the time `drive()` checks.
@@ -26263,6 +26262,35 @@ fn a_lane_worker_blocks_behind_an_exclusively_held_path_lock() {
         dispatch_log(&log),
         vec!["install:brew:alpha-pkg".to_string()],
         "the action must still run to completion once the lock is released"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn a_caller_holding_the_path_window_lends_it_to_its_lane_workers() {
+    // The caller parks on its lane workers while it holds the write half, so a
+    // worker waiting on that lock for its own read guard never returns. The
+    // timeout turns that deadlock into a failure instead of a hung suite.
+    let log = new_dispatch_log();
+    let registry = lane_registry(vec![DispatchLogManager::new("brew", &log, true)]);
+    let plan = packages_phase(vec![module_install_action("alpha", "brew", "alpha-pkg")]);
+    let modules = vec![module_for("alpha", "brew", "alpha-pkg")];
+    let state = test_state();
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _excl = crate::test_helpers::path_env_mutation_guard();
+        let reconciler = Reconciler::new(&registry, &state);
+        let _ = tx.send(run_apply(&reconciler, &plan, &modules, None).status);
+    });
+    let status = rx
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("a lane worker waited on the window its own caller holds");
+
+    assert_eq!(status, ApplyStatus::Success);
+    assert_eq!(
+        dispatch_log(&log),
+        vec!["install:brew:alpha-pkg".to_string()]
     );
 }
 

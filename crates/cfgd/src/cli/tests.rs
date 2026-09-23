@@ -44462,14 +44462,14 @@ fn a_declared_gsettings_setting_plans_the_tool_ahead_of_the_configurator() {
 #[test]
 #[serial_test::serial]
 fn a_configurator_whose_seam_points_at_its_tool_plans_no_prerequisite_for_it() {
-    // The read guard, not the write one: what makes the tool present here is
-    // the consumer's own seam, which is the question the planner asks, so the
-    // process-global PATH only has to hold still.
+    // The shim holds the exclusive window from here on, which also keeps the
+    // process-global PATH still; the read guard below is a re-entrant no-op
+    // inside it, and a read taken first could not be upgraded.
+    let _shim = cfgd_core::test_helpers::ToolShim::install("CFGD_GSETTINGS_BIN", 0, "", "");
     let _path_lock = cfgd_core::test_helpers::path_env_read_guard();
     let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
     let _paths = cfgd_core::test_helpers::CommandPathMemoTtlGuard::always_expired();
     let _avail = cfgd_core::test_helpers::AvailabilityMemoTtlGuard::always_expired();
-    let _shim = cfgd_core::test_helpers::ToolShim::install("CFGD_GSETTINGS_BIN", 0, "", "");
     let registry = apt_only_registry();
     let state = cfgd_core::test_helpers::test_state();
     let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &state);

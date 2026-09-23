@@ -1747,7 +1747,7 @@ mod tests {
             let state = cfgd_core::test_helpers::test_state();
             let cx = PackageContext::new(&p, &state);
             NpmManager.install(&[], &cx).expect("Ok");
-            assert_eq!(s.argv_lines_naming("install"), Vec::<String>::new());
+            assert_eq!(s.invocation_count(), 0);
         }
 
         #[test]

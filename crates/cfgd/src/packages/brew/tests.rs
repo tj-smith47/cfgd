@@ -631,7 +631,7 @@ mod brew_shim {
         let st = test_state();
         let cx = test_package_context(&p, &st);
         BrewManager.uninstall(&[], &cx).expect("empty uninstall Ok");
-        assert_eq!(shim.argv_lines_naming("uninstall"), Vec::<String>::new());
+        assert_eq!(shim.invocation_count(), 0);
     }
 
     #[test]
@@ -948,7 +948,7 @@ mod brew_shim {
         let st = test_state();
         let cx = test_package_context(&p, &st);
         BrewCaskManager.install(&[], &cx).expect("Ok");
-        assert_eq!(shim.argv_lines_naming("--cask"), Vec::<String>::new());
+        assert_eq!(shim.invocation_count(), 0);
     }
 
     #[test]
@@ -1049,7 +1049,7 @@ mod brew_shim {
         let st = test_state();
         let cx = test_package_context(&p, &st);
         BrewCaskManager.uninstall(&[], &cx).expect("Ok");
-        assert_eq!(shim.argv_lines_naming("--cask"), Vec::<String>::new());
+        assert_eq!(shim.invocation_count(), 0);
     }
 
     #[test]

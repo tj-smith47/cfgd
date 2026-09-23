@@ -2630,11 +2630,22 @@ pub fn write_tool_shim(dir: &Path, name: &str, arms: &[ShimArm<'_>]) -> std::pat
 /// Construct with [`ToolShim::install`]. Drops the env-vars and tempdir on
 /// drop, even when a test panics — env state never leaks across tests.
 ///
+/// The seam is a process-global env var, so while it is set the shim holds
+/// [`path_env_mutation_guard`]: every guarded spawn on another thread waits,
+/// and no sibling test's manager call can run this shim and write into its
+/// log. The shim's own test spawns on its own thread, where the guard is
+/// re-entrant, and on the lane workers an apply dispatches, which inherit the
+/// window through [`enter_inherited_window`]. Any other hand-off to a thread
+/// (a raw `spawn_blocking`) waits on the lock the shim holds.
+///
 /// Cross-platform: a `/bin/sh` script on Unix, a `.cmd` batch file on Windows.
 pub struct ToolShim {
     _tmp: tempfile::TempDir,
     env_var: String,
     log_path: std::path::PathBuf,
+    // Declared last so it drops last: `Drop::drop` removes the seam first,
+    // then the guard lets the other threads' spawns back in.
+    _spawn_excl: ExclusiveEnvGuard,
 }
 
 impl ToolShim {
@@ -2674,8 +2685,9 @@ impl ToolShim {
         let tmp = tempfile::TempDir::new().expect("tempdir");
         let bin_path = write_tool_shim(tmp.path(), &format!("shim-{env_var}"), arms);
 
-        // SAFETY: callers wrap with `serial_test::serial`, so no concurrent
-        // reader observes a mid-update env state.
+        let spawn_excl = path_env_mutation_guard();
+        // SAFETY: callers wrap with `serial_test::serial`, and the guard above
+        // holds every other thread's guarded spawn out while the seam is set.
         unsafe {
             std::env::set_var(env_var, &bin_path);
         }
@@ -2684,6 +2696,7 @@ impl ToolShim {
             log_path: tmp.path().join("argv.log"),
             _tmp: tmp,
             env_var: env_var.to_string(),
+            _spawn_excl: spawn_excl,
         }
     }
 
@@ -2707,15 +2720,9 @@ impl ToolShim {
         self.argv_log().lines().filter(|l| !l.is_empty()).count()
     }
 
-    /// The captured argv lines that name `subject`, in order.
-    ///
-    /// The seam this shim installs is an ENV VAR, which is process-global and
-    /// carries no exclusive guard — so any test running in parallel that spawns
-    /// the same tool lands in this log too, whatever `serial_test` group the
-    /// asserting test is in (`serial` excludes only other serial tests). A
-    /// spawn-count claim is always about one subject — one registry key, one
-    /// schema, one domain — so filter to the lines naming it rather than
-    /// asserting on a log another test also writes to.
+    /// The captured argv lines that name `subject`, in order: for a test
+    /// whose one call spawns the tool several times and asserts on the
+    /// invocations about one key, schema or domain.
     pub fn argv_lines_naming(&self, subject: &str) -> Vec<String> {
         self.argv_log()
             .lines()
@@ -3129,10 +3136,42 @@ pub fn path_env_read_guard() -> SpawnEnvGuard {
 /// with both at their default — so a helper's own [`path_env_read_guard`]
 /// genuinely blocks on `PATH_ENV_LOCK` rather than short-circuiting as a
 /// re-entrant no-op, and never unblocks if the exclusive holder is the same
-/// thread that is now waiting on the helper. Check this BEFORE spawning, so
-/// that precondition fails fast instead of hanging.
+/// thread that is now waiting on the helper. Read this BEFORE spawning and hand
+/// it to each helper's [`enter_inherited_window`].
 pub fn path_env_exclusive_guard_held() -> bool {
     SPAWN_GUARD_EXCLUSIVE.with(std::cell::Cell::get)
+}
+
+/// Run a scoped helper thread inside the exclusive window of the thread that
+/// spawned it and waits for it, when `held` (that thread's
+/// [`path_env_exclusive_guard_held`], read before the spawn) says it has one.
+///
+/// The holder is parked on the helper, so it mutates nothing while the helper
+/// runs, and every other thread stays shut out by the lock the holder still
+/// owns. The helper therefore counts as the holder: its guards are re-entrant
+/// no-ops instead of waiting on a lock its own waiter holds. Take it as the
+/// helper's first statement; it releases nothing, because the holder owns
+/// the lock.
+// env-mutator-ok: sets a thread-local Cell; writes no env var.
+pub fn enter_inherited_window(held: bool) -> InheritedWindow {
+    if held {
+        SPAWN_GUARD_EXCLUSIVE.with(|f| f.set(true));
+    }
+    InheritedWindow { held }
+}
+
+/// Returned by [`enter_inherited_window`]; clears the helper thread's
+/// inherited flag on drop.
+pub struct InheritedWindow {
+    held: bool,
+}
+
+impl Drop for InheritedWindow {
+    fn drop(&mut self) {
+        if self.held {
+            SPAWN_GUARD_EXCLUSIVE.with(|f| f.set(false));
+        }
+    }
 }
 
 /// Shared read guard returned by [`path_env_read_guard`]. `None` for a
@@ -4002,11 +4041,16 @@ fn fake_cosign_bin_path() -> std::path::PathBuf {
 /// Cross-platform: the fake is the compiled `fake-cosign` binary, so consumers
 /// run identically on Windows, macOS, and Linux — no `#[cfg(unix)]` gate
 /// required.
+///
+/// Holds [`path_env_mutation_guard`] while installed, for the reason
+/// [`ToolShim`] does: the seam is process-global.
 pub struct CosignTestShim {
     log_path: Option<std::path::PathBuf>,
     argv_logging: bool,
     _tmp: tempfile::TempDir,
     prior: CosignEnvSnapshot,
+    // Declared last so it drops after `Drop::drop` has restored the seam.
+    _spawn_excl: ExclusiveEnvGuard,
 }
 
 /// Prior values of every env var the shim mutates, captured on install and
@@ -4137,6 +4181,7 @@ impl CosignTestShimBuilder {
         let tmp = tempfile::TempDir::new().expect("tempdir");
         let log_path = tmp.path().join("argv.log");
 
+        let spawn_excl = path_env_mutation_guard();
         // Capture prior values of every var the shim mutates.
         let prior = CosignEnvSnapshot {
             bin: std::env::var_os("CFGD_COSIGN_BIN"),
@@ -4170,6 +4215,7 @@ impl CosignTestShimBuilder {
             argv_logging: self.argv_logging,
             _tmp: tmp,
             prior,
+            _spawn_excl: spawn_excl,
         }
     }
 }
@@ -6889,6 +6935,40 @@ mod tests {
         unsafe {
             std::env::remove_var(KEY);
         }
+    }
+
+    /// An env-seam shim's seam is process-global, so each shim keeps every
+    /// other thread's guarded spawn out for as long as the seam is set; the
+    /// window closes again once the shim drops.
+    #[test]
+    #[serial]
+    fn every_env_seam_shim_holds_the_spawn_window_while_its_seam_is_set() {
+        assert!(
+            !path_env_exclusive_guard_held(),
+            "the test starts outside the window"
+        );
+        {
+            let _shim = ToolShim::install("CFGD_SPAWN_WINDOW_PROBE_BIN", 0, "", "");
+            assert!(
+                path_env_exclusive_guard_held(),
+                "a live ToolShim holds the window"
+            );
+        }
+        assert!(
+            !path_env_exclusive_guard_held(),
+            "a dropped ToolShim releases it"
+        );
+        {
+            let _shim = CosignTestShim::install();
+            assert!(
+                path_env_exclusive_guard_held(),
+                "a live CosignTestShim holds the window"
+            );
+        }
+        assert!(
+            !path_env_exclusive_guard_held(),
+            "a dropped CosignTestShim releases it"
+        );
     }
 
     // -----------------------------------------------------------------------
