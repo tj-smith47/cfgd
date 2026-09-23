@@ -85,8 +85,6 @@ pub fn cmd_source_create(
     };
 
     let yaml = format!(
-        // module-package-id-ok: a source's policy-tier template YAML, not a
-        // recorded module package install id.
         "apiVersion: cfgd.io/v1alpha1\n\
          kind: ConfigSource\n\
          metadata:\n\

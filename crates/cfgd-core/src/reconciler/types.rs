@@ -2038,11 +2038,11 @@ pub fn package_drift_resource_id(manager: &str, packages: &[String]) -> String {
     // spelling and stand forever instead of healing.
     debug_assert!(
         !manager.is_empty() && packages.iter().all(|p| !p.is_empty()),
-        "a package drift id needs a manager and real package names: {manager:?} / {packages:?}" // module-package-id-ok: this composer's own debug message, a different id grammar
+        "a package drift id needs a manager and real package names: {manager:?} / {packages:?}"
     );
     debug_assert!(
         packages.len() == 1,
-        "a package drift row names exactly one package: {manager:?} / {packages:?}" // module-package-id-ok: this composer's own debug message, a different id grammar
+        "a package drift row names exactly one package: {manager:?} / {packages:?}"
     );
     format!("{}:{}", manager, packages.join(","))
 }

@@ -291,7 +291,6 @@ pub enum PackageError {
     #[error("{manager} uninstall failed: {message}")]
     UninstallFailed { manager: String, message: String },
 
-    // module-package-id-ok: a package-manager failure message, not a recorded id
     #[error("{manager} failed to list installed packages: {message}")]
     ListFailed { manager: String, message: String },
 

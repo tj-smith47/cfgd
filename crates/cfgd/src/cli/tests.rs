@@ -34477,42 +34477,35 @@ fn every_held_floor_row_id_comes_from_the_composer_that_owns_it() {
     );
 }
 
-/// The nearest line at or above `n`, in the masked (non-code-blanked) `code`
-/// lines, that still carries a real declaration rather than pure literal
-/// continuation. A single-line literal keeps its own quote characters
-/// unmasked (a comment on that line, or the run above it, is what
-/// [`line_hatched`] reads), so it declares on its own line; a multi-line raw
-/// string's INTERIOR rows blank down to nothing but whitespace, so this
-/// climbs past those to the row that still carries the opening delimiter —
-/// the `r#"` row (a `const`/`let` line) or, for an ordinary string split
-/// across lines with `\` continuations, the row that opens the `"`.
-fn literal_declared_at(code: &[&str], n: usize) -> usize {
-    let mut i = n;
-    while i > 0 && code[i].trim().is_empty() {
-        i -= 1;
-    }
-    i
+/// Whether a `packages:` occurrence at byte offset `at` in `line` sits at an
+/// id-COMPOSITION boundary rather than inside prose, a YAML key or a debug
+/// placeholder. The four boundary characters are what every real composition
+/// spells and nothing else does: the character immediately before the
+/// occurrence is `"` (a joined literal, `"module:{m}:packages:{n}"`), `:` (a
+/// split literal glued onto a prior segment, `":packages:"`) or `}` (a
+/// `push_str` continuation after an interpolated segment); the character
+/// immediately after is `"` (the occurrence ends the literal there) or `{`
+/// (`"packages:{n}"`, an interpolated count following in the same literal).
+/// A doc sentence (`spec.packages: a list`) is preceded by a space, a YAML
+/// key (`  packages:`) is preceded by whitespace and followed by a newline,
+/// and a debug placeholder (`{packages:?}`) is preceded by `{` — none of
+/// those four boundary characters — so none of them fire.
+fn is_composition_tell(line: &str, at: usize, len: usize) -> bool {
+    let before = line[..at].chars().next_back();
+    let after = line[at + len..].chars().next();
+    matches!(before, Some('"') | Some(':') | Some('}')) && matches!(after, Some('"') | Some('{'))
 }
 
 /// A module's package-install description, `module:<m>:packages:<a,b>`, is
 /// the plan's action id and the apply's recorded id at once, so it has one
 /// composer: `module_packages_description`. A production literal spelling
-/// `packages:` outside that composer's body is a second composer, and the plan
-/// and the apply stop matching the first time the two disagree on a byte —
-/// including one spelled as two literals glued together at compile time,
-/// which is why the tell is the bare word rather than requiring the leading
-/// `:` from `module:<m>:`.
+/// `packages:` AT A COMPOSITION BOUNDARY (see [`is_composition_tell`])
+/// outside that composer's body is a second composer, and the plan and the
+/// apply stop matching the first time the two disagree on a byte.
 #[test]
 fn every_module_package_description_comes_from_its_composer() {
     const SPELLING: &str = "packages:";
     const COMPOSER: &str = "module_packages_description";
-    /// A literal `packages:` that names no module package id at all — a
-    /// published schema/doc block, a fixture YAML constant, or an unrelated
-    /// message that happens to share the word. Its declaring line (the
-    /// nearest non-continuation code above the literal, or the literal's own
-    /// line for a single-line one) carries this marker, on the line itself
-    /// or the run of comment lines directly above it.
-    const HATCH: &str = "// module-package-id-ok:";
     /// The composer's own spelling, so a walk that stopped reading its file
     /// fails on that file's name rather than passing with nothing to judge.
     const SPELLED_FLOOR: [(&str, usize); 1] = [("cfgd-core/src/reconciler/format.rs", 1)];
@@ -34542,7 +34535,6 @@ fn every_module_package_description_comes_from_its_composer() {
                 "{krate}/src/{}",
                 cfgd_core::to_posix_string(path.strip_prefix(&root).unwrap_or(&path))
             );
-            let raw: Vec<&str> = production.lines().collect();
             let masked = blank_non_code(&production);
             let code: Vec<&str> = masked.lines().collect();
             // Literals kept, comments blanked: the spelling lives inside a
@@ -34561,13 +34553,19 @@ fn every_module_package_description_comes_from_its_composer() {
             for (n, line) in commentless.lines().enumerate() {
                 // Both masks are byte for byte, so a hit the code mask blanked
                 // sits inside a literal; one it kept is a path like
-                // `crate::packages::` and spells no id.
-                let in_literal = line.match_indices(SPELLING).any(|(at, _)| {
-                    code.get(n)
+                // `crate::packages::` and spells no id. Composition boundary
+                // narrows further: a doc sentence, a YAML key and a debug
+                // placeholder all sit inside a literal too, but none of them
+                // spell the four boundary characters `is_composition_tell`
+                // requires.
+                let composes = line.match_indices(SPELLING).any(|(at, _)| {
+                    let in_literal = code
+                        .get(n)
                         .and_then(|c| c.get(at..at + SPELLING.len()))
-                        .is_some_and(|c| c.trim().is_empty())
+                        .is_some_and(|c| c.trim().is_empty());
+                    in_literal && is_composition_tell(line, at, SPELLING.len())
                 });
-                if !in_literal {
+                if !composes {
                     continue;
                 }
                 let owner = owner_of
@@ -34577,9 +34575,6 @@ fn every_module_package_description_comes_from_its_composer() {
                     .and_then(|at| cfgd_core::test_helpers::declared_fn_name(code[at]));
                 if owner.as_deref() == Some(COMPOSER) {
                     *spelled.entry(file.clone()).or_default() += 1;
-                } else if line_hatched(&raw, literal_declared_at(&code, n), HATCH) {
-                    // A legitimate non-composer spelling, named at its
-                    // declaration; skip.
                 } else {
                     offenders.push(format!("{file}:{}: {}", n + 1, line.trim()));
                 }
