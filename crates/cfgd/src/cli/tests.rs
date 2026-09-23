@@ -48978,7 +48978,10 @@ fn the_lock_wait_test_matches_the_state_store_event_by_its_constant() {
     let copies: Vec<&str> = span_literals(&blanked, &body)
         .into_iter()
         .map(|(_, literal)| literal)
-        .filter(|literal| literal.split_whitespace().count() > 1 && WAL_LOCK_WAIT.contains(literal))
+        .filter(|l| {
+            (l.split_whitespace().count() > 1 && WAL_LOCK_WAIT.contains(l))
+                || l.contains(WAL_LOCK_WAIT)
+        })
         .collect();
     assert!(
         copies.is_empty(),
