@@ -29,7 +29,7 @@ use cfgd::cli::status::{
     ModuleFileStatus, ModulePackagePresence, ModulePackageStatus, ModuleStatus, ModuleStatusEntry,
     ModuleStatusView, SURFACE_ENV, SURFACE_FILES, SURFACE_PACKAGES, StatusOutput,
     build_fleet_status_doc, build_module_status_doc, build_module_status_not_found_doc,
-    managed_resource_payload,
+    fill_declared_managers, managed_resource_payload,
 };
 use cfgd_core::config::{EnvVar, ShellAlias};
 use cfgd_core::modules::{DeclaredScript, HookScripts, ModuleSurfaces};
@@ -84,7 +84,7 @@ fn dev_tools_declared() -> ModuleDeclared {
 /// per-package rows a profile-level install writes, which the table groups
 /// back into one row per manager.
 fn managed_resources() -> Vec<ManagedResourceRow> {
-    managed_resource_payload(
+    let mut rows = managed_resource_payload(
         [
             ("env", "/home/user/.cfgd.env"),
             ("file", "~/.bashrc"),
@@ -110,7 +110,14 @@ fn managed_resources() -> Vec<ManagedResourceRow> {
         })
         .collect(),
         Some("default"),
-    )
+    );
+    // The module rows carry no stored manager, as a store written before the
+    // manager was recorded does, so `status` names the declared one.
+    fill_declared_managers(
+        &mut rows,
+        &[("dev-tools".to_string(), dev_tools_declared())].into(),
+    );
+    rows
 }
 
 fn clean_output() -> StatusOutput {

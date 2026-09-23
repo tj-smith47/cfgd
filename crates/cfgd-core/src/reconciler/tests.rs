@@ -13882,14 +13882,6 @@ fn an_install_that_landed_fewer_than_it_named_says_so_on_its_row() {
     );
 }
 
-/// A provision that found its manager already there says so, and does not
-/// claim a green tick for work it did not do.
-///
-/// The executor half of `provisioned_managers_summary`: the count is the
-/// executor's own re-read, carried out on `ActionRun::installed` the way the
-/// package arm's is, and a node whose members were all available already ran
-/// nothing — the run's own `Bootstrap` phase, or an earlier node, may have
-/// delivered one between the plan being priced and the node being dispatched.
 /// A module's package install records the manager that ran it and the kind
 /// of resource it is. The tracking id (`npmtest:packages:cowsay`) never spells
 /// the manager, so a row without the column named its installer only while the
@@ -13959,6 +13951,58 @@ fn a_module_package_install_records_its_manager_and_kind() {
     assert_eq!(row.manager.as_deref(), Some("npm"), "{row:?}");
 }
 
+/// A package `Skip` installed nothing, so its tracking row names no manager,
+/// the same answer the store's backfill gives a row of that shape.
+#[test]
+fn a_package_skip_records_no_manager() {
+    let registry = ProviderRegistry::new();
+    let state = test_state();
+    let reconciler = Reconciler::new(&registry, &state);
+    let plan = Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::Packages,
+            &Owner::profile("test"),
+            vec![Action::Package(PackageAction::Skip {
+                manager: "apt".to_string(),
+                reason: "not available".to_string(),
+                origin: "local".to_string(),
+            })],
+        )],
+        warnings: vec![],
+    };
+
+    reconciler
+        .apply(
+            &plan,
+            &make_empty_resolved(),
+            Path::new("."),
+            &test_printer(),
+            None,
+            &[],
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .expect("apply");
+
+    let rows = state.managed_resources().unwrap();
+    let row = rows
+        .iter()
+        .find(|r| r.resource_type == "package" && r.resource_id == "apt:skip")
+        .unwrap_or_else(|| panic!("the skip records its tracking row: {rows:?}"));
+    assert_eq!(row.kind.as_deref(), Some("package"), "{row:?}");
+    assert_eq!(row.manager, None, "{row:?}");
+}
+
+/// A provision that found its manager already there says so, and does not
+/// claim a green tick for work it did not do.
+///
+/// The executor half of `provisioned_managers_summary`: the count is the
+/// executor's own re-read, carried out on `ActionRun::installed` the way the
+/// package arm's is, and a node whose members were all available already ran
+/// nothing — the run's own `Bootstrap` phase, or an earlier node, may have
+/// delivered one between the plan being priced and the node being dispatched.
 #[test]
 fn a_provision_whose_manager_was_already_delivered_states_the_count_that_says_so() {
     let provisioned = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));

@@ -802,7 +802,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let state = StateStore::open_in_dir(dir.path()).expect("open state");
         state
-            .upsert_package_resource("brew/ripgrep", "brew", "local", None, None)
+            .upsert_package_resource("brew", "ripgrep", "local", None, None)
             .expect("track package");
 
         let set = cfgd_installed_packages(&state).expect("collect installed");
@@ -871,7 +871,7 @@ mod tests {
             .expect("open in explicit dir");
         // Round-trip a write to prove the store at this dir is live and usable.
         state
-            .upsert_package_resource("apt/curl", "apt", "local", None, None)
+            .upsert_package_resource("apt", "curl", "local", None, None)
             .expect("write to explicit-dir store");
         let set = cfgd_installed_packages(&state).expect("read back");
         assert!(set.contains("apt/curl"));

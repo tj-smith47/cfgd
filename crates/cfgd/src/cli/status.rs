@@ -130,6 +130,35 @@ pub fn managed_resource_payload(
         .collect()
 }
 
+/// Give each module package row that recorded no manager the one its module's
+/// current declaration resolves to.
+///
+/// A row written before the store kept the manager has none, and the id never
+/// spells it. Filled once on the payload, so the table's `npm: cowsay` and
+/// `-o json`'s `manager` are one value; a row whose module the config no
+/// longer declares keeps none.
+pub fn fill_declared_managers(
+    rows: &mut [ManagedResourceRow],
+    declared: &std::collections::BTreeMap<String, ModuleDeclared>,
+) {
+    for row in rows.iter_mut() {
+        let resource = &mut row.resource;
+        if resource.manager.is_some() {
+            continue;
+        }
+        let Some((module, rest)) = module_id_parts(&resource.resource_type, &resource.resource_id)
+        else {
+            continue;
+        };
+        let Some(("packages", item)) = rest.split_once(':') else {
+            continue;
+        };
+        let manager =
+            row_manager(&module_package_names(item), declared.get(module)).map(str::to_string);
+        resource.manager = manager;
+    }
+}
+
 /// The owner token one recorded row belongs to.
 ///
 /// A row naming a module is that module's; everything else asks
@@ -1386,7 +1415,7 @@ fn managed_resource_rows(
             continue;
         }
         let resource = match surface {
-            "packages" => module_packages_resource(item, r.manager.as_deref(), declared),
+            "packages" => module_packages_resource(item, r.manager.as_deref()),
             _ if item.is_empty() => NO_DETAIL.to_string(),
             _ => item.to_string(),
         };
@@ -1666,21 +1695,16 @@ fn module_files_resource(
 /// by the manager that installs them.
 ///
 /// One recorded row is one manager's group (the planner groups them that way),
-/// and the manager is the one the apply recorded beside the row. A row recorded
-/// before the store kept it has none, and only then is it recovered from the
-/// resolution, and only when every name in the row agrees on one, so the row
-/// can never name a manager that installs some other part of its own list.
-fn module_packages_resource(
-    recorded: &str,
-    recorded_manager: Option<&str>,
-    declared: Option<&ModuleDeclared>,
-) -> String {
+/// and `manager` is the row's own: the one the apply recorded, or for an older
+/// row the one [`fill_declared_managers`] resolved, the same value `-o json`
+/// carries.
+fn module_packages_resource(recorded: &str, manager: Option<&str>) -> String {
     let names = module_package_names(recorded);
     if names.is_empty() {
         return NO_DETAIL.to_string();
     }
     let list = names.join(", ");
-    match recorded_manager.or_else(|| row_manager(&names, declared)) {
+    match manager {
         Some(manager) => format!("{manager}: {list}"),
         None => list,
     }
@@ -3118,7 +3142,7 @@ pub(super) fn cmd_status(
         .answerable(state.pending_decisions()?);
     // The owner the table prints is derived, so it is derived once, here, and
     // carried on the row every consumer of this run reads.
-    let resources =
+    let mut resources =
         managed_resource_payload(state.managed_resources()?, derivable_profile(profile_name));
 
     let config_dir = config_dir(cli);
@@ -3216,6 +3240,7 @@ pub(super) fn cmd_status(
         .iter()
         .map(|module| (module.name.clone(), ModuleDeclared::of(module)))
         .collect();
+    fill_declared_managers(&mut resources, &declared);
     let tallies = recorded_module_tallies(&resources, &declared);
     let module_entries: Vec<ModuleStatusEntry> = resolved_modules
         .iter()
@@ -4299,6 +4324,20 @@ mod tests {
         );
     }
 
+    /// `rows` as `cmd_status` hands them to the table: each module package
+    /// row that recorded no manager filled from `entries`' declarations.
+    fn filled(
+        mut rows: Vec<ManagedResourceRow>,
+        entries: &[ModuleStatusEntry],
+    ) -> Vec<ManagedResourceRow> {
+        let declared = entries
+            .iter()
+            .map(|entry| (entry.name.clone(), entry.declared.clone()))
+            .collect();
+        fill_declared_managers(&mut rows, &declared);
+        rows
+    }
+
     /// A recorded row as a run carries it: the stored fact plus the owner the
     /// Owner column and `-o json` both read off the row. Under `base`;
     /// `recorded_under` is for a fixture whose rows belong to another profile.
@@ -4841,12 +4880,16 @@ mod tests {
             package_managers: declared_managers(&[("git", "apt"), ("gcc", "apt")]),
             scripts: 9,
         };
+        let entries = [nvim_entry(declared)];
         let rows = managed_resource_rows(
-            &[
-                recorded("module", "nvim:files:6"),
-                recorded("module", "nvim:packages:git,gcc"),
-            ],
-            &[nvim_entry(declared)],
+            &filled(
+                vec![
+                    recorded("module", "nvim:files:6"),
+                    recorded("module", "nvim:packages:git,gcc"),
+                ],
+                &entries,
+            ),
+            &entries,
             &ManagedResourceDetail::default(),
         );
         let resources: Vec<&str> = rows.iter().map(|r| r[2].as_str()).collect();
@@ -4866,9 +4909,13 @@ mod tests {
             package_managers: declared_managers(&[("git", "apt"), ("neovim", "brew")]),
             ..ModuleDeclared::default()
         };
+        let entries = [nvim_entry(split)];
         let rows = managed_resource_rows(
-            &[recorded("module", "nvim:packages:neovim,git")],
-            &[nvim_entry(split)],
+            &filled(
+                vec![recorded("module", "nvim:packages:neovim,git")],
+                &entries,
+            ),
+            &entries,
             &ManagedResourceDetail::default(),
         );
         assert_eq!(rows[0][2], "git, neovim");
@@ -4916,15 +4963,15 @@ mod tests {
         // name alone, the canonical row finds nothing and renders bare.
         for recorded_names in ["gcc,pip", "build-essential,python3-pip"] {
             assert_eq!(
-                module_packages_resource(recorded_names, None, Some(&declared)),
-                format!("apt: {}", module_package_names(recorded_names).join(", ")),
-                "the row spells the manager for `{recorded_names}`"
+                row_manager(&module_package_names(recorded_names), Some(&declared)),
+                Some("apt"),
+                "the row resolves the manager for `{recorded_names}`"
             );
         }
         assert_eq!(
-            module_packages_resource("curl,ghost", None, Some(&declared)),
-            "apt: curl, ghost",
-            "a name the module no longer declares does not veto the prefix"
+            row_manager(&module_package_names("curl,ghost"), Some(&declared)),
+            Some("apt"),
+            "a name the module no longer declares does not veto the manager"
         );
     }
 
@@ -7161,9 +7208,10 @@ mod tests {
                 package_managers: declared_managers(&[("thing", manager)]),
                 ..ModuleDeclared::default()
             };
+            let entries = [nvim_entry(declared)];
             let rows = managed_resource_rows(
-                &[recorded("module", "nvim:packages:thing")],
-                &[nvim_entry(declared)],
+                &filled(vec![recorded("module", "nvim:packages:thing")], &entries),
+                &entries,
                 &ManagedResourceDetail::default(),
             );
             assert_eq!(
@@ -7180,9 +7228,10 @@ mod tests {
             package_managers: declared_managers(&[("neovim", "apt"), ("neovim", "npm")]),
             ..ModuleDeclared::default()
         };
+        let entries = [nvim_entry(both)];
         let rows = managed_resource_rows(
-            &[recorded("module", "nvim:packages:neovim")],
-            &[nvim_entry(both)],
+            &filled(vec![recorded("module", "nvim:packages:neovim")], &entries),
+            &entries,
             &ManagedResourceDetail::default(),
         );
         assert_eq!(
@@ -7882,6 +7931,67 @@ mod tests {
             .unwrap();
         assert_eq!(npm["kind"], "package", "{npm}");
         assert_eq!(npm["manager"], "npm", "{npm}");
+    }
+
+    /// A module package row recorded before the store kept its manager reads
+    /// the manager the module's declaration still resolves to, and the table
+    /// and `-o json` read that ONE value: the table's prefix is never a
+    /// manager `-o json` reports as unknown.
+    #[test]
+    fn cmd_status_table_and_json_agree_on_a_declared_manager_the_store_never_recorded() {
+        let (config_dir, state_dir, config_path) = setup_env_with_module();
+        // The `script` pseudo-manager resolves on every host, so the fixture's
+        // manager does not depend on what this machine has installed.
+        std::fs::write(
+            config_dir.path().join("modules/test-mod/module.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\n\
+             kind: Module\n\
+             metadata:\n  name: test-mod\n\
+             spec:\n  packages:\n    - name: cowsay\n      prefer: [script]\n      script: \"true\"\n",
+        )
+        .unwrap();
+        let store = open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
+        store
+            .upsert_managed_resource(
+                "module",
+                "test-mod:packages:cowsay",
+                "package",
+                None,
+                "local",
+                None,
+                None,
+            )
+            .unwrap();
+        drop(store);
+
+        let render = |json: bool| {
+            let cli = test_cli_for(config_path.clone(), state_dir.path());
+            let (printer, buf) = if json {
+                test_printers_json()
+            } else {
+                test_printers()
+            };
+            cmd_status(&cli, &printer, None, StatusRun::default()).unwrap();
+            drop(printer);
+            cfgd_core::test_helpers::captured_text(&buf)
+        };
+        let table = render(false);
+        let parsed: serde_json::Value = serde_json::from_str(&render(true)).unwrap();
+        let row = parsed["managedResources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["resourceId"] == "test-mod:packages:cowsay")
+            .unwrap_or_else(|| panic!("`-o json` carries the row: {parsed}"));
+        assert_eq!(row["manager"], "script", "{row}");
+        let line = table
+            .lines()
+            .find(|l| l.contains("cowsay") && !l.contains("—"))
+            .unwrap_or_else(|| panic!("the table shows the row: {table}"));
+        assert!(
+            line.contains("script: cowsay"),
+            "the Resource cell leads with `-o json`'s manager: {line}"
+        );
     }
 
     #[test]

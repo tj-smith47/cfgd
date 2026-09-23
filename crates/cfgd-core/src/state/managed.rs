@@ -119,8 +119,9 @@ impl StateStore {
 
     /// Upsert a package tracking row, persisting the manager's uninstall command.
     ///
-    /// `resource_id` is [`package_resource_id`]'s composition — callers mint
-    /// through it, never a hand-built `format!`.
+    /// The row's id is [`package_resource_id`]'s composition of `manager` and
+    /// `package`, minted here so the recorded manager and the id's manager
+    /// half cannot disagree.
     ///
     /// Like [`upsert_managed_resource`](Self::upsert_managed_resource) but fixed to
     /// `resource_type = "package"` with a NULL `last_hash`, and it records
@@ -132,8 +133,8 @@ impl StateStore {
     /// config (the script would otherwise vanish with it).
     pub fn upsert_package_resource(
         &self,
-        resource_id: &str,
         manager: &str,
+        package: &str,
         source: &str,
         apply_id: Option<i64>,
         uninstall_cmd: Option<&str>,
@@ -147,7 +148,13 @@ impl StateStore {
                     source = excluded.source,
                     last_applied = excluded.last_applied,
                     uninstall_cmd = excluded.uninstall_cmd",
-            params![resource_id, manager, source, apply_id, uninstall_cmd],
+            params![
+                package_resource_id(manager, package),
+                manager,
+                source,
+                apply_id,
+                uninstall_cmd
+            ],
         )?;
         Ok(())
     }

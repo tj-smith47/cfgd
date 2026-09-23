@@ -2367,7 +2367,6 @@ impl<'a> super::Reconciler<'a> {
                 self.state
                     .resolve_drift_keys(apply_id, &result.drift_rows)?;
                 for pkg in &packages {
-                    let rid = crate::state::package_resource_id(&manager, pkg);
                     match verb.as_str() {
                         "install" => {
                             // Persist the scripted uninstall command (Some only for
@@ -2380,15 +2379,18 @@ impl<'a> super::Reconciler<'a> {
                                 .find(|m| m.name() == manager)
                                 .and_then(|m| m.persisted_uninstall());
                             self.state.upsert_package_resource(
-                                &rid,
                                 &manager,
+                                pkg,
                                 package_layers.recording_layer(&manager, pkg, recording_layer),
                                 Some(apply_id),
                                 uninstall_cmd.as_deref(),
                             )?;
                         }
                         "uninstall" => {
-                            self.state.remove_managed_resource("package", &rid)?;
+                            self.state.remove_managed_resource(
+                                "package",
+                                &crate::state::package_resource_id(&manager, pkg),
+                            )?;
                         }
                         _ => {}
                     }
@@ -2464,7 +2466,11 @@ impl<'a> super::Reconciler<'a> {
                 &rtype,
                 &rid,
                 super::recorded_resource_kind(&rtype, &rid),
-                result.manager.as_deref(),
+                // A module package row is the only row whose id does not spell
+                // its manager. The other `package` row this writer sees is a
+                // `Skip`, which installed nothing, so it records no manager,
+                // the same as the backfill gives it.
+                result.manager.as_deref().filter(|_| rtype == "module"),
                 recording_layer,
                 None,
                 Some(apply_id),

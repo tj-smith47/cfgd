@@ -1134,8 +1134,8 @@ mod tests {
         // preview ever executed it (it must not).
         state
             .upsert_package_resource(
-                "widgetmgr/widget",
                 "widgetmgr",
+                "widget",
                 "local",
                 None,
                 Some(&format!("touch {}", marker.display())),
@@ -1143,11 +1143,11 @@ mod tests {
             .unwrap();
         // Orphan with NO persisted script (legacy row).
         state
-            .upsert_package_resource("legacymgr/legacypkg", "legacymgr", "local", None, None)
+            .upsert_package_resource("legacymgr", "legacypkg", "local", None, None)
             .unwrap();
         // A package under a registered (built-in) manager — NOT orphaned.
         state
-            .upsert_package_resource("cargo/bat", "cargo", "local", None, None)
+            .upsert_package_resource("cargo", "bat", "local", None, None)
             .unwrap();
 
         // Registry contains only built-in managers, so cargo is "known" but

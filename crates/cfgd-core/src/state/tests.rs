@@ -689,8 +689,8 @@ fn upsert_package_resource_persists_uninstall_cmd() {
     // Scripted manager package — carries a persisted uninstall command.
     store
         .upsert_package_resource(
-            "widgetmgr/widget",
             "widgetmgr",
+            "widget",
             "local",
             None,
             Some("widgetmgr rm {package}"),
@@ -698,7 +698,7 @@ fn upsert_package_resource_persists_uninstall_cmd() {
         .unwrap();
     // Built-in package — no persisted command (NULL).
     store
-        .upsert_package_resource("cargo/foo", "cargo", "local", None, None)
+        .upsert_package_resource("cargo", "foo", "local", None, None)
         .unwrap();
 
     let known: std::collections::HashSet<String> = ["cargo".to_string(), "apt".to_string()]
@@ -726,8 +726,8 @@ fn upsert_package_resource_refreshes_changed_uninstall_cmd() {
     let store = StateStore::open_in_memory().unwrap();
     store
         .upsert_package_resource(
-            "widgetmgr/widget",
             "widgetmgr",
+            "widget",
             "local",
             None,
             Some("old rm {package}"),
@@ -736,8 +736,8 @@ fn upsert_package_resource_refreshes_changed_uninstall_cmd() {
     // Re-install with a changed script must update the persisted command.
     store
         .upsert_package_resource(
-            "widgetmgr/widget",
             "widgetmgr",
+            "widget",
             "local",
             None,
             Some("new rm {package}"),
@@ -758,13 +758,7 @@ fn upsert_package_resource_refreshes_changed_uninstall_cmd() {
 fn orphaned_package_resources_empty_when_manager_known() {
     let store = StateStore::open_in_memory().unwrap();
     store
-        .upsert_package_resource(
-            "widgetmgr/widget",
-            "widgetmgr",
-            "local",
-            None,
-            Some("widgetmgr rm"),
-        )
+        .upsert_package_resource("widgetmgr", "widget", "local", None, Some("widgetmgr rm"))
         .unwrap();
 
     let known: std::collections::HashSet<String> = ["widgetmgr".to_string()].into_iter().collect();
@@ -781,7 +775,7 @@ fn orphaned_package_resources_reports_null_cmd_rows() {
     // A custom-manager package tracked before the persisted-uninstall column
     // existed: NULL command, but still orphaned and must be reported.
     store
-        .upsert_package_resource("legacymgr/legacypkg", "legacymgr", "local", None, None)
+        .upsert_package_resource("legacymgr", "legacypkg", "local", None, None)
         .unwrap();
 
     let known = std::collections::HashSet::new();
@@ -2123,13 +2117,7 @@ fn migration_adds_uninstall_cmd_column() {
     // package-resource helper, rather than pinning a fragile version number.
     let store = StateStore::open_in_memory().unwrap();
     store
-        .upsert_package_resource(
-            "widgetmgr/widget",
-            "widgetmgr",
-            "local",
-            None,
-            Some("widgetmgr rm"),
-        )
+        .upsert_package_resource("widgetmgr", "widget", "local", None, Some("widgetmgr rm"))
         .unwrap();
     let known = std::collections::HashSet::new();
     let orphans = store.orphaned_package_resources(&known).unwrap();
@@ -2693,13 +2681,7 @@ fn migration_9_drops_stale_managed_resource_ids_and_apply_recreates_them() {
         // A real package row must NOT be swept — it is the one shape carrying an
         // uninstall_cmd that cannot be re-derived once its manager leaves config.
         store
-            .upsert_package_resource(
-                "widgetmgr/widget",
-                "widgetmgr",
-                "local",
-                None,
-                Some("widgetmgr rm"),
-            )
+            .upsert_package_resource("widgetmgr", "widget", "local", None, Some("widgetmgr rm"))
             .unwrap();
         // Hardcoded, not `MIGRATIONS.len() - 1`: this test means "replay the
         // id-shape sweep", so appending a later migration must not silently
@@ -5046,6 +5028,9 @@ const KIND_BACKFILL_ROWS: &[(&str, &str, &str, Option<&str>)] = &[
         None,
     ),
     ("module", "nvim:script", "script", None),
+    // A skipped package manager's row installed nothing, so it has no
+    // manager; the id carries no `/` to read one from.
+    ("package", "apt:skip", "package", None),
     (
         "env",
         "/Users/me/Library/LaunchAgents/com.cfgd.user-environment.plist",

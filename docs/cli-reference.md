@@ -880,9 +880,9 @@ Each `managedResources[]` row also carries two facts the table prints:
   row and the resource it is about match on it. `resourceType` names the engine that recorded the
   row (`module`, `env`) and stays the key the row is stored under.
 - `manager`: the package manager that installed a package row (`npm` for the row the table prints
-  as `npm: cowsay`), and `null` for every other row. A module's package row recorded before cfgd
-  kept the manager reads `null` until the next apply records it; the table then names the manager
-  the module's current declaration resolves to.
+  as `npm: cowsay`). A module's package row recorded before cfgd stored the manager carries the
+  manager the module's declaration resolves to, the same one the table prints. A row that is not
+  an installed package carries no manager.
 
 ```bash
 cfgd status -o json | jq '.managedResources[] | select(.kind == "package") | {manager, resourceId}'
