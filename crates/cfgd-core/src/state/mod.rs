@@ -1,7 +1,7 @@
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 
 use crate::Scope;
 use crate::errors::{Result, StateError};
@@ -749,6 +749,20 @@ const MIGRATIONS: &[&str] = &[
               AND length(resource_id) > instr(resource_id, '/')
          THEN substr(resource_id, 1, instr(resource_id, '/') - 1)
        END;",
+    // Migration 30: the store's own identity, which a saved plan records so a
+    // replay under another `--state-dir` is refused. Minted once, here, rather
+    // than derived from the path: a store copied or moved to another directory
+    // is the same store and keeps it, and a fresh store gets its own. An
+    // upgraded store gains one at this migration, before any plan asks. The
+    // value is a random UUIDv4 in its canonical spelling; the guard keeps a
+    // replayed migration from minting a second row.
+    "CREATE TABLE IF NOT EXISTS store_identity (id TEXT NOT NULL);
+     INSERT INTO store_identity (id)
+     SELECT lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4'
+            || substr(lower(hex(randomblob(2))), 2) || '-'
+            || substr('89ab', 1 + (abs(random()) % 4), 1)
+            || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))
+      WHERE NOT EXISTS (SELECT 1 FROM store_identity);",
 ];
 
 /// Make `cfgd_compliance_content_hash(snapshot_json, current_hash)` callable
@@ -1037,6 +1051,22 @@ impl StateStore {
             })?;
 
         Ok(())
+    }
+
+    /// The identity minted for this store when it was created: a UUIDv4
+    /// string that follows the database file wherever it is copied or moved,
+    /// and that no other store shares.
+    ///
+    /// Read, never minted here: a store with no identity row is
+    /// [`StateError::IdentityMissing`], because a fresh id on read would give
+    /// two reads of one store two answers.
+    pub fn store_id(&self) -> Result<String> {
+        self.conn
+            .query_row("SELECT id FROM store_identity LIMIT 1", [], |row| {
+                row.get(0)
+            })
+            .optional()?
+            .ok_or_else(|| StateError::IdentityMissing.into())
     }
 
     /// The applied-migration count, or `0` for a database that has never run

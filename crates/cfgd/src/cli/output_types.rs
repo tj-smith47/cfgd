@@ -481,9 +481,10 @@ pub struct PlanOutput {
 /// `plan` is the reconciler's own action graph, serialized whole: `phases[]`
 /// above is the RENDERED contract a consumer reads (descriptions, targets,
 /// provenance), this is the typed one cfgd reads back. `configInputs` is every
-/// file the derivation opened with the stamp it carried, and `serial` the id of
-/// the last recorded apply: the two facts `apply --plan` refuses on, and the
-/// only two. A filtered run records nothing here, because `--plan` refuses a
+/// file the derivation opened with the stamp it carried, `serial` the id of the
+/// last recorded apply, and `storeId` the identity of the state store both were
+/// read from: the three facts `apply --plan` refuses on, and the only three. A
+/// filtered run records nothing here, because `--plan` refuses a
 /// filter and a payload carrying one would be a second statement of the run's
 /// scope.
 ///
@@ -495,6 +496,7 @@ pub struct SavedPlan {
     pub plan: serde_json::Value,
     pub config_inputs: cfgd_core::ConfigInputs,
     pub serial: i64,
+    pub store_id: String,
 }
 
 #[derive(Debug, Serialize)]

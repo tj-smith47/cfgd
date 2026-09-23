@@ -646,6 +646,7 @@ pub(in crate::cli) fn saved_plan_for(
         plan: serde_json::to_value(plan)?,
         config_inputs,
         serial: state.last_apply()?.map_or(0, |a| a.id),
+        store_id: state.store_id()?,
     }))
 }
 
@@ -693,6 +694,9 @@ struct SavedPlanIn {
     plan: reconciler::Plan,
     config_inputs: cfgd_core::ConfigInputs,
     serial: i64,
+    /// `None` for a file written before the key existed, which is refused with
+    /// its own sentence rather than serde's missing-field one.
+    store_id: Option<String>,
 }
 
 /// A plan file this machine has not moved past.
@@ -741,9 +745,10 @@ fn plan_refusal(
 /// Read `cfgd plan -o json`'s payload back, refusing one this machine has moved
 /// past.
 ///
-/// Two facts decide that, and they are the two [`saved_plan_for`] records: the
-/// `applies` serial the plan was written against, and whether every config
-/// input the derivation read still has the stamp it had. Both are refusals
+/// Three facts decide that, and they are the three [`saved_plan_for`] records:
+/// the state store the plan was derived against, the `applies` serial it was
+/// written against, and whether every config input the derivation read still
+/// has the stamp it had. All three are refusals
 /// rather than warnings — the file IS the approval, and an approval of a plan
 /// the machine has moved past approves actions nobody looked at.
 ///
@@ -857,6 +862,38 @@ pub(in crate::cli) fn load_saved_plan(
             ),
             serde_json::json!({ "config": config.display_posix() }),
         ));
+    }
+
+    // Asked before the serial: a serial read off another store is a number from
+    // a different sequence, so comparing it would name an apply that never ran
+    // on the store the plan came from.
+    let store_id = state.store_id()?;
+    match saved.store_id.as_deref() {
+        Some(recorded) if recorded == store_id => {}
+        Some(recorded) => {
+            return Err(plan_refusal(
+                path,
+                "stale",
+                format!(
+                    "{shown} is stale: it was derived against state store {recorded}, and this \
+                     run opened store {store_id}, so it does not describe the machine this store \
+                     records — run `cfgd plan -o json` against this store"
+                ),
+                serde_json::json!({ "storeId": store_id, "recordedStoreId": recorded }),
+            ));
+        }
+        None => {
+            return Err(plan_refusal(
+                path,
+                "stale",
+                format!(
+                    "{shown} is stale: it was written before cfgd recorded the state store a \
+                     plan was derived against (it records none, and this run opened store \
+                     {store_id}) — run `cfgd plan -o json` again"
+                ),
+                serde_json::json!({ "storeId": store_id, "recordedStoreId": null }),
+            ));
+        }
     }
 
     let serial = state.last_apply()?.map_or(0, |a| a.id);

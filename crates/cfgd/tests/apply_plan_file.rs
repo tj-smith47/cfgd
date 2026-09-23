@@ -611,3 +611,115 @@ fn every_apply_arg_is_refused_with_a_plan_file_or_is_an_execution_knob() {
         );
     }
 }
+
+/// The identity of the store at `state_dir`, read the way the replay reads it.
+fn store_id_of(state_dir: &Path) -> String {
+    StateStore::open(&state_dir.join("state.db"))
+        .unwrap()
+        .store_id()
+        .unwrap()
+}
+
+#[test]
+fn a_plan_saved_under_another_state_dir_is_refused() {
+    // Both serials are 0 and the config is the same one, so nothing but the
+    // store the replay opened tells the two runs apart.
+    let (config_dir, state_dir, target) = tiny_profile_setup();
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let plan_file = state_dir.path().join("plan.json");
+    record_plan_file(&cli, &plan_args(), &plan_file);
+
+    let other_state = tempfile::tempdir().unwrap();
+    let elsewhere = cli_for(config_dir.path(), other_state.path());
+    let printer = test_printer();
+    let refusal = run_apply(&elsewhere, &printer, &replay_args(&plan_file)).unwrap_err();
+
+    let recorded = store_id_of(state_dir.path());
+    let opened = store_id_of(other_state.path());
+    assert_ne!(recorded, opened, "two stores, two identities");
+    let payload = payload_of(&refusal);
+    assert_eq!(payload["error"], "stale", "{payload}");
+    assert_eq!(payload["storeId"], opened.as_str(), "{payload}");
+    assert_eq!(payload["recordedStoreId"], recorded.as_str(), "{payload}");
+    let err = refusal.to_string();
+    assert!(
+        err.contains(&format!(
+            "plan.json is stale: it was derived against state store {recorded}, and this run \
+             opened store {opened}"
+        )),
+        "the refusal names the file and both stores: {err}"
+    );
+    assert!(!target.exists(), "a refused plan runs nothing: {err}");
+}
+
+#[test]
+fn a_plan_file_naming_no_store_is_refused_as_written_before_the_key() {
+    let (config_dir, state_dir, target) = tiny_profile_setup();
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let plan_file = state_dir.path().join("plan.json");
+    record_plan_file(&cli, &plan_args(), &plan_file);
+
+    let mut payload: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&plan_file).unwrap()).unwrap();
+    assert!(
+        payload["savedPlan"]
+            .as_object_mut()
+            .expect("the recorded contract is an object")
+            .remove("storeId")
+            .is_some(),
+        "the producer records the store: {payload}"
+    );
+    std::fs::write(&plan_file, serde_json::to_string(&payload).unwrap()).unwrap();
+
+    let printer = test_printer();
+    let refusal = run_apply(&cli, &printer, &replay_args(&plan_file)).unwrap_err();
+    let opened = store_id_of(state_dir.path());
+    let wire = payload_of(&refusal);
+    assert_eq!(wire["error"], "stale", "{wire}");
+    assert_eq!(wire["storeId"], opened.as_str(), "{wire}");
+    assert!(
+        wire["recordedStoreId"].is_null() && wire.get("recordedStoreId").is_some(),
+        "the missing identity is an explicit null: {wire}"
+    );
+    let err = refusal.to_string();
+    assert!(
+        err.contains(&format!(
+            "plan.json is stale: it was written before cfgd recorded the state store a plan \
+             was derived against (it records none, and this run opened store {opened})"
+        )),
+        "the refusal names the file, the missing identity and this store's: {err}"
+    );
+    assert!(!target.exists(), "a refused plan runs nothing: {err}");
+}
+
+#[test]
+fn a_plan_replays_against_its_store_copied_to_another_directory() {
+    // The identity lives in the database rather than in the path, so the same
+    // store under another `--state-dir` is still the store the plan names.
+    let (config_dir, state_dir, target) = tiny_profile_setup();
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let plan_file = state_dir.path().join("plan.json");
+    record_plan_file(&cli, &plan_args(), &plan_file);
+
+    let moved = tempfile::tempdir().unwrap();
+    let mut copied = 0;
+    for name in ["state.db", "state.db-wal", "state.db-shm"] {
+        let from = state_dir.path().join(name);
+        if from.exists() {
+            std::fs::copy(&from, moved.path().join(name)).unwrap();
+            copied += 1;
+        }
+    }
+    assert!(copied >= 1, "the plan run left a database to copy");
+    assert_eq!(store_id_of(moved.path()), store_id_of(state_dir.path()));
+
+    let printer = test_printer();
+    let outcome = run_apply(
+        &cli_for(config_dir.path(), moved.path()),
+        &printer,
+        &replay_args(&plan_file),
+    )
+    .unwrap();
+    assert_eq!(outcome.status, ApplyStatus::Success);
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "hello world");
+}

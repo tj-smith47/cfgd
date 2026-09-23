@@ -608,6 +608,11 @@ pub enum StateError {
     #[error("migration failed: {message}")]
     MigrationFailed { message: String },
 
+    /// The store's `store_identity` table holds no row, which only a
+    /// hand-edited database reaches: migration 30 mints one for every store.
+    #[error("the state store carries no identity: its store_identity table is empty")]
+    IdentityMissing,
+
     #[error("state directory not writable: {path}")]
     DirectoryNotWritable { path: PathBuf },
 

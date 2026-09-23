@@ -76,7 +76,8 @@
         }
       ]
     },
-    "serial": 0
+    "serial": 0,
+    "storeId": "<STORE_ID>"
   },
   "totalActions": 1
 }

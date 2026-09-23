@@ -2427,6 +2427,7 @@ fn a_saved_plan_hashes_to_what_it_hashed_before_the_payload_carried_it() {
         plan: serde_json::to_value(&plan).expect("a plan serializes"),
         config_inputs: cfgd_core::ConfigInputs::default(),
         serial: 7,
+        store_id: "00000000-0000-4000-8000-000000000000".to_string(),
     };
     let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[], Some(saved));
     let json = serde_json::to_value(&output).expect("the payload serializes");

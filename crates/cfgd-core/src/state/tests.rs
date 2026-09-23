@@ -5099,3 +5099,74 @@ fn migration_29_backfills_kind_and_manager_as_the_writer_records_them() {
         );
     }
 }
+
+/// Migration 30 gives a store that predates it an identity, once: re-opening
+/// the upgraded store reads the same id back rather than minting a second one,
+/// because a saved plan compares against it.
+#[test]
+fn migration_30_mints_one_store_identity_and_reopening_keeps_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    {
+        let store = StateStore::open(&path).unwrap();
+        store
+            .conn
+            .execute_batch("DROP TABLE store_identity")
+            .unwrap();
+        // Hardcoded, not `MIGRATIONS.len() - 1`: this test means "replay the
+        // identity mint", so a later migration must not re-point it.
+        rewind_schema_version(&store, 30);
+    }
+
+    let upgraded = StateStore::open(&path).unwrap();
+    assert_eq!(upgraded.schema_version().unwrap(), MIGRATIONS.len());
+    let rows: i64 = upgraded
+        .conn
+        .query_row("SELECT COUNT(*) FROM store_identity", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(rows, 1, "the upgrade mints exactly one identity");
+    let id = upgraded.store_id().unwrap();
+    let bytes = id.as_bytes();
+    assert!(
+        id.len() == 36
+            && [8, 13, 18, 23].iter().all(|&i| bytes[i] == b'-')
+            && bytes[14] == b'4'
+            && matches!(bytes[19], b'8' | b'9' | b'a' | b'b')
+            && id
+                .chars()
+                .all(|c| c == '-' || c.is_ascii_digit() || ('a'..='f').contains(&c)),
+        "the identity is a canonical lowercase UUIDv4: {id}"
+    );
+    drop(upgraded);
+
+    let reopened = StateStore::open(&path).unwrap();
+    assert_eq!(
+        reopened.store_id().unwrap(),
+        id,
+        "re-opening reads the minted identity back"
+    );
+    assert_ne!(
+        StateStore::open_in_memory().unwrap().store_id().unwrap(),
+        id,
+        "a fresh store mints its own"
+    );
+}
+
+/// A store whose identity row is gone reports it rather than minting one on
+/// read, which would give two reads of one store two answers.
+#[test]
+fn a_store_with_no_identity_row_is_an_error_on_read() {
+    let store = StateStore::open_in_memory().unwrap();
+    store
+        .conn
+        .execute("DELETE FROM store_identity", [])
+        .unwrap();
+    let err = store.store_id().unwrap_err();
+    assert!(
+        matches!(
+            err,
+            crate::errors::CfgdError::State(crate::errors::StateError::IdentityMissing)
+        ),
+        "{err}"
+    );
+}

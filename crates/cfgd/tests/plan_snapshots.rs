@@ -35,9 +35,10 @@
 //!   - `plan/saved_plan.json` — a real unfiltered `cmd_plan` payload WITH
 //!     `savedPlan`: the bytes `cfgd apply --plan` reads a plan file back out
 //!     of, which no hand-built `PlanOutput` fixture can hold. Each recorded
-//!     input's `mtime` and `size` are pinned to `0` before the compare: they
-//!     are the wall-clock stamp and the byte length of a tempdir path the
-//!     fixture wrote, neither of which is the same twice.
+//!     input's `mtime` and `size` are pinned to `0` and `storeId` to
+//!     `<STORE_ID>` before the compare: they are the wall-clock stamp and the
+//!     byte length of a tempdir path the fixture wrote and the identity a fresh
+//!     store mints, none of which is the same twice.
 
 use cfgd_test_fixtures as common;
 
@@ -57,13 +58,20 @@ use common::{
     tiny_profile_setup,
 };
 
-/// Pin the two volatile fields of every recorded config input.
+/// Pin the volatile fields of the recorded contract: the store identity and
+/// the two stamps of every recorded config input.
 ///
-/// `mtime` is the wall-clock instant the fixture wrote the file and `size` the
-/// byte length of a profile document holding a tempdir path, so both differ
-/// between two runs of the same test. What the golden is for is the shape of
-/// the recorded set and the bytes of the action graph beside it.
-fn pin_recorded_input_stamps(payload: &mut serde_json::Value) {
+/// `storeId` is minted at random for each fresh store, `mtime` is the
+/// wall-clock instant the fixture wrote the file and `size` the byte length of
+/// a profile document holding a tempdir path, so all three differ between two
+/// runs of the same test. What the golden is for is the shape of the recorded
+/// set and the bytes of the action graph beside it.
+fn pin_volatile_saved_plan_fields(payload: &mut serde_json::Value) {
+    assert!(
+        payload["savedPlan"]["storeId"].is_string(),
+        "the recorded contract names its store: {payload}"
+    );
+    payload["savedPlan"]["storeId"] = serde_json::json!("<STORE_ID>");
     let Some(inputs) = payload["savedPlan"]["configInputs"].as_array_mut() else {
         panic!("the recorded contract carries an input list: {payload}");
     };
@@ -736,7 +744,7 @@ fn plan_json_saved_plan_payload() {
     cmd_plan(&cli, &printer, &plan_args()).unwrap();
     drop(printer);
     let mut payload = cap.json().expect("plan doc carries a payload");
-    pin_recorded_input_stamps(&mut payload);
+    pin_volatile_saved_plan_fields(&mut payload);
     let rendered = serde_json::to_string_pretty(&payload).expect("the payload re-serializes");
     let normalized =
         normalize_tempdir_paths(&rendered, config_dir.path(), &[(&target, "<TARGET>")]);

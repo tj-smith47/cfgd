@@ -254,7 +254,7 @@ installs, then `module:nvim`. Execution reverses those two (see the note above).
 
 An unfiltered `cfgd plan` (or `cfgd apply --dry-run`) under any structured format
 (`-o json`, `-o yaml`, and the `jsonpath`/`template` projections over them)
-records one more key, `savedPlan`: the plan itself plus the two facts that say
+records one more key, `savedPlan`: the plan itself plus the three facts that say
 whether it still describes this machine. `-o name` prints the context name on its
 own line and exposes no payload key, so it projects nothing of this one.
 
@@ -263,6 +263,7 @@ own line and exposes no payload key, so it projects nothing of this one.
 | `plan` | The reconciler's own action graph, typed and serialized whole. `phases[]` is the rendered contract a reader scans; this is cfgd's own format, written for cfgd to read back. It spells its variants the way Rust tags them (PascalCase, externally tagged) rather than the camelCase the rest of the payload uses, and it is not a surface to build a `jq` expression on: read `phases[]` for that. |
 | `configInputs` | Every file the derivation opened, each with the modification time and size it carried. A file that has since moved (or appeared, or gone) makes the plan stale. |
 | `serial` | The id of the last apply recorded on this machine, or `0` when none has run. A later apply means the machine is no longer the one the plan was taken against. |
+| `storeId` | The identity of the state store the plan was derived against, a UUID minted once when the store was created and kept inside it. A replay that opens another store (another `--state-dir`) is refused; the same store copied or moved to another directory keeps its identity. |
 
 A filtered run records nothing here, and the key is absent rather than null: the
 plan file would otherwise state a scope a second time, once in its actions and once
@@ -272,7 +273,7 @@ in the flags that produced them. A run scoped by `--phase`, `--only`, `--skip`,
 Neither is a run holding a withheld source decision, whatever flags it was given.
 A pending, declined or rejected decision prunes actions out of the plan, and
 answering it with `cfgd decide` writes decision rows only: no config file changes
-and no apply is recorded, so neither `configInputs` nor `serial` moves. A plan
+and no apply is recorded, so none of `configInputs`, `serial` and `storeId` moves. A plan
 recorded under a pending decision would otherwise replay after the answer with the
 accepted resource silently missing. Answer the decisions, then plan again.
 
@@ -281,12 +282,12 @@ included. Treat a saved plan as exactly as sensitive as the config it was derive
 from.
 
 `cfgd apply --plan <file>` reads the payload back and runs it: see
-[Applying a saved plan](cli-reference.md#applying-a-saved-plan). The two fields
+[Applying a saved plan](cli-reference.md#applying-a-saved-plan). The three fields
 above are what it refuses on, so the window a saved plan is good for is exactly
-"nothing has changed and nothing has been applied". `configInputs` answers one
-more question first: the config file the replay resolved has to be among the paths
-it lists, or the file is a plan written for another machine picture rather than a
-stale one.
+"nothing has changed, nothing has been applied, and the replay opens the same
+store". `configInputs` answers one more question first: the config file the replay
+resolved has to be among the paths it lists, or the file is a plan written for
+another machine picture rather than a stale one.
 
 ## Filtering
 

@@ -319,8 +319,40 @@ Phase: Files
 ✓ Apply complete — 1 action succeeded (<0.1s wall)
 ```
 
-Two facts decide whether the file still describes this machine, and both are
-refusals (exit 1) rather than warnings. An apply recorded since it was written:
+Three facts decide whether the file still describes this machine, and all three are
+refusals (exit 1) rather than warnings. The state store the replay opened has to be
+the one the plan was derived against. A plan taken under one `--state-dir` and
+replayed under another names a different store:
+
+```console
+$ cfgd --state-dir /srv/cfgd/state apply --plan plan.json
+✗ plan.json is stale: it was derived against state store c7e8f094-c6a9-46e4-89b1-a73bcd8354fc, and this run opened store a1789f12-9519-40c8-8141-462f356868bd, so it does not describe the machine this store records — run `cfgd plan -o json` against this store
+```
+
+The identity is minted once when a store is created and lives inside the database,
+so a store copied or moved to another directory keeps it and still replays its plans.
+A plan file written by a cfgd that did not record the store yet names none, and is
+refused the same way:
+
+```console
+$ cfgd apply --plan plan.json
+✗ plan.json is stale: it was written before cfgd recorded the state store a plan was derived against (it records none, and this run opened store c7e8f094-c6a9-46e4-89b1-a73bcd8354fc) — run `cfgd plan -o json` again
+```
+
+Under `-o json` both carry the `stale` kind, this run's store as `storeId` and the
+file's as `recordedStoreId` (`null` when it names none):
+
+```json
+{
+  "error": "stale",
+  "file": "plan.json",
+  "name": "plan",
+  "recordedStoreId": "c7e8f094-c6a9-46e4-89b1-a73bcd8354fc",
+  "storeId": "a1789f12-9519-40c8-8141-462f356868bd"
+}
+```
+
+An apply recorded since it was written:
 
 ```console
 $ cfgd apply --plan plan.json
@@ -346,7 +378,7 @@ $ cfgd apply --config /etc/cfgd/other.yaml --plan plan.json
 ✗ plan.json is not a plan cfgd wrote for this config: nothing its derivation read was /etc/cfgd/other.yaml, so the actions in it were priced against another machine picture — run `cfgd plan -o json` under this config
 ```
 
-There is no `--force` over either refusal. A plan the machine has moved past is
+There is no `--force` over any of these refusals. A plan the machine has moved past is
 replaced by a new one, not overridden: the file is the approval, and forcing it would
 approve actions nobody looked at.
 
@@ -726,8 +758,9 @@ Windows `%ProgramData%\cfgd\state`) rather than the per-user one, so the store
 a run judges ownership against is always the store it opened.
 
 An unfiltered run carries one further key, `savedPlan`, holding the typed action
-graph, the files the derivation read with their stamps, and the id of the last
-recorded apply; every structured format carries it, not `-o json` alone. A scoped
+graph, the files the derivation read with their stamps, the id of the last
+recorded apply, and the identity of the state store it was derived against; every
+structured format carries it, not `-o json` alone. A scoped
 run (`--phase`, `--only`, `--skip`, `--skip-scripts`, `--module`) omits it, and so
 does a run holding a withheld source decision. See
 [The saved plan](reconciliation.md#the-saved-plan-savedplan).
