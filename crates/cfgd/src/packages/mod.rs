@@ -57,8 +57,8 @@ pub use pipx::PipxManager;
 pub use scoop::ScoopManager;
 pub use scripted::custom_managers;
 // SimpleManager and ScriptedManager are part of the package-manager type
-// surface; they aren't named directly by callers today (constructed via
-// `all_package_managers()` / `custom_managers()`), but the re-exports keep
+// surface; callers construct them through
+// `all_package_managers()` / `custom_managers()`, and the re-exports keep
 // the types reachable at `crate::packages::SimpleManager` / `ScriptedManager`.
 pub use scripted::ScriptedManager;
 pub use simple::SimpleManager;

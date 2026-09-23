@@ -35298,60 +35298,103 @@ fn every_two_root_walk_guards_each_root_it_reads() {
 
 /// A blanket lint escape is a fixture nobody restructured: it hides the next
 /// dead item as well as the one it was written for, and `renderer/mod.rs` held
-/// one whose own justification had been false for releases. The population is
-/// EMPTY, so a new one is a design decision argued here rather than added quietly.
+/// one whose own justification had been false for releases. The rule is any
+/// `dead_code` or `unused*` lint in an `allow`/`expect` list, inner or outer,
+/// inside a `cfg_attr` or not, read over the body with comments and literals
+/// blanked. The population is EMPTY, so a new one is a design decision argued
+/// here rather than added quietly.
 #[test]
 fn no_source_carries_a_dead_code_allowance() {
-    /// The escapes a fixture reaches for. All are the same shape, so a rename
-    /// from one to another does not evade this.
-    const TELLS: &[&str] = &[
-        "allow(dead_code)",
-        "expect(dead_code)",
-        "allow(unused)",
-        "allow(unused_imports)",
-        "allow(unused_variables)",
+    /// Every crate under `crates/`, with a floor under the sources it holds
+    /// today: its `src`, `tests`, `benches` and `examples` trees and its
+    /// `build.rs`. A crate joining or leaving the workspace fails until named.
+    const CRATE_FLOORS: &[(&str, usize)] = &[
+        ("cfgd", 250),
+        ("cfgd-core", 235),
+        ("cfgd-crd", 2),
+        ("cfgd-csi", 11),
+        ("cfgd-operator", 60),
+        ("cfgd-schema", 2),
+        ("cfgd-test-fixtures", 1),
     ];
     let root = cfgd_core::test_helpers::workspace_root();
-    let mut read = 0usize;
+    let crates_dir = root.join("crates");
+    let mut crates: Vec<String> = std::fs::read_dir(&crates_dir)
+        .unwrap_or_else(|e| panic!("{}: the walk must read it: {e}", crates_dir.display()))
+        .map(|entry| {
+            entry.unwrap_or_else(|e| {
+                panic!(
+                    "{}: the walk must read every entry: {e}",
+                    crates_dir.display()
+                )
+            })
+        })
+        .filter(|entry| entry.path().is_dir())
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    crates.sort();
+    let named: Vec<&str> = CRATE_FLOORS.iter().map(|(krate, _)| *krate).collect();
+    assert_eq!(
+        crates, named,
+        "a crate joined or left the workspace, so its sources are judged by nobody"
+    );
     let mut per_root: Vec<(&str, usize, usize)> = Vec::new();
     let mut offenders = Vec::new();
-    // Per root, with a floor under the sources each holds today: an aggregate is
-    // one tree's count plus the others', which the biggest alone clears.
-    for (dir, floor) in [
-        ("crates/cfgd/src", 170usize),
-        ("crates/cfgd/tests", 80),
-        ("crates/cfgd-core/src", 230),
-        ("crates/cfgd-core/tests", 8),
-        ("crates/cfgd-crd/src", 2),
-        ("crates/cfgd-csi/src", 9),
-        ("crates/cfgd-csi/tests", 1),
-        ("crates/cfgd-operator/src", 60),
-        ("crates/cfgd-operator/tests", 1),
-        ("crates/cfgd-schema/src", 2),
-        ("crates/cfgd-test-fixtures/src", 1),
-    ] {
-        let before = read;
-        for path in rust_sources_under(&root.join(dir)) {
-            let body = cfgd_core::test_helpers::walked_file_body(&path);
-            read += 1;
-            for (n, line) in body.lines().enumerate() {
-                // The raw line is a superset of its code, so a line naming no
-                // tell at all skips the blanking pass and its allocation.
-                if !TELLS.iter().any(|t| line.contains(t)) {
-                    continue;
-                }
-                let code = code_line(line);
-                if let Some(tell) = TELLS.iter().find(|t| code.contains(**t)) {
-                    let at = path.strip_prefix(&root).unwrap_or(&path);
-                    offenders.push(format!("{}:{}: {tell}", at.display(), n + 1));
+    for (krate, floor) in CRATE_FLOORS {
+        let dir = crates_dir.join(krate);
+        let mut sources: Vec<std::path::PathBuf> = ["src", "tests", "benches", "examples"]
+            .iter()
+            .map(|tree| dir.join(tree))
+            .filter(|tree| tree.is_dir())
+            .flat_map(|tree| rust_sources_under(&tree))
+            .collect();
+        let build = dir.join("build.rs");
+        if build.is_file() {
+            sources.push(build);
+        }
+        for path in &sources {
+            let body = walked_file_body(path);
+            // The raw body is a superset of its code, so one naming neither lint
+            // family skips the blanking pass.
+            if !body.contains("dead_code") && !body.contains("unused") {
+                continue;
+            }
+            let code = blank_non_code(&body);
+            for keyword in ["allow", "expect"] {
+                for (at, _) in code.match_indices(keyword) {
+                    // `.expect(` and `Result::expect(` are calls, and `allowed(`
+                    // is another word; an attribute's list follows `[`, `(`,
+                    // `,` or whitespace.
+                    let before = code[..at].chars().next_back();
+                    if before.is_some_and(|c| c.is_alphanumeric() || matches!(c, '_' | '.' | ':')) {
+                        continue;
+                    }
+                    let rest = code[at + keyword.len()..].trim_start();
+                    let Some(list) = rest.strip_prefix('(') else {
+                        continue;
+                    };
+                    let list = &list[..list.find(')').unwrap_or(list.len())];
+                    let lints: Vec<&str> = list.split(',').map(str::trim).collect();
+                    if lints
+                        .iter()
+                        .any(|l| *l == "dead_code" || l.starts_with("unused"))
+                    {
+                        let line = code[..at].matches('\n').count() + 1;
+                        let rel = path.strip_prefix(&root).unwrap_or(path);
+                        offenders.push(format!(
+                            "{}:{line}: {keyword}({})",
+                            rel.display(),
+                            lints.join(", ")
+                        ));
+                    }
                 }
             }
         }
-        per_root.push((dir, read - before, floor));
+        per_root.push((*krate, sources.len(), *floor));
     }
     assert!(
         per_root.iter().all(|(_, found, floor)| found >= floor),
-        "a tree the walk reads holds fewer sources than it did, so the files in it are judged \
+        "a crate the walk reads holds fewer sources than it did, so the files in it are judged \
          by nobody: {per_root:?}"
     );
     assert!(
@@ -48035,35 +48078,55 @@ fn every_real_host_script_is_reachable_from_ci() {
     );
 }
 
+/// `line` cut at its YAML comment: the first `#` outside quotes that opens
+/// the line or follows whitespace. A `run:` block's shell reads `#` the same
+/// way, so the cut holds inside a block scalar too.
+fn yaml_code(line: &str) -> &str {
+    let mut quote = None;
+    let mut prev = ' ';
+    for (i, c) in line.char_indices() {
+        match (quote, c) {
+            (None, '#') if prev.is_whitespace() => return &line[..i],
+            // An apostrophe inside a word (`it's`) opens nothing.
+            (None, '"' | '\'') if !prev.is_alphanumeric() => quote = Some(c),
+            (Some(q), _) if c == q => quote = None,
+            _ => {}
+        }
+        prev = c;
+    }
+    line
+}
+
 /// The Taskfile target whose body names `rel`: the nearest two-space-indented
-/// `<name>:` header above the line that runs the script. Read off the file
-/// rather than a table, so renaming a target moves the pin with it.
+/// `<name>:` header above the first uncommented line naming the script, both
+/// searched below `tasks:` so a key under the top-level `vars:` or `env:` is
+/// never taken for a target. Read off the file rather than a table, so
+/// renaming a target moves the pin with it.
 fn target_naming(taskfile: &str, rel: &str) -> Option<String> {
-    let lines: Vec<&str> = taskfile.lines().collect();
-    let at = lines.iter().position(|l| l.contains(rel))?;
-    lines[..at].iter().rev().find_map(|l| {
-        let trimmed = l.strip_prefix("  ")?;
+    let lines: Vec<&str> = taskfile.lines().map(yaml_code).collect();
+    let tasks = lines.iter().position(|l| l.trim_end() == "tasks:")? + 1;
+    let at = tasks + lines[tasks..].iter().position(|l| l.contains(rel))?;
+    lines[tasks..at].iter().rev().find_map(|l| {
+        let trimmed = l.strip_prefix("  ")?.trim_end();
         (!trimmed.starts_with(' ') && trimmed.ends_with(':'))
             .then(|| trimmed.trim_end_matches(':').to_string())
     })
 }
 
-/// Whether `workflow` runs `task <target>` on an uncommented line. The name
-/// must end where a target name cannot continue, or `task test:x` would count
-/// as running `test:x2`, and a commented-out step runs nothing.
+/// Whether `workflow` runs `task <target>` outside a comment. The name must
+/// end where a target name cannot continue, or `task test:x` would count as
+/// running `test:x2`, and a commented-out step or a trailing `# then task x`
+/// runs nothing.
 fn runs_task(workflow: &str, target: &str) -> bool {
     let call = format!("task {target}");
-    workflow
-        .lines()
-        .filter(|l| !l.trim_start().starts_with('#'))
-        .any(|l| {
-            l.match_indices(&call).any(|(i, _)| {
-                l[i + call.len()..]
-                    .chars()
-                    .next()
-                    .is_none_or(|c| !(c.is_alphanumeric() || matches!(c, ':' | '-' | '_')))
-            })
+    workflow.lines().map(yaml_code).any(|l| {
+        l.match_indices(&call).any(|(i, _)| {
+            l[i + call.len()..]
+                .chars()
+                .next()
+                .is_none_or(|c| !(c.is_alphanumeric() || matches!(c, ':' | '-' | '_')))
         })
+    })
 }
 
 /// Every e2e suite runs under the one scratch-home redirect.
