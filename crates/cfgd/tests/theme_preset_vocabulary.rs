@@ -1,5 +1,3 @@
-#![allow(deprecated)] // assert_cmd 2.x cargo_bin deprecation; upgrade path is assert_cmd 3.x
-
 //! `spec.output.theme.name` is a plain string in the document, so the preset
 //! vocabulary is held at the two points a word enters: the setter that writes
 //! one, and the load that reads one somebody else wrote.
@@ -9,19 +7,9 @@
 //! where the printer is built, which no in-process call reaches.
 
 use std::path::Path;
-use std::process::Command;
 
-use assert_cmd::cargo::CommandCargoExt;
-
-/// The binary under test, with cfgd's own startup update check opted out.
-/// A fixture spawning the real binary reaches GitHub over the network on every
-/// human-channel run otherwise, which is no part of what any of these pins
-/// claims.
-fn cfgd_bin() -> Result<Command, assert_cmd::cargo::CargoError> {
-    let mut cmd = Command::cargo_bin("cfgd")?;
-    cmd.env("CFGD_NO_UPDATE_CHECK", "1");
-    Ok(cmd)
-}
+mod cfgd_binary;
+use cfgd_binary::cfgd_bin;
 
 /// A document whose theme block holds `name`, laid out at the default config
 /// directory of a throwaway home.

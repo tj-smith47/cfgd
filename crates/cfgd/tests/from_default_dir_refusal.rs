@@ -1,5 +1,3 @@
-#![allow(deprecated)] // assert_cmd 2.x cargo_bin deprecation; upgrade path is assert_cmd 3.x
-
 //! A `--from` run that names no destination must not write over the default
 //! config directory.
 //!
@@ -11,18 +9,12 @@
 
 use std::path::Path;
 
-use assert_cmd::Command;
 use predicates::prelude::*;
 
-/// The binary under test, with cfgd's own startup update check opted out.
-/// A fixture spawning the real binary reaches GitHub over the network on every
-/// human-channel run otherwise, which is no part of what any of these pins
-/// claims.
-fn cfgd_bin() -> Result<Command, assert_cmd::cargo::CargoError> {
-    let mut cmd = Command::cargo_bin("cfgd")?;
-    cmd.env("CFGD_NO_UPDATE_CHECK", "1");
-    Ok(cmd)
-}
+use assert_cmd::prelude::*;
+
+mod cfgd_binary;
+use cfgd_binary::cfgd_bin;
 
 /// A committed git repository holding a `cfgd.yaml`, for `--from` to clone.
 fn source_repo(dir: &Path) {

@@ -48239,47 +48239,58 @@ fn every_e2e_suite_runs_under_the_one_scratch_home() {
     );
 }
 
-/// Every integration fixture spawning the real binary opts out of the startup
-/// update check.
+/// Every integration test spawning the real binary goes through the one
+/// constructor, `cfgd_bin` in `tests/cfgd_binary/mod.rs`, and that constructor
+/// opts out of the startup update check and gives the calling test a state
+/// store of its own.
 ///
 /// `startup_update_check` runs on the human channel of every command, so a
-/// fixture that leaves it on makes a live GitHub request per spawned process —
-/// hundreds across the suite, each one a wait and a failure mode no pin is
-/// asking about, and all of them in a test run that may have no network at all.
-/// The opt-out belongs to the spawn, so each fixture names the binary exactly
-/// once, inside its own `cfgd_bin` helper, and that helper names the variable
-/// `cfgd_core::upgrade::OPTOUT_VARS[0]` holds as the FIRST string literal of a
-/// `.env(` statement that runs: the statement is located between
-/// `fn cfgd_bin(` and its closing brace on the body with every literal and
-/// comment blanked, so no comment syntax can move the brace, and the name is
-/// then that statement's first literal read whole, so a mention in a comment,
-/// a name spelled in the VALUE slot, a longer name and one fragment of a
-/// `concat!` each set something other than the opt-out and are refused as
-/// such. The name is read off that production constant rather than spelled
+/// spawn that leaves it on makes a live GitHub request per process: hundreds
+/// across the suite, each one a wait and a failure mode no pin is asking
+/// about, and all of them in a test run that may have no network at all. And
+/// every test process in a run shares one `HOME`, so a spawn resolving the
+/// default state directory opens the same `state.db` as every other test
+/// running beside it; `CFGD_STATE_DIR` is what keeps one test's store out of
+/// another's.
+///
+/// Both of Cargo's spellings (`Command::cargo_bin("cfgd")`,
+/// `CARGO_BIN_EXE_cfgd`) are the population tell: exactly one file under
+/// `tests/` names the binary, the constructor's own, and it names it once. The
+/// constructor must set each variable as the FIRST string literal of a `.env(`
+/// statement that runs: the statement is located between `fn cfgd_bin(` and
+/// its closing brace on the body with every literal and comment blanked, so no
+/// comment syntax can move the brace, and the name is then that statement's
+/// first literal read whole, so a mention in a comment, a name spelled in the
+/// VALUE slot, a longer name and one fragment of a `concat!` each set
+/// something other than the variable and are refused as such. The opt-out's
+/// name is read off `cfgd_core::upgrade::OPTOUT_VARS[0]` rather than spelled
 /// here, because a spelling of its own keeps passing once the gate reads some
-/// other variable and no fixture opts out any more. Both of Cargo's spellings
-/// (`Command::cargo_bin("cfgd")`, `CARGO_BIN_EXE_cfgd`) count as the
-/// population tell and as the call sites counted, so a fixture reaching for
-/// the other one joins the rule rather than sitting outside it.
+/// other variable. The files calling the constructor are floored, so the
+/// population cannot go dark while the constructor stays.
 #[test]
-fn every_integration_fixture_spawning_the_binary_opts_out_of_the_update_check() {
+fn every_integration_test_spawns_the_binary_through_the_one_isolating_constructor() {
     const OPTOUT: &str = cfgd_core::upgrade::OPTOUT_VARS[0];
+    const STATE_DIR_VAR: &str = "CFGD_STATE_DIR";
+    const CONSTRUCTOR_FILE: &str = "cfgd_binary/mod.rs";
     const HELPER: &str = "fn cfgd_bin(";
+    const CALL: &str = "cfgd_bin()";
+    const CALLER_FLOOR: usize = 13;
     const SPAWNS: [&str; 2] = ["cargo_bin(\"cfgd\")", "CARGO_BIN_EXE_cfgd"];
 
     let dir = cfgd_core::test_helpers::workspace_root().join("crates/cfgd/tests");
-    let mut spawning = 0usize;
+    let mut spawning: Vec<String> = Vec::new();
+    let mut callers = 0usize;
     let mut offenders: Vec<String> = Vec::new();
     for path in cfgd_core::test_helpers::rust_sources_under(&dir) {
         let body = walked_file_body(&path);
+        let name = cfgd_core::to_posix_string(path.strip_prefix(&dir).unwrap_or(&path));
+        if name != CONSTRUCTOR_FILE && body.contains(CALL) {
+            callers += 1;
+        }
         if !SPAWNS.iter().any(|tell| body.contains(tell)) {
             continue;
         }
-        spawning += 1;
-        let name = path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
+        spawning.push(name.clone());
         // Blanked once: the helper is located, and its braces matched, on a
         // body carrying no comment and no literal, so neither a `{` written
         // in either nor a row of one that spans several lines can move the
@@ -48295,33 +48306,30 @@ fn every_integration_fixture_spawning_the_binary_opts_out_of_the_update_check() 
             ));
             continue;
         };
-        // The opt-out is the SPAWN's, so only a statement that RUNS inside
-        // the helper counts: read otherwise it is satisfied by the name
-        // surviving in a doc comment, by a `.env` line commented out while
-        // debugging, by one written inside a string, and by one sitting in
-        // some other function, each of which leaves every spawn reaching
-        // GitHub. The call is found on the blanked span, where nothing a
-        // comment or a literal holds survives; the name is then the
-        // statement's FIRST literal, paired off the raw span at the same byte
-        // range because a literal's body is what the blanking spaces out.
-        // Asking only whether the statement CARRIES the name reads a
-        // `.env(/* CFGD_NO_UPDATE_CHECK */ "OTHER", "1")`, a name written in
-        // the value slot, a longer `CFGD_NO_UPDATE_CHECKS` and a `concat!`
-        // fragment as the opt-out while the spawn still reaches GitHub.
+        // Only a statement that RUNS inside the helper counts: read otherwise
+        // the rule is satisfied by the name surviving in a doc comment, by a
+        // `.env` line commented out while debugging, by one written inside a
+        // string, and by one sitting in some other function. The call is
+        // found on the blanked span, where nothing a comment or a literal
+        // holds survives; the name is then the statement's FIRST literal,
+        // paired off the raw span at the same byte range because a literal's
+        // body is what the blanking spaces out.
         let code = &blanked[open..open + helper.len()];
-        let sets_optout = code.match_indices(".env(").any(|(at, _)| {
-            let end = code[at..].find(';').map_or(code.len(), |n| at + n);
-            span_literals(&code[at..end], &helper[at..end])
-                .first()
-                .is_some_and(|(_, name)| *name == OPTOUT)
-        });
-        if !sets_optout {
-            offenders.push(format!(
-                "{name} — no `.env(` line setting {OPTOUT} inside `cfgd_bin`; its spawns never opt out"
-            ));
+        let sets = |var: &str| {
+            code.match_indices(".env(").any(|(at, _)| {
+                let end = code[at..].find(';').map_or(code.len(), |n| at + n);
+                span_literals(&code[at..end], &helper[at..end])
+                    .first()
+                    .is_some_and(|(_, name)| *name == var)
+            })
+        };
+        for var in [OPTOUT, STATE_DIR_VAR] {
+            if !sets(var) {
+                offenders.push(format!(
+                    "{name} — no `.env(` line setting {var} inside `cfgd_bin`"
+                ));
+            }
         }
-        // One spawn site per file: the helper's own is the only place a fixture
-        // names the binary, so anything past it bypasses the opt-out.
         let spawns: usize = SPAWNS.iter().map(|tell| body.matches(tell).count()).sum();
         if spawns > 1 {
             offenders.push(format!(
@@ -48330,14 +48338,19 @@ fn every_integration_fixture_spawning_the_binary_opts_out_of_the_update_check() 
         }
     }
 
+    assert_eq!(
+        spawning,
+        [CONSTRUCTOR_FILE],
+        "only the one constructor names the binary; every other test calls it"
+    );
     assert!(
-        spawning >= 13,
-        "the fixtures spawning the real binary have shrunk to {spawning}"
+        callers >= CALLER_FLOOR,
+        "the tests spawning the real binary have shrunk to {callers}, floor {CALLER_FLOOR}"
     );
     assert!(
         offenders.is_empty(),
-        "every fixture spawning cfgd routes it through a `cfgd_bin` helper that sets \
-         {OPTOUT}, so no test run reaches the network for a self-update check:\n{}",
+        "the constructor sets {OPTOUT} and {STATE_DIR_VAR} on every spawn, so no test run \
+         reaches the network for a self-update check or shares another test's state store:\n{}",
         offenders.join("\n")
     );
 }

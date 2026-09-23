@@ -1,6 +1,4 @@
 #![cfg(unix)]
-#![allow(deprecated)] // assert_cmd 2.x cargo_bin deprecation; upgrade path is assert_cmd 3.x
-
 //! Signal-abort regression test for `cfgd apply`.
 //!
 //! SIGINT during an apply is a cooperative cancellation: the in-flight atomic
@@ -15,20 +13,11 @@
 
 use std::io::Read;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{Duration, Instant};
 
-use assert_cmd::cargo::CommandCargoExt;
-
-/// The binary under test, with cfgd's own startup update check opted out.
-/// A fixture spawning the real binary reaches GitHub over the network on every
-/// human-channel run otherwise, which is no part of what any of these pins
-/// claims.
-fn cfgd_bin() -> Result<Command, assert_cmd::cargo::CargoError> {
-    let mut cmd = Command::cargo_bin("cfgd")?;
-    cmd.env("CFGD_NO_UPDATE_CHECK", "1");
-    Ok(cmd)
-}
+mod cfgd_binary;
+use cfgd_binary::cfgd_bin;
 
 /// Fixed name of the readiness sentinel written by the `preApply` script,
 /// relative to the config `dir`. Resolve via [`sentinel_path`].

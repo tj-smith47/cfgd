@@ -1,5 +1,3 @@
-#![allow(deprecated)] // assert_cmd 2.x cargo_bin deprecation; upgrade path is assert_cmd 3.x
-
 //! Exit-code and stdout-shape regression tests for `cfgd backup run` and
 //! `cfgd backup gc`.
 //!
@@ -13,18 +11,10 @@
 
 use cfgd_test_fixtures as common;
 
-use assert_cmd::Command;
 use common::{backup_profile_setup, strand_a_snapshot};
 
-/// The binary under test, with cfgd's own startup update check opted out.
-/// A fixture spawning the real binary reaches GitHub over the network on every
-/// human-channel run otherwise, which is no part of what any of these pins
-/// claims.
-fn cfgd_bin() -> Result<Command, assert_cmd::cargo::CargoError> {
-    let mut cmd = Command::cargo_bin("cfgd")?;
-    cmd.env("CFGD_NO_UPDATE_CHECK", "1");
-    Ok(cmd)
-}
+mod cfgd_binary;
+use cfgd_binary::cfgd_bin;
 
 #[test]
 fn backup_run_json_emits_exactly_one_document_when_a_unit_is_busy() {

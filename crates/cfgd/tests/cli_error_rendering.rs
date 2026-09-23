@@ -1,5 +1,3 @@
-#![allow(deprecated)] // assert_cmd 2.x cargo_bin deprecation; upgrade path is assert_cmd 3.x
-
 //! End-to-end proof of the central CLI error sink (`render_cli_error`).
 //!
 //! These tests drive the REAL `cfgd` binary on failing commands — the only path
@@ -14,17 +12,8 @@
 //!     silent on failure, and no `✗` human line leaks onto stdout;
 //!   - the structured payload carries the expected `error` kind.
 
-use assert_cmd::Command;
-
-/// The binary under test, with cfgd's own startup update check opted out.
-/// A fixture spawning the real binary reaches GitHub over the network on every
-/// human-channel run otherwise, which is no part of what any of these pins
-/// claims.
-fn cfgd_bin() -> Result<Command, assert_cmd::cargo::CargoError> {
-    let mut cmd = Command::cargo_bin("cfgd")?;
-    cmd.env("CFGD_NO_UPDATE_CHECK", "1");
-    Ok(cmd)
-}
+mod cfgd_binary;
+use cfgd_binary::cfgd_bin;
 
 /// Minimal valid config dir (so a command reaches its own not-found logic rather
 /// than failing earlier on missing config).

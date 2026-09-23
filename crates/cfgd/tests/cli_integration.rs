@@ -1,17 +1,9 @@
-#![allow(deprecated)] // assert_cmd 2.x cargo_bin deprecation; upgrade path is assert_cmd 3.x
-
-use assert_cmd::Command;
 use predicates::prelude::*;
 
-/// The binary under test, with cfgd's own startup update check opted out.
-/// A fixture spawning the real binary reaches GitHub over the network on every
-/// human-channel run otherwise, which is no part of what any of these pins
-/// claims.
-fn cfgd_bin() -> Result<Command, assert_cmd::cargo::CargoError> {
-    let mut cmd = Command::cargo_bin("cfgd")?;
-    cmd.env("CFGD_NO_UPDATE_CHECK", "1");
-    Ok(cmd)
-}
+use assert_cmd::prelude::*;
+
+mod cfgd_binary;
+use cfgd_binary::cfgd_bin;
 
 /// Helper: create a minimal valid config directory with a profile.
 fn create_valid_config(dir: &std::path::Path) {
@@ -100,6 +92,60 @@ fn apply_dry_run_with_empty_config() {
         .arg(config_dir.join("cfgd.yaml"))
         .assert()
         .success();
+}
+
+// --- the state store a real-binary test opens is its own ---
+
+#[test]
+fn a_real_binary_run_opens_the_calling_tests_own_state_store() {
+    let dir = tempfile::tempdir().unwrap();
+    create_valid_config(dir.path());
+
+    cfgd_bin()
+        .unwrap()
+        .args(["apply", "--dry-run", "--config"])
+        .arg(dir.path().join("cfgd.yaml"))
+        .assert()
+        .success();
+
+    let store = cfgd_binary::state_dir().join("state.db");
+    assert!(
+        store.is_file(),
+        "a run given no --state-dir must open {}, the calling test's own store",
+        store.display()
+    );
+}
+
+#[test]
+fn apply_dry_run_waits_for_another_process_creating_the_state_store() {
+    let dir = tempfile::tempdir().unwrap();
+    create_valid_config(dir.path());
+
+    // A second process creating the same fresh store holds the write lock on
+    // a database still in rollback mode; the run below starts inside that hold.
+    let holder = rusqlite::Connection::open(cfgd_binary::state_dir().join("state.db")).unwrap();
+    holder
+        .execute_batch("CREATE TABLE probe (x); BEGIN IMMEDIATE;")
+        .unwrap();
+    let release = std::thread::spawn(move || {
+        // sleep-ok: nothing observable says the child is inside SQLite's busy handler; the hold only has to outlast the child's start and first attempt
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        holder.execute_batch("COMMIT").unwrap();
+    });
+
+    let out = cfgd_bin()
+        .unwrap()
+        .args(["apply", "--dry-run", "--config"])
+        .arg(dir.path().join("cfgd.yaml"))
+        .output()
+        .unwrap();
+    release.join().unwrap();
+
+    assert!(
+        out.status.success(),
+        "a dry-run must wait out another writer's lock, not fail on it; stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 #[test]
@@ -2562,7 +2608,7 @@ fn yes_flag_is_global_in_every_spelling() {
             .args(after)
             .arg("--config")
             .arg(dir.join("cfgd.yaml"))
-            .write_stdin("");
+            .stdin(std::process::Stdio::null());
         if let Some(v) = env {
             cmd.env("CFGD_YES", v);
         }
@@ -3191,10 +3237,7 @@ fn apply_plan_stale_by_store_exits_1_through_the_real_binary() {
     );
 }
 
-/// The identity `store_id()` reads for the store under `state_dir`, the same
-/// way `apply_plan_file.rs`'s own `store_id_of` reads it for the in-process
-/// suite — for a pin comparing a refusal's wire ids to the REAL stores rather
-/// than merely to each other.
+/// The identity `store_id()` reads for the store under `state_dir`.
 fn store_id_of(state_dir: &std::path::Path) -> String {
     cfgd_core::state::StateStore::open(&state_dir.join("state.db"))
         .unwrap()

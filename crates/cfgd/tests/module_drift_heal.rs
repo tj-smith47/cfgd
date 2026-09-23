@@ -1,5 +1,3 @@
-#![allow(deprecated)] // assert_cmd 2.x cargo_bin deprecation
-
 //! The round trip a module-file drift row has to survive: the daemon tick's
 //! own producer RECORDS it, `cfgd apply` HEALS it, and the next `cfgd status`
 //! reads a converged machine.
@@ -17,21 +15,13 @@
 
 use std::path::{Path, PathBuf};
 
-use assert_cmd::Command;
 use cfgd_core::modules::ResolvedFile;
 use cfgd_core::providers::ProviderRegistry;
 use cfgd_core::reconciler::{Action, ModuleAction, ModuleActionKind, action_drift_rows};
 use cfgd_core::state::StateStore;
 
-/// The binary under test, with cfgd's own startup update check opted out.
-/// A fixture spawning the real binary reaches GitHub over the network on every
-/// human-channel run otherwise, which is no part of what any of these pins
-/// claims.
-fn cfgd_bin() -> Result<Command, assert_cmd::cargo::CargoError> {
-    let mut cmd = Command::cargo_bin("cfgd")?;
-    cmd.env("CFGD_NO_UPDATE_CHECK", "1");
-    Ok(cmd)
-}
+mod cfgd_binary;
+use cfgd_binary::cfgd_bin;
 
 /// A config dir holding one module that deploys one file to a target which
 /// does not exist yet, so the first scan finds drift.

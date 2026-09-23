@@ -18,8 +18,6 @@
 //! Goldens live under `tests/output_snapshots/explain/`. Regenerate with:
 //!     INSTA_UPDATE=always cargo test -p cfgd --test explain_snapshots
 
-#![allow(deprecated)] // assert_cmd 2.x cargo_bin deprecation; upgrade path is assert_cmd 3.x
-
 use std::path::Path;
 
 use cfgd::cli::explain::{
@@ -29,15 +27,8 @@ use cfgd::cli::explain::{
 use cfgd_core::output::test_capture::assert_snapshot_at;
 use cfgd_core::output::{DocCapture, Printer, strip_ansi};
 
-/// The binary under test, with cfgd's own startup update check opted out.
-/// A fixture spawning the real binary reaches GitHub over the network on every
-/// human-channel run otherwise, which is no part of what any of these pins
-/// claims.
-fn cfgd_bin() -> Result<assert_cmd::Command, assert_cmd::cargo::CargoError> {
-    let mut cmd = assert_cmd::Command::cargo_bin("cfgd")?;
-    cmd.env("CFGD_NO_UPDATE_CHECK", "1");
-    Ok(cmd)
-}
+mod cfgd_binary;
+use cfgd_binary::cfgd_bin;
 
 const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
 

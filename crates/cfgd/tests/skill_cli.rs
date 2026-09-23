@@ -1,18 +1,10 @@
-#![allow(deprecated)] // assert_cmd 2.x cargo_bin deprecation; upgrade path is assert_cmd 3.x
-
-use assert_cmd::Command;
 use predicates::prelude::*;
 use serde_json::Value;
 
-/// The binary under test, with cfgd's own startup update check opted out.
-/// A fixture spawning the real binary reaches GitHub over the network on every
-/// human-channel run otherwise, which is no part of what any of these pins
-/// claims.
-fn cfgd_bin() -> Result<Command, assert_cmd::cargo::CargoError> {
-    let mut cmd = Command::cargo_bin("cfgd")?;
-    cmd.env("CFGD_NO_UPDATE_CHECK", "1");
-    Ok(cmd)
-}
+use assert_cmd::prelude::*;
+
+mod cfgd_binary;
+use cfgd_binary::cfgd_bin;
 
 /// `cfgd skill install --help` must list the author kinds (so the kind is
 /// discoverable) and carry an `Examples:` block (the cfgd top-level-command
@@ -76,7 +68,7 @@ fn install_in(
     repo: &std::path::Path,
     home: &std::path::Path,
     args: &[&str],
-) -> assert_cmd::Command {
+) -> std::process::Command {
     let mut cmd = cfgd_bin().unwrap();
     cmd.env("HOME", home)
         // Windows resolves the home directory from USERPROFILE first; without
@@ -243,7 +235,11 @@ fn global_scope_skips_cursor_and_copilot_with_warning() {
 }
 
 /// Spawn `cfgd skill <subcommand...>` with a hermetic HOME and pinned CWD.
-fn skill_in(repo: &std::path::Path, home: &std::path::Path, args: &[&str]) -> assert_cmd::Command {
+fn skill_in(
+    repo: &std::path::Path,
+    home: &std::path::Path,
+    args: &[&str],
+) -> std::process::Command {
     let mut cmd = cfgd_bin().unwrap();
     cmd.env("HOME", home)
         .env("XDG_CONFIG_HOME", home.join(".config"))

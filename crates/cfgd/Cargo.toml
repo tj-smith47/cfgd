@@ -81,6 +81,9 @@ mockito = "1"
 semver = "1"
 cfgd-test-fixtures = { path = "../cfgd-test-fixtures" }
 tempfile = "3"
+# Test-only: hold a write lock on a state store from outside the binary under
+# test, the way a second `cfgd` creating the same store does.
+rusqlite = { version = "0.32", features = ["bundled"] }
 pretty_assertions = "1"
 tower = { version = "0.5", features = ["util"] }
 http = "1"

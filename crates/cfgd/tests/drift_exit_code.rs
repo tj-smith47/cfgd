@@ -1,5 +1,3 @@
-#![allow(deprecated)] // assert_cmd 2.x cargo_bin deprecation
-
 //! Exit-code contract for every drift surface that takes `--exit-code`
 //! (`diff`, `status`, `verify`, plus the `--module` flag-scoped variants of
 //! the first two — `every_exit_code_surface_reports_an_erroring_check`
@@ -16,18 +14,10 @@
 
 use std::path::Path;
 
-use assert_cmd::Command;
 use cfgd_core::test_helpers::{ShimArm, write_tool_shim};
 
-/// The binary under test, with cfgd's own startup update check opted out.
-/// A fixture spawning the real binary reaches GitHub over the network on every
-/// human-channel run otherwise, which is no part of what any of these pins
-/// claims.
-fn cfgd_bin() -> Result<Command, assert_cmd::cargo::CargoError> {
-    let mut cmd = Command::cargo_bin("cfgd")?;
-    cmd.env("CFGD_NO_UPDATE_CHECK", "1");
-    Ok(cmd)
-}
+mod cfgd_binary;
+use cfgd_binary::cfgd_bin;
 
 /// Every surface taking `--exit-code`, each spelled as the argv that arms it.
 const EXIT_CODE_SURFACES: [&[&str]; 3] = [

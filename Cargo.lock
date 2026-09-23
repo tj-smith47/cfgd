@@ -596,6 +596,7 @@ dependencies = [
  "mockito",
  "predicates",
  "pretty_assertions",
+ "rusqlite",
  "rustls",
  "schemars",
  "secrecy",

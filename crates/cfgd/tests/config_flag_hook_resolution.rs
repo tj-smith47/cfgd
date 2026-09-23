@@ -1,6 +1,4 @@
 #![cfg(unix)]
-#![allow(deprecated)] // assert_cmd 2.x cargo_bin deprecation; upgrade path is assert_cmd 3.x
-
 //! I3 regression: the finding's exact mandated matrix — {absolute, relative}
 //! `--config` × {no args, with args} — all four resolve and run.
 //!
@@ -26,19 +24,9 @@
 //! regresses.
 
 use std::path::Path;
-use std::process::Command;
 
-use assert_cmd::cargo::CommandCargoExt;
-
-/// The binary under test, with cfgd's own startup update check opted out.
-/// A fixture spawning the real binary reaches GitHub over the network on every
-/// human-channel run otherwise, which is no part of what any of these pins
-/// claims.
-fn cfgd_bin() -> Result<Command, assert_cmd::cargo::CargoError> {
-    let mut cmd = Command::cargo_bin("cfgd")?;
-    cmd.env("CFGD_NO_UPDATE_CHECK", "1");
-    Ok(cmd)
-}
+mod cfgd_binary;
+use cfgd_binary::cfgd_bin;
 
 /// Marker file the hook script writes, directly under the config directory
 /// (the resolution base a profile script uses is the directory holding

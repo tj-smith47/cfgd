@@ -1,5 +1,3 @@
-#![allow(deprecated)] // assert_cmd 2.x cargo_bin deprecation; upgrade path is assert_cmd 3.x
-
 //! Exit-code regression test for `cfgd apply`.
 //!
 //! A partial or total apply failure must surface as a nonzero exit
@@ -12,18 +10,12 @@
 
 use std::path::Path;
 
-use assert_cmd::Command;
 use predicates::prelude::*;
 
-/// The binary under test, with cfgd's own startup update check opted out.
-/// A fixture spawning the real binary reaches GitHub over the network on every
-/// human-channel run otherwise, which is no part of what any of these pins
-/// claims.
-fn cfgd_bin() -> Result<Command, assert_cmd::cargo::CargoError> {
-    let mut cmd = Command::cargo_bin("cfgd")?;
-    cmd.env("CFGD_NO_UPDATE_CHECK", "1");
-    Ok(cmd)
-}
+use assert_cmd::prelude::*;
+
+mod cfgd_binary;
+use cfgd_binary::cfgd_bin;
 
 /// Write a config + profile with two managed file actions: one whose target
 /// directory is normal (succeeds), and one whose target's parent is a regular
