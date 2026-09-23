@@ -52,11 +52,17 @@ as installed:
 The unprivileged arm is proven on a real host as well as in unit tests: CI's
 FreeBSD job runs `tests/real-host/freebsd-npm-prefix.sh` (the
 `task test:freebsd:npm-prefix` target) against the `www/npm` package, whose
-configured prefix is the root-owned `/usr/local`. The script itself needs root
-to install that package and create the test account, and it runs every `cfgd`
-invocation as the unprivileged user, asserting that a declared package's binary
-lands in `$HOME/.npm-global/bin` and that the generated env file puts that
-directory on `PATH`.
+configured prefix is the root-owned `/usr/local`. The script needs root to
+install that package and create the test account, and it runs every `cfgd`
+invocation as the unprivileged user against a module declaring `prefer: [npm]`,
+asserting that the package's binary lands in `$HOME/.npm-global/bin`, that the
+generated env file puts that directory on `PATH`, and that a second apply plans
+no work.
+
+npm's own configured prefix is untouched throughout: `npm config get prefix`
+still answers `/usr/local` for that user. cfgd passes `--prefix` on each global
+invocation rather than writing `npm_config_prefix` or `~/.npmrc`, so nothing in
+the user's npm configuration changes.
 
 The first time the fallback is used, `cfgd apply` prints a one-time notice
 naming the fallback prefix. Nothing is asked of you: `$HOME/.npm-global` is a
