@@ -6,7 +6,7 @@ use std::process::Command;
 use assert_cmd::cargo::{CargoError, CommandCargoExt};
 
 mod isolated_env;
-use isolated_env::{ISOLATED_ENV, WORKING_DIR};
+use isolated_env::{ISOLATED_ENV, REMOVED_ENV, WORKING_DIR};
 
 thread_local! {
     // libtest runs every test on a thread of its own, so this is one scratch
@@ -31,7 +31,8 @@ thread_local! {
 /// reaches GitHub over the network on every human-channel run otherwise, which
 /// is no part of what any of these pins claims.
 ///
-/// Every `CFGD_*` variable the test process inherited is removed, then every
+/// Every `CFGD_*` variable the test process inherited is removed, and so is
+/// every variable in `REMOVED_ENV`, then every
 /// variable in `ISOLATED_ENV` and the working directory point into the
 /// calling test's own directory. Every test process in a run shares one
 /// `HOME` and starts in the crate's checkout, so a `cfgd` left to resolve its
@@ -53,6 +54,9 @@ pub fn cfgd_bin() -> Result<Command, CargoError> {
         {
             cmd.env_remove(var);
         }
+    }
+    for var in REMOVED_ENV {
+        cmd.env_remove(var);
     }
     cmd.env("CFGD_NO_UPDATE_CHECK", "1");
     ROOT.with(|root| {

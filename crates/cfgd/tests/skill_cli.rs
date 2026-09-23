@@ -72,8 +72,8 @@ fn install_in(
     let mut cmd = cfgd_bin().unwrap();
     cmd.env("HOME", home)
         // Windows resolves the home directory from USERPROFILE first; without
-        // this the hermetic HOME is ignored and provider detection inspects the
-        // runner's real profile instead of the test fixture.
+        // this the fixture HOME is ignored and provider detection inspects the
+        // constructor's home instead of the test fixture.
         .env("USERPROFILE", home)
         .env("XDG_CONFIG_HOME", home.join(".config"))
         .current_dir(repo)

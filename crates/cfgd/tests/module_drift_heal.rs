@@ -62,11 +62,11 @@ fn run(args: &[&str], config: &Path, state: &Path, home: &Path) -> std::process:
         .arg("--state-dir")
         .arg(state)
         .env("HOME", home)
-        // Windows resolves `~` from USERPROFILE first, so a child left holding
-        // the invoking account's profile would write to the real home.
+        // Windows resolves `~` from USERPROFILE first, so HOME alone would
+        // leave the child under the constructor's home instead of this one.
         .env("USERPROFILE", home)
-        // `directories` reads Windows' known folders rather than the env, so
-        // nothing but this seam keeps a child's module cache out of the real profile.
+        // Keeps the module cache under the home this test re-points; the
+        // constructor's own cache override sits outside it.
         .env("CFGD_CACHE_DIR", home.join("cache"))
         .env("CFGD_COLOR", "never");
     cmd.output().unwrap()

@@ -854,10 +854,6 @@ fn doctor_with_missing_explicit_config_fails() {
 
 // --- doctor without config at the DEFAULT path still succeeds (fresh machine) ---
 
-// Unix-only: the default config dir honors $XDG_CONFIG_HOME/$HOME there, so the
-// test can point the DEFAULT at an empty tempdir. On Windows the default comes
-// from the Known Folders API, which env vars cannot redirect.
-#[cfg(unix)]
 #[test]
 fn doctor_without_config_at_default_path_succeeds() {
     let home = tempfile::tempdir().unwrap();
@@ -870,6 +866,7 @@ fn doctor_without_config_at_default_path_succeeds() {
         .env_remove("CFGD_CONFIG")
         .env_remove("CFGD_CONFIG_DIR")
         .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
         .env("XDG_CONFIG_HOME", home.path().join(".config"))
         .env("XDG_STATE_HOME", home.path().join(".state"))
         .env("XDG_CACHE_HOME", home.path().join(".cache"))

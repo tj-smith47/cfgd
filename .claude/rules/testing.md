@@ -5,7 +5,7 @@ paths: ["crates/**/*.rs"]
 
 - `cargo test` must pass before any phase is considered complete.
 - Unit tests for pure logic (config parsing, diffing, template rendering). Co-located in `#[cfg(test)] mod tests {}` within each module.
-- Integration tests in `tests/`. Every one that runs the real binary spawns it through `cfgd_binary::cfgd_bin()` (`crates/cfgd/tests/cfgd_binary/mod.rs`), which opts out of the update check and points `HOME`, `USERPROFILE`, the four `XDG_*_HOME`, `CFGD_STATE_DIR` and the working directory into the test's own temp dir. No test spells `cargo_bin(`, `cargo_bin!(`, `cargo_bin_cmd!(`, `Command::new("cfgd"` or `CARGO_BIN_EXE_cfgd` itself; `every_integration_test_spawns_the_binary_through_the_one_isolating_constructor` fails until it calls the constructor.
+- Integration tests in `tests/`. Every one that runs the real binary spawns it through `cfgd_binary::cfgd_bin()` (`crates/cfgd/tests/cfgd_binary/mod.rs`), which opts out of the update check, removes every inherited `CFGD_*` and systemd `*_DIRECTORY` variable, and points every variable in `cfgd_binary/isolated_env.rs` and the working directory into the test's own temp dir. No test spells `cargo_bin(`, `cargo_bin!(`, `cargo_bin_cmd!(`, `Command::new("cfgd"` or `CARGO_BIN_EXE_cfgd` itself; `every_integration_test_spawns_the_binary_through_the_one_isolating_constructor` fails until it calls the constructor.
 - Package manager tests use mock trait implementations, not real system calls.
 - Use `tempfile` for any test that touches the filesystem.
 
@@ -67,9 +67,11 @@ directory trips over the rule.
 
 The Rust integration tests under `crates/cfgd/tests/` have the same need and
 one constructor for it: `cfgd_binary::cfgd_bin()` removes every `CFGD_*` the
-test process inherited, then builds every real-binary command with `HOME`,
-`USERPROFILE`, the four `XDG_*_HOME` directories, `XDG_RUNTIME_DIR`,
-`CFGD_STATE_DIR`, `CFGD_CACHE_DIR` and `CFGD_RUNTIME_DIR` (the list in
+test process inherited (matched case-insensitively, as Windows names them) and
+the four systemd `*_DIRECTORY` variables `REMOVED_ENV` lists, then builds every
+real-binary command with `HOME`, `USERPROFILE`, the four `XDG_*_HOME`
+directories, `XDG_RUNTIME_DIR`, `LOCALAPPDATA`, `CFGD_STATE_DIR`,
+`CFGD_CACHE_DIR` and `CFGD_RUNTIME_DIR` (the list in
 `cfgd_binary/isolated_env.rs`) pointed into a temp dir owned by the
 calling test's thread, and starts it in a working directory there too, so no
 spawn reads the developer's config, writes project scope into the checkout,

@@ -7,7 +7,7 @@
 /// home and XDG variables. Windows resolves its cache and runtime roots
 /// through known-folder lookups that ignore the environment, so there the
 /// `CFGD_*` overrides are what steer them; its config root honors
-/// `XDG_CONFIG_HOME` and its legacy data directory follows `USERPROFILE`.
+/// `XDG_CONFIG_HOME` and its legacy data directory follows `LOCALAPPDATA`.
 ///
 /// `CFGD_CONFIG_DIR` is left out: the CLI reads it as an explicit
 /// `--config-dir`, which turns off what a run does only at the default config
@@ -20,9 +20,21 @@ pub const ISOLATED_ENV: &[(&str, &str)] = &[
     ("XDG_STATE_HOME", "home/.local/state"),
     ("XDG_CACHE_HOME", "home/.cache"),
     ("XDG_RUNTIME_DIR", "home/.cache/cfgd-runtime-base"),
+    ("LOCALAPPDATA", "home/AppData/Local"),
     ("CFGD_STATE_DIR", "state"),
     ("CFGD_CACHE_DIR", "home/.cache/cfgd"),
     ("CFGD_RUNTIME_DIR", "home/runtime"),
+];
+
+/// Every environment variable `cfgd_bin()` removes outright: the directories
+/// systemd hands a unit (`ConfigurationDirectory=` and its siblings). `cfgd`
+/// ranks `CONFIGURATION_DIRECTORY` above `XDG_CONFIG_HOME`, so a test run
+/// from inside such a unit would otherwise reach that unit's real config.
+pub const REMOVED_ENV: &[&str] = &[
+    "CONFIGURATION_DIRECTORY",
+    "STATE_DIRECTORY",
+    "CACHE_DIRECTORY",
+    "RUNTIME_DIRECTORY",
 ];
 
 /// The working directory `cfgd_bin()` starts `cfgd` in, under the

@@ -48549,7 +48549,7 @@ fn binary_spawn_tells(body: &str) -> Vec<&'static str> {
 /// dark while the constructor stays.
 #[test]
 fn every_integration_test_spawns_the_binary_through_the_one_isolating_constructor() {
-    use cfgd_binary_isolated_env::{ISOLATED_ENV, WORKING_DIR};
+    use cfgd_binary_isolated_env::{ISOLATED_ENV, REMOVED_ENV, WORKING_DIR};
 
     const OPTOUT: &str = cfgd_core::upgrade::OPTOUT_VARS[0];
     const CONSTRUCTOR_FILE: &str = "cfgd_binary/mod.rs";
@@ -48558,8 +48558,13 @@ fn every_integration_test_spawns_the_binary_through_the_one_isolating_constructo
     const CALLER_FLOOR: usize = 13;
     // Each statement as rustfmt lays it out, compared with the whitespace
     // taken out of both sides so a wrap does not read as a missing line.
-    const SWEEP: [&str; 2] = [
+    // `eq_ignore_ascii_case(` is required because Windows folds the case of
+    // an environment name, so a case-sensitive match lets `cfgd_yes` through.
+    const SWEEP: [&str; 5] = [
         "for (var, _) in std::env::vars_os() {",
+        "eq_ignore_ascii_case(",
+        "cmd.env_remove(var);",
+        "for var in REMOVED_ENV {",
         "cmd.env_remove(var);",
     ];
     const INHERITED_PREFIX: &str = "CFGD_";
@@ -48608,6 +48613,7 @@ fn every_integration_test_spawns_the_binary_through_the_one_isolating_constructo
         "XDG_STATE_HOME",
         "XDG_CACHE_HOME",
         "XDG_RUNTIME_DIR",
+        "LOCALAPPDATA",
         "CFGD_STATE_DIR",
         "CFGD_CACHE_DIR",
         "CFGD_RUNTIME_DIR",
@@ -48624,6 +48630,36 @@ fn every_integration_test_spawns_the_binary_through_the_one_isolating_constructo
         "CFGD_CONFIG_DIR is an explicit --config-dir to the CLI, so setting it would \
          move every spawn off the default config directory it runs against"
     );
+    // Every systemd-provided directory a resolver in `cfgd-core` reads is
+    // removed, because each outranks the XDG variable the list sets for it.
+    let core_src = cfgd_core::test_helpers::workspace_root().join("crates/cfgd-core/src");
+    let mut systemd_dirs: Vec<String> = Vec::new();
+    for path in cfgd_core::test_helpers::rust_sources_under(&core_src) {
+        let rel = cfgd_core::to_posix_string(path.strip_prefix(&core_src).unwrap_or(&path));
+        if rel.ends_with("tests.rs") || rel.contains("/tests/") || rel == "test_helpers.rs" {
+            continue;
+        }
+        let body = walked_file_body(&path);
+        let blanked = blank_non_code(&body);
+        // Only a call naming its variable as a literal; `fn systemd_dir(`
+        // itself takes a parameter.
+        for (at, _) in blanked.match_indices("systemd_dir(\"") {
+            if let Some((_, name)) = span_literals(&blanked[at..], &body[at..]).first() {
+                systemd_dirs.push((*name).to_string());
+            }
+        }
+    }
+    assert!(
+        systemd_dirs.len() >= 4,
+        "the walk found {systemd_dirs:?} under {}, so it is reading the wrong tree",
+        core_src.display()
+    );
+    for name in &systemd_dirs {
+        assert!(
+            REMOVED_ENV.contains(&name.as_str()),
+            "cfgd resolves a directory from systemd's {name}, and the constructor leaves it set"
+        );
+    }
     // A path that is not relative replaces the test's directory when joined
     // onto it, and a working directory inside the isolated home resolves
     // project scope to the same tree as user scope.
