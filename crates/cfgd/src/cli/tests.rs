@@ -48107,7 +48107,7 @@ fn every_real_host_script_is_reachable_from_ci() {
             "tests/real-host/{}",
             script.file_name().unwrap_or_default().to_string_lossy()
         );
-        match target_naming(&taskfile, &rel) {
+        match key_naming(&taskfile, "tasks:", &rel) {
             None => offenders.push(format!("{rel}: no Taskfile target runs it")),
             Some(target) => {
                 if !workflows.iter().any(|w| runs_task(w, &target)) {
@@ -48119,6 +48119,111 @@ fn every_real_host_script_is_reachable_from_ci() {
     assert!(
         offenders.is_empty(),
         "a real-host proof nothing runs: {offenders:?}"
+    );
+}
+
+/// Every demo GIF and every tape names, in `demo/recorded.txt`, the commit it
+/// was recorded at, and a check on every pull request holds each GIF to it.
+///
+/// `demo/scripts/check-sync.sh` flags a GIF whose render inputs changed since
+/// its line, so a GIF or a tape with no line is one nothing ever judges, and a
+/// stamp that is not a full commit id is one it cannot resolve. The population
+/// is read off `demo/` itself, so a new take joins it by existing.
+#[test]
+fn every_demo_gif_is_stamped_and_checked() {
+    /// The GIFs shipped today; a file holding fewer lines lost a stamp.
+    const STAMP_FLOOR: usize = 8;
+    const CHECK: &str = "demo/scripts/check-sync.sh";
+    let root = cfgd_core::test_helpers::workspace_root();
+    let demo = root.join("demo");
+    let stamps: Vec<Vec<String>> = walked_file_body(&demo.join("recorded.txt"))
+        .lines()
+        .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
+        .map(|l| l.split_whitespace().map(str::to_string).collect())
+        .collect();
+    assert!(
+        stamps.len() >= STAMP_FLOOR,
+        "demo/recorded.txt holds {} lines, fewer than the {STAMP_FLOOR} GIFs demo/ ships",
+        stamps.len()
+    );
+    let mut on_disk: Vec<String> = std::fs::read_dir(&demo)
+        .unwrap_or_else(|e| panic!("cannot read {}: {e}", demo.display()))
+        .map(|entry| {
+            entry
+                .unwrap_or_else(|e| panic!("cannot read an entry of {}: {e}", demo.display()))
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .filter(|n| n.ends_with(".gif") || n.ends_with(".tape"))
+        .collect();
+    on_disk.sort();
+    assert!(
+        on_disk.iter().filter(|n| n.ends_with(".gif")).count() >= STAMP_FLOOR,
+        "the walk read fewer than {STAMP_FLOOR} GIFs in demo/: {on_disk:?}"
+    );
+
+    let mut offenders = Vec::new();
+    for stamp in &stamps {
+        let [gif, tape, sha] = stamp.as_slice() else {
+            offenders.push(format!("{stamp:?}: not `<gif> <tape> <commit>`"));
+            continue;
+        };
+        for named in [gif, tape] {
+            if !on_disk.contains(named) {
+                offenders.push(format!("{gif}: names demo/{named}, which does not exist"));
+            }
+        }
+        if sha.len() != 40 || !sha.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f')) {
+            offenders.push(format!("{gif}: `{sha}` is not a 40-hex commit id"));
+        }
+    }
+    for name in &on_disk {
+        let column = usize::from(name.ends_with(".tape"));
+        let lines = stamps
+            .iter()
+            .filter(|s| s.get(column) == Some(name))
+            .count();
+        if lines != 1 {
+            offenders.push(format!(
+                "demo/{name}: {lines} lines in demo/recorded.txt, not one"
+            ));
+        }
+    }
+
+    let ci = walked_file_body(&root.join(".github/workflows/ci.yml"));
+    let ci_lines: Vec<&str> = ci.lines().map(yaml_code).collect();
+    let on_pull_request = ci_lines
+        .iter()
+        .skip_while(|l| l.trim_end() != "on:")
+        .skip(1)
+        .take_while(|l| l.starts_with(' ') || l.trim().is_empty())
+        .any(|l| l.trim().trim_end_matches(':') == "pull_request");
+    if !on_pull_request {
+        offenders.push("ci.yml: not triggered by pull_request".to_string());
+    }
+    match key_naming(&ci, "jobs:", CHECK) {
+        None => offenders.push(format!("ci.yml: no job runs {CHECK}")),
+        Some(job) => {
+            let header = format!("  {job}:");
+            let gated = ci_lines
+                .iter()
+                .skip_while(|l| l.trim_end() != header)
+                .skip(1)
+                .take_while(|l| l.trim().is_empty() || l.starts_with("   "))
+                .any(|l| l.starts_with("    if:"));
+            if gated {
+                offenders.push(format!("ci.yml: job `{job}` runs {CHECK} behind an `if:`"));
+            }
+        }
+    }
+    let taskfile = walked_file_body(&root.join("Taskfile.yml"));
+    if key_naming(&taskfile, "tasks:", CHECK).is_none() {
+        offenders.push(format!("Taskfile.yml: no target runs {CHECK}"));
+    }
+    assert!(
+        offenders.is_empty(),
+        "a demo GIF the sync check cannot judge: {offenders:?}"
     );
 }
 
@@ -48141,14 +48246,15 @@ fn yaml_code(line: &str) -> &str {
     line
 }
 
-/// The Taskfile target whose body names `rel`: the nearest two-space-indented
-/// `<name>:` header above the first uncommented line naming the script, both
-/// searched below `tasks:` so a key under the top-level `vars:` or `env:` is
-/// never taken for a target. Read off the file rather than a table, so
-/// renaming a target moves the pin with it.
-fn target_naming(taskfile: &str, rel: &str) -> Option<String> {
-    let lines: Vec<&str> = taskfile.lines().map(yaml_code).collect();
-    let tasks = lines.iter().position(|l| l.trim_end() == "tasks:")? + 1;
+/// The key under the top-level `section` (`tasks:` of a Taskfile, `jobs:` of
+/// a workflow) whose body names `rel`: the nearest two-space-indented
+/// `<name>:` header above the first uncommented line naming it, both searched
+/// below `section` so a key under the top-level `vars:` or `env:` is never
+/// taken for a target or a job. Read off the file rather than a table, so
+/// renaming a target or a job moves the pin with it.
+fn key_naming(body: &str, section: &str, rel: &str) -> Option<String> {
+    let lines: Vec<&str> = body.lines().map(yaml_code).collect();
+    let tasks = lines.iter().position(|l| l.trim_end() == section)? + 1;
     let at = tasks + lines[tasks..].iter().position(|l| l.contains(rel))?;
     lines[tasks..at].iter().rev().find_map(|l| {
         let trimmed = l.strip_prefix("  ")?.trim_end();
