@@ -1356,28 +1356,32 @@ mod tests {
         assert_eq!(type_desc_of(schema, "nested"), "object");
     }
 
-    // A deliberately self-referential pair of types. `edge` and `target` are
-    // bare (non-optional) `$ref`s — exactly the shape `resolve_ref` follows —
-    // so the walk recurses Node -> Edge -> Node -> Edge ... Without a cycle
-    // guard this overflows the stack and aborts the process.
-    #[derive(schemars::JsonSchema)]
-    #[allow(dead_code)]
-    struct Node {
-        name: String,
-        edge: Edge,
-    }
-
-    #[derive(schemars::JsonSchema)]
-    #[allow(dead_code)]
-    struct Edge {
-        target: Box<Node>,
-    }
-
+    // A deliberately self-referential pair. `edge` and `target` are bare
+    // (non-optional) `$ref`s — the shape `resolve_ref` follows — so the walk
+    // recurses Node -> Edge -> Node -> Edge. Without a cycle guard this
+    // overflows the stack and aborts the process. Written as a literal rather
+    // than derived: the cycle is total, so no value of the pair exists for a
+    // schemars derive to be grounded against. The literal keeps the layout a
+    // derive emits for a recursive root: Node inline at the root, Edge under
+    // `$defs`, and the way back to Node spelled as the root ref `#`.
     #[test]
     fn self_referential_schema_terminates_with_bounded_tree() {
-        let schema = schema_for!(Node);
-        // The contract under test is termination: this returns instead of
-        // overflowing the stack on the recursive `edge`/`target` refs.
+        let schema: Schema = serde_json::from_value(serde_json::json!({
+            "type": "object",
+            "properties": {
+                "name": { "type": "string" },
+                "edge": { "$ref": "#/$defs/Edge" }
+            },
+            "required": ["name", "edge"],
+            "$defs": {
+                "Edge": {
+                    "type": "object",
+                    "properties": { "target": { "$ref": "#" } },
+                    "required": ["target"]
+                }
+            }
+        }))
+        .expect("schema parses");
         let tree = field_tree_from_schema(&schema);
 
         let names: Vec<&str> = tree.iter().map(|f| f.name.as_str()).collect();
@@ -1420,8 +1424,7 @@ mod tests {
     // `kids: Vec<TreeNode>` makes `array_element_fields` descend TreeNode ->
     // kids[](TreeNode) -> kids[](TreeNode) ... so without the `RefDescent`
     // guard on the element `$ref` the walk overflows the stack.
-    #[derive(schemars::JsonSchema)]
-    #[allow(dead_code)]
+    #[derive(schemars::JsonSchema, serde::Serialize, serde::Deserialize)]
     struct TreeNode {
         name: String,
         kids: Vec<TreeNode>,
@@ -1429,6 +1432,28 @@ mod tests {
 
     #[test]
     fn self_referential_array_terminates_with_bounded_tree() {
+        // The round-trip is what reads the fields, and it is also the claim:
+        // the walk must name the fields serde actually emits.
+        let value = TreeNode {
+            name: "root".into(),
+            kids: vec![TreeNode {
+                name: "leaf".into(),
+                kids: vec![],
+            }],
+        };
+        let json = serde_json::to_value(&value).expect("serializes");
+        let back: TreeNode = serde_json::from_value(json.clone()).expect("round-trips");
+        assert_eq!(back.name, "root");
+        assert_eq!(back.kids.len(), 1);
+        let mut keys: Vec<&str> = json
+            .as_object()
+            .expect("object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort();
+        assert_eq!(keys, ["kids", "name"]);
+
         let schema = schema_for!(TreeNode);
         // Termination: returns instead of overflowing on the recursive `kids`
         // element `$ref`.
@@ -1469,8 +1494,7 @@ mod tests {
     // around the `$ref`, which `unwrap_single_subschema` peels before
     // `field_node` follows the ref. Without the guard on that unwrapped ref the
     // walk recurses ListNode -> next(ListNode) -> next(ListNode) ... forever.
-    #[derive(schemars::JsonSchema)]
-    #[allow(dead_code)]
+    #[derive(schemars::JsonSchema, serde::Serialize, serde::Deserialize)]
     struct ListNode {
         value: String,
         next: Option<Box<ListNode>>,
@@ -1478,6 +1502,28 @@ mod tests {
 
     #[test]
     fn option_wrapped_self_ref_terminates_with_bounded_tree() {
+        // The round-trip is what reads the fields, and it is also the claim:
+        // the walk must name the fields serde actually emits.
+        let value = ListNode {
+            value: "head".into(),
+            next: Some(Box::new(ListNode {
+                value: "tail".into(),
+                next: None,
+            })),
+        };
+        let json = serde_json::to_value(&value).expect("serializes");
+        let back: ListNode = serde_json::from_value(json.clone()).expect("round-trips");
+        assert_eq!(back.value, "head");
+        assert!(back.next.is_some());
+        let mut keys: Vec<&str> = json
+            .as_object()
+            .expect("object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort();
+        assert_eq!(keys, ["next", "value"]);
+
         let schema = schema_for!(ListNode);
         // Termination: returns instead of overflowing on the recursive,
         // option-wrapped `next` ref.
