@@ -201,16 +201,14 @@ echo
 echo "===== (c) the apply's row is Ok and the env surface exports the bin dir ====="
 echo "$APPLY_OUT" | grep -q "✓ npm install $PKG_NAME" ||
     fail 13 "the apply did not render an Ok row for 'npm install $PKG_NAME'"
-# A module-declared package is recorded under its module's id, not as a bare
-# `npm/<name>` row, so the JSON row is keyed by module and package name.
-echo "$JSON_OUT" | grep -q "\"npmtest:packages:$PKG_NAME\"" ||
-    fail 13 "-o json status does not name the npmtest:packages:$PKG_NAME resource row"
+echo "$STATUS_OUT" | grep -q "npm: $PKG_NAME" ||
+    fail 13 "cfgd status does not list the package under its manager as 'npm: $PKG_NAME'"
 ENV_FILE=$HOME_DIR/.cfgd.env
 [ -f "$ENV_FILE" ] || fail 13 "no generated env file at $ENV_FILE"
 cat "$ENV_FILE"
 grep -q '^export PATH=.*\.npm-global/bin' "$ENV_FILE" ||
     fail 13 "$ENV_FILE does not put the fallback bin directory on PATH"
-echo "PASS (c): Ok row rendered and $ENV_FILE exports the fallback bin directory"
+echo "PASS (c): Ok row rendered, status names npm: $PKG_NAME, and $ENV_FILE exports the fallback bin directory"
 
 echo
 echo "===== cfgd apply --yes (second) ====="
@@ -228,8 +226,12 @@ echo "PASS (d): the second apply is a no-op"
 
 echo
 echo "===== (e) the package was resolved through the module that named npm ====="
-echo "$JSON_OUT" | grep -q '"npmtest"' ||
-    fail 15 "-o json status does not name the npmtest module, so the module arm did not resolve"
+# Both JSON keys are spellings only a module-owned row produces: the profile
+# is also named npmtest, so a bare "npmtest" would match its lastApply entry.
+echo "$JSON_OUT" | grep -q "\"resourceId\": \"npmtest:packages:$PKG_NAME\"" ||
+    fail 15 "-o json status has no npmtest:packages:$PKG_NAME resource, so the module arm did not record the package"
+echo "$JSON_OUT" | grep -q '"owner": "module:npmtest"' ||
+    fail 15 "-o json status has no resource owned by module:npmtest"
 echo "$PLAN_OUT" | grep -q "module:npmtest" ||
     fail 15 "the plan did not attribute the package to module:npmtest"
 echo "PASS (e): the npm package resolved under module:npmtest"
