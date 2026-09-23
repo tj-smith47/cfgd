@@ -4650,6 +4650,177 @@ fn open_pins_wal_and_normal_synchronous() {
     assert_eq!(synchronous, 1);
 }
 
+/// A second connection on a database still in rollback mode, holding its
+/// write lock: the state a fresh `state.db` is in while another process is
+/// creating it.
+fn hold_rollback_write_lock(path: &Path) -> Connection {
+    let holder = Connection::open(path).unwrap();
+    holder
+        .execute_batch("CREATE TABLE IF NOT EXISTS probe (x); BEGIN IMMEDIATE;")
+        .unwrap();
+    let mode: String = holder
+        .query_row("PRAGMA journal_mode", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(
+        mode.to_lowercase(),
+        "delete",
+        "the holder must be in rollback mode"
+    );
+    holder
+}
+
+#[test]
+fn a_store_opened_while_another_connection_writes_the_fresh_file_waits_for_its_lock() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    let holder = hold_rollback_write_lock(&path);
+    let release = std::thread::spawn(move || {
+        // sleep-ok: nothing observable says a connection is inside SQLite's busy handler; the hold only has to outlast the open's first attempt, and the verdict is the ordering below
+        std::thread::sleep(Duration::from_millis(300));
+        holder.execute_batch("COMMIT").unwrap();
+        std::time::Instant::now()
+    });
+
+    let store = StateStore::open(&path);
+    let opened_at = std::time::Instant::now();
+    let released_at = release.join().unwrap();
+
+    let store = store.unwrap_or_else(|e| panic!("open failed while the lock was held: {e}"));
+    assert!(
+        opened_at >= released_at,
+        "the open returned before the other connection released its write lock"
+    );
+    let mode: String = store
+        .conn
+        .query_row("PRAGMA journal_mode", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(mode.to_lowercase(), "wal");
+}
+
+#[test]
+fn enable_wal_waits_the_whole_busy_timeout_before_it_reports_the_lock() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    let _holder = hold_rollback_write_lock(&path);
+    let conn = Connection::open(&path).unwrap();
+    let timeout = Duration::from_millis(250);
+
+    let started = std::time::Instant::now();
+    let err = enable_wal(&conn, timeout).expect_err("the lock is never released");
+    let waited = started.elapsed();
+
+    assert_eq!(
+        err.sqlite_error_code(),
+        Some(rusqlite::ErrorCode::DatabaseBusy),
+        "{err}"
+    );
+    assert!(
+        waited >= timeout,
+        "reported the lock after {waited:?}, inside the {timeout:?} busy timeout"
+    );
+}
+
+/// `enable_wal` is the one place a production connection switches its journal
+/// mode, because a bare `PRAGMA journal_mode=WAL` fails a second process that
+/// opens a fresh database at the same moment without waiting on it.
+///
+/// Every `<crate>/src` under `crates/` is read off the directory, with a floor
+/// per root so a tree going dark fails by name. Comment rows are skipped, so
+/// prose naming the pragma is not a site.
+#[test]
+fn every_production_journal_mode_switch_goes_through_enable_wal() {
+    use crate::test_helpers::{production_slice_of, rust_sources_under, workspace_root};
+
+    const WALK_ROOTS: &[(&str, usize)] = &[
+        ("crates/cfgd-core/src", 192),
+        ("crates/cfgd-crd/src", 1),
+        ("crates/cfgd-csi/src", 8),
+        ("crates/cfgd-operator/src", 46),
+        ("crates/cfgd-schema/src", 2),
+        ("crates/cfgd-test-fixtures/src", 1),
+        ("crates/cfgd/src", 145),
+    ];
+    const HELPER_FILE: &str = "crates/cfgd-core/src/state/mod.rs";
+
+    let workspace = workspace_root();
+    let crates_dir = workspace.join("crates");
+    let mut roots: Vec<String> = std::fs::read_dir(&crates_dir)
+        .unwrap_or_else(|e| panic!("{}: {e}", crates_dir.display()))
+        .map(|entry| {
+            entry
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "{}: the walk must read every entry: {e}",
+                        crates_dir.display()
+                    )
+                })
+                .path()
+                .join("src")
+        })
+        .filter(|src| src.is_dir())
+        .map(|src| crate::to_posix_string(src.strip_prefix(&workspace).unwrap_or(&src)))
+        .collect();
+    roots.sort();
+    let named: Vec<&str> = WALK_ROOTS.iter().map(|(root, _)| *root).collect();
+    assert_eq!(roots, named, "the walk roots are every crate's src");
+
+    let mut sites: Vec<String> = Vec::new();
+    for (root, floor) in WALK_ROOTS {
+        let mut files = 0usize;
+        for path in rust_sources_under(&workspace.join(root)) {
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            if name.starts_with("tests")
+                || name == "test_helpers.rs"
+                || path.parent().is_some_and(|p| p.ends_with("tests"))
+            {
+                continue;
+            }
+            files += 1;
+            let relative = crate::to_posix_string(path.strip_prefix(&workspace).unwrap_or(&path));
+            for (n, line) in production_slice_of(&path).lines().enumerate() {
+                if line.trim_start().starts_with("//") {
+                    continue;
+                }
+                if line.to_ascii_lowercase().contains("journal_mode") {
+                    sites.push(format!("{relative}:{}", n + 1));
+                }
+            }
+        }
+        assert!(
+            files >= *floor,
+            "{root}: walked {files} production sources, floor {floor}"
+        );
+    }
+
+    // The helper's body, as the rows from its signature to the `}` that closes
+    // it at column zero, so a second switch written into the same file is
+    // still a site outside it.
+    let helper = production_slice_of(&workspace.join(HELPER_FILE));
+    let rows: Vec<&str> = helper.lines().collect();
+    let opens = rows
+        .iter()
+        .position(|l| l.starts_with("pub fn enable_wal("))
+        .unwrap_or_else(|| panic!("{HELPER_FILE}: no `pub fn enable_wal(`"));
+    let closes = opens
+        + rows[opens..]
+            .iter()
+            .position(|l| *l == "}")
+            .unwrap_or_else(|| panic!("{HELPER_FILE}: `enable_wal` never closes"));
+    let inside: Vec<String> = (opens + 1..=closes + 1)
+        .map(|n| format!("{HELPER_FILE}:{n}"))
+        .collect();
+
+    assert_eq!(
+        sites.len(),
+        1,
+        "journal_mode switches outside enable_wal: {sites:?}"
+    );
+    assert!(
+        inside.contains(&sites[0]),
+        "the one journal_mode switch sits outside enable_wal: {sites:?}"
+    );
+}
+
 #[test]
 fn in_transaction_batches_every_write_into_one_commit() {
     let dir = tempfile::tempdir().unwrap();

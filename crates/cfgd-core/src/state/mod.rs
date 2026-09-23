@@ -1,5 +1,6 @@
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use rusqlite::{Connection, OptionalExtension};
 
@@ -42,6 +43,36 @@ pub use types::{
 /// explicit-`--state-dir`/`CFGD_STATE_DIR` paths can never diverge onto sibling
 /// files (the divergence silently read an empty DB and reported "no history").
 pub const STATE_DB_FILENAME: &str = "state.db";
+
+/// How long a state store connection waits on another process's lock before
+/// a statement fails with `database is locked`.
+const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Set `conn`'s busy timeout and switch its database to WAL journaling,
+/// waiting out another connection's write lock the way every other statement
+/// on `conn` does.
+///
+/// `PRAGMA journal_mode=WAL` on a database still in rollback mode reads the
+/// header and then upgrades to a write lock, and SQLite never runs the busy
+/// handler for a read-to-write upgrade: a second process creating the same
+/// fresh database gets `SQLITE_BUSY` at once, whatever the timeout says. On
+/// that error this waits for the write lock through `BEGIN IMMEDIATE`, which
+/// starts from no transaction and so does run the busy handler, releases it,
+/// and asks again. The other writer has
+/// usually converted the file by then, and the second ask finds WAL already
+/// set and writes nothing. A lock held past `busy_timeout` fails the wait
+/// with `SQLITE_BUSY`, as any statement would.
+pub fn enable_wal(conn: &Connection, busy_timeout: Duration) -> rusqlite::Result<()> {
+    conn.busy_timeout(busy_timeout)?;
+    loop {
+        match conn.execute_batch("PRAGMA journal_mode=WAL;") {
+            Err(e) if e.sqlite_error_code() == Some(rusqlite::ErrorCode::DatabaseBusy) => {
+                conn.execute_batch("BEGIN IMMEDIATE; ROLLBACK;")?;
+            }
+            done => return done,
+        }
+    }
+}
 
 const MIGRATIONS: &[&str] = &[
     // space-run-ok: a table definition's own column layout.
@@ -904,7 +935,7 @@ impl StateStore {
         // `synchronous=NORMAL` is the WAL-mode counterpart of the default
         // `FULL`: a committing writer stops fsyncing the WAL on every commit and
         // syncs at checkpoints instead. It is safe precisely BECAUSE `WAL` is
-        // set on the line beside it — under WAL, `NORMAL` still cannot lose or
+        // set on the line above it — under WAL, `NORMAL` still cannot lose or
         // corrupt a committed transaction when the PROCESS dies (the WAL is
         // durable in the page cache and replayed on the next open); the window
         // it trades away is an OS crash or power loss between commit and
@@ -912,10 +943,8 @@ impl StateStore {
         // machine that just lost power mid-apply. An apply writes one row per
         // action plus a backup blob per touched file, and paying a disk sync for
         // each was the single largest fixed cost of a large apply.
-        conn.execute_batch(
-            "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON;",
-        )?;
-        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        enable_wal(&conn, BUSY_TIMEOUT)?;
+        conn.execute_batch("PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON;")?;
         register_sql_functions(&conn)?;
 
         let mut store = Self {

@@ -131,10 +131,9 @@ const MIGRATIONS: &[&str] = &[
 
 /// Applied to every reader connection.
 fn init_reader(conn: &mut Connection) -> rusqlite::Result<()> {
-    conn.busy_timeout(SQLITE_BUSY_TIMEOUT)?;
+    cfgd_core::state::enable_wal(conn, SQLITE_BUSY_TIMEOUT)?;
     conn.execute_batch(
-        "PRAGMA journal_mode=WAL;
-         PRAGMA synchronous=FULL;
+        "PRAGMA synchronous=FULL;
          PRAGMA foreign_keys=ON;
          PRAGMA temp_store=MEMORY;
          PRAGMA query_only=ON;",
@@ -145,10 +144,9 @@ fn init_reader(conn: &mut Connection) -> rusqlite::Result<()> {
 
 /// Applied to the dedicated writer connection.
 fn init_writer(conn: &mut Connection) -> rusqlite::Result<()> {
-    conn.busy_timeout(SQLITE_BUSY_TIMEOUT)?;
+    cfgd_core::state::enable_wal(conn, SQLITE_BUSY_TIMEOUT)?;
     conn.execute_batch(
-        "PRAGMA journal_mode=WAL;
-         PRAGMA synchronous=FULL;
+        "PRAGMA synchronous=FULL;
          PRAGMA foreign_keys=ON;
          PRAGMA temp_store=MEMORY;",
     )?;
