@@ -35301,8 +35301,9 @@ fn every_two_root_walk_guards_each_root_it_reads() {
 /// one whose own justification had been false for releases. The rule is any
 /// `dead_code` or `unused*` lint in an `allow`/`expect` list, inner or outer,
 /// inside a `cfg_attr` or not, read over the body with comments and literals
-/// blanked. The population is EMPTY, so a new one is a design decision argued
-/// here rather than added quietly.
+/// blanked. `warnings` carries the same two families as a member of rustc's own
+/// lint group, so it trips the rule too. The population is EMPTY, so a new one
+/// is a design decision argued here rather than added quietly.
 #[test]
 fn no_source_carries_a_dead_code_allowance() {
     /// Every crate under `crates/`, with a floor under the sources it holds
@@ -35354,9 +35355,10 @@ fn no_source_carries_a_dead_code_allowance() {
         }
         for path in &sources {
             let body = walked_file_body(path);
-            // The raw body is a superset of its code, so one naming neither lint
-            // family skips the blanking pass.
-            if !body.contains("dead_code") && !body.contains("unused") {
+            // The raw body is a superset of its code, so one naming none of the
+            // three tells skips the blanking pass.
+            if !body.contains("dead_code") && !body.contains("unused") && !body.contains("warnings")
+            {
                 continue;
             }
             let code = blank_non_code(&body);
@@ -35377,7 +35379,7 @@ fn no_source_carries_a_dead_code_allowance() {
                     let lints: Vec<&str> = list.split(',').map(str::trim).collect();
                     if lints
                         .iter()
-                        .any(|l| *l == "dead_code" || l.starts_with("unused"))
+                        .any(|l| *l == "dead_code" || *l == "warnings" || l.starts_with("unused"))
                     {
                         let line = code[..at].matches('\n').count() + 1;
                         let rel = path.strip_prefix(&root).unwrap_or(path);
