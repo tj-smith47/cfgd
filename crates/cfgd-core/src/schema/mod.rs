@@ -1112,6 +1112,7 @@ fn array_inner_type(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde::Deserialize;
 
     #[test]
     fn registry_lists_every_kind_local_and_crd() {
@@ -1442,7 +1443,7 @@ mod tests {
             }],
         };
         let json = serde_json::to_value(&value).expect("serializes");
-        let back: TreeNode = serde_json::from_value(json.clone()).expect("round-trips");
+        let back = TreeNode::deserialize(&json).expect("round-trips");
         assert_eq!(back.name, "root");
         assert_eq!(back.kids.len(), 1);
         let mut keys: Vec<&str> = json
@@ -1512,7 +1513,7 @@ mod tests {
             })),
         };
         let json = serde_json::to_value(&value).expect("serializes");
-        let back: ListNode = serde_json::from_value(json.clone()).expect("round-trips");
+        let back = ListNode::deserialize(&json).expect("round-trips");
         assert_eq!(back.value, "head");
         assert!(back.next.is_some());
         let mut keys: Vec<&str> = json

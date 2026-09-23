@@ -874,7 +874,7 @@ mod tests {
 
     #[test]
     fn an_elapsed_time_never_occupies_its_own_line() {
-        // A status outside any section makes its one push_line_with_trailer
+        // A status outside any section makes its one push_line_undrained
         // call for the subject and its duration together — there is no second
         // push for the "(Ns)" suffix. A duration stranded on a line of its
         // own would read as disconnected from whatever it timed.
