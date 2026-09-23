@@ -17864,6 +17864,7 @@ fn every_saved_plan_the_cli_records_comes_from_the_one_gate() {
         ("cfgd-csi", 0),
         ("cfgd-operator", 0),
         ("cfgd-schema", 0),
+        ("cfgd-test-fixtures", 0),
     ];
     let names: Vec<&str> = WALK_ROOTS.iter().map(|(k, _)| *k).collect();
     let trees = production_sources_per_root(&names);
@@ -34897,7 +34898,8 @@ fn no_tests_file_carries_a_cfg_test_attribute_of_its_own() {
     /// its own `src/` must yield. Per root, because an aggregate is one tree's
     /// count plus another's and the larger tree alone clears it; the two
     /// crates holding one file each floor AT their count, and `cfgd-schema`
-    /// holds none, which the assertion against `crates/` is what defends.
+    /// and `cfgd-test-fixtures` hold none, which the assertion against
+    /// `crates/` is what defends.
     const WALK_ROOTS: &[(&str, usize)] = &[
         ("cfgd", 26),
         ("cfgd-core", 38),
@@ -34905,6 +34907,7 @@ fn no_tests_file_carries_a_cfg_test_attribute_of_its_own() {
         ("cfgd-csi", 1),
         ("cfgd-operator", 15),
         ("cfgd-schema", 0),
+        ("cfgd-test-fixtures", 0),
     ];
 
     let crates_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
@@ -34999,6 +35002,7 @@ fn every_two_root_walk_guards_each_root_it_reads() {
         ("cfgd-csi", 7),
         ("cfgd-operator", 50),
         ("cfgd-schema", 2),
+        ("cfgd-test-fixtures", 1),
     ];
     /// Each file holding multi-root walks today, with a floor under the 25 and
     /// the 2 they hold, so retiring one walk is free and a file dropping out of
@@ -36722,6 +36726,7 @@ fn the_hint_minting_doors_are_read_off_the_types_own_declaration() {
         "cfgd-csi",
         "cfgd-operator",
         "cfgd-schema",
+        "cfgd-test-fixtures",
     ])
     .into_iter()
     .flat_map(|(_, sources)| sources)
@@ -36829,6 +36834,7 @@ fn every_closing_hint_names_a_command() {
         ("cfgd-csi", 0),
         ("cfgd-operator", 0),
         ("cfgd-schema", 0),
+        ("cfgd-test-fixtures", 0),
     ];
     let names: Vec<&str> = WALK_ROOTS.iter().map(|(k, _)| *k).collect();
     let trees = production_sources_per_root(&names);
@@ -37000,6 +37006,7 @@ fn no_gated_hint_names_a_path_or_a_machine_state() {
         ("cfgd-csi", 0),
         ("cfgd-operator", 0),
         ("cfgd-schema", 0),
+        ("cfgd-test-fixtures", 0),
     ];
     let names: Vec<&str> = WALK_ROOTS.iter().map(|(k, _)| *k).collect();
     let trees = production_sources_per_root(&names);
@@ -37146,6 +37153,7 @@ fn every_hint_composer_declares_its_class() {
         ("cfgd-csi", 0),
         ("cfgd-operator", 0),
         ("cfgd-schema", 0),
+        ("cfgd-test-fixtures", 0),
     ];
     let names: Vec<&str> = WALK_ROOTS.iter().map(|(k, _)| *k).collect();
     let trees = production_sources_per_root(&names);
@@ -37736,6 +37744,7 @@ fn every_hint_composer_the_workspace_declares_is_classified() {
         ("cfgd-csi", 0, 0),
         ("cfgd-operator", 0, 0),
         ("cfgd-schema", 0, 0),
+        ("cfgd-test-fixtures", 0, 0),
     ];
     let names: Vec<&str> = WALK_ROOTS.iter().map(|(k, _, _)| *k).collect();
     let trees = production_sources_per_root(&names);
@@ -46828,8 +46837,9 @@ fn every_hook_table_a_production_site_builds_reads_the_one_hook_set() {
     /// Every crate of the workspace, each with the floor of production files its
     /// own `src/` must yield, so a re-rooted walk trips it. The four larger
     /// crates sit under what they hold, so a deletion there is free;
-    /// `cfgd-crd` and `cfgd-schema` hold exactly one and two production files,
-    /// so their floors ARE their counts and deleting one is meant to trip.
+    /// `cfgd-crd`, `cfgd-schema` and `cfgd-test-fixtures` hold exactly one, two
+    /// and one production files, so their floors ARE their counts and deleting
+    /// one is meant to trip.
     /// Checked against `crates/` itself, so a crate added to the workspace fails
     /// this walk until it joins the table with a floor.
     const WALK_ROOTS: &[(&str, usize)] = &[
@@ -46839,6 +46849,7 @@ fn every_hook_table_a_production_site_builds_reads_the_one_hook_set() {
         ("cfgd-csi", 6),
         ("cfgd-operator", 40),
         ("cfgd-schema", 2),
+        ("cfgd-test-fixtures", 1),
     ];
     let crates_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()

@@ -12,7 +12,7 @@
 //!     Quiet-mode Printer with no queued responses returns Err which
 //!     `unwrap_or(false)` maps to "do not overwrite".
 
-mod common;
+use cfgd_test_fixtures as common;
 
 use std::path::Path;
 

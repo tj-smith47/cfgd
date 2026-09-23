@@ -9,7 +9,7 @@
 //! Goldens live under `tests/output_snapshots/source_create/`. Regenerate with:
 //!     INSTA_UPDATE=always cargo test -p cfgd --test source_create_snapshots
 
-mod common;
+use cfgd_test_fixtures as common;
 
 use std::path::Path;
 

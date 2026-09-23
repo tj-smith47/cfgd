@@ -10,7 +10,7 @@
 /// Six call sites shared this block by copy before this helper consolidated
 /// them — three in-crate (`cli/checkin.rs` twice, `cli/module/build.rs`,
 /// `cli/module/push_pull.rs`) and two integration-test copies (their sibling
-/// in `tests/common::assert_nests_under` covers those, since an integration
+/// in `cfgd_test_fixtures::assert_nests_under` covers those, since an integration
 /// test cannot reach a `pub(crate)` item in the binary crate). Keep both in
 /// sync if the nesting contract ever changes.
 #[cfg(test)]

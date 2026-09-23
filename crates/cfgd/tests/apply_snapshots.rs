@@ -23,7 +23,7 @@
 //!     same `Printer`; asserts the bridge invariant (one blank line
 //!     between streaming and buffered) programmatically.
 
-mod common;
+use cfgd_test_fixtures as common;
 
 use std::collections::BTreeMap;
 use std::path::Path;

@@ -4,6 +4,9 @@
 # by tracking brace depth, so violations inside test modules are correctly ignored.
 #
 # Workspace layout: crates/{cfgd-schema,cfgd-crd,cfgd-core,cfgd,cfgd-csi,cfgd-operator}/src/
+# SRC_ROOTS names production code only. crates/cfgd-test-fixtures/src is the
+# code crates/cfgd/tests/ shares, so the lib-code rules (no unwrap, no raw
+# Command) leave it out the same way they leave out every tests/ directory.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 

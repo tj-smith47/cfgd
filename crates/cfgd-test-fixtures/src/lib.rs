@@ -1,11 +1,9 @@
-//! Shared integration-test helpers.
+//! Shared integration-test fixtures for the `cfgd` binary crate's `tests/`.
 //!
-//! Each integration test file is its own crate, so any unused helper here
-//! will trip `dead_code` when imported by a file that only uses some of
-//! them. `#![allow(dead_code)]` is the standard Cargo idiom for this
-//! shared-fixture pattern.
-
-#![allow(dead_code)]
+//! A lib crate rather than a `tests/common/mod.rs`: every integration crate
+//! compiles that file with a different used subset, so the pattern needs a
+//! blanket `dead_code` allowance to build. A lib's `pub` items are its API and
+//! need none.
 
 use std::path::PathBuf;
 

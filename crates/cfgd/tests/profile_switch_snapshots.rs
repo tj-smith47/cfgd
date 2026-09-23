@@ -9,7 +9,7 @@
 //! Goldens live under `tests/output_snapshots/profile_switch/`. Regenerate with:
 //!     INSTA_UPDATE=always cargo test -p cfgd --test profile_switch_snapshots
 
-mod common;
+use cfgd_test_fixtures as common;
 
 use std::path::Path;
 

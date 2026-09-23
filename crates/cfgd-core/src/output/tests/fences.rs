@@ -4946,8 +4946,8 @@ fn every_production_spawn_in_the_workspace_goes_through_the_one_ladder() {
     /// Every crate root the walk must still be reading, workspace-relative,
     /// with a floor UNDER the count each holds today, so deleting a file is
     /// free; an aggregate floor is one tree's count plus another's, which the
-    /// biggest tree alone clears. The two crates holding a couple of files each
-    /// floor at their count, because a root going empty is what the assertion
+    /// biggest tree alone clears. The three crates holding a couple of files
+    /// each floor at their count, because a root going empty is what the assertion
     /// against `crates/` below defends.
     const SPAWN_WALK_ROOTS: &[(&str, usize)] = &[
         ("crates/cfgd-core/src", 180),
@@ -4955,6 +4955,7 @@ fn every_production_spawn_in_the_workspace_goes_through_the_one_ladder() {
         ("crates/cfgd-csi/src", 7),
         ("crates/cfgd-operator/src", 40),
         ("crates/cfgd-schema/src", 2),
+        ("crates/cfgd-test-fixtures/src", 1),
         ("crates/cfgd/src", 135),
     ];
 

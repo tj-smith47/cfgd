@@ -4,7 +4,7 @@
 //! the producer and the consumer are pinned against each other rather than
 //! against a hand-written payload.
 
-mod common;
+use cfgd_test_fixtures as common;
 
 use std::path::Path;
 

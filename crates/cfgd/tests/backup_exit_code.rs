@@ -11,7 +11,7 @@
 //! so a second emitted document overwrites the first instead of appending,
 //! which is precisely the failure shape under test here.
 
-mod common;
+use cfgd_test_fixtures as common;
 
 use assert_cmd::Command;
 use common::{backup_profile_setup, strand_a_snapshot};

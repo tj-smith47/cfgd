@@ -581,6 +581,7 @@ dependencies = [
  "cfgd-core",
  "cfgd-crd",
  "cfgd-schema",
+ "cfgd-test-fixtures",
  "clap",
  "clap_complete",
  "clap_mangen",
@@ -776,6 +777,16 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "thiserror",
+]
+
+[[package]]
+name = "cfgd-test-fixtures"
+version = "0.1.0"
+dependencies = [
+ "cfgd",
+ "cfgd-core",
+ "git2",
+ "tempfile",
 ]
 
 [[package]]

@@ -7,7 +7,7 @@
 //!   - `config_get/not_found.txt` — error-path Doc when the key path doesn't
 //!     resolve under `spec`.
 
-mod common;
+use cfgd_test_fixtures as common;
 
 use std::path::Path;
 

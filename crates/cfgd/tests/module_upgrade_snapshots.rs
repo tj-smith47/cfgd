@@ -15,7 +15,7 @@
 //! user-facing surface is the final emit. The bridge invariant does not
 //! apply when there is no streaming surface.
 
-mod common;
+use cfgd_test_fixtures as common;
 
 use std::path::Path;
 

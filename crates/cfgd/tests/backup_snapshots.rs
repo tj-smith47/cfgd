@@ -44,7 +44,7 @@
 //!     best-effort pattern — and a backup failure never raises an
 //!     already-`Failed` apply back up to `partial`.
 
-mod common;
+use cfgd_test_fixtures as common;
 
 use std::path::Path;
 

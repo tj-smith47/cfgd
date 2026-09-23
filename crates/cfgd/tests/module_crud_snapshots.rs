@@ -23,7 +23,7 @@
 //!   - `module_update/remove_nonexistent.json` — removing absent items emits warn, changes==0.
 //!   - `module_update/add_duplicate.json` — adding already-present pkg emits info, changes==0.
 
-mod common;
+use cfgd_test_fixtures as common;
 
 use std::path::Path;
 

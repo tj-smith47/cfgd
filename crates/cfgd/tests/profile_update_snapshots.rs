@@ -16,7 +16,7 @@
 //! with:
 //!     INSTA_UPDATE=always cargo test -p cfgd --test profile_update_snapshots
 
-mod common;
+use cfgd_test_fixtures as common;
 
 use std::path::Path;
 

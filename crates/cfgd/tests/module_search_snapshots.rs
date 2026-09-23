@@ -13,7 +13,7 @@
 //! because the streaming-bearing surface deserves a standalone bridge
 //! anchor.
 
-mod common;
+use cfgd_test_fixtures as common;
 
 use std::path::Path;
 

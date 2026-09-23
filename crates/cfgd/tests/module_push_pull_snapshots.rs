@@ -3,8 +3,6 @@
 //! `push` is captured over a mock registry, the way `image pack` is; `pull`'s
 //! happy path is exercised in cfgd-core's unit tests against mock responses.
 
-mod common;
-
 use std::path::Path;
 
 use cfgd::cli::error::render_cli_error;

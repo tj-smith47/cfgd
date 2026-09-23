@@ -7,7 +7,7 @@
 //! longer on disk, and the consumer asking "did the user hand-modify this?"
 //! answers yes forever.
 
-mod common;
+use cfgd_test_fixtures as common;
 
 use std::path::{Path, PathBuf};
 

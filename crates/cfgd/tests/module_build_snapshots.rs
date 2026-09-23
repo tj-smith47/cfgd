@@ -14,8 +14,6 @@
 //!     deterministic and may diverge from any specific real invocation;
 //!     what's locked is the one-blank-line bridge invariant.
 
-mod common;
-
 use std::path::Path;
 
 use cfgd::cli::error::render_cli_error;

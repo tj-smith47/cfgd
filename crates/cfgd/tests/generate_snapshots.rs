@@ -18,8 +18,6 @@
 //!   `settingsCaptured`, `dotfileEntries`, …). The home dir is a tempdir
 //!   so the snapshot is reproducible.
 
-mod common;
-
 use std::path::Path;
 
 use cfgd::cli::generate::{self, GenerateArgs};

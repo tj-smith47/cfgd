@@ -11,8 +11,6 @@
 //!     stream, the buffered "Key rotation complete" Doc follows with
 //!     exactly one blank line between them (one-blank-line bridge invariant).
 
-mod common;
-
 #[cfg(unix)]
 use cfgd::cli::module;
 #[cfg(unix)]

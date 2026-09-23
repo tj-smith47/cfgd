@@ -51,6 +51,7 @@ crates/
 │       ├── fleet.rs        # Fleet status aggregation
 │       ├── web.rs          # Web dashboard (HTML/CSS/JS)
 │       └── errors.rs       # GatewayError with IntoResponse
+├── cfgd-test-fixtures/src/ # Test-only lib (publish = false): the shared fixtures `crates/cfgd/tests/` imports as `common`
 └── cfgd-csi/src/           # CSI Node plugin binary crate
     ├── main.rs             # Entry point: gRPC server on unix socket, metrics HTTP
     ├── lib.rs              # Crate root, proto include

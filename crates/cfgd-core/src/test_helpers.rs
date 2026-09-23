@@ -5488,7 +5488,7 @@ pub fn rust_sources_under(root: &Path) -> Vec<PathBuf> {
 /// no walk at all. The roots are derived by reading `crates_dir` rather than
 /// listed, so a crate added to the workspace joins the population with it, and
 /// each root is a crate's `src`: a bare `crates/` root would read
-/// `cfgd/tests/common/mod.rs` as production. A `build.rs` is outside the roots
+/// `cfgd/tests/*.rs` as production. A `build.rs` is outside the roots
 /// and outside the class — it runs as the building user in its own `OUT_DIR`,
 /// never elevated inside a directory another account owns.
 ///

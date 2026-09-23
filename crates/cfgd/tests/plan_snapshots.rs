@@ -39,7 +39,7 @@
 //!     are the wall-clock stamp and the byte length of a tempdir path the
 //!     fixture wrote, neither of which is the same twice.
 
-mod common;
+use cfgd_test_fixtures as common;
 
 use std::path::Path;
 

@@ -1,7 +1,7 @@
 //! Snapshot tests for cfgd sync — local repo pull, source iteration,
 //! permission prompts, failure handling, bridge transition.
 
-mod common;
+use cfgd_test_fixtures as common;
 
 use std::path::Path;
 

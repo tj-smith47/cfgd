@@ -9,7 +9,7 @@
 //! Test asserts on *count*, not output — output shape is covered by
 //! `apply_snapshots.rs`.
 
-mod common;
+use cfgd_test_fixtures as common;
 
 use cfgd::cli::apply;
 use cfgd_core::state::StateStore;

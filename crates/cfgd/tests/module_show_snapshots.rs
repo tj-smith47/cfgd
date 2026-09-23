@@ -27,7 +27,7 @@ use cfgd_core::config::{
 use cfgd_core::output::{Printer, ScriptsForm, Theme, Verbosity};
 use pretty_assertions::assert_eq;
 
-mod common;
+use cfgd_test_fixtures as common;
 
 const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
 

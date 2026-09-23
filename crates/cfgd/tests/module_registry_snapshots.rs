@@ -25,7 +25,7 @@
 //! Goldens live under `tests/output_snapshots/`. Regenerate via:
 //!     INSTA_UPDATE=always cargo test -p cfgd --test module_registry_snapshots
 
-mod common;
+use cfgd_test_fixtures as common;
 
 use std::path::Path;
 

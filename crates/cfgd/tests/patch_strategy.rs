@@ -9,7 +9,7 @@
 //! functions, not the file manager, so the plan → apply hand-off (which carries
 //! the `patch` block through `FileAction`) is exercised too.
 
-mod common;
+use cfgd_test_fixtures as common;
 
 #[cfg(unix)]
 use std::path::Path;

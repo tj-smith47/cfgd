@@ -10,6 +10,10 @@ vars:
   # The one spelling of the rustdoc gate's deny-warnings flag. ci.yml gets it
   # by invoking `task doc` rather than repeating the string.
   RUSTDOC_DENY_WARNINGS: "-D warnings"
+  # cargo-llvm-cov leaves every `tests/` directory out of its report, and
+  # `cfgd-test-fixtures` is the code `crates/cfgd/tests/` shares, so it stays
+  # out with them rather than counting test scaffolding as covered product.
+  LLVM_COV_IGNORE: "--ignore-filename-regex crates/cfgd-test-fixtures/"
 
 env:
   REGISTRY: '{{.REGISTRY}}'
@@ -384,13 +388,13 @@ tasks:
   coverage:check:
     desc: Run workspace test coverage and write cobertura.xml. Prints the same percentage the README badge shows. No branch switching, no push.
     cmds:
-      - cargo llvm-cov nextest --cobertura --output-path cobertura.xml --no-fail-fast
+      - cargo llvm-cov nextest {{.LLVM_COV_IGNORE}} --cobertura --output-path cobertura.xml --no-fail-fast
       - 'echo "Coverage (line, cobertura): $(bash .claude/scripts/coverage-percent.sh cobertura.xml)"'
 
   coverage:publish:
     desc: Run workspace test coverage and publish the badge update to origin/badges. Switches branches via the badge script; release/CI only.
     cmds:
-      - cargo llvm-cov nextest --cobertura --output-path cobertura.xml --no-fail-fast
+      - cargo llvm-cov nextest {{.LLVM_COV_IGNORE}} --cobertura --output-path cobertura.xml --no-fail-fast
       - bash .claude/scripts/coverage-percent.sh cobertura.xml
       - bash .claude/scripts/publish-coverage.sh cobertura.xml
 
@@ -402,7 +406,7 @@ tasks:
       # terminal to percent + verdict and park the rest in a logfile.
       - mkdir -p target
       - |
-        if ! cargo llvm-cov nextest --cobertura --output-path cobertura.xml --no-fail-fast > target/coverage-gate.log 2>&1; then
+        if ! cargo llvm-cov nextest {{.LLVM_COV_IGNORE}} --cobertura --output-path cobertura.xml --no-fail-fast > target/coverage-gate.log 2>&1; then
           echo "instrumented test run failed — tail of target/coverage-gate.log:" >&2
           tail -n 40 target/coverage-gate.log >&2
           exit 1
@@ -482,8 +486,14 @@ tasks:
       # No --no-verify: the verify build compiles each crate FROM ITS TARBALL —
       # the only local gate that catches sources escaping the crate directory
       # (e.g. include_str! of workspace-root files), which packages fine but
-      # fails the release run's cargo publish verify.
-      - cargo package --workspace --allow-dirty
+      # fails the release run's cargo publish verify. `--workspace` packages a
+      # `publish = false` member too, and a test-only crate's path dependency on
+      # a sibling carries no version, so every unpublishable member is excluded
+      # by reading the flag off the manifests.
+      - |
+        cargo package --workspace --allow-dirty \
+          $(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.publish == []) | "--exclude \(.name)"')
 
   snapshot:
     desc: Dry-run release pipeline (single target, no publish) using anodizer
