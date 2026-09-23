@@ -4669,29 +4669,59 @@ fn hold_rollback_write_lock(path: &Path) -> Connection {
     holder
 }
 
+/// Where [`hand_off_to_holder`] tells the lock holder it is waiting.
+static TELL_HOLDER: std::sync::Mutex<Option<std::sync::mpsc::Sender<&'static str>>> =
+    std::sync::Mutex::new(None);
+/// Where [`hand_off_to_holder`] hears that the holder has released its lock.
+static HOLDER_RELEASED: std::sync::Mutex<Option<std::sync::mpsc::Receiver<()>>> =
+    std::sync::Mutex::new(None);
+
+/// A busy handler that, on its first call, tells the lock holder the waiting
+/// connection is inside the handler and blocks until the holder commits, so
+/// the lock is released only once SQLite has actually asked to wait.
+fn hand_off_to_holder(attempt: i32) -> bool {
+    let released = HOLDER_RELEASED.lock().unwrap().take();
+    if let Some(released) = released {
+        if let Some(tell) = TELL_HOLDER.lock().unwrap().take() {
+            let _ = tell.send("busy handler");
+        }
+        let _ = released.recv();
+    }
+    // A bound keeps a lock that is somehow never released from spinning the
+    // test forever once the handoff is spent.
+    attempt < 1000
+}
+
 #[test]
-fn a_store_opened_while_another_connection_writes_the_fresh_file_waits_for_its_lock() {
+fn switch_to_wal_waits_in_the_busy_handler_while_another_connection_writes_the_fresh_file() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("state.db");
     let holder = hold_rollback_write_lock(&path);
+    let (tell_holder, holder_hears) = std::sync::mpsc::channel();
+    let (released, released_rx) = std::sync::mpsc::channel();
+    *TELL_HOLDER.lock().unwrap() = Some(tell_holder.clone());
+    *HOLDER_RELEASED.lock().unwrap() = Some(released_rx);
     let release = std::thread::spawn(move || {
-        // sleep-ok: nothing observable says a connection is inside SQLite's busy handler; the hold only has to outlast the open's first attempt, and the verdict is the ordering below
-        std::thread::sleep(Duration::from_millis(300));
+        let first = holder_hears.recv().unwrap();
         holder.execute_batch("COMMIT").unwrap();
-        std::time::Instant::now()
+        let _ = released.send(());
+        first
     });
 
-    let store = StateStore::open(&path);
-    let opened_at = std::time::Instant::now();
-    let released_at = release.join().unwrap();
+    let conn = Connection::open(&path).unwrap();
+    conn.busy_handler(Some(hand_off_to_holder)).unwrap();
+    let switched = switch_to_wal(&conn);
+    // Wakes a holder the busy handler never reached, so a switch that gave
+    // up at once fails the assertion below instead of hanging the test.
+    let _ = tell_holder.send("switch returned");
+    let first = release.join().unwrap();
 
-    let store = store.unwrap_or_else(|e| panic!("open failed while the lock was held: {e}"));
-    assert!(
-        opened_at >= released_at,
-        "the open returned before the other connection released its write lock"
+    assert_eq!(
+        first, "busy handler",
+        "the switch returned before SQLite ran the busy handler: {switched:?}"
     );
-    let mode: String = store
-        .conn
+    switched.unwrap_or_else(|e| panic!("switch failed after the lock was released: {e}"));
+    let mode: String = conn
         .query_row("PRAGMA journal_mode", [], |r| r.get(0))
         .unwrap();
     assert_eq!(mode.to_lowercase(), "wal");
@@ -4720,9 +4750,10 @@ fn enable_wal_waits_the_whole_busy_timeout_before_it_reports_the_lock() {
     );
 }
 
-/// `enable_wal` is the one place a production connection switches its journal
-/// mode, because a bare `PRAGMA journal_mode=WAL` fails a second process that
-/// opens a fresh database at the same moment without waiting on it.
+/// `enable_wal`, through its `switch_to_wal`, is the one place a production
+/// connection switches its journal mode, because a bare
+/// `PRAGMA journal_mode=WAL` fails a second process that opens a fresh
+/// database at the same moment without waiting on it.
 ///
 /// Every `<crate>/src` under `crates/` is read off the directory, with a floor
 /// per root so a tree going dark fails by name. Comment rows are skipped, so
@@ -4799,13 +4830,13 @@ fn every_production_journal_mode_switch_goes_through_enable_wal() {
     let rows: Vec<&str> = helper.lines().collect();
     let opens = rows
         .iter()
-        .position(|l| l.starts_with("pub fn enable_wal("))
-        .unwrap_or_else(|| panic!("{HELPER_FILE}: no `pub fn enable_wal(`"));
+        .position(|l| l.starts_with("fn switch_to_wal("))
+        .unwrap_or_else(|| panic!("{HELPER_FILE}: no `fn switch_to_wal(`"));
     let closes = opens
         + rows[opens..]
             .iter()
             .position(|l| *l == "}")
-            .unwrap_or_else(|| panic!("{HELPER_FILE}: `enable_wal` never closes"));
+            .unwrap_or_else(|| panic!("{HELPER_FILE}: `switch_to_wal` never closes"));
     let inside: Vec<String> = (opens + 1..=closes + 1)
         .map(|n| format!("{HELPER_FILE}:{n}"))
         .collect();
@@ -4817,7 +4848,7 @@ fn every_production_journal_mode_switch_goes_through_enable_wal() {
     );
     assert!(
         inside.contains(&sites[0]),
-        "the one journal_mode switch sits outside enable_wal: {sites:?}"
+        "the one journal_mode switch sits outside switch_to_wal: {sites:?}"
     );
 }
 

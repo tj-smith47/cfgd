@@ -50,7 +50,15 @@ const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Set `conn`'s busy timeout and switch its database to WAL journaling,
 /// waiting out another connection's write lock the way every other statement
-/// on `conn` does.
+/// on `conn` does. A lock held past `busy_timeout` fails with `SQLITE_BUSY`,
+/// as any statement would.
+pub fn enable_wal(conn: &Connection, busy_timeout: Duration) -> rusqlite::Result<()> {
+    conn.busy_timeout(busy_timeout)?;
+    switch_to_wal(conn)
+}
+
+/// Switch `conn`'s database to WAL, waiting through whatever busy handler
+/// `conn` carries.
 ///
 /// `PRAGMA journal_mode=WAL` on a database still in rollback mode reads the
 /// header and then upgrades to a write lock, and SQLite never runs the busy
@@ -58,15 +66,15 @@ const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 /// fresh database gets `SQLITE_BUSY` at once, whatever the timeout says. On
 /// that error this waits for the write lock through `BEGIN IMMEDIATE`, which
 /// starts from no transaction and so does run the busy handler, releases it,
-/// and asks again. The other writer has
-/// usually converted the file by then, and the second ask finds WAL already
-/// set and writes nothing. A lock held past `busy_timeout` fails the wait
-/// with `SQLITE_BUSY`, as any statement would.
-pub fn enable_wal(conn: &Connection, busy_timeout: Duration) -> rusqlite::Result<()> {
-    conn.busy_timeout(busy_timeout)?;
+/// and asks again. The other writer has usually converted the file by then,
+/// and the second ask finds WAL already set and writes nothing.
+fn switch_to_wal(conn: &Connection) -> rusqlite::Result<()> {
     loop {
         match conn.execute_batch("PRAGMA journal_mode=WAL;") {
             Err(e) if e.sqlite_error_code() == Some(rusqlite::ErrorCode::DatabaseBusy) => {
+                tracing::debug!(
+                    "another connection holds the write lock; waiting for it to switch the database to WAL"
+                );
                 conn.execute_batch("BEGIN IMMEDIATE; ROLLBACK;")?;
             }
             done => return done,
