@@ -290,6 +290,77 @@ fn legacy_data_dir_resolves_under_test_home() {
     );
 }
 
+// The binary spawned by a test sees no thread-local override, so the arms
+// below are what isolate it: each resolves from the environment's home.
+
+#[test]
+#[serial_test::serial]
+fn legacy_data_dir_is_unresolved_without_a_home_variable() {
+    let _home = EnvVarGuard::unset("HOME");
+    let _profile = EnvVarGuard::unset("USERPROFILE");
+    let _xdg = EnvVarGuard::unset("XDG_DATA_HOME");
+    assert_eq!(legacy_data_dir(), None);
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
+#[test]
+#[serial_test::serial]
+fn legacy_data_dir_prefers_an_absolute_xdg_data_home() {
+    let dir = tempfile::tempdir().unwrap();
+    let _home = EnvVarGuard::set("HOME", dir.path().join("home").to_str().unwrap());
+    let _xdg = EnvVarGuard::set("XDG_DATA_HOME", dir.path().join("data").to_str().unwrap());
+    assert_eq!(
+        legacy_data_dir(),
+        Some(dir.path().join("data").join("cfgd"))
+    );
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
+#[test]
+#[serial_test::serial]
+fn legacy_data_dir_falls_back_to_home_when_xdg_data_home_is_unset_or_relative() {
+    let dir = tempfile::tempdir().unwrap();
+    let _home = EnvVarGuard::set("HOME", dir.path().to_str().unwrap());
+    let expected = Some(dir.path().join(".local").join("share").join("cfgd"));
+    {
+        let _xdg = EnvVarGuard::unset("XDG_DATA_HOME");
+        assert_eq!(legacy_data_dir(), expected);
+    }
+    let _xdg = EnvVarGuard::set("XDG_DATA_HOME", "relative/data");
+    assert_eq!(legacy_data_dir(), expected);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+#[serial_test::serial]
+fn legacy_data_dir_resolves_under_home_application_support() {
+    let dir = tempfile::tempdir().unwrap();
+    let _home = EnvVarGuard::set("HOME", dir.path().to_str().unwrap());
+    let _xdg = EnvVarGuard::set("XDG_DATA_HOME", dir.path().join("data").to_str().unwrap());
+    assert_eq!(
+        legacy_data_dir(),
+        Some(
+            dir.path()
+                .join("Library")
+                .join("Application Support")
+                .join("cfgd")
+        )
+    );
+}
+
+#[cfg(windows)]
+#[test]
+#[serial_test::serial]
+fn legacy_data_dir_resolves_under_userprofile_appdata_local() {
+    let dir = tempfile::tempdir().unwrap();
+    let _home = EnvVarGuard::set("USERPROFILE", dir.path().to_str().unwrap());
+    let _xdg = EnvVarGuard::set("XDG_DATA_HOME", dir.path().join("data").to_str().unwrap());
+    assert_eq!(
+        legacy_data_dir(),
+        Some(dir.path().join("AppData").join("Local").join("cfgd"))
+    );
+}
+
 // --- Scope mapping ---
 
 #[test]

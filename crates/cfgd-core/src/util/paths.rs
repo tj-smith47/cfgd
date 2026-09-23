@@ -433,6 +433,13 @@ pub fn move_file(src: &std::path::Path, dst: &std::path::Path) -> std::io::Resul
 /// *default* only: it never honors `CFGD_STATE_DIR`/`CFGD_CACHE_DIR` (those are
 /// overrides, not the legacy default). Pure path logic — touches no filesystem.
 ///
+/// Resolved from the same home every other user-scope directory derives from
+/// (`HOME`, or `USERPROFILE` on Windows):
+/// - macOS: `~/Library/Application Support/cfgd`
+/// - Windows: `%USERPROFILE%\AppData\Local\cfgd`
+/// - elsewhere: `$XDG_DATA_HOME/cfgd` when that is an absolute path, else
+///   `~/.local/share/cfgd`
+///
 /// Honors the [`TestHomeGuard`] thread-local override (test builds resolve a
 /// Linux-shaped `~/.local/share/cfgd` under the override home) so tests never
 /// read the real data dir. Returns `None` when no home directory is resolvable.
@@ -440,7 +447,21 @@ pub fn legacy_data_dir() -> Option<std::path::PathBuf> {
     if let Some(home) = test_home_override() {
         return Some(home.join(".local").join("share").join("cfgd"));
     }
-    Some(directories::BaseDirs::new()?.data_local_dir().join("cfgd"))
+    #[cfg(not(any(target_os = "macos", windows)))]
+    if let Some(xdg) = std::env::var_os("XDG_DATA_HOME")
+        .map(std::path::PathBuf::from)
+        .filter(|p| p.is_absolute())
+    {
+        return Some(xdg.join("cfgd"));
+    }
+    let home = std::path::PathBuf::from(home_dir_var()?);
+    #[cfg(target_os = "macos")]
+    let data = home.join("Library").join("Application Support");
+    #[cfg(windows)]
+    let data = home.join("AppData").join("Local");
+    #[cfg(not(any(target_os = "macos", windows)))]
+    let data = home.join(".local").join("share");
+    Some(data.join("cfgd"))
 }
 
 /// Per-user runtime directory for short-lived sockets and pid files.
