@@ -10,7 +10,7 @@ use std::path::Path;
 
 use cfgd::cli::apply::run_apply;
 use cfgd::cli::plan::cmd_plan;
-use cfgd::cli::{ApplyArgs, Cli, PlanArgs};
+use cfgd::cli::{ApplyArgs, Cli, HermeticParse, PlanArgs};
 use cfgd_core::output::{OutputFormat, Printer};
 use cfgd_core::state::{ApplyStatus, StateStore};
 use cfgd_core::test_helpers::test_printer;
@@ -273,8 +273,7 @@ fn a_plan_file_whose_phases_were_reordered_is_refused() {
 #[test]
 fn a_filter_is_refused_with_a_plan_file() {
     // clap owns the refusal, and `--context`'s DEFAULT must not trip it.
-    use clap::Parser;
-    assert!(Cli::try_parse_from(["cfgd", "apply", "--plan", "p.json"]).is_ok());
+    assert!(Cli::try_parse_hermetic(["cfgd", "apply", "--plan", "p.json"]).is_ok());
     for filter in [
         ["--only", "files"],
         ["--skip", "files"],
@@ -283,19 +282,21 @@ fn a_filter_is_refused_with_a_plan_file() {
         ["--from", "acme/config"],
         ["--context", "reconcile"],
     ] {
-        let bad = Cli::try_parse_from(["cfgd", "apply", "--plan", "p.json", filter[0], filter[1]]);
+        let bad =
+            Cli::try_parse_hermetic(["cfgd", "apply", "--plan", "p.json", filter[0], filter[1]]);
         assert!(bad.is_err(), "`{}` must be refused with --plan", filter[0]);
     }
     for flag in ["--skip-scripts", "--with-profile"] {
-        let bad = Cli::try_parse_from(["cfgd", "apply", "--plan", "p.json", flag]);
+        let bad = Cli::try_parse_hermetic(["cfgd", "apply", "--plan", "p.json", flag]);
         assert!(bad.is_err(), "`{flag}` must be refused with --plan");
     }
     // The execution knobs stay legal: they say HOW this run behaves, not what
     // it does, which is the file's to say.
-    assert!(Cli::try_parse_from(["cfgd", "apply", "--plan", "p.json", "--dry-run"]).is_ok());
-    assert!(Cli::try_parse_from(["cfgd", "apply", "--plan", "p.json", "--yes"]).is_ok());
+    assert!(Cli::try_parse_hermetic(["cfgd", "apply", "--plan", "p.json", "--dry-run"]).is_ok());
+    assert!(Cli::try_parse_hermetic(["cfgd", "apply", "--plan", "p.json", "--yes"]).is_ok());
     assert!(
-        Cli::try_parse_from(["cfgd", "apply", "--plan", "p.json", "--on-conflict", "skip"]).is_ok()
+        Cli::try_parse_hermetic(["cfgd", "apply", "--plan", "p.json", "--on-conflict", "skip"])
+            .is_ok()
     );
 }
 
@@ -553,7 +554,7 @@ fn a_json_document_that_is_no_plan_output_is_refused_as_one() {
 /// own argument list instead.
 #[test]
 fn every_apply_arg_is_refused_with_a_plan_file_or_is_an_execution_knob() {
-    use clap::{CommandFactory, Parser};
+    use clap::CommandFactory;
 
     // These say HOW the run behaves, not WHAT it does, which is the file's to
     // say. `plan` itself is not an argument of the run. The list holds only
@@ -589,7 +590,7 @@ fn every_apply_arg_is_refused_with_a_plan_file_or_is_an_execution_knob() {
         ) {
             argv.push("files");
         }
-        let err = Cli::try_parse_from(&argv)
+        let err = Cli::try_parse_hermetic(&argv)
             .err()
             .unwrap_or_else(|| panic!("`{flag}` must be refused with --plan"));
         assert_eq!(

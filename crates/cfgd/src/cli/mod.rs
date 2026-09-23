@@ -3701,5 +3701,58 @@ pub fn execute(
     }
 }
 
+/// Parse an argv in-process the way a test needs it: every `env =` binding
+/// the command declares is dropped first, so a variable the developer or the
+/// CI host exported (`CFGD_YES=1`, `CFGD_THEME=…`) never reaches the parse.
+///
+/// `Parser::parse_from` and `Parser::try_parse_from` read the process
+/// environment for every `env =` argument, so a test calling them passes or
+/// fails by what the shell running it exported.
+/// `every_in_process_parse_goes_through_the_hermetic_parser` fails on a direct call.
+#[cfg(any(test, feature = "test-helpers"))]
+pub trait HermeticParse: Parser {
+    /// Parse `argv` with no environment binding in force.
+    fn try_parse_hermetic<I, T>(argv: I) -> Result<Self, clap::Error>
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<std::ffi::OsString> + Clone,
+    {
+        Self::try_parse_reading_env(argv, &[])
+    }
+
+    /// Parse `argv` with only the bindings for the variables in `env` in
+    /// force, for a test that exercises those variables on purpose.
+    fn try_parse_reading_env<I, T>(argv: I, env: &[&str]) -> Result<Self, clap::Error>
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<std::ffi::OsString> + Clone,
+    {
+        let matches = keep_env_bindings(Self::command(), env).try_get_matches_from(argv)?;
+        <Self as clap::FromArgMatches>::from_arg_matches(&matches)
+    }
+}
+
+#[cfg(any(test, feature = "test-helpers"))]
+impl<P: Parser> HermeticParse for P {}
+
+/// `cmd` with every argument's `env =` binding cleared except those naming a
+/// variable in `keep`, through every subcommand. A global argument is declared
+/// on the root and copied down only when the command is built, so clearing it
+/// at the root clears every copy.
+#[cfg(any(test, feature = "test-helpers"))]
+fn keep_env_bindings(cmd: clap::Command, keep: &[&str]) -> clap::Command {
+    cmd.mut_args(|arg| {
+        if arg
+            .get_env()
+            .is_some_and(|var| keep.iter().any(|k| var == *k))
+        {
+            arg
+        } else {
+            arg.env(None::<&str>)
+        }
+    })
+    .mut_subcommands(|sub| keep_env_bindings(sub, keep))
+}
+
 #[cfg(test)]
 mod tests;

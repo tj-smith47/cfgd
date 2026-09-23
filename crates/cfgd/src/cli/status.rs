@@ -4112,6 +4112,7 @@ pub(super) fn cmd_status_module(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cli::HermeticParse;
     use cfgd_core::output::Printer;
     use cfgd_core::output::Verbosity;
     use cfgd_core::state::{ApplyRecord, ApplyStatus};
@@ -4128,7 +4129,7 @@ mod tests {
     fn every_retired_status_flag_names_its_replacement() {
         for (n, entry) in LEGACY_STATUS_FLAGS.iter().enumerate() {
             let (spelling, reason, replacement) = entry;
-            let parsed = crate::cli::Cli::try_parse_from(["cfgd", "status", spelling])
+            let parsed = crate::cli::Cli::try_parse_hermetic(["cfgd", "status", spelling])
                 .unwrap_or_else(|e| panic!("`cfgd status {spelling}` must still parse: {e}"));
             let Some(crate::cli::Command::Status {
                 show_scripts,
@@ -4165,7 +4166,7 @@ mod tests {
                     }
                 })
                 .collect();
-            crate::cli::Cli::try_parse_from(&runnable).unwrap_or_else(|e| {
+            crate::cli::Cli::try_parse_hermetic(&runnable).unwrap_or_else(|e| {
                 panic!("the replacement `{replacement}` does not re-parse: {e}")
             });
 

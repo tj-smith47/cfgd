@@ -496,9 +496,9 @@ fn every_show_values_flag_conflicts_with_the_global_masking_knob() {
         found.len()
     );
 
-    Cli::try_parse_from(["cfgd", "module", "show", "nvim", "--show-values"])
+    Cli::try_parse_hermetic(["cfgd", "module", "show", "nvim", "--show-values"])
         .expect("--show-values alone parses");
-    Cli::try_parse_from([
+    Cli::try_parse_hermetic([
         "cfgd",
         "module",
         "show",
@@ -558,7 +558,7 @@ fn no_subcommand_declares_its_own_yes_flag() {
         ["cfgd", "rollback", "42", "--yes"],
         ["cfgd", "rollback", "42", "-y"],
     ] {
-        let cli = Cli::try_parse_from(argv).expect("--yes parses in every position");
+        let cli = Cli::try_parse_hermetic(argv).expect("--yes parses in every position");
         assert!(cli.yes, "{argv:?} did not set cli.yes");
         let Some(Command::Rollback { yes, .. }) = cli.command else {
             panic!("{argv:?} did not parse as rollback");
@@ -624,7 +624,7 @@ fn only_module_show_carries_the_script_body_flags() {
             vec!["cfgd", "status", &long_flag],
             vec!["cfgd", "status", "--module", "nvim", &short_flag],
         ] {
-            let parsed = Cli::try_parse_from(&argv)
+            let parsed = Cli::try_parse_hermetic(&argv)
                 .unwrap_or_else(|e| panic!("{argv:?} parses so the refusal can name it: {e}"));
             let Some(Command::Status {
                 show_scripts,
@@ -658,8 +658,8 @@ fn only_module_show_carries_the_script_body_flags() {
             "`cfgd {name} --show-values` renders no script body, so its help says none: {values_help}"
         );
     }
-    assert!(Cli::try_parse_from(["cfgd", "status", "--show-values"]).is_ok());
-    assert!(Cli::try_parse_from(["cfgd", "module", "show", "nvim", "--show-values"]).is_ok());
+    assert!(Cli::try_parse_hermetic(["cfgd", "status", "--show-values"]).is_ok());
+    assert!(Cli::try_parse_hermetic(["cfgd", "module", "show", "nvim", "--show-values"]).is_ok());
 }
 
 /// The module both inventory verbs are driven over below: one env value worth
@@ -703,7 +703,7 @@ fn inventory_flag_output(args: &[&str]) -> String {
         "--no-color".to_string(),
     ];
     argv.extend(args.iter().map(|a| (*a).to_string()));
-    let cli = Cli::try_parse_from(&argv).expect("the inventory flags parse");
+    let cli = Cli::try_parse_hermetic(&argv).expect("the inventory flags parse");
     super::execute(&cli, h.printer(), &super::paths::DirSources::all_default())
         .expect("the invocation runs");
     h.output()
@@ -866,7 +866,7 @@ fn every_destructive_backup_verb_mirrors_the_global_yes() {
         ["cfgd", "backup", "rollback", "notes", "--yes"],
         ["cfgd", "backup", "rollback", "notes", "-y"],
     ] {
-        let cli = Cli::try_parse_from(argv).expect("--yes parses in every position");
+        let cli = Cli::try_parse_hermetic(argv).expect("--yes parses in every position");
         let Some(Command::Backup {
             command: BackupCommand::Rollback { yes, .. },
         }) = cli.command
@@ -928,12 +928,13 @@ fn every_source_update_toggle_is_a_settable_unsettable_pair() {
                 "`--{half}` is a toggle and must take no value"
             );
             assert!(
-                Cli::try_parse_from(["cfgd", "source", "update", &format!("--{half}")]).is_err(),
+                Cli::try_parse_hermetic(["cfgd", "source", "update", &format!("--{half}")])
+                    .is_err(),
                 "`--{half}` with no named source must be refused; without one it edits nothing"
             );
         }
         assert!(
-            Cli::try_parse_from([
+            Cli::try_parse_hermetic([
                 "cfgd",
                 "source",
                 "update",
@@ -948,7 +949,7 @@ fn every_source_update_toggle_is_a_settable_unsettable_pair() {
 
     // The pair really does reach the two ends, and silence really is neither.
     let parse = |args: &[&str]| {
-        let cli = Cli::try_parse_from(args).expect("parses");
+        let cli = Cli::try_parse_hermetic(args).expect("parses");
         match cli.command {
             Some(Command::Source {
                 command:
@@ -983,7 +984,7 @@ fn every_source_update_toggle_is_a_settable_unsettable_pair() {
         Some(false)
     );
     assert!(
-        Cli::try_parse_from([
+        Cli::try_parse_hermetic([
             "cfgd",
             "source",
             "update",
@@ -995,17 +996,17 @@ fn every_source_update_toggle_is_a_settable_unsettable_pair() {
         "both halves at once must be refused"
     );
     assert!(
-        Cli::try_parse_from(["cfgd", "source", "update", "--require-signed-commits"]).is_err(),
+        Cli::try_parse_hermetic(["cfgd", "source", "update", "--require-signed-commits"]).is_err(),
         "a toggle with no named source must be refused"
     );
 }
 
 #[test]
 fn theme_flag_is_global_and_refuses_an_unknown_preset() {
-    let cli = Cli::try_parse_from(["cfgd", "status", "--theme", "dracula"])
+    let cli = Cli::try_parse_hermetic(["cfgd", "status", "--theme", "dracula"])
         .expect("--theme parses after the subcommand");
     assert_eq!(cli.theme.as_deref(), Some("dracula"));
-    let err = match Cli::try_parse_from(["cfgd", "--theme", "bogus", "status"]) {
+    let err = match Cli::try_parse_hermetic(["cfgd", "--theme", "bogus", "status"]) {
         Ok(_) => panic!("an unknown preset must be refused at the flag"),
         Err(e) => e.to_string(),
     };
@@ -1020,7 +1021,7 @@ fn theme_flag_is_global_and_refuses_an_unknown_preset() {
 fn theme_flag_reads_cfgd_theme_from_the_environment() {
     use cfgd_core::test_helpers::EnvVarGuard;
     let _g = EnvVarGuard::set("CFGD_THEME", "nord");
-    let cli = Cli::try_parse_from(["cfgd", "status"]).expect("parse");
+    let cli = Cli::try_parse_reading_env(["cfgd", "status"], &["CFGD_THEME"]).expect("parse");
     assert_eq!(cli.theme.as_deref(), Some("nord"));
 }
 
@@ -1479,7 +1480,7 @@ fn every_enum_valued_global_flag_accepts_its_config_spelling() {
         let _clear = EnvVarGuard::unset(knob.env);
         for token in &knob.tokens {
             for spelling in [(*token).to_string(), token.to_lowercase()] {
-                let cli = Cli::try_parse_from(["cfgd", knob.flag, spelling.as_str(), "status"])
+                let cli = Cli::try_parse_hermetic(["cfgd", knob.flag, spelling.as_str(), "status"])
                     .unwrap_or_else(|e| panic!("`{} {spelling}` must parse: {e}", knob.flag));
                 assert_eq!(
                     (knob.read)(&cli).as_deref().and_then(knob.canonical),
@@ -1489,7 +1490,7 @@ fn every_enum_valued_global_flag_accepts_its_config_spelling() {
                 );
 
                 let _env = EnvVarGuard::set(knob.env, &spelling);
-                let cli = Cli::try_parse_from(["cfgd", "status"])
+                let cli = Cli::try_parse_reading_env(["cfgd", "status"], &[knob.env])
                     .unwrap_or_else(|e| panic!("`{}={spelling}` must parse: {e}", knob.env));
                 assert_eq!(
                     (knob.read)(&cli).as_deref().and_then(knob.canonical),
@@ -1792,13 +1793,13 @@ fn cli_has_alias_subcommand() {
     // Sanity-check both canonical and alias entry points actually parse —
     // catches regressions where the enum variant exists but clap routing
     // breaks (e.g. duplicate alias collision).
-    assert!(Cli::try_parse_from(["cfgd", "alias", "set", "n", "v"]).is_ok());
-    assert!(Cli::try_parse_from(["cfgd", "alias", "add", "n", "v"]).is_ok());
-    assert!(Cli::try_parse_from(["cfgd", "alias", "delete", "n"]).is_ok());
-    assert!(Cli::try_parse_from(["cfgd", "alias", "rm", "n"]).is_ok());
-    assert!(Cli::try_parse_from(["cfgd", "alias", "list"]).is_ok());
-    assert!(Cli::try_parse_from(["cfgd", "alias", "ls"]).is_ok());
-    assert!(Cli::try_parse_from(["cfgd", "alias", "show", "n"]).is_ok());
+    assert!(Cli::try_parse_hermetic(["cfgd", "alias", "set", "n", "v"]).is_ok());
+    assert!(Cli::try_parse_hermetic(["cfgd", "alias", "add", "n", "v"]).is_ok());
+    assert!(Cli::try_parse_hermetic(["cfgd", "alias", "delete", "n"]).is_ok());
+    assert!(Cli::try_parse_hermetic(["cfgd", "alias", "rm", "n"]).is_ok());
+    assert!(Cli::try_parse_hermetic(["cfgd", "alias", "list"]).is_ok());
+    assert!(Cli::try_parse_hermetic(["cfgd", "alias", "ls"]).is_ok());
+    assert!(Cli::try_parse_hermetic(["cfgd", "alias", "show", "n"]).is_ok());
 }
 
 /// `--scan` is the explicitly named form of the live drift scan `--exit-code`
@@ -1821,7 +1822,7 @@ fn status_scan_is_a_plain_flag_that_composes_with_exit_code_and_module() {
         ),
     ];
     for (argv, want_scan, want_exit_code, want_module) in cases {
-        let parsed = Cli::try_parse_from(argv).unwrap_or_else(|e| panic!("{argv:?}: {e}"));
+        let parsed = Cli::try_parse_hermetic(argv).unwrap_or_else(|e| panic!("{argv:?}: {e}"));
         let Some(Command::Status {
             module,
             scan,
@@ -1841,7 +1842,7 @@ fn status_scan_is_a_plain_flag_that_composes_with_exit_code_and_module() {
     // `--scan` has no short form. `-s` parses, but only as the retired
     // `--show-scripts` spelling the run is refused for; it must never stand in
     // for the scan.
-    let short_s = Cli::try_parse_from(["cfgd", "status", "-s"])
+    let short_s = Cli::try_parse_hermetic(["cfgd", "status", "-s"])
         .expect("`-s` stays declared so the refusal can name its replacement");
     let Some(Command::Status {
         scan, show_scripts, ..
@@ -1861,7 +1862,7 @@ fn status_scan_is_a_plain_flag_that_composes_with_exit_code_and_module() {
 fn generate_backend_flags_may_follow_the_subcommand() {
     use crate::cli::generate::GenerateTarget;
 
-    let parsed = Cli::try_parse_from([
+    let parsed = Cli::try_parse_hermetic([
         "cfgd",
         "generate",
         "profile",
@@ -1887,7 +1888,7 @@ fn generate_backend_flags_may_follow_the_subcommand() {
 
     // The pre-subcommand spelling keeps working — a global arg accepts both
     // positions, so this is not a swap of one broken order for another.
-    let before = Cli::try_parse_from([
+    let before = Cli::try_parse_hermetic([
         "cfgd",
         "generate",
         "--model",
@@ -13212,7 +13213,7 @@ fn cmd_decide_no_args_shows_pending() {
 // green.
 #[test]
 fn decide_bare_parses_and_lists() {
-    assert!(Cli::try_parse_from(["cfgd", "decide"]).is_ok());
+    assert!(Cli::try_parse_hermetic(["cfgd", "decide"]).is_ok());
 
     let state_dir = tempfile::tempdir().unwrap();
     let (printer, buf) =
@@ -15263,7 +15264,7 @@ fn cmd_apply_invalid_context_fails() {
 #[test]
 fn apply_shell_flag_parses() {
     use super::{ApplyShell, Command, apply_shell_to_script_shell};
-    let cli = Cli::try_parse_from(["cfgd", "apply", "--shell", "bash", "--yes", "--dry-run"])
+    let cli = Cli::try_parse_hermetic(["cfgd", "apply", "--shell", "bash", "--yes", "--dry-run"])
         .expect("--shell bash must parse");
     match cli.command {
         Some(Command::Apply(args)) => {
@@ -15287,7 +15288,7 @@ fn apply_shell_flag_parses() {
 fn apply_shell_flag_default_is_none() {
     use super::Command;
     let cli =
-        Cli::try_parse_from(["cfgd", "apply", "--yes", "--dry-run"]).expect("apply must parse");
+        Cli::try_parse_hermetic(["cfgd", "apply", "--yes", "--dry-run"]).expect("apply must parse");
     match cli.command {
         Some(Command::Apply(args)) => assert!(args.shell.is_none()),
         _ => panic!("expected Command::Apply"),
@@ -15297,7 +15298,8 @@ fn apply_shell_flag_default_is_none() {
 // Reject unknown interpreter values at parse time (clap value_enum).
 #[test]
 fn apply_shell_flag_rejects_unknown_value() {
-    let result = Cli::try_parse_from(["cfgd", "apply", "--shell", "fish", "--yes", "--dry-run"]);
+    let result =
+        Cli::try_parse_hermetic(["cfgd", "apply", "--shell", "fish", "--yes", "--dry-run"]);
     assert!(result.is_err(), "fish is not a supported interpreter");
 }
 
@@ -15771,7 +15773,7 @@ fn every_verdict_that_shows_pending_work_names_the_command_that_settles_it() {
         .split('`')
         .nth(1)
         .unwrap_or_else(|| panic!("the hint backticks its command: {hint}"));
-    Cli::try_parse_from(flags.split_whitespace())
+    Cli::try_parse_hermetic(flags.split_whitespace())
         .unwrap_or_else(|e| panic!("the composed next step must re-parse: {e}"));
 
     // The retired `--phase env` spelling renders as the phase it selects, so
@@ -19358,7 +19360,7 @@ fn every_composed_next_step_names_a_command() {
             let argv: Vec<&str> = substituted.split_whitespace().collect();
             match argv.first() {
                 Some(&"cfgd") => {
-                    if let Err(e) = Cli::try_parse_from(argv.iter().copied()) {
+                    if let Err(e) = Cli::try_parse_hermetic(argv.iter().copied()) {
                         panic!(
                             "{mutation:?} composes `{command}`, which this CLI does not parse — \
                              a hint hands the reader a runnable invocation: {e}"
@@ -23071,7 +23073,7 @@ fn daemon_uninstall_prints_platform_info_and_succeeds() {
     let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
     // On Linux (CI/test env), uninstall_service just removes the unit file
     // if present; in a clean test env there is nothing to remove, so it succeeds.
-    let cli = Cli::try_parse_from(["cfgd"]).unwrap();
+    let cli = Cli::try_parse_hermetic(["cfgd"]).unwrap();
     let result = super::daemon::cmd_daemon_uninstall(&cli, &printer);
     drop(printer);
     let output = cap.human();
@@ -29926,7 +29928,7 @@ fn phase_arg_rejects_a_trailing_dot_with_an_empty_selector() {
 fn phase_flag_parses_the_dotted_grammar_through_real_clap_parsing() {
     use super::Command;
 
-    let cli = Cli::try_parse_from(["cfgd", "apply", "--phase", "bootstrap.brew", "--yes"])
+    let cli = Cli::try_parse_hermetic(["cfgd", "apply", "--phase", "bootstrap.brew", "--yes"])
         .expect("--phase bootstrap.brew must parse");
     match cli.command {
         Some(Command::Apply(args)) => {
@@ -29940,7 +29942,7 @@ fn phase_flag_parses_the_dotted_grammar_through_real_clap_parsing() {
 
 #[test]
 fn phase_flag_rejects_a_trailing_dot_as_a_clap_usage_error() {
-    let err = match Cli::try_parse_from(["cfgd", "apply", "--phase", "bootstrap.", "--yes"]) {
+    let err = match Cli::try_parse_hermetic(["cfgd", "apply", "--phase", "bootstrap.", "--yes"]) {
         Ok(_) => panic!("a trailing '.' must fail parsing"),
         Err(e) => e,
     };
@@ -48779,6 +48781,180 @@ fn every_integration_test_spawns_the_binary_through_the_one_isolating_constructo
          {ISOLATED_ENV:?} and the working directory into the calling test's own directory",
         offenders.join("\n")
     );
+}
+
+/// The hermetic parser reads no environment binding it was not told to, and
+/// reads the ones it was.
+#[test]
+#[serial_test::serial]
+fn the_hermetic_parser_reads_only_the_environment_it_is_handed() {
+    use cfgd_core::test_helpers::EnvVarGuard;
+    let _yes = EnvVarGuard::set("CFGD_YES", "not-a-bool");
+    let _theme = EnvVarGuard::set("CFGD_THEME", "dracula");
+    let cli = Cli::try_parse_hermetic(["cfgd", "status"]).expect("an exported CFGD_* is ignored");
+    assert!(!cli.yes);
+    assert_eq!(cli.theme, None);
+
+    let cli = Cli::try_parse_reading_env(["cfgd", "status"], &["CFGD_THEME"])
+        .expect("only the named binding is in force");
+    assert!(!cli.yes);
+    assert_eq!(cli.theme.as_deref(), Some("dracula"));
+
+    // A subcommand's own `env =` argument is cleared too, not only the root's.
+    let local_env: Vec<String> = {
+        fn walk(cmd: &clap::Command, out: &mut Vec<String>) {
+            for sub in cmd.get_subcommands() {
+                for arg in sub.get_arguments().filter(|a| !a.is_global_set()) {
+                    if let Some(var) = arg.get_env() {
+                        out.push(var.to_string_lossy().into_owned());
+                    }
+                }
+                walk(sub, out);
+            }
+        }
+        let mut out = Vec::new();
+        walk(&Cli::command(), &mut out);
+        out
+    };
+    let cleared = keep_env_bindings(Cli::command(), &[]);
+    fn any_env(cmd: &clap::Command) -> bool {
+        cmd.get_arguments().any(|a| a.get_env().is_some()) || cmd.get_subcommands().any(any_env)
+    }
+    assert!(
+        !any_env(&cleared),
+        "no `env =` binding survives the hermetic parser's reset (subcommand-local ones: {local_env:?})"
+    );
+}
+
+/// Every in-process parse of a `clap::Parser` type in this crate goes
+/// through [`HermeticParse`], so an exported `CFGD_*` in the shell running
+/// the tests cannot change what they parse.
+///
+/// clap's `Parser` methods read the process environment for every `env =`
+/// argument; `CFGD_YES=1` exported on a developer's machine was enough to fail
+/// a parse the shipped binary never performs (its `main` folds boolish values
+/// before clap reads them). The tells are each `Parser` type's name joined to
+/// each of those methods, the types read off the crate's own
+/// `#[derive(..Parser..)]` declarations so a new one joins the walk. The one
+/// direct call left is the plugin binary's own entry point.
+#[test]
+fn every_in_process_parse_goes_through_the_hermetic_parser() {
+    /// `clap::Parser`'s provided methods, each of which reads `env =` bindings.
+    const METHODS: [&str; 6] = [
+        "parse(",
+        "try_parse(",
+        "parse_from(",
+        "try_parse_from(",
+        "update_from(",
+        "try_update_from(",
+    ];
+    /// Production entry points, which parse the real process argv and env.
+    const ENTRY_POINTS: [(&str, &str); 1] = [("cli/plugin/mod.rs", "PluginCli::parse(")];
+    const HERMETIC: [&str; 2] = ["::try_parse_hermetic(", "::try_parse_reading_env("];
+    /// The hermetic calls each file makes today, so the population cannot
+    /// drain away file by file while the walk stays green.
+    const FLOORS: [(&str, usize); 9] = [
+        ("src/cli/tests.rs", 39),
+        ("src/cli/plugin/tests.rs", 12),
+        ("src/cli/paths.rs", 1),
+        ("src/cli/config_schema.rs", 1),
+        ("src/cli/daemon.rs", 1),
+        ("src/cli/source/update.rs", 2),
+        ("src/cli/status.rs", 2),
+        ("tests/apply_plan_file.rs", 7),
+        ("tests/daemon_snapshots.rs", 2),
+    ];
+
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let src = manifest.join("src");
+
+    const ITEM_KEYWORDS: [&str; 10] = [
+        "enum", "fn", "impl", "mod", "use", "const", "static", "type", "trait", "union",
+    ];
+    let mut parsers: Vec<String> = Vec::new();
+    for path in rust_sources_under(&src) {
+        let code = blank_non_code(&walked_file_body(&path));
+        // An attribute row, a continuation of one and a blanked comment open
+        // no item, so the derive carries down to the next item that does.
+        let mut derives_parser = false;
+        for line in code.lines() {
+            let keyword = cfgd_core::test_helpers::item_keyword(line);
+            if line.trim_start().starts_with("#[derive(") {
+                derives_parser |= line
+                    .trim_start()
+                    .trim_start_matches("#[derive(")
+                    .split([',', ')'])
+                    .any(|d| d.trim() == "Parser");
+            } else if keyword == "struct" {
+                if derives_parser {
+                    let name: String = cfgd_core::test_helpers::strip_item_lead(line)
+                        .trim_start_matches("struct")
+                        .trim_start()
+                        .chars()
+                        .take_while(|c| c.is_alphanumeric() || *c == '_')
+                        .collect();
+                    parsers.push(name);
+                }
+                derives_parser = false;
+            } else if ITEM_KEYWORDS.contains(&keyword) {
+                derives_parser = false;
+            }
+        }
+    }
+    assert!(
+        parsers.iter().any(|p| p == "Cli") && parsers.iter().any(|p| p == "PluginCli"),
+        "the walk found the parser types {parsers:?}, missing `Cli` or `PluginCli`"
+    );
+
+    let mut offenders: Vec<String> = Vec::new();
+    let mut hermetic: Vec<(String, usize)> = Vec::new();
+    for root in [src.clone(), manifest.join("tests")] {
+        for path in rust_sources_under(&root) {
+            let rel = cfgd_core::to_posix_string(path.strip_prefix(manifest).unwrap_or(&path));
+            let code = blank_non_code(&walked_file_body(&path));
+            let calls: usize = HERMETIC.iter().map(|h| code.matches(h).count()).sum();
+            if calls > 0 {
+                hermetic.push((rel.clone(), calls));
+            }
+            for parser in &parsers {
+                for method in METHODS {
+                    let tell = format!("{parser}::{method}");
+                    for (at, _) in code.match_indices(&tell) {
+                        // `PluginCli::parse(` holds `Cli::parse(`; only a
+                        // name starting at a word boundary is this type.
+                        let bounded = code[..at]
+                            .chars()
+                            .next_back()
+                            .is_none_or(|c| !(c.is_alphanumeric() || c == '_'));
+                        let entry = ENTRY_POINTS
+                            .iter()
+                            .any(|(file, call)| rel.ends_with(file) && tell == *call);
+                        if bounded && !entry {
+                            let line = code[..at].lines().count();
+                            offenders.push(format!("{rel}:{line}: {tell}"));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "a test parses an argv in-process through clap's own `Parser` methods, which \
+         read every exported `CFGD_*`; call `HermeticParse::try_parse_hermetic` (or \
+         `try_parse_reading_env` for a variable the test sets itself):\n{}",
+        offenders.join("\n")
+    );
+    for (file, floor) in FLOORS {
+        let calls = hermetic
+            .iter()
+            .find(|(rel, _)| rel == file)
+            .map_or(0, |(_, n)| *n);
+        assert!(
+            calls >= floor,
+            "{file} makes {calls} hermetic parses, under its floor of {floor}"
+        );
+    }
 }
 
 /// The lock-wait test in `tests/cli_integration.rs` recognises the state

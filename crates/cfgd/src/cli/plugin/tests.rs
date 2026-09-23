@@ -3,6 +3,7 @@ use cfgd_core::test_helpers::{EnvVarGuard, test_printer};
 use serial_test::serial;
 
 use super::*;
+use crate::cli::HermeticParse;
 
 #[test]
 fn parse_module_arg_valid() {
@@ -250,7 +251,7 @@ fn image_tag_version_host_port_no_tag() {
 
 #[test]
 fn plugin_output_default_is_table() {
-    let cli = PluginCli::try_parse_from(["kubectl-cfgd", "version"]).unwrap();
+    let cli = PluginCli::try_parse_hermetic(["kubectl-cfgd", "version"]).unwrap();
     assert!(matches!(
         cli.output.0,
         cfgd_core::output::OutputFormat::Table
@@ -259,7 +260,7 @@ fn plugin_output_default_is_table() {
 
 #[test]
 fn plugin_output_before_subcommand_parses_json() {
-    let cli = PluginCli::try_parse_from(["kubectl-cfgd", "-o", "json", "version"]).unwrap();
+    let cli = PluginCli::try_parse_hermetic(["kubectl-cfgd", "-o", "json", "version"]).unwrap();
     assert!(matches!(
         cli.output.0,
         cfgd_core::output::OutputFormat::Json
@@ -269,7 +270,7 @@ fn plugin_output_before_subcommand_parses_json() {
 #[test]
 fn plugin_output_after_subcommand_parses_yaml() {
     // global=true means -o is accepted after the subcommand too.
-    let cli = PluginCli::try_parse_from(["kubectl-cfgd", "status", "-o", "yaml"]).unwrap();
+    let cli = PluginCli::try_parse_hermetic(["kubectl-cfgd", "status", "-o", "yaml"]).unwrap();
     assert!(matches!(
         cli.output.0,
         cfgd_core::output::OutputFormat::Yaml
@@ -278,7 +279,7 @@ fn plugin_output_after_subcommand_parses_yaml() {
 
 #[test]
 fn plugin_output_name_format() {
-    let cli = PluginCli::try_parse_from(["kubectl-cfgd", "-o", "name", "version"]).unwrap();
+    let cli = PluginCli::try_parse_hermetic(["kubectl-cfgd", "-o", "name", "version"]).unwrap();
     assert!(matches!(
         cli.output.0,
         cfgd_core::output::OutputFormat::Name
@@ -289,7 +290,7 @@ fn plugin_output_name_format() {
 
 #[test]
 fn plugin_cli_parse_debug_command() {
-    let cli = PluginCli::try_parse_from([
+    let cli = PluginCli::try_parse_hermetic([
         "kubectl-cfgd",
         "debug",
         "my-pod",
@@ -320,8 +321,8 @@ fn plugin_cli_parse_debug_command() {
 
 #[test]
 fn plugin_cli_parse_debug_omitted_namespace_and_default_image() {
-    let cli =
-        PluginCli::try_parse_from(["kubectl-cfgd", "debug", "my-pod", "-m", "tools:1.0"]).unwrap();
+    let cli = PluginCli::try_parse_hermetic(["kubectl-cfgd", "debug", "my-pod", "-m", "tools:1.0"])
+        .unwrap();
 
     match cli.command {
         PluginCommand::Debug {
@@ -339,7 +340,7 @@ fn plugin_cli_parse_debug_omitted_namespace_and_default_image() {
 
 #[test]
 fn plugin_cli_parse_debug_multiple_modules() {
-    let cli = PluginCli::try_parse_from([
+    let cli = PluginCli::try_parse_hermetic([
         "kubectl-cfgd",
         "debug",
         "my-pod",
@@ -362,7 +363,7 @@ fn plugin_cli_parse_debug_multiple_modules() {
 
 #[test]
 fn plugin_cli_parse_exec_command() {
-    let cli = PluginCli::try_parse_from([
+    let cli = PluginCli::try_parse_hermetic([
         "kubectl-cfgd",
         "exec",
         "my-pod",
@@ -392,7 +393,7 @@ fn plugin_cli_parse_exec_command() {
 
 #[test]
 fn plugin_cli_parse_inject_command() {
-    let cli = PluginCli::try_parse_from([
+    let cli = PluginCli::try_parse_hermetic([
         "kubectl-cfgd",
         "inject",
         "deployment/myapp",
@@ -419,19 +420,19 @@ fn plugin_cli_parse_inject_command() {
 
 #[test]
 fn plugin_cli_parse_status_command() {
-    let cli = PluginCli::try_parse_from(["kubectl-cfgd", "status"]).unwrap();
+    let cli = PluginCli::try_parse_hermetic(["kubectl-cfgd", "status"]).unwrap();
     assert!(matches!(cli.command, PluginCommand::Status { .. }));
 }
 
 #[test]
 fn plugin_cli_parse_version_command() {
-    let cli = PluginCli::try_parse_from(["kubectl-cfgd", "version"]).unwrap();
+    let cli = PluginCli::try_parse_hermetic(["kubectl-cfgd", "version"]).unwrap();
     assert!(matches!(cli.command, PluginCommand::Version { .. }));
 }
 
 #[test]
 fn plugin_cli_no_subcommand_fails() {
-    let result = PluginCli::try_parse_from(["kubectl-cfgd"]);
+    let result = PluginCli::try_parse_hermetic(["kubectl-cfgd"]);
     assert!(result.is_err(), "missing subcommand should fail");
 }
 

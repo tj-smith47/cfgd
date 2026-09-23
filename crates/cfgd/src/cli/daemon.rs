@@ -567,6 +567,7 @@ pub(super) fn cmd_daemon_service() -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use crate::cli::HermeticParse;
 
     /// The instant every daemon-status render in this suite ages its stamps
     /// against, so a captured age is a fact about the fixture rather than about
@@ -643,7 +644,6 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn windows_service_binpath_argv_parses_via_cli() {
-        use clap::Parser;
         let cfg = std::path::Path::new("C:/ProgramData/cfgd/cfgd.yaml");
         let no_dirs = cfgd_core::daemon::DaemonDirOverrides::default();
         let both_dirs = cfgd_core::daemon::DaemonDirOverrides {
@@ -684,7 +684,7 @@ mod tests {
                 );
             }
             let full = std::iter::once("cfgd".to_string()).chain(argv.iter().cloned());
-            let cli = Cli::try_parse_from(full).unwrap_or_else(|e| {
+            let cli = Cli::try_parse_hermetic(full).unwrap_or_else(|e| {
                 panic!(
                     "baked service argv {argv:?} rejected by the daemon-service clap parser: {e}"
                 )

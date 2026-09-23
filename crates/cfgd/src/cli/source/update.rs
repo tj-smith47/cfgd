@@ -499,7 +499,7 @@ pub fn run_source_update(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::Parser;
+    use crate::cli::HermeticParse;
 
     /// The source entry's `subscription:` value is substituted per case, so one
     /// seed covers every shape the block can arrive in.
@@ -584,7 +584,7 @@ mod tests {
     /// The parsed flags, through the same `paired_flag` mapping the dispatcher
     /// uses, so a rewired flag fails here rather than in a golden.
     fn edits_from_argv(argv: &[&str]) -> SubscriptionEdits {
-        let cli = Cli::try_parse_from(argv).expect("parse argv");
+        let cli = Cli::try_parse_hermetic(argv).expect("parse argv");
         match cli.command {
             Some(crate::cli::Command::Source {
                 command:
@@ -663,7 +663,7 @@ mod tests {
             vec!["cfgd", "source", "update", "--no-allow-scripts"],
         ] {
             assert!(
-                Cli::try_parse_from(&argv).is_err(),
+                Cli::try_parse_hermetic(&argv).is_err(),
                 "must be refused: {argv:?}"
             );
         }

@@ -40,13 +40,11 @@
 
 use std::path::Path;
 
-use clap::Parser;
-
-use cfgd::cli::Cli;
 use cfgd::cli::daemon::{
     DaemonInstallOutput, DaemonUninstallOutput, build_daemon_install_doc, build_daemon_status_doc,
     build_daemon_uninstall_doc, cmd_daemon_status,
 };
+use cfgd::cli::{Cli, HermeticParse};
 use cfgd_core::daemon::{DaemonStatusResponse, SourceStatus};
 use cfgd_core::output::Printer;
 
@@ -169,7 +167,7 @@ const DAEMON_STATUS_NOW: &str = "2026-05-14T12:00:00Z";
 
 #[test]
 fn daemon_status_not_running_human() {
-    let cli = Cli::parse_from(["cfgd"]);
+    let cli = Cli::try_parse_hermetic(["cfgd"]).expect("a bare argv parses");
     let (printer, cap) = Printer::for_test_doc();
     cmd_daemon_status(&cli, &printer).unwrap();
     drop(printer);
@@ -178,7 +176,7 @@ fn daemon_status_not_running_human() {
 
 #[test]
 fn daemon_status_not_running_json() {
-    let cli = Cli::parse_from(["cfgd"]);
+    let cli = Cli::try_parse_hermetic(["cfgd"]).expect("a bare argv parses");
     let (printer, cap) = Printer::for_test_doc();
     cmd_daemon_status(&cli, &printer).unwrap();
     drop(printer);

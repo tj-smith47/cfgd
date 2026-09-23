@@ -84,6 +84,12 @@ directory sets it on the returned command, and its setting wins; one that sets
 `XDG_CACHE_HOME` to exercise cache resolution also removes `CFGD_CACHE_DIR`,
 which outranks it.
 
+An in-process test parses an argv through `cli::HermeticParse`
+(`try_parse_hermetic`, or `try_parse_reading_env` for a variable the test sets
+itself), never clap's own `Parser` methods, which read every `env =` binding
+from the exported environment; `every_in_process_parse_goes_through_the_hermetic_parser`
+walks both `src` and `tests`.
+
 The binary answers for its own half: a verb that materialises a config from
 `--from` refuses to write into a default config directory that already holds a
 `cfgd.yaml`, is not empty, or is a symlink

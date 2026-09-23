@@ -68,6 +68,7 @@ This file is an **INDEX**. The reasoning — why a helper exists, what breaks wi
 
 ## CLI parsing / validation
 
+- `cli::HermeticParse` (`crates/cfgd/src/cli/mod.rs`, `cfg(test | test-helpers)`) — `try_parse_hermetic(argv)` / `try_parse_reading_env(argv, vars)`: an in-process test parse with every `env =` binding cleared but the named ones, so an exported `CFGD_*` cannot change it. `every_in_process_parse_goes_through_the_hermetic_parser` walks for a direct `Parser` call.
 - `canonical_bool_str(raw)` — a boolish env-var value (`1`/`yes`/`on`/… and their negatives) to clap's canonical `"true"`/`"false"`; `None` for anything else. Shared across the `cfgd` binary's env pre-normalization and the library's own manual boolean-env reads (`cli::resolve_hints_enabled`) because the two are separate crate compilations.
 - `parse_env_var(input)` / `parse_alias(input)` — parse `KEY=VALUE` / `name=command`, validating as they go.
 - `validate_env_var_user_name(name)` — the one to use for USER input: shell-safety plus the reserved `CFGD_*` refusal.

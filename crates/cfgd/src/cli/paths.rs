@@ -337,6 +337,7 @@ pub fn cmd_paths(cli: &Cli, printer: &Printer, sources: &DirSources) -> anyhow::
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cli::HermeticParse;
     use std::path::PathBuf;
 
     use cfgd_core::output::{OutputFormat, Printer, Verbosity};
@@ -345,8 +346,7 @@ mod tests {
     use serial_test::serial;
 
     fn test_cli(state_dir: Option<PathBuf>, cache_dir: Option<PathBuf>) -> Cli {
-        use clap::Parser;
-        let mut cli = Cli::parse_from(["cfgd"]);
+        let mut cli = Cli::try_parse_hermetic(["cfgd"]).expect("a bare argv parses");
         cli.state_dir = state_dir;
         cli.cache_dir = cache_dir;
         cli

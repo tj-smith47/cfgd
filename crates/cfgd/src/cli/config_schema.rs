@@ -406,6 +406,7 @@ pub fn gate_on_load(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cli::HermeticParse;
 
     /// A `Cli` pointed at a fixture config, parsed from an argv so every
     /// global default is the real one. A hand-written `Cli { … }` literal goes
@@ -424,7 +425,6 @@ mod tests {
         state_dir: Option<&std::path::Path>,
         verb: &[&str],
     ) -> Cli {
-        use clap::Parser;
         let config = config.to_string_lossy().into_owned();
         let mut argv = vec!["cfgd".to_string(), "--config".to_string(), config];
         if let Some(dir) = state_dir {
@@ -432,7 +432,7 @@ mod tests {
             argv.push(dir.to_string_lossy().into_owned());
         }
         argv.extend(verb.iter().map(|part| (*part).to_string()));
-        Cli::try_parse_from(argv).expect("the fixture argv parses")
+        Cli::try_parse_hermetic(argv).expect("the fixture argv parses")
     }
 
     /// `--write` materializes the missing keys through the config crate's own
