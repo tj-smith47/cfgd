@@ -48129,11 +48129,21 @@ fn every_real_host_script_is_reachable_from_ci() {
 /// its line, so a GIF or a tape with no line is one nothing ever judges, and a
 /// stamp that is not a full commit id is one it cannot resolve. The population
 /// is read off `demo/` itself, so a new take joins it by existing.
+///
+/// The stamp is the commit the take was recorded at: `record.sh` writes it
+/// beside the frames and `stamp.sh` copies it. A `stamp.sh` reading the
+/// checkout's own commit would let a re-encode of old frames, or a hand run,
+/// clear a flag no new take earned. A job or step that may fail without
+/// failing the run, runs only sometimes, or a trigger filtered to some pull
+/// requests each leave the check unrun or unheard with this pin still green,
+/// so each is refused.
 #[test]
 fn every_demo_gif_is_stamped_and_checked() {
     /// The GIFs shipped today; a file holding fewer lines lost a stamp.
     const STAMP_FLOOR: usize = 8;
     const CHECK: &str = "demo/scripts/check-sync.sh";
+    /// The file a take leaves beside its frames naming the commit it recorded.
+    const SIDECAR: &str = "recorded-at";
     let root = cfgd_core::test_helpers::workspace_root();
     let demo = root.join("demo");
     let stamps: Vec<Vec<String>> = walked_file_body(&demo.join("recorded.txt"))
@@ -48191,29 +48201,89 @@ fn every_demo_gif_is_stamped_and_checked() {
         }
     }
 
+    let shell_code = |rel: &str| -> String {
+        walked_file_body(&root.join(rel))
+            .lines()
+            .filter(|l| !l.trim_start().starts_with('#'))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let stamp_sh = shell_code("demo/scripts/stamp.sh");
+    if !stamp_sh.contains(SIDECAR) || stamp_sh.contains("rev-parse") {
+        offenders.push(format!(
+            "demo/scripts/stamp.sh: must copy the take's `{SIDECAR}` and never read a commit itself"
+        ));
+    }
+    let record_sh = shell_code("demo/scripts/record.sh");
+    if !record_sh.contains("rev-parse HEAD") || !record_sh.contains(SIDECAR) {
+        offenders.push(format!(
+            "demo/scripts/record.sh: must write the take's commit to `{SIDECAR}`"
+        ));
+    }
+
     let ci = walked_file_body(&root.join(".github/workflows/ci.yml"));
     let ci_lines: Vec<&str> = ci.lines().map(yaml_code).collect();
-    let on_pull_request = ci_lines
+    let on_block: Vec<&str> = ci_lines
         .iter()
+        .copied()
         .skip_while(|l| l.trim_end() != "on:")
         .skip(1)
         .take_while(|l| l.starts_with(' ') || l.trim().is_empty())
-        .any(|l| l.trim().trim_end_matches(':') == "pull_request");
-    if !on_pull_request {
-        offenders.push("ci.yml: not triggered by pull_request".to_string());
+        .collect();
+    match on_block
+        .iter()
+        .position(|l| l.trim_end() == "  pull_request:")
+    {
+        None => offenders.push("ci.yml: no bare `pull_request:` trigger under `on:`".to_string()),
+        Some(at) => {
+            let filtered = on_block[at + 1..]
+                .iter()
+                .take_while(|l| l.trim().is_empty() || l.starts_with("   "))
+                .any(|l| !l.trim().is_empty());
+            if filtered {
+                offenders.push(
+                    "ci.yml: `pull_request:` carries a filter, so some pull requests skip the check"
+                        .to_string(),
+                );
+            }
+        }
     }
     match key_naming(&ci, "jobs:", CHECK) {
         None => offenders.push(format!("ci.yml: no job runs {CHECK}")),
         Some(job) => {
             let header = format!("  {job}:");
-            let gated = ci_lines
+            let body: Vec<&str> = ci_lines
                 .iter()
+                .copied()
                 .skip_while(|l| l.trim_end() != header)
                 .skip(1)
                 .take_while(|l| l.trim().is_empty() || l.starts_with("   "))
-                .any(|l| l.starts_with("    if:"));
-            if gated {
-                offenders.push(format!("ci.yml: job `{job}` runs {CHECK} behind an `if:`"));
+                .collect();
+            let neutering = |l: &str| {
+                let key = l.trim_start().trim_start_matches("- ");
+                key.starts_with("if:") || key.starts_with("continue-on-error:")
+            };
+            if body
+                .iter()
+                .any(|l| l.starts_with("    ") && !l.starts_with("     ") && neutering(l))
+            {
+                offenders.push(format!(
+                    "ci.yml: job `{job}` carries a job-level `if:` or `continue-on-error:`"
+                ));
+            }
+            let at = body.iter().position(|l| l.contains(CHECK));
+            let step_start = |l: &&str| l.starts_with("      - ");
+            if let Some(at) = at {
+                let start = body[..=at].iter().rposition(step_start).unwrap_or(at);
+                let end = body[at + 1..]
+                    .iter()
+                    .position(step_start)
+                    .map_or(body.len(), |i| at + 1 + i);
+                if body[start..end].iter().any(|l| neutering(l)) {
+                    offenders.push(format!(
+                        "ci.yml: the step running {CHECK} carries an `if:` or `continue-on-error:`"
+                    ));
+                }
             }
         }
     }
@@ -48224,6 +48294,82 @@ fn every_demo_gif_is_stamped_and_checked() {
     assert!(
         offenders.is_empty(),
         "a demo GIF the sync check cannot judge: {offenders:?}"
+    );
+}
+
+/// `demo/scripts/check-sync.sh` judges the last line of `demo/recorded.txt`
+/// when that line has no trailing newline.
+///
+/// Shell `read` returns failure on such a line after filling its fields, so a
+/// plain `while read` loop drops it and a hand edit that leaves the newline off
+/// exempts one GIF with every check green. The fixture stamps the first GIF at
+/// HEAD and the last, unterminated one before a change to its tape, so only a
+/// loop that reads the last line can fail.
+#[cfg(unix)]
+#[test]
+fn demo_sync_check_judges_an_unterminated_last_line() {
+    const CHECK: &str = "demo/scripts/check-sync.sh";
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let repo = tmp.path();
+    std::fs::create_dir_all(repo.join("demo/scripts")).expect("create demo/scripts");
+    std::fs::copy(
+        cfgd_core::test_helpers::workspace_root().join(CHECK),
+        repo.join(CHECK),
+    )
+    .expect("copy the check into the fixture");
+    for (name, body) in [
+        ("demo/x.tape", "x\n"),
+        ("demo/y.tape", "y\n"),
+        ("demo/cfgd-x.gif", ""),
+        ("demo/cfgd-y.gif", ""),
+    ] {
+        std::fs::write(repo.join(name), body).expect("write fixture file");
+    }
+    let git = git2::Repository::init(repo).expect("git init");
+    let sig = git2::Signature::now("cfgd-test", "test@cfgd.io").expect("signature");
+    let commit = |message: &str| -> String {
+        let mut index = git.index().expect("index");
+        index
+            .add_all(["*"], git2::IndexAddOption::DEFAULT, None)
+            .expect("stage");
+        index.write().expect("write index");
+        let tree = git
+            .find_tree(index.write_tree().expect("write tree"))
+            .expect("find tree");
+        let parents: Vec<git2::Commit> = git
+            .head()
+            .ok()
+            .and_then(|h| h.peel_to_commit().ok())
+            .into_iter()
+            .collect();
+        let parents: Vec<&git2::Commit> = parents.iter().collect();
+        git.commit(Some("HEAD"), &sig, &sig, message, &tree, &parents)
+            .expect("commit")
+            .to_string()
+    };
+    let recorded = commit("recorded");
+    std::fs::write(repo.join("demo/x.tape"), "x changed\n").expect("change the tape");
+    let head = commit("tape changed");
+    std::fs::write(
+        repo.join("demo/recorded.txt"),
+        format!("cfgd-y.gif y.tape {head}\ncfgd-x.gif x.tape {recorded}"),
+    )
+    .expect("write recorded.txt without a trailing newline");
+
+    let out = std::process::Command::new("bash")
+        .arg(repo.join(CHECK))
+        .env("HOME", repo)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .output()
+        .expect("run the check");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !out.status.success()
+            && stdout.contains(&format!("demo/cfgd-x.gif: recorded at {recorded}")),
+        "the unterminated last line went unjudged: status {:?}, stdout {stdout}, stderr {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
     );
 }
 
