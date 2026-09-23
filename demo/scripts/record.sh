@@ -71,6 +71,10 @@ export TMPDIR
 rm -rf "$TMPDIR"
 mkdir -p "$TMPDIR"
 
+# The commit the take records, read before it starts so a commit made while it
+# runs cannot be mistaken for the one the frames show.
+recorded_at="$(git rev-parse HEAD)"
+
 vhs "$TAPE"
 
 # vhs exits 0 whether or not it managed to publish the frames, so the only
@@ -117,5 +121,10 @@ if awk -v r="$rate" 'BEGIN { exit !(r < 20) }'; then
     echo "$RAW captured ${rate} fps — too sparse to read as motion. Re-record on an idle host." >&2
     exit 1
 fi
+
+# Written last, beside the frames, so only a take that passed every check above
+# carries it. The encoder's stamp.sh copies it into demo/recorded.txt; a
+# re-encode of the same frames therefore keeps this take's commit.
+printf '%s\n' "$recorded_at" > "${RAW%/}/recorded-at"
 
 echo "Recorded $RAW (${frames} frames, ${rate} fps captured of ${declared:-?} declared, $(du -sh "$RAW" | cut -f1))"

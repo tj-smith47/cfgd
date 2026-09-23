@@ -139,10 +139,16 @@ single-source-of-truth wiring.
 - The `demo-sync` job in ci.yml runs `demo/scripts/check-sync.sh` (the same
   script `task demo:check` runs) on every PR and master push, with no Rust
   toolchain: it only diffs each GIF's stamped commit in `demo/recorded.txt`
-  against HEAD, which is why its checkout carries `fetch-depth: 0`. A flag is
-  cleared only by re-recording the GIF (the encode step rewrites its stamp);
-  there is no allow-list. `every_demo_gif_is_stamped_and_checked` fails if the
-  job loses the script, its `pull_request` trigger, or gains a job-level `if:`.
+  against HEAD, which is why its checkout carries `fetch-depth: 0`. The stamp is
+  the commit the take was recorded at (`record.sh` writes it beside the frames,
+  `stamp.sh` copies it), and the inputs are all of `crates/` plus the root
+  manifests, so every dependency or version bump flags all eight GIFs. A flag is
+  cleared only by re-recording the GIF; there is no allow-list. A stamped
+  commit rewritten by a rebase, a reword or a rebase-merge is unreachable and
+  fails the job until the GIF is re-recorded.
+  `every_demo_gif_is_stamped_and_checked` fails if the job loses the script or
+  its bare `pull_request` trigger, or gains an `if:` or `continue-on-error:` on
+  the job or the step.
 - The `test-thread-model` job in ci.yml runs `task test:threads` — plain
   `cargo test --test-threads=16`, not nextest. It is not redundant with the
   `test` job: nextest runs one process per test, so each test gets its own

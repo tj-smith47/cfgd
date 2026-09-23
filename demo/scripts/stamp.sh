@@ -1,19 +1,26 @@
 #!/usr/bin/env bash
-# Record in demo/recorded.txt that demo/<gif> was just rendered from
-# demo/<tape> as of HEAD, the commit `demo/scripts/check-sync.sh` diffs the
-# GIF's render inputs from.
+# Copy into demo/recorded.txt the commit the take behind demo/<gif> was
+# recorded at, the commit `demo/scripts/check-sync.sh` diffs the GIF's render
+# inputs from.
+#
+# The commit comes from the take directory's `recorded-at`, which record.sh
+# writes when the take is recorded, and never from the checkout this runs in: a
+# re-encode of old frames after a later commit would otherwise claim frames the
+# later commit never rendered, and a hand run would clear a flag without a take.
 #
 # The only writer of that file: every line is rewritten through the one
 # format below and the lines are kept sorted by GIF, so two takes stamping
 # different lines never disagree on the file's shape.
 #
-# Usage: stamp.sh <gif-basename> <tape-basename>
+# Usage: stamp.sh <gif-basename> <tape-basename> <take-dir>
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
-GIF="${1:?usage: stamp.sh <gif-basename> <tape-basename>}"
-TAPE="${2:?usage: stamp.sh <gif-basename> <tape-basename>}"
+USAGE="usage: stamp.sh <gif-basename> <tape-basename> <take-dir>"
+GIF="${1:?$USAGE}"
+TAPE="${2:?$USAGE}"
+TAKE="${3:?$USAGE}"
 FILE=demo/recorded.txt
 
 for f in "demo/$GIF" "demo/$TAPE" "$FILE"; do
@@ -23,10 +30,16 @@ for f in "demo/$GIF" "demo/$TAPE" "$FILE"; do
     fi
 done
 
-# HEAD, not the working tree: an uncommitted change to a render input is
-# committed after the take, so the check sees it as changed since the stamp and
-# flags the GIF once more. That over-flag is the safe direction.
-sha="$(git rev-parse HEAD)"
+SIDECAR="${TAKE%/}/recorded-at"
+if [ ! -f "$SIDECAR" ]; then
+    echo "$SIDECAR does not exist: demo/$TAPE has no take recorded by demo/scripts/record.sh to stamp." >&2
+    exit 1
+fi
+sha="$(cat "$SIDECAR")"
+if ! [[ "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "$SIDECAR holds \`$sha\`, not a 40-hex commit, so demo/$TAPE's take cannot be stamped." >&2
+    exit 1
+fi
 
 {
     printf '%-24s %-20s %s\n' '# gif' 'tape' 'commit-recorded-at'

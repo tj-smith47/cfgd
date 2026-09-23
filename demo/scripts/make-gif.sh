@@ -223,4 +223,4 @@ ${RAMP};[vf][2:v]paletteuse=dither=none:diff_mode=rectangle" "$OUT"
 
 echo "Wrote $OUT ($(du -h "$OUT" | cut -f1), ${frames} frames over a ${dur}s take; scripts opened at ${scripts_at}s; plan ${plan_speed}x after a ${ease_in_speed}x ease, scripts ${scripts_speed}x before a ${ease_out_speed}x ease)"
 
-bash "$(dirname "$0")/stamp.sh" "$(basename "$OUT")" "$(basename "$TAPE")"
+bash "$(dirname "$0")/stamp.sh" "$(basename "$OUT")" "$(basename "$TAPE")" "$FRAMES"
