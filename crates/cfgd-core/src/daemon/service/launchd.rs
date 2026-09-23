@@ -45,7 +45,7 @@ pub(crate) fn generate_launchd_plist(
         args.push("<string>--scope</string>".to_string());
         args.push("<string>system</string>".to_string());
     }
-    for (flag, dir) in service_dir_flags(dirs) {
+    for (flag, dir) in super::service_dir_flags(dirs) {
         args.push(format!("<string>{}</string>", flag));
         args.push(format!(
             "<string>{}</string>",

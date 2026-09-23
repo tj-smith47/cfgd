@@ -1260,10 +1260,12 @@ fn build_inline_command(
     run_str: &str,
     working_dir: &std::path::Path,
     cfgd_env_path: Option<&std::path::Path>,
-    // Only read inside `#[cfg(unix)]` below: process groups are a POSIX
-    // concept and there is no non-unix arm to consume it in.
-    #[cfg_attr(not(unix), allow(unused_variables))] set_process_group: bool,
+    set_process_group: bool,
 ) -> std::process::Command {
+    // Process groups are a POSIX concept: the flag is only acted on inside the
+    // `#[cfg(unix)]` block below, and there is no non-unix arm to consume it in.
+    #[cfg(not(unix))]
+    let _ = set_process_group;
     let mut c = match shell {
         ScriptShell::Auto => {
             #[cfg(unix)]

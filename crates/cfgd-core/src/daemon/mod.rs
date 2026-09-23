@@ -778,18 +778,6 @@ use git::*;
 use health_ipc::*;
 use reconcile::*;
 use runner::*;
-// service::* contains cfg-gated launchd/systemd/windows wrappers — the parent
-// wildcard appears unused on the platform that DOESN'T match its arm. Keep
-// the import live across all platforms so the cross-platform call sites
-// (install_service/uninstall_service/run_as_windows_service) compile uniformly.
-#[allow(unused_imports)]
-use service::*;
-// sync::* exposes handle_sync / handle_version_check / handle_compliance_snapshot;
-// the public re-exports point at them through `pub use`, but the wildcard at
-// this scope keeps direct super::handle_* call sites in runner.rs compiling
-// even when no other submodule path imports them.
-#[allow(unused_imports)]
-use sync::*;
 
 // --- Public re-exports (preserve crate::daemon::<name> API) ---
 
@@ -1651,8 +1639,10 @@ pub(super) fn run_startup_checkin_blocking(
 
 /// Remove the daemon's IPC socket file at shutdown. No-op on Windows (named
 /// pipes are kernel objects with no on-disk artifact).
-#[allow(unused_variables)]
 pub(super) fn cleanup_ipc_socket(ipc_path: &Path) {
+    // A named pipe leaves nothing on disk to unlink, so only the unix arm reads the path.
+    #[cfg(not(unix))]
+    let _ = ipc_path;
     #[cfg(unix)]
     {
         if ipc_path.exists() {

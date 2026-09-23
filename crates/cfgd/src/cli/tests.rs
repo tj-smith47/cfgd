@@ -34479,17 +34479,24 @@ fn every_held_floor_row_id_comes_from_the_composer_that_owns_it() {
 
 /// Whether a `packages:` occurrence at byte offset `at` in `line` sits at an
 /// id-COMPOSITION boundary rather than inside prose, a YAML key or a debug
-/// placeholder. The four boundary characters are what every real composition
-/// spells and nothing else does: the character immediately before the
-/// occurrence is `"` (a joined literal, `"module:{m}:packages:{n}"`), `:` (a
-/// split literal glued onto a prior segment, `":packages:"`) or `}` (a
-/// `push_str` continuation after an interpolated segment); the character
-/// immediately after is `"` (the occurrence ends the literal there) or `{`
-/// (`"packages:{n}"`, an interpolated count following in the same literal).
-/// A doc sentence (`spec.packages: a list`) is preceded by a space, a YAML
-/// key (`  packages:`) is preceded by whitespace and followed by a newline,
-/// and a debug placeholder (`{packages:?}`) is preceded by `{` — none of
-/// those four boundary characters — so none of them fire.
+/// placeholder. The character immediately before the occurrence is one of:
+///
+/// - `"`: the literal opens on the segment (`"packages:"`, `"packages:{n}"`)
+/// - `:`: the segment follows an earlier one in the same literal
+///   (`"module:{m}:packages:{n}"`, `":packages:"`)
+/// - `}`: the segment follows an interpolation with no separator
+///   (`"{prefix}packages:{n}"`)
+///
+/// The character immediately after is `"` (the literal ends there) or `{`
+/// (an interpolated count follows in the same literal). A doc sentence
+/// (`spec.packages: a list`) is preceded by a space, a YAML key
+/// (`  packages:`) is preceded by whitespace and followed by a newline, and a
+/// debug placeholder (`{packages:?}`) is preceded by `{`, so none of them fire.
+///
+/// The tell assumes the `packages:` segment is spelled inside ONE literal. A
+/// composition split before the colon (`"module:{m}:packages"` followed by a
+/// separate `":"`) spells no `packages:` anywhere and is outside what this
+/// tell sees.
 fn is_composition_tell(line: &str, at: usize, len: usize) -> bool {
     let before = line[..at].chars().next_back();
     let after = line[at + len..].chars().next();
@@ -35286,6 +35293,72 @@ fn every_two_root_walk_guards_each_root_it_reads() {
          nothing; each reports its own count per root, or carries \
          `{HATCH} <why that root has no count of its own>`:\n{}",
         offenders.join("\n")
+    );
+}
+
+/// A blanket lint escape is a fixture nobody restructured: it hides the next
+/// dead item as well as the one it was written for, and `renderer/mod.rs` held
+/// one whose own justification had been false for releases. The population is
+/// EMPTY, so a new one is a design decision argued here rather than added quietly.
+#[test]
+fn no_source_carries_a_dead_code_allowance() {
+    /// The escapes a fixture reaches for. All are the same shape, so a rename
+    /// from one to another does not evade this.
+    const TELLS: &[&str] = &[
+        "allow(dead_code)",
+        "expect(dead_code)",
+        "allow(unused)",
+        "allow(unused_imports)",
+        "allow(unused_variables)",
+    ];
+    let root = cfgd_core::test_helpers::workspace_root();
+    let mut read = 0usize;
+    let mut per_root: Vec<(&str, usize, usize)> = Vec::new();
+    let mut offenders = Vec::new();
+    // Per root, with a floor under the sources each holds today: an aggregate is
+    // one tree's count plus the others', which the biggest alone clears.
+    for (dir, floor) in [
+        ("crates/cfgd/src", 170usize),
+        ("crates/cfgd/tests", 80),
+        ("crates/cfgd-core/src", 230),
+        ("crates/cfgd-core/tests", 8),
+        ("crates/cfgd-crd/src", 2),
+        ("crates/cfgd-csi/src", 9),
+        ("crates/cfgd-csi/tests", 1),
+        ("crates/cfgd-operator/src", 60),
+        ("crates/cfgd-operator/tests", 1),
+        ("crates/cfgd-schema/src", 2),
+        ("crates/cfgd-test-fixtures/src", 1),
+    ] {
+        let before = read;
+        for path in rust_sources_under(&root.join(dir)) {
+            let body = cfgd_core::test_helpers::walked_file_body(&path);
+            read += 1;
+            for (n, line) in body.lines().enumerate() {
+                // The raw line is a superset of its code, so a line naming no
+                // tell at all skips the blanking pass and its allocation.
+                if !TELLS.iter().any(|t| line.contains(t)) {
+                    continue;
+                }
+                let code = code_line(line);
+                if let Some(tell) = TELLS.iter().find(|t| code.contains(**t)) {
+                    let at = path.strip_prefix(&root).unwrap_or(&path);
+                    offenders.push(format!("{}:{}: {tell}", at.display(), n + 1));
+                }
+            }
+        }
+        per_root.push((dir, read - before, floor));
+    }
+    assert!(
+        per_root.iter().all(|(_, found, floor)| found >= floor),
+        "a tree the walk reads holds fewer sources than it did, so the files in it are judged \
+         by nobody: {per_root:?}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "{}: a blanket lint escape stands in for a fixture nobody restructured; restructure \
+         it (see the test guards in .claude/rules/shared-utils.md) rather than widening this walk",
+        offenders.join(", ")
     );
 }
 

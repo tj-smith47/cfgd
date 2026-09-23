@@ -67,7 +67,7 @@ pub(crate) fn generate_systemd_unit(
         args.push("--scope".to_string());
         args.push("system".to_string());
     }
-    for (flag, dir) in service_dir_flags(dirs) {
+    for (flag, dir) in super::service_dir_flags(dirs) {
         args.push(flag.to_string());
         args.push(dir.display().to_string()); // native-ok: argv token for this host
     }

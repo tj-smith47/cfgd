@@ -60,9 +60,7 @@ pub use scripted::custom_managers;
 // surface; they aren't named directly by callers today (constructed via
 // `all_package_managers()` / `custom_managers()`), but the re-exports keep
 // the types reachable at `crate::packages::SimpleManager` / `ScriptedManager`.
-#[allow(unused_imports)]
 pub use scripted::ScriptedManager;
-#[allow(unused_imports)]
 pub use simple::SimpleManager;
 pub use snap::SnapManager;
 pub use winget::WingetManager;

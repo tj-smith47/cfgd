@@ -2,6 +2,11 @@ use super::*;
 // Drift helpers are reached via fully-qualified `super::drift::` paths in
 // production; tests use the bare names (e.g. `record_file_drift_to`).
 use super::drift::*;
+// Likewise the sync handlers: `runner.rs` names them through `super::sync::`.
+use super::sync::*;
+// The launchd/systemd writers exist only on unix, and only their tests name them bare.
+#[cfg(unix)]
+use super::service::*;
 use crate::config::{AutoApplyPolicyConfig, PolicyAction};
 use crate::reconciler::{
     DecisionExclusions, DecisionScope, DeliveredItems, WithheldDecisions, action_resource_info,
