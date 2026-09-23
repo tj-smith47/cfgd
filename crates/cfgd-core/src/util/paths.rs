@@ -433,12 +433,16 @@ pub fn move_file(src: &std::path::Path, dst: &std::path::Path) -> std::io::Resul
 /// *default* only: it never honors `CFGD_STATE_DIR`/`CFGD_CACHE_DIR` (those are
 /// overrides, not the legacy default). Pure path logic — touches no filesystem.
 ///
-/// Resolved from the same home every other user-scope directory derives from
-/// (`HOME`, or `USERPROFILE` on Windows):
+/// Resolved from the environment, never from a platform lookup that ignores
+/// it:
 /// - macOS: `~/Library/Application Support/cfgd`
-/// - Windows: `%USERPROFILE%\AppData\Local\cfgd`
+/// - Windows: `%LOCALAPPDATA%\cfgd` when that is an absolute path, else
+///   `%USERPROFILE%\AppData\Local\cfgd`
 /// - elsewhere: `$XDG_DATA_HOME/cfgd` when that is an absolute path, else
 ///   `~/.local/share/cfgd`
+///
+/// The home is `HOME`, or `USERPROFILE` first on Windows: the same one every
+/// other user-scope directory derives from.
 ///
 /// Honors the [`TestHomeGuard`] thread-local override (test builds resolve a
 /// Linux-shaped `~/.local/share/cfgd` under the override home) so tests never
@@ -447,12 +451,18 @@ pub fn legacy_data_dir() -> Option<std::path::PathBuf> {
     if let Some(home) = test_home_override() {
         return Some(home.join(".local").join("share").join("cfgd"));
     }
+    // `%LOCALAPPDATA%` is the environment's copy of the known folder earlier
+    // Windows builds wrote to, so a relocated folder is still found.
+    #[cfg(windows)]
+    const DATA_VAR: &str = "LOCALAPPDATA";
     #[cfg(not(any(target_os = "macos", windows)))]
-    if let Some(xdg) = std::env::var_os("XDG_DATA_HOME")
+    const DATA_VAR: &str = "XDG_DATA_HOME";
+    #[cfg(not(target_os = "macos"))]
+    if let Some(data) = std::env::var_os(DATA_VAR)
         .map(std::path::PathBuf::from)
         .filter(|p| p.is_absolute())
     {
-        return Some(xdg.join("cfgd"));
+        return Some(data.join("cfgd"));
     }
     let home = std::path::PathBuf::from(home_dir_var()?);
     #[cfg(target_os = "macos")]

@@ -299,6 +299,7 @@ fn legacy_data_dir_is_unresolved_without_a_home_variable() {
     let _home = EnvVarGuard::unset("HOME");
     let _profile = EnvVarGuard::unset("USERPROFILE");
     let _xdg = EnvVarGuard::unset("XDG_DATA_HOME");
+    let _local = EnvVarGuard::unset("LOCALAPPDATA");
     assert_eq!(legacy_data_dir(), None);
 }
 
@@ -351,9 +352,23 @@ fn legacy_data_dir_resolves_under_home_application_support() {
 #[cfg(windows)]
 #[test]
 #[serial_test::serial]
-fn legacy_data_dir_resolves_under_userprofile_appdata_local() {
+fn legacy_data_dir_prefers_an_absolute_localappdata() {
+    let dir = tempfile::tempdir().unwrap();
+    let _home = EnvVarGuard::set("USERPROFILE", dir.path().join("home").to_str().unwrap());
+    let _local = EnvVarGuard::set("LOCALAPPDATA", dir.path().join("local").to_str().unwrap());
+    assert_eq!(
+        legacy_data_dir(),
+        Some(dir.path().join("local").join("cfgd"))
+    );
+}
+
+#[cfg(windows)]
+#[test]
+#[serial_test::serial]
+fn legacy_data_dir_falls_back_to_userprofile_appdata_local_without_localappdata() {
     let dir = tempfile::tempdir().unwrap();
     let _home = EnvVarGuard::set("USERPROFILE", dir.path().to_str().unwrap());
+    let _local = EnvVarGuard::unset("LOCALAPPDATA");
     let _xdg = EnvVarGuard::set("XDG_DATA_HOME", dir.path().join("data").to_str().unwrap());
     assert_eq!(
         legacy_data_dir(),

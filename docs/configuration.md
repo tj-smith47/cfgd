@@ -835,8 +835,8 @@ on where the config dir resides.
 ### Silent state & cache migration
 
 Earlier builds kept the state DB and the source cache together in one data dir
-(`~/.local/share/cfgd` on Linux, `~/Library/Application Support/cfgd` on macOS,
-`%LOCALAPPDATA%\cfgd` on Windows). cfgd now resolves **state** and **cache** to
+(`$XDG_DATA_HOME/cfgd`, default `~/.local/share/cfgd`, on Linux;
+`~/Library/Application Support/cfgd` on macOS; `%LOCALAPPDATA%\cfgd` on Windows). cfgd now resolves **state** and **cache** to
 their own roots (the table above). On the first run after upgrading, cfgd
 relocates that data to the new defaults automatically, with **no prompt**. Unlike the
 config dir, state and cache are app-managed (not hand-authored, not git-tracked),
