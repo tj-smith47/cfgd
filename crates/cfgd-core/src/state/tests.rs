@@ -5100,6 +5100,24 @@ fn migration_29_backfills_kind_and_manager_as_the_writer_records_them() {
     }
 }
 
+/// Whether `id` is a canonical lowercase UUIDv4: the version nibble is `4`
+/// and the variant nibble is one of `8`/`9`/`a`/`b`. Shared so a mask bug in
+/// the migration's SQL (`state/mod.rs`'s variant-nibble expression) is judged
+/// the same way whether it minted one id or two hundred.
+fn assert_uuid_v4(id: &str) {
+    let bytes = id.as_bytes();
+    assert!(
+        id.len() == 36
+            && [8, 13, 18, 23].iter().all(|&i| bytes[i] == b'-')
+            && bytes[14] == b'4'
+            && matches!(bytes[19], b'8' | b'9' | b'a' | b'b')
+            && id
+                .chars()
+                .all(|c| c == '-' || c.is_ascii_digit() || ('a'..='f').contains(&c)),
+        "the identity is a canonical lowercase UUIDv4: {id}"
+    );
+}
+
 /// Migration 30 gives a store that predates it an identity, once: re-opening
 /// the upgraded store reads the same id back rather than minting a second one,
 /// because a saved plan compares against it.
@@ -5126,17 +5144,7 @@ fn migration_30_mints_one_store_identity_and_reopening_keeps_it() {
         .unwrap();
     assert_eq!(rows, 1, "the upgrade mints exactly one identity");
     let id = upgraded.store_id().unwrap();
-    let bytes = id.as_bytes();
-    assert!(
-        id.len() == 36
-            && [8, 13, 18, 23].iter().all(|&i| bytes[i] == b'-')
-            && bytes[14] == b'4'
-            && matches!(bytes[19], b'8' | b'9' | b'a' | b'b')
-            && id
-                .chars()
-                .all(|c| c == '-' || c.is_ascii_digit() || ('a'..='f').contains(&c)),
-        "the identity is a canonical lowercase UUIDv4: {id}"
-    );
+    assert_uuid_v4(&id);
     drop(upgraded);
 
     let reopened = StateStore::open(&path).unwrap();
@@ -5170,6 +5178,18 @@ fn migration_30_mints_one_store_identity_and_reopening_keeps_it() {
         id,
         "the replayed migration keeps the original identity"
     );
+}
+
+/// One store's shape is not enough to catch a wrong variant-nibble mask: a
+/// bad mask lands on the right nibble by chance about half the time. Two
+/// hundred fresh stores each run migration 30's SQL fresh (`open_in_memory`
+/// runs every migration), so a wrong mask has a 2^-200 chance of passing.
+#[test]
+fn migration_30_mints_a_v4_shape_id_on_two_hundred_fresh_stores() {
+    for _ in 0..200 {
+        let id = StateStore::open_in_memory().unwrap().store_id().unwrap();
+        assert_uuid_v4(&id);
+    }
 }
 
 /// A store whose identity row is gone reports it rather than minting one on

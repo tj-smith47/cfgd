@@ -3176,14 +3176,30 @@ fn apply_plan_stale_by_store_exits_1_through_the_real_binary() {
     let plan_file = state_a.path().join("plan.json");
     record_plan_via_binary(config_dir.path(), state_a.path(), &plan_file);
 
+    let id_a = store_id_of(state_a.path());
+    let id_b = store_id_of(state_b.path());
+    assert_ne!(id_a, id_b, "two state dirs, two store identities");
+
     let payload = assert_stale_apply_exits_1(config_dir.path(), state_b.path(), &plan_file);
-    let recorded = payload["recordedStoreId"]
-        .as_str()
-        .expect("the store the plan was derived against");
-    let opened = payload["storeId"]
-        .as_str()
-        .expect("the store this run opened");
-    assert_ne!(recorded, opened, "two state dirs, two store identities");
+    assert_eq!(
+        payload["recordedStoreId"], id_a,
+        "the plan was derived against store A: {payload}"
+    );
+    assert_eq!(
+        payload["storeId"], id_b,
+        "this run opened store B: {payload}"
+    );
+}
+
+/// The identity `store_id()` reads for the store under `state_dir`, the same
+/// way `apply_plan_file.rs`'s own `store_id_of` reads it for the in-process
+/// suite — for a pin comparing a refusal's wire ids to the REAL stores rather
+/// than merely to each other.
+fn store_id_of(state_dir: &std::path::Path) -> String {
+    cfgd_core::state::StateStore::open(&state_dir.join("state.db"))
+        .unwrap()
+        .store_id()
+        .unwrap()
 }
 
 #[test]
