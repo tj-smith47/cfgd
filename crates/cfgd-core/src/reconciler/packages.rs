@@ -829,7 +829,6 @@ impl<'x> PackageExec<'x> {
     ) -> Result<ActionRun> {
         // Packages in each InstallPackages action are already grouped by
         // manager in plan_modules(), so just collect names and install.
-        let pkg_names: Vec<String> = pkgs.iter().map(|p| p.resolved_name.clone()).collect();
         let resolved_mod = mcx
             .module_actions
             .iter()
@@ -1015,11 +1014,7 @@ impl<'x> PackageExec<'x> {
         }
 
         let run = ActionRun::new(
-            format!(
-                "module:{}:packages:{}",
-                action.module_name,
-                pkg_names.join(",")
-            ),
+            super::format::module_packages_description(&action.module_name, pkgs),
             script_changed || manager_changed,
         );
         Ok(match installed {

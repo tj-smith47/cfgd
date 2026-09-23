@@ -272,8 +272,7 @@ pub fn format_action_description(action: &Action) -> String {
         },
         Action::Module(ma) => match &ma.kind {
             ModuleActionKind::InstallPackages { resolved } => {
-                let names: Vec<&str> = resolved.iter().map(|p| p.resolved_name.as_str()).collect();
-                format!("module:{}:packages:{}", ma.module_name, names.join(","))
+                module_packages_description(&ma.module_name, resolved)
             }
             ModuleActionKind::DeployFiles { declared_total, .. } => {
                 module_files_description(&ma.module_name, *declared_total)
@@ -1031,6 +1030,29 @@ const TWO_COLON_PREFIXES: &[&str] = &["file", "secret", "script", "env"];
 /// nothing ever reads back.
 pub(super) fn module_files_description(module_name: &str, declared_total: usize) -> String {
     format!("module:{module_name}:files:{declared_total}")
+}
+
+/// The description of one module's package install,
+/// `module:<module>:packages:<a,b>`: the resolved names in declared order,
+/// joined by `,`.
+///
+/// The plan's action description and the executed run's description are both
+/// this string, and [`parse_resource_from_description`] splits it into the
+/// `module` tracking row `<module>:packages:<a,b>`, whose name list `cfgd
+/// status` reads back by splitting on `,`. The plan and the apply must agree
+/// byte for byte, or the apply records a row the plan never matches.
+pub(super) fn module_packages_description(
+    module: &str,
+    packages: &[crate::modules::ResolvedPackage],
+) -> String {
+    let mut id = format!("module:{module}:packages:");
+    for (i, pkg) in packages.iter().enumerate() {
+        if i > 0 {
+            id.push(',');
+        }
+        id.push_str(&pkg.resolved_name);
+    }
+    id
 }
 
 /// The module named by a [`module_files_description`], for a reader holding the

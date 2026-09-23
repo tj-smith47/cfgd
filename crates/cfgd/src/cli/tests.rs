@@ -34477,6 +34477,117 @@ fn every_held_floor_row_id_comes_from_the_composer_that_owns_it() {
     );
 }
 
+/// A module's package-install description, `module:<m>:packages:<a,b>`, is
+/// the plan's action id and the apply's recorded id at once, so it has one
+/// composer: `module_packages_description`. A production literal spelling
+/// `:packages:` outside that composer's body is a second composer, and the plan
+/// and the apply stop matching the first time the two disagree on a byte.
+#[test]
+fn every_module_package_description_comes_from_its_composer() {
+    const SPELLING: &str = ":packages:";
+    const COMPOSER: &str = "module_packages_description";
+    /// The composer's own spelling, so a walk that stopped reading its file
+    /// fails on that file's name rather than passing with nothing to judge.
+    const SPELLED_FLOOR: [(&str, usize); 1] = [("cfgd-core/src/reconciler/format.rs", 1)];
+    /// The plan's description and the executed run's description, each named
+    /// by its own file.
+    const COMPOSER_CALLERS: [(&str, usize); 2] = [
+        ("cfgd-core/src/reconciler/format.rs", 1),
+        ("cfgd-core/src/reconciler/packages.rs", 1),
+    ];
+
+    let crates_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let mut spelled: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    let mut taken: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    let mut offenders: Vec<String> = Vec::new();
+    for krate in ["cfgd", "cfgd-core"] {
+        let root = crates_dir.join(krate).join("src");
+        for path in rust_sources_under(&root) {
+            // A test module's fixtures spell recorded ids by hand on purpose:
+            // they are the expected values the composer is judged against.
+            if path.file_name().is_some_and(|n| n == "tests.rs")
+                || path.components().any(|c| c.as_os_str() == "tests")
+            {
+                continue;
+            }
+            let production = cfgd_core::test_helpers::production_slice_of(&path);
+            let file = format!(
+                "{krate}/src/{}",
+                cfgd_core::to_posix_string(path.strip_prefix(&root).unwrap_or(&path))
+            );
+            let masked = blank_non_code(&production);
+            let code: Vec<&str> = masked.lines().collect();
+            // Literals kept, comments blanked: the spelling lives inside a
+            // literal, and a doc comment naming the shape composes nothing.
+            let commentless = cfgd_core::test_helpers::blank_comments(&production);
+            let mut owner_of: Vec<Option<usize>> = vec![None; code.len()];
+            for (i, line) in code.iter().enumerate() {
+                if cfgd_core::test_helpers::opens_function(line) {
+                    for j in function_span(&code, i) {
+                        owner_of[j] = Some(i);
+                    }
+                } else if cfgd_core::test_helpers::calls_free_fn(line, COMPOSER) {
+                    *taken.entry(file.clone()).or_default() += 1;
+                }
+            }
+            for (n, line) in commentless.lines().enumerate() {
+                // Both masks are byte for byte, so a hit the code mask blanked
+                // sits inside a literal; one it kept is a path like
+                // `crate::packages::` and spells no id.
+                let in_literal = line.match_indices(SPELLING).any(|(at, _)| {
+                    code.get(n)
+                        .and_then(|c| c.get(at..at + SPELLING.len()))
+                        .is_some_and(|c| c.trim().is_empty())
+                });
+                if !in_literal {
+                    continue;
+                }
+                let owner = owner_of
+                    .get(n)
+                    .copied()
+                    .flatten()
+                    .and_then(|at| cfgd_core::test_helpers::declared_fn_name(code[at]));
+                if owner.as_deref() == Some(COMPOSER) {
+                    *spelled.entry(file.clone()).or_default() += 1;
+                } else {
+                    offenders.push(format!("{file}:{}: {}", n + 1, line.trim()));
+                }
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "these spell a module package description outside `{COMPOSER}`, so the plan's id \
+         and the apply's recorded id can drift apart; route them through it:\n{}",
+        offenders.join("\n")
+    );
+    let below = |floors: &[(&str, usize)], seen: &std::collections::BTreeMap<String, usize>| {
+        floors
+            .iter()
+            .filter(|(file, floor)| seen.get(*file).copied().unwrap_or_default() < *floor)
+            .map(|(file, floor)| {
+                format!(
+                    "{file}: {} of {floor}",
+                    seen.get(*file).copied().unwrap_or_default()
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let short = below(&SPELLED_FLOOR, &spelled);
+    assert!(
+        short.is_empty(),
+        "the walk no longer finds `{COMPOSER}` spelling the id; found {spelled:#?}\n{}",
+        short.join("\n")
+    );
+    let unreached = below(&COMPOSER_CALLERS, &taken);
+    assert!(
+        unreached.is_empty(),
+        "the plan and the apply both compose this id through `{COMPOSER}`, and a producer \
+         that stopped is named here; found {taken:#?}\n{}",
+        unreached.join("\n")
+    );
+}
+
 /// One reader of a `module` row's id, in the file that mints it.
 ///
 /// The owner half of a `module` row ends at its FIRST separator, and a second
