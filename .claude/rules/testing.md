@@ -66,14 +66,21 @@ walks every `tests/e2e/*/scripts/run-all.sh` for both halves, so a new suite
 directory trips over the rule.
 
 The Rust integration tests under `crates/cfgd/tests/` have the same need and
-one constructor for it: `cfgd_binary::cfgd_bin()` builds every real-binary
-command with `HOME`, `USERPROFILE`, the four `XDG_*_HOME` directories and
-`CFGD_STATE_DIR` (the list in `cfgd_binary/isolated_env.rs`) pointed into a
-temp dir owned by the calling test's thread, and starts it in a working
-directory there too, so no spawn reads the developer's config, writes project
-scope into the checkout, or shares another test's `state.db`. A test that
-needs its own home or working directory sets it on the returned command, and
-its setting wins.
+one constructor for it: `cfgd_binary::cfgd_bin()` removes every `CFGD_*` the
+test process inherited, then builds every real-binary command with `HOME`,
+`USERPROFILE`, the four `XDG_*_HOME` directories, `XDG_RUNTIME_DIR`,
+`CFGD_STATE_DIR`, `CFGD_CACHE_DIR` and `CFGD_RUNTIME_DIR` (the list in
+`cfgd_binary/isolated_env.rs`) pointed into a temp dir owned by the
+calling test's thread, and starts it in a working directory there too, so no
+spawn reads the developer's config, writes project scope into the checkout,
+takes a lock in the real runtime dir, or shares another test's `state.db`. The
+`CFGD_*` overrides are what isolate Windows, whose cache and runtime
+known-folder lookups ignore the environment. `CFGD_CONFIG_DIR` stays unset: the
+CLI reads it as an explicit `--config-dir`, and `XDG_CONFIG_HOME` already moves
+the default config directory on every OS. A test that needs its own home, `CFGD_*` value or working
+directory sets it on the returned command, and its setting wins; one that sets
+`XDG_CACHE_HOME` to exercise cache resolution also removes `CFGD_CACHE_DIR`,
+which outranks it.
 
 The binary answers for its own half: a verb that materialises a config from
 `--from` refuses to write into a default config directory that already holds a

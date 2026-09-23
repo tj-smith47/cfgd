@@ -48543,6 +48543,8 @@ fn binary_spawn_tells(body: &str) -> Vec<&'static str> {
 /// passing once the gate reads some other variable. The isolated variables
 /// are set by one loop over the constant this pin compiles in, so a variable
 /// added there is set by the constructor with no second list to keep in step.
+/// Every `CFGD_*` the test process inherited is removed before any of that,
+/// so a developer's exported `CFGD_CONFIG_DIR` or `CFGD_YES` reaches no spawn.
 /// The files calling the constructor are floored, so the population cannot go
 /// dark while the constructor stays.
 #[test]
@@ -48556,6 +48558,11 @@ fn every_integration_test_spawns_the_binary_through_the_one_isolating_constructo
     const CALLER_FLOOR: usize = 13;
     // Each statement as rustfmt lays it out, compared with the whitespace
     // taken out of both sides so a wrap does not read as a missing line.
+    const SWEEP: [&str; 2] = [
+        "for (var, _) in std::env::vars_os() {",
+        "cmd.env_remove(var);",
+    ];
+    const INHERITED_PREFIX: &str = "CFGD_";
     const ISOLATING: [&str; 3] = [
         "for (var, path) in ISOLATED_ENV {",
         "cmd.env(var, root.path().join(path));",
@@ -48590,9 +48597,32 @@ fn every_integration_test_spawns_the_binary_through_the_one_isolating_constructo
         assert_eq!(binary_spawn_tells(fixture), [tell], "{fixture}");
     }
     assert!(binary_spawn_tells("// Command::cargo_bin(\"cfgd\")\nlet c = cfgd_bin();").is_empty());
+    // Linux and macOS resolve each root through the home and XDG variables;
+    // Windows resolves cache and runtime through known folders that ignore the
+    // environment, so only the `CFGD_*` overrides steer them there.
+    for required in [
+        "HOME",
+        "USERPROFILE",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "XDG_STATE_HOME",
+        "XDG_CACHE_HOME",
+        "XDG_RUNTIME_DIR",
+        "CFGD_STATE_DIR",
+        "CFGD_CACHE_DIR",
+        "CFGD_RUNTIME_DIR",
+    ] {
+        assert!(
+            ISOLATED_ENV.iter().any(|(var, _)| *var == required),
+            "the constructor points {required} into the calling test's own directory"
+        );
+    }
     assert!(
-        ISOLATED_ENV.iter().any(|(var, _)| *var == "CFGD_STATE_DIR"),
-        "the constructor gives each test a state store of its own"
+        ISOLATED_ENV
+            .iter()
+            .all(|(var, _)| *var != "CFGD_CONFIG_DIR"),
+        "CFGD_CONFIG_DIR is an explicit --config-dir to the CLI, so setting it would \
+         move every spawn off the default config directory it runs against"
     );
     // A path that is not relative replaces the test's directory when joined
     // onto it, and a working directory inside the isolated home resolves
@@ -48664,10 +48694,29 @@ fn every_integration_test_spawns_the_binary_through_the_one_isolating_constructo
             ));
         }
         let squeezed = squeeze(code);
-        for statement in ISOLATING {
+        for statement in SWEEP.iter().chain(&ISOLATING) {
             if !squeezed.contains(&squeeze(statement)) {
                 offenders.push(format!("{name} — `cfgd_bin` never runs `{statement}`"));
             }
+        }
+        if !span_literals(code, helper)
+            .iter()
+            .any(|(_, literal)| *literal == INHERITED_PREFIX)
+        {
+            offenders.push(format!(
+                "{name} — `cfgd_bin` never matches inherited names against \"{INHERITED_PREFIX}\""
+            ));
+        }
+        // Run after any `.env(`, the sweep would take back the opt-out and
+        // every `CFGD_*` the list sets.
+        let first_env = squeezed.find(".env(").unwrap_or(squeezed.len());
+        if squeezed
+            .find(&squeeze(SWEEP[0]))
+            .is_some_and(|at| at > first_env)
+        {
+            offenders.push(format!(
+                "{name} — `cfgd_bin` removes the inherited `{INHERITED_PREFIX}*` after setting variables"
+            ));
         }
         let spawns: usize = BINARY_SPAWN_TELLS
             .iter()
