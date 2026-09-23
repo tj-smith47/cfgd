@@ -96,6 +96,18 @@ fn apply_dry_run_with_empty_config() {
 
 // --- the state store a real-binary test opens is its own ---
 
+/// The state directory `cfgd_bin()` hands this test's invocations, read off
+/// the command it builds.
+fn own_state_dir() -> std::path::PathBuf {
+    cfgd_bin()
+        .unwrap()
+        .get_envs()
+        .find(|(var, _)| *var == "CFGD_STATE_DIR")
+        .and_then(|(_, dir)| dir)
+        .map(std::path::PathBuf::from)
+        .expect("cfgd_bin() sets CFGD_STATE_DIR")
+}
+
 #[test]
 fn a_real_binary_run_opens_the_calling_tests_own_state_store() {
     let dir = tempfile::tempdir().unwrap();
@@ -108,7 +120,7 @@ fn a_real_binary_run_opens_the_calling_tests_own_state_store() {
         .assert()
         .success();
 
-    let store = cfgd_binary::state_dir().join("state.db");
+    let store = own_state_dir().join("state.db");
     assert!(
         store.is_file(),
         "a run given no --state-dir must open {}, the calling test's own store",
@@ -118,33 +130,53 @@ fn a_real_binary_run_opens_the_calling_tests_own_state_store() {
 
 #[test]
 fn apply_dry_run_waits_for_another_process_creating_the_state_store() {
+    use std::io::{BufRead, Read};
+
+    const WAITING: &str = "another connection holds the write lock";
+
     let dir = tempfile::tempdir().unwrap();
     create_valid_config(dir.path());
 
     // A second process creating the same fresh store holds the write lock on
     // a database still in rollback mode; the run below starts inside that hold.
-    let holder = rusqlite::Connection::open(cfgd_binary::state_dir().join("state.db")).unwrap();
+    let holder = rusqlite::Connection::open(own_state_dir().join("state.db")).unwrap();
     holder
         .execute_batch("CREATE TABLE probe (x); BEGIN IMMEDIATE;")
         .unwrap();
-    let release = std::thread::spawn(move || {
-        // sleep-ok: nothing observable says the child is inside SQLite's busy handler; the hold only has to outlast the child's start and first attempt
-        std::thread::sleep(std::time::Duration::from_millis(1500));
-        holder.execute_batch("COMMIT").unwrap();
-    });
 
-    let out = cfgd_bin()
+    let mut child = cfgd_bin()
         .unwrap()
         .args(["apply", "--dry-run", "--config"])
         .arg(dir.path().join("cfgd.yaml"))
-        .output()
+        .env("RUST_LOG", "cfgd_core::state=debug")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
         .unwrap();
-    release.join().unwrap();
+    let mut stderr = std::io::BufReader::new(child.stderr.take().unwrap());
+
+    // The lock is released only once the child has said it is waiting on it,
+    // so the run below is known to have met the held lock.
+    let mut seen = String::new();
+    let mut waited = false;
+    while !waited {
+        let before = seen.len();
+        if stderr.read_line(&mut seen).unwrap() == 0 {
+            break;
+        }
+        waited = seen[before..].contains(WAITING);
+    }
+    holder.execute_batch("COMMIT").unwrap();
+    stderr.read_to_string(&mut seen).unwrap();
+    let status = child.wait().unwrap();
 
     assert!(
-        out.status.success(),
-        "a dry-run must wait out another writer's lock, not fail on it; stderr:\n{}",
-        String::from_utf8_lossy(&out.stderr)
+        waited,
+        "the run never reported meeting the held lock; stderr:\n{seen}"
+    );
+    assert!(
+        status.success(),
+        "a dry-run must wait out another writer's lock, not fail on it; stderr:\n{seen}"
     );
 }
 
@@ -2589,8 +2621,9 @@ fn status_help_documents_exit_code_flag() {
 /// `--yes` is ONE global flag: `cfgd --yes profile delete x`, `cfgd profile
 /// delete x --yes` and `CFGD_YES=1 cfgd profile delete x` all reach the same
 /// confirmation gate, and the env spelling still passes through `main.rs`'s
-/// boolish normalization. Engagement is proven by contrast: piped stdin cannot
-/// answer the prompt, so the same delete WITHOUT any of them is refused.
+/// boolish normalization. Engagement is proven by contrast: a null stdin is
+/// not a terminal and ends at once, so it cannot answer the prompt and the
+/// same delete WITHOUT any of them is refused.
 #[test]
 fn yes_flag_is_global_in_every_spelling() {
     let write_scratch = |dir: &std::path::Path| {

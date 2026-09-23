@@ -1,17 +1,27 @@
 //! The one constructor every real-binary test in this crate spawns `cfgd`
 //! through.
 
-use std::path::PathBuf;
 use std::process::Command;
 
 use assert_cmd::cargo::{CargoError, CommandCargoExt};
 
+mod isolated_env;
+use isolated_env::{ISOLATED_ENV, WORKING_DIR};
+
 thread_local! {
-    // libtest runs every test on a thread of its own, so this is one state
-    // store per test: shared by each invocation the test makes, and deleted
+    // libtest runs every test on a thread of its own, so this is one scratch
+    // tree per test: shared by each invocation the test makes, and deleted
     // when the test's thread exits.
-    static STATE_DIR: tempfile::TempDir =
-        tempfile::tempdir().expect("create the calling test's state directory");
+    static ROOT: tempfile::TempDir = {
+        let root = tempfile::tempdir().expect("create the calling test's directory");
+        for (_, path) in ISOLATED_ENV {
+            std::fs::create_dir_all(root.path().join(path))
+                .expect("create the calling test's isolated directories");
+        }
+        std::fs::create_dir_all(root.path().join(WORKING_DIR))
+            .expect("create the calling test's working directory");
+        root
+    };
 }
 
 /// The binary under test. Assert on it through `assert_cmd::prelude`'s
@@ -21,20 +31,22 @@ thread_local! {
 /// reaches GitHub over the network on every human-channel run otherwise, which
 /// is no part of what any of these pins claims.
 ///
-/// `CFGD_STATE_DIR` names the calling test's own directory ([`state_dir`]).
-/// Every test process in a run shares one `HOME`, so a `cfgd` resolving the
-/// default state directory opens the same `state.db` as every other test
-/// running beside it. A `--state-dir` or `CFGD_STATE_DIR` the test sets itself
-/// still wins.
+/// Every variable in `ISOLATED_ENV` and the working directory point into
+/// the calling test's own directory. Every test process in a run shares one
+/// `HOME` and starts in the crate's checkout, so a `cfgd` left to resolve its
+/// defaults opens the same `state.db` as every test running beside it, reads
+/// the developer's own config, and resolves project scope to the checkout. A
+/// variable, `--state-dir` or working directory the test sets itself after
+/// this still wins.
 #[allow(deprecated)] // assert_cmd 2.x cargo_bin deprecation; upgrade path is assert_cmd 3.x
 pub fn cfgd_bin() -> Result<Command, CargoError> {
     let mut cmd = Command::cargo_bin("cfgd")?;
     cmd.env("CFGD_NO_UPDATE_CHECK", "1");
-    cmd.env("CFGD_STATE_DIR", state_dir());
+    ROOT.with(|root| {
+        for (var, path) in ISOLATED_ENV {
+            cmd.env(var, root.path().join(path));
+        }
+        cmd.current_dir(root.path().join(WORKING_DIR));
+    });
     Ok(cmd)
-}
-
-/// The state directory [`cfgd_bin`] hands the calling test's invocations.
-pub fn state_dir() -> PathBuf {
-    STATE_DIR.with(|dir| dir.path().to_path_buf())
 }

@@ -48345,58 +48345,147 @@ fn every_e2e_suite_runs_under_the_one_scratch_home() {
     );
 }
 
+#[path = "../../tests/cfgd_binary/isolated_env.rs"]
+mod cfgd_binary_isolated_env;
+
+/// Every spelling that starts the `cfgd` binary: assert_cmd's `cargo_bin`
+/// method and its `cargo_bin!` and `cargo_bin_cmd!` macros, a `Command`
+/// naming it on `PATH`, and Cargo's `CARGO_BIN_EXE_cfgd` path, however it is
+/// passed on.
+const BINARY_SPAWN_TELLS: [&str; 5] = [
+    "cargo_bin(",
+    "cargo_bin!(",
+    "cargo_bin_cmd!(",
+    "Command::new(\"cfgd\"",
+    "CARGO_BIN_EXE_cfgd",
+];
+
+/// The [`BINARY_SPAWN_TELLS`] `body` spells outside its comments.
+fn binary_spawn_tells(body: &str) -> Vec<&'static str> {
+    let code = cfgd_core::test_helpers::blank_comments(body);
+    BINARY_SPAWN_TELLS
+        .into_iter()
+        .filter(|tell| code.contains(tell))
+        .collect()
+}
+
 /// Every integration test spawning the real binary goes through the one
 /// constructor, `cfgd_bin` in `tests/cfgd_binary/mod.rs`, and that constructor
-/// opts out of the startup update check and gives the calling test a state
-/// store of its own.
+/// opts out of the startup update check and points every variable in
+/// `tests/cfgd_binary/isolated_env.rs`, and the working directory, into the
+/// calling test's own directory.
 ///
 /// `startup_update_check` runs on the human channel of every command, so a
 /// spawn that leaves it on makes a live GitHub request per process: hundreds
 /// across the suite, each one a wait and a failure mode no pin is asking
-/// about, and all of them in a test run that may have no network at all. And
-/// every test process in a run shares one `HOME`, so a spawn resolving the
-/// default state directory opens the same `state.db` as every other test
-/// running beside it; `CFGD_STATE_DIR` is what keeps one test's store out of
-/// another's.
+/// about, and all of them in a test run that may have no network at all.
+/// Every test process in a run shares one `HOME` and starts in the crate's
+/// checkout, so a spawn left to its defaults opens the same `state.db` as
+/// every other test running beside it, reads and writes the developer's own
+/// config, and resolves project scope to the checkout.
 ///
-/// Both of Cargo's spellings (`Command::cargo_bin("cfgd")`,
-/// `CARGO_BIN_EXE_cfgd`) are the population tell: exactly one file under
-/// `tests/` names the binary, the constructor's own, and it names it once. The
-/// constructor must set each variable as the FIRST string literal of a `.env(`
-/// statement that runs: the statement is located between `fn cfgd_bin(` and
-/// its closing brace on the body with every literal and comment blanked, so no
-/// comment syntax can move the brace, and the name is then that statement's
-/// first literal read whole, so a mention in a comment, a name spelled in the
-/// VALUE slot, a longer name and one fragment of a `concat!` each set
-/// something other than the variable and are refused as such. The opt-out's
-/// name is read off `cfgd_core::upgrade::OPTOUT_VARS[0]` rather than spelled
-/// here, because a spelling of its own keeps passing once the gate reads some
-/// other variable. The files calling the constructor are floored, so the
-/// population cannot go dark while the constructor stays.
+/// [`BINARY_SPAWN_TELLS`] is the population tell: exactly one file under
+/// `tests/` spells any of them, the constructor's own, and it spells one once;
+/// each tell is checked against a fixture here so a tell the matcher stopped
+/// seeing fails by name. The constructor's statements are located between
+/// `fn cfgd_bin(` and its closing brace on the body with every literal and
+/// comment blanked, so no comment syntax can move the brace and nothing
+/// commented out counts. The opt-out must be the FIRST string literal of a
+/// `.env(` statement, so a mention in the VALUE slot, a longer name and one
+/// fragment of a `concat!` are refused; its name is read off
+/// `cfgd_core::upgrade::OPTOUT_VARS[0]`, because a spelling of its own keeps
+/// passing once the gate reads some other variable. The isolated variables
+/// are set by one loop over the constant this pin compiles in, so a variable
+/// added there is set by the constructor with no second list to keep in step.
+/// The files calling the constructor are floored, so the population cannot go
+/// dark while the constructor stays.
 #[test]
 fn every_integration_test_spawns_the_binary_through_the_one_isolating_constructor() {
+    use cfgd_binary_isolated_env::{ISOLATED_ENV, WORKING_DIR};
+
     const OPTOUT: &str = cfgd_core::upgrade::OPTOUT_VARS[0];
-    const STATE_DIR_VAR: &str = "CFGD_STATE_DIR";
     const CONSTRUCTOR_FILE: &str = "cfgd_binary/mod.rs";
     const HELPER: &str = "fn cfgd_bin(";
     const CALL: &str = "cfgd_bin()";
     const CALLER_FLOOR: usize = 13;
-    const SPAWNS: [&str; 2] = ["cargo_bin(\"cfgd\")", "CARGO_BIN_EXE_cfgd"];
+    // Each statement as rustfmt lays it out, compared with the whitespace
+    // taken out of both sides so a wrap does not read as a missing line.
+    const ISOLATING: [&str; 3] = [
+        "for (var, path) in ISOLATED_ENV {",
+        "cmd.env(var, root.path().join(path));",
+        "cmd.current_dir(root.path().join(WORKING_DIR));",
+    ];
 
+    let fixtures = [
+        (
+            "cargo_bin(",
+            "let c = Command::cargo_bin(\"cfgd\").unwrap();",
+        ),
+        (
+            "cargo_bin!(",
+            "let c = Command::new(assert_cmd::cargo::cargo_bin!(\"cfgd\"));",
+        ),
+        (
+            "cargo_bin_cmd!(",
+            "let c = assert_cmd::cargo::cargo_bin_cmd!(\"cfgd\");",
+        ),
+        (
+            "Command::new(\"cfgd\"",
+            "let c = std::process::Command::new(\"cfgd\");",
+        ),
+        (
+            "CARGO_BIN_EXE_cfgd",
+            "let c = Command::new(env!(\"CARGO_BIN_EXE_cfgd\"));",
+        ),
+    ];
+    let covered: Vec<&str> = fixtures.iter().map(|(tell, _)| *tell).collect();
+    assert_eq!(covered, BINARY_SPAWN_TELLS, "every tell carries a fixture");
+    for (tell, fixture) in fixtures {
+        assert_eq!(binary_spawn_tells(fixture), [tell], "{fixture}");
+    }
+    assert!(binary_spawn_tells("// Command::cargo_bin(\"cfgd\")\nlet c = cfgd_bin();").is_empty());
+    assert!(
+        ISOLATED_ENV.iter().any(|(var, _)| *var == "CFGD_STATE_DIR"),
+        "the constructor gives each test a state store of its own"
+    );
+    // A path that is not relative replaces the test's directory when joined
+    // onto it, and a working directory inside the isolated home resolves
+    // project scope to the same tree as user scope.
+    for (var, path) in ISOLATED_ENV {
+        assert!(std::path::Path::new(path).is_relative(), "{var} -> {path}");
+        assert!(
+            !std::path::Path::new(WORKING_DIR).starts_with(path),
+            "the working directory {WORKING_DIR} sits inside {var}'s {path}"
+        );
+    }
+    assert!(
+        std::path::Path::new(WORKING_DIR).is_relative(),
+        "{WORKING_DIR}"
+    );
+
+    let squeeze = |s: &str| s.split_whitespace().collect::<String>();
     let dir = cfgd_core::test_helpers::workspace_root().join("crates/cfgd/tests");
-    let mut spawning: Vec<String> = Vec::new();
+    let mut constructor_seen = false;
     let mut callers = 0usize;
     let mut offenders: Vec<String> = Vec::new();
     for path in cfgd_core::test_helpers::rust_sources_under(&dir) {
         let body = walked_file_body(&path);
         let name = cfgd_core::to_posix_string(path.strip_prefix(&dir).unwrap_or(&path));
-        if name != CONSTRUCTOR_FILE && body.contains(CALL) {
+        let uncommented = cfgd_core::test_helpers::blank_comments(&body);
+        if name != CONSTRUCTOR_FILE && uncommented.contains(CALL) {
             callers += 1;
         }
-        if !SPAWNS.iter().any(|tell| body.contains(tell)) {
+        let tells = binary_spawn_tells(&body);
+        if tells.is_empty() {
             continue;
         }
-        spawning.push(name.clone());
+        if name != CONSTRUCTOR_FILE {
+            offenders.push(format!(
+                "{name} — spawns the binary through {tells:?}; call `cfgd_bin()` instead"
+            ));
+            continue;
+        }
+        constructor_seen = true;
         // Blanked once: the helper is located, and its braces matched, on a
         // body carrying no comment and no literal, so neither a `{` written
         // in either nor a row of one that spans several lines can move the
@@ -48412,31 +48501,32 @@ fn every_integration_test_spawns_the_binary_through_the_one_isolating_constructo
             ));
             continue;
         };
-        // Only a statement that RUNS inside the helper counts: read otherwise
-        // the rule is satisfied by the name surviving in a doc comment, by a
-        // `.env` line commented out while debugging, by one written inside a
-        // string, and by one sitting in some other function. The call is
-        // found on the blanked span, where nothing a comment or a literal
-        // holds survives; the name is then the statement's FIRST literal,
-        // paired off the raw span at the same byte range because a literal's
-        // body is what the blanking spaces out.
+        // The call is found on the blanked span, where nothing a comment or
+        // a literal holds survives; the name is then the statement's FIRST
+        // literal, paired off the raw span at the same byte range because a
+        // literal's body is what the blanking spaces out.
         let code = &blanked[open..open + helper.len()];
-        let sets = |var: &str| {
-            code.match_indices(".env(").any(|(at, _)| {
-                let end = code[at..].find(';').map_or(code.len(), |n| at + n);
-                span_literals(&code[at..end], &helper[at..end])
-                    .first()
-                    .is_some_and(|(_, name)| *name == var)
-            })
-        };
-        for var in [OPTOUT, STATE_DIR_VAR] {
-            if !sets(var) {
-                offenders.push(format!(
-                    "{name} — no `.env(` line setting {var} inside `cfgd_bin`"
-                ));
+        let sets_optout = code.match_indices(".env(").any(|(at, _)| {
+            let end = code[at..].find(';').map_or(code.len(), |n| at + n);
+            span_literals(&code[at..end], &helper[at..end])
+                .first()
+                .is_some_and(|(_, var)| *var == OPTOUT)
+        });
+        if !sets_optout {
+            offenders.push(format!(
+                "{name} — no `.env(` line setting {OPTOUT} inside `cfgd_bin`"
+            ));
+        }
+        let squeezed = squeeze(code);
+        for statement in ISOLATING {
+            if !squeezed.contains(&squeeze(statement)) {
+                offenders.push(format!("{name} — `cfgd_bin` never runs `{statement}`"));
             }
         }
-        let spawns: usize = SPAWNS.iter().map(|tell| body.matches(tell).count()).sum();
+        let spawns: usize = BINARY_SPAWN_TELLS
+            .iter()
+            .map(|tell| uncommented.matches(tell).count())
+            .sum();
         if spawns > 1 {
             offenders.push(format!(
                 "{name} — {spawns} spawn call sites; only `cfgd_bin`'s own may name the binary"
@@ -48444,10 +48534,9 @@ fn every_integration_test_spawns_the_binary_through_the_one_isolating_constructo
         }
     }
 
-    assert_eq!(
-        spawning,
-        [CONSTRUCTOR_FILE],
-        "only the one constructor names the binary; every other test calls it"
+    assert!(
+        constructor_seen,
+        "{CONSTRUCTOR_FILE} is the one place a test spells the binary, and it spells none"
     );
     assert!(
         callers >= CALLER_FLOOR,
@@ -48455,8 +48544,8 @@ fn every_integration_test_spawns_the_binary_through_the_one_isolating_constructo
     );
     assert!(
         offenders.is_empty(),
-        "the constructor sets {OPTOUT} and {STATE_DIR_VAR} on every spawn, so no test run \
-         reaches the network for a self-update check or shares another test's state store:\n{}",
+        "{}\nevery spawn goes through `cfgd_bin()`, which sets {OPTOUT} and points \
+         {ISOLATED_ENV:?} and the working directory into the calling test's own directory",
         offenders.join("\n")
     );
 }

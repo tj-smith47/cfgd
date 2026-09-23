@@ -5,7 +5,7 @@ paths: ["crates/**/*.rs"]
 
 - `cargo test` must pass before any phase is considered complete.
 - Unit tests for pure logic (config parsing, diffing, template rendering). Co-located in `#[cfg(test)] mod tests {}` within each module.
-- Integration tests in `tests/`, using `assert_cmd` for CLI commands.
+- Integration tests in `tests/`. Every one that runs the real binary spawns it through `cfgd_binary::cfgd_bin()` (`crates/cfgd/tests/cfgd_binary/mod.rs`), which opts out of the update check and points `HOME`, `USERPROFILE`, the four `XDG_*_HOME`, `CFGD_STATE_DIR` and the working directory into the test's own temp dir. No test spells `cargo_bin(`, `cargo_bin!(`, `cargo_bin_cmd!(`, `Command::new("cfgd"` or `CARGO_BIN_EXE_cfgd` itself; `every_integration_test_spawns_the_binary_through_the_one_isolating_constructor` fails until it calls the constructor.
 - Package manager tests use mock trait implementations, not real system calls.
 - Use `tempfile` for any test that touches the filesystem.
 
@@ -64,6 +64,16 @@ whole run when it moved. `helpers.sh` sources it, so every suite reaches it, and
 `every_e2e_suite_runs_under_the_one_scratch_home` (`crates/cfgd/src/cli/tests.rs`)
 walks every `tests/e2e/*/scripts/run-all.sh` for both halves, so a new suite
 directory trips over the rule.
+
+The Rust integration tests under `crates/cfgd/tests/` have the same need and
+one constructor for it: `cfgd_binary::cfgd_bin()` builds every real-binary
+command with `HOME`, `USERPROFILE`, the four `XDG_*_HOME` directories and
+`CFGD_STATE_DIR` (the list in `cfgd_binary/isolated_env.rs`) pointed into a
+temp dir owned by the calling test's thread, and starts it in a working
+directory there too, so no spawn reads the developer's config, writes project
+scope into the checkout, or shares another test's `state.db`. A test that
+needs its own home or working directory sets it on the returned command, and
+its setting wins.
 
 The binary answers for its own half: a verb that materialises a config from
 `--from` refuses to write into a default config directory that already holds a
