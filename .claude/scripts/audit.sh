@@ -3,16 +3,16 @@
 # Uses block-aware test filtering: an awk pass strips #[cfg(test)] blocks
 # by tracking brace depth, so violations inside test modules are correctly ignored.
 #
-# Workspace layout: crates/{cfgd-schema,cfgd-crd,cfgd-core,cfgd,cfgd-csi,cfgd-operator}/src/
-# SRC_ROOTS names production code only. crates/cfgd-test-fixtures/src is the
-# code crates/cfgd/tests/ shares, so the lib-code rules (no unwrap, no raw
-# Command) leave it out the same way they leave out every tests/ directory.
+# Workspace layout: crates/{cfgd-schema,cfgd-crd,cfgd-core,cfgd,cfgd-csi,cfgd-operator,cfgd-test-fixtures}/src/
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
 ERRORS=0
 WARNINGS=0
 
+# SRC_ROOTS names production code only. crates/cfgd-test-fixtures/src is the
+# code crates/cfgd/tests/ shares, so the lib-code rules (no unwrap, no raw
+# Command) leave it out the same way they leave out every tests/ directory.
 SRC_ROOTS=(crates/cfgd-schema/src crates/cfgd-crd/src crates/cfgd-core/src crates/cfgd/src crates/cfgd-csi/src crates/cfgd-operator/src)
 
 # --- Formatting helpers ---

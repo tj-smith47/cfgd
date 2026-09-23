@@ -18,7 +18,12 @@ own test binary. Without it a `cfgd` / `cfgd-operator` / `cfgd-csi` test links a
 release-shaped core, and a non-dry-run apply of a profile carrying `spec.env`
 rewrites the operator's own `~/.cfgd.env`, `~/.config/environment.d/cfgd.conf`
 and shell rc files. Each consumer enables `test-helpers` in
-`[dev-dependencies]` only, so no shipped binary compiles the test arm.
+`[dev-dependencies]` only, and the one crate that needs it as a normal
+dependency (`cfgd-test-fixtures`, `publish = false`) stays out of the
+workspace `default-members`, so no shipped binary compiles the test arm: a
+root-level `cargo build` resolves features over the default members alone.
+`the_default_members_are_every_member_but_the_unpublished_ones` holds that
+list to `members` minus every `publish = false` member.
 
 A test that installs `with_test_home_guard` gets the home it asked for. A test
 that installs nothing gets a throwaway directory unique to its own thread,

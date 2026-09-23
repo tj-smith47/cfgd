@@ -10,9 +10,9 @@ vars:
   # The one spelling of the rustdoc gate's deny-warnings flag. ci.yml gets it
   # by invoking `task doc` rather than repeating the string.
   RUSTDOC_DENY_WARNINGS: "-D warnings"
-  # cargo-llvm-cov leaves every `tests/` directory out of its report, and
-  # `cfgd-test-fixtures` is the code `crates/cfgd/tests/` shares, so it stays
-  # out with them rather than counting test scaffolding as covered product.
+  # cargo-llvm-cov leaves every `tests/` directory out of its report.
+  # `cfgd-test-fixtures` is the code `crates/cfgd/tests/` shares, so the filter
+  # leaves it out too and the report measures the shipped crates alone.
   LLVM_COV_IGNORE: "--ignore-filename-regex crates/cfgd-test-fixtures/"
 
 env:

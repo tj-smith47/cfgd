@@ -9,6 +9,18 @@ members = [
     "crates/cfgd-csi",
     "crates/cfgd-test-fixtures",
 ]
+# Every member but the `publish = false` ones. A root-level `cargo build` builds
+# the default members, and resolver 2 unifies features across what it builds:
+# with `cfgd-test-fixtures` among them, its `cfgd-core/test-helpers` dependency
+# reaches every binary and swaps `$HOME` for a throwaway test home.
+default-members = [
+    "crates/cfgd-schema",
+    "crates/cfgd-crd",
+    "crates/cfgd-core",
+    "crates/cfgd",
+    "crates/cfgd-operator",
+    "crates/cfgd-csi",
+]
 
 [workspace.package]
 edition = "2024"

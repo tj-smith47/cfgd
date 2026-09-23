@@ -455,8 +455,10 @@ fn resolved_home() -> PathBuf {
 /// `cfg(test)` is set only while compiling THIS crate's own test binary. Every
 /// dependent crate links a plain release-shaped `cfgd-core`, so a `cfgd` CLI
 /// test driving a real apply resolved the operator's home through the arm
-/// above. The feature is declared in each consumer's `[dev-dependencies]`
-/// only, so under resolver 2 no shipped binary can compile this arm.
+/// above. The feature is declared in each consumer's `[dev-dependencies]`,
+/// and the one crate taking it as a normal dependency (`cfgd-test-fixtures`,
+/// `publish = false`) is left out of the workspace `default-members`, so
+/// under resolver 2 no shipped binary can compile this arm.
 #[cfg(any(test, feature = "test-helpers"))]
 fn resolved_home() -> PathBuf {
     crate::test_home_override().unwrap_or_else(unguarded_test_home)

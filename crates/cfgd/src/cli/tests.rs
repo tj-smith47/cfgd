@@ -35263,6 +35263,68 @@ fn every_two_root_walk_guards_each_root_it_reads() {
     );
 }
 
+/// A root-level `cargo build` builds the workspace's default members, and
+/// resolver 2 unifies each dependency's features across everything it builds.
+/// A `publish = false` member is test scaffolding that may take
+/// `cfgd-core/test-helpers` as a normal dependency, which swaps `$HOME` for a
+/// throwaway test home; left among the default members, that feature reaches
+/// every binary `task build`, `task e2e:cli` and the image Dockerfiles produce.
+/// So `default-members` is exactly `members` minus every unpublishable member,
+/// and a crate added to either list has to take a side.
+#[test]
+fn the_default_members_are_every_member_but_the_unpublished_ones() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let manifest = |dir: &std::path::Path| -> toml::Table {
+        let path = dir.join("Cargo.toml");
+        std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+            .parse()
+            .unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+    };
+    let workspace_manifest = manifest(&root);
+    let workspace = workspace_manifest["workspace"]
+        .as_table()
+        .expect("the root manifest declares a [workspace]");
+    let list = |key: &str| -> Vec<String> {
+        workspace
+            .get(key)
+            .and_then(toml::Value::as_array)
+            .unwrap_or_else(|| panic!("[workspace] declares `{key}` as a list"))
+            .iter()
+            .map(|v| v.as_str().expect("a member is a path string").to_string())
+            .collect()
+    };
+    // `publish = false` and `publish = []` both keep a crate off every registry.
+    let unpublished = |member: &str| match manifest(&root.join(member))["package"].get("publish") {
+        Some(toml::Value::Boolean(publish)) => !publish,
+        Some(toml::Value::Array(registries)) => registries.is_empty(),
+        _ => false,
+    };
+    let members = list("members");
+    let expected: Vec<String> = members
+        .iter()
+        .filter(|m| !unpublished(m))
+        .cloned()
+        .collect();
+    assert!(
+        expected.len() < members.len(),
+        "no member reads as `publish = false`, so the walk judges nothing: {members:?}"
+    );
+    assert!(
+        !expected.is_empty(),
+        "every member is unpublished: {members:?}"
+    );
+    let mut defaults = list("default-members");
+    defaults.sort();
+    let mut expected_sorted = expected.clone();
+    expected_sorted.sort();
+    assert_eq!(
+        defaults, expected_sorted,
+        "`default-members` must be `members` minus every `publish = false` member, or a \
+         root-level build unifies a test crate's features into the shipped binaries"
+    );
+}
+
 /// Every test whose expectation the host's own tools can decide plants the
 /// `PATH` it reads.
 ///
