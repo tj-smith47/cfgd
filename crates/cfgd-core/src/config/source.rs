@@ -31,10 +31,12 @@ pub struct SourceSpec {
     /// Where the source's manifest is fetched from.
     pub origin: OriginSpec,
     /// What this machine accepts from the source and how it applies.
-    #[serde(default, deserialize_with = "null_as_default")]
+    #[serde(default, deserialize_with = "crate::config::null_as_default")]
+    #[schemars(with = "Option<SubscriptionSpec>")]
     pub subscription: SubscriptionSpec,
     /// How often and under what conditions the source is refreshed.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::config::null_as_default")]
+    #[schemars(with = "Option<SourceSyncSpec>")]
     pub sync: SourceSyncSpec,
 }
 
@@ -149,17 +151,6 @@ pub fn validate_source_priority(n: u32) -> std::result::Result<u32, String> {
     Ok(n)
 }
 
-/// Read an explicit `null` as the field's default, the way a bare `key:` with
-/// nothing after it already reads. A writer that serializes an emptied block
-/// prints `null`, and a document holding the file's own output must load.
-fn null_as_default<'de, D, T>(deserializer: D) -> std::result::Result<T, D::Error>
-where
-    D: serde::Deserializer<'de>,
-    T: Default + Deserialize<'de>,
-{
-    Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
-}
-
 fn deserialize_source_priority<'de, D>(deserializer: D) -> std::result::Result<u32, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -269,11 +260,13 @@ pub struct ConfigSourceMetadata {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConfigSourceSpec {
     /// Profiles and modules this source publishes.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::config::null_as_default")]
+    #[schemars(with = "Option<ConfigSourceProvides>")]
     pub provides: ConfigSourceProvides,
     /// Policy tiers (required/recommended/optional/locked) and constraints
     /// this source enforces on subscribers.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::config::null_as_default")]
+    #[schemars(with = "Option<ConfigSourcePolicy>")]
     pub policy: ConfigSourcePolicy,
 }
 
@@ -291,7 +284,8 @@ pub struct ConfigSourceProvides {
     pub profile_details: Vec<ConfigSourceProfileEntry>,
     /// Maps a platform/distro tag (`macos`, `debian`, …) to the profile name
     /// to use on that platform.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::config::null_as_default")]
+    #[schemars(with = "Option<std::collections::HashMap<String, String>>")]
     pub platform_profiles: HashMap<String, String>,
     /// Names of modules this source publishes.
     #[serde(default)]
@@ -341,19 +335,24 @@ pub struct ConfigSourceProfileEntry {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConfigSourcePolicy {
     /// Items every subscriber receives unconditionally.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::config::null_as_default")]
+    #[schemars(with = "Option<PolicyItems>")]
     pub required: PolicyItems,
     /// Items a subscriber receives when `subscription.acceptRecommended` is set.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::config::null_as_default")]
+    #[schemars(with = "Option<PolicyItems>")]
     pub recommended: PolicyItems,
     /// Items a subscriber must explicitly name in `subscription.optIn` to receive.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::config::null_as_default")]
+    #[schemars(with = "Option<PolicyItems>")]
     pub optional: PolicyItems,
     /// Items every subscriber receives and cannot override locally.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::config::null_as_default")]
+    #[schemars(with = "Option<PolicyItems>")]
     pub locked: PolicyItems,
     /// Restrictions this source imposes on how subscribers may compose it.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::config::null_as_default")]
+    #[schemars(with = "Option<SourceConstraints>")]
     pub constraints: SourceConstraints,
 }
 
@@ -480,8 +479,8 @@ pub struct PolicyItems {
     #[serde(default)]
     pub aliases: Vec<ShellAlias>,
     /// System configurator settings offered at this tier.
-    #[serde(default)]
-    #[schemars(with = "std::collections::BTreeMap<String, serde_json::Value>")]
+    #[serde(default, deserialize_with = "crate::config::null_as_default")]
+    #[schemars(with = "Option<std::collections::BTreeMap<String, serde_json::Value>>")]
     pub system: SystemSettings,
     /// Profile names this tier recommends composing in.
     #[serde(default)]

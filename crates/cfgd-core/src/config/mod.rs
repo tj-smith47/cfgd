@@ -86,3 +86,14 @@ pub use sync_secrets::{
     NotifyConfig, NotifyMethod, SecretIntegration, SecretsConfig, SopsConfig, SyncConfig,
 };
 pub use theme::{ThemeConfig, ThemeOverrides};
+
+/// Read an explicit `null` as the field's default, the way a bare `key:` with
+/// nothing after it already reads. A writer that serializes an emptied block
+/// prints `null`, and a document holding the file's own output must load.
+pub(crate) fn null_as_default<'de, D, T>(deserializer: D) -> std::result::Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Default + serde::Deserialize<'de>,
+{
+    Ok(<Option<T> as serde::Deserialize>::deserialize(deserializer)?.unwrap_or_default())
+}

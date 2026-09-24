@@ -150,7 +150,8 @@ pub struct ConfigSpec {
 
     /// CLI aliases: map of alias name → command string.
     /// Built-in defaults (add, remove) can be overridden or extended.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::config::null_as_default")]
+    #[schemars(with = "Option<std::collections::HashMap<String, String>>")]
     pub aliases: HashMap<String, String>,
 
     /// AI assistant configuration: provider, model, and API key env var.
@@ -281,7 +282,8 @@ pub struct UpdateConfig {
     pub channel: Option<String>,
 
     /// Update policy for authored skills. Defaults to inheriting `policy`.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::config::null_as_default")]
+    #[schemars(with = "Option<SkillUpdateConfig>")]
     pub skills: SkillUpdateConfig,
 }
 

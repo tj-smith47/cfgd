@@ -91,7 +91,14 @@
       "description": "`spec.policy`: the four acceptance tiers a config source offers items under, plus the constraints it enforces on every subscriber. ```yaml policy: required: packages: apt: [git] recommended: modules: [nvim] optional: modules: [tmux] locked: env: - name: COMPANY_PROXY value: http://proxy.internal:3128 constraints: noScripts: true ```",
       "properties": {
         "constraints": {
-          "$ref": "#/definitions/SourceConstraints",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SourceConstraints"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "default": {
             "allowSystemChanges": false,
             "allowedTargetPaths": [],
@@ -102,7 +109,14 @@
           "description": "Restrictions this source imposes on how subscribers may compose it."
         },
         "locked": {
-          "$ref": "#/definitions/PolicyItems",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PolicyItems"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "default": {
             "aliases": [],
             "env": [],
@@ -116,7 +130,14 @@
           "description": "Items every subscriber receives and cannot override locally."
         },
         "optional": {
-          "$ref": "#/definitions/PolicyItems",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PolicyItems"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "default": {
             "aliases": [],
             "env": [],
@@ -130,7 +151,14 @@
           "description": "Items a subscriber must explicitly name in `subscription.optIn` to receive."
         },
         "recommended": {
-          "$ref": "#/definitions/PolicyItems",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PolicyItems"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "default": {
             "aliases": [],
             "env": [],
@@ -144,7 +172,14 @@
           "description": "Items a subscriber receives when `subscription.acceptRecommended` is set."
         },
         "required": {
-          "$ref": "#/definitions/PolicyItems",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PolicyItems"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "default": {
             "aliases": [],
             "env": [],
@@ -216,7 +251,10 @@
           },
           "default": {},
           "description": "Maps a platform/distro tag (`macos`, `debian`, …) to the profile name to use on that platform.",
-          "type": "object"
+          "type": [
+            "object",
+            "null"
+          ]
         },
         "profileDetails": {
           "default": [],
@@ -1011,7 +1049,10 @@
           "additionalProperties": true,
           "default": {},
           "description": "System configurator settings offered at this tier.",
-          "type": "object"
+          "type": [
+            "object",
+            "null"
+          ]
         }
       },
       "type": "object"
@@ -1159,7 +1200,14 @@
   "description": "`spec`: the body of a config source manifest.",
   "properties": {
     "policy": {
-      "$ref": "#/definitions/ConfigSourcePolicy",
+      "anyOf": [
+        {
+          "$ref": "#/definitions/ConfigSourcePolicy"
+        },
+        {
+          "type": "null"
+        }
+      ],
       "default": {
         "constraints": {
           "allowSystemChanges": false,
@@ -1212,7 +1260,14 @@
       "description": "Policy tiers (required/recommended/optional/locked) and constraints this source enforces on subscribers."
     },
     "provides": {
-      "$ref": "#/definitions/ConfigSourceProvides",
+      "anyOf": [
+        {
+          "$ref": "#/definitions/ConfigSourceProvides"
+        },
+        {
+          "type": "null"
+        }
+      ],
       "default": {
         "modules": [],
         "platformProfiles": {},

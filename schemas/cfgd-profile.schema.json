@@ -330,7 +330,10 @@
           },
           "default": {},
           "description": "Octal permission strings (`\"0600\"`) keyed by target path, applied after\ndeployment.",
-          "type": "object"
+          "type": [
+            "object",
+            "null"
+          ]
         }
       },
       "type": "object"
@@ -986,7 +989,10 @@
           "additionalProperties": true,
           "default": {},
           "description": "System configurator settings (`macosDefaults`, `systemd`, `sysctl`, …),\nkeyed by configurator name.",
-          "type": "object"
+          "type": [
+            "object",
+            "null"
+          ]
         }
       },
       "type": "object"

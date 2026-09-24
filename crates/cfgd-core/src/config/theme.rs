@@ -26,7 +26,12 @@ pub struct ThemeConfig {
     #[schemars(schema_with = "theme_name_schema")]
     pub name: String,
     /// Per-color and per-icon overrides applied on top of the named preset.
-    #[serde(default, skip_serializing_if = "ThemeOverrides::is_empty")]
+    #[serde(
+        default,
+        deserialize_with = "crate::config::null_as_default",
+        skip_serializing_if = "ThemeOverrides::is_empty"
+    )]
+    #[schemars(with = "Option<ThemeOverrides>")]
     pub overrides: ThemeOverrides,
 }
 
@@ -78,12 +83,14 @@ impl<'de> serde::Deserialize<'de> for ThemeConfig {
                 self,
                 map: M,
             ) -> std::result::Result<ThemeConfig, M::Error> {
+                // The derive on `ThemeConfig` only serializes and reflects, so
+                // each field's read rule is restated here.
                 #[derive(Deserialize)]
                 #[serde(rename_all = "camelCase")]
                 struct Inner {
                     #[serde(default = "default_theme_name")]
                     name: String,
-                    #[serde(default)]
+                    #[serde(default, deserialize_with = "crate::config::null_as_default")]
                     overrides: ThemeOverrides,
                 }
                 let inner = Inner::deserialize(de::value::MapAccessDeserializer::new(map))?;

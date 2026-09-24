@@ -57,7 +57,14 @@
           "type": "boolean"
         },
         "export": {
-          "$ref": "#/definitions/ComplianceExport",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ComplianceExport"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "default": {
             "format": "Json",
             "path": "~/.local/state/cfgd/compliance/"
@@ -75,7 +82,14 @@
           "type": "string"
         },
         "scope": {
-          "$ref": "#/definitions/ComplianceScope",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ComplianceScope"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "default": {
             "files": true,
             "packages": true,
@@ -193,7 +207,10 @@
           },
           "default": {},
           "description": "CLI aliases: map of alias name → command string.\nBuilt-in defaults (add, remove) can be overridden or extended.",
-          "type": "object"
+          "type": [
+            "object",
+            "null"
+          ]
         },
         "compliance": {
           "anyOf": [
@@ -862,7 +879,14 @@
           "description": "Where the source's manifest is fetched from."
         },
         "subscription": {
-          "$ref": "#/definitions/SubscriptionSpec",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SubscriptionSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "default": {
             "acceptRecommended": false,
             "allowScripts": false,
@@ -873,7 +897,14 @@
           "description": "What this machine accepts from the source and how it applies."
         },
         "sync": {
-          "$ref": "#/definitions/SourceSyncSpec",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SourceSyncSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "default": {
             "autoApply": false,
             "interval": "1h",
@@ -1032,7 +1063,14 @@
           "type": "string"
         },
         "overrides": {
-          "$ref": "#/definitions/ThemeOverrides",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ThemeOverrides"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "description": "Per-color and per-icon overrides applied on top of the named preset."
         }
       },
@@ -1219,7 +1257,14 @@
           "description": "How update checks for the cfgd binary behave. Defaults to `Prompt`."
         },
         "skills": {
-          "$ref": "#/definitions/SkillUpdateConfig",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SkillUpdateConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "default": {
             "policy": "Inherit"
           },

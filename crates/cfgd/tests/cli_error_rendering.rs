@@ -480,6 +480,33 @@ fn source_priority_writes_into_an_absent_or_bare_subscription_and_the_file_still
     }
 }
 
+/// A source whose `sync` block is written `null` loads with the default block,
+/// as a bare `sync:` beside it does, so `source list` reports the source.
+#[test]
+fn a_source_whose_sync_block_is_null_loads_and_lists() {
+    for (case, block) in [("bare", "    sync:\n"), ("null", "    sync: null\n")] {
+        let dir = tempfile::tempdir().unwrap();
+        let config = write_config_with_source(dir.path(), block);
+        let out = cfgd_bin()
+            .unwrap()
+            .args(["source", "list", "--config"])
+            .arg(&config)
+            .args(["-o", "json"])
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{case}: {stdout}{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let v = parse_single_json(&stdout);
+        assert_eq!(v[0]["name"], "s", "{case}: {v}");
+        assert_eq!(v[0]["priority"], 500, "{case}: {v}");
+    }
+}
+
 /// An out-of-range priority given to `source priority` is refused as the
 /// `[VALUE]` positional its `--help` prints, the argument the invocation
 /// actually carried.

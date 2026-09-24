@@ -146,8 +146,12 @@ pub struct ModuleSpec {
 
     /// System configurator settings contributed by this module.
     /// Deep-merged into the profile system map; module values override profile values at leaf level.
-    #[serde(default, skip_serializing_if = "SystemSettings::is_empty")]
-    #[schemars(with = "std::collections::BTreeMap<String, serde_json::Value>")]
+    #[serde(
+        default,
+        deserialize_with = "crate::config::null_as_default",
+        skip_serializing_if = "SystemSettings::is_empty"
+    )]
+    #[schemars(with = "Option<std::collections::BTreeMap<String, serde_json::Value>>")]
     pub system: SystemSettings,
 }
 
@@ -179,7 +183,12 @@ pub struct ModulePackageEntry {
 
     /// Manager-specific package name aliases (e.g. `{apt: "neovim", brew:
     /// "neovim"}`) for a package named differently across managers.
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    #[serde(
+        default,
+        deserialize_with = "crate::config::null_as_default",
+        skip_serializing_if = "HashMap::is_empty"
+    )]
+    #[schemars(with = "Option<std::collections::HashMap<String, String>>")]
     pub aliases: HashMap<String, String>,
 
     /// Shell script to run instead of a manager install, selected via

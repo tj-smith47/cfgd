@@ -1024,21 +1024,283 @@ origin:
     assert!(!spec.sync.auto_apply);
 }
 
-// A block written `subscription: null` (what a writer serializing an emptied
-// block prints) reads as the bare `subscription:` beside it does.
+// A section written `key: null` (what a writer serializing an emptied block
+// prints) reads as the bare `key:` beside it does.
 #[test]
-fn source_spec_reads_a_null_subscription_as_its_default() {
-    for block in [
-        "subscription:\n",
-        "subscription: null\n",
-        "subscription: ~\n",
+fn a_config_section_written_null_reads_as_its_default() {
+    let origin = "name: test-source\norigin:\n  type: Git\n  url: https://example.com/config.git\n";
+    for key in ["subscription", "sync"] {
+        for value in ["", " null", " ~"] {
+            let yaml = format!("{origin}{key}:{value}\n");
+            let spec: SourceSpec =
+                serde_yaml::from_str(&yaml).unwrap_or_else(|e| panic!("{key}:{value}: {e}"));
+            assert_eq!(spec.subscription.priority, 500, "{key}:{value}");
+            assert_eq!(spec.sync.interval, "1h", "{key}:{value}");
+        }
+    }
+
+    let policy: ConfigSourcePolicy = serde_yaml::from_str(
+        "required: null\nrecommended: ~\noptional: null\nlocked: null\nconstraints: null\n",
+    )
+    .unwrap();
+    assert!(
+        policy.constraints.no_scripts,
+        "the constraints default holds"
+    );
+    let source: ConfigSourceSpec = serde_yaml::from_str("provides: null\npolicy: null\n").unwrap();
+    assert!(source.provides.platform_profiles.is_empty());
+
+    let compliance: ComplianceConfig =
+        serde_yaml::from_str("enabled: true\nscope: null\nexport: null\n").unwrap();
+    assert!(compliance.scope.files, "the scope default holds");
+
+    let theme: ThemeConfig = serde_yaml::from_str("name: dracula\noverrides: null\n").unwrap();
+    assert!(theme.overrides.is_empty());
+    let update: UpdateConfig = serde_yaml::from_str("skills: null\n").unwrap();
+    assert_eq!(update.skills.policy, SkillUpdatePolicy::default());
+    let files: FilesSpec = serde_yaml::from_str("permissions: null\n").unwrap();
+    assert!(files.permissions.is_empty());
+    let profile: ProfileSpec = serde_yaml::from_str("system: null\n").unwrap();
+    assert!(profile.system.is_empty());
+    let packages: PackagesSpec = serde_yaml::from_str("apk: null\nbrew: null\n").unwrap();
+    assert!(packages.apk.is_empty() && packages.brew.is_none());
+    let output: OutputConfig =
+        serde_yaml::from_str("theme:\n  name: dracula\n  overrides: null\n").unwrap();
+    assert!(output.theme.unwrap().overrides.is_empty());
+}
+
+/// A section a document may leave out (a struct or a map with a default) is
+/// read from an explicit `null` as from a bare `key:`, and the published
+/// schema says so: `deserialize_with = "crate::config::null_as_default"` and
+/// `#[schemars(with = "Option<..>")]` are one statement, written together. The
+/// population is read off the live schema of every local kind (each optional
+/// object-shaped property); each member is then found in the source and held
+/// to both halves, and no field in the source carries one half alone.
+#[test]
+fn every_defaulted_config_section_reads_null_as_its_default() {
+    use serde_json::Value;
+    use std::collections::{BTreeMap, BTreeSet};
+
+    fn type_names(node: &Value) -> Vec<&str> {
+        match &node["type"] {
+            Value::String(t) => vec![t.as_str()],
+            Value::Array(ts) => ts.iter().filter_map(Value::as_str).collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    let mut population = BTreeSet::new();
+    let mut refuses_null = Vec::new();
+    for entry in crate::schema::KIND_REGISTRY.iter().filter(|e| !e.crd) {
+        let schema: Value = serde_json::from_str(&entry.pretty_schema())
+            .unwrap_or_else(|e| panic!("{} schema: {e}", entry.kind));
+        let empty = serde_json::Map::new();
+        let defs = schema["definitions"].as_object().unwrap_or(&empty);
+        let is_object_ref = |m: &Value| {
+            m["$ref"]
+                .as_str()
+                .and_then(|r| defs.get(r.trim_start_matches("#/definitions/")))
+                .is_some_and(|d| type_names(d).contains(&"object"))
+        };
+        let title = schema["title"]
+            .as_str()
+            .expect("a kind schema carries its type name");
+        let owners =
+            std::iter::once((title, &schema)).chain(defs.iter().map(|(k, v)| (k.as_str(), v)));
+        for (owner, node) in owners {
+            let Some(props) = node["properties"].as_object() else {
+                continue;
+            };
+            let required: Vec<&str> = node["required"]
+                .as_array()
+                .map(|r| r.iter().filter_map(Value::as_str).collect())
+                .unwrap_or_default();
+            for (name, prop) in props {
+                if required.contains(&name.as_str()) {
+                    continue;
+                }
+                let members: Vec<&Value> = match prop["anyOf"].as_array() {
+                    Some(arms) => arms.iter().collect(),
+                    None => vec![prop],
+                };
+                let object_shaped = members
+                    .iter()
+                    .any(|m| type_names(m).contains(&"object") || is_object_ref(m));
+                if !object_shaped {
+                    continue;
+                }
+                if !members.iter().any(|m| type_names(m).contains(&"null")) {
+                    refuses_null.push(format!("{} {owner}.{name}: {prop}", entry.kind));
+                }
+                population.insert((owner.to_string(), name.clone()));
+            }
+        }
+    }
+    assert!(
+        refuses_null.is_empty(),
+        "an optional section's schema must admit the `null` its loader reads as the default:\n{}",
+        refuses_null.join("\n")
+    );
+
+    // (struct, serialized field) -> (file, rust type, reads null, schema admits null)
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/config");
+    // A package field's union deserializer reads `null` itself, and
+    // `every_list_or_map_package_field_declares_both_shapes_in_its_schema`
+    // holds its schema.
+    const READS_NULL_ITSELF: [&str; 2] = [
+        "deserialize_with = \"list_or_packages_vec\"",
+        "deserialize_with = \"list_or_struct\"",
+    ];
+    let mut fields: BTreeMap<(String, String), (String, String, bool, bool)> = BTreeMap::new();
+    // A type deserialized by hand ignores its derive's field attributes, so its
+    // impl restates the rule: owner -> whether the impl body names it.
+    let mut manual_impls: BTreeMap<String, bool> = BTreeMap::new();
+    let mut unpaired = Vec::new();
+    let mut paired_per_file: BTreeMap<String, usize> = BTreeMap::new();
+    let entries = std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display()));
+    for dirent in entries {
+        let path = dirent
+            .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
+            .path();
+        let file = path.file_name().unwrap().to_string_lossy().into_owned();
+        if !file.ends_with(".rs") || file == "tests.rs" {
+            continue;
+        }
+        let src = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{file}: {e}"));
+        let lines: Vec<&str> = src.lines().collect();
+        for (n, line) in lines.iter().enumerate() {
+            let Some((_, target)) = line.split_once("Deserialize<'de> for ") else {
+                continue;
+            };
+            let owner: String = target
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            let body_end = lines[n..]
+                .iter()
+                .position(|l| *l == "}")
+                .map_or(lines.len(), |end| n + end);
+            let names_rule = lines[n..body_end]
+                .iter()
+                .any(|l| l.contains("crate::config::null_as_default"));
+            manual_impls.insert(owner, names_rule);
+        }
+        let mut owner = String::new();
+        let mut attrs = String::new();
+        let mut depth = 0i32;
+        for line in src.lines() {
+            let code = line.trim_start();
+            if depth > 0 || code.starts_with("#[") {
+                depth += code.matches('[').count() as i32 - code.matches(']').count() as i32;
+                attrs.push_str(code);
+                continue;
+            }
+            if code.starts_with("//") {
+                continue;
+            }
+            let rest = crate::test_helpers::strip_item_lead(code);
+            if let Some(decl) = rest.strip_prefix("struct ") {
+                owner = decl
+                    .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+                    .next()
+                    .unwrap_or_default()
+                    .to_string();
+            } else if rest != code
+                && let Some((ident, ty)) = rest.split_once(':')
+                && !ident.is_empty()
+                && ident.chars().all(|c| c.is_alphanumeric() || c == '_')
+                && !ty.starts_with(':')
+            {
+                let serialized = match attrs.split_once("rename = \"") {
+                    Some((_, after)) => after.split('"').next().unwrap_or_default().to_string(),
+                    None => {
+                        let mut out = String::new();
+                        let mut up = false;
+                        for c in ident.chars() {
+                            if c == '_' {
+                                up = true;
+                            } else if up {
+                                out.push(c.to_ascii_uppercase());
+                                up = false;
+                            } else {
+                                out.push(c);
+                            }
+                        }
+                        out
+                    }
+                };
+                let reads_null = attrs
+                    .contains("deserialize_with = \"crate::config::null_as_default\"")
+                    || READS_NULL_ITSELF.iter().any(|d| attrs.contains(d));
+                let schema_null = attrs.contains("#[schemars(with = \"Option<")
+                    || READS_NULL_ITSELF.iter().any(|d| attrs.contains(d));
+                if reads_null != schema_null {
+                    unpaired.push(format!("{file}: {owner}.{ident}"));
+                }
+                if attrs.contains("#[schemars(with = \"Option<") {
+                    *paired_per_file.entry(file.clone()).or_default() += 1;
+                }
+                let ty = ty.trim().trim_end_matches(',').to_string();
+                fields.insert(
+                    (owner.clone(), serialized),
+                    (file.clone(), ty, reads_null, schema_null),
+                );
+            }
+            attrs.clear();
+        }
+    }
+    assert!(
+        unpaired.is_empty(),
+        "a field reading `null` as its default and a schema admitting it are written together:\n{}",
+        unpaired.join("\n")
+    );
+
+    let mut unreached = Vec::new();
+    let mut refuses_null_on_load = Vec::new();
+    let mut members = 0;
+    for (owner, name) in &population {
+        match fields.get(&(owner.clone(), name.clone())) {
+            None => unreached.push(format!("{owner}.{name}")),
+            Some((_, ty, ..)) if ty.starts_with("Option<") => {}
+            Some((file, _, reads_null, schema_null)) => {
+                members += 1;
+                let hand_read = manual_impls.get(owner).copied().unwrap_or(true);
+                if !(*reads_null && *schema_null && hand_read) {
+                    refuses_null_on_load.push(format!("{file}: {owner}.{name}"));
+                }
+            }
+        }
+    }
+    assert!(
+        unreached.is_empty(),
+        "the source walk no longer finds these schema properties: {unreached:?}"
+    );
+    assert!(
+        refuses_null_on_load.is_empty(),
+        "an optional section must read an explicit `null` as its default:\n{}",
+        refuses_null_on_load.join("\n")
+    );
+    assert!(
+        manual_impls.contains_key("ThemeConfig"),
+        "the walk no longer finds a hand-written Deserialize: {manual_impls:?}"
+    );
+    assert!(
+        members >= 20,
+        "the walk no longer reaches the defaulted sections: it found {members} in {population:?}"
+    );
+    for (file, floor) in [
+        ("compliance.rs", 2),
+        ("module.rs", 2),
+        ("profile_spec.rs", 2),
+        ("root.rs", 2),
+        ("source.rs", 11),
+        ("theme.rs", 1),
     ] {
-        let yaml = format!(
-            "name: test-source\norigin:\n  type: Git\n  url: https://example.com/config.git\n{block}"
+        let found = paired_per_file.get(file).copied().unwrap_or(0);
+        assert!(
+            found >= floor,
+            "{file}: the walk reached {found} defaulted sections, expected at least {floor}"
         );
-        let spec: SourceSpec =
-            serde_yaml::from_str(&yaml).unwrap_or_else(|e| panic!("{block:?}: {e}"));
-        assert_eq!(spec.subscription.priority, 500, "{block:?}");
     }
 }
 

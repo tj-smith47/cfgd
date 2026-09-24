@@ -163,7 +163,10 @@
             "type": "string"
           },
           "description": "Manager-specific package name aliases (e.g. `{apt: \"neovim\", brew: \"neovim\"}`) for a package named differently across managers.",
-          "type": "object"
+          "type": [
+            "object",
+            "null"
+          ]
         },
         "creates": {
           "description": "Skip the install script if this path already exists. A leading `~` expands to the home directory; a relative path resolves against the script's working directory. Existence follows symlinks. Only meaningful for a `prefer: [script]` install; ignored otherwise.",
@@ -524,7 +527,10 @@
     "system": {
       "additionalProperties": true,
       "description": "System configurator settings contributed by this module. Deep-merged into the profile system map; module values override profile values at leaf level.",
-      "type": "object"
+      "type": [
+        "object",
+        "null"
+      ]
     }
   },
   "title": "ModuleSpec",

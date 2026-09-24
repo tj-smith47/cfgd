@@ -380,8 +380,8 @@ pub struct ProfileSpec {
 
     /// System configurator settings (`macosDefaults`, `systemd`, `sysctl`, …),
     /// keyed by configurator name.
-    #[serde(default)]
-    #[schemars(with = "std::collections::BTreeMap<String, serde_json::Value>")]
+    #[serde(default, deserialize_with = "crate::config::null_as_default")]
+    #[schemars(with = "Option<std::collections::BTreeMap<String, serde_json::Value>>")]
     pub system: SystemSettings,
 
     /// Secrets this profile resolves into files or environment variables.
@@ -829,7 +829,8 @@ pub struct FilesSpec {
     pub managed: Vec<ManagedFileSpec>,
     /// Octal permission strings (`"0600"`) keyed by target path, applied after
     /// deployment.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::config::null_as_default")]
+    #[schemars(with = "Option<std::collections::HashMap<String, String>>")]
     pub permissions: HashMap<String, String>,
 }
 
