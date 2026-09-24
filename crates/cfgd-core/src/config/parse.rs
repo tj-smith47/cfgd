@@ -467,7 +467,7 @@ struct RawConfigSpec {
     file_strategy: FileStrategy,
     #[serde(default)]
     security: Option<SecurityConfig>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::config::null_as_default")]
     aliases: HashMap<String, String>,
     #[serde(default)]
     ai: Option<AiConfig>,

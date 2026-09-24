@@ -1069,27 +1069,20 @@ fn a_config_section_written_null_reads_as_its_default() {
     assert!(output.theme.unwrap().overrides.is_empty());
 }
 
-/// A section a document may leave out (a struct or a map with a default) is
-/// read from an explicit `null` as from a bare `key:`, and the published
-/// schema says so: `deserialize_with = "crate::config::null_as_default"` and
-/// `#[schemars(with = "Option<..>")]` are one statement, written together. The
-/// population is read off the live schema of every local kind (each optional
-/// object-shaped property); each member is then found in the source and held
-/// to both halves, and no field in the source carries one half alone.
-#[test]
-fn every_defaulted_config_section_reads_null_as_its_default() {
-    use serde_json::Value;
-    use std::collections::{BTreeMap, BTreeSet};
-
-    fn type_names(node: &Value) -> Vec<&str> {
-        match &node["type"] {
-            Value::String(t) => vec![t.as_str()],
-            Value::Array(ts) => ts.iter().filter_map(Value::as_str).collect(),
-            _ => Vec::new(),
-        }
+fn schema_type_names(node: &serde_json::Value) -> Vec<&str> {
+    match &node["type"] {
+        serde_json::Value::String(t) => vec![t.as_str()],
+        serde_json::Value::Array(ts) => ts.iter().filter_map(serde_json::Value::as_str).collect(),
+        _ => Vec::new(),
     }
+}
 
-    let mut population = BTreeSet::new();
+/// Every optional object-shaped property of every local kind's live schema,
+/// as (owning type, serialized name), and the ones whose schema refuses `null`.
+fn defaulted_section_population() -> (std::collections::BTreeSet<(String, String)>, Vec<String>) {
+    use serde_json::Value;
+
+    let mut population = std::collections::BTreeSet::new();
     let mut refuses_null = Vec::new();
     for entry in crate::schema::KIND_REGISTRY.iter().filter(|e| !e.crd) {
         let schema: Value = serde_json::from_str(&entry.pretty_schema())
@@ -1100,7 +1093,7 @@ fn every_defaulted_config_section_reads_null_as_its_default() {
             m["$ref"]
                 .as_str()
                 .and_then(|r| defs.get(r.trim_start_matches("#/definitions/")))
-                .is_some_and(|d| type_names(d).contains(&"object"))
+                .is_some_and(|d| schema_type_names(d).contains(&"object"))
         };
         let title = schema["title"]
             .as_str()
@@ -1125,17 +1118,35 @@ fn every_defaulted_config_section_reads_null_as_its_default() {
                 };
                 let object_shaped = members
                     .iter()
-                    .any(|m| type_names(m).contains(&"object") || is_object_ref(m));
+                    .any(|m| schema_type_names(m).contains(&"object") || is_object_ref(m));
                 if !object_shaped {
                     continue;
                 }
-                if !members.iter().any(|m| type_names(m).contains(&"null")) {
+                if !members
+                    .iter()
+                    .any(|m| schema_type_names(m).contains(&"null"))
+                {
                     refuses_null.push(format!("{} {owner}.{name}: {prop}", entry.kind));
                 }
                 population.insert((owner.to_string(), name.clone()));
             }
         }
     }
+    (population, refuses_null)
+}
+
+/// A section a document may leave out (a struct or a map with a default) is
+/// read from an explicit `null` as from a bare `key:`, and the published
+/// schema says so: `deserialize_with = "crate::config::null_as_default"` and
+/// `#[schemars(with = "Option<..>")]` are one statement, written together. The
+/// population is read off the live schema of every local kind (each optional
+/// object-shaped property); each member is then found in the source and held
+/// to both halves, and no field in the source carries one half alone.
+#[test]
+fn every_defaulted_config_section_reads_null_as_its_default() {
+    use std::collections::BTreeMap;
+
+    let (population, refuses_null) = defaulted_section_population();
     assert!(
         refuses_null.is_empty(),
         "an optional section's schema must admit the `null` its loader reads as the default:\n{}",
@@ -1302,6 +1313,187 @@ fn every_defaulted_config_section_reads_null_as_its_default() {
             "{file}: the walk reached {found} defaulted sections, expected at least {floor}"
         );
     }
+}
+
+/// Every defaulted section written `null` loads through the reader cfgd uses
+/// for its kind, so a read struct standing between the document and the typed
+/// one (the root config's legacy-key fold) is held to the rule the typed struct
+/// and the schema state. One document per (kind, member): the member set to
+/// `null`, everything around it the smallest document the schema accepts.
+#[test]
+fn every_defaulted_section_written_null_loads_through_its_kinds_reader() {
+    use serde_json::{Map, Value, json};
+    use std::collections::BTreeSet;
+
+    fn resolve<'a>(r: &str, defs: &'a Map<String, Value>) -> (&'a str, &'a Value) {
+        let name = r.trim_start_matches("#/definitions/");
+        let (key, node) = defs
+            .get_key_value(name)
+            .unwrap_or_else(|| panic!("dangling schema reference {r}"));
+        (key.as_str(), node)
+    }
+
+    fn minimal(node: &Value, defs: &Map<String, Value>) -> Value {
+        if let Some(r) = node["$ref"].as_str() {
+            return minimal(resolve(r, defs).1, defs);
+        }
+        if let Some(c) = node.get("const") {
+            return c.clone();
+        }
+        if let Some(first) = node["enum"].as_array().and_then(|e| e.first()) {
+            return first.clone();
+        }
+        for key in ["anyOf", "oneOf"] {
+            if let Some(arm) = node[key]
+                .as_array()
+                .and_then(|arms| arms.iter().find(|a| schema_type_names(a) != ["null"]))
+            {
+                return minimal(arm, defs);
+            }
+        }
+        let ty = schema_type_names(node)
+            .into_iter()
+            .find(|t| *t != "null")
+            .unwrap_or("string");
+        match ty {
+            "object" => {
+                // A plain string field reads an empty default the schema allows
+                // and a reader's own check may refuse (a file's `source`, a
+                // package's `name`), so each one is written too.
+                let required = node["required"].as_array().cloned().unwrap_or_default();
+                let mut out = Map::new();
+                for (name, prop) in node["properties"].as_object().into_iter().flatten() {
+                    if required.contains(&json!(name)) || schema_type_names(prop) == ["string"] {
+                        out.insert(name.clone(), minimal(prop, defs));
+                    }
+                }
+                Value::Object(out)
+            }
+            "array" => json!([]),
+            "integer" | "number" => json!(0),
+            "boolean" => json!(false),
+            _ => json!("x"),
+        }
+    }
+
+    /// The smallest value of `node` that holds `target` written `null`, with
+    /// the member's slash path, or `None` when `node` cannot reach it.
+    fn with_null_at(
+        node: &Value,
+        owner: &str,
+        target: &(String, String),
+        defs: &Map<String, Value>,
+        visiting: &mut Vec<String>,
+    ) -> Option<(Value, String)> {
+        if let Some(r) = node["$ref"].as_str() {
+            let (name, def) = resolve(r, defs);
+            if visiting.iter().any(|v| v == name) {
+                return None;
+            }
+            visiting.push(name.to_string());
+            let found = with_null_at(def, name, target, defs, visiting);
+            visiting.pop();
+            return found;
+        }
+        for key in ["anyOf", "oneOf"] {
+            for arm in node[key].as_array().into_iter().flatten() {
+                if let Some(found) = with_null_at(arm, owner, target, defs, visiting) {
+                    return Some(found);
+                }
+            }
+        }
+        if let Some(props) = node["properties"].as_object() {
+            for (name, prop) in props {
+                let (value, path) = if owner == target.0 && *name == target.1 {
+                    (Value::Null, name.clone())
+                } else if let Some((v, p)) = with_null_at(prop, "", target, defs, visiting) {
+                    (v, format!("{name}/{p}"))
+                } else {
+                    continue;
+                };
+                let mut obj = minimal(node, defs);
+                obj[name.as_str()] = value;
+                return Some((obj, path));
+            }
+        }
+        if node["items"].is_object()
+            && let Some((v, p)) = with_null_at(&node["items"], "", target, defs, visiting)
+        {
+            return Some((json!([v]), format!("0/{p}")));
+        }
+        if node["additionalProperties"].is_object()
+            && let Some((v, p)) =
+                with_null_at(&node["additionalProperties"], "", target, defs, visiting)
+        {
+            return Some((json!({ "k": v }), format!("k/{p}")));
+        }
+        None
+    }
+
+    let (population, _) = defaulted_section_population();
+    let home = tempfile::tempdir().unwrap();
+    let mut reached = BTreeSet::new();
+    let mut refused = Vec::new();
+    for entry in crate::schema::KIND_REGISTRY.iter().filter(|e| !e.crd) {
+        let schema: Value = serde_json::from_str(&entry.pretty_schema())
+            .unwrap_or_else(|e| panic!("{} schema: {e}", entry.kind));
+        let defs = schema["definitions"]
+            .as_object()
+            .cloned()
+            .unwrap_or_default();
+        let root = schema["title"]
+            .as_str()
+            .expect("a kind schema carries its type name");
+        for member in &population {
+            let Some((value, path)) = with_null_at(&schema, root, member, &defs, &mut Vec::new())
+            else {
+                continue;
+            };
+            reached.insert(member.clone());
+            let (doc, path) = if entry.kind == "Config" {
+                (value, path)
+            } else {
+                (json!({ "spec": value }), format!("spec/{path}"))
+            };
+            let mut doc = doc;
+            doc["apiVersion"] = json!(entry.api_version);
+            doc["kind"] = json!(entry.kind);
+            doc["metadata"] = json!({ "name": "null-sections" });
+            let yaml = serde_yaml::to_string(&doc).expect("a JSON value serializes as YAML");
+            let read = match entry.kind {
+                "Module" => super::parse_module(&yaml).map(drop),
+                "ConfigSource" => super::parse_config_source(&yaml).map(drop),
+                "Profile" | "Config" => {
+                    let file = home.path().join(format!("{}.yaml", entry.kind));
+                    std::fs::write(&file, &yaml).unwrap();
+                    if entry.kind == "Profile" {
+                        super::load_profile(&file).map(drop)
+                    } else {
+                        super::load_config(&file).map(drop)
+                    }
+                }
+                other => panic!("no reader is named here for the local kind {other}"),
+            };
+            if let Err(e) = read {
+                refused.push(format!("{} {path}: {e}\n{yaml}", entry.kind));
+            }
+        }
+    }
+    assert!(
+        refused.is_empty(),
+        "a defaulted section written `null` must load through its kind's reader:\n{}",
+        refused.join("\n")
+    );
+    let unreached: Vec<_> = population.difference(&reached).collect();
+    assert!(
+        unreached.is_empty(),
+        "no document of any local kind reaches these sections: {unreached:?}"
+    );
+    assert!(
+        reached.len() >= 20,
+        "the walk reached only {} sections: {reached:?}",
+        reached.len()
+    );
 }
 
 #[test]

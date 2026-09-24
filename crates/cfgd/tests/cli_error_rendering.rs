@@ -507,6 +507,35 @@ fn a_source_whose_sync_block_is_null_loads_and_lists() {
     }
 }
 
+/// A config whose `spec.aliases` is written bare or `null` loads, so a
+/// command reading it runs.
+#[test]
+fn a_config_whose_aliases_are_null_loads_and_lists() {
+    for (case, block) in [("bare", "  aliases:\n"), ("null", "  aliases: null\n")] {
+        let dir = tempfile::tempdir().unwrap();
+        let config = write_config_with_source(dir.path(), block);
+        let out = cfgd_bin()
+            .unwrap()
+            .args(["source", "list", "--config"])
+            .arg(&config)
+            .args(["-o", "json"])
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{case}: {stdout}{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            parse_single_json(&stdout)[0]["name"],
+            "s",
+            "{case}: {stdout}"
+        );
+    }
+}
+
 /// An out-of-range priority given to `source priority` is refused as the
 /// `[VALUE]` positional its `--help` prints, the argument the invocation
 /// actually carried.
