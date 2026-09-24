@@ -108,7 +108,12 @@ single-source-of-truth wiring.
   to `-p cfgd-core -p cfgd`, because cfgd-csi/cfgd-operator are k8s
   server-side with no FreeBSD surface (same rationale as the Windows branch).
   The toolchain is `rustup-init` not pkg `rust` (guarantees `>= MSRV`, mirrors
-  the VM); `task`/`nextest`/`npm` come from pkg; no protoc (neither in-scope
+  the VM); `task`/`nextest`/`npm`/`bash` come from pkg (`bash` because the
+  demo-script fixture tests run the real bash scripts and FreeBSD base ships
+  none), and `prepare` sets `git config --global --add safe.directory '*'`
+  because the synced workspace keeps the runner's uid while the tests run as
+  root, and git refuses to read a repository another uid owns (the demo pin
+  runs `git ls-files` on the workspace); no protoc (neither in-scope
   crate compiles protos). The `run:` block opens on `set -e`: it holds three
   commands now, the guest script's shell flags are the action's rather than
   GitHub's, and without the abort a failing `task test:ci` is followed by a

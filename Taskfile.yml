@@ -184,8 +184,14 @@ tasks:
           # FreeBSD base. Mirror ci.yml's freebsd prepare so a fresh VM links it.
           ssh {{.HOST}} 'command -v gmake >/dev/null 2>&1 || pkg install -y gmake'
           ssh {{.HOST}} 'command -v perl >/dev/null 2>&1 || pkg install -y perl5'
+          # Mirror ci.yml's freebsd prepare for the demo-script tests: they run
+          # the real bash scripts, and the demo pin runs `git ls-files` on the
+          # synced tree, so bash, git and the tree's .git all have to be there.
+          ssh {{.HOST}} 'command -v bash >/dev/null 2>&1 || pkg install -y bash'
+          ssh {{.HOST}} 'command -v git >/dev/null 2>&1 || pkg install -y git'
+          ssh {{.HOST}} "git config --global --get-all safe.directory | grep -qxF '*' || git config --global --add safe.directory '*'"
           echo "==> syncing tree to {{.HOST}}:cfgd"
-          rsync -a --delete --exclude .git --exclude target --exclude '*.log' ./ {{.HOST}}:cfgd/
+          rsync -a --delete --exclude target --exclude '*.log' ./ {{.HOST}}:cfgd/
           echo "==> task test:ci on {{.HOST}}"
           ssh {{.HOST}} '. "$HOME/.cargo/env"; cd cfgd && task test:ci'
           if [ -n "{{.SHUTDOWN}}" ]; then

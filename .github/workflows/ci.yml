@@ -182,7 +182,12 @@ jobs:
             # npm is the subject of the real-host prefix check in `run:`, and
             # it must come from pkg here: IGNORE_OSVERSION is not exported into
             # that shell, so a pkg install attempted there is rejected.
-            pkg install -y rustup-init git task nextest gmake perl5 npm
+            # bash: the demo-script tests run the real bash scripts, and the
+            # base system has no bash. safe.directory: the synced workspace
+            # keeps the runner's uid while the tests run as root, and git
+            # refuses a repository another uid owns.
+            pkg install -y rustup-init git bash task nextest gmake perl5 npm
+            git config --global --add safe.directory '*'
             rustup-init -y --default-toolchain stable --profile minimal
           run: |
             # The guest script's shell flags are the action's, not GitHub's, so
