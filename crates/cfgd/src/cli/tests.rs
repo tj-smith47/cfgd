@@ -51352,14 +51352,8 @@ fn command_for_fn<'a>(root: &'a clap::Command, fn_name: &str) -> Option<&'a clap
 fn use_statements(code: &str) -> Vec<String> {
     code.split(';')
         .filter_map(|stmt| {
-            let stmt = stmt.trim_start();
-            let after_vis = stmt
-                .strip_prefix("pub(crate) ")
-                .or_else(|| stmt.strip_prefix("pub(super) "))
-                .or_else(|| stmt.strip_prefix("pub(in crate::cli) "))
-                .or_else(|| stmt.strip_prefix("pub "))
-                .unwrap_or(stmt);
-            after_vis.starts_with("use ").then(|| after_vis.to_string())
+            let stmt = cfgd_core::test_helpers::strip_item_lead(stmt);
+            (cfgd_core::test_helpers::item_keyword(stmt) == "use").then(|| stmt.to_string())
         })
         .collect()
 }

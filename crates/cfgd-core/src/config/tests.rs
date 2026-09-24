@@ -1107,7 +1107,7 @@ fn fields_reading_null_by_hand(body: &[&str]) -> std::collections::BTreeSet<Stri
         if code.starts_with("//") {
             continue;
         }
-        let field = code.strip_prefix("pub ").unwrap_or(code);
+        let field = crate::test_helpers::strip_item_lead(code);
         if let Some((ident, _)) = field.split_once(':')
             && !ident.is_empty()
             && ident.chars().all(|c| c.is_alphanumeric() || c == '_')
