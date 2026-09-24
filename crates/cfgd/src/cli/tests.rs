@@ -48010,14 +48010,20 @@ fn every_real_host_script_is_reachable_from_ci() {
 /// A file a crate embeds (`include_str!`, `include_bytes!`, `resource_example!`)
 /// is compiled into the recorded binary, so it must be one of the check's
 /// inputs; the inputs are asked of `git ls-files` with the check's own
-/// `COMMON` and `EXCLUDED` lists, so there is one list to keep.
+/// `COMMON` and `EXCLUDED` lists, so there is one list to keep. What those
+/// lists leave out must stay out of the binary: every excluded source under
+/// `src/` is declared behind a test gate (or sits under an excluded module
+/// that is), and no crate takes `cfgd-test-fixtures`, or `cfgd-core`'s
+/// `test-helpers` feature, as a normal or build dependency.
 #[test]
 fn every_demo_gif_is_stamped_and_checked() {
     /// The GIFs shipped today; a file holding fewer lines lost a stamp.
     const STAMP_FLOOR: usize = 8;
     /// The files the crates embed today; a walk finding fewer went blind.
     const EMBED_FLOOR: usize = 25;
-    const CHECK: &str = "demo/scripts/check-sync.sh";
+    /// The test sources under `src/` the check leaves out today (74).
+    const EXCLUDED_SOURCE_FLOOR: usize = 70;
+    const CHECK: &str = DEMO_SYNC_CHECK;
     /// The file a take leaves beside its frames naming the commit it recorded.
     const SIDECAR: &str = "recorded-at";
     let root = cfgd_core::test_helpers::workspace_root();
@@ -48137,14 +48143,17 @@ fn every_demo_gif_is_stamped_and_checked() {
         !common.is_empty() && !excluded.is_empty(),
         "{CHECK}: the walk read no COMMON or no EXCLUDED list: {common:?} {excluded:?}"
     );
-    let listed = std::process::Command::new("git")
-        .arg("-C")
-        .arg(&root)
-        .args(["ls-files", "-z", "--"])
-        .args(&common)
-        .args(&excluded)
-        .output()
-        .unwrap_or_else(|e| panic!("cannot run git ls-files: {e}"));
+    let listed = {
+        let _path = cfgd_core::test_helpers::path_env_read_guard();
+        cfgd_core::git_cmd_local()
+            .arg("-C")
+            .arg(&root)
+            .args(["ls-files", "-z", "--"])
+            .args(&common)
+            .args(&excluded)
+            .output()
+            .unwrap_or_else(|e| panic!("cannot run git ls-files: {e}"))
+    };
     assert!(
         listed.status.success(),
         "git ls-files failed: {}",
@@ -48156,6 +48165,7 @@ fn every_demo_gif_is_stamped_and_checked() {
         .map(str::to_string)
         .collect();
     let mut embeds = 0;
+    let mut excluded_sources = 0;
     let crates_dir = root.join("crates");
     let mut crate_dirs: Vec<std::path::PathBuf> = std::fs::read_dir(&crates_dir)
         .unwrap_or_else(|e| panic!("cannot read {}: {e}", crates_dir.display()))
@@ -48167,11 +48177,37 @@ fn every_demo_gif_is_stamped_and_checked() {
         .filter(|p| p.join("src").is_dir())
         .collect();
     crate_dirs.sort();
+    // A crate the check excludes whole is kept out of the binary by the
+    // dependency arm below, so its sources and manifest are not judged here.
+    let (crate_dirs, excluded_crates): (Vec<_>, Vec<_>) = crate_dirs
+        .into_iter()
+        .partition(|c| inputs.contains(&format!("{}/Cargo.toml", repo_relative(&root, c))));
+    let excluded_packages: Vec<String> = excluded_crates
+        .iter()
+        .map(|c| {
+            let manifest = c.join("Cargo.toml");
+            walked_file_body(&manifest)
+                .parse::<toml::Table>()
+                .unwrap_or_else(|e| panic!("{}: does not parse: {e}", manifest.display()))
+                .get("package")
+                .and_then(|p| p.get("name"))
+                .and_then(toml::Value::as_str)
+                .unwrap_or_else(|| panic!("{}: no package name", manifest.display()))
+                .to_string()
+        })
+        .collect();
+    assert!(
+        !excluded_packages.is_empty(),
+        "{CHECK} excludes no crate, so the dependency arm judges nothing: {excluded_crates:?}"
+    );
     for crate_dir in &crate_dirs {
         for source in cfgd_core::test_helpers::rust_sources_under(&crate_dir.join("src")) {
             let source_rel = repo_relative(&root, &source);
-            // Test code the check excludes is not compiled into the binary.
             if !inputs.contains(&source_rel) {
+                excluded_sources += 1;
+                if let Some(ungated) = ungated_excluded_module(&root, &source, &inputs) {
+                    offenders.push(ungated);
+                }
                 continue;
             }
             let code = cfgd_core::test_helpers::production_slice_of(&source)
@@ -48212,6 +48248,63 @@ fn every_demo_gif_is_stamped_and_checked() {
         embeds >= EMBED_FLOOR,
         "the walk found {embeds} embedded files, fewer than the {EMBED_FLOOR} the crates hold"
     );
+    assert!(
+        excluded_sources >= EXCLUDED_SOURCE_FLOOR,
+        "the walk judged {excluded_sources} excluded sources, fewer than the {EXCLUDED_SOURCE_FLOOR} the crates hold"
+    );
+    for crate_dir in &crate_dirs {
+        let manifest_path = crate_dir.join("Cargo.toml");
+        let manifest: toml::Table = walked_file_body(&manifest_path)
+            .parse()
+            .unwrap_or_else(|e| panic!("{}: does not parse: {e}", manifest_path.display()));
+        let crate_rel = repo_relative(&root, crate_dir);
+        let mut tables: Vec<(String, &toml::Table)> = Vec::new();
+        for kind in ["dependencies", "build-dependencies"] {
+            if let Some(t) = manifest.get(kind).and_then(toml::Value::as_table) {
+                tables.push((kind.to_string(), t));
+            }
+            for (target, body) in manifest
+                .get("target")
+                .and_then(toml::Value::as_table)
+                .into_iter()
+                .flatten()
+            {
+                if let Some(t) = body.get(kind).and_then(toml::Value::as_table) {
+                    tables.push((format!("target.{target}.{kind}"), t));
+                }
+            }
+        }
+        for (table, deps) in tables {
+            for package in excluded_packages
+                .iter()
+                .filter(|p| deps.contains_key(p.as_str()))
+            {
+                offenders.push(format!(
+                    "{crate_rel}/Cargo.toml: [{table}] takes {package}, which {CHECK} does not count"
+                ));
+            }
+            let helpers = deps
+                .get("cfgd-core")
+                .and_then(|d| d.get("features"))
+                .and_then(toml::Value::as_array)
+                .is_some_and(|f| f.iter().any(|x| x.as_str() == Some("test-helpers")));
+            if helpers {
+                offenders.push(format!(
+                    "{crate_rel}/Cargo.toml: [{table}] enables cfgd-core's test-helpers, which {CHECK} does not count"
+                ));
+            }
+        }
+        let default_helpers = manifest
+            .get("features")
+            .and_then(|f| f.get("default"))
+            .and_then(toml::Value::as_array)
+            .is_some_and(|f| f.iter().any(|x| x.as_str() == Some("test-helpers")));
+        if default_helpers {
+            offenders.push(format!(
+                "{crate_rel}/Cargo.toml: test-helpers is a default feature, which {CHECK} does not count"
+            ));
+        }
+    }
 
     let taskfile = walked_file_body(&root.join("Taskfile.yml"));
     if target_naming(&taskfile, CHECK).is_none() {
@@ -48250,6 +48343,73 @@ fn shell_array(script: &str, name: &str) -> Vec<String> {
         words.push(word);
     }
     words
+}
+
+/// The script that holds every demo GIF to the commit its take recorded.
+const DEMO_SYNC_CHECK: &str = "demo/scripts/check-sync.sh";
+
+/// Why `source`, a file under a crate's `src/` that the demo check does not
+/// count, could still be compiled into the binary, or `None` when it cannot.
+///
+/// It cannot when the `mod` declaring it sits directly under a test gate
+/// (`cfg(test)`, `cfg(all(test, ...))` or `cfg(any(test, feature =
+/// "test-helpers"))`), or when the declaring file is itself excluded, whose
+/// own declaration answers the same question one level up.
+fn ungated_excluded_module(
+    root: &std::path::Path,
+    source: &std::path::Path,
+    inputs: &std::collections::HashSet<String>,
+) -> Option<String> {
+    const GATES: [&str; 3] = [
+        "cfg(test)",
+        "cfg(all(test",
+        "cfg(any(test, feature = \"test-helpers\"))",
+    ];
+    let rel = repo_relative(root, source);
+    let dir = source.parent()?;
+    let stem = source.file_stem()?.to_string_lossy().into_owned();
+    let (name, decl_dir) = if stem == "mod" {
+        (
+            dir.file_name()?.to_string_lossy().into_owned(),
+            dir.parent()?,
+        )
+    } else {
+        (stem, dir)
+    };
+    let candidates = if decl_dir.file_name().is_some_and(|n| n == "src") {
+        vec![decl_dir.join("lib.rs"), decl_dir.join("main.rs")]
+    } else {
+        vec![decl_dir.join("mod.rs"), decl_dir.with_extension("rs")]
+    };
+    let declaration = format!("mod {name};");
+    for parent in candidates.iter().filter(|p| p.is_file()) {
+        let body = walked_file_body(parent);
+        let lines: Vec<&str> = body.lines().collect();
+        let Some(at) = lines.iter().position(|l| {
+            let t = l.trim();
+            t == declaration || (t.starts_with("pub") && t.ends_with(&format!(" {declaration}")))
+        }) else {
+            continue;
+        };
+        if !inputs.contains(&repo_relative(root, parent)) {
+            return None;
+        }
+        let gated = lines[..at]
+            .iter()
+            .rev()
+            .map(|l| l.trim())
+            .take_while(|l| l.starts_with("#[") || l.starts_with("//"))
+            .any(|l| l.starts_with("#[") && GATES.iter().any(|g| l.contains(g)));
+        return (!gated).then(|| {
+            format!(
+                "{rel}: {DEMO_SYNC_CHECK} does not count it, but `{declaration}` in {} is not under a test gate",
+                repo_relative(root, parent)
+            )
+        });
+    }
+    Some(format!(
+        "{rel}: {DEMO_SYNC_CHECK} does not count it, and no `{declaration}` declares it, so the walk cannot tell whether it is compiled in"
+    ))
 }
 
 /// `path` relative to `root`, `..` resolved and joined with `/`, the spelling
@@ -48326,6 +48486,7 @@ impl DemoRepo {
     }
 
     fn run(&self, script: &str, args: &[&str]) -> std::process::Output {
+        let _path = cfgd_core::test_helpers::path_env_read_guard();
         std::process::Command::new("bash")
             .arg(self.dir.path().join("demo/scripts").join(script))
             .args(args)
