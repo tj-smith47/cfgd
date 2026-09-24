@@ -835,12 +835,14 @@ fn yaml_value_to_string_float() {
 
 #[test]
 fn read_command_output_successful_command() {
+    let _path = cfgd_core::test_helpers::path_env_read_guard();
     let output = read_command_output(Command::new("echo").arg("hello"));
     assert_eq!(output, "hello");
 }
 
 #[test]
 fn read_command_output_trims_trailing_newline() {
+    let _path = cfgd_core::test_helpers::path_env_read_guard();
     // echo outputs "hello\n" but read_command_output should trim it
     let output = read_command_output(Command::new("echo").arg("  spaced  "));
     assert_eq!(output, "spaced");
@@ -848,12 +850,14 @@ fn read_command_output_trims_trailing_newline() {
 
 #[test]
 fn read_command_output_failed_command_returns_empty() {
+    let _path = cfgd_core::test_helpers::path_env_read_guard();
     let output = read_command_output(&mut Command::new("false"));
     assert_eq!(output, "");
 }
 
 #[test]
 fn read_command_output_nonexistent_command_returns_empty() {
+    let _path = cfgd_core::test_helpers::path_env_read_guard();
     let output = read_command_output(&mut Command::new("cfgd_nonexistent_cmd_12345"));
     assert_eq!(output, "");
 }
@@ -861,6 +865,7 @@ fn read_command_output_nonexistent_command_returns_empty() {
 #[test]
 #[cfg(not(windows))] // printf with embedded \n is unreliable on Windows
 fn read_command_output_multiline_output() {
+    let _path = cfgd_core::test_helpers::path_env_read_guard();
     // printf produces multiline output without trailing newline issues
     let output = read_command_output(Command::new("printf").arg("line1\nline2"));
     assert_eq!(output, "line1\nline2");

@@ -3004,8 +3004,9 @@ impl PathEnvGate {
                     state.readers_waiting.swap_remove(at);
                 }
                 panic!(
-                    "PATH_ENV_LOCK: reader waited over {GATE_WAIT_BOUND:?} for a writer to \
-                     release the gate; a writer waiting on this reader's thread never will"
+                    "PATH_ENV_LOCK: reader waited over {GATE_WAIT_BOUND:?} for the write half; \
+                     the usual cause is a writer parked on a thread that needs this read guard \
+                     (a lane worker its caller did not lend the window to)"
                 );
             }
             state = self
@@ -3054,8 +3055,8 @@ impl PathEnvGate {
             // diagnostic this panic exists to print.
             state.writers_waiting -= 1;
             panic!(
-                "PATH_ENV_LOCK: writer starved for over {:?} with {} reader(s) still \
-                 holding the gate — this is writer starvation, not a legitimate wait",
+                "PATH_ENV_LOCK: writer waited over {:?} with {} reader(s) still holding \
+                 the gate; the usual cause is a reader that never released",
                 GATE_WAIT_BOUND, state.readers
             );
         }
@@ -7001,6 +7002,7 @@ mod tests {
         /// Run the installed shim with the given argv. Returns (exit_code,
         /// stderr_string). Reads $CFGD_COSIGN_BIN like real consumers.
         fn run_shim(args: &[&str]) -> (i32, String) {
+            let _path = crate::test_helpers::path_env_read_guard();
             let bin = std::env::var("CFGD_COSIGN_BIN").expect("CFGD_COSIGN_BIN set");
             let output = std::process::Command::new(&bin)
                 .args(args)
@@ -7107,6 +7109,7 @@ mod tests {
         #[test]
         #[serial]
         fn keygen_mode_writes_key_pair_to_cwd_on_generate_key_pair() {
+            let _path = crate::test_helpers::path_env_mutation_guard();
             let _shim = CosignTestShim::builder().with_keygen(true).install();
             let workdir = tempfile::TempDir::new().expect("workdir");
 
@@ -7139,6 +7142,7 @@ mod tests {
         #[test]
         #[serial]
         fn keygen_mode_skips_writes_for_non_generate_subcommands() {
+            let _path = crate::test_helpers::path_env_mutation_guard();
             let _shim = CosignTestShim::builder().with_keygen(true).install();
             let workdir = tempfile::TempDir::new().expect("workdir");
 

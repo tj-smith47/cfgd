@@ -221,6 +221,7 @@ fn validate_verify_options_rejects_all_none() {
 
 #[test]
 fn apply_verify_args_with_key() {
+    let _path = crate::test_helpers::path_env_read_guard();
     let mut cmd = std::process::Command::new("echo");
     let opts = VerifyOptions {
         key: Some("/path/to/cosign.pub"),
@@ -242,6 +243,7 @@ fn apply_verify_args_with_key() {
 
 #[test]
 fn apply_verify_args_keyless_with_identity_and_issuer() {
+    let _path = crate::test_helpers::path_env_read_guard();
     let mut cmd = std::process::Command::new("echo");
     let opts = VerifyOptions {
         key: None,
@@ -263,6 +265,7 @@ fn apply_verify_args_keyless_with_identity_and_issuer() {
 
 #[test]
 fn apply_verify_args_keyless_with_identity_only_defaults_issuer() {
+    let _path = crate::test_helpers::path_env_read_guard();
     let mut cmd = std::process::Command::new("echo");
     let opts = VerifyOptions {
         key: None,
@@ -285,6 +288,7 @@ fn apply_verify_args_keyless_with_identity_only_defaults_issuer() {
 
 #[test]
 fn apply_verify_args_keyless_with_issuer_only_defaults_identity() {
+    let _path = crate::test_helpers::path_env_read_guard();
     let mut cmd = std::process::Command::new("echo");
     let opts = VerifyOptions {
         key: None,
@@ -307,6 +311,7 @@ fn apply_verify_args_keyless_with_issuer_only_defaults_identity() {
 
 #[test]
 fn apply_verify_args_key_takes_precedence_over_keyless() {
+    let _path = crate::test_helpers::path_env_read_guard();
     let mut cmd = std::process::Command::new("echo");
     let opts = VerifyOptions {
         key: Some("my.pub"),
@@ -486,6 +491,7 @@ fn validate_verify_options_all_none_fails() {
 
 #[test]
 fn apply_verify_args_with_key_only() {
+    let _path = crate::test_helpers::path_env_read_guard();
     let mut cmd = std::process::Command::new("echo");
     let opts = VerifyOptions {
         key: Some("/path/to/cosign.pub"),
@@ -498,6 +504,7 @@ fn apply_verify_args_with_key_only() {
 
 #[test]
 fn apply_verify_args_keyless_defaults() {
+    let _path = crate::test_helpers::path_env_read_guard();
     let mut cmd = std::process::Command::new("echo");
     let opts = VerifyOptions {
         key: None,
@@ -983,6 +990,7 @@ use crate::test_helpers::CosignTestShim;
 #[test]
 #[serial_test::serial]
 fn a_registry_cfgd_reads_over_http_is_named_to_cosign_as_insecure() {
+    let _path = crate::test_helpers::path_env_read_guard();
     let _env = EnvVarGuard::set("OCI_INSECURE_REGISTRIES", "kind-registry:5000");
     let mut cmd = std::process::Command::new("echo");
     apply_registry_scheme(&mut cmd, "kind-registry:5000/demo/tools:v1");
@@ -993,6 +1001,7 @@ fn a_registry_cfgd_reads_over_http_is_named_to_cosign_as_insecure() {
 #[test]
 #[serial_test::serial]
 fn a_tls_registry_is_not_downgraded_for_cosign() {
+    let _path = crate::test_helpers::path_env_read_guard();
     let _env = EnvVarGuard::unset("OCI_INSECURE_REGISTRIES");
     let mut cmd = std::process::Command::new("echo");
     apply_registry_scheme(&mut cmd, "ghcr.io/acme/tools:v1");

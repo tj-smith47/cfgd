@@ -806,6 +806,7 @@ mod tests {
     #[test]
     #[serial]
     fn cmd_upgrade_check_only_update_available_exits_2() {
+        let _path = cfgd_core::test_helpers::path_env_read_guard();
         let exe = match std::env::current_exe() {
             Ok(p) if p.exists() => p,
             _ => return,

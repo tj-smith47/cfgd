@@ -35,6 +35,7 @@ fn sourced_path(dir: &std::path::Path, declarations: &[&str]) -> String {
         .map(|d| format!("export PATH=\"{d}\"\n"))
         .collect();
     std::fs::write(&script, body).expect("write the declarations");
+    // raw-spawn-ok: an absolute program under `env_clear` and a pinned PATH, so no PATH window can change what runs.
     let output = Command::new("/bin/sh")
         .arg("-c")
         .arg(format!(

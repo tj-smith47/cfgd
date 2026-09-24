@@ -283,6 +283,7 @@ email: bad@example.com
 
 #[test]
 fn gpg_integration_generate_and_detect() {
+    let _path = cfgd_core::test_helpers::path_env_read_guard();
     if !cfgd_core::command_available("gpg") {
         return; // skip if gpg not installed
     }

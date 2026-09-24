@@ -1381,6 +1381,7 @@ mod tests {
             return;
         }
 
+        let _path = crate::test_helpers::path_env_read_guard();
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("ipc-umask");
         let exe = std::env::current_exe().expect("the test binary is a real file");

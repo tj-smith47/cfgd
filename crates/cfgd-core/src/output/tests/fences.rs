@@ -6537,3 +6537,194 @@ fn the_floor_sentence_matcher_reads_a_literal_and_not_a_comment() {
         "the bare verb is the tell; an `offers` about something else takes the hatch"
     );
 }
+
+/// Where test code builds a child with a raw `Command::new(`, the function
+/// doing it holds the `PATH` gate.
+///
+/// A raw spawn resolves its program against the process-global `PATH` at
+/// `spawn()`, and every test that empties or shims `PATH` holds the write
+/// half of `test_helpers::PATH_ENV_LOCK` for its window. A raw spawn outside
+/// the gate runs inside a sibling's window whenever the two overlap, and the
+/// child it meant to start is either not found or is the sibling's shim; the
+/// `git` spawn in `cmd_workflow_generate_with_git_repo` failed that way. So
+/// the function enclosing each raw `Command::new(` in a test region binds
+/// `path_env_read_guard()` (or `path_env_mutation_guard()` where it also
+/// holds a `PATH` or tool-seam window), or reaches git through `git_cmd_local()`, which resolves
+/// the program under the read guard and is no raw spawn. `std::process::`,
+/// `process::` and `tokio::process::` spellings all end in the one tell.
+///
+/// The test regions are the partition the other test-text walks read: a
+/// scaffolding file (`tests.rs`, anything under a `tests` directory,
+/// `test_helpers.rs`) whole, and the `#[cfg(test)]` items of every other
+/// file; `every_production_spawn_in_the_workspace_goes_through_the_one_ladder`
+/// judges the rest.
+///
+/// `// raw-spawn-ok: <why>` on the line or the line above exempts a site no
+/// `PATH` window can reach: a spawn under a `PATH` the test pins itself, or a
+/// builder whose every caller spawns through a seam that takes the read
+/// guard. The count of those is held at a ceiling, and each file's judged
+/// spawns at a floor, so neither side drifts unseen.
+#[test]
+fn every_raw_spawn_in_test_code_holds_the_path_gate() {
+    const HATCH: &str = "raw-spawn-ok:";
+    const HATCH_CEILING: usize = 2;
+    const FLOORS: [(&str, usize); 15] = [
+        ("crates/cfgd/src/cli/init/tests.rs", 3),
+        ("crates/cfgd/src/cli/tests.rs", 3),
+        ("crates/cfgd/src/cli/upgrade.rs", 1),
+        ("crates/cfgd/src/packages/shared/tests.rs", 30),
+        ("crates/cfgd/src/system/gpg_keys/tests.rs", 2),
+        ("crates/cfgd/src/system/tests.rs", 5),
+        ("crates/cfgd-core/src/daemon/health_ipc.rs", 1),
+        ("crates/cfgd-core/src/oci/sign/tests.rs", 9),
+        ("crates/cfgd-core/src/output/printer.rs", 1),
+        ("crates/cfgd-core/src/output/process.rs", 2),
+        ("crates/cfgd-core/src/output/section_guard.rs", 2),
+        ("crates/cfgd-core/src/test_helpers.rs", 3),
+        ("crates/cfgd-core/src/util/process.rs", 13),
+        ("crates/cfgd-core/tests/path_layer_order.rs", 1),
+        ("crates/cfgd-operator/src/gateway/api/tests.rs", 13),
+    ];
+
+    for (form, code) in [
+        ("bare", "fn t() {\n    let c = Command::new(\"git\");\n}\n"),
+        (
+            "process-qualified",
+            "fn t() {\n    let c = process::Command::new(\"git\");\n}\n",
+        ),
+        (
+            "std-qualified",
+            "fn t() {\n    let c = std::process::Command::new(\"git\");\n}\n",
+        ),
+        (
+            "dropped guard",
+            "fn t() {\n    let _ = path_env_read_guard();\n    let c = Command::new(\"git\");\n}\n",
+        ),
+        (
+            "guard in a sibling",
+            "fn g() {\n    let _p = path_env_read_guard();\n}\nfn t() {\n    Command::new(\"git\");\n}\n",
+        ),
+    ] {
+        let (unguarded, _, _) = raw_spawns(&FIXTURE_SOURCE, code, HATCH);
+        assert_eq!(
+            unguarded.len(),
+            1,
+            "the walk misses the {form} spawn in `{code}`"
+        );
+    }
+    for (form, code) in [
+        (
+            "read guard",
+            "fn t() {\n    let _p = crate::test_helpers::path_env_read_guard();\n    Command::new(\"git\");\n}\n",
+        ),
+        (
+            "wrapped write guard",
+            "fn t() {\n    let _p =\n        path_env_mutation_guard();\n    Command::new(\"sh\");\n}\n",
+        ),
+        (
+            "literal",
+            "fn t() {\n    let s = \"Command::new(\\\"git\\\")\";\n}\n",
+        ),
+        ("longer name", "fn t() {\n    MyCommand::new(\"x\");\n}\n"),
+    ] {
+        let (unguarded, _, _) = raw_spawns(&FIXTURE_SOURCE, code, HATCH);
+        assert!(
+            unguarded.is_empty(),
+            "the walk flags the {form} shape `{code}`: {unguarded:?}"
+        );
+    }
+    let hatched =
+        "fn t() {\n    // raw-spawn-ok: PATH is the test's own\n    Command::new(\"x\");\n}\n";
+    assert_eq!(raw_spawns(&FIXTURE_SOURCE, hatched, HATCH), (vec![], 1, 1));
+
+    let mut offenders = Vec::new();
+    let mut hatches = Vec::new();
+    let mut per_file: Vec<(String, usize)> = Vec::new();
+    for path in workspace_rust_files() {
+        let label = source_label(&path);
+        let region = test_region(&path, &walked_file_body(&path));
+        let (unguarded, sites, hatched) = raw_spawns(&label, &region, HATCH);
+        offenders.extend(unguarded);
+        if hatched > 0 {
+            hatches.push((label.to_string(), hatched));
+        }
+        if sites > 0 {
+            per_file.push((label.to_string(), sites));
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "a test spawns through a raw `Command::new(` outside the PATH gate, so a \
+         sibling test's PATH window can decide what it starts; bind \
+         `cfgd_core::test_helpers::path_env_read_guard()` in the function first (or \
+         `path_env_mutation_guard()` if it also changes PATH), reach git through \
+         `git_cmd_local()`, or say why the PATH is the test's own with \
+         `// raw-spawn-ok: <why>`:\n{}",
+        offenders.join("\n")
+    );
+    let hatch_total: usize = hatches.iter().map(|(_, n)| n).sum();
+    assert!(
+        hatch_total <= HATCH_CEILING,
+        "{hatch_total} raw spawns carry `{HATCH}`, over the ceiling of {HATCH_CEILING}: {hatches:?}"
+    );
+    for (file, floor) in FLOORS {
+        let sites = per_file
+            .iter()
+            .find(|(f, _)| f == file)
+            .map_or(0, |(_, n)| *n);
+        assert!(
+            sites >= floor,
+            "{file} holds {sites} raw spawns in its test region, under its floor of {floor}; \
+             a walk reading fewer than it did is going blind"
+        );
+    }
+}
+
+/// The raw `Command::new(` sites in `region` whose enclosing function holds no
+/// `PATH` guard and carries no hatch, with the count of every site and of the
+/// hatched ones.
+fn raw_spawns(source: &SourceLabel, region: &str, hatch: &str) -> (Vec<String>, usize, usize) {
+    const TELL: &str = "Command::new(";
+    const GUARDS: [&str; 2] = ["path_env_read_guard()", "path_env_mutation_guard()"];
+    let code = crate::test_helpers::blank_non_code(region);
+    let lines: Vec<&str> = region.lines().collect();
+    let functions = source_functions(source, region);
+    let binds_a_guard = |body: &str| {
+        let body = crate::test_helpers::blank_non_code(body);
+        GUARDS.iter().any(|guard| {
+            body.match_indices(guard).any(|(at, _)| {
+                let statement = body[..at].rsplit([';', '{', '}']).next().unwrap_or("");
+                statement
+                    .trim_start()
+                    .strip_prefix("let ")
+                    .and_then(|rest| rest.split_once('='))
+                    .is_some_and(|(name, _)| !matches!(name.trim(), "_" | ""))
+            })
+        })
+    };
+    let mut unguarded = Vec::new();
+    let (mut sites, mut hatched_sites) = (0, 0);
+    for (at, _) in code.match_indices(TELL) {
+        if code[..at]
+            .chars()
+            .next_back()
+            .is_some_and(|c| c.is_alphanumeric() || c == '_')
+        {
+            continue;
+        }
+        sites += 1;
+        let row = code[..at].matches('\n').count();
+        if hatched(&lines, row, hatch) {
+            hatched_sites += 1;
+            continue;
+        }
+        let enclosing = functions
+            .iter()
+            .filter(|(open, body)| (open - 1..open - 1 + body.lines().count()).contains(&row))
+            .max_by_key(|(open, _)| *open);
+        if !enclosing.is_some_and(|(_, body)| binds_a_guard(body)) {
+            unguarded.push(format!("{source}:{}: {}", row + 1, lines[row].trim()));
+        }
+    }
+    (unguarded, sites, hatched_sites)
+}

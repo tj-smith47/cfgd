@@ -255,6 +255,7 @@ mod tests {
     }
 
     fn sh(script: &str) -> std::process::Command {
+        // raw-spawn-ok: builds the command only; every caller runs it through `run_command`, whose one spawn in `spawn_and_pump` holds the read guard.
         let mut cmd = std::process::Command::new("sh");
         cmd.arg("-c").arg(script);
         cmd
@@ -537,6 +538,7 @@ mod tests {
     /// Build an `ExitStatus` with the given exit code, portable across Unix
     /// and Windows for the make_output tests above.
     fn exit_status_from_code(code: i32) -> std::process::ExitStatus {
+        let _path = crate::test_helpers::path_env_read_guard();
         // Run `sh -c "exit N"` synchronously and capture the resulting status.
         // Cheaper than depending on platform-specific `ExitStatusExt`.
         std::process::Command::new("sh")

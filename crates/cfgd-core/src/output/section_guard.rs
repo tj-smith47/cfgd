@@ -544,6 +544,7 @@ mod tests {
     /// the section header must appear before it.
     #[test]
     fn section_run_captures_command_output() {
+        let _path = crate::test_helpers::path_env_read_guard();
         let (p, buf) = Printer::for_test_at(Verbosity::Normal);
         {
             let s = p.section("Build");
@@ -577,6 +578,7 @@ mod tests {
     /// status (does NOT propagate as Err; the command itself ran).
     #[test]
     fn section_run_non_zero_exit_is_not_io_error() {
+        let _path = crate::test_helpers::path_env_read_guard();
         let (p, _buf) = Printer::for_test_at(Verbosity::Normal);
         let s = p.section("Fail");
         // `false` exits 1 on all POSIX targets.

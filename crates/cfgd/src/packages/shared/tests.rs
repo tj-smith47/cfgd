@@ -678,6 +678,7 @@ fn strip_sudo_for_exec_strips_when_wrapped_tool_seam_is_set() {
 
 #[test]
 fn run_pkg_cmd_install_error_maps_to_install_failed() {
+    let _path = cfgd_core::test_helpers::path_env_read_guard();
     let result = run_pkg_cmd(
         "test-mgr",
         Command::new("sh").args(["-c", "echo install-err >&2; exit 1"]),
@@ -694,6 +695,7 @@ fn run_pkg_cmd_install_error_maps_to_install_failed() {
 
 #[test]
 fn run_pkg_cmd_uninstall_error_maps_to_uninstall_failed() {
+    let _path = cfgd_core::test_helpers::path_env_read_guard();
     let result = run_pkg_cmd(
         "test-mgr",
         Command::new("sh").args(["-c", "echo rm-err >&2; exit 1"]),
@@ -710,6 +712,7 @@ fn run_pkg_cmd_uninstall_error_maps_to_uninstall_failed() {
 
 #[test]
 fn run_pkg_cmd_list_error_maps_to_list_failed() {
+    let _path = cfgd_core::test_helpers::path_env_read_guard();
     let result = run_pkg_cmd(
         "test-mgr",
         Command::new("sh").args(["-c", "echo list-err >&2; exit 1"]),
@@ -726,6 +729,7 @@ fn run_pkg_cmd_list_error_maps_to_list_failed() {
 
 #[test]
 fn run_pkg_cmd_unknown_error_kind_maps_to_install_failed() {
+    let _path = cfgd_core::test_helpers::path_env_read_guard();
     // The default match arm maps unknown error kinds to InstallFailed
     let result = run_pkg_cmd(
         "test-mgr",
@@ -744,6 +748,7 @@ fn run_pkg_cmd_unknown_error_kind_maps_to_install_failed() {
 
 #[test]
 fn run_pkg_cmd_success_returns_output() {
+    let _path = cfgd_core::test_helpers::path_env_read_guard();
     let result = run_pkg_cmd(
         "test-mgr",
         Command::new("sh").args(["-c", "echo hello"]),
@@ -756,6 +761,7 @@ fn run_pkg_cmd_success_returns_output() {
 
 #[test]
 fn run_pkg_cmd_msg_includes_prefix_in_error() {
+    let _path = cfgd_core::test_helpers::path_env_read_guard();
     let result = run_pkg_cmd_msg(
         "test-mgr",
         Command::new("sh").args(["-c", "echo detail >&2; exit 1"]),
@@ -773,6 +779,7 @@ fn run_pkg_cmd_msg_includes_prefix_in_error() {
 
 #[test]
 fn run_pkg_cmd_msg_empty_prefix_not_prepended() {
+    let _path = cfgd_core::test_helpers::path_env_read_guard();
     let result = run_pkg_cmd_msg(
         "test-mgr",
         Command::new("sh").args(["-c", "echo only-stderr >&2; exit 1"]),
@@ -791,6 +798,7 @@ fn run_pkg_cmd_msg_empty_prefix_not_prepended() {
 
 #[test]
 fn run_pkg_cmd_command_not_found_maps_to_command_failed() {
+    let _path = cfgd_core::test_helpers::path_env_read_guard();
     let result = run_pkg_cmd(
         "test-mgr",
         &mut Command::new("/nonexistent/binary/path/that/does/not/exist"),
@@ -1170,6 +1178,7 @@ fn sudo_cmd_with_seam_falls_back_to_sudo_cmd_when_unset() {
 #[test]
 #[serial_test::serial]
 fn run_pkg_cmd_live_success_returns_command_output() {
+    let _path = cfgd_core::test_helpers::path_env_mutation_guard();
     let notes = NoteSink::default();
     let _shim =
         cfgd_core::test_helpers::ToolShim::install("CFGD_SH_BIN", 0, "hello from shim\n", "");
@@ -1191,6 +1200,7 @@ fn run_pkg_cmd_live_success_returns_command_output() {
 #[test]
 #[serial_test::serial]
 fn run_pkg_cmd_live_install_failure_maps_to_install_failed() {
+    let _path = cfgd_core::test_helpers::path_env_mutation_guard();
     let notes = NoteSink::default();
     let _shim =
         cfgd_core::test_helpers::ToolShim::install("CFGD_SH_FAIL_BIN", 1, "", "install broke\n");
@@ -1217,6 +1227,7 @@ fn run_pkg_cmd_live_install_failure_maps_to_install_failed() {
 #[test]
 #[serial_test::serial]
 fn run_pkg_cmd_live_uninstall_failure_maps_to_uninstall_failed() {
+    let _path = cfgd_core::test_helpers::path_env_mutation_guard();
     let notes = NoteSink::default();
     let _shim = cfgd_core::test_helpers::ToolShim::install(
         "CFGD_SH_UNINST_BIN",
@@ -1247,6 +1258,7 @@ fn run_pkg_cmd_live_uninstall_failure_maps_to_uninstall_failed() {
 #[test]
 #[serial_test::serial]
 fn run_pkg_cmd_live_failure_with_no_stderr_includes_exit_code() {
+    let _path = cfgd_core::test_helpers::path_env_mutation_guard();
     let notes = NoteSink::default();
     let _shim = cfgd_core::test_helpers::ToolShim::install("CFGD_SH_NOOUT_BIN", 42, "", "");
     let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
@@ -1272,6 +1284,7 @@ fn run_pkg_cmd_live_failure_with_no_stderr_includes_exit_code() {
 #[test]
 #[serial_test::serial]
 fn run_pkg_cmd_live_install_success_extracts_brew_caveats() {
+    let _path = cfgd_core::test_helpers::path_env_mutation_guard();
     let notes = NoteSink::default();
     let _shim = cfgd_core::test_helpers::ToolShim::install(
         "CFGD_SH_CAVEAT_BIN",
@@ -1312,6 +1325,7 @@ fn run_pkg_cmd_live_install_success_extracts_brew_caveats() {
 #[test]
 #[serial_test::serial]
 fn caller_owned_status_suppresses_the_windows_own_line() {
+    let _path = cfgd_core::test_helpers::path_env_mutation_guard();
     let _shim = cfgd_core::test_helpers::ToolShim::install("CFGD_SH_OWNER_BIN", 0, "ok\n", "");
     let bin = std::env::var("CFGD_SH_OWNER_BIN").expect("shim seam is set");
     let notes = NoteSink::default();
@@ -1360,6 +1374,7 @@ fn caller_owned_status_suppresses_the_windows_own_line() {
 #[test]
 #[serial_test::serial]
 fn caller_owned_status_suppresses_the_windows_own_line_on_failure() {
+    let _path = cfgd_core::test_helpers::path_env_mutation_guard();
     let _shim = cfgd_core::test_helpers::ToolShim::install(
         "CFGD_SH_FAIL_OWNER_BIN",
         1,
@@ -1426,6 +1441,7 @@ fn caller_owned_status_suppresses_the_windows_own_line_on_failure() {
 #[test]
 #[serial_test::serial]
 fn a_failed_caller_owned_batch_install_carries_every_cause() {
+    let _path = cfgd_core::test_helpers::path_env_mutation_guard();
     let _shim = cfgd_core::test_helpers::ToolShim::install(
         "CFGD_BATCH_FAIL_BIN",
         1,
@@ -1752,6 +1768,7 @@ fn bootstrap_via_brew_then_system_falls_back_when_brew_fails_and_no_system_manag
 #[test]
 #[serial_test::serial]
 fn run_pkg_cmd_live_unknown_error_kind_maps_to_install_failed() {
+    let _path = cfgd_core::test_helpers::path_env_mutation_guard();
     let notes = NoteSink::default();
     let _shim =
         cfgd_core::test_helpers::ToolShim::install("CFGD_SH_UPDATE_BIN", 1, "", "update broke\n");
@@ -1892,6 +1909,7 @@ fn resolve_tool_with_fallbacks_uses_path_when_command_available() {
 #[test]
 #[serial_test::serial]
 fn run_pkg_query_returns_output_even_on_nonzero_exit() {
+    let _path = cfgd_core::test_helpers::path_env_read_guard();
     // A query command (e.g. scoop `list`) may exit non-zero for a benign empty
     // result; run_pkg_query returns the captured output instead of erroring, so the
     // caller can parse stdout. Only spawn/timeout failures become CommandFailed.
@@ -1909,6 +1927,7 @@ fn run_pkg_query_returns_output_even_on_nonzero_exit() {
 #[test]
 #[serial_test::serial]
 fn run_pkg_query_maps_spawn_error_to_command_failed() {
+    let _path = cfgd_core::test_helpers::path_env_read_guard();
     let mut cmd = std::process::Command::new("/nonexistent/binary/cfgd-query-xyz");
     let err = run_pkg_query("test-mgr", &mut cmd).expect_err("spawn error must surface");
     assert!(matches!(&err, PackageError::CommandFailed { manager, .. } if manager == "test-mgr"));
@@ -1988,6 +2007,7 @@ fn windows_pkg_argv_unresolved_falls_back_to_bare_name() {
 #[test]
 #[serial_test::serial]
 fn run_pkg_cmd_live_spawn_error_maps_to_command_failed() {
+    let _path = cfgd_core::test_helpers::path_env_read_guard();
     let notes = NoteSink::default();
     let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let mut cmd = std::process::Command::new("/nonexistent/binary/cfgd-test-path-xyz");
@@ -2298,6 +2318,7 @@ fn a_path_the_command_builder_already_chose_is_left_alone() {
 #[test]
 #[serial_test::serial]
 fn a_run_that_bootstrapped_nothing_sets_no_path_at_all() {
+    let _path = cfgd_core::test_helpers::path_env_read_guard();
     let _registry = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
     let mut cmd = Command::new("apt-get");
     hand_child_bootstrapped_path(&mut cmd);
@@ -2550,6 +2571,7 @@ fn a_version_probe_reaches_a_sibling_the_manager_shim_finds_through_the_bootstra
 #[test]
 #[serial_test::serial]
 fn upgrade_each_spawns_the_built_command_once_per_held_package() {
+    let _path = cfgd_core::test_helpers::path_env_mutation_guard();
     let notes = NoteSink::default();
     let _shim = cfgd_core::test_helpers::ToolShim::install("CFGD_SH_UPGRADE_BIN", 0, "", "");
     let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);

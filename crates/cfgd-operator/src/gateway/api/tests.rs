@@ -719,6 +719,7 @@ fn enrollment_method_unknown_falls_back_to_token() {
 
 #[test]
 fn verify_ssh_signature_correct_key_succeeds() {
+    let _path = cfgd_core::test_helpers::path_env_read_guard();
     if !cfgd_core::command_available("ssh-keygen") {
         return;
     }
@@ -788,6 +789,7 @@ fn verify_ssh_signature_correct_key_succeeds() {
 
 #[test]
 fn verify_ssh_signature_wrong_key_fails() {
+    let _path = cfgd_core::test_helpers::path_env_read_guard();
     if !cfgd_core::command_available("ssh-keygen") {
         return;
     }
@@ -889,6 +891,7 @@ fn verify_ssh_signature_empty_keys_returns_false() {
 
 #[test]
 fn verify_ssh_signature_bad_signature_data_returns_false() {
+    let _path = cfgd_core::test_helpers::path_env_read_guard();
     if !cfgd_core::command_available("ssh-keygen") {
         return;
     }
@@ -934,6 +937,7 @@ fn verify_ssh_signature_bad_signature_data_returns_false() {
 
 #[test]
 fn verify_ssh_signature_multiple_keys_finds_correct_one() {
+    let _path = cfgd_core::test_helpers::path_env_read_guard();
     if !cfgd_core::command_available("ssh-keygen") {
         return;
     }
@@ -1035,6 +1039,7 @@ fn verify_ssh_signature_multiple_keys_finds_correct_one() {
 
 #[test]
 fn verify_ssh_signature_wrong_nonce_fails() {
+    let _path = cfgd_core::test_helpers::path_env_read_guard();
     if !cfgd_core::command_available("ssh-keygen") {
         return;
     }
@@ -2734,6 +2739,7 @@ async fn verify_enrollment_rejects_when_signature_does_not_verify() {
 
 #[tokio::test]
 async fn verify_enrollment_with_valid_ssh_signature_enrolls_device() {
+    let _path = cfgd_core::test_helpers::path_env_read_guard();
     // Drives the success path at lines 239-310: signature verifies, a
     // device api-key is generated and hashed, the device + credential rows
     // are inserted in one write transaction, a FleetEvent is broadcast,

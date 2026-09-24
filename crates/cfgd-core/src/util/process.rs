@@ -1604,6 +1604,7 @@ mod tests {
 
     #[test]
     fn command_output_with_timeout_succeeds() {
+        let _path = crate::test_helpers::path_env_read_guard();
         let mut cmd = std::process::Command::new("echo");
         cmd.arg("hello");
         let output =
@@ -1614,6 +1615,7 @@ mod tests {
 
     #[test]
     fn command_output_with_timeout_kills_on_exceed() {
+        let _path = crate::test_helpers::path_env_read_guard();
         let mut cmd = std::process::Command::new("sleep");
         cmd.arg("60");
         let result = command_output_with_timeout(&mut cmd, std::time::Duration::from_millis(100));
@@ -1673,6 +1675,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn command_outcome_reports_timeout_for_hung_command() {
+        let _path = crate::test_helpers::path_env_read_guard();
         let mut cmd = std::process::Command::new("sleep");
         cmd.arg("5");
         let outcome =
@@ -1685,6 +1688,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn command_outcome_no_timeout_for_fast_command() {
+        let _path = crate::test_helpers::path_env_read_guard();
         let mut cmd = std::process::Command::new("true");
         let outcome =
             command_output_with_timeout_outcome(&mut cmd, std::time::Duration::from_secs(5))
@@ -1703,6 +1707,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn command_output_captures_both_streams_without_caller_piping() {
+        let _path = crate::test_helpers::path_env_read_guard();
         let mut cmd = std::process::Command::new("sh");
         cmd.arg("-c").arg("echo to-stdout; echo to-stderr >&2");
         let output =
@@ -1717,6 +1722,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn command_output_returns_when_descendant_holds_pipe_open() {
+        let _path = crate::test_helpers::path_env_read_guard();
         let mut cmd = std::process::Command::new("sh");
         cmd.arg("-c").arg("sleep 30 & echo $!; sleep 30");
 
@@ -1754,6 +1760,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_program_file_held_open_for_writing_is_spawned_once_the_writer_closes() {
+        let _path = crate::test_helpers::path_env_read_guard();
         let tmp = tempfile::TempDir::new().unwrap();
         let program = tmp.path().join("busy");
         std::fs::write(&program, "#!/bin/sh\nexit 0\n").unwrap();

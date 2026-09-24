@@ -2499,6 +2499,7 @@ fn sign_with_ssh_does_not_hang_when_key_prompts_on_stdin() {
 #[test]
 #[serial_test::serial]
 fn sign_with_gpg_requires_gpg() {
+    let _path = cfgd_core::test_helpers::path_env_read_guard();
     if !cfgd_core::command_available("gpg") {
         let result = sign_with_gpg("test-nonce", "DEADBEEF");
         assert!(result.is_err());
@@ -2528,6 +2529,7 @@ fn sign_with_gpg_requires_gpg() {
 #[serial_test::serial]
 #[cfg(unix)]
 fn sign_with_gpg_signs_with_a_key_in_the_users_keyring() {
+    let _path = cfgd_core::test_helpers::path_env_read_guard();
     // sign_with_gpg must sign against the user's real GnuPG keyring (GNUPGHOME),
     // where the secret key actually lives. The historical bug redirected gpg to a
     // fresh empty --homedir that never held the key, so every signature failed with

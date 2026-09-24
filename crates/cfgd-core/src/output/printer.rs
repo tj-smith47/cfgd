@@ -2573,6 +2573,7 @@ mod tests {
     #[cfg(feature = "test-helpers")]
     #[test]
     fn top_level_run_stays_at_column_zero() {
+        let _path = crate::test_helpers::path_env_read_guard();
         let (p, buf) = Printer::for_test_at(Verbosity::Normal);
         let out = p
             .run(

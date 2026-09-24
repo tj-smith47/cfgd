@@ -5358,6 +5358,7 @@ fn generate_release_workflow_detect_grep_covers_flat_and_bundle_forms() {
 #[cfg(target_os = "linux")]
 #[test]
 fn generate_release_workflow_detect_grep_behavior_against_real_grep() {
+    let _path = cfgd_core::test_helpers::path_env_read_guard();
     use std::io::Write;
     use std::process::{Command, Stdio};
 
@@ -21891,11 +21892,17 @@ fn cmd_source_list_structured_json() {
 #[test]
 fn cmd_workflow_generate_with_git_repo() {
     let (config_dir, state_dir) = setup_test_env();
-    std::process::Command::new("git")
+    let _path = cfgd_core::test_helpers::path_env_read_guard();
+    let init = cfgd_core::git_cmd_local()
         .args(["init"])
         .current_dir(config_dir.path())
         .output()
-        .ok();
+        .expect("git runs");
+    assert!(
+        init.status.success(),
+        "git init failed: {}",
+        String::from_utf8_lossy(&init.stderr)
+    );
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let (printer, buf) = test_printer_capture();
@@ -27905,6 +27912,7 @@ spec:
 #[test]
 #[serial_test::serial]
 fn a_source_refused_for_an_unsigned_head_syncs_once_a_signed_commit_lands() {
+    let _path = cfgd_core::test_helpers::path_env_read_guard();
     use cfgd_core::test_helpers::EnvVarGuard;
 
     let scratch = tempfile::tempdir().unwrap();
@@ -49085,22 +49093,27 @@ fn the_hermetic_parser_reads_only_the_environment_it_is_handed() {
 /// argument; `CFGD_YES=1` exported on a developer's machine was enough to fail
 /// a parse the shipped binary never performs (its `main` folds boolish values
 /// before clap reads them). The tells come from clap's method names:
-/// `Parser`'s own, joined to each `Parser` type's name (read off the crate's
-/// `#[derive(..Parser..)]` declarations, so a new one joins the walk) and to
-/// the trait itself for the `<Cli as Parser>::` and `Parser::` spellings; and
+/// `Parser`'s `parse` and `try_parse`, joined to each `Parser` type's name
+/// (read off the crate's `#[derive(..Parser..)]` declarations, so a new one
+/// joins the walk) and to the trait itself for the `<Cli as Parser>::` and
+/// `Parser::` spellings; `Parser`'s `*_from` methods on any receiver; and
 /// `Command`'s matchers with `FromArgMatches::from_arg_matches`, which reach
 /// the same bindings whatever the receiver is called. The direct calls left
 /// are the two binaries' entry points and the hermetic parser itself.
 #[test]
 fn every_in_process_parse_goes_through_the_hermetic_parser() {
-    /// `clap::Parser`'s provided methods, each of which reads `env =` bindings.
-    const METHODS: [&str; 6] = [
-        "parse(",
-        "try_parse(",
-        "parse_from(",
-        "try_parse_from(",
-        "update_from(",
-        "try_update_from(",
+    /// `clap::Parser`'s provided methods whose names other types also use
+    /// (`windows_registry.rs` has its own `Self::parse(`), so they count only
+    /// on a receiver the walk knows is a `Parser`.
+    const METHODS: [&str; 2] = ["parse(", "try_parse("];
+    /// `clap::Parser`'s provided methods no other type in the crate spells,
+    /// which count on any receiver: a generic `P::try_parse_from(` and a
+    /// `Self::parse_from(` inside an `impl Cli` read the same bindings.
+    const ANY_RECEIVER: [&str; 4] = [
+        "::parse_from(",
+        "::try_parse_from(",
+        "::update_from(",
+        "::try_update_from(",
     ];
     /// `clap::Command`'s matchers, which read `env =` bindings, and the
     /// `FromArgMatches` call that turns their result into a `Parser` type.
@@ -49183,6 +49196,7 @@ fn every_in_process_parse_goes_through_the_hermetic_parser() {
         .map(String::as_str)
         .chain(["Parser", "Parser>"])
         .flat_map(|receiver| METHODS.map(|method| format!("{receiver}::{method}")))
+        .chain(ANY_RECEIVER.map(String::from))
         .chain(MATCHERS.map(String::from))
         .collect();
     let offenders_in = |rel: &str, code: &str| -> Vec<String> {
@@ -49191,11 +49205,14 @@ fn every_in_process_parse_goes_through_the_hermetic_parser() {
             for (at, _) in code.match_indices(tell.as_str()) {
                 // `PluginCli::parse(` holds `Cli::parse(` and
                 // `try_get_matches(` holds `get_matches(`; only a tell
-                // starting at a word boundary is the call it names.
-                let bounded = code[..at]
-                    .chars()
-                    .next_back()
-                    .is_none_or(|c| !(c.is_alphanumeric() || c == '_'));
+                // starting at a word boundary is the call it names. A tell
+                // opening on `::` is bounded by that path separator whatever
+                // receiver stands in front of it.
+                let bounded = tell.starts_with("::")
+                    || code[..at]
+                        .chars()
+                        .next_back()
+                        .is_none_or(|c| !(c.is_alphanumeric() || c == '_'));
                 let entry = ENTRY_POINTS
                     .iter()
                     .any(|(file, call)| rel == *file && tell == call);
@@ -49224,6 +49241,8 @@ fn every_in_process_parse_goes_through_the_hermetic_parser() {
         ),
         ("matcher", "let m = cmd.get_matches_from(argv);"),
         ("conversion", "let cli = Cli::from_arg_matches(&m);"),
+        ("generic receiver", "let cli = P::try_parse_from(argv);"),
+        ("`Self` receiver", "let cli = Self::parse_from(argv);"),
         (
             "entry point outside its file",
             "let m = cmd.get_matches_from(argv);",
@@ -49244,6 +49263,10 @@ fn every_in_process_parse_goes_through_the_hermetic_parser() {
         (
             "src/fixture.rs",
             "let n = \"4\".parse::<u32>(); let c = Cli::try_parse_hermetic(argv);",
+        ),
+        (
+            "src/system/windows_registry.rs",
+            "Self::parse(&String::from_utf8_lossy(&output.stdout))",
         ),
     ] {
         assert!(

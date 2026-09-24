@@ -26269,10 +26269,11 @@ fn a_lane_worker_blocks_behind_an_exclusively_held_path_lock() {
 #[serial_test::serial]
 fn a_caller_holding_the_path_window_lends_it_to_its_lane_workers() {
     // The caller parks on its lane workers while it holds the write half, so a
-    // worker waiting on that lock for its own read guard never returns. The
-    // timeout reports that deadlock as this test's failure. The gate's own wait
-    // bound then panics the stuck worker, the holder thread below ends and
-    // drops its guard, and the rest of a full run gets the lock back.
+    // worker waiting on that lock for its own read guard waits until the gate's
+    // own bound. The timeout reports that deadlock as this test's failure. The
+    // gate's own wait bound then panics the stuck worker, the holder thread
+    // below ends and drops its guard, and the rest of a full run gets the lock
+    // back.
     let log = new_dispatch_log();
     let registry = lane_registry(vec![DispatchLogManager::new("brew", &log, true)]);
     let plan = packages_phase(vec![module_install_action("alpha", "brew", "alpha-pkg")]);
