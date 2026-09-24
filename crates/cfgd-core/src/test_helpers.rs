@@ -2910,7 +2910,8 @@ pub fn install_named_path_shims(shims: &[(&str, i32)]) -> (tempfile::TempDir, Pa
 /// Two shapes they cannot cover. Cross-thread: a thread holding the exclusive
 /// guard that waits on a helper thread which spawns (a raw `spawn_blocking`,
 /// say) deadlocks, because the helper has neither flag — keep a mutation window
-/// on one thread. And shared-then-exclusive on one thread: a read guard cannot
+/// on one thread; the helper's wait ends only at [`GATE_WAIT_BOUND`], when it
+/// panics. And shared-then-exclusive on one thread: a read guard cannot
 /// upgrade to a write guard, so [`path_env_mutation_guard`] `debug_assert!`s
 /// that no shared guard is held rather than silently allowing the mutation.
 ///
@@ -2944,6 +2945,14 @@ static PATH_ENV_LOCK: PathEnvGate = PathEnvGate {
     signal: Condvar::new(),
 };
 
+/// The longest either half of `PATH_ENV_LOCK` waits before it panics with a
+/// diagnostic naming the gate. No legitimate suite run approaches it. A
+/// silent hang points at nothing, and a waiter that never gives up keeps
+/// every thread behind it parked for the rest of the run: a reader stuck
+/// behind a writer that is waiting on that same reader panics here, the
+/// writer's thread stops waiting and drops its guard, and the gate reopens.
+const GATE_WAIT_BOUND: std::time::Duration = std::time::Duration::from_secs(300);
+
 /// The `PATH` gate's admission state and the condvar every waiter parks on.
 struct PathEnvGate {
     state: Mutex<PathEnvGateState>,
@@ -2971,6 +2980,7 @@ impl PathEnvGate {
         let mut state = self.locked();
         let me = std::thread::current().id();
         let mut queued = false;
+        let deadline = std::time::Instant::now() + GATE_WAIT_BOUND;
         while state.writer || (state.writers_waiting > 0 && state.readers == 0) {
             if !queued {
                 state.readers_waiting.push(me);
@@ -2985,10 +2995,24 @@ impl PathEnvGate {
                 // on the hottest call in the test binary.
                 self.signal.notify_all();
             }
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            if left.is_zero() {
+                // Dequeued before the panic for the same reason the write
+                // half drops its count: `locked()` swallows the poison, and a
+                // stale entry answers a later "is this reader queued" wait.
+                if let Some(at) = state.readers_waiting.iter().position(|id| *id == me) {
+                    state.readers_waiting.swap_remove(at);
+                }
+                panic!(
+                    "PATH_ENV_LOCK: reader waited over {GATE_WAIT_BOUND:?} for a writer to \
+                     release the gate; a writer waiting on this reader's thread never will"
+                );
+            }
             state = self
                 .signal
-                .wait(state)
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                .wait_timeout(state, left)
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .0;
         }
         if queued && let Some(at) = state.readers_waiting.iter().position(|id| *id == me) {
             state.readers_waiting.swap_remove(at);
@@ -3016,14 +3040,9 @@ impl PathEnvGate {
         // Announced before parking, so a test can observe the queued writer
         // rather than sleep a guess at when it arrives.
         self.signal.notify_all();
-        // A generous bound no legitimate suite run can approach: a silent
-        // hang points at nothing, so a writer that waits this long panics
-        // with a diagnostic naming the gate instead of leaving the suite to
-        // time out with no pointer to why.
-        const WRITER_STARVATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
         let (next, result) = self
             .signal
-            .wait_timeout_while(state, WRITER_STARVATION_TIMEOUT, |gate| {
+            .wait_timeout_while(state, GATE_WAIT_BOUND, |gate| {
                 gate.writer || gate.readers > 0
             })
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -3037,7 +3056,7 @@ impl PathEnvGate {
             panic!(
                 "PATH_ENV_LOCK: writer starved for over {:?} with {} reader(s) still \
                  holding the gate — this is writer starvation, not a legitimate wait",
-                WRITER_STARVATION_TIMEOUT, state.readers
+                GATE_WAIT_BOUND, state.readers
             );
         }
         state.writers_waiting -= 1;
