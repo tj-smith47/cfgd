@@ -51620,11 +51620,40 @@ fn reaches_a_yaml_section(lines: &[&str], i: usize) -> bool {
         .chain(lines[fn_start..=i].iter().find(|l| l.contains('{')))
         .copied()
         .collect();
+    let names = |l: &str, ident: &str| {
+        l.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .any(|w| w == ident)
+    };
+    // A value borrowed mutably on an earlier line (`let v = m.get_mut(..)`)
+    // is as writable as one taken on the matching line, so the pattern that
+    // tests it (`if let Value::Mapping(inner) = v`, or the arms of `match v`)
+    // reaches the section too.
+    let bound_mutably: Vec<String> = (fn_start..i)
+        .filter(|&k| lines[k].contains("_mut("))
+        .filter_map(|k| {
+            let after = lines[k].split_once("let ")?.1.trim_start_matches("mut ");
+            let after = after.strip_prefix("Some(").unwrap_or(after);
+            let ident: String = after
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect();
+            (!ident.is_empty()).then_some(ident)
+        })
+        .collect();
+    let scrutinee_line = if line.contains("let ") {
+        Some(line)
+    } else {
+        (fn_start..i)
+            .rev()
+            .map(|k| lines[k])
+            .find(|l| l.contains("match "))
+    };
     let holds_mut_value = signature.contains("&mut serde_yaml::Value")
         || signature.contains("&mut Value")
         || line.contains("&mut")
         || line.contains("ref mut")
-        || line.contains("_mut(");
+        || line.contains("_mut(")
+        || scrutinee_line.is_some_and(|l| bound_mutably.iter().any(|b| names(l, b)));
 
     let binds_a_section = ["Value::Mapping(", "Value::Sequence("].iter().any(|pat| {
         line.match_indices(pat).any(|(at, _)| {
@@ -51649,13 +51678,9 @@ fn reaches_a_yaml_section(lines: &[&str], i: usize) -> bool {
         (!ident.is_empty() && after.starts_with('=') && !after.starts_with("==")).then_some(ident)
     });
     deref_target.is_some_and(|ident| {
-        let names = |l: &str| {
-            l.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-                .any(|w| w == ident)
-        };
         (fn_start..i).any(|k| {
             lines[k].contains("get_mut(")
-                && (names(lines[k]) || (k > fn_start && names(lines[k - 1])))
+                && (names(lines[k], &ident) || (k > fn_start && names(lines[k - 1], &ident)))
         })
     })
 }
@@ -51678,6 +51703,12 @@ fn every_section_reach_shape_is_seen_by_the_section_walk() {
     assert_eq!(reaches(pattern), [3, 4]);
     let let_pattern = "fn f(m: &mut serde_yaml::Mapping) {\n    if let Some(serde_yaml::Value::Mapping(inner)) = m.get_mut(\"spec\") {\n        inner.clear();\n    }\n}";
     assert_eq!(reaches(let_pattern), [2]);
+    let bound_earlier = "fn f(m: &mut serde_yaml::Mapping) {\n    let v = m.get_mut(\"spec\").unwrap();\n    if let serde_yaml::Value::Mapping(inner) = v { inner.clear(); }\n}";
+    assert_eq!(reaches(bound_earlier), [3]);
+    let matched_earlier = "fn f(m: &mut serde_yaml::Mapping) {\n    let v = m.get_mut(\"spec\").unwrap();\n    match v {\n        serde_yaml::Value::Mapping(inner) => inner.clear(),\n        _ => {}\n    }\n}";
+    assert_eq!(reaches(matched_earlier), [4]);
+    let read_earlier = "fn f(m: &serde_yaml::Mapping) -> bool {\n    let v = m.get(\"spec\").unwrap();\n    if let serde_yaml::Value::Mapping(inner) = v { return inner.is_empty(); }\n    false\n}";
+    assert_eq!(reaches(read_earlier), Vec::<usize>::new());
     let read_only = "fn f(doc: &serde_yaml::Value) -> bool {\n    match doc {\n        serde_yaml::Value::Mapping(map) => map.is_empty(),\n        serde_yaml::Value::Sequence(_) => true,\n        _ => false,\n    }\n}";
     assert_eq!(reaches(read_only), Vec::<usize>::new());
 
