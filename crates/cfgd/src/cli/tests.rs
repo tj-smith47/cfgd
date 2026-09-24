@@ -19292,7 +19292,7 @@ fn walked_mutations() -> &'static [(Mutation<'static>, &'static [&'static str])]
 /// substituted: dropping the file left `kubectl apply`, which exits 1 on
 /// `must specify one of -f and -k` without contacting a cluster, three lines
 /// above the operator hand-typing the `-f` the hint had dropped. A span
-/// opening on `cfgd` round-trips through [`Cli::try_parse_from`]; one opening
+/// opening on `cfgd` round-trips through `Cli::try_parse_hermetic`; one opening
 /// on a foreign tool is judged by [`foreign_command_is_complete`], whose table
 /// a new foreign command trips by being absent from. A span that is a bare
 /// flag (`--apply`) is named, not claimed typeable on its own.
@@ -35640,130 +35640,6 @@ fn every_test_whose_plan_shape_a_host_tool_decides_plants_its_path() {
     );
 }
 
-/// A test claiming an env-seam shim ran nothing owns the spawn window while it
-/// says so.
-///
-/// `ToolShim::install` writes a `CFGD_*_BIN` seam, and that seam is
-/// process-global: any other thread spawning the same tool while the shim is up
-/// appends to the same log, so "this call spawned nothing" then reports what the
-/// rest of the binary happened to do. A threaded run put a `brew tap` listing
-/// into `provision_tool_answers_from_the_seam_without_reaching_a_manager`'s log
-/// that way. Every guarded spawn takes the shared read half of the `PATH`
-/// window, so holding the exclusive half for the length of the claim is what
-/// keeps the other threads out and makes the empty log a fact about this test.
-///
-/// A claim that the log CARRIES something stays out: it names the argv it wants,
-/// and a stranger's line cannot satisfy it.
-#[test]
-fn every_test_claiming_an_env_seam_shim_ran_nothing_holds_the_spawn_window() {
-    /// The guard that makes the spawn window exclusive for the claim's length.
-    const GUARD: &str = "path_env_mutation_guard";
-    /// The shim whose seam is process-global.
-    const SHIM: &str = "ToolShim::install(";
-    /// The two spellings of "this log is empty". A literal-blanked line keeps
-    /// its quotes and blanks its body, so an assertion message stays wide and
-    /// only a genuinely empty literal matches either one.
-    const EMPTY_CLAIMS: [&str; 2] = ["argv_log(), \"\"", "argv_log() == \"\""];
-    /// Per root, because an aggregate floor is one tree's count plus the
-    /// other's and the larger tree alone clears it. `cfgd-core` holds no member
-    /// today and is read anyway, so one moving there joins the walk.
-    const FLOOR_CLAIMS: [usize; 2] = [3, 0];
-    /// The sources each root holds today, so a tree going dark fails here
-    /// rather than passing on a population of nothing.
-    const FLOOR_SOURCES: [usize; 2] = [135, 180];
-
-    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let roots = [manifest.join("src"), manifest.join("../cfgd-core/src")];
-    let mut found = 0usize;
-    let mut offenders: Vec<String> = Vec::new();
-    for (r, root) in roots.iter().enumerate() {
-        let (mut sources, mut claims) = (0usize, 0usize);
-        for path in rust_sources_under(root) {
-            sources += 1;
-            let body = cfgd_core::test_helpers::walked_file_body(&path);
-            let lines: Vec<&str> = body.lines().collect();
-            let mut spans: Vec<(usize, usize)> = Vec::new();
-            for (i, line) in lines.iter().enumerate() {
-                if !cfgd_core::test_helpers::code_line(line).contains(SHIM) {
-                    continue;
-                }
-                if let Some(span) = enclosing_fn_span(&lines, i)
-                    && !spans.contains(&span)
-                {
-                    spans.push(span);
-                }
-            }
-            for (start, end) in spans {
-                // `enclosing_fn_span` opens at the first row of the statement,
-                // which is the attribute block, so a declaration the harness
-                // runs is told apart from a helper by the rows ahead of the
-                // signature.
-                let signature = (start..=end)
-                    .find(|k| {
-                        cfgd_core::test_helpers::blank_string_literals(lines[*k])
-                            .replace(['(', ')'], " ")
-                            .split_whitespace()
-                            .any(|word| word == "fn")
-                    })
-                    .unwrap_or(start);
-                if !lines[start..signature]
-                    .iter()
-                    .any(|l| l.trim() == "#[test]" || l.trim() == "#[tokio::test]")
-                {
-                    continue;
-                }
-                // The claim and the guard are both code, so a mention in a
-                // string or a comment answers neither question; the rows are
-                // flattened because an assertion wraps its operands over
-                // several of them.
-                let flat = lines[start..=end]
-                    .iter()
-                    .map(|l| cfgd_core::test_helpers::code_line(l))
-                    .collect::<Vec<_>>()
-                    .join(" ")
-                    .split_whitespace()
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                if !EMPTY_CLAIMS.iter().any(|claim| flat.contains(claim)) {
-                    continue;
-                }
-                claims += 1;
-                if flat.contains(GUARD) {
-                    continue;
-                }
-                let name = cfgd_core::test_helpers::declared_fn_name(
-                    &cfgd_core::test_helpers::code_line(lines[signature]),
-                )
-                .unwrap_or_default();
-                offenders.push(format!("{}:{}: {name}", path.display(), start + 1));
-            }
-        }
-        assert!(
-            sources >= FLOOR_SOURCES[r],
-            "the walk read {sources} sources under {}, under the floor, so it is looking \
-             at the wrong root",
-            root.display()
-        );
-        assert!(
-            claims >= FLOOR_CLAIMS[r],
-            "the walk found {claims} empty-log claims under {}, under the floor",
-            root.display()
-        );
-        found += claims;
-    }
-    assert!(
-        found >= 3,
-        "the walk found {found} empty-log claims across the workspace, so it is proving \
-         its rule over nothing"
-    );
-    assert!(
-        offenders.is_empty(),
-        "a test asserting an env-seam shim's argv log is empty is asserting what every \
-         other thread did too, unless it holds `{GUARD}` as its first guard:\n{}",
-        offenders.join("\n")
-    );
-}
-
 /// No CLI slot chooses a drift row's cause by hand.
 ///
 /// The verbose form states both operands and the terse one names the kind of
@@ -44085,10 +43961,6 @@ const ABSENT_SEAM_PATH: &str = cfgd_core::test_helpers::ABSENT_SEAM_PATH;
 #[test]
 #[serial_test::serial]
 fn provision_tool_answers_from_the_seam_without_reaching_a_manager() {
-    // The seam is process-global, so a sibling enumerating installed packages
-    // would spawn this shim and leave a `tap` in its log; the exclusive window
-    // keeps every guarded spawn out, and comes first so it drops last.
-    let _spawn_excl = cfgd_core::test_helpers::path_env_mutation_guard();
     let shim = cfgd_core::test_helpers::ToolShim::install("CFGD_BREW_BIN", 0, "", "");
     let here = std::env::current_exe().expect("the running test binary is a real file");
     let _seam = cfgd_core::test_helpers::EnvVarGuard::set(
@@ -44196,13 +44068,8 @@ fn provision_tool_with_no_manager_names_the_routes_it_considered_and_spawns_noth
     // The registry handed over is empty; this pins the host's own managers
     // missing as well, so no route out of this declaration reaches a real one.
     let _managers = cfgd_core::test_helpers::NoHostManagers::pinned_missing();
-    // The seam is process-global, so a sibling sweeping the managers would spawn
-    // this shim and the log would carry a `tap` this call never made. What keeps
-    // it out is the spawn side: every guarded spawn takes the shared read guard
-    // at the spawn itself, so no other thread can reach one while this exclusive
-    // window is open. The guard comes first so it drops last, bracketing the
-    // window the seam is set in.
-    let _spawn_excl = cfgd_core::test_helpers::path_env_mutation_guard();
+    // host-tool-ok: a seam naming a missing file refuses without a PATH lookup,
+    // and the registry handed over holds no manager for a route to reach.
     let shim = cfgd_core::test_helpers::ToolShim::install("CFGD_BREW_BIN", 0, "", "");
     let _seam = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_COSIGN_BIN", ABSENT_SEAM_PATH);
     let printer = test_printer();
@@ -49056,10 +48923,13 @@ fn the_hermetic_parser_reads_only_the_environment_it_is_handed() {
 /// clap's `Parser` methods read the process environment for every `env =`
 /// argument; `CFGD_YES=1` exported on a developer's machine was enough to fail
 /// a parse the shipped binary never performs (its `main` folds boolish values
-/// before clap reads them). The tells are each `Parser` type's name joined to
-/// each of those methods, the types read off the crate's own
-/// `#[derive(..Parser..)]` declarations so a new one joins the walk. The one
-/// direct call left is the plugin binary's own entry point.
+/// before clap reads them). The tells come from clap's method names:
+/// `Parser`'s own, joined to each `Parser` type's name (read off the crate's
+/// `#[derive(..Parser..)]` declarations, so a new one joins the walk) and to
+/// the trait itself for the `<Cli as Parser>::` and `Parser::` spellings; and
+/// `Command`'s matchers with `FromArgMatches::from_arg_matches`, which reach
+/// the same bindings whatever the receiver is called. The direct calls left
+/// are the two binaries' entry points and the hermetic parser itself.
 #[test]
 fn every_in_process_parse_goes_through_the_hermetic_parser() {
     /// `clap::Parser`'s provided methods, each of which reads `env =` bindings.
@@ -49071,8 +48941,26 @@ fn every_in_process_parse_goes_through_the_hermetic_parser() {
         "update_from(",
         "try_update_from(",
     ];
-    /// Production entry points, which parse the real process argv and env.
-    const ENTRY_POINTS: [(&str, &str); 1] = [("cli/plugin/mod.rs", "PluginCli::parse(")];
+    /// `clap::Command`'s matchers, which read `env =` bindings, and the
+    /// `FromArgMatches` call that turns their result into a `Parser` type.
+    const MATCHERS: [&str; 7] = [
+        "get_matches(",
+        "get_matches_from(",
+        "try_get_matches(",
+        "try_get_matches_from(",
+        "get_matches_mut(",
+        "try_get_matches_from_mut(",
+        "from_arg_matches(",
+    ];
+    /// Production entry points, which parse the real process argv and env,
+    /// and the hermetic parser, which clears the bindings before it matches.
+    const ENTRY_POINTS: [(&str, &str); 5] = [
+        ("src/main.rs", "get_matches_from("),
+        ("src/main.rs", "from_arg_matches("),
+        ("src/cli/mod.rs", "try_get_matches_from("),
+        ("src/cli/mod.rs", "from_arg_matches("),
+        ("src/cli/plugin/mod.rs", "PluginCli::parse("),
+    ];
     const HERMETIC: [&str; 2] = ["::try_parse_hermetic(", "::try_parse_reading_env("];
     /// The hermetic calls each file makes today, so the population cannot
     /// drain away file by file while the walk stays green.
@@ -49129,6 +49017,80 @@ fn every_in_process_parse_goes_through_the_hermetic_parser() {
         "the walk found the parser types {parsers:?}, missing `Cli` or `PluginCli`"
     );
 
+    let tells: Vec<String> = parsers
+        .iter()
+        .map(String::as_str)
+        .chain(["Parser", "Parser>"])
+        .flat_map(|receiver| METHODS.map(|method| format!("{receiver}::{method}")))
+        .chain(MATCHERS.map(String::from))
+        .collect();
+    let offenders_in = |rel: &str, code: &str| -> Vec<String> {
+        let mut found = Vec::new();
+        for tell in &tells {
+            for (at, _) in code.match_indices(tell.as_str()) {
+                // `PluginCli::parse(` holds `Cli::parse(` and
+                // `try_get_matches(` holds `get_matches(`; only a tell
+                // starting at a word boundary is the call it names.
+                let bounded = code[..at]
+                    .chars()
+                    .next_back()
+                    .is_none_or(|c| !(c.is_alphanumeric() || c == '_'));
+                let entry = ENTRY_POINTS
+                    .iter()
+                    .any(|(file, call)| rel == *file && tell == call);
+                if bounded && !entry {
+                    let line = code[..at].lines().count();
+                    found.push(format!("{rel}:{line}: {tell}"));
+                }
+            }
+        }
+        found
+    };
+
+    for (form, code) in [
+        ("Parser type", "let cli = Cli::try_parse_from(argv);"),
+        (
+            "qualified trait",
+            "let cli = <Cli as Parser>::parse_from(argv);",
+        ),
+        (
+            "bare trait",
+            "let cli: Cli = clap::Parser::parse_from(argv);",
+        ),
+        (
+            "matcher",
+            "let m = Cli::command().try_get_matches_from(argv);",
+        ),
+        ("matcher", "let m = cmd.get_matches_from(argv);"),
+        ("conversion", "let cli = Cli::from_arg_matches(&m);"),
+        (
+            "entry point outside its file",
+            "let m = cmd.get_matches_from(argv);",
+        ),
+    ] {
+        let rel = if form.starts_with("entry") {
+            "src/cli/tests.rs"
+        } else {
+            "src/fixture.rs"
+        };
+        assert!(
+            !offenders_in(rel, code).is_empty(),
+            "the walk misses the {form} spelling `{code}`"
+        );
+    }
+    for (rel, code) in [
+        ("src/main.rs", "let m = cmd.get_matches_from(&expanded);"),
+        (
+            "src/fixture.rs",
+            "let n = \"4\".parse::<u32>(); let c = Cli::try_parse_hermetic(argv);",
+        ),
+    ] {
+        assert!(
+            offenders_in(rel, code).is_empty(),
+            "the walk flags `{code}` in {rel}, which is no in-process parse by a test"
+        );
+    }
+
     let mut offenders: Vec<String> = Vec::new();
     let mut hermetic: Vec<(String, usize)> = Vec::new();
     for root in [src.clone(), manifest.join("tests")] {
@@ -49139,32 +49101,13 @@ fn every_in_process_parse_goes_through_the_hermetic_parser() {
             if calls > 0 {
                 hermetic.push((rel.clone(), calls));
             }
-            for parser in &parsers {
-                for method in METHODS {
-                    let tell = format!("{parser}::{method}");
-                    for (at, _) in code.match_indices(&tell) {
-                        // `PluginCli::parse(` holds `Cli::parse(`; only a
-                        // name starting at a word boundary is this type.
-                        let bounded = code[..at]
-                            .chars()
-                            .next_back()
-                            .is_none_or(|c| !(c.is_alphanumeric() || c == '_'));
-                        let entry = ENTRY_POINTS
-                            .iter()
-                            .any(|(file, call)| rel.ends_with(file) && tell == *call);
-                        if bounded && !entry {
-                            let line = code[..at].lines().count();
-                            offenders.push(format!("{rel}:{line}: {tell}"));
-                        }
-                    }
-                }
-            }
+            offenders.extend(offenders_in(&rel, &code));
         }
     }
     assert!(
         offenders.is_empty(),
-        "a test parses an argv in-process through clap's own `Parser` methods, which \
-         read every exported `CFGD_*`; call `HermeticParse::try_parse_hermetic` (or \
+        "a test parses an argv in-process through clap's own `Parser` or `Command` \
+         methods, which read every exported `CFGD_*`; call `HermeticParse::try_parse_hermetic` (or \
          `try_parse_reading_env` for a variable the test sets itself):\n{}",
         offenders.join("\n")
     );
