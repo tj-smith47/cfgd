@@ -873,6 +873,7 @@ pub fn cmd_deploy(
             "namespace": namespace,
         });
         if let Some(out) = kubectl_output {
+            // section-write-ok: a JSON payload, not the config document
             payload["kubectlOutput"] = serde_json::Value::String(out);
         }
         printer.emit(

@@ -365,9 +365,12 @@ fn remove_at(tree: &mut serde_yaml::Value, path: &[YamlStep]) {
         return;
     };
     let parent = parents.iter().try_fold(tree, |node, step| match step {
+        // section-write-ok: descends to what is removed, creating nothing
         YamlStep::Key(key) => node.as_mapping_mut()?.get_mut(key),
+        // section-write-ok: descends to what is removed, creating nothing
         YamlStep::Index(index) => node.as_sequence_mut()?.get_mut(*index),
     });
+    // section-write-ok: removes a key, and an absent parent holds none
     if let (Some(map), YamlStep::Key(key)) = (parent.and_then(|p| p.as_mapping_mut()), last) {
         map.remove(key);
     }
@@ -1387,36 +1390,41 @@ pub(in crate::cli) fn default_device_id() -> String {
     cfgd_core::hostname_string()
 }
 
+/// Write `value` at the dot-separated `path` under `root`, where `at` is how a
+/// refusal names `root` itself.
+///
+/// Every section on the way (and `root`) takes the rule
+/// [`section_mapping_mut`](super::config_cmd::section_mapping_mut) applies:
+/// absent or bare is an empty mapping, and any other shape is refused naming
+/// what it holds, so the write either lands or says why it could not.
 pub(in crate::cli) fn set_nested_yaml_value(
     root: &mut serde_yaml::Value,
     path: &str,
     value: &serde_yaml::Value,
+    config_path: &Path,
+    at: &str,
 ) -> anyhow::Result<()> {
-    let parts: Vec<&str> = path.split('.').collect();
-    let mut current = root;
-
-    for (i, part) in parts.iter().enumerate() {
-        if i == parts.len() - 1 {
-            // Last part: set the value
-            if let Some(mapping) = current.as_mapping_mut() {
-                mapping.insert(serde_yaml::Value::String(part.to_string()), value.clone());
-            }
-        } else {
-            // Intermediate part: navigate or create
-            let mapping = current.as_mapping_mut().ok_or_else(|| {
-                crate::cli::cli_error(
-                    path,
-                    "parse_failed",
-                    format!("expected mapping at '{}'", part),
-                    serde_json::json!({}),
-                )
-            })?;
-            current = mapping
-                .entry(serde_yaml::Value::String(part.to_string()))
-                .or_insert(serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));
-        }
+    use super::config_cmd::{
+        SHAPE_MAPPING, blocking_shape, section_mapping_mut, section_shape_refusal,
+    };
+    let (parents, leaf) = match path.rsplit_once('.') {
+        Some((parents, leaf)) => (Some(parents), leaf),
+        None => (None, path),
+    };
+    let mut here = at.to_string();
+    let found = blocking_shape(root);
+    let mut current = section_mapping_mut(root)
+        .ok_or_else(|| section_shape_refusal(config_path, &here, found, SHAPE_MAPPING))?;
+    for part in parents.into_iter().flat_map(|p| p.split('.')) {
+        here = format!("{here}.{part}");
+        let slot = current
+            .entry(serde_yaml::Value::String(part.to_string()))
+            .or_insert(serde_yaml::Value::Null);
+        let found = blocking_shape(slot);
+        current = section_mapping_mut(slot)
+            .ok_or_else(|| section_shape_refusal(config_path, &here, found, SHAPE_MAPPING))?;
     }
-
+    current.insert(serde_yaml::Value::String(leaf.to_string()), value.clone());
     Ok(())
 }
 

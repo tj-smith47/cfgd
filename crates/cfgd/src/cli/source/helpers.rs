@@ -100,10 +100,38 @@ pub(crate) fn checked_priority(n: u32, flag: &str) -> anyhow::Result<u32> {
     validate_source_priority(n).map_err(|m| crate::cli::invalid_argument(flag, &n.to_string(), m))
 }
 
-/// A source entry in the config document whose shape is not the one the
-/// schema declares, so the edit asked for has nowhere to go.
-pub(super) fn source_shape_refusal(name: &str, message: String) -> anyhow::Error {
-    crate::cli::cli_error(name, "parse_failed", message, serde_json::json!({}))
+/// The `subscription` block of the source entry `name`, as the mapping a verb
+/// editing one of its knobs writes into.
+///
+/// An absent block and a bare `subscription:` are an empty one, the rule
+/// [`section_mapping_mut`](crate::cli::config_cmd::section_mapping_mut) applies
+/// to every section of the config document; any other shape is refused naming
+/// what the entry holds there, so no knob is reported written into a block
+/// that could not take it.
+pub(super) fn subscription_mapping_mut<'a>(
+    entry: &'a mut serde_yaml::Value,
+    config_path: &Path,
+    name: &str,
+) -> anyhow::Result<&'a mut serde_yaml::Mapping> {
+    use crate::cli::config_cmd::{
+        SHAPE_MAPPING, blocking_shape, section_mapping_mut, section_shape_refusal,
+    };
+    let at = format!("sources[{name}]");
+    let found = blocking_shape(entry);
+    let entry = section_mapping_mut(entry)
+        .ok_or_else(|| section_shape_refusal(config_path, &at, found, SHAPE_MAPPING))?;
+    let block = entry
+        .entry(serde_yaml::Value::String("subscription".into()))
+        .or_insert(serde_yaml::Value::Null);
+    let found = blocking_shape(block);
+    section_mapping_mut(block).ok_or_else(|| {
+        section_shape_refusal(config_path, &subscription_path(name), found, SHAPE_MAPPING)
+    })
+}
+
+/// How a refusal names the `subscription` block of the source entry `name`.
+pub(super) fn subscription_path(name: &str) -> String {
+    format!("sources[{name}].subscription")
 }
 
 pub(crate) fn count_policy_items(items: &config::PolicyItems) -> usize {
@@ -209,6 +237,7 @@ pub(crate) fn remove_source_from_config(config_path: &Path, name: &str) -> anyho
     mutate_config_yaml(config_path, true, |raw| {
         if let Some(spec) = raw.get_mut("spec")
             && let Some(sources) = spec.get_mut("sources")
+            // section-write-ok: a remover; an absent list holds no entry to remove
             && let Some(seq) = sources.as_sequence_mut()
         {
             seq.retain(|item| {
@@ -228,6 +257,7 @@ fn find_source_in_config<'a>(
 ) -> Option<&'a mut serde_yaml::Value> {
     raw.get_mut("spec")?
         .get_mut("sources")?
+        // section-write-ok: finds an existing entry, and an absent list holds none
         .as_sequence_mut()?
         .iter_mut()
         .find(|item| {

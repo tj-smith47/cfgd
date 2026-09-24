@@ -378,6 +378,8 @@ fn set_nested_yaml_value_sets_top_level_key() {
         &mut root,
         "name",
         &serde_yaml::Value::String("alice".to_string()),
+        std::path::Path::new("cfgd.yaml"),
+        "root",
     )
     .unwrap();
     assert_eq!(root["name"], serde_yaml::Value::String("alice".to_string()));
@@ -390,6 +392,8 @@ fn set_nested_yaml_value_creates_intermediate_maps() {
         &mut root,
         "a.b.c",
         &serde_yaml::Value::String("deep".to_string()),
+        std::path::Path::new("cfgd.yaml"),
+        "root",
     )
     .unwrap();
     assert_eq!(
@@ -405,6 +409,8 @@ fn set_nested_yaml_value_overwrites_existing_key() {
         &mut root,
         "key",
         &serde_yaml::Value::String("new".to_string()),
+        std::path::Path::new("cfgd.yaml"),
+        "root",
     )
     .unwrap();
     assert_eq!(root["key"], serde_yaml::Value::String("new".to_string()));
@@ -417,12 +423,56 @@ fn set_nested_yaml_value_two_level_path() {
         &mut root,
         "spec.active",
         &serde_yaml::Value::String("new".to_string()),
+        std::path::Path::new("cfgd.yaml"),
+        "root",
     )
     .unwrap();
     assert_eq!(
         root["spec"]["active"],
         serde_yaml::Value::String("new".to_string())
     );
+}
+
+#[test]
+fn set_nested_yaml_value_writes_through_a_bare_section() {
+    let mut root: serde_yaml::Value = serde_yaml::from_str("a:\n").unwrap();
+    set_nested_yaml_value(
+        &mut root,
+        "a.b",
+        &serde_yaml::Value::String("set".to_string()),
+        std::path::Path::new("cfgd.yaml"),
+        "root",
+    )
+    .unwrap();
+    assert_eq!(root["a"]["b"], serde_yaml::Value::String("set".to_string()));
+}
+
+// A write whose parent is not a mapping used to be dropped with no error while
+// the caller reported it made; every parent on the way now refuses by name.
+#[test]
+fn set_nested_yaml_value_refuses_a_parent_of_another_shape_by_name() {
+    for (yaml, path, refusal) in [
+        ("a: 3\n", "a.b", "'root.a' holds a scalar, not a mapping"),
+        (
+            "a: [1]\n",
+            "a.b.c",
+            "'root.a' holds a sequence, not a mapping",
+        ),
+        ("just text\n", "b", "'root' holds a scalar, not a mapping"),
+    ] {
+        let mut root: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
+        let before = root.clone();
+        let err = set_nested_yaml_value(
+            &mut root,
+            path,
+            &serde_yaml::Value::Null,
+            std::path::Path::new("cfgd.yaml"),
+            "root",
+        )
+        .expect_err(yaml);
+        assert_eq!(err.to_string(), refusal, "{yaml}");
+        assert_eq!(root, before, "{yaml}: a refused write changes nothing");
+    }
 }
 
 // ---------------------------------------------------------------------------

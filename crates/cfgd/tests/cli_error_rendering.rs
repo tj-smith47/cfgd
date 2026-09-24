@@ -441,6 +441,45 @@ fn source_priority_json(
     (parse_single_json(&stdout), out.status.code())
 }
 
+/// A source whose `subscription` is absent, bare or `null` holds the default
+/// block, so a new priority is written into it, and the file it leaves loads
+/// and reports that priority. A bare block used to be rewritten as `null` with
+/// the priority dropped, and every later command refused the file.
+#[test]
+fn source_priority_writes_into_an_absent_or_bare_subscription_and_the_file_still_loads() {
+    for (case, block) in [
+        ("absent", ""),
+        ("bare", "    subscription:\n"),
+        ("null", "    subscription: null\n"),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let config = write_config_with_source(dir.path(), block);
+
+        let (v, code) = source_priority_json(&config, &["s", "7"]);
+        assert_eq!(code, Some(0), "{case}: {v}");
+        assert_eq!(
+            v,
+            serde_json::json!({ "name": "s", "priority": 7, "previousPriority": 500 }),
+            "{case}"
+        );
+
+        let written: serde_yaml::Value =
+            serde_yaml::from_str(&std::fs::read_to_string(&config).unwrap()).unwrap();
+        assert_eq!(
+            written["spec"]["sources"][0]["subscription"]["priority"], 7,
+            "{case}: the file records the priority: {written:?}"
+        );
+
+        let (v, code) = source_priority_json(&config, &["s"]);
+        assert_eq!(code, Some(0), "{case}: the written file loads: {v}");
+        assert_eq!(
+            v,
+            serde_json::json!({ "name": "s", "priority": 7 }),
+            "{case}"
+        );
+    }
+}
+
 /// An out-of-range priority given to `source priority` is refused as the
 /// `[VALUE]` positional its `--help` prints, the argument the invocation
 /// actually carried.

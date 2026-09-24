@@ -967,6 +967,7 @@ pub fn cmd_module_registry_remove(
             .get_mut("spec")
             .and_then(|s| s.get_mut("modules"))
             .and_then(|m| m.get_mut("registries"))
+            // section-write-ok: a remover; an absent list is reported as holding no registries
             .and_then(|v| v.as_sequence_mut());
         match registries {
             None => outcome = RegistryRemoveOutcome::NoRegistries,
@@ -1117,10 +1118,12 @@ pub fn cmd_module_registry_rename(
             .get_mut("spec")
             .and_then(|s| s.get_mut("modules"))
             .and_then(|m| m.get_mut("registries"))
+            // section-write-ok: renames an entry the typed load above already found
             .and_then(|v| v.as_sequence_mut())
         {
             for entry in registries.iter_mut() {
                 if entry.get("name").and_then(|v| v.as_str()) == Some(name) {
+                    // section-write-ok: the entry matched by name is a mapping
                     entry["name"] = serde_yaml::Value::String(new_name.to_string());
                     break;
                 }

@@ -2691,6 +2691,8 @@ fn set_nested_yaml_value_creates_path() {
         &mut root,
         "env.EDITOR",
         &serde_yaml::Value::String("nvim".into()),
+        std::path::Path::new("cfgd.yaml"),
+        "root",
     )
     .unwrap();
 
@@ -14039,8 +14041,14 @@ fn output_format_arg_into_os_str() {
 #[test]
 fn set_nested_yaml_value_overwrites_existing() {
     let mut root: serde_yaml::Value = serde_yaml::from_str("a:\n  b: old\n").unwrap();
-    super::set_nested_yaml_value(&mut root, "a.b", &serde_yaml::Value::String("new".into()))
-        .unwrap();
+    super::set_nested_yaml_value(
+        &mut root,
+        "a.b",
+        &serde_yaml::Value::String("new".into()),
+        std::path::Path::new("cfgd.yaml"),
+        "root",
+    )
+    .unwrap();
 
     let val = root
         .get("a")
@@ -14056,6 +14064,8 @@ fn set_nested_yaml_value_creates_deep_path() {
         &mut root,
         "a.b.c.d",
         &serde_yaml::Value::String("deep".into()),
+        std::path::Path::new("cfgd.yaml"),
+        "root",
     )
     .unwrap();
 
@@ -25228,8 +25238,14 @@ fn generate_release_workflow_profiles_only() {
 #[test]
 fn set_nested_yaml_value_top_level_key() {
     let mut root = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
-    super::set_nested_yaml_value(&mut root, "name", &serde_yaml::Value::String("test".into()))
-        .unwrap();
+    super::set_nested_yaml_value(
+        &mut root,
+        "name",
+        &serde_yaml::Value::String("test".into()),
+        std::path::Path::new("cfgd.yaml"),
+        "root",
+    )
+    .unwrap();
 
     let val = root.get("name").and_then(|v| v.as_str());
     assert_eq!(val, Some("test"));
@@ -25242,6 +25258,8 @@ fn set_nested_yaml_value_three_level_path() {
         &mut root,
         "a.b.c",
         &serde_yaml::Value::String("value".into()),
+        std::path::Path::new("cfgd.yaml"),
+        "root",
     )
     .unwrap();
 
@@ -25263,6 +25281,8 @@ fn set_nested_yaml_value_preserves_siblings() {
         &mut root,
         "a.new_key",
         &serde_yaml::Value::String("added".into()),
+        std::path::Path::new("cfgd.yaml"),
+        "root",
     )
     .unwrap();
 
@@ -25287,6 +25307,8 @@ fn set_nested_yaml_value_numeric_value() {
         &mut root,
         "spec.replicas",
         &serde_yaml::Value::Number(serde_yaml::Number::from(3)),
+        std::path::Path::new("cfgd.yaml"),
+        "root",
     )
     .unwrap();
 
@@ -51493,6 +51515,143 @@ fn every_refused_flag_is_spelled_the_way_help_prints_it() {
         offenders.is_empty(),
         "a refused flag is not one `--help` prints for the command refusing it:\n{}",
         offenders.join("\n")
+    );
+}
+
+/// The mark excusing a write into the config document from the section rule,
+/// read off the line or the comment block directly above it.
+const SECTION_WRITE_HATCH: &str = "section-write-ok:";
+
+/// Every write into the config document from the CLI goes through the section
+/// rule: an absent or bare section is an empty one, and any other shape is
+/// refused naming what the document holds there.
+///
+/// A writer reaching into a section with `as_mapping_mut` or an index
+/// assignment either drops its write on a shape it did not expect or replaces
+/// what the author wrote, and both have shipped: a `source priority` that
+/// reported a priority it never wrote, and a knob written over a hand-written
+/// block. The population is every such reach in the CLI's production sources,
+/// so a new writer trips over the rule by being written; a reader or a remover,
+/// for which an absent section simply holds nothing, says why with
+/// `// section-write-ok: <why>`. The helpers the rule is spelled in are floored
+/// per file, so a reader that stops finding them fails naming the file.
+#[test]
+fn every_write_into_the_config_document_takes_the_section_rule() {
+    const ROUTES: &[&str] = &[
+        "section_mapping_mut(",
+        "section_sequence_mut(",
+        "spec_mapping_mut(",
+        "subscription_mapping_mut(",
+        "set_nested_yaml_value(",
+        "walk_yaml_path_mut(",
+        "walk_spec_path_mut(",
+    ];
+    /// The calls into the rule each writer file makes today.
+    const FLOOR_PER_FILE: &[(&str, usize)] = &[
+        ("src/cli/config_cmd.rs", 9),
+        ("src/cli/config_schema.rs", 1),
+        ("src/cli/helpers.rs", 2),
+        ("src/cli/module/registry.rs", 3),
+        ("src/cli/source/helpers.rs", 4),
+        ("src/cli/source/override_cmd.rs", 4),
+        ("src/cli/source/priority.rs", 1),
+        ("src/cli/source/replace.rs", 1),
+        ("src/cli/source/update.rs", 1),
+    ];
+
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut routed: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    let mut offenders = Vec::new();
+    let mut unanswered = Vec::new();
+    for (path, body) in cli_production_bodies() {
+        let file = cfgd_core::to_posix_string(path.strip_prefix(root).unwrap_or(&path));
+        let code = blank_non_code(&body);
+        let code_lines: Vec<&str> = code.lines().collect();
+        let raw_lines: Vec<&str> = body.lines().collect();
+        let mut answered = std::collections::BTreeSet::new();
+        for (i, line) in code_lines.iter().enumerate() {
+            let calls = ROUTES
+                .iter()
+                .map(|r| {
+                    line.match_indices(r)
+                        .filter(|(at, _)| {
+                            let before = &line[..*at];
+                            !before.trim_end().ends_with("fn")
+                                && !before
+                                    .chars()
+                                    .next_back()
+                                    .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+                        })
+                        .count()
+                })
+                .sum::<usize>();
+            *routed.entry(file.clone()).or_default() += calls;
+
+            let reaches = line.contains("as_mapping_mut")
+                || line.contains("as_sequence_mut")
+                || (line.contains("\"] =") && !line.contains("\"] =="));
+            if !reaches {
+                continue;
+            }
+            let hatched_here = |k: usize| {
+                let line = raw_lines[k];
+                cfgd_core::test_helpers::carries_hatch(line, SECTION_WRITE_HATCH)
+                    && line
+                        .split_once(SECTION_WRITE_HATCH)
+                        .is_some_and(|(_, why)| !why.trim().is_empty())
+            };
+            let mut hatched = hatched_here(i).then_some(i);
+            let mut k = i;
+            while hatched.is_none()
+                && k > 0
+                && cfgd_core::test_helpers::is_plain_line_comment(raw_lines[k - 1])
+            {
+                k -= 1;
+                hatched = hatched_here(k).then_some(k);
+            }
+            match hatched {
+                Some(mark) => {
+                    answered.insert(mark);
+                }
+                None => offenders.push(format!("{file}:{}: {}", i + 1, raw_lines[i].trim())),
+            }
+        }
+        for (k, line) in raw_lines.iter().enumerate() {
+            if cfgd_core::test_helpers::carries_hatch(line, SECTION_WRITE_HATCH)
+                && !answered.contains(&k)
+            {
+                unanswered.push(format!("{file}:{}", k + 1));
+            }
+        }
+    }
+
+    let short: Vec<String> = FLOOR_PER_FILE
+        .iter()
+        .filter(|(file, floor)| routed.get(*file).copied().unwrap_or(0) < *floor)
+        .map(|(file, floor)| {
+            format!(
+                "{file}: {} calls into the section rule, floor {floor}",
+                routed.get(*file).copied().unwrap_or(0)
+            )
+        })
+        .collect();
+    assert!(
+        short.is_empty(),
+        "a writer file calls into the section rule less than it does today:\n{}",
+        short.join("\n")
+    );
+    assert!(
+        offenders.is_empty(),
+        "a write into the config document reaches a section without the section rule \
+         (`config_cmd::section_mapping_mut` / `section_sequence_mut` / \
+         `section_shape_refusal`); route it, or mark a reader or remover with \
+         `// {SECTION_WRITE_HATCH} <why>`:\n{}",
+        offenders.join("\n")
+    );
+    assert!(
+        unanswered.is_empty(),
+        "a `{SECTION_WRITE_HATCH}` mark answers for no reach on its line or below it:\n{}",
+        unanswered.join("\n")
     );
 }
 

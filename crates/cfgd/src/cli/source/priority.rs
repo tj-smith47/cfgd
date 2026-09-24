@@ -35,19 +35,10 @@ pub fn cmd_source_priority(
             let old_priority = source.subscription.priority;
             // Update priority in cfgd.yaml
             with_source_config(&config_path, name, |source_entry| {
-                let subscription = source_entry.get_mut("subscription").ok_or_else(|| {
-                    source_shape_refusal(
-                        name,
-                        format!("source '{}' has no subscription block", name),
-                    )
-                })?;
-
-                if let Some(mapping) = subscription.as_mapping_mut() {
-                    mapping.insert(
-                        serde_yaml::Value::String("priority".into()),
-                        serde_yaml::Value::Number(serde_yaml::Number::from(new_priority)),
-                    );
-                }
+                subscription_mapping_mut(source_entry, &config_path, name)?.insert(
+                    serde_yaml::Value::String("priority".into()),
+                    serde_yaml::Value::Number(serde_yaml::Number::from(new_priority)),
+                );
                 Ok(())
             })?;
 

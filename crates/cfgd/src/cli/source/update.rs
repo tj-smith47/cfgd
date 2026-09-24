@@ -93,13 +93,12 @@ impl SubscriptionEdits {
 /// Write the asked-for subscription knobs into `cfgd.yaml` and report back what
 /// the tree actually holds afterwards.
 ///
-/// The block is MINTED when it is absent, `null`, or a scalar — every
+/// The block is created when it is absent or `null` — every
 /// `SubscriptionSpec` field is `#[serde(default)]` and the rewrite path prunes
 /// an empty mapping, so a source legitimately carries no `subscription:` key at
 /// all, and a hand-written `subscription:` with no children parses to `null`.
-/// Refusing either shape failed a command that only ever asked to set a value;
-/// skipping the insert on either shape was worse, because the caller still
-/// announced a write that never happened.
+/// Any other shape is refused naming what the entry holds, since overwriting it
+/// would discard whatever the author put there.
 ///
 /// The return value is READ BACK out of the tree that is about to be written,
 /// never echoed from `asked`: the success line and the `-o json` payload may
@@ -111,22 +110,7 @@ fn write_subscription_knobs(
 ) -> anyhow::Result<Vec<(&'static str, bool)>> {
     let mut written = Vec::new();
     with_source_config(config_path, name, |source_entry| {
-        let map = source_entry.as_mapping_mut().ok_or_else(|| {
-            source_shape_refusal(name, format!("source '{name}' is not a mapping"))
-        })?;
-        let key = serde_yaml::Value::String("subscription".into());
-        if !map.get(&key).is_some_and(serde_yaml::Value::is_mapping) {
-            map.insert(key.clone(), serde_yaml::Value::Mapping(Default::default()));
-        }
-        let subscription = map
-            .get_mut(&key)
-            .and_then(serde_yaml::Value::as_mapping_mut)
-            .ok_or_else(|| {
-                source_shape_refusal(
-                    name,
-                    format!("source '{name}' subscription block is not a mapping"),
-                )
-            })?;
+        let subscription = subscription_mapping_mut(source_entry, config_path, name)?;
         for (k, v) in asked {
             subscription.insert(
                 serde_yaml::Value::String((*k).into()),
@@ -532,16 +516,16 @@ mod tests {
             .as_bool()
     }
 
-    /// Every shape the `subscription:` block can be in when the knob is asked
-    /// for: absent entirely (the rewrite path prunes an empty mapping), `null`
-    /// (hand-written with no children), a scalar (hand-written nonsense), and
-    /// an existing mapping. Each must write AND read the value back.
+    /// Every shape the `subscription:` block can take a knob in: absent
+    /// entirely (the rewrite path prunes an empty mapping), `null` written
+    /// either way, and an existing mapping. Each must write AND read the value
+    /// back.
     #[test]
     fn every_subscription_block_shape_is_written_and_read_back() {
         for (case, block) in [
             ("absent", ""),
-            ("null", "      subscription:\n"),
-            ("scalar", "      subscription: yes-please\n"),
+            ("bare", "      subscription:\n"),
+            ("null", "      subscription: null\n"),
             (
                 "mapping",
                 "      subscription:\n        requireSignedCommits: false\n",
@@ -565,6 +549,29 @@ mod tests {
                 "{case}: the file must record the knob"
             );
         }
+    }
+
+    /// A block holding anything but a mapping is the author's, and a knob
+    /// written over it would discard it, so the write is refused naming what
+    /// the entry holds and the file is left as it was.
+    #[test]
+    fn a_subscription_block_of_another_shape_is_refused_and_left_alone() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = seed_config(dir.path(), "      subscription: yes-please\n");
+        let before = std::fs::read_to_string(&path).expect("read config");
+
+        let err = write_subscription_knobs(&path, "acme", &[("requireSignedCommits", true)])
+            .expect_err("a scalar block takes no knob");
+
+        assert_eq!(
+            err.to_string(),
+            "'sources[acme].subscription' holds a scalar, not a mapping"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read config"),
+            before,
+            "a refused write leaves the file as it was"
+        );
     }
 
     /// A knob the invocation never named is not touched, and one it did name

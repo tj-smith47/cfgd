@@ -286,6 +286,7 @@ pub(in crate::cli) fn section_mapping_mut(
     if value.is_null() {
         *value = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
     }
+    // section-write-ok: the section rule itself
     value.as_mapping_mut()
 }
 
@@ -296,6 +297,7 @@ pub(in crate::cli) fn section_sequence_mut(
     if value.is_null() {
         *value = serde_yaml::Value::Sequence(Vec::new());
     }
+    // section-write-ok: the section rule itself
     value.as_sequence_mut()
 }
 
