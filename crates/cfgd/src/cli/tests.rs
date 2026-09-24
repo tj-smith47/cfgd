@@ -51794,8 +51794,9 @@ const SECTION_WRITE_HATCH: &str = "section-write-ok:";
 
 /// Whether code line `i` reaches into a YAML section to write it: a mutable
 /// accessor (`as_mapping_mut`, `as_sequence_mut`), an index assignment, a
-/// `Value::Mapping(map)` / `Value::Sequence(seq)` pattern bound on a `&mut`,
-/// or a `*slot =` through a binding a `get_mut(..)` produced. `lines` is the
+/// `Value::Mapping(map)` / `Value::Sequence(seq)` pattern bound on a `&mut` or
+/// on a value an earlier `*_mut(..)` call returned, or a `*slot =` through a
+/// binding a `get_mut(..)` produced. `lines` is the
 /// file's code with strings and comments blanked.
 fn reaches_a_yaml_section(lines: &[&str], i: usize) -> bool {
     let line = lines[i];
