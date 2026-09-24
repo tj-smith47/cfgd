@@ -51312,19 +51312,22 @@ fn built_cli_command() -> clap::Command {
     root
 }
 
-/// Every spelling `--help` prints for an argument of any command.
-fn help_spellings(root: &clap::Command) -> std::collections::BTreeSet<String> {
-    let mut out = help_spellings_of(root);
-    for sub in root.get_subcommands() {
-        out.extend(help_spellings(sub));
-    }
-    out
+/// The kubectl plugin's command tree, built the same way: the functions under
+/// `src/cli/plugin/` implement its subcommands, several of which share a name
+/// with one of the CLI's own (`status`, `version`).
+fn built_plugin_command() -> clap::Command {
+    use clap::CommandFactory;
+
+    let mut root = super::plugin::PluginCli::command();
+    root.build();
+    root
 }
 
 /// The subcommand a `cmd_*` / `run_*` function implements, read off its name
 /// against the real command tree (`cmd_source_priority` is `source priority`,
 /// `cmd_module_registry_add` is `module registry add`); `None` for a function
-/// named for no subcommand, such as a helper shared by several.
+/// named for no subcommand, such as a helper shared by several, whose commands
+/// are read off its callers instead.
 fn command_for_fn<'a>(root: &'a clap::Command, fn_name: &str) -> Option<&'a clap::Command> {
     let rest = fn_name
         .strip_prefix("cmd_")
@@ -51349,7 +51352,9 @@ fn command_for_fn<'a>(root: &'a clap::Command, fn_name: &str) -> Option<&'a clap
 /// the command refusing it: a long flag, or a positional's value name in the
 /// brackets clap prints for it. A refusal written in the function implementing
 /// one subcommand (`cmd_source_priority`) is held to that subcommand's own
-/// arguments; one in a helper several commands share, to any command's.
+/// arguments; one in a helper is held to the arguments of every subcommand
+/// whose function reaches the helper through its callers, and a helper no
+/// subcommand reaches fails.
 ///
 /// A script matches `flag` against the invocation it built, and a word that
 /// is neither (`module` for `--module`, `--priority` for the `[VALUE]` of
@@ -51387,6 +51392,9 @@ fn every_refused_flag_is_spelled_the_way_help_prints_it() {
     const FLOOR_COMPOSERS: usize = 4;
     /// The spellings written inside a function named for its subcommand.
     const FLOOR_PER_COMMAND: usize = 15;
+    /// The spellings written in a helper, each held to the subcommands its
+    /// callers reach.
+    const FLOOR_THROUGH_CALLERS: usize = 25;
 
     let bodies = cli_production_bodies();
     let composers = flag_composers(&bodies);
@@ -51403,6 +51411,13 @@ fn every_refused_flag_is_spelled_the_way_help_prints_it() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     // (file, spelling, the function it is written in)
     let mut spellings: Vec<(String, String, Option<String>)> = Vec::new();
+    // callee -> (file, function) of every function whose body names it
+    let mut callers: std::collections::BTreeMap<
+        String,
+        std::collections::BTreeSet<(String, String)>,
+    > = std::collections::BTreeMap::new();
+    // (file, function, its code)
+    let mut spans: Vec<(String, String, String)> = Vec::new();
     for (path, body) in &bodies {
         let file = cfgd_core::to_posix_string(path.strip_prefix(root).unwrap_or(path));
         let code = blank_non_code(body);
@@ -51421,6 +51436,10 @@ fn every_refused_flag_is_spelled_the_way_help_prints_it() {
                 declared.push((offset, name));
             }
             offset += line.len();
+        }
+        for (i, (start, name)) in declared.iter().enumerate() {
+            let end = declared.get(i + 1).map_or(code.len(), |(next, _)| *next);
+            spans.push((file.clone(), name.clone(), code[*start..end].to_string()));
         }
         let enclosing = |at: usize| {
             declared
@@ -51477,39 +51496,95 @@ fn every_refused_flag_is_spelled_the_way_help_prints_it() {
         short.join("\n")
     );
 
+    let known: std::collections::BTreeSet<&str> =
+        spans.iter().map(|(_, n, _)| n.as_str()).collect();
+    for (file, caller, span) in &spans {
+        for ident in span.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')) {
+            if ident != caller && known.contains(ident) {
+                callers
+                    .entry(ident.to_string())
+                    .or_default()
+                    .insert((file.clone(), caller.clone()));
+            }
+        }
+    }
+
     // A spelling written inside the function implementing one subcommand is
-    // held to that subcommand's own `--help`; one in a helper shared by
-    // several is held to what any command prints.
+    // held to that subcommand's own `--help`; one in a helper, to the `--help`
+    // of every subcommand whose function reaches the helper.
     let cli = built_cli_command();
-    let anywhere = help_spellings(&cli);
-    let mut per_command = 0;
-    let offenders: Vec<String> = spellings
-        .iter()
-        .filter_map(|(file, flag, within)| {
-            let command = within.as_deref().and_then(|f| command_for_fn(&cli, f));
-            let printed = match command {
-                Some(cmd) => {
-                    per_command += 1;
-                    help_spellings_of(cmd)
+    let plugin = built_plugin_command();
+    let command_in = |file: &str, function: &str| {
+        let root = if file.starts_with("src/cli/plugin/") {
+            &plugin
+        } else {
+            &cli
+        };
+        command_for_fn(root, function)
+    };
+    let commands_reaching = |helper: &str| {
+        let mut reached: std::collections::BTreeMap<String, &clap::Command> =
+            std::collections::BTreeMap::new();
+        let mut seen = std::collections::BTreeSet::new();
+        let mut queue = vec![helper.to_string()];
+        while let Some(callee) = queue.pop() {
+            for (file, caller) in callers.get(&callee).into_iter().flatten() {
+                if !seen.insert((file.clone(), caller.clone())) {
+                    continue;
                 }
-                None => anywhere.clone(),
-            };
-            (!printed.contains(flag)).then(|| {
-                let whose = command.map_or_else(
-                    || "any command".to_string(),
-                    |c| format!("`{}`", c.get_bin_name().unwrap_or(c.get_name())),
-                );
-                format!(
-                    "{file} ({}): {flag:?} is not printed by {whose}",
-                    within.as_deref().unwrap_or("?")
-                )
-            })
-        })
-        .collect();
+                match command_in(file, caller) {
+                    Some(cmd) => {
+                        reached.insert(
+                            cmd.get_bin_name().unwrap_or(cmd.get_name()).to_string(),
+                            cmd,
+                        );
+                    }
+                    None => queue.push(caller.clone()),
+                }
+            }
+        }
+        reached
+    };
+    let mut per_command = 0;
+    let mut through_callers = 0;
+    let mut offenders: Vec<String> = Vec::new();
+    for (file, flag, within) in &spellings {
+        let at = format!("{file} ({})", within.as_deref().unwrap_or("?"));
+        if let Some(cmd) = within.as_deref().and_then(|f| command_in(file, f)) {
+            per_command += 1;
+            if !help_spellings_of(cmd).contains(flag) {
+                offenders.push(format!(
+                    "{at}: {flag:?} is not printed by `{}`",
+                    cmd.get_bin_name().unwrap_or(cmd.get_name())
+                ));
+            }
+            continue;
+        }
+        let reached = within.as_deref().map(commands_reaching).unwrap_or_default();
+        if reached.is_empty() {
+            offenders.push(format!(
+                "{at}: {flag:?} is written in a function no subcommand reaches"
+            ));
+            continue;
+        }
+        through_callers += 1;
+        for (name, cmd) in reached {
+            if !help_spellings_of(cmd).contains(flag) {
+                offenders.push(format!(
+                    "{at}: {flag:?} is not printed by `{name}`, which reaches it"
+                ));
+            }
+        }
+    }
     assert!(
         per_command >= FLOOR_PER_COMMAND,
         "{per_command} spellings were held to the subcommand they refuse for, fewer than \
          the {FLOOR_PER_COMMAND} today"
+    );
+    assert!(
+        through_callers >= FLOOR_THROUGH_CALLERS,
+        "{through_callers} helper spellings were held to the subcommands reaching them, fewer \
+         than the {FLOOR_THROUGH_CALLERS} today"
     );
     assert!(
         offenders.is_empty(),

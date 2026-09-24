@@ -19,7 +19,7 @@ use crate::cli::{ColorWhen, OutputFormatArg};
                   kubectl cfgd status\n  \
                   kubectl cfgd version"
 )]
-struct PluginCli {
+pub(in crate::cli) struct PluginCli {
     /// Output format: table, wide, json, yaml, name, jsonpath=EXPR, template=TMPL, template-file=PATH
     #[arg(long, short = 'o', global = true, default_value = "table")]
     output: OutputFormatArg,
