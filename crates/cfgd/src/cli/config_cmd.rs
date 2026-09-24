@@ -233,18 +233,23 @@ pub(in crate::cli) fn blocking_shape(value: &serde_yaml::Value) -> &'static str 
 /// instead of matching a message four situations shared.
 #[derive(Debug)]
 pub(super) struct ShapeBlocked {
-    path: String,
+    /// The key path that blocked, or `None` for the document itself, which no
+    /// key names.
+    path: Option<String>,
     found: &'static str,
     wanted: &'static str,
 }
 
 impl std::fmt::Display for ShapeBlocked {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "'{}' holds {}, not {}",
-            self.path, self.found, self.wanted
-        )
+        match &self.path {
+            Some(path) => write!(f, "'{path}' holds {}, not {}", self.found, self.wanted),
+            None => write!(
+                f,
+                "the config document holds {}, not {}",
+                self.found, self.wanted
+            ),
+        }
     }
 }
 
@@ -307,8 +312,16 @@ pub(in crate::cli) fn spec_mapping_mut<'a>(
     config_path: &Path,
 ) -> anyhow::Result<&'a mut serde_yaml::Mapping> {
     let found = blocking_shape(root);
-    let document = section_mapping_mut(root)
-        .ok_or_else(|| section_shape_refusal(config_path, "the document", found, SHAPE_MAPPING))?;
+    let document = section_mapping_mut(root).ok_or_else(|| {
+        shape_refusal(
+            config_path,
+            ShapeBlocked {
+                path: None,
+                found,
+                wanted: SHAPE_MAPPING,
+            },
+        )
+    })?;
     let spec = document
         .entry(serde_yaml::Value::String("spec".into()))
         .or_insert(serde_yaml::Value::Null);
@@ -327,11 +340,17 @@ pub(in crate::cli) fn section_shape_refusal(
     found: &'static str,
     wanted: &'static str,
 ) -> anyhow::Error {
-    let blocked = ShapeBlocked {
-        path: path.to_string(),
-        found,
-        wanted,
-    };
+    shape_refusal(
+        config_path,
+        ShapeBlocked {
+            path: Some(path.to_string()),
+            found,
+            wanted,
+        },
+    )
+}
+
+fn shape_refusal(config_path: &Path, blocked: ShapeBlocked) -> anyhow::Error {
     let message = blocked.to_string();
     let file = cfgd_core::to_posix_string(config_path);
     let extras = serde_json::json!({ "path": &file });
@@ -376,11 +395,11 @@ fn descent_blocked(path: &[&str], asked: &[&str], found: &'static str) -> anyhow
         // The root of the walk is `spec` itself, which every path is relative
         // to and no segment names, so an empty path is the mapping the whole
         // field list hangs off.
-        path: if path.is_empty() {
+        path: Some(if path.is_empty() {
             "spec".to_string()
         } else {
             path.join(".")
-        },
+        }),
         found,
         wanted: SHAPE_MAPPING,
     })
@@ -1069,6 +1088,23 @@ spec:
         let yaml: serde_yaml::Value = serde_yaml::from_str("daemon: yes\n").unwrap();
         let err = walk_yaml_path(&yaml, "daemon.reconcile").unwrap_err();
         assert_eq!(err.to_string(), "'daemon' holds a scalar, not a mapping");
+    }
+
+    // The document itself is no key, so its refusal names it in words rather
+    // than quoting a path nobody wrote.
+    #[test]
+    fn a_config_document_that_is_not_a_mapping_is_refused_in_its_own_words() {
+        let mut root: serde_yaml::Value = serde_yaml::from_str("just a string\n").unwrap();
+        let err = spec_mapping_mut(&mut root, Path::new("cfgd.yaml")).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "the config document holds a scalar, not a mapping"
+        );
+        assert!(
+            err.chain()
+                .any(|e| e.downcast_ref::<ShapeBlocked>().is_some()),
+            "the refusal carries the typed shape block: {err:?}"
+        );
     }
 
     /// Every `spec`-relative path the `Config` schema names that a key path
