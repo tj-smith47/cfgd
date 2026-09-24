@@ -6608,6 +6608,14 @@ fn every_raw_spawn_in_test_code_holds_the_path_gate() {
             "guard after the spawn",
             "fn t() {\n    Command::new(\"git\");\n    let _p = path_env_read_guard();\n}\n",
         ),
+        (
+            "guard after the spawn in a later function",
+            "fn a() {\n    let x = 1;\n    let y = 2;\n}\nfn t() {\n    Command::new(\"git\");\n    let _p = path_env_read_guard();\n}\n",
+        ),
+        (
+            "guard in a closed block",
+            "fn t() {\n    {\n        let _p = path_env_read_guard();\n    }\n    Command::new(\"git\");\n}\n",
+        ),
     ] {
         let (unguarded, _, _) = raw_spawns(&FIXTURE_SOURCE, code, HATCH);
         assert_eq!(
@@ -6707,11 +6715,26 @@ fn raw_spawns(source: &SourceLabel, region: &str, hatch: &str) -> (Vec<String>, 
                     return false;
                 }
                 let statement = body[..at].rsplit([';', '{', '}']).next().unwrap_or("");
-                statement
+                let named_let = statement
                     .trim_start()
                     .strip_prefix("let ")
                     .and_then(|rest| rest.split_once('='))
-                    .is_some_and(|(name, _)| !matches!(name.trim(), "_" | ""))
+                    .is_some_and(|(name, _)| !matches!(name.trim(), "_" | ""));
+                if !named_let {
+                    return false;
+                }
+                // A guard dropped at the end of its own block is not held at the
+                // spawn, so a brace opened after the binding must still be open
+                // when the spawn is reached.
+                let mut depth = 0i32;
+                body[at..site_offset].chars().all(|c| {
+                    depth += match c {
+                        '{' => 1,
+                        '}' => -1,
+                        _ => 0,
+                    };
+                    depth >= 0
+                })
             })
         })
     };
