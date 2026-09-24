@@ -48109,7 +48109,7 @@ fn every_real_host_script_is_reachable_from_ci() {
             "tests/real-host/{}",
             script.file_name().unwrap_or_default().to_string_lossy()
         );
-        match key_naming(&taskfile, "tasks:", &rel) {
+        match target_naming(&taskfile, &rel) {
             None => offenders.push(format!("{rel}: no Taskfile target runs it")),
             Some(target) => {
                 if !workflows.iter().any(|w| runs_task(w, &target)) {
@@ -48132,17 +48132,24 @@ fn every_real_host_script_is_reachable_from_ci() {
 /// stamp that is not a full commit id is one it cannot resolve. The population
 /// is read off `demo/` itself, so a new take joins it by existing.
 ///
-/// The stamp is the commit the take was recorded at: `record.sh` writes it
-/// beside the frames and `stamp.sh` copies it. A `stamp.sh` reading the
-/// checkout's own commit would let a re-encode of old frames, or a hand run,
-/// clear a flag no new take earned. A job or step that may fail without
-/// failing the run, runs only sometimes, or a trigger filtered to some pull
-/// requests each leave the check unrun or unheard with this pin still green,
-/// so each is refused.
+/// The stamp is the commit the take was recorded at, which `record.sh` writes
+/// beside the frames (vhs cannot run here, so that half is read off the
+/// script; `stamp.sh`'s half is `demo_stamp_copies_the_take_commit`). A job
+/// that may fail without failing the run, runs only sometimes or waits on a
+/// job that can be skipped, a step that runs more than the script, and a
+/// trigger filtered to some pull requests each leave the check unrun or
+/// unheard, so each is refused off the parsed workflow.
+///
+/// A file a crate embeds (`include_str!`, `include_bytes!`, `resource_example!`)
+/// is compiled into the recorded binary, so it must be one of the check's
+/// inputs; the inputs are asked of `git ls-files` with the check's own
+/// `COMMON` and `EXCLUDED` lists, so there is one list to keep.
 #[test]
 fn every_demo_gif_is_stamped_and_checked() {
     /// The GIFs shipped today; a file holding fewer lines lost a stamp.
     const STAMP_FLOOR: usize = 8;
+    /// The files the crates embed today; a walk finding fewer went blind.
+    const EMBED_FLOOR: usize = 25;
     const CHECK: &str = "demo/scripts/check-sync.sh";
     /// The file a take leaves beside its frames naming the commit it recorded.
     const SIDECAR: &str = "recorded-at";
@@ -48203,94 +48210,144 @@ fn every_demo_gif_is_stamped_and_checked() {
         }
     }
 
-    let shell_code = |rel: &str| -> String {
-        walked_file_body(&root.join(rel))
-            .lines()
-            .filter(|l| !l.trim_start().starts_with('#'))
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
-    let stamp_sh = shell_code("demo/scripts/stamp.sh");
-    if !stamp_sh.contains(SIDECAR) || stamp_sh.contains("rev-parse") {
-        offenders.push(format!(
-            "demo/scripts/stamp.sh: must copy the take's `{SIDECAR}` and never read a commit itself"
-        ));
-    }
-    let record_sh = shell_code("demo/scripts/record.sh");
+    let record_sh: String = walked_file_body(&root.join("demo/scripts/record.sh"))
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .collect::<Vec<_>>()
+        .join("\n");
     if !record_sh.contains("rev-parse HEAD") || !record_sh.contains(SIDECAR) {
         offenders.push(format!(
             "demo/scripts/record.sh: must write the take's commit to `{SIDECAR}`"
         ));
     }
 
-    let ci = walked_file_body(&root.join(".github/workflows/ci.yml"));
-    let ci_lines: Vec<&str> = ci.lines().map(yaml_code).collect();
-    let on_block: Vec<&str> = ci_lines
-        .iter()
-        .copied()
-        .skip_while(|l| l.trim_end() != "on:")
-        .skip(1)
-        .take_while(|l| l.starts_with(' ') || l.trim().is_empty())
-        .collect();
-    match on_block
-        .iter()
-        .position(|l| l.trim_end() == "  pull_request:")
+    let ci_path = root.join(".github/workflows/ci.yml");
+    let ci: serde_yaml::Value = serde_yaml::from_str(&walked_file_body(&ci_path))
+        .unwrap_or_else(|e| panic!("{}: does not parse: {e}", ci_path.display()));
+    if ci.get("on").and_then(|on| on.get("pull_request")) != Some(&serde_yaml::Value::Null) {
+        offenders.push("ci.yml: no bare `pull_request:` trigger under `on:`".to_string());
+    }
+    let run_line = format!("bash {CHECK}");
+    let mut runners = 0;
+    for (name, job) in ci["jobs"]
+        .as_mapping()
+        .unwrap_or_else(|| panic!("{}: `jobs` is not a mapping", ci_path.display()))
     {
-        None => offenders.push("ci.yml: no bare `pull_request:` trigger under `on:`".to_string()),
-        Some(at) => {
-            let filtered = on_block[at + 1..]
-                .iter()
-                .take_while(|l| l.trim().is_empty() || l.starts_with("   "))
-                .any(|l| !l.trim().is_empty());
-            if filtered {
-                offenders.push(
-                    "ci.yml: `pull_request:` carries a filter, so some pull requests skip the check"
-                        .to_string(),
-                );
+        let job_name = name.as_str().unwrap_or_default();
+        for step in job["steps"].as_sequence().into_iter().flatten() {
+            let Some(run) = step["run"].as_str().filter(|r| r.contains(CHECK)) else {
+                continue;
+            };
+            runners += 1;
+            for key in ["if", "continue-on-error", "needs"] {
+                if job.get(key).is_some() {
+                    offenders.push(format!("ci.yml: job `{job_name}` carries `{key}`"));
+                }
+            }
+            for key in ["if", "continue-on-error"] {
+                if step.get(key).is_some() {
+                    offenders.push(format!(
+                        "ci.yml: the step in `{job_name}` running {CHECK} carries `{key}`"
+                    ));
+                }
+            }
+            if run.trim() != run_line {
+                offenders.push(format!(
+                    "ci.yml: the step in `{job_name}` runs `{}`, not exactly `{run_line}`",
+                    run.trim()
+                ));
             }
         }
     }
-    match key_naming(&ci, "jobs:", CHECK) {
-        None => offenders.push(format!("ci.yml: no job runs {CHECK}")),
-        Some(job) => {
-            let header = format!("  {job}:");
-            let body: Vec<&str> = ci_lines
-                .iter()
-                .copied()
-                .skip_while(|l| l.trim_end() != header)
-                .skip(1)
-                .take_while(|l| l.trim().is_empty() || l.starts_with("   "))
-                .collect();
-            let neutering = |l: &str| {
-                let key = l.trim_start().trim_start_matches("- ");
-                key.starts_with("if:") || key.starts_with("continue-on-error:")
-            };
-            if body
-                .iter()
-                .any(|l| l.starts_with("    ") && !l.starts_with("     ") && neutering(l))
-            {
-                offenders.push(format!(
-                    "ci.yml: job `{job}` carries a job-level `if:` or `continue-on-error:`"
-                ));
+    if runners == 0 {
+        offenders.push(format!("ci.yml: no step runs {CHECK}"));
+    }
+
+    let check = walked_file_body(&root.join(CHECK));
+    let common = shell_array(&check, "COMMON");
+    let excluded = shell_array(&check, "EXCLUDED");
+    assert!(
+        !common.is_empty() && !excluded.is_empty(),
+        "{CHECK}: the walk read no COMMON or no EXCLUDED list: {common:?} {excluded:?}"
+    );
+    let listed = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&root)
+        .args(["ls-files", "-z", "--"])
+        .args(&common)
+        .args(&excluded)
+        .output()
+        .unwrap_or_else(|e| panic!("cannot run git ls-files: {e}"));
+    assert!(
+        listed.status.success(),
+        "git ls-files failed: {}",
+        String::from_utf8_lossy(&listed.stderr)
+    );
+    let inputs: std::collections::HashSet<String> = String::from_utf8_lossy(&listed.stdout)
+        .split('\0')
+        .filter(|p| !p.is_empty())
+        .map(str::to_string)
+        .collect();
+    let mut embeds = 0;
+    let crates_dir = root.join("crates");
+    let mut crate_dirs: Vec<std::path::PathBuf> = std::fs::read_dir(&crates_dir)
+        .unwrap_or_else(|e| panic!("cannot read {}: {e}", crates_dir.display()))
+        .map(|entry| {
+            entry
+                .unwrap_or_else(|e| panic!("cannot read an entry of crates/: {e}"))
+                .path()
+        })
+        .filter(|p| p.join("src").is_dir())
+        .collect();
+    crate_dirs.sort();
+    for crate_dir in &crate_dirs {
+        for source in cfgd_core::test_helpers::rust_sources_under(&crate_dir.join("src")) {
+            let source_rel = repo_relative(&root, &source);
+            // Test code the check excludes is not compiled into the binary.
+            if !inputs.contains(&source_rel) {
+                continue;
             }
-            let at = body.iter().position(|l| l.contains(CHECK));
-            let step_start = |l: &&str| l.starts_with("      - ");
-            if let Some(at) = at {
-                let start = body[..=at].iter().rposition(step_start).unwrap_or(at);
-                let end = body[at + 1..]
-                    .iter()
-                    .position(step_start)
-                    .map_or(body.len(), |i| at + 1 + i);
-                if body[start..end].iter().any(|l| neutering(l)) {
-                    offenders.push(format!(
-                        "ci.yml: the step running {CHECK} carries an `if:` or `continue-on-error:`"
-                    ));
+            let code = cfgd_core::test_helpers::production_slice_of(&source)
+                .lines()
+                .filter(|l| !l.trim_start().starts_with("//"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let source_dir = source.parent().unwrap_or(&source);
+            for (call, base) in [
+                ("include_str!(", source_dir),
+                ("include_bytes!(", source_dir),
+                ("resource_example!(", crate_dir.as_path()),
+            ] {
+                for (at, _) in code.match_indices(call) {
+                    let args = code[at + call.len()..].trim_start();
+                    match args.strip_prefix('"').and_then(|a| a.split_once('"')) {
+                        Some((literal, _)) => {
+                            embeds += 1;
+                            let target = repo_relative(&root, &base.join(literal));
+                            if !inputs.contains(&target) {
+                                offenders.push(format!(
+                                    "{source_rel}: embeds {target}, which {CHECK} does not count"
+                                ));
+                            }
+                        }
+                        // `resource_example!`'s own body; its call sites are
+                        // resolved above.
+                        None if args.starts_with("concat!(\"../../\", $rel)") => {}
+                        None => offenders.push(format!(
+                            "{source_rel}: embeds a path that is not a literal, so the walk cannot tell whether it is an input"
+                        )),
+                    }
                 }
             }
         }
     }
+    assert!(
+        embeds >= EMBED_FLOOR,
+        "the walk found {embeds} embedded files, fewer than the {EMBED_FLOOR} the crates hold"
+    );
+
     let taskfile = walked_file_body(&root.join("Taskfile.yml"));
-    if key_naming(&taskfile, "tasks:", CHECK).is_none() {
+    if target_naming(&taskfile, CHECK).is_none() {
         offenders.push(format!("Taskfile.yml: no target runs {CHECK}"));
     }
     assert!(
@@ -48299,79 +48356,246 @@ fn every_demo_gif_is_stamped_and_checked() {
     );
 }
 
+/// The words of the bash array `name=( ... )` in `script`, single quotes
+/// removed. A quoted word may hold a `)` (a pathspec's `:(exclude)` magic), so
+/// the array ends at the first `)` outside quotes.
+fn shell_array(script: &str, name: &str) -> Vec<String> {
+    let open = format!("{name}=(");
+    let Some(start) = script.find(&open) else {
+        return Vec::new();
+    };
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut quoted = false;
+    for c in script[start + open.len()..].chars() {
+        match c {
+            '\'' => quoted = !quoted,
+            ')' if !quoted => break,
+            c if c.is_whitespace() && !quoted => {
+                if !word.is_empty() {
+                    words.push(std::mem::take(&mut word));
+                }
+            }
+            c => word.push(c),
+        }
+    }
+    if !word.is_empty() {
+        words.push(word);
+    }
+    words
+}
+
+/// `path` relative to `root`, `..` resolved and joined with `/`, the spelling
+/// `git ls-files` prints on every OS.
+fn repo_relative(root: &std::path::Path, path: &std::path::Path) -> String {
+    let rel = path
+        .strip_prefix(root)
+        .unwrap_or_else(|_| panic!("{} is not under {}", path.display(), root.display()));
+    let mut parts: Vec<String> = Vec::new();
+    for part in rel.components() {
+        match part {
+            std::path::Component::ParentDir => {
+                parts.pop();
+            }
+            std::path::Component::Normal(p) => parts.push(p.to_string_lossy().into_owned()),
+            _ => {}
+        }
+    }
+    parts.join("/")
+}
+
+/// A throwaway git repository holding copies of the named `demo/scripts/`
+/// files, for running them against a history the test controls.
+#[cfg(unix)]
+struct DemoRepo {
+    dir: tempfile::TempDir,
+    git: git2::Repository,
+}
+
+#[cfg(unix)]
+impl DemoRepo {
+    fn new(scripts: &[&str]) -> Self {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let scripts_dir = dir.path().join("demo/scripts");
+        std::fs::create_dir_all(&scripts_dir).expect("create demo/scripts");
+        let real = cfgd_core::test_helpers::workspace_root().join("demo/scripts");
+        for script in scripts {
+            std::fs::copy(real.join(script), scripts_dir.join(script))
+                .unwrap_or_else(|e| panic!("copy {script} into the fixture: {e}"));
+        }
+        let git = git2::Repository::init(dir.path()).expect("git init");
+        Self { dir, git }
+    }
+
+    fn write(&self, rel: &str, body: &str) {
+        let path = self.dir.path().join(rel);
+        std::fs::create_dir_all(path.parent().expect("a file has a parent"))
+            .expect("create parent");
+        std::fs::write(&path, body).unwrap_or_else(|e| panic!("write {rel}: {e}"));
+    }
+
+    fn read(&self, rel: &str) -> String {
+        walked_file_body(&self.dir.path().join(rel))
+    }
+
+    /// Commit every file in the tree; returns the commit id.
+    fn commit(&self, message: &str) -> String {
+        let mut index = self.git.index().expect("index");
+        index
+            .add_all(["*"], git2::IndexAddOption::DEFAULT, None)
+            .expect("stage");
+        index.write().expect("write index");
+        let tree = self
+            .git
+            .find_tree(index.write_tree().expect("write tree"))
+            .expect("find tree");
+        let sig = git2::Signature::now("cfgd-test", "test@cfgd.io").expect("signature");
+        let parent = self.git.head().ok().and_then(|h| h.peel_to_commit().ok());
+        let parents: Vec<&git2::Commit> = parent.iter().collect();
+        self.git
+            .commit(Some("HEAD"), &sig, &sig, message, &tree, &parents)
+            .expect("commit")
+            .to_string()
+    }
+
+    fn run(&self, script: &str, args: &[&str]) -> std::process::Output {
+        std::process::Command::new("bash")
+            .arg(self.dir.path().join("demo/scripts").join(script))
+            .args(args)
+            .env("HOME", self.dir.path())
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .output()
+            .unwrap_or_else(|e| panic!("run {script}: {e}"))
+    }
+}
+
 /// `demo/scripts/check-sync.sh` judges the last line of `demo/recorded.txt`
 /// when that line has no trailing newline.
 ///
 /// Shell `read` returns failure on such a line after filling its fields, so a
 /// plain `while read` loop drops it and a hand edit that leaves the newline off
-/// exempts one GIF with every check green. The fixture stamps the first GIF at
-/// HEAD and the last, unterminated one before a change to its tape, so only a
-/// loop that reads the last line can fail.
+/// exempts one GIF with every check green. Each GIF here is committed after
+/// the commit its take recorded, as a real take is; the first is current and
+/// the last, unterminated one predates a change to its tape, so only a loop
+/// that reads the last line can fail.
 #[cfg(unix)]
 #[test]
 fn demo_sync_check_judges_an_unterminated_last_line() {
-    const CHECK: &str = "demo/scripts/check-sync.sh";
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let repo = tmp.path();
-    std::fs::create_dir_all(repo.join("demo/scripts")).expect("create demo/scripts");
-    std::fs::copy(
-        cfgd_core::test_helpers::workspace_root().join(CHECK),
-        repo.join(CHECK),
-    )
-    .expect("copy the check into the fixture");
-    for (name, body) in [
-        ("demo/x.tape", "x\n"),
-        ("demo/y.tape", "y\n"),
-        ("demo/cfgd-x.gif", ""),
-        ("demo/cfgd-y.gif", ""),
-    ] {
-        std::fs::write(repo.join(name), body).expect("write fixture file");
-    }
-    let git = git2::Repository::init(repo).expect("git init");
-    let sig = git2::Signature::now("cfgd-test", "test@cfgd.io").expect("signature");
-    let commit = |message: &str| -> String {
-        let mut index = git.index().expect("index");
-        index
-            .add_all(["*"], git2::IndexAddOption::DEFAULT, None)
-            .expect("stage");
-        index.write().expect("write index");
-        let tree = git
-            .find_tree(index.write_tree().expect("write tree"))
-            .expect("find tree");
-        let parents: Vec<git2::Commit> = git
-            .head()
-            .ok()
-            .and_then(|h| h.peel_to_commit().ok())
-            .into_iter()
-            .collect();
-        let parents: Vec<&git2::Commit> = parents.iter().collect();
-        git.commit(Some("HEAD"), &sig, &sig, message, &tree, &parents)
-            .expect("commit")
-            .to_string()
-    };
-    let recorded = commit("recorded");
-    std::fs::write(repo.join("demo/x.tape"), "x changed\n").expect("change the tape");
-    let head = commit("tape changed");
-    std::fs::write(
-        repo.join("demo/recorded.txt"),
-        format!("cfgd-y.gif y.tape {head}\ncfgd-x.gif x.tape {recorded}"),
-    )
-    .expect("write recorded.txt without a trailing newline");
+    let repo = DemoRepo::new(&["check-sync.sh"]);
+    repo.write("demo/x.tape", "x\n");
+    repo.write("demo/y.tape", "y\n");
+    let x_recorded = repo.commit("tapes");
+    repo.write("demo/cfgd-x.gif", "x take\n");
+    repo.commit("x take");
+    repo.write("demo/x.tape", "x changed\n");
+    let y_recorded = repo.commit("x tape changed");
+    repo.write("demo/cfgd-y.gif", "y take\n");
+    repo.commit("y take");
+    repo.write(
+        "demo/recorded.txt",
+        &format!("cfgd-y.gif y.tape {y_recorded}\ncfgd-x.gif x.tape {x_recorded}"),
+    );
 
-    let out = std::process::Command::new("bash")
-        .arg(repo.join(CHECK))
-        .env("HOME", repo)
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .output()
-        .expect("run the check");
+    let out = repo.run("check-sync.sh", &[]);
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         !out.status.success()
-            && stdout.contains(&format!("demo/cfgd-x.gif: recorded at {recorded}")),
+            && stdout.contains(&format!("demo/cfgd-x.gif: recorded at {x_recorded}")),
         "the unterminated last line went unjudged: status {:?}, stdout {stdout}, stderr {}",
         out.status,
         String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// `demo/scripts/check-sync.sh` refuses a stamp no take wrote.
+///
+/// A take commits its GIF after the commit it recorded, so a stamp moved
+/// forward by hand to a commit the GIF was not committed after (here the
+/// GIF's own commit) must fail even though no input changed since it. The
+/// same GIF stamped at the commit before its take passes, so the refusal is
+/// the stamp's and nothing else in the fixture's.
+#[cfg(unix)]
+#[test]
+fn demo_sync_check_refuses_a_stamp_no_take_wrote() {
+    let repo = DemoRepo::new(&["check-sync.sh"]);
+    repo.write("demo/x.tape", "x\n");
+    let recorded = repo.commit("tape");
+    repo.write("demo/cfgd-x.gif", "x take\n");
+    let head = repo.commit("x take");
+
+    repo.write(
+        "demo/recorded.txt",
+        &format!("cfgd-x.gif x.tape {recorded}\n"),
+    );
+    let taken = repo.run("check-sync.sh", &[]);
+    assert!(
+        taken.status.success(),
+        "a stamp a take wrote was refused: {}",
+        String::from_utf8_lossy(&taken.stdout)
+    );
+
+    repo.write("demo/recorded.txt", &format!("cfgd-x.gif x.tape {head}\n"));
+    let forged = repo.run("check-sync.sh", &[]);
+    let stdout = String::from_utf8_lossy(&forged.stdout);
+    assert!(
+        !forged.status.success() && stdout.contains("no take wrote the stamp"),
+        "a stamp moved to the GIF's own commit passed: status {:?}, stdout {stdout}",
+        forged.status
+    );
+}
+
+/// `demo/scripts/stamp.sh` stamps the commit the take recorded, read from the
+/// take's `recorded-at`, and never the checkout's own commit.
+///
+/// The take here recorded commit A and the checkout has since moved to B: a
+/// stamp reading the checkout (by any spelling) writes B and would let a
+/// re-encode of old frames clear a flag no new take earned. A take directory
+/// with no `recorded-at`, or one holding something other than a commit id, is
+/// refused.
+#[cfg(unix)]
+#[test]
+fn demo_stamp_copies_the_take_commit() {
+    let repo = DemoRepo::new(&["stamp.sh"]);
+    repo.write("demo/x.tape", "x\n");
+    repo.write("demo/cfgd-x.gif", "x take\n");
+    repo.write("demo/recorded.txt", "# gif tape commit-recorded-at\n");
+    let a = repo.commit("A");
+    repo.write("demo/x.tape", "x changed\n");
+    let b = repo.commit("B");
+    let args = ["cfgd-x.gif", "x.tape", "demo/.out/x"];
+
+    let missing = repo.run("stamp.sh", &args);
+    let stderr = String::from_utf8_lossy(&missing.stderr);
+    assert!(
+        !missing.status.success() && stderr.contains("demo/x.tape"),
+        "a take with no recorded-at was stamped: status {:?}, stderr {stderr}",
+        missing.status
+    );
+
+    repo.write("demo/.out/x/recorded-at", "HEAD\n");
+    let symbolic = repo.run("stamp.sh", &args);
+    assert!(
+        !symbolic.status.success(),
+        "a recorded-at holding `HEAD` was stamped: {}",
+        String::from_utf8_lossy(&symbolic.stdout)
+    );
+
+    repo.write("demo/.out/x/recorded-at", &format!("{a}\n"));
+    let stamped = repo.run("stamp.sh", &args);
+    assert!(
+        stamped.status.success(),
+        "stamping the take failed: {}",
+        String::from_utf8_lossy(&stamped.stderr)
+    );
+    let recorded = repo.read("demo/recorded.txt");
+    let line = recorded
+        .lines()
+        .find(|l| l.starts_with("cfgd-x.gif"))
+        .unwrap_or_else(|| panic!("no line for cfgd-x.gif in {recorded}"));
+    assert!(
+        line.ends_with(&a) && !line.contains(&b),
+        "the stamp is not the take's commit {a} (checkout at {b}): {line}"
     );
 }
 
@@ -48394,15 +48618,14 @@ fn yaml_code(line: &str) -> &str {
     line
 }
 
-/// The key under the top-level `section` (`tasks:` of a Taskfile, `jobs:` of
-/// a workflow) whose body names `rel`: the nearest two-space-indented
-/// `<name>:` header above the first uncommented line naming it, both searched
-/// below `section` so a key under the top-level `vars:` or `env:` is never
-/// taken for a target or a job. Read off the file rather than a table, so
-/// renaming a target or a job moves the pin with it.
-fn key_naming(body: &str, section: &str, rel: &str) -> Option<String> {
-    let lines: Vec<&str> = body.lines().map(yaml_code).collect();
-    let tasks = lines.iter().position(|l| l.trim_end() == section)? + 1;
+/// The Taskfile target whose body names `rel`: the nearest two-space-indented
+/// `<name>:` header above the first uncommented line naming the script, both
+/// searched below `tasks:` so a key under the top-level `vars:` or `env:` is
+/// never taken for a target. Read off the file rather than a table, so
+/// renaming a target moves the pin with it.
+fn target_naming(taskfile: &str, rel: &str) -> Option<String> {
+    let lines: Vec<&str> = taskfile.lines().map(yaml_code).collect();
+    let tasks = lines.iter().position(|l| l.trim_end() == "tasks:")? + 1;
     let at = tasks + lines[tasks..].iter().position(|l| l.contains(rel))?;
     lines[tasks..at].iter().rev().find_map(|l| {
         let trimmed = l.strip_prefix("  ")?.trim_end();
