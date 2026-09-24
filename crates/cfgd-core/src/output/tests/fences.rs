@@ -6604,6 +6604,10 @@ fn every_raw_spawn_in_test_code_holds_the_path_gate() {
             "guard in a sibling",
             "fn g() {\n    let _p = path_env_read_guard();\n}\nfn t() {\n    Command::new(\"git\");\n}\n",
         ),
+        (
+            "guard after the spawn",
+            "fn t() {\n    Command::new(\"git\");\n    let _p = path_env_read_guard();\n}\n",
+        ),
     ] {
         let (unguarded, _, _) = raw_spawns(&FIXTURE_SOURCE, code, HATCH);
         assert_eq!(
@@ -6689,10 +6693,19 @@ fn raw_spawns(source: &SourceLabel, region: &str, hatch: &str) -> (Vec<String>, 
     let code = crate::test_helpers::blank_non_code(region);
     let lines: Vec<&str> = region.lines().collect();
     let functions = source_functions(source, region);
-    let binds_a_guard = |body: &str| {
+    // Line starts of `code`, so a function's opening LINE (1-based, from
+    // `source_functions`) resolves to the byte offset a spawn's own `at` is
+    // comparable against: a guard bound must sit BEFORE the spawn it protects.
+    let line_starts: Vec<usize> = std::iter::once(0)
+        .chain(code.match_indices('\n').map(|(at, _)| at + 1))
+        .collect();
+    let binds_a_guard = |body: &str, site_offset: usize| {
         let body = crate::test_helpers::blank_non_code(body);
         GUARDS.iter().any(|guard| {
             body.match_indices(guard).any(|(at, _)| {
+                if at >= site_offset {
+                    return false;
+                }
                 let statement = body[..at].rsplit([';', '{', '}']).next().unwrap_or("");
                 statement
                     .trim_start()
@@ -6722,7 +6735,11 @@ fn raw_spawns(source: &SourceLabel, region: &str, hatch: &str) -> (Vec<String>, 
             .iter()
             .filter(|(open, body)| (open - 1..open - 1 + body.lines().count()).contains(&row))
             .max_by_key(|(open, _)| *open);
-        if !enclosing.is_some_and(|(_, body)| binds_a_guard(body)) {
+        let guarded = enclosing.is_some_and(|(open, body)| {
+            let func_start = line_starts[open - 1];
+            binds_a_guard(body, at - func_start)
+        });
+        if !guarded {
             unguarded.push(format!("{source}:{}: {}", row + 1, lines[row].trim()));
         }
     }

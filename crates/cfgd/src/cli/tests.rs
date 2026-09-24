@@ -49366,12 +49366,17 @@ fn every_in_process_parse_goes_through_the_hermetic_parser() {
     const METHODS: [&str; 2] = ["parse(", "try_parse("];
     /// `clap::Parser`'s provided methods no other type in the crate spells,
     /// which count on any receiver: a generic `P::try_parse_from(` and a
-    /// `Self::parse_from(` inside an `impl Cli` read the same bindings.
-    const ANY_RECEIVER: [&str; 4] = [
+    /// `Self::parse_from(` inside an `impl Cli` read the same bindings. The
+    /// `&mut self` pair's method-call form (`cli.try_update_from(argv)`)
+    /// reads the same bindings through a `.` receiver, so both spellings
+    /// are listed.
+    const ANY_RECEIVER: [&str; 6] = [
         "::parse_from(",
         "::try_parse_from(",
         "::update_from(",
         "::try_update_from(",
+        ".update_from(",
+        ".try_update_from(",
     ];
     /// `clap::Command`'s matchers, which read `env =` bindings, and the
     /// `FromArgMatches` call that turns their result into a `Parser` type.
@@ -49464,9 +49469,10 @@ fn every_in_process_parse_goes_through_the_hermetic_parser() {
                 // `PluginCli::parse(` holds `Cli::parse(` and
                 // `try_get_matches(` holds `get_matches(`; only a tell
                 // starting at a word boundary is the call it names. A tell
-                // opening on `::` is bounded by that path separator whatever
-                // receiver stands in front of it.
+                // opening on `::` or `.` is bounded by that separator
+                // whatever receiver stands in front of it.
                 let bounded = tell.starts_with("::")
+                    || tell.starts_with('.')
                     || code[..at]
                         .chars()
                         .next_back()
@@ -49501,6 +49507,7 @@ fn every_in_process_parse_goes_through_the_hermetic_parser() {
         ("conversion", "let cli = Cli::from_arg_matches(&m);"),
         ("generic receiver", "let cli = P::try_parse_from(argv);"),
         ("`Self` receiver", "let cli = Self::parse_from(argv);"),
+        ("method call", "cli.try_update_from(argv);"),
         (
             "entry point outside its file",
             "let m = cmd.get_matches_from(argv);",
