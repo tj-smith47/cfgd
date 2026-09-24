@@ -21,6 +21,7 @@ single-source-of-truth wiring.
 | crossplane version + sha256 | `.github/actions/setup-crossplane` input defaults | release (function/push jobs), e2e-setup; `tests/e2e/setup-cluster.sh` fallback mirrors it for local runs |
 | cosign version | `COSIGN_VERSION` env in e2e.yml | both cosign-installer steps |
 | MSRV | `rust-version` in root Cargo.toml | ci.yml msrv job reads it with sed |
+| FreeBSD guest packages, `safe.directory` trust, synced `.git` | ci.yml `test-freebsd` vmactions `prepare:` | Taskfile `test:freebsd` (`npm` is CI-only: only `test:freebsd:npm-prefix` reads it); compared by `the_local_freebsd_leg_prepares_the_guest_ci_prepares` |
 
 ## Job wiring invariants
 

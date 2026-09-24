@@ -47999,6 +47999,157 @@ fn every_real_host_script_is_reachable_from_ci() {
     );
 }
 
+/// `task test:freebsd` is the local run of CI's FreeBSD leg, so the guest it
+/// prepares holds what the vmactions `prepare:` installs: the same packages,
+/// the same `safe.directory` trust, and a synced tree that keeps `.git`. The
+/// two are written by hand in two files, and the local one had fallen behind
+/// before this compared them.
+#[test]
+fn the_local_freebsd_leg_prepares_the_guest_ci_prepares() {
+    /// A package CI's guest installs that the local leg does not need, with
+    /// the one target that reads it; the local leg must not run that target.
+    const CI_ONLY: [(&str, &str); 1] = [("npm", "test:freebsd:npm-prefix")];
+    const INSTALL: &str = "pkg install -y ";
+    const TRUST: &str = "safe.directory '*'";
+    let root = cfgd_core::test_helpers::workspace_root();
+    let ci_path = root.join(".github/workflows/ci.yml");
+    let ci: serde_yaml::Value = serde_yaml::from_str(&walked_file_body(&ci_path))
+        .unwrap_or_else(|e| panic!("{}: does not parse: {e}", ci_path.display()));
+    let steps = ci["jobs"]["test-freebsd"]["steps"]
+        .as_sequence()
+        .unwrap_or_else(|| panic!("{}: job `test-freebsd` has no steps", ci_path.display()));
+    let vm = steps
+        .iter()
+        .find(|s| {
+            s["uses"]
+                .as_str()
+                .is_some_and(|u| u.starts_with("vmactions/freebsd-vm"))
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "{}: `test-freebsd` has no vmactions step",
+                ci_path.display()
+            )
+        });
+    let prepare = vm["with"]["prepare"].as_str().unwrap_or_else(|| {
+        panic!(
+            "{}: the vmactions step has no `prepare:`",
+            ci_path.display()
+        )
+    });
+    let ci_run = vm["with"]["run"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{}: the vmactions step has no `run:`", ci_path.display()));
+    let task_path = root.join("Taskfile.yml");
+    let taskfile: serde_yaml::Value = serde_yaml::from_str(&walked_file_body(&task_path))
+        .unwrap_or_else(|e| panic!("{}: does not parse: {e}", task_path.display()));
+    let local: String = taskfile["tasks"]["test:freebsd"]["cmds"]
+        .as_sequence()
+        .unwrap_or_else(|| panic!("{}: `test:freebsd` has no cmds", task_path.display()))
+        .iter()
+        .map(|c| {
+            c.as_str().or_else(|| c["cmd"].as_str()).unwrap_or_else(|| {
+                panic!("{}: a `test:freebsd` cmd is not text", task_path.display())
+            })
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let code = |text: &str| -> Vec<String> {
+        text.lines()
+            .map(str::trim)
+            .filter(|l| !l.starts_with('#'))
+            .map(str::to_string)
+            .collect()
+    };
+    // The words after each `pkg install -y`, up to the end of that command.
+    let packages = |text: &str| -> std::collections::BTreeSet<String> {
+        let mut found = std::collections::BTreeSet::new();
+        for line in code(text) {
+            for (at, _) in line.match_indices(INSTALL) {
+                for word in line[at + INSTALL.len()..].split_whitespace() {
+                    let name = word.trim_end_matches(['\'', '"', ';', '}']);
+                    if matches!(name, "&&" | "||" | "|") || name.is_empty() {
+                        break;
+                    }
+                    found.insert(name.to_string());
+                    if name.len() != word.len() {
+                        break;
+                    }
+                }
+            }
+        }
+        found
+    };
+    let ci_packages = packages(prepare);
+    let local_packages = packages(&local);
+    assert!(
+        !ci_packages.is_empty() && !local_packages.is_empty(),
+        "the walk read no package on one side: ci {ci_packages:?}, local {local_packages:?}"
+    );
+    let mut offenders = Vec::new();
+    for package in ci_packages.difference(&local_packages) {
+        match CI_ONLY.iter().find(|(p, _)| p == package) {
+            Some((_, target)) => {
+                if runs_task(&local, target) || !runs_task(ci_run, target) {
+                    offenders.push(format!(
+                        "{package}: CI-only because only `task {target}` reads it, but CI's run does not run it or the local leg does"
+                    ));
+                }
+            }
+            None => offenders.push(format!(
+                "{package}: CI's FreeBSD guest installs it and `task test:freebsd` does not"
+            )),
+        }
+    }
+    for package in local_packages.difference(&ci_packages) {
+        offenders.push(format!(
+            "{package}: `task test:freebsd` installs it and CI's FreeBSD guest does not"
+        ));
+    }
+    for (side, text) in [
+        ("ci.yml prepare", prepare),
+        ("task test:freebsd", local.as_str()),
+    ] {
+        if !code(text).iter().any(|l| l.contains(TRUST)) {
+            offenders.push(format!(
+                "{side}: does not trust the synced tree with `{TRUST}`"
+            ));
+        }
+    }
+    let rsync: Vec<String> = code(&local)
+        .into_iter()
+        .filter(|l| l.starts_with("rsync "))
+        .collect();
+    if rsync.is_empty() {
+        offenders.push("task test:freebsd: no rsync line syncs the tree".to_string());
+    }
+    for line in &rsync {
+        let words: Vec<&str> = line.split_whitespace().collect();
+        let drops_git = words.iter().enumerate().any(|(i, w)| {
+            let excluded = match w.strip_prefix("--exclude=") {
+                Some(v) => Some(v),
+                None if *w == "--exclude" => words.get(i + 1).copied(),
+                None => None,
+            };
+            excluded.is_some_and(|v| {
+                matches!(
+                    v.trim_matches(['\'', '"']).trim_end_matches('/'),
+                    ".git" | "/.git"
+                )
+            })
+        });
+        if drops_git {
+            offenders.push(format!(
+                "task test:freebsd: `{line}` leaves out .git, which the demo pin's `git ls-files` reads"
+            ));
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "the local FreeBSD leg prepares a different guest from CI's: {offenders:?}"
+    );
+}
+
 /// Every demo GIF and every tape names, in `demo/recorded.txt`, the commit it
 /// was recorded at, and a check on every pull request holds each GIF to it.
 ///
@@ -48019,18 +48170,28 @@ fn every_real_host_script_is_reachable_from_ci() {
 /// is compiled into the recorded binary, so it must be one of the check's
 /// inputs; the inputs are asked of `git ls-files` with the check's own
 /// `COMMON` and `EXCLUDED` lists, so there is one list to keep. What those
-/// lists leave out must stay out of the binary: every excluded source under
+/// lists leave out must stay out of the binary. Every excluded source under
 /// `src/` is declared behind a test gate (or sits under an excluded module
-/// that is), and no crate takes `cfgd-test-fixtures`, or `cfgd-core`'s
-/// `test-helpers` feature, as a normal or build dependency.
+/// that is). The manifests reach the binary through cargo's own feature
+/// resolution, so `demo/scripts/build-binary.sh` asks cargo's resolved graph,
+/// for the selection and target it builds, and refuses to build when that
+/// graph names an excluded crate or the `test-helpers` feature; this pin holds
+/// the script to that gate.
 #[test]
 fn every_demo_gif_is_stamped_and_checked() {
     /// The GIFs shipped today; a file holding fewer lines lost a stamp.
     const STAMP_FLOOR: usize = 8;
     /// The files the crates embed today; a walk finding fewer went blind.
     const EMBED_FLOOR: usize = 25;
-    /// The test sources under `src/` the check leaves out today (74).
-    const EXCLUDED_SOURCE_FLOOR: usize = 70;
+    /// The test sources under each crate's `src/` the check leaves out today
+    /// (cfgd 26, cfgd-core 40, cfgd-operator 6, cfgd-crd 1, cfgd-csi 1).
+    const EXCLUDED_SOURCE_FLOORS: [(&str, usize); 5] = [
+        ("cfgd", 24),
+        ("cfgd-core", 36),
+        ("cfgd-operator", 5),
+        ("cfgd-crd", 1),
+        ("cfgd-csi", 1),
+    ];
     const CHECK: &str = DEMO_SYNC_CHECK;
     /// The file a take leaves beside its frames naming the commit it recorded.
     const SIDECAR: &str = "recorded-at";
@@ -48173,7 +48334,8 @@ fn every_demo_gif_is_stamped_and_checked() {
         .map(str::to_string)
         .collect();
     let mut embeds = 0;
-    let mut excluded_sources = 0;
+    let mut excluded_per_root: std::collections::BTreeMap<String, usize> =
+        std::collections::BTreeMap::new();
     let crates_dir = root.join("crates");
     let mut crate_dirs: Vec<std::path::PathBuf> = std::fs::read_dir(&crates_dir)
         .unwrap_or_else(|e| panic!("cannot read {}: {e}", crates_dir.display()))
@@ -48185,18 +48347,25 @@ fn every_demo_gif_is_stamped_and_checked() {
         .filter(|p| p.join("src").is_dir())
         .collect();
     crate_dirs.sort();
-    // A crate the check excludes whole is kept out of the binary by the
-    // dependency arm below, so its sources and manifest are not judged here.
+    // A crate the check excludes whole is kept out of the binary by the build
+    // script's gate below, so its sources are not judged here.
     let (crate_dirs, excluded_crates): (Vec<_>, Vec<_>) = crate_dirs
         .into_iter()
         .partition(|c| inputs.contains(&format!("{}/Cargo.toml", repo_relative(&root, c))));
-    let excluded_packages: Vec<String> = excluded_crates
+    let excluded_manifests: Vec<(std::path::PathBuf, toml::Table)> = excluded_crates
         .iter()
         .map(|c| {
             let manifest = c.join("Cargo.toml");
-            walked_file_body(&manifest)
+            let table = walked_file_body(&manifest)
                 .parse::<toml::Table>()
-                .unwrap_or_else(|e| panic!("{}: does not parse: {e}", manifest.display()))
+                .unwrap_or_else(|e| panic!("{}: does not parse: {e}", manifest.display()));
+            (manifest, table)
+        })
+        .collect();
+    let excluded_packages: Vec<String> = excluded_manifests
+        .iter()
+        .map(|(manifest, table)| {
+            table
                 .get("package")
                 .and_then(|p| p.get("name"))
                 .and_then(toml::Value::as_str)
@@ -48206,13 +48375,48 @@ fn every_demo_gif_is_stamped_and_checked() {
         .collect();
     assert!(
         !excluded_packages.is_empty(),
-        "{CHECK} excludes no crate, so the dependency arm judges nothing: {excluded_crates:?}"
+        "{CHECK} excludes no crate, so the build gate refuses nothing: {excluded_crates:?}"
+    );
+    // The package an excluded crate turns the test feature on in is the one a
+    // real build graph names, so the gate's canary is read off that entry.
+    let featured: Vec<String> = excluded_manifests
+        .iter()
+        .flat_map(|(_, table)| {
+            table
+                .get("dependencies")
+                .and_then(toml::Value::as_table)
+                .into_iter()
+                .flatten()
+        })
+        .filter(|(_, dep)| {
+            dep.get("features")
+                .and_then(toml::Value::as_array)
+                .is_some_and(|f| f.iter().any(|x| x.as_str() == Some(DEMO_TEST_FEATURE)))
+        })
+        .map(|(key, dep)| {
+            dep.get("package")
+                .and_then(toml::Value::as_str)
+                .unwrap_or(key)
+                .to_string()
+        })
+        .collect();
+    assert!(
+        !featured.is_empty(),
+        "no crate {CHECK} excludes turns on `{DEMO_TEST_FEATURE}`, so the gate's canary cannot be read: {excluded_packages:?}"
     );
     for crate_dir in &crate_dirs {
         for source in cfgd_core::test_helpers::rust_sources_under(&crate_dir.join("src")) {
             let source_rel = repo_relative(&root, &source);
             if !inputs.contains(&source_rel) {
-                excluded_sources += 1;
+                *excluded_per_root
+                    .entry(
+                        crate_dir
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .into_owned(),
+                    )
+                    .or_default() += 1;
                 if let Some(ungated) = ungated_excluded_module(&root, &source, &inputs) {
                     offenders.push(ungated);
                 }
@@ -48256,62 +48460,103 @@ fn every_demo_gif_is_stamped_and_checked() {
         embeds >= EMBED_FLOOR,
         "the walk found {embeds} embedded files, fewer than the {EMBED_FLOOR} the crates hold"
     );
+    let short: Vec<String> = EXCLUDED_SOURCE_FLOORS
+        .iter()
+        .filter(|(krate, floor)| {
+            excluded_per_root.get(*krate).copied().unwrap_or_default() < *floor
+        })
+        .map(|(krate, floor)| {
+            format!(
+                "crates/{krate}: judged {} excluded sources, under its floor of {floor}",
+                excluded_per_root.get(*krate).copied().unwrap_or_default()
+            )
+        })
+        .collect();
     assert!(
-        excluded_sources >= EXCLUDED_SOURCE_FLOOR,
-        "the walk judged {excluded_sources} excluded sources, fewer than the {EXCLUDED_SOURCE_FLOOR} the crates hold"
+        short.is_empty(),
+        "the walk judged fewer excluded sources than a crate holds: {short:?}"
     );
-    for crate_dir in &crate_dirs {
-        let manifest_path = crate_dir.join("Cargo.toml");
-        let manifest: toml::Table = walked_file_body(&manifest_path)
-            .parse()
-            .unwrap_or_else(|e| panic!("{}: does not parse: {e}", manifest_path.display()));
-        let crate_rel = repo_relative(&root, crate_dir);
-        let mut tables: Vec<(String, &toml::Table)> = Vec::new();
-        for kind in ["dependencies", "build-dependencies"] {
-            if let Some(t) = manifest.get(kind).and_then(toml::Value::as_table) {
-                tables.push((kind.to_string(), t));
+
+    let build_rel = DEMO_BUILD_SCRIPT;
+    let build_code: Vec<String> = walked_file_body(&root.join(build_rel))
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .map(str::to_string)
+        .collect();
+    // The call itself, at the head of a line or of a command substitution, so
+    // a message quoting the command is never taken for it.
+    let line_of = |sub: &str| {
+        let call = format!("cargo {sub} ");
+        build_code
+            .iter()
+            .position(|l| l.trim_start().starts_with(&call) || l.contains(&format!("$({call}")))
+    };
+    // The words of a command line after its subcommand, quotes removed, so the
+    // two cargo calls can be held to one selection and target.
+    let args_after = |line: &str, sub: &str| -> Vec<String> {
+        let words = shell_array(&format!("w=({line})"), "w");
+        let at = words
+            .iter()
+            .position(|w| w == sub)
+            .map_or(words.len(), |at| at + 1);
+        words[at..].to_vec()
+    };
+    // Each flag with its value that one call carries for its own job alone.
+    let drop_own = |words: Vec<String>, own: &[&str], valued: &[&str]| {
+        let mut kept = Vec::new();
+        let mut rest = words.into_iter();
+        while let Some(w) = rest.next() {
+            if valued.contains(&w.as_str()) {
+                rest.next();
+            } else if !own.contains(&w.as_str()) {
+                kept.push(w);
             }
-            for (target, body) in manifest
-                .get("target")
-                .and_then(toml::Value::as_table)
-                .into_iter()
-                .flatten()
-            {
-                if let Some(t) = body.get(kind).and_then(toml::Value::as_table) {
-                    tables.push((format!("target.{target}.{kind}"), t));
+        }
+        kept.sort();
+        kept
+    };
+    match (line_of("tree"), line_of("zigbuild")) {
+        (Some(tree_at), Some(build_at)) if tree_at < build_at => {
+            let tree = &build_code[tree_at];
+            if !tree.contains("-e features") {
+                offenders.push(format!(
+                    "{build_rel}: `cargo tree` does not ask for the resolved features (`-e features`)"
+                ));
+            }
+            let tree_args = drop_own(args_after(tree, "tree"), &[], &["-e", "-f", "--prefix"]);
+            let build_args = drop_own(
+                args_after(&build_code[build_at], "zigbuild"),
+                &["--release"],
+                &["--bin"],
+            );
+            if tree_args != build_args {
+                offenders.push(format!(
+                    "{build_rel}: `cargo tree` judges {tree_args:?} while the build selects {build_args:?}"
+                ));
+            }
+            let refusals = featured
+                .iter()
+                .map(|canary| (canary.as_str(), "the canary proving the graph is not empty"))
+                .chain(
+                    excluded_packages
+                        .iter()
+                        .map(|p| (p.as_str(), "a crate the check leaves out")),
+                )
+                .chain([(DEMO_TEST_FEATURE, "the test feature")]);
+            for (token, what) in refusals {
+                let judged = build_code[tree_at + 1..build_at]
+                    .iter()
+                    .any(|l| l.contains("grep") && l.contains(token));
+                if !judged {
+                    offenders.push(format!(
+                        "{build_rel}: no grep between `cargo tree` and the build reads `{token}`, {what}"
+                    ));
                 }
             }
         }
-        for (table, deps) in tables {
-            for package in excluded_packages
-                .iter()
-                .filter(|p| deps.contains_key(p.as_str()))
-            {
-                offenders.push(format!(
-                    "{crate_rel}/Cargo.toml: [{table}] takes {package}, which {CHECK} does not count"
-                ));
-            }
-            let helpers = deps
-                .get("cfgd-core")
-                .and_then(|d| d.get("features"))
-                .and_then(toml::Value::as_array)
-                .is_some_and(|f| f.iter().any(|x| x.as_str() == Some("test-helpers")));
-            if helpers {
-                offenders.push(format!(
-                    "{crate_rel}/Cargo.toml: [{table}] enables cfgd-core's test-helpers, which {CHECK} does not count"
-                ));
-            }
-        }
-        let default_helpers = manifest
-            .get("features")
-            .and_then(|f| f.get("default"))
-            .and_then(toml::Value::as_array)
-            .is_some_and(|f| f.iter().any(|x| x.as_str() == Some("test-helpers")));
-        if default_helpers {
-            offenders.push(format!(
-                "{crate_rel}/Cargo.toml: test-helpers is a default feature, which {CHECK} does not count"
-            ));
-        }
+        _ => offenders.push(format!(
+            "{build_rel}: must run `cargo tree` over the graph `cargo zigbuild` builds before building"
+        )),
     }
 
     let taskfile = walked_file_body(&root.join("Taskfile.yml"));
@@ -48356,6 +48601,13 @@ fn shell_array(script: &str, name: &str) -> Vec<String> {
 /// The script that holds every demo GIF to the commit its take recorded.
 const DEMO_SYNC_CHECK: &str = "demo/scripts/check-sync.sh";
 
+/// The script that builds the binary every demo take records.
+const DEMO_BUILD_SCRIPT: &str = "demo/scripts/build-binary.sh";
+
+/// The feature that swaps `$HOME` for a test home, which no recorded binary
+/// may carry.
+const DEMO_TEST_FEATURE: &str = "test-helpers";
+
 /// Why `source`, a file under a crate's `src/` that the demo check does not
 /// count, could still be compiled into the binary, or `None` when it cannot.
 ///
@@ -48390,17 +48642,21 @@ fn ungated_excluded_module(
         vec![decl_dir.join("mod.rs"), decl_dir.with_extension("rs")]
     };
     let declaration = format!("mod {name};");
+    // A crate with both `lib.rs` and `main.rs` compiles each root on its own,
+    // so every file declaring the module is judged, not the first one found.
+    let mut declared = false;
     for parent in candidates.iter().filter(|p| p.is_file()) {
         let body = walked_file_body(parent);
         let lines: Vec<&str> = body.lines().collect();
-        let Some(at) = lines.iter().position(|l| {
-            let t = l.trim();
-            t == declaration || (t.starts_with("pub") && t.ends_with(&format!(" {declaration}")))
-        }) else {
+        let Some(at) = lines
+            .iter()
+            .position(|l| cfgd_core::test_helpers::strip_item_lead(l).trim_end() == declaration)
+        else {
             continue;
         };
+        declared = true;
         if !inputs.contains(&repo_relative(root, parent)) {
-            return None;
+            continue;
         }
         let gated = lines[..at]
             .iter()
@@ -48408,16 +48664,18 @@ fn ungated_excluded_module(
             .map(|l| l.trim())
             .take_while(|l| l.starts_with("#[") || l.starts_with("//"))
             .any(|l| l.starts_with("#[") && GATES.iter().any(|g| l.contains(g)));
-        return (!gated).then(|| {
-            format!(
+        if !gated {
+            return Some(format!(
                 "{rel}: {DEMO_SYNC_CHECK} does not count it, but `{declaration}` in {} is not under a test gate",
                 repo_relative(root, parent)
-            )
-        });
+            ));
+        }
     }
-    Some(format!(
-        "{rel}: {DEMO_SYNC_CHECK} does not count it, and no `{declaration}` declares it, so the walk cannot tell whether it is compiled in"
-    ))
+    (!declared).then(|| {
+        format!(
+            "{rel}: {DEMO_SYNC_CHECK} does not count it, and no `{declaration}` declares it, so the walk cannot tell whether it is compiled in"
+        )
+    })
 }
 
 /// `path` relative to `root`, `..` resolved and joined with `/`, the spelling
