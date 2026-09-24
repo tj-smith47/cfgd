@@ -1024,6 +1024,24 @@ origin:
     assert!(!spec.sync.auto_apply);
 }
 
+// A block written `subscription: null` (what a writer serializing an emptied
+// block prints) reads as the bare `subscription:` beside it does.
+#[test]
+fn source_spec_reads_a_null_subscription_as_its_default() {
+    for block in [
+        "subscription:\n",
+        "subscription: null\n",
+        "subscription: ~\n",
+    ] {
+        let yaml = format!(
+            "name: test-source\norigin:\n  type: Git\n  url: https://example.com/config.git\n{block}"
+        );
+        let spec: SourceSpec =
+            serde_yaml::from_str(&yaml).unwrap_or_else(|e| panic!("{block:?}: {e}"));
+        assert_eq!(spec.subscription.priority, 500, "{block:?}");
+    }
+}
+
 #[test]
 fn cargo_spec_deserialize_list() {
     // Dual-form lives on the `PackagesSpec::cargo` field, the real consumer

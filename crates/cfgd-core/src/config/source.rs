@@ -31,7 +31,7 @@ pub struct SourceSpec {
     /// Where the source's manifest is fetched from.
     pub origin: OriginSpec,
     /// What this machine accepts from the source and how it applies.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub subscription: SubscriptionSpec,
     /// How often and under what conditions the source is refreshed.
     #[serde(default)]
@@ -147,6 +147,17 @@ pub fn validate_source_priority(n: u32) -> std::result::Result<u32, String> {
         ));
     }
     Ok(n)
+}
+
+/// Read an explicit `null` as the field's default, the way a bare `key:` with
+/// nothing after it already reads. A writer that serializes an emptied block
+/// prints `null`, and a document holding the file's own output must load.
+fn null_as_default<'de, D, T>(deserializer: D) -> std::result::Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Default + Deserialize<'de>,
+{
+    Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
 }
 
 fn deserialize_source_priority<'de, D>(deserializer: D) -> std::result::Result<u32, D::Error>
