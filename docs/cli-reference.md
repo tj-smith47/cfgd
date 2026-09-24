@@ -2991,7 +2991,7 @@ domain instead: `config`, `file`, `package`, `secret`, `system`, `state`,
 | `internal` | A failure no handler typed and no `CfgdError` explains; `message` carries its text. |
 | `invalid` | The path given is not the kind of file system entry the command needs. |
 | `invalid_annotation` | An image annotation could not be parsed. |
-| `invalid_argument` | A flag or argument value was refused; `flag` names it and `value` repeats what was given. |
+| `invalid_argument` | A flag or argument value was refused. `flag` names the flag (or the argument, for a refused name) and `value` repeats what was given, `true` for a switch; `valid` lists the accepted values where they are a closed list, and `resource` names the kind a refused name was for. |
 | `invalid_label` | An image label could not be parsed. |
 | `invalid_pin_version` | `--pin-version` starts with `-`. |
 | `invalid_reference` | An OCI or image reference could not be parsed. |
@@ -3017,7 +3017,7 @@ domain instead: `config`, `file`, `package`, `secret`, `system`, `state`,
 | `no_snapshots` | The backup has no snapshots yet. |
 | `no_versions` | The registry publishes no versions of the module. |
 | `not_a_cfgd_plan` | The `--plan` file is not a plan cfgd wrote. |
-| `not_found` | A named module, profile, source, file, snapshot, package or field is not there. |
+| `not_found` | A named module, profile, source, file, snapshot, package or field is not there. For an `explain` field path, `resource` names the kind it was read against and `available` lists the fields where the path stopped resolving. |
 | `pack_failed` | `cfgd image pack` could not pack the image. |
 | `parent_not_found` | The profile named in `inherits` does not exist; `parent` names it. |
 | `parse_failed` | A document (config, module, plan) could not be parsed, or its shape contradicts the schema. |

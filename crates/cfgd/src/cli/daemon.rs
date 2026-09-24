@@ -603,6 +603,36 @@ mod tests {
     use super::*;
     use cfgd_core::test_helpers::test_printer as make_printer;
 
+    /// A system-scope refusal renders as one failure line plus the command that
+    /// gets past it, and reaches `-o json` under the verb's own kind with the
+    /// reason a script branches on. Built directly: the suite runs as root,
+    /// where the command never reaches the refusal.
+    #[test]
+    fn a_system_scope_refusal_renders_one_line_its_hint_and_its_reason() {
+        let err = || system_scope_needs_root("install_failed", "install", "linux", "cfgd.service");
+
+        let (printer, buf) =
+            cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+        crate::cli::error::render_cli_error(&printer, &err());
+        printer.flush();
+        let human = cfgd_core::test_helpers::captured_text(&buf);
+        assert_eq!(human.matches('✗').count(), 1, "one failure line: {human}");
+        assert!(
+            human.contains("sudo cfgd --scope system daemon install"),
+            "the refusal names the command past it: {human}"
+        );
+
+        let (printer, buf) =
+            cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
+        crate::cli::error::render_cli_error(&printer, &err());
+        printer.flush();
+        let json: serde_json::Value =
+            serde_json::from_str(&cfgd_core::test_helpers::captured_text(&buf))
+                .expect("json payload must parse");
+        assert_eq!(json["error"], "install_failed", "{json}");
+        assert_eq!(json["reason"], "insufficient_privileges", "{json}");
+    }
+
     fn make_status(running: bool) -> cfgd_core::daemon::DaemonStatusResponse {
         cfgd_core::daemon::DaemonStatusResponse {
             running,

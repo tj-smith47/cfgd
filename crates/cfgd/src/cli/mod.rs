@@ -46,7 +46,7 @@ pub(in crate::cli) use cfgd_core::reconciler::DecisionContents;
 pub use error::{
     CliErrorMeta, cli_error, cli_error_ctx, cli_error_ctx_with_hints,
     cli_error_ctx_with_hints_and_block, cli_error_with_hints, emit_not_found_ignored,
-    exit_code_for_anyhow, invalid_argument,
+    exit_code_for_anyhow, invalid_argument, invalid_argument_among,
 };
 pub use helpers::effective_config_file;
 pub(crate) use helpers::run_state_dir;
@@ -3098,10 +3098,16 @@ fn resolve_phase_filter(
     // accepted it and the matcher was written to serve both.
     legal.extend(reconciler::prerequisite_selectors(registry));
     if !legal.contains(&selector) {
-        return Err(refuse(format!(
+        let message = format!(
             "unknown selector '{selector}' for `--phase bootstrap`: legal values are {}",
             legal.join(", ")
-        )));
+        );
+        return Err(invalid_argument_among(
+            "--phase",
+            &format!("{token}.{selector}"),
+            &legal,
+            message,
+        ));
     }
     Ok(Some(PhaseFilter::Selector(name, selector)))
 }

@@ -204,3 +204,146 @@ fn a_refusal_names_its_fix_end_to_end_with_usage_hints_off() {
         "and it still names the way out: {stderr:?}"
     );
 }
+
+/// The `-o json` payload a refusal leaves on stdout, run against a valid
+/// config so each command reaches its own refusal rather than a missing file.
+fn json_refusal(dir: &std::path::Path, args: &[&str]) -> serde_json::Value {
+    create_valid_config(dir);
+    let out = cfgd_bin()
+        .unwrap()
+        .args(args)
+        .arg("--config")
+        .arg(dir.join("cfgd.yaml"))
+        .args(["-o", "json"])
+        .output()
+        .unwrap();
+    assert_ne!(out.status.code(), Some(0), "{args:?} must refuse");
+    parse_single_json(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// A refused flag value names the flag, repeats the value and, where the
+/// accepted words are a closed list, carries that list.
+#[test]
+fn an_unknown_context_names_its_flag_value_and_the_accepted_words_in_json() {
+    let dir = tempfile::tempdir().unwrap();
+    let v = json_refusal(dir.path(), &["apply", "--context", "bogus"]);
+    assert_eq!(
+        v,
+        serde_json::json!({
+            "error": "invalid_argument",
+            "name": "--context",
+            "flag": "--context",
+            "value": "bogus",
+            "valid": ["apply", "reconcile"],
+        })
+    );
+}
+
+/// An unknown `bootstrap.` selector carries the selectors that would have
+/// matched, cfgd's own groups and the managers alike.
+#[test]
+fn an_unknown_bootstrap_selector_names_the_selectors_it_accepts_in_json() {
+    let dir = tempfile::tempdir().unwrap();
+    let v = json_refusal(dir.path(), &["plan", "--phase", "bootstrap.nope"]);
+    assert_eq!(v["error"], "invalid_argument", "{v}");
+    assert_eq!(v["flag"], "--phase", "{v}");
+    assert_eq!(v["value"], "bootstrap.nope", "{v}");
+    let valid: Vec<&str> = v["valid"]
+        .as_array()
+        .unwrap_or_else(|| panic!("`valid` is a list: {v}"))
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .collect();
+    assert!(
+        valid.contains(&"managers") && valid.contains(&"apt"),
+        "`valid` lists cfgd's groups and the managers: {v}"
+    );
+}
+
+/// `--with-profile` with no `--module` is a flag missing its partner.
+#[test]
+fn with_profile_without_a_module_is_a_missing_argument_in_json() {
+    let dir = tempfile::tempdir().unwrap();
+    let v = json_refusal(dir.path(), &["plan", "--with-profile"]);
+    assert_eq!(
+        v,
+        serde_json::json!({
+            "error": "missing_argument",
+            "name": "--with-profile",
+            "flag": "--with-profile",
+            "requires": "--module",
+        })
+    );
+}
+
+/// A secret verb handed a file that is not there names the path it looked at.
+#[test]
+fn a_secret_verb_on_a_missing_file_is_not_found_with_its_path_in_json() {
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("absent.enc");
+    let v = json_refusal(
+        dir.path(),
+        &["secret", "encrypt", missing.to_str().unwrap()],
+    );
+    let path = cfgd_core::to_posix_string(&missing);
+    assert_eq!(
+        v,
+        serde_json::json!({ "error": "not_found", "name": &path, "path": &path })
+    );
+}
+
+/// An unknown `explain` field path names the resource it was read against and
+/// the fields available where the path stopped resolving.
+#[test]
+fn an_unknown_explain_field_path_names_the_fields_where_it_stopped_in_json() {
+    let dir = tempfile::tempdir().unwrap();
+    let v = json_refusal(dir.path(), &["explain", "profile.spec.packages.nope"]);
+    assert_eq!(v["error"], "not_found", "{v}");
+    assert_eq!(v["resource"], "profile", "{v}");
+    let available: Vec<&str> = v["available"]
+        .as_array()
+        .unwrap_or_else(|| panic!("`available` is a list: {v}"))
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .collect();
+    assert!(
+        available.contains(&"brew") && !available.contains(&"packages"),
+        "`available` lists the children of `spec.packages`, where resolution stopped: {v}"
+    );
+}
+
+/// A retired `status` switch is a refused flag like any other: it names the
+/// switch, carries the value clap read for it and the command that replaces it.
+#[test]
+fn a_retired_status_switch_names_its_flag_value_and_replacement_in_json() {
+    let dir = tempfile::tempdir().unwrap();
+    let v = json_refusal(dir.path(), &["status", "--show-all"]);
+    assert_eq!(
+        v,
+        serde_json::json!({
+            "error": "invalid_argument",
+            "name": "--show-all",
+            "flag": "--show-all",
+            "value": "true",
+            "replacement": "cfgd status -o wide",
+        })
+    );
+}
+
+/// A resource name refused at creation names the argument, repeats the name
+/// and says which kind of resource it was for.
+#[test]
+fn a_refused_resource_name_names_its_argument_and_value_in_json() {
+    let dir = tempfile::tempdir().unwrap();
+    let v = json_refusal(dir.path(), &["module", "create", "my mod"]);
+    assert_eq!(
+        v,
+        serde_json::json!({
+            "error": "invalid_argument",
+            "name": "my mod",
+            "flag": "name",
+            "value": "my mod",
+            "resource": "module",
+        })
+    );
+}

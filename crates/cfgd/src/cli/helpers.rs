@@ -1088,7 +1088,7 @@ pub(in crate::cli) fn validate_resource_name(name: &str, kind: &str) -> anyhow::
         name,
         "invalid_argument",
         refusal,
-        serde_json::json!({ "resource": kind.to_ascii_lowercase() }),
+        serde_json::json!({ "flag": "name", "value": name, "resource": kind.to_ascii_lowercase() }),
     ))
 }
 

@@ -147,11 +147,18 @@ pub(super) fn parse_reconcile_context(raw: &str) -> anyhow::Result<ReconcileCont
     match raw {
         "apply" => Ok(ReconcileContext::Apply),
         "reconcile" => Ok(ReconcileContext::Reconcile),
-        other => Err(super::invalid_argument(
-            "--context",
-            other,
-            format!("Unknown context '{other}'. Valid values: apply, reconcile"),
-        )),
+        other => {
+            let valid = ["apply", "reconcile"];
+            Err(super::invalid_argument_among(
+                "--context",
+                other,
+                &valid,
+                format!(
+                    "Unknown context '{other}'. Valid values: {}",
+                    valid.join(", ")
+                ),
+            ))
+        }
     }
 }
 

@@ -96,6 +96,23 @@ pub fn invalid_argument(flag: &str, value: &str, message: impl Into<String>) -> 
     )
 }
 
+/// [`invalid_argument`] for a flag whose accepted values are a closed list,
+/// carried as `valid` so a script offers the choices the sentence names.
+pub fn invalid_argument_among<S: AsRef<str>>(
+    flag: &str,
+    value: &str,
+    valid: &[S],
+    message: impl Into<String>,
+) -> anyhow::Error {
+    let valid: Vec<&str> = valid.iter().map(AsRef::as_ref).collect();
+    cli_error(
+        flag,
+        "invalid_argument",
+        message,
+        serde_json::json!({ "flag": flag, "value": value, "valid": valid }),
+    )
+}
+
 /// Like [`cli_error`] but also carries human-mode remediation `hints` (the old
 /// site attached them via `Doc::hint(...)`).
 pub fn cli_error_with_hints(

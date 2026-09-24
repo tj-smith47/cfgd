@@ -3070,7 +3070,9 @@ pub(super) fn retired_status_flag_error(flag: &LegacyStatusFlag) -> anyhow::Erro
         *spelling,
         "invalid_argument",
         format!("{reason}; run `{replacement}` instead."),
-        serde_json::json!({ "replacement": replacement }),
+        // A retired switch carries no value of its own; `true` is how clap
+        // reads a switch that was given.
+        serde_json::json!({ "flag": spelling, "value": "true", "replacement": replacement }),
         vec![cfgd_core::output::HintCommands::new(
             "Run this instead:",
             [replacement.to_string()],

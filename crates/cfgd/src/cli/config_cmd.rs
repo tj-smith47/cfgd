@@ -267,13 +267,10 @@ fn empty_segment(path: &str) -> anyhow::Error {
 
 /// The refusal a config document with no `spec` section earns from a verb
 /// that writes under it: the document's shape, not the key, is what is wrong.
-fn missing_spec_section(config_path: &Path) -> anyhow::Error {
-    crate::cli::cli_error(
-        cfgd_core::to_posix_string(config_path),
-        "parse_failed",
-        "config has no 'spec' section",
-        serde_json::json!({ "path": cfgd_core::to_posix_string(config_path) }),
-    )
+pub(in crate::cli) fn missing_spec_section(config_path: &Path) -> anyhow::Error {
+    let path = cfgd_core::to_posix_string(config_path);
+    let extras = serde_json::json!({ "path": &path });
+    crate::cli::cli_error(path, "parse_failed", "config has no 'spec' section", extras)
 }
 
 /// The refusal a descent blocked at `path` earns, where `asked` is the path
@@ -414,16 +411,11 @@ pub(super) fn walk_yaml_path_mut<'a>(
         // An absent key and a `daemon:` holding nothing (Null, which is also
         // how a serialized `None` section reads back) both mean there is no
         // section here yet, so both get a fresh mapping to descend into.
-        if matches!(map.get(&key), None | Some(serde_yaml::Value::Null)) {
-            map.insert(
-                key.clone(),
-                serde_yaml::Value::Mapping(serde_yaml::Mapping::new()),
-            );
+        let slot = map.entry(key).or_insert(serde_yaml::Value::Null);
+        if slot.is_null() {
+            *slot = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
         }
-        current = map
-            .get_mut(&key)
-            // untyped-ok: the key was inserted two lines above, so no input reaches this.
-            .ok_or_else(|| anyhow::anyhow!("failed to create intermediate mapping"))?;
+        current = slot;
     }
 
     promote_scalar_union(current, &segments[..segments.len() - 1]);

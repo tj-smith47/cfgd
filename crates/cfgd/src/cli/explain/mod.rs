@@ -976,7 +976,19 @@ pub(super) fn cmd_explain(
             let message = format!(
                 "Unknown field path '{asked}'. Run `cfgd explain {resource_name}` to see available fields."
             );
-            crate::cli::cli_error(asked, "not_found", message, serde_json::json!({}))
+            // The fields at the deepest prefix that did resolve, which is where
+            // the reader's path went wrong.
+            let reached = (0..field_path.len())
+                .rev()
+                .find_map(|depth| resolve_field_path(&schema.fields, &field_path[..depth]))
+                .unwrap_or(&schema.fields);
+            let available: Vec<&str> = reached.iter().map(|f| f.name.as_str()).collect();
+            crate::cli::cli_error(
+                asked,
+                "not_found",
+                message,
+                serde_json::json!({ "resource": resource_name, "available": available }),
+            )
         })?;
         build_explain_drilldown_doc(schema, field_path, fields, recursive)
     };
