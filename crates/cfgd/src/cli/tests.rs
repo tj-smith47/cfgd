@@ -51977,7 +51977,13 @@ fn reaches_a_yaml_section(lines: &[&str], i: usize) -> bool {
     let bound_mutably: Vec<String> = (fn_start..i)
         .filter(|&k| lines[k].contains("_mut("))
         .filter_map(|k| {
-            let after = lines[k].split_once("let ")?.1.trim_start_matches("mut ");
+            // rustfmt wraps a long `let v =` onto its own line above the call.
+            let binding = if lines[k].contains("let ") || k == fn_start {
+                lines[k]
+            } else {
+                lines[k - 1]
+            };
+            let after = binding.split_once("let ")?.1.trim_start_matches("mut ");
             let after = after.strip_prefix("Some(").unwrap_or(after);
             let ident: String = after
                 .chars()
@@ -52053,6 +52059,8 @@ fn every_section_reach_shape_is_seen_by_the_section_walk() {
     assert_eq!(reaches(bound_earlier), [3]);
     let matched_earlier = "fn f(m: &mut serde_yaml::Mapping) {\n    let v = m.get_mut(\"spec\").unwrap();\n    match v {\n        serde_yaml::Value::Mapping(inner) => inner.clear(),\n        _ => {}\n    }\n}";
     assert_eq!(reaches(matched_earlier), [4]);
+    let wrapped_earlier = "fn f(m: &mut serde_yaml::Mapping) {\n    let v =\n        m.get_mut(\"spec\").unwrap();\n    if let serde_yaml::Value::Mapping(inner) = v { inner.clear(); }\n}";
+    assert_eq!(reaches(wrapped_earlier), [4]);
     let read_earlier = "fn f(m: &serde_yaml::Mapping) -> bool {\n    let v = m.get(\"spec\").unwrap();\n    if let serde_yaml::Value::Mapping(inner) = v { return inner.is_empty(); }\n    false\n}";
     assert_eq!(reaches(read_earlier), Vec::<usize>::new());
     let read_only = "fn f(doc: &serde_yaml::Value) -> bool {\n    match doc {\n        serde_yaml::Value::Mapping(map) => map.is_empty(),\n        serde_yaml::Value::Sequence(_) => true,\n        _ => false,\n    }\n}";
