@@ -51426,7 +51426,10 @@ fn imported_from(stmt: &str, ident: &str) -> Option<String> {
 
 /// Resolves a call written in one CLI file to the files defining what it calls.
 struct CallResolver<'a> {
+    /// Free functions: name -> the files defining one.
     definers: std::collections::BTreeMap<&'a str, std::collections::BTreeSet<&'a str>>,
+    /// Functions declared inside an `impl` or `trait` block: name -> files.
+    methods: std::collections::BTreeMap<&'a str, std::collections::BTreeSet<&'a str>>,
     files: std::collections::BTreeSet<&'a str>,
     uses: &'a std::collections::BTreeMap<String, Vec<String>>,
 }
@@ -51435,7 +51438,7 @@ impl CallResolver<'_> {
     /// The files a module path segment written in `from` names.
     fn module_files(&self, from: &str, module: &str) -> Vec<String> {
         match module {
-            "self" | "Self" => vec![from.to_string()],
+            "self" => vec![from.to_string()],
             "super" => super_files_of(from).into(),
             _ => self
                 .files
@@ -51444,6 +51447,19 @@ impl CallResolver<'_> {
                 .map(|f| f.to_string())
                 .collect(),
         }
+    }
+
+    /// The files defining a method `ident` a call in `file` can reach: the
+    /// file's own when it has one, else every file declaring a method of that
+    /// name, since the receiver's type is not read.
+    fn methods_for(&self, file: &str, ident: &str) -> Vec<String> {
+        let Some(files) = self.methods.get(ident) else {
+            return Vec::new();
+        };
+        if files.contains(file) {
+            return vec![file.to_string()];
+        }
+        files.iter().map(|f| f.to_string()).collect()
     }
 
     /// The definitions of `ident` visible in `file`: its own, else the ones its
@@ -51472,32 +51488,40 @@ impl CallResolver<'_> {
     }
 }
 
-/// For each function `(file, name)` in `spans`, the `(file, function)` of every
-/// body calling it. A call resolves through the module path it is written with
-/// (`helpers::parse(..)`), else to the caller's own file when that file defines
-/// the name, else through the `use` statements importing it (named or glob,
-/// followed through re-exports), and only when none of those reaches a
-/// definition, to every same-named one. Keying callers by the definition keeps
-/// a reached function from vouching for a same-named one in another file that
-/// nothing calls.
+/// For each function `(file, name)` in `spans` (the last field marks one
+/// declared in an `impl` or `trait` block), the `(file, function)` of every
+/// body calling it. A receiver call (`x.name(..)`) or a type-qualified one
+/// (`Self::name(..)`) resolves only to methods. Any other call resolves to a
+/// free function: through the module path it is written with
+/// (`helpers::parse(..)`), else to the caller's own file when that file
+/// defines the name, else through the `use` statements importing it (named or
+/// glob, followed through re-exports). A call none of those resolves adds no
+/// caller, so a helper nothing calls stays uncalled whatever else shares its
+/// name.
 fn callers_by_definition(
-    spans: &[(String, String, String)],
+    spans: &[(String, String, String, bool)],
     uses: &std::collections::BTreeMap<String, Vec<String>>,
 ) -> std::collections::BTreeMap<(String, String), std::collections::BTreeSet<(String, String)>> {
     let mut resolver = CallResolver {
         definers: std::collections::BTreeMap::new(),
+        methods: std::collections::BTreeMap::new(),
         files: uses.keys().map(String::as_str).collect(),
         uses,
     };
-    for (file, name, _) in spans {
-        resolver.definers.entry(name).or_default().insert(file);
+    for (file, name, _, is_method) in spans {
+        let by_name = if *is_method {
+            &mut resolver.methods
+        } else {
+            &mut resolver.definers
+        };
+        by_name.entry(name).or_default().insert(file);
         resolver.files.insert(file);
     }
     let mut callers: std::collections::BTreeMap<
         (String, String),
         std::collections::BTreeSet<(String, String)>,
     > = std::collections::BTreeMap::new();
-    for (file, caller, span) in spans {
+    for (file, caller, span, _) in spans {
         let mut at = 0;
         while at < span.len() {
             let rest = &span[at..];
@@ -51509,21 +51533,26 @@ fn callers_by_definition(
                 .unwrap_or(rest.len() - start);
             let (begin, ident) = (at + start, &rest[start..start + len]);
             at = begin + len;
-            let Some(candidates) = resolver.definers.get(ident) else {
+            if !resolver.definers.contains_key(ident) && !resolver.methods.contains_key(ident) {
                 continue;
-            };
-            let mut seen = std::collections::BTreeSet::new();
-            let mut resolved: Vec<String> = match path_segment_before(&span[..begin]) {
-                Some(module) => resolver
-                    .module_files(file, &module)
-                    .iter()
-                    .flat_map(|m| resolver.visible_in(m, ident, &mut seen))
-                    .collect(),
-                None => resolver.visible_in(file, ident, &mut seen),
-            };
-            if resolved.is_empty() {
-                resolved = candidates.iter().map(|f| f.to_string()).collect();
             }
+            let mut seen = std::collections::BTreeSet::new();
+            let qualifier = path_segment_before(&span[..begin]);
+            let resolved: Vec<String> = if span[..begin].ends_with('.') {
+                resolver.methods_for(file, ident)
+            } else {
+                match qualifier {
+                    Some(q) if q.starts_with(|c: char| c.is_ascii_uppercase()) => {
+                        resolver.methods_for(file, ident)
+                    }
+                    Some(module) => resolver
+                        .module_files(file, &module)
+                        .iter()
+                        .flat_map(|m| resolver.visible_in(m, ident, &mut seen))
+                        .collect(),
+                    None => resolver.visible_in(file, ident, &mut seen),
+                }
+            };
             for target in resolved {
                 if (target.as_str(), ident) != (file.as_str(), caller.as_str()) {
                     callers
@@ -51539,8 +51568,12 @@ fn callers_by_definition(
 
 #[test]
 fn a_call_reaches_the_definition_its_file_resolves_it_to() {
-    let span =
-        |file: &str, name: &str, code: &str| (file.to_string(), name.to_string(), code.to_string());
+    let span = |file: &str, name: &str, code: &str| {
+        (file.to_string(), name.to_string(), code.to_string(), false)
+    };
+    let method = |file: &str, name: &str, code: &str| {
+        (file.to_string(), name.to_string(), code.to_string(), true)
+    };
     let spans = [
         span("src/cli/a.rs", "helper", "fn helper() {}\n"),
         span("src/cli/b.rs", "helper", "fn helper() {}\n"),
@@ -51591,15 +51624,47 @@ fn a_call_reaches_the_definition_its_file_resolves_it_to() {
     assert_eq!(of("src/cli/f/mod.rs"), ["cmd_g".into()].into());
     assert_eq!(of("src/cli/h/mod.rs"), ["cmd_i".into()].into());
 
+    // Each caller below names `helper` in a way that resolves to no free
+    // function in a.rs: a receiver or type-qualified call (in a.rs itself and
+    // elsewhere), a same-named definition in another file, and a bare mention
+    // in a file that neither defines nor imports it.
     let orphan = [
         span("src/cli/a.rs", "helper", "fn helper() {}\n"),
+        span(
+            "src/cli/a.rs",
+            "cmd_a",
+            "fn cmd_a() { x.helper(); Self::helper(); }\n",
+        ),
         span("src/cli/b.rs", "helper", "fn helper() {}\n"),
         span("src/cli/b.rs", "cmd_b", "fn cmd_b() { helper(); }\n"),
+        span("src/cli/c.rs", "cmd_c", "fn cmd_c() { x.helper(); }\n"),
+        span(
+            "src/cli/z.rs",
+            "cmd_z",
+            "fn cmd_z() { helper(); Item::helper(); }\n",
+        ),
+        method("src/cli/m.rs", "render", "fn render(&self) {}\n"),
+        span("src/cli/o.rs", "render", "fn render() {}\n"),
+        span("src/cli/n.rs", "cmd_n", "fn cmd_n() { x.render(); }\n"),
     ];
     let callers = callers_by_definition(&orphan, &Default::default());
+    let callers_of = |file: &str, name: &str| {
+        callers
+            .get(&(file.to_string(), name.to_string()))
+            .cloned()
+            .unwrap_or_default()
+    };
     assert!(
-        !callers.contains_key(&("src/cli/a.rs".to_string(), "helper".to_string())),
+        callers_of("src/cli/a.rs", "helper").is_empty(),
         "{callers:?}"
+    );
+    assert!(
+        callers_of("src/cli/o.rs", "render").is_empty(),
+        "{callers:?}"
+    );
+    assert_eq!(
+        callers_of("src/cli/m.rs", "render"),
+        [("src/cli/n.rs".to_string(), "cmd_n".to_string())].into()
     );
 }
 
@@ -51667,7 +51732,8 @@ fn every_refused_flag_is_spelled_the_way_help_prints_it() {
     // (file, spelling, the function it is written in)
     let mut spellings: Vec<(String, String, Option<String>)> = Vec::new();
     // (file, function, its code)
-    let mut spans: Vec<(String, String, String)> = Vec::new();
+    // (file, function, its code, declared in an `impl` or `trait` block)
+    let mut spans: Vec<(String, String, String, bool)> = Vec::new();
     // file -> its `use` statements
     let mut uses: std::collections::BTreeMap<String, Vec<String>> =
         std::collections::BTreeMap::new();
@@ -51683,16 +51749,49 @@ fn every_refused_flag_is_spelled_the_way_help_prints_it() {
                 .map(str::to_string)
         };
         let mut declared: Vec<(usize, String)> = Vec::new();
+        let mut in_impl: Vec<bool> = Vec::new();
         let mut offset = 0;
+        let mut depth = 0usize;
+        let mut impl_depths: Vec<usize> = Vec::new();
+        let mut opens_impl = false;
         for line in code.split_inclusive('\n') {
             if let Some(name) = cfgd_core::test_helpers::declared_fn_name(line) {
                 declared.push((offset, name));
+                in_impl.push(!impl_depths.is_empty());
+            }
+            if matches!(
+                cfgd_core::test_helpers::item_keyword(line),
+                "impl" | "trait"
+            ) {
+                opens_impl = true;
+            }
+            for c in line.chars() {
+                match c {
+                    '{' => {
+                        if std::mem::take(&mut opens_impl) {
+                            impl_depths.push(depth);
+                        }
+                        depth += 1;
+                    }
+                    '}' => {
+                        depth = depth.saturating_sub(1);
+                        if impl_depths.last() == Some(&depth) {
+                            impl_depths.pop();
+                        }
+                    }
+                    _ => {}
+                }
             }
             offset += line.len();
         }
         for (i, (start, name)) in declared.iter().enumerate() {
             let end = declared.get(i + 1).map_or(code.len(), |(next, _)| *next);
-            spans.push((file.clone(), name.clone(), code[*start..end].to_string()));
+            spans.push((
+                file.clone(),
+                name.clone(),
+                code[*start..end].to_string(),
+                in_impl[i],
+            ));
         }
         uses.insert(file.clone(), use_statements(&code));
         let enclosing = |at: usize| {
