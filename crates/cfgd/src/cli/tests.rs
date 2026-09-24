@@ -48002,8 +48002,7 @@ fn every_real_host_script_is_reachable_from_ci() {
 /// `task test:freebsd` is the local run of CI's FreeBSD leg, so the guest it
 /// prepares holds what the vmactions `prepare:` installs: the same packages,
 /// the same `safe.directory` trust, and a synced tree that keeps `.git`. The
-/// two are written by hand in two files, and the local one had fallen behind
-/// before this compared them.
+/// two are written by hand in two files, so this test holds them to one list.
 #[test]
 fn the_local_freebsd_leg_prepares_the_guest_ci_prepares() {
     /// A package CI's guest installs that the local leg does not need, with
