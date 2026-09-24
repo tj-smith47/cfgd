@@ -51348,6 +51348,210 @@ fn command_for_fn<'a>(root: &'a clap::Command, fn_name: &str) -> Option<&'a clap
     (i > 0).then_some(cmd)
 }
 
+/// The `use` statements in `code`, each as one string however rustfmt wrapped it.
+fn use_statements(code: &str) -> Vec<String> {
+    code.split(';')
+        .filter_map(|stmt| {
+            let stmt = stmt.trim_start();
+            let after_vis = stmt
+                .strip_prefix("pub(crate) ")
+                .or_else(|| stmt.strip_prefix("pub(super) "))
+                .or_else(|| stmt.strip_prefix("pub(in crate::cli) "))
+                .or_else(|| stmt.strip_prefix("pub "))
+                .unwrap_or(stmt);
+            after_vis.starts_with("use ").then(|| after_vis.to_string())
+        })
+        .collect()
+}
+
+/// The module a CLI source file is: its stem, or its directory for a `mod.rs`.
+fn module_name_of(file: &str) -> &str {
+    let path = std::path::Path::new(file);
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default();
+    if stem == "mod" {
+        path.parent()
+            .and_then(|d| d.file_name())
+            .and_then(|d| d.to_str())
+            .unwrap_or_default()
+    } else {
+        stem
+    }
+}
+
+/// The files `super` names from `file`: the parent module's `mod.rs` or `<dir>.rs`.
+fn super_files_of(file: &str) -> [String; 2] {
+    let own = file
+        .strip_suffix("/mod.rs")
+        .or_else(|| file.strip_suffix(".rs"))
+        .unwrap_or(file);
+    let parent = own.rsplit_once('/').map_or("", |(dir, _)| dir);
+    [format!("{parent}/mod.rs"), format!("{parent}.rs")]
+}
+
+/// For each function `(file, name)` in `spans`, the `(file, function)` of every
+/// body calling it. A call resolves to the caller's own file when that file
+/// defines the name, else through the module path it is written with
+/// (`helpers::parse(..)`) or the `use` importing it, and only when neither
+/// names a module, to every same-named definition. Keying callers by the
+/// definition keeps a reached function from vouching for a same-named one in
+/// another file that nothing calls.
+fn callers_by_definition(
+    spans: &[(String, String, String)],
+    uses: &std::collections::BTreeMap<String, Vec<String>>,
+) -> std::collections::BTreeMap<(String, String), std::collections::BTreeSet<(String, String)>> {
+    let is_ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let mut definers: std::collections::BTreeMap<&str, std::collections::BTreeSet<&str>> =
+        std::collections::BTreeMap::new();
+    for (file, name, _) in spans {
+        definers.entry(name).or_default().insert(file);
+    }
+    let in_module =
+        |caller_file: &str, module: &str, candidates: &std::collections::BTreeSet<&str>| {
+            let hits: Vec<String> = match module {
+                "self" => vec![caller_file.to_string()],
+                "super" => super_files_of(caller_file).into(),
+                _ => candidates
+                    .iter()
+                    .filter(|f| module_name_of(f) == module)
+                    .map(|f| f.to_string())
+                    .collect(),
+            };
+            hits.into_iter()
+                .filter(|f| candidates.contains(f.as_str()))
+                .collect::<Vec<_>>()
+        };
+    let segment_before = |text: &str| -> Option<String> {
+        let path = text.trim_end().strip_suffix("::")?;
+        let seg: String = path
+            .chars()
+            .rev()
+            .take_while(|c| is_ident(*c))
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        (!seg.is_empty()).then_some(seg)
+    };
+    let mut callers: std::collections::BTreeMap<
+        (String, String),
+        std::collections::BTreeSet<(String, String)>,
+    > = std::collections::BTreeMap::new();
+    for (file, caller, span) in spans {
+        let mut at = 0;
+        while at < span.len() {
+            let rest = &span[at..];
+            let Some(start) = rest.find(is_ident) else {
+                break;
+            };
+            let len = rest[start..]
+                .find(|c: char| !is_ident(c))
+                .unwrap_or(rest.len() - start);
+            let (begin, ident) = (at + start, &rest[start..start + len]);
+            at = begin + len;
+            let Some(candidates) = definers.get(ident) else {
+                continue;
+            };
+            let resolved: Vec<String> = if let Some(module) = segment_before(&span[..begin]) {
+                in_module(file, &module, candidates)
+            } else if candidates.contains(file.as_str()) {
+                vec![file.clone()]
+            } else {
+                uses.get(file)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|stmt| {
+                        let pos = stmt
+                            .match_indices(ident)
+                            .find(|(p, _)| {
+                                !stmt[..*p].ends_with(is_ident)
+                                    && !stmt[p + ident.len()..].starts_with(is_ident)
+                            })?
+                            .0;
+                        let before = &stmt[..pos];
+                        segment_before(before).or_else(|| {
+                            let mut depth = 0;
+                            let open = before.char_indices().rev().find(|(_, c)| {
+                                match c {
+                                    '}' => depth += 1,
+                                    '{' if depth == 0 => return true,
+                                    '{' => depth -= 1,
+                                    _ => {}
+                                }
+                                false
+                            })?;
+                            segment_before(&before[..open.0])
+                        })
+                    })
+                    .flat_map(|module| in_module(file, &module, candidates))
+                    .collect()
+            };
+            let resolved = if resolved.is_empty() {
+                candidates.iter().map(|f| f.to_string()).collect()
+            } else {
+                resolved
+            };
+            for target in resolved {
+                if (target.as_str(), ident) != (file.as_str(), caller.as_str()) {
+                    callers
+                        .entry((target, ident.to_string()))
+                        .or_default()
+                        .insert((file.clone(), caller.clone()));
+                }
+            }
+        }
+    }
+    callers
+}
+
+#[test]
+fn a_call_reaches_the_definition_its_file_resolves_it_to() {
+    let span =
+        |file: &str, name: &str, code: &str| (file.to_string(), name.to_string(), code.to_string());
+    let spans = [
+        span("src/cli/a.rs", "helper", "fn helper() {}\n"),
+        span("src/cli/b.rs", "helper", "fn helper() {}\n"),
+        span("src/cli/b.rs", "cmd_b", "fn cmd_b() { helper(); }\n"),
+        span("src/cli/c.rs", "cmd_c", "fn cmd_c() { b::helper(); }\n"),
+        span("src/cli/d/mod.rs", "cmd_d", "fn cmd_d() { helper(); }\n"),
+        span(
+            "src/cli/d/e.rs",
+            "cmd_e",
+            "fn cmd_e() { super::super::a::helper(); }\n",
+        ),
+    ];
+    let uses = [(
+        "src/cli/d/mod.rs".to_string(),
+        use_statements("use super::{\n    a::{helper, other},\n    b::unrelated,\n};\n"),
+    )]
+    .into();
+    let callers = callers_by_definition(&spans, &uses);
+    let of = |file: &str| {
+        callers
+            .get(&(file.to_string(), "helper".to_string()))
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(_, caller)| caller)
+            .collect::<std::collections::BTreeSet<_>>()
+    };
+    assert_eq!(of("src/cli/a.rs"), ["cmd_d".into(), "cmd_e".into()].into());
+    assert_eq!(of("src/cli/b.rs"), ["cmd_b".into(), "cmd_c".into()].into());
+
+    let orphan = [
+        span("src/cli/a.rs", "helper", "fn helper() {}\n"),
+        span("src/cli/b.rs", "helper", "fn helper() {}\n"),
+        span("src/cli/b.rs", "cmd_b", "fn cmd_b() { helper(); }\n"),
+    ];
+    let callers = callers_by_definition(&orphan, &Default::default());
+    assert!(
+        !callers.contains_key(&("src/cli/a.rs".to_string(), "helper".to_string())),
+        "{callers:?}"
+    );
+}
+
 /// Every flag an `invalid_argument` refusal names is one `--help` prints for
 /// the command refusing it: a long flag, or a positional's value name in the
 /// brackets clap prints for it. A refusal written in the function implementing
@@ -51411,13 +51615,11 @@ fn every_refused_flag_is_spelled_the_way_help_prints_it() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     // (file, spelling, the function it is written in)
     let mut spellings: Vec<(String, String, Option<String>)> = Vec::new();
-    // callee -> (file, function) of every function whose body names it
-    let mut callers: std::collections::BTreeMap<
-        String,
-        std::collections::BTreeSet<(String, String)>,
-    > = std::collections::BTreeMap::new();
     // (file, function, its code)
     let mut spans: Vec<(String, String, String)> = Vec::new();
+    // file -> its `use` statements
+    let mut uses: std::collections::BTreeMap<String, Vec<String>> =
+        std::collections::BTreeMap::new();
     for (path, body) in &bodies {
         let file = cfgd_core::to_posix_string(path.strip_prefix(root).unwrap_or(path));
         let code = blank_non_code(body);
@@ -51441,6 +51643,7 @@ fn every_refused_flag_is_spelled_the_way_help_prints_it() {
             let end = declared.get(i + 1).map_or(code.len(), |(next, _)| *next);
             spans.push((file.clone(), name.clone(), code[*start..end].to_string()));
         }
+        uses.insert(file.clone(), use_statements(&code));
         let enclosing = |at: usize| {
             declared
                 .iter()
@@ -51496,18 +51699,7 @@ fn every_refused_flag_is_spelled_the_way_help_prints_it() {
         short.join("\n")
     );
 
-    let known: std::collections::BTreeSet<&str> =
-        spans.iter().map(|(_, n, _)| n.as_str()).collect();
-    for (file, caller, span) in &spans {
-        for ident in span.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')) {
-            if ident != caller && known.contains(ident) {
-                callers
-                    .entry(ident.to_string())
-                    .or_default()
-                    .insert((file.clone(), caller.clone()));
-            }
-        }
-    }
+    let callers = callers_by_definition(&spans, &uses);
 
     // A spelling written inside the function implementing one subcommand is
     // held to that subcommand's own `--help`; one in a helper, to the `--help`
@@ -51522,11 +51714,11 @@ fn every_refused_flag_is_spelled_the_way_help_prints_it() {
         };
         command_for_fn(root, function)
     };
-    let commands_reaching = |helper: &str| {
+    let commands_reaching = |file: &str, helper: &str| {
         let mut reached: std::collections::BTreeMap<String, &clap::Command> =
             std::collections::BTreeMap::new();
         let mut seen = std::collections::BTreeSet::new();
-        let mut queue = vec![helper.to_string()];
+        let mut queue = vec![(file.to_string(), helper.to_string())];
         while let Some(callee) = queue.pop() {
             for (file, caller) in callers.get(&callee).into_iter().flatten() {
                 if !seen.insert((file.clone(), caller.clone())) {
@@ -51539,7 +51731,7 @@ fn every_refused_flag_is_spelled_the_way_help_prints_it() {
                             cmd,
                         );
                     }
-                    None => queue.push(caller.clone()),
+                    None => queue.push((file.clone(), caller.clone())),
                 }
             }
         }
@@ -51560,7 +51752,10 @@ fn every_refused_flag_is_spelled_the_way_help_prints_it() {
             }
             continue;
         }
-        let reached = within.as_deref().map(commands_reaching).unwrap_or_default();
+        let reached = within
+            .as_deref()
+            .map(|f| commands_reaching(file, f))
+            .unwrap_or_default();
         if reached.is_empty() {
             offenders.push(format!(
                 "{at}: {flag:?} is written in a function no subcommand reaches"
