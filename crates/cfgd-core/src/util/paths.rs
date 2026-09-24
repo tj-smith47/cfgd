@@ -428,13 +428,11 @@ pub fn move_file(src: &std::path::Path, dst: &std::path::Path) -> std::io::Resul
 /// location that held both the state DB and the `sources/` cache before they
 /// moved to independent state and cache roots.
 ///
-/// Reproduced here (rather than inlined at the migration call site) so the
-/// startup migration and its tests share one definition. This is the legacy
-/// *default* only: it never honors `CFGD_STATE_DIR`/`CFGD_CACHE_DIR` (those are
-/// overrides, not the legacy default). Pure path logic — touches no filesystem.
+/// Defined here so the startup migration and its tests share one definition.
+/// This is the legacy *default* only: it never honors the `CFGD_STATE_DIR` or
+/// `CFGD_CACHE_DIR` overrides. Pure path logic; touches no filesystem.
 ///
-/// Resolved from the environment, never from a platform lookup that ignores
-/// it:
+/// Resolved from environment variables:
 /// - macOS: `~/Library/Application Support/cfgd`
 /// - Windows: `%LOCALAPPDATA%\cfgd` when that is an absolute path, else
 ///   `%USERPROFILE%\AppData\Local\cfgd`
