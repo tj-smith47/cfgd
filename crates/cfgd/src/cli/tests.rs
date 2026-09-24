@@ -51388,8 +51388,9 @@ fn super_files_of(file: &str) -> [String; 2] {
 /// For each function `(file, name)` in `spans`, the `(file, function)` of every
 /// body calling it. A call resolves to the caller's own file when that file
 /// defines the name, else through the module path it is written with
-/// (`helpers::parse(..)`) or the `use` importing it, and only when neither
-/// names a module, to every same-named definition. Keying callers by the
+/// (`helpers::parse(..)`), the `use` importing it or a glob `use` of its
+/// module, and only when none of those names a module, to every same-named
+/// definition. Keying callers by the
 /// definition keeps a reached function from vouching for a same-named one in
 /// another file that nothing calls.
 fn callers_by_definition(
@@ -51480,7 +51481,17 @@ fn callers_by_definition(
                         })
                     })
                     .flat_map(|module| in_module(file, &module, candidates))
+                    .collect::<Vec<_>>()
+            };
+            let resolved = if resolved.is_empty() {
+                uses.get(file)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|stmt| segment_before(stmt.trim_end().strip_suffix('*')?))
+                    .flat_map(|module| in_module(file, &module, candidates))
                     .collect()
+            } else {
+                resolved
             };
             let resolved = if resolved.is_empty() {
                 candidates.iter().map(|f| f.to_string()).collect()
@@ -51515,11 +51526,19 @@ fn a_call_reaches_the_definition_its_file_resolves_it_to() {
             "cmd_e",
             "fn cmd_e() { super::super::a::helper(); }\n",
         ),
+        span("src/cli/f/mod.rs", "helper", "fn helper() {}\n"),
+        span("src/cli/f/g.rs", "cmd_g", "fn cmd_g() { helper(); }\n"),
     ];
-    let uses = [(
-        "src/cli/d/mod.rs".to_string(),
-        use_statements("use super::{\n    a::{helper, other},\n    b::unrelated,\n};\n"),
-    )]
+    let uses = [
+        (
+            "src/cli/d/mod.rs".to_string(),
+            use_statements("use super::{\n    a::{helper, other},\n    b::unrelated,\n};\n"),
+        ),
+        (
+            "src/cli/f/g.rs".to_string(),
+            use_statements("use super::*;\n"),
+        ),
+    ]
     .into();
     let callers = callers_by_definition(&spans, &uses);
     let of = |file: &str| {
@@ -51533,6 +51552,7 @@ fn a_call_reaches_the_definition_its_file_resolves_it_to() {
     };
     assert_eq!(of("src/cli/a.rs"), ["cmd_d".into(), "cmd_e".into()].into());
     assert_eq!(of("src/cli/b.rs"), ["cmd_b".into(), "cmd_c".into()].into());
+    assert_eq!(of("src/cli/f/mod.rs"), ["cmd_g".into()].into());
 
     let orphan = [
         span("src/cli/a.rs", "helper", "fn helper() {}\n"),
