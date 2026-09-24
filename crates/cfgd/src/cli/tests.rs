@@ -51597,6 +51597,98 @@ fn every_refused_flag_is_spelled_the_way_help_prints_it() {
 /// read off the line or the comment block directly above it.
 const SECTION_WRITE_HATCH: &str = "section-write-ok:";
 
+/// Whether code line `i` reaches into a YAML section to write it: a mutable
+/// accessor (`as_mapping_mut`, `as_sequence_mut`), an index assignment, a
+/// `Value::Mapping(map)` / `Value::Sequence(seq)` pattern bound on a `&mut`,
+/// or a `*slot =` through a binding a `get_mut(..)` produced. `lines` is the
+/// file's code with strings and comments blanked.
+fn reaches_a_yaml_section(lines: &[&str], i: usize) -> bool {
+    let line = lines[i];
+    if line.contains("as_mapping_mut")
+        || line.contains("as_sequence_mut")
+        || (line.contains("\"] =") && !line.contains("\"] =="))
+    {
+        return true;
+    }
+    let fn_start = (0..=i)
+        .rev()
+        .find(|&k| cfgd_core::test_helpers::declared_fn_name(lines[k]).is_some())
+        .unwrap_or(0);
+    let signature: String = lines[fn_start..=i]
+        .iter()
+        .take_while(|l| !l.contains('{'))
+        .chain(lines[fn_start..=i].iter().find(|l| l.contains('{')))
+        .copied()
+        .collect();
+    let holds_mut_value = signature.contains("&mut serde_yaml::Value")
+        || signature.contains("&mut Value")
+        || line.contains("&mut")
+        || line.contains("ref mut")
+        || line.contains("_mut(");
+
+    let binds_a_section = ["Value::Mapping(", "Value::Sequence("].iter().any(|pat| {
+        line.match_indices(pat).any(|(at, _)| {
+            let bound: String = line[at + pat.len()..]
+                .trim_start_matches("ref mut ")
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect();
+            !bound.is_empty() && bound != "_"
+        })
+    }) && (line.contains("=>") || line.contains("let "));
+    if binds_a_section && holds_mut_value {
+        return true;
+    }
+
+    let deref_target = line.trim_start().strip_prefix('*').and_then(|rest| {
+        let ident: String = rest
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect();
+        let after = rest[ident.len()..].trim_start();
+        (!ident.is_empty() && after.starts_with('=') && !after.starts_with("==")).then_some(ident)
+    });
+    deref_target.is_some_and(|ident| {
+        let names = |l: &str| {
+            l.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .any(|w| w == ident)
+        };
+        (fn_start..i).any(|k| {
+            lines[k].contains("get_mut(")
+                && (names(lines[k]) || (k > fn_start && names(lines[k - 1])))
+        })
+    })
+}
+
+#[test]
+fn every_section_reach_shape_is_seen_by_the_section_walk() {
+    let reaches = |src: &str| -> Vec<usize> {
+        let lines: Vec<&str> = src.lines().collect();
+        (0..lines.len())
+            .filter(|&i| reaches_a_yaml_section(&lines, i))
+            .map(|i| i + 1)
+            .collect()
+    };
+    let accessor = "fn f(doc: &mut serde_yaml::Value) {\n    let m = doc.as_mapping_mut();\n}";
+    assert_eq!(reaches(accessor), [2]);
+    let index = "fn f(doc: &mut serde_yaml::Value) {\n    doc[\"spec\"] = x;\n}";
+    assert_eq!(reaches(index), [2]);
+
+    let pattern = "fn f(doc: &mut serde_yaml::Value) {\n    match doc {\n        serde_yaml::Value::Mapping(map) => map.clear(),\n        serde_yaml::Value::Sequence(seq) => seq.clear(),\n        _ => {}\n    }\n}";
+    assert_eq!(reaches(pattern), [3, 4]);
+    let let_pattern = "fn f(m: &mut serde_yaml::Mapping) {\n    if let Some(serde_yaml::Value::Mapping(inner)) = m.get_mut(\"spec\") {\n        inner.clear();\n    }\n}";
+    assert_eq!(reaches(let_pattern), [2]);
+    let read_only = "fn f(doc: &serde_yaml::Value) -> bool {\n    match doc {\n        serde_yaml::Value::Mapping(map) => map.is_empty(),\n        serde_yaml::Value::Sequence(_) => true,\n        _ => false,\n    }\n}";
+    assert_eq!(reaches(read_only), Vec::<usize>::new());
+
+    let slot = "fn f(m: &mut serde_yaml::Mapping) {\n    if let Some(slot) = m.get_mut(\"spec\") {\n        *slot = serde_yaml::Value::Null;\n    }\n}";
+    assert_eq!(reaches(slot), [3]);
+    let wrapped_slot = "fn f(m: &mut serde_yaml::Mapping) {\n    if let Some(slot) =\n        m.get_mut(\"spec\")\n    {\n        *slot = serde_yaml::Value::Null;\n    }\n}";
+    assert_eq!(reaches(wrapped_slot), [5]);
+    let plain_deref = "fn f(n: &mut u32) {\n    *n = 3;\n}";
+    assert_eq!(reaches(plain_deref), Vec::<usize>::new());
+}
+
 /// Every write into the config document from the CLI goes through the section
 /// rule: an absent or bare section is an empty one, and any other shape is
 /// refused naming what the document holds there.
@@ -51605,8 +51697,9 @@ const SECTION_WRITE_HATCH: &str = "section-write-ok:";
 /// assignment either drops its write on a shape it did not expect or replaces
 /// what the author wrote, and both have shipped: a `source priority` that
 /// reported a priority it never wrote, and a knob written over a hand-written
-/// block. The population is every such reach in the CLI's production sources,
-/// so a new writer trips over the rule by being written; a reader or a remover,
+/// block. The population is every such reach in the CLI's production sources
+/// ([`reaches_a_yaml_section`] names each shape one takes), so a new writer
+/// trips over the rule by being written; a reader or a remover,
 /// for which an absent section simply holds nothing, says why with
 /// `// section-write-ok: <why>`. The helpers the rule is spelled in are floored
 /// per file, so a reader that stops finding them fails naming the file.
@@ -51662,10 +51755,7 @@ fn every_write_into_the_config_document_takes_the_section_rule() {
                 .sum::<usize>();
             *routed.entry(file.clone()).or_default() += calls;
 
-            let reaches = line.contains("as_mapping_mut")
-                || line.contains("as_sequence_mut")
-                || (line.contains("\"] =") && !line.contains("\"] =="));
-            if !reaches {
+            if !reaches_a_yaml_section(&code_lines, i) {
                 continue;
             }
             let hatched_here = |k: usize| {

@@ -741,9 +741,11 @@ fn rewrite_image_refs(
     rewrites: &mut Vec<(String, String)>,
 ) {
     match value {
+        // section-write-ok: a Kubernetes manifest, not the config document
         serde_yaml::Value::Mapping(mapping) => {
             // If this mapping has an `image` whose value is itself a mapping with
             // a string `reference` present in the map, pin it in place.
+            // section-write-ok: a Kubernetes manifest, not the config document
             if let Some(serde_yaml::Value::Mapping(image_map)) =
                 mapping.get_mut(serde_yaml::Value::from("image"))
                 && let Some(serde_yaml::Value::String(reference)) =
@@ -751,6 +753,7 @@ fn rewrite_image_refs(
                 && let Some(pinned) = map.get(reference.as_str())
             {
                 let old = reference.clone();
+                // section-write-ok: a Kubernetes manifest, not the config document
                 *reference = (*pinned).to_string();
                 rewrites.push((old, (*pinned).to_string()));
             }
@@ -758,6 +761,7 @@ fn rewrite_image_refs(
                 rewrite_image_refs(v, map, rewrites);
             }
         }
+        // section-write-ok: a Kubernetes manifest, not the config document
         serde_yaml::Value::Sequence(seq) => {
             for v in seq.iter_mut() {
                 rewrite_image_refs(v, map, rewrites);

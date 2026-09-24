@@ -96,6 +96,7 @@ pub(in crate::cli) fn rewrite_user_yaml_with_original<
 /// is never dropped either.
 fn prune_absent_sections(value: &mut serde_yaml::Value, depth: usize) {
     match value {
+        // section-write-ok: a remover; it drops only entries that hold nothing
         serde_yaml::Value::Mapping(map) => {
             for entry in map.values_mut() {
                 prune_absent_sections(entry, depth + 1);
@@ -104,6 +105,7 @@ fn prune_absent_sections(value: &mut serde_yaml::Value, depth: usize) {
                 map.retain(|_, v| !is_absent_section(v));
             }
         }
+        // section-write-ok: descends into list elements, which it never drops
         serde_yaml::Value::Sequence(seq) => {
             for entry in seq.iter_mut() {
                 prune_absent_sections(entry, depth + 1);
