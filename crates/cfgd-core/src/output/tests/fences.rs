@@ -6638,6 +6638,18 @@ fn every_raw_spawn_in_test_code_holds_the_path_gate() {
             "fn t() {\n    let s = \"Command::new(\\\"git\\\")\";\n}\n",
         ),
         ("longer name", "fn t() {\n    MyCommand::new(\"x\");\n}\n"),
+        (
+            "spawn in a nested block",
+            "fn t() {\n    let _p = path_env_read_guard();\n    for _ in 0..2 {\n        if true {\n            Command::new(\"git\");\n        }\n    }\n}\n",
+        ),
+        (
+            "brace in a literal or comment between",
+            "fn t() {\n    let _p = path_env_read_guard();\n    let s = \"}\";\n    let c = '}';\n    // }\n    Command::new(\"git\");\n}\n",
+        ),
+        (
+            "same line",
+            "fn t() {\n    let _p = path_env_read_guard(); Command::new(\"git\");\n}\n",
+        ),
     ] {
         let (unguarded, _, _) = raw_spawns(&FIXTURE_SOURCE, code, HATCH);
         assert!(
