@@ -879,14 +879,20 @@ pub fn cmd_module_registry_add(
     // helper's write (still a harmless idempotent rewrite).
     let mut already_present = false;
     super::mutate_config_yaml(&cli.config, true, |doc| {
-        let spec = doc
-            .get_mut("spec")
-            .ok_or_else(|| anyhow::anyhow!("config has no spec"))?;
+        let spec = doc.get_mut("spec").ok_or_else(|| {
+            crate::cli::cli_error(
+                cfgd_core::to_posix_string(&cli.config),
+                "parse_failed",
+                "config has no spec",
+                serde_json::json!({ "path": cfgd_core::to_posix_string(&cli.config) }),
+            )
+        })?;
         if spec.get("modules").is_none() {
             spec["modules"] = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
         }
         let modules = spec
             .get_mut("modules")
+            // untyped-ok: the section was inserted just above, so no input reaches this.
             .ok_or_else(|| anyhow::anyhow!("failed to create modules section"))?;
         let registries = modules
             .get_mut("registries")

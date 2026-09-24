@@ -179,8 +179,13 @@ pub(super) fn cmd_compliance_history(
 
     let since_ts: Option<String> = since
         .map(|s| {
-            let dur = cfgd_core::parse_duration_str(s)
-                .map_err(|e| anyhow::anyhow!("invalid --since value '{}': {}", s, e))?;
+            let dur = cfgd_core::parse_duration_str(s).map_err(|e| {
+                crate::cli::invalid_argument(
+                    "--since",
+                    s,
+                    format!("invalid --since value '{}': {}", s, e),
+                )
+            })?;
             let cutoff_secs = cfgd_core::unix_secs_now().saturating_sub(dur.as_secs());
             Ok::<String, anyhow::Error>(cfgd_core::unix_secs_to_iso8601(cutoff_secs))
         })
@@ -202,12 +207,20 @@ pub(super) fn cmd_compliance_diff(
     id2: i64,
 ) -> anyhow::Result<()> {
     let state = open_state_store(cli.state_dir.as_deref(), cli.scope())?;
+    let missing = |id: i64| {
+        crate::cli::cli_error(
+            format!("#{id}"),
+            "not_found",
+            format!("snapshot #{} not found", id),
+            serde_json::json!({ "id": id }),
+        )
+    };
     let snap1 = state
         .get_compliance_snapshot(id1)?
-        .ok_or_else(|| anyhow::anyhow!("snapshot #{} not found", id1))?;
+        .ok_or_else(|| missing(id1))?;
     let snap2 = state
         .get_compliance_snapshot(id2)?
-        .ok_or_else(|| anyhow::anyhow!("snapshot #{} not found", id2))?;
+        .ok_or_else(|| missing(id2))?;
 
     let diff = compute_compliance_diff(&snap1, &snap2);
     printer.emit(build_compliance_diff_doc(

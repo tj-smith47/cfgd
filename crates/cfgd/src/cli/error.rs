@@ -84,6 +84,18 @@ pub fn cli_error(
     anyhow::Error::new(meta(name, error_kind, message, extras, Vec::new()))
 }
 
+/// A value handed to a flag or argument that the command refuses, typed
+/// `invalid_argument` with the flag as its subject and the value it was given,
+/// so a script reads which input to change without parsing the sentence.
+pub fn invalid_argument(flag: &str, value: &str, message: impl Into<String>) -> anyhow::Error {
+    cli_error(
+        flag,
+        "invalid_argument",
+        message,
+        serde_json::json!({ "flag": flag, "value": value }),
+    )
+}
+
 /// Like [`cli_error`] but also carries human-mode remediation `hints` (the old
 /// site attached them via `Doc::hint(...)`).
 pub fn cli_error_with_hints(

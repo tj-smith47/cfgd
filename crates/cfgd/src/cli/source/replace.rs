@@ -17,7 +17,7 @@ fn restore_subscription(
     with_source_config(config_path, name, |entry| {
         entry
             .as_mapping_mut()
-            .ok_or_else(|| anyhow::anyhow!("source '{name}' is not a mapping"))?
+            .ok_or_else(|| source_shape_refusal(name, format!("source '{name}' is not a mapping")))?
             .insert(serde_yaml::Value::String("subscription".into()), value);
         Ok(())
     })

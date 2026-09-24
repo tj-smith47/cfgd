@@ -589,14 +589,22 @@ pub(in crate::cli) fn resolve_secret_backend(
     ));
 
     if !file.exists() {
-        anyhow::bail!("File not found: {}", file.posix());
+        return Err(crate::cli::cli_error(
+            cfgd_core::to_posix_string(file),
+            "not_found",
+            format!("File not found: {}", file.posix()),
+            serde_json::json!({ "path": cfgd_core::to_posix_string(file) }),
+        ));
     }
 
     match registry.secret_backend {
         Some(ref backend) if !backend.is_available() => {
-            anyhow::bail!("{}: not installed", backend.name());
+            return Err(backend_unavailable(
+                file,
+                format!("{}: not installed", backend.name()),
+            ));
         }
-        None => anyhow::bail!("No secret backend configured"),
+        None => return Err(no_secret_backend(file)),
         _ => {}
     }
 
@@ -612,7 +620,22 @@ pub(in crate::cli) fn get_secret_backend(
     let registry = resolve_secret_backend(cli, printer, file)?;
     registry
         .secret_backend
-        .ok_or_else(|| anyhow::anyhow!("No secret backend configured"))
+        .ok_or_else(|| no_secret_backend(file))
+}
+
+/// No secret backend is configured, so nothing can read or write `file`.
+fn no_secret_backend(file: &Path) -> anyhow::Error {
+    backend_unavailable(file, "No secret backend configured".to_string())
+}
+
+/// The secret backend that would handle `file` cannot run on this machine.
+///
+/// The subject is the file the command was asked about, and `detail` repeats
+/// the reason, which is the payload every `cfgd secret` verb has carried.
+fn backend_unavailable(file: &Path, detail: String) -> anyhow::Error {
+    let path = cfgd_core::to_posix_string(file);
+    let extras = serde_json::json!({ "path": &path, "detail": &detail });
+    crate::cli::cli_error(path, "backend_unavailable", detail, extras)
 }
 
 #[cfg(test)]

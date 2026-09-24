@@ -8,17 +8,7 @@ pub fn cmd_plan(
     printer: &cfgd_core::output::Printer,
     args: &PlanArgs,
 ) -> anyhow::Result<()> {
-    // Parse --context
-    let reconcile_context = match args.context.as_str() {
-        "apply" => ReconcileContext::Apply,
-        "reconcile" => ReconcileContext::Reconcile,
-        other => {
-            anyhow::bail!(
-                "Unknown context '{}'. Valid values: apply, reconcile",
-                other
-            );
-        }
-    };
+    let reconcile_context = super::apply::parse_reconcile_context(&args.context)?;
 
     // --from: mirror cmd_apply so `plan` can be pointed at a git source or local path.
     if let Some(from) = &args.from {
@@ -32,14 +22,7 @@ pub fn cmd_plan(
     let module_filter: &[String] = &args.module;
     let with_profile = args.with_profile;
 
-    // `--with-profile` opts a `--module` run INTO composing with the full
-    // profile; with no module named, there is nothing for it to compose
-    // with — reject rather than silently behaving like a plain `cfgd plan`.
-    if with_profile && module_filter.is_empty() {
-        anyhow::bail!(
-            "--with-profile requires --module (it composes the named module(s) with the full profile; without --module there is nothing to add)"
-        );
-    }
+    super::apply::refuse_with_profile_without_module(with_profile, module_filter)?;
 
     // Opened around the whole derivation, not around the config parse alone:
     // the profile chain, the module bodies, the lockfiles and the declared

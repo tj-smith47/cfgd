@@ -224,7 +224,7 @@ pub(super) fn run_source_add(
 
     // Interactive priority prompt (when --priority not specified on command line)
     let resolved_priority = if let Some(p) = priority {
-        cfgd_core::config::validate_source_priority(p).map_err(|m| anyhow::anyhow!(m))?
+        checked_priority(p)?
     } else if args.yes {
         DEFAULT_NONINTERACTIVE_PRIORITY
     } else {

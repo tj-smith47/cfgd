@@ -254,6 +254,28 @@ fn key_not_found(asked: &[&str]) -> anyhow::Error {
     ))
 }
 
+/// The refusal a key path holding an empty segment (`a..b`, a trailing `.`)
+/// earns: no key is spelled that way, so the path itself is the bad input.
+fn empty_segment(path: &str) -> anyhow::Error {
+    crate::cli::cli_error(
+        path,
+        "invalid_value",
+        format!("invalid key path '{path}': contains empty segment"),
+        serde_json::json!({}),
+    )
+}
+
+/// The refusal a config document with no `spec` section earns from a verb
+/// that writes under it: the document's shape, not the key, is what is wrong.
+fn missing_spec_section(config_path: &Path) -> anyhow::Error {
+    crate::cli::cli_error(
+        cfgd_core::to_posix_string(config_path),
+        "parse_failed",
+        "config has no 'spec' section",
+        serde_json::json!({ "path": cfgd_core::to_posix_string(config_path) }),
+    )
+}
+
 /// The refusal a descent blocked at `path` earns, where `asked` is the path
 /// the caller named and `found` the shape that blocked it.
 ///
@@ -323,7 +345,7 @@ pub(super) fn walk_yaml_path<'a>(
     }
     let segments: Vec<&str> = path.split('.').collect();
     if segments.iter().any(|s| s.is_empty()) {
-        anyhow::bail!("invalid key path '{}': contains empty segment", path);
+        return Err(empty_segment(path));
     }
     let mut current = value;
 
@@ -373,7 +395,7 @@ pub(super) fn walk_yaml_path_mut<'a>(
 ) -> anyhow::Result<(&'a mut serde_yaml::Mapping, String)> {
     let segments: Vec<&str> = path.split('.').collect();
     if segments.is_empty() || segments.iter().any(|s| s.is_empty()) {
-        anyhow::bail!("invalid key path '{}': contains empty segment", path);
+        return Err(empty_segment(path));
     }
 
     // A bare `spec:` is the same "nothing here yet" as a Null section below it.
@@ -400,6 +422,7 @@ pub(super) fn walk_yaml_path_mut<'a>(
         }
         current = map
             .get_mut(&key)
+            // untyped-ok: the key was inserted two lines above, so no input reaches this.
             .ok_or_else(|| anyhow::anyhow!("failed to create intermediate mapping"))?;
     }
 
@@ -411,6 +434,7 @@ pub(super) fn walk_yaml_path_mut<'a>(
         .ok_or_else(|| descent_blocked(&segments[..segments.len() - 1], &segments, found))?;
     let leaf = segments
         .last()
+        // untyped-ok: `split` yields at least one segment, so no input reaches this.
         .ok_or_else(|| anyhow::anyhow!("empty key path"))?
         .to_string();
     Ok((parent, leaf))
@@ -627,7 +651,7 @@ pub fn cmd_config_set(cli: &Cli, printer: &Printer, key: &str, value: &str) -> a
     let mutate_result = mutate_config_yaml(config_path, true, |raw| {
         let spec = raw
             .get_mut("spec")
-            .ok_or_else(|| anyhow::anyhow!("config has no 'spec' section"))?;
+            .ok_or_else(|| missing_spec_section(config_path))?;
         if nested.is_some() {
             let flat = serde_yaml::Value::String(
                 key.split_once('.')
@@ -696,7 +720,7 @@ pub fn cmd_config_unset(cli: &Cli, printer: &Printer, key: &str) -> anyhow::Resu
     let mutate_result = mutate_config_yaml(config_path, true, |raw| {
         let spec = raw
             .get_mut("spec")
-            .ok_or_else(|| anyhow::anyhow!("config has no 'spec' section"))?;
+            .ok_or_else(|| missing_spec_section(config_path))?;
         // Unsetting a presentation knob clears both spellings: one left
         // standing is a value the reader believes they removed.
         let mut removed_flat = false;

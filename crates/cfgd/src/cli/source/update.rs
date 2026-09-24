@@ -111,9 +111,9 @@ fn write_subscription_knobs(
 ) -> anyhow::Result<Vec<(&'static str, bool)>> {
     let mut written = Vec::new();
     with_source_config(config_path, name, |source_entry| {
-        let map = source_entry
-            .as_mapping_mut()
-            .ok_or_else(|| anyhow::anyhow!("source '{name}' is not a mapping"))?;
+        let map = source_entry.as_mapping_mut().ok_or_else(|| {
+            source_shape_refusal(name, format!("source '{name}' is not a mapping"))
+        })?;
         let key = serde_yaml::Value::String("subscription".into());
         if !map.get(&key).is_some_and(serde_yaml::Value::is_mapping) {
             map.insert(key.clone(), serde_yaml::Value::Mapping(Default::default()));
@@ -122,7 +122,10 @@ fn write_subscription_knobs(
             .get_mut(&key)
             .and_then(serde_yaml::Value::as_mapping_mut)
             .ok_or_else(|| {
-                anyhow::anyhow!("source '{name}' subscription block is not a mapping")
+                source_shape_refusal(
+                    name,
+                    format!("source '{name}' subscription block is not a mapping"),
+                )
             })?;
         for (k, v) in asked {
             subscription.insert(

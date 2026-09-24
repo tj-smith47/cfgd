@@ -83,8 +83,14 @@ pub fn cmd_module_push(
 
         if apply {
             let module_yaml = std::fs::read_to_string(dir_path.join("module.yaml"))?;
-            let module_doc = cfgd_core::config::parse_module(&module_yaml)
-                .map_err(|e| anyhow::anyhow!("Failed to parse module.yaml: {e}"))?;
+            let module_doc = cfgd_core::config::parse_module(&module_yaml).map_err(|e| {
+                crate::cli::cli_error(
+                    artifact,
+                    "parse_failed",
+                    format!("Failed to parse module.yaml: {e}"),
+                    serde_json::json!({ "artifact": artifact, "dir": dir }),
+                )
+            })?;
 
             let signature = build_module_signature(printer, signed, key);
             let rt = tokio::runtime::Runtime::new()?;

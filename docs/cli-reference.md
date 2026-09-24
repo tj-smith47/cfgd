@@ -2930,9 +2930,8 @@ selector format's success shape and an error doc's shape rarely agree:
   { "error": "not_found", "name": "web-server", "available": ["base", "dev"] }
   ```
 
-  `error` is a machine-readable kind (`not_found`, `registry_not_found`, `already_exists`,
-  `parse_failed`, `key_not_found`, `target_not_writable`, `config_dir_occupied`, …), `name` identifies the subject
-  (module / source / profile / registry / key), and any
+  `error` is a machine-readable kind from the [Error kinds](#error-kinds) list below,
+  `name` identifies the subject (module / source / profile / registry / key / flag), and any
   command-specific fields follow. `name` is present only when the failure has a subject to
   report: an empty subject is omitted from the payload rather than serialized as `""`. A
   plain propagated error with no CLI handler attached still gets a real kind: any typed
@@ -2948,6 +2947,102 @@ selector format's success shape and an error doc's shape rarely agree:
   fields (e.g. `-o jsonpath={.name}` against a `not_found` error, which does carry `name`), that
   projection additionally prints to `stdout`, so a selector format can render an error twice,
   once as the guaranteed `stderr` diagnostic and once as whatever the selector matched.
+
+### Error kinds
+
+Every kind a CLI refusal can carry in its structured payload's `error` field.
+A plain propagated failure with no handler attached carries its `CfgdError`
+domain instead: `config`, `file`, `package`, `secret`, `system`, `state`,
+`daemon`, `source`, `composition`, `upgrade`, `module`, `generate`, `oci`,
+`skill`, `backup` or `io`.
+
+| Kind | Meaning |
+|---|---|
+| `active_profile` | The profile named for deletion is the active one. |
+| `already_exists` | The module, profile, source or registry being created already exists. |
+| `ambiguous_snapshot` | `cfgd backup restore --at` matched more than one snapshot. |
+| `api_error` | The AI provider for `cfgd generate` cannot be reached, or its API key variable is unset. |
+| `apply_failed` | `kubectl cfgd` could not apply the rendered manifest. |
+| `attest_failed` | Attaching a provenance attestation to a pushed artifact failed. |
+| `backend_unavailable` | No secret backend is configured, or the configured one is not installed. |
+| `branch_pin_conflict` | `--branch` and `--pin-version` were given together. |
+| `build_failed` | `cfgd module build` could not build the module for a target. |
+| `check_failed` | `cfgd upgrade` could not check for a release. |
+| `clone_failed` | A git clone, or the checkout that follows it, did not complete. |
+| `command_required` | `kubectl cfgd exec` was given no command after `--`. |
+| `config_dir_occupied` | The default config directory already holds something that is not a cfgd config. |
+| `confirmation_required` | A destructive step needs `--yes` in a non-interactive run. |
+| `conflicting_flags` | Two flags that exclude each other were given together. |
+| `cosign_required` | `cfgd upgrade` requires a cosign signature and none verified. |
+| `crd_apply_failed` | Applying the Module CRD to the cluster failed. |
+| `crd_connect_failed` | The cluster for a Module CRD apply cannot be reached. |
+| `decryption_failed` | The secret backend could not decrypt the file. |
+| `duplicate_basename` | Two `--file` arguments share a file name, so one would overwrite the other. |
+| `edit_failed` | The editor could not be started, or the edit could not be saved back. |
+| `empty_lockfile` | The image lockfile holds no entries to pin against. |
+| `encryption_failed` | The secret backend could not encrypt the file. |
+| `filename_required` | `kubectl cfgd` was given no `-f`/`--filename`. |
+| `foreign_config` | The `--plan` file was not written for this config. |
+| `host_moved` | The `--plan` file describes a different host. |
+| `in_use` | The module named for deletion is referenced by a profile. |
+| `inherited` | The profile named for deletion is inherited by another profile. |
+| `inject_failed` | `kubectl cfgd` could not create its ephemeral container. |
+| `install_failed` | Installing the daemon service or a cfgd release failed, or was refused before it started. |
+| `internal` | A failure no handler typed and no `CfgdError` explains; `message` carries its text. |
+| `invalid` | The path given is not the kind of file system entry the command needs. |
+| `invalid_annotation` | An image annotation could not be parsed. |
+| `invalid_argument` | A flag or argument value was refused; `flag` names it and `value` repeats what was given. |
+| `invalid_label` | An image label could not be parsed. |
+| `invalid_pin_version` | `--pin-version` starts with `-`. |
+| `invalid_reference` | An OCI or image reference could not be parsed. |
+| `invalid_resource` | A `kubectl cfgd` resource is not written as `kind/name`. |
+| `invalid_url` | No registry name can be derived from the URL. |
+| `invalid_value` | A config key path or value, or an interactive answer, was refused. |
+| `key_not_found` | The config key, or the signing key file, is not there. |
+| `keygen_failed` | `cosign generate-key-pair` failed. |
+| `kube_connect_failed` | The cluster `kubectl cfgd` targets cannot be reached. |
+| `list_failed` | A provider's listing of installed items failed. |
+| `load_failed` | A source added by `cfgd source add` could not be loaded after its fetch. |
+| `local_module` | The module is a local one, so a registry operation does not apply to it. |
+| `method_mismatch` | The enrollment server uses a different enrollment method. |
+| `missing_argument` | A flag or argument the command needs was not given. |
+| `missing_value` | An override `set` action was given no value. |
+| `module_required` | `kubectl cfgd` was given no module. |
+| `module_yaml_missing` | The directory holds no `module.yaml`. |
+| `no_config` | No cfgd config file (or `cfgd-source.yaml`) is at the resolved path. |
+| `no_key` | No signing key was found for enrollment. |
+| `no_release` | `cfgd upgrade` found no release information. |
+| `no_rollback_copy` | The backup has no copy beside its source to roll back to. |
+| `no_saved_plan` | The `--plan` file carries no saved plan. |
+| `no_snapshots` | The backup has no snapshots yet. |
+| `no_versions` | The registry publishes no versions of the module. |
+| `not_a_cfgd_plan` | The `--plan` file is not a plan cfgd wrote. |
+| `not_found` | A named module, profile, source, file, snapshot, package or field is not there. |
+| `pack_failed` | `cfgd image pack` could not pack the image. |
+| `parent_not_found` | The profile named in `inherits` does not exist; `parent` names it. |
+| `parse_failed` | A document (config, module, plan) could not be parsed, or its shape contradicts the schema. |
+| `profile_source_delivered` | The profile named is not local, and a subscribed source provides it; `sources` lists which. |
+| `pull_failed` | Pulling a module artifact failed. |
+| `push_failed` | Pushing a module artifact failed. |
+| `read_failed` | A file the command needs exists but could not be read. |
+| `registry_not_found` | The module registry named is not configured. |
+| `resign_failed` | Re-signing an artifact with a rotated key failed. |
+| `restore_failed` | `cfgd backup restore` could not select or restore the snapshot. |
+| `runtime_failed` | The daemon's reconcile loop failed. |
+| `sign_failed` | Signing a pushed artifact failed. |
+| `signature_failed` | A tag's signature is present but does not verify. |
+| `signature_required` | Signatures are required and the module has none. |
+| `signing_failed` | The enrollment challenge could not be signed. |
+| `snapshot_not_found` | `cfgd backup restore --at` matched no snapshot. |
+| `stale` | The `--plan` file was derived against state or config this machine has moved past. |
+| `status_unavailable` | The daemon's status could not be read. |
+| `target_not_writable` | The directory a write goes to is not writable. |
+| `tool_missing` | An external tool the command runs (cosign, ssh-keygen, gpg) is not available. |
+| `uninstall_failed` | Uninstalling the daemon service failed, or was refused before it started. |
+| `validation_failed` | A document or the names it declares failed validation. |
+| `verify_failed` | An artifact's or tag's signature could not be verified. |
+| `version_not_found` | The registry has no tag for the module version asked for. |
+| `write_failed` | A file the command writes could not be written. |
 
 ### Use in CI
 

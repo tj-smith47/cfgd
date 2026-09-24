@@ -46,7 +46,7 @@ pub(in crate::cli) use cfgd_core::reconciler::DecisionContents;
 pub use error::{
     CliErrorMeta, cli_error, cli_error_ctx, cli_error_ctx_with_hints,
     cli_error_ctx_with_hints_and_block, cli_error_with_hints, emit_not_found_ignored,
-    exit_code_for_anyhow,
+    exit_code_for_anyhow, invalid_argument,
 };
 pub use helpers::effective_config_file;
 pub(crate) use helpers::run_state_dir;
@@ -3067,24 +3067,26 @@ fn resolve_phase_filter(
     let Some(selector) = selector else {
         return Ok(Some(base));
     };
+    let refuse =
+        |message: String| invalid_argument("--phase", &format!("{token}.{selector}"), message);
     let PhaseFilter::Phase(name) = base else {
-        anyhow::bail!(
+        return Err(refuse(format!(
             "`--phase modules.{selector}` is not valid: `modules` has no single phase to scope \
              a selector to — module work applies in whichever phase it landed in. Use \
              `--module {selector}` instead."
-        );
+        )));
     };
     if name != PhaseName::Bootstrap {
         if name == PhaseName::Packages {
-            anyhow::bail!(
+            return Err(refuse(format!(
                 "`--phase packages.{selector}` is not valid: package manager work lives in \
                  `bootstrap`, not `packages`. Use `--phase bootstrap.{selector}` instead."
-            );
+            )));
         }
-        anyhow::bail!(
+        return Err(refuse(format!(
             "`--phase {token}.{selector}` is not valid: `{token}` has no dotted \
              selector grammar. Selectors are only valid on `--phase bootstrap`."
-        );
+        )));
     }
     let mut legal: Vec<String> = reconciler::CFGD_GROUP_ORDER
         .iter()
@@ -3096,10 +3098,10 @@ fn resolve_phase_filter(
     // accepted it and the matcher was written to serve both.
     legal.extend(reconciler::prerequisite_selectors(registry));
     if !legal.contains(&selector) {
-        anyhow::bail!(
+        return Err(refuse(format!(
             "unknown selector '{selector}' for `--phase bootstrap`: legal values are {}",
             legal.join(", ")
-        );
+        )));
     }
     Ok(Some(PhaseFilter::Selector(name, selector)))
 }

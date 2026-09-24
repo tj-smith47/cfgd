@@ -66,10 +66,20 @@ pub(super) fn plan_from(from: &str, target: Option<&Path>) -> anyhow::Result<std
     }
     let path = cfgd_core::expand_tilde(Path::new(from));
     if !path.exists() {
-        anyhow::bail!("Path does not exist: {}", path.posix());
+        return Err(crate::cli::cli_error(
+            cfgd_core::to_posix_string(&path),
+            "not_found",
+            format!("Path does not exist: {}", path.posix()),
+            serde_json::json!({ "path": cfgd_core::to_posix_string(&path) }),
+        ));
     }
     if !path.join(cfgd_core::config::CONFIG_FILENAME).exists() {
-        anyhow::bail!("No cfgd.yaml found in {}", path.posix());
+        return Err(crate::cli::cli_error(
+            cfgd_core::to_posix_string(&path),
+            "no_config",
+            format!("No cfgd.yaml found in {}", path.posix()),
+            serde_json::json!({ "path": cfgd_core::to_posix_string(&path) }),
+        ));
     }
     Ok(path)
 }
@@ -240,6 +250,11 @@ pub(super) fn commit_detail(commit: &str) -> String {
     format!("at {commit}")
 }
 
+/// A clone of `url`, or the checkout that follows it, that did not complete.
+fn clone_refusal(url: &str, message: String) -> anyhow::Error {
+    crate::cli::cli_error(url, "clone_failed", message, serde_json::json!({}))
+}
+
 /// Clone a remote repo into the target directory.
 pub(super) fn clone_into(
     target_dir: &Path,
@@ -264,7 +279,7 @@ pub(super) fn clone_into(
     }
 
     cfgd_core::sources::git_clone_with_fallback(url, target_dir, printer)
-        .map_err(|e| anyhow::anyhow!("Clone failed: {}", e))?;
+        .map_err(|e| clone_refusal(url, format!("Clone failed: {}", e)))?;
 
     let mut row = printer.status(
         Role::Ok,
@@ -284,7 +299,7 @@ pub(super) fn clone_into(
     // git clone checks out the remote's default branch; switch when the user
     // asked for a different one.
     let repo = git2::Repository::open(target_dir)
-        .map_err(|e| anyhow::anyhow!("Failed to open cloned repo: {}", e))?;
+        .map_err(|e| clone_refusal(url, format!("Failed to open cloned repo: {}", e)))?;
     let current_branch = repo
         .head()
         .ok()
@@ -292,13 +307,20 @@ pub(super) fn clone_into(
         .unwrap_or_default();
     if current_branch != branch {
         let remote_branch = format!("origin/{}", branch);
-        let obj = repo
-            .revparse_single(&remote_branch)
-            .map_err(|_| anyhow::anyhow!("Branch '{}' not found in remote", branch))?;
+        let obj = repo.revparse_single(&remote_branch).map_err(|_| {
+            crate::cli::cli_error(
+                branch,
+                "not_found",
+                format!("Branch '{}' not found in remote", branch),
+                serde_json::json!({ "url": url }),
+            )
+        })?;
         repo.checkout_tree(&obj, None)
-            .map_err(|e| anyhow::anyhow!("Failed to checkout '{}': {}", branch, e))?;
+            .map_err(|e| clone_refusal(url, format!("Failed to checkout '{}': {}", branch, e)))?;
         repo.set_head(&format!("refs/heads/{}", branch))
-            .map_err(|e| anyhow::anyhow!("Failed to set HEAD to '{}': {}", branch, e))?;
+            .map_err(|e| {
+                clone_refusal(url, format!("Failed to set HEAD to '{}': {}", branch, e))
+            })?;
         printer
             .status(Role::Info, "Checked out branch")
             .qualifier(branch);

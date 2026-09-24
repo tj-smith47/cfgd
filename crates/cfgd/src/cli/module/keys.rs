@@ -11,6 +11,16 @@ fn provision_cosign(printer: &Printer) -> std::result::Result<(), String> {
     crate::cli::helpers::provision_tool(printer, &registry, "cosign", "CFGD_COSIGN_BIN")
 }
 
+/// cosign was provisioned but could not be started.
+fn cosign_unrunnable(e: &impl std::fmt::Display) -> anyhow::Error {
+    crate::cli::cli_error(
+        "cosign",
+        "tool_missing",
+        format!("failed to run cosign: {e}"),
+        serde_json::json!({}),
+    )
+}
+
 pub fn cmd_module_keys_generate(printer: &Printer, output_dir: Option<&str>) -> anyhow::Result<()> {
     if let Err(msg) = provision_cosign(printer) {
         return Err(crate::cli::cli_error(
@@ -43,7 +53,7 @@ pub fn cmd_module_keys_generate(printer: &Printer, output_dir: Option<&str>) -> 
             // prompts the user and inherits the real terminal.
             .stderr(std::process::Stdio::inherit()),
     )
-    .map_err(|e| anyhow::anyhow!("failed to run cosign: {e}"))?;
+    .map_err(|e| cosign_unrunnable(&e))?;
 
     if !status.success() {
         return Err(crate::cli::cli_error(
@@ -224,7 +234,7 @@ pub fn cmd_module_keys_rotate(
             // prompts the user and inherits the real terminal.
             .stderr(std::process::Stdio::inherit()),
     )
-    .map_err(|e| anyhow::anyhow!("failed to run cosign: {e}"))?;
+    .map_err(|e| cosign_unrunnable(&e))?;
 
     if !status.success() {
         let mut restore_failures: Vec<String> = Vec::new();

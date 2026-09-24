@@ -818,9 +818,10 @@ pub(super) fn apply_plan(
 /// Interactively pick a profile from the profiles directory.
 pub(super) fn pick_profile(profiles_dir: &Path, printer: &Printer) -> anyhow::Result<String> {
     if !profiles_dir.is_dir() {
-        anyhow::bail!(
-            "No profiles directory found — create a profile first with: `cfgd profile create <name>`"
-        );
+        return Err(no_profile_to_pick(
+            profiles_dir,
+            "No profiles directory found — create a profile first with: `cfgd profile create <name>`",
+        ));
     }
 
     // Tolerant listing: an ambiguous profile warns and is skipped instead of
@@ -828,9 +829,10 @@ pub(super) fn pick_profile(profiles_dir: &Path, printer: &Printer) -> anyhow::Re
     let names: Vec<String> = scan_profile_names(profiles_dir, printer)?;
 
     if names.is_empty() {
-        anyhow::bail!(
-            "No profiles found — create a profile first with: `cfgd profile create <name>`"
-        );
+        return Err(no_profile_to_pick(
+            profiles_dir,
+            "No profiles found — create a profile first with: `cfgd profile create <name>`",
+        ));
     }
 
     if names.len() == 1 {
@@ -862,9 +864,24 @@ pub(super) fn pick_profile(profiles_dir: &Path, printer: &Printer) -> anyhow::Re
         return Ok(input);
     }
 
-    anyhow::bail!(
-        "Invalid selection '{}' — expected a number or profile name",
-        input
+    Err(crate::cli::cli_error(
+        &input,
+        "invalid_value",
+        format!(
+            "Invalid selection '{}' — expected a number or profile name",
+            input
+        ),
+        serde_json::json!({ "available": names }),
+    ))
+}
+
+/// The picker has no profile to offer: the directory is absent or holds none.
+fn no_profile_to_pick(profiles_dir: &Path, message: &'static str) -> anyhow::Error {
+    crate::cli::cli_error(
+        "profile",
+        "not_found",
+        message,
+        serde_json::json!({ "path": cfgd_core::to_posix_string(profiles_dir) }),
     )
 }
 

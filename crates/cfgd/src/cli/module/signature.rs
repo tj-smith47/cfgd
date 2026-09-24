@@ -23,7 +23,12 @@ fn verify_tag_signature_cryptographic(repo_dir: &Path, tag_name: &str) -> anyhow
             Ok(false) // Signature present but invalid
         } else {
             // gpg not installed, key not in keyring, etc.
-            anyhow::bail!("{}", stderr)
+            Err(crate::cli::cli_error(
+                tag_name,
+                "verify_failed",
+                stderr,
+                serde_json::json!({ "tag": tag_name }),
+            ))
         }
     }
 }

@@ -81,11 +81,17 @@ pub(in crate::cli) fn enroll_error_hints(kind: &str) -> Vec<HintCommands> {
 /// payload shape and the per-kind hint stay in one place.
 pub fn build_enroll_error(
     name: &str,
-    kind: &'static str,
+    error_kind: &'static str,
     message: impl Into<String>,
     extras: serde_json::Value,
 ) -> anyhow::Error {
-    crate::cli::cli_error_with_hints(name, kind, message, extras, enroll_error_hints(kind))
+    crate::cli::cli_error_with_hints(
+        name,
+        error_kind,
+        message,
+        extras,
+        enroll_error_hints(error_kind),
+    )
 }
 
 // ─────────────────────────────────────────────────────
@@ -122,9 +128,7 @@ pub(crate) fn cmd_enroll(
             "Exchanging bootstrap token for device credential",
         );
 
-        let resp = client
-            .enroll(token, printer)
-            .map_err(|e| anyhow::anyhow!("{}", e))?;
+        let resp = client.enroll(token, printer)?;
 
         return finish_enrollment(printer, server_url, &device_id, resp);
     }
@@ -134,7 +138,7 @@ pub(crate) fn cmd_enroll(
     printer.kv("Username", &username);
 
     // Check server enrollment method
-    let info = client.enroll_info().map_err(|e| anyhow::anyhow!("{}", e))?;
+    let info = client.enroll_info()?;
 
     if info.method == "token" {
         return Err(build_enroll_error(
@@ -182,9 +186,7 @@ pub(crate) fn cmd_enroll(
     )]);
 
     // Challenge-response
-    let challenge = client
-        .request_challenge(&username, printer)
-        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    let challenge = client.request_challenge(&username, printer)?;
 
     let signature = match key_type {
         KeyType::Ssh => sign_with_ssh(&challenge.nonce, &key_ref),
@@ -215,14 +217,12 @@ pub(crate) fn cmd_enroll(
         challenge.challenge_id, challenge.expires_at
     ));
 
-    let resp = client
-        .submit_verification(
-            &challenge.challenge_id,
-            &signature,
-            key_type.as_str(),
-            printer,
-        )
-        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    let resp = client.submit_verification(
+        &challenge.challenge_id,
+        &signature,
+        key_type.as_str(),
+        printer,
+    )?;
 
     finish_enrollment(printer, server_url, &device_id, resp)
 }
@@ -412,9 +412,32 @@ pub(super) fn first_existing_ssh_key(ssh_dir: &Path) -> Option<std::path::PathBu
     None
 }
 
+/// A signing tool enrollment needs is not on this machine.
+fn signing_tool_missing(tool: &str, message: impl Into<String>) -> anyhow::Error {
+    crate::cli::cli_error(tool, "tool_missing", message, serde_json::json!({}))
+}
+
+/// The signing tool ran and produced no signature over the challenge.
+fn signing_refused(key_ref: &str, message: impl Into<String>) -> anyhow::Error {
+    crate::cli::cli_error(key_ref, "signing_failed", message, serde_json::json!({}))
+}
+
+/// The signing tool reported success but its signature file cannot be read.
+fn signature_unreadable(sig_path: &Path, message: String) -> anyhow::Error {
+    crate::cli::cli_error(
+        cfgd_core::to_posix_string(sig_path),
+        "read_failed",
+        message,
+        serde_json::json!({}),
+    )
+}
+
 pub(super) fn sign_with_ssh(nonce: &str, key_path: &str) -> anyhow::Result<String> {
     if !cfgd_core::command_available_with_seam("CFGD_SSH_KEYGEN_BIN", "ssh-keygen") {
-        anyhow::bail!("ssh-keygen not found — is OpenSSH installed?");
+        return Err(signing_tool_missing(
+            "ssh-keygen",
+            "ssh-keygen not found — is OpenSSH installed?",
+        ));
     }
 
     let tmp_dir = tempfile::tempdir()?;
@@ -445,28 +468,43 @@ pub(super) fn sign_with_ssh(nonce: &str, key_path: &str) -> anyhow::Result<Strin
 
     let outcome =
         cfgd_core::command_output_with_timeout_outcome(&mut cmd, cfgd_core::COMMAND_TIMEOUT)
-            .map_err(|e| anyhow::anyhow!("ssh-keygen not found: {e} — is OpenSSH installed?"))?;
+            .map_err(|e| {
+                signing_tool_missing(
+                    "ssh-keygen",
+                    format!("ssh-keygen not found: {e} — is OpenSSH installed?"),
+                )
+            })?;
 
     if outcome.timed_out {
-        anyhow::bail!(
-            "ssh-keygen -Y sign timed out after {}s — the SSH key may be prompting for a passphrase or the agent is unresponsive",
-            cfgd_core::COMMAND_TIMEOUT.as_secs()
-        );
+        return Err(signing_refused(
+            key_path,
+            format!(
+                "ssh-keygen -Y sign timed out after {}s — the SSH key may be prompting for a passphrase or the agent is unresponsive",
+                cfgd_core::COMMAND_TIMEOUT.as_secs()
+            ),
+        ));
     }
 
     if !outcome.output.status.success() {
-        anyhow::bail!("ssh-keygen -Y sign failed — check that your SSH key is accessible");
+        return Err(signing_refused(
+            key_path,
+            "ssh-keygen -Y sign failed — check that your SSH key is accessible",
+        ));
     }
 
-    let signature = std::fs::read_to_string(&sig_path)
-        .map_err(|e| anyhow::anyhow!("failed to read SSH signature: {e}"))?;
+    let signature = std::fs::read_to_string(&sig_path).map_err(|e| {
+        signature_unreadable(&sig_path, format!("failed to read SSH signature: {e}"))
+    })?;
 
     Ok(signature)
 }
 
 pub(super) fn sign_with_gpg(nonce: &str, gpg_key_id: &str) -> anyhow::Result<String> {
     if !cfgd_core::command_available_with_seam("CFGD_GPG_BIN", "gpg") {
-        anyhow::bail!("gpg not found — is GnuPG installed?");
+        return Err(signing_tool_missing(
+            "gpg",
+            "gpg not found — is GnuPG installed?",
+        ));
     }
 
     let tmp_dir = tempfile::tempdir()?;
@@ -502,28 +540,37 @@ pub(super) fn sign_with_gpg(nonce: &str, gpg_key_id: &str) -> anyhow::Result<Str
 
     let outcome =
         cfgd_core::command_output_with_timeout_outcome(&mut cmd, cfgd_core::COMMAND_TIMEOUT)
-            .map_err(|e| anyhow::anyhow!("gpg not found: {e} — is GPG installed?"))?;
+            .map_err(|e| {
+                signing_tool_missing("gpg", format!("gpg not found: {e} — is GPG installed?"))
+            })?;
 
     if outcome.timed_out {
-        anyhow::bail!(
-            "gpg --detach-sign timed out after {}s — the gpg-agent may be unresponsive",
-            cfgd_core::COMMAND_TIMEOUT.as_secs()
-        );
+        return Err(signing_refused(
+            gpg_key_id,
+            format!(
+                "gpg --detach-sign timed out after {}s — the gpg-agent may be unresponsive",
+                cfgd_core::COMMAND_TIMEOUT.as_secs()
+            ),
+        ));
     }
 
     let sign_output = outcome.output;
     if !sign_output.status.success() {
         // Surface gpg's own stderr — it carries the actionable reason ("No secret key",
         // "no passphrase supplied in batch mode", …) that the user needs.
-        anyhow::bail!(
-            "gpg --detach-sign failed for secret key '{}': {}",
+        return Err(signing_refused(
             gpg_key_id,
-            cfgd_core::stderr_lossy_trimmed(&sign_output)
-        );
+            format!(
+                "gpg --detach-sign failed for secret key '{}': {}",
+                gpg_key_id,
+                cfgd_core::stderr_lossy_trimmed(&sign_output)
+            ),
+        ));
     }
 
-    let signature = std::fs::read_to_string(&sig_path)
-        .map_err(|e| anyhow::anyhow!("failed to read GPG signature: {e}"))?;
+    let signature = std::fs::read_to_string(&sig_path).map_err(|e| {
+        signature_unreadable(&sig_path, format!("failed to read GPG signature: {e}"))
+    })?;
 
     Ok(signature)
 }

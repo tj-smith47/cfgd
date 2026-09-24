@@ -214,8 +214,13 @@ fn current_context_namespace() -> String {
 }
 
 fn parse_module_arg(arg: &str) -> anyhow::Result<(&str, &str)> {
-    arg.split_once(':')
-        .ok_or_else(|| anyhow::anyhow!("invalid module format '{arg}' — expected name:version"))
+    arg.split_once(':').ok_or_else(|| {
+        crate::cli::invalid_argument(
+            "module",
+            arg,
+            format!("invalid module format '{arg}' — expected name:version"),
+        )
+    })
 }
 
 fn build_volume_mount(name: &str) -> serde_json::Value {

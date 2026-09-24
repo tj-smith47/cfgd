@@ -24,14 +24,25 @@ use crate::cli::cli_error_ctx;
 fn read_source(source: &str) -> anyhow::Result<String> {
     if source == "-" {
         let mut buf = String::new();
-        std::io::stdin()
-            .read_to_string(&mut buf)
-            .map_err(|e| anyhow::anyhow!("failed to read document from stdin: {e}"))?;
+        std::io::stdin().read_to_string(&mut buf).map_err(|e| {
+            unreadable_source(source, format!("failed to read document from stdin: {e}"))
+        })?;
         Ok(buf)
     } else {
-        std::fs::read_to_string(source)
-            .map_err(|e| anyhow::anyhow!("failed to read document '{source}': {e}"))
+        std::fs::read_to_string(source).map_err(|e| {
+            let message = format!("failed to read document '{source}': {e}");
+            if e.kind() == std::io::ErrorKind::NotFound {
+                crate::cli::cli_error(source, "not_found", message, serde_json::json!({}))
+            } else {
+                unreadable_source(source, message)
+            }
+        })
     }
+}
+
+/// The document `cfgd validate` was pointed at could not be read.
+fn unreadable_source(source: &str, message: String) -> anyhow::Error {
+    crate::cli::cli_error(source, "read_failed", message, serde_json::json!({}))
 }
 
 /// Validate a Module document (`cfgd module validate <file|->`).

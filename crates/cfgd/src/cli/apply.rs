@@ -143,12 +143,36 @@ pub fn cmd_apply(
 /// Shared by the flag and by a plan file's recorded `context`, which is the
 /// same vocabulary written back out — a replay must not accept a word the flag
 /// would refuse.
-fn parse_reconcile_context(raw: &str) -> anyhow::Result<ReconcileContext> {
+pub(super) fn parse_reconcile_context(raw: &str) -> anyhow::Result<ReconcileContext> {
     match raw {
         "apply" => Ok(ReconcileContext::Apply),
         "reconcile" => Ok(ReconcileContext::Reconcile),
-        other => anyhow::bail!("Unknown context '{other}'. Valid values: apply, reconcile"),
+        other => Err(super::invalid_argument(
+            "--context",
+            other,
+            format!("Unknown context '{other}'. Valid values: apply, reconcile"),
+        )),
     }
+}
+
+/// Refuse `--with-profile` on a run that names no `--module`.
+///
+/// The flag opts a `--module` run INTO composing with the full profile; with
+/// no module named there is nothing for it to compose with, and running
+/// anyway would behave exactly like the plain command while claiming not to.
+pub(super) fn refuse_with_profile_without_module(
+    with_profile: bool,
+    module_filter: &[String],
+) -> anyhow::Result<()> {
+    if with_profile && module_filter.is_empty() {
+        return Err(super::cli_error(
+            "--with-profile",
+            "missing_argument",
+            "--with-profile requires --module (it composes the named module(s) with the full profile; without --module there is nothing to add)",
+            serde_json::json!({ "flag": "--with-profile", "requires": "--module" }),
+        ));
+    }
+    Ok(())
 }
 
 /// Drive a full apply (or dry-run) and return the resulting [`ApplyOutcome`]
@@ -183,14 +207,7 @@ pub fn run_apply(
     let module_filter: &[String] = &args.module;
     let with_profile = args.with_profile;
 
-    // `--with-profile` opts a `--module` run INTO composing with the full
-    // profile; with no module named, there is nothing for it to compose
-    // with — reject rather than silently behaving like a plain `cfgd apply`.
-    if with_profile && module_filter.is_empty() {
-        anyhow::bail!(
-            "--with-profile requires --module (it composes the named module(s) with the full profile; without --module there is nothing to add)"
-        );
-    }
+    refuse_with_profile_without_module(with_profile, module_filter)?;
 
     let config_dir = config_dir(cli);
 

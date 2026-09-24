@@ -120,11 +120,19 @@ fn update_source_rejection(
                     .or_insert(serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));
                 m.get_mut(serde_yaml::Value::String("subscription".into()))
             })
-            .ok_or_else(|| anyhow::anyhow!("cannot access subscription"))?;
+            .ok_or_else(|| {
+                source_shape_refusal(
+                    source_name,
+                    format!("source '{source_name}' is not a mapping"),
+                )
+            })?;
 
-        let sub_map = subscription
-            .as_mapping_mut()
-            .ok_or_else(|| anyhow::anyhow!("subscription is not a mapping"))?;
+        let sub_map = subscription.as_mapping_mut().ok_or_else(|| {
+            source_shape_refusal(
+                source_name,
+                format!("source '{source_name}' subscription block is not a mapping"),
+            )
+        })?;
         let reject = sub_map
             .entry(serde_yaml::Value::String("reject".into()))
             .or_insert(serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));
@@ -152,11 +160,19 @@ fn update_source_override(
                     .or_insert(serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));
                 m.get_mut(serde_yaml::Value::String("subscription".into()))
             })
-            .ok_or_else(|| anyhow::anyhow!("cannot access subscription"))?;
+            .ok_or_else(|| {
+                source_shape_refusal(
+                    source_name,
+                    format!("source '{source_name}' is not a mapping"),
+                )
+            })?;
 
-        let sub_map = subscription
-            .as_mapping_mut()
-            .ok_or_else(|| anyhow::anyhow!("subscription is not a mapping"))?;
+        let sub_map = subscription.as_mapping_mut().ok_or_else(|| {
+            source_shape_refusal(
+                source_name,
+                format!("source '{source_name}' subscription block is not a mapping"),
+            )
+        })?;
         let overrides = sub_map
             .entry(serde_yaml::Value::String("overrides".into()))
             .or_insert(serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));

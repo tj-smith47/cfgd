@@ -36840,6 +36840,7 @@ const PINNED_HINT_COMPOSERS: &[(&str, bool)] = &[
     ("run_next_step", true),
     ("source_failure_next_step", true),
     ("success_next_step", false),
+    ("system_scope_root_hint", true),
     ("withheld_hints", false),
     ("writability_hint", true),
 ];
@@ -37065,7 +37066,7 @@ fn every_closing_hint_names_a_command() {
     // backup note composers shipped with nobody holding their wording or
     // their class.
     const WALK_ROOTS: &[(&str, usize)] = &[
-        ("cfgd", 28),
+        ("cfgd", 27),
         ("cfgd-core", 0),
         ("cfgd-crd", 0),
         ("cfgd-csi", 0),
@@ -37703,8 +37704,6 @@ const UNCONDITIONAL_HINT_CALL_SITES: &[(&str, &str)] = &[
         "cfgd-core/src/daemon/service/systemd.rs",
         "stop_systemd_service",
     ),
-    ("cfgd/src/cli/daemon.rs", "cmd_daemon_install"),
-    ("cfgd/src/cli/daemon.rs", "cmd_daemon_uninstall"),
     ("cfgd/src/cli/error.rs", "render_cli_error"),
     ("cfgd/src/cli/init/cmd_init.rs", "check_prerequisites"),
     ("cfgd/src/cli/init/cmd_init.rs", "cmd_init"),
@@ -37843,6 +37842,12 @@ fn every_hint_composer_states_whether_its_wording_is_unconditional() {
             unconditional.push((format!("writability_hint {kind}"), hint));
         }
     }
+    for verb in ["install", "uninstall"] {
+        unconditional.push((
+            format!("system_scope_root_hint {verb}"),
+            crate::cli::daemon::system_scope_root_hint(verb),
+        ));
+    }
     // Every state a run can end in, over every title, because the wording is
     // per state and only `Success` with work attempted leaves nothing to say.
     let tally = |status: ApplyStatus, not_attempted: Vec<String>| RunTally {
@@ -37876,7 +37881,7 @@ fn every_hint_composer_states_whether_its_wording_is_unconditional() {
         }
     }
     assert!(
-        unconditional.len() >= 59,
+        unconditional.len() >= 61,
         "the unconditional population shrank to {} — a composer stopped being walked",
         unconditional.len()
     );
@@ -37975,7 +37980,7 @@ fn every_hint_composer_the_workspace_declares_is_classified() {
     // held by `production_sources_per_root`, which fails on a root that reads
     // as empty and on a crate joining the workspace unnamed.
     const WALK_ROOTS: &[(&str, usize, usize)] = &[
-        ("cfgd", 6, 7),
+        ("cfgd", 7, 5),
         ("cfgd-core", 3, 4),
         ("cfgd-crd", 0, 0),
         ("cfgd-csi", 0, 0),
@@ -50814,5 +50819,309 @@ fn the_held_manager_sentences_the_docs_promise_come_from_the_one_composer() {
     assert!(
         body.contains(&block),
         "the page's apply row states the shortfall the composer words: {block}"
+    );
+}
+
+/// The mark a production refusal carries when no CLI input can reach it, so
+/// the untyped string it builds never meets a structured consumer.
+const UNTYPED_REFUSAL_HATCH: &str = "// untyped-ok:";
+
+/// The two macros anyhow composes a string refusal with. A refusal built by
+/// either reaches `render_cli_error` carrying no kind of its own and renders
+/// as `internal`.
+const UNTYPED_REFUSAL_MACROS: [&str; 2] = ["bail!", "anyhow!"];
+
+/// Each untyped refusal in one production body: the 1-based line its call sits
+/// on, and whether the hatch answers for it.
+///
+/// The body is read through `blank_non_code`, so a spelling inside a message,
+/// a doc line or a block comment is not a call. `calls_free_fn` reads a
+/// qualified call (`anyhow::bail!(`) and the bare spelling an import allows as
+/// the same call, wherever it sits on its line: after a statement, inside a
+/// closure, on a closing line. The hatch is read off the raw line, on the
+/// call's own line or in the plain comment block directly above it.
+fn untyped_refusal_sites(body: &str) -> Vec<(usize, bool)> {
+    let code = blank_non_code(body);
+    let raw: Vec<&str> = body.lines().collect();
+    code.lines()
+        .enumerate()
+        .filter(|(_, line)| {
+            UNTYPED_REFUSAL_MACROS
+                .iter()
+                .any(|m| cfgd_core::test_helpers::calls_free_fn(line, m))
+        })
+        .map(|(at, _)| (at + 1, untyped_refusal_hatched(&raw, at)))
+        .collect()
+}
+
+/// Whether line `at` or the plain comment block directly above it carries
+/// [`UNTYPED_REFUSAL_HATCH`].
+fn untyped_refusal_hatched(raw: &[&str], at: usize) -> bool {
+    carries_hatch(raw[at], UNTYPED_REFUSAL_HATCH)
+        || raw[..at]
+            .iter()
+            .rev()
+            .take_while(|l| cfgd_core::test_helpers::is_plain_line_comment(l))
+            .any(|l| l.contains(UNTYPED_REFUSAL_HATCH))
+}
+
+#[test]
+fn untyped_refusal_sites_reads_each_call_as_code_wherever_it_sits() {
+    let body = r#"fn f() -> anyhow::Result<()> {
+    let msg = "anyhow::bail!(inside a literal)";
+    // bail!(inside a comment)
+    /* anyhow!(inside
+       a block comment) */
+    let x = 1; anyhow::bail!("after a statement");
+    let y = z.ok_or_else(|| anyhow!("in a closure"))?;
+    if x > 0 { return Ok(()); } else { bail!("on a closing line") }
+    // untyped-ok: no input reaches the call below
+    let w = v.ok_or_else(|| anyhow::anyhow!("hatched above"))?;
+    let u = t.ok_or_else(|| anyhow::anyhow!("hatched trailing"))?; // untyped-ok: why
+    // untyped-ok: this mark sits above a statement, not the call
+    let a = 1;
+    bail!("below a statement the mark was written over");
+    my_bail!("a different macro");
+    Ok(())
+}"#;
+    assert_eq!(
+        untyped_refusal_sites(body),
+        vec![
+            (6, false),
+            (7, false),
+            (8, false),
+            (10, true),
+            (11, true),
+            (14, false),
+        ],
+        "a call is read wherever it sits, never inside a literal or a comment, \
+         and a hatch answers only for the call directly below it or on its line"
+    );
+}
+
+/// Every refusal the CLI's production code builds reaches a `-o json` caller
+/// with a typed `error` kind.
+///
+/// A refusal built with `anyhow::bail!` or `anyhow!` carries no kind, so the
+/// sink falls back to `internal` and a script cannot tell a typo in a flag
+/// from a bug. The population is every production source under `src/cli`; a
+/// site no CLI input can reach (an invariant the code just established) says
+/// so with `// untyped-ok: <why>`, and the hatched sites are held under a
+/// ceiling so a new one is a decision rather than a habit.
+#[test]
+fn no_reachable_cli_refusal_is_an_untyped_anyhow() {
+    /// The production sources under `src/cli` today: a floor, so a walk that
+    /// stops reading a directory fails on the count rather than passing.
+    const FLOOR_FILES: usize = 78;
+    /// The hatched sites today: two in the config key walker, one each in
+    /// `module registry add`, `profile update --secret` and the devcontainer
+    /// export. Raising it is a change a reviewer sees.
+    const HATCH_CEILING: usize = 5;
+
+    let cli_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli");
+    let mut files = 0usize;
+    let mut marks = 0usize;
+    let mut offenders: Vec<String> = Vec::new();
+    let mut hatched: Vec<String> = Vec::new();
+    for path in rust_sources_under(&cli_dir) {
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default();
+        // A scaffolding file is a test region whole, with no `#[cfg(test)]`
+        // for the production slice to cut at.
+        if name.starts_with("tests") || path.parent().is_some_and(|p| p.ends_with("tests")) {
+            continue;
+        }
+        files += 1;
+        let production = cfgd_core::test_helpers::production_slice_of(&path);
+        marks += production
+            .lines()
+            .filter(|l| carries_hatch(l, UNTYPED_REFUSAL_HATCH))
+            .count();
+        for (line, ok) in untyped_refusal_sites(&production) {
+            let site = format!("{}:{line}", path.display());
+            if ok {
+                hatched.push(site);
+            } else {
+                offenders.push(site);
+            }
+        }
+    }
+    assert!(
+        files >= FLOOR_FILES,
+        "the walk read {files} production sources under src/cli, fewer than the {FLOOR_FILES} there"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a CLI refusal reaches `-o json` untyped: build it with `cli_error` (or a \
+         constructor over it) under a kind from docs/cli-reference.md's Error kinds, \
+         or mark a site no input reaches with `{UNTYPED_REFUSAL_HATCH} <why>`:\n{}",
+        offenders.join("\n")
+    );
+    assert!(
+        hatched.len() <= HATCH_CEILING,
+        "{} untyped refusals are hatched, above the ceiling of {HATCH_CEILING}; type the \
+         new one, or raise the ceiling in the same change that says why:\n{}",
+        hatched.len(),
+        hatched.join("\n")
+    );
+    assert_eq!(
+        marks,
+        hatched.len(),
+        "a `{UNTYPED_REFUSAL_HATCH}` mark answers for no untyped refusal below it or on its line"
+    );
+}
+
+/// Every refusal constructor in the CLI's production sources, by name, with
+/// the index of its `error_kind` parameter.
+///
+/// A constructor is any function taking a parameter of that name, which is
+/// what `cli_error` and each composer written over it call the kind, so a new
+/// composer joins the population by being written the way the others are.
+fn refusal_constructors(bodies: &[(std::path::PathBuf, String)]) -> Vec<(String, usize)> {
+    let mut out = Vec::new();
+    for (_, body) in bodies {
+        let code = blank_non_code(body);
+        let commentless = cfgd_core::test_helpers::blank_comments(body);
+        let mut offset = 0;
+        for line in code.split_inclusive('\n') {
+            if let Some(name) = cfgd_core::test_helpers::declared_fn_name(line)
+                && let Some(at) = line.find(&format!("{name}("))
+            {
+                let open = offset + at + name.len();
+                if let Some(index) = top_level_args(&commentless[open + 1..])
+                    .iter()
+                    .position(|arg| arg.starts_with("error_kind:"))
+                {
+                    out.push((name, index));
+                }
+            }
+            offset += line.len();
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// The literal kind each call to a refusal constructor passes, with the file
+/// it is written in.
+///
+/// The call is found on the body as code, so a spelling inside a literal or a
+/// comment is not one, and its arguments are read off the body with only the
+/// comments blanked, so the kind is read as written.
+///
+/// A kind computed at the call (a `match` over a typed error's variants) is
+/// not a literal and is not read here; the documentation names those by hand.
+fn literal_refusal_kinds(
+    bodies: &[(std::path::PathBuf, String)],
+    constructors: &[(String, usize)],
+) -> std::collections::BTreeMap<String, std::collections::BTreeSet<String>> {
+    let mut kinds: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> =
+        std::collections::BTreeMap::new();
+    for (path, body) in bodies {
+        let code = blank_non_code(body);
+        let commentless = cfgd_core::test_helpers::blank_comments(body);
+        for (name, index) in constructors {
+            let needle = format!("{name}(");
+            for (at, _) in code.match_indices(&needle) {
+                let before = &code[..at];
+                let boundary = !before
+                    .chars()
+                    .next_back()
+                    .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_');
+                if !boundary || before.trim_end().ends_with("fn") {
+                    continue;
+                }
+                let args = top_level_args(&commentless[at + needle.len()..]);
+                let Some(written) = args.get(*index) else {
+                    continue;
+                };
+                if let Some(kind) = written
+                    .strip_prefix('"')
+                    .and_then(|k| k.strip_suffix('"'))
+                    .filter(|k| k.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'))
+                {
+                    kinds
+                        .entry(kind.to_string())
+                        .or_default()
+                        .insert(path.display().to_string());
+                }
+            }
+        }
+    }
+    kinds
+}
+
+/// Every kind a CLI refusal is built with is named in the reference's Error
+/// kinds list.
+///
+/// A script branches on the `error` field, so a kind the reference does not
+/// name is one no consumer can know to handle. The kinds are read off every
+/// literal a refusal constructor is called with in the CLI's production
+/// sources, and the constructors off every function taking an `error_kind`
+/// parameter, so a new constructor and a new kind both join the check by being
+/// written.
+#[test]
+fn every_cli_refusal_kind_is_named_in_the_reference() {
+    /// The constructors and literal kinds in use today: floors, so a reader
+    /// that stops finding either fails on the count rather than passing.
+    const FLOOR_CONSTRUCTORS: usize = 10;
+    const FLOOR_KINDS: usize = 79;
+
+    let cli_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli");
+    let bodies: Vec<(std::path::PathBuf, String)> = rust_sources_under(&cli_dir)
+        .into_iter()
+        .filter(|path| {
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default();
+            !(name.starts_with("tests") || path.parent().is_some_and(|p| p.ends_with("tests")))
+        })
+        .map(|path| {
+            let production = cfgd_core::test_helpers::production_slice_of(&path);
+            (path, production)
+        })
+        .collect();
+    let constructors = refusal_constructors(&bodies);
+    assert!(
+        constructors.len() >= FLOOR_CONSTRUCTORS,
+        "found {} refusal constructors, fewer than the {FLOOR_CONSTRUCTORS} in use: {constructors:?}",
+        constructors.len()
+    );
+    let kinds = literal_refusal_kinds(&bodies, &constructors);
+    assert!(
+        kinds.len() >= FLOOR_KINDS,
+        "found {} literal refusal kinds, fewer than the {FLOOR_KINDS} in use",
+        kinds.len()
+    );
+
+    let reference =
+        walked_file_body(&cfgd_core::test_helpers::workspace_root().join("docs/cli-reference.md"));
+    let section = reference
+        .split_once("\n### Error kinds\n")
+        .map(|(_, rest)| rest.split("\n### ").next().unwrap_or(rest))
+        .expect("docs/cli-reference.md carries an Error kinds section");
+    let documented: std::collections::BTreeSet<&str> = section
+        .lines()
+        .filter_map(|l| l.strip_prefix("| `"))
+        .filter_map(|l| l.split_once('`').map(|(kind, _)| kind))
+        .collect();
+    let missing: Vec<String> = kinds
+        .iter()
+        .filter(|(kind, _)| !documented.contains(kind.as_str()))
+        .map(|(kind, files)| {
+            format!(
+                "{kind} ({})",
+                files.iter().cloned().collect::<Vec<_>>().join(", ")
+            )
+        })
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "a CLI refusal kind is not named in docs/cli-reference.md's Error kinds list:\n{}",
+        missing.join("\n")
     );
 }

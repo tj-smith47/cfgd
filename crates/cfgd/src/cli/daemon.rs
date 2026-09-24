@@ -309,6 +309,38 @@ fn daemon_source_row(
     }
 }
 
+/// A system-scope service change refused before it starts, because only root
+/// can write the system service directories.
+///
+/// One refusal carrying its own remediation, so the reader sees one failure
+/// line and the command that gets past it.
+fn system_scope_needs_root(
+    error_kind: &'static str,
+    verb: &str,
+    platform: &str,
+    service: &str,
+) -> anyhow::Error {
+    crate::cli::cli_error_with_hints(
+        "cfgd",
+        error_kind,
+        format!("System-scope {verb} requires root privileges"),
+        serde_json::json!({
+            "platform": platform,
+            "service": service,
+            "reason": "insufficient_privileges",
+        }),
+        vec![system_scope_root_hint(verb)],
+    )
+}
+
+/// The way past [`system_scope_needs_root`]. Unconditional: nothing else on
+/// the surface names the command that gets the reader through.
+pub(in crate::cli) fn system_scope_root_hint(verb: &str) -> cfgd_core::output::HintCommands {
+    cfgd_core::output::HintCommands::unconditional(format!(
+        "Re-run with `sudo cfgd --scope system daemon {verb}`"
+    ))
+}
+
 pub(super) fn cmd_daemon_install(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     // Runtime cfg! so the install_failed error_doc has the platform+service
     // strings available before the lib call. The success payload uses
@@ -325,12 +357,11 @@ pub(super) fn cmd_daemon_install(cli: &Cli, printer: &Printer) -> anyhow::Result
     let scope = cli.scope();
 
     if scope == cfgd_core::Scope::System && !cfgd_core::is_root() {
-        printer.status_simple(Role::Fail, "System-scope install requires root privileges");
-        printer.hint(cfgd_core::output::HintCommands::unconditional(
-            "Re-run with `sudo cfgd --scope system daemon install`",
-        ));
-        return Err(anyhow::anyhow!(
-            "insufficient privileges for system-scope install"
+        return Err(system_scope_needs_root(
+            "install_failed",
+            "install",
+            platform,
+            service,
         ));
     }
 
@@ -489,15 +520,11 @@ pub(super) fn cmd_daemon_uninstall(cli: &Cli, printer: &Printer) -> anyhow::Resu
     let scope = cli.scope();
 
     if scope == cfgd_core::Scope::System && !cfgd_core::is_root() {
-        printer.status_simple(
-            Role::Fail,
-            "System-scope uninstall requires root privileges",
-        );
-        printer.hint(cfgd_core::output::HintCommands::unconditional(
-            "Re-run with `sudo cfgd --scope system daemon uninstall`",
-        ));
-        return Err(anyhow::anyhow!(
-            "insufficient privileges for system-scope uninstall"
+        return Err(system_scope_needs_root(
+            "uninstall_failed",
+            "uninstall",
+            platform,
+            service,
         ));
     }
 

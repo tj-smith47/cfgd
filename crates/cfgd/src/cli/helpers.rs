@@ -673,9 +673,13 @@ pub(in crate::cli) fn parse_package_flag(
         });
     };
     if prefix.is_empty() || name.is_empty() {
-        anyhow::bail!(
-            "invalid package '--package {s}' — expected <manager>[.<list>]:<name> or a bare name"
-        );
+        return Err(crate::cli::invalid_argument(
+            "--package",
+            s,
+            format!(
+                "invalid package '--package {s}' — expected <manager>[.<list>]:<name> or a bare name"
+            ),
+        ));
     }
     validate_flag_package_name(name)?;
     if let Some(path) = cfgd_core::config::package_schema_path(prefix) {
@@ -709,7 +713,8 @@ pub(in crate::cli) fn parse_package_flag(
 /// cannot be present to remove, and refusing both keeps one answer for what a
 /// package may be called.
 fn validate_flag_package_name(name: &str) -> anyhow::Result<()> {
-    cfgd_schema::validate_package_name("--package", name).map_err(|e| anyhow::anyhow!("{e}"))
+    cfgd_schema::validate_package_name("--package", name)
+        .map_err(|e| crate::cli::invalid_argument("--package", name, e.to_string()))
 }
 
 /// The `--package` tokens that WOULD remove `name` from `packages`, for a bare
@@ -762,10 +767,14 @@ fn unknown_package_prefix(
         .iter()
         .find(|p| p.slot == prefix && p.path != prefix)
     {
-        return anyhow::anyhow!(
-            "unknown package manager '{prefix}' in '--package {token}'; \
-             use {}:{name}",
-            path.path
+        return crate::cli::invalid_argument(
+            "--package",
+            token,
+            format!(
+                "unknown package manager '{prefix}' in '--package {token}'; \
+                 use {}:{name}",
+                path.path
+            ),
         );
     }
     let mut known: Vec<String> = cfgd_core::config::PACKAGE_SCHEMA_PATHS
@@ -785,14 +794,15 @@ fn unknown_package_prefix(
             .unwrap_or(prefix),
     )
     .is_some();
-    if manager_shaped {
-        anyhow::anyhow!("unknown package manager '{prefix}' in '--package {token}'; known: {known}")
+    let message = if manager_shaped {
+        format!("unknown package manager '{prefix}' in '--package {token}'; known: {known}")
     } else {
-        anyhow::anyhow!(
+        format!(
             "unknown package manager '{prefix}' in '--package {token}'; \
              did you mean {native}:{token}? (known: {known})"
         )
-    }
+    };
+    crate::cli::invalid_argument("--package", token, message)
 }
 
 /// Best-effort name of the profile a module-only command runs under: the
@@ -884,10 +894,18 @@ pub(in crate::cli) fn parse_file_spec(spec: &str) -> anyhow::Result<(PathBuf, Pa
         let target = &spec[pos + 1..];
         // Target may also start with a drive letter — handle C:\path after the separator
         if source.is_empty() {
-            anyhow::bail!("empty source in file spec: {}", spec);
+            return Err(crate::cli::invalid_argument(
+                "--file",
+                spec,
+                format!("empty source in file spec: {}", spec),
+            ));
         }
         if target.is_empty() {
-            anyhow::bail!("empty target in file spec: {}", spec);
+            return Err(crate::cli::invalid_argument(
+                "--file",
+                spec,
+                format!("empty target in file spec: {}", spec),
+            ));
         }
         Ok((
             cfgd_core::expand_tilde(Path::new(source)),
@@ -910,7 +928,12 @@ pub(in crate::cli) fn copy_files_to_dir(
     for spec in file_specs {
         let (source, target) = parse_file_spec(spec)?;
         if !source.exists() {
-            anyhow::bail!("File not found: {}", source.posix());
+            return Err(crate::cli::cli_error(
+                cfgd_core::to_posix_string(&source),
+                "not_found",
+                format!("File not found: {}", source.posix()),
+                serde_json::json!({ "flag": "--file" }),
+            ));
         }
 
         // Reject sources in system directories to prevent path traversal attacks.
@@ -941,11 +964,15 @@ pub(in crate::cli) fn copy_files_to_dir(
         ];
         for prefix in forbidden_prefixes {
             if source.starts_with(prefix) || canonical_source.starts_with(prefix) {
-                anyhow::bail!(
-                    "Refusing to import '{}': source is in system directory {}",
-                    source.posix(),
-                    prefix
-                );
+                return Err(crate::cli::invalid_argument(
+                    "--file",
+                    spec,
+                    format!(
+                        "Refusing to import '{}': source is in system directory {}",
+                        source.posix(),
+                        prefix
+                    ),
+                ));
             }
         }
         // Check /var against the canonical path only. On Linux canonical == original
@@ -953,16 +980,24 @@ pub(in crate::cli) fn copy_files_to_dir(
         // /private/var, so temp files (/var/folders/…) canonicalize to
         // /private/var/folders/… which does not start with /var — safe to allow.
         if canonical_source.starts_with("/var") {
-            anyhow::bail!(
-                "Refusing to import '{}': source is in system directory /var",
-                source.posix()
-            );
+            return Err(crate::cli::invalid_argument(
+                "--file",
+                spec,
+                format!(
+                    "Refusing to import '{}': source is in system directory /var",
+                    source.posix()
+                ),
+            ));
         }
 
         std::fs::create_dir_all(repo_dir)?;
-        let file_name = source
-            .file_name()
-            .ok_or_else(|| anyhow::anyhow!("Invalid file path: {}", source.posix()))?;
+        let file_name = source.file_name().ok_or_else(|| {
+            crate::cli::invalid_argument(
+                "--file",
+                spec,
+                format!("Invalid file path: {}", source.posix()),
+            )
+        })?;
         let dest = repo_dir.join(file_name);
         if source.is_dir() {
             cfgd_core::copy_dir_recursive(&source, &dest)?;
@@ -1008,28 +1043,53 @@ pub(in crate::cli) fn add_to_gitignore(config_dir: &Path, path: &str) -> anyhow:
 
 // --- Validation helpers ---
 
+/// One `--env KEY=VALUE` token, refused as the argument it came from.
+pub(in crate::cli) fn env_flag(token: &str) -> anyhow::Result<cfgd_core::config::EnvVar> {
+    cfgd_core::parse_env_var(token).map_err(|e| crate::cli::invalid_argument("--env", token, e))
+}
+
+/// One `--alias NAME=COMMAND` token, refused as the argument it came from.
+pub(in crate::cli) fn alias_flag(token: &str) -> anyhow::Result<cfgd_core::config::ShellAlias> {
+    cfgd_core::parse_alias(token).map_err(|e| crate::cli::invalid_argument("--alias", token, e))
+}
+
+/// One `--system KEY=VALUE` token split at its first `=`.
+pub(in crate::cli) fn system_flag(token: &str) -> anyhow::Result<(&str, &str)> {
+    token.split_once('=').ok_or_else(|| {
+        crate::cli::invalid_argument(
+            "--system",
+            token,
+            format!("Invalid system setting '{}' — expected key=value", token),
+        )
+    })
+}
+
 /// Validate a resource name (module or profile) for filesystem safety.
 /// Allows alphanumeric, hyphen, underscore, and dot (but not leading dot).
 pub(in crate::cli) fn validate_resource_name(name: &str, kind: &str) -> anyhow::Result<()> {
-    if name.is_empty() {
-        anyhow::bail!("{kind} name cannot be empty");
-    }
-    if name.len() > 128 {
-        anyhow::bail!("{kind} name too long (max 128 characters)");
-    }
-    if name.starts_with('.') || name.starts_with('-') {
-        anyhow::bail!("{kind} name cannot start with '.' or '-'");
-    }
-    if !name
+    let refusal = if name.is_empty() {
+        format!("{kind} name cannot be empty")
+    } else if name.len() > 128 {
+        format!("{kind} name too long (max 128 characters)")
+    } else if name.starts_with('.') || name.starts_with('-') {
+        format!("{kind} name cannot start with '.' or '-'")
+    } else if !name
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
     {
-        anyhow::bail!(
+        format!(
             "{kind} name '{}' contains invalid characters — use only alphanumeric, hyphen, underscore, or dot",
             name
-        );
-    }
-    Ok(())
+        )
+    } else {
+        return Ok(());
+    };
+    Err(crate::cli::cli_error(
+        name,
+        "invalid_argument",
+        refusal,
+        serde_json::json!({ "resource": kind.to_ascii_lowercase() }),
+    ))
 }
 
 /// Best-effort workflow regeneration after a completed mutation: the
@@ -1183,7 +1243,14 @@ pub(in crate::cli) fn open_in_editor(path: &Path, printer: &Printer) -> anyhow::
             .stdout(std::process::Stdio::inherit())
             .stderr(std::process::Stdio::inherit()),
     )
-    .map_err(|e| anyhow::anyhow!("Failed to open editor '{}': {}", editor, e))?;
+    .map_err(|e| {
+        crate::cli::cli_error(
+            &editor,
+            "edit_failed",
+            format!("Failed to open editor '{}': {}", editor, e),
+            serde_json::json!({ "path": cfgd_core::to_posix_string(path) }),
+        )
+    })?;
 
     if !status.success() {
         printer.status_simple(
@@ -1236,8 +1303,12 @@ pub(crate) fn run_state_dir(
     state_over: Option<&Path>,
     scope: cfgd_core::Scope,
 ) -> anyhow::Result<PathBuf> {
-    cfgd_core::resolve_state_dir(state_over, scope)
-        .map_err(|e| anyhow::anyhow!("cannot determine state directory: {}", e))
+    // The typed StateError stays in the chain, so the refusal's kind is its
+    // own `state` domain rather than the text of a restated message.
+    cfgd_core::resolve_state_dir(state_over, scope).map_err(|e| {
+        let message = format!("cannot determine state directory: {e}");
+        anyhow::Error::from(e).context(message)
+    })
 }
 
 /// Resolve the effective config-file path honoring `--config` > `--config-dir` > default.
@@ -1317,9 +1388,14 @@ pub(in crate::cli) fn set_nested_yaml_value(
             }
         } else {
             // Intermediate part: navigate or create
-            let mapping = current
-                .as_mapping_mut()
-                .ok_or_else(|| anyhow::anyhow!("expected mapping at '{}'", part))?;
+            let mapping = current.as_mapping_mut().ok_or_else(|| {
+                crate::cli::cli_error(
+                    path,
+                    "parse_failed",
+                    format!("expected mapping at '{}'", part),
+                    serde_json::json!({}),
+                )
+            })?;
             current = mapping
                 .entry(serde_yaml::Value::String(part.to_string()))
                 .or_insert(serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));

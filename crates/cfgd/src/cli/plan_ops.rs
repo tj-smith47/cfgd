@@ -730,7 +730,7 @@ fn phases_in_execution_order(plan: &reconciler::Plan) -> bool {
 /// a caller handed cfgd; `extras` adds whatever the one refusal knows on top.
 fn plan_refusal(
     file: &std::path::Path,
-    kind: &str,
+    error_kind: &str,
     message: String,
     extras: serde_json::Value,
 ) -> anyhow::Error {
@@ -739,7 +739,7 @@ fn plan_refusal(
     {
         map.extend(add);
     }
-    super::cli_error("plan", kind, message, payload)
+    super::cli_error("plan", error_kind, message, payload)
 }
 
 /// Read `cfgd plan -o json`'s payload back, refusing one this machine has moved

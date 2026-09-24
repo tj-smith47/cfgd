@@ -83,10 +83,38 @@ pub(crate) fn resolve_non_interactive_profile(
 /// Surfaces the canonical `invalid priority: '<input>' (must be a number)`
 /// error so the wording stays in lockstep with the user-facing CLI.
 pub(crate) fn parse_priority_input(input: &str) -> anyhow::Result<u32> {
-    let n = input
-        .parse::<u32>()
-        .map_err(|_| anyhow::anyhow!("invalid priority: '{}' (must be a number)", input))?;
-    validate_source_priority(n).map_err(|m| anyhow::anyhow!(m))
+    let n = input.parse::<u32>().map_err(|_| {
+        crate::cli::invalid_argument(
+            "--priority",
+            input,
+            format!("invalid priority: '{}' (must be a number)", input),
+        )
+    })?;
+    checked_priority(n)
+}
+
+/// A subscription priority the config parser will hold, refused as the
+/// `--priority` argument it came from when it is out of range.
+pub(crate) fn checked_priority(n: u32) -> anyhow::Result<u32> {
+    validate_source_priority(n)
+        .map_err(|m| crate::cli::invalid_argument("--priority", &n.to_string(), m))
+}
+
+/// A source entry in the config document whose shape is not the one the
+/// schema declares, so the edit asked for has nowhere to go.
+pub(super) fn source_shape_refusal(name: &str, message: String) -> anyhow::Error {
+    crate::cli::cli_error(name, "parse_failed", message, serde_json::json!({}))
+}
+
+/// The config document itself is missing a section, or holds one of the
+/// wrong shape, that adding a source writes under.
+fn config_shape_refusal(config_path: &Path, message: &'static str) -> anyhow::Error {
+    crate::cli::cli_error(
+        cfgd_core::to_posix_string(config_path),
+        "parse_failed",
+        message,
+        serde_json::json!({ "path": cfgd_core::to_posix_string(config_path) }),
+    )
 }
 
 pub(crate) fn count_policy_items(items: &config::PolicyItems) -> usize {
@@ -157,21 +185,26 @@ pub(crate) fn add_source_to_config(
     source: &config::SourceSpec,
 ) -> anyhow::Result<()> {
     if !config_path.exists() {
-        anyhow::bail!("Config file not found: {}", config_path.posix());
+        return Err(crate::cli::cli_error(
+            cfgd_core::to_posix_string(config_path),
+            "no_config",
+            format!("Config file not found: {}", config_path.posix()),
+            serde_json::json!({ "path": cfgd_core::to_posix_string(config_path) }),
+        ));
     }
 
     mutate_config_yaml(config_path, true, |raw| {
         let spec = raw
             .get_mut("spec")
-            .ok_or_else(|| anyhow::anyhow!("config missing 'spec'"))?;
+            .ok_or_else(|| config_shape_refusal(config_path, "config missing 'spec'"))?;
         let sources = spec
             .as_mapping_mut()
-            .ok_or_else(|| anyhow::anyhow!("spec is not a mapping"))?
+            .ok_or_else(|| config_shape_refusal(config_path, "spec is not a mapping"))?
             .entry(serde_yaml::Value::String("sources".into()))
             .or_insert(serde_yaml::Value::Sequence(vec![]));
         let seq = sources
             .as_sequence_mut()
-            .ok_or_else(|| anyhow::anyhow!("sources is not a sequence"))?;
+            .ok_or_else(|| config_shape_refusal(config_path, "sources is not a sequence"))?;
         let source_value = serde_yaml::to_value(source)?;
         seq.push(source_value);
         Ok(())
@@ -238,8 +271,17 @@ where
     f(&mut raw)?;
     let output = cfgd_core::config::with_leading_comments(&contents, &serde_yaml::to_string(&raw)?);
     if validate {
-        config::parse_config(&output, config_path)
-            .map_err(|e| anyhow::anyhow!("config would become invalid: {}", e))?;
+        config::parse_config(&output, config_path).map_err(|e| {
+            crate::cli::cli_error(
+                cfgd_core::to_posix_string(config_path),
+                "parse_failed",
+                format!("config would become invalid: {}", e),
+                serde_json::json!({
+                    "path": cfgd_core::to_posix_string(config_path),
+                    "reason": e.to_string(),
+                }),
+            )
+        })?;
     }
     // Pre-flight the config dir for real write access so a read-only dir surfaces
     // the typed TargetNotWritable (naming the path) instead of a bare
@@ -273,8 +315,14 @@ where
     F: FnOnce(&mut serde_yaml::Value) -> anyhow::Result<()>,
 {
     mutate_config_yaml(config_path, false, |raw| {
-        let source = find_source_in_config(raw, source_name)
-            .ok_or_else(|| anyhow::anyhow!("source '{}' not found in config file", source_name))?;
+        let source = find_source_in_config(raw, source_name).ok_or_else(|| {
+            crate::cli::cli_error(
+                source_name,
+                "not_found",
+                format!("source '{}' not found in config file", source_name),
+                serde_json::json!({ "path": cfgd_core::to_posix_string(config_path) }),
+            )
+        })?;
         f(source)
     })
 }

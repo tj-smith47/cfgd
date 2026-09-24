@@ -972,12 +972,11 @@ pub(super) fn cmd_explain(
         build_explain_schema_doc(schema, recursive)
     } else {
         let fields = resolve_field_path(&schema.fields, field_path).ok_or_else(|| {
-            anyhow::anyhow!(
-                "Unknown field path '{}.{}'. Run `cfgd explain {}` to see available fields.",
-                resource_name,
-                field_path.join("."),
-                resource_name,
-            )
+            let asked = format!("{}.{}", resource_name, field_path.join("."));
+            let message = format!(
+                "Unknown field path '{asked}'. Run `cfgd explain {resource_name}` to see available fields."
+            );
+            crate::cli::cli_error(asked, "not_found", message, serde_json::json!({}))
         })?;
         build_explain_drilldown_doc(schema, field_path, fields, recursive)
     };
