@@ -1064,34 +1064,47 @@ pub(in crate::cli) fn system_flag(token: &str) -> anyhow::Result<(&str, &str)> {
     })
 }
 
-/// Validate a resource name (module or profile) for filesystem safety.
-/// Allows alphanumeric, hyphen, underscore, and dot (but not leading dot).
-pub(in crate::cli) fn validate_resource_name(name: &str, kind: &str) -> anyhow::Result<()> {
-    let refusal = if name.is_empty() {
-        format!("{kind} name cannot be empty")
+/// What is wrong with `name` as a resource (module or profile) name, or `None`
+/// when it is safe on a filesystem: alphanumeric, hyphen, underscore and dot,
+/// with no leading dot or hyphen.
+pub(in crate::cli) fn resource_name_problem(name: &str, kind: &str) -> Option<String> {
+    if name.is_empty() {
+        Some(format!("{kind} name cannot be empty"))
     } else if name.len() > 128 {
-        format!("{kind} name too long (max 128 characters)")
+        Some(format!("{kind} name too long (max 128 characters)"))
     } else if name.starts_with('.') || name.starts_with('-') {
-        format!("{kind} name cannot start with '.' or '-'")
+        Some(format!("{kind} name cannot start with '.' or '-'"))
     } else if !name
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
     {
-        format!(
+        Some(format!(
             "{kind} name '{}' contains invalid characters — use only alphanumeric, hyphen, underscore, or dot",
             name
-        )
+        ))
     } else {
-        return Ok(());
-    };
-    Err(crate::cli::cli_error(
-        name,
-        "invalid_argument",
-        refusal,
-        // The positional is spelled as `--help` prints it, beside the flags
-        // every other refusal of this kind names.
-        serde_json::json!({ "flag": "<NAME>", "value": name, "resource": kind.to_ascii_lowercase() }),
-    ))
+        None
+    }
+}
+
+/// Refuse a resource name [`resource_name_problem`] finds fault with, as the
+/// argument `flag` it came from, spelled the way that command's `--help`
+/// prints it (`<NAME>` for a required positional, `[NAME]` for an optional
+/// one).
+pub(in crate::cli) fn validate_resource_name(
+    name: &str,
+    kind: &str,
+    flag: &str,
+) -> anyhow::Result<()> {
+    match resource_name_problem(name, kind) {
+        None => Ok(()),
+        Some(refusal) => Err(crate::cli::cli_error(
+            name,
+            "invalid_argument",
+            refusal,
+            serde_json::json!({ "flag": flag, "value": name, "resource": kind.to_ascii_lowercase() }),
+        )),
+    }
 }
 
 /// Best-effort workflow regeneration after a completed mutation: the
@@ -1140,13 +1153,13 @@ pub(in crate::cli) fn scan_profile_names(
         // Scanned stems flow into generated-workflow grep patterns and bare
         // YAML matrix lines — an invalid on-disk name (quote, newline, …)
         // would corrupt the generated file silently, so gate it here.
-        if let Err(e) = validate_resource_name(&found.name, "profile") {
+        if let Some(problem) = resource_name_problem(&found.name, "profile") {
             printer.status_simple(
                 Role::Warn,
                 format!(
                     "Skipping profile '{}': {}",
                     found.name.escape_default(),
-                    cfgd_core::output::collapse_to_subject_line(&*e)
+                    cfgd_core::output::collapse_to_subject_line(&problem)
                 ),
             );
             continue;
@@ -1201,13 +1214,13 @@ pub(in crate::cli) fn scan_module_names(
             {
                 // Same gate as scan_profile_names: raw stems end up inside
                 // generated-workflow grep patterns and YAML matrix lines.
-                if let Err(e) = validate_resource_name(n, "module") {
+                if let Some(problem) = resource_name_problem(n, "module") {
                     printer.status_simple(
                         Role::Warn,
                         format!(
                             "Skipping module '{}': {}",
                             n.escape_default(),
-                            cfgd_core::output::collapse_to_subject_line(&*e)
+                            cfgd_core::output::collapse_to_subject_line(&problem)
                         ),
                     );
                     continue;

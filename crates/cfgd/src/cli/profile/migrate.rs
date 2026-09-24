@@ -129,7 +129,7 @@ pub(crate) fn run_profile_migrate(
     let pdir = profiles_dir(cli);
 
     let plan: Vec<PlanItem> = if let Some(name) = name {
-        validate_resource_name(name, "Profile")?;
+        validate_resource_name(name, "Profile", "[NAME]")?;
         printer.heading_title(&TitleLabel::new("Migrate Profile", name));
         match plan_for_name(&pdir, name) {
             Ok(item) => vec![item],

@@ -31,7 +31,7 @@ pub fn cmd_source_priority(
 
     match value {
         Some(new_priority) => {
-            checked_priority(new_priority)?;
+            checked_priority(new_priority, "[VALUE]")?;
             let old_priority = source.subscription.priority;
             // Update priority in cfgd.yaml
             with_source_config(&config_path, name, |source_entry| {

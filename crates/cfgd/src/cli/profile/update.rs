@@ -24,7 +24,7 @@ pub fn cmd_profile_update(
         cfgd_core::split_add_remove(&args.post_reconcile);
     let (add_on_change, remove_on_change) = cfgd_core::split_add_remove(&args.on_change);
     let (add_on_drift, remove_on_drift) = cfgd_core::split_add_remove(&args.on_drift);
-    validate_resource_name(name, "Profile")?;
+    validate_resource_name(name, "Profile", "[NAME]")?;
     printer.heading_title(&TitleLabel::new("Update Profile", name));
 
     let config_dir = config_dir(cli);

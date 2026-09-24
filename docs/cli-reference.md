@@ -2991,7 +2991,7 @@ domain instead: `config`, `file`, `package`, `secret`, `system`, `state`,
 | `internal` | A failure no handler typed and no `CfgdError` explains; `message` carries its text. |
 | `invalid` | The path given is not the kind of file system entry the command needs. |
 | `invalid_annotation` | An image annotation could not be parsed. |
-| `invalid_argument` | A flag or argument value was refused. `flag` names the flag, or the argument spelled as `--help` prints it (`<NAME>`) for a refused name, and `value` repeats what was given, `true` for a switch; `valid` lists the accepted values where they are a closed list, and `resource` names the kind a refused name was for. |
+| `invalid_argument` | A flag or argument value was refused. `flag` names the argument as that command's `--help` prints it: a flag with its dashes (`--priority`), a required positional as `<NAME>` and an optional one as `[NAME]`; and `value` repeats what was given, `true` for a switch; `valid` lists the accepted values where they are a closed list, and `resource` names the kind a refused name was for. |
 | `invalid_label` | An image label could not be parsed. |
 | `invalid_pin_version` | `--pin-version` starts with `-`. |
 | `invalid_reference` | An OCI or image reference could not be parsed. |

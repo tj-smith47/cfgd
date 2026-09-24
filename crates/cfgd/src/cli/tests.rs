@@ -3976,22 +3976,22 @@ fn generate_workflow_yaml_hyphens_in_names() {
 #[test]
 fn test_validate_resource_name_valid() {
     // Each call must succeed (unwrap ensures no silent failures)
-    validate_resource_name("my-module", "Module").unwrap();
-    validate_resource_name("my_module", "Module").unwrap();
-    validate_resource_name("Module123", "Module").unwrap();
-    validate_resource_name("a", "Module").unwrap();
-    validate_resource_name("foo.bar", "Module").unwrap();
+    validate_resource_name("my-module", "Module", "<NAME>").unwrap();
+    validate_resource_name("my_module", "Module", "<NAME>").unwrap();
+    validate_resource_name("Module123", "Module", "<NAME>").unwrap();
+    validate_resource_name("a", "Module", "<NAME>").unwrap();
+    validate_resource_name("foo.bar", "Module", "<NAME>").unwrap();
 }
 
 #[test]
 fn test_validate_resource_name_invalid() {
-    assert!(validate_resource_name("", "Module").is_err());
-    assert!(validate_resource_name("../etc", "Module").is_err());
-    assert!(validate_resource_name(".hidden", "Module").is_err());
-    assert!(validate_resource_name("-leading", "Module").is_err());
-    assert!(validate_resource_name("foo/bar", "Module").is_err());
-    assert!(validate_resource_name("foo bar", "Module").is_err());
-    assert!(validate_resource_name("a".repeat(129).as_str(), "Module").is_err());
+    assert!(validate_resource_name("", "Module", "<NAME>").is_err());
+    assert!(validate_resource_name("../etc", "Module", "<NAME>").is_err());
+    assert!(validate_resource_name(".hidden", "Module", "<NAME>").is_err());
+    assert!(validate_resource_name("-leading", "Module", "<NAME>").is_err());
+    assert!(validate_resource_name("foo/bar", "Module", "<NAME>").is_err());
+    assert!(validate_resource_name("foo bar", "Module", "<NAME>").is_err());
+    assert!(validate_resource_name("a".repeat(129).as_str(), "Module", "<NAME>").is_err());
 }
 
 #[test]
@@ -13997,17 +13997,17 @@ fn cmd_log_show_output_for_nonexistent_apply() {
 fn validate_resource_name_max_length() {
     // 128 chars should be valid
     let name = "a".repeat(128);
-    assert!(super::validate_resource_name(&name, "Module").is_ok());
+    assert!(super::validate_resource_name(&name, "Module", "<NAME>").is_ok());
 
     // 129 chars should be invalid
     let name = "a".repeat(129);
-    assert!(super::validate_resource_name(&name, "Module").is_err());
+    assert!(super::validate_resource_name(&name, "Module", "<NAME>").is_err());
 }
 
 #[test]
 fn validate_resource_name_underscores_and_dots() {
     // Unwrap to ensure success; not just is_ok()
-    super::validate_resource_name("my_module.v2", "Module").unwrap();
+    super::validate_resource_name("my_module.v2", "Module", "<NAME>").unwrap();
 }
 
 // --- infer_source_name edge cases ---
@@ -23476,16 +23476,16 @@ fn is_unmanaged_file_module_cache_symlink_under_test_home() {
 
 #[test]
 fn validate_resource_name_valid_names() {
-    assert!(super::validate_resource_name("my-module", "Module").is_ok());
-    assert!(super::validate_resource_name("mod_v2", "Module").is_ok());
-    assert!(super::validate_resource_name("a.b.c", "Module").is_ok());
-    assert!(super::validate_resource_name("X", "Module").is_ok());
-    assert!(super::validate_resource_name("a123", "Module").is_ok());
+    assert!(super::validate_resource_name("my-module", "Module", "<NAME>").is_ok());
+    assert!(super::validate_resource_name("mod_v2", "Module", "<NAME>").is_ok());
+    assert!(super::validate_resource_name("a.b.c", "Module", "<NAME>").is_ok());
+    assert!(super::validate_resource_name("X", "Module", "<NAME>").is_ok());
+    assert!(super::validate_resource_name("a123", "Module", "<NAME>").is_ok());
 }
 
 #[test]
 fn validate_resource_name_empty_fails() {
-    let result = super::validate_resource_name("", "Module");
+    let result = super::validate_resource_name("", "Module", "<NAME>");
     assert!(result.is_err());
     assert!(
         result.unwrap_err().to_string().contains("cannot be empty"),
@@ -23496,7 +23496,7 @@ fn validate_resource_name_empty_fails() {
 #[test]
 fn validate_resource_name_too_long_fails() {
     let name = "a".repeat(129);
-    let result = super::validate_resource_name(&name, "Module");
+    let result = super::validate_resource_name(&name, "Module", "<NAME>");
     assert!(result.is_err());
     assert!(
         result.unwrap_err().to_string().contains("too long"),
@@ -23506,7 +23506,7 @@ fn validate_resource_name_too_long_fails() {
 
 #[test]
 fn validate_resource_name_leading_dot_fails() {
-    let result = super::validate_resource_name(".hidden", "Profile");
+    let result = super::validate_resource_name(".hidden", "Profile", "<NAME>");
     assert!(result.is_err());
     assert!(
         result
@@ -23519,7 +23519,7 @@ fn validate_resource_name_leading_dot_fails() {
 
 #[test]
 fn validate_resource_name_leading_hyphen_fails() {
-    let result = super::validate_resource_name("-bad", "Profile");
+    let result = super::validate_resource_name("-bad", "Profile", "<NAME>");
     assert!(result.is_err());
     assert!(
         result
@@ -23532,7 +23532,7 @@ fn validate_resource_name_leading_hyphen_fails() {
 
 #[test]
 fn validate_resource_name_invalid_chars_fails() {
-    let result = super::validate_resource_name("my module!", "Module");
+    let result = super::validate_resource_name("my module!", "Module", "<NAME>");
     assert!(result.is_err());
     let msg = result.unwrap_err().to_string();
     assert!(
@@ -51178,67 +51178,320 @@ fn every_invalid_argument_refusal_names_its_flag_and_value() {
     );
 }
 
-/// Every flag an `invalid_argument` refusal names is spelled the way `--help`
-/// prints it: a flag with its dashes, a positional as its `<VALUE>` name.
+/// One refusal composer that names the argument it refuses: a function taking
+/// a `flag` parameter that it puts in a payload's `"flag"` key, or hands on to
+/// another composer's `flag` parameter.
+struct FlagComposer {
+    name: String,
+    flag_at: usize,
+}
+
+/// Every flag composer in the CLI's production sources, folded until the set
+/// stops growing, so a composer written over another joins by being written.
+fn flag_composers(bodies: &[(std::path::PathBuf, String)]) -> Vec<FlagComposer> {
+    // (name, index of its `flag` parameter, its body with comments blanked)
+    let mut candidates: Vec<(String, usize, String)> = Vec::new();
+    for (_, body) in bodies {
+        let code = blank_non_code(body);
+        let commentless = cfgd_core::test_helpers::blank_comments(body);
+        let mut offset = 0;
+        for line in code.split_inclusive('\n') {
+            if let Some(name) = cfgd_core::test_helpers::declared_fn_name(line)
+                && let Some(at) = line.find(&format!("fn {name}"))
+                && let Some(paren) = line[at..].find('(')
+            {
+                // Past any generic parameters, which a `<` after the name opens.
+                let open = offset + at + paren;
+                let params = top_level_args(&commentless[open + 1..]);
+                if let Some(flag_at) = params.iter().position(|p| p.trim().starts_with("flag:"))
+                    && let Some(brace) = code[open..].find('{').map(|b| open + b)
+                {
+                    let mut depth = 0i32;
+                    let mut end = brace;
+                    for (k, c) in code[brace..].char_indices() {
+                        match c {
+                            '{' => depth += 1,
+                            '}' => depth -= 1,
+                            _ => {}
+                        }
+                        if depth == 0 {
+                            end = brace + k;
+                            break;
+                        }
+                    }
+                    candidates.push((name, flag_at, commentless[brace..=end].to_string()));
+                }
+            }
+            offset += line.len();
+        }
+    }
+    let mut composers: Vec<FlagComposer> = Vec::new();
+    loop {
+        let before = composers.len();
+        for (name, flag_at, body) in &candidates {
+            if composers.iter().any(|c| &c.name == name) {
+                continue;
+            }
+            let payload = body.contains("\"flag\": flag,") || body.contains("\"flag\": flag }");
+            let forwards = composers.iter().any(|c| {
+                let needle = format!("{}(", c.name);
+                body.match_indices(&needle).any(|(at, _)| {
+                    top_level_args(&body[at + needle.len()..])
+                        .get(c.flag_at)
+                        .is_some_and(|a| a.trim() == "flag")
+                })
+            });
+            if payload || forwards {
+                composers.push(FlagComposer {
+                    name: name.clone(),
+                    flag_at: *flag_at,
+                });
+            }
+        }
+        if composers.len() == before {
+            break;
+        }
+    }
+    composers
+}
+
+/// The spellings `--help` prints for `cmd`'s own arguments: each long flag
+/// with its dashes, and each positional as its value name, bracketed the way
+/// that positional is (`<NAME>` required, `[NAME]` optional).
+fn help_spellings_of(cmd: &clap::Command) -> std::collections::BTreeSet<String> {
+    let mut out = std::collections::BTreeSet::new();
+    for arg in cmd.get_arguments() {
+        if let Some(long) = arg.get_long() {
+            out.insert(format!("--{long}"));
+        }
+        if arg.is_positional() {
+            let name = arg
+                .get_value_names()
+                .and_then(|names| names.first())
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| arg.get_id().as_str().to_ascii_uppercase());
+            out.insert(if arg.is_required_set() {
+                format!("<{name}>")
+            } else {
+                format!("[{name}]")
+            });
+        }
+    }
+    out
+}
+
+/// The CLI's command tree, built so each subcommand carries the global flags
+/// its `--help` prints.
+fn built_cli_command() -> clap::Command {
+    use clap::CommandFactory;
+
+    let mut root = Cli::command();
+    root.build();
+    root
+}
+
+/// Every spelling `--help` prints for an argument of any command.
+fn help_spellings(root: &clap::Command) -> std::collections::BTreeSet<String> {
+    let mut out = help_spellings_of(root);
+    for sub in root.get_subcommands() {
+        out.extend(help_spellings(sub));
+    }
+    out
+}
+
+/// The subcommand a `cmd_*` / `run_*` function implements, read off its name
+/// against the real command tree (`cmd_source_priority` is `source priority`,
+/// `cmd_module_registry_add` is `module registry add`); `None` for a function
+/// named for no subcommand, such as a helper shared by several.
+fn command_for_fn<'a>(root: &'a clap::Command, fn_name: &str) -> Option<&'a clap::Command> {
+    let rest = fn_name
+        .strip_prefix("cmd_")
+        .or_else(|| fn_name.strip_prefix("run_"))?;
+    let segments: Vec<&str> = rest.split('_').collect();
+    let mut cmd = root;
+    let mut i = 0;
+    'descend: while i < segments.len() {
+        for j in (i + 1..=segments.len()).rev() {
+            if let Some(sub) = cmd.find_subcommand(segments[i..j].join("-")) {
+                cmd = sub;
+                i = j;
+                continue 'descend;
+            }
+        }
+        break;
+    }
+    (i > 0).then_some(cmd)
+}
+
+/// Every flag an `invalid_argument` refusal names is one `--help` prints for
+/// the command refusing it: a long flag, or a positional's value name in the
+/// brackets clap prints for it. A refusal written in the function implementing
+/// one subcommand (`cmd_source_priority`) is held to that subcommand's own
+/// arguments; one in a helper several commands share, to any command's.
 ///
 /// A script matches `flag` against the invocation it built, and a word that
-/// is neither (`module` for `--module`, `name` for `<NAME>`) is one it cannot
-/// match, beside a top-level `name` key it is easily read as. The population
-/// is every literal handed to either flag composer and every literal `"flag"`
-/// key in the CLI's production sources, so a new refusal joins by being
+/// is neither (`module` for `--module`, `--priority` for the `[VALUE]` of
+/// `source priority`) is one it cannot match. The population is every literal
+/// handed to a flag composer's `flag` parameter and every literal `"flag"`
+/// key in the CLI's production sources, and the oracle is the real clap
+/// definition, so a new refusal and a renamed argument both join by being
 /// written.
 #[test]
 fn every_refused_flag_is_spelled_the_way_help_prints_it() {
-    /// The literal spellings in use today: a floor, so a reader that stops
-    /// finding them fails on the count rather than passing.
-    const FLOOR_SPELLINGS: usize = 30;
+    /// The files carrying a literal spelling today, each with the count it
+    /// carries: a floor per file, so a reader that stops finding one file's
+    /// spellings fails naming that file.
+    const FLOOR_PER_FILE: &[(&str, usize)] = &[
+        ("src/cli/apply.rs", 2),
+        ("src/cli/backup.rs", 1),
+        ("src/cli/compliance.rs", 1),
+        ("src/cli/helpers.rs", 13),
+        ("src/cli/mod.rs", 2),
+        ("src/cli/module/crud.rs", 6),
+        ("src/cli/module/mod.rs", 2),
+        ("src/cli/plugin/mod.rs", 1),
+        ("src/cli/profile/create.rs", 2),
+        ("src/cli/profile/delete.rs", 1),
+        ("src/cli/profile/edit.rs", 1),
+        ("src/cli/profile/migrate.rs", 1),
+        ("src/cli/profile/parsers.rs", 2),
+        ("src/cli/profile/update.rs", 1),
+        ("src/cli/source/add.rs", 1),
+        ("src/cli/source/helpers.rs", 2),
+        ("src/cli/source/priority.rs", 1),
+    ];
+    /// The composers today: the two in `cli/error.rs`, the resource-name
+    /// check and the priority check.
+    const FLOOR_COMPOSERS: usize = 4;
+    /// The spellings written inside a function named for its subcommand.
+    const FLOOR_PER_COMMAND: usize = 15;
 
-    let mut spellings: Vec<(String, String)> = Vec::new();
-    for (path, body) in cli_production_bodies() {
-        let code = cfgd_core::test_helpers::blank_comments(&body);
-        for needle in ["invalid_argument(", "invalid_argument_among(", "\"flag\":"] {
-            for (at, _) in code.match_indices(needle) {
-                let before = code[..at].chars().next_back();
-                if before.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_') {
+    let bodies = cli_production_bodies();
+    let composers = flag_composers(&bodies);
+    assert!(
+        composers.len() >= FLOOR_COMPOSERS,
+        "found {} flag composers, fewer than the {FLOOR_COMPOSERS} in use: {:?}",
+        composers.len(),
+        composers
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect::<Vec<_>>()
+    );
+
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    // (file, spelling, the function it is written in)
+    let mut spellings: Vec<(String, String, Option<String>)> = Vec::new();
+    for (path, body) in &bodies {
+        let file = cfgd_core::to_posix_string(path.strip_prefix(root).unwrap_or(path));
+        let code = blank_non_code(body);
+        let commentless = cfgd_core::test_helpers::blank_comments(body);
+        let literal = |written: &str| {
+            written
+                .trim()
+                .strip_prefix('"')
+                .and_then(|w| w.strip_suffix('"'))
+                .map(str::to_string)
+        };
+        let mut declared: Vec<(usize, String)> = Vec::new();
+        let mut offset = 0;
+        for line in code.split_inclusive('\n') {
+            if let Some(name) = cfgd_core::test_helpers::declared_fn_name(line) {
+                declared.push((offset, name));
+            }
+            offset += line.len();
+        }
+        let enclosing = |at: usize| {
+            declared
+                .iter()
+                .rev()
+                .find(|(start, _)| *start <= at)
+                .map(|(_, name)| name.clone())
+        };
+        for composer in &composers {
+            let needle = format!("{}(", composer.name);
+            for (at, _) in code.match_indices(&needle) {
+                let before = &code[..at];
+                if before
+                    .chars()
+                    .next_back()
+                    .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+                    || before.trim_end().ends_with("fn")
+                {
                     continue;
                 }
-                let rest = code[at + needle.len()..].trim_start();
-                let Some(literal) = rest.strip_prefix('"') else {
-                    continue;
-                };
-                let Some(end) = literal.find('"') else {
-                    continue;
-                };
-                spellings.push((
-                    cfgd_core::to_posix_string(&path),
-                    literal[..end].to_string(),
-                ));
+                if let Some(flag) = top_level_args(&commentless[at + needle.len()..])
+                    .get(composer.flag_at)
+                    .and_then(|a| literal(a))
+                {
+                    spellings.push((file.clone(), flag, enclosing(at)));
+                }
+            }
+        }
+        for (at, _) in commentless.match_indices("\"flag\":") {
+            let rest = &commentless[at + "\"flag\":".len()..];
+            if let Some(flag) = top_level_args(rest).first().and_then(|a| literal(a)) {
+                spellings.push((file.clone(), flag, enclosing(at)));
             }
         }
     }
-    assert!(
-        spellings.len() >= FLOOR_SPELLINGS,
-        "found {} literal flag spellings, fewer than the {FLOOR_SPELLINGS} in use",
-        spellings.len()
-    );
-    let as_help_prints = |flag: &str| {
-        flag.strip_prefix("--").is_some_and(|name| {
-            !name.is_empty() && name.chars().all(|c| c.is_ascii_lowercase() || c == '-')
-        }) || flag
-            .strip_prefix('<')
-            .and_then(|f| f.strip_suffix('>'))
-            .is_some_and(|name| {
-                !name.is_empty() && name.chars().all(|c| c.is_ascii_uppercase() || c == '_')
-            })
-    };
-    let offenders: Vec<String> = spellings
+
+    let mut per_file: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+    for (file, _, _) in &spellings {
+        *per_file.entry(file.as_str()).or_default() += 1;
+    }
+    let short: Vec<String> = FLOOR_PER_FILE
         .iter()
-        .filter(|(_, flag)| !as_help_prints(flag))
-        .map(|(file, flag)| format!("{file}: {flag:?}"))
+        .filter(|(file, floor)| per_file.get(file).copied().unwrap_or(0) < *floor)
+        .map(|(file, floor)| {
+            format!(
+                "{file}: {} found, floor {floor}",
+                per_file.get(file).copied().unwrap_or(0)
+            )
+        })
         .collect();
     assert!(
+        short.is_empty(),
+        "a file carries fewer literal flag spellings than it does today:\n{}\nfound: {per_file:?}",
+        short.join("\n")
+    );
+
+    // A spelling written inside the function implementing one subcommand is
+    // held to that subcommand's own `--help`; one in a helper shared by
+    // several is held to what any command prints.
+    let cli = built_cli_command();
+    let anywhere = help_spellings(&cli);
+    let mut per_command = 0;
+    let offenders: Vec<String> = spellings
+        .iter()
+        .filter_map(|(file, flag, within)| {
+            let command = within.as_deref().and_then(|f| command_for_fn(&cli, f));
+            let printed = match command {
+                Some(cmd) => {
+                    per_command += 1;
+                    help_spellings_of(cmd)
+                }
+                None => anywhere.clone(),
+            };
+            (!printed.contains(flag)).then(|| {
+                let whose = command.map_or_else(
+                    || "any command".to_string(),
+                    |c| format!("`{}`", c.get_bin_name().unwrap_or(c.get_name())),
+                );
+                format!(
+                    "{file} ({}): {flag:?} is not printed by {whose}",
+                    within.as_deref().unwrap_or("?")
+                )
+            })
+        })
+        .collect();
+    assert!(
+        per_command >= FLOOR_PER_COMMAND,
+        "{per_command} spellings were held to the subcommand they refuse for, fewer than \
+         the {FLOOR_PER_COMMAND} today"
+    );
+    assert!(
         offenders.is_empty(),
-        "a refused flag is not spelled the way `--help` prints it:\n{}",
+        "a refused flag is not one `--help` prints for the command refusing it:\n{}",
         offenders.join("\n")
     );
 }

@@ -42,7 +42,7 @@ pub fn cmd_module_create(
     let env_list = &args.env;
     let post_apply = &args.post_apply;
     let sets = &args.sets;
-    validate_resource_name(name, "Module")?;
+    validate_resource_name(name, "Module", "<NAME>")?;
     printer.heading_title(&TitleLabel::new("Create Module", name));
 
     let config_dir = config_dir(cli);
@@ -460,7 +460,7 @@ pub fn cmd_module_update_local(
     let (add_post_apply, remove_post_apply) = cfgd_core::split_add_remove(&args.post_apply);
     let description = args.description.as_deref();
     let sets = &args.sets;
-    validate_resource_name(name, "Module")?;
+    validate_resource_name(name, "Module", "<NAME>")?;
     printer.heading_owner_prefixed("Update", &OwnerLabel::new("module", name));
 
     let config_dir = config_dir(cli);
@@ -813,7 +813,7 @@ pub fn cmd_module_update_local(
 // --- Module Edit ---
 
 pub fn cmd_module_edit(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Result<()> {
-    validate_resource_name(name, "Module")?;
+    validate_resource_name(name, "Module", "<NAME>")?;
     let config_dir = config_dir(cli);
     let module_yaml = cfgd_core::declared_modules_dir(&config_dir)
         .join(name)
@@ -901,7 +901,7 @@ pub fn cmd_module_delete(
     purge: bool,
     ignore_not_found: bool,
 ) -> anyhow::Result<()> {
-    validate_resource_name(name, "Module")?;
+    validate_resource_name(name, "Module", "<NAME>")?;
     printer.heading_title(&TitleLabel::new("Delete Module", name));
 
     let config_dir = config_dir(cli);

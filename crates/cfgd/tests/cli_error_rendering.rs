@@ -413,6 +413,57 @@ fn a_spec_that_is_not_a_mapping_is_refused_naming_what_it_holds() {
     assert_eq!(std::fs::read_to_string(&config).unwrap(), before);
 }
 
+/// A config holding one source, `s`, whose entry ends on `subscription`.
+fn write_config_with_source(dir: &std::path::Path, subscription: &str) -> std::path::PathBuf {
+    write_config_with_spec(
+        dir,
+        &format!(
+            "spec:\n  sources:\n  - name: s\n    origin:\n      type: Git\n      url: https://example.com/x.git\n{subscription}"
+        ),
+    )
+}
+
+/// `cfgd source priority` against `config`, as its `-o json` payload and exit.
+fn source_priority_json(
+    config: &std::path::Path,
+    args: &[&str],
+) -> (serde_json::Value, Option<i32>) {
+    let out = cfgd_bin()
+        .unwrap()
+        .args(["source", "priority"])
+        .args(args)
+        .arg("--config")
+        .arg(config)
+        .args(["-o", "json"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    (parse_single_json(&stdout), out.status.code())
+}
+
+/// An out-of-range priority given to `source priority` is refused as the
+/// `[VALUE]` positional its `--help` prints, the argument the invocation
+/// actually carried.
+#[test]
+fn an_out_of_range_source_priority_names_its_positional_in_json() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = write_config_with_source(dir.path(), "");
+    let before = std::fs::read_to_string(&config).unwrap();
+
+    let (v, code) = source_priority_json(&config, &["s", "4294967295"]);
+    assert_eq!(code, Some(1), "{v}");
+    assert_eq!(
+        v,
+        serde_json::json!({
+            "error": "invalid_argument",
+            "name": "[VALUE]",
+            "flag": "[VALUE]",
+            "value": "4294967295",
+        })
+    );
+    assert_eq!(std::fs::read_to_string(&config).unwrap(), before);
+}
+
 /// The `-o json` payload a refusal leaves on stdout, run against `config` as
 /// it stands.
 fn json_refusal_against(config: &std::path::Path, args: &[&str]) -> serde_json::Value {

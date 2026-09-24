@@ -224,7 +224,7 @@ pub(super) fn run_source_add(
 
     // Interactive priority prompt (when --priority not specified on command line)
     let resolved_priority = if let Some(p) = priority {
-        checked_priority(p)?
+        checked_priority(p, "--priority")?
     } else if args.yes {
         DEFAULT_NONINTERACTIVE_PRIORITY
     } else {

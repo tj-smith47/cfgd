@@ -90,14 +90,14 @@ pub(crate) fn parse_priority_input(input: &str) -> anyhow::Result<u32> {
             format!("invalid priority: '{}' (must be a number)", input),
         )
     })?;
-    checked_priority(n)
+    checked_priority(n, "--priority")
 }
 
 /// A subscription priority the config parser will hold, refused as the
-/// `--priority` argument it came from when it is out of range.
-pub(crate) fn checked_priority(n: u32) -> anyhow::Result<u32> {
-    validate_source_priority(n)
-        .map_err(|m| crate::cli::invalid_argument("--priority", &n.to_string(), m))
+/// argument `flag` it came from, spelled as that command's `--help` prints it,
+/// when it is out of range.
+pub(crate) fn checked_priority(n: u32, flag: &str) -> anyhow::Result<u32> {
+    validate_source_priority(n).map_err(|m| crate::cli::invalid_argument(flag, &n.to_string(), m))
 }
 
 /// A source entry in the config document whose shape is not the one the

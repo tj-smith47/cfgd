@@ -322,20 +322,20 @@ fn parse_file_spec_empty_target_errors() {
 #[test]
 fn validate_resource_name_accepts_valid_names() {
     for name in &["mymod", "my-mod", "my_mod", "my.mod", "mod123", "m"] {
-        validate_resource_name(name, "module")
+        validate_resource_name(name, "module", "<NAME>")
             .unwrap_or_else(|e| panic!("rejected valid name '{name}': {e}"));
     }
 }
 
 #[test]
 fn validate_resource_name_rejects_empty() {
-    let err = validate_resource_name("", "module").unwrap_err();
+    let err = validate_resource_name("", "module", "<NAME>").unwrap_err();
     assert!(err.to_string().contains("cannot be empty"), "{err}");
 }
 
 #[test]
 fn validate_resource_name_rejects_leading_dot() {
-    let err = validate_resource_name(".hidden", "module").unwrap_err();
+    let err = validate_resource_name(".hidden", "module", "<NAME>").unwrap_err();
     assert!(
         err.to_string().contains("cannot start with"),
         "unexpected: {err}"
@@ -344,7 +344,7 @@ fn validate_resource_name_rejects_leading_dot() {
 
 #[test]
 fn validate_resource_name_rejects_leading_dash() {
-    let err = validate_resource_name("-start", "module").unwrap_err();
+    let err = validate_resource_name("-start", "module", "<NAME>").unwrap_err();
     assert!(
         err.to_string().contains("cannot start with"),
         "unexpected: {err}"
@@ -353,7 +353,7 @@ fn validate_resource_name_rejects_leading_dash() {
 
 #[test]
 fn validate_resource_name_rejects_invalid_chars() {
-    let err = validate_resource_name("my mod", "module").unwrap_err();
+    let err = validate_resource_name("my mod", "module", "<NAME>").unwrap_err();
     assert!(
         err.to_string().contains("invalid characters"),
         "unexpected: {err}"
@@ -363,7 +363,7 @@ fn validate_resource_name_rejects_invalid_chars() {
 #[test]
 fn validate_resource_name_rejects_name_too_long() {
     let long = "a".repeat(129);
-    let err = validate_resource_name(&long, "module").unwrap_err();
+    let err = validate_resource_name(&long, "module", "<NAME>").unwrap_err();
     assert!(err.to_string().contains("too long"), "unexpected: {err}");
 }
 

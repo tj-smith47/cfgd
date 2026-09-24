@@ -22,7 +22,7 @@ pub fn cmd_profile_create(
     let post_reconcile = &args.post_reconcile;
     let on_change = &args.on_change;
     let on_drift = &args.on_drift;
-    validate_resource_name(name, "Profile")?;
+    validate_resource_name(name, "Profile", "<NAME>")?;
     printer.heading_title(&TitleLabel::new("Create Profile", name));
 
     let config_dir = config_dir(cli);
