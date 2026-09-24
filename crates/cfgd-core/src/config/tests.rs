@@ -1069,6 +1069,67 @@ fn a_config_section_written_null_reads_as_its_default() {
     assert!(output.theme.unwrap().overrides.is_empty());
 }
 
+/// The key a field is read under: its `rename`, else its camelCase spelling.
+fn serialized_field_name(ident: &str, attrs: &str) -> String {
+    if let Some((_, after)) = attrs.split_once("rename = \"") {
+        return after.split('"').next().unwrap_or_default().to_string();
+    }
+    let mut out = String::new();
+    let mut up = false;
+    for c in ident.chars() {
+        if c == '_' {
+            up = true;
+        } else if up {
+            out.push(c.to_ascii_uppercase());
+            up = false;
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// The serialized names of the fields a hand-written `Deserialize` body reads
+/// through `null_as_default`. Each mention counts only for the field its
+/// attribute sits on, so one section restating the rule never vouches for a
+/// sibling that does not.
+fn fields_reading_null_by_hand(body: &[&str]) -> std::collections::BTreeSet<String> {
+    let mut out = std::collections::BTreeSet::new();
+    let mut attrs = String::new();
+    let mut depth = 0i32;
+    for line in body {
+        let code = line.trim_start();
+        if depth > 0 || code.starts_with("#[") {
+            depth += code.matches('[').count() as i32 - code.matches(']').count() as i32;
+            attrs.push_str(code);
+            continue;
+        }
+        if code.starts_with("//") {
+            continue;
+        }
+        let field = code.strip_prefix("pub ").unwrap_or(code);
+        if let Some((ident, _)) = field.split_once(':')
+            && !ident.is_empty()
+            && ident.chars().all(|c| c.is_alphanumeric() || c == '_')
+            && attrs.contains("deserialize_with = \"crate::config::null_as_default\"")
+        {
+            out.insert(serialized_field_name(ident, &attrs));
+        }
+        attrs.clear();
+    }
+    out
+}
+
+#[test]
+fn a_hand_written_reader_restates_the_null_rule_per_section() {
+    let body = "        struct Inner {\n            #[serde(default, deserialize_with = \"crate::config::null_as_default\")]\n            overrides: ThemeOverrides,\n            #[serde(default)]\n            extra_colors: Palette,\n            #[serde(\n                default,\n                deserialize_with = \"crate::config::null_as_default\"\n            )]\n            #[serde(rename = \"fonts\")]\n            font_set: Fonts,\n        }";
+    let lines: Vec<&str> = body.lines().collect();
+    assert_eq!(
+        fields_reading_null_by_hand(&lines),
+        ["fonts".to_string(), "overrides".to_string()].into()
+    );
+}
+
 fn schema_type_names(node: &serde_json::Value) -> Vec<&str> {
     match &node["type"] {
         serde_json::Value::String(t) => vec![t.as_str()],
@@ -1164,8 +1225,8 @@ fn every_defaulted_config_section_reads_null_as_its_default() {
     ];
     let mut fields: BTreeMap<(String, String), (String, String, bool, bool)> = BTreeMap::new();
     // A type deserialized by hand ignores its derive's field attributes, so its
-    // impl restates the rule: owner -> whether the impl body names it.
-    let mut manual_impls: BTreeMap<String, bool> = BTreeMap::new();
+    // impl restates the rule: owner -> the fields its body reads `null` for.
+    let mut manual_impls: BTreeMap<String, std::collections::BTreeSet<String>> = BTreeMap::new();
     let mut unpaired = Vec::new();
     let mut paired_per_file: BTreeMap<String, usize> = BTreeMap::new();
     let entries = std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display()));
@@ -1191,10 +1252,7 @@ fn every_defaulted_config_section_reads_null_as_its_default() {
                 .iter()
                 .position(|l| *l == "}")
                 .map_or(lines.len(), |end| n + end);
-            let names_rule = lines[n..body_end]
-                .iter()
-                .any(|l| l.contains("crate::config::null_as_default"));
-            manual_impls.insert(owner, names_rule);
+            manual_impls.insert(owner, fields_reading_null_by_hand(&lines[n..body_end]));
         }
         let mut owner = String::new();
         let mut attrs = String::new();
@@ -1222,24 +1280,7 @@ fn every_defaulted_config_section_reads_null_as_its_default() {
                 && ident.chars().all(|c| c.is_alphanumeric() || c == '_')
                 && !ty.starts_with(':')
             {
-                let serialized = match attrs.split_once("rename = \"") {
-                    Some((_, after)) => after.split('"').next().unwrap_or_default().to_string(),
-                    None => {
-                        let mut out = String::new();
-                        let mut up = false;
-                        for c in ident.chars() {
-                            if c == '_' {
-                                up = true;
-                            } else if up {
-                                out.push(c.to_ascii_uppercase());
-                                up = false;
-                            } else {
-                                out.push(c);
-                            }
-                        }
-                        out
-                    }
-                };
+                let serialized = serialized_field_name(ident, &attrs);
                 let reads_null = attrs
                     .contains("deserialize_with = \"crate::config::null_as_default\"")
                     || READS_NULL_ITSELF.iter().any(|d| attrs.contains(d));
@@ -1275,7 +1316,9 @@ fn every_defaulted_config_section_reads_null_as_its_default() {
             Some((_, ty, ..)) if ty.starts_with("Option<") => {}
             Some((file, _, reads_null, schema_null)) => {
                 members += 1;
-                let hand_read = manual_impls.get(owner).copied().unwrap_or(true);
+                let hand_read = manual_impls
+                    .get(owner)
+                    .is_none_or(|read| read.contains(name));
                 if !(*reads_null && *schema_null && hand_read) {
                     refuses_null_on_load.push(format!("{file}: {owner}.{name}"));
                 }
@@ -1292,8 +1335,10 @@ fn every_defaulted_config_section_reads_null_as_its_default() {
         refuses_null_on_load.join("\n")
     );
     assert!(
-        manual_impls.contains_key("ThemeConfig"),
-        "the walk no longer finds a hand-written Deserialize: {manual_impls:?}"
+        manual_impls
+            .get("ThemeConfig")
+            .is_some_and(|read| read.contains("overrides")),
+        "the walk no longer finds the hand-written ThemeConfig reader: {manual_impls:?}"
     );
     assert!(
         members >= 20,
