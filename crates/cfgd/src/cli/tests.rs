@@ -50842,6 +50842,13 @@ const UNTYPED_REFUSAL_HATCH: &str = "// untyped-ok:";
 /// that build one, the alias `format_err!` for `anyhow!`, and `Error::msg`. A
 /// refusal built by any of them reaches `render_cli_error` carrying no kind of
 /// its own and renders as `internal`.
+///
+/// `context` and `with_context` are not on the list because they wrap a source
+/// error, and the renderer reads that error's kind through the chain.
+/// `Error::new` is not on it because it is how the typed constructors,
+/// `ShapeBlocked` and `CfgdError` errors are built. `Option::context("…")`
+/// does build an untyped refusal from nothing, and the walk does not catch it:
+/// its text is the same as the `Result` form, which wraps a source.
 const UNTYPED_REFUSAL_CONSTRUCTORS: [&str; 5] =
     ["bail!", "anyhow!", "ensure!", "format_err!", "Error::msg"];
 
@@ -50859,13 +50866,26 @@ fn untyped_refusal_sites(body: &str) -> Vec<(usize, bool)> {
     let raw: Vec<&str> = body.lines().collect();
     code.lines()
         .enumerate()
-        .filter(|(_, line)| {
-            UNTYPED_REFUSAL_CONSTRUCTORS
-                .iter()
-                .any(|m| cfgd_core::test_helpers::calls_free_fn(line, m))
-        })
+        .filter(|(_, line)| names_an_untyped_constructor(line))
         .map(|(at, _)| (at + 1, untyped_refusal_hatched(&raw, at)))
         .collect()
+}
+
+/// Whether a line of code calls one of [`UNTYPED_REFUSAL_CONSTRUCTORS`], or
+/// hands `Error::msg` to a combinator as a path (`.map_err(anyhow::Error::msg)`),
+/// which builds the same refusal with no call written out.
+fn names_an_untyped_constructor(line: &str) -> bool {
+    UNTYPED_REFUSAL_CONSTRUCTORS
+        .iter()
+        .any(|m| cfgd_core::test_helpers::calls_free_fn(line, m))
+        || ["Error::msg)", "Error::msg,"].iter().any(|path| {
+            line.match_indices(path).any(|(at, _)| {
+                !line[..at]
+                    .chars()
+                    .next_back()
+                    .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
+            })
+        })
 }
 
 /// Whether line `at` or the plain comment block directly above it carries
@@ -50898,7 +50918,10 @@ fn untyped_refusal_sites_reads_each_call_as_code_wherever_it_sits() {
     anyhow::ensure!(x > 0, "a precondition");
     let e = anyhow::format_err!("the alias for anyhow!");
     let f = anyhow::Error::msg("a message");
+    let h = r.map_err(anyhow::Error::msg)?;
+    let i = r.map_or_else(Error::msg, Ok);
     let g = MyError::msg("a different type's constructor");
+    let k = r.map_err(MyError::msg)?;
     my_bail!("a different macro");
     Ok(())
 }"#;
@@ -50914,6 +50937,8 @@ fn untyped_refusal_sites_reads_each_call_as_code_wherever_it_sits() {
             (15, false),
             (16, false),
             (17, false),
+            (18, false),
+            (19, false),
         ],
         "a call is read wherever it sits, never inside a literal or a comment, \
          and a hatch answers only for the call directly below it or on its line"
@@ -50939,29 +50964,18 @@ fn no_reachable_cli_refusal_is_an_untyped_anyhow() {
     /// export's install command. Raising it is a change a reviewer sees.
     const HATCH_CEILING: usize = 3;
 
-    let cli_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli");
-    let mut files = 0usize;
+    let bodies = cli_production_bodies();
+    let files = bodies.len();
     let mut marks = 0usize;
     let mut offenders: Vec<String> = Vec::new();
     let mut hatched: Vec<String> = Vec::new();
-    for path in rust_sources_under(&cli_dir) {
-        let name = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or_default();
-        // A scaffolding file is a test region whole, with no `#[cfg(test)]`
-        // for the production slice to cut at.
-        if name.starts_with("tests") || path.parent().is_some_and(|p| p.ends_with("tests")) {
-            continue;
-        }
-        files += 1;
-        let production = cfgd_core::test_helpers::production_slice_of(&path);
+    for (path, production) in &bodies {
         marks += production
             .lines()
             .filter(|l| carries_hatch(l, UNTYPED_REFUSAL_HATCH))
             .count();
-        for (line, ok) in untyped_refusal_sites(&production) {
-            let site = format!("{}:{line}", path.display());
+        for (line, ok) in untyped_refusal_sites(production) {
+            let site = format!("{}:{line}", cfgd_core::to_posix_string(path));
             if ok {
                 hatched.push(site);
             } else {
