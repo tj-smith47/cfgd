@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
-# Flag every demo GIF whose render inputs changed since the commit it was
-# recorded at (its line in demo/recorded.txt, written by stamp.sh when the GIF
-# is encoded).
+# Flag every demo GIF whose render inputs changed since the commit its take was
+# recorded at (its line in demo/recorded.txt, copied by stamp.sh from the take),
+# and every GIF whose stamp no take wrote: the GIF must have been committed
+# after its stamped commit.
 #
-# The inputs are deliberately broad: any change to the tape, the image, the demo
-# scripts, the workspace manifests and lockfile, or any non-test file of any
-# crate counts (a crate added later joins by existing), so a change that moves
-# the rendered output cannot slip past. A dependency or version bump therefore
-# flags every GIF. A change that moves nothing
-# is flagged too, and the answer to either is the same: re-record the GIF, which
-# rewrites its stamp. There is no other way to clear a flag.
+# The inputs are deliberately broad: the tape, the demo image and scripts, the
+# chart and release images the cluster takes install, the workspace manifests
+# and lockfile, and every file under crates/ except test code, changelogs and
+# the test-fixtures crate (fixtures and snapshots a crate embeds count; a crate
+# added later joins by existing). A dependency, version or chart bump therefore
+# flags every GIF. A change that moves nothing is flagged too, and the answer to
+# either is the same: re-record the GIF, which rewrites its stamp. There is no
+# other way to clear a flag.
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
@@ -20,15 +22,15 @@ if [ ! -f "$FILE" ]; then
     exit 1
 fi
 
-COMMON=(demo/Dockerfile demo/scripts crates Cargo.toml Cargo.lock)
-# The two takes that run against a cluster also render the operator and CSI
-# images they install and the chart that installs them.
-CLUSTER=(chart Dockerfile.operator.release Dockerfile.csi.release)
+COMMON=(
+    demo/Dockerfile demo/scripts .dockerignore crates Cargo.toml Cargo.lock
+    chart Dockerfile.operator.release Dockerfile.csi.release
+)
 EXCLUDED=(
     ':(exclude)crates/cfgd-test-fixtures'
     ':(exclude,glob)**/CHANGELOG.md'
     ':(exclude,glob)**/tests.rs'
-    ':(exclude,glob)**/tests/**'
+    ':(exclude,glob)**/tests/**/*.rs'
     ':(exclude,glob)**/test_helpers*'
     ':(exclude,glob)**/test_helpers*/**'
 )
@@ -52,13 +54,19 @@ while read -r gif tape sha extra || [ -n "$gif" ]; do
     fi
     # Nothing can be said about a GIF whose commit is gone, so it fails.
     if ! git cat-file -e "${sha}^{commit}" 2>/dev/null; then
-        echo "demo/$gif: recorded at $sha, a commit this clone does not have: a shallow clone, or the stamped commit was rewritten (rebase, reword or rebase-merge) after the take. Re-record the GIF."
+        echo "demo/$gif: recorded at $sha, a commit this clone does not have: a shallow clone, or the stamped commit was rewritten (rebase, reword, rebase-merge or squash-merge) after the take. Re-record the GIF."
         failed=1
         continue
     fi
-    inputs=("demo/$tape" "${COMMON[@]}")
-    case "$tape" in k8s.tape | connect.tape) inputs+=("${CLUSTER[@]}") ;; esac
-    changed="$(git diff --name-only "$sha" HEAD -- "${inputs[@]}" "${EXCLUDED[@]}")"
+    # A take commits its GIF after the commit it recorded, so a stamp that is not
+    # a strict ancestor of the GIF's last commit was written by hand, not by a take.
+    gif_at="$(git log -1 --format=%H -- "demo/$gif")"
+    if [ -z "$gif_at" ] || [ "$gif_at" = "$sha" ] || ! git merge-base --is-ancestor "$sha" "$gif_at"; then
+        echo "demo/$gif: stamped at $sha, but the GIF was last committed at ${gif_at:-nowhere}, not after that commit, so no take wrote the stamp. Re-record the GIF."
+        failed=1
+        continue
+    fi
+    changed="$(git diff --name-only "$sha" HEAD -- "demo/$tape" "${COMMON[@]}" "${EXCLUDED[@]}")"
     if [ -n "$changed" ]; then
         count="$(grep -c '' <<<"$changed")"
         echo "demo/$gif: recorded at $sha, $count render inputs changed since:"

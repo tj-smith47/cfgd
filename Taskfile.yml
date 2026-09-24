@@ -781,7 +781,6 @@ tasks:
   demo:
     desc: Re-record the README demo end to end (binary, image, VHS take, GIF).
     cmds:
-      - task: demo:image
       - task: demo:record
       - task: demo:gif
 
@@ -798,6 +797,10 @@ tasks:
 
   demo:record:
     desc: Run demo/init.tape, producing whatever its Output line names (demo/.out/raw/).
+    # The take records whatever cfgd-demo:latest holds, so the image is rebuilt
+    # from this checkout first; otherwise the take is stamped with a commit its
+    # binary was never built from.
+    deps: [demo:image]
     preconditions:
       # LazyVim's tree, tabline and statusline are Nerd Font glyphs; without the
       # font VHS still exits 0 and records a take full of tofu boxes. The font

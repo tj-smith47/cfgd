@@ -141,14 +141,18 @@ single-source-of-truth wiring.
   toolchain: it only diffs each GIF's stamped commit in `demo/recorded.txt`
   against HEAD, which is why its checkout carries `fetch-depth: 0`. The stamp is
   the commit the take was recorded at (`record.sh` writes it beside the frames,
-  `stamp.sh` copies it), and the inputs are all of `crates/` plus the root
-  manifests, so every dependency or version bump flags all eight GIFs. A flag is
-  cleared only by re-recording the GIF; there is no allow-list. A stamped
-  commit rewritten by a rebase, a reword or a rebase-merge is unreachable and
-  fails the job until the GIF is re-recorded.
-  `every_demo_gif_is_stamped_and_checked` fails if the job loses the script or
-  its bare `pull_request` trigger, or gains an `if:` or `continue-on-error:` on
-  the job or the step.
+  `stamp.sh` copies it), and the check also fails a GIF not committed after its
+  stamp, so a hand-written stamp is refused. The inputs are one list for every
+  tape: all of `crates/` minus test code, changelogs and the test-fixtures crate
+  (embedded fixtures count), the root manifests, `chart/`, the release
+  Dockerfiles and `.dockerignore`, so every dependency, version or chart bump
+  flags all eight GIFs. A flag is cleared only by re-recording the GIF; there
+  is no allow-list. A stamped commit rewritten by a rebase, a reword, a
+  rebase-merge or a squash-merge is unreachable and fails the job until the GIF
+  is re-recorded. `every_demo_gif_is_stamped_and_checked` parses the workflow
+  and fails if the job loses its bare `pull_request` trigger, gains `needs`,
+  `if` or `continue-on-error` on the job or the step, or runs anything but the
+  script; it also fails when a file a crate embeds is not an input.
 - The `test-thread-model` job in ci.yml runs `task test:threads` — plain
   `cargo test --test-threads=16`, not nextest. It is not redundant with the
   `test` job: nextest runs one process per test, so each test gets its own
