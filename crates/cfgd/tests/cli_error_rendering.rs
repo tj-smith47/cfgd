@@ -209,16 +209,7 @@ fn a_refusal_names_its_fix_end_to_end_with_usage_hints_off() {
 /// config so each command reaches its own refusal rather than a missing file.
 fn json_refusal(dir: &std::path::Path, args: &[&str]) -> serde_json::Value {
     create_valid_config(dir);
-    let out = cfgd_bin()
-        .unwrap()
-        .args(args)
-        .arg("--config")
-        .arg(dir.join("cfgd.yaml"))
-        .args(["-o", "json"])
-        .output()
-        .unwrap();
-    assert_ne!(out.status.code(), Some(0), "{args:?} must refuse");
-    parse_single_json(&String::from_utf8_lossy(&out.stdout))
+    json_refusal_against(&dir.join("cfgd.yaml"), args)
 }
 
 /// A refused flag value names the flag, repeats the value and, where the
@@ -341,9 +332,146 @@ fn a_refused_resource_name_names_its_argument_and_value_in_json() {
         serde_json::json!({
             "error": "invalid_argument",
             "name": "my mod",
-            "flag": "name",
+            "flag": "<NAME>",
             "value": "my mod",
             "resource": "module",
         })
     );
+}
+
+/// A config document whose `spec` is `spec_tail`, beside the default profile.
+fn write_config_with_spec(dir: &std::path::Path, spec_tail: &str) -> std::path::PathBuf {
+    create_valid_config(dir);
+    let config = dir.join("cfgd.yaml");
+    std::fs::write(
+        &config,
+        format!("apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: test\n{spec_tail}"),
+    )
+    .unwrap();
+    config
+}
+
+/// A bare `spec:` is a spec with nothing in it yet, so a verb writing under it
+/// creates the sections it writes to, as `config set` does.
+#[test]
+fn module_registry_add_writes_under_a_bare_spec() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = write_config_with_spec(dir.path(), "spec:\n");
+    let out = cfgd_bin()
+        .unwrap()
+        .args([
+            "module",
+            "registry",
+            "add",
+            "https://github.com/example/mods.git",
+        ])
+        .arg("--config")
+        .arg(&config)
+        .args(["-o", "json"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(0), "{stdout}");
+    let v = parse_single_json(&stdout);
+    assert_eq!(v["name"], "example", "{v}");
+
+    let written: serde_yaml::Value =
+        serde_yaml::from_str(&std::fs::read_to_string(&config).unwrap()).unwrap();
+    assert_eq!(
+        written["spec"]["modules"]["registries"][0]["url"],
+        "https://github.com/example/mods.git"
+    );
+}
+
+/// A `spec` holding something other than a mapping is refused as a document
+/// contradicting its schema, and the refusal says what the document holds.
+#[test]
+fn a_spec_that_is_not_a_mapping_is_refused_naming_what_it_holds() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = write_config_with_spec(dir.path(), "spec: 3\n");
+    let before = std::fs::read_to_string(&config).unwrap();
+    let args = [
+        "module",
+        "registry",
+        "add",
+        "https://github.com/example/mods.git",
+    ];
+
+    let v = json_refusal_against(&config, &args);
+    let path = cfgd_core::to_posix_string(&config);
+    assert_eq!(
+        v,
+        serde_json::json!({ "error": "parse_failed", "name": &path, "path": &path })
+    );
+
+    let (_, stderr, code) = run(&[&args[..], &["--config", config.to_str().unwrap()]].concat());
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(
+        stderr.contains("'spec' holds a scalar, not a mapping"),
+        "the refusal names what the document holds: {stderr}"
+    );
+    assert_eq!(std::fs::read_to_string(&config).unwrap(), before);
+}
+
+/// The `-o json` payload a refusal leaves on stdout, run against `config` as
+/// it stands.
+fn json_refusal_against(config: &std::path::Path, args: &[&str]) -> serde_json::Value {
+    let out = cfgd_bin()
+        .unwrap()
+        .args(args)
+        .arg("--config")
+        .arg(config)
+        .args(["-o", "json"])
+        .output()
+        .unwrap();
+    assert_ne!(out.status.code(), Some(0), "{args:?} must refuse");
+    parse_single_json(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// A secret verb whose backend cannot run names the file it was asked about
+/// and why the backend cannot run.
+#[test]
+fn a_secret_verb_whose_backend_is_not_installed_is_backend_unavailable_in_json() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = write_config_with_spec(dir.path(), "spec:\n  secrets:\n    backend: sops\n");
+    let target = dir.path().join("present.yaml");
+    std::fs::write(&target, "k: v\n").unwrap();
+    // A PATH holding no executables, handed to the child alone, so sops is
+    // missing whatever the host has installed.
+    let no_tools = tempfile::tempdir().unwrap();
+
+    let out = cfgd_bin()
+        .unwrap()
+        .env("PATH", no_tools.path())
+        .args(["secret", "encrypt"])
+        .arg(&target)
+        .arg("--config")
+        .arg(&config)
+        .args(["-o", "json"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let path = cfgd_core::to_posix_string(&target);
+    assert_eq!(
+        parse_single_json(&String::from_utf8_lossy(&out.stdout)),
+        serde_json::json!({
+            "error": "backend_unavailable",
+            "name": &path,
+            "path": &path,
+            "detail": "sops: not installed",
+        })
+    );
+}
+
+/// A config that cannot be parsed reaches `-o json` as the `config` domain,
+/// ahead of any question about the file or the backend.
+#[test]
+fn a_secret_verb_over_an_unparseable_config_is_the_config_domain_in_json() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = write_config_with_spec(dir.path(), "spec: [\n");
+    let target = dir.path().join("present.yaml");
+    std::fs::write(&target, "k: v\n").unwrap();
+
+    let v = json_refusal_against(&config, &["secret", "encrypt", target.to_str().unwrap()]);
+    assert_eq!(v["error"], "config", "{v}");
 }

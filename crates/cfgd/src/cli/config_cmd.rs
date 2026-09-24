@@ -210,18 +210,19 @@ pub(super) fn is_union_scalar(value: &serde_yaml::Value) -> bool {
 /// The words a refusal calls the two shapes whose refusal turns on what the
 /// schema declares at the path they blocked.
 const SHAPE_SCALAR: &str = "a scalar";
-const SHAPE_SEQUENCE: &str = "a sequence";
+pub(in crate::cli) const SHAPE_SEQUENCE: &str = "a sequence";
+pub(in crate::cli) const SHAPE_MAPPING: &str = "a mapping";
 
 /// What a value that blocked a descent IS, as the refusal words it. Captured
 /// before the parent it sits in is borrowed mutably, so both walkers can name
 /// the shape they found.
-fn blocking_shape(value: &serde_yaml::Value) -> &'static str {
+pub(in crate::cli) fn blocking_shape(value: &serde_yaml::Value) -> &'static str {
     match value {
         serde_yaml::Value::String(_)
         | serde_yaml::Value::Number(_)
         | serde_yaml::Value::Bool(_) => SHAPE_SCALAR,
         serde_yaml::Value::Sequence(_) => SHAPE_SEQUENCE,
-        serde_yaml::Value::Mapping(_) => "a mapping",
+        serde_yaml::Value::Mapping(_) => SHAPE_MAPPING,
         serde_yaml::Value::Tagged(_) => "a tagged value",
         serde_yaml::Value::Null => "nothing",
     }
@@ -234,11 +235,16 @@ fn blocking_shape(value: &serde_yaml::Value) -> &'static str {
 pub(super) struct ShapeBlocked {
     path: String,
     found: &'static str,
+    wanted: &'static str,
 }
 
 impl std::fmt::Display for ShapeBlocked {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "'{}' holds {}, not a mapping", self.path, self.found)
+        write!(
+            f,
+            "'{}' holds {}, not {}",
+            self.path, self.found, self.wanted
+        )
     }
 }
 
@@ -265,12 +271,77 @@ fn empty_segment(path: &str) -> anyhow::Error {
     )
 }
 
-/// The refusal a config document with no `spec` section earns from a verb
-/// that writes under it: the document's shape, not the key, is what is wrong.
-pub(in crate::cli) fn missing_spec_section(config_path: &Path) -> anyhow::Error {
-    let path = cfgd_core::to_posix_string(config_path);
-    let extras = serde_json::json!({ "path": &path });
-    crate::cli::cli_error(path, "parse_failed", "config has no 'spec' section", extras)
+/// The mapping a section of a config document holds, where a section holding
+/// nothing becomes an empty one; `None` for any other shape. A bare `key:` and
+/// a serialized `None` both read back as Null, and both mean the section is
+/// not there yet, so a writer creates it rather than refusing the document.
+pub(in crate::cli) fn section_mapping_mut(
+    value: &mut serde_yaml::Value,
+) -> Option<&mut serde_yaml::Mapping> {
+    if value.is_null() {
+        *value = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+    }
+    value.as_mapping_mut()
+}
+
+/// [`section_mapping_mut`]'s twin for a section the schema declares a list.
+pub(in crate::cli) fn section_sequence_mut(
+    value: &mut serde_yaml::Value,
+) -> Option<&mut serde_yaml::Sequence> {
+    if value.is_null() {
+        *value = serde_yaml::Value::Sequence(Vec::new());
+    }
+    value.as_sequence_mut()
+}
+
+/// A config document's `spec`, as the mapping a verb writing under it edits.
+///
+/// An absent `spec` and a bare `spec:` are an empty mapping, the rule
+/// [`section_mapping_mut`] applies to every section the key walker descends
+/// through; any other shape is refused `parse_failed`, naming what the
+/// document holds there. The refusal carries [`ShapeBlocked`] as its source,
+/// so `config set` and `config unset` classify it as they classify the same
+/// block met further down a key path.
+pub(in crate::cli) fn spec_mapping_mut<'a>(
+    root: &'a mut serde_yaml::Value,
+    config_path: &Path,
+) -> anyhow::Result<&'a mut serde_yaml::Mapping> {
+    let found = blocking_shape(root);
+    let document = section_mapping_mut(root)
+        .ok_or_else(|| section_shape_refusal(config_path, "the document", found, SHAPE_MAPPING))?;
+    let spec = document
+        .entry(serde_yaml::Value::String("spec".into()))
+        .or_insert(serde_yaml::Value::Null);
+    let found = blocking_shape(spec);
+    section_mapping_mut(spec)
+        .ok_or_else(|| section_shape_refusal(config_path, "spec", found, SHAPE_MAPPING))
+}
+
+/// The `parse_failed` refusal a writer earns from a section of the config
+/// document at `path` holding `found` where the schema declares `wanted`.
+/// Its source is the same [`ShapeBlocked`] a blocked key walk mints, so the
+/// wording and the classification are one whichever writer met the block.
+pub(in crate::cli) fn section_shape_refusal(
+    config_path: &Path,
+    path: &str,
+    found: &'static str,
+    wanted: &'static str,
+) -> anyhow::Error {
+    let blocked = ShapeBlocked {
+        path: path.to_string(),
+        found,
+        wanted,
+    };
+    let message = blocked.to_string();
+    let file = cfgd_core::to_posix_string(config_path);
+    let extras = serde_json::json!({ "path": &file });
+    crate::cli::cli_error_ctx(
+        anyhow::Error::new(blocked),
+        file,
+        "parse_failed",
+        message,
+        extras,
+    )
 }
 
 /// The refusal a descent blocked at `path` earns, where `asked` is the path
@@ -311,6 +382,7 @@ fn descent_blocked(path: &[&str], asked: &[&str], found: &'static str) -> anyhow
             path.join(".")
         },
         found,
+        wanted: SHAPE_MAPPING,
     })
 }
 
@@ -390,46 +462,48 @@ pub(super) fn walk_yaml_path_mut<'a>(
     value: &'a mut serde_yaml::Value,
     path: &str,
 ) -> anyhow::Result<(&'a mut serde_yaml::Mapping, String)> {
+    let segments = key_segments(path)?;
+    let found = blocking_shape(value);
+    let root =
+        section_mapping_mut(value).ok_or_else(|| descent_blocked(&[], &segments[..1], found))?;
+    walk_spec_path_mut(root, path)
+}
+
+/// [`walk_yaml_path_mut`] from a `spec` already in hand as a mapping, the
+/// shape [`spec_mapping_mut`] hands a writer.
+pub(super) fn walk_spec_path_mut<'a>(
+    spec: &'a mut serde_yaml::Mapping,
+    path: &str,
+) -> anyhow::Result<(&'a mut serde_yaml::Mapping, String)> {
+    let segments = key_segments(path)?;
+    let (leaf, parents) = segments
+        .split_last()
+        // untyped-ok: `split` yields at least one segment, so no input reaches this.
+        .ok_or_else(|| anyhow::anyhow!("empty key path"))?;
+
+    let mut parent = spec;
+    // An absent key is inserted as Null, which reads as the empty section it
+    // stands for, exactly as a `daemon:` holding nothing does.
+    for (i, segment) in parents.iter().enumerate() {
+        let slot = parent
+            .entry(serde_yaml::Value::String((*segment).to_string()))
+            .or_insert(serde_yaml::Value::Null);
+        let at = &segments[..=i];
+        promote_scalar_union(slot, at);
+        let found = blocking_shape(slot);
+        parent = section_mapping_mut(slot)
+            .ok_or_else(|| descent_blocked(at, &segments[..i + 2], found))?;
+    }
+    Ok((parent, (*leaf).to_string()))
+}
+
+/// A key path's dot-separated segments, refused when one of them is empty.
+fn key_segments(path: &str) -> anyhow::Result<Vec<&str>> {
     let segments: Vec<&str> = path.split('.').collect();
-    if segments.is_empty() || segments.iter().any(|s| s.is_empty()) {
+    if segments.iter().any(|s| s.is_empty()) {
         return Err(empty_segment(path));
     }
-
-    // A bare `spec:` is the same "nothing here yet" as a Null section below it.
-    if value.is_null() {
-        *value = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
-    }
-    let mut current = value;
-    // Walk to the parent of the final segment, creating intermediate maps
-    for (i, segment) in segments[..segments.len() - 1].iter().enumerate() {
-        promote_scalar_union(current, &segments[..i]);
-        let key = serde_yaml::Value::String((*segment).to_string());
-        let found = blocking_shape(current);
-        let map = current
-            .as_mapping_mut()
-            .ok_or_else(|| descent_blocked(&segments[..i], &segments[..=i], found))?;
-        // An absent key and a `daemon:` holding nothing (Null, which is also
-        // how a serialized `None` section reads back) both mean there is no
-        // section here yet, so both get a fresh mapping to descend into.
-        let slot = map.entry(key).or_insert(serde_yaml::Value::Null);
-        if slot.is_null() {
-            *slot = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
-        }
-        current = slot;
-    }
-
-    promote_scalar_union(current, &segments[..segments.len() - 1]);
-    // Named rather than "parent", so a refusal reads the same on both verbs.
-    let found = blocking_shape(current);
-    let parent = current
-        .as_mapping_mut()
-        .ok_or_else(|| descent_blocked(&segments[..segments.len() - 1], &segments, found))?;
-    let leaf = segments
-        .last()
-        // untyped-ok: `split` yields at least one segment, so no input reaches this.
-        .ok_or_else(|| anyhow::anyhow!("empty key path"))?
-        .to_string();
-    Ok((parent, leaf))
+    Ok(segments)
 }
 
 /// Parse a string value into the most appropriate YAML type.
@@ -641,22 +715,18 @@ pub fn cmd_config_set(cli: &Cli, printer: &Printer, key: &str, value: &str) -> a
     }
 
     let mutate_result = mutate_config_yaml(config_path, true, |raw| {
-        let spec = raw
-            .get_mut("spec")
-            .ok_or_else(|| missing_spec_section(config_path))?;
+        let spec = spec_mapping_mut(raw, config_path)?;
         if nested.is_some() {
             let flat = serde_yaml::Value::String(
                 key.split_once('.')
                     .map_or(key, |(head, _)| head)
                     .to_string(),
             );
-            if let Some(map) = spec.as_mapping_mut()
-                && let Some(prior) = map.remove(&flat)
-            {
+            if let Some(prior) = spec.remove(&flat) {
                 previous = serde_json::to_value(&prior).unwrap_or(serde_json::Value::Null);
             }
         }
-        let (parent, leaf_key) = walk_yaml_path_mut(spec, &written_key)?;
+        let (parent, leaf_key) = walk_spec_path_mut(spec, &written_key)?;
         let yaml_key = serde_yaml::Value::String(leaf_key);
         if let Some(prior) = parent.get(&yaml_key) {
             previous = serde_json::to_value(prior).unwrap_or(serde_json::Value::Null);
@@ -710,9 +780,7 @@ pub fn cmd_config_unset(cli: &Cli, printer: &Printer, key: &str) -> anyhow::Resu
     let nested = nested_output_key(key);
     let written_key = nested.clone().unwrap_or_else(|| key.to_string());
     let mutate_result = mutate_config_yaml(config_path, true, |raw| {
-        let spec = raw
-            .get_mut("spec")
-            .ok_or_else(|| missing_spec_section(config_path))?;
+        let spec = spec_mapping_mut(raw, config_path)?;
         // Unsetting a presentation knob clears both spellings: one left
         // standing is a value the reader believes they removed.
         let mut removed_flat = false;
@@ -722,14 +790,12 @@ pub fn cmd_config_unset(cli: &Cli, printer: &Printer, key: &str) -> anyhow::Resu
                     .map_or(key, |(head, _)| head)
                     .to_string(),
             );
-            if let Some(map) = spec.as_mapping_mut()
-                && let Some(prior) = map.remove(&flat)
-            {
+            if let Some(prior) = spec.remove(&flat) {
                 previous = serde_json::to_value(&prior).unwrap_or(serde_json::Value::Null);
                 removed_flat = true;
             }
         }
-        let (parent, leaf_key) = walk_yaml_path_mut(spec, &written_key)?;
+        let (parent, leaf_key) = walk_spec_path_mut(spec, &written_key)?;
         let yaml_key = serde_yaml::Value::String(leaf_key.clone());
         match parent.remove(&yaml_key) {
             Some(prior) => {
@@ -798,7 +864,7 @@ fn classify_config_error(e: &anyhow::Error) -> &'static str {
     let msg = e.to_string();
     if msg.contains("not found") {
         "key_not_found"
-    } else if msg.contains("no 'spec' section") || msg.contains("would become invalid") {
+    } else if msg.contains("would become invalid") {
         "parse_failed"
     } else {
         "invalid_value"

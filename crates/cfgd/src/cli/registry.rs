@@ -888,34 +888,6 @@ mod tests {
         );
     }
 
-    /// A config that cannot be read reaches `-o json` as the `config` domain,
-    /// ahead of any question about the file or the backend.
-    #[test]
-    fn resolve_secret_backend_on_an_unreadable_config_renders_the_config_domain() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let config = dir.path().join("cfgd.yaml");
-        std::fs::write(&config, "spec: [\n").expect("write config");
-        let target = dir.path().join("present.enc");
-        std::fs::write(&target, "x").expect("write target");
-
-        let err = match resolve_secret_backend(
-            &cli_for(config),
-            &cfgd_core::test_helpers::test_printer(),
-            &target,
-        ) {
-            Ok(_) => panic!("an unreadable config must error"),
-            Err(e) => e,
-        };
-        let (printer, buf) =
-            cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
-        crate::cli::error::render_cli_error(&printer, &err);
-        printer.flush();
-        let json: serde_json::Value =
-            serde_json::from_str(&cfgd_core::test_helpers::captured_text(&buf))
-                .expect("json payload must parse");
-        assert_eq!(json["error"], "config", "{json}");
-    }
-
     #[test]
     fn open_state_store_honors_explicit_dir() {
         let dir = tempfile::tempdir().expect("tempdir");

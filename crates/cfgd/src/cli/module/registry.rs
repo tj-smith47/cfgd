@@ -879,32 +879,40 @@ pub fn cmd_module_registry_add(
     // helper's write (still a harmless idempotent rewrite).
     let mut already_present = false;
     super::mutate_config_yaml(&cli.config, true, |doc| {
-        let spec = doc
-            .get_mut("spec")
-            .and_then(serde_yaml::Value::as_mapping_mut)
-            .ok_or_else(|| crate::cli::config_cmd::missing_spec_section(&cli.config))?;
+        use crate::cli::config_cmd;
+        let spec = config_cmd::spec_mapping_mut(doc, &cli.config)?;
         let modules = spec
             .entry(serde_yaml::Value::from("modules"))
             .or_insert(serde_yaml::Value::Null);
-        if modules.is_null() {
-            *modules = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
-        }
+        let found = config_cmd::blocking_shape(modules);
+        let modules = config_cmd::section_mapping_mut(modules).ok_or_else(|| {
+            config_cmd::section_shape_refusal(
+                &cli.config,
+                "modules",
+                found,
+                config_cmd::SHAPE_MAPPING,
+            )
+        })?;
         let registries = modules
-            .get_mut("registries")
-            .and_then(|v| v.as_sequence_mut());
-
-        if let Some(registries) = registries {
-            if registries
-                .iter()
-                .any(|s| s.get("name").and_then(|v| v.as_str()) == Some(&registry_name))
-            {
-                already_present = true;
-                return Ok(());
-            }
-            registries.push(new_entry.clone());
-        } else {
-            modules["registries"] = serde_yaml::Value::Sequence(vec![new_entry.clone()]);
+            .entry(serde_yaml::Value::from("registries"))
+            .or_insert(serde_yaml::Value::Null);
+        let found = config_cmd::blocking_shape(registries);
+        let registries = config_cmd::section_sequence_mut(registries).ok_or_else(|| {
+            config_cmd::section_shape_refusal(
+                &cli.config,
+                "modules.registries",
+                found,
+                config_cmd::SHAPE_SEQUENCE,
+            )
+        })?;
+        if registries
+            .iter()
+            .any(|s| s.get("name").and_then(|v| v.as_str()) == Some(&registry_name))
+        {
+            already_present = true;
+            return Ok(());
         }
+        registries.push(new_entry.clone());
         Ok(())
     })?;
 

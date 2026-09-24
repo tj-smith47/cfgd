@@ -216,7 +216,7 @@ fn current_context_namespace() -> String {
 fn parse_module_arg(arg: &str) -> anyhow::Result<(&str, &str)> {
     arg.split_once(':').ok_or_else(|| {
         crate::cli::invalid_argument(
-            "module",
+            "--module",
             arg,
             format!("invalid module format '{arg}' — expected name:version"),
         )

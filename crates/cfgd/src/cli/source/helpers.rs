@@ -106,17 +106,6 @@ pub(super) fn source_shape_refusal(name: &str, message: String) -> anyhow::Error
     crate::cli::cli_error(name, "parse_failed", message, serde_json::json!({}))
 }
 
-/// The config document itself is missing a section, or holds one of the
-/// wrong shape, that adding a source writes under.
-fn config_shape_refusal(config_path: &Path, message: &'static str) -> anyhow::Error {
-    crate::cli::cli_error(
-        cfgd_core::to_posix_string(config_path),
-        "parse_failed",
-        message,
-        serde_json::json!({ "path": cfgd_core::to_posix_string(config_path) }),
-    )
-}
-
 pub(crate) fn count_policy_items(items: &config::PolicyItems) -> usize {
     let mut count = 0;
     if let Some(ref pkgs) = items.packages {
@@ -194,17 +183,19 @@ pub(crate) fn add_source_to_config(
     }
 
     mutate_config_yaml(config_path, true, |raw| {
-        let spec = raw
-            .get_mut("spec")
-            .ok_or_else(|| config_shape_refusal(config_path, "config missing 'spec'"))?;
-        let sources = spec
-            .as_mapping_mut()
-            .ok_or_else(|| config_shape_refusal(config_path, "spec is not a mapping"))?
+        use crate::cli::config_cmd;
+        let sources = config_cmd::spec_mapping_mut(raw, config_path)?
             .entry(serde_yaml::Value::String("sources".into()))
-            .or_insert(serde_yaml::Value::Sequence(vec![]));
-        let seq = sources
-            .as_sequence_mut()
-            .ok_or_else(|| config_shape_refusal(config_path, "sources is not a sequence"))?;
+            .or_insert(serde_yaml::Value::Null);
+        let found = config_cmd::blocking_shape(sources);
+        let seq = config_cmd::section_sequence_mut(sources).ok_or_else(|| {
+            config_cmd::section_shape_refusal(
+                config_path,
+                "sources",
+                found,
+                config_cmd::SHAPE_SEQUENCE,
+            )
+        })?;
         let source_value = serde_yaml::to_value(source)?;
         seq.push(source_value);
         Ok(())

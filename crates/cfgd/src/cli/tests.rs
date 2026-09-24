@@ -23282,16 +23282,11 @@ spec:
     );
 }
 
+/// A document with no `spec`, or a bare `spec:`, is one whose sections are
+/// not there yet: adding a source creates them. Only a `spec` of another
+/// shape is refused, and the refusal names what it holds.
 #[test]
-fn add_source_to_config_errors_when_spec_missing() {
-    let dir = tempfile::tempdir().unwrap();
-    let config_path = dir.path().join("cfgd.yaml");
-    std::fs::write(
-        &config_path,
-        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: test\n",
-    )
-    .unwrap();
-
+fn add_source_to_config_creates_an_absent_spec_and_refuses_one_of_another_shape() {
     let source = config::SourceSpec {
         name: "src".into(),
         origin: config::OriginSpec {
@@ -23304,14 +23299,31 @@ fn add_source_to_config_errors_when_spec_missing() {
         subscription: config::SubscriptionSpec::default(),
         sync: config::SourceSyncSpec::default(),
     };
+    let head = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: test\n";
 
-    let result = super::add_source_to_config(&config_path, &source);
-    assert!(result.is_err(), "expected error when spec is missing");
-    let msg = result.unwrap_err().to_string();
-    assert!(
-        msg.contains("config missing 'spec'"),
-        "expected 'config missing spec', got: {msg}"
-    );
+    for tail in ["", "spec:\n", "spec:\n  sources:\n"] {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("cfgd.yaml");
+        std::fs::write(&config_path, format!("{head}{tail}")).unwrap();
+        super::add_source_to_config(&config_path, &source)
+            .unwrap_or_else(|e| panic!("{tail:?} is a spec with nothing in it yet: {e}"));
+        let cfg = config::load_config(&config_path).unwrap();
+        assert_eq!(cfg.spec.sources.len(), 1, "{tail:?}");
+    }
+
+    for (tail, refusal) in [
+        ("spec: 3\n", "'spec' holds a scalar, not a mapping"),
+        (
+            "spec:\n  sources: 3\n",
+            "'sources' holds a scalar, not a sequence",
+        ),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("cfgd.yaml");
+        std::fs::write(&config_path, format!("{head}{tail}")).unwrap();
+        let err = super::add_source_to_config(&config_path, &source).unwrap_err();
+        assert_eq!(err.to_string(), refusal, "{tail:?}");
+    }
 }
 
 // -----------------------------------------------------------------------
@@ -51148,6 +51160,71 @@ fn every_invalid_argument_refusal_names_its_flag_and_value() {
     assert!(
         offenders.is_empty(),
         "an invalid_argument refusal's payload does not name `flag` and `value` inline:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// Every flag an `invalid_argument` refusal names is spelled the way `--help`
+/// prints it: a flag with its dashes, a positional as its `<VALUE>` name.
+///
+/// A script matches `flag` against the invocation it built, and a word that
+/// is neither (`module` for `--module`, `name` for `<NAME>`) is one it cannot
+/// match, beside a top-level `name` key it is easily read as. The population
+/// is every literal handed to either flag composer and every literal `"flag"`
+/// key in the CLI's production sources, so a new refusal joins by being
+/// written.
+#[test]
+fn every_refused_flag_is_spelled_the_way_help_prints_it() {
+    /// The literal spellings in use today: a floor, so a reader that stops
+    /// finding them fails on the count rather than passing.
+    const FLOOR_SPELLINGS: usize = 30;
+
+    let mut spellings: Vec<(String, String)> = Vec::new();
+    for (path, body) in cli_production_bodies() {
+        let code = cfgd_core::test_helpers::blank_comments(&body);
+        for needle in ["invalid_argument(", "invalid_argument_among(", "\"flag\":"] {
+            for (at, _) in code.match_indices(needle) {
+                let before = code[..at].chars().next_back();
+                if before.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_') {
+                    continue;
+                }
+                let rest = code[at + needle.len()..].trim_start();
+                let Some(literal) = rest.strip_prefix('"') else {
+                    continue;
+                };
+                let Some(end) = literal.find('"') else {
+                    continue;
+                };
+                spellings.push((
+                    cfgd_core::to_posix_string(&path),
+                    literal[..end].to_string(),
+                ));
+            }
+        }
+    }
+    assert!(
+        spellings.len() >= FLOOR_SPELLINGS,
+        "found {} literal flag spellings, fewer than the {FLOOR_SPELLINGS} in use",
+        spellings.len()
+    );
+    let as_help_prints = |flag: &str| {
+        flag.strip_prefix("--").is_some_and(|name| {
+            !name.is_empty() && name.chars().all(|c| c.is_ascii_lowercase() || c == '-')
+        }) || flag
+            .strip_prefix('<')
+            .and_then(|f| f.strip_suffix('>'))
+            .is_some_and(|name| {
+                !name.is_empty() && name.chars().all(|c| c.is_ascii_uppercase() || c == '_')
+            })
+    };
+    let offenders: Vec<String> = spellings
+        .iter()
+        .filter(|(_, flag)| !as_help_prints(flag))
+        .map(|(file, flag)| format!("{file}: {flag:?}"))
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "a refused flag is not spelled the way `--help` prints it:\n{}",
         offenders.join("\n")
     );
 }
