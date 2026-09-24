@@ -51488,9 +51488,14 @@ impl CallResolver<'_> {
     }
 }
 
-/// For each function `(file, name)` in `spans` (the last field marks one
-/// declared in an `impl` or `trait` block), the `(file, function)` of every
-/// body calling it. A receiver call (`x.name(..)`) or a type-qualified one
+/// A function by its identity: file, name, and whether it is declared in an
+/// `impl` or `trait` block, so a method and a free function of one name in one
+/// file stay two functions.
+type FnKey = (String, String, bool);
+
+/// For each function in `spans` (the last field marks one declared in an
+/// `impl` or `trait` block), every function whose body calls it, both keyed by
+/// [`FnKey`]. A receiver call (`x.name(..)`) or a type-qualified one
 /// (`Self::name(..)`) resolves only to methods. Any other call resolves to a
 /// free function: through the module path it is written with
 /// (`helpers::parse(..)`), else to the caller's own file when that file
@@ -51501,7 +51506,7 @@ impl CallResolver<'_> {
 fn callers_by_definition(
     spans: &[(String, String, String, bool)],
     uses: &std::collections::BTreeMap<String, Vec<String>>,
-) -> std::collections::BTreeMap<(String, String), std::collections::BTreeSet<(String, String)>> {
+) -> std::collections::BTreeMap<FnKey, std::collections::BTreeSet<FnKey>> {
     let mut resolver = CallResolver {
         definers: std::collections::BTreeMap::new(),
         methods: std::collections::BTreeMap::new(),
@@ -51517,11 +51522,9 @@ fn callers_by_definition(
         by_name.entry(name).or_default().insert(file);
         resolver.files.insert(file);
     }
-    let mut callers: std::collections::BTreeMap<
-        (String, String),
-        std::collections::BTreeSet<(String, String)>,
-    > = std::collections::BTreeMap::new();
-    for (file, caller, span, _) in spans {
+    let mut callers: std::collections::BTreeMap<FnKey, std::collections::BTreeSet<FnKey>> =
+        std::collections::BTreeMap::new();
+    for (file, caller, span, caller_is_method) in spans {
         let mut at = 0;
         while at < span.len() {
             let rest = &span[at..];
@@ -51533,37 +51536,143 @@ fn callers_by_definition(
                 .unwrap_or(rest.len() - start);
             let (begin, ident) = (at + start, &rest[start..start + len]);
             at = begin + len;
-            if !resolver.definers.contains_key(ident) && !resolver.methods.contains_key(ident) {
+            // A declaration names the function without calling it.
+            if span[..begin].trim_end().ends_with("fn")
+                || (!resolver.definers.contains_key(ident) && !resolver.methods.contains_key(ident))
+            {
                 continue;
             }
             let mut seen = std::collections::BTreeSet::new();
             let qualifier = path_segment_before(&span[..begin]);
-            let resolved: Vec<String> = if span[..begin].ends_with('.') {
-                resolver.methods_for(file, ident)
-            } else {
-                match qualifier {
-                    Some(q) if q.starts_with(|c: char| c.is_ascii_uppercase()) => {
-                        resolver.methods_for(file, ident)
-                    }
-                    Some(module) => resolver
-                        .module_files(file, &module)
-                        .iter()
-                        .flat_map(|m| resolver.visible_in(m, ident, &mut seen))
-                        .collect(),
-                    None => resolver.visible_in(file, ident, &mut seen),
-                }
+            let receiver = span[..begin].ends_with('.')
+                || qualifier
+                    .as_deref()
+                    .is_some_and(|q| q.starts_with(|c: char| c.is_ascii_uppercase()));
+            let resolved: Vec<String> = match qualifier {
+                _ if receiver => resolver.methods_for(file, ident),
+                Some(module) => resolver
+                    .module_files(file, &module)
+                    .iter()
+                    .flat_map(|m| resolver.visible_in(m, ident, &mut seen))
+                    .collect(),
+                None => resolver.visible_in(file, ident, &mut seen),
             };
+            let this = (file.clone(), caller.clone(), *caller_is_method);
             for target in resolved {
-                if (target.as_str(), ident) != (file.as_str(), caller.as_str()) {
-                    callers
-                        .entry((target, ident.to_string()))
-                        .or_default()
-                        .insert((file.clone(), caller.clone()));
+                let target = (target, ident.to_string(), receiver);
+                if target != this {
+                    callers.entry(target).or_default().insert(this.clone());
                 }
             }
         }
     }
     callers
+}
+
+/// Each function declared in `code` (strings and comments blanked): its byte
+/// offset, its name, and whether it sits inside an `impl` or `trait` block.
+fn function_spans(code: &str) -> Vec<(usize, String, bool)> {
+    let mut declared = Vec::new();
+    let mut offset = 0;
+    let mut depth = 0usize;
+    let mut impl_depths: Vec<usize> = Vec::new();
+    // An `impl` whose `where` clause wraps opens its block on a later line.
+    let mut opens_impl = false;
+    for line in code.split_inclusive('\n') {
+        if let Some(name) = cfgd_core::test_helpers::declared_fn_name(line) {
+            declared.push((offset, name, !impl_depths.is_empty()));
+        }
+        if matches!(
+            cfgd_core::test_helpers::item_keyword(line),
+            "impl" | "trait"
+        ) {
+            opens_impl = true;
+        }
+        for c in line.chars() {
+            match c {
+                '{' => {
+                    if std::mem::take(&mut opens_impl) {
+                        impl_depths.push(depth);
+                    }
+                    depth += 1;
+                }
+                '}' => {
+                    depth = depth.saturating_sub(1);
+                    if impl_depths.last() == Some(&depth) {
+                        impl_depths.pop();
+                    }
+                }
+                _ => {}
+            }
+        }
+        offset += line.len();
+    }
+    declared
+}
+
+/// Whether a function declared at `code[start..]` takes `self` as its first
+/// parameter, which only a method can.
+fn takes_self(code: &str, start: usize) -> bool {
+    let Some((_, params)) = code[start..].split_once('(') else {
+        return false;
+    };
+    let first = params.trim_start();
+    let first = first.strip_prefix('&').unwrap_or(first).trim_start();
+    let first = match first.strip_prefix('\'') {
+        Some(lifetime) => lifetime.trim_start_matches(is_ident_char).trim_start(),
+        None => first,
+    };
+    let first = first.strip_prefix("mut ").unwrap_or(first).trim_start();
+    first
+        .strip_prefix("self")
+        .is_some_and(|rest| !rest.starts_with(is_ident_char))
+}
+
+#[test]
+fn every_function_is_read_as_a_method_exactly_when_an_impl_or_trait_holds_it() {
+    let code = "\
+impl<T> Show for Wrapper<T>
+where
+    T: Clone,
+{
+    fn show(&self) {}
+}
+fn after_wrapped_impl() {}
+trait Greet {
+    fn greet(&self) {
+        let _ = 1;
+    }
+}
+unsafe impl Send for Wrapper<u8> {}
+impl Marker for Wrapper<u16> {}
+fn after_one_line_impls() {}
+mod tests {
+    fn inner_free() {}
+    impl Inner {
+        fn inner_method(&'a mut self) {}
+    }
+    fn after_inner_impl() {}
+}
+fn last(selfish: u8) {}
+";
+    let read: Vec<(String, bool, bool)> = function_spans(code)
+        .into_iter()
+        .map(|(start, name, is_method)| (name, is_method, takes_self(code, start)))
+        .collect();
+    let expect = |name: &str, method: bool| (name.to_string(), method, method);
+    assert_eq!(
+        read,
+        [
+            expect("show", true),
+            expect("after_wrapped_impl", false),
+            expect("greet", true),
+            expect("after_one_line_impls", false),
+            expect("inner_free", false),
+            expect("inner_method", true),
+            expect("after_inner_impl", false),
+            expect("last", false),
+        ]
+    );
 }
 
 #[test]
@@ -51612,11 +51721,11 @@ fn a_call_reaches_the_definition_its_file_resolves_it_to() {
     let callers = callers_by_definition(&spans, &uses);
     let of = |file: &str| {
         callers
-            .get(&(file.to_string(), "helper".to_string()))
+            .get(&(file.to_string(), "helper".to_string(), false))
             .cloned()
             .unwrap_or_default()
             .into_iter()
-            .map(|(_, caller)| caller)
+            .map(|(_, caller, _)| caller)
             .collect::<std::collections::BTreeSet<_>>()
     };
     assert_eq!(of("src/cli/a.rs"), ["cmd_d".into(), "cmd_e".into()].into());
@@ -51626,10 +51735,12 @@ fn a_call_reaches_the_definition_its_file_resolves_it_to() {
 
     // Each caller below names `helper` in a way that resolves to no free
     // function in a.rs: a receiver or type-qualified call (in a.rs itself and
-    // elsewhere), a same-named definition in another file, and a bare mention
-    // in a file that neither defines nor imports it.
+    // elsewhere, where a.rs also holds a method of that name), a same-named
+    // definition in another file, and a bare mention in a file that neither
+    // defines nor imports it.
     let orphan = [
         span("src/cli/a.rs", "helper", "fn helper() {}\n"),
+        method("src/cli/a.rs", "helper", "fn helper(&self) {}\n"),
         span(
             "src/cli/a.rs",
             "cmd_a",
@@ -51648,23 +51759,35 @@ fn a_call_reaches_the_definition_its_file_resolves_it_to() {
         span("src/cli/n.rs", "cmd_n", "fn cmd_n() { x.render(); }\n"),
     ];
     let callers = callers_by_definition(&orphan, &Default::default());
-    let callers_of = |file: &str, name: &str| {
+    let callers_of = |file: &str, name: &str, is_method: bool| {
         callers
-            .get(&(file.to_string(), name.to_string()))
+            .get(&(file.to_string(), name.to_string(), is_method))
             .cloned()
             .unwrap_or_default()
+            .into_iter()
+            .map(|(file, caller, _)| (file, caller))
+            .collect::<std::collections::BTreeSet<_>>()
     };
     assert!(
-        callers_of("src/cli/a.rs", "helper").is_empty(),
+        callers_of("src/cli/a.rs", "helper", false).is_empty(),
         "{callers:?}"
     );
     assert!(
-        callers_of("src/cli/o.rs", "render").is_empty(),
+        callers_of("src/cli/o.rs", "render", false).is_empty(),
         "{callers:?}"
     );
     assert_eq!(
-        callers_of("src/cli/m.rs", "render"),
+        callers_of("src/cli/m.rs", "render", true),
         [("src/cli/n.rs".to_string(), "cmd_n".to_string())].into()
+    );
+    assert_eq!(
+        callers_of("src/cli/a.rs", "helper", true),
+        [
+            ("src/cli/a.rs".to_string(), "cmd_a".to_string()),
+            ("src/cli/c.rs".to_string(), "cmd_c".to_string()),
+            ("src/cli/z.rs".to_string(), "cmd_z".to_string()),
+        ]
+        .into()
     );
 }
 
@@ -51730,13 +51853,16 @@ fn every_refused_flag_is_spelled_the_way_help_prints_it() {
 
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     // (file, spelling, the function it is written in)
-    let mut spellings: Vec<(String, String, Option<String>)> = Vec::new();
-    // (file, function, its code)
+    let mut spellings: Vec<(String, String, Option<FnKey>)> = Vec::new();
     // (file, function, its code, declared in an `impl` or `trait` block)
     let mut spans: Vec<(String, String, String, bool)> = Vec::new();
     // file -> its `use` statements
     let mut uses: std::collections::BTreeMap<String, Vec<String>> =
         std::collections::BTreeMap::new();
+    // A function the method reading gets wrong at a place the fixture does
+    // not foresee: a free one at column 0 read as a method, or one taking
+    // `self` read as free.
+    let mut misread: Vec<String> = Vec::new();
     for (path, body) in &bodies {
         let file = cfgd_core::to_posix_string(path.strip_prefix(root).unwrap_or(path));
         let code = blank_non_code(body);
@@ -51748,49 +51874,18 @@ fn every_refused_flag_is_spelled_the_way_help_prints_it() {
                 .and_then(|w| w.strip_suffix('"'))
                 .map(str::to_string)
         };
-        let mut declared: Vec<(usize, String)> = Vec::new();
-        let mut in_impl: Vec<bool> = Vec::new();
-        let mut offset = 0;
-        let mut depth = 0usize;
-        let mut impl_depths: Vec<usize> = Vec::new();
-        let mut opens_impl = false;
-        for line in code.split_inclusive('\n') {
-            if let Some(name) = cfgd_core::test_helpers::declared_fn_name(line) {
-                declared.push((offset, name));
-                in_impl.push(!impl_depths.is_empty());
+        let declared = function_spans(&code);
+        for (i, (start, name, is_method)) in declared.iter().enumerate() {
+            let end = declared.get(i + 1).map_or(code.len(), |(next, _, _)| *next);
+            let at_column_0 = !code[*start..].starts_with(char::is_whitespace);
+            if (at_column_0 && *is_method) || (takes_self(&code, *start) && !is_method) {
+                misread.push(format!("{file}: {name} read as method={is_method}"));
             }
-            if matches!(
-                cfgd_core::test_helpers::item_keyword(line),
-                "impl" | "trait"
-            ) {
-                opens_impl = true;
-            }
-            for c in line.chars() {
-                match c {
-                    '{' => {
-                        if std::mem::take(&mut opens_impl) {
-                            impl_depths.push(depth);
-                        }
-                        depth += 1;
-                    }
-                    '}' => {
-                        depth = depth.saturating_sub(1);
-                        if impl_depths.last() == Some(&depth) {
-                            impl_depths.pop();
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            offset += line.len();
-        }
-        for (i, (start, name)) in declared.iter().enumerate() {
-            let end = declared.get(i + 1).map_or(code.len(), |(next, _)| *next);
             spans.push((
                 file.clone(),
                 name.clone(),
                 code[*start..end].to_string(),
-                in_impl[i],
+                *is_method,
             ));
         }
         uses.insert(file.clone(), use_statements(&code));
@@ -51798,8 +51893,8 @@ fn every_refused_flag_is_spelled_the_way_help_prints_it() {
             declared
                 .iter()
                 .rev()
-                .find(|(start, _)| *start <= at)
-                .map(|(_, name)| name.clone())
+                .find(|(start, _, _)| *start <= at)
+                .map(|(_, name, is_method)| (file.clone(), name.clone(), *is_method))
         };
         for composer in &composers {
             let needle = format!("{}(", composer.name);
@@ -51849,6 +51944,11 @@ fn every_refused_flag_is_spelled_the_way_help_prints_it() {
         short.join("\n")
     );
 
+    assert!(
+        misread.is_empty(),
+        "a function is read as a method (or not) against its own declaration:\n{}",
+        misread.join("\n")
+    );
     let callers = callers_by_definition(&spans, &uses);
 
     // A spelling written inside the function implementing one subcommand is
@@ -51864,16 +51964,17 @@ fn every_refused_flag_is_spelled_the_way_help_prints_it() {
         };
         command_for_fn(root, function)
     };
-    let commands_reaching = |file: &str, helper: &str| {
+    let commands_reaching = |helper: FnKey| {
         let mut reached: std::collections::BTreeMap<String, &clap::Command> =
             std::collections::BTreeMap::new();
         let mut seen = std::collections::BTreeSet::new();
-        let mut queue = vec![(file.to_string(), helper.to_string())];
+        let mut queue = vec![helper];
         while let Some(callee) = queue.pop() {
-            for (file, caller) in callers.get(&callee).into_iter().flatten() {
-                if !seen.insert((file.clone(), caller.clone())) {
+            for key in callers.get(&callee).into_iter().flatten() {
+                if !seen.insert(key.clone()) {
                     continue;
                 }
+                let (file, caller, _) = key;
                 match command_in(file, caller) {
                     Some(cmd) => {
                         reached.insert(
@@ -51881,7 +51982,7 @@ fn every_refused_flag_is_spelled_the_way_help_prints_it() {
                             cmd,
                         );
                     }
-                    None => queue.push((file.clone(), caller.clone())),
+                    None => queue.push(key.clone()),
                 }
             }
         }
@@ -51891,8 +51992,11 @@ fn every_refused_flag_is_spelled_the_way_help_prints_it() {
     let mut through_callers = 0;
     let mut offenders: Vec<String> = Vec::new();
     for (file, flag, within) in &spellings {
-        let at = format!("{file} ({})", within.as_deref().unwrap_or("?"));
-        if let Some(cmd) = within.as_deref().and_then(|f| command_in(file, f)) {
+        let at = format!(
+            "{file} ({})",
+            within.as_ref().map_or("?", |(_, name, _)| name.as_str())
+        );
+        if let Some(cmd) = within.as_ref().and_then(|(_, f, _)| command_in(file, f)) {
             per_command += 1;
             if !help_spellings_of(cmd).contains(flag) {
                 offenders.push(format!(
@@ -51903,8 +52007,8 @@ fn every_refused_flag_is_spelled_the_way_help_prints_it() {
             continue;
         }
         let reached = within
-            .as_deref()
-            .map(|f| commands_reaching(file, f))
+            .as_ref()
+            .map(|key| commands_reaching(key.clone()))
             .unwrap_or_default();
         if reached.is_empty() {
             offenders.push(format!(
