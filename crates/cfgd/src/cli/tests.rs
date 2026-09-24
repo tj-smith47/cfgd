@@ -51385,51 +51385,114 @@ fn super_files_of(file: &str) -> [String; 2] {
     [format!("{parent}/mod.rs"), format!("{parent}.rs")]
 }
 
+fn is_ident_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_'
+}
+
+/// The last path segment before a trailing `::` in `text` (`b` in `a::b::`).
+fn path_segment_before(text: &str) -> Option<String> {
+    let path = text.trim_end().strip_suffix("::")?;
+    let start = path
+        .rfind(|c: char| !is_ident_char(c))
+        .map_or(0, |at| at + 1);
+    let seg = &path[start..];
+    (!seg.is_empty()).then(|| seg.to_string())
+}
+
+/// The module a `use` statement brings `ident` in from: the path it names
+/// `ident` under (braced lists included), or the module of a glob.
+fn imported_from(stmt: &str, ident: &str) -> Option<String> {
+    let named = stmt.match_indices(ident).find(|(p, _)| {
+        !stmt[..*p].ends_with(is_ident_char) && !stmt[p + ident.len()..].starts_with(is_ident_char)
+    });
+    let Some((pos, _)) = named else {
+        return path_segment_before(stmt.trim_end().strip_suffix('*')?);
+    };
+    let before = &stmt[..pos];
+    path_segment_before(before).or_else(|| {
+        let mut depth = 0;
+        let (open, _) = before.char_indices().rev().find(|(_, c)| {
+            match c {
+                '}' => depth += 1,
+                '{' if depth == 0 => return true,
+                '{' => depth -= 1,
+                _ => {}
+            }
+            false
+        })?;
+        path_segment_before(&before[..open])
+    })
+}
+
+/// Resolves a call written in one CLI file to the files defining what it calls.
+struct CallResolver<'a> {
+    definers: std::collections::BTreeMap<&'a str, std::collections::BTreeSet<&'a str>>,
+    files: std::collections::BTreeSet<&'a str>,
+    uses: &'a std::collections::BTreeMap<String, Vec<String>>,
+}
+
+impl CallResolver<'_> {
+    /// The files a module path segment written in `from` names.
+    fn module_files(&self, from: &str, module: &str) -> Vec<String> {
+        match module {
+            "self" | "Self" => vec![from.to_string()],
+            "super" => super_files_of(from).into(),
+            _ => self
+                .files
+                .iter()
+                .filter(|f| module_name_of(f) == module)
+                .map(|f| f.to_string())
+                .collect(),
+        }
+    }
+
+    /// The definitions of `ident` visible in `file`: its own, else the ones its
+    /// `use` statements bring in, followed through re-exports.
+    fn visible_in(
+        &self,
+        file: &str,
+        ident: &str,
+        seen: &mut std::collections::BTreeSet<String>,
+    ) -> Vec<String> {
+        if self.definers.get(ident).is_some_and(|d| d.contains(file)) {
+            return vec![file.to_string()];
+        }
+        if !seen.insert(file.to_string()) {
+            return Vec::new();
+        }
+        let mut found = Vec::new();
+        for stmt in self.uses.get(file).into_iter().flatten() {
+            if let Some(module) = imported_from(stmt, ident) {
+                for module_file in self.module_files(file, &module) {
+                    found.extend(self.visible_in(&module_file, ident, seen));
+                }
+            }
+        }
+        found
+    }
+}
+
 /// For each function `(file, name)` in `spans`, the `(file, function)` of every
-/// body calling it. A call resolves to the caller's own file when that file
-/// defines the name, else through the module path it is written with
-/// (`helpers::parse(..)`), the `use` importing it or a glob `use` of its
-/// module, and only when none of those names a module, to every same-named
-/// definition. Keying callers by the
-/// definition keeps a reached function from vouching for a same-named one in
-/// another file that nothing calls.
+/// body calling it. A call resolves through the module path it is written with
+/// (`helpers::parse(..)`), else to the caller's own file when that file defines
+/// the name, else through the `use` statements importing it (named or glob,
+/// followed through re-exports), and only when none of those reaches a
+/// definition, to every same-named one. Keying callers by the definition keeps
+/// a reached function from vouching for a same-named one in another file that
+/// nothing calls.
 fn callers_by_definition(
     spans: &[(String, String, String)],
     uses: &std::collections::BTreeMap<String, Vec<String>>,
 ) -> std::collections::BTreeMap<(String, String), std::collections::BTreeSet<(String, String)>> {
-    let is_ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
-    let mut definers: std::collections::BTreeMap<&str, std::collections::BTreeSet<&str>> =
-        std::collections::BTreeMap::new();
-    for (file, name, _) in spans {
-        definers.entry(name).or_default().insert(file);
-    }
-    let in_module =
-        |caller_file: &str, module: &str, candidates: &std::collections::BTreeSet<&str>| {
-            let hits: Vec<String> = match module {
-                "self" => vec![caller_file.to_string()],
-                "super" => super_files_of(caller_file).into(),
-                _ => candidates
-                    .iter()
-                    .filter(|f| module_name_of(f) == module)
-                    .map(|f| f.to_string())
-                    .collect(),
-            };
-            hits.into_iter()
-                .filter(|f| candidates.contains(f.as_str()))
-                .collect::<Vec<_>>()
-        };
-    let segment_before = |text: &str| -> Option<String> {
-        let path = text.trim_end().strip_suffix("::")?;
-        let seg: String = path
-            .chars()
-            .rev()
-            .take_while(|c| is_ident(*c))
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect();
-        (!seg.is_empty()).then_some(seg)
+    let mut resolver = CallResolver {
+        definers: std::collections::BTreeMap::new(),
+        files: uses.keys().map(String::as_str).collect(),
+        uses,
     };
+    for (file, name, _) in spans {
+        resolver.definers.entry(name).or_default().insert(file);
+        resolver.files.insert(file);
+    }
     let mut callers: std::collections::BTreeMap<
         (String, String),
         std::collections::BTreeSet<(String, String)>,
@@ -51438,66 +51501,29 @@ fn callers_by_definition(
         let mut at = 0;
         while at < span.len() {
             let rest = &span[at..];
-            let Some(start) = rest.find(is_ident) else {
+            let Some(start) = rest.find(is_ident_char) else {
                 break;
             };
             let len = rest[start..]
-                .find(|c: char| !is_ident(c))
+                .find(|c: char| !is_ident_char(c))
                 .unwrap_or(rest.len() - start);
             let (begin, ident) = (at + start, &rest[start..start + len]);
             at = begin + len;
-            let Some(candidates) = definers.get(ident) else {
+            let Some(candidates) = resolver.definers.get(ident) else {
                 continue;
             };
-            let resolved: Vec<String> = if let Some(module) = segment_before(&span[..begin]) {
-                in_module(file, &module, candidates)
-            } else if candidates.contains(file.as_str()) {
-                vec![file.clone()]
-            } else {
-                uses.get(file)
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|stmt| {
-                        let pos = stmt
-                            .match_indices(ident)
-                            .find(|(p, _)| {
-                                !stmt[..*p].ends_with(is_ident)
-                                    && !stmt[p + ident.len()..].starts_with(is_ident)
-                            })?
-                            .0;
-                        let before = &stmt[..pos];
-                        segment_before(before).or_else(|| {
-                            let mut depth = 0;
-                            let open = before.char_indices().rev().find(|(_, c)| {
-                                match c {
-                                    '}' => depth += 1,
-                                    '{' if depth == 0 => return true,
-                                    '{' => depth -= 1,
-                                    _ => {}
-                                }
-                                false
-                            })?;
-                            segment_before(&before[..open.0])
-                        })
-                    })
-                    .flat_map(|module| in_module(file, &module, candidates))
-                    .collect::<Vec<_>>()
+            let mut seen = std::collections::BTreeSet::new();
+            let mut resolved: Vec<String> = match path_segment_before(&span[..begin]) {
+                Some(module) => resolver
+                    .module_files(file, &module)
+                    .iter()
+                    .flat_map(|m| resolver.visible_in(m, ident, &mut seen))
+                    .collect(),
+                None => resolver.visible_in(file, ident, &mut seen),
             };
-            let resolved = if resolved.is_empty() {
-                uses.get(file)
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|stmt| segment_before(stmt.trim_end().strip_suffix('*')?))
-                    .flat_map(|module| in_module(file, &module, candidates))
-                    .collect()
-            } else {
-                resolved
-            };
-            let resolved = if resolved.is_empty() {
-                candidates.iter().map(|f| f.to_string()).collect()
-            } else {
-                resolved
-            };
+            if resolved.is_empty() {
+                resolved = candidates.iter().map(|f| f.to_string()).collect();
+            }
             for target in resolved {
                 if (target.as_str(), ident) != (file.as_str(), caller.as_str()) {
                     callers
@@ -51528,6 +51554,8 @@ fn a_call_reaches_the_definition_its_file_resolves_it_to() {
         ),
         span("src/cli/f/mod.rs", "helper", "fn helper() {}\n"),
         span("src/cli/f/g.rs", "cmd_g", "fn cmd_g() { helper(); }\n"),
+        span("src/cli/h/mod.rs", "helper", "fn helper() {}\n"),
+        span("src/cli/k/i.rs", "cmd_i", "fn cmd_i() { helper(); }\n"),
     ];
     let uses = [
         (
@@ -51537,6 +51565,14 @@ fn a_call_reaches_the_definition_its_file_resolves_it_to() {
         (
             "src/cli/f/g.rs".to_string(),
             use_statements("use super::*;\n"),
+        ),
+        (
+            "src/cli/k/i.rs".to_string(),
+            use_statements("use super::*;\n"),
+        ),
+        (
+            "src/cli/k/mod.rs".to_string(),
+            use_statements("pub(crate) use super::h::*;\n"),
         ),
     ]
     .into();
@@ -51553,6 +51589,7 @@ fn a_call_reaches_the_definition_its_file_resolves_it_to() {
     assert_eq!(of("src/cli/a.rs"), ["cmd_d".into(), "cmd_e".into()].into());
     assert_eq!(of("src/cli/b.rs"), ["cmd_b".into(), "cmd_c".into()].into());
     assert_eq!(of("src/cli/f/mod.rs"), ["cmd_g".into()].into());
+    assert_eq!(of("src/cli/h/mod.rs"), ["cmd_i".into()].into());
 
     let orphan = [
         span("src/cli/a.rs", "helper", "fn helper() {}\n"),
