@@ -4207,8 +4207,7 @@ fn every_in_process_test_declaring_shell_items_holds_a_test_home() {
         // the check through the same `~` but are the library's own and are
         // covered by their crate's fixtures.
         let posix = crate::to_posix_string(&path);
-        // test-source-ok: asks for integration tests alone, a narrower question
-        if !posix.contains("/tests/") || posix.contains("/src/") {
+        if !crate::test_helpers::is_test_source(&path) || posix.contains("/src/") {
             continue;
         }
         let body = walked_file_body(&path);
@@ -6789,6 +6788,32 @@ fn is_test_source_names_every_test_only_file_shape_and_nothing_else() {
     }
 }
 
+/// A checkout that sits under a directory named `tests` classifies its files
+/// the same as any other: only the components below the workspace root count.
+#[test]
+fn is_test_source_judges_only_components_below_the_workspace_root() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path().join("tests").join("ws");
+    let production = ws.join("crates/cfgd/src/cli/status.rs");
+    let held = ws.join("crates/cfgd/tests/a.rs");
+    for file in [&production, &held] {
+        std::fs::create_dir_all(file.parent().expect("parent")).expect("mkdir");
+        std::fs::write(file, "fn f() {}\n").expect("write source");
+    }
+    let below = crate::test_helpers::is_test_source_below;
+    assert!(
+        !below(&ws, &production),
+        "{} is production",
+        production.display()
+    );
+    assert!(below(&ws, &held), "{} holds tests alone", held.display());
+
+    let listed = rust_sources_under(&ws.join("crates"));
+    let (tests, sources): (Vec<_>, Vec<_>) = listed.iter().partition(|p| below(&ws, p));
+    assert_eq!(sources, vec![&production], "the listed production sources");
+    assert_eq!(tests, vec![&held], "the listed test-only sources");
+}
+
 /// Every scan that skips test-only files asks `is_test_source` which ones
 /// those are; a second hand-written copy of the naming rule is how scans came
 /// to disagree about `tests_*.rs` files and read their fixtures as production.
@@ -6796,10 +6821,18 @@ fn is_test_source_names_every_test_only_file_shape_and_nothing_else() {
 /// The tells are the rule's own spellings, read on each line's code with its
 /// trailing comment cut: the `tests.rs` name, a `tests` prefix or component
 /// compared against a path, and a `/tests/` substring. The helper's own file is
-/// the one place allowed to spell them. `// test-source-ok: <why>` on the line
-/// or the line above hatches a site asking a narrower question.
+/// the one place allowed to spell them. No site is hatched: a narrower
+/// question is the helper's answer plus a condition of its own, as the
+/// integration-tests-alone scan asks `is_test_source(p) && !p.contains("/src/")`.
+///
+/// Both floors equal the population they were counted from, so a scan that stops
+/// reading files, or a routed site that stops asking, fails here. The `asks`
+/// count leaves out the tests that define the rule, whose calls check the
+/// helper rather than route a scan through it.
 #[test]
 fn no_scan_hand_copies_the_test_source_naming_rule() {
+    const FILES: usize = 575;
+    const ASKS: usize = 87;
     // Built from pieces so this file's own needles are not read as copies.
     let tells = [
         concat!("\"tests", ".rs\""),
@@ -6821,35 +6854,35 @@ fn no_scan_hand_copies_the_test_source_naming_rule() {
         }
         files += 1;
         let body = walked_file_body(&path);
-        let lines: Vec<&str> = body.lines().collect();
-        for (row, line) in lines.iter().enumerate() {
+        let mut in_rule_test = false;
+        for (row, line) in body.lines().enumerate() {
             let code = crate::test_helpers::code_span(line);
-            asks += code.matches("is_test_source(").count();
-            if !tells.iter().any(|tell| code.contains(tell)) {
-                continue;
+            if code.starts_with("fn is_test_source_") || code.starts_with("fn no_scan_hand_copies_")
+            {
+                in_rule_test = true;
+            } else if in_rule_test && line == "}" {
+                in_rule_test = false;
             }
-            let hatched = carries_hatch(line, "test-source-ok:")
-                || row
-                    .checked_sub(1)
-                    .is_some_and(|above| carries_hatch(lines[above], "test-source-ok:"));
-            if !hatched {
+            if !in_rule_test {
+                asks += code.matches("is_test_source(").count();
+            }
+            if tells.iter().any(|tell| code.contains(tell)) {
                 offenders.push(format!("{}:{}: {}", path.display(), row + 1, line.trim()));
             }
         }
     }
     assert!(
-        files >= 550,
-        "the scan read {files} sources under crates/, fewer than the workspace holds"
+        files >= FILES,
+        "the scan read {files} sources under crates/, fewer than the {FILES} the workspace holds"
     );
     assert!(
-        asks >= 80,
-        "only {asks} sites ask is_test_source, so the scan is no longer reading the scans it guards"
+        asks >= ASKS,
+        "{asks} sites ask is_test_source, fewer than the {ASKS} that route a scan through it"
     );
     assert!(
         offenders.is_empty(),
         "these lines restate which files hold tests alone; ask \
-         `cfgd_core::test_helpers::is_test_source(path)` instead, or hatch a narrower question \
-         with `// test-source-ok: <why>`:\n{}",
+         `cfgd_core::test_helpers::is_test_source(path)` instead:\n{}",
         offenders.join("\n")
     );
 }

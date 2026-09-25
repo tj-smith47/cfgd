@@ -5488,10 +5488,19 @@ pub fn production_slice_of(path: &Path) -> String {
 /// `<root>/crates/cfgd-core` whichever crate's test binary is running and a
 /// consumer crate's walk reaches the same root as cfgd-core's own.
 pub fn workspace_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
+    WORKSPACE_ROOT.clone()
 }
+
+// Taken lexically (two `parent()` steps, no `..` component) so every path a
+// scan builds on it, or on any crate's `CARGO_MANIFEST_DIR`, starts with it
+// component for component and `is_test_source` can strip it.
+static WORKSPACE_ROOT: std::sync::LazyLock<PathBuf> = std::sync::LazyLock::new(|| {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("cfgd-core sits two levels below the workspace root")
+        .to_path_buf()
+});
 
 /// Every file under `root`, at any depth, in whatever order the filesystem
 /// lists them.
@@ -5554,11 +5563,22 @@ pub fn rust_sources_under(root: &Path) -> Vec<PathBuf> {
 /// code skips the whole file. This is the one statement of that naming rule,
 /// so a test module named some other way is added here, where every scan
 /// skipping test files picks it up at once.
+///
+/// Only the components below the workspace root are judged: a checkout that
+/// itself sits under a directory named `tests` classifies the same as any
+/// other. A path outside the workspace root is judged whole.
 pub fn is_test_source(path: &Path) -> bool {
-    path.file_name()
+    is_test_source_below(&WORKSPACE_ROOT, path)
+}
+
+/// [`is_test_source`] against an explicit `root` in place of the workspace
+/// root, so a test can place a workspace anywhere.
+pub fn is_test_source_below(root: &Path, path: &Path) -> bool {
+    let rel = path.strip_prefix(root).unwrap_or(path);
+    rel.file_name()
         .and_then(|n| n.to_str())
         .is_some_and(|n| n == "tests.rs" || (n.starts_with("tests_") && n.ends_with(".rs")))
-        || path.components().any(|c| c.as_os_str() == "tests")
+        || rel.components().any(|c| c.as_os_str() == "tests")
 }
 
 /// Every path-based chmod in the production sources of every crate under
