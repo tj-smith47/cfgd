@@ -382,37 +382,6 @@ fn systemd_unit_path() {
 }
 
 #[test]
-fn compute_config_hash_is_deterministic() {
-    use crate::config::{
-        CargoSpec, LayerPolicy, MergedProfile, PackagesSpec, ProfileLayer, ProfileSpec,
-        ResolvedProfile,
-    };
-    let resolved = ResolvedProfile {
-        layers: vec![ProfileLayer {
-            source: "local".into(),
-            profile_name: "test".into(),
-            priority: crate::config::LOCAL_LAYER_PRIORITY,
-            policy: LayerPolicy::Local,
-            spec: ProfileSpec::default(),
-        }],
-        merged: MergedProfile {
-            packages: PackagesSpec {
-                cargo: Some(CargoSpec {
-                    file: None,
-                    packages: vec!["bat".into()],
-                }),
-                ..Default::default()
-            },
-            ..Default::default()
-        },
-    };
-    let hash1 = compute_config_hash(&resolved).unwrap();
-    let hash2 = compute_config_hash(&resolved).unwrap();
-    assert_eq!(hash1, hash2);
-    assert_eq!(hash1.len(), 64);
-}
-
-#[test]
 fn find_server_url_returns_none_for_git_origin() {
     use crate::config::*;
     let config = CfgdConfig {
@@ -518,7 +487,7 @@ fn checkin_payload_round_trips() {
 #[test]
 fn checkin_response_deserializes() {
     let json = r#"{"status":"ok","configChanged":true,"desiredConfig":null}"#;
-    let resp: CheckinServerResponse = serde_json::from_str(json).unwrap();
+    let resp: crate::server_client::CheckinResponse = serde_json::from_str(json).unwrap();
     assert!(resp.config_changed);
     assert_eq!(resp.status, "ok");
 }
@@ -2896,6 +2865,7 @@ fn unchanged_machine_collected_twice_hashes_equal_and_the_daemon_skips_the_secon
             &printer,
             &store,
             None,
+            &[],
         )
         .unwrap()
     };
@@ -3014,60 +2984,6 @@ fn compliance_timer_invalid_interval_when_enabled() {
 
     // Enabled but unparseable interval -> None (no timer)
     assert!(interval.is_none());
-}
-
-// --- compute_config_hash: different profiles produce different hashes ---
-
-#[test]
-fn compute_config_hash_differs_for_different_packages() {
-    use crate::config::{
-        CargoSpec, LayerPolicy, MergedProfile, PackagesSpec, ProfileLayer, ProfileSpec,
-        ResolvedProfile,
-    };
-
-    let resolved_a = ResolvedProfile {
-        layers: vec![ProfileLayer {
-            source: "local".into(),
-            profile_name: "a".into(),
-            priority: crate::config::LOCAL_LAYER_PRIORITY,
-            policy: LayerPolicy::Local,
-            spec: ProfileSpec::default(),
-        }],
-        merged: MergedProfile {
-            packages: PackagesSpec {
-                cargo: Some(CargoSpec {
-                    file: None,
-                    packages: vec!["bat".into()],
-                }),
-                ..Default::default()
-            },
-            ..Default::default()
-        },
-    };
-
-    let resolved_b = ResolvedProfile {
-        layers: vec![ProfileLayer {
-            source: "local".into(),
-            profile_name: "b".into(),
-            priority: crate::config::LOCAL_LAYER_PRIORITY,
-            policy: LayerPolicy::Local,
-            spec: ProfileSpec::default(),
-        }],
-        merged: MergedProfile {
-            packages: PackagesSpec {
-                cargo: Some(CargoSpec {
-                    file: None,
-                    packages: vec!["ripgrep".into()],
-                }),
-                ..Default::default()
-            },
-            ..Default::default()
-        },
-    };
-
-    let hash_a = compute_config_hash(&resolved_a).unwrap();
-    let hash_b = compute_config_hash(&resolved_b).unwrap();
-    assert_ne!(hash_a, hash_b);
 }
 
 // --- hash_resources edge cases ---
@@ -3754,7 +3670,7 @@ fn find_server_url_returns_none_for_empty_origins() {
     assert!(find_server_url(&config).is_none());
 }
 
-// --- CheckinServerResponse deserialization edge cases ---
+// --- crate::server_client::CheckinResponse deserialization edge cases ---
 
 /// The key is `desiredConfig`, the spelling the gateway's own `CheckinResponse`
 /// serializes: a body read under any other name leaves a pushed configuration
@@ -3762,7 +3678,7 @@ fn find_server_url_returns_none_for_empty_origins() {
 #[test]
 fn checkin_response_with_config_payload() {
     let json = r#"{"status":"ok","configChanged":true,"desiredConfig":{"packages":["git"]}}"#;
-    let resp: CheckinServerResponse = serde_json::from_str(json).unwrap();
+    let resp: crate::server_client::CheckinResponse = serde_json::from_str(json).unwrap();
     assert!(resp.config_changed);
     assert!(resp.desired_config.is_some());
 }
@@ -3770,7 +3686,7 @@ fn checkin_response_with_config_payload() {
 #[test]
 fn checkin_response_no_change() {
     let json = r#"{"status":"ok","configChanged":false,"desiredConfig":null}"#;
-    let resp: CheckinServerResponse = serde_json::from_str(json).unwrap();
+    let resp: crate::server_client::CheckinResponse = serde_json::from_str(json).unwrap();
     assert!(!resp.config_changed);
 }
 
@@ -3784,34 +3700,6 @@ fn parse_duration_zero_seconds() {
 #[test]
 fn parse_duration_zero_plain() {
     assert_eq!(parse_duration_or_default("0"), Duration::from_secs(0));
-}
-
-// --- compute_config_hash with empty packages ---
-
-#[test]
-fn compute_config_hash_with_empty_packages() {
-    use crate::config::{
-        LayerPolicy, MergedProfile, PackagesSpec, ProfileLayer, ProfileSpec, ResolvedProfile,
-    };
-
-    let resolved = ResolvedProfile {
-        layers: vec![ProfileLayer {
-            source: "local".into(),
-            profile_name: "empty".into(),
-            priority: crate::config::LOCAL_LAYER_PRIORITY,
-            policy: LayerPolicy::Local,
-            spec: ProfileSpec::default(),
-        }],
-        merged: MergedProfile {
-            packages: PackagesSpec::default(),
-            ..Default::default()
-        },
-    };
-
-    let hash1 = compute_config_hash(&resolved).unwrap();
-    let hash2 = compute_config_hash(&resolved).unwrap();
-    assert_eq!(hash1, hash2, "hash should be deterministic");
-    assert_eq!(hash1.len(), 64, "hash should be a valid SHA256 hex string");
 }
 
 // --- declared_decision_paths: casks fold into brew, taps keep their own manager ---
@@ -4369,57 +4257,6 @@ fn find_server_url_picks_first_server_among_duplicates() {
         find_server_url(&config),
         Some("https://first-server.example.com".to_string()),
         "should return the first server origin when multiple exist"
-    );
-}
-
-// --- compute_config_hash: empty vs non-empty produces different hashes ---
-
-#[test]
-fn compute_config_hash_empty_vs_nonempty_differ() {
-    use crate::config::{
-        CargoSpec, LayerPolicy, MergedProfile, PackagesSpec, ProfileLayer, ProfileSpec,
-        ResolvedProfile,
-    };
-
-    let empty_resolved = ResolvedProfile {
-        layers: vec![ProfileLayer {
-            source: "local".into(),
-            profile_name: "empty".into(),
-            priority: crate::config::LOCAL_LAYER_PRIORITY,
-            policy: LayerPolicy::Local,
-            spec: ProfileSpec::default(),
-        }],
-        merged: MergedProfile {
-            packages: PackagesSpec::default(),
-            ..Default::default()
-        },
-    };
-
-    let nonempty_resolved = ResolvedProfile {
-        layers: vec![ProfileLayer {
-            source: "local".into(),
-            profile_name: "nonempty".into(),
-            priority: crate::config::LOCAL_LAYER_PRIORITY,
-            policy: LayerPolicy::Local,
-            spec: ProfileSpec::default(),
-        }],
-        merged: MergedProfile {
-            packages: PackagesSpec {
-                cargo: Some(CargoSpec {
-                    file: None,
-                    packages: vec!["bat".into()],
-                }),
-                ..Default::default()
-            },
-            ..Default::default()
-        },
-    };
-
-    let hash_empty = compute_config_hash(&empty_resolved).unwrap();
-    let hash_nonempty = compute_config_hash(&nonempty_resolved).unwrap();
-    assert_ne!(
-        hash_empty, hash_nonempty,
-        "empty and non-empty packages should produce different hashes"
     );
 }
 
@@ -6304,14 +6141,21 @@ fn git_auto_commit_push_fresh_repo_no_head() {
     );
 }
 
+/// A check-in's facts as a test hands them to a sender: the identity alone.
+fn sample_checkin_facts() -> crate::server_client::CheckinFacts<'static> {
+    crate::server_client::CheckinFacts {
+        hostname: "test-host".into(),
+        config_hash: "deadbeef".into(),
+        compliance: None,
+        package_versions: None,
+        backup_schedule_owners: None,
+    }
+}
+
 // --- server_checkin: mock HTTP test for config_changed=true ---
 
 #[test]
 fn server_checkin_mock_config_changed() {
-    use crate::config::{
-        LayerPolicy, MergedProfile, PackagesSpec, ProfileLayer, ProfileSpec, ResolvedProfile,
-    };
-
     let mut server = mockito::Server::new();
     let mock = server
         .mock("POST", "/api/v1/checkin")
@@ -6320,25 +6164,10 @@ fn server_checkin_mock_config_changed() {
         .with_body(r#"{"status":"ok","configChanged":true,"config":null}"#)
         .create();
 
-    let resolved = ResolvedProfile {
-        layers: vec![ProfileLayer {
-            source: "local".into(),
-            profile_name: "test".into(),
-            priority: crate::config::LOCAL_LAYER_PRIORITY,
-            policy: LayerPolicy::Local,
-            spec: ProfileSpec::default(),
-        }],
-        merged: MergedProfile {
-            packages: PackagesSpec::default(),
-            ..Default::default()
-        },
-    };
-
     let changed = server_checkin(
-        &server.url(),
-        &resolved,
-        Default::default(),
         &test_credential(&server.url()),
+        sample_checkin_facts(),
+        &test_printer(),
     )
     .config_changed;
     assert!(changed, "server should report config changed");
@@ -6349,10 +6178,6 @@ fn server_checkin_mock_config_changed() {
 
 #[test]
 fn server_checkin_mock_no_change() {
-    use crate::config::{
-        LayerPolicy, MergedProfile, PackagesSpec, ProfileLayer, ProfileSpec, ResolvedProfile,
-    };
-
     let mut server = mockito::Server::new();
     let mock = server
         .mock("POST", "/api/v1/checkin")
@@ -6361,25 +6186,10 @@ fn server_checkin_mock_no_change() {
         .with_body(r#"{"status":"ok","configChanged":false,"config":null}"#)
         .create();
 
-    let resolved = ResolvedProfile {
-        layers: vec![ProfileLayer {
-            source: "local".into(),
-            profile_name: "test".into(),
-            priority: crate::config::LOCAL_LAYER_PRIORITY,
-            policy: LayerPolicy::Local,
-            spec: ProfileSpec::default(),
-        }],
-        merged: MergedProfile {
-            packages: PackagesSpec::default(),
-            ..Default::default()
-        },
-    };
-
     let changed = server_checkin(
-        &server.url(),
-        &resolved,
-        Default::default(),
         &test_credential(&server.url()),
+        sample_checkin_facts(),
+        &test_printer(),
     )
     .config_changed;
     assert!(!changed, "server should report no change");
@@ -6390,39 +6200,24 @@ fn server_checkin_mock_no_change() {
 
 #[test]
 fn server_checkin_mock_server_error() {
-    use crate::config::{
-        LayerPolicy, MergedProfile, PackagesSpec, ProfileLayer, ProfileSpec, ResolvedProfile,
-    };
-
     let mut server = mockito::Server::new();
     let mock = server
         .mock("POST", "/api/v1/checkin")
         .with_status(500)
         .with_body("internal server error")
+        .expect(crate::retry::BackoffConfig::DEFAULT_TRANSIENT.max_attempts as usize)
         .create();
 
-    let resolved = ResolvedProfile {
-        layers: vec![ProfileLayer {
-            source: "local".into(),
-            profile_name: "test".into(),
-            priority: crate::config::LOCAL_LAYER_PRIORITY,
-            policy: LayerPolicy::Local,
-            spec: ProfileSpec::default(),
-        }],
-        merged: MergedProfile {
-            packages: PackagesSpec::default(),
-            ..Default::default()
-        },
-    };
-
     let changed = server_checkin(
-        &server.url(),
-        &resolved,
-        Default::default(),
         &test_credential(&server.url()),
+        sample_checkin_facts(),
+        &test_printer(),
     )
     .config_changed;
-    assert!(!changed, "server error should return false");
+    assert!(
+        !changed,
+        "a gateway that keeps failing, after the client's retries, answers nothing"
+    );
     mock.assert();
 }
 
@@ -6430,10 +6225,6 @@ fn server_checkin_mock_server_error() {
 
 #[test]
 fn server_checkin_mock_malformed_json() {
-    use crate::config::{
-        LayerPolicy, MergedProfile, PackagesSpec, ProfileLayer, ProfileSpec, ResolvedProfile,
-    };
-
     let mut server = mockito::Server::new();
     let mock = server
         .mock("POST", "/api/v1/checkin")
@@ -6442,25 +6233,10 @@ fn server_checkin_mock_malformed_json() {
         .with_body("not json at all")
         .create();
 
-    let resolved = ResolvedProfile {
-        layers: vec![ProfileLayer {
-            source: "local".into(),
-            profile_name: "test".into(),
-            priority: crate::config::LOCAL_LAYER_PRIORITY,
-            policy: LayerPolicy::Local,
-            spec: ProfileSpec::default(),
-        }],
-        merged: MergedProfile {
-            packages: PackagesSpec::default(),
-            ..Default::default()
-        },
-    };
-
     let changed = server_checkin(
-        &server.url(),
-        &resolved,
-        Default::default(),
         &test_credential(&server.url()),
+        sample_checkin_facts(),
+        &test_printer(),
     )
     .config_changed;
     assert!(!changed, "malformed JSON should return false");
@@ -6471,10 +6247,6 @@ fn server_checkin_mock_malformed_json() {
 
 #[test]
 fn server_checkin_mock_trailing_slash_url() {
-    use crate::config::{
-        LayerPolicy, MergedProfile, PackagesSpec, ProfileLayer, ProfileSpec, ResolvedProfile,
-    };
-
     let mut server = mockito::Server::new();
     let mock = server
         .mock("POST", "/api/v1/checkin")
@@ -6483,27 +6255,12 @@ fn server_checkin_mock_trailing_slash_url() {
         .with_body(r#"{"status":"ok","configChanged":false,"config":null}"#)
         .create();
 
-    let resolved = ResolvedProfile {
-        layers: vec![ProfileLayer {
-            source: "local".into(),
-            profile_name: "test".into(),
-            priority: crate::config::LOCAL_LAYER_PRIORITY,
-            policy: LayerPolicy::Local,
-            spec: ProfileSpec::default(),
-        }],
-        merged: MergedProfile {
-            packages: PackagesSpec::default(),
-            ..Default::default()
-        },
-    };
-
-    // URL with trailing slash should be trimmed
+    // A credential stored with a trailing slash still posts to the one endpoint.
     let url_with_slash = format!("{}/", server.url());
     let changed = server_checkin(
-        &url_with_slash,
-        &resolved,
-        Default::default(),
-        &test_credential(&server.url()),
+        &test_credential(&url_with_slash),
+        sample_checkin_facts(),
+        &test_printer(),
     )
     .config_changed;
     assert!(!changed);
@@ -6514,11 +6271,6 @@ fn server_checkin_mock_trailing_slash_url() {
 
 #[test]
 fn server_checkin_mock_verifies_request_body() {
-    use crate::config::{
-        CargoSpec, LayerPolicy, MergedProfile, PackagesSpec, ProfileLayer, ProfileSpec,
-        ResolvedProfile,
-    };
-
     let mut server = mockito::Server::new();
     let mock = server
         .mock("POST", "/api/v1/checkin")
@@ -6528,31 +6280,10 @@ fn server_checkin_mock_verifies_request_body() {
         .with_body(r#"{"status":"ok","configChanged":false,"config":null}"#)
         .create();
 
-    let resolved = ResolvedProfile {
-        layers: vec![ProfileLayer {
-            source: "local".into(),
-            profile_name: "test".into(),
-            priority: crate::config::LOCAL_LAYER_PRIORITY,
-            policy: LayerPolicy::Local,
-            spec: ProfileSpec::default(),
-        }],
-        merged: MergedProfile {
-            packages: PackagesSpec {
-                cargo: Some(CargoSpec {
-                    file: None,
-                    packages: vec!["bat".into()],
-                }),
-                ..Default::default()
-            },
-            ..Default::default()
-        },
-    };
-
     let changed = server_checkin(
-        &server.url(),
-        &resolved,
-        Default::default(),
         &test_credential(&server.url()),
+        sample_checkin_facts(),
+        &test_printer(),
     )
     .config_changed;
     assert!(!changed);
@@ -6596,19 +6327,40 @@ fn try_server_checkin_no_server_origin_returns_false() {
         deprecations: Vec::new(),
         legacy_output_keys: Vec::new(),
     };
-    let resolved = ResolvedProfile {
-        layers: vec![ProfileLayer {
-            source: "local".into(),
-            profile_name: "test".into(),
-            priority: crate::config::LOCAL_LAYER_PRIORITY,
-            policy: LayerPolicy::Local,
-            spec: ProfileSpec::default(),
-        }],
-        merged: MergedProfile::default(),
-    };
-
-    let changed = try_server_checkin(&config, &resolved, Default::default()).config_changed;
+    let composed = std::cell::Cell::new(false);
+    let changed = try_server_checkin(&config, &test_printer(), || {
+        composed.set(true);
+        Some(sample_checkin_facts())
+    })
+    .config_changed;
     assert!(!changed, "no server origin means no checkin");
+    assert!(
+        !composed.get(),
+        "a machine with no gateway to report to observes nothing for one"
+    );
+}
+
+/// A gateway this machine holds no credential for is a skipped check-in, and
+/// the skip is decided before the machine is observed for it.
+#[test]
+fn a_check_in_with_no_credential_composes_no_facts() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let _home = crate::with_test_home_guard(tmp.path());
+    let config: CfgdConfig = serde_yaml::from_str(
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  \
+         origin:\n    - type: Server\n      url: https://gateway.example\n      branch: main\n",
+    )
+    .expect("config");
+    let composed = std::cell::Cell::new(false);
+    let outcome = try_server_checkin(&config, &test_printer(), || {
+        composed.set(true);
+        Some(sample_checkin_facts())
+    });
+    assert!(outcome.backup_schedules.is_none());
+    assert!(
+        !composed.get(),
+        "no credential means no check-in, and nothing observed for one"
+    );
 }
 
 // --- try_server_checkin: with mock server ---
@@ -6663,18 +6415,8 @@ fn try_server_checkin_with_server_origin_calls_checkin() {
         deprecations: Vec::new(),
         legacy_output_keys: Vec::new(),
     };
-    let resolved = ResolvedProfile {
-        layers: vec![ProfileLayer {
-            source: "local".into(),
-            profile_name: "test".into(),
-            priority: crate::config::LOCAL_LAYER_PRIORITY,
-            policy: LayerPolicy::Local,
-            spec: ProfileSpec::default(),
-        }],
-        merged: MergedProfile::default(),
-    };
-
-    let changed = try_server_checkin(&config, &resolved, Default::default()).config_changed;
+    let changed = try_server_checkin(&config, &test_printer(), || Some(sample_checkin_facts()))
+        .config_changed;
     assert!(changed, "server origin should trigger checkin");
     mock.assert();
 }
@@ -7168,12 +6910,12 @@ fn daemon_status_response_full_deserialization() {
     assert!(parsed.module_reconcile[0].auto_apply);
 }
 
-// --- CheckinServerResponse: missing config field defaults to None ---
+// --- crate::server_client::CheckinResponse: missing config field defaults to None ---
 
 #[test]
 fn checkin_response_without_config_field() {
     let json = r#"{"status":"ok","configChanged":false}"#;
-    let resp: CheckinServerResponse = serde_json::from_str(json).unwrap();
+    let resp: crate::server_client::CheckinResponse = serde_json::from_str(json).unwrap();
     // desired_config is Option<Value>, so a missing field reads as None
     assert!(!resp.config_changed);
     assert!(resp.desired_config.is_none());
@@ -7522,63 +7264,6 @@ fn source_status_camel_case_serialization() {
     assert!(
         !json.contains("Reconcile"),
         "a source row carries no reconcile stamp of its own: {json}"
-    );
-}
-
-// --- compute_config_hash: uses only packages for hash ---
-
-#[test]
-fn compute_config_hash_ignores_non_package_fields() {
-    use crate::config::{
-        EnvVar, LayerPolicy, MergedProfile, PackagesSpec, ProfileLayer, ProfileSpec,
-        ResolvedProfile,
-    };
-
-    let resolved_a = ResolvedProfile {
-        layers: vec![ProfileLayer {
-            source: "local".into(),
-            profile_name: "a".into(),
-            priority: crate::config::LOCAL_LAYER_PRIORITY,
-            policy: LayerPolicy::Local,
-            spec: ProfileSpec::default(),
-        }],
-        merged: MergedProfile {
-            packages: PackagesSpec::default(),
-            env: vec![EnvVar {
-                name: "FOO".into(),
-                value: "bar".into(),
-                platforms: vec![],
-            }],
-            ..Default::default()
-        },
-    };
-
-    let resolved_b = ResolvedProfile {
-        layers: vec![ProfileLayer {
-            source: "local".into(),
-            profile_name: "b".into(),
-            priority: crate::config::LOCAL_LAYER_PRIORITY,
-            policy: LayerPolicy::Local,
-            spec: ProfileSpec::default(),
-        }],
-        merged: MergedProfile {
-            packages: PackagesSpec::default(),
-            env: vec![EnvVar {
-                name: "BAZ".into(),
-                value: "qux".into(),
-                platforms: vec![],
-            }],
-            ..Default::default()
-        },
-    };
-
-    // Both have same empty packages, so hash should be the same
-    // because compute_config_hash only hashes the packages field
-    let hash_a = compute_config_hash(&resolved_a).unwrap();
-    let hash_b = compute_config_hash(&resolved_b).unwrap();
-    assert_eq!(
-        hash_a, hash_b,
-        "compute_config_hash should only hash packages, not env vars"
     );
 }
 
@@ -17365,6 +17050,10 @@ spec: {}
             &cfg,
             None,
             &tokio::sync::Notify::new(),
+            &crate::test_helpers::NoopDaemonHooks,
+            &test_printer(),
+            crate::Scope::User,
+            None,
         );
     }
 
@@ -17387,6 +17076,10 @@ spec: {}
             &cfg,
             None,
             &tokio::sync::Notify::new(),
+            &crate::test_helpers::NoopDaemonHooks,
+            &test_printer(),
+            crate::Scope::User,
+            None,
         );
     }
 
@@ -17419,6 +17112,10 @@ spec: {}
             &cfg,
             None,
             &tokio::sync::Notify::new(),
+            &crate::test_helpers::NoopDaemonHooks,
+            &test_printer(),
+            crate::Scope::User,
+            None,
         );
     }
 
@@ -17481,6 +17178,10 @@ spec: {}
                 &cfg,
                 None,
                 &tokio::sync::Notify::new(),
+                &crate::test_helpers::NoopDaemonHooks,
+                &test_printer(),
+                crate::Scope::User,
+                None,
             );
             crate::test_home_override()
         })
@@ -19117,11 +18818,11 @@ fn stage_constraint_violating_cached_source(cache_root: &Path, name: &str) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial_test::serial]
-async fn handle_reconcile_compose_error_skips_tick_and_preserves_source_package() {
-    // RED before the fail-closed fix: a constraint-violating cached source made
-    // compose fall back to local-only, so the pruning reconcile uninstalled the
-    // tracked source-delivered package. GREEN after: the tick is skipped, the
-    // package survives, last_reconcile is NOT advanced, and an alert is raised.
+async fn handle_reconcile_constraint_violation_skips_tick_and_preserves_source_package() {
+    // A constraint-violating cached source once made compose fall back to
+    // local-only, so the pruning reconcile uninstalled the tracked
+    // source-delivered package. The tick is skipped instead: the package
+    // survives, last_reconcile is NOT advanced, and an alert names the violation.
     let tmp = tempfile::tempdir().unwrap();
     let _g = crate::with_test_home_guard(tmp.path());
     // The daemon resolves its source cache via `default_cache_dir_for`, which
@@ -19265,16 +18966,14 @@ async fn handle_reconcile_compose_error_skips_tick_and_preserves_source_package(
         );
     }
 
-    // Alert raised: the notifier captured a fail-closed skip notification whose
-    // body explains the broken source config (so an operator knows WHY and what
-    // to do). The title flags the skipped reconcile.
+    // The alert names the source and the constraint it violated, so an
+    // operator knows WHY the tick was skipped and where to look.
     let alerts = notifier.captured();
     assert!(
-        alerts
-            .iter()
-            .any(|(title, body)| title.contains("reconcile skipped")
-                && body.contains("source's cached config is broken")),
-        "a fail-closed compose error must raise an alert naming the failure; got: {alerts:?}"
+        alerts.iter().any(|(title, body)| title
+            == "cfgd: reconcile skipped — source security constraint violated"
+            && body.contains("source test-src: source 'test-src' carries a preApply script")),
+        "a constraint violation must raise an alert naming the violation; got: {alerts:?}"
     );
 }
 
@@ -19346,7 +19045,7 @@ async fn handle_reconcile_required_uncached_source_skips_tick_and_preserves_pack
     // packages being phantom drift, uninstalling them under autoApply). The
     // compose chokepoint returns RequiredSourceUnavailable → tick SKIPPED, the
     // tracked source-delivered package survives, last_reconcile untouched, alert
-    // raised. Parallels handle_reconcile_compose_error_skips_tick_and_preserves_source_package
+    // raised. Parallels handle_reconcile_constraint_violation_skips_tick_and_preserves_source_package
     // but for the cache-only fail-OPEN gap the chokepoint fix closes.
     let tmp = tempfile::tempdir().unwrap();
     let _g = crate::with_test_home_guard(tmp.path());
@@ -21569,6 +21268,7 @@ mod backup_timers {
             .mock("POST", "/api/v1/checkin")
             .with_status(500)
             .with_body("gateway is restarting")
+            .expect(crate::retry::BackoffConfig::DEFAULT_TRANSIENT.max_attempts as usize)
             .create();
         crate::server_client::save_credential(&test_credential(&server.url()))
             .expect("store the device credential");
@@ -21596,18 +21296,7 @@ mod backup_timers {
             deprecations: Vec::new(),
             legacy_output_keys: Vec::new(),
         };
-        let resolved = ResolvedProfile {
-            layers: vec![ProfileLayer {
-                source: "local".into(),
-                profile_name: "test".into(),
-                priority: crate::config::LOCAL_LAYER_PRIORITY,
-                policy: LayerPolicy::Local,
-                spec: ProfileSpec::default(),
-            }],
-            merged: MergedProfile::default(),
-        };
-
-        let outcome = try_server_checkin(&config, &resolved, Default::default());
+        let outcome = try_server_checkin(&config, &test_printer(), || Some(sample_checkin_facts()));
         mock.assert();
         assert!(
             outcome.backup_schedules.is_none(),
@@ -21663,18 +21352,7 @@ mod backup_timers {
             deprecations: Vec::new(),
             legacy_output_keys: Vec::new(),
         };
-        let resolved = ResolvedProfile {
-            layers: vec![ProfileLayer {
-                source: "local".into(),
-                profile_name: "test".into(),
-                priority: crate::config::LOCAL_LAYER_PRIORITY,
-                policy: LayerPolicy::Local,
-                spec: ProfileSpec::default(),
-            }],
-            merged: MergedProfile::default(),
-        };
-
-        let outcome = try_server_checkin(&config, &resolved, Default::default());
+        let outcome = try_server_checkin(&config, &test_printer(), || Some(sample_checkin_facts()));
         mock.assert();
         assert!(
             !outcome.config_changed,
@@ -21729,18 +21407,7 @@ mod backup_timers {
             deprecations: Vec::new(),
             legacy_output_keys: Vec::new(),
         };
-        let resolved = ResolvedProfile {
-            layers: vec![ProfileLayer {
-                source: "local".into(),
-                profile_name: "test".into(),
-                priority: crate::config::LOCAL_LAYER_PRIORITY,
-                policy: LayerPolicy::Local,
-                spec: ProfileSpec::default(),
-            }],
-            merged: MergedProfile::default(),
-        };
-
-        let outcome = try_server_checkin(&config, &resolved, Default::default());
+        let outcome = try_server_checkin(&config, &test_printer(), || Some(sample_checkin_facts()));
         mock.assert();
         assert!(
             outcome.backup_schedules.is_none(),
@@ -21798,18 +21465,7 @@ mod backup_timers {
             deprecations: Vec::new(),
             legacy_output_keys: Vec::new(),
         };
-        let resolved = ResolvedProfile {
-            layers: vec![ProfileLayer {
-                source: "local".into(),
-                profile_name: "test".into(),
-                priority: crate::config::LOCAL_LAYER_PRIORITY,
-                policy: LayerPolicy::Local,
-                spec: ProfileSpec::default(),
-            }],
-            merged: MergedProfile::default(),
-        };
-
-        let outcome = try_server_checkin(&config, &resolved, Default::default());
+        let outcome = try_server_checkin(&config, &test_printer(), || Some(sample_checkin_facts()));
         mock.assert();
         assert_eq!(
             outcome.backup_schedules,
@@ -22008,7 +21664,17 @@ mod backup_timers {
         let config_path = write_gateway_config(&tmp, &server.url(), "spec: {}\n");
         let cfg = config::load_config(&config_path).expect("load the config");
         let notify = tokio::sync::Notify::new();
-        run_startup_checkin_blocking(&config_path, None, &cfg, Some(tmp.path()), &notify);
+        run_startup_checkin_blocking(
+            &config_path,
+            None,
+            &cfg,
+            Some(tmp.path()),
+            &notify,
+            &crate::test_helpers::NoopDaemonHooks,
+            &test_printer(),
+            crate::Scope::User,
+            None,
+        );
         mock.assert();
 
         let store = StateStore::open_in_dir(tmp.path()).expect("state store");
@@ -22049,7 +21715,17 @@ mod backup_timers {
         let config_path = write_gateway_config(&tmp, &server.url(), "spec: {}\n");
         let cfg = config::load_config(&config_path).expect("load the config");
         let notify = tokio::sync::Notify::new();
-        run_startup_checkin_blocking(&config_path, None, &cfg, Some(tmp.path()), &notify);
+        run_startup_checkin_blocking(
+            &config_path,
+            None,
+            &cfg,
+            Some(tmp.path()),
+            &notify,
+            &crate::test_helpers::NoopDaemonHooks,
+            &test_printer(),
+            crate::Scope::User,
+            None,
+        );
         mock.assert();
 
         assert_eq!(
@@ -22164,6 +21840,97 @@ mod backup_timers {
             body.get("backupScheduleOwners").is_some(),
             "the map the tick did observe is still reported: {body}"
         );
+    }
+
+    /// The periodic check-in reports the snapshot the daemon's own compliance
+    /// tick collected, never whatever row is newest in the store (another
+    /// profile's `cfgd compliance` run writes there too), and reports none while
+    /// the config this tick loaded has compliance off.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_tick_reports_the_compliance_its_own_tick_collected_only_while_enabled() {
+        use crate::compliance::{
+            ComplianceCheck, ComplianceSnapshot, ComplianceStatus, MachineInfo,
+        };
+
+        let snapshot = |detail: &str| {
+            let checks = vec![ComplianceCheck {
+                category: "file".into(),
+                target: Some("/home/u/.zshrc".into()),
+                status: ComplianceStatus::Violation,
+                detail: Some(detail.into()),
+                ..Default::default()
+            }];
+            ComplianceSnapshot {
+                timestamp: crate::utc_now_iso8601(),
+                machine: MachineInfo {
+                    hostname: "ws-1".into(),
+                    os: "linux".into(),
+                    arch: "x86_64".into(),
+                },
+                profile: "default".into(),
+                sources: vec![],
+                summary: crate::compliance::compute_summary(&checks),
+                checks,
+            }
+        };
+
+        for enabled in [true, false] {
+            let tmp = tempfile::TempDir::new().unwrap();
+            let _home = crate::with_test_home_guard(tmp.path());
+            let mut server = mockito::Server::new_async().await;
+            let posted: Arc<std::sync::Mutex<Option<serde_json::Value>>> = Arc::default();
+            let captured = Arc::clone(&posted);
+            let mock = server
+                .mock("POST", "/api/v1/checkin")
+                .match_request(move |req| {
+                    if let Ok(raw) = req.body()
+                        && let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(raw)
+                    {
+                        *captured.lock().expect("the capture slot") = Some(parsed);
+                    }
+                    true
+                })
+                .with_status(200)
+                .with_header("content-type", "application/json")
+                .with_body(r#"{"status":"ok","configChanged":false}"#)
+                .create_async()
+                .await;
+            crate::server_client::save_credential(&test_credential(&server.url()))
+                .expect("store the device credential");
+
+            let (mut ctx, state, _buf) = make_test_ctx(&tmp, false, false, None);
+            ctx.config_path = write_gateway_config(&tmp, &server.url(), "spec: {}\n");
+            let mut config = std::fs::read_to_string(&ctx.config_path).expect("read the config");
+            config.push_str(&format!("  compliance:\n    enabled: {enabled}\n"));
+            std::fs::write(&ctx.config_path, config).expect("write the config");
+
+            StateStore::open_in_dir(tmp.path())
+                .expect("state store")
+                .store_compliance_snapshot(&snapshot("another profile's row"))
+                .expect("store");
+            state.lock().await.reported_compliance =
+                Some(Arc::new(snapshot("managed file missing")));
+
+            run_default_tick(&ctx).await;
+            mock.assert_async().await;
+
+            let body = posted
+                .lock()
+                .expect("the capture slot")
+                .clone()
+                .expect("the tick posted a check-in");
+            if enabled {
+                assert_eq!(
+                    body["complianceSummary"]["checks"][0]["detail"], "managed file missing",
+                    "the tick reports the snapshot its compliance tick collected: {body}"
+                );
+            } else {
+                assert!(
+                    body.get("complianceSummary").is_none(),
+                    "compliance off reports nothing, whatever is cached or stored: {body}"
+                );
+            }
+        }
     }
 
     // ----- task-set construction -----
@@ -24634,76 +24401,4 @@ fn every_counted_clause_names_the_unit_it_counts() {
          word it from what the reader can see on the machine:\n{}",
         record_worded.join("\n")
     );
-}
-
-/// The daemon's check-in reports the newest snapshot the compliance tick
-/// stored, and nothing while compliance is off, whatever an earlier
-/// configuration left in the store.
-#[test]
-fn the_daemons_checkin_reports_the_newest_stored_compliance_only_while_enabled() {
-    use crate::compliance::{ComplianceCheck, ComplianceSnapshot, ComplianceStatus, MachineInfo};
-
-    let tmp = tempfile::TempDir::new().unwrap();
-    let store = StateStore::open_in_dir(tmp.path()).expect("state store");
-    let snapshot = |detail: &str| {
-        let checks = vec![ComplianceCheck {
-            category: "file".into(),
-            target: Some("/home/u/.zshrc".into()),
-            status: ComplianceStatus::Violation,
-            detail: Some(detail.into()),
-            ..Default::default()
-        }];
-        ComplianceSnapshot {
-            timestamp: crate::utc_now_iso8601(),
-            machine: MachineInfo {
-                hostname: "ws-1".into(),
-                os: "linux".into(),
-                arch: "x86_64".into(),
-            },
-            profile: "default".into(),
-            sources: vec![],
-            summary: crate::compliance::compute_summary(&checks),
-            checks,
-        }
-    };
-    let config = |compliance: Option<&str>| CfgdConfig {
-        api_version: crate::API_VERSION.into(),
-        kind: "Config".into(),
-        metadata: crate::config::ConfigMetadata {
-            name: "test".into(),
-        },
-        spec: crate::config::ConfigSpec {
-            compliance: compliance.map(|yaml| serde_yaml::from_str(yaml).expect("compliance")),
-            ..Default::default()
-        },
-        deprecations: Vec::new(),
-        legacy_output_keys: Vec::new(),
-    };
-    let enabled = config(Some("enabled: true"));
-
-    assert!(
-        crate::daemon::checkin::reported_compliance(&enabled, &store).is_none(),
-        "nothing stored yet is nothing to report"
-    );
-
-    store
-        .store_compliance_snapshot(&snapshot("older"))
-        .expect("store");
-    store
-        .store_compliance_snapshot(&snapshot("managed file missing"))
-        .expect("store");
-    let reported = crate::daemon::checkin::reported_compliance(&enabled, &store)
-        .expect("an enabled daemon reports its stored snapshot");
-    assert_eq!(
-        reported.checks[0].detail.as_deref(),
-        Some("managed file missing"),
-        "the newest stored snapshot is the one reported"
-    );
-
-    for off in [config(Some("enabled: false")), config(None)] {
-        assert!(
-            crate::daemon::checkin::reported_compliance(&off, &store).is_none(),
-            "compliance off reports nothing, stored rows or not"
-        );
-    }
 }

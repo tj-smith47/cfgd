@@ -15,7 +15,11 @@ pub(super) fn collect_and_store_compliance_snapshot<'a>(
     let config_dir = ctx.config_dir();
 
     let quiet_printer = printer.at_verbosity(cfgd_core::output::Verbosity::Quiet);
-    let inputs = ComplianceInputs::of_config(ctx, cfg, local_resolved, &quiet_printer)?;
+    let mut inputs = ComplianceInputs::of_config(ctx, cfg, local_resolved, &quiet_printer)?;
+    // A snapshot missing a manifest's packages would report them as undeclared.
+    if let Some(e) = inputs.take_manifest_error() {
+        return Err(e.into());
+    }
 
     let profile_name = cli
         .profile
@@ -66,6 +70,9 @@ pub(super) struct ComplianceInputs {
     pub(super) resolved: ResolvedProfile,
     pub(super) modules: Vec<cfgd_core::modules::ResolvedModule>,
     constraint_violations: Vec<cfgd_core::composition::ConstraintViolation>,
+    /// Why a `<manager>.file` manifest could not be folded into `resolved`,
+    /// which then declares fewer packages than the config does.
+    manifest_error: Option<cfgd_core::errors::CfgdError>,
 }
 
 impl ComplianceInputs {
@@ -95,11 +102,15 @@ impl ComplianceInputs {
         let mut registry = desired.take_registry(cfg);
         let mut resolved = desired.resolved;
         // The packages a manifest declares are declared packages like any
-        // other, so they are checked and reported with the rest.
-        ctx.resolve_manifest_packages(
-            &mut resolved.merged.packages,
-            &mut resolved.merged.layer_sources,
-        )?;
+        // other, so they are checked and reported with the rest. A manifest
+        // that cannot be read is held for the caller, which decides what an
+        // incomplete package set still lets it report.
+        let manifest_error = ctx
+            .resolve_manifest_packages(
+                &mut resolved.merged.packages,
+                &mut resolved.merged.layer_sources,
+            )
+            .err();
         registry.file_manager = Some(Box::new(build_compliance_file_manager(
             ctx.config_dir(),
             &resolved,
@@ -110,11 +121,18 @@ impl ComplianceInputs {
             resolved,
             modules: desired.modules,
             constraint_violations: desired.constraint_violations,
+            manifest_error,
         })
     }
 
+    /// The manifest read error [`Self::of_config`] held, if any, taken so the
+    /// caller can return it.
+    pub(super) fn take_manifest_error(&mut self) -> Option<cfgd_core::errors::CfgdError> {
+        self.manifest_error.take()
+    }
+
     /// Collect a snapshot against this desired state, with the resolution's
-    /// source-constraint violations folded in as `Violation` checks.
+    /// source-constraint violations reported as `Violation` checks.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn collect(
         &self,
@@ -126,7 +144,7 @@ impl ComplianceInputs {
         state: &cfgd_core::state::StateStore,
         system_diffs: Option<&[cfgd_core::compliance::SystemDiff]>,
     ) -> cfgd_core::errors::Result<ComplianceSnapshot> {
-        let mut snapshot = cfgd_core::compliance::collect_snapshot(
+        cfgd_core::compliance::collect_snapshot(
             profile_name,
             &self.resolved.merged,
             &self.modules,
@@ -137,54 +155,9 @@ impl ComplianceInputs {
             printer,
             state,
             system_diffs,
-        )?;
-        append_constraint_violation_checks(&mut snapshot, &self.constraint_violations);
-        Ok(snapshot)
+            &self.constraint_violations,
+        )
     }
-}
-
-/// Map a Report-mode source-constraint violation `kind` to a compliance check
-/// category. Encryption constraints land in `file-encryption` (the category the
-/// file-encryption compliance checks already use); other source constraints
-/// share the `source-constraint` category.
-fn constraint_violation_category(kind: &str) -> &'static str {
-    match kind {
-        "encryption-required" | "encryption-backend-mismatch" | "encryption-mode-mismatch" => {
-            "file-encryption"
-        }
-        _ => "source-constraint",
-    }
-}
-
-/// Append each Report-mode source-constraint violation to the snapshot as a
-/// `Violation` check, then recompute the summary over the combined set. The
-/// appended checks are sorted (category, then target/detail) for deterministic
-/// output regardless of source-visit order.
-fn append_constraint_violation_checks(
-    snapshot: &mut ComplianceSnapshot,
-    violations: &[cfgd_core::composition::ConstraintViolation],
-) {
-    if violations.is_empty() {
-        return;
-    }
-    let mut extra: Vec<ComplianceCheck> = violations
-        .iter()
-        .map(|v| ComplianceCheck {
-            category: constraint_violation_category(&v.kind).to_string(),
-            target: v.path.clone(),
-            status: ComplianceStatus::Violation,
-            detail: Some(v.detail.clone()),
-            ..Default::default()
-        })
-        .collect();
-    extra.sort_by(|a, b| {
-        a.category
-            .cmp(&b.category)
-            .then(a.target.cmp(&b.target))
-            .then(a.detail.cmp(&b.detail))
-    });
-    snapshot.checks.extend(extra);
-    snapshot.summary = cfgd_core::compliance::compute_summary(&snapshot.checks);
 }
 
 /// Build a snapshot and emit a compliance summary Doc.
@@ -1089,69 +1062,6 @@ mod tests {
         assert_eq!(snapshot.summary.compliant, recomputed.compliant);
         assert_eq!(snapshot.summary.warning, recomputed.warning);
         assert_eq!(snapshot.summary.violation, recomputed.violation);
-    }
-
-    // --- append_constraint_violation_checks ---
-
-    #[test]
-    fn append_constraint_violation_checks_adds_violation_and_bumps_summary() {
-        use cfgd_core::composition::ConstraintViolation;
-
-        let mut snapshot = sample_snapshot(vec![check(
-            "file",
-            "/etc/hosts",
-            ComplianceStatus::Compliant,
-        )]);
-        let before = snapshot.summary.violation;
-
-        let violations = vec![ConstraintViolation {
-            source_name: "ec-source-repo".into(),
-            path: Some("/home/u/.config/secret-unprotected.yaml".into()),
-            kind: "encryption-required".into(),
-            detail: "file '/home/u/.config/secret-unprotected.yaml' matches required-encryption \
-                     target 'secret*' in source 'ec-source-repo' but has no encryption block"
-                .into(),
-        }];
-
-        append_constraint_violation_checks(&mut snapshot, &violations);
-
-        // An encryption-required violation lands in the file-encryption category.
-        let added = snapshot
-            .checks
-            .iter()
-            .find(|c| c.category == "file-encryption")
-            .expect("encryption-required violation must be a file-encryption check");
-        assert_eq!(added.status, ComplianceStatus::Violation);
-        assert_eq!(
-            added.target.as_deref(),
-            Some("/home/u/.config/secret-unprotected.yaml")
-        );
-        assert!(
-            added
-                .detail
-                .as_deref()
-                .unwrap()
-                .contains("no encryption block"),
-            "detail must carry the verbatim constraint message"
-        );
-        assert_eq!(
-            snapshot.summary.violation,
-            before + 1,
-            "summary.violation must bump by the appended violation"
-        );
-    }
-
-    #[test]
-    fn append_constraint_violation_checks_noop_when_empty() {
-        let mut snapshot =
-            sample_snapshot(vec![check("file", "/etc/a", ComplianceStatus::Compliant)]);
-        let n = snapshot.checks.len();
-        append_constraint_violation_checks(&mut snapshot, &[]);
-        assert_eq!(
-            snapshot.checks.len(),
-            n,
-            "empty violations must not add checks"
-        );
     }
 
     /// `cfgd compliance diff` compares two RECORDED snapshots out of the state

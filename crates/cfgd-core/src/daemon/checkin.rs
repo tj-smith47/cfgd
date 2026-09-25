@@ -2,28 +2,6 @@ use super::*;
 
 // --- Server Check-in ---
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CheckinServerResponse {
-    /// The gateway's own word for the outcome, as its `CheckinResponse`
-    /// serializes it.
-    pub status: String,
-    pub config_changed: bool,
-    /// The configuration the gateway pushed for this machine, under the key the
-    /// gateway's own `CheckinResponse` serializes it as. Saved as the pending
-    /// server config, which the next reconcile consumes.
-    #[serde(default)]
-    pub desired_config: Option<serde_json::Value>,
-    /// The cadences the cluster owns for this machine, as the gateway answered.
-    ///
-    /// Absent when the gateway could not read the cluster, and from an older
-    /// gateway's answer: either way this machine learned nothing, and a set it
-    /// already recorded stays. Present and empty is an answer, and retires
-    /// them.
-    #[serde(default)]
-    pub backup_schedules: Option<crate::backup::ScheduleProjections>,
-}
-
 /// What a check-in produced: whether the gateway reports the config changed,
 /// and the cluster-owned cadences it answered with.
 ///
@@ -43,149 +21,65 @@ pub struct CheckinOutcome {
     pub backup_schedules: Option<crate::backup::ScheduleProjections>,
 }
 
-/// The compliance snapshot the daemon's check-in reports: the newest one the
-/// compliance tick stored, which stores only when the machine's compliance
-/// changed, so the newest row is the newest observation.
+/// Perform a server check-in as the enrolled device, reporting what
+/// [`crate::server_client::CheckinFacts::collect`] composed and taking back the
+/// cadences the cluster owns.
 ///
-/// `None` while compliance is off, whatever an earlier configuration left
-/// stored: the machine is no longer observing it, so it is not current.
-pub(crate) fn reported_compliance(
-    config: &CfgdConfig,
-    store: &crate::state::StateStore,
-) -> Option<crate::compliance::ComplianceSnapshot> {
-    config.spec.compliance.as_ref().filter(|c| c.enabled)?;
-    store.latest_compliance_snapshot().unwrap_or_else(|e| {
-        tracing::warn!(error = %e, "daemon: stored compliance snapshot unreadable — the check-in reports none");
-        None
-    })
-}
-
-/// Compute a SHA256 hash of the resolved profile serialized to YAML.
-pub(crate) fn compute_config_hash(
-    resolved: &ResolvedProfile,
-) -> std::result::Result<String, String> {
-    let yaml = serde_yaml::to_string(&resolved.merged.packages)
-        .map_err(|e| format!("failed to serialize profile for hashing: {}", e))?;
-    Ok(crate::sha256_hex(yaml.as_bytes()))
-}
-
-/// Perform a server check-in as the enrolled device, reporting what this tick
-/// observed about the machine and taking back the cadences the cluster owns.
-///
-/// The credential is required rather than optional: `/api/v1/checkin` sits
-/// behind the gateway's auth middleware, and it enforces that the bearer names
-/// the same device the body does — so an unauthenticated post, or one carrying
-/// a device id derived from the hostname instead of the enrolment's, is a
-/// request the gateway can only refuse.
+/// The credential is required: `/api/v1/checkin` sits behind the gateway's auth
+/// middleware, which enforces that the bearer names the same device the body
+/// does. The request goes through [`crate::server_client::ServerClient`], the
+/// one client `cfgd checkin` uses too, so both senders put the same body on the
+/// wire and retry a busy gateway on the same ladder.
 ///
 /// On any error, logs a warning and returns an outcome that ANSWERED nothing
 /// (best-effort): the machine's own reconcile never depends on the cluster
 /// answering, and nothing the cluster owns is retired by a round-trip that did
 /// not happen.
 pub(crate) fn server_checkin(
-    server_url: &str,
-    resolved: &ResolvedProfile,
-    facts: crate::server_client::CheckinFacts<'_>,
     credential: &crate::server_client::DeviceCredential,
+    facts: crate::server_client::CheckinFacts<'_>,
+    printer: &Printer,
 ) -> CheckinOutcome {
-    let host = match hostname::get() {
-        Ok(h) => h.to_string_lossy().to_string(),
-        Err(e) => {
-            tracing::warn!(error = %e, "daemon: server check-in failed to get hostname");
-            return CheckinOutcome::default();
-        }
-    };
+    tracing::debug!(url = %credential.server_url, device_id = %credential.device_id, "daemon: check-in request");
+    tracing::info!("daemon: checking in with {}", credential.server_url);
 
-    let config_hash = match compute_config_hash(resolved) {
-        Ok(h) => h,
-        Err(e) => {
-            tracing::warn!(error = %e, "daemon: server check-in failed to hash the profile");
-            return CheckinOutcome::default();
-        }
-    };
-
-    let payload = crate::server_client::CheckinRequest {
-        device_id: credential.device_id.clone(),
-        hostname: host,
-        os: std::env::consts::OS.to_string(),
-        arch: std::env::consts::ARCH.to_string(),
-        config_hash,
-        compliance_summary: facts.compliance,
-        package_versions: facts.package_versions,
-        backup_schedule_owners: facts.backup_schedule_owners,
-    };
-
-    let url = format!("{}/api/v1/checkin", server_url.trim_end_matches('/'));
-
-    let body = match serde_json::to_string(&payload) {
-        Ok(b) => b,
-        Err(e) => {
-            tracing::warn!(error = %e, "daemon: server check-in failed to serialize payload");
-            return CheckinOutcome::default();
-        }
-    };
-
-    tracing::debug!(url = %url, device_id = %payload.device_id, "daemon: check-in request");
-    tracing::info!("daemon: checking in with {url}");
-
-    match ureq::post(&url)
-        .header("Content-Type", "application/json")
-        .header("Authorization", &format!("Bearer {}", credential.api_key))
-        .send(body.as_str())
-    {
-        Ok(mut response) => {
-            // not-a-child-ok: an HTTP response's own status code, which starts no process
-            let status = response.status().as_u16();
-            match response.body_mut().read_to_string() {
-                Ok(resp_body) => match serde_json::from_str::<CheckinServerResponse>(&resp_body) {
-                    Ok(resp) => {
-                        tracing::debug!(
-                            server_status = %resp.status,
-                            config_changed = resp.config_changed,
-                            cluster_scheduled_units = resp
-                                .backup_schedules
-                                .as_ref()
-                                .map_or(0, std::collections::BTreeMap::len),
-                            "daemon: check-in response"
-                        );
-                        tracing::info!(
-                            "daemon: server check-in succeeded — config {}",
-                            if resp.config_changed {
-                                "changed"
-                            } else {
-                                "unchanged"
-                            }
-                        );
-                        if let Some(ref pushed) = resp.desired_config
-                            && let Err(e) = crate::state::save_pending_server_config(pushed)
-                        {
-                            tracing::warn!(
-                                error = %e,
-                                "daemon: the configuration the gateway pushed was not saved"
-                            );
-                        }
-                        CheckinOutcome {
-                            config_changed: resp.config_changed,
-                            backup_schedules: resp.backup_schedules,
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            status = status,
-                            error = %e,
-                            "daemon: server check-in failed to parse response"
-                        );
-                        CheckinOutcome::default()
-                    }
-                },
-                Err(e) => {
-                    tracing::warn!(error = %e, "daemon: server check-in failed to read response body");
-                    CheckinOutcome::default()
+    // The daemon's own account of the round-trip is the journal lines here;
+    // the client's progress line is for a terminal nobody watches.
+    let quiet = printer.at_verbosity(crate::output::Verbosity::Quiet);
+    match crate::server_client::ServerClient::from_credential(credential).checkin(facts, &quiet) {
+        Ok(resp) => {
+            tracing::debug!(
+                server_status = %resp.status,
+                config_changed = resp.config_changed,
+                cluster_scheduled_units = resp
+                    .backup_schedules
+                    .as_ref()
+                    .map_or(0, std::collections::BTreeMap::len),
+                "daemon: check-in response"
+            );
+            tracing::info!(
+                "daemon: server check-in succeeded — config {}",
+                if resp.config_changed {
+                    "changed"
+                } else {
+                    "unchanged"
                 }
+            );
+            if let Some(ref pushed) = resp.desired_config
+                && let Err(e) = crate::state::save_pending_server_config(pushed)
+            {
+                tracing::warn!(
+                    error = %e,
+                    "daemon: the configuration the gateway pushed was not saved"
+                );
+            }
+            CheckinOutcome {
+                config_changed: resp.config_changed,
+                backup_schedules: resp.backup_schedules,
             }
         }
         Err(e) => {
-            tracing::warn!(error = %e, "daemon: server check-in request failed");
+            tracing::warn!(error = %e, "daemon: server check-in failed");
             CheckinOutcome::default()
         }
     }
@@ -207,10 +101,15 @@ pub(crate) fn find_server_url(config: &CfgdConfig) -> Option<String> {
 /// A configured origin the machine holds no enrolment for is a logged skip
 /// rather than an anonymous post: the gateway would refuse it, and a request
 /// that cannot be authenticated is one the operator has to be told about.
-pub fn try_server_checkin(
+///
+/// `facts` is called only once a gateway and a credential for it are known, so
+/// a machine that reports to no gateway pays for none of the observation. It
+/// returns `None` when the facts could not be composed, having logged why, and
+/// the check-in is skipped.
+pub fn try_server_checkin<'a>(
     config: &CfgdConfig,
-    resolved: &ResolvedProfile,
-    facts: crate::server_client::CheckinFacts<'_>,
+    printer: &Printer,
+    facts: impl FnOnce() -> Option<crate::server_client::CheckinFacts<'a>>,
 ) -> CheckinOutcome {
     let Some(url) = find_server_url(config) else {
         return CheckinOutcome::default();
@@ -219,15 +118,16 @@ pub fn try_server_checkin(
         .ok()
         .flatten()
         .filter(|cred| crate::server_client::credential_matches(&url, cred));
-    match credential {
-        Some(cred) => server_checkin(&url, resolved, facts, &cred),
-        None => {
-            tracing::warn!(
-                url = %url,
-                "daemon: no device credential for this gateway — skipping the check-in; run `cfgd enroll` on this machine"
-            );
-            CheckinOutcome::default()
-        }
+    let Some(cred) = credential else {
+        tracing::warn!(
+            url = %url,
+            "daemon: no device credential for this gateway — skipping the check-in; run `cfgd enroll` on this machine"
+        );
+        return CheckinOutcome::default();
+    };
+    match facts() {
+        Some(facts) => server_checkin(&cred, facts, printer),
+        None => CheckinOutcome::default(),
     }
 }
 

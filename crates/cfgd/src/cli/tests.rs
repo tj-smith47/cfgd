@@ -50071,7 +50071,7 @@ fn every_local_layer_ranks_through_the_one_constant() {
     /// Each crate root the walk reads, floored under the local layers its
     /// sources build today, so a tree going dark fails on its own name rather
     /// than quietly contributing nothing.
-    const WALK_ROOTS: &[(&str, usize)] = &[("cfgd", 10), ("cfgd-core", 55)];
+    const WALK_ROOTS: &[(&str, usize)] = &[("cfgd", 10), ("cfgd-core", 35)];
 
     let crates_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     let mut offenders: Vec<String> = Vec::new();

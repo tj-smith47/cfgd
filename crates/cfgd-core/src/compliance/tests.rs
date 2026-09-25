@@ -1184,6 +1184,7 @@ fn a_snapshot_handed_collected_diffs_asks_no_configurator_again() {
         &printer,
         &state,
         Some(&collected),
+        &[],
     )
     .unwrap();
 
@@ -1878,6 +1879,7 @@ fn collect_snapshot_includes_module_resources_and_content_check() {
         &printer,
         &state,
         None,
+        &[],
     )
     .unwrap();
 
@@ -2037,4 +2039,92 @@ fn a_broken_manager_holding_no_declared_package_withholds_nothing() {
         "the healthy manager's rows are reported: {reported:?}"
     );
     assert_eq!(reported.len(), 1, "and nothing else is: {reported:?}");
+}
+
+fn violation(kind: &str, path: &str, detail: &str) -> crate::composition::ConstraintViolation {
+    crate::composition::ConstraintViolation {
+        source_name: "team".into(),
+        path: Some(path.into()),
+        kind: kind.into(),
+        detail: detail.into(),
+    }
+}
+
+/// A source-constraint violation a Report-mode composition collected is a
+/// `Violation` check in the snapshot itself, counted in its summary: every
+/// command collects through the one collector that reports it, so none can
+/// collect a snapshot that leaves it out.
+#[test]
+fn a_snapshot_reports_each_source_constraint_violation_as_a_violation_check() {
+    let dir = tempfile::tempdir().unwrap();
+    let printer = crate::test_helpers::test_printer();
+    let state = crate::test_helpers::test_state();
+    let scope = ComplianceScope {
+        files: false,
+        packages: false,
+        system: false,
+        secrets: false,
+        ..Default::default()
+    };
+
+    let snapshot = collect_snapshot(
+        "default",
+        &crate::config::MergedProfile::default(),
+        &[],
+        dir.path(),
+        &ProviderRegistry::new(),
+        &scope,
+        &[],
+        &printer,
+        &state,
+        None,
+        &[
+            violation(
+                "scripts-not-allowed",
+                "/home/u/hook.sh",
+                "source 'team' may not run scripts",
+            ),
+            violation(
+                "encryption-required",
+                "/home/u/.config/secret.yaml",
+                "file matches required-encryption target 'secret*' but has no encryption block",
+            ),
+        ],
+    )
+    .unwrap();
+
+    let rows: Vec<_> = snapshot
+        .checks
+        .iter()
+        .map(|c| {
+            (
+                c.category.as_str(),
+                c.target.as_deref(),
+                c.status,
+                c.detail.as_deref(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        rows,
+        vec![
+            (
+                "file-encryption",
+                Some("/home/u/.config/secret.yaml"),
+                ComplianceStatus::Violation,
+                Some(
+                    "file matches required-encryption target 'secret*' but has no encryption block"
+                ),
+            ),
+            (
+                "source-constraint",
+                Some("/home/u/hook.sh"),
+                ComplianceStatus::Violation,
+                Some("source 'team' may not run scripts"),
+            ),
+        ],
+        "each violation is one check, sorted by category, carrying its detail verbatim"
+    );
+    assert_eq!(snapshot.summary.violation, 2);
+    assert_eq!(snapshot.summary.compliant, 0);
 }

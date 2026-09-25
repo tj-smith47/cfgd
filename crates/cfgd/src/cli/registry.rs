@@ -100,6 +100,19 @@ impl cfgd_core::daemon::DaemonHooks for WorkstationDaemonHooks {
         )?)))
     }
 
+    fn resolve_manifest_packages(
+        &self,
+        config_dir: &std::path::Path,
+        merged: &mut cfgd_core::config::MergedProfile,
+    ) -> cfgd_core::errors::Result<()> {
+        crate::packages::resolve_manifest_packages_cached(
+            &mut merged.packages,
+            &mut merged.layer_sources,
+            config_dir,
+            &crate::packages::ManifestCache::default(),
+        )
+    }
+
     fn expand_tilde(&self, path: &std::path::Path) -> std::path::PathBuf {
         cfgd_core::expand_tilde(path)
     }

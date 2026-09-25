@@ -134,6 +134,10 @@ pub struct ComplianceSummary {
 /// them to the gateway — so the machine is diffed once per command rather than
 /// once per consumer. `None` collects them here.
 ///
+/// `constraint_violations` are the source security-constraint violations a
+/// `ConstraintMode::Report` composition collected; each becomes a `Violation`
+/// check, so every command that collects a snapshot reports them the same way.
+///
 /// Pass what a caller ALREADY has, never a collection made for this call: the
 /// diff shells out to every configurator the profile declares, so a caller that
 /// collects eagerly to fill this argument has paid for a scan whose second
@@ -153,6 +157,7 @@ pub fn collect_snapshot(
     printer: &Printer,
     state: &StateStore,
     system_diffs: Option<&[SystemDiff]>,
+    constraint_violations: &[crate::composition::ConstraintViolation],
 ) -> Result<ComplianceSnapshot> {
     let platform = Platform::current();
     let hostname = crate::hostname_string();
@@ -198,6 +203,7 @@ pub fn collect_snapshot(
             &cx,
         )?);
     }
+    checks.extend(constraint_violation_checks(constraint_violations));
 
     let summary = compute_summary(&checks);
 
@@ -209,6 +215,44 @@ pub fn collect_snapshot(
         checks,
         summary,
     })
+}
+
+/// Map a source-constraint violation `kind` to a compliance check category.
+/// Encryption constraints are filed under `file-encryption`, the category the
+/// file-encryption checks already use; every other constraint shares
+/// `source-constraint`.
+fn constraint_violation_category(kind: &str) -> &'static str {
+    match kind {
+        "encryption-required" | "encryption-backend-mismatch" | "encryption-mode-mismatch" => {
+            "file-encryption"
+        }
+        _ => "source-constraint",
+    }
+}
+
+/// Each source-constraint violation as a `Violation` check, sorted by
+/// category, then target, then detail, so the order does not depend on the
+/// order the sources were visited in.
+fn constraint_violation_checks(
+    violations: &[crate::composition::ConstraintViolation],
+) -> Vec<ComplianceCheck> {
+    let mut checks: Vec<ComplianceCheck> = violations
+        .iter()
+        .map(|v| ComplianceCheck {
+            category: constraint_violation_category(&v.kind).to_string(),
+            target: v.path.clone(),
+            status: ComplianceStatus::Violation,
+            detail: Some(v.detail.clone()),
+            ..Default::default()
+        })
+        .collect();
+    checks.sort_by(|a, b| {
+        a.category
+            .cmp(&b.category)
+            .then(a.target.cmp(&b.target))
+            .then(a.detail.cmp(&b.detail))
+    });
+    checks
 }
 
 /// Compute summary counts from a list of checks.

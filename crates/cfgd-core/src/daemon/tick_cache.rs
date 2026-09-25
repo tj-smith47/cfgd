@@ -62,6 +62,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use crate::composition::ConstraintViolation;
 use crate::config::{CfgdConfig, ResolvedProfile};
 use crate::modules::{ResolvedModule, SourceModuleRoot};
 use crate::providers::ProviderRegistry;
@@ -153,6 +154,7 @@ struct ConfigDerivation {
     source_module_roots: Arc<Vec<SourceModuleRoot>>,
     registry: Arc<ProviderRegistry>,
     source_advisories: Arc<Vec<SourceAdvisory>>,
+    constraint_violations: Arc<Vec<ConstraintViolation>>,
 }
 
 /// The module half, and the config derivation it was resolved against.
@@ -418,6 +420,7 @@ impl TickCache {
             source_module_roots: Arc::new(derived.source_module_roots),
             registry: Arc::new(derived.registry),
             source_advisories: Arc::new(derived.source_advisories),
+            constraint_violations: Arc::new(derived.constraint_violations),
         };
         let fresh = CachedConfig::from_held(&held, false);
         self.fire_before_store();
@@ -579,6 +582,8 @@ pub(crate) struct DerivedConfig {
     pub(crate) registry: ProviderRegistry,
     /// What the composition said out loud about sources it skipped.
     pub(crate) source_advisories: Vec<SourceAdvisory>,
+    /// The source security-constraint violations the composition found.
+    pub(crate) constraint_violations: Vec<ConstraintViolation>,
 }
 
 /// One tick's handle on the config-derived objects.
@@ -592,6 +597,9 @@ pub(crate) struct CachedConfig {
     /// The composition's skip advisories, carried so a REUSING tick can re-state
     /// a condition that still holds. See [`Self::advisories_to_restate`].
     source_advisories: Arc<Vec<SourceAdvisory>>,
+    /// The source security-constraint violations the composition found. A
+    /// tick with any reconciles nothing and reports them.
+    pub(crate) constraint_violations: Arc<Vec<ConstraintViolation>>,
     /// Whether this handle came from a held derivation rather than from one this
     /// caller just ran. The derivation printed its own advisories; a reuse did
     /// not, and has to.
@@ -610,6 +618,7 @@ impl CachedConfig {
             source_module_roots: Arc::clone(&held.source_module_roots),
             registry: Arc::clone(&held.registry),
             source_advisories: Arc::clone(&held.source_advisories),
+            constraint_violations: Arc::clone(&held.constraint_violations),
             reused,
             derivation_id: held.id,
         }
@@ -660,6 +669,7 @@ pub(super) fn test_derived_config(
         source_module_roots: Vec::new(),
         registry: ProviderRegistry::new(),
         source_advisories,
+        constraint_violations: Vec::new(),
     }
 }
 

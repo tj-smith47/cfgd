@@ -4,9 +4,11 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::compliance::{ComplianceCheck, ComplianceSnapshot, ComplianceStatus};
+use crate::config::MergedProfile;
 use crate::errors::{CfgdError, Result};
+use crate::modules::ResolvedModule;
 use crate::output::{Printer, Role};
-use crate::providers::SystemDrift;
+use crate::providers::{PackageContext, ProviderRegistry, SystemDrift};
 
 /// Ceiling on a server-advised wait. The gateway's own quota hands a token back
 /// in seconds, so anything past a minute is either a misconfigured proxy or a
@@ -63,22 +65,29 @@ pub struct ServerClient {
     device_id: String,
 }
 
-/// What the machine reports about itself on a check-in, beyond the config hash.
+/// Everything a check-in reports about the machine, composed once by
+/// [`CheckinFacts::collect`] for both senders, `cfgd checkin` and the daemon's
+/// reconcile tick.
 ///
-/// The device is the only thing that can answer any of these questions, and
-/// the check-in is its only channel to the cluster: `MachineConfig.status`
-/// carries them, and a `ConfigPolicy` version pin and a `BackupPolicy`
-/// schedule projection are decided from them.
+/// One composer is what keeps the two senders from disagreeing: the gateway
+/// reads `config_changed` off a hash comparison and applies each observed map
+/// whole, so a daemon and a CLI composing the body two ways would flip the one
+/// and retire keys from the other on every alternation.
 ///
-/// Each field is an `Option` because "I looked and found none" and "I could not
-/// look" are different facts and the gateway acts on them differently: an
-/// observed map is applied whole, so a key the machine stopped reporting is
-/// retired, while an unobserved one is left alone with whatever the cluster
-/// already holds. `None` is also what an older device's body deserializes as.
-#[derive(Debug, Default, Clone)]
+/// Each fact beyond the identity is an `Option` because "I looked and found
+/// none" and "I could not look" are different facts and the gateway acts on
+/// them differently: an observed map is applied whole, so a key the machine
+/// stopped reporting is retired, while an unobserved one is left alone with
+/// whatever the cluster already holds. `None` is also what an older device's
+/// body deserializes as.
+#[derive(Debug, Clone)]
 pub struct CheckinFacts<'a> {
-    /// The compliance snapshot this check-in collected, when compliance is
-    /// enabled and the collection succeeded.
+    /// This machine's hostname, `"unknown"` when the system cannot say.
+    pub hostname: String,
+    /// [`checkin_config_hash`] of the desired state the check-in describes.
+    pub config_hash: String,
+    /// The compliance snapshot this check-in reports, when compliance is
+    /// enabled and a complete snapshot is at hand.
     pub compliance: Option<CheckinCompliance<'a>>,
     /// Installed versions of the packages this machine DECLARES, keyed
     /// `<manager>/<package>` by [`crate::state::package_resource_id`].
@@ -86,6 +95,50 @@ pub struct CheckinFacts<'a> {
     /// Which layer owns each declared backup unit's schedule, as
     /// [`crate::config::ScheduleOwner::label`] spells it.
     pub backup_schedule_owners: Option<BTreeMap<String, String>>,
+}
+
+impl<'a> CheckinFacts<'a> {
+    /// Compose a check-in from the desired state it describes.
+    ///
+    /// `merged` is the source-composed profile with every `<manager>.file`
+    /// manifest's packages folded in, and `modules` its resolved modules.
+    /// `packages` is the context the declared versions are read through; `None`
+    /// withholds `packageVersions`, which is what a sender passes when a
+    /// manifest could not be read, since the map would otherwise retire every
+    /// version that manifest declares. `compliance` is the snapshot to report,
+    /// collected over the same desired state.
+    pub fn collect(
+        merged: &MergedProfile,
+        modules: &[ResolvedModule],
+        registry: &ProviderRegistry,
+        packages: Option<&PackageContext<'_>>,
+        compliance: Option<&'a ComplianceSnapshot>,
+    ) -> Result<Self> {
+        Ok(Self {
+            hostname: crate::hostname_string(),
+            config_hash: checkin_config_hash(merged, modules)?,
+            compliance: compliance.map(CheckinCompliance::from_snapshot),
+            package_versions: packages.and_then(|cx| {
+                crate::compliance::declared_package_versions(merged, modules, registry, cx)
+            }),
+            backup_schedule_owners: Some(crate::backup::declared_schedule_owners(&merged.backups)),
+        })
+    }
+}
+
+/// The hash a check-in reports for the machine's desired system configuration:
+/// the effective (profile plus modules) system map, serialized and digested.
+///
+/// The gateway answers `configChanged` by comparing it with the hash the last
+/// check-in sent, so it is computed here alone.
+pub fn checkin_config_hash(merged: &MergedProfile, modules: &[ResolvedModule]) -> Result<String> {
+    let (system, _) = crate::effective::effective_system_map(merged, modules);
+    let yaml = serde_yaml::to_string(&system).map_err(|e| {
+        CfgdError::Io(std::io::Error::other(format!(
+            "failed to serialize the system configuration for its check-in hash: {e}"
+        )))
+    })?;
+    Ok(crate::sha256_hex(yaml.as_bytes()))
 }
 
 /// A compliance snapshot as the check-in reports it: the three counts, and
@@ -509,22 +562,15 @@ impl ServerClient {
         ))
     }
 
-    /// Check in with the device gateway, reporting the current config hash and
-    /// what the machine observed about itself.
-    pub fn checkin(
-        &self,
-        config_hash: &str,
-        facts: CheckinFacts<'_>,
-        printer: &Printer,
-    ) -> Result<CheckinResponse> {
-        let hostname = crate::hostname_string();
-
+    /// Check in with the device gateway, reporting what
+    /// [`CheckinFacts::collect`] composed.
+    pub fn checkin(&self, facts: CheckinFacts<'_>, printer: &Printer) -> Result<CheckinResponse> {
         let body = CheckinRequest {
             device_id: self.device_id.clone(),
-            hostname,
+            hostname: facts.hostname,
             os: std::env::consts::OS.to_string(),
             arch: std::env::consts::ARCH.to_string(),
-            config_hash: config_hash.to_string(),
+            config_hash: facts.config_hash,
             compliance_summary: facts.compliance,
             package_versions: facts.package_versions,
             backup_schedule_owners: facts.backup_schedule_owners,

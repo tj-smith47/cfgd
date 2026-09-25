@@ -752,7 +752,7 @@ pub(super) async fn handle_compliance_tick(ctx: &DaemonLoopContext) -> Result<()
         let cd = ctx.cache_dir_override.clone();
         let scope = ctx.scope;
         let printer = Arc::clone(&ctx.printer);
-        crate::spawn_blocking_with_test_home(move || {
+        let collected = crate::spawn_blocking_with_test_home(move || {
             handle_compliance_snapshot(
                 &cp,
                 po.as_deref(),
@@ -762,12 +762,13 @@ pub(super) async fn handle_compliance_tick(ctx: &DaemonLoopContext) -> Result<()
                 cd.as_deref(),
                 scope,
                 &printer,
-            );
+            )
         })
         .await
         .map_err(|e| DaemonError::WatchError {
             message: format!("compliance snapshot task failed: {}", e),
         })?;
+        ctx.state.lock().await.reported_compliance = collected.map(Arc::new);
     }
     Ok(())
 }

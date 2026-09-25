@@ -2776,7 +2776,7 @@ packages, env vars and aliases are checked locally by [`cfgd diff`](#cfgd-diff) 
 gateway through the compliance summary a check-in carries when
 [`spec.compliance`](spec/config.md#speccompliance) is enabled: the snapshot's counts, and every
 check that did not pass with the name and detail [`cfgd compliance`](#cfgd-compliance) shows for
-it (violations first, then warnings). They land on the machine's `MachineConfig.status.compliance`
+it (violations first, then warnings), a source's security-constraint violations included. They are written to the machine's `MachineConfig.status.compliance`
 and in the gateway's device listing, never as a DriftAlert. A device the
 fleet dashboard shows as healthy is a device whose system settings matched, not a device proven
 in sync.
@@ -2789,18 +2789,23 @@ in sync.
 
 The payload also carries what only this machine can answer: `packageVersions`, the installed
 version of each package the resolved profile declares (keyed `<manager>/<package>`, from the
-managers available here, never a full listing), and `backupScheduleOwners`, each declared backup
+managers available here, never a full listing; a package a manifest such as a `Cargo.toml` or a
+Brewfile names counts as declared), and `backupScheduleOwners`, each declared backup
 unit's [`scheduleOwner`](backups.md#scheduleowner). Both reach the machine's `MachineConfig.status`
 in the cluster, each applied whole under its own field manager: a key this machine stopped
 reporting is retired there, and a machine holding none of what it declares sends the empty map
 that clears it. A machine that could not list one of the managers holding its declared
 packages withholds the whole map rather than sending a partial one the cluster would read as a
 retirement, and a map left out produces no write at all, so the versions the cluster holds
-survive it.
+survive it. A package manifest that cannot be read leaves both `packageVersions` and the
+compliance summary out of the check-in, with a warning, and the check-in still goes out.
 
-The daemon's own periodic check-in reports the same two facts from the profile its tick resolved,
-and the newest compliance snapshot its compliance tick stored, authenticating as the device
-[`cfgd enroll`](#cfgd-enroll) registered.
+The daemon's own periodic check-in is composed the same way, from the profile its tick resolved,
+with the same hash: it carries the same two facts, and the snapshot the daemon's most recent
+compliance tick collected (none until the first compliance tick after the daemon starts). It
+authenticates as the device [`cfgd enroll`](#cfgd-enroll) registered, and a tick that skips
+reconciling because a source violates a security constraint still checks in and reports the
+violation.
 
 The gateway answers with the backup cadences a cluster [`BackupPolicy`](backup-policy.md) owns for
 this machine. They are recorded locally and decide when a cluster-owned unit is next due; a unit

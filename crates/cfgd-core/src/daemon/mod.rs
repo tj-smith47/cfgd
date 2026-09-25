@@ -123,6 +123,22 @@ pub trait DaemonHooks: Send + Sync {
         Ok(None)
     }
 
+    /// Fold every `<manager>.file` manifest's packages (Brewfile, apt list,
+    /// `package.json`, `Cargo.toml`) into `merged.packages`, claiming each under
+    /// the layer that declared the manifest.
+    ///
+    /// The manifest parsers live in the binary that owns the package managers,
+    /// so the default folds nothing. A reporting tick calls this so the packages
+    /// it declares to the gateway are the ones `cfgd checkin` and
+    /// `cfgd compliance` declare.
+    fn resolve_manifest_packages(
+        &self,
+        _config_dir: &Path,
+        _merged: &mut MergedProfile,
+    ) -> Result<()> {
+        Ok(())
+    }
+
     /// Expand tilde (~) to home directory in a path.
     fn expand_tilde(&self, path: &Path) -> PathBuf;
 
@@ -218,9 +234,16 @@ pub(crate) fn resolve_daemon_modules(
 /// With no sources configured it returns the local profile unchanged and empty
 /// module roots.
 ///
+/// `mode` is [`crate::composition::ConstraintMode::Report`] for the compliance
+/// tick, the reconcile tick and the startup check-in, which all report a
+/// source-constraint violation to the gateway; the violations come back in
+/// [`DaemonComposition::constraint_violations`], and the reconcile tick
+/// applies nothing while any stands. The backup timers compose in `Enforce`,
+/// which stops on the first violation.
+///
 /// FAIL-CLOSED: a real compose error — a cached manifest that is malformed,
-/// whose signature fails, or whose contribution violates a source constraint —
-/// is propagated as an `Err`, NOT swallowed. The caller MUST skip the tick.
+/// whose signature fails, or (in `Enforce`) whose contribution violates a
+/// source constraint — is propagated as an `Err`, and the caller MUST skip the tick.
 /// Substituting the LOCAL profile here would be catastrophic: the reconcile is a
 /// PRUNING reconcile, so a source-delivered package/module that drops out of the
 /// (now local-only) desired set looks like phantom drift and, under
@@ -243,12 +266,14 @@ pub(crate) fn compose_daemon_desired_state(
     printer: &Printer,
     scope: crate::Scope,
     cache_dir_override: Option<&Path>,
+    mode: crate::composition::ConstraintMode,
 ) -> Result<DaemonComposition> {
     if cfg.spec.sources.is_empty() {
         return Ok(DaemonComposition {
             resolved: local.clone(),
             source_module_roots: Vec::new(),
             advisories: Vec::new(),
+            constraint_violations: Vec::new(),
         });
     }
     let cache_dir = crate::resolve_cache_dir(cache_dir_override, scope)
@@ -257,17 +282,12 @@ pub(crate) fn compose_daemon_desired_state(
     let mut mgr = crate::sources::SourceManager::new(&cache_dir);
     mgr.set_allow_unsigned(cfg.spec.security.as_ref().is_some_and(|s| s.allow_unsigned));
     mgr.load_sources_cached(&cfg.spec.sources, printer)?;
-    // The daemon's pruning reconcile must stay fail-closed: a source
-    // security-constraint violation aborts rather than reconciling phantom state.
-    let result = mgr.compose(
-        &cfg.spec.sources,
-        local,
-        crate::composition::ConstraintMode::Enforce,
-    )?;
+    let result = mgr.compose(&cfg.spec.sources, local, mode)?;
     Ok(DaemonComposition {
         resolved: result.resolved,
         source_module_roots: result.source_module_roots,
         advisories: mgr.take_advisories(),
+        constraint_violations: result.constraint_violations,
     })
 }
 
@@ -281,6 +301,9 @@ pub(crate) struct DaemonComposition {
     /// until someone runs `cfgd sync` (or drops `--allow-unsigned`), and a
     /// warning that stops appearing reads as resolved.
     pub(crate) advisories: Vec<crate::sources::SourceAdvisory>,
+    /// The source-constraint violations a `Report` composition collected;
+    /// always empty under `Enforce`, where the first one is an `Err`.
+    pub(crate) constraint_violations: Vec<crate::composition::ConstraintViolation>,
 }
 
 const DEBOUNCE_MS: u64 = 500;
@@ -532,6 +555,14 @@ pub(super) struct DaemonState {
     /// replaced. It lives here because the check-in runs inside a blocking
     /// reconcile tick, which holds this state and nothing else the loop owns.
     backup_reresolve: Arc<tokio::sync::Notify>,
+    /// The snapshot the last compliance tick collected, which the reconcile
+    /// tick's check-in reports.
+    ///
+    /// Held in memory: the store's newest row can be one `cfgd compliance
+    /// --profile other` wrote, or one a previous configuration left, and neither
+    /// describes what this daemon observes. `None` until the first compliance
+    /// tick, and again after a tick that could not collect one.
+    pub(super) reported_compliance: Option<Arc<crate::compliance::ComplianceSnapshot>>,
 }
 
 impl DaemonState {
@@ -560,6 +591,7 @@ impl DaemonState {
             reconcile_secs: None,
             sync_secs: None,
             backup_reresolve: Arc::new(tokio::sync::Notify::new()),
+            reported_compliance: None,
         }
     }
 
@@ -754,12 +786,6 @@ mod reconcile;
 mod runner;
 mod service;
 mod sync;
-
-/// The two halves of the daemon's own check-in wire contract, for the pin that
-/// reads them with the gateway's types: the daemon posts a body cfgd-operator
-/// must parse, and neither crate can see the other's spelling on its own.
-#[cfg(any(test, feature = "test-helpers"))]
-pub use checkin::CheckinServerResponse;
 
 /// The daemon's own periodic check-in, for the pin that reads it beside the
 /// CLI's: the two are separate crates, and only a test holding both can say
@@ -965,6 +991,52 @@ pub(super) fn build_pre_loop_setup(
         server_checkin_url,
         profile_name: resolved_profile_name,
     })
+}
+
+/// One compliance tick and then one reconcile tick of the daemon loop, over a
+/// config on disk, with the check-in each tick makes. Only a test holding the
+/// workstation hooks as well as the CLI can say that the daemon and
+/// `cfgd checkin` post the same payload for one machine, and those hooks live
+/// in the `cfgd` crate.
+#[cfg(any(test, feature = "test-helpers"))]
+pub async fn run_compliance_and_reconcile_ticks(
+    config_path: &Path,
+    hooks: Arc<dyn DaemonHooks>,
+    state_dir: &Path,
+    cache_dir: Option<&Path>,
+) -> Result<()> {
+    let printer = Arc::new(crate::test_helpers::test_printer());
+    let scope = crate::Scope::User;
+    let mut setup = build_pre_loop_setup(
+        config_path,
+        None,
+        hooks.as_ref(),
+        scope,
+        &printer,
+        Some(state_dir),
+        cache_dir,
+    )?;
+    let ctx = DaemonLoopContext {
+        state: Arc::new(Mutex::new(DaemonState::new())),
+        abort: Arc::new(crate::AbortFlag::new()),
+        hooks,
+        notifier: Arc::clone(&setup.notifier),
+        config_path: config_path.to_path_buf(),
+        profile_override: None,
+        on_change_reconcile: setup.parsed.on_change_reconcile,
+        notify_on_drift: setup.parsed.notify_on_drift,
+        compliance_config: setup.compliance_config.clone(),
+        printer,
+        state_dir_override: Some(state_dir.to_path_buf()),
+        explicit_state_dir: true,
+        cache_dir_override: cache_dir.map(Path::to_path_buf),
+        managed_paths: setup.managed_paths.clone(),
+        scope,
+        cfgd_version: env!("CARGO_PKG_VERSION").to_string(),
+        tick_cache: Arc::new(tick_cache::TickCache::new()),
+    };
+    handle_compliance_tick(&ctx).await?;
+    handle_reconcile_tick(&ctx, &mut setup.reconcile_tasks).await
 }
 
 // --- Main Daemon Entry Point ---
@@ -1215,6 +1287,10 @@ pub(super) async fn run_daemon_with(
         let startup_profile_override = profile_override.clone();
         let startup_state_dir = resolved_state_dir.clone();
         let startup_reresolve = { state.lock().await.backup_reresolve() };
+        let startup_hooks = Arc::clone(&hooks);
+        let startup_printer = Arc::clone(&printer);
+        let startup_scope = overrides.scope;
+        let startup_cache_dir = overrides.cache_dir_override.clone();
         crate::spawn_blocking_with_test_home(move || {
             run_startup_checkin_blocking(
                 &startup_config_path,
@@ -1222,6 +1298,10 @@ pub(super) async fn run_daemon_with(
                 &startup_cfg,
                 startup_state_dir.as_deref(),
                 &startup_reresolve,
+                &*startup_hooks,
+                &startup_printer,
+                startup_scope,
+                startup_cache_dir.as_deref(),
             );
         })
         .await
@@ -1547,10 +1627,6 @@ pub(super) fn print_startup_banner(
     }
 }
 
-/// Synchronous body of the startup server check-in. Resolves the profile,
-/// posts the check-in payload, and clears any pending server config so the
-/// first reconcile tick picks it up. Extracted from the `spawn_blocking`
-/// closure so tests can drive the no-profile and resolve-failure arms without
 /// The directory a config's profiles live in.
 pub(super) fn profiles_dir_for(config_path: &Path) -> PathBuf {
     config_path
@@ -1575,21 +1651,29 @@ pub(super) fn profile_context<'a>(
     (profiles_dir_for(config_path), profile_name)
 }
 
-/// scheduling onto a tokio runtime.
-/// The startup check-in, which reports NEITHER device-observed map.
+/// Synchronous body of the startup server check-in, which reports NEITHER
+/// device-observed map. Resolves the profile, posts the check-in, and clears
+/// any pending server config so the first reconcile tick picks it up.
 ///
-/// It has resolved a profile and nothing else: no provider registry, so no
-/// installed versions, and reporting one map while leaving the other unobserved
-/// would have the gateway apply a status naming only half of what this machine
-/// reports. The first reconcile tick, which resolves both, is the reporter; what
-/// startup is here for is the config hash and the cadences the answer carries
-/// back, in time for the timer set to be armed from them.
+/// It composes the desired state the reconcile tick composes (sources from
+/// cache, modules resolved) so the config hash it sends is the one every later
+/// check-in sends, and the gateway does not read a restart as a config change.
+/// It asks no package manager what is installed, and reporting one map while
+/// leaving the other unobserved would have the gateway apply a status naming
+/// only half of what this machine reports. The first reconcile tick is the
+/// reporter; what startup is here for is the cadences the answer carries back,
+/// in time for the timer set to be armed from them.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn run_startup_checkin_blocking(
     config_path: &Path,
     profile_override: Option<&str>,
     cfg: &CfgdConfig,
     state_dir: Option<&Path>,
     backup_reresolve: &tokio::sync::Notify,
+    hooks: &dyn DaemonHooks,
+    printer: &Printer,
+    scope: crate::Scope,
+    cache_dir_override: Option<&Path>,
 ) {
     let profiles_dir = profiles_dir_for(config_path);
     let profile_name = match profile_override.or(cfg.spec.profile.as_deref()) {
@@ -1599,40 +1683,74 @@ pub(super) fn run_startup_checkin_blocking(
             return;
         }
     };
-    match config::resolve_profile(profile_name, &profiles_dir) {
-        Ok(resolved) => {
-            let checkin = try_server_checkin(
-                cfg,
-                &resolved,
-                crate::server_client::CheckinFacts::default(),
-            );
-            if checkin.config_changed {
-                tracing::info!("daemon: server reports config changed at startup");
-            }
-            if let Some(ref projections) = checkin.backup_schedules
-                && checkin::record_cluster_schedules_in(state_dir, projections)
-            {
-                backup_reresolve.notify_one();
-            }
-            // Consume any pending server config at startup so the first
-            // reconcile tick picks up the changes.
-            match crate::state::load_pending_server_config() {
-                Ok(Some(_pending)) => {
-                    tracing::info!(
-                        "daemon: found pending server config — first reconcile will apply it"
-                    );
-                    if let Err(e) = crate::state::clear_pending_server_config() {
-                        tracing::warn!(error = %e, "daemon: failed to clear pending server config at startup");
-                    }
-                }
-                Ok(None) => {}
-                Err(e) => {
-                    tracing::warn!(error = %e, "daemon: failed to load pending server config at startup");
-                }
-            }
-        }
+    let local = match config::resolve_profile(profile_name, &profiles_dir) {
+        Ok(resolved) => resolved,
         Err(e) => {
             tracing::warn!(error = %e, "daemon: startup check-in failed to resolve profile");
+            return;
+        }
+    };
+    let config_dir = config_path.parent().unwrap_or_else(|| Path::new("."));
+    let quiet = printer.at_verbosity(crate::output::Verbosity::Quiet);
+    let checkin = try_server_checkin(cfg, printer, || {
+        let composed = compose_daemon_desired_state(
+            cfg,
+            &local,
+            &quiet,
+            scope,
+            cache_dir_override,
+            crate::composition::ConstraintMode::Report,
+        )
+        .inspect_err(|e| {
+            tracing::warn!(error = %e, "daemon: startup check-in skipped — source composition failed");
+        })
+        .ok()?;
+        let mut registry = hooks.build_registry(cfg);
+        hooks.extend_registry_custom_managers(&mut registry, &composed.resolved.merged.packages);
+        let modules = resolve_daemon_modules(
+            &registry,
+            &composed.resolved,
+            config_dir,
+            &composed.source_module_roots,
+            None,
+            &quiet,
+            scope,
+            cache_dir_override,
+        );
+        let mut facts = crate::server_client::CheckinFacts::collect(
+            &composed.resolved.merged,
+            &modules,
+            &registry,
+            None,
+            None,
+        )
+        .inspect_err(|e| {
+            tracing::warn!(error = %e, "daemon: startup check-in skipped — its facts could not be composed");
+        })
+        .ok()?;
+        facts.backup_schedule_owners = None;
+        Some(facts)
+    });
+    if checkin.config_changed {
+        tracing::info!("daemon: server reports config changed at startup");
+    }
+    if let Some(ref projections) = checkin.backup_schedules
+        && checkin::record_cluster_schedules_in(state_dir, projections)
+    {
+        backup_reresolve.notify_one();
+    }
+    // Consume any pending server config at startup so the first
+    // reconcile tick picks up the changes.
+    match crate::state::load_pending_server_config() {
+        Ok(Some(_pending)) => {
+            tracing::info!("daemon: found pending server config — first reconcile will apply it");
+            if let Err(e) = crate::state::clear_pending_server_config() {
+                tracing::warn!(error = %e, "daemon: failed to clear pending server config at startup");
+            }
+        }
+        Ok(None) => {}
+        Err(e) => {
+            tracing::warn!(error = %e, "daemon: failed to load pending server config at startup");
         }
     }
 }

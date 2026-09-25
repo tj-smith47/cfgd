@@ -63,6 +63,11 @@ where
 /// default and installing it changes nothing; with one (a caller tracing a
 /// bounded operation), the blocking half's events land beside the async
 /// half's instead of silently falling through to the global default.
+///
+/// Under test, a caller holding `PATH`'s exclusive spawn window (a tool shim
+/// is installed) lends it to the worker the same way, because the caller is
+/// parked awaiting the worker: a worker waiting on the lock its own waiter
+/// owns would never run.
 pub fn spawn_blocking_with_test_home<F, R>(f: F) -> tokio::task::JoinHandle<R>
 where
     F: FnOnce() -> R + Send + 'static,
@@ -70,7 +75,11 @@ where
 {
     let test_home = test_home_override();
     let dispatcher = tracing::dispatcher::get_default(|d| d.clone());
+    #[cfg(any(test, feature = "test-helpers"))]
+    let window = crate::test_helpers::path_env_exclusive_guard_held();
     tokio::task::spawn_blocking(move || {
+        #[cfg(any(test, feature = "test-helpers"))]
+        let _window = crate::test_helpers::enter_inherited_window(window);
         let _dispatch = tracing::dispatcher::set_default(&dispatcher);
         let _guard = test_home.as_deref().map(with_test_home_guard);
         f()

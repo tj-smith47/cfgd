@@ -440,7 +440,10 @@ for the packages it declares (keyed `<manager>/<package>`), `backupScheduleOwner
 owns each backup unit's schedule, and, when [`spec.compliance`](spec/config.md#speccompliance)
 is enabled, `complianceSummary`: the counts of its compliance snapshot and every check that did
 not pass. `cfgd checkin` collects a fresh snapshot (the same one `cfgd compliance` collects); the
-daemon sends the newest snapshot its compliance tick stored.
+daemon sends the snapshot its most recent compliance tick collected, and none before its first one.
+Both senders compose the check-in through one function, so they report the same hash, the same
+failing checks (source security-constraint violations included) and the same versions, packages
+a manifest declares included.
 
 ```json
 "complianceSummary": {

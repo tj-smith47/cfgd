@@ -486,7 +486,7 @@ fn the_gateways_checkin_answer_is_what_the_daemon_parses() {
         .into(),
     };
     let wire = serde_json::to_string(&answer).expect("the gateway serializes its answer");
-    let parsed: cfgd_core::daemon::CheckinServerResponse =
+    let parsed: cfgd_core::server_client::CheckinResponse =
         serde_json::from_str(&wire).expect("the daemon parses the answer the gateway sends");
 
     assert_eq!(parsed.status, "ok");

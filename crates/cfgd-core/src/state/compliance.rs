@@ -105,18 +105,6 @@ impl StateStore {
         ))
     }
 
-    /// The most recently stored compliance snapshot, `None` when none has been
-    /// stored.
-    pub fn latest_compliance_snapshot(
-        &self,
-    ) -> Result<Option<crate::compliance::ComplianceSnapshot>> {
-        snapshot_from_row(self.conn.query_row(
-            "SELECT snapshot_json FROM compliance_snapshots ORDER BY id DESC LIMIT 1",
-            [],
-            |row| row.get::<_, String>(0),
-        ))
-    }
-
     /// Remove compliance snapshots older than the given ISO 8601 timestamp.
     /// Returns the number of rows deleted.
     pub fn prune_compliance_snapshots(&self, before_timestamp: &str) -> Result<usize> {

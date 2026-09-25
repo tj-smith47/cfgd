@@ -546,7 +546,12 @@ pub(super) fn resolve_backup_tasks(
     let local = config::resolve_profile(profile_name, &profiles_dir)?;
 
     let (specs, degraded) = match super::compose_daemon_desired_state(
-        cfg, &local, printer, scope, cache_dir,
+        cfg,
+        &local,
+        printer,
+        scope,
+        cache_dir,
+        crate::composition::ConstraintMode::Enforce,
     ) {
         Ok(composed) => (composed.resolved.merged.backups, None),
         Err(e) => {
