@@ -9,14 +9,18 @@ metadata:
     app.kubernetes.io/component: operator
 spec:
   replicas: {{ .Values.operator.replicaCount }}
+  {{- $gateway := .Values.deviceGateway.enabled }}
+  {{- $leaderElection := .Values.operator.leaderElection.enabled }}
   strategy:
-    {{- with .Values.operator.strategy }}
-    {{- toYaml . | nindent 4 }}
+    {{- if .Values.operator.strategy }}
+    {{- toYaml .Values.operator.strategy | nindent 4 }}
+    {{- else if and $gateway .Values.deviceGateway.persistence.enabled (not $leaderElection) }}
+    type: Recreate
     {{- else }}
     type: RollingUpdate
     rollingUpdate:
       maxSurge: 1
-      maxUnavailable: {{ if and .Values.deviceGateway.enabled .Values.operator.leaderElection.enabled }}1{{ else }}0{{ end }}
+      maxUnavailable: {{ if and $gateway $leaderElection }}1{{ else }}0{{ end }}
     {{- end }}
   selector:
     matchLabels:

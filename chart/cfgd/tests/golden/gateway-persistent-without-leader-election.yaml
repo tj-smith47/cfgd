@@ -1,0 +1,8 @@
+strategy:
+  type: Recreate
+readinessProbe:
+  httpGet:
+    path: /readyz
+    port: health
+  initialDelaySeconds: 5
+  periodSeconds: 10

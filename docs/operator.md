@@ -303,7 +303,20 @@ standby
 
 The metrics endpoint carries the same fact as a gauge, `cfgd_operator_leader`: `1` on the lease holder and `0` on each standby.
 
-The chart's Deployment probes `/readyz` for readiness and `/healthz` for liveness. Its update strategy (`operator.strategy`, empty by default) is derived from the same rule: `RollingUpdate` with `maxSurge: 1` and `maxUnavailable: 0`, so the old pod leaves only after its replacement serves admission; with the device gateway and leader election both on, `maxUnavailable: 1`, because readiness there waits for a lease the old pod releases only as it terminates. Set `operator.strategy` to render your own:
+The chart's Deployment probes `/readyz` for readiness and `/healthz` for liveness. Its update strategy (`operator.strategy`, empty by default) is derived from what a replacement pod waits for before it turns ready:
+
+| `deviceGateway.enabled` | `deviceGateway.persistence.enabled` | `operator.leaderElection.enabled` | Derived strategy |
+|---|---|---|---|
+| off | — | on or off | `RollingUpdate`, `maxSurge: 1`, `maxUnavailable: 0` |
+| on | on or off | on | `RollingUpdate`, `maxSurge: 1`, `maxUnavailable: 1` |
+| on | on | off | `Recreate` |
+| on | off | off | `RollingUpdate`, `maxSurge: 1`, `maxUnavailable: 0` |
+
+- `maxUnavailable: 0` keeps the old pod until its replacement serves, so the admission webhook always has a backend.
+- With the gateway and leader election on, readiness waits for a lease the old pod releases only as it terminates, so the old pod has to leave first (`maxUnavailable: 1`).
+- With the gateway on and leader election off, every pod runs the gateway. Its SQLite database lives on one ReadWriteOnce volume that a second pod cannot share, so the old pod stops before the new one starts, and the gateway (and the webhook) are down for the length of the roll.
+
+Set `operator.strategy` to render your own:
 
 ```yaml
 operator:

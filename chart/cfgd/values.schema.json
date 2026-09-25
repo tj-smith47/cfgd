@@ -18,7 +18,7 @@
         },
         "strategy": {
           "type": "object",
-          "description": "Operator Deployment update strategy, rendered as given; empty picks RollingUpdate with maxSurge 1 and maxUnavailable 0, or 1 when the device gateway and leader election are both enabled"
+          "description": "Operator Deployment update strategy, rendered as given. Empty derives it: RollingUpdate with maxSurge 1 and maxUnavailable 0 when the device gateway is off, or on without leader election and without persistence; maxUnavailable 1 when the gateway and leader election are both on; Recreate when the gateway and its persistence are on without leader election"
         },
         "image": {
           "type": "object",

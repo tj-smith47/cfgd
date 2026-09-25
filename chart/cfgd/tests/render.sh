@@ -10,10 +10,14 @@ here="$(cd "$(dirname "$0")" && pwd)"
 chart="$(dirname "$here")"
 
 # name|helm arguments
+# One case per cell of the derived strategy (gateway, gateway persistence,
+# leader election), then the explicit overrides.
 cases=(
   "default|"
+  "no-gateway-without-leader-election|--set operator.leaderElection.enabled=false"
   "gateway-with-leader-election|--set deviceGateway.enabled=true"
-  "gateway-without-leader-election|--set deviceGateway.enabled=true --set operator.leaderElection.enabled=false"
+  "gateway-persistent-without-leader-election|--set deviceGateway.enabled=true --set operator.leaderElection.enabled=false"
+  "gateway-ephemeral-without-leader-election|--set deviceGateway.enabled=true --set deviceGateway.persistence.enabled=false --set operator.leaderElection.enabled=false"
   "override-recreate|--set operator.strategy.type=Recreate"
   "override-rolling|--set operator.strategy.type=RollingUpdate --set operator.strategy.rollingUpdate.maxUnavailable=2 --set operator.strategy.rollingUpdate.maxSurge=0"
 )
