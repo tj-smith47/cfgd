@@ -192,9 +192,13 @@ impl DeviceCompliance {
     /// still counted.
     pub fn headline(&self) -> Option<String> {
         let (first, rest) = self.checks.split_first()?;
-        let more = (self.warning + self.violation)
+        // The counts are the device's own numbers, so no sum of them may
+        // overflow a render.
+        let more = self
+            .warning
+            .saturating_add(self.violation)
             .saturating_sub(1)
-            .max(rest.len() as u32);
+            .max(u32::try_from(rest.len()).unwrap_or(u32::MAX));
         let mut line = format!("{} {}", first.category, first.name);
         if let Some(detail) = &first.detail {
             line.push_str(": ");

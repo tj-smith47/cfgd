@@ -1357,6 +1357,13 @@ fn device_compliance_headline_names_the_first_check_and_counts_the_rest() {
     );
     report.violation = 1;
     assert_eq!(report.headline().as_deref(), Some("file /c"));
+    report.warning = u32::MAX;
+    assert_eq!(
+        report.headline().as_deref(),
+        Some("file /c (+4294967294 more)"),
+        "counts at the top of the range still render"
+    );
+    report.warning = 0;
     report.checks.clear();
     assert_eq!(report.headline(), None);
 }
