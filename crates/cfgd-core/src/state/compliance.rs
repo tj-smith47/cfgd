@@ -98,23 +98,23 @@ impl StateStore {
         &self,
         id: i64,
     ) -> Result<Option<crate::compliance::ComplianceSnapshot>> {
-        let result = self.conn.query_row(
+        snapshot_from_row(self.conn.query_row(
             "SELECT snapshot_json FROM compliance_snapshots WHERE id = ?1",
             params![id],
             |row| row.get::<_, String>(0),
-        );
+        ))
+    }
 
-        match result {
-            Ok(json) => {
-                let snapshot: crate::compliance::ComplianceSnapshot = serde_json::from_str(&json)
-                    .map_err(|e| {
-                    StateError::Database(format!("failed to deserialize snapshot: {}", e))
-                })?;
-                Ok(Some(snapshot))
-            }
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(StateError::Database(e.to_string()).into()),
-        }
+    /// The most recently stored compliance snapshot, `None` when none has been
+    /// stored.
+    pub fn latest_compliance_snapshot(
+        &self,
+    ) -> Result<Option<crate::compliance::ComplianceSnapshot>> {
+        snapshot_from_row(self.conn.query_row(
+            "SELECT snapshot_json FROM compliance_snapshots ORDER BY id DESC LIMIT 1",
+            [],
+            |row| row.get::<_, String>(0),
+        ))
     }
 
     /// Remove compliance snapshots older than the given ISO 8601 timestamp.
@@ -125,5 +125,21 @@ impl StateStore {
             params![before_timestamp],
         )?;
         Ok(deleted)
+    }
+}
+
+fn snapshot_from_row(
+    result: rusqlite::Result<String>,
+) -> Result<Option<crate::compliance::ComplianceSnapshot>> {
+    match result {
+        Ok(json) => {
+            let snapshot: crate::compliance::ComplianceSnapshot = serde_json::from_str(&json)
+                .map_err(|e| {
+                    StateError::Database(format!("failed to deserialize snapshot: {}", e))
+                })?;
+            Ok(Some(snapshot))
+        }
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(StateError::Database(e.to_string()).into()),
     }
 }

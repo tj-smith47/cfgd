@@ -33,7 +33,7 @@ pub fn register_device_tx(
     os: &str,
     arch: &str,
     config_hash: &str,
-    compliance_summary: Option<&serde_json::Value>,
+    compliance_summary: Option<&crate::crds::DeviceCompliance>,
 ) -> Result<Device, GatewayError> {
     let now = cfgd_core::utc_now_iso8601();
     let compliance_str = compliance_summary
@@ -69,7 +69,7 @@ pub fn update_checkin_tx(
     conn: &Connection,
     id: &str,
     config_hash: &str,
-    compliance_summary: Option<&serde_json::Value>,
+    compliance_summary: Option<&crate::crds::DeviceCompliance>,
 ) -> Result<(), GatewayError> {
     let now = cfgd_core::utc_now_iso8601();
     let compliance_str = compliance_summary
@@ -227,7 +227,7 @@ impl ServerDb {
         os: &str,
         arch: &str,
         config_hash: &str,
-        compliance_summary: Option<&serde_json::Value>,
+        compliance_summary: Option<&crate::crds::DeviceCompliance>,
     ) -> Result<Device, GatewayError> {
         let writer = self.writer.clone();
         let metrics = self.metrics.clone();
@@ -256,7 +256,7 @@ impl ServerDb {
         &self,
         id: &str,
         config_hash: &str,
-        compliance_summary: Option<&serde_json::Value>,
+        compliance_summary: Option<&crate::crds::DeviceCompliance>,
     ) -> Result<(), GatewayError> {
         let writer = self.writer.clone();
         let metrics = self.metrics.clone();

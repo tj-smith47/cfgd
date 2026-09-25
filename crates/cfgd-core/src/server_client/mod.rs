@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::compliance::ComplianceSummary;
+use crate::compliance::{ComplianceCheck, ComplianceSnapshot, ComplianceStatus};
 use crate::errors::{CfgdError, Result};
 use crate::output::{Printer, Role};
 use crate::providers::SystemDrift;
@@ -63,21 +63,23 @@ pub struct ServerClient {
     device_id: String,
 }
 
-/// What the machine reports about itself on a check-in, beyond the config hash
-/// and the compliance summary.
+/// What the machine reports about itself on a check-in, beyond the config hash.
 ///
-/// The device is the only thing that can answer either question, and the
-/// check-in is its only channel to the cluster: `MachineConfig.status`
-/// carries both maps, and a `ConfigPolicy` version pin and a `BackupPolicy`
+/// The device is the only thing that can answer any of these questions, and
+/// the check-in is its only channel to the cluster: `MachineConfig.status`
+/// carries them, and a `ConfigPolicy` version pin and a `BackupPolicy`
 /// schedule projection are decided from them.
 ///
-/// Each map is an `Option` because "I looked and found none" and "I could not
+/// Each field is an `Option` because "I looked and found none" and "I could not
 /// look" are different facts and the gateway acts on them differently: an
 /// observed map is applied whole, so a key the machine stopped reporting is
 /// retired, while an unobserved one is left alone with whatever the cluster
 /// already holds. `None` is also what an older device's body deserializes as.
 #[derive(Debug, Default, Clone)]
-pub struct CheckinFacts {
+pub struct CheckinFacts<'a> {
+    /// The compliance snapshot this check-in collected, when compliance is
+    /// enabled and the collection succeeded.
+    pub compliance: Option<CheckinCompliance<'a>>,
     /// Installed versions of the packages this machine DECLARES, keyed
     /// `<manager>/<package>` by [`crate::state::package_resource_id`].
     pub package_versions: Option<BTreeMap<String, String>>,
@@ -86,24 +88,95 @@ pub struct CheckinFacts {
     pub backup_schedule_owners: Option<BTreeMap<String, String>>,
 }
 
+/// A compliance snapshot as the check-in reports it: the three counts, and
+/// every check that is not compliant.
+///
+/// The counts say how much is wrong and the checks say what, so a fleet reader
+/// sees the reason a machine is out of compliance without asking the machine.
+/// Compliant checks are left out: they are the bulk of a snapshot and tell the
+/// fleet nothing it acts on.
+#[derive(Debug, Clone, Serialize)]
+pub struct CheckinCompliance<'a> {
+    pub compliant: usize,
+    pub warning: usize,
+    pub violation: usize,
+    /// Violations first, then warnings, each in the order the snapshot
+    /// collected them: the order `cfgd compliance` lists them in, so the first
+    /// check a fleet reader sees is the most severe one the machine shows.
+    ///
+    /// Omitted when empty, which is the body a gateway that predates the field
+    /// already parses.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub checks: Vec<CheckinCheck<'a>>,
+}
+
+/// One non-compliant check, borrowed from the snapshot that recorded it.
+#[derive(Debug, Clone, Serialize)]
+pub struct CheckinCheck<'a> {
+    pub category: &'a str,
+    /// [`ComplianceCheck::subject_name`], the identifier `cfgd compliance` names
+    /// the row by.
+    pub name: &'a str,
+    pub status: ComplianceStatus,
+    /// The row's own detail text, as the machine recorded it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<&'a str>,
+}
+
+impl<'a> CheckinCompliance<'a> {
+    /// Report `snapshot` as the check-in carries it.
+    pub fn from_snapshot(snapshot: &'a ComplianceSnapshot) -> Self {
+        let summary = &snapshot.summary;
+        let mut checks = Vec::with_capacity(summary.warning + summary.violation);
+        for status in [ComplianceStatus::Violation, ComplianceStatus::Warning] {
+            checks.extend(
+                snapshot
+                    .checks
+                    .iter()
+                    .filter(|c| c.status == status)
+                    .map(CheckinCheck::from),
+            );
+        }
+        Self {
+            compliant: summary.compliant,
+            warning: summary.warning,
+            violation: summary.violation,
+            checks,
+        }
+    }
+}
+
+impl<'a> From<&'a ComplianceCheck> for CheckinCheck<'a> {
+    fn from(check: &'a ComplianceCheck) -> Self {
+        Self {
+            category: &check.category,
+            name: check.subject_name(),
+            status: check.status,
+            detail: check.detail.as_deref(),
+        }
+    }
+}
+
+/// The body of `POST /api/v1/checkin`, as both `cfgd checkin` and the daemon's
+/// reconcile tick send it.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct CheckinRequest {
-    device_id: String,
-    hostname: String,
-    os: String,
-    arch: String,
-    config_hash: String,
+pub struct CheckinRequest<'a> {
+    pub device_id: String,
+    pub hostname: String,
+    pub os: String,
+    pub arch: String,
+    pub config_hash: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    compliance_summary: Option<ComplianceSummary>,
+    pub compliance_summary: Option<CheckinCompliance<'a>>,
     /// Omitted when the device did not observe it, which is the body an older
     /// device sends and a gateway that predates the field parses. An observed
     /// map is sent whole, empty included: that is what lets the gateway retire
     /// a key this machine no longer reports.
     #[serde(skip_serializing_if = "Option::is_none")]
-    package_versions: Option<BTreeMap<String, String>>,
+    pub package_versions: Option<BTreeMap<String, String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    backup_schedule_owners: Option<BTreeMap<String, String>>,
+    pub backup_schedule_owners: Option<BTreeMap<String, String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -436,12 +509,12 @@ impl ServerClient {
         ))
     }
 
-    /// Check in with the device gateway, reporting current config hash and optional compliance summary.
+    /// Check in with the device gateway, reporting the current config hash and
+    /// what the machine observed about itself.
     pub fn checkin(
         &self,
         config_hash: &str,
-        compliance_summary: Option<ComplianceSummary>,
-        facts: CheckinFacts,
+        facts: CheckinFacts<'_>,
         printer: &Printer,
     ) -> Result<CheckinResponse> {
         let hostname = crate::hostname_string();
@@ -452,7 +525,7 @@ impl ServerClient {
             os: std::env::consts::OS.to_string(),
             arch: std::env::consts::ARCH.to_string(),
             config_hash: config_hash.to_string(),
-            compliance_summary,
+            compliance_summary: facts.compliance,
             package_versions: facts.package_versions,
             backup_schedule_owners: facts.backup_schedule_owners,
         };

@@ -9,8 +9,9 @@ via external alerting integrations.
 **What a DriftAlert covers.** A device's report is produced by `cfgd checkin`, whose drift payload
 is the answers of the system configurators its profile declares (`sysctl`, `kernelModules`,
 `macosDefaults`, `windowsRegistry`, ...) and nothing else. Managed files, packages, env vars and
-aliases are checked on the device by `cfgd diff`, and reach the fleet only as the aggregate
-counts of a check-in's compliance summary — never as findings. A device with no open DriftAlert
+aliases are checked on the device by `cfgd diff`, and reach the fleet through a check-in's
+compliance summary (its counts and each check that did not pass, on
+`MachineConfig.status.compliance`), never as a DriftAlert. A device with no open DriftAlert
 is a device whose system settings matched, not a device proven in sync.
 
 **API group:** `cfgd.io/v1alpha1`

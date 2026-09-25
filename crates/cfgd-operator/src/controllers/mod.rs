@@ -54,6 +54,10 @@ pub(crate) const FIELD_MANAGER_GATEWAY_PACKAGES: &str = "cfgd-operator/gateway/p
 /// words the DEVICE reports; the backups half of the split
 /// [`FIELD_MANAGER_GATEWAY_PACKAGES`] describes.
 pub(crate) const FIELD_MANAGER_GATEWAY_BACKUPS: &str = "cfgd-operator/gateway/backups";
+/// Field manager for `MachineConfig.status.compliance`, the compliance
+/// snapshot the DEVICE reports; split from the other two for the reason
+/// [`FIELD_MANAGER_GATEWAY_PACKAGES`] describes.
+pub(crate) const FIELD_MANAGER_GATEWAY_COMPLIANCE: &str = "cfgd-operator/gateway/compliance";
 pub(super) const MACHINE_CONFIG_FINALIZER: &str = "cfgd.io/machine-config-cleanup";
 pub(super) const CONFIG_POLICY_FINALIZER: &str = "cfgd.io/config-policy-cleanup";
 pub(super) const CLUSTER_CONFIG_POLICY_FINALIZER: &str = "cfgd.io/cluster-config-policy-cleanup";

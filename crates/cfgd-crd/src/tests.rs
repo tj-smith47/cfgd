@@ -1324,3 +1324,32 @@ fn backup_policy_units_summary_names_each_unit_once() {
         Some("dotfiles, notes".to_string())
     );
 }
+
+/// The fleet's one-line reason: the first failing check, its detail when the
+/// device gave one, and how many checks follow it.
+#[test]
+fn device_compliance_headline_names_the_first_check_and_counts_the_rest() {
+    let check = |name: &str, detail: Option<&str>| DeviceComplianceCheck {
+        category: "file".to_string(),
+        name: name.to_string(),
+        status: DeviceComplianceStatus::Violation,
+        detail: detail.map(str::to_string),
+    };
+    let mut report = DeviceCompliance {
+        violation: 3,
+        checks: vec![
+            check("/a", Some("managed file missing")),
+            check("/b", None),
+            check("/c", None),
+        ],
+        ..Default::default()
+    };
+    assert_eq!(
+        report.headline().as_deref(),
+        Some("file /a: managed file missing (+2 more)")
+    );
+    report.checks.drain(..2);
+    assert_eq!(report.headline().as_deref(), Some("file /c"));
+    report.checks.clear();
+    assert_eq!(report.headline(), None);
+}

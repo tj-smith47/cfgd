@@ -83,6 +83,103 @@ async fn dashboard_with_devices_shows_device_rows() {
     assert!(html.contains(r#"<div class="value">2</div>"#));
 }
 
+fn reported_compliance() -> crate::crds::DeviceCompliance {
+    crate::crds::DeviceCompliance {
+        compliant: 3,
+        warning: 1,
+        violation: 1,
+        checks: vec![
+            crate::crds::DeviceComplianceCheck {
+                category: "file".to_string(),
+                name: "/home/u/.zshrc".to_string(),
+                status: crate::crds::DeviceComplianceStatus::Violation,
+                detail: Some("managed file <missing>".to_string()),
+            },
+            crate::crds::DeviceComplianceCheck {
+                category: "watchPath".to_string(),
+                name: "/etc/cfgd/watched".to_string(),
+                status: crate::crds::DeviceComplianceStatus::Warning,
+                detail: Some("path does not exist".to_string()),
+            },
+        ],
+    }
+}
+
+/// The device table says why a machine is out of compliance: the first check
+/// that did not pass and how many follow it. An agent that predates the check
+/// list still shows its counts, and a device that never reported says so.
+#[tokio::test]
+async fn dashboard_compliance_cell_names_the_first_failing_check() {
+    let (state, _tmp) = test_state();
+    let checks = reported_compliance();
+    let counts_only = crate::crds::DeviceCompliance {
+        compliant: 7,
+        warning: 1,
+        violation: 0,
+        checks: vec![],
+    };
+    let clean = crate::crds::DeviceCompliance {
+        compliant: 9,
+        ..Default::default()
+    };
+    for (id, report) in [
+        ("dev-a", Some(&checks)),
+        ("dev-b", Some(&counts_only)),
+        ("dev-c", Some(&clean)),
+        ("dev-d", None),
+    ] {
+        state
+            .db
+            .register_device(id, id, "linux", "x86_64", "h", report)
+            .await
+            .expect("register device");
+    }
+
+    let html = dashboard(State(state)).await.expect("dashboard renders").0;
+
+    assert!(html.contains("<th>Compliance</th>"), "{html}");
+    for cell in [
+        r#"<td><span class="status offline">file /home/u/.zshrc: managed file &lt;missing&gt; (+1 more)</span></td>"#,
+        r#"<td><span class="status drifted">1 warning, 0 violation</span></td>"#,
+        r#"<td><span class="status healthy">9 compliant</span></td>"#,
+        r#"<td><span class="muted">not reported</span></td>"#,
+    ] {
+        assert!(html.contains(cell), "missing {cell} in {html}");
+    }
+}
+
+/// The device page lists every check the device reported as not passing,
+/// which is where the dashboard's "+N more" leads.
+#[tokio::test]
+async fn device_detail_lists_every_reported_failing_check() {
+    let (state, _tmp) = test_state();
+    state
+        .db
+        .register_device(
+            "dev-1",
+            "host-1",
+            "linux",
+            "x86_64",
+            "h1",
+            Some(&reported_compliance()),
+        )
+        .await
+        .expect("register device");
+
+    let html = device_detail(State(state), Path("dev-1".to_string()))
+        .await
+        .expect("device page renders")
+        .0;
+
+    for row in [
+        r#"<p><span class="status offline">Violation</span> <span class="muted">3 compliant, 1 warning, 1 violation</span></p>"#,
+        r#"<tr><td><span class="status offline">Violation</span></td><td>file</td><td><code>/home/u/.zshrc</code></td><td>managed file &lt;missing&gt;</td></tr>"#,
+        r#"<tr><td><span class="status drifted">Warning</span></td><td>watchPath</td><td><code>/etc/cfgd/watched</code></td><td>path does not exist</td></tr>"#,
+    ] {
+        assert!(html.contains(row), "missing {row} in {html}");
+    }
+}
+
 #[tokio::test]
 async fn dashboard_stat_cards_reflect_device_statuses() {
     let (state, _tmp) = test_state();

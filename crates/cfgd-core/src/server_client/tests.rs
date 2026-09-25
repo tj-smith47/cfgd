@@ -68,6 +68,7 @@ fn checkin_carries_the_declared_package_versions_and_backup_schedule_owners() {
     let client = ServerClient::new(&server.url(), Some("key"), "dev-1");
     let printer = test_printer();
     let facts = CheckinFacts {
+        compliance: None,
         package_versions: Some(BTreeMap::from([(
             crate::state::package_resource_id("brew", "git"),
             "2.45.1".to_string(),
@@ -78,7 +79,7 @@ fn checkin_carries_the_declared_package_versions_and_backup_schedule_owners() {
         )])),
     };
     client
-        .checkin("hash123", None, facts, &printer)
+        .checkin("hash123", facts, &printer)
         .expect("the gateway answered");
     mock.assert();
 
@@ -133,7 +134,7 @@ fn checkin_response_without_backup_schedules_projects_nothing() {
     let client = ServerClient::new(&server.url(), Some("key"), "dev-1");
     let printer = test_printer();
     let resp = client
-        .checkin("hash", None, Default::default(), &printer)
+        .checkin("hash", Default::default(), &printer)
         .expect("the gateway answered");
     assert!(
         resp.backup_schedules.is_none(),
@@ -156,7 +157,7 @@ fn checkin_response_carries_the_cluster_owned_projection() {
     let client = ServerClient::new(&server.url(), Some("key"), "dev-1");
     let printer = test_printer();
     let resp = client
-        .checkin("hash", None, Default::default(), &printer)
+        .checkin("hash", Default::default(), &printer)
         .expect("the gateway answered");
     let projected = resp
         .backup_schedules
@@ -255,7 +256,7 @@ fn checkin_sends_correct_payload_and_parses_response() {
 
     let client = ServerClient::new(&server.url(), Some("test-key"), "dev-1");
     let printer = test_printer();
-    let result = client.checkin("hash123", None, Default::default(), &printer);
+    let result = client.checkin("hash123", Default::default(), &printer);
 
     assert!(result.is_ok());
     let resp = result.unwrap();
@@ -264,26 +265,116 @@ fn checkin_sends_correct_payload_and_parses_response() {
     mock.assert();
 }
 
+/// The body a real `cfgd checkin` sent for a machine with one missing managed
+/// file and one missing watched path, copied from the request the listener
+/// captured. Only the host fields are filled per machine.
+const CAPTURED_CHECKIN_BODY: &str = r#"{"deviceId":"dev-1","hostname":{HOSTNAME},"os":"{OS}","arch":"{ARCH}","configHash":"ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356","complianceSummary":{"compliant":0,"warning":1,"violation":1,"checks":[{"category":"file","name":"/root/.cache/cfgd-debug/checkin-payload/run/tmppu95r0vq/.zshrc","status":"Violation","detail":"managed file missing"},{"category":"watchPath","name":"/root/.cache/cfgd-debug/checkin-payload/run/tmppu95r0vq/watched","status":"Warning","detail":"path does not exist"}]},"packageVersions":{},"backupScheduleOwners":{}}"#;
+
+/// The check-in carries every check that did not pass, violations first, as
+/// the bytes a real check-in sent. The snapshot lists the warning first, so
+/// the order on the wire is the report's own and not the collection's.
 #[test]
-fn checkin_with_compliance_summary() {
+fn checkin_sends_the_non_compliant_checks_as_a_real_checkin_did() {
+    use crate::compliance::{ComplianceCheck, MachineInfo, compute_summary};
+
+    let home = "/root/.cache/cfgd-debug/checkin-payload/run/tmppu95r0vq";
+    let checks = vec![
+        ComplianceCheck {
+            category: "watchPath".into(),
+            path: Some(format!("{home}/watched")),
+            status: ComplianceStatus::Warning,
+            detail: Some("path does not exist".into()),
+            ..Default::default()
+        },
+        ComplianceCheck {
+            category: "file".into(),
+            target: Some(format!("{home}/.zshrc")),
+            status: ComplianceStatus::Violation,
+            detail: Some("managed file missing".into()),
+            ..Default::default()
+        },
+    ];
+    let snapshot = ComplianceSnapshot {
+        timestamp: "2026-09-25T00:00:00Z".into(),
+        machine: MachineInfo {
+            hostname: "ws-1".into(),
+            os: "linux".into(),
+            arch: "x86_64".into(),
+        },
+        profile: "default".into(),
+        sources: vec![],
+        summary: compute_summary(&checks),
+        checks,
+    };
+    let expected = CAPTURED_CHECKIN_BODY
+        .replace(
+            "{HOSTNAME}",
+            &serde_json::to_string(&crate::hostname_string()).unwrap(),
+        )
+        .replace("{OS}", std::env::consts::OS)
+        .replace("{ARCH}", std::env::consts::ARCH);
+
     let mut server = mockito::Server::new();
     let mock = server
         .mock("POST", "/api/v1/checkin")
+        .match_body(mockito::Matcher::Exact(expected))
         .with_status(200)
-        .with_body(r#"{"status":"ok","configChanged":true}"#)
+        .with_body(r#"{"status":"ok","configChanged":false}"#)
         .create();
-
     let client = ServerClient::new(&server.url(), Some("key"), "dev-1");
-    let printer = test_printer();
-    let summary = ComplianceSummary {
-        compliant: 5,
-        warning: 1,
-        violation: 0,
-    };
-    let result = client.checkin("hash", Some(summary), Default::default(), &printer);
-    assert!(result.is_ok());
-    assert!(result.unwrap().config_changed);
+    client
+        .checkin(
+            "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+            CheckinFacts {
+                compliance: Some(CheckinCompliance::from_snapshot(&snapshot)),
+                package_versions: Some(BTreeMap::new()),
+                backup_schedule_owners: Some(BTreeMap::new()),
+            },
+            &test_printer(),
+        )
+        .expect("the gateway answered");
     mock.assert();
+}
+
+/// A machine whose checks all pass sends the counts alone, and a failing check
+/// with no detail sends no `detail` key: both are the shape a gateway that
+/// predates the list already parses.
+#[test]
+fn a_checkin_omits_an_empty_check_list_and_an_absent_detail() {
+    use crate::compliance::{ComplianceCheck, MachineInfo, compute_summary};
+
+    let snapshot = |checks: Vec<ComplianceCheck>| ComplianceSnapshot {
+        timestamp: "2026-09-25T00:00:00Z".into(),
+        machine: MachineInfo {
+            hostname: "ws-1".into(),
+            os: "linux".into(),
+            arch: "x86_64".into(),
+        },
+        profile: "default".into(),
+        sources: vec![],
+        summary: compute_summary(&checks),
+        checks,
+    };
+    let passing = snapshot(vec![ComplianceCheck {
+        category: "file".into(),
+        target: Some("/home/u/.zshrc".into()),
+        status: ComplianceStatus::Compliant,
+        ..Default::default()
+    }]);
+    assert_eq!(
+        serde_json::to_string(&CheckinCompliance::from_snapshot(&passing)).unwrap(),
+        r#"{"compliant":1,"warning":0,"violation":0}"#
+    );
+    let undetailed = snapshot(vec![ComplianceCheck {
+        category: "package".into(),
+        name: Some("jq".into()),
+        status: ComplianceStatus::Violation,
+        ..Default::default()
+    }]);
+    assert_eq!(
+        serde_json::to_string(&CheckinCompliance::from_snapshot(&undetailed)).unwrap(),
+        r#"{"compliant":0,"warning":0,"violation":1,"checks":[{"category":"package","name":"jq","status":"Violation"}]}"#
+    );
 }
 
 #[test]
@@ -460,7 +551,7 @@ fn checkin_server_error_returns_error() {
 
     let client = ServerClient::new(&server.url(), Some("key"), "dev-1");
     let printer = test_printer();
-    let result = client.checkin("hash", None, Default::default(), &printer);
+    let result = client.checkin("hash", Default::default(), &printer);
     assert!(result.is_err());
     mock.assert();
 }
@@ -477,7 +568,7 @@ fn checkin_client_error_does_not_retry() {
 
     let client = ServerClient::new(&server.url(), Some("bad-key"), "dev-1");
     let printer = test_printer();
-    let result = client.checkin("hash", None, Default::default(), &printer);
+    let result = client.checkin("hash", Default::default(), &printer);
     assert!(result.is_err());
     mock.assert();
 }
@@ -567,7 +658,7 @@ fn checkin_invalid_json_response() {
 
     let client = ServerClient::new(&server.url(), Some("key"), "dev-1");
     let printer = test_printer();
-    let result = client.checkin("hash", None, Default::default(), &printer);
+    let result = client.checkin("hash", Default::default(), &printer);
     assert!(result.is_err());
     let err_msg = format!("{}", result.unwrap_err());
     assert!(
@@ -693,7 +784,7 @@ fn request_challenge_connection_refused() {
 fn checkin_connection_refused() {
     let client = ServerClient::new("http://127.0.0.1:1", Some("key"), "dev-1");
     let printer = test_printer();
-    let result = client.checkin("hash", None, Default::default(), &printer);
+    let result = client.checkin("hash", Default::default(), &printer);
     assert!(result.is_err());
     let err_msg = format!("{}", result.unwrap_err());
     assert!(
@@ -758,7 +849,7 @@ fn checkin_with_desired_config_in_response() {
     let client = ServerClient::new(&server.url(), Some("key"), "dev-1");
     let printer = test_printer();
     let result = client
-        .checkin("hash", None, Default::default(), &printer)
+        .checkin("hash", Default::default(), &printer)
         .unwrap();
     assert!(result.config_changed);
     assert!(result.desired_config.is_some());
@@ -838,7 +929,7 @@ fn checkin_no_api_key_omits_auth_header() {
 
     let client = ServerClient::new(&server.url(), None, "dev-1");
     let printer = test_printer();
-    let result = client.checkin("hash", None, Default::default(), &printer);
+    let result = client.checkin("hash", Default::default(), &printer);
     assert!(result.is_ok());
     mock.assert();
 }
@@ -1003,7 +1094,7 @@ mod bridge {
         let client = ServerClient::new(&server.url(), Some("key"), "dev-1");
         let (printer, cap) = Printer::for_test_doc();
         let resp = client
-            .checkin("hash123", None, Default::default(), &printer)
+            .checkin("hash123", Default::default(), &printer)
             .unwrap();
 
         let summary = CheckinSummary {

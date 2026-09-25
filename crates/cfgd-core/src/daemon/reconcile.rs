@@ -1351,10 +1351,14 @@ fn reconcile_tick(
     // answer both of the questions only the device can — and it reports them as
     // OBSERVED maps, which is what lets the gateway retire a package this
     // machine uninstalled or a backup unit it stopped declaring.
+    let compliance_snapshot = super::checkin::reported_compliance(cfg, store);
     let checkin = try_server_checkin(
         cfg,
         resolved,
         crate::server_client::CheckinFacts {
+            compliance: compliance_snapshot
+                .as_ref()
+                .map(crate::server_client::CheckinCompliance::from_snapshot),
             package_versions: crate::compliance::declared_package_versions(
                 &resolved.merged,
                 resolved_modules_ref.as_slice(),

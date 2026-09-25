@@ -22,31 +22,14 @@ pub fn cmd_checkin(
     let (cfg, _profile_name, local_resolved) = ctx.config_and_profile()?;
     let config_dir = ctx.config_dir();
 
-    // Compose with sources (cache-only — read paths stay offline) and resolve the
-    // effective module set through the one shared resolver, so the checkin
-    // payload reflects the same source-composed desired state that `apply` writes.
-    let mut desired = resolve_desired_state(
-        &ctx,
-        cfg,
-        local_resolved,
-        &[],
-        false,
-        printer,
-        false,
-        composition::ConstraintMode::Report,
-        &cfgd_core::modules::refuse_floor_bootstrap,
-    )?;
-    // Taken before the other fields, because a partial move out of `desired`
-    // would block the `&mut self` this accessor needs.
-    let mut registry = desired.take_registry(cfg);
-    let resolved = desired.resolved;
-    let resolved_modules = desired.modules;
-
-    registry.file_manager = Some(Box::new(build_compliance_file_manager(
-        config_dir,
-        &resolved,
-        Some(&ctx),
-    )?));
+    // The same resolution `cfgd compliance` collects against, so the compliance
+    // report, the hash and the drift scan below all read the source-composed
+    // desired state that `apply` writes.
+    let inputs =
+        super::compliance::ComplianceInputs::of_config(&ctx, cfg, local_resolved, printer)?;
+    let registry = &inputs.registry;
+    let resolved = &inputs.resolved;
+    let resolved_modules = &inputs.modules;
 
     let stored_cred = cfgd_core::server_client::load_credential().ok().flatten();
     let client = build_checkin_client(server_url, api_key, device_id, stored_cred.as_ref());
@@ -58,7 +41,7 @@ pub fn cmd_checkin(
     // settings changed, and the drift scan never checked a setting only a module
     // declared.
     let (system, _) =
-        cfgd_core::effective::effective_system_map(&resolved.merged, &resolved_modules);
+        cfgd_core::effective::effective_system_map(&resolved.merged, resolved_modules);
     let config_yaml =
         serde_yaml::to_string(&system).context("failed to serialize system config")?;
     let config_hash = cfgd_core::sha256_hex(config_yaml.as_bytes());
@@ -74,19 +57,18 @@ pub fn cmd_checkin(
     let system_diffs: std::cell::OnceCell<Vec<cfgd_core::compliance::SystemDiff>> =
         std::cell::OnceCell::new();
     let diff_system = || {
-        cfgd_core::compliance::collect_system_diffs(&resolved.merged, &resolved_modules, &registry)
+        cfgd_core::compliance::collect_system_diffs(&resolved.merged, resolved_modules, registry)
     };
 
-    let compliance_summary = if let Some(ref compliance_cfg) = cfg.spec.compliance {
-        if compliance_cfg.enabled {
+    // Kept whole for the length of the check-in, because the report borrows
+    // its rows from it.
+    let compliance_snapshot = match cfg.spec.compliance.as_ref().filter(|c| c.enabled) {
+        Some(compliance_cfg) => {
             let profile_name = cfg.active_profile().unwrap_or("unknown");
             let checkin_state = ctx.state()?;
-            match cfgd_core::compliance::collect_snapshot(
+            match inputs.collect(
                 profile_name,
-                &resolved.merged,
-                &resolved_modules,
                 config_dir,
-                &registry,
                 &compliance_cfg.scope,
                 &[],
                 printer,
@@ -103,18 +85,15 @@ pub fn cmd_checkin(
                             snapshot.summary.violation,
                         ),
                     );
-                    Some(snapshot.summary)
+                    Some(snapshot)
                 }
                 Err(e) => {
                     tracing::warn!(error = %e, "Failed to collect compliance snapshot for checkin");
                     None
                 }
             }
-        } else {
-            None
         }
-    } else {
-        None
+        None => None,
     };
 
     // What the machine reports about itself beyond the hash: the versions it
@@ -130,11 +109,14 @@ pub fn cmd_checkin(
     // it writes nothing, and the cluster keeps the versions the last check-in
     // that could look reported.
     let checkin_facts = cfgd_core::server_client::CheckinFacts {
+        compliance: compliance_snapshot
+            .as_ref()
+            .map(cfgd_core::server_client::CheckinCompliance::from_snapshot),
         package_versions: match ctx.package_context() {
             Ok(pkg_cx) => cfgd_core::compliance::declared_package_versions(
                 &resolved.merged,
-                &resolved_modules,
-                &registry,
+                resolved_modules,
+                registry,
                 &pkg_cx,
             ),
             Err(e) => {
@@ -163,7 +145,7 @@ pub fn cmd_checkin(
         let gateway_sec = printer.section("Gateway");
         let _inherit = printer.depth_inheritance();
         let result = client
-            .checkin(&config_hash, compliance_summary, checkin_facts, printer)
+            .checkin(&config_hash, checkin_facts, printer)
             .context("checkin to gateway failed");
         match &result {
             Ok(resp) => {
@@ -430,7 +412,7 @@ spec: {}
 
         let client = build_checkin_client(&server.url(), None, None, Some(&cred));
         let (printer, _buf) = Printer::for_test_at(Verbosity::Quiet);
-        let result = client.checkin("hash", None, Default::default(), &printer);
+        let result = client.checkin("hash", Default::default(), &printer);
 
         assert!(result.is_ok(), "checkin should succeed: {:?}", result);
         mock.assert();
@@ -455,7 +437,7 @@ spec: {}
             Some(&cred),
         );
         let (printer, _buf) = Printer::for_test_at(Verbosity::Quiet);
-        let result = client.checkin("hash", None, Default::default(), &printer);
+        let result = client.checkin("hash", Default::default(), &printer);
 
         assert!(result.is_ok(), "checkin should succeed: {:?}", result);
         mock.assert();
@@ -476,7 +458,7 @@ spec: {}
         let client =
             build_checkin_client(&server.url(), None, Some("explicit-device"), Some(&cred));
         let (printer, _buf) = Printer::for_test_at(Verbosity::Quiet);
-        let result = client.checkin("hash", None, Default::default(), &printer);
+        let result = client.checkin("hash", Default::default(), &printer);
 
         // The mock succeeds without requiring Bearer stored-key, confirming the
         // anonymous (non-stored-cred) path was taken.
@@ -500,7 +482,7 @@ spec: {}
 
         let client = build_checkin_client(&server_url, None, None, Some(&cred));
         let (printer, _buf) = Printer::for_test_at(Verbosity::Quiet);
-        let result = client.checkin("hash", None, Default::default(), &printer);
+        let result = client.checkin("hash", Default::default(), &printer);
 
         assert!(
             result.is_ok(),
@@ -634,6 +616,89 @@ spec:
             vec!["list-recursively org.gnome.cfgd-checkin"],
             "the compliance snapshot and the drift report share one diff pass"
         );
+    }
+
+    /// The check-in reports the machine's failing checks as `cfgd compliance`
+    /// collects them for the same config: the same rows, the same subjects
+    /// and the same details, so the fleet and the machine never disagree
+    /// about why it is out of compliance.
+    #[test]
+    #[serial_test::serial]
+    fn checkin_reports_the_failing_checks_cfgd_compliance_collects() {
+        let config_dir = make_test_config_dir();
+        let root = config_dir.path();
+        std::fs::create_dir_all(root.join("files")).unwrap();
+        std::fs::write(root.join("files").join("zshrc"), "export A=1\n").unwrap();
+        std::fs::write(
+            root.join("cfgd.yaml"),
+            format!(
+                "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  \
+                 profile: default\n  compliance:\n    enabled: true\n    scope:\n      \
+                 packages: false\n      system: false\n      secrets: false\n      \
+                 watchPaths: [{}]\n",
+                cfgd_core::to_posix_string(root.join("watched"))
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("profiles").join("default.yaml"),
+            format!(
+                "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\n\
+                 spec:\n  files:\n    managed:\n      - source: files/zshrc\n        \
+                 target: {}\n",
+                cfgd_core::to_posix_string(root.join(".zshrc"))
+            ),
+        )
+        .unwrap();
+
+        let state_dir = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(root);
+        let _state_env = EnvVarGuard::set("CFGD_STATE_DIR", state_dir.path().to_str().unwrap());
+        let cli = test_cli_for(root, state_dir.path());
+
+        let (quiet, _) = Printer::for_test_doc();
+        let (_, collected) = super::super::compliance::collect_and_store_compliance_snapshot(
+            &RunContext::new(&cli, &quiet),
+        )
+        .expect("cfgd compliance collects");
+        let report = cfgd_core::server_client::CheckinCompliance::from_snapshot(&collected);
+        assert_eq!(
+            report
+                .checks
+                .iter()
+                .map(|c| (c.category, c.status))
+                .collect::<Vec<_>>(),
+            vec![
+                ("file", cfgd_core::compliance::ComplianceStatus::Violation),
+                (
+                    "watchPath",
+                    cfgd_core::compliance::ComplianceStatus::Warning
+                ),
+            ],
+            "the fixture fails one check of each kind"
+        );
+        let expected = serde_json::json!({ "complianceSummary": report }).to_string();
+
+        let mut server = mockito::Server::new();
+        let checkin = server
+            .mock("POST", "/api/v1/checkin")
+            .match_body(mockito::Matcher::PartialJsonString(expected))
+            .with_status(200)
+            .with_body(r#"{"status":"ok","configChanged":false}"#)
+            .create();
+
+        let (printer, _cap) = Printer::for_test_doc();
+        let result = cmd_checkin(
+            &cli,
+            &printer,
+            &server.url(),
+            Some("test-key"),
+            Some("dev-1"),
+        );
+        drop(printer);
+
+        assert!(result.is_ok(), "cmd_checkin should succeed: {result:?}");
+        checkin.assert();
     }
 
     /// Every string in a gateway response is remote input, and this command

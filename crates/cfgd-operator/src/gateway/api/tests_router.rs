@@ -819,6 +819,64 @@ fn status_object(body: &serde_json::Value) -> &serde_json::Map<String, serde_jso
         .unwrap_or_else(|| panic!("an apply body carries a status object: {body}"))
 }
 
+/// A check-in carrying compliance writes it onto the MachineConfig under a
+/// manager of its own, naming no other field, so the fleet reads the checks
+/// that failed with `kubectl get machineconfig -o yaml`.
+#[tokio::test]
+#[serial]
+async fn checkin_applies_the_reported_compliance_under_its_own_field_manager() {
+    unsafe {
+        std::env::remove_var("CFGD_API_KEY");
+    }
+    let (ctx, _registry, harness) = MockKubeHarness::new(vec![
+        ExpectedCall::list("/apis/cfgd.io/v1alpha1/machineconfigs")
+            .returning_json(&machine_config_list("fleet", "workstation-1-mc", "host-1")),
+        expect_status_apply("cfgd-operator/gateway/compliance"),
+        ExpectedCall::list("/apis/cfgd.io/v1alpha1/namespaces/fleet/backuppolicies")
+            .returning_json(&backup_policy_list(vec![])),
+    ]);
+    let (state, _tmp) = crate::gateway::test_state::test_state_with_kube(ctx.client.clone());
+    let token = enrolled_device(&state, "dev-1", "host-1").await;
+    let compliance = serde_json::json!({
+        "compliant": 3,
+        "warning": 0,
+        "violation": 1,
+        "checks": [{
+            "category": "file",
+            "name": "/home/u/.zshrc",
+            "status": "Violation",
+            "detail": "managed file missing",
+        }],
+    });
+
+    let response = router_with_state(state)
+        .oneshot(post_json_with_bearer(
+            "/api/v1/checkin",
+            &token,
+            serde_json::json!({
+                "deviceId": "dev-1",
+                "hostname": "host-1",
+                "os": "linux",
+                "arch": "x86_64",
+                "configHash": "abc",
+                "complianceSummary": compliance,
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let report = harness.finish().await;
+    let applied = applied_under(&report, "cfgd-operator/gateway/compliance");
+    let status = status_object(&applied);
+    assert_eq!(status.get("compliance"), Some(&compliance), "{applied}");
+    assert_eq!(
+        status.len(),
+        1,
+        "the compliance manager names nothing else: {applied}"
+    );
+}
+
 #[tokio::test]
 #[serial]
 async fn checkin_patches_the_devices_machine_config_status() {

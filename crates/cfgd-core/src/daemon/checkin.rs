@@ -2,24 +2,6 @@ use super::*;
 
 // --- Server Check-in ---
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CheckinPayload {
-    pub device_id: String,
-    pub hostname: String,
-    pub os: String,
-    pub arch: String,
-    pub config_hash: String,
-    /// Omitted when this check-in observed no such map, which is the body a
-    /// gateway that predates the field already parses. An observed map is sent
-    /// whole, empty included, so the gateway can retire a key the machine
-    /// stopped reporting.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub package_versions: Option<std::collections::BTreeMap<String, String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub backup_schedule_owners: Option<std::collections::BTreeMap<String, String>>,
-}
-
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CheckinServerResponse {
@@ -61,6 +43,23 @@ pub struct CheckinOutcome {
     pub backup_schedules: Option<crate::backup::ScheduleProjections>,
 }
 
+/// The compliance snapshot the daemon's check-in reports: the newest one the
+/// compliance tick stored, which stores only when the machine's compliance
+/// changed, so the newest row is the newest observation.
+///
+/// `None` while compliance is off, whatever an earlier configuration left
+/// stored: the machine is no longer observing it, so it is not current.
+pub(crate) fn reported_compliance(
+    config: &CfgdConfig,
+    store: &crate::state::StateStore,
+) -> Option<crate::compliance::ComplianceSnapshot> {
+    config.spec.compliance.as_ref().filter(|c| c.enabled)?;
+    store.latest_compliance_snapshot().unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "daemon: stored compliance snapshot unreadable — the check-in reports none");
+        None
+    })
+}
+
 /// Compute a SHA256 hash of the resolved profile serialized to YAML.
 pub(crate) fn compute_config_hash(
     resolved: &ResolvedProfile,
@@ -86,7 +85,7 @@ pub(crate) fn compute_config_hash(
 pub(crate) fn server_checkin(
     server_url: &str,
     resolved: &ResolvedProfile,
-    facts: crate::server_client::CheckinFacts,
+    facts: crate::server_client::CheckinFacts<'_>,
     credential: &crate::server_client::DeviceCredential,
 ) -> CheckinOutcome {
     let host = match hostname::get() {
@@ -105,12 +104,13 @@ pub(crate) fn server_checkin(
         }
     };
 
-    let payload = CheckinPayload {
+    let payload = crate::server_client::CheckinRequest {
         device_id: credential.device_id.clone(),
         hostname: host,
         os: std::env::consts::OS.to_string(),
         arch: std::env::consts::ARCH.to_string(),
         config_hash,
+        compliance_summary: facts.compliance,
         package_versions: facts.package_versions,
         backup_schedule_owners: facts.backup_schedule_owners,
     };
@@ -210,7 +210,7 @@ pub(crate) fn find_server_url(config: &CfgdConfig) -> Option<String> {
 pub fn try_server_checkin(
     config: &CfgdConfig,
     resolved: &ResolvedProfile,
-    facts: crate::server_client::CheckinFacts,
+    facts: crate::server_client::CheckinFacts<'_>,
 ) -> CheckinOutcome {
     let Some(url) = find_server_url(config) else {
         return CheckinOutcome::default();

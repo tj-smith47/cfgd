@@ -58,6 +58,24 @@ pub struct ComplianceCheck {
     pub value: Option<String>,
 }
 
+impl ComplianceCheck {
+    /// The one identifier this check is reported under: its target, name, key
+    /// or path, whichever it carries first.
+    ///
+    /// Every surface naming a check reads it here — the `cfgd compliance`
+    /// rows, the diff that pairs two snapshots, and the check-in that tells the
+    /// gateway which checks failed — so the fleet and the machine name a row
+    /// the same way.
+    pub fn subject_name(&self) -> &str {
+        self.target
+            .as_deref()
+            .or(self.name.as_deref())
+            .or(self.key.as_deref())
+            .or(self.path.as_deref())
+            .unwrap_or("(unknown)")
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ComplianceStatus {
     #[default]

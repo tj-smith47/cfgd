@@ -52,6 +52,19 @@ status:
 
   packageVersions:
     manager/package-name: version-string
+
+  backupScheduleOwners:
+    unit-name: owner-string
+
+  compliance:
+    compliant: int
+    warning: int
+    violation: int
+    checks:
+      - category: string
+        name: string
+        status: Warning | Violation
+        detail: string
 ```
 
 ---
@@ -158,6 +171,8 @@ Written by the operator when a reconciliation pass changes it. Do not set manual
 | `observedGeneration` | int | The `metadata.generation` that was last processed by the controller. |
 | `conditions` | list | Standard Kubernetes condition list. A device's drifted **system settings** are reported here as a `DriftDetected` condition. See [status.conditions[]](#statusconditions). |
 | `packageVersions` | map | Reported installed versions, keyed `<manager>/<package>` (e.g. `{"brew/kubectl": "1.28.3"}`): the manager qualifies the name because two managers may hold one package at different versions. Versions are loose semver: `1.28`, `1.28.3`. Written by the device gateway on every check-in, from the packages the machine declares; a reconcile that cannot observe the map carries it forward rather than blanking it. A policy version requirement naming a package is met only when EVERY reported copy of it satisfies the requirement, because two managers may hold one package at different versions and a pin that only the newer copy meets is not met. |
+| `backupScheduleOwners` | map | Which layer owns each declared backup unit's schedule on this machine, keyed by unit name (`{"dotfiles": "local"}`). Written by the device gateway on every check-in; a reconcile that cannot observe it carries it forward. See [BackupPolicy](../backup-policy.md). |
+| `compliance` | object | The compliance the machine last reported: `compliant`, `warning` and `violation` counts, and `checks`, every check that did not pass (violations first), each with `category`, `name`, `status` (`Warning` or `Violation`) and `detail` as `cfgd compliance` shows them. Written by the device gateway on each check-in that carries a compliance snapshot (the machine's `spec.compliance` is enabled); absent until one does, and a reconcile carries it forward. `checks` is absent when nothing fails or the agent predates the list. |
 
 The operator patches `status` only when the pass observed something different,
 so a machine that has not moved is not written to on every requeue. That makes

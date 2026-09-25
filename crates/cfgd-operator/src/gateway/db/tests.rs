@@ -310,7 +310,17 @@ async fn force_reconcile_not_found() {
 #[tokio::test(flavor = "current_thread")]
 async fn compliance_summary_stored_on_register() {
     let (db, _tmp) = test_db();
-    let summary = serde_json::json!({"compliant": 5, "warning": 1, "violation": 0});
+    let summary = crate::crds::DeviceCompliance {
+        compliant: 5,
+        warning: 1,
+        violation: 0,
+        checks: vec![crate::crds::DeviceComplianceCheck {
+            category: "watchPath".to_string(),
+            name: "/etc/cfgd/watched".to_string(),
+            status: crate::crds::DeviceComplianceStatus::Warning,
+            detail: Some("path does not exist".to_string()),
+        }],
+    };
     let device = db
         .register_device("dev-c", "ws-c", "linux", "x86_64", "hash1", Some(&summary))
         .await
@@ -325,7 +335,12 @@ async fn compliance_summary_stored_on_checkin_update() {
         .await
         .expect("register failed");
 
-    let summary = serde_json::json!({"compliant": 10, "warning": 0, "violation": 2});
+    let summary = crate::crds::DeviceCompliance {
+        compliant: 10,
+        warning: 0,
+        violation: 2,
+        checks: vec![],
+    };
     db.update_checkin("dev-c2", "hash2", Some(&summary))
         .await
         .expect("update failed");

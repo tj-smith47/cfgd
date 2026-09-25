@@ -147,6 +147,68 @@ pub struct MachineConfigStatus {
     /// cannot observe it preserves it.
     #[serde(default)]
     pub backup_schedule_owners: BTreeMap<String, String>,
+    /// The compliance the machine last reported: how many of its checks pass,
+    /// warn and fail, and every check that does not pass. Device-reported,
+    /// like `packageVersions`: absent until a check-in carries a compliance
+    /// snapshot, and a reconcile that cannot observe it preserves it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compliance: Option<DeviceCompliance>,
+}
+
+/// A machine's compliance snapshot as its check-in reports it.
+#[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceCompliance {
+    /// Checks that pass.
+    pub compliant: u32,
+    /// Checks that raised a warning.
+    pub warning: u32,
+    /// Checks that fail.
+    pub violation: u32,
+    /// Every check that does not pass, violations first, then warnings. An
+    /// agent that predates the list reports the counts alone.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub checks: Vec<DeviceComplianceCheck>,
+}
+
+impl DeviceCompliance {
+    /// One line for a fleet table: the first check that does not pass, with a
+    /// count of the ones after it. `None` when the report lists no check.
+    pub fn headline(&self) -> Option<String> {
+        let (first, rest) = self.checks.split_first()?;
+        let mut line = format!("{} {}", first.category, first.name);
+        if let Some(detail) = &first.detail {
+            line.push_str(": ");
+            line.push_str(detail);
+        }
+        if !rest.is_empty() {
+            use std::fmt::Write;
+            let _ = write!(line, " (+{} more)", rest.len());
+        }
+        Some(line)
+    }
+}
+
+/// One check a machine reported as not passing.
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceComplianceCheck {
+    /// What kind of thing was checked (`file`, `package`, `watchPath`, ...).
+    pub category: String,
+    /// The file, package, key or path the check is about, as the machine names
+    /// it in `cfgd compliance`.
+    pub name: String,
+    pub status: DeviceComplianceStatus,
+    /// Why the check did not pass, in the machine's own words.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+/// The outcome of a check that did not pass.
+#[derive(Deserialize, Serialize, Clone, Copy, Debug, PartialEq, Eq, JsonSchema)]
+pub enum DeviceComplianceStatus {
+    Warning,
+    Violation,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq, JsonSchema)]
@@ -284,10 +346,10 @@ pub struct MachineConfigReference {
 /// A device's report covers its system settings alone — the answers of the
 /// system configurators its profile declares (`sysctl`, `kernelModules`,
 /// `macosDefaults`, `windowsRegistry`, ...). Packages, managed files, env vars
-/// and aliases are checked on the device by `cfgd diff` and reach the fleet only
-/// as the aggregate counts of a compliance summary, never as findings — so a
-/// device with no DriftAlert is a device whose system settings matched, not a
-/// device proven in sync.
+/// and aliases are checked on the device by `cfgd diff` and reach the fleet
+/// through its compliance summary (`MachineConfig.status.compliance`), never as
+/// a DriftAlert — so a device with no DriftAlert is a device whose system
+/// settings matched, not a device proven in sync.
 #[derive(CustomResource, Deserialize, Serialize, Clone, Debug, JsonSchema)]
 #[kube(
     group = "cfgd.io",

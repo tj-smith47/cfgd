@@ -759,7 +759,7 @@ mod sync;
 /// reads them with the gateway's types: the daemon posts a body cfgd-operator
 /// must parse, and neither crate can see the other's spelling on its own.
 #[cfg(any(test, feature = "test-helpers"))]
-pub use checkin::{CheckinPayload, CheckinServerResponse};
+pub use checkin::CheckinServerResponse;
 
 /// The daemon's own periodic check-in, for the pin that reads it beside the
 /// CLI's: the two are separate crates, and only a test holding both can say

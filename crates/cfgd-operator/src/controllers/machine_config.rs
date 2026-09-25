@@ -137,6 +137,10 @@ pub(super) async fn reconcile_machine_config(
         .map(|s| s.backup_schedule_owners.clone())
         .unwrap_or_default();
 
+    // And for the compliance the device last reported: only a check-in can
+    // observe it.
+    let existing_compliance = existing_status.and_then(|s| s.compliance.clone());
+
     // `Compliant` belongs to the policy controllers: its status, reason AND
     // message are all theirs, and this controller only carries them through.
     // Rewriting any of the three is not cosmetic — a `Condition` compares by
@@ -200,6 +204,7 @@ pub(super) async fn reconcile_machine_config(
         ],
         package_versions: existing_package_versions,
         backup_schedule_owners: existing_backup_schedule_owners,
+        compliance: existing_compliance,
     };
 
     // Everything the reconcile observed is already recorded — write nothing and
@@ -214,15 +219,16 @@ pub(super) async fn reconcile_machine_config(
 
     desired.last_reconciled = Some(now.clone());
     let mut reported = serde_json::json!(desired);
-    // The two device-reported maps are carried in `desired` so the
+    // The device-reported fields are carried in `desired` so the
     // already-current comparison above sees the whole status, and dropped from
     // the body: they are the gateway's fields, applied server-side under its own
-    // manager, and echoing them here would move their ownership to this manager
+    // managers, and echoing them here would move their ownership to this manager
     // and turn the gateway's next apply into a conflict. A merge patch that
-    // names neither leaves both standing.
+    // names none of them leaves them all standing.
     if let Some(body) = reported.as_object_mut() {
         body.remove("packageVersions");
         body.remove("backupScheduleOwners");
+        body.remove("compliance");
     }
     let status = serde_json::json!({ "status": reported });
 

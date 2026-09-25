@@ -207,6 +207,7 @@ async fn reconcile_machine_config_skips_when_generation_observed_and_no_drift() 
     mc.status = Some(MachineConfigStatus {
         last_reconciled: Some("2026-01-01T00:00:00Z".to_string()),
         backup_schedule_owners: Default::default(),
+        compliance: None,
         observed_generation: Some(7),
         conditions: vec![],
         package_versions: Default::default(),
@@ -401,6 +402,7 @@ async fn reconcile_machine_config_carries_the_policys_compliant_message_forward(
     mc.status = Some(MachineConfigStatus {
         last_reconciled: Some("2026-01-01T00:00:00Z".to_string()),
         backup_schedule_owners: Default::default(),
+        compliance: None,
         observed_generation: Some(1),
         conditions: vec![policy_written_compliant("p")],
         package_versions: Default::default(),
@@ -462,6 +464,7 @@ async fn a_drifted_policy_targeted_machine_reaches_steady_state() {
     mc.status = Some(MachineConfigStatus {
         last_reconciled: Some("2026-01-01T00:00:00Z".to_string()),
         backup_schedule_owners: Default::default(),
+        compliance: None,
         observed_generation: Some(1),
         conditions: vec![policy_written_compliant("pp-policy")],
         package_versions: Default::default(),
@@ -659,6 +662,7 @@ async fn reconcile_machine_config_preserves_existing_compliant_condition_status(
     mc.status = Some(MachineConfigStatus {
         last_reconciled: Some("2025-12-01T00:00:00Z".to_string()),
         backup_schedule_owners: Default::default(),
+        compliance: None,
         observed_generation: Some(1),
         conditions: vec![Condition {
             condition_type: "Compliant".to_string(),
@@ -744,7 +748,7 @@ async fn reconcile_machine_config_when_drift_alert_cache_is_unpopulated_returns_
 /// (unforced) apply into a conflict. A merge patch changes only what it names,
 /// so leaving both out is what preserves them.
 #[tokio::test]
-async fn reconcile_machine_config_leaves_the_device_reported_maps_to_the_gateway() {
+async fn reconcile_machine_config_leaves_the_device_reported_fields_to_the_gateway() {
     let mut mc = machine_config("mc-pinned", NS);
     mc.metadata.finalizers = Some(vec![MACHINE_CONFIG_FINALIZER.to_string()]);
     mc.status = Some(MachineConfigStatus {
@@ -760,6 +764,17 @@ async fn reconcile_machine_config_leaves_the_device_reported_maps_to_the_gateway
         package_versions: [("brew/git".to_string(), "2.45.1".to_string())]
             .into_iter()
             .collect(),
+        compliance: Some(crate::crds::DeviceCompliance {
+            compliant: 4,
+            warning: 0,
+            violation: 1,
+            checks: vec![crate::crds::DeviceComplianceCheck {
+                category: "file".to_string(),
+                name: "/home/u/.bashrc".to_string(),
+                status: crate::crds::DeviceComplianceStatus::Violation,
+                detail: Some("managed file missing".to_string()),
+            }],
+        }),
     });
 
     // Drift keeps the reconcile off the already-observed short circuit, which
@@ -794,6 +809,10 @@ async fn reconcile_machine_config_leaves_the_device_reported_maps_to_the_gateway
     assert!(
         status.get("packageVersions").is_none(),
         "the reported versions are the gateway's field on the same terms: {status}"
+    );
+    assert!(
+        status.get("compliance").is_none(),
+        "the reported compliance is the gateway's field on the same terms: {status}"
     );
     assert!(
         status["lastReconciled"].as_str().is_some(),

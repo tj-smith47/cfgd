@@ -231,6 +231,7 @@ async fn reconcile_drift_alert_preserves_sibling_conditions_on_the_machine() {
     mc.status = Some(crate::crds::MachineConfigStatus {
         last_reconciled: Some("2026-01-01T00:00:00Z".to_string()),
         backup_schedule_owners: Default::default(),
+        compliance: None,
         observed_generation: Some(1),
         conditions: vec![
             Condition {

@@ -493,12 +493,13 @@ fn find_server_url_returns_url_for_server_origin() {
 /// spelled the way the gateway's own `CheckinRequest` reads it: camelCase.
 #[test]
 fn checkin_payload_round_trips() {
-    let payload = CheckinPayload {
+    let payload = crate::server_client::CheckinRequest {
         device_id: "abc123".into(),
         hostname: "test-host".into(),
         os: "linux".into(),
         arch: "x86_64".into(),
         config_hash: "deadbeef".into(),
+        compliance_summary: None,
         package_versions: None,
         backup_schedule_owners: None,
     };
@@ -509,8 +510,8 @@ fn checkin_payload_round_trips() {
     assert_eq!(parsed["os"], "linux");
     assert_eq!(parsed["arch"], "x86_64");
     assert_eq!(parsed["configHash"], "deadbeef");
-    // Exactly 5 fields: a check-in that observed neither map sends the body a
-    // gateway that predates them already parses.
+    // Exactly 5 fields: a check-in that observed no compliance and neither map
+    // sends the body a gateway that predates them already parses.
     assert_eq!(parsed.as_object().unwrap().len(), 5);
 }
 
@@ -5098,16 +5099,17 @@ fn daemon_status_response_deserializes_from_minimal_json() {
     assert!(parsed.update_available.is_none());
 }
 
-// --- CheckinPayload: field coverage ---
+// --- CheckinRequest: field coverage ---
 
 #[test]
 fn checkin_payload_serializes_all_fields() {
-    let payload = CheckinPayload {
+    let payload = crate::server_client::CheckinRequest {
         device_id: "sha256hex".into(),
         hostname: "myhost.local".into(),
         os: "linux".into(),
         arch: "aarch64".into(),
         config_hash: "abcd1234".into(),
+        compliance_summary: None,
         package_versions: None,
         backup_schedule_owners: None,
     };
@@ -24632,4 +24634,76 @@ fn every_counted_clause_names_the_unit_it_counts() {
          word it from what the reader can see on the machine:\n{}",
         record_worded.join("\n")
     );
+}
+
+/// The daemon's check-in reports the newest snapshot the compliance tick
+/// stored, and nothing while compliance is off, whatever an earlier
+/// configuration left in the store.
+#[test]
+fn the_daemons_checkin_reports_the_newest_stored_compliance_only_while_enabled() {
+    use crate::compliance::{ComplianceCheck, ComplianceSnapshot, ComplianceStatus, MachineInfo};
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let store = StateStore::open_in_dir(tmp.path()).expect("state store");
+    let snapshot = |detail: &str| {
+        let checks = vec![ComplianceCheck {
+            category: "file".into(),
+            target: Some("/home/u/.zshrc".into()),
+            status: ComplianceStatus::Violation,
+            detail: Some(detail.into()),
+            ..Default::default()
+        }];
+        ComplianceSnapshot {
+            timestamp: crate::utc_now_iso8601(),
+            machine: MachineInfo {
+                hostname: "ws-1".into(),
+                os: "linux".into(),
+                arch: "x86_64".into(),
+            },
+            profile: "default".into(),
+            sources: vec![],
+            summary: crate::compliance::compute_summary(&checks),
+            checks,
+        }
+    };
+    let config = |compliance: Option<&str>| CfgdConfig {
+        api_version: crate::API_VERSION.into(),
+        kind: "Config".into(),
+        metadata: crate::config::ConfigMetadata {
+            name: "test".into(),
+        },
+        spec: crate::config::ConfigSpec {
+            compliance: compliance.map(|yaml| serde_yaml::from_str(yaml).expect("compliance")),
+            ..Default::default()
+        },
+        deprecations: Vec::new(),
+        legacy_output_keys: Vec::new(),
+    };
+    let enabled = config(Some("enabled: true"));
+
+    assert!(
+        crate::daemon::checkin::reported_compliance(&enabled, &store).is_none(),
+        "nothing stored yet is nothing to report"
+    );
+
+    store
+        .store_compliance_snapshot(&snapshot("older"))
+        .expect("store");
+    store
+        .store_compliance_snapshot(&snapshot("managed file missing"))
+        .expect("store");
+    let reported = crate::daemon::checkin::reported_compliance(&enabled, &store)
+        .expect("an enabled daemon reports its stored snapshot");
+    assert_eq!(
+        reported.checks[0].detail.as_deref(),
+        Some("managed file missing"),
+        "the newest stored snapshot is the one reported"
+    );
+
+    for off in [config(Some("enabled: false")), config(None)] {
+        assert!(
+            crate::daemon::checkin::reported_compliance(&off, &store).is_none(),
+            "compliance off reports nothing, stored rows or not"
+        );
+    }
 }

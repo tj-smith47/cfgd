@@ -202,11 +202,12 @@ fn inject_smd_annotations(crd: &mut serde_json::Value) {
     // per key, so a key another writer left behind would survive the whole-map
     // write and never be retired.
     let atomic_maps = [
-        // The two maps a device reports whole at every check-in, against the
+        // What a device reports whole at every check-in, against the
         // ownership entries the released whole-status merge patch and a manual
         // kubectl patch leave behind.
         format!("{spec_base}/status/properties/packageVersions"),
         format!("{spec_base}/status/properties/backupScheduleOwners"),
+        format!("{spec_base}/status/properties/compliance"),
         // The module file on disk is the whole declaration, and
         // `cfgd module push --apply` sends it whole, so a key an earlier edit
         // left behind must not outlive the push.
@@ -1438,12 +1439,12 @@ mod tests {
             .clone()
     }
 
-    /// The value behind that declaration for the two maps a device reports
-    /// whole: atomic, so the gateway's forced apply is a whole-map takeover.
+    /// The value behind that declaration for what a device reports whole:
+    /// atomic, so the gateway's forced apply is a whole-field takeover.
     #[test]
     fn the_device_reported_machine_config_status_maps_render_atomic() {
         let docs = rendered_crd_docs();
-        for map in ["packageVersions", "backupScheduleOwners"] {
+        for map in ["packageVersions", "backupScheduleOwners", "compliance"] {
             let node = rendered_node(
                 &docs,
                 "machineconfigs.cfgd.io",

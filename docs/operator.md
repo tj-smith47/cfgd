@@ -223,8 +223,9 @@ container.
 
 Created by the gateway when a device reports drifted **system settings** during check-in. A
 device's report covers the answers of its system configurators alone: packages, managed files,
-env vars and aliases are checked on the device by `cfgd diff` and reach the fleet only as the
-aggregate counts of a compliance summary, never as findings.
+env vars and aliases are checked on the device by `cfgd diff` and reach the fleet through the
+check-in's compliance summary (its counts and each check that did not pass, on
+`MachineConfig.status.compliance`), never as a DriftAlert.
 
 ```yaml
 apiVersion: cfgd.io/v1alpha1
@@ -428,36 +429,58 @@ CFGD_SERVER_DB_PATH=/data/cfgd-gateway.db \
 ### Checkin API
 
 A check-in carries the device identity (id, hostname, OS, arch) and the hash of its
-desired system configuration. `cfgd checkin` adds a compliance summary when
-[`spec.compliance`](spec/config.md#speccompliance) is enabled, and posts any drifted **system
-settings** it finds to `/api/v1/devices/{id}/drift`. The daemon's own periodic check-in sends
-the identity and hash, and reports the same two device-only facts below; it authenticates with
-the credential `cfgd enroll` stored, and a machine holding none for that gateway logs the skip
-rather than posting anonymously.
+desired system configuration. `cfgd checkin` also posts any drifted **system settings** it finds
+to `/api/v1/devices/{id}/drift`. The daemon's own periodic check-in sends the identity and hash,
+and reports the same device-only facts below; it authenticates with the credential `cfgd enroll`
+stored, and a machine holding none for that gateway logs the skip rather than posting
+anonymously.
 
-It also carries the two facts only the device can answer: `packageVersions`, the versions it
-holds for the packages it declares (keyed `<manager>/<package>`), and `backupScheduleOwners`,
-which layer owns each backup unit's schedule. A gateway holding a Kubernetes client writes each
-onto the `MachineConfig.status` whose `spec.hostname` matches the device, one server-side apply
-per map, each under its own field manager: `cfgd-operator/gateway/packages` owns
-`status.packageVersions` and `cfgd-operator/gateway/backups` owns `status.backupScheduleOwners`.
+It also carries the facts only the device can answer: `packageVersions`, the versions it holds
+for the packages it declares (keyed `<manager>/<package>`), `backupScheduleOwners`, which layer
+owns each backup unit's schedule, and, when [`spec.compliance`](spec/config.md#speccompliance)
+is enabled, `complianceSummary`: the counts of its compliance snapshot and every check that did
+not pass. `cfgd checkin` collects a fresh snapshot (the same one `cfgd compliance` collects); the
+daemon sends the newest snapshot its compliance tick stored.
+
+```json
+"complianceSummary": {
+  "compliant": 12,
+  "warning": 1,
+  "violation": 1,
+  "checks": [
+    {"category": "file", "name": "/home/jane/.zshrc", "status": "Violation", "detail": "managed file missing"},
+    {"category": "watchPath", "name": "/etc/cfgd/watched", "status": "Warning", "detail": "path does not exist"}
+  ]
+}
+```
+
+`checks` lists violations first, then warnings, each with the name and detail `cfgd compliance`
+shows for that row; compliant checks are not sent. `detail` is omitted for a check that has
+none, and an agent that predates the list sends the counts alone, which the gateway reads as a
+report with no checks.
+
+A gateway holding a Kubernetes client writes each fact onto the `MachineConfig.status` whose
+`spec.hostname` matches the device, one server-side apply per field, each under its own field
+manager: `cfgd-operator/gateway/packages` owns `status.packageVersions`,
+`cfgd-operator/gateway/backups` owns `status.backupScheduleOwners` and
+`cfgd-operator/gateway/compliance` owns `status.compliance`.
 The write is best-effort: a refused patch, an unreachable API server or a hostname no
 MachineConfig names is logged and the check-in still returns `200`, because the device's own
 reconcile does not depend on the cluster accepting a status. A standalone gateway holds no
-client and writes nothing. A map the device did not report is omitted from the body and produces
+client and writes nothing. A fact the device did not report is omitted from the body and produces
 no apply for its manager, so a fact the cluster already holds is never blanked by a device that
 could not observe it.
 
 A map the device DID report arrives whole, empty included, and the gateway applies it whole: a
 key the machine stopped reporting is retired, and a device that now holds none of what it
 declares clears the map. One field per manager is what makes that safe, because an apply also
-removes the fields its own manager stops naming: a single manager holding both maps would delete
-the map this check-in could not observe. Each apply is forced, since its manager is the sole
+removes the fields its own manager stops naming: a single manager holding several fields would
+delete the one this check-in could not observe. Each apply is forced, since its manager is the sole
 writer of its one field and yielding to an ownership entry an older release left behind would
 strand the device's status. The status fields the controllers own are never disturbed, because
-neither gateway manager names them. Both maps are declared `x-kubernetes-map-type: atomic` in the
-CRD schema, so server-side apply treats each as one leaf and a check-in replaces the whole map,
-including keys an earlier operator version or a manual `kubectl patch` wrote. A Module's `system`
+no gateway manager names them. All three fields are declared `x-kubernetes-map-type: atomic` in
+the CRD schema, so server-side apply treats each as one leaf and a check-in replaces the whole
+field, including keys an earlier operator version or a manual `kubectl patch` wrote. A Module's `system`
 map and each package's `aliases` map are declared atomic for the same reason, since
 `cfgd module push --apply` sends the module file on disk whole, and every policy selector
 (`BackupPolicy.spec.selector`, `ConfigPolicy.spec.targetSelector`,
@@ -474,6 +497,10 @@ outage never retires a fleet cadence.
 ```sh
 cfgd checkin --server-url https://cfgd.acme.com --api-key <key>
 ```
+
+The device listing (`GET /api/v1/devices`) and a single device (`GET /api/v1/devices/{id}`)
+return the last `complianceSummary` the device reported, checks included, and omit nothing the
+check-in carried.
 
 ### Device Config Delivery
 
@@ -530,6 +557,12 @@ Device inventory, reported system-settings drift, and compliance posture at a gl
 `Drifted` count is devices whose last report named a drifted system setting — a drifted package
 or file is never reported as a finding, so `Healthy` means "nothing reported", not "verified in
 sync".
+
+The device table's `Compliance` column names the first check the device reported as not passing
+and how many follow it (`file /home/jane/.zshrc: managed file missing (+1 more)`), coloured by
+the most severe outcome. A device whose agent predates the check list shows its counts
+(`1 warning, 0 violation`), and one that never reported compliance shows `not reported`. The
+device page lists every check that did not pass, with its status, category, name and detail.
 
 ### SSE Streaming
 

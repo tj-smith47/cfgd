@@ -14,40 +14,8 @@ pub(super) fn collect_and_store_compliance_snapshot<'a>(
     let (cfg, _profile_name, local_resolved) = ctx.config_and_profile()?;
     let config_dir = ctx.config_dir();
 
-    // Compose with sources (cache-only — read paths stay offline) and resolve the
-    // effective module set through the one shared resolver, so the compliance
-    // snapshot reflects the same source-composed desired state that `apply` writes.
     let quiet_printer = printer.at_verbosity(cfgd_core::output::Verbosity::Quiet);
-    // Report mode: a source security-constraint violation surfaces as a compliance
-    // check rather than aborting (exit 4). `compliance` reports state; it does not
-    // gate on it — unlike apply/plan/daemon which compose in Enforce mode.
-    let mut desired = resolve_desired_state(
-        ctx,
-        cfg,
-        local_resolved,
-        &[],
-        false,
-        &quiet_printer,
-        false,
-        composition::ConstraintMode::Report,
-        &cfgd_core::modules::refuse_floor_bootstrap,
-    )?;
-    // Taken before the other fields, because a partial move out of `desired`
-    // would block the `&mut self` this accessor needs.
-    let mut registry = desired.take_registry(cfg);
-    let constraint_violations = desired.constraint_violations;
-    let mut resolved = desired.resolved;
-    let resolved_modules = desired.modules;
-
-    ctx.resolve_manifest_packages(
-        &mut resolved.merged.packages,
-        &mut resolved.merged.layer_sources,
-    )?;
-    registry.file_manager = Some(Box::new(build_compliance_file_manager(
-        config_dir,
-        &resolved,
-        Some(ctx),
-    )?));
+    let inputs = ComplianceInputs::of_config(ctx, cfg, local_resolved, &quiet_printer)?;
 
     let profile_name = cli
         .profile
@@ -69,13 +37,10 @@ pub(super) fn collect_and_store_compliance_snapshot<'a>(
     // routing the wait through it would suppress the wait too — while a real
     // `-o json` or `--quiet` invocation still shows nothing, because the owning
     // printer suppresses spinners at that verbosity itself.
-    let mut snapshot = printer.narrate("Collecting compliance checks", |_| {
-        cfgd_core::compliance::collect_snapshot(
+    let snapshot = printer.narrate("Collecting compliance checks", |_| {
+        inputs.collect(
             profile_name,
-            &resolved.merged,
-            &resolved_modules,
             config_dir,
-            &registry,
             &scope,
             &sources,
             &quiet_printer,
@@ -84,14 +49,98 @@ pub(super) fn collect_and_store_compliance_snapshot<'a>(
         )
     })?;
 
-    // Fold the Report-mode source-constraint violations into the snapshot as
-    // Violation checks so they appear in the `checks` array and bump
-    // `summary.violation`, then recompute the summary over the combined set.
-    append_constraint_violation_checks(&mut snapshot, &constraint_violations);
-
     state.store_compliance_snapshot(&snapshot)?;
 
     Ok((cfg, snapshot))
+}
+
+/// The desired state a compliance snapshot is collected against: the
+/// source-composed profile with its manifest packages folded in, the resolved
+/// modules, and a registry whose file manager checks that profile.
+///
+/// `cfgd compliance` and `cfgd checkin` both resolve and collect through it,
+/// so the checks a check-in reports to the fleet are the rows `cfgd compliance`
+/// shows for the same config.
+pub(super) struct ComplianceInputs {
+    pub(super) registry: cfgd_core::providers::ProviderRegistry,
+    pub(super) resolved: ResolvedProfile,
+    pub(super) modules: Vec<cfgd_core::modules::ResolvedModule>,
+    constraint_violations: Vec<cfgd_core::composition::ConstraintViolation>,
+}
+
+impl ComplianceInputs {
+    pub(super) fn of_config(
+        ctx: &RunContext<'_>,
+        cfg: &CfgdConfig,
+        local_resolved: &ResolvedProfile,
+        printer: &Printer,
+    ) -> anyhow::Result<Self> {
+        // Composed cache-only, because read paths stay offline, and in Report
+        // mode, because a source security-constraint violation is state this
+        // reports as a compliance check; apply, plan and the daemon compose in
+        // Enforce mode and stop on one.
+        let mut desired = resolve_desired_state(
+            ctx,
+            cfg,
+            local_resolved,
+            &[],
+            false,
+            printer,
+            false,
+            composition::ConstraintMode::Report,
+            &cfgd_core::modules::refuse_floor_bootstrap,
+        )?;
+        // Taken before the other fields, because a partial move out of
+        // `desired` would block the `&mut self` this accessor needs.
+        let mut registry = desired.take_registry(cfg);
+        let mut resolved = desired.resolved;
+        // The packages a manifest declares are declared packages like any
+        // other, so they are checked and reported with the rest.
+        ctx.resolve_manifest_packages(
+            &mut resolved.merged.packages,
+            &mut resolved.merged.layer_sources,
+        )?;
+        registry.file_manager = Some(Box::new(build_compliance_file_manager(
+            ctx.config_dir(),
+            &resolved,
+            Some(ctx),
+        )?));
+        Ok(Self {
+            registry,
+            resolved,
+            modules: desired.modules,
+            constraint_violations: desired.constraint_violations,
+        })
+    }
+
+    /// Collect a snapshot against this desired state, with the resolution's
+    /// source-constraint violations folded in as `Violation` checks.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn collect(
+        &self,
+        profile_name: &str,
+        config_dir: &std::path::Path,
+        scope: &cfgd_core::config::ComplianceScope,
+        sources: &[String],
+        printer: &Printer,
+        state: &cfgd_core::state::StateStore,
+        system_diffs: Option<&[cfgd_core::compliance::SystemDiff]>,
+    ) -> cfgd_core::errors::Result<ComplianceSnapshot> {
+        let mut snapshot = cfgd_core::compliance::collect_snapshot(
+            profile_name,
+            &self.resolved.merged,
+            &self.modules,
+            config_dir,
+            &self.registry,
+            scope,
+            sources,
+            printer,
+            state,
+            system_diffs,
+        )?;
+        append_constraint_violation_checks(&mut snapshot, &self.constraint_violations);
+        Ok(snapshot)
+    }
 }
 
 /// Map a Report-mode source-constraint violation `kind` to a compliance check
@@ -236,14 +285,7 @@ pub(super) fn cmd_compliance_diff(
 
 /// Diff key for a compliance check — first available identifier, prefixed by category.
 pub(super) fn check_key(c: &ComplianceCheck) -> String {
-    let id = c
-        .target
-        .as_deref()
-        .or(c.name.as_deref())
-        .or(c.key.as_deref())
-        .or(c.path.as_deref())
-        .unwrap_or("(unknown)");
-    format!("{}:{}", c.category, id)
+    format!("{}:{}", c.category, c.subject_name())
 }
 
 /// [`check_key`] in a DISPLAY slot: the same identity, with the home

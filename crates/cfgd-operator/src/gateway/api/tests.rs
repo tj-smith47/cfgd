@@ -298,17 +298,59 @@ fn checkin_request_parses_the_status_maps() {
     );
 }
 
-/// The daemon composes the body and the gateway parses it, in two crates that
+/// The device composes the body and the gateway parses it, in two crates that
 /// cannot see each other's spelling: a renamed field or a changed key would
-/// compile on both sides and only fail on a real machine's check-in.
+/// compile on both sides and only fail on a real machine's check-in. The body
+/// here is the device's own request type, built from a real snapshot through
+/// the one constructor both of the device's senders use.
 #[test]
-fn the_daemons_checkin_body_is_what_the_gateway_parses() {
-    let payload = cfgd_core::daemon::CheckinPayload {
+fn the_devices_checkin_body_is_what_the_gateway_parses() {
+    use cfgd_core::compliance::{
+        ComplianceCheck, ComplianceSnapshot, ComplianceStatus, MachineInfo, compute_summary,
+    };
+    use cfgd_core::server_client::CheckinCompliance;
+
+    let checks = vec![
+        ComplianceCheck {
+            category: "watchPath".to_string(),
+            path: Some("/etc/cfgd/watched".to_string()),
+            status: ComplianceStatus::Warning,
+            detail: Some("path does not exist".to_string()),
+            ..Default::default()
+        },
+        ComplianceCheck {
+            category: "file".to_string(),
+            target: Some("/home/u/.bashrc".to_string()),
+            status: ComplianceStatus::Compliant,
+            ..Default::default()
+        },
+        ComplianceCheck {
+            category: "file".to_string(),
+            target: Some("/home/u/.zshrc".to_string()),
+            status: ComplianceStatus::Violation,
+            detail: Some("managed file missing".to_string()),
+            ..Default::default()
+        },
+    ];
+    let snapshot = ComplianceSnapshot {
+        timestamp: "2026-09-25T00:00:00Z".to_string(),
+        machine: MachineInfo {
+            hostname: "workstation-1".to_string(),
+            os: "linux".to_string(),
+            arch: "x86_64".to_string(),
+        },
+        profile: "default".to_string(),
+        sources: vec![],
+        summary: compute_summary(&checks),
+        checks,
+    };
+    let payload = cfgd_core::server_client::CheckinRequest {
         device_id: "dev-1".to_string(),
         hostname: "workstation-1".to_string(),
         os: "linux".to_string(),
         arch: "x86_64".to_string(),
         config_hash: "abc123".to_string(),
+        compliance_summary: Some(CheckinCompliance::from_snapshot(&snapshot)),
         package_versions: Some(
             [("brew/git".to_string(), "2.45.1".to_string())]
                 .into_iter()
@@ -320,9 +362,9 @@ fn the_daemons_checkin_body_is_what_the_gateway_parses() {
                 .collect(),
         ),
     };
-    let wire = serde_json::to_string(&payload).expect("the daemon serializes its body");
+    let wire = serde_json::to_string(&payload).expect("the device serializes its body");
     let req: CheckinRequest =
-        serde_json::from_str(&wire).expect("the gateway parses the body the daemon sends");
+        serde_json::from_str(&wire).expect("the gateway parses the body the device sends");
 
     assert_eq!(req.device_id, "dev-1");
     assert_eq!(req.hostname, "workstation-1");
@@ -331,6 +373,48 @@ fn the_daemons_checkin_body_is_what_the_gateway_parses() {
     assert_eq!(req.config_hash, "abc123");
     assert_eq!(req.package_versions, payload.package_versions);
     assert_eq!(req.backup_schedule_owners, payload.backup_schedule_owners);
+    assert_eq!(
+        req.compliance_summary,
+        Some(crate::crds::DeviceCompliance {
+            compliant: 1,
+            warning: 1,
+            violation: 1,
+            checks: vec![
+                crate::crds::DeviceComplianceCheck {
+                    category: "file".to_string(),
+                    name: "/home/u/.zshrc".to_string(),
+                    status: crate::crds::DeviceComplianceStatus::Violation,
+                    detail: Some("managed file missing".to_string()),
+                },
+                crate::crds::DeviceComplianceCheck {
+                    category: "watchPath".to_string(),
+                    name: "/etc/cfgd/watched".to_string(),
+                    status: crate::crds::DeviceComplianceStatus::Warning,
+                    detail: Some("path does not exist".to_string()),
+                },
+            ],
+        }),
+        "the gateway reads every non-compliant check, violations first: {wire}"
+    );
+}
+
+/// An agent that predates the check list reports the counts alone, and the
+/// gateway reads them as a report with no checks.
+#[test]
+fn an_older_agents_compliance_counts_parse_without_checks() {
+    let req: CheckinRequest = serde_json::from_str(
+        r#"{"deviceId":"dev-1","hostname":"ws-1","os":"linux","arch":"x86_64","configHash":"h","complianceSummary":{"compliant":5,"warning":1,"violation":0}}"#,
+    )
+    .expect("an older agent's body parses");
+    assert_eq!(
+        req.compliance_summary,
+        Some(crate::crds::DeviceCompliance {
+            compliant: 5,
+            warning: 1,
+            violation: 0,
+            checks: vec![],
+        })
+    );
 }
 
 // --- CheckinResponse serialization ---
@@ -1608,11 +1692,17 @@ async fn checkin_device_auth_can_only_checkin_as_self() {
 async fn checkin_with_compliance_summary() {
     let (state, _tmp) = test_state();
     let auth = AuthContext::Admin;
-    let compliance = serde_json::json!({
-        "total": 10,
-        "compliant": 8,
-        "drifted": 2
-    });
+    let compliance = crate::crds::DeviceCompliance {
+        compliant: 8,
+        warning: 0,
+        violation: 2,
+        checks: vec![crate::crds::DeviceComplianceCheck {
+            category: "file".to_string(),
+            name: "/home/u/.zshrc".to_string(),
+            status: crate::crds::DeviceComplianceStatus::Violation,
+            detail: Some("managed file missing".to_string()),
+        }],
+    };
     let req = CheckinRequest {
         device_id: "dev-compliance".to_string(),
         hostname: "ws-compliance".to_string(),
@@ -1639,8 +1729,7 @@ async fn checkin_with_compliance_summary() {
 
     // Verify compliance_summary was stored
     let device = state.db.get_device("dev-compliance").await.expect("device");
-    assert!(device.compliance_summary.is_some());
-    assert_eq!(device.compliance_summary.unwrap()["total"], 10);
+    assert_eq!(device.compliance_summary, Some(compliance));
 }
 
 #[tokio::test]

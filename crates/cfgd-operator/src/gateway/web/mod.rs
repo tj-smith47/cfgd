@@ -7,8 +7,11 @@ use axum::routing::get;
 use cfgd_core::{join_clauses, sha256_hex, xml_escape};
 use subtle::ConstantTimeEq;
 
+use std::fmt::Write;
+
 use super::api::{SharedState, extract_bearer_token};
 use super::errors::GatewayError;
+use crate::crds::{DeviceCompliance, DeviceComplianceStatus};
 
 /// Session cookie lifetime — matches the 24h Max-Age written to the client.
 const SESSION_TTL: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
@@ -162,7 +165,9 @@ async fn dashboard(State(state): State<SharedState>) -> Result<Html<String>, Gat
                 <td><span class="status {status_class}">{status}</span></td>
                 <td>{last_checkin}</td>
                 <td><code>{hash}</code></td>
+                <td>{compliance}</td>
             </tr>"#,
+            compliance = compliance_cell(d.compliance_summary.as_ref()),
             id_raw = xml_escape(&d.id),
             id = xml_escape(&d.id),
             hostname = xml_escape(&d.hostname),
@@ -246,6 +251,7 @@ async fn dashboard(State(state): State<SharedState>) -> Result<Html<String>, Gat
                     <th>Status</th>
                     <th>Last Check-in</th>
                     <th>Config Hash</th>
+                    <th>Compliance</th>
                 </tr>
             </thead>
             <tbody>
@@ -292,6 +298,8 @@ async fn device_detail(
         </div>"#
             .to_string()
     };
+
+    let compliance_html = compliance_section(device.compliance_summary.as_ref());
 
     let mut drift_rows = String::new();
     for e in &drift_events {
@@ -476,6 +484,8 @@ async fn device_detail(
             <div id="action-feedback" class="feedback"></div>
         </div>
 
+        {compliance_html}
+
         {desired_config_html}
 
         <div class="section">
@@ -618,6 +628,7 @@ async fn device_detail(
         arch = xml_escape(&device.arch),
         last_checkin = xml_escape(&device.last_checkin),
         config_hash = xml_escape(&device.config_hash),
+        compliance_html = compliance_html,
         desired_config_html = desired_config_html,
         drift_count = drift_events.len(),
         drift_html = drift_html,
@@ -849,6 +860,86 @@ async fn fleet_events(State(state): State<SharedState>) -> Result<Html<String>, 
     );
 
     Ok(Html(html))
+}
+
+/// A compliance report's most severe outcome, as its badge word and colour.
+fn compliance_outcome(report: &DeviceCompliance) -> (&'static str, &'static str) {
+    if report.violation > 0 {
+        check_badge(DeviceComplianceStatus::Violation)
+    } else if report.warning > 0 {
+        check_badge(DeviceComplianceStatus::Warning)
+    } else {
+        ("Compliant", "healthy")
+    }
+}
+
+fn check_badge(status: DeviceComplianceStatus) -> (&'static str, &'static str) {
+    match status {
+        DeviceComplianceStatus::Violation => ("Violation", "offline"),
+        DeviceComplianceStatus::Warning => ("Warning", "drifted"),
+    }
+}
+
+/// The counts a report's badge carries when no check is listed: an agent that
+/// predates the check list, or a machine with nothing failing.
+fn compliance_counts(report: &DeviceCompliance) -> String {
+    if report.warning == 0 && report.violation == 0 {
+        format!("{} compliant", report.compliant)
+    } else {
+        format!("{} warning, {} violation", report.warning, report.violation)
+    }
+}
+
+/// The device table's Compliance cell: the first check that does not pass and
+/// how many follow it, so a reader sees why a machine is out of compliance
+/// without opening it.
+fn compliance_cell(report: Option<&DeviceCompliance>) -> String {
+    let Some(report) = report else {
+        return r#"<span class="muted">not reported</span>"#.to_string();
+    };
+    let text = report
+        .headline()
+        .unwrap_or_else(|| compliance_counts(report));
+    format!(
+        r#"<span class="status {}">{}</span>"#,
+        compliance_outcome(report).1,
+        xml_escape(&text)
+    )
+}
+
+/// The device page's Compliance section: the counts and every check the
+/// device reported as not passing.
+fn compliance_section(report: Option<&DeviceCompliance>) -> String {
+    let body = match report {
+        None => r#"<p class="muted">This device has not reported compliance. It reports it on check-in when its config enables compliance.</p>"#.to_string(),
+        Some(report) => {
+            let (word, class) = compliance_outcome(report);
+            let mut html = format!(
+                r#"<p><span class="status {class}">{word}</span> <span class="muted">{} compliant, {} warning, {} violation</span></p>"#,
+                report.compliant,
+                report.warning,
+                report.violation,
+            );
+            if !report.checks.is_empty() {
+                html.push_str(
+                    "<table><thead><tr><th>Status</th><th>Category</th><th>Name</th><th>Detail</th></tr></thead><tbody>",
+                );
+                for check in &report.checks {
+                    let (word, class) = check_badge(check.status);
+                    let _ = write!(
+                        html,
+                        r#"<tr><td><span class="status {class}">{word}</span></td><td>{}</td><td><code>{}</code></td><td>{}</td></tr>"#,
+                        xml_escape(&check.category),
+                        xml_escape(&check.name),
+                        xml_escape(check.detail.as_deref().unwrap_or("")),
+                    );
+                }
+                html.push_str("</tbody></table>");
+            }
+            html
+        }
+    };
+    format!(r#"<div class="section"><h2>Compliance</h2>{body}</div>"#)
 }
 
 fn status_to_class(status: &str) -> &'static str {

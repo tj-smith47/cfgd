@@ -76,6 +76,7 @@ pub(super) fn machine_config_status_with_drift_detected() -> MachineConfigStatus
     MachineConfigStatus {
         last_reconciled: Some("2026-01-01T00:00:00Z".to_string()),
         backup_schedule_owners: Default::default(),
+        compliance: None,
         observed_generation: Some(1),
         conditions: vec![Condition {
             condition_type: "DriftDetected".to_string(),

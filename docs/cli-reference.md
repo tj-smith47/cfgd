@@ -2773,8 +2773,11 @@ The drift half of a check-in covers system settings only — the answers of the 
 configurators the profile declares (`sysctl`, `kernelModules`, `macosDefaults`,
 `windowsRegistry`, ...), which is why the report is headed `System Settings`. Managed files,
 packages, env vars and aliases are checked locally by [`cfgd diff`](#cfgd-diff) and reach the
-gateway only as the aggregate counts of the compliance summary a check-in carries when
-[`spec.compliance`](spec/config.md#speccompliance) is enabled — never as findings. A device the
+gateway through the compliance summary a check-in carries when
+[`spec.compliance`](spec/config.md#speccompliance) is enabled: the snapshot's counts, and every
+check that did not pass with the name and detail [`cfgd compliance`](#cfgd-compliance) shows for
+it (violations first, then warnings). They land on the machine's `MachineConfig.status.compliance`
+and in the gateway's device listing, never as a DriftAlert. A device the
 fleet dashboard shows as healthy is a device whose system settings matched, not a device proven
 in sync.
 
@@ -2796,7 +2799,8 @@ retirement, and a map left out produces no write at all, so the versions the clu
 survive it.
 
 The daemon's own periodic check-in reports the same two facts from the profile its tick resolved,
-authenticating as the device [`cfgd enroll`](#cfgd-enroll) registered.
+and the newest compliance snapshot its compliance tick stored, authenticating as the device
+[`cfgd enroll`](#cfgd-enroll) registered.
 
 The gateway answers with the backup cadences a cluster [`BackupPolicy`](backup-policy.md) owns for
 this machine. They are recorded locally and decide when a cluster-owned unit is next due; a unit

@@ -119,8 +119,12 @@ pub struct CheckinRequest {
     pub os: String,
     pub arch: String,
     pub config_hash: String,
+    /// The compliance snapshot the device collected for this check-in: its
+    /// counts, and every check that did not pass. Absent when the device has
+    /// compliance off or could not collect it; an agent that predates the
+    /// check list sends the counts alone.
     #[serde(default)]
-    pub compliance_summary: Option<serde_json::Value>,
+    pub compliance_summary: Option<crate::crds::DeviceCompliance>,
     /// Installed versions of the packages the device DECLARES, keyed
     /// `<manager>/<package>`. Absent when the device did not observe them,
     /// which is what a device that predates the field sends; an observed map
