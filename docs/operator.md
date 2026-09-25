@@ -288,12 +288,12 @@ The probe server listens on `HEALTH_PORT` (default `8081`) and answers three pat
 | Path | 200 when | 503 when |
 |---|---|---|
 | `/healthz` | the process is up | — |
-| `/readyz` | the admission webhook is serving (at once when the pod has no webhook certificates) | the webhook has not loaded its certificates yet |
+| `/readyz` | every listener the pod's Services route to is accepting: the admission webhook when the pod has webhook certificates, and the device gateway when it is enabled (at once when the pod has neither) | the webhook has not loaded its certificates yet, or the gateway has not bound its listener; with the device gateway and leader election on, that includes a pod that does not hold the lease |
 | `/leaderz` | this pod holds the leader lease, or runs with leader election off | this pod is a standby |
 
 Readiness and leadership are separate signals. Only the lease holder runs the controllers, but every pod whose webhook is serving answers admission, so a standby is ready and stays an endpoint of the webhook Service. During a roll the replacement pod turns ready as soon as its webhook serves, joins the Service while the old pod still holds the lease, and admission (`failurePolicy: Fail`) always has a backend.
 
-One configuration keeps readiness tied to the lease: the device gateway with leader election on. The gateway runs only on the lease holder, so a ready standby would receive gateway traffic with nothing listening; there `/readyz` also waits for the lease.
+With the device gateway enabled, readiness also waits for the gateway's listener to bind, which happens after its database opens, so the gateway Service never routes a request to a port nothing listens on. The gateway starts only on the pod running the controllers, so with leader election on as well, a standby's `/readyz` waits for the lease.
 
 ```sh
 $ kubectl -n cfgd-system port-forward pod/<operator-pod> 8081 &

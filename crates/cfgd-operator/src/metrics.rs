@@ -260,7 +260,7 @@ mod tests {
             "a standby must export the leader gauge at 0: {standby}"
         );
 
-        crate::health::HealthState::new(metrics.leader.clone(), false).set_leader();
+        crate::health::HealthState::new(metrics.leader.clone(), false, false).set_leader();
         let mut leader = String::new();
         encode(&mut leader, &registry).unwrap();
         assert!(

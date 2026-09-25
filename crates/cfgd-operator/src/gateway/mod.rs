@@ -98,9 +98,13 @@ pub struct GatewayConfig {
     pub metrics: Option<Metrics>,
 }
 
-/// Start the device gateway HTTP server.
-/// Returns when the server shuts down or encounters a fatal error.
-pub async fn start_gateway(config: GatewayConfig) -> Result<(), Box<dyn std::error::Error>> {
+/// Start the device gateway HTTP server, calling `on_listening` once its
+/// listener is bound. Returns when the server shuts down or encounters a
+/// fatal error.
+pub async fn start_gateway(
+    config: GatewayConfig,
+    on_listening: impl FnOnce(),
+) -> Result<(), Box<dyn std::error::Error>> {
     let db = ServerDb::open(&config.db_path)
         .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })?
         .with_metrics(config.metrics.clone());
@@ -179,6 +183,7 @@ pub async fn start_gateway(config: GatewayConfig) -> Result<(), Box<dyn std::err
     tracing::info!(%addr, db_path = %config.db_path, "device gateway starting");
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
+    on_listening();
     // `into_make_service_with_connect_info` populates `ConnectInfo<SocketAddr>`
     // on every request — required by the per-IP rate limiter on
     // `/api/v1/enroll/*`. Without this, the limiter middleware would fall
@@ -347,6 +352,7 @@ mod tests_start_gateway {
     use cfgd_core::test_helpers::EnvVarGuard;
     use prometheus_client::registry::Registry;
     use serial_test::serial;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
 
     fn temp_db_path(tmp: &tempfile::TempDir) -> String {
@@ -369,9 +375,18 @@ mod tests_start_gateway {
             metrics: None,
         };
 
-        let result = tokio::time::timeout(Duration::from_secs(2), start_gateway(config)).await;
+        let listening = AtomicBool::new(false);
+        let result = tokio::time::timeout(
+            Duration::from_secs(2),
+            start_gateway(config, || listening.store(true, Ordering::SeqCst)),
+        )
+        .await;
         let inner = result.expect("start_gateway returned before timeout");
         assert!(inner.is_err(), "expected ServerDb::open to fail");
+        assert!(
+            !listening.load(Ordering::SeqCst),
+            "a gateway whose database never opened must not report a bound listener"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -391,10 +406,19 @@ mod tests_start_gateway {
             metrics: None,
         };
 
-        let result = tokio::time::timeout(Duration::from_millis(300), start_gateway(config)).await;
+        let listening = AtomicBool::new(false);
+        let result = tokio::time::timeout(
+            Duration::from_millis(300),
+            start_gateway(config, || listening.store(true, Ordering::SeqCst)),
+        )
+        .await;
         assert!(
             result.is_err(),
             "start_gateway should block in serve loop, got {result:?}"
+        );
+        assert!(
+            listening.load(Ordering::SeqCst),
+            "a gateway blocked in its accept loop must have reported its bound listener"
         );
     }
 
@@ -418,7 +442,8 @@ mod tests_start_gateway {
             metrics: Some(metrics),
         };
 
-        let result = tokio::time::timeout(Duration::from_millis(300), start_gateway(config)).await;
+        let result =
+            tokio::time::timeout(Duration::from_millis(300), start_gateway(config, || {})).await;
         assert!(
             result.is_err(),
             "start_gateway should block in serve loop, got {result:?}"

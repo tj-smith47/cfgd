@@ -7,37 +7,61 @@ use crate::errors::OperatorError;
 
 /// The two signals the probe server reports.
 ///
-/// Readiness says the pod can take the traffic its Services send it: the
-/// admission webhook is serving, and on a pod whose device gateway runs only
-/// under the leader lease, the lease is held. Leadership says this pod runs the
-/// controllers. A standby answers admission as well as the leader does, so
-/// readiness waits on the lease only where a Service would otherwise route
-/// gateway traffic to a pod with no gateway listening.
-#[derive(Clone, Default)]
+/// Readiness says every listener the pod's Services route to is accepting:
+/// the admission webhook when the pod has webhook certificates, and the device
+/// gateway when it is enabled. Leadership says this pod runs the controllers.
+/// A standby answers admission as well as the leader does, so the webhook
+/// alone never waits on the lease; the gateway starts only once this pod runs
+/// the controllers, so with leader election on, a standby's gateway (and with
+/// it readiness) waits on the lease.
+#[derive(Clone)]
 pub struct HealthState(Arc<Signals>);
 
-#[derive(Default)]
 struct Signals {
-    serving: AtomicBool,
+    webhook: Listener,
+    gateway: Listener,
     leader: AtomicBool,
-    ready_needs_leader: bool,
     leader_gauge: Gauge,
+}
+
+struct Listener {
+    expected: bool,
+    accepting: AtomicBool,
+}
+
+impl Listener {
+    fn new(expected: bool) -> Self {
+        Self {
+            expected,
+            accepting: AtomicBool::new(false),
+        }
+    }
+
+    fn is_up(&self) -> bool {
+        !self.expected || self.accepting.load(Ordering::SeqCst)
+    }
 }
 
 impl HealthState {
     /// `leader_gauge` mirrors leadership into the metrics registry;
-    /// `ready_needs_leader` makes readiness wait on the lease as well.
-    pub fn new(leader_gauge: Gauge, ready_needs_leader: bool) -> Self {
+    /// `webhook` and `gateway` name the listeners readiness waits for.
+    pub fn new(leader_gauge: Gauge, webhook: bool, gateway: bool) -> Self {
         Self(Arc::new(Signals {
-            ready_needs_leader,
+            webhook: Listener::new(webhook),
+            gateway: Listener::new(gateway),
+            leader: AtomicBool::new(false),
             leader_gauge,
-            ..Signals::default()
         }))
     }
 
-    /// Everything this pod serves to its Services is up.
-    pub fn set_serving(&self) {
-        self.0.serving.store(true, Ordering::SeqCst);
+    /// The admission webhook has loaded its certificates and is accepting.
+    pub fn set_webhook_serving(&self) {
+        self.0.webhook.accepting.store(true, Ordering::SeqCst);
+    }
+
+    /// The device gateway's listener is bound and accepting.
+    pub fn set_gateway_serving(&self) {
+        self.0.gateway.accepting.store(true, Ordering::SeqCst);
     }
 
     /// This pod holds the leader lease (or runs without leader election).
@@ -48,7 +72,7 @@ impl HealthState {
     }
 
     pub fn is_ready(&self) -> bool {
-        self.0.serving.load(Ordering::SeqCst) && (!self.0.ready_needs_leader || self.is_leader())
+        self.0.webhook.is_up() && self.0.gateway.is_up()
     }
 
     pub fn is_leader(&self) -> bool {
@@ -132,24 +156,22 @@ mod tests {
         (get(state, "/readyz").await, get(state, "/leaderz").await)
     }
 
+    fn state(webhook: bool, gateway: bool) -> (HealthState, Gauge) {
+        let gauge = Gauge::default();
+        (HealthState::new(gauge.clone(), webhook, gateway), gauge)
+    }
+
+    const DOWN: StatusCode = StatusCode::SERVICE_UNAVAILABLE;
+
     #[tokio::test]
     async fn healthz_returns_ok() {
-        assert_eq!(
-            get(&HealthState::default(), "/healthz").await,
-            StatusCode::OK
-        );
+        assert_eq!(get(&state(true, true).0, "/healthz").await, StatusCode::OK);
     }
 
     #[tokio::test]
     async fn a_starting_pod_is_neither_ready_nor_leader() {
-        let state = HealthState::default();
-        assert_eq!(
-            probes(&state).await,
-            (
-                StatusCode::SERVICE_UNAVAILABLE,
-                StatusCode::SERVICE_UNAVAILABLE
-            )
-        );
+        let (state, _) = state(true, false);
+        assert_eq!(probes(&state).await, (DOWN, DOWN));
     }
 
     /// A standby serving admission is an endpoint of the webhook Service, so a
@@ -157,19 +179,16 @@ mod tests {
     /// holds the lease.
     #[tokio::test]
     async fn a_serving_standby_is_ready_and_reports_standby() {
-        let state = HealthState::default();
-        state.set_serving();
-        assert_eq!(
-            probes(&state).await,
-            (StatusCode::OK, StatusCode::SERVICE_UNAVAILABLE)
-        );
+        let (state, gauge) = state(true, false);
+        state.set_webhook_serving();
+        assert_eq!(probes(&state).await, (StatusCode::OK, DOWN));
+        assert_eq!(gauge.get(), 0);
     }
 
     #[tokio::test]
     async fn a_serving_leader_is_ready_and_reports_leader() {
-        let gauge = Gauge::default();
-        let state = HealthState::new(gauge.clone(), false);
-        state.set_serving();
+        let (state, gauge) = state(true, false);
+        state.set_webhook_serving();
         state.set_leader();
         assert_eq!(probes(&state).await, (StatusCode::OK, StatusCode::OK));
         assert_eq!(gauge.get(), 1, "leadership must reach the metrics gauge");
@@ -179,30 +198,39 @@ mod tests {
     /// serves, admission sent to it would fail.
     #[tokio::test]
     async fn a_leader_whose_webhook_is_not_serving_is_not_ready() {
-        let state = HealthState::default();
+        let (state, _) = state(true, false);
         state.set_leader();
-        assert_eq!(
-            probes(&state).await,
-            (StatusCode::SERVICE_UNAVAILABLE, StatusCode::OK)
-        );
+        assert_eq!(probes(&state).await, (DOWN, StatusCode::OK));
     }
 
-    /// Where the device gateway runs only under the lease, a standby has no
-    /// gateway listening, so readiness waits on leadership.
+    /// A pod with the gateway enabled is ready only once the gateway accepts,
+    /// whatever the webhook and the lease say: until then a gateway Service
+    /// would send requests to a port nothing listens on.
     #[tokio::test]
-    async fn readiness_waits_on_the_lease_where_the_gateway_needs_it() {
-        let gauge = Gauge::default();
-        let state = HealthState::new(gauge.clone(), true);
-        state.set_serving();
-        assert_eq!(
-            probes(&state).await,
-            (
-                StatusCode::SERVICE_UNAVAILABLE,
-                StatusCode::SERVICE_UNAVAILABLE
-            )
-        );
-        assert_eq!(gauge.get(), 0);
+    async fn readiness_waits_for_the_gateway_listener() {
+        let (state, _) = state(true, true);
+        state.set_webhook_serving();
         state.set_leader();
+        assert_eq!(probes(&state).await, (DOWN, StatusCode::OK));
+        state.set_gateway_serving();
         assert_eq!(probes(&state).await, (StatusCode::OK, StatusCode::OK));
+    }
+
+    /// A gateway pod with no webhook certificates turns ready on the gateway
+    /// alone.
+    #[tokio::test]
+    async fn a_gateway_without_a_webhook_is_ready_once_the_gateway_accepts() {
+        let (state, _) = state(false, true);
+        assert_eq!(probes(&state).await, (DOWN, DOWN));
+        state.set_gateway_serving();
+        assert_eq!(probes(&state).await, (StatusCode::OK, DOWN));
+    }
+
+    /// A pod that serves neither listener carries only the controllers, which
+    /// no Service routes to, so it is ready from the start.
+    #[tokio::test]
+    async fn a_pod_with_no_listener_is_ready_at_once() {
+        let (state, _) = state(false, false);
+        assert_eq!(probes(&state).await, (StatusCode::OK, DOWN));
     }
 }
