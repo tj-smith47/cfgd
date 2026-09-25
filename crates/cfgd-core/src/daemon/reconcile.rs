@@ -1463,17 +1463,20 @@ fn check_in_after_tick(report: TickReport<'_>, state: &Arc<Mutex<DaemonState>>, 
             Err(e) => {
                 tracing::warn!(
                     error = %e,
-                    "reconcile: a package manifest could not be read — the check-in withholds package versions"
+                    "reconcile: a package manifest could not be read — the check-in withholds package versions and compliance"
                 );
                 None
             }
         };
+        // A snapshot taken before the manifest broke would report packages the
+        // machine can no longer say it declares, so it goes with the versions.
+        let compliance = packages.and(compliance_snapshot.as_deref());
         crate::server_client::CheckinFacts::collect(
             &merged,
             report.modules,
             report.registry,
             packages,
-            compliance_snapshot.as_deref(),
+            compliance,
         )
         .inspect_err(|e| {
             tracing::warn!(error = %e, "reconcile: check-in skipped — its facts could not be composed");
