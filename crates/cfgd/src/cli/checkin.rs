@@ -1292,7 +1292,7 @@ spec:
         mock.assert();
     }
 
-    /// One enrolled machine for both senders: a source whose file lands
+    /// One enrolled machine for both senders: a source whose file sits
     /// outside its allowed paths, compliance on, a `Cargo.toml` manifest
     /// declaring `ripgrep`, and a gateway that records every check-in body.
     struct TwoSenderMachine {
