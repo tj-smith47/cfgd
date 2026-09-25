@@ -1358,3 +1358,35 @@ async fn server_db_open_fails_for_invalid_path() {
     let res = ServerDb::open("/this/path/does/not/exist/db.sqlite");
     assert!(res.is_err(), "expected open to fail for invalid path");
 }
+
+/// A stored column that no longer parses reads as absent, and says which
+/// device and column it was, so a device showing "not reported" after a
+/// gateway upgrade is explained in the log.
+#[test]
+fn an_unreadable_stored_column_reads_as_absent_and_warns() {
+    let tmp = tempfile::NamedTempFile::new().expect("tempfile");
+    let path = tmp.path().to_str().expect("path").to_string();
+    drop(super::ServerDb::open(&path).expect("open"));
+    let conn = Connection::open(&path).expect("rusqlite open");
+    conn.execute(
+        "INSERT INTO devices (id, hostname, os, arch, last_checkin, config_hash, status, desired_config, compliance_summary)
+         VALUES ('dev-u', 'ws-u', 'linux', 'x86_64', 't', 'h', 'healthy', 'not json', '{\"legacy\": true}')",
+        [],
+    )
+    .expect("insert legacy row");
+
+    let mut device = None;
+    let logs = capture_warn_logs(|| {
+        device = Some(super::devices::get_device_tx(&conn, "dev-u").expect("row still reads"));
+    });
+    let device = device.expect("read ran");
+    assert!(device.desired_config.is_none());
+    assert!(device.compliance_summary.is_none());
+    for column in ["desired_config", "compliance_summary"] {
+        assert!(
+            logs.lines()
+                .any(|l| l.contains("WARN") && l.contains("dev-u") && l.contains(column)),
+            "no warning names {column}: {logs:?}"
+        );
+    }
+}

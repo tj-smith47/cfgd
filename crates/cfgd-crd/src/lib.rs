@@ -180,6 +180,11 @@ pub struct DeviceCompliance {
 pub use cfgd_schema::MAX_REPORTED_CHECKS;
 
 impl DeviceCompliance {
+    /// The report's counts: `12 compliant, 1 warning, 0 violation`.
+    pub fn counts_line(&self) -> String {
+        cfgd_schema::compliance_counts_line(self.compliant, self.warning, self.violation)
+    }
+
     /// One line for a fleet table: the first check that does not pass, with a
     /// count of the ones after it. `None` when the report lists no check.
     ///
@@ -209,8 +214,8 @@ impl DeviceCompliance {
 pub struct DeviceComplianceCheck {
     /// What kind of thing was checked (`file`, `package`, `watchPath`, ...).
     pub category: String,
-    /// The file, package, key or path the check is about, as the machine names
-    /// it in `cfgd compliance`.
+    /// The file, package, key or path the check is about: the name
+    /// `cfgd compliance -o json` carries for it (a file's absolute path).
     pub name: String,
     pub status: DeviceComplianceStatus,
     /// Why the check did not pass, in the machine's own words.

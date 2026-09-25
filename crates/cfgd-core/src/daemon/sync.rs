@@ -619,10 +619,8 @@ fn persist_compliance_snapshot(
         "daemon: compliance snapshot stored"
     );
     tracing::info!(
-        "daemon: compliance snapshot stored — {} compliant, {} warning, {} violation",
-        snapshot.summary.compliant,
-        snapshot.summary.warning,
-        snapshot.summary.violation
+        "daemon: compliance snapshot stored — {}",
+        snapshot.summary.counts_line()
     );
 
     // Export if configured

@@ -52557,3 +52557,76 @@ fn every_cli_refusal_kind_is_named_in_the_reference() {
          CfgdError::kind() returns them"
     );
 }
+
+/// A compliance report's counts are spelled by `cfgd_schema::compliance_counts_line`
+/// alone, wherever they are stated: `cfgd compliance`, `cfgd checkin`,
+/// the daemon's journal and the fleet dashboard. A reader comparing the
+/// machine's own line to the fleet's reads one spelling. The dashboard's
+/// badge words are the serde names the check-in carries, so they cannot drift
+/// from a second hand-spelled copy.
+#[test]
+fn every_compliance_counts_line_comes_from_the_one_builder() {
+    // one-root-population-ok: the question is an absence, which no root has a
+    // count of; the builder's own presence is the floor asserted below.
+    let crates_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let builder_home = crates_dir.join("cfgd-schema/src/lib.rs");
+    let dashboard = crates_dir.join("cfgd-operator/src/gateway/web/mod.rs");
+    // A count followed by the word, inside a literal: `{} compliant, ` or
+    // `{compliant} compliant, `. A field access (`self.compliant, `) or a SQL
+    // column (`summary_compliant, `) is not a spelling.
+    let spells_counts = |line: &str| {
+        let code = line.trim_start();
+        !code.starts_with("//")
+            && code.contains("violation")
+            && code.match_indices(" compliant, ").any(|(at, _)| {
+                code[..at]
+                    .chars()
+                    .next_back()
+                    .is_some_and(|c| c == '}' || c.is_ascii_digit())
+            })
+    };
+    let mut builder_seen = false;
+    let mut offenders: Vec<String> = Vec::new();
+    for (path, production) in production_sources_per_root(&[
+        "cfgd",
+        "cfgd-core",
+        "cfgd-crd",
+        "cfgd-csi",
+        "cfgd-operator",
+        "cfgd-schema",
+        "cfgd-test-fixtures",
+    ])
+    .into_iter()
+    .flat_map(|(_, sources)| sources)
+    {
+        for (i, line) in production.lines().enumerate() {
+            let site = format!(
+                "{}:{}: {}",
+                cfgd_core::to_posix_string(&path),
+                i + 1,
+                line.trim()
+            );
+            if spells_counts(line) {
+                if path == builder_home {
+                    builder_seen = true;
+                } else {
+                    offenders.push(site);
+                }
+            } else if path == dashboard
+                && (line.contains("\"Violation\"") || line.contains("\"Warning\""))
+            {
+                offenders.push(site);
+            }
+        }
+    }
+    assert!(
+        builder_seen,
+        "the scan did not find the counts builder in cfgd-schema, so it proves nothing"
+    );
+    assert!(
+        offenders.is_empty(),
+        "spell compliance counts through `compliance_counts_line` (or a `counts_line()` over it), \
+         and take a badge word from the status's serde name:\n{}",
+        offenders.join("\n")
+    );
+}

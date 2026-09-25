@@ -819,6 +819,56 @@ fn status_object(body: &serde_json::Value) -> &serde_json::Map<String, serde_jso
         .unwrap_or_else(|| panic!("an apply body carries a status object: {body}"))
 }
 
+/// The checks a device reported come back through the device listing and the
+/// single-device read, exactly as the check-in carried them.
+#[tokio::test]
+#[serial]
+async fn the_device_reads_return_the_checks_a_checkin_reported() {
+    unsafe {
+        std::env::remove_var("CFGD_API_KEY");
+    }
+    let (state, _tmp) = test_state();
+    let token = enrolled_device(&state, "dev-1", "host-1").await;
+    let compliance = serde_json::json!({
+        "compliant": 3,
+        "warning": 1,
+        "violation": 1,
+        "checks": [
+            { "category": "file", "name": "/home/u/.zshrc", "status": "Violation", "detail": "managed file missing" },
+            { "category": "watchPath", "name": "/etc/cfgd/watched", "status": "Warning" },
+        ],
+    });
+    let mut body = checkin_body("dev-1", "host-1");
+    body["complianceSummary"] = compliance.clone();
+    let response = router_with_state(state.clone())
+        .oneshot(post_json_with_bearer("/api/v1/checkin", &token, body))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    unsafe {
+        std::env::set_var("CFGD_API_KEY", TEST_ADMIN_KEY);
+    }
+    let listed = router_with_state(state.clone())
+        .oneshot(get_with_bearer("/api/v1/devices", TEST_ADMIN_KEY))
+        .await
+        .unwrap();
+    let one = router_with_state(state)
+        .oneshot(get_with_bearer("/api/v1/devices/dev-1", TEST_ADMIN_KEY))
+        .await
+        .unwrap();
+    unsafe {
+        std::env::remove_var("CFGD_API_KEY");
+    }
+
+    assert_eq!(listed.status(), StatusCode::OK);
+    let listed: serde_json::Value = serde_json::from_slice(&body_bytes(listed).await).unwrap();
+    assert_eq!(listed[0]["complianceSummary"], compliance, "{listed}");
+    assert_eq!(one.status(), StatusCode::OK);
+    let one: serde_json::Value = serde_json::from_slice(&body_bytes(one).await).unwrap();
+    assert_eq!(one["complianceSummary"], compliance, "{one}");
+}
+
 /// A compliance report the gateway cannot read (a status word a newer agent
 /// added) costs the check-in its report and nothing else: the check-in is
 /// accepted and its package versions and backup owners are still applied.

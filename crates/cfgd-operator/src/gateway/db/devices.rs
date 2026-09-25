@@ -5,14 +5,29 @@ use super::types::{Device, DeviceStatus};
 use super::{acquire_reader, acquire_writer, spawn_blocking_db};
 use crate::gateway::errors::GatewayError;
 
+/// Parse a stored JSON column. A row that does not parse (one written by an
+/// older gateway in a shape this one no longer reads) reads as absent, and the
+/// warning says so: otherwise the device would show "not reported" with
+/// nothing in the log explaining the report it did send.
+fn stored_json<T: serde::de::DeserializeOwned>(
+    device: &str,
+    column: &str,
+    raw: Option<String>,
+) -> Option<T> {
+    serde_json::from_str(&raw?)
+        .inspect_err(|e| {
+            tracing::warn!(device, column, error = %e, "gateway: a stored device column could not be read; it reads as absent");
+        })
+        .ok()
+}
+
 fn map_device_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Device> {
-    let config_str: Option<String> = row.get(7)?;
-    let desired_config = config_str.and_then(|s| serde_json::from_str(&s).ok());
-    let compliance_str: Option<String> = row.get(8)?;
-    let compliance_summary = compliance_str.and_then(|s| serde_json::from_str(&s).ok());
+    let id: String = row.get(0)?;
+    let desired_config = stored_json(&id, "desired_config", row.get(7)?);
+    let compliance_summary = stored_json(&id, "compliance_summary", row.get(8)?);
     let status_str: String = row.get(6)?;
     Ok(Device {
-        id: row.get(0)?,
+        id,
         hostname: row.get(1)?,
         os: row.get(2)?,
         arch: row.get(3)?,

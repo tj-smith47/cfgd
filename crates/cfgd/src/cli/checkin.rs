@@ -80,15 +80,7 @@ pub fn cmd_checkin(
                 Some(system_diffs.get_or_init(diff_system)),
             ) {
                 Ok(snapshot) => {
-                    printer.kv(
-                        "Compliance",
-                        format!(
-                            "{} compliant, {} warning, {} violation",
-                            snapshot.summary.compliant,
-                            snapshot.summary.warning,
-                            snapshot.summary.violation,
-                        ),
-                    );
+                    printer.kv("Compliance", snapshot.summary.counts_line());
                     Some(snapshot)
                 }
                 Err(e) => {

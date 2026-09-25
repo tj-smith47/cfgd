@@ -457,11 +457,12 @@ a manifest declares included.
 }
 ```
 
-`checks` lists violations first, then warnings, each with the name and detail `cfgd compliance`
-shows for that row; compliant checks are not sent. The list stops at the first 200, the most
-`MachineConfig.status.compliance` holds, and the counts still cover every check. `detail` is omitted for a check that has
-none, and an agent that predates the list sends the counts alone, which the gateway reads as a
-report with no checks.
+`checks` lists violations first, then warnings, each with the detail `cfgd compliance` shows for
+that row and the name `cfgd compliance -o json` carries (for a file, its absolute path, where the
+human report writes `~/`); compliant checks are not sent. The list stops at the first 200, the
+most `MachineConfig.status.compliance` holds, and the counts still cover every check. `detail` is
+omitted for a check that has none, and an agent that predates the list sends the counts alone,
+which the gateway reads as a report with no checks.
 
 A gateway holding a Kubernetes client writes each fact onto the `MachineConfig.status` whose
 `spec.hostname` matches the device, one server-side apply per field, each under its own field
@@ -564,8 +565,10 @@ sync".
 
 The device table's `Compliance` column names the first check the device reported as not passing
 and how many follow it (`file /home/jane/.zshrc: managed file missing (+1 more)`), coloured by
-the most severe outcome. A device whose agent predates the check list shows its counts
-(`1 warning, 0 violation`), and one that never reported compliance shows `not reported`. The
+the most severe outcome. A line longer than 80 characters is cut short with `…`, and hovering
+the cell shows all of it. A device with nothing failing, or whose agent predates the check list,
+shows its counts (`12 compliant, 1 warning, 0 violation`, the spelling `cfgd checkin` and
+`cfgd compliance` print), and one that never reported compliance shows `not reported`. The
 device page lists each check the device reported as not passing, with its status, category, name
 and detail.
 

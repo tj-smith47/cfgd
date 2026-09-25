@@ -525,13 +525,27 @@ impl ScriptBodyShape {
 /// The most failing checks one check-in reports, and one MachineConfig status
 /// lists.
 ///
-/// The list lands in a status object every operator replica watches, which
+/// The list is written to a status object every operator replica watches, which
 /// has to stay well inside etcd's ~1.5 MiB limit. Unlike the policy violator
 /// lists, whose entries are bounded `namespace/name` pairs, a check carries a
 /// path and a free-text detail of any length, so the cap is lower than theirs:
 /// at ~1 KiB per check, 200 is ~200 KiB. The counts beside the list stay
 /// exact; only the enumeration stops.
 pub const MAX_REPORTED_CHECKS: usize = 200;
+
+/// A compliance report's counts as every command and the dashboard spell them:
+/// `12 compliant, 1 warning, 0 violation`.
+///
+/// The machine's own report, the daemon's journal, the check-in and the fleet
+/// dashboard all state these three numbers, and a reader comparing two of them
+/// should not have to reconcile two spellings.
+pub fn compliance_counts_line(
+    compliant: impl std::fmt::Display,
+    warning: impl std::fmt::Display,
+    violation: impl std::fmt::Display,
+) -> String {
+    format!("{compliant} compliant, {warning} warning, {violation} violation")
+}
 
 /// Which layer owns a backup unit's schedule.
 ///

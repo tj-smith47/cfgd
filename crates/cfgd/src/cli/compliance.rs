@@ -517,10 +517,7 @@ pub fn build_compliance_summary_doc(snapshot: &ComplianceSnapshot, now: &str, ar
         Role::Ok
     };
     let summary_line = if snapshot.summary.violation > 0 || snapshot.summary.warning > 0 {
-        format!(
-            "Summary: {} compliant, {} warning, {} violation",
-            snapshot.summary.compliant, snapshot.summary.warning, snapshot.summary.violation
-        )
+        format!("Summary: {}", snapshot.summary.counts_line())
     } else {
         format!(
             "All {} compliant",

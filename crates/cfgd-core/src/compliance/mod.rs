@@ -114,6 +114,14 @@ pub struct ComplianceSummary {
     pub violation: usize,
 }
 
+impl ComplianceSummary {
+    /// The counts as every command and the fleet dashboard spell them:
+    /// `12 compliant, 1 warning, 0 violation`.
+    pub fn counts_line(&self) -> String {
+        cfgd_schema::compliance_counts_line(self.compliant, self.warning, self.violation)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Collection
 // ---------------------------------------------------------------------------

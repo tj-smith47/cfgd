@@ -169,8 +169,8 @@ pub struct CheckinCompliance<'a> {
 #[derive(Debug, Clone, Serialize)]
 pub struct CheckinCheck<'a> {
     pub category: &'a str,
-    /// [`ComplianceCheck::subject_name`], the identifier `cfgd compliance` names
-    /// the row by.
+    /// [`ComplianceCheck::subject_name`]: the name `cfgd compliance -o json`
+    /// carries for the row (a file's absolute path).
     pub name: &'a str,
     pub status: ComplianceStatus,
     /// The row's own detail text, as the machine recorded it.

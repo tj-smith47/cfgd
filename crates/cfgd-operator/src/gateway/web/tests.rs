@@ -139,13 +139,47 @@ async fn dashboard_compliance_cell_names_the_first_failing_check() {
 
     assert!(html.contains("<th>Compliance</th>"), "{html}");
     for cell in [
-        r#"<td><span class="status offline">file /home/u/.zshrc: managed file &lt;missing&gt; (+1 more)</span></td>"#,
-        r#"<td><span class="status drifted">1 warning, 0 violation</span></td>"#,
-        r#"<td><span class="status healthy">9 compliant</span></td>"#,
+        r#"<td><span class="status offline" title="file /home/u/.zshrc: managed file &lt;missing&gt; (+1 more)">file /home/u/.zshrc: managed file &lt;missing&gt; (+1 more)</span></td>"#,
+        r#"<td><span class="status drifted" title="7 compliant, 1 warning, 0 violation">7 compliant, 1 warning, 0 violation</span></td>"#,
+        r#"<td><span class="status healthy" title="9 compliant, 0 warning, 0 violation">9 compliant, 0 warning, 0 violation</span></td>"#,
         r#"<td><span class="muted">not reported</span></td>"#,
     ] {
         assert!(html.contains(cell), "missing {cell} in {html}");
     }
+}
+
+/// A check whose detail runs long is cut short in the device table, with the
+/// whole line, escaped, as the cell's tooltip.
+#[tokio::test]
+async fn dashboard_compliance_cell_cuts_a_long_line_and_keeps_it_whole_in_the_tooltip() {
+    let (state, _tmp) = test_state();
+    let detail = format!("<{}>", "x".repeat(298));
+    let report = crate::crds::DeviceCompliance {
+        violation: 1,
+        checks: vec![crate::crds::DeviceComplianceCheck {
+            category: "env".to_string(),
+            name: "PATH".to_string(),
+            status: crate::crds::DeviceComplianceStatus::Violation,
+            detail: Some(detail.clone()),
+        }],
+        ..Default::default()
+    };
+    state
+        .db
+        .register_device("dev-l", "host-l", "linux", "x86_64", "h", Some(&report))
+        .await
+        .expect("register device");
+
+    let html = dashboard(State(state)).await.expect("dashboard renders").0;
+
+    let full = format!("env PATH: {detail}");
+    let shown: String = full.chars().take(79).chain(['…']).collect();
+    let cell = format!(
+        r#"<td><span class="status offline" title="{}">{}</span></td>"#,
+        cfgd_core::xml_escape(&full),
+        cfgd_core::xml_escape(&shown)
+    );
+    assert!(html.contains(&cell), "missing {cell} in {html}");
 }
 
 /// The device page lists every check the device reported as not passing,

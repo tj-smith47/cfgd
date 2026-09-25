@@ -2775,8 +2775,9 @@ configurators the profile declares (`sysctl`, `kernelModules`, `macosDefaults`,
 packages, env vars and aliases are checked locally by [`cfgd diff`](#cfgd-diff) and reach the
 gateway through the compliance summary a check-in carries when
 [`spec.compliance`](spec/config.md#speccompliance) is enabled: the snapshot's counts, and the first 200
-checks that did not pass with the name and detail [`cfgd compliance`](#cfgd-compliance) shows for
-it (violations first, then warnings), a source's security-constraint violations included. They are written to the machine's `MachineConfig.status.compliance`
+checks that did not pass, each with the name `cfgd compliance -o json` carries (for a file, its
+absolute path) and the detail [`cfgd compliance`](#cfgd-compliance) shows (violations first, then
+warnings), a source's security-constraint violations included. They are written to the machine's `MachineConfig.status.compliance`
 and in the gateway's device listing, never as a DriftAlert. A device the
 fleet dashboard shows as healthy is a device whose system settings matched, not a device proven
 in sync.

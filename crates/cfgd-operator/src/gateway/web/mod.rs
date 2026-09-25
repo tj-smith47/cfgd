@@ -863,47 +863,56 @@ async fn fleet_events(State(state): State<SharedState>) -> Result<Html<String>, 
 }
 
 /// A compliance report's most severe outcome, as its badge word and colour.
-fn compliance_outcome(report: &DeviceCompliance) -> (&'static str, &'static str) {
+fn compliance_outcome(report: &DeviceCompliance) -> (String, &'static str) {
     if report.violation > 0 {
         check_badge(DeviceComplianceStatus::Violation)
     } else if report.warning > 0 {
         check_badge(DeviceComplianceStatus::Warning)
     } else {
-        ("Compliant", "healthy")
+        ("Compliant".to_string(), "healthy")
     }
 }
 
-fn check_badge(status: DeviceComplianceStatus) -> (&'static str, &'static str) {
-    match status {
-        DeviceComplianceStatus::Violation => ("Violation", "offline"),
-        DeviceComplianceStatus::Warning => ("Warning", "drifted"),
-    }
+/// A check status's badge: the word is the one the check-in and the
+/// MachineConfig status carry, so the page and `kubectl` read alike.
+fn check_badge(status: DeviceComplianceStatus) -> (String, &'static str) {
+    let word = serde_json::to_value(status)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_owned))
+        .unwrap_or_default();
+    let class = match status {
+        DeviceComplianceStatus::Violation => "offline",
+        DeviceComplianceStatus::Warning => "drifted",
+    };
+    (word, class)
 }
 
-/// The counts a report's badge carries when no check is listed: an agent that
-/// predates the check list, or a machine with nothing failing.
-fn compliance_counts(report: &DeviceCompliance) -> String {
-    if report.warning == 0 && report.violation == 0 {
-        format!("{} compliant", report.compliant)
-    } else {
-        format!("{} warning, {} violation", report.warning, report.violation)
-    }
-}
+/// The most characters a device-table Compliance cell shows. A check's detail
+/// can run to several sentences, which would stretch one row over the rest.
+const COMPLIANCE_CELL_CHARS: usize = 80;
 
 /// The device table's Compliance cell: the first check that does not pass and
 /// how many follow it, so a reader sees why a machine is out of compliance
-/// without opening it.
+/// without opening it. An agent that predates the check list, or a machine
+/// with nothing failing, shows its counts. A long line is cut short, and the
+/// whole line is the cell's tooltip.
 fn compliance_cell(report: Option<&DeviceCompliance>) -> String {
     let Some(report) = report else {
         return r#"<span class="muted">not reported</span>"#.to_string();
     };
-    let text = report
-        .headline()
-        .unwrap_or_else(|| compliance_counts(report));
+    let text = report.headline().unwrap_or_else(|| report.counts_line());
+    let shown = if text.chars().count() > COMPLIANCE_CELL_CHARS {
+        let mut cut: String = text.chars().take(COMPLIANCE_CELL_CHARS - 1).collect();
+        cut.push('…');
+        cut
+    } else {
+        text.clone()
+    };
     format!(
-        r#"<span class="status {}">{}</span>"#,
+        r#"<span class="status {}" title="{}">{}</span>"#,
         compliance_outcome(report).1,
-        xml_escape(&text)
+        xml_escape(&text),
+        xml_escape(&shown)
     )
 }
 
@@ -915,10 +924,8 @@ fn compliance_section(report: Option<&DeviceCompliance>) -> String {
         Some(report) => {
             let (word, class) = compliance_outcome(report);
             let mut html = format!(
-                r#"<p><span class="status {class}">{word}</span> <span class="muted">{} compliant, {} warning, {} violation</span></p>"#,
-                report.compliant,
-                report.warning,
-                report.violation,
+                r#"<p><span class="status {class}">{word}</span> <span class="muted">{}</span></p>"#,
+                report.counts_line(),
             );
             if !report.checks.is_empty() {
                 html.push_str(

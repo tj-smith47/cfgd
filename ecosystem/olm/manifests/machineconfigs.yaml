@@ -188,8 +188,8 @@ spec:
                           type: string
                         name:
                           description: |-
-                            The file, package, key or path the check is about, as the machine names
-                            it in `cfgd compliance`.
+                            The file, package, key or path the check is about: the name
+                            `cfgd compliance -o json` carries for it (a file's absolute path).
                           type: string
                         status:
                           description: The outcome of a check that did not pass.
