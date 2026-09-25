@@ -6812,6 +6812,32 @@ fn is_test_source_judges_only_components_below_the_workspace_root() {
     let (tests, sources): (Vec<_>, Vec<_>) = listed.iter().partition(|p| below(&ws, p));
     assert_eq!(sources, vec![&production], "the listed production sources");
     assert_eq!(tests, vec![&held], "the listed test-only sources");
+
+    // Cargo keeps the logical path it was given, so a root reached through a
+    // link is judged under the link; canonicalizing a file resolves it past the
+    // link, out from under that root, where the whole path is judged.
+    #[cfg(unix)]
+    {
+        let link = tmp.path().join("link");
+        std::os::unix::fs::symlink(&ws, &link).expect("symlink the workspace");
+        let logical = link.join("crates/cfgd/src/cli/status.rs");
+        let listed = rust_sources_under(&link.join("crates"));
+        assert!(
+            listed.contains(&logical),
+            "the listing keeps the logical path"
+        );
+        assert!(
+            !below(&link, &logical),
+            "{} is production",
+            logical.display()
+        );
+        let physical = logical.canonicalize().expect("canonicalize");
+        assert!(
+            below(&link, &physical),
+            "{} sits outside the link root, so its `tests` ancestor is judged",
+            physical.display()
+        );
+    }
 }
 
 /// Every scan that skips test-only files asks `is_test_source` which ones
@@ -6828,7 +6854,8 @@ fn is_test_source_judges_only_components_below_the_workspace_root() {
 /// Both floors equal the population they were counted from, so a scan that stops
 /// reading files, or a routed site that stops asking, fails here. The `asks`
 /// count leaves out the tests that define the rule, whose calls check the
-/// helper rather than route a scan through it.
+/// helper rather than route a scan through it, and reads each line with its
+/// string literals blanked, so a message quoting the call counts for nothing.
 #[test]
 fn no_scan_hand_copies_the_test_source_naming_rule() {
     const FILES: usize = 575;
@@ -6864,7 +6891,9 @@ fn no_scan_hand_copies_the_test_source_naming_rule() {
                 in_rule_test = false;
             }
             if !in_rule_test {
-                asks += code.matches("is_test_source(").count();
+                asks += crate::test_helpers::code_line(line)
+                    .matches("is_test_source(")
+                    .count();
             }
             if tells.iter().any(|tell| code.contains(tell)) {
                 offenders.push(format!("{}:{}: {}", path.display(), row + 1, line.trim()));

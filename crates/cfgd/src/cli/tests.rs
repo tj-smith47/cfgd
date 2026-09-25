@@ -20989,10 +20989,11 @@ fn no_provider_note_repeats_its_own_tag() {
 /// The same walk over `cfgd-core`'s production sources: the messages a library
 /// surface composes reach the same terminal as the binary crate's.
 fn core_production_sources() -> Vec<(std::path::PathBuf, String)> {
-    let core_src = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../cfgd-core/src")
-        .canonicalize()
-        .expect("the workspace sibling crate is checked out beside this one");
+    let core_src = cfgd_core::test_helpers::workspace_root().join("crates/cfgd-core/src");
+    assert!(
+        core_src.is_dir(),
+        "the workspace sibling crate is checked out beside this one"
+    );
     let files = rust_sources_under(&core_src);
     files
         .into_iter()
@@ -46292,10 +46293,11 @@ fn every_annotated_kv_slot_states_a_fact_its_row_cannot_show() {
         ),
     ];
     let mut sources = cli_production_sources();
-    let core_output = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../cfgd-core/src/output")
-        .canonicalize()
-        .expect("cfgd-core/src/output");
+    let core_output = cfgd_core::test_helpers::workspace_root().join("crates/cfgd-core/src/output");
+    assert!(
+        core_output.is_dir(),
+        "the workspace sibling crate is checked out beside this one"
+    );
     for path in rust_sources_under(&core_output) {
         if cfgd_core::test_helpers::is_test_source(&path) {
             continue;
