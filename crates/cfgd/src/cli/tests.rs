@@ -51728,7 +51728,9 @@ trait Greet {
         let _ = 1;
     }
 }
-unsafe impl Send for Wrapper<u8> {}
+unsafe impl Send for Wrapper<u8> {
+    fn unsafe_held(&self) {}
+}
 impl Holder {
     fn outer(&self) {
         fn nested() {}
@@ -51756,6 +51758,7 @@ fn last(selfish: u8) {}
             expect("show", true),
             expect("after_wrapped_impl", false),
             expect("greet", true),
+            expect("unsafe_held", true),
             expect("outer", true),
             expect("nested", false),
             expect("after_one_line_impls", false),
