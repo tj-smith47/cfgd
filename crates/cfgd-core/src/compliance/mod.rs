@@ -85,6 +85,9 @@ pub enum ComplianceStatus {
 }
 
 impl ComplianceStatus {
+    /// Every status, least severe first.
+    pub const ALL: [Self; 3] = [Self::Compliant, Self::Warning, Self::Violation];
+
     /// The word a person reads for this status, WITH the role that colours it.
     ///
     /// One producer of both halves, for the same reason `ApplyStatus` has one:

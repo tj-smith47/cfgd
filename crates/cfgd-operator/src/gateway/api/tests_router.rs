@@ -819,6 +819,43 @@ fn status_object(body: &serde_json::Value) -> &serde_json::Map<String, serde_jso
         .unwrap_or_else(|| panic!("an apply body carries a status object: {body}"))
 }
 
+/// A compliance report the gateway cannot read (a status word a newer agent
+/// added) costs the check-in its report and nothing else: the check-in is
+/// accepted and its package versions and backup owners are still applied.
+#[tokio::test]
+#[serial]
+async fn checkin_with_an_unreadable_compliance_report_still_applies_the_rest() {
+    unsafe {
+        std::env::remove_var("CFGD_API_KEY");
+    }
+    let (ctx, _registry, harness) = MockKubeHarness::new(checkin_kube_calls());
+    let (state, _tmp) = crate::gateway::test_state::test_state_with_kube(ctx.client.clone());
+    let token = enrolled_device(&state, "dev-1", "host-1").await;
+    let mut body = checkin_body("dev-1", "host-1");
+    body["complianceSummary"] = serde_json::json!({
+        "compliant": 3,
+        "warning": 0,
+        "violation": 1,
+        "checks": [{ "category": "file", "name": "/etc/hosts", "status": "Critical" }],
+    });
+
+    let response = router_with_state(state)
+        .oneshot(post_json_with_bearer("/api/v1/checkin", &token, body))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let report = harness.finish().await;
+    let packages = applied_under(&report, "cfgd-operator/gateway/packages");
+    assert_eq!(packages["status"]["packageVersions"]["brew/git"], "2.45.1");
+    assert!(
+        status_applies(&report)
+            .iter()
+            .all(|(manager, _)| manager != "cfgd-operator/gateway/compliance"),
+        "an unreadable report is not written to the MachineConfig"
+    );
+}
+
 /// A check-in carrying compliance writes it onto the MachineConfig under a
 /// manager of its own, naming no other field, so the fleet reads the checks
 /// that failed with `kubectl get machineconfig -o yaml`.

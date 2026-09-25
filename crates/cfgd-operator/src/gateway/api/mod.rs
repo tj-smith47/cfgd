@@ -122,8 +122,10 @@ pub struct CheckinRequest {
     /// The compliance snapshot the device collected for this check-in: its
     /// counts, and every check that did not pass. Absent when the device has
     /// compliance off or could not collect it; an agent that predates the
-    /// check list sends the counts alone.
-    #[serde(default)]
+    /// check list sends the counts alone. A report the gateway cannot read (a
+    /// status word a newer agent added) is dropped with a warning, so it costs
+    /// the check-in its compliance and nothing else.
+    #[serde(default, deserialize_with = "lenient_compliance")]
     pub compliance_summary: Option<crate::crds::DeviceCompliance>,
     /// Installed versions of the packages the device DECLARES, keyed
     /// `<manager>/<package>`. Absent when the device did not observe them,
@@ -135,6 +137,28 @@ pub struct CheckinRequest {
     /// as `ScheduleOwner::label` spells it. Absent on the same terms.
     #[serde(default)]
     pub backup_schedule_owners: Option<std::collections::BTreeMap<String, String>>,
+}
+
+/// Read `complianceSummary`, dropping a report that does not parse. The rest
+/// of the check-in (the device's identity, its package versions and backup
+/// owners) is still applied, which a strict field would refuse along with it.
+fn lenient_compliance<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<crate::crds::DeviceCompliance>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let Some(value) = Option::<serde_json::Value>::deserialize(deserializer)? else {
+        return Ok(None);
+    };
+    Ok(serde_json::from_value(value)
+        .inspect_err(|e| {
+            tracing::warn!(
+                error = %e,
+                "gateway: a check-in's compliance summary could not be read; it is accepted without one"
+            );
+        })
+        .ok())
 }
 
 #[derive(Debug, Serialize)]

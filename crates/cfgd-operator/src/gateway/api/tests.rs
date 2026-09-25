@@ -3413,3 +3413,59 @@ async fn event_stream_returns_sse() {
     // Just verify it doesn't panic and returns the SSE stream
     let _sse = event_stream(State(state)).await;
 }
+
+/// Every status the agent can report on a failing check is one the gateway's
+/// type reads, and the agent never reports a passing check. A status added to
+/// `ComplianceStatus` without its twin in `DeviceComplianceStatus` would be
+/// dropped by every gateway that received it.
+#[test]
+fn every_status_the_agent_reports_is_one_the_gateway_reads() {
+    use cfgd_core::compliance::{
+        ComplianceCheck, ComplianceSnapshot, ComplianceStatus, ComplianceSummary, MachineInfo,
+    };
+    use cfgd_core::server_client::CheckinCompliance;
+
+    for status in ComplianceStatus::ALL {
+        let token = serde_json::to_value(status).unwrap();
+        let parsed = serde_json::from_value::<crate::crds::DeviceComplianceStatus>(token.clone());
+        match status {
+            ComplianceStatus::Compliant => assert!(
+                parsed.is_err(),
+                "a passing check has no gateway status, so {token} must not parse as one"
+            ),
+            _ => assert!(
+                parsed.is_ok(),
+                "the gateway cannot read {token}: {parsed:?}"
+            ),
+        }
+    }
+
+    let snapshot = ComplianceSnapshot {
+        timestamp: "2026-01-01T00:00:00Z".into(),
+        machine: MachineInfo {
+            hostname: "h".into(),
+            os: "linux".into(),
+            arch: "x86_64".into(),
+        },
+        profile: "p".into(),
+        sources: vec![],
+        checks: ComplianceStatus::ALL
+            .iter()
+            .map(|&status| ComplianceCheck {
+                category: "file".into(),
+                path: Some("/etc/hosts".into()),
+                status,
+                ..Default::default()
+            })
+            .collect(),
+        summary: ComplianceSummary {
+            compliant: 1,
+            warning: 1,
+            violation: 1,
+        },
+    };
+    let body = serde_json::to_value(CheckinCompliance::from_snapshot(&snapshot)).unwrap();
+    let report: crate::crds::DeviceCompliance =
+        serde_json::from_value(body.clone()).expect("the gateway reads the agent's report");
+    assert_eq!(report.checks.len(), 2, "{body}");
+}
