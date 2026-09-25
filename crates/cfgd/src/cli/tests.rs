@@ -17799,7 +17799,9 @@ fn floored_production_body(path: &std::path::Path) -> String {
 /// indistinguishable from one holding no offender. The comparison is
 /// order-insensitive: both sides are sorted first, so a caller listing its
 /// roots in its own order is not failed with a message about a crate joining
-/// the workspace.
+/// the workspace. A test module's own file (`tests.rs`, `tests_*.rs`, anything
+/// under `tests/`) is compiled under `#[cfg(test)]` from its parent and is no
+/// production source.
 fn production_sources_per_root(roots: &[&str]) -> Vec<(String, Vec<(std::path::PathBuf, String)>)> {
     let crates_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     let mut present: Vec<String> = std::fs::read_dir(&crates_dir)
@@ -17821,7 +17823,11 @@ fn production_sources_per_root(roots: &[&str]) -> Vec<(String, Vec<(std::path::P
             let files: Vec<(std::path::PathBuf, String)> =
                 rust_sources_under(&crates_dir.join(krate).join("src"))
                     .into_iter()
-                    .filter(|p| p.file_name().is_none_or(|n| n != "tests.rs"))
+                    .filter(|p| {
+                        p.file_name()
+                            .and_then(|n| n.to_str())
+                            .is_none_or(|n| n != "tests.rs" && !n.starts_with("tests_"))
+                    })
                     .filter(|p| !p.components().any(|c| c.as_os_str() == "tests"))
                     .map(|path| {
                         let production = floored_production_body(&path);
@@ -52563,29 +52569,43 @@ fn every_cli_refusal_kind_is_named_in_the_reference() {
 /// the daemon's journal and the fleet dashboard. A reader comparing the
 /// machine's own line to the fleet's reads one spelling. The dashboard's
 /// badge words are the serde names the check-in carries, so they cannot drift
-/// from a second hand-spelled copy.
+/// from a second hand-spelled copy. A literal whose count runs straight into
+/// one of the three status words is a hand copy, whichever word it opens on;
+/// `// counts-line-ok: <why>` marks a sentence counting something else.
 #[test]
 fn every_compliance_counts_line_comes_from_the_one_builder() {
     // one-root-population-ok: the question is an absence, which no root has a
-    // count of; the builder's own presence is the floor asserted below.
+    // count of; the builder's own presence and the dashboard's read are the
+    // floors asserted below.
     let crates_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     let builder_home = crates_dir.join("cfgd-schema/src/lib.rs");
     let dashboard = crates_dir.join("cfgd-operator/src/gateway/web/mod.rs");
-    // A count followed by the word, inside a literal: `{} compliant, ` or
-    // `{compliant} compliant, `. A field access (`self.compliant, `) or a SQL
-    // column (`summary_compliant, `) is not a spelling.
-    let spells_counts = |line: &str| {
-        let code = line.trim_start();
-        !code.starts_with("//")
-            && code.contains("violation")
-            && code.match_indices(" compliant, ").any(|(at, _)| {
-                code[..at]
-                    .chars()
-                    .next_back()
-                    .is_some_and(|c| c == '}' || c.is_ascii_digit())
+    // A count followed by a status word inside a literal, whichever word the
+    // copy opens on: `{} compliant`, `{warning} warning`, `3 violation`. The
+    // count byte must itself sit in a literal, so a field access
+    // (`self.compliant`) or a SQL column (`summary_compliant`) is not one.
+    // A sentence counting something other than a compliance report's three
+    // statuses (a policy's non-compliant machines, an all-pass verdict) says so.
+    const HATCH: &str = "counts-line-ok:";
+    let hand_compositions = |body: &str| -> Vec<usize> {
+        let raw = cfgd_core::test_helpers::blank_comments(body);
+        let masked = blank_non_code(body);
+        let (raw, masked) = (raw.as_bytes(), masked.as_bytes());
+        (0..raw.len())
+            .filter(|&at| {
+                (raw[at] == b'}' || raw[at].is_ascii_digit())
+                    && masked[at] == b' '
+                    && [" compliant", " warning", " violation"].iter().any(|word| {
+                        raw[at + 1..].starts_with(word.as_bytes())
+                            && raw
+                                .get(at + 1 + word.len())
+                                .is_none_or(|&b| b != b'_' && !b.is_ascii_alphanumeric())
+                    })
             })
+            .collect()
     };
     let mut builder_seen = false;
+    let mut dashboard_seen = false;
     let mut offenders: Vec<String> = Vec::new();
     for (path, production) in production_sources_per_root(&[
         "cfgd",
@@ -52599,29 +52619,48 @@ fn every_compliance_counts_line_comes_from_the_one_builder() {
     .into_iter()
     .flat_map(|(_, sources)| sources)
     {
-        for (i, line) in production.lines().enumerate() {
-            let site = format!(
+        let site = |at: usize| {
+            let line = production[..at].matches('\n').count();
+            format!(
                 "{}:{}: {}",
                 cfgd_core::to_posix_string(&path),
-                i + 1,
-                line.trim()
+                line + 1,
+                production.lines().nth(line).unwrap_or_default().trim()
+            )
+        };
+        let lines: Vec<&str> = production.lines().collect();
+        let hits: Vec<usize> = hand_compositions(&production)
+            .into_iter()
+            .filter(|&at| {
+                let line = production[..at].matches('\n').count();
+                !(carries_hatch(lines[line], HATCH)
+                    || line
+                        .checked_sub(1)
+                        .is_some_and(|above| carries_hatch(lines[above], HATCH)))
+            })
+            .collect();
+        if path == builder_home {
+            builder_seen = !hits.is_empty();
+        } else {
+            offenders.extend(hits.into_iter().map(site));
+        }
+        if path == dashboard {
+            dashboard_seen = true;
+            offenders.extend(
+                production
+                    .match_indices("\"Violation\"")
+                    .chain(production.match_indices("\"Warning\""))
+                    .map(|(at, _)| site(at)),
             );
-            if spells_counts(line) {
-                if path == builder_home {
-                    builder_seen = true;
-                } else {
-                    offenders.push(site);
-                }
-            } else if path == dashboard
-                && (line.contains("\"Violation\"") || line.contains("\"Warning\""))
-            {
-                offenders.push(site);
-            }
         }
     }
     assert!(
         builder_seen,
         "the scan did not find the counts builder in cfgd-schema, so it proves nothing"
+    );
+    assert!(
+        dashboard_seen,
+        "the scan did not read the fleet dashboard's source, so its badge words went unchecked"
     );
     assert!(
         offenders.is_empty(),

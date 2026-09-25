@@ -63,6 +63,7 @@ pub(super) const CONFIG_POLICY_FINALIZER: &str = "cfgd.io/config-policy-cleanup"
 pub(super) const CLUSTER_CONFIG_POLICY_FINALIZER: &str = "cfgd.io/cluster-config-policy-cleanup";
 
 pub(super) fn compliance_summary(compliant: u32, non_compliant: u32) -> String {
+    // counts-line-ok: a policy counts the machines that meet it, in its own two words
     format!("{compliant} compliant, {non_compliant} non-compliant")
 }
 
