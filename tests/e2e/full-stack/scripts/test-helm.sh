@@ -425,3 +425,73 @@ else
 fi
 
 kubectl delete namespace "$HELM_NS" --ignore-not-found --wait=false 2>/dev/null || true
+
+# =================================================================
+# FS-HELM-09: An operator roll keeps the webhook Service backed
+# =================================================================
+begin_test "FS-HELM-09: An operator roll keeps the webhook Service backed"
+
+# A standby whose webhook serves is ready, so the replacement joins the webhook
+# Service while the old pod still holds the leader lease, and the chart's
+# derived strategy removes the old pod only after that. Every sample taken
+# during the roll must name at least one ready address. failurePolicy Ignore
+# keeps this release's cluster-scoped webhook from failing anyone else's
+# writes while it exists; the mutating pod injector is left out for the same
+# reason. A webhook configuration left by an interrupted run would block the
+# install, so it goes first.
+kubectl delete validatingwebhookconfiguration cfgd-test --ignore-not-found 2>/dev/null || true
+helm_test_ns "09"
+helm install cfgd-test "$CHART_DIR" \
+    -n "$HELM_NS" \
+    --set "operator.image.repository=${REGISTRY}/cfgd-operator" \
+    --set "operator.image.tag=$IMAGE_TAG" \
+    --set "operator.imagePullSecrets[0].name=registry-credentials" \
+    --set operator.enabled=true \
+    --set operator.leaderElection.enabled=true \
+    --set csiDriver.enabled=false \
+    --set webhook.enabled=true \
+    --set webhook.certManager.enabled=true \
+    --set webhook.failurePolicy=Ignore \
+    --set mutatingWebhook.enabled=false \
+    --set agent.enabled=false \
+    --set deviceGateway.enabled=false \
+    --wait --timeout 180s 2>&1 || true
+
+ROLL_DEPLOY=$(kubectl get deployment -n "$HELM_NS" \
+    -l app.kubernetes.io/component=operator \
+    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+ROLL_SVC=cfgd-test-webhook
+ROLL_SAMPLES=0
+ROLL_EMPTY=0
+ROLL_DONE=false
+
+if [ -z "$ROLL_DEPLOY" ]; then
+    fail_test "FS-HELM-09" "No operator deployment after helm install"
+elif ! wait_for_service_endpoints "$HELM_NS" "$ROLL_SVC" 120; then
+    fail_test "FS-HELM-09" "Webhook Service never had a ready endpoint before the roll"
+elif ! kubectl rollout restart "deployment/$ROLL_DEPLOY" -n "$HELM_NS"; then
+    fail_test "FS-HELM-09" "kubectl rollout restart failed, so no roll was observed"
+else
+    ROLL_DEADLINE=$((SECONDS + 180))
+    while [ $SECONDS -lt $ROLL_DEADLINE ]; do
+        ROLL_ADDRS=$(kubectl get endpoints "$ROLL_SVC" -n "$HELM_NS" \
+            -o jsonpath='{.subsets[*].addresses[*].ip}' 2>/dev/null || echo "")
+        ROLL_SAMPLES=$((ROLL_SAMPLES + 1))
+        [ -n "$ROLL_ADDRS" ] || ROLL_EMPTY=$((ROLL_EMPTY + 1))
+        if kubectl rollout status "deployment/$ROLL_DEPLOY" -n "$HELM_NS" --timeout=1s >/dev/null 2>&1; then
+            ROLL_DONE=true
+            break
+        fi
+    done
+    echo "  Roll finished: $ROLL_DONE; samples: $ROLL_SAMPLES; samples with no ready endpoint: $ROLL_EMPTY"
+
+    if [ "$ROLL_DONE" != "true" ]; then
+        fail_test "FS-HELM-09" "The operator roll did not finish within 180s"
+    elif [ "$ROLL_EMPTY" -ne 0 ]; then
+        fail_test "FS-HELM-09" "The webhook Service had no ready endpoint in $ROLL_EMPTY of $ROLL_SAMPLES samples during the roll"
+    else
+        pass_test "FS-HELM-09"
+    fi
+fi
+
+helm_test_cleanup "cfgd-test"

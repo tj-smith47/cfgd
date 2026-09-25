@@ -5,6 +5,16 @@ fullnameOverride: ""
 operator:
   enabled: true
   replicaCount: 1
+  # The Deployment's update strategy, rendered as given. Left empty, the chart
+  # picks RollingUpdate with maxSurge 1 and a maxUnavailable that depends on
+  # what readiness waits for. A pod turns ready once its admission webhook
+  # serves, lease or no lease, so the replacement joins the webhook Service
+  # before the old pod leaves (maxUnavailable 0) and admission never loses its
+  # last backend. With the device gateway on and leader election enabled,
+  # readiness also waits for the leader lease, which the old pod holds until it
+  # terminates; there maxUnavailable is 1, because 0 (and the 25% default,
+  # which rounds to 0 at one replica) would wait on the lease forever.
+  strategy: {}
   image:
     repository: ghcr.io/tj-smith47/cfgd-operator
     # Pinned to the cfgd-operator crate's own version, which moves independently of

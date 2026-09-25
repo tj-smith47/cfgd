@@ -258,6 +258,12 @@ jobs:
       - name: Chart image tag guard
         run: task chart:tags:check
 
+      # The operator Deployment's update strategy decides whether a roll can
+      # finish at one replica; the goldens hold each derived default and an
+      # override to what the template renders.
+      - name: Chart render goldens
+        run: task chart:test
+
   # A demo GIF shows what the binary rendered when it was recorded, and nothing
   # else notices when a later change moves that output.
   demo-sync:

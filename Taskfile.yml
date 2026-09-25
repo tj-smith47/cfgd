@@ -266,6 +266,11 @@ tasks:
       # (v0.8.0 left the chart and four docs at 0.7.0). Caught here instead of by a user.
       - '${ANODIZER_BIN:-anodizer} check version-files'
 
+  chart:test:
+    desc: Render the chart's operator Deployment per case and compare its update strategy and readiness probe with chart/cfgd/tests/golden (UPDATE=1 rewrites the goldens).
+    cmds:
+      - bash chart/cfgd/tests/render.sh
+
   chart:tags:check:
     desc: Verify every first-party image the chart renders by default names the version its crate has released, or the one the release cut from this commit publishes (CI drift guard).
     cmds:
@@ -621,6 +626,7 @@ tasks:
       - task: gen:crds:check
       - task: version-files:check
       - task: chart:tags:check
+      - task: chart:test
       - task: test
       - task: test:threads
       - task: audit

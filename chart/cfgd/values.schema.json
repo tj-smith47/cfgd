@@ -16,6 +16,10 @@
           "minimum": 1,
           "description": "Number of operator replicas"
         },
+        "strategy": {
+          "type": "object",
+          "description": "Operator Deployment update strategy, rendered as given; empty picks RollingUpdate with maxSurge 1 and maxUnavailable 0, or 1 when the device gateway and leader election are both enabled"
+        },
         "image": {
           "type": "object",
           "properties": {

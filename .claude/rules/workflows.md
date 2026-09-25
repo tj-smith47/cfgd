@@ -204,6 +204,11 @@ single-source-of-truth wiring.
   Rust ones; they sit in the one job that holds the tools they need (`task`,
   anodizer on PATH from the action step, docker, helm, yq, jq), and that job
   checks out with `fetch-depth: 0` because the prediction walks the tags.
+  The third chart step in that job is `task chart:test`, which renders the
+  operator Deployment per case in `chart/cfgd/tests/render.sh` and compares
+  its update strategy and readiness probe with `chart/cfgd/tests/golden/`. It
+  needs only helm and yq, and it sits beside the other chart guards so every
+  chart check runs in one place.
 - The `rustdoc` job runs `task doc` (`cargo doc --workspace --no-deps
   --document-private-items --all-features` under `RUSTDOCFLAGS="-D warnings"`,
   the flag spelled once as the Taskfile's `RUSTDOC_DENY_WARNINGS` var) as its

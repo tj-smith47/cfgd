@@ -36,7 +36,7 @@ create_e2e_namespace
 
 cleanup_fullstack() {
     # Additional namespace cleanup
-    for ns in "e2e-csi-test-${E2E_RUN_ID}" "e2e-csi-multi-${E2E_RUN_ID}" "e2e-csi-cache-${E2E_RUN_ID}" "e2e-csi-invalid-${E2E_RUN_ID}" "e2e-csi-update-${E2E_RUN_ID}" "e2e-csi-unmount-${E2E_RUN_ID}" "e2e-csi-ro-${E2E_RUN_ID}" "e2e-plugin-test-${E2E_RUN_ID}" "e2e-debug-flow-${E2E_RUN_ID}" "e2e-helm-01-${E2E_RUN_ID}" "e2e-helm-02-${E2E_RUN_ID}" "e2e-helm-03-${E2E_RUN_ID}" "e2e-helm-04-${E2E_RUN_ID}" "e2e-helm-05-${E2E_RUN_ID}" "e2e-helm-06-${E2E_RUN_ID}" "e2e-helm-08-${E2E_RUN_ID}" "e2e-oci01-${E2E_RUN_ID}" "e2e-oci02-${E2E_RUN_ID}" "e2e-oci05-${E2E_RUN_ID}" "e2e-oci06-${E2E_RUN_ID}"; do
+    for ns in "e2e-csi-test-${E2E_RUN_ID}" "e2e-csi-multi-${E2E_RUN_ID}" "e2e-csi-cache-${E2E_RUN_ID}" "e2e-csi-invalid-${E2E_RUN_ID}" "e2e-csi-update-${E2E_RUN_ID}" "e2e-csi-unmount-${E2E_RUN_ID}" "e2e-csi-ro-${E2E_RUN_ID}" "e2e-plugin-test-${E2E_RUN_ID}" "e2e-debug-flow-${E2E_RUN_ID}" "e2e-helm-01-${E2E_RUN_ID}" "e2e-helm-02-${E2E_RUN_ID}" "e2e-helm-03-${E2E_RUN_ID}" "e2e-helm-04-${E2E_RUN_ID}" "e2e-helm-05-${E2E_RUN_ID}" "e2e-helm-06-${E2E_RUN_ID}" "e2e-helm-08-${E2E_RUN_ID}" "e2e-helm-09-${E2E_RUN_ID}" "e2e-oci01-${E2E_RUN_ID}" "e2e-oci02-${E2E_RUN_ID}" "e2e-oci05-${E2E_RUN_ID}" "e2e-oci06-${E2E_RUN_ID}"; do
         kubectl delete namespace "$ns" --ignore-not-found --wait=false 2>/dev/null || true
     done
     # Delete run-scoped cluster-scoped resources

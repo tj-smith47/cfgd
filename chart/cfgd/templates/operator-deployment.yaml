@@ -9,6 +9,15 @@ metadata:
     app.kubernetes.io/component: operator
 spec:
   replicas: {{ .Values.operator.replicaCount }}
+  strategy:
+    {{- with .Values.operator.strategy }}
+    {{- toYaml . | nindent 4 }}
+    {{- else }}
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: {{ if and .Values.deviceGateway.enabled .Values.operator.leaderElection.enabled }}1{{ else }}0{{ end }}
+    {{- end }}
   selector:
     matchLabels:
       {{- include "cfgd.operatorSelectorLabels" . | nindent 6 }}

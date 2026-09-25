@@ -1,0 +1,11 @@
+strategy:
+  rollingUpdate:
+    maxSurge: 0
+    maxUnavailable: 2
+  type: RollingUpdate
+readinessProbe:
+  httpGet:
+    path: /readyz
+    port: health
+  initialDelaySeconds: 5
+  periodSeconds: 10

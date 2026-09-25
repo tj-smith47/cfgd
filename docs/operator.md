@@ -303,7 +303,16 @@ standby
 
 The metrics endpoint carries the same fact as a gauge, `cfgd_operator_leader`: `1` on the lease holder and `0` on each standby.
 
-The chart's Deployment probes `/readyz` for readiness and `/healthz` for liveness.
+The chart's Deployment probes `/readyz` for readiness and `/healthz` for liveness. Its update strategy (`operator.strategy`, empty by default) is derived from the same rule: `RollingUpdate` with `maxSurge: 1` and `maxUnavailable: 0`, so the old pod leaves only after its replacement serves admission; with the device gateway and leader election both on, `maxUnavailable: 1`, because readiness there waits for a lease the old pod releases only as it terminates. Set `operator.strategy` to render your own:
+
+```yaml
+operator:
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+```
 
 ## Pod Module Injection
 

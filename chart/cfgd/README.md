@@ -40,6 +40,7 @@ helm install cfgd oci://ghcr.io/tj-smith47/charts/cfgd -n cfgd-system --create-n
 |---|---|---|
 | `installCRDs` | `true` | Install the cfgd.io CRDs with the chart |
 | `operator.replicaCount` | `1` | Operator replicas; `operator.leaderElection.enabled` (`true`) makes >1 safe |
+| `operator.strategy` | `{}` | Operator Deployment update strategy, rendered as given; empty picks `RollingUpdate` with `maxSurge: 1` and `maxUnavailable: 0` (`1` when `deviceGateway.enabled` and leader election are both on). See [Health and Leadership](../../docs/operator.md#health-and-leadership) |
 | `agent.serverUrl` | `""` | Device gateway URL the node agent checks in to |
 | `agent.apiKeySecret.name` | `""` | Secret holding the agent API key (key: `agent.apiKeySecret.key`, default `api-key`) |
 | `agent.reconcileInterval` | `5m` | Node agent reconcile interval |
