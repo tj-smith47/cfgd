@@ -51630,10 +51630,27 @@ fn takes_self(code: &str, start: usize) -> bool {
         .is_some_and(|rest| !rest.starts_with(is_ident_char))
 }
 
-/// The byte offset just past the body of the function declared at
+/// The byte offset just past the body of the item declared at
 /// `code[start..]`, or `start` for a declaration without a body.
 fn body_end(code: &str, start: usize) -> usize {
-    let Some(open) = code[start..].find(['{', ';']).map(|at| start + at) else {
+    // A `;` inside parentheses or brackets belongs to the signature (`[u8; 3]`).
+    let mut nesting = 0usize;
+    let Some(open) = code[start..]
+        .char_indices()
+        .find(|&(_, c)| match c {
+            '(' | '[' => {
+                nesting += 1;
+                false
+            }
+            ')' | ']' => {
+                nesting = nesting.saturating_sub(1);
+                false
+            }
+            '{' | ';' => nesting == 0,
+            _ => false,
+        })
+        .map(|(at, _)| start + at)
+    else {
         return start;
     };
     if code.as_bytes()[open] == b';' {
@@ -51699,6 +51716,9 @@ impl Holder {
         }
         fn after_local() {}
     }
+    fn sized(&self, _: [u8; 3]) {
+        fn inner() {}
+    }
 }
 fn free() {}
 ";
@@ -51717,6 +51737,8 @@ fn free() {}
             ("outer".to_string(), false),
             ("nested".to_string(), true),
             ("after_local".to_string(), true),
+            ("sized".to_string(), false),
+            ("inner".to_string(), true),
             ("free".to_string(), true),
         ]
     );
