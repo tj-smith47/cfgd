@@ -51658,7 +51658,8 @@ fn body_end(code: &str, start: usize) -> usize {
 /// The functions in `declared` whose method flag contradicts what their own
 /// text shows, each as (name, flag read): a function at column 0 read as a
 /// method, one taking `self` read as free, and one inside another function's
-/// body, with no `impl` or `trait` between them, read as a method.
+/// body, outside any `impl` or `trait` block opened in that body, read as a
+/// method.
 fn misread_functions(code: &str, declared: &[(usize, String, bool)]) -> Vec<(String, bool)> {
     let ends: Vec<usize> = declared
         .iter()
@@ -51670,9 +51671,15 @@ fn misread_functions(code: &str, declared: &[(usize, String, bool)]) -> Vec<(Str
         .filter(|(i, (start, _, is_method))| {
             let at_column_0 = !code[*start..].starts_with(char::is_whitespace);
             let nested_in_a_body = (0..*i).rev().find(|&j| ends[j] > *start).is_some_and(|j| {
-                !code[declared[j].0..*start]
-                    .lines()
-                    .any(|l| matches!(cfgd_core::test_helpers::item_keyword(l), "impl" | "trait"))
+                let mut at = declared[j].0;
+                !code[at..*start].split_inclusive('\n').any(|line| {
+                    let opens_block_around = matches!(
+                        cfgd_core::test_helpers::item_keyword(line),
+                        "impl" | "trait"
+                    ) && body_end(code, at) > *start;
+                    at += line.len();
+                    opens_block_around
+                })
             });
             (*is_method && (at_column_0 || nested_in_a_body))
                 || (!*is_method && takes_self(code, *start))
@@ -51690,6 +51697,7 @@ impl Holder {
         impl Local {
             fn local_method() {}
         }
+        fn after_local() {}
     }
 }
 fn free() {}
@@ -51708,6 +51716,7 @@ fn free() {}
         [
             ("outer".to_string(), false),
             ("nested".to_string(), true),
+            ("after_local".to_string(), true),
             ("free".to_string(), true),
         ]
     );
