@@ -51570,7 +51570,8 @@ fn callers_by_definition(
 }
 
 /// Each function declared in `code` (strings and comments blanked): its byte
-/// offset, its name, and whether it sits inside an `impl` or `trait` block.
+/// offset, its name, and whether it is a direct item of an `impl` or `trait`
+/// block (a function nested in a method's body is free).
 fn function_spans(code: &str) -> Vec<(usize, String, bool)> {
     let mut declared = Vec::new();
     let mut offset = 0;
@@ -51580,7 +51581,8 @@ fn function_spans(code: &str) -> Vec<(usize, String, bool)> {
     let mut opens_impl = false;
     for line in code.split_inclusive('\n') {
         if let Some(name) = cfgd_core::test_helpers::declared_fn_name(line) {
-            declared.push((offset, name, !impl_depths.is_empty()));
+            let in_block = impl_depths.last().is_some_and(|d| depth == d + 1);
+            declared.push((offset, name, in_block));
         }
         if matches!(
             cfgd_core::test_helpers::item_keyword(line),
@@ -51628,6 +51630,89 @@ fn takes_self(code: &str, start: usize) -> bool {
         .is_some_and(|rest| !rest.starts_with(is_ident_char))
 }
 
+/// The byte offset just past the body of the function declared at
+/// `code[start..]`, or `start` for a declaration without a body.
+fn body_end(code: &str, start: usize) -> usize {
+    let Some(open) = code[start..].find(['{', ';']).map(|at| start + at) else {
+        return start;
+    };
+    if code.as_bytes()[open] == b';' {
+        return start;
+    }
+    let mut depth = 0usize;
+    for (at, c) in code[open..].char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return open + at + 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    code.len()
+}
+
+/// The functions in `declared` whose method flag contradicts what their own
+/// text shows, each as (name, flag read): a function at column 0 read as a
+/// method, one taking `self` read as free, and one inside another function's
+/// body, with no `impl` or `trait` between them, read as a method.
+fn misread_functions(code: &str, declared: &[(usize, String, bool)]) -> Vec<(String, bool)> {
+    let ends: Vec<usize> = declared
+        .iter()
+        .map(|(start, _, _)| body_end(code, *start))
+        .collect();
+    declared
+        .iter()
+        .enumerate()
+        .filter(|(i, (start, _, is_method))| {
+            let at_column_0 = !code[*start..].starts_with(char::is_whitespace);
+            let nested_in_a_body = (0..*i).rev().find(|&j| ends[j] > *start).is_some_and(|j| {
+                !code[declared[j].0..*start]
+                    .lines()
+                    .any(|l| matches!(cfgd_core::test_helpers::item_keyword(l), "impl" | "trait"))
+            });
+            (*is_method && (at_column_0 || nested_in_a_body))
+                || (!*is_method && takes_self(code, *start))
+        })
+        .map(|(_, (_, name, is_method))| (name.clone(), *is_method))
+        .collect()
+}
+
+#[test]
+fn the_misread_guard_sees_each_way_the_method_reading_can_drift() {
+    let code = "\
+impl Holder {
+    fn outer(&self) {
+        fn nested() {}
+        impl Local {
+            fn local_method() {}
+        }
+    }
+}
+fn free() {}
+";
+    let declared = function_spans(code);
+    assert!(
+        misread_functions(code, &declared).is_empty(),
+        "{declared:?}"
+    );
+    let flipped: Vec<(usize, String, bool)> = declared
+        .iter()
+        .map(|(start, name, is_method)| (*start, name.clone(), !is_method))
+        .collect();
+    assert_eq!(
+        misread_functions(code, &flipped),
+        [
+            ("outer".to_string(), false),
+            ("nested".to_string(), true),
+            ("free".to_string(), true),
+        ]
+    );
+}
+
 #[test]
 fn every_function_is_read_as_a_method_exactly_when_an_impl_or_trait_holds_it() {
     let code = "\
@@ -51644,6 +51729,11 @@ trait Greet {
     }
 }
 unsafe impl Send for Wrapper<u8> {}
+impl Holder {
+    fn outer(&self) {
+        fn nested() {}
+    }
+}
 impl Marker for Wrapper<u16> {}
 fn after_one_line_impls() {}
 mod tests {
@@ -51666,6 +51756,8 @@ fn last(selfish: u8) {}
             expect("show", true),
             expect("after_wrapped_impl", false),
             expect("greet", true),
+            expect("outer", true),
+            expect("nested", false),
             expect("after_one_line_impls", false),
             expect("inner_free", false),
             expect("inner_method", true),
@@ -51860,8 +51952,7 @@ fn every_refused_flag_is_spelled_the_way_help_prints_it() {
     let mut uses: std::collections::BTreeMap<String, Vec<String>> =
         std::collections::BTreeMap::new();
     // A function the method reading gets wrong at a place the fixture does
-    // not foresee: a free one at column 0 read as a method, or one taking
-    // `self` read as free.
+    // not foresee, by `misread_functions`.
     let mut misread: Vec<String> = Vec::new();
     for (path, body) in &bodies {
         let file = cfgd_core::to_posix_string(path.strip_prefix(root).unwrap_or(path));
@@ -51875,12 +51966,11 @@ fn every_refused_flag_is_spelled_the_way_help_prints_it() {
                 .map(str::to_string)
         };
         let declared = function_spans(&code);
+        for (name, is_method) in misread_functions(&code, &declared) {
+            misread.push(format!("{file}: {name} read as method={is_method}"));
+        }
         for (i, (start, name, is_method)) in declared.iter().enumerate() {
             let end = declared.get(i + 1).map_or(code.len(), |(next, _, _)| *next);
-            let at_column_0 = !code[*start..].starts_with(char::is_whitespace);
-            if (at_column_0 && *is_method) || (takes_self(&code, *start) && !is_method) {
-                misread.push(format!("{file}: {name} read as method={is_method}"));
-            }
             spans.push((
                 file.clone(),
                 name.clone(),
