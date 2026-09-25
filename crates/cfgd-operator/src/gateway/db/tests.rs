@@ -350,6 +350,37 @@ async fn compliance_summary_stored_on_checkin_update() {
     assert_eq!(device.compliance_summary, Some(summary));
 }
 
+/// A check-in carrying no report keeps the one the device sent before, on the
+/// update path and on a re-registration alike: a daemon restarted since its
+/// last compliance tick has nothing to send, and the fleet still shows what
+/// it last knew.
+#[tokio::test(flavor = "current_thread")]
+async fn a_checkin_without_compliance_keeps_the_last_report() {
+    let (db, _tmp) = test_db();
+    let summary = crate::crds::DeviceCompliance {
+        compliant: 4,
+        warning: 0,
+        violation: 1,
+        checks: vec![],
+    };
+    db.register_device("dev-k", "ws-k", "linux", "x86_64", "hash1", Some(&summary))
+        .await
+        .expect("register failed");
+
+    db.update_checkin("dev-k", "hash2", None)
+        .await
+        .expect("update failed");
+    let device = db.get_device("dev-k").await.expect("get failed");
+    assert_eq!(device.config_hash, "hash2");
+    assert_eq!(device.compliance_summary.as_ref(), Some(&summary));
+
+    let device = db
+        .register_device("dev-k", "ws-k", "linux", "x86_64", "hash3", None)
+        .await
+        .expect("re-register failed");
+    assert_eq!(device.compliance_summary, Some(summary));
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn compliance_summary_null_when_not_provided() {
     let (db, _tmp) = test_db();

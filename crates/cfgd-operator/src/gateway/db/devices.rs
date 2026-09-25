@@ -50,7 +50,7 @@ pub fn register_device_tx(
             last_checkin = excluded.last_checkin,
             config_hash = excluded.config_hash,
             status = excluded.status,
-            compliance_summary = excluded.compliance_summary",
+            compliance_summary = COALESCE(excluded.compliance_summary, devices.compliance_summary)",
     )?;
     stmt.execute(params![
         id,
@@ -77,7 +77,7 @@ pub fn update_checkin_tx(
         .transpose()
         .map_err(|e| GatewayError::Internal(format!("failed to serialize compliance: {e}")))?;
     let mut stmt = conn.prepare_cached(
-        "UPDATE devices SET last_checkin = ?1, config_hash = ?2, status = ?3, compliance_summary = ?4 WHERE id = ?5",
+        "UPDATE devices SET last_checkin = ?1, config_hash = ?2, status = ?3, compliance_summary = COALESCE(?4, compliance_summary) WHERE id = ?5",
     )?;
     let rows = stmt.execute(params![
         &now,
