@@ -2335,8 +2335,7 @@ mod outranked_tests {
         let mut scanned = 0usize;
         for path in files {
             if path.file_name().is_some_and(|n| n == "pending.rs")
-                || path.file_name().is_some_and(|n| n == "tests.rs")
-                || path.components().any(|c| c.as_os_str() == "tests")
+                || crate::test_helpers::is_test_source(&path)
             {
                 continue;
             }

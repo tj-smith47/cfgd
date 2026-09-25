@@ -9976,7 +9976,7 @@ fn every_system_configurator_and_secret_provider_names_its_tool_or_says_why_not(
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or_default();
-        if name == "tests.rs" || name == "test_helpers.rs" {
+        if cfgd_core::test_helpers::is_test_source(&path) || name == "test_helpers.rs" {
             continue;
         }
         let production = cfgd_core::test_helpers::production_slice_of(&path);
@@ -16860,9 +16860,7 @@ fn every_daemon_log_marker_the_e2e_suites_grep_for_is_a_string_the_daemon_emits(
     ] {
         let mut read = 0usize;
         for p in rust_sources_under(&dir) {
-            if p.file_name().is_some_and(|n| n == "tests.rs")
-                || p.components().any(|c| c.as_os_str() == "tests")
-            {
+            if cfgd_core::test_helpers::is_test_source(&p) {
                 continue;
             }
             let body = std::fs::read_to_string(&p).unwrap_or_else(|e| {
@@ -17417,9 +17415,8 @@ fn no_cli_site_builds_a_second_package_context() {
     let mut offenders = Vec::new();
     let mut threaded = 0usize;
     for path in files {
-        if path
-            .file_name()
-            .is_some_and(|n| n == "tests.rs" || n == "run_context.rs")
+        if cfgd_core::test_helpers::is_test_source(&path)
+            || path.file_name().is_some_and(|n| n == "run_context.rs")
         {
             continue;
         }
@@ -17464,7 +17461,7 @@ fn no_command_words_the_up_to_date_verdict_for_itself() {
     let mut offenders = Vec::new();
     let files = rust_sources_under(&cli_dir);
     for path in files {
-        if path.file_name().is_some_and(|n| n == "tests.rs") {
+        if cfgd_core::test_helpers::is_test_source(&path) {
             continue;
         }
         let production = cfgd_core::test_helpers::production_slice_of(&path);
@@ -17799,8 +17796,7 @@ fn floored_production_body(path: &std::path::Path) -> String {
 /// indistinguishable from one holding no offender. The comparison is
 /// order-insensitive: both sides are sorted first, so a caller listing its
 /// roots in its own order is not failed with a message about a crate joining
-/// the workspace. A test module's own file (`tests.rs`, `tests_*.rs`, anything
-/// under `tests/`) is compiled under `#[cfg(test)]` from its parent and is no
+/// the workspace. A file `is_test_source` names holds tests alone and is no
 /// production source.
 fn production_sources_per_root(roots: &[&str]) -> Vec<(String, Vec<(std::path::PathBuf, String)>)> {
     let crates_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
@@ -17823,12 +17819,7 @@ fn production_sources_per_root(roots: &[&str]) -> Vec<(String, Vec<(std::path::P
             let files: Vec<(std::path::PathBuf, String)> =
                 rust_sources_under(&crates_dir.join(krate).join("src"))
                     .into_iter()
-                    .filter(|p| {
-                        p.file_name()
-                            .and_then(|n| n.to_str())
-                            .is_none_or(|n| n != "tests.rs" && !n.starts_with("tests_"))
-                    })
-                    .filter(|p| !p.components().any(|c| c.as_os_str() == "tests"))
+                    .filter(|p| !cfgd_core::test_helpers::is_test_source(p))
                     .map(|path| {
                         let production = floored_production_body(&path);
                         (path, production)
@@ -17850,8 +17841,7 @@ fn cli_production_sources() -> Vec<(std::path::PathBuf, String)> {
     let files = rust_sources_under(&cli_dir);
     files
         .into_iter()
-        .filter(|p| p.file_name().is_none_or(|n| n != "tests.rs"))
-        .filter(|p| !p.components().any(|c| c.as_os_str() == "tests"))
+        .filter(|p| !cfgd_core::test_helpers::is_test_source(p))
         .map(|path| {
             let production = floored_production_body(&path);
             (path, production)
@@ -18581,7 +18571,7 @@ fn every_reconciler_the_binary_builds_names_its_recording_scope() {
     let mut built = 0usize;
     let mut offenders = Vec::new();
     for path in files {
-        if path.file_name().is_some_and(|n| n == "tests.rs") {
+        if cfgd_core::test_helpers::is_test_source(&path) {
             continue;
         }
         let production = floored_production_body(&path);
@@ -18632,7 +18622,7 @@ fn every_single_subject_source_title_uses_the_owner_spelling() {
     let mut plural_titles = 0usize;
     let mut offenders = Vec::new();
     for path in files {
-        if path.file_name().is_some_and(|n| n == "tests.rs") {
+        if cfgd_core::test_helpers::is_test_source(&path) {
             continue;
         }
         let production = floored_production_body(&path);
@@ -20865,12 +20855,7 @@ fn provider_note_calls() -> Vec<ProviderNoteCall> {
     let sources: Vec<(std::path::PathBuf, String)> = ["packages", "system"]
         .iter()
         .flat_map(|dir| rust_sources_under(&providers_root.join(dir)))
-        .filter(|p| p.file_name().is_none_or(|n| n != "tests.rs"))
-        .filter(|p| !p.components().any(|c| c.as_os_str() == "tests"))
-        .filter(|p| {
-            p.file_name()
-                .is_none_or(|n| n != "tests_snapshot_bridge.rs")
-        })
+        .filter(|p| !cfgd_core::test_helpers::is_test_source(p))
         .map(|path| {
             let production = floored_production_body(&path);
             (path, production)
@@ -21011,8 +20996,7 @@ fn core_production_sources() -> Vec<(std::path::PathBuf, String)> {
     let files = rust_sources_under(&core_src);
     files
         .into_iter()
-        .filter(|p| p.file_name().is_none_or(|n| n != "tests.rs"))
-        .filter(|p| !p.components().any(|c| c.as_os_str() == "tests"))
+        .filter(|p| !cfgd_core::test_helpers::is_test_source(p))
         .map(|path| {
             let production = floored_production_body(&path);
             (path, production)
@@ -21105,8 +21089,7 @@ fn no_apply_path_warn_restates_a_printer_line() {
         .chain(
             package_files
                 .into_iter()
-                .filter(|p| p.file_name().is_none_or(|n| n != "tests.rs"))
-                .filter(|p| !p.components().any(|c| c.as_os_str() == "tests"))
+                .filter(|p| !cfgd_core::test_helpers::is_test_source(p))
                 .map(|path| {
                     let production = floored_production_body(&path);
                     (path, production)
@@ -33925,7 +33908,7 @@ fn every_merged_env_view_is_built_once_per_command() {
         // A `tests.rs` is a test module whole (declared `mod tests;` from its
         // parent), so it carries no `#[cfg(test)]` line to cut at — including
         // this fence's own file, whose literals would report themselves.
-        if name == "tests.rs" {
+        if cfgd_core::test_helpers::is_test_source(&path) {
             continue;
         }
         let production = cfgd_core::test_helpers::production_slice_of(&path);
@@ -34015,7 +33998,7 @@ fn every_live_minted_drift_id_comes_from_its_composer() {
             .and_then(|n| n.to_str())
             .unwrap_or_default()
             .to_string();
-        if name == "tests.rs" {
+        if cfgd_core::test_helpers::is_test_source(&path) {
             continue;
         }
         let production = cfgd_core::test_helpers::production_slice_of(&path);
@@ -34125,7 +34108,7 @@ fn every_core_minted_package_drift_id_comes_from_its_composer() {
             .and_then(|n| n.to_str())
             .unwrap_or_default()
             .to_string();
-        if name == "tests.rs" || name == "test_helpers.rs" {
+        if cfgd_core::test_helpers::is_test_source(&path) || name == "test_helpers.rs" {
             continue;
         }
         let production = cfgd_core::test_helpers::production_slice_of(&path);
@@ -34616,9 +34599,7 @@ fn every_module_package_description_comes_from_its_composer() {
         for path in rust_sources_under(&root) {
             // A test module's fixtures spell recorded ids by hand on purpose:
             // they are the expected values the composer is judged against.
-            if path.file_name().is_some_and(|n| n == "tests.rs")
-                || path.components().any(|c| c.as_os_str() == "tests")
-            {
+            if cfgd_core::test_helpers::is_test_source(&path) {
                 continue;
             }
             let production = cfgd_core::test_helpers::production_slice_of(&path);
@@ -34752,7 +34733,10 @@ fn no_production_site_outside_format_rs_splits_a_module_id() {
                 .and_then(|n| n.to_str())
                 .unwrap_or_default()
                 .to_string();
-            if name == "tests.rs" || name == "test_helpers.rs" || path == exempt {
+            if cfgd_core::test_helpers::is_test_source(&path)
+                || name == "test_helpers.rs"
+                || path == exempt
+            {
                 continue;
             }
             seen += 1;
@@ -34876,7 +34860,7 @@ fn reconciler_removal_methods() -> Vec<String> {
     for path in rust_sources_under(&root) {
         // A `tests.rs` carries no `#[cfg(test)]` for the cut to read, and a
         // test is not a route the reconciler takes.
-        if path.file_name().is_some_and(|n| n == "tests.rs") {
+        if cfgd_core::test_helpers::is_test_source(&path) {
             continue;
         }
         let production = cfgd_core::test_helpers::production_slice_of(&path);
@@ -34991,7 +34975,7 @@ fn every_reconciler_a_production_site_builds_says_which_picture_it_saw() {
                 .and_then(|n| n.to_str())
                 .unwrap_or_default()
                 .to_string();
-            if name == "tests.rs" || name == "test_helpers.rs" {
+            if cfgd_core::test_helpers::is_test_source(&path) || name == "test_helpers.rs" {
                 continue;
             }
             let production = cfgd_core::test_helpers::production_slice_of(&path);
@@ -35165,8 +35149,7 @@ fn no_tests_file_carries_a_cfg_test_attribute_of_its_own() {
             // A file that IS test scaffolding carries no `#[cfg(test)]` for a
             // production slice to cut at. `test_helpers.rs` is the one that
             // holds an inline test module as well, so it is named out.
-            let scaffolding =
-                name.starts_with("tests") || path.parent().is_some_and(|p| p.ends_with("tests"));
+            let scaffolding = cfgd_core::test_helpers::is_test_source(&path);
             if !scaffolding || name == "test_helpers.rs" {
                 continue;
             }
@@ -35723,7 +35706,7 @@ fn no_cli_slot_pairs_the_shell_kind_test_with_the_verbose_detail() {
     let files = rust_sources_under(&root);
     let (mut seen, mut anchors) = (0usize, 0usize);
     for path in files {
-        if path.file_name().and_then(|n| n.to_str()) == Some("tests.rs") {
+        if cfgd_core::test_helpers::is_test_source(&path) {
             continue;
         }
         seen += 1;
@@ -35806,7 +35789,7 @@ fn no_core_production_site_compares_a_manager_name_to_a_bare_script_literal() {
                 .and_then(|n| n.to_str())
                 .unwrap_or_default()
                 .to_string();
-            if name == "tests.rs" || name == "test_helpers.rs" {
+            if cfgd_core::test_helpers::is_test_source(&path) || name == "test_helpers.rs" {
                 continue;
             }
             seen += 1;
@@ -35911,7 +35894,7 @@ fn every_module_drift_id_names_the_file_it_stands_for() {
                 .and_then(|n| n.to_str())
                 .unwrap_or_default()
                 .to_string();
-            if name == "tests.rs" || name == "test_helpers.rs" {
+            if cfgd_core::test_helpers::is_test_source(&path) || name == "test_helpers.rs" {
                 continue;
             }
             seen += 1;
@@ -36011,7 +35994,7 @@ fn every_resolved_package_producer_routes_through_the_one_resolver() {
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or_default();
-            if name == "tests.rs" || name == "test_helpers.rs" {
+            if cfgd_core::test_helpers::is_test_source(&path) || name == "test_helpers.rs" {
                 continue;
             }
             seen += 1;
@@ -36061,7 +36044,7 @@ fn every_unknown_package_version_a_manager_reports_comes_from_the_one_sentinel()
     let files = rust_sources_under(&packages);
     let mut offenders = Vec::new();
     for path in files {
-        if path.file_name().and_then(|n| n.to_str()) == Some("tests.rs") {
+        if cfgd_core::test_helpers::is_test_source(&path) {
             continue;
         }
         let production = cfgd_core::test_helpers::production_slice_of(&path);
@@ -36119,7 +36102,7 @@ fn every_manager_install_the_cli_emits_spells_its_weak_dependency_policy_once() 
     let files = rust_sources_under(&src);
     let mut offenders = Vec::new();
     for path in files {
-        if path == declaration || path.file_name().is_some_and(|n| n == "tests.rs") {
+        if path == declaration || cfgd_core::test_helpers::is_test_source(&path) {
             continue;
         }
         let body = walked_file_body(&path);
@@ -36291,7 +36274,7 @@ fn every_windows_manager_install_the_cli_emits_comes_from_its_declaration() {
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or_default();
-        if name == "tests.rs" {
+        if cfgd_core::test_helpers::is_test_source(&path) {
             continue;
         }
         seen += 1;
@@ -36406,7 +36389,7 @@ fn no_result_section_respells_a_word_its_command_title_already_spent() {
             .collect()
     };
     for path in files {
-        if path.file_name().is_some_and(|n| n == "tests.rs") {
+        if cfgd_core::test_helpers::is_test_source(&path) {
             continue;
         }
         let production = cfgd_core::test_helpers::production_slice_of(&path);
@@ -38286,9 +38269,7 @@ fn every_bootstrap_failure_names_what_it_installed() {
     ] {
         let before = files.len();
         for p in rust_sources_under(&dir) {
-            if p.components().any(|c| c.as_os_str() == "tests")
-                || p.file_name().is_some_and(|n| n == "tests.rs")
-            {
+            if cfgd_core::test_helpers::is_test_source(&p) {
                 continue;
             }
             let production = cfgd_core::test_helpers::production_slice_of(&p);
@@ -38455,9 +38436,7 @@ fn no_status_detail_trails_a_verdict_word_behind_its_counts() {
     ] {
         let mut read = 0usize;
         for path in rust_sources_under(&dir) {
-            if path.components().any(|c| c.as_os_str() == "tests")
-                || path.file_name().is_some_and(|n| n == "tests.rs")
-            {
+            if cfgd_core::test_helpers::is_test_source(&path) {
                 continue;
             }
             let body = std::fs::read_to_string(&path).unwrap_or_else(|e| {
@@ -39170,7 +39149,7 @@ fn one_stored_literal_for_a_missing_package() {
         files.extend(
             rust_sources_under(&dir)
                 .into_iter()
-                .filter(|p| p.file_name().is_none_or(|n| n != "tests.rs")),
+                .filter(|p| !cfgd_core::test_helpers::is_test_source(p)),
         );
         per_root.push((dir.display().to_string(), files.len() - before));
     }
@@ -39294,7 +39273,9 @@ fn every_empty_drift_verdict_states_whether_a_check_ran() {
     let allowed = |p: &std::path::Path| {
         let s = cfgd_core::to_posix_string(p);
         // The two production homes, plus test files asserting about them.
-        s.ends_with("cli/status.rs") || s.ends_with("cli/diff.rs") || s.ends_with("tests.rs")
+        s.ends_with("cli/status.rs")
+            || s.ends_with("cli/diff.rs")
+            || cfgd_core::test_helpers::is_test_source(p)
     };
     let offenders: Vec<String> = carriers
         .iter()
@@ -40674,9 +40655,7 @@ fn no_journal_line_folds_the_home_directory() {
         let mut files = rust_sources_under(walk_root);
         files.sort();
         for path in files {
-            if path.file_name().is_none_or(|n| n == "tests.rs")
-                || path.components().any(|c| c.as_os_str() == "tests")
-            {
+            if cfgd_core::test_helpers::is_test_source(&path) {
                 continue;
             }
             let body = floored_production_body(&path);
@@ -40743,8 +40722,7 @@ fn no_production_slot_hardcodes_the_arrow_glyph() {
         let files = rust_sources_under(walk_root);
         let mut seen = 0usize;
         for path in files {
-            if path.file_name().is_none_or(|n| n == "tests.rs")
-                || path.components().any(|c| c.as_os_str() == "tests")
+            if cfgd_core::test_helpers::is_test_source(&path)
                 || path.ends_with("output/theme.rs")
                 || path.ends_with("generate/schema.rs")
             {
@@ -40812,9 +40790,8 @@ fn no_production_site_hand_rolls_the_v_strip_or_the_owner_token_split() {
                 .and_then(|n| n.to_str())
                 .unwrap_or_default()
                 .to_string();
-            if name == "tests.rs"
+            if cfgd_core::test_helpers::is_test_source(&path)
                 || name == "test_helpers.rs"
-                || path.components().any(|c| c.as_os_str() == "tests")
                 || path.ends_with("util/hashing.rs")
                 || path.ends_with("output/owner_label.rs")
             {
@@ -40902,9 +40879,8 @@ fn no_production_site_hand_rolls_the_same_path_comparison() {
                 .and_then(|n| n.to_str())
                 .unwrap_or_default()
                 .to_string();
-            if name == "tests.rs"
+            if cfgd_core::test_helpers::is_test_source(&path)
                 || name == "test_helpers.rs"
-                || path.components().any(|c| c.as_os_str() == "tests")
                 || path.ends_with("util/paths.rs")
                 || path.ends_with("util/fs_perms.rs")
             {
@@ -40977,9 +40953,8 @@ fn no_production_site_joins_the_module_cache_segment_by_hand() {
                 .and_then(|n| n.to_str())
                 .unwrap_or_default()
                 .to_string();
-            if name == "tests.rs"
+            if cfgd_core::test_helpers::is_test_source(&path)
                 || name == "test_helpers.rs"
-                || path.components().any(|c| c.as_os_str() == "tests")
                 || path.ends_with("util/paths.rs")
                 || path.ends_with("daemon/mod.rs")
                 || path.ends_with("modules/loader.rs")
@@ -41050,10 +41025,7 @@ fn every_recorded_origin_names_the_layer_that_delivered_it() {
                 .and_then(|n| n.to_str())
                 .unwrap_or_default()
                 .to_string();
-            if name == "tests.rs"
-                || name == "test_helpers.rs"
-                || path.components().any(|c| c.as_os_str() == "tests")
-            {
+            if cfgd_core::test_helpers::is_test_source(&path) || name == "test_helpers.rs" {
                 continue;
             }
             seen += 1;
@@ -41156,10 +41128,7 @@ fn no_serialized_payload_field_is_built_from_a_themed_arrow() {
                 .and_then(|n| n.to_str())
                 .unwrap_or_default()
                 .to_string();
-            if name == "tests.rs"
-                || name == "test_helpers.rs"
-                || path.components().any(|c| c.as_os_str() == "tests")
-            {
+            if cfgd_core::test_helpers::is_test_source(&path) || name == "test_helpers.rs" {
                 continue;
             }
             seen += 1;
@@ -41316,12 +41285,7 @@ fn no_serialized_payload_field_is_built_from_a_themed_arrow() {
     let mut builder_seen = 0usize;
     let mut builder_offenders = Vec::new();
     for path in cli_files {
-        let name = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or_default()
-            .to_string();
-        if name == "tests.rs" {
+        if cfgd_core::test_helpers::is_test_source(&path) {
             continue;
         }
         let production = cfgd_core::test_helpers::production_slice_of(&path);
@@ -42419,10 +42383,7 @@ fn every_display_slot_of_both_crates_folds_the_home_directory() {
                 .to_string();
             // A test region renders paths of its own and asserts on them, so
             // the population is the production sources alone.
-            if name == "tests.rs"
-                || name == "test_helpers.rs"
-                || path.components().any(|c| c.as_os_str() == "tests")
-            {
+            if cfgd_core::test_helpers::is_test_source(&path) || name == "test_helpers.rs" {
                 continue;
             }
             let production = cfgd_core::test_helpers::production_slice_of(&path);
@@ -42659,10 +42620,8 @@ fn no_serialized_payload_slot_renders_a_path_with_the_host_separator() {
     for (r, root) in roots.iter().enumerate() {
         let before = files;
         for path in rust_sources_under(root) {
-            if path
-                .file_name()
-                .is_some_and(|n| n == "tests.rs" || n == "test_helpers.rs")
-                || path.components().any(|c| c.as_os_str() == "tests")
+            if cfgd_core::test_helpers::is_test_source(&path)
+                || path.file_name().is_some_and(|n| n == "test_helpers.rs")
             {
                 continue;
             }
@@ -42911,8 +42870,7 @@ fn no_test_fixture_writes_a_native_path_into_a_declared_document() {
     let mut offenders: Vec<String> = Vec::new();
     for path in cfgd_core::test_helpers::rust_sources_under(&crates_dir) {
         let body = cfgd_core::test_helpers::walked_file_body(&path);
-        let in_tests = path.components().any(|c| c.as_os_str() == "tests")
-            || path.file_name().is_some_and(|n| n == "tests.rs");
+        let in_tests = cfgd_core::test_helpers::is_test_source(&path);
         // The complement of the production slice, so which end of a file a
         // test-only item sits at cannot change what is judged; blanked rather
         // than cut, so a line's number stays the file's own and an offender can
@@ -43189,10 +43147,7 @@ fn every_plan_running_verb_settles_its_link_deployed_hashes() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli");
     let mut sources: Vec<std::path::PathBuf> = rust_sources_under(&root)
         .into_iter()
-        .filter(|p| {
-            p.file_name().is_none_or(|n| n != "tests.rs")
-                && !p.components().any(|c| c.as_os_str() == "tests")
-        })
+        .filter(|p| !cfgd_core::test_helpers::is_test_source(p))
         .collect();
     // The daemon's own applying tick is the third apply path; it holds its
     // file manager apart from the registry, so it reaches the core seam
@@ -43269,8 +43224,7 @@ fn every_manager_spawn_under_packages_inherits_the_bootstrapped_dirs() {
     let mut judged = 0usize;
     for path in files
         .into_iter()
-        .filter(|p| p.file_name().is_none_or(|n| n != "tests.rs"))
-        .filter(|p| !p.components().any(|c| c.as_os_str() == "tests"))
+        .filter(|p| !cfgd_core::test_helpers::is_test_source(p))
     {
         let production = floored_production_body(&path);
         let lines: Vec<&str> = production.lines().collect();
@@ -43428,8 +43382,7 @@ fn every_multi_arm_bootstrap_honours_the_planned_method() {
     let mut offenders = Vec::new();
     for path in files
         .into_iter()
-        .filter(|p| p.file_name().is_none_or(|n| n != "tests.rs"))
-        .filter(|p| !p.components().any(|c| c.as_os_str() == "tests"))
+        .filter(|p| !cfgd_core::test_helpers::is_test_source(p))
     {
         let production = floored_production_body(&path);
         let lines: Vec<&str> = production.lines().collect();
@@ -43487,8 +43440,7 @@ fn manager_production_sources() -> Vec<std::path::PathBuf> {
     let packages_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/packages");
     rust_sources_under(&packages_dir)
         .into_iter()
-        .filter(|p| p.file_name().is_none_or(|n| n != "tests.rs"))
-        .filter(|p| !p.components().any(|c| c.as_os_str() == "tests"))
+        .filter(|p| !cfgd_core::test_helpers::is_test_source(p))
         .collect()
 }
 
@@ -43724,8 +43676,7 @@ fn every_bootstrap_route_a_plan_withholds_is_one_no_manager_could_drive() {
     let mut offenders = Vec::new();
     for path in rust_sources_under(&packages_dir)
         .into_iter()
-        .filter(|p| p.file_name().is_none_or(|n| n != "tests.rs"))
-        .filter(|p| !p.components().any(|c| c.as_os_str() == "tests"))
+        .filter(|p| !cfgd_core::test_helpers::is_test_source(p))
     {
         let relative =
             cfgd_core::to_posix_string(path.strip_prefix(&packages_dir).unwrap_or(&path));
@@ -43846,8 +43797,7 @@ fn every_mediated_arms_table_names_every_system_manager_or_declines_it() {
     let mut offenders = Vec::new();
     for path in rust_sources_under(&packages_dir)
         .into_iter()
-        .filter(|p| p.file_name().is_none_or(|n| n != "tests.rs"))
-        .filter(|p| !p.components().any(|c| c.as_os_str() == "tests"))
+        .filter(|p| !cfgd_core::test_helpers::is_test_source(p))
     {
         for table in declared_arms_tables(&cfgd_core::test_helpers::production_slice_of(&path)) {
             tables += 1;
@@ -45177,7 +45127,7 @@ fn every_function_that_can_reach_the_tool_provisioner_is_named_here() {
         // the cut to read (held by
         // `no_tests_file_carries_a_cfg_test_attribute_of_its_own`), and its
         // helpers are nobody's production route.
-        if path.file_name().is_some_and(|n| n == "tests.rs") {
+        if cfgd_core::test_helpers::is_test_source(&path) {
             continue;
         }
         let production = cfgd_core::test_helpers::production_slice_of(&path);
@@ -45309,10 +45259,7 @@ fn every_require_tool_call_site_names_the_command_that_provisions_the_tool() {
                 .and_then(|n| n.to_str())
                 .unwrap_or_default()
                 .to_string();
-            if name == "tests.rs"
-                || name == "test_helpers.rs"
-                || path.components().any(|c| c.as_os_str() == "tests")
-            {
+            if cfgd_core::test_helpers::is_test_source(&path) || name == "test_helpers.rs" {
                 continue;
             }
             let production = cfgd_core::test_helpers::production_slice_of(&path);
@@ -45418,9 +45365,7 @@ fn every_docs_pointer_the_cli_renders_goes_through_the_linked_slot() {
     let mut rows = Vec::new();
     let mut pointers = Vec::new();
     for path in files {
-        if path.file_name().is_some_and(|n| n == "tests.rs")
-            || path.components().any(|c| c.as_os_str() == "tests")
-        {
+        if cfgd_core::test_helpers::is_test_source(&path) {
             continue;
         }
         let production = floored_production_body(&path);
@@ -46352,7 +46297,7 @@ fn every_annotated_kv_slot_states_a_fact_its_row_cannot_show() {
         .canonicalize()
         .expect("cfgd-core/src/output");
     for path in rust_sources_under(&core_output) {
-        if path.components().any(|c| c.as_os_str() == "tests") {
+        if cfgd_core::test_helpers::is_test_source(&path) {
             continue;
         }
         let production = floored_production_body(&path);
@@ -46865,10 +46810,7 @@ fn every_backup_unit_the_cli_builds_is_projected() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let sources: Vec<std::path::PathBuf> = rust_sources_under(&root)
         .into_iter()
-        .filter(|p| {
-            p.file_name().is_none_or(|n| n != "tests.rs")
-                && !p.components().any(|c| c.as_os_str() == "tests")
-        })
+        .filter(|p| !cfgd_core::test_helpers::is_test_source(p))
         .collect();
     let mut seen = 0usize;
     let mut declared = Vec::new();
@@ -46979,9 +46921,8 @@ fn every_scripts_inventory_a_surface_renders_comes_from_the_one_composer() {
         for path in rust_sources_under(walk_root) {
             // `output/` owns every block slot; a call there is the slot's own
             // body, which is what the rest of the workspace reaches through.
-            if path.components().any(|c| c.as_os_str() == "tests")
-                || path.components().any(|c| c.as_os_str() == "output")
-                || path.file_name().is_none_or(|n| n == "tests.rs")
+            if path.components().any(|c| c.as_os_str() == "output")
+                || cfgd_core::test_helpers::is_test_source(&path)
             {
                 continue;
             }
@@ -47156,9 +47097,7 @@ fn every_hook_table_a_production_site_builds_reads_the_one_hook_set() {
         let walk_root = crates_dir.join(name).join("src");
         let mut seen = 0usize;
         for path in rust_sources_under(&walk_root) {
-            if path.components().any(|c| c.as_os_str() == "tests")
-                || path.file_name().is_none_or(|n| n == "tests.rs")
-            {
+            if cfgd_core::test_helpers::is_test_source(&path) {
                 continue;
             }
             seen += 1;
@@ -47784,8 +47723,7 @@ fn every_show_and_list_verb_renders_only_its_fact_classes() {
     let cli_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli");
     let sources: Vec<(std::path::PathBuf, String)> = rust_sources_under(&cli_dir)
         .into_iter()
-        .filter(|p| p.file_name().is_none_or(|n| n != "tests.rs"))
-        .filter(|p| !p.components().any(|c| c.as_os_str() == "tests"))
+        .filter(|p| !cfgd_core::test_helpers::is_test_source(p))
         .map(|path| {
             let body = cfgd_core::test_helpers::production_slice_of(&path);
             (path, body)
@@ -49199,7 +49137,7 @@ fn every_integration_test_spawns_the_binary_through_the_one_isolating_constructo
     let mut systemd_dirs: Vec<String> = Vec::new();
     for path in cfgd_core::test_helpers::rust_sources_under(&core_src) {
         let rel = cfgd_core::to_posix_string(path.strip_prefix(&core_src).unwrap_or(&path));
-        if rel.ends_with("tests.rs") || rel.contains("/tests/") || rel == "test_helpers.rs" {
+        if cfgd_core::test_helpers::is_test_source(&path) || rel == "test_helpers.rs" {
             continue;
         }
         let body = walked_file_body(&path);
@@ -49671,7 +49609,7 @@ fn every_from_verb_takes_its_destination_from_from_destination() {
     for path in rust_sources_under(&src) {
         // The walk judges production call sites; `tests.rs` (this file and
         // `init/tests.rs`) drives `resolve_from` directly with every shape.
-        if path.file_name().is_some_and(|n| n == "tests.rs") {
+        if cfgd_core::test_helpers::is_test_source(&path) {
             continue;
         }
         let production = cfgd_core::test_helpers::production_slice_of(&path);
@@ -49861,7 +49799,7 @@ fn every_declared_env_value_a_surface_masks_is_decided_by_the_one_masking() {
     for path in cfgd_core::test_helpers::rust_sources_under(&cli_dir) {
         // A `tests.rs` is a whole file of test region: nothing cuts it, so the
         // walk names it rather than reading its asserts as production sites.
-        if path.file_stem().is_some_and(|s| s == "tests") {
+        if cfgd_core::test_helpers::is_test_source(&path) {
             continue;
         }
         let body = cfgd_core::test_helpers::production_slice_of(&path);
@@ -51143,13 +51081,7 @@ fn cli_production_bodies() -> Vec<(std::path::PathBuf, String)> {
     let cli_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli");
     rust_sources_under(&cli_dir)
         .into_iter()
-        .filter(|path| {
-            let name = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or_default();
-            !(name.starts_with("tests") || path.parent().is_some_and(|p| p.ends_with("tests")))
-        })
+        .filter(|path| !cfgd_core::test_helpers::is_test_source(path))
         .map(|path| {
             let production = cfgd_core::test_helpers::production_slice_of(&path);
             (path, production)

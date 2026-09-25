@@ -2271,7 +2271,7 @@ fn the_env_gate_and_the_module_gate_share_one_predicate() {
         // named out for the other reason: it ships as production and holds an
         // inline test module the slice would cut at.
         let name = path.file_name().unwrap_or_default().to_string_lossy();
-        if name == "test_helpers.rs" || name.starts_with("tests") {
+        if name == "test_helpers.rs" || cfgd_core::test_helpers::is_test_source(&path) {
             continue;
         }
         let production = cfgd_core::test_helpers::production_slice_of(&path);

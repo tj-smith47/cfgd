@@ -4383,7 +4383,7 @@ fn no_daemon_state_write_reaches_a_source_row_by_position() {
         .expect("the daemon module is checked out")
         .filter_map(|e| e.ok().map(|e| e.path()))
         .filter(|p| p.extension().is_some_and(|x| x == "rs"))
-        .filter(|p| p.file_name().is_some_and(|n| n != "tests.rs"))
+        .filter(|p| !crate::test_helpers::is_test_source(p))
         .collect();
     files.sort();
     assert!(

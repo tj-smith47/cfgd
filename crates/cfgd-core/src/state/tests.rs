@@ -4800,10 +4800,7 @@ fn every_production_journal_mode_switch_goes_through_enable_wal() {
         let mut files = 0usize;
         for path in rust_sources_under(&workspace.join(root)) {
             let name = path.file_name().unwrap_or_default().to_string_lossy();
-            if name.starts_with("tests")
-                || name == "test_helpers.rs"
-                || path.parent().is_some_and(|p| p.ends_with("tests"))
-            {
+            if crate::test_helpers::is_test_source(&path) || name == "test_helpers.rs" {
                 continue;
             }
             files += 1;
@@ -5036,7 +5033,7 @@ fn every_upsert_refreshes_its_own_timestamp() {
         .expect("the state module is checked out")
         .filter_map(|e| e.ok().map(|e| e.path()))
         .filter(|p| p.extension().is_some_and(|x| x == "rs"))
-        .filter(|p| p.file_name().is_some_and(|n| n != "tests.rs"))
+        .filter(|p| !crate::test_helpers::is_test_source(p))
         .collect();
     files.sort();
     let mut upserts = 0usize;

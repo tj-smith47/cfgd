@@ -5922,7 +5922,7 @@ fn every_checkout_row_spells_its_revision_through_the_one_derivation() {
     for entry in std::fs::read_dir(&dir).expect("the init tree is readable") {
         let path = entry.expect("readable entry").path();
         if path.extension().and_then(|e| e.to_str()) != Some("rs")
-            || path.file_name().and_then(|f| f.to_str()) == Some("tests.rs")
+            || cfgd_core::test_helpers::is_test_source(&path)
         {
             continue;
         }

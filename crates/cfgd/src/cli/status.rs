@@ -4578,9 +4578,7 @@ mod tests {
         let mut files = 0usize;
         let mut literals = 0usize;
         for path in cfgd_core::test_helpers::rust_sources_under(&cli_root) {
-            if path.file_name().is_some_and(|n| n == "tests.rs")
-                || path.components().any(|c| c.as_os_str() == "tests")
-            {
+            if cfgd_core::test_helpers::is_test_source(&path) {
                 continue;
             }
             files += 1;

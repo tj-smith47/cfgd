@@ -1128,7 +1128,7 @@ mod condense_script_label_tests {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let mut files: Vec<_> = crate::test_helpers::rust_sources_under(&root.join("output"))
             .into_iter()
-            .filter(|p| p.file_name().is_none_or(|n| n != "tests.rs"))
+            .filter(|p| !crate::test_helpers::is_test_source(p))
             .collect();
         files.push(root.join("reconciler/format.rs"));
         let idioms = [

@@ -835,7 +835,7 @@ fn every_daemon_info_event_names_its_subsystem() {
     let mut seen = 0usize;
     for path in workspace_rust_files() {
         if !path.components().any(|c| c.as_os_str() == "daemon")
-            || path.ends_with(Path::new("tests.rs"))
+            || crate::test_helpers::is_test_source(&path)
         {
             continue;
         }
@@ -2757,9 +2757,8 @@ fn every_production_path_read_takes_the_read_guard() {
         // This file spells every needle in order to hunt for it, and the test
         // corpus mutates `PATH` on purpose.
         if path.ends_with(Path::new("output/tests/fences.rs"))
-            || path.ends_with(Path::new("tests.rs"))
+            || crate::test_helpers::is_test_source(&path)
             || path.ends_with(Path::new("test_helpers.rs"))
-            || path.components().any(|c| c.as_os_str() == "tests")
         {
             continue;
         }
@@ -3252,13 +3251,8 @@ fn names_a_hatch_marker(name: &str) -> bool {
 /// also keeps a line's number its own, so an offender can be opened where it is
 /// reported.
 fn test_region(path: &Path, body: &str) -> String {
-    let scaffolding = path
-        .components()
-        .any(|c| c.as_os_str() == std::ffi::OsStr::new("tests"))
-        || matches!(
-            path.file_stem().and_then(|s| s.to_str()),
-            Some("tests" | "test_helpers")
-        );
+    let scaffolding = crate::test_helpers::is_test_source(path)
+        || path.file_name().is_some_and(|n| n == "test_helpers.rs");
     if scaffolding {
         return body.to_string();
     }
@@ -4213,6 +4207,7 @@ fn every_in_process_test_declaring_shell_items_holds_a_test_home() {
         // the check through the same `~` but are the library's own and are
         // covered by their crate's fixtures.
         let posix = crate::to_posix_string(&path);
+        // test-source-ok: asks for integration tests alone, a narrower question
         if !posix.contains("/tests/") || posix.contains("/src/") {
             continue;
         }
@@ -4615,12 +4610,7 @@ fn no_production_site_spells_an_env_resource_type_instead_of_its_constant() {
     let mut offenders = Vec::new();
     let mut files_walked = 0usize;
     for path in workspace_rust_files() {
-        let is_test_source = path.ends_with(Path::new("tests.rs"))
-            || path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| n.starts_with("tests_"))
-            || path.components().any(|c| c.as_os_str() == "tests");
+        let is_test_source = crate::test_helpers::is_test_source(&path);
         if path.ends_with(&declarations) || is_test_source {
             continue;
         }
@@ -4990,8 +4980,7 @@ fn every_production_spawn_in_the_workspace_goes_through_the_one_ladder() {
                 .to_string();
             // A file that IS test scaffolding carries no production slice of
             // its own; the predicate is the one four sibling walks share.
-            let scaffolding =
-                name.starts_with("tests") || path.parent().is_some_and(|p| p.ends_with("tests"));
+            let scaffolding = crate::test_helpers::is_test_source(&path);
             if scaffolding || name == "test_helpers.rs" {
                 continue;
             }
@@ -5308,7 +5297,7 @@ fn no_walk_silently_drops_a_file_it_enumerated() {
         // `production_slice` reads from the other side, so the production
         // carve-out falls out of the REGION and a walk written in an inline test
         // module is inside the population rather than outside it.
-        let from = if name.starts_with("test") || posix.contains("/tests/") {
+        let from = if crate::test_helpers::is_test_source(&path) || name.starts_with("test_") {
             Some(0)
         } else {
             lines.iter().position(|l| opens_a_test_region(l))
@@ -5440,7 +5429,7 @@ fn every_path_a_test_substitutes_for_a_label_goes_through_the_one_normalizer() {
         let name = posix.rsplit('/').next().unwrap_or(&posix);
         let body = walked_file_body(&path);
         let lines: Vec<&str> = body.lines().collect();
-        let from = if name.starts_with("test") || posix.contains("/tests/") {
+        let from = if crate::test_helpers::is_test_source(&path) || name.starts_with("test_") {
             Some(0)
         } else {
             lines.iter().position(|l| opens_a_test_region(l))
@@ -5762,8 +5751,7 @@ fn every_deserialized_script_body_is_refused_an_empty_run() {
     for path in workspace_rust_files() {
         // This file spells the holders' declarations in its own table.
         if path.ends_with(Path::new("output/tests/fences.rs"))
-            || path.ends_with(Path::new("tests.rs"))
-            || path.components().any(|c| c.as_os_str() == "tests")
+            || crate::test_helpers::is_test_source(&path)
         {
             continue;
         }
@@ -6346,12 +6334,7 @@ fn no_production_site_outside_the_resolver_composes_a_floor_shortfall_sentence()
     let mut per_root: Vec<(&str, usize)> =
         FLOOR_SENTENCE_ROOTS.iter().map(|(r, _)| (*r, 0)).collect();
     for path in workspace_rust_files() {
-        let is_test_source = path.ends_with(Path::new("tests.rs"))
-            || path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| n.starts_with("tests_"))
-            || path.components().any(|c| c.as_os_str() == "tests");
+        let is_test_source = crate::test_helpers::is_test_source(&path);
         if path.ends_with(&declarations) || is_test_source {
             continue;
         }
@@ -6440,12 +6423,7 @@ fn every_production_site_re_leading_a_provision_goes_through_the_one_helper() {
     for path in workspace_rust_files() {
         // A whole test FILE carries no inner `#[cfg(test)]` for the slice to
         // cut, so its fixtures would be judged as production sites.
-        let is_test_source = path.ends_with(Path::new("tests.rs"))
-            || path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| n.starts_with("tests_"))
-            || path.components().any(|c| c.as_os_str() == "tests");
+        let is_test_source = crate::test_helpers::is_test_source(&path);
         let production = crate::test_helpers::production_slice_of(&path);
         if path.ends_with(&helper)
             || is_test_source
@@ -6779,4 +6757,99 @@ fn raw_spawns(source: &SourceLabel, region: &str, hatch: &str) -> (Vec<String>, 
         }
     }
     (unguarded, sites, hatched_sites)
+}
+
+/// `is_test_source` names each file shape that holds tests alone and nothing
+/// that merely sits beside them.
+#[test]
+fn is_test_source_names_every_test_only_file_shape_and_nothing_else() {
+    for held in [
+        "crates/cfgd/src/cli/tests.rs",
+        "crates/cfgd/src/system/tests_snapshot_bridge.rs",
+        "crates/cfgd-operator/src/gateway/api/tests_foo.rs",
+        "crates/cfgd-core/src/output/tests/fences.rs",
+        "crates/cfgd/tests/apply_plan_file.rs",
+    ] {
+        assert!(
+            crate::test_helpers::is_test_source(Path::new(held)),
+            "{held} holds tests alone"
+        );
+    }
+    for production in [
+        "crates/cfgd/src/cli/status.rs",
+        "crates/cfgd-core/src/test_helpers.rs",
+        "crates/cfgd/src/cli/test_support.rs",
+        "crates/cfgd/src/cli/foo.rs",
+        "crates/cfgd/src/cli/tests_notes.md",
+    ] {
+        assert!(
+            !crate::test_helpers::is_test_source(Path::new(production)),
+            "{production} is no test-only source"
+        );
+    }
+}
+
+/// Every scan that skips test-only files asks `is_test_source` which ones
+/// those are; a second hand-written copy of the naming rule is how scans came
+/// to disagree about `tests_*.rs` files and read their fixtures as production.
+///
+/// The tells are the rule's own spellings, read on each line's code with its
+/// trailing comment cut: the `tests.rs` name, a `tests` prefix or component
+/// compared against a path, and a `/tests/` substring. The helper's own file is
+/// the one place allowed to spell them. `// test-source-ok: <why>` on the line
+/// or the line above hatches a site asking a narrower question.
+#[test]
+fn no_scan_hand_copies_the_test_source_naming_rule() {
+    // Built from pieces so this file's own needles are not read as copies.
+    let tells = [
+        concat!("\"tests", ".rs\""),
+        concat!("starts_with(\"", "tests"),
+        concat!("ends_with(\"", "tests\")"),
+        concat!("== \"", "tests\""),
+        concat!("OsStr::new(\"", "tests\")"),
+        concat!("Some(\"", "tests"),
+        concat!("contains(\"/", "tests/\")"),
+        concat!("\"test", "s_"),
+    ];
+    let helper_home = Path::new("cfgd-core/src/test_helpers.rs");
+    let mut files = 0usize;
+    let mut asks = 0usize;
+    let mut offenders = Vec::new();
+    for path in workspace_rust_files() {
+        if path.ends_with(helper_home) {
+            continue;
+        }
+        files += 1;
+        let body = walked_file_body(&path);
+        let lines: Vec<&str> = body.lines().collect();
+        for (row, line) in lines.iter().enumerate() {
+            let code = crate::test_helpers::code_span(line);
+            asks += code.matches("is_test_source(").count();
+            if !tells.iter().any(|tell| code.contains(tell)) {
+                continue;
+            }
+            let hatched = carries_hatch(line, "test-source-ok:")
+                || row
+                    .checked_sub(1)
+                    .is_some_and(|above| carries_hatch(lines[above], "test-source-ok:"));
+            if !hatched {
+                offenders.push(format!("{}:{}: {}", path.display(), row + 1, line.trim()));
+            }
+        }
+    }
+    assert!(
+        files >= 550,
+        "the scan read {files} sources under crates/, fewer than the workspace holds"
+    );
+    assert!(
+        asks >= 80,
+        "only {asks} sites ask is_test_source, so the scan is no longer reading the scans it guards"
+    );
+    assert!(
+        offenders.is_empty(),
+        "these lines restate which files hold tests alone; ask \
+         `cfgd_core::test_helpers::is_test_source(path)` instead, or hatch a narrower question \
+         with `// test-source-ok: <why>`:\n{}",
+        offenders.join("\n")
+    );
 }

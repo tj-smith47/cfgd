@@ -310,10 +310,7 @@ fn no_production_site_compares_an_api_version_by_hand() {
             // at, and `test_helpers.rs` ships as production while holding an
             // inline test module the slice WOULD cut at, leaving a fraction of
             // the file behind.
-            if name.starts_with("tests")
-                || name == "test_helpers.rs"
-                || path.parent().is_some_and(|p| p.ends_with("tests"))
-            {
+            if crate::test_helpers::is_test_source(&path) || name == "test_helpers.rs" {
                 continue;
             }
             let production = production_slice_of(&path);
@@ -1235,7 +1232,7 @@ fn every_defaulted_config_section_reads_null_as_its_default() {
             .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
             .path();
         let file = path.file_name().unwrap().to_string_lossy().into_owned();
-        if !file.ends_with(".rs") || file == "tests.rs" {
+        if !file.ends_with(".rs") || crate::test_helpers::is_test_source(&path) {
             continue;
         }
         let src = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{file}: {e}"));

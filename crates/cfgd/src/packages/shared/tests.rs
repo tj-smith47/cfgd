@@ -2475,7 +2475,7 @@ fn command_failure_reason_is_the_only_place_a_managers_stderr_becomes_a_message(
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/packages");
     let mut offenders: Vec<String> = Vec::new();
     for path in cfgd_core::test_helpers::rust_sources_under(&root) {
-        if path.file_name().is_some_and(|f| f == "tests.rs") {
+        if cfgd_core::test_helpers::is_test_source(&path) {
             continue;
         }
         let body = std::fs::read_to_string(&path)
@@ -2798,7 +2798,7 @@ fn every_manager_command_factory_spawns_the_path_its_resolver_chose() {
         // A `tests.rs` is a whole test region declared from its parent, so it
         // carries no `#[cfg(test)]` of its own for the cut to find (held by
         // `cli::tests::no_tests_file_carries_a_cfg_test_attribute_of_its_own`).
-        if path.file_name().is_some_and(|f| f == "tests.rs") {
+        if cfgd_core::test_helpers::is_test_source(&path) {
             continue;
         }
         let src = cfgd_core::test_helpers::production_slice_of(&path);
@@ -3022,7 +3022,7 @@ fn brew_path_dir_readers() -> Vec<(String, Option<String>)> {
         // the cut to read (held by
         // `cli::tests::no_tests_file_carries_a_cfg_test_attribute_of_its_own`),
         // and a test is not a route production takes.
-        .filter(|p| p.file_name().is_some_and(|n| n != "tests.rs"))
+        .filter(|p| !cfgd_core::test_helpers::is_test_source(p))
         .map(|p| cfgd_core::test_helpers::production_slice_of(&p))
         .collect();
     assert!(!sources.is_empty(), "the derivation read no sources at all");

@@ -1708,10 +1708,7 @@ mod tests {
             // `test_helpers.rs` is named out for the other reason: it ships as
             // production and holds an inline test module the slice would cut at,
             // leaving a fraction of the file behind.
-            if name.starts_with("tests")
-                || name == "test_helpers.rs"
-                || relative.contains("/tests/")
-            {
+            if crate::test_helpers::is_test_source(&path) || name == "test_helpers.rs" {
                 continue;
             }
             sources.push((

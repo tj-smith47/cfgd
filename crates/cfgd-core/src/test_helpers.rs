@@ -5545,6 +5545,22 @@ pub fn rust_sources_under(root: &Path) -> Vec<PathBuf> {
     out
 }
 
+/// Whether `path` is a source file that holds tests alone: a `tests.rs`, a
+/// `tests_*.rs` module file, or anything under a `tests/` directory.
+///
+/// Each is compiled only under `#[cfg(test)]` (declared from its parent as
+/// `#[cfg(test)] mod tests_x;`) or as an integration test, and carries no inner
+/// `#[cfg(test)]` for `production_slice` to cut, so a scan judging production
+/// code skips the whole file. This is the one statement of that naming rule,
+/// so a test module named some other way is added here, where every scan
+/// skipping test files picks it up at once.
+pub fn is_test_source(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n == "tests.rs" || (n.starts_with("tests_") && n.ends_with(".rs")))
+        || path.components().any(|c| c.as_os_str() == "tests")
+}
+
 /// Every path-based chmod in the production sources of every crate under
 /// `crates_dir`, and the ones that do not say why following a symlink is safe.
 ///

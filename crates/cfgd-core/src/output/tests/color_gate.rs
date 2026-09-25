@@ -253,7 +253,7 @@ fn every_styled_span_reaches_bytes_through_the_one_gate() {
     let mut offenders = Vec::new();
     for path in &files {
         // The gate itself, and the tests that assert about what it writes.
-        if path.ends_with("theme.rs") || path.components().any(|c| c.as_os_str() == "tests") {
+        if path.ends_with("theme.rs") || crate::test_helpers::is_test_source(path) {
             continue;
         }
         let production = crate::test_helpers::production_slice_of(path);

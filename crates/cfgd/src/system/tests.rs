@@ -896,9 +896,7 @@ fn every_privileged_writer_says_whether_a_non_root_reader_opens_its_file() {
     let mut writers = 0usize;
     let mut files = 0usize;
     for path in cfgd_core::test_helpers::rust_sources_under(&system_dir) {
-        if path.file_name().is_some_and(|n| n == "tests.rs")
-            || path.parent().is_some_and(|p| p.ends_with("tests"))
-        {
+        if cfgd_core::test_helpers::is_test_source(&path) {
             continue;
         }
         let body = cfgd_core::test_helpers::production_slice_of(&path);
@@ -972,7 +970,7 @@ fn every_privileged_writer_says_whether_a_non_root_reader_opens_its_file() {
         }
     }
     assert!(
-        files >= 24 && writers >= 16,
+        files >= 23 && writers >= 16,
         "the walk read {files} files and {writers} writers, too few to be the population"
     );
     assert!(
