@@ -37,6 +37,14 @@ pub fn is_leader_election_enabled() -> bool {
     env::parse_bool_env("LEADER_ELECTION_ENABLED")
 }
 
+/// Whether `/readyz` must also wait for the leader lease. The device gateway
+/// runs only on the lease holder, so with leader election on, a ready standby
+/// would take gateway traffic with nothing listening. Everywhere else a pod is
+/// ready once its admission webhook serves, lease or no lease.
+pub fn readiness_needs_lease() -> bool {
+    is_leader_election_enabled() && is_gateway_enabled()
+}
+
 /// The namespace in which the operator runs leader-election leases. Reads
 /// `POD_NAMESPACE`; defaults to `cfgd-system` when unset.
 pub fn leader_namespace() -> String {
@@ -82,7 +90,7 @@ pub fn build_gateway_config(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cfgd_core::test_helpers::with_test_env_var;
+    use cfgd_core::test_helpers::{EnvVarGuard, with_test_env_var};
     use serial_test::serial;
 
     #[test]
@@ -139,6 +147,31 @@ mod tests {
         with_test_env_var("LEADER_ELECTION_ENABLED", Some("true"), || {
             assert!(is_leader_election_enabled());
         });
+    }
+
+    #[test]
+    #[serial]
+    fn readiness_waits_on_the_lease_only_for_a_leader_elected_gateway() {
+        for (leader, gateway, expected) in [
+            (None, None, false),
+            (Some("true"), None, false),
+            (None, Some("true"), false),
+            (Some("true"), Some("true"), true),
+        ] {
+            let _le = match leader {
+                Some(v) => EnvVarGuard::set("LEADER_ELECTION_ENABLED", v),
+                None => EnvVarGuard::unset("LEADER_ELECTION_ENABLED"),
+            };
+            let _gw = match gateway {
+                Some(v) => EnvVarGuard::set("DEVICE_GATEWAY_ENABLED", v),
+                None => EnvVarGuard::unset("DEVICE_GATEWAY_ENABLED"),
+            };
+            assert_eq!(
+                readiness_needs_lease(),
+                expected,
+                "leader election {leader:?}, gateway {gateway:?}"
+            );
+        }
     }
 
     #[test]

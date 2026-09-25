@@ -39,7 +39,7 @@ crates/
 │   ├── crds/               # CRD definitions (MachineConfig, ConfigPolicy, DriftAlert, ClusterConfigPolicy)
 │   ├── controllers/        # kube-rs reconciliation controllers (4 controllers)
 │   ├── webhook.rs          # Admission webhook server (TLS, 4 validation + 1 mutation endpoints)
-│   ├── health.rs           # Dedicated health probe server (/healthz, /readyz)
+│   ├── health.rs           # Dedicated health probe server (/healthz, /readyz, /leaderz)
 │   ├── leader.rs           # Lease-based leader election
 │   ├── metrics.rs          # Prometheus metrics registry + HTTP endpoint
 │   ├── gen_crds.rs         # CRD JSON schema generation utility

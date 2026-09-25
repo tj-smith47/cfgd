@@ -61,6 +61,7 @@ pub struct Metrics {
     pub db_pool_in_use: Family<DbPoolLabels, Gauge>,
     pub db_pool_wait_seconds: Histogram,
     pub db_writer_wait_seconds: Histogram,
+    pub leader: Gauge,
 }
 
 impl Metrics {
@@ -139,6 +140,13 @@ impl Metrics {
             db_writer_wait_seconds.clone(),
         );
 
+        let leader = Gauge::default();
+        sub.register(
+            "leader",
+            "1 while this pod holds the leader lease and runs the controllers, 0 on a standby",
+            leader.clone(),
+        );
+
         Self {
             reconciliations_total,
             reconciliation_duration_seconds,
@@ -150,6 +158,7 @@ impl Metrics {
             db_pool_in_use,
             db_pool_wait_seconds,
             db_writer_wait_seconds,
+            leader,
         }
     }
 }
@@ -236,6 +245,28 @@ mod tests {
         // All metric families should appear in the output (even if zero-valued)
         // Verify the registry doesn't panic during encoding
         assert!(!buf.is_empty());
+    }
+
+    /// A standby exports the leadership gauge at 0, so a dashboard can tell
+    /// the leader apart from its standbys by the one series.
+    #[test]
+    fn leader_gauge_reports_the_lease_holder() {
+        let mut registry = Registry::default();
+        let metrics = Metrics::new(&mut registry);
+        let mut standby = String::new();
+        encode(&mut standby, &registry).unwrap();
+        assert!(
+            standby.contains("\ncfgd_operator_leader 0\n"),
+            "a standby must export the leader gauge at 0: {standby}"
+        );
+
+        crate::health::HealthState::new(metrics.leader.clone(), false).set_leader();
+        let mut leader = String::new();
+        encode(&mut leader, &registry).unwrap();
+        assert!(
+            leader.contains("\ncfgd_operator_leader 1\n"),
+            "the lease holder must export the leader gauge at 1: {leader}"
+        );
     }
 
     #[test]

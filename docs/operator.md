@@ -281,6 +281,30 @@ The operator runs [kube-rs](https://kube.rs/) controllers that watch and reconci
 
 Validates CRD specs on create/update. Catches invalid configurations (missing required fields, malformed selectors) before they're persisted to etcd.
 
+## Health and Leadership
+
+The probe server listens on `HEALTH_PORT` (default `8081`) and answers three paths:
+
+| Path | 200 when | 503 when |
+|---|---|---|
+| `/healthz` | the process is up | — |
+| `/readyz` | the admission webhook is serving (at once when the pod has no webhook certificates) | the webhook has not loaded its certificates yet |
+| `/leaderz` | this pod holds the leader lease, or runs with leader election off | this pod is a standby |
+
+Readiness and leadership are separate signals. Only the lease holder runs the controllers, but every pod whose webhook is serving answers admission, so a standby is ready and stays an endpoint of the webhook Service. During a roll the replacement pod turns ready as soon as its webhook serves, joins the Service while the old pod still holds the lease, and admission (`failurePolicy: Fail`) always has a backend.
+
+One configuration keeps readiness tied to the lease: the device gateway with leader election on. The gateway runs only on the lease holder, so a ready standby would receive gateway traffic with nothing listening; there `/readyz` also waits for the lease.
+
+```sh
+$ kubectl -n cfgd-system port-forward pod/<operator-pod> 8081 &
+$ curl -s localhost:8081/leaderz
+standby
+```
+
+The metrics endpoint carries the same fact as a gauge, `cfgd_operator_leader`: `1` on the lease holder and `0` on each standby.
+
+The chart's Deployment probes `/readyz` for readiness and `/healthz` for liveness.
+
 ## Pod Module Injection
 
 A module published as an OCI artifact can be mounted into a pod. A pod asks for it with one annotation. The mutating webhook rewrites the pod on admission, and the CSI node plugin pulls the artifact and bind-mounts it read-only before the container starts.

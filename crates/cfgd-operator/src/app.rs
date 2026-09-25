@@ -146,10 +146,14 @@ fn log_crd_info() {
 }
 
 /// Spawn the health-probe server on `HEALTH_PORT` (default 8081) and return its
-/// task handle plus the shared `HealthState`. The caller marks ready via
-/// `HealthState::set_ready` once dependents are up.
-fn spawn_health_server() -> (tokio::task::JoinHandle<()>, health::HealthState) {
-    let health_state = health::HealthState::new();
+/// task handle plus the shared `HealthState`. The caller reports what is
+/// serving via `HealthState::set_serving` and the lease via
+/// `HealthState::set_leader`.
+fn spawn_health_server(
+    leader_gauge: prometheus_client::metrics::gauge::Gauge,
+    ready_needs_leader: bool,
+) -> (tokio::task::JoinHandle<()>, health::HealthState) {
+    let health_state = health::HealthState::new(leader_gauge, ready_needs_leader);
     let health_port = env::parse_port_env("HEALTH_PORT", 8081);
 
     let handle = tokio::spawn({
@@ -255,8 +259,10 @@ pub async fn run() -> Result<()> {
 
     let client = Client::try_default().await?;
 
-    let (mut health_handle, health_state) = spawn_health_server();
+    let leader_enabled = runtime::is_leader_election_enabled();
     let (mut metrics_handle, metrics) = spawn_metrics_server();
+    let (mut health_handle, health_state) =
+        spawn_health_server(metrics.leader.clone(), runtime::readiness_needs_lease());
 
     let cert_dir = cfgd_core::env_or("WEBHOOK_CERT_DIR", "/tmp/k8s-webhook-server/serving-certs");
     let webhook_port = env::parse_port_env("WEBHOOK_PORT", 9443);
@@ -274,12 +280,14 @@ pub async fn run() -> Result<()> {
         };
         let webhook_metrics = metrics.clone();
         let webhook_client = client.clone();
+        let serving = health_state.clone();
         webhook_handle = Some(tokio::spawn(async move {
             if let Err(e) = webhook::run_webhook_server(
                 &cert_dir,
                 webhook_listener,
                 webhook_metrics,
                 webhook_client,
+                move || serving.set_serving(),
             )
             .await
             {
@@ -291,9 +299,8 @@ pub async fn run() -> Result<()> {
             cert_dir = %cert_dir,
             "webhook certs not found, webhook server disabled"
         );
+        health_state.set_serving();
     }
-
-    let leader_enabled = runtime::is_leader_election_enabled();
 
     let shutdown = CancellationToken::new();
 
@@ -310,7 +317,7 @@ pub async fn run() -> Result<()> {
 
             let le = leader::LeaderElection::new(client.clone(), namespace, identity);
             le.run(shutdown.clone(), || async {
-                health_state.set_ready();
+                health_state.set_leader();
                 run_operator(client, metrics)
                     .await
                     .map_err(|e| errors::OperatorError::Leader(format!("Operator run failed: {e}")))
@@ -318,7 +325,7 @@ pub async fn run() -> Result<()> {
             .await
             .map_err(|e| anyhow::anyhow!("{}", e))?;
         } else {
-            health_state.set_ready();
+            health_state.set_leader();
             run_operator(client, metrics).await?;
         }
 
@@ -409,13 +416,14 @@ async fn run_standalone_gateway() -> Result<()> {
          controllers, webhook, and leader election are disabled"
     );
 
-    let (mut health_handle, health_state) = spawn_health_server();
     let (mut metrics_handle, metrics) = spawn_metrics_server();
+    let (mut health_handle, health_state) = spawn_health_server(metrics.leader.clone(), false);
 
     let gateway_config =
         runtime::build_gateway_config(None, controllers::BackupPolicyCache::default(), metrics);
 
-    health_state.set_ready();
+    health_state.set_serving();
+    health_state.set_leader();
 
     let mut gateway_err: Option<anyhow::Error> = None;
     tokio::select! {

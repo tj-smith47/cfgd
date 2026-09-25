@@ -39,11 +39,14 @@ struct WebhookState {
     client: Client,
 }
 
+/// Serve admission over TLS on `listener`, calling `on_serving` once the
+/// certificates have loaded and the accept loop starts.
 pub async fn run_webhook_server(
     cert_dir: &str,
     listener: TcpListener,
     metrics: Metrics,
     client: Client,
+    on_serving: impl FnOnce(),
 ) -> Result<(), OperatorError> {
     let cert_path = Path::new(cert_dir).join("tls.crt");
     let key_path = Path::new(cert_dir).join("tls.key");
@@ -79,6 +82,7 @@ pub async fn run_webhook_server(
         .map_err(|e| OperatorError::Webhook(format!("failed to read listener address: {e}")))?;
 
     info!(addr = %local_addr, "webhook server listening");
+    on_serving();
 
     loop {
         let (stream, peer_addr) = match listener.accept().await {
@@ -190,8 +194,8 @@ fn handle_validate<S: Validatable + serde::de::DeserializeOwned + 'static>(
 
 // Liveness probe for the webhook pod. Kubernetes liveness semantics are
 // "the process is alive and serving" — accepting TCP here already proves that.
-// Intentionally does not consult `HealthState` (which gates readiness /
-// leader status) because liveness must stay green even when the operator
+// Intentionally does not consult `HealthState` (which reports readiness and
+// leadership) because liveness must stay green even when the operator
 // is voluntarily paused. Matches `health::healthz_handler`'s unconditional
 // OK response — keep in sync if that handler ever changes.
 async fn liveness_ok() -> (axum::http::StatusCode, &'static str) {
