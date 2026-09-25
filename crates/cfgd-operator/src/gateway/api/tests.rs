@@ -3433,7 +3433,7 @@ fn every_status_the_agent_reports_is_one_the_gateway_reads() {
                 parsed.is_err(),
                 "a passing check has no gateway status, so {token} must not parse as one"
             ),
-            _ => assert!(
+            ComplianceStatus::Warning | ComplianceStatus::Violation => assert!(
                 parsed.is_ok(),
                 "the gateway cannot read {token}: {parsed:?}"
             ),

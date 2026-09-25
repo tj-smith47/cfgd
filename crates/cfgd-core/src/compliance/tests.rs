@@ -2128,3 +2128,45 @@ fn a_snapshot_reports_each_source_constraint_violation_as_a_violation_check() {
     assert_eq!(snapshot.summary.violation, 2);
     assert_eq!(snapshot.summary.compliant, 0);
 }
+
+/// `ComplianceStatus::ALL` holds every status, each at its own ordinal, so a
+/// loop over it (the gateway's check that it reads every status the agent
+/// sends) cannot miss one.
+#[test]
+fn every_compliance_status_is_listed_in_all_at_its_ordinal() {
+    assert_eq!(
+        ComplianceStatus::ALL.len(),
+        ComplianceStatus::Violation.ordinal() + 1
+    );
+    for status in ComplianceStatus::ALL {
+        assert_eq!(ComplianceStatus::ALL[status.ordinal()], status);
+    }
+    // serde's refusal of an unknown word names every variant the enum
+    // declares, which is the one list nobody writes by hand. A status added
+    // after `Violation` with its own ordinal passes the two checks above, and
+    // fails here until `ALL` holds it.
+    let refusal = serde_json::from_str::<ComplianceStatus>(r#""no-such-status""#)
+        .expect_err("an unknown word is refused")
+        .to_string();
+    let (_, declared) = refusal
+        .split_once("expected one of ")
+        .unwrap_or_else(|| panic!("serde's refusal no longer lists the variants: {refusal}"));
+    let declared: Vec<&str> = declared
+        .split(", ")
+        .map(|w| w.split('`').nth(1).unwrap_or_default())
+        .collect();
+    let listed: Vec<String> = ComplianceStatus::ALL
+        .iter()
+        .map(|s| {
+            serde_json::to_value(s)
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .to_string()
+        })
+        .collect();
+    assert_eq!(
+        declared, listed,
+        "ComplianceStatus::ALL is missing a status"
+    );
+}
