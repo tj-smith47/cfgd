@@ -51949,7 +51949,7 @@ fn every_refused_flag_is_spelled_the_way_help_prints_it() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     // (file, spelling, the function it is written in)
     let mut spellings: Vec<(String, String, Option<FnKey>)> = Vec::new();
-    // (file, function, its code, declared in an `impl` or `trait` block)
+    // (file, function, its code, a direct item of an `impl` or `trait` block)
     let mut spans: Vec<(String, String, String, bool)> = Vec::new();
     // file -> its `use` statements
     let mut uses: std::collections::BTreeMap<String, Vec<String>> =
