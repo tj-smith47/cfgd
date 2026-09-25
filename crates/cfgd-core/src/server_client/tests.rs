@@ -389,6 +389,47 @@ fn a_checkin_omits_an_empty_check_list_and_an_absent_detail() {
     );
 }
 
+/// A machine failing more checks than a status can list sends the first of
+/// them, violations ahead of warnings, and counts every one.
+#[test]
+fn a_checkin_lists_at_most_the_capped_checks_and_counts_them_all() {
+    use crate::compliance::{ComplianceCheck, MachineInfo, compute_summary};
+
+    let cap = cfgd_schema::MAX_REPORTED_CHECKS;
+    let check = |i: usize, status| ComplianceCheck {
+        category: "file".into(),
+        target: Some(format!("/f{i}")),
+        status,
+        ..Default::default()
+    };
+    let checks: Vec<ComplianceCheck> = (0..cap)
+        .map(|i| check(i, ComplianceStatus::Warning))
+        .chain((0..2).map(|i| check(cap + i, ComplianceStatus::Violation)))
+        .collect();
+    let snapshot = ComplianceSnapshot {
+        timestamp: "2026-09-25T00:00:00Z".into(),
+        machine: MachineInfo {
+            hostname: "ws-1".into(),
+            os: "linux".into(),
+            arch: "x86_64".into(),
+        },
+        profile: "default".into(),
+        sources: vec![],
+        summary: compute_summary(&checks),
+        checks,
+    };
+
+    let report = CheckinCompliance::from_snapshot(&snapshot);
+    assert_eq!(report.checks.len(), cap);
+    assert_eq!((report.warning, report.violation), (cap, 2));
+    assert!(
+        report.checks[..2]
+            .iter()
+            .all(|c| c.status == ComplianceStatus::Violation),
+        "the violations are listed ahead of the warnings the cap cuts"
+    );
+}
+
 #[test]
 fn report_drift_sends_drift_details() {
     let mut server = mockito::Server::new();

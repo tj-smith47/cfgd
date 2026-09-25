@@ -522,6 +522,17 @@ impl ScriptBodyShape {
     }
 }
 
+/// The most failing checks one check-in reports, and one MachineConfig status
+/// lists.
+///
+/// The list lands in a status object every operator replica watches, which
+/// has to stay well inside etcd's ~1.5 MiB limit. Unlike the policy violator
+/// lists, whose entries are bounded `namespace/name` pairs, a check carries a
+/// path and a free-text detail of any length, so the cap is lower than theirs:
+/// at ~1 KiB per check, 200 is ~200 KiB. The counts beside the list stay
+/// exact; only the enumeration stops.
+pub const MAX_REPORTED_CHECKS: usize = 200;
+
 /// Which layer owns a backup unit's schedule.
 ///
 /// `Cluster` (the default) leaves the unit open to a cluster `BackupPolicy`,

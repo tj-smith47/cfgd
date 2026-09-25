@@ -156,6 +156,8 @@ pub struct CheckinCompliance<'a> {
     /// Violations first, then warnings, each in the order the snapshot
     /// collected them: the order `cfgd compliance` lists them in, so the first
     /// check a fleet reader sees is the most severe one the machine shows.
+    /// Only the first [`cfgd_schema::MAX_REPORTED_CHECKS`] are sent; the
+    /// counts above cover every check.
     ///
     /// Omitted when empty, which is the body a gateway that predates the field
     /// already parses.
@@ -180,16 +182,12 @@ impl<'a> CheckinCompliance<'a> {
     /// Report `snapshot` as the check-in carries it.
     pub fn from_snapshot(snapshot: &'a ComplianceSnapshot) -> Self {
         let summary = &snapshot.summary;
-        let mut checks = Vec::with_capacity(summary.warning + summary.violation);
-        for status in [ComplianceStatus::Violation, ComplianceStatus::Warning] {
-            checks.extend(
-                snapshot
-                    .checks
-                    .iter()
-                    .filter(|c| c.status == status)
-                    .map(CheckinCheck::from),
-            );
-        }
+        let checks = [ComplianceStatus::Violation, ComplianceStatus::Warning]
+            .into_iter()
+            .flat_map(|status| snapshot.checks.iter().filter(move |c| c.status == status))
+            .take(cfgd_schema::MAX_REPORTED_CHECKS)
+            .map(CheckinCheck::from)
+            .collect();
         Self {
             compliant: summary.compliant,
             warning: summary.warning,

@@ -530,7 +530,7 @@ mod tests {
             "every CRD kind in the registry is rendered, and nothing else is"
         );
         assert!(
-            capped >= 3,
+            capped >= 4,
             "only {capped} capped lists were judged, so the cap walk proves nothing"
         );
         // The webhook path a kind registers under is its own kind lowercased —

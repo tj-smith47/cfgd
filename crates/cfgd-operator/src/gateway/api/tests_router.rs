@@ -856,6 +856,57 @@ async fn checkin_with_an_unreadable_compliance_report_still_applies_the_rest() {
     );
 }
 
+/// A report listing more checks than the MachineConfig schema accepts is
+/// written with the first of them, so the API server does not refuse the
+/// status apply and cost the machine its whole report.
+#[tokio::test]
+#[serial]
+async fn checkin_trims_a_compliance_list_longer_than_the_status_accepts() {
+    unsafe {
+        std::env::remove_var("CFGD_API_KEY");
+    }
+    let (ctx, _registry, harness) = MockKubeHarness::new(vec![
+        ExpectedCall::list("/apis/cfgd.io/v1alpha1/machineconfigs")
+            .returning_json(&machine_config_list("fleet", "workstation-1-mc", "host-1")),
+        expect_status_apply("cfgd-operator/gateway/compliance"),
+        ExpectedCall::list("/apis/cfgd.io/v1alpha1/namespaces/fleet/backuppolicies")
+            .returning_json(&backup_policy_list(vec![])),
+    ]);
+    let (state, _tmp) = crate::gateway::test_state::test_state_with_kube(ctx.client.clone());
+    let token = enrolled_device(&state, "dev-1", "host-1").await;
+    let over = crate::crds::MAX_REPORTED_CHECKS + 1;
+    let checks: Vec<serde_json::Value> = (0..over)
+        .map(|i| serde_json::json!({ "category": "file", "name": format!("/f{i}"), "status": "Violation" }))
+        .collect();
+
+    let response = router_with_state(state)
+        .oneshot(post_json_with_bearer(
+            "/api/v1/checkin",
+            &token,
+            serde_json::json!({
+                "deviceId": "dev-1",
+                "hostname": "host-1",
+                "os": "linux",
+                "arch": "x86_64",
+                "configHash": "abc",
+                "complianceSummary": { "compliant": 0, "warning": 0, "violation": over, "checks": checks },
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let report = harness.finish().await;
+    let applied = applied_under(&report, "cfgd-operator/gateway/compliance");
+    let compliance = &status_object(&applied)["compliance"];
+    assert_eq!(
+        compliance["checks"].as_array().map(Vec::len),
+        Some(crate::crds::MAX_REPORTED_CHECKS)
+    );
+    assert_eq!(compliance["checks"][0]["name"], "/f0");
+    assert_eq!(compliance["violation"], over, "the count stays whole");
+}
+
 /// A check-in carrying compliance writes it onto the MachineConfig under a
 /// manager of its own, naming no other field, so the fleet reads the checks
 /// that failed with `kubectl get machineconfig -o yaml`.

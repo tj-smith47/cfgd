@@ -1326,7 +1326,8 @@ fn backup_policy_units_summary_names_each_unit_once() {
 }
 
 /// The fleet's one-line reason: the first failing check, its detail when the
-/// device gave one, and how many checks follow it.
+/// device gave one, and how many checks follow it, counted from the totals so
+/// the checks past the listed ones are counted too.
 #[test]
 fn device_compliance_headline_names_the_first_check_and_counts_the_rest() {
     let check = |name: &str, detail: Option<&str>| DeviceComplianceCheck {
@@ -1349,6 +1350,12 @@ fn device_compliance_headline_names_the_first_check_and_counts_the_rest() {
         Some("file /a: managed file missing (+2 more)")
     );
     report.checks.drain(..2);
+    assert_eq!(
+        report.headline().as_deref(),
+        Some("file /c (+2 more)"),
+        "the two checks no longer listed are still counted"
+    );
+    report.violation = 1;
     assert_eq!(report.headline().as_deref(), Some("file /c"));
     report.checks.clear();
     assert_eq!(report.headline(), None);

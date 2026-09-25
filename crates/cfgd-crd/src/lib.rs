@@ -165,25 +165,39 @@ pub struct DeviceCompliance {
     pub warning: u32,
     /// Checks that fail.
     pub violation: u32,
-    /// Every check that does not pass, violations first, then warnings. An
-    /// agent that predates the list reports the counts alone.
+    /// The checks that do not pass, violations first, then warnings: the first
+    /// 200 of them, with the counts above staying exact. An agent that
+    /// predates the list reports the counts alone.
+    // The cap is MAX_REPORTED_CHECKS, the free-text list's etcd ceiling.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(length(max = MAX_REPORTED_CHECKS))]
     pub checks: Vec<DeviceComplianceCheck>,
 }
+
+/// The most checks a [`DeviceCompliance`] lists. Re-exported from
+/// `cfgd-schema` so the agent that trims its report and the schema that
+/// bounds it read one number.
+pub use cfgd_schema::MAX_REPORTED_CHECKS;
 
 impl DeviceCompliance {
     /// One line for a fleet table: the first check that does not pass, with a
     /// count of the ones after it. `None` when the report lists no check.
+    ///
+    /// The count comes from the totals, so checks past the listed ones are
+    /// still counted.
     pub fn headline(&self) -> Option<String> {
         let (first, rest) = self.checks.split_first()?;
+        let more = (self.warning + self.violation)
+            .saturating_sub(1)
+            .max(rest.len() as u32);
         let mut line = format!("{} {}", first.category, first.name);
         if let Some(detail) = &first.detail {
             line.push_str(": ");
             line.push_str(detail);
         }
-        if !rest.is_empty() {
+        if more > 0 {
             use std::fmt::Write;
-            let _ = write!(line, " (+{} more)", rest.len());
+            let _ = write!(line, " (+{more} more)");
         }
         Some(line)
     }

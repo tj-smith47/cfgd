@@ -224,7 +224,7 @@ container.
 Created by the gateway when a device reports drifted **system settings** during check-in. A
 device's report covers the answers of its system configurators alone: packages, managed files,
 env vars and aliases are checked on the device by `cfgd diff` and reach the fleet through the
-check-in's compliance summary (its counts and each check that did not pass, on
+check-in's compliance summary (its counts and the first 200 checks that did not pass, on
 `MachineConfig.status.compliance`), never as a DriftAlert.
 
 ```yaml
@@ -438,8 +438,8 @@ anonymously.
 It also carries the facts only the device can answer: `packageVersions`, the versions it holds
 for the packages it declares (keyed `<manager>/<package>`), `backupScheduleOwners`, which layer
 owns each backup unit's schedule, and, when [`spec.compliance`](spec/config.md#speccompliance)
-is enabled, `complianceSummary`: the counts of its compliance snapshot and every check that did
-not pass. `cfgd checkin` collects a fresh snapshot (the same one `cfgd compliance` collects); the
+is enabled, `complianceSummary`: the counts of its compliance snapshot and the first 200 checks that
+did not pass. `cfgd checkin` collects a fresh snapshot (the same one `cfgd compliance` collects); the
 daemon sends the snapshot its most recent compliance tick collected, and none before its first one.
 Both senders compose the check-in through one function, so they report the same hash, the same
 failing checks (source security-constraint violations included) and the same versions, packages
@@ -458,7 +458,8 @@ a manifest declares included.
 ```
 
 `checks` lists violations first, then warnings, each with the name and detail `cfgd compliance`
-shows for that row; compliant checks are not sent. `detail` is omitted for a check that has
+shows for that row; compliant checks are not sent. The list stops at the first 200, the most
+`MachineConfig.status.compliance` holds, and the counts still cover every check. `detail` is omitted for a check that has
 none, and an agent that predates the list sends the counts alone, which the gateway reads as a
 report with no checks.
 
@@ -565,7 +566,8 @@ The device table's `Compliance` column names the first check the device reported
 and how many follow it (`file /home/jane/.zshrc: managed file missing (+1 more)`), coloured by
 the most severe outcome. A device whose agent predates the check list shows its counts
 (`1 warning, 0 violation`), and one that never reported compliance shows `not reported`. The
-device page lists every check that did not pass, with its status, category, name and detail.
+device page lists each check the device reported as not passing, with its status, category, name
+and detail.
 
 ### SSE Streaming
 

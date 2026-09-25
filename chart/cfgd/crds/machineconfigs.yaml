@@ -173,8 +173,9 @@ spec:
                 properties:
                   checks:
                     description: |-
-                      Every check that does not pass, violations first, then warnings. An
-                      agent that predates the list reports the counts alone.
+                      The checks that do not pass, violations first, then warnings: the first
+                      200 of them, with the counts above staying exact. An agent that
+                      predates the list reports the counts alone.
                     items:
                       description: One check a machine reported as not passing.
                       properties:
@@ -201,6 +202,7 @@ spec:
                       - name
                       - status
                       type: object
+                    maxItems: 200
                     type: array
                   compliant:
                     description: Checks that pass.

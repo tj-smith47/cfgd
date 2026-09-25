@@ -124,7 +124,8 @@ pub struct CheckinRequest {
     /// compliance off or could not collect it; an agent that predates the
     /// check list sends the counts alone. A report the gateway cannot read (a
     /// status word a newer agent added) is dropped with a warning, so it costs
-    /// the check-in its compliance and nothing else.
+    /// the check-in its compliance and nothing else. A list longer than
+    /// [`crate::crds::MAX_REPORTED_CHECKS`] keeps its first entries.
     #[serde(default, deserialize_with = "lenient_compliance")]
     pub compliance_summary: Option<crate::crds::DeviceCompliance>,
     /// Installed versions of the packages the device DECLARES, keyed
@@ -151,7 +152,13 @@ where
     let Some(value) = Option::<serde_json::Value>::deserialize(deserializer)? else {
         return Ok(None);
     };
-    Ok(serde_json::from_value(value)
+    // The MachineConfig schema refuses a longer list, and that refusal would
+    // cost the status apply the whole report.
+    Ok(serde_json::from_value::<crate::crds::DeviceCompliance>(value)
+        .map(|mut report| {
+            report.checks.truncate(crate::crds::MAX_REPORTED_CHECKS);
+            report
+        })
         .inspect_err(|e| {
             tracing::warn!(
                 error = %e,
