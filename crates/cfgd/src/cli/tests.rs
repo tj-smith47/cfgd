@@ -52261,7 +52261,7 @@ fn every_section_reach_shape_is_seen_by_the_section_walk() {
     assert_eq!(reaches(matched_earlier), [4]);
     let wrapped_earlier = "fn f(m: &mut serde_yaml::Mapping) {\n    let v =\n        m.get_mut(\"spec\").unwrap();\n    if let serde_yaml::Value::Mapping(inner) = v { inner.clear(); }\n}";
     assert_eq!(reaches(wrapped_earlier), [4]);
-    let unrelated_above = "fn f(m: &mut serde_yaml::Mapping, v: &serde_yaml::Value) {\n    let a = 1;\n    m.get_mut(\"x\").unwrap();\n    if let serde_yaml::Value::Mapping(inner) = a { inner.len(); }\n}";
+    let unrelated_above = "fn f(m: &mut serde_yaml::Mapping) {\n    let a = 1;\n    m.get_mut(\"x\").unwrap();\n    if let serde_yaml::Value::Mapping(inner) = a { inner.len(); }\n}";
     assert_eq!(reaches(unrelated_above), Vec::<usize>::new());
     let read_earlier = "fn f(m: &serde_yaml::Mapping) -> bool {\n    let v = m.get(\"spec\").unwrap();\n    if let serde_yaml::Value::Mapping(inner) = v { return inner.is_empty(); }\n    false\n}";
     assert_eq!(reaches(read_earlier), Vec::<usize>::new());
