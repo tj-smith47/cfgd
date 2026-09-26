@@ -798,12 +798,15 @@ if kubectl get daemonset cfgd-csi-csi -n cfgd-system \
     CSI_ARGOCD_MANAGED=true
 fi
 
-# Skip the Helm redeploy when the CSI image is unchanged AND a release already
-# exists (fresh clusters with no release still install). The DaemonSet keeps
-# running the image it was installed with, so a re-upgrade would be a no-op.
+# Skip the Helm redeploy only when the image was not rebuilt, a release exists
+# (fresh clusters with no release still install) and the DaemonSet already runs
+# the reference this run wants. An image that was not rebuilt can still be a
+# different reference, such as a tag override, and only an upgrade deploys it.
+CSI_WANTED_IMAGE="$(e2e_image cfgd-csi)"
 CSI_HELM_NEEDED=true
 if [ "${IMAGE_BUILT[cfgd-csi]:-true}" != "true" ] \
-    && helm status cfgd-csi -n cfgd-system >/dev/null 2>&1; then
+    && helm status cfgd-csi -n cfgd-system >/dev/null 2>&1 \
+    && [ "$(running_image daemonset cfgd-csi-csi cfgd-csi)" = "$CSI_WANTED_IMAGE" ]; then
     CSI_HELM_NEEDED=false
 fi
 
@@ -811,7 +814,7 @@ if [ "$CSI_ARGOCD_MANAGED" = "true" ]; then
     echo "Deploying CSI driver... daemonset/cfgd-csi-csi is managed by ArgoCD and runs $(running_image daemonset cfgd-csi-csi cfgd-csi) — skipping Helm install"
     warn_override_unused cfgd-csi ArgoCD daemonset cfgd-csi-csi cfgd-csi
 elif [ "$CSI_HELM_NEEDED" != "true" ]; then
-    echo "Deploying CSI driver... cfgd-csi image unchanged and release present — skipping Helm upgrade"
+    echo "Deploying CSI driver... daemonset/cfgd-csi-csi already runs $CSI_WANTED_IMAGE — skipping Helm upgrade"
 else
 echo "Deploying CSI driver..."
 helm upgrade --install cfgd-csi "$REPO_ROOT/chart/cfgd" \
