@@ -196,9 +196,10 @@ jobs:
             git config --global --add safe.directory '*'
             rustup-init -y --default-toolchain stable --profile minimal
           run: |
-            # The guest script's shell flags are the action's, not GitHub's, so
-            # the abort is stated here: without it a failing test leg is followed
-            # by a passing build and the whole job reports green.
+            # The guest script runs with the action's shell flags (GitHub's
+            # `bash -e` default does not apply there), so the abort is stated
+            # here: without it a failing test leg is followed by a passing
+            # build and the whole job reports green.
             set -e
             . "$HOME/.cargo/env"
             task test:ci
