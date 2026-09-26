@@ -12,7 +12,7 @@ RESET="${1:-}"
 
 echo "=== cfgd E2E Setup ==="
 echo "Registry: $REGISTRY"
-echo "Image references (a component ArgoCD owns runs its pinned release instead):"
+echo "Image references (ArgoCD-owned components run the release their manifests pin):"
 for img in cfgd cfgd-operator cfgd-csi function-cfgd; do
     echo "  $(e2e_image "$img")"
 done
@@ -401,9 +401,9 @@ RUST_SHARED_PATHS=(Cargo.lock Cargo.toml crates/cfgd-core)
 # read it to skip no-op restarts on unchanged images.
 declare -A IMAGE_BUILT
 
-# An overridden image is used as it is: never built, pushed or retagged, and
-# setup stops when the registry does not hold it rather than deploy a reference
-# nothing can pull.
+# An overridden image is used as it is: never built, pushed or retagged. Setup
+# stops when the registry does not hold it, since a deploy of that reference
+# could not pull.
 use_overridden_image() {
     local ref
     ref="$(e2e_image "$1")"
@@ -411,7 +411,7 @@ use_overridden_image() {
         echo "ERROR: $ref is not in the registry. Its tag comes from an override, so setup uses it as it is and never builds it." >&2
         exit 1
     fi
-    echo "  USE ${1}: $ref (tag override, not built)"
+    echo "  USE ${1}: $ref (tag override, used as it is)"
 }
 
 build_and_push() {

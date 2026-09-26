@@ -120,7 +120,7 @@ for image in "${images[@]}"; do
 done
 
 if resolve not-an-image >/dev/null 2>&1; then
-    echo "FAIL  unknown image: resolved instead of failing"
+    echo "FAIL  unknown image: resolved (want a refusal)"
     failures=$((failures + 1))
 else
     echo "PASS  unknown image: refused"
