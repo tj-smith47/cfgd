@@ -2190,8 +2190,11 @@ cask_gap="$(python3 - <<'PY'
 import yaml
 
 doc = yaml.safe_load(open(".anodizer.yaml"))
-gaps = []
-for i, cask in enumerate(doc.get("homebrew_casks") or []):
+casks = doc.get("homebrew_casks") or []
+# The config carries one cask today, cfgd's own; a block moved or renamed out
+# of the top-level key would otherwise leave nothing judged and pass.
+gaps = [] if casks else ["cfgd: no homebrew_casks entry in .anodizer.yaml, so no cask was judged"]
+for i, cask in enumerate(casks):
     name = cask.get("name", f"homebrew_casks[{i}]")
     if cask.get("generate_completions_from_executable") is not None:
         gaps.append(f"{name}: sets generate_completions_from_executable, which runs the binary at install time")
@@ -2201,7 +2204,7 @@ print("\n".join(gaps))
 PY
 )"
 if [ -n "$cask_gap" ]; then
-    log_error "Homebrew casks that would run cfgd at install time:"
+    log_error "Homebrew cask completions check failed:"
     printf '%s\n' "$cask_gap"
 else
     log_ok "Every Homebrew cask installs its completions from the release archive"
