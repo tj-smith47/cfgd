@@ -43,9 +43,12 @@ e2e_image_tag cfgd-csi    # 0.7.2
 resolves each image under every override and fails when a script under `tests/e2e/`
 spells `IMAGE_TAG` or a first-party image reference itself.
 
-## The CSI node plugin
+## Components ArgoCD owns
 
-On the shared cluster the CSI node plugin is deployed by ArgoCD from
-`/db/manifests/k3s/namespaces/cfgd-system/csi-daemonset.yaml`. `setup-cluster.sh`
-installs it with Helm only on a cluster where ArgoCD does not own the `cfgd-csi-csi`
-DaemonSet.
+On the shared cluster ArgoCD deploys the operator, the device gateway and the CSI
+node plugin from `/db/manifests/k3s/namespaces/cfgd-system/` (the CSI plugin from
+`csi-daemonset.yaml`), so the operator and CSI suites there run the release those
+manifests pin, whatever this run built. `setup-cluster.sh` prints the image each
+of them runs, warns when `OPERATOR_IMAGE_TAG` or `CSI_IMAGE_TAG` is set for one of
+them, and installs the CSI plugin with Helm only on a cluster where ArgoCD does
+not own the `cfgd-csi-csi` DaemonSet.
