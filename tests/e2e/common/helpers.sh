@@ -62,10 +62,11 @@ e2e_image_overridden() {
 
 # The warning setup prints when an override is set for a component whose spec
 # another owner controls: <image> <owner> <object> <image the object runs>.
-# Prints nothing when the image has no override.
+# Prints nothing when the image has no override, or when the object already
+# runs the overridden reference, since the override then took effect.
 e2e_override_unused_warning() {
     local image="$1" owner="$2" object="$3" running="$4"
-    if e2e_image_overridden "$image"; then
+    if e2e_image_overridden "$image" && [ "$running" != "$(e2e_image "$image")" ]; then
         echo "  WARN: $(e2e_image_override_var "$image") is set, but $owner owns $object, which runs $running; the override does not reach it"
     fi
 }
