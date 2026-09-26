@@ -2181,6 +2181,32 @@ else
     log_ok "README Distribution table and docs/installation.md match the enabled publishers"
 fi
 
+# A Homebrew cask that generates completions runs the freshly installed binary,
+# which is quarantined and not notarized: Gatekeeper prompts and a headless
+# `brew install` never returns. Completions come from the release archive.
+log_section "Homebrew casks install completions from the archive"
+
+cask_gap="$(python3 - <<'PY'
+import yaml
+
+doc = yaml.safe_load(open(".anodizer.yaml"))
+gaps = []
+for i, cask in enumerate(doc.get("homebrew_casks") or []):
+    name = cask.get("name", f"homebrew_casks[{i}]")
+    if cask.get("generate_completions_from_executable") is not None:
+        gaps.append(f"{name}: sets generate_completions_from_executable, which runs the binary at install time")
+    if not cask.get("completions"):
+        gaps.append(f"{name}: has no completions: block naming the archive's completion files")
+print("\n".join(gaps))
+PY
+)"
+if [ -n "$cask_gap" ]; then
+    log_error "Homebrew casks that would run cfgd at install time:"
+    printf '%s\n' "$cask_gap"
+else
+    log_ok "Every Homebrew cask installs its completions from the release archive"
+fi
+
 log_section "Demo tapes (one Taskfile target each)"
 
 tape_gap=""
