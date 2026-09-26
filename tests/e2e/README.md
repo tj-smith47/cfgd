@@ -24,10 +24,11 @@ images one release published:
 export REGISTRY=ghcr.io/tj-smith47
 export CFGD_IMAGE_TAG=0.11.0 OPERATOR_IMAGE_TAG=0.9.0 CSI_IMAGE_TAG=0.7.2
 export FUNCTION_IMAGE_TAG=v0.11.0
-# Setup builds and pushes every image; skip it so the published tags stay as released.
-export CFGD_E2E_SETUP_DONE=1
 task e2e:operator
 ```
+
+An overridden image is used as it is: setup never builds, pushes or retags it, and
+stops with an error naming the reference when the registry does not hold it.
 
 Every image reference the scripts compose comes from three functions in
 `common/helpers.sh`:

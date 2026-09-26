@@ -62,6 +62,34 @@ expect "released set" cfgd-operator "$registry/cfgd-operator:0.9.0" "${released[
 expect "released set" cfgd-csi "$registry/cfgd-csi:0.7.2" "${released[@]}"
 expect "released set" function-cfgd "$registry/function-cfgd:v0.11.0" "${released[@]}"
 
+# shellcheck disable=SC2016 # the inner script expands its own positional args
+overridden() {
+    local image="$1"; shift
+    env -u CFGD_IMAGE_TAG -u OPERATOR_IMAGE_TAG -u CSI_IMAGE_TAG -u FUNCTION_IMAGE_TAG \
+        REGISTRY="$registry" IMAGE_TAG=base CLI_SCRATCH="$scratch" "$@" \
+        bash -c 'source "$1/common/helpers.sh"; e2e_image_overridden "$2"' _ "$e2e_root" "$image" 2>/dev/null
+}
+
+# Setup never builds an overridden image, so the predicate must be true exactly
+# when a non-empty override is set; an empty one falls back to IMAGE_TAG.
+for image in "${images[@]}"; do
+    var="${override_of[$image]}"
+    for arm in set unset empty; do
+        case "$arm" in
+            set) args=("$var=pinned"); want=true ;;
+            unset) args=(); want=false ;;
+            empty) args=("$var="); want=false ;;
+        esac
+        if overridden "$image" "${args[@]}"; then got=true; else got=false; fi
+        if [ "$got" = "$want" ]; then
+            echo "PASS  overridden, $var $arm: $image -> $got"
+        else
+            echo "FAIL  overridden, $var $arm: $image -> $got (want $want)"
+            failures=$((failures + 1))
+        fi
+    done
+done
+
 if resolve not-an-image >/dev/null 2>&1; then
     echo "FAIL  unknown image: resolved instead of failing"
     failures=$((failures + 1))

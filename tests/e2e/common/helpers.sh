@@ -32,17 +32,32 @@ IMAGE_TAG="${IMAGE_TAG:-e2e-$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/
 # IMAGE_TAG stays every image's default and each override replaces one. Every
 # image reference the suites compose comes from e2e_image / e2e_image_repo /
 # e2e_image_tag, so an override reaches every place its image is named.
-e2e_image_tag() {
+e2e_image_override_var() {
     case "$1" in
-        cfgd) printf '%s\n' "${CFGD_IMAGE_TAG:-$IMAGE_TAG}" ;;
-        cfgd-operator) printf '%s\n' "${OPERATOR_IMAGE_TAG:-$IMAGE_TAG}" ;;
-        cfgd-csi) printf '%s\n' "${CSI_IMAGE_TAG:-$IMAGE_TAG}" ;;
-        function-cfgd) printf '%s\n' "${FUNCTION_IMAGE_TAG:-$IMAGE_TAG}" ;;
+        cfgd) echo CFGD_IMAGE_TAG ;;
+        cfgd-operator) echo OPERATOR_IMAGE_TAG ;;
+        cfgd-csi) echo CSI_IMAGE_TAG ;;
+        function-cfgd) echo FUNCTION_IMAGE_TAG ;;
         *)
             echo "e2e_image_tag: unknown image '$1'" >&2
             return 1
             ;;
     esac
+}
+
+e2e_image_tag() {
+    local var
+    var="$(e2e_image_override_var "$1")" || return 1
+    printf '%s\n' "${!var:-$IMAGE_TAG}"
+}
+
+# An override names an image the caller wants used as it is, often a released
+# one, so setup must never build over it: true when the image's override is set
+# and non-empty.
+e2e_image_overridden() {
+    local var
+    var="$(e2e_image_override_var "$1")" || return 1
+    [ -n "${!var:-}" ]
 }
 
 e2e_image_repo() {

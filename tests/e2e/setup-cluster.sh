@@ -383,6 +383,19 @@ RUST_SHARED_PATHS=(Cargo.lock Cargo.toml crates/cfgd-core)
 # read it to skip no-op restarts on unchanged images.
 declare -A IMAGE_BUILT
 
+# An overridden image is used as it is: never built, pushed or retagged, and
+# setup stops when the registry does not hold it rather than deploy a reference
+# nothing can pull.
+use_overridden_image() {
+    local ref
+    ref="$(e2e_image "$1")"
+    if ! docker manifest inspect "$ref" >/dev/null 2>&1; then
+        echo "ERROR: $ref is not in the registry. Its tag comes from an override, so setup uses it as it is and never builds it." >&2
+        exit 1
+    fi
+    echo "  USE ${1}: $ref (tag override, not built)"
+}
+
 build_and_push() {
     local image="$1" dockerfile="$2" context="$3" scope="$4" retag_latest="$5"; shift 5
     local input_paths=("$@")
@@ -390,6 +403,12 @@ build_and_push() {
     local ref latest
     ref="$(e2e_image "$image")"
     latest="$(e2e_image_repo "$image"):latest"
+
+    if e2e_image_overridden "$image"; then
+        use_overridden_image "$image"
+        IMAGE_BUILT[$image]="false"
+        return 0
+    fi
 
     local decision
     decision="$(image_decision "$image" "$df_rel" "${input_paths[@]}")"
@@ -433,7 +452,10 @@ build_and_push cfgd-csi "$REPO_ROOT/Dockerfile.csi" "$REPO_ROOT" cfgd-csi true \
 FUNCTION_IMAGE="$(e2e_image function-cfgd)"
 FUNCTION_LATEST="$(e2e_image_repo function-cfgd):latest"
 FUNCTION_DECISION="$(image_decision function-cfgd function-cfgd/Dockerfile function-cfgd)"
-if [ "$FUNCTION_DECISION" = "skip" ] && docker manifest inspect "$FUNCTION_IMAGE" >/dev/null 2>&1; then
+if e2e_image_overridden function-cfgd; then
+    use_overridden_image function-cfgd
+    FUNCTION_DECISION="override"
+elif [ "$FUNCTION_DECISION" = "skip" ] && docker manifest inspect "$FUNCTION_IMAGE" >/dev/null 2>&1; then
     echo "  SKIP function-cfgd: no source change since last-green"
 else
     echo "  BUILD function-cfgd..."
@@ -828,6 +850,8 @@ fi
 if [ -n "$GIT_SHA" ]; then
     echo "Recording last-green SHA ($GIT_SHA) for branch $E2E_BRANCH..."
     for img in cfgd cfgd-operator cfgd-csi function-cfgd; do
+        # This run never built an overridden image, so HEAD is not green for it.
+        e2e_image_overridden "$img" && continue
         record_green_sha "$img"
     done
 fi
