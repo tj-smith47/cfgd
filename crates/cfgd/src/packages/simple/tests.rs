@@ -973,66 +973,98 @@ fn apt_spells_its_noninteractive_env_through_sudo_env() {
     );
 }
 
-/// Every verb slot of every family spawns with the family's environment, the
-/// label printing exactly the argv spawned. The expected environment is named
-/// per family here, so a family gaining or losing a prompt its flags do not
-/// answer changes this table, and a verb slot added to the apt family (or any
-/// other) is walked with no edit.
+/// Every verb slot of every family in [`SIMPLE_FAMILIES`] spawns with the
+/// family's environment and prints exactly the argv it spawns, and every apt
+/// slot that runs dpkg answers dpkg's conffile question up front while the
+/// index refresh, which runs no dpkg, carries neither option.
+///
+/// The families come from the same list `simple_manager` answers, and each
+/// needs a row in the table below, so a new family fails here until its
+/// environment is named. `SimpleManager` is destructured with no `..`, so a new
+/// field fails to compile here until it is sorted into a walked verb slot or
+/// bound to `_` with the reason it takes no part.
 #[test]
 #[serial_test::serial]
 fn every_family_verb_spawns_with_the_family_env() {
+    const CONFFILE: [&str; 4] = [
+        "-o",
+        "Dpkg::Options::=--force-confdef",
+        "-o",
+        "Dpkg::Options::=--force-confold",
+    ];
     let apt: &[(&str, &str)] = &[
         ("DEBIAN_FRONTEND", "noninteractive"),
         ("NEEDRESTART_MODE", "a"),
     ];
     let pkg: &[(&str, &str)] = &[("ASSUME_ALWAYS_YES", "yes")];
-    type FamilyEnv = (
-        &'static str,
-        &'static str,
-        &'static [(&'static str, &'static str)],
-    );
-    let families: [FamilyEnv; 7] = [
-        ("apt", APT_GET_BIN_ENV, apt),
-        ("dnf", DNF_BIN_ENV, &[]),
-        ("yum", YUM_BIN_ENV, &[]),
-        ("apk", APK_BIN_ENV, &[]),
-        ("pacman", PACMAN_BIN_ENV, &[]),
-        ("zypper", ZYPPER_BIN_ENV, &[]),
-        ("pkg", PKG_BIN_ENV, pkg),
-    ];
-    let _seams: Vec<_> = families
+    let expected_env = |name: &str| -> &[(&str, &str)] {
+        match name {
+            "apt" => apt,
+            "pkg" => pkg,
+            "dnf" | "yum" | "apk" | "pacman" | "zypper" => &[],
+            other => panic!("{other} has no row in the environment table"),
+        }
+    };
+
+    let managers: Vec<SimpleManager> = SIMPLE_FAMILIES
         .iter()
-        .map(|(_, seam, _)| cfgd_core::test_helpers::EnvVarGuard::unset(seam))
+        .map(|name| simple_manager(name).unwrap_or_else(|| panic!("{name} resolves")))
         .collect();
-    let mut apt_slots = 0;
-    for (name, _, env) in families {
-        let mgr = simple_manager(name).unwrap_or_else(|| panic!("{name} is a family"));
-        assert_eq!(mgr.env, env, "{name}'s declared environment");
-        for (slot, parts) in [
-            ("install_cmd", Some(mgr.install_cmd)),
-            ("uninstall_cmd", Some(mgr.uninstall_cmd)),
-            ("update_cmd", mgr.update_cmd),
-            ("upgrade_cmd", mgr.upgrade_cmd),
+    let _seams: Vec<_> = managers
+        .iter()
+        .map(|mgr| {
+            cfgd_core::test_helpers::EnvVarGuard::unset(
+                super::super::shared::tool_seam_var(mgr.install_cmd[1]).leak(),
+            )
+        })
+        .collect();
+
+    let mut apt_dpkg_slots = 0;
+    for mgr in &managers {
+        let SimpleManager {
+            mgr_name: name,
+            // Read-only listing: spawned through the seam directly, never prompts.
+            list_cmd: _,
+            install_cmd,
+            uninstall_cmd,
+            update_cmd,
+            upgrade_cmd,
+            raise_verb: _,
+            ignore_update_exit: _,
+            env,
+            parse_list: _,
+            query_version: _,
+            is_available_fn: _,
+            list_with_versions: _,
+            aliases_fn: _,
+            pkg_version_memo: _,
+        } = mgr;
+        let expected = expected_env(name);
+        assert_eq!(*env, expected, "{name}'s declared environment");
+        // (slot, argv, whether the verb runs dpkg on an apt host)
+        for (slot, parts, runs_dpkg) in [
+            ("install_cmd", Some(*install_cmd), true),
+            ("uninstall_cmd", Some(*uninstall_cmd), true),
+            ("update_cmd", *update_cmd, false),
+            ("upgrade_cmd", *upgrade_cmd, true),
         ] {
             let Some(parts) = parts else { continue };
-            if name == "apt" {
-                apt_slots += 1;
-            }
+
             let under_sudo = mgr.argv_after_strip(parts);
-            let mut expected: Vec<String> = Vec::new();
-            if !env.is_empty() {
-                expected.push("sudo".into());
-                expected.push("env".into());
-                expected.extend(env.iter().map(|(k, v)| format!("{k}={v}")));
-                expected.extend(parts[1..].iter().map(|s| s.to_string()));
+            let mut want: Vec<String> = Vec::new();
+            if !expected.is_empty() {
+                want.push("sudo".into());
+                want.push("env".into());
+                want.extend(expected.iter().map(|(k, v)| format!("{k}={v}")));
+                want.extend(parts[1..].iter().map(|s| s.to_string()));
             } else {
-                expected.extend(parts.iter().map(|s| s.to_string()));
+                want.extend(parts.iter().map(|s| s.to_string()));
             }
-            assert_eq!(under_sudo, expected, "{name}'s {slot} under sudo");
+            assert_eq!(under_sudo, want, "{name}'s {slot} under sudo");
 
             let cmd = mgr.spawn_command(parts);
             let envs: Vec<_> = cmd.get_envs().collect();
-            for (k, v) in env {
+            for (k, v) in expected {
                 assert!(
                     envs.contains(&(std::ffi::OsStr::new(k), Some(std::ffi::OsStr::new(v)))),
                     "{name}'s {slot} spawns without {k}={v}: {envs:?}"
@@ -1047,42 +1079,27 @@ fn every_family_verb_spawns_with_the_family_env() {
                 spawned.join(" "),
                 "{name}'s {slot} label must print the argv it spawns"
             );
+
+            if *name == "apt" {
+                let holds = parts.windows(CONFFILE.len()).any(|w| w == CONFFILE);
+                if runs_dpkg {
+                    apt_dpkg_slots += 1;
+                    assert!(
+                        holds,
+                        "apt's {slot} runs dpkg without the conffile answer: {parts:?}"
+                    );
+                } else {
+                    assert!(
+                        !parts.iter().any(|t| t.starts_with("Dpkg::Options")),
+                        "apt's {slot} runs no dpkg: {parts:?}"
+                    );
+                }
+            }
         }
     }
-    assert!(apt_slots >= 3, "the apt walk reached {apt_slots} slots");
-}
-
-/// Every apt verb that runs dpkg answers dpkg's conffile question up front,
-/// which neither `-y` nor debconf's frontend does; the index refresh runs no
-/// dpkg and carries neither option.
-#[test]
-fn every_apt_verb_that_runs_dpkg_answers_the_conffile_question() {
-    const CONFFILE: [&str; 4] = [
-        "-o",
-        "Dpkg::Options::=--force-confdef",
-        "-o",
-        "Dpkg::Options::=--force-confold",
-    ];
-    let mgr = apt_manager();
-    let holds = |parts: &[&str]| parts.windows(CONFFILE.len()).any(|w| w == CONFFILE);
-    let mut walked = 0;
-    for (slot, parts) in [
-        ("install_cmd", Some(mgr.install_cmd)),
-        ("uninstall_cmd", Some(mgr.uninstall_cmd)),
-        ("upgrade_cmd", mgr.upgrade_cmd),
-    ] {
-        let Some(parts) = parts else { continue };
-        walked += 1;
-        assert!(
-            holds(parts),
-            "apt's {slot} runs dpkg without the conffile answer: {parts:?}"
-        );
-    }
-    assert!(walked >= 2, "the dpkg walk reached {walked} slots");
-    let update = mgr.update_cmd.expect("apt refreshes its index");
     assert!(
-        !update.iter().any(|t| t.starts_with("Dpkg::Options")),
-        "apt-get update runs no dpkg: {update:?}"
+        apt_dpkg_slots >= 2,
+        "the apt dpkg walk reached {apt_dpkg_slots} slots"
     );
 }
 

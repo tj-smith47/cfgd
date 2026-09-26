@@ -434,9 +434,19 @@ impl PackageManager for SimpleManager {
 
 // --- SimpleManager constructors ---
 
+/// Every family name [`simple_manager`] answers, in one list a caller can
+/// iterate.
+pub(super) const SIMPLE_FAMILIES: &[&str] =
+    &["apt", "dnf", "yum", "apk", "pacman", "zypper", "pkg"];
+
 /// The `SimpleManager` a family name resolves to, for a caller that needs the
 /// family's own command spellings rather than a live provider.
 pub(super) fn simple_manager(name: &str) -> Option<SimpleManager> {
+    // The list is the whole set this answers, so a walk over it reaches every
+    // family a caller can resolve.
+    if !SIMPLE_FAMILIES.contains(&name) {
+        return None;
+    }
     Some(match name {
         "apt" => apt_manager(),
         "dnf" => dnf_manager(),
