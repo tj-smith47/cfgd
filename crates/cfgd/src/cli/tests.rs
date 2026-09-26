@@ -36148,7 +36148,8 @@ fn every_manager_install_the_cli_emits_spells_its_weak_dependency_policy_once() 
     );
     assert_eq!(
         script.install,
-        "DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install -y curl"
+        "DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install -y \
+         -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold curl"
     );
     assert!(
         crate::packages::manager_install_script("brew", &[]).is_none(),

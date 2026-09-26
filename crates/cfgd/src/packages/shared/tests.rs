@@ -2120,7 +2120,8 @@ fn a_provision_planned_via_apt_never_reaches_brew_even_when_brew_is_available() 
         brew.argv_log()
     );
     assert!(
-        apt.argv_log().contains("install -y ripgrep"),
+        apt.argv_log().starts_with("install -y ")
+            && apt.argv_log().trim_end().ends_with(" ripgrep"),
         "the apt arm ran the install: {}",
         apt.argv_log()
     );

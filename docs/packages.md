@@ -33,7 +33,9 @@ apt runs non-interactively: every `apt-get` cfgd starts carries
 `sudo env …` when it elevates), so a package's debconf question or
 needrestart's restart menu never stops an install. For the same reason pkg
 runs with `ASSUME_ALWAYS_YES=yes` and zypper refreshes with
-`--non-interactive`.
+`--non-interactive`. When a package ships a new version of a configuration file
+you edited, apt keeps your edited file, and takes dpkg's default answer in
+every other case.
 
 Package managers that aren't installed on the current system are silently skipped. `cfgd apply --dry-run` shows which managers will be used and which packages will be installed or removed.
 

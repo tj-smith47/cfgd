@@ -1052,6 +1052,40 @@ fn every_family_verb_spawns_with_the_family_env() {
     assert!(apt_slots >= 3, "the apt walk reached {apt_slots} slots");
 }
 
+/// Every apt verb that runs dpkg answers dpkg's conffile question up front,
+/// which neither `-y` nor debconf's frontend does; the index refresh runs no
+/// dpkg and carries neither option.
+#[test]
+fn every_apt_verb_that_runs_dpkg_answers_the_conffile_question() {
+    const CONFFILE: [&str; 4] = [
+        "-o",
+        "Dpkg::Options::=--force-confdef",
+        "-o",
+        "Dpkg::Options::=--force-confold",
+    ];
+    let mgr = apt_manager();
+    let holds = |parts: &[&str]| parts.windows(CONFFILE.len()).any(|w| w == CONFFILE);
+    let mut walked = 0;
+    for (slot, parts) in [
+        ("install_cmd", Some(mgr.install_cmd)),
+        ("uninstall_cmd", Some(mgr.uninstall_cmd)),
+        ("upgrade_cmd", mgr.upgrade_cmd),
+    ] {
+        let Some(parts) = parts else { continue };
+        walked += 1;
+        assert!(
+            holds(parts),
+            "apt's {slot} runs dpkg without the conffile answer: {parts:?}"
+        );
+    }
+    assert!(walked >= 2, "the dpkg walk reached {walked} slots");
+    let update = mgr.update_cmd.expect("apt refreshes its index");
+    assert!(
+        !update.iter().any(|t| t.starts_with("Dpkg::Options")),
+        "apt-get update runs no dpkg: {update:?}"
+    );
+}
+
 /// `zypper refresh` takes no `-y`, so the global `--non-interactive` is the
 /// only thing between a new repository key and a trust prompt waiting on
 /// stdin. Install and remove carry `-y`, zypper's alias for the same switch.

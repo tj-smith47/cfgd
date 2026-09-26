@@ -479,8 +479,30 @@ pub(super) fn apt_manager() -> SimpleManager {
     SimpleManager {
         mgr_name: "apt",
         list_cmd: &["dpkg-query", "-W", "-f", "${Package}\n"],
-        install_cmd: &["sudo", "apt-get", "install", "-y"],
-        uninstall_cmd: &["sudo", "apt-get", "remove", "-y"],
+        // dpkg asks what to do with a configuration file the admin edited, a
+        // question neither `-y` nor debconf answers: confdef takes dpkg's default
+        // answer where one exists, and confold keeps the edited file where none
+        // does.
+        install_cmd: &[
+            "sudo",
+            "apt-get",
+            "install",
+            "-y",
+            "-o",
+            "Dpkg::Options::=--force-confdef",
+            "-o",
+            "Dpkg::Options::=--force-confold",
+        ],
+        uninstall_cmd: &[
+            "sudo",
+            "apt-get",
+            "remove",
+            "-y",
+            "-o",
+            "Dpkg::Options::=--force-confdef",
+            "-o",
+            "Dpkg::Options::=--force-confold",
+        ],
         update_cmd: Some(&["sudo", "apt-get", "update"]),
         upgrade_cmd: None,
         raise_verb: "install",
