@@ -27,6 +27,12 @@ curl -fsSL https://github.com/tj-smith47/cfgd/releases/latest/download/install.s
 The script detects the OS and architecture, downloads the matching tarball,
 verifies the SHA256 + cosign signature, and drops the `cfgd` binary into
 `/usr/local/bin` (or `~/.local/bin` if `/usr/local/bin` isn't writable).
+`CFGD_INSTALL_DIR` names another directory; the script creates it when it does
+not exist yet, through `sudo` when your user cannot.
+
+```sh
+curl -fsSL https://github.com/tj-smith47/cfgd/releases/latest/download/install.sh | CFGD_INSTALL_DIR="$HOME/bin" sh
+```
 
 ### Cargo (any platform with a Rust toolchain)
 

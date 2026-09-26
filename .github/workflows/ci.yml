@@ -114,6 +114,12 @@ jobs:
         shell: bash
         run: task test:ci
 
+      # The installer runs under each OS's own sh (dash, macOS sh, Git Bash);
+      # its directory checks run here so every one of them executes the script.
+      - name: Installer checks
+        shell: bash
+        run: task installer:test
+
   test-thread-model:
     name: Tests (thread model)
     runs-on: ubuntu-latest
@@ -196,6 +202,7 @@ jobs:
             set -e
             . "$HOME/.cargo/env"
             task test:ci
+            task installer:test
             # The npm prefix fallback's unit pins inject both elevation and the
             # write-probe, so only a real host proves it: a non-root user, the
             # real www/npm whose configured prefix is the root-owned

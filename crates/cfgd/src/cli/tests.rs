@@ -47922,15 +47922,24 @@ fn every_resolved_and_show_values_flag_reads_one_help() {
     );
 }
 
-/// A real-host script proves what no unit pin can, and only while something
-/// runs it. Each is named by a Taskfile target and that target by a workflow
-/// step, so deleting either half fails here rather than silently retiring the
-/// proof its doc page promises.
+/// A host script proves what no unit pin can, and only while something runs
+/// it. Each is named by a Taskfile target and that target by a workflow step,
+/// so deleting either half fails here; without the check the proof its doc
+/// page promises would stop running with no failure anywhere.
 #[test]
-fn every_real_host_script_is_reachable_from_ci() {
+fn every_host_script_proof_is_reachable_from_ci() {
     /// The workflows present today; a directory reading fewer went blind or
     /// lost a file the scripts may have been reached through.
     const WORKFLOW_FLOOR: usize = 8;
+    /// Every directory holding script proofs, with the file-name prefix a proof
+    /// carries there (`""` where every `.sh` is one). `tests/e2e/common` also
+    /// holds the helpers the suites source, which prove nothing on their own.
+    const PROOF_DIRS: [(&str, &str); 4] = [
+        ("tests/real-host", ""),
+        ("scripts/tests", ""),
+        ("chart/cfgd/tests", ""),
+        ("tests/e2e/common", "test-"),
+    ];
     let root = cfgd_core::test_helpers::workspace_root();
     let taskfile = walked_file_body(&root.join("Taskfile.yml"));
     let entries_of = |dir: &std::path::Path| -> Vec<std::path::PathBuf> {
@@ -47955,21 +47964,25 @@ fn every_real_host_script_is_reachable_from_ci() {
         "the walk read {} workflows, fewer than the {WORKFLOW_FLOOR} the directory holds",
         workflows.len()
     );
-    let scripts: Vec<std::path::PathBuf> = entries_of(&root.join("tests/real-host"))
-        .into_iter()
-        .filter(|p| p.extension().is_some_and(|x| x == "sh"))
-        .collect();
-    assert!(
-        !scripts.is_empty(),
-        "the walk read no real-host script, so it judges nothing"
-    );
-    let mut offenders = Vec::new();
-    for script in &scripts {
-        let rel = format!(
-            "tests/real-host/{}",
-            script.file_name().unwrap_or_default().to_string_lossy()
+    let mut scripts: Vec<String> = Vec::new();
+    for (dir, prefix) in PROOF_DIRS {
+        let found: Vec<String> = entries_of(&root.join(dir))
+            .into_iter()
+            .filter(|p| p.extension().is_some_and(|x| x == "sh"))
+            .filter_map(|p| {
+                let name = p.file_name()?.to_string_lossy().into_owned();
+                name.starts_with(prefix).then(|| format!("{dir}/{name}"))
+            })
+            .collect();
+        assert!(
+            !found.is_empty(),
+            "the walk read no script proof in {dir}, so it judges nothing there"
         );
-        match target_naming(&taskfile, &rel) {
+        scripts.extend(found);
+    }
+    let mut offenders = Vec::new();
+    for rel in &scripts {
+        match target_naming(&taskfile, rel) {
             None => offenders.push(format!("{rel}: no Taskfile target runs it")),
             Some(target) => {
                 if !workflows.iter().any(|w| runs_task(w, &target)) {
@@ -47980,7 +47993,7 @@ fn every_real_host_script_is_reachable_from_ci() {
     }
     assert!(
         offenders.is_empty(),
-        "a real-host proof nothing runs: {offenders:?}"
+        "a script proof nothing runs: {offenders:?}"
     );
 }
 
@@ -48899,12 +48912,16 @@ fn yaml_code(line: &str) -> &str {
 /// The Taskfile target whose body names `rel`: the nearest two-space-indented
 /// `<name>:` header above the first uncommented line naming the script, both
 /// searched below `tasks:` so a key under the top-level `vars:` or `env:` is
-/// never taken for a target. Read off the file rather than a table, so
-/// renaming a target moves the pin with it.
+/// never taken for a target. A `desc:` line naming the script runs nothing, so
+/// it is skipped. The target is read off the file itself, so renaming a target
+/// moves the check with it.
 fn target_naming(taskfile: &str, rel: &str) -> Option<String> {
     let lines: Vec<&str> = taskfile.lines().map(yaml_code).collect();
     let tasks = lines.iter().position(|l| l.trim_end() == "tasks:")? + 1;
-    let at = tasks + lines[tasks..].iter().position(|l| l.contains(rel))?;
+    let at = tasks
+        + lines[tasks..]
+            .iter()
+            .position(|l| l.contains(rel) && !l.trim_start().starts_with("desc:"))?;
     lines[tasks..at].iter().rev().find_map(|l| {
         let trimmed = l.strip_prefix("  ")?.trim_end();
         (!trimmed.starts_with(' ') && trimmed.ends_with(':'))

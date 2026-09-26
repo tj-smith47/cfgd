@@ -136,19 +136,26 @@ resolve_asset() {
 # --- Install Directory ---
 
 resolve_install_dir() {
-    if [ -n "$INSTALL_DIR" ]; then
-        echo "$INSTALL_DIR"
-        return
+    local dir="$INSTALL_DIR"
+    if [ -z "$dir" ]; then
+        # Prefer /usr/local/bin if writable, otherwise ~/.local/bin
+        if [ -w /usr/local/bin ]; then
+            dir="/usr/local/bin"
+        else
+            dir="${HOME}/.local/bin"
+        fi
     fi
 
-    # Prefer /usr/local/bin if writable, otherwise ~/.local/bin
-    if [ -w /usr/local/bin ]; then
-        echo "/usr/local/bin"
-    else
-        local_bin="${HOME}/.local/bin"
-        mkdir -p "$local_bin"
-        echo "$local_bin"
+    # The install step copies into this directory, and CFGD_INSTALL_DIR may name
+    # one that does not exist yet. A directory the user cannot create takes the
+    # same sudo route the copy takes into a directory the user cannot write.
+    if [ "$DRY_RUN" != true ] && [ ! -d "$dir" ]; then
+        mkdir -p "$dir" 2>/dev/null || sudo mkdir -p "$dir" || {
+            error "Cannot create install directory ${dir}"
+            exit 1
+        }
     fi
+    echo "$dir"
 }
 
 # --- Download ---

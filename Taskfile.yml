@@ -193,7 +193,7 @@ tasks:
           echo "==> syncing tree to {{.HOST}}:cfgd"
           rsync -a --delete --exclude target --exclude '*.log' ./ {{.HOST}}:cfgd/
           echo "==> task test:ci on {{.HOST}}"
-          ssh {{.HOST}} '. "$HOME/.cargo/env"; cd cfgd && task test:ci'
+          ssh {{.HOST}} '. "$HOME/.cargo/env"; cd cfgd && task test:ci && task installer:test'
           if [ -n "{{.SHUTDOWN}}" ]; then
             echo "==> powering off FreeBSD VM {{.VMID}}"
             ssh {{.HOST}} 'shutdown -p now' || true
@@ -270,6 +270,11 @@ tasks:
     desc: Render the chart's operator Deployment per case and compare its update strategy and readiness probe with chart/cfgd/tests/golden (UPDATE=1 rewrites the goldens).
     cmds:
       - bash chart/cfgd/tests/render.sh
+
+  installer:test:
+    desc: Run the installer's install-directory checks (scripts/tests/test-install-dir.sh) against scratch directories; no download, no root.
+    cmds:
+      - sh scripts/tests/test-install-dir.sh
 
   e2e:tags:check:
     desc: Verify the e2e image tag map resolves each image to IMAGE_TAG or its own override, and that no e2e script composes an image reference outside common/helpers.sh (no cluster needed).
@@ -633,6 +638,7 @@ tasks:
       - task: chart:tags:check
       - task: chart:test
       - task: e2e:tags:check
+      - task: installer:test
       - task: test
       - task: test:threads
       - task: audit

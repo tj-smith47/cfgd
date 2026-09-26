@@ -115,10 +115,18 @@ single-source-of-truth wiring.
   because the synced workspace keeps the runner's uid while the tests run as
   root, and git refuses to read a repository another uid owns (the demo pin
   runs `git ls-files` on the workspace); no protoc (neither in-scope
-  crate compiles protos). The `run:` block opens on `set -e`: it holds three
-  commands now, the guest script's shell flags are the action's rather than
-  GitHub's, and without the abort a failing `task test:ci` is followed by a
+  crate compiles protos). The `run:` block opens on `set -e`: it holds several
+  commands, the guest script takes the action's shell flags (GitHub's
+  `bash -e` default does not apply there), and without the abort a failing `task test:ci` is followed by a
   passing build and the leg reports green on red tests.
+- Every test leg (the ubuntu/macos/windows `test` matrix and the FreeBSD
+  guest) runs `task installer:test` after `task test:ci`:
+  `scripts/tests/test-install-dir.sh` lifts `resolve_install_dir` out of
+  `scripts/install.sh.tpl` and runs it under that OS's own `sh`, the shell a
+  `curl | sh` install runs there. `task ci` and `task test:freebsd` run it
+  too. `every_host_script_proof_is_reachable_from_ci` fails when a script
+  under `tests/real-host/`, `scripts/tests/` or `chart/cfgd/tests/`, or a
+  `tests/e2e/common/test-*.sh`, has no Taskfile target a workflow runs.
 - After `task test:ci` that same guest builds `--bin cfgd` and runs
   `task test:freebsd:npm-prefix`, the real-host proof of the unprivileged npm
   global-prefix fallback documented in `docs/packages.md`: the unit pins
