@@ -108,6 +108,20 @@ fi
 grep -q "Cannot create install directory $blocked" "$scratch/stderr" \
     || fail "a directory nothing can create: stderr does not name it: $(cat "$scratch/stderr")"
 
+# A dry run into a directory that does not exist yet says it would create it.
+# resolve_asset is stubbed: the dry run prints the asset URLs and fetches none.
+printf '%s\n%s\n%s\n' "$(function_body info)" "$(function_body download_and_install)" \
+    'resolve_asset() { ARCHIVE=cfgd.tar.gz; }' > "$scratch/dry-install.sh"
+dry_out="$(DRY_RUN=true REPO=o/r VERSION=v0 sh -c '. "$1"; download_and_install linux x86_64 "$2"' \
+    sh "$scratch/dry-install.sh" "$scratch/dry/bin")" || fail "a dry run's plan: download_and_install failed"
+case "$dry_out" in
+    *"Would create $scratch/dry/bin"*) ;;
+    *) fail "a dry run's plan does not say it would create $scratch/dry/bin: $dry_out" ;;
+esac
+case "$dry_out" in
+    *"Would require sudo"*) fail "a dry run's plan claims sudo for a directory that does not exist yet: $dry_out" ;;
+esac
+
 if [ "$failures" -ne 0 ]; then
     printf '%d install directory check(s) failed\n' "$failures" >&2
     exit 1

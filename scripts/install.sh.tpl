@@ -218,7 +218,9 @@ download_and_install() {
         info "[dry-run] Would verify checksum from ${base_url}/${checksum_name}"
         info "[dry-run] Would verify cosign signature from ${base_url}/${bundle_name} (if cosign installed)"
         info "[dry-run] Would extract and install cfgd to ${dest_dir}/${bin}"
-        if [ ! -w "$dest_dir" ]; then
+        if [ ! -d "$dest_dir" ]; then
+            info "[dry-run] Would create ${dest_dir}"
+        elif [ ! -w "$dest_dir" ]; then
             info "[dry-run] Would require sudo for ${dest_dir}"
         fi
         return
