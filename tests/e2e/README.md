@@ -16,12 +16,14 @@ each `task e2e:<suite>` target runs one suite.
 | `FUNCTION_IMAGE_TAG` | `IMAGE_TAG` | Tag of `function-cfgd` (Crossplane function) |
 
 A release tags each image at its own crate's version, so a released set needs the
-per-image overrides (`function-cfgd` is published at no release tag, so the
-Crossplane suite still needs an e2e build). To run the suites against the images one release published:
+per-image overrides. `function-cfgd` is tagged with the cfgd version behind a `v`
+prefix, which the other three images do not carry. To run the suites against the
+images one release published:
 
 ```bash
 export REGISTRY=ghcr.io/tj-smith47
 export CFGD_IMAGE_TAG=0.11.0 OPERATOR_IMAGE_TAG=0.9.0 CSI_IMAGE_TAG=0.7.2
+export FUNCTION_IMAGE_TAG=v0.11.0
 # Setup builds and pushes every image; skip it so the published tags stay as released.
 export CFGD_E2E_SETUP_DONE=1
 task e2e:operator

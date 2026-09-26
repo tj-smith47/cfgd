@@ -56,11 +56,11 @@ for target in "${images[@]}"; do
     done
 done
 
-released=(CFGD_IMAGE_TAG=0.11.0 OPERATOR_IMAGE_TAG=0.9.0 CSI_IMAGE_TAG=0.7.2)
+released=(CFGD_IMAGE_TAG=0.11.0 OPERATOR_IMAGE_TAG=0.9.0 CSI_IMAGE_TAG=0.7.2 FUNCTION_IMAGE_TAG=v0.11.0)
 expect "released set" cfgd "$registry/cfgd:0.11.0" "${released[@]}"
 expect "released set" cfgd-operator "$registry/cfgd-operator:0.9.0" "${released[@]}"
 expect "released set" cfgd-csi "$registry/cfgd-csi:0.7.2" "${released[@]}"
-expect "released set" function-cfgd "$registry/function-cfgd:base" "${released[@]}"
+expect "released set" function-cfgd "$registry/function-cfgd:v0.11.0" "${released[@]}"
 
 if resolve not-an-image >/dev/null 2>&1; then
     echo "FAIL  unknown image: resolved instead of failing"
