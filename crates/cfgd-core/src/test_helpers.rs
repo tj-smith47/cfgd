@@ -2511,9 +2511,9 @@ impl<'a> ShimArm<'a> {
 
 /// Write an executable stand-in for an external tool into `dir` and return the
 /// path to invoke it by. Every invocation appends its space-joined argv as one
-/// line to `<dir>/argv.log` and overwrites `<dir>/env.log` with the environment
-/// it was spawned with, then the first matching [`ShimArm`] decides what the
-/// shim writes and what it exits with.
+/// line to `<dir>/argv.log` (and, on Unix, overwrites `<dir>/env.log` with the
+/// environment it was spawned with), then the first matching [`ShimArm`]
+/// decides what the shim writes and what it exits with.
 ///
 /// Two arms, one per host family, with identical observable behaviour:
 ///
@@ -2586,11 +2586,7 @@ pub fn write_tool_shim(dir: &Path, name: &str, arms: &[ShimArm<'_>]) -> std::pat
     {
         // `echo(` (rather than `echo `) prints an empty line for an empty
         // argv instead of `ECHO is off.`.
-        let mut script = format!(
-            "@echo off\r\n>>\"{}\" echo(%*\r\nset >\"{}\"\r\n",
-            log_path.display(),
-            dir.join("env.log").display()
-        );
+        let mut script = format!("@echo off\r\n>>\"{}\" echo(%*\r\n", log_path.display());
         let emit = |script: &mut String, arm: &ShimArm<'_>, idx: usize| {
             for (stream, body, redirect) in [("out", arm.stdout, ""), ("err", arm.stderr, " 1>&2")]
             {
@@ -2723,6 +2719,7 @@ impl ToolShim {
 
     /// The value `key` held in the environment of the shim's latest
     /// invocation, `None` when it was unset there or nothing ran the shim.
+    #[cfg(unix)]
     pub fn env_seen(&self, key: &str) -> Option<String> {
         let env_log = self.log_path.with_file_name("env.log");
         // absent-file-ok: a shim nothing ran recorded no environment.
