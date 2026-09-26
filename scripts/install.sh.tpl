@@ -221,12 +221,17 @@ download_and_install() {
         if [ ! -d "$dest_dir" ]; then
             # The real run creates the directory as whoever can write its nearest
             # existing parent: through sudo when that is not the user, and the
-            # copy into a directory sudo created needs sudo too.
+            # copy into a directory sudo created needs sudo too. A file standing
+            # on the path makes the real run's mkdir fail, so the plan refuses
+            # the same way.
             local parent="$dest_dir"
-            while [ ! -d "$parent" ]; do
+            while [ ! -e "$parent" ]; do
                 parent="$(dirname "$parent")"
             done
-            if [ -w "$parent" ]; then
+            if [ ! -d "$parent" ]; then
+                error "Cannot create install directory ${dest_dir}"
+                exit 1
+            elif [ -w "$parent" ]; then
                 info "[dry-run] Would create ${dest_dir}"
             else
                 info "[dry-run] Would create ${dest_dir} (requires sudo)"

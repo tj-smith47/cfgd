@@ -110,7 +110,7 @@ grep -q "Cannot create install directory $blocked" "$scratch/stderr" \
 
 # A dry run into a directory that does not exist yet says it would create it.
 # resolve_asset is stubbed: the dry run prints the asset URLs and fetches none.
-printf '%s\n%s\n%s\n' "$(function_body info)" "$(function_body download_and_install)" \
+printf '%s\n%s\n%s\n%s\n' "$(function_body info)" "$(function_body error)" "$(function_body download_and_install)" \
     'resolve_asset() { ARCHIVE=cfgd.tar.gz; }' > "$scratch/dry-install.sh"
 dry_out="$(DRY_RUN=true REPO=o/r VERSION=v0 sh -c '. "$1"; download_and_install linux x86_64 "$2"' \
     sh "$scratch/dry-install.sh" "$scratch/dry/bin")" || fail "a dry run's plan: download_and_install failed"
@@ -121,6 +121,16 @@ esac
 case "$dry_out" in
     *"Would require sudo"*) fail "a dry run's plan claims sudo for a directory that does not exist yet: $dry_out" ;;
 esac
+
+# A file standing where a parent directory should be fails the dry run with the
+# refusal the real run gives above, so the plan never promises a directory the
+# install cannot create.
+if dry_out="$(DRY_RUN=true REPO=o/r VERSION=v0 sh -c '. "$1"; download_and_install linux x86_64 "$2"' \
+    sh "$scratch/dry-install.sh" "$blocked" 2> "$scratch/dry-stderr")"; then
+    fail "a dry run under a file: download_and_install succeeded: $dry_out"
+fi
+grep -q "Cannot create install directory $blocked" "$scratch/dry-stderr" \
+    || fail "a dry run under a file: stderr does not name it: $(cat "$scratch/dry-stderr")"
 
 # A missing directory whose nearest existing parent the user cannot write is
 # created through sudo, and the copy into it needs sudo too; the plan says both.
