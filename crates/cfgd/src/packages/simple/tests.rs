@@ -722,6 +722,58 @@ mod seam_tests {
         assert!(log.contains("-y"));
     }
 
+    /// The bare shape of every apt spawn — root, or this seam — hands debconf's
+    /// and needrestart's switches to apt-get through the environment, read
+    /// back from what the shim itself was spawned with. Each spawn path is
+    /// driven: install, uninstall, the index refresh, and the mediated
+    /// bootstrap's install.
+    #[test]
+    #[serial]
+    fn apt_spawns_hand_their_env_to_the_tool_on_the_bare_shape() {
+        let _clear: Vec<_> = ["DEBIAN_FRONTEND", "NEEDRESTART_MODE"]
+            .into_iter()
+            .map(cfgd_core::test_helpers::EnvVarGuard::unset)
+            .collect();
+        let printer = test_printer();
+        let state = test_state();
+        let cx = test_package_context(&printer, &state);
+
+        let shim = ToolShim::install(APT_GET_BIN_ENV, 0, "", "");
+        let apt = apt_manager();
+        let spawns: [(&str, &dyn Fn()); 4] = [
+            ("install", &|| apt.install(&["curl".into()], &cx).unwrap()),
+            ("uninstall", &|| {
+                apt.uninstall(&["curl".into()], &cx).unwrap()
+            }),
+            ("refresh_index", &|| apt.refresh_index(&cx).unwrap()),
+            ("family_install_command", &|| {
+                let status = super::super::family_install_command("apt", &["curl"])
+                    .expect("apt composes an install")
+                    .status()
+                    .expect("the shim spawns");
+                assert!(status.success());
+            }),
+        ];
+        for (n, (path, spawn)) in spawns.into_iter().enumerate() {
+            spawn();
+            assert_eq!(
+                shim.invocation_count(),
+                n + 1,
+                "{path} spawned apt-get once"
+            );
+            assert_eq!(
+                shim.env_seen("DEBIAN_FRONTEND").as_deref(),
+                Some("noninteractive"),
+                "{path}"
+            );
+            assert_eq!(
+                shim.env_seen("NEEDRESTART_MODE").as_deref(),
+                Some("a"),
+                "{path}"
+            );
+        }
+    }
+
     #[test]
     #[serial]
     fn zypper_uninstall_invokes_zypper_remove() {
@@ -893,4 +945,102 @@ fn every_unix_family_declares_the_privilege_its_install_needs() {
             );
         }
     }
+}
+
+/// The sudo shape of an apt command, judged on the argv left after the `sudo`
+/// strip so it holds at either uid: sudo resets the environment, so the
+/// switches ride the argv through `env(1)`. Once `sudo` is gone the argv is the
+/// declaration itself, and the Command carries the switches instead.
+#[test]
+fn apt_spells_its_noninteractive_env_through_sudo_env() {
+    let mgr = apt_manager();
+    assert_eq!(
+        join_cmd(
+            &mgr.argv_after_strip(&["sudo", "apt-get", "install", "-y"]),
+            &["curl".to_string(), "wget".to_string()],
+        ),
+        "sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install -y curl wget"
+    );
+    assert_eq!(
+        mgr.argv_after_strip(&["apt-get", "install", "-y"]),
+        ["apt-get", "install", "-y"]
+    );
+}
+
+/// Every verb slot of every family spawns with the family's environment, the
+/// label printing exactly the argv spawned. The expected environment is named
+/// per family here, so a family gaining or losing a prompt its flags do not
+/// answer changes this table, and a verb slot added to the apt family (or any
+/// other) is walked with no edit.
+#[test]
+#[serial_test::serial]
+fn every_family_verb_spawns_with_the_family_env() {
+    let apt: &[(&str, &str)] = &[
+        ("DEBIAN_FRONTEND", "noninteractive"),
+        ("NEEDRESTART_MODE", "a"),
+    ];
+    type FamilyEnv = (
+        &'static str,
+        &'static str,
+        &'static [(&'static str, &'static str)],
+    );
+    let families: [FamilyEnv; 7] = [
+        ("apt", APT_GET_BIN_ENV, apt),
+        ("dnf", DNF_BIN_ENV, &[]),
+        ("yum", YUM_BIN_ENV, &[]),
+        ("apk", APK_BIN_ENV, &[]),
+        ("pacman", PACMAN_BIN_ENV, &[]),
+        ("zypper", ZYPPER_BIN_ENV, &[]),
+        ("pkg", PKG_BIN_ENV, &[]),
+    ];
+    let _seams: Vec<_> = families
+        .iter()
+        .map(|(_, seam, _)| cfgd_core::test_helpers::EnvVarGuard::unset(seam))
+        .collect();
+    let mut apt_slots = 0;
+    for (name, _, env) in families {
+        let mgr = simple_manager(name).unwrap_or_else(|| panic!("{name} is a family"));
+        assert_eq!(mgr.env, env, "{name}'s declared environment");
+        for (slot, parts) in [
+            ("install_cmd", Some(mgr.install_cmd)),
+            ("uninstall_cmd", Some(mgr.uninstall_cmd)),
+            ("update_cmd", mgr.update_cmd),
+            ("upgrade_cmd", mgr.upgrade_cmd),
+        ] {
+            let Some(parts) = parts else { continue };
+            if name == "apt" {
+                apt_slots += 1;
+            }
+            let under_sudo = mgr.argv_after_strip(parts);
+            let mut expected: Vec<String> = Vec::new();
+            if !env.is_empty() {
+                expected.push("sudo".into());
+                expected.push("env".into());
+                expected.extend(env.iter().map(|(k, v)| format!("{k}={v}")));
+                expected.extend(parts[1..].iter().map(|s| s.to_string()));
+            } else {
+                expected.extend(parts.iter().map(|s| s.to_string()));
+            }
+            assert_eq!(under_sudo, expected, "{name}'s {slot} under sudo");
+
+            let cmd = mgr.spawn_command(parts);
+            let envs: Vec<_> = cmd.get_envs().collect();
+            for (k, v) in env {
+                assert!(
+                    envs.contains(&(std::ffi::OsStr::new(k), Some(std::ffi::OsStr::new(v)))),
+                    "{name}'s {slot} spawns without {k}={v}: {envs:?}"
+                );
+            }
+            let spawned: Vec<String> = std::iter::once(cmd.get_program())
+                .chain(cmd.get_args())
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect();
+            assert_eq!(
+                mgr.display_cmd(parts, &[]),
+                spawned.join(" "),
+                "{name}'s {slot} label must print the argv it spawns"
+            );
+        }
+    }
+    assert!(apt_slots >= 3, "the apt walk reached {apt_slots} slots");
 }

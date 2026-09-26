@@ -615,12 +615,12 @@ fn extract_caveats_brew_caveats_only_blank_lines() {
 #[test]
 fn sudo_cmd_builds_correct_command_structure() {
     // sudo_cmd should prepend sudo when not root, or run directly when root
-    let cmd = sudo_cmd("apt-get");
+    let cmd = sudo_cmd("snap");
     let prog = format!("{:?}", cmd.get_program());
     if cfgd_core::is_root() {
         assert!(
-            prog.contains("apt-get"),
-            "as root, program should be apt-get, got: {}",
+            prog.contains("snap"),
+            "as root, program should be snap, got: {}",
             prog
         );
     } else {

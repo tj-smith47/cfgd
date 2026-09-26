@@ -36142,8 +36142,14 @@ fn every_manager_install_the_cli_emits_spells_its_weak_dependency_policy_once() 
     // the family's declared commands, sudo stripped for a container build.
     let script = crate::packages::manager_install_script("apt", &["curl".to_string()])
         .expect("apt is a data-driven family");
-    assert_eq!(script.update.as_deref(), Some("apt-get update"));
-    assert_eq!(script.install, "apt-get install -y curl");
+    assert_eq!(
+        script.update.as_deref(),
+        Some("DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get update")
+    );
+    assert_eq!(
+        script.install,
+        "DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install -y curl"
+    );
     assert!(
         crate::packages::manager_install_script("brew", &[]).is_none(),
         "only the data-driven system families answer here"

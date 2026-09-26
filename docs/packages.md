@@ -28,6 +28,11 @@ cfgd manages packages across 18 package managers (Homebrew manages taps, formula
 Every family whose command above opens on `sudo` leads every command it builds
 with it. cfgd drops the `sudo` when it already runs as root.
 
+apt runs non-interactively: every `apt-get` cfgd starts carries
+`DEBIAN_FRONTEND=noninteractive` and `NEEDRESTART_MODE=a` (through
+`sudo env …` when it elevates), so a package's debconf question or
+needrestart's restart menu never stops an install.
+
 Package managers that aren't installed on the current system are silently skipped. `cfgd apply --dry-run` shows which managers will be used and which packages will be installed or removed.
 
 ## npm global-install prefix
