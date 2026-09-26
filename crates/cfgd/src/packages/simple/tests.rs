@@ -978,8 +978,8 @@ fn apt_spells_its_noninteractive_env_through_sudo_env() {
 /// slot that runs dpkg answers dpkg's conffile question up front while the
 /// index refresh, which runs no dpkg, carries neither option.
 ///
-/// The families come from the same list `simple_manager` answers, and each
-/// needs a row in the table below, so a new family fails here until its
+/// The families come from the table `simple_manager` resolves from, and each
+/// needs a row in the environment table below, so a new family fails here until its
 /// environment is named. `SimpleManager` is destructured with no `..`, so a new
 /// field fails to compile here until it is sorted into a walked verb slot or
 /// bound to `_` with the reason it takes no part.
@@ -1008,7 +1008,13 @@ fn every_family_verb_spawns_with_the_family_env() {
 
     let managers: Vec<SimpleManager> = SIMPLE_FAMILIES
         .iter()
-        .map(|name| simple_manager(name).unwrap_or_else(|| panic!("{name} resolves")))
+        .map(|(family, build)| {
+            let mgr = build();
+            assert_eq!(mgr.mgr_name, *family, "a table row names its own manager");
+            let resolved = simple_manager(family).unwrap_or_else(|| panic!("{family} resolves"));
+            assert_eq!(resolved.mgr_name, *family);
+            mgr
+        })
         .collect();
     let _seams: Vec<_> = managers
         .iter()
