@@ -132,6 +132,22 @@ fi
 grep -q "Cannot create install directory $blocked" "$scratch/dry-stderr" \
     || fail "a dry run under a file: stderr does not name it: $(cat "$scratch/dry-stderr")"
 
+# A dangling symlink where a parent directory should be: the install's mkdir
+# cannot create through it, and the dry run refuses with the same words.
+ln -s "$scratch/nowhere" "$scratch/dangling"
+dangling="$scratch/dangling/bin"
+if got="$(SUDO_EXIT=1 resolve "$dangling" "$missing_system" false "$shim" 2> "$scratch/stderr")"; then
+    fail "a directory under a dangling link: resolve_install_dir succeeded, echoing '$got'"
+fi
+grep -q "Cannot create install directory $dangling" "$scratch/stderr" \
+    || fail "a directory under a dangling link: stderr does not name it: $(cat "$scratch/stderr")"
+if dry_out="$(DRY_RUN=true REPO=o/r VERSION=v0 sh -c '. "$1"; download_and_install linux x86_64 "$2"' \
+    sh "$scratch/dry-install.sh" "$dangling" 2> "$scratch/dry-stderr")"; then
+    fail "a dry run under a dangling link: download_and_install succeeded: $dry_out"
+fi
+grep -q "Cannot create install directory $dangling" "$scratch/dry-stderr" \
+    || fail "a dry run under a dangling link: stderr does not name it: $(cat "$scratch/dry-stderr")"
+
 # A missing directory whose nearest existing parent the user cannot write is
 # created through sudo, and the copy into it needs sudo too; the plan says both.
 # Root ignores mode bits (the FreeBSD guest runs this as root), so the case only

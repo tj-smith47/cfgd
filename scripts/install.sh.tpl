@@ -222,10 +222,12 @@ download_and_install() {
             # The real run creates the directory as whoever can write its nearest
             # existing parent: through sudo when that is not the user, and the
             # copy into a directory sudo created needs sudo too. A file standing
-            # on the path makes the real run's mkdir fail, so the plan refuses
-            # the same way.
+            # or a dangling symlink on the path makes the real run's mkdir fail,
+            # so the plan refuses the same way.
             local parent="$dest_dir"
-            while [ ! -e "$parent" ]; do
+            # `-e` follows a symlink, so a dangling one would read as absent and
+            # the walk would pass it; mkdir cannot create through it either.
+            while [ ! -e "$parent" ] && [ ! -L "$parent" ]; do
                 parent="$(dirname "$parent")"
             done
             if [ ! -d "$parent" ]; then
