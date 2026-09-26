@@ -726,11 +726,11 @@ mod seam_tests {
     /// and needrestart's switches to apt-get through the environment, read
     /// back from what the shim itself was spawned with. Each spawn path is
     /// driven: install, uninstall, the index refresh, and the mediated
-    /// bootstrap's install.
+    /// bootstrap's install. pkg's bootstrap switch is read the same way.
     #[test]
     #[serial]
-    fn apt_spawns_hand_their_env_to_the_tool_on_the_bare_shape() {
-        let _clear: Vec<_> = ["DEBIAN_FRONTEND", "NEEDRESTART_MODE"]
+    fn apt_and_pkg_spawns_hand_their_env_to_the_tool_on_the_bare_shape() {
+        let _clear: Vec<_> = ["DEBIAN_FRONTEND", "NEEDRESTART_MODE", "ASSUME_ALWAYS_YES"]
             .into_iter()
             .map(cfgd_core::test_helpers::EnvVarGuard::unset)
             .collect();
@@ -772,6 +772,12 @@ mod seam_tests {
                 "{path}"
             );
         }
+        drop(shim);
+
+        let shim = ToolShim::install(PKG_BIN_ENV, 0, "", "");
+        pkg_manager().refresh_index(&cx).unwrap();
+        assert_eq!(shim.invocation_count(), 1);
+        assert_eq!(shim.env_seen("ASSUME_ALWAYS_YES").as_deref(), Some("yes"));
     }
 
     #[test]
@@ -979,6 +985,7 @@ fn every_family_verb_spawns_with_the_family_env() {
         ("DEBIAN_FRONTEND", "noninteractive"),
         ("NEEDRESTART_MODE", "a"),
     ];
+    let pkg: &[(&str, &str)] = &[("ASSUME_ALWAYS_YES", "yes")];
     type FamilyEnv = (
         &'static str,
         &'static str,
@@ -991,7 +998,7 @@ fn every_family_verb_spawns_with_the_family_env() {
         ("apk", APK_BIN_ENV, &[]),
         ("pacman", PACMAN_BIN_ENV, &[]),
         ("zypper", ZYPPER_BIN_ENV, &[]),
-        ("pkg", PKG_BIN_ENV, &[]),
+        ("pkg", PKG_BIN_ENV, pkg),
     ];
     let _seams: Vec<_> = families
         .iter()

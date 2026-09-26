@@ -97,7 +97,7 @@ pub struct SimpleManager {
     pub(super) ignore_update_exit: bool,
     /// Variables every command of the family carries, for a prompt the
     /// family's `-y` / `--noconfirm` flag does not answer (apt's debconf and
-    /// needrestart questions). Empty for a
+    /// needrestart questions, pkg(7)'s bootstrap confirmation). Empty for a
     /// family whose flags already cover every prompt.
     pub(super) env: &'static [(&'static str, &'static str)],
     pub(super) parse_list: fn(&str) -> HashSet<String>,
@@ -471,6 +471,10 @@ pub(super) const APT_ENV: &[(&str, &str)] = &[
     ("NEEDRESTART_MODE", "a"),
 ];
 
+/// pkg(7), the stub a fresh FreeBSD ships, asks before fetching pkg(8) on the
+/// first command, and `pkg update` has no `-y` to answer it.
+pub(super) const PKG_ENV: &[(&str, &str)] = &[("ASSUME_ALWAYS_YES", "yes")];
+
 pub(super) fn apt_manager() -> SimpleManager {
     SimpleManager {
         mgr_name: "apt",
@@ -614,7 +618,7 @@ pub(super) fn pkg_manager() -> SimpleManager {
         upgrade_cmd: None,
         raise_verb: "install",
         ignore_update_exit: false,
-        env: &[],
+        env: PKG_ENV,
         parse_list: parse_pkg_lines,
         query_version: query_version_pkg,
         is_available_fn: None,
