@@ -856,7 +856,9 @@ pub enum UpgradeError {
     ApiError { message: String },
 
     #[error(
-        "GitHub API rate limit of {limit} requests is used up until {reset_at}; set GITHUB_TOKEN or GH_TOKEN to a GitHub token to raise it"
+        "GitHub API rate limit of {limit} requests is used up until {reset_at}; set {} or {} to a GitHub token to raise it",
+        crate::upgrade::GITHUB_TOKEN_VARS[0],
+        crate::upgrade::GITHUB_TOKEN_VARS[1]
     )]
     RateLimited { limit: u64, reset_at: String },
 

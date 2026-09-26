@@ -1280,8 +1280,7 @@ fn query_with(
     status: usize,
     headers: MockHeaders,
 ) -> Result<ReleaseInfo> {
-    // Spelled here, not read off GITHUB_TOKEN_VARS, so reordering that list
-    // is a change this test sees.
+    // The names are written out so a reorder of GITHUB_TOKEN_VARS fails this test.
     let _vars: Vec<_> = ["GITHUB_TOKEN", "GH_TOKEN"]
         .into_iter()
         .zip(tokens)
