@@ -18,9 +18,8 @@ The cask installs the bash, zsh and fish completions and the man page from the
 release archive, so installing runs no `cfgd` command and a headless
 `brew install` on macOS completes without a Gatekeeper prompt.
 
-The tap also publishes the operator and CSI binaries under
-`tj-smith47/tap/cfgd-operator` and `tj-smith47/tap/cfgd-csi` for cluster-side
-installs.
+The operator and CSI driver are Linux container images installed through the
+Helm chart; see [Containers and Kubernetes](#containers-and-kubernetes).
 
 ### Install script
 
