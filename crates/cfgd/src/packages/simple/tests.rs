@@ -1051,3 +1051,16 @@ fn every_family_verb_spawns_with_the_family_env() {
     }
     assert!(apt_slots >= 3, "the apt walk reached {apt_slots} slots");
 }
+
+/// `zypper refresh` takes no `-y`, so the global `--non-interactive` is the
+/// only thing between a new repository key and a trust prompt waiting on
+/// stdin. Install and remove carry `-y`, zypper's alias for the same switch.
+#[test]
+fn zypper_refresh_runs_non_interactive() {
+    let mgr = zypper_manager();
+    assert_eq!(
+        mgr.update_cmd,
+        Some(&["sudo", "zypper", "--non-interactive", "refresh"][..])
+    );
+    assert!(mgr.install_cmd.contains(&"-y") && mgr.uninstall_cmd.contains(&"-y"));
+}

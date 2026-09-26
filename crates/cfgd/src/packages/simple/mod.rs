@@ -594,7 +594,10 @@ pub(super) fn zypper_manager() -> SimpleManager {
         ],
         install_cmd: &["sudo", "zypper", "install", "-y"],
         uninstall_cmd: &["sudo", "zypper", "remove", "-y"],
-        update_cmd: Some(&["sudo", "zypper", "refresh"]),
+        // `refresh` takes no `-y`, so the global `--non-interactive` is what
+        // keeps a new repository key's trust prompt from waiting on stdin: zypper
+        // takes the prompt's default answer instead.
+        update_cmd: Some(&["sudo", "zypper", "--non-interactive", "refresh"]),
         upgrade_cmd: None,
         raise_verb: "install",
         ignore_update_exit: false,
