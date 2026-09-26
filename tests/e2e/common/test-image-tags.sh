@@ -90,6 +90,35 @@ for image in "${images[@]}"; do
     done
 done
 
+# shellcheck disable=SC2016 # the inner script expands its own positional args
+warning() {
+    env -u CFGD_IMAGE_TAG -u OPERATOR_IMAGE_TAG -u CSI_IMAGE_TAG -u FUNCTION_IMAGE_TAG \
+        REGISTRY="$registry" IMAGE_TAG=base CLI_SCRATCH="$scratch" "${@:2}" \
+        bash -c 'source "$1/common/helpers.sh"; e2e_override_unused_warning "$2" "the tree at /deploy" deployment/x running:1' \
+        _ "$e2e_root" "$1" 2>&1
+}
+
+# A component whose spec setup does not own must say when its override is
+# ignored, naming the owner and what runs, and stay quiet with no override.
+for image in "${images[@]}"; do
+    var="${override_of[$image]}"
+    want="  WARN: $var is set, but the tree at /deploy owns deployment/x, which runs running:1; the override does not reach it"
+    got="$(warning "$image" "$var=pinned")"
+    if [ "$got" = "$want" ]; then
+        echo "PASS  unused-override warning, $var set: $image"
+    else
+        echo "FAIL  unused-override warning, $var set: $image -> '$got' (want '$want')"
+        failures=$((failures + 1))
+    fi
+    got="$(warning "$image")"
+    if [ -z "$got" ]; then
+        echo "PASS  unused-override warning, $var unset: $image says nothing"
+    else
+        echo "FAIL  unused-override warning, $var unset: $image -> '$got' (want nothing)"
+        failures=$((failures + 1))
+    fi
+done
+
 if resolve not-an-image >/dev/null 2>&1; then
     echo "FAIL  unknown image: resolved instead of failing"
     failures=$((failures + 1))

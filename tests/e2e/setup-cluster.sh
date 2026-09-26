@@ -17,22 +17,22 @@ for img in cfgd cfgd-operator cfgd-csi function-cfgd; do
     echo "  $(e2e_image "$img")"
 done
 
-# The image a live cfgd-system workload runs, read off the object itself.
+# The image a live cfgd-system workload runs, read off the object itself. The
+# container is chosen by name so a sidecar listed first is never reported as
+# the component.
 running_image() {
-    local image
-    image="$(kubectl get "$1" "$2" -n cfgd-system \
-        -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || true)"
+    local kind="$1" name="$2" container="$3" image
+    image="$(kubectl get "$kind" "$name" -n cfgd-system \
+        -o jsonpath="{.spec.template.spec.containers[?(@.name==\"$container\")].image}" 2>/dev/null || true)"
     printf '%s\n' "${image:-not deployed}"
 }
 
-# ArgoCD reverts anything setup applies to an object it owns, so a tag
-# override for that component cannot take effect there; say so rather than
-# report the override as deployed.
+# Where something other than setup owns a component's spec, a tag override for
+# it cannot take effect there, so setup says so.
 warn_override_unused() {
-    local image="$1" kind="$2" name="$3"
-    if e2e_image_overridden "$image"; then
-        echo "  WARN: $(e2e_image_override_var "$image") is set, but ArgoCD owns $kind/$name, which runs $(running_image "$kind" "$name"); the override does not reach it"
-    fi
+    local image="$1" owner="$2" kind="$3" name="$4" container="$5"
+    e2e_override_unused_warning "$image" "$owner" "$kind/$name" \
+        "$(running_image "$kind" "$name" "$container")"
 }
 
 # --- Step 1: Verify cluster access ---
@@ -578,14 +578,16 @@ fi
 
 if [ "$ARGOCD_MANAGED" = "true" ]; then
     for deploy in cfgd-operator cfgd-server; do
-        echo "  deployment/$deploy is managed by ArgoCD and runs $(running_image deployment "$deploy")"
+        echo "  deployment/$deploy is managed by ArgoCD and runs $(running_image deployment "$deploy" cfgd-operator)"
     done
-    warn_override_unused cfgd-operator deployment cfgd-operator
+    warn_override_unused cfgd-operator ArgoCD deployment cfgd-operator cfgd-operator
 elif [ -n "${CFGD_DEPLOY_MANIFESTS:-}" ] && [ -d "$CFGD_DEPLOY_MANIFESTS" ]; then
     # A tree `task deploy:operator` applied owns these Deployments, so setup
     # leaves their spec alone. They name the :latest tag this run pushes, and a
     # restart is what makes them pull a rebuilt image. Skipping it when the
     # image was not rebuilt is the bulk of the no-source-change time saving.
+    warn_override_unused cfgd-operator "the tree at $CFGD_DEPLOY_MANIFESTS" \
+        deployment cfgd-operator cfgd-operator
     if [ "${IMAGE_BUILT[cfgd-operator]:-true}" != "true" ]; then
         echo "  cfgd-operator image unchanged — skipping operator/server rollout restart"
     else
@@ -806,8 +808,8 @@ if [ "${IMAGE_BUILT[cfgd-csi]:-true}" != "true" ] \
 fi
 
 if [ "$CSI_ARGOCD_MANAGED" = "true" ]; then
-    echo "Deploying CSI driver... daemonset/cfgd-csi-csi is managed by ArgoCD and runs $(running_image daemonset cfgd-csi-csi) — skipping Helm install"
-    warn_override_unused cfgd-csi daemonset cfgd-csi-csi
+    echo "Deploying CSI driver... daemonset/cfgd-csi-csi is managed by ArgoCD and runs $(running_image daemonset cfgd-csi-csi cfgd-csi) — skipping Helm install"
+    warn_override_unused cfgd-csi ArgoCD daemonset cfgd-csi-csi cfgd-csi
 elif [ "$CSI_HELM_NEEDED" != "true" ]; then
     echo "Deploying CSI driver... cfgd-csi image unchanged and release present — skipping Helm upgrade"
 else
@@ -887,8 +889,8 @@ echo "=== E2E Setup Complete ==="
 echo "  Operator:  $(kubectl get pods -n cfgd-system -l app=cfgd-operator -o jsonpath='{.items[0].status.phase}' 2>/dev/null || echo 'unknown')"
 echo "  Gateway:   $(kubectl get pods -n cfgd-system -l app=cfgd-server -o jsonpath='{.items[0].status.phase}' 2>/dev/null || echo 'unknown')"
 echo "  CSI:       $(kubectl get ds -n cfgd-system -l app.kubernetes.io/component=csi-driver -o jsonpath='{.items[0].status.numberReady}' 2>/dev/null || echo 'N/A') ready"
-echo "  Running:   operator $(running_image deployment cfgd-operator)"
-echo "             gateway $(running_image deployment cfgd-server)"
-echo "             csi $(running_image daemonset cfgd-csi-csi)"
+echo "  Running:   operator $(running_image deployment cfgd-operator cfgd-operator)"
+echo "             gateway $(running_image deployment cfgd-server cfgd-operator)"
+echo "             csi $(running_image daemonset cfgd-csi-csi cfgd-csi)"
 echo "  Test pod:  $(e2e_image cfgd)"
 echo "  Function:  $(e2e_image function-cfgd)"

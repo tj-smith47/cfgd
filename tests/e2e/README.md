@@ -51,4 +51,6 @@ node plugin from `/db/manifests/k3s/namespaces/cfgd-system/` (the CSI plugin fro
 manifests pin, whatever this run built. `setup-cluster.sh` prints the image each
 of them runs, warns when `OPERATOR_IMAGE_TAG` or `CSI_IMAGE_TAG` is set for one of
 them, and installs the CSI plugin with Helm only on a cluster where ArgoCD does
-not own the `cfgd-csi-csi` DaemonSet.
+not own the `cfgd-csi-csi` DaemonSet. When `CFGD_DEPLOY_MANIFESTS` names a tree that
+`task deploy:operator` applied, that tree owns the operator and gateway Deployments,
+and setup warns the same way when `OPERATOR_IMAGE_TAG` is set.
