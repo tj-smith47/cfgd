@@ -98,17 +98,85 @@ else
 fi
 
 # A reference composed by hand would ignore its override, so the helpers are
-# the only place a first-party image or IMAGE_TAG may be spelled.
-stray="$(grep -rnE --include='*.sh' --include='*.yaml' \
-    -e 'IMAGE_TAG|REGISTRY_PLACEHOLDER' \
-    -e '\$\{?REGISTRY\}?/(cfgd|cfgd-operator|cfgd-csi|function-cfgd)([^-a-zA-Z0-9]|$)' \
-    "$e2e_root" | grep -v -e '^[^:]*/common/helpers\.sh:' -e '^[^:]*/common/test-image-tags\.sh:' || true)"
-if [ -n "$stray" ]; then
-    echo "FAIL  image references composed outside common/helpers.sh:"
-    printf '%s\n' "$stray"
+# the only place a first-party image or IMAGE_TAG may be spelled. grep exits 1
+# for no match and 2 for an error; an error must fail the check, since an empty
+# result would otherwise read as a clean tree.
+scan_strays() {
+    local out rc=0 line
+    out="$(grep -rnE \
+        --include='*.sh' --include='*.yaml' --include='*.yml' --include='*.tera' --include='*.json' \
+        -e 'IMAGE_TAG|REGISTRY_PLACEHOLDER' \
+        -e '\$\{?REGISTRY[^}/"]*\}?"?/(cfgd|cfgd-operator|cfgd-csi|function-cfgd)([^-a-zA-Z0-9]|$)' \
+        "$1" 2>&1)" || rc=$?
+    if [ "$rc" -gt 1 ]; then
+        printf 'grep exited %s: %s\n' "$rc" "$out" >&2
+        return 2
+    fi
+    while IFS= read -r line; do
+        case "${line%%:*}" in
+            "" | */common/helpers.sh | */common/test-image-tags.sh) ;;
+            *) printf '%s\n' "$line" ;;
+        esac
+    done <<<"$out"
+}
+
+if stray="$(scan_strays "$e2e_root")"; then
+    if [ -n "$stray" ]; then
+        echo "FAIL  image references composed outside common/helpers.sh:"
+        printf '%s\n' "$stray"
+        failures=$((failures + 1))
+    else
+        echo "PASS  every first-party image reference goes through common/helpers.sh"
+    fi
+else
+    echo "FAIL  the image reference scan could not read $e2e_root"
+    failures=$((failures + 1))
+fi
+
+# Each spelling the scan exists to catch, one fixture file apiece, must be
+# reported; an OCI module path that merely starts with cfgd must not be.
+fixtures="$scratch/stray-fixtures"
+mkdir -p "$fixtures"
+# shellcheck disable=SC2016 # fixtures hold the literal text a script would contain
+declare -A stray_fixture=(
+    [braced.sh]='ref="${REGISTRY}/cfgd:x"'
+    [bare.yml]='image: $REGISTRY/cfgd-operator:x'
+    [quoted.sh]='ref="$REGISTRY"/cfgd-operator:x'
+    [defaulted.tera]='image: ${REGISTRY:-r}/cfgd-csi:x'
+    [line-end.yaml]='repository: $REGISTRY/function-cfgd'
+    [tag.json]='{"tag": "$IMAGE_TAG"}'
+    [placeholder.yaml]='image: REGISTRY_PLACEHOLDER/cfgd:x'
+)
+for name in "${!stray_fixture[@]}"; do
+    printf '%s\n' "${stray_fixture[$name]}" > "$fixtures/$name"
+done
+# shellcheck disable=SC2016 # fixtures hold the literal text a script would contain
+printf '%s\n' 'ref="${REGISTRY}/cfgd-e2e/module:v1"' > "$fixtures/module-artifact.sh"
+if found="$(scan_strays "$fixtures")"; then
+    for name in "${!stray_fixture[@]}"; do
+        if grep -qF -- "$fixtures/$name:" <<<"$found"; then
+            echo "PASS  scan reports $name"
+        else
+            echo "FAIL  scan misses $name: ${stray_fixture[$name]}"
+            failures=$((failures + 1))
+        fi
+    done
+    if grep -qF -- "$fixtures/module-artifact.sh:" <<<"$found"; then
+        echo "FAIL  scan reports an OCI module artifact under \$REGISTRY/cfgd-e2e"
+        failures=$((failures + 1))
+    else
+        echo "PASS  scan passes an OCI module artifact under \$REGISTRY/cfgd-e2e"
+    fi
+else
+    echo "FAIL  the image reference scan could not read its fixtures"
+    failures=$((failures + 1))
+fi
+
+if scan_strays "$scratch/no-such-dir" >/dev/null 2>&1; then
+    echo "FAIL  scan of an unreadable path passed"
     failures=$((failures + 1))
 else
-    echo "PASS  every first-party image reference goes through common/helpers.sh"
+    echo "PASS  scan of an unreadable path fails"
 fi
 
 if [ "$failures" -ne 0 ]; then
