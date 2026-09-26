@@ -1373,12 +1373,15 @@ The `Package Managers` section reads the same resolution: a manager no `spec.pac
 names still counts as used when a module routes to it (`brew: available (used by 3 modules)`),
 and only a manager nothing reaches reads `(not used)`.
 
-Exits non-zero when the verdict fails (an invalid config, a config missing at an
-explicitly-given `--config`/`CFGD_CONFIG`/`--config-dir` path, an unresolvable module, or a
-hard-broken profile such as [ambiguous layout forms](profiles.md#layout)), so
-`cfgd doctor && cfgd apply` stops instead of proceeding into a broken apply. A config
-missing at the *default* path is the fresh-machine state and stays a warning (exit 0),
-as does a supported legacy-flat layout; warnings do not affect the exit code.
+Exits non-zero when the verdict fails (a missing required tool, an invalid config, a config
+missing at an explicitly-given `--config`/`CFGD_CONFIG`/`--config-dir` path, an unresolvable
+module, or a hard-broken profile such as [ambiguous layout forms](profiles.md#layout)), so
+`cfgd doctor && cfgd apply` stops before a broken apply. `git` is the one required tool,
+because cfgd runs it to clone and fetch config sources: a machine without it fails the run,
+and `-o json` reports it as `"git": false`. `sops` is needed only for secrets, so a missing
+`sops` is a warning. A config missing at the *default* path is the fresh-machine state and
+stays a warning (exit 0), as does a supported legacy-flat layout; warnings do not affect the
+exit code.
 
 ### `cfgd log`
 

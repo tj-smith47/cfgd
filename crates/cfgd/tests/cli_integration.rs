@@ -833,6 +833,47 @@ fn doctor_with_valid_config_succeeds() {
         .success();
 }
 
+// --- doctor treats git as a required tool ---
+
+/// `git` is a required tool: over one valid config, a PATH holding a `git`
+/// passes the run with `"git": true`, and the same PATH without it fails the
+/// run with exit 1 and `"git": false` in the `-o json` payload.
+#[test]
+fn doctor_fails_the_run_and_reports_git_false_when_git_is_not_on_path() {
+    let dir = tempfile::tempdir().unwrap();
+    create_valid_config(dir.path());
+    for with_git in [true, false] {
+        // A PATH handed to the child alone, so what it resolves is exactly what
+        // this directory holds, whatever the host has installed.
+        let tools = tempfile::tempdir().unwrap();
+        if with_git {
+            cfgd_core::test_helpers::write_probe_tool(tools.path(), "git");
+        }
+        let out = cfgd_bin()
+            .unwrap()
+            .args(["doctor", "-o", "json"])
+            .env("CFGD_CONFIG", dir.path().join("cfgd.yaml"))
+            .env("PATH", tools.path())
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let payload: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
+            panic!("with_git={with_git}: stdout is not one JSON value ({e}): {stdout}")
+        });
+        assert_eq!(
+            payload["git"],
+            serde_json::json!(with_git),
+            "with_git={with_git}: {payload}"
+        );
+        assert_eq!(
+            out.status.code(),
+            Some(if with_git { 0 } else { 1 }),
+            "with_git={with_git}: stderr {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
+
 // --- doctor with a missing config at an explicitly-given path fails ---
 
 #[test]
