@@ -37,7 +37,7 @@ kubectl apply -f "$CROSSPLANE_DIR/composition.yaml"
 
 # Apply Function CR with the E2E registry image, pull secrets, and runtime config.
 # The xpkg is built by setup-cluster.sh; the DRC passes --insecure to skip mTLS.
-FUNC_IMAGE="${REGISTRY}/function-cfgd:${IMAGE_TAG:-latest}"
+FUNC_IMAGE="$(e2e_image function-cfgd)"
 kubectl apply -f - <<FUNCEOF
 apiVersion: pkg.crossplane.io/v1beta1
 kind: DeploymentRuntimeConfig

@@ -56,8 +56,8 @@ begin_test "FS-HELM-01: Fresh Helm install creates operator deployment"
 helm_test_ns "01"
 INSTALL_OUTPUT=$(helm install cfgd-test "$CHART_DIR" \
     -n "$HELM_NS" \
-    --set "operator.image.repository=${REGISTRY}/cfgd-operator" \
-    --set "operator.image.tag=$IMAGE_TAG" \
+    --set "operator.image.repository=$(e2e_image_repo cfgd-operator)" \
+    --set "operator.image.tag=$(e2e_image_tag cfgd-operator)" \
     --set "operator.imagePullSecrets[0].name=registry-credentials" \
     --set operator.enabled=true \
     --set csiDriver.enabled=false \
@@ -108,8 +108,8 @@ begin_test "FS-HELM-02: Gateway enabled creates gateway service"
 helm_test_ns "02"
 helm install cfgd-test "$CHART_DIR" \
     -n "$HELM_NS" \
-    --set "operator.image.repository=${REGISTRY}/cfgd-operator" \
-    --set "operator.image.tag=$IMAGE_TAG" \
+    --set "operator.image.repository=$(e2e_image_repo cfgd-operator)" \
+    --set "operator.image.tag=$(e2e_image_tag cfgd-operator)" \
     --set "operator.imagePullSecrets[0].name=registry-credentials" \
     --set operator.enabled=true \
     --set deviceGateway.enabled=true \
@@ -148,8 +148,8 @@ begin_test "FS-HELM-03: Gateway disabled creates no gateway service"
 helm_test_ns "03"
 helm install cfgd-test "$CHART_DIR" \
     -n "$HELM_NS" \
-    --set "operator.image.repository=${REGISTRY}/cfgd-operator" \
-    --set "operator.image.tag=$IMAGE_TAG" \
+    --set "operator.image.repository=$(e2e_image_repo cfgd-operator)" \
+    --set "operator.image.tag=$(e2e_image_tag cfgd-operator)" \
     --set "operator.imagePullSecrets[0].name=registry-credentials" \
     --set operator.enabled=true \
     --set deviceGateway.enabled=false \
@@ -191,8 +191,8 @@ begin_test "FS-HELM-04: CSI disabled creates no CSI daemonset"
 helm_test_ns "04"
 helm install cfgd-test "$CHART_DIR" \
     -n "$HELM_NS" \
-    --set "operator.image.repository=${REGISTRY}/cfgd-operator" \
-    --set "operator.image.tag=$IMAGE_TAG" \
+    --set "operator.image.repository=$(e2e_image_repo cfgd-operator)" \
+    --set "operator.image.tag=$(e2e_image_tag cfgd-operator)" \
     --set "operator.imagePullSecrets[0].name=registry-credentials" \
     --set operator.enabled=true \
     --set csiDriver.enabled=false \
@@ -226,8 +226,8 @@ helm_test_ns "05"
 # Install initial release
 helm install cfgd-test "$CHART_DIR" \
     -n "$HELM_NS" \
-    --set "operator.image.repository=${REGISTRY}/cfgd-operator" \
-    --set "operator.image.tag=$IMAGE_TAG" \
+    --set "operator.image.repository=$(e2e_image_repo cfgd-operator)" \
+    --set "operator.image.tag=$(e2e_image_tag cfgd-operator)" \
     --set "operator.imagePullSecrets[0].name=registry-credentials" \
     --set operator.enabled=true \
     --set csiDriver.enabled=false \
@@ -262,8 +262,8 @@ echo "  MachineConfig before upgrade: ${MC_BEFORE:-<not found>}"
 # Perform Helm upgrade
 UPGRADE_OUTPUT=$(helm upgrade cfgd-test "$CHART_DIR" \
     -n "$HELM_NS" \
-    --set "operator.image.repository=${REGISTRY}/cfgd-operator" \
-    --set "operator.image.tag=$IMAGE_TAG" \
+    --set "operator.image.repository=$(e2e_image_repo cfgd-operator)" \
+    --set "operator.image.tag=$(e2e_image_tag cfgd-operator)" \
     --set "operator.imagePullSecrets[0].name=registry-credentials" \
     --set operator.enabled=true \
     --set csiDriver.enabled=false \
@@ -304,8 +304,8 @@ begin_test "FS-HELM-06: Values override — custom replica count"
 helm_test_ns "06"
 helm install cfgd-test "$CHART_DIR" \
     -n "$HELM_NS" \
-    --set "operator.image.repository=${REGISTRY}/cfgd-operator" \
-    --set "operator.image.tag=$IMAGE_TAG" \
+    --set "operator.image.repository=$(e2e_image_repo cfgd-operator)" \
+    --set "operator.image.tag=$(e2e_image_tag cfgd-operator)" \
     --set "operator.imagePullSecrets[0].name=registry-credentials" \
     --set operator.enabled=true \
     --set operator.replicaCount=2 \
@@ -374,8 +374,8 @@ helm_test_ns "08"
 # Install
 helm install cfgd-test "$CHART_DIR" \
     -n "$HELM_NS" \
-    --set "operator.image.repository=${REGISTRY}/cfgd-operator" \
-    --set "operator.image.tag=$IMAGE_TAG" \
+    --set "operator.image.repository=$(e2e_image_repo cfgd-operator)" \
+    --set "operator.image.tag=$(e2e_image_tag cfgd-operator)" \
     --set "operator.imagePullSecrets[0].name=registry-credentials" \
     --set operator.enabled=true \
     --set csiDriver.enabled=false \
@@ -443,8 +443,8 @@ kubectl delete validatingwebhookconfiguration cfgd-test --ignore-not-found 2>/de
 helm_test_ns "09"
 helm install cfgd-test "$CHART_DIR" \
     -n "$HELM_NS" \
-    --set "operator.image.repository=${REGISTRY}/cfgd-operator" \
-    --set "operator.image.tag=$IMAGE_TAG" \
+    --set "operator.image.repository=$(e2e_image_repo cfgd-operator)" \
+    --set "operator.image.tag=$(e2e_image_tag cfgd-operator)" \
     --set "operator.imagePullSecrets[0].name=registry-credentials" \
     --set operator.enabled=true \
     --set operator.leaderElection.enabled=true \

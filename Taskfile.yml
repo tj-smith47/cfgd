@@ -271,6 +271,11 @@ tasks:
     cmds:
       - bash chart/cfgd/tests/render.sh
 
+  e2e:tags:check:
+    desc: Verify the e2e image tag map resolves each image to IMAGE_TAG or its own override, and that no e2e script composes an image reference outside common/helpers.sh (no cluster needed).
+    cmds:
+      - bash tests/e2e/common/test-image-tags.sh
+
   chart:tags:check:
     desc: Verify every first-party image the chart renders by default names the version its crate has released, or the one the release cut from this commit publishes (CI drift guard).
     cmds:
@@ -627,6 +632,7 @@ tasks:
       - task: version-files:check
       - task: chart:tags:check
       - task: chart:test
+      - task: e2e:tags:check
       - task: test
       - task: test:threads
       - task: audit

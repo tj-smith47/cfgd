@@ -209,6 +209,11 @@ single-source-of-truth wiring.
   its update strategy and readiness probe with `chart/cfgd/tests/golden/`. It
   needs only helm and yq, and it sits beside the other chart guards so every
   chart check runs in one place.
+  After it, `task e2e:tags:check` runs `tests/e2e/common/test-image-tags.sh`:
+  it needs no cluster, resolves the e2e image tag map (`IMAGE_TAG` plus one
+  override per image) for every override, and fails when any script under
+  `tests/e2e/` composes a first-party image reference outside
+  `common/helpers.sh`.
 - The `rustdoc` job runs `task doc` (`cargo doc --workspace --no-deps
   --document-private-items --all-features` under `RUSTDOCFLAGS="-D warnings"`,
   the flag spelled once as the Taskfile's `RUSTDOC_DENY_WARNINGS` var) as its

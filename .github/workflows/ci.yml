@@ -264,6 +264,11 @@ jobs:
       - name: Chart render goldens
         run: task chart:test
 
+      # A suite that spells an image reference itself ignores that image's tag
+      # override; the check resolves the map and fails on any such reference.
+      - name: E2E image tag map
+        run: task e2e:tags:check
+
   # A demo GIF shows what the binary rendered when it was recorded, and nothing
   # else notices when a later change moves that output.
   demo-sync:

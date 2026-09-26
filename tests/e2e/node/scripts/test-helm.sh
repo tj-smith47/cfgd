@@ -20,8 +20,8 @@ begin_test "T20: Helm install"
 helm install cfgd "$CHART_DIR" \
     -f "$VALUES_FILE" \
     -n "$E2E_NAMESPACE" \
-    --set "agent.image.repository=${REGISTRY}/cfgd" \
-    --set "agent.image.tag=$IMAGE_TAG" \
+    --set "agent.image.repository=$(e2e_image_repo cfgd)" \
+    --set "agent.image.tag=$(e2e_image_tag cfgd)" \
     --set agent.serverUrl=http://cfgd-server.cfgd-system.svc.cluster.local:8080 \
     --set "agent.imagePullSecrets[0].name=registry-credentials" \
     --set webhook.enabled=false \
@@ -102,8 +102,8 @@ fi
 begin_test "T24: Helm upgrade"
 OUTPUT=$(helm upgrade cfgd "$CHART_DIR" \
     -f "$VALUES_FILE" \
-    --set "agent.image.repository=${REGISTRY}/cfgd" \
-    --set "agent.image.tag=$IMAGE_TAG" \
+    --set "agent.image.repository=$(e2e_image_repo cfgd)" \
+    --set "agent.image.tag=$(e2e_image_tag cfgd)" \
     --set agent.serverUrl=http://cfgd-server.cfgd-system.svc.cluster.local:8080 \
     --set "agent.imagePullSecrets[0].name=registry-credentials" \
     --set agent.reconcileInterval="15s" \

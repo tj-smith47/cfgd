@@ -26,6 +26,34 @@ NC='\033[0m'
 
 REGISTRY="${REGISTRY:?E2E_REGISTRY must be set (e.g. export REGISTRY=your.registry.io)}"
 IMAGE_TAG="${IMAGE_TAG:-e2e-$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo latest)}"
+
+# A release tags each image at its own crate's version (cfgd 0.11.0 beside
+# operator 0.9.0 and csi 0.7.2), so one IMAGE_TAG cannot name a released set.
+# IMAGE_TAG stays every image's default and each override replaces one. Every
+# image reference the suites compose comes from e2e_image / e2e_image_repo /
+# e2e_image_tag, so an override reaches every place its image is named.
+e2e_image_tag() {
+    case "$1" in
+        cfgd) printf '%s\n' "${CFGD_IMAGE_TAG:-$IMAGE_TAG}" ;;
+        cfgd-operator) printf '%s\n' "${OPERATOR_IMAGE_TAG:-$IMAGE_TAG}" ;;
+        cfgd-csi) printf '%s\n' "${CSI_IMAGE_TAG:-$IMAGE_TAG}" ;;
+        function-cfgd) printf '%s\n' "${FUNCTION_IMAGE_TAG:-$IMAGE_TAG}" ;;
+        *)
+            echo "e2e_image_tag: unknown image '$1'" >&2
+            return 1
+            ;;
+    esac
+}
+
+e2e_image_repo() {
+    printf '%s/%s\n' "$REGISTRY" "$1"
+}
+
+e2e_image() {
+    local tag
+    tag="$(e2e_image_tag "$1")" || return 1
+    printf '%s:%s\n' "$(e2e_image_repo "$1")" "$tag"
+}
 E2E_NAMESPACE="${E2E_NAMESPACE:-cfgd-e2e-${GITHUB_RUN_ID:-$(date +%s)-$$}}"
 E2E_RUN_ID="${GITHUB_RUN_ID:-local-$$}"
 E2E_RUN_LABEL="cfgd.io/e2e-run=$E2E_RUN_ID"
@@ -79,8 +107,7 @@ ensure_test_pod() {
 
     create_e2e_namespace
 
-    # Substitute placeholders and apply (image first to avoid double-sub)
-    sed "s|REGISTRY_PLACEHOLDER|${REGISTRY}|g; s|IMAGE_PLACEHOLDER|${IMAGE_TAG}|g; s|RUN_PLACEHOLDER|${E2E_RUN_ID}|g" \
+    sed "s|IMAGE_PLACEHOLDER|$(e2e_image cfgd)|g; s|RUN_PLACEHOLDER|${E2E_RUN_ID}|g" \
         "$manifest" | kubectl apply -n "$E2E_NAMESPACE" -f -
 
     echo "  Waiting for test pod $pod_name..."

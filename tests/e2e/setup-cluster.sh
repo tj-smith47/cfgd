@@ -12,7 +12,10 @@ RESET="${1:-}"
 
 echo "=== cfgd E2E Setup ==="
 echo "Registry: $REGISTRY"
-echo "Image tag: $IMAGE_TAG"
+echo "Images:"
+for img in cfgd cfgd-operator cfgd-csi function-cfgd; do
+    echo "  $(e2e_image "$img")"
+done
 
 # --- Step 1: Verify cluster access ---
 # Stale-resource cleanup (former Step 0) moved to the async cfgd-e2e-janitor
@@ -245,7 +248,8 @@ echo "  All pre-flight checks passed"
 # layer restores across runs and the build stays warm.
 buildcache_args() {
     [ "${SCCACHE_GHA_ENABLED:-}" = "true" ] || return 0
-    local ref="${REGISTRY}/$1:buildcache"
+    local ref
+    ref="$(e2e_image_repo "$1"):buildcache"
     # ignore-error: the cache export is an optimization, and a registry-side
     # blob rejection during it aborts an otherwise-successful build — which
     # fails setup, which cascades every E2E suite to "skipped" without a
@@ -365,7 +369,7 @@ build_image() {
 }
 
 # Build + push an image only when its inputs changed since last-green; otherwise
-# verify the previously-pushed :IMAGE_TAG still exists in the registry. If the
+# verify the previously-pushed image reference still exists in the registry. If the
 # skip-candidate tag is missing (GC raced, registry wiped), fall through to a
 # build so a green run never ships a dangling tag. Rust images also retag :latest
 # so ArgoCD-managed deployments pick up new code.
@@ -383,6 +387,9 @@ build_and_push() {
     local image="$1" dockerfile="$2" context="$3" scope="$4" retag_latest="$5"; shift 5
     local input_paths=("$@")
     local df_rel="${dockerfile#"$REPO_ROOT/"}"
+    local ref latest
+    ref="$(e2e_image "$image")"
+    latest="$(e2e_image_repo "$image"):latest"
 
     local decision
     decision="$(image_decision "$image" "$df_rel" "${input_paths[@]}")"
@@ -390,25 +397,25 @@ build_and_push() {
     if [ "$decision" = "skip" ]; then
         # Confirm the tag the deploys reference actually exists before trusting
         # the skip — fail OPEN to a build if the registry lost it.
-        if docker manifest inspect "${REGISTRY}/${image}:${IMAGE_TAG}" >/dev/null 2>&1; then
-            echo "  SKIP ${image}: no source change since ${REGISTRY}/${image} last-green"
+        if docker manifest inspect "$ref" >/dev/null 2>&1; then
+            echo "  SKIP ${image}: no source change since $(e2e_image_repo "$image") last-green"
             if [ "$retag_latest" = "true" ]; then
-                docker pull "${REGISTRY}/${image}:${IMAGE_TAG}" >/dev/null 2>&1 || true
-                docker tag "${REGISTRY}/${image}:${IMAGE_TAG}" "${REGISTRY}/${image}:latest" 2>/dev/null || true
-                docker push "${REGISTRY}/${image}:latest" 2>/dev/null || true
+                docker pull "$ref" >/dev/null 2>&1 || true
+                docker tag "$ref" "$latest" 2>/dev/null || true
+                docker push "$latest" 2>/dev/null || true
             fi
             IMAGE_BUILT[$image]="false"
             return 0
         fi
-        echo "  ${image}: last-green unchanged but :${IMAGE_TAG} missing from registry — rebuilding"
+        echo "  ${image}: last-green unchanged but $ref missing from registry — rebuilding"
     fi
 
     echo "  BUILD ${image}..."
-    build_image "$dockerfile" "${REGISTRY}/${image}:${IMAGE_TAG}" "$context" "$scope"
-    docker push "${REGISTRY}/${image}:${IMAGE_TAG}"
+    build_image "$dockerfile" "$ref" "$context" "$scope"
+    docker push "$ref"
     if [ "$retag_latest" = "true" ]; then
-        docker tag "${REGISTRY}/${image}:${IMAGE_TAG}" "${REGISTRY}/${image}:latest"
-        docker push "${REGISTRY}/${image}:latest"
+        docker tag "$ref" "$latest"
+        docker push "$latest"
     fi
     IMAGE_BUILT[$image]="true"
 }
@@ -423,16 +430,18 @@ build_and_push cfgd-csi "$REPO_ROOT/Dockerfile.csi" "$REPO_ROOT" cfgd-csi true \
 # function-cfgd is a self-contained Go module: its dir holds go.mod/go.sum and
 # its Dockerfile, so the crate dir alone is the full input set. It is pushed as
 # a Crossplane xpkg (below), not via the plain image push, so retag_latest=false.
+FUNCTION_IMAGE="$(e2e_image function-cfgd)"
+FUNCTION_LATEST="$(e2e_image_repo function-cfgd):latest"
 FUNCTION_DECISION="$(image_decision function-cfgd function-cfgd/Dockerfile function-cfgd)"
-if [ "$FUNCTION_DECISION" = "skip" ] && docker manifest inspect "${REGISTRY}/function-cfgd:${IMAGE_TAG}" >/dev/null 2>&1; then
+if [ "$FUNCTION_DECISION" = "skip" ] && docker manifest inspect "$FUNCTION_IMAGE" >/dev/null 2>&1; then
     echo "  SKIP function-cfgd: no source change since last-green"
 else
     echo "  BUILD function-cfgd..."
     build_image "$REPO_ROOT/function-cfgd/Dockerfile" \
-        "${REGISTRY}/function-cfgd:${IMAGE_TAG}" "$REPO_ROOT/function-cfgd" function-cfgd
-    docker push "${REGISTRY}/function-cfgd:${IMAGE_TAG}"
-    docker tag "${REGISTRY}/function-cfgd:${IMAGE_TAG}" "${REGISTRY}/function-cfgd:latest"
-    docker push "${REGISTRY}/function-cfgd:latest"
+        "$FUNCTION_IMAGE" "$REPO_ROOT/function-cfgd" function-cfgd
+    docker push "$FUNCTION_IMAGE"
+    docker tag "$FUNCTION_IMAGE" "$FUNCTION_LATEST"
+    docker push "$FUNCTION_LATEST"
     FUNCTION_DECISION="build"
 fi
 
@@ -476,10 +485,10 @@ if [ "$FUNCTION_DECISION" = "build" ]; then
     XPKG_OUT="${RUNNER_TEMP:-/tmp}/function-cfgd.xpkg"
     crossplane xpkg build \
         --package-root="$REPO_ROOT/function-cfgd/package" \
-        --embed-runtime-image="${REGISTRY}/function-cfgd:${IMAGE_TAG}" \
+        --embed-runtime-image="$FUNCTION_IMAGE" \
         -o "$XPKG_OUT"
-    crossplane xpkg push "${REGISTRY}/function-cfgd:${IMAGE_TAG}" -f "$XPKG_OUT"
-    crossplane xpkg push "${REGISTRY}/function-cfgd:latest" -f "$XPKG_OUT"
+    crossplane xpkg push "$FUNCTION_IMAGE" -f "$XPKG_OUT"
+    crossplane xpkg push "$FUNCTION_LATEST" -f "$XPKG_OUT"
 
     # Restart the function-cfgd deployment so it picks up the new embedded runtime image.
     # The xpkg push doesn't trigger a redeploy when the tag is unchanged.
@@ -550,9 +559,9 @@ if [ "$ARGOCD_MANAGED" = "true" ] || { [ -n "${CFGD_DEPLOY_MANIFESTS:-}" ] && [ 
     fi
 else
     echo "  Applying E2E manifests..."
-    sed "s|REGISTRY_PLACEHOLDER|${REGISTRY}|g; s|IMAGE_PLACEHOLDER|${IMAGE_TAG}|g" \
+    sed "s|IMAGE_PLACEHOLDER|$(e2e_image cfgd-operator)|g" \
         "$SCRIPT_DIR/operator/manifests/operator-deployment.yaml" | kubectl apply -f -
-    sed "s|REGISTRY_PLACEHOLDER|${REGISTRY}|g; s|IMAGE_PLACEHOLDER|${IMAGE_TAG}|g" \
+    sed "s|IMAGE_PLACEHOLDER|$(e2e_image cfgd-operator)|g" \
         "$SCRIPT_DIR/node/manifests/cfgd-server.yaml" | kubectl apply -f -
 fi
 
@@ -731,7 +740,7 @@ rm -f "$WEBHOOK_FILE"
 # --- Step 11: Deploy CSI driver via Helm ---
 # Skip the Helm redeploy when the CSI image is unchanged AND a release already
 # exists (fresh clusters with no release still install). The DaemonSet keeps
-# running the existing :IMAGE_TAG image, so a re-upgrade would be a no-op.
+# running the image it was installed with, so a re-upgrade would be a no-op.
 CSI_HELM_NEEDED=true
 if [ "${IMAGE_BUILT[cfgd-csi]:-true}" != "true" ] \
     && helm status cfgd-csi -n cfgd-system >/dev/null 2>&1; then
@@ -750,8 +759,8 @@ helm upgrade --install cfgd-csi "$REPO_ROOT/chart/cfgd" \
     --set mutatingWebhook.enabled=false \
     --set installCRDs=false \
     --set csiDriver.enabled=true \
-    --set "csiDriver.image.repository=${REGISTRY}/cfgd-csi" \
-    --set "csiDriver.image.tag=${IMAGE_TAG}" \
+    --set "csiDriver.image.repository=$(e2e_image_repo cfgd-csi)" \
+    --set "csiDriver.image.tag=$(e2e_image_tag cfgd-csi)" \
     --set csiDriver.image.pullPolicy=Always \
     --set "csiDriver.extraEnv[0].name=OCI_INSECURE_REGISTRIES" \
     --set "csiDriver.extraEnv[0].value=${REGISTRY}:5000" \
@@ -815,4 +824,6 @@ echo "=== E2E Setup Complete ==="
 echo "  Operator:  $(kubectl get pods -n cfgd-system -l app=cfgd-operator -o jsonpath='{.items[0].status.phase}' 2>/dev/null || echo 'unknown')"
 echo "  Gateway:   $(kubectl get pods -n cfgd-system -l app=cfgd-server -o jsonpath='{.items[0].status.phase}' 2>/dev/null || echo 'unknown')"
 echo "  CSI:       $(kubectl get ds -n cfgd-system -l app.kubernetes.io/component=csi-driver -o jsonpath='{.items[0].status.numberReady}' 2>/dev/null || echo 'N/A') ready"
-echo "  Images:    ${REGISTRY}/cfgd:${IMAGE_TAG}"
+for img in cfgd cfgd-operator cfgd-csi function-cfgd; do
+    echo "  Image:     $(e2e_image "$img")"
+done
