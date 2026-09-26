@@ -27,8 +27,8 @@ NC='\033[0m'
 REGISTRY="${REGISTRY:?E2E_REGISTRY must be set (e.g. export REGISTRY=your.registry.io)}"
 IMAGE_TAG="${IMAGE_TAG:-e2e-$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo latest)}"
 
-# A release tags each image at its own crate's version (cfgd 0.11.0 beside
-# operator 0.9.0 and csi 0.7.2), so one IMAGE_TAG cannot name a released set.
+# Each crate releases at its own version and its image is tagged with it, so
+# one IMAGE_TAG cannot name a released set.
 # IMAGE_TAG stays every image's default and each override replaces one. Every
 # image reference the suites compose comes from e2e_image / e2e_image_repo /
 # e2e_image_tag, so an override reaches every place its image is named.
