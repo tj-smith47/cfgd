@@ -7,7 +7,7 @@ paths: ["crates/cfgd/src/cli/**/*.rs"]
 Every `cmd_*` function in `crates/cfgd/src/cli/` must appear in this
 table. The audit greps for `cmd_*` declarations and fails if any are
 missing from the table. The third column is a RATIONALE (why the payload
-exists, who reads it), never an inventory of its keys: a key list here is a
+exists, who reads it). It lists no keys: a key list here is a
 second copy of the `with_data` shape, and it drifted (`debug` listed three
 keys while carrying six). The keys live in the builder and its golden.
 
@@ -47,7 +47,7 @@ keys while carrying six). The keys live in the builder and its golden.
 | doctor                       | yes               | the health verdict and every check's row, read by CI; under `--fix` the rows state the machine the repair left |
 | enroll                       | yes               | machine identity exposed to gateway                |
 | exec                         | yes               | the target a wrapper script ran a command against  |
-| explain                      | yes               | the schema an editor plugin or doc generator reads instead of scraping the rendered tree |
+| explain                      | yes               | the schema an editor plugin or doc generator reads, so neither has to scrape the rendered tree |
 | generate                     | yes               | generated module metadata                          |
 | generate_scan_only           | yes               | scan results consumed by scripts                   |
 | image_pack                   | yes               | packed-image artifact + digest records             |

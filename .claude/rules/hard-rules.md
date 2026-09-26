@@ -7,7 +7,7 @@ paths: ["crates/**/*.rs"]
 
 2. **No `unwrap()` or `expect()` in library code**. Use `?` with proper error types. `unwrap()` is permitted only in tests and in `main.rs` for top-level setup where failure means "crash immediately."
 
-3. **All providers implement their respective traits** (`PackageManager`, `SystemConfigurator`, `FileManager`, `SecretBackend`). No ad-hoc shelling out. Every provider gets a struct that implements the trait. The reconciler depends on `ProviderRegistry`, never on concrete implementations.
+3. **All providers implement their respective traits** (`PackageManager`, `SystemConfigurator`, `FileManager`, `SecretBackend`). No ad-hoc shelling out. Every provider gets a struct that implements the trait. The reconciler depends on `ProviderRegistry` and on no concrete implementation.
 
 4. **Errors use `thiserror` for library errors, `anyhow` only at the CLI boundary**. Module-level error enums in `errors/`. Functions return `Result<T, CfgdError>` or module-specific errors. `anyhow::Result` is only used in `main.rs` and `cli/`.
 

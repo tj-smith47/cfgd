@@ -6,7 +6,7 @@ paths: ["crates/**/*.rs"]
 - `cargo test` must pass before any phase is considered complete.
 - Unit tests for pure logic (config parsing, diffing, template rendering). Co-located in `#[cfg(test)] mod tests {}` within each module.
 - Integration tests in `tests/`. Every one that runs the real binary spawns it through `cfgd_binary::cfgd_bin()` (`crates/cfgd/tests/cfgd_binary/mod.rs`), which opts out of the update check, removes every inherited `CFGD_*` and systemd `*_DIRECTORY` variable, and points every variable in `cfgd_binary/isolated_env.rs` and the working directory into the test's own temp dir. No test spells `cargo_bin(`, `cargo_bin!(`, `cargo_bin_cmd!(`, `Command::new("cfgd"` or `CARGO_BIN_EXE_cfgd` itself; `every_integration_test_spawns_the_binary_through_the_one_isolating_constructor` fails until it calls the constructor.
-- Package manager tests use mock trait implementations, not real system calls.
+- Package manager tests use mock trait implementations and make no real system calls.
 - Use `tempfile` for any test that touches the filesystem.
 
 ## The reconciler cannot resolve a real `$HOME` under test
@@ -28,7 +28,7 @@ list to `members` minus every `publish = false` member.
 A test that installs `with_test_home_guard` gets the home it asked for. A test
 that installs nothing gets a throwaway directory unique to its own thread,
 named `cfgd-unguarded-test-home-<pid>-<n>` under the system temp dir. That
-directory is named, not created: anything appearing there is a test that writes
+directory is only named and never created: anything appearing there is a test that writes
 env surfaces and should install a guard.
 
 That fallback is the RECONCILER's alone. The env CHECK
@@ -86,7 +86,7 @@ which outranks it.
 
 An in-process test parses an argv through `cli::HermeticParse`
 (`try_parse_hermetic`, or `try_parse_reading_env` for a variable the test sets
-itself), never clap's own `Parser` methods, which read every `env =` binding
+itself). Clap's own `Parser` methods are off limits: they read every `env =` binding
 from the exported environment; `every_in_process_parse_goes_through_the_hermetic_parser`
 walks both `src` and `tests`.
 
@@ -109,14 +109,14 @@ age key beside it.
 
 `cargo test` from a pipe and `script -qec "cargo test" /dev/null` (a real pty)
 are two different terminals, and a test that reads either one asserts about how
-the suite was started rather than about what the code did. Three ambient inputs
-have to be supplied, never inherited:
+the suite was started and says nothing about what the code did. Three ambient
+inputs have to be supplied by the test, and a test inherits none of them:
 
 | Ambient input | Supply it with |
 |---|---|
 | **Colour** — a styled render used to re-read `console::colors_enabled()`, which is on under a pty | a `Printer::for_test*` constructor (all pin `colors: false`); `for_test_with_theme_colored` is the one that pins it ON |
 | **Live region** — a spinner's start line is written when there is none and repainted away when there is | a `Printer::for_test*` constructor (they pin `live_region: false`); the three `live_capture` constructors — `for_test_live_scrollback`, `for_test_with_live_bars`, `for_test_live_terminal` — pin it ON, and which one to reach for is in `shared-utils.md`'s Test guards section |
-| **stdin TTY** — the interactive-script gate | `execute_script_with_tty(stdin_is_tty, …)`, never the `execute_script` wrapper that reads `stdin().is_terminal()` |
+| **stdin TTY** — the interactive-script gate | `execute_script_with_tty(stdin_is_tty, …)`; the `execute_script` wrapper reads `stdin().is_terminal()` and is not used |
 
 Colour is decided ONCE, per `Printer`, at construction, and folded into its theme
 (`Theme::with_colors`), so a capture buffer cannot be styled by construction rather
@@ -125,7 +125,7 @@ than merely stripped by convention. Production supplies the decision as a
 `output::printer::colors_must_be_disabled(&format)`; `--no-color` passes `Never`).
 That veto covers only the formats whose payload is a machine contract
 (`OutputFormat::refuses_color`): `-o yaml` is highlighted under the ordinary
-decision and asks STDOUT rather than stderr, because the payload is the only
+decision and asks STDOUT (stderr plays no part), because the payload is the only
 thing colour reaches there. Every capture constructor supplies `false` except
 `for_test_with_theme_colored` and `for_test_with_theme_and_format(.., colors)`. No PRODUCTION code writes `console`'s colour
 flags, so nothing a run does can change what a printer already decided. Tests write them
@@ -145,8 +145,8 @@ process-global env var — through `EnvVarGuard`, `EditorGuard::set`,
 `with_test_env_var`, `ProbePath::containing`, any `install_named_path_shim*`,
 either tool shim, or a raw `env::set_var` / `remove_var`, in its own body or in a
 same-file helper it calls — carries `#[serial_test::serial…]`, because edition 2024 makes
-an unserialized write in a live-threaded harness undefined behaviour rather than
-a flake; `every_test_mutating_the_process_environment_serializes_itself` walks
+an unserialized write in a live-threaded harness undefined behaviour, which is
+worse than a flake; `every_test_mutating_the_process_environment_serializes_itself` walks
 for one, and `// serial-ok: <why>` hatches a mutation that cannot race (a
 per-child `Command::env(…)` handoff is not one of them and is never matched).
 
@@ -212,7 +212,7 @@ banner.
 That group belongs to the journal alone. A scoped capture holds one thread's
 buffer for the length of one closure, so a test whose only tracing reach is a
 capture carries no serial attribute: what keeps its verdict independent of what
-another thread registered is the journal installed under it, not a lock.
+another thread registered is the journal installed under it, and no lock is involved.
 
 ## A fail-without-fix probe never mutates the shared working tree
 
@@ -240,16 +240,16 @@ CARGO_TARGET_DIR=~/.cache/cfgd-debug/probe-target \
 ```
 
 The evidence is identical and no other reader can see the mutation. Scratch goes under
-`~/.cache/`, never `/tmp`, and the probe TREE is deleted as soon as the probe's red run is
+`~/.cache/` (`/tmp` is off limits), and the probe TREE is deleted as soon as the probe's red run is
 captured, so nothing later reads a tree still carrying a deliberate defect. The shared
 target dir (`~/.cache/cfgd-debug/red-target`) is retained: a fresh tree is copied per
-probe, so what a kept target dir changes is rebuild cost, never what a probe measures.
+probe, so a kept target dir changes only rebuild cost and leaves what a probe measures alone.
 
 ## Fixture versions: use the 9.9.x sentinel range
 
 When a test hardcodes a version string as a scaffold (mock upgrade
-flows, fake release tags, illustrative bump scenarios) rather than
-asserting against `CARGO_PKG_VERSION`, use a version in the **9.9.x**
+flows, fake release tags, illustrative bump scenarios) and does not
+assert against `CARGO_PKG_VERSION`, use a version in the **9.9.x**
 range (e.g. `v9.9.0`, `v9.9.1`). These never coincide with any real
 cfgd release stream, so the test stays inert across version bumps.
 

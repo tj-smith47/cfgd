@@ -3,7 +3,7 @@ paths: ["crates/**/*.rs"]
 ---
 # cfgd Module Boundaries — `std::process::Command` allow-list
 
-If you need to shell out, it must go through a controlled execution layer, not scattered across the codebase.
+If you need to shell out, it must go through a controlled execution layer; shell-outs scattered across the codebase are not allowed.
 
 `std::process::Command` is permitted **only** in:
 

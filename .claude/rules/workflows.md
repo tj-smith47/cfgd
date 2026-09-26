@@ -33,7 +33,7 @@ single-source-of-truth wiring.
   binary distribution — and they run FIRST, ahead of `dispatch-oidc`:
   `publish-trio`'s `github-release` publisher creates the release + binary
   assets that cargo's verify-release gate requires for a binary crate (its
-  binstall `pkg_url` must resolve, never 404), and crates.io is append-only
+  binstall `pkg_url` must resolve with no 404), and crates.io is append-only
   while the release + tags are deletable, so the irreversible cargo leg goes
   LAST. `publish-trio` needs only `[tag, determinism-check]`; `dispatch-oidc`
   needs `[tag, determinism-check, publish-trio]` and gates on `publish-trio`
@@ -51,8 +51,8 @@ single-source-of-truth wiring.
   crates shard across all three OSes, library crates linux-only (via
   determinism-shards' `os-labels` input). Publish legs restore their
   crate's `dist-<crate>-*` artifact — there is no inline preserve-dist.
-- Trio rollback is the dedicated `rollback-trio` job, never a per-leg
-  step (fail-fast off means legs run concurrently).
+- Trio rollback is the dedicated `rollback-trio` job; no leg carries its own
+  rollback step (fail-fast off means legs run concurrently).
 - `permissions:` read-only at workflow level; publish jobs elevate to the
   full write set, image-push jobs to `packages: write` only. The preflight
   job also carries `id-token: write` — not to publish, but because the
@@ -60,8 +60,8 @@ single-source-of-truth wiring.
   can mint OIDC tokens, and anodizer's secret preflight validates those on
   behalf of the MCP-registry publisher.
 - crates.io Trusted Publishing (`.anodizer.yaml` cargo `auth: oidc`) runs in a
-  DEDICATED `publish-oidc.yml` (`on: workflow_dispatch`), never in `release.yml`
-  or the reusable `publish-crate.yml`: crates.io TP rejects the `workflow_run`
+  DEDICATED `publish-oidc.yml` (`on: workflow_dispatch`); `release.yml` and
+  the reusable `publish-crate.yml` cannot host it: crates.io TP rejects the `workflow_run`
   event those fire on ("does not support the workflow_run event trigger" — the
   OIDC `event_name` claim is fixed per trigger and checked before any
   workflow-filename match), and `workflow_dispatch` is on its accepted list.
@@ -104,7 +104,7 @@ single-source-of-truth wiring.
 - The `test-freebsd` job in ci.yml is a `vmactions/freebsd-vm` guest (no
   GitHub-hosted FreeBSD runner exists), pinned to the same release as the
   acceptance VM. It runs `task test:ci` like every other test leg — the
-  FreeBSD scope decision lives in the Taskfile, not the workflow: `test:ci`
+  FreeBSD scope decision lives in the Taskfile, and the workflow holds none: `test:ci`
   detects FreeBSD via `uname -s` (no `RUNNER_OS` inside the guest) and scopes
   to `-p cfgd-core -p cfgd`, because cfgd-csi/cfgd-operator are k8s
   server-side with no FreeBSD surface (same rationale as the Windows branch).
@@ -139,7 +139,7 @@ single-source-of-truth wiring.
   is a Taskfile `uname -s` branch like `test:ci`'s and never a leg of
   `task ci`; the script refuses a non-root caller, a non-FreeBSD host, and a
   target user whose uid or home says it is somebody real. `npm` is installed
-  in `prepare` rather than by the script because `IGNORE_OSVERSION` is not
+  in `prepare` because `IGNORE_OSVERSION` is not
   exported into the `run:` shell. The guest gets `mem: 10240`: rustc compiling cfgd-core's
   test crate was SIGKILLed on the default allotment (run 34063783806), and
   the 16 GB runner can spare it. `task test:freebsd` runs the same leg
@@ -168,7 +168,7 @@ single-source-of-truth wiring.
   `if` or `continue-on-error` on the job or the step, or runs anything but the
   script; it also fails when a file a crate embeds is not an input.
 - The `test-thread-model` job in ci.yml runs `task test:threads` — plain
-  `cargo test --test-threads=16`, not nextest. It is not redundant with the
+  `cargo test --test-threads=16`, without nextest. It is not redundant with the
   `test` job: nextest runs one process per test, so each test gets its own
   `environ` and its own copy of every `static`, and a race on process-global
   state shared BETWEEN tests (PATH mutation vs `command_path` resolution, the
@@ -180,7 +180,7 @@ single-source-of-truth wiring.
   release that fails AFTER `anodizer tag` never lands its bump on master, and
   every later old→new `version_files` sweep then finds nothing to replace —
   the literal freezes (v0.8.0 left `chart/cfgd/Chart.yaml` and four docs at
-  0.7.0 through two more releases). Keep it in the audit job, not the
+  0.7.0 through two more releases). Keep it in the audit job and out of the
   release workflow: the point is to fail a PR, before anything is tagged.
   Its sibling, right after it in the same job, is `task chart:tags:check`,
   which renders the chart with every first-party image enabled and holds
@@ -208,8 +208,8 @@ single-source-of-truth wiring.
   equal the predicted version, which is why the guard as an existence check
   could never pass a pin bump (run 34063783806); off a release branch it may
   run ahead of the released version, which the release branch's own run then
-  checks exactly. Both guards are registry/anodizer questions rather than
-  Rust ones; they sit in the one job that holds the tools they need (`task`,
+  checks exactly. Both guards ask registry/anodizer questions and
+  no Rust ones; they sit in the one job that holds the tools they need (`task`,
   anodizer on PATH from the action step, docker, helm, yq, jq), and that job
   checks out with `fetch-depth: 0` because the prediction walks the tags.
   The third chart step in that job is `task chart:test`, which renders the
@@ -231,15 +231,15 @@ single-source-of-truth wiring.
   paid twice on purpose; the doc leg's `--all-features` pulls in
   `test-helpers`, which `cargo clippy --workspace --all-targets` does not
   build, so the two legs never shared a build cache even in one job.
-  `--all-features` is load-bearing, not decoration:
+  `--all-features` is required:
   `cfgd-core` is the only crate in the workspace with a non-default feature (`test-helpers`),
   and without it the gate never compiles `test_helpers.rs` or the
   `EnvHostProbeOverride` seam at all, so a broken link inside either one
   passes clean locally and in CI alike. Denying warnings turns every rustdoc
   lint (broken intra-doc link, private-item link from a public item, bare
   URL, unclosed HTML tag, redundant explicit link target) into a build
-  failure; fix the reference, never `#[allow(rustdoc::…)]` and never a `///`
-  demoted to `//`. The one standing exception is a clap-derive `///` whose
+  failure; the fix is to correct the reference. Neither `#[allow(rustdoc::…)]`
+  nor a `///` demoted to `//` is an accepted fix. The one standing exception is a clap-derive `///` whose
   placeholder syntax is user-facing help text (`cli/mod.rs`'s four
   `<manager>`-style arg docs on `ProfileCreateArgs`/`ProfileUpdateArgs`/
   `ModuleCreateArgs`/`ModuleUpdateArgs`, rendered verbatim in `cfgd --help`):
@@ -254,10 +254,10 @@ single-source-of-truth wiring.
   two rustdocs peak near 10 GB each; on the 12 GB dev host that is the
   kernel OOM-killing the largest process on the box, whichever session owns
   it (41 kills between 2026-09-04 and 2026-09-09, every one a rustdoc or the
-  rust-analyzer beside it). A broken link is a merge blocker, not a commit
-  blocker — CI refuses it before it lands.
+  rust-analyzer beside it). A broken link blocks the merge and does not block
+  a commit — CI refuses it before it lands.
 - **Every e2e job that cargo-builds carries the compile-cache layering, under its
-  own key.** Six e2e jobs compile on the runner rather than riding the
+  own key.** Six e2e jobs compile on the runner and do not ride the
   setup job's images: `setup` (e2e-setup.yml, building the three images),
   `operator-tests` (`test-oci.sh` → `ensure_cfgd_binary`), `full-stack-tests`
   (`setup-fullstack-env.sh` → `ensure_cfgd_binary`), `crossplane-tests`
@@ -271,11 +271,11 @@ single-source-of-truth wiring.
   different `target/` trees evict each other from. `node-tests`, `helm-tests` and
   `server-tests` compile nothing and carry no Rust toolchain at all. A new e2e job
   that builds joins the list with its own key. A cold build is what the per-job
-  budget cannot absorb: raising the timeout hides a missing cache rather than
-  fixing it.
+  budget cannot absorb: raising the timeout hides a missing cache and leaves
+  it missing.
 - **What `.claude/scripts/audit.sh`'s "e2e compile-cache layering" gate judges.**
   Its population is the `.github/workflows/e2e*.yml` glob, and a glob matching
-  nothing fails the gate rather than passing an unwatched tree. Inside each file it
+  nothing fails the gate, so an unwatched tree cannot pass. Inside each file it
   cuts the `jobs:` map at every two-space job key, a trailing `# comment` on that
   key included, and for every job carrying a `dtolnay/rust-toolchain` step it
   demands all four parts plus a `key:`; the key map is judged over every scanned
