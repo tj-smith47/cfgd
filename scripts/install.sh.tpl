@@ -219,7 +219,19 @@ download_and_install() {
         info "[dry-run] Would verify cosign signature from ${base_url}/${bundle_name} (if cosign installed)"
         info "[dry-run] Would extract and install cfgd to ${dest_dir}/${bin}"
         if [ ! -d "$dest_dir" ]; then
-            info "[dry-run] Would create ${dest_dir}"
+            # The real run creates the directory as whoever can write its nearest
+            # existing parent: through sudo when that is not the user, and the
+            # copy into a directory sudo created needs sudo too.
+            local parent="$dest_dir"
+            while [ ! -d "$parent" ]; do
+                parent="$(dirname "$parent")"
+            done
+            if [ -w "$parent" ]; then
+                info "[dry-run] Would create ${dest_dir}"
+            else
+                info "[dry-run] Would create ${dest_dir} (requires sudo)"
+                info "[dry-run] Would require sudo for ${dest_dir}"
+            fi
         elif [ ! -w "$dest_dir" ]; then
             info "[dry-run] Would require sudo for ${dest_dir}"
         fi
