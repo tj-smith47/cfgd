@@ -52412,7 +52412,7 @@ fn every_cli_refusal_kind_is_named_in_the_reference() {
     /// The constructors and literal kinds in use today: floors, so a reader
     /// that stops finding either fails on the count rather than passing.
     const FLOOR_CONSTRUCTORS: usize = 10;
-    const FLOOR_KINDS: usize = 79;
+    const FLOOR_KINDS: usize = 80;
 
     let bodies = cli_production_bodies();
     let constructors = refusal_constructors(&bodies);

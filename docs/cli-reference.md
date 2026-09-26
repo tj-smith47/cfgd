@@ -1525,7 +1525,33 @@ cfgd upgrade                   # download and install latest
 cfgd upgrade --check           # check only (exit 0 = current, 2 = update available, 1 = error)
 cfgd upgrade --require-cosign  # fail if cosign signature cannot be verified
 CFGD_REQUIRE_COSIGN=1 cfgd upgrade
+GITHUB_TOKEN=$(gh auth token) cfgd upgrade --check
 ```
+
+#### GitHub token and rate limit
+
+The release check queries the GitHub Releases API, which answers 60 requests an
+hour per IP address without a token. When `GITHUB_TOKEN` or `GH_TOKEN` is set,
+the query sends it as a bearer token and the account's own limit applies.
+`GITHUB_TOKEN` is read first, and an empty value counts as unset. The
+automatic update check and the daemon's check read the same two variables.
+
+When the limit is used up, the check fails with the `rate_limited` kind.
+`limit` is the request allowance GitHub reported, `resetAt` is when it resets
+(RFC 3339, UTC) and `hint` names the two variables:
+
+```json
+{
+  "error": "rate_limited",
+  "name": "0.11.0",
+  "currentVersion": "0.11.0",
+  "limit": 60,
+  "resetAt": "2026-09-21T14:13:20Z",
+  "hint": "set GITHUB_TOKEN or GH_TOKEN to a GitHub token to raise the limit"
+}
+```
+
+Any other refusal from the API fails with `check_failed`.
 
 #### Signature verification
 
@@ -3034,6 +3060,7 @@ domain instead: `config`, `file`, `package`, `secret`, `system`, `state`,
 | `profile_source_delivered` | The profile named is not local, and a subscribed source provides it; `sources` lists which. |
 | `pull_failed` | Pulling a module artifact failed. |
 | `push_failed` | Pushing a module artifact failed. |
+| `rate_limited` | `cfgd upgrade` used up the GitHub API rate limit; `limit` is the allowance, `resetAt` when it resets (RFC 3339) and `hint` names `GITHUB_TOKEN` and `GH_TOKEN`, which raise it. |
 | `read_failed` | A file the command needs exists but could not be read. |
 | `registry_not_found` | The module registry named is not configured. |
 | `resign_failed` | Re-signing an artifact with a rotated key failed. |

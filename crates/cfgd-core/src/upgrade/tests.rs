@@ -1266,6 +1266,132 @@ fn fetch_latest_release_from_handles_prerelease_version() {
     assert_eq!(release.version, Version::parse("4.0.0-beta.1").unwrap());
 }
 
+// --- GitHub token and rate limit ---
+
+/// Response headers a mock answers with, as `(name, value)` pairs.
+type MockHeaders = &'static [(&'static str, &'static str)];
+
+/// Runs one latest-release query against a mock whose answer is `status` with
+/// `headers`, with `GITHUB_TOKEN` and `GH_TOKEN` set to `tokens` (`None` unsets
+/// one).
+fn query_with(
+    tokens: [Option<&str>; 2],
+    expect_auth: mockito::Matcher,
+    status: usize,
+    headers: MockHeaders,
+) -> Result<ReleaseInfo> {
+    // Spelled here, not read off GITHUB_TOKEN_VARS, so reordering that list
+    // is a change this test sees.
+    let _vars: Vec<_> = ["GITHUB_TOKEN", "GH_TOKEN"]
+        .into_iter()
+        .zip(tokens)
+        .map(|(var, value)| match value {
+            Some(value) => crate::test_helpers::EnvVarGuard::set(var, value),
+            None => crate::test_helpers::EnvVarGuard::unset(var),
+        })
+        .collect();
+    let mut server = mockito::Server::new();
+    let mut mock = server
+        .mock("GET", "/repos/test/repo/releases/latest")
+        .match_header("authorization", expect_auth)
+        .with_status(status)
+        .with_body(r#"{"tag_name": "v1.0.0", "assets": []}"#);
+    for (name, value) in headers {
+        mock = mock.with_header(*name, value);
+    }
+    let mock = mock.create();
+    let result = fetch_latest_release_from(&server.url(), "test/repo", None);
+    mock.assert();
+    result
+}
+
+#[test]
+#[serial_test::serial]
+fn the_release_query_sends_a_bearer_token_from_github_token_then_gh_token() {
+    use mockito::Matcher;
+    let cases: [([Option<&str>; 2], Matcher); 5] = [
+        ([Some("from-github"), None], "Bearer from-github".into()),
+        ([None, Some("from-gh")], "Bearer from-gh".into()),
+        (
+            [Some("from-github"), Some("from-gh")],
+            "Bearer from-github".into(),
+        ),
+        ([Some(""), Some("from-gh")], "Bearer from-gh".into()),
+        ([None, None], Matcher::Missing),
+    ];
+    for (tokens, expect) in cases {
+        let release = query_with(tokens, expect, 200, &[])
+            .unwrap_or_else(|e| panic!("tokens {tokens:?}: the query failed: {e}"));
+        assert_eq!(release.tag, "v1.0.0", "tokens {tokens:?}");
+    }
+}
+
+#[test]
+#[serial_test::serial]
+fn an_exhausted_rate_limit_is_a_typed_error_naming_its_limit_reset_and_token_variables() {
+    for status in [403, 429] {
+        let err = query_with(
+            [None, None],
+            mockito::Matcher::Missing,
+            status,
+            &[
+                ("x-ratelimit-limit", "60"),
+                ("x-ratelimit-remaining", "0"),
+                ("x-ratelimit-reset", "1790000000"),
+            ],
+        )
+        .expect_err("an exhausted limit fails the query");
+        match &err {
+            crate::errors::CfgdError::Upgrade(UpgradeError::RateLimited { limit, reset_at }) => {
+                assert_eq!(*limit, 60, "status {status}");
+                assert_eq!(reset_at, "2026-09-21T14:13:20Z", "status {status}");
+            }
+            other => panic!("status {status}: expected RateLimited, got {other:?}"),
+        }
+        assert_eq!(
+            err.to_string(),
+            "upgrade error: GitHub API rate limit of 60 requests is used up until \
+             2026-09-21T14:13:20Z; set GITHUB_TOKEN or GH_TOKEN to a GitHub token to raise it",
+            "status {status}"
+        );
+    }
+}
+
+#[test]
+#[serial_test::serial]
+fn a_refusal_that_is_not_an_exhausted_rate_limit_stays_a_plain_status_error() {
+    let cases: [(&str, usize, MockHeaders); 3] = [
+        ("a 403 without rate limit headers", 403, &[]),
+        (
+            "a 403 with requests left",
+            403,
+            &[
+                ("x-ratelimit-limit", "60"),
+                ("x-ratelimit-remaining", "5"),
+                ("x-ratelimit-reset", "1790000000"),
+            ],
+        ),
+        (
+            "a 404 with the limit used up",
+            404,
+            &[
+                ("x-ratelimit-limit", "60"),
+                ("x-ratelimit-remaining", "0"),
+                ("x-ratelimit-reset", "1790000000"),
+            ],
+        ),
+    ];
+    for (case, status, headers) in cases {
+        let err = query_with([None, None], mockito::Matcher::Missing, status, headers)
+            .expect_err("a refusal fails the query");
+        assert_eq!(
+            err.to_string(),
+            format!("upgrade error: failed to query GitHub releases: http status: {status}"),
+            "{case}"
+        );
+    }
+}
+
 // --- download_to_file with mockito ---
 
 #[test]

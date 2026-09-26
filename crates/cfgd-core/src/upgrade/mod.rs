@@ -282,18 +282,51 @@ fn github_get(
     }
 }
 
+/// The environment variables a GitHub token is read from, first set one wins.
+/// `GITHUB_TOKEN` leads because it is what a GitHub Actions job exports; `GH_TOKEN`
+/// is the `gh` CLI's own.
+pub const GITHUB_TOKEN_VARS: [&str; 2] = ["GITHUB_TOKEN", "GH_TOKEN"];
+
+/// The GitHub token the release queries authenticate with. An empty value
+/// counts as unset, so `GITHUB_TOKEN=` does not hide a `GH_TOKEN`.
+fn github_token() -> Option<String> {
+    GITHUB_TOKEN_VARS
+        .iter()
+        .find_map(|var| std::env::var(var).ok().filter(|token| !token.is_empty()))
+}
+
 /// The fallible half of [`github_get`]: one `Result` the caller matches once
 /// to settle the spinner, instead of an early `?` abandoning it mid-request.
 fn github_get_inner(url: &str) -> Result<String> {
     let agent = crate::http::http_agent(crate::http::HTTP_UPGRADE_TIMEOUT);
-    let mut response = agent
+    // Status-as-error off for this request only: `ureq::Error::StatusCode`
+    // carries nothing but the code, and telling an exhausted rate limit apart
+    // from any other 403 needs the response headers.
+    let mut request = agent
         .get(url)
+        .config()
+        .http_status_as_error(false)
+        .build()
         .header("Accept", "application/vnd.github+json")
-        .header("User-Agent", "cfgd-self-update")
-        .call()
-        .map_err(|e| UpgradeError::ApiError {
-            message: format!("{}", e),
-        })?;
+        .header("User-Agent", "cfgd-self-update");
+    if let Some(token) = github_token() {
+        request = request.header("Authorization", &format!("Bearer {token}"));
+    }
+    let mut response = request.call().map_err(|e| UpgradeError::ApiError {
+        message: format!("{}", e),
+    })?;
+
+    // not-a-child-ok: an HTTP response's own status code, which starts no process
+    let status = response.status().as_u16();
+    if !(200..300).contains(&status) {
+        if let Some(limited) = rate_limited(status, response.headers()) {
+            return Err(limited.into());
+        }
+        return Err(UpgradeError::ApiError {
+            message: format!("{}", ureq::Error::StatusCode(status)),
+        }
+        .into());
+    }
 
     let body: String =
         response
@@ -304,6 +337,25 @@ fn github_get_inner(url: &str) -> Result<String> {
             })?;
 
     Ok(body)
+}
+
+/// An exhausted primary rate limit, read off a refusal's headers. GitHub
+/// answers one with a 403 or a 429 whose `x-ratelimit-remaining` is 0; any
+/// other refusal, and one missing the limit or its reset, stays a plain status
+/// error because there is nothing more exact to say about it.
+fn rate_limited(status: u16, headers: &ureq::http::HeaderMap) -> Option<UpgradeError> {
+    if status != 403 && status != 429 {
+        return None;
+    }
+    let number =
+        |name: &str| -> Option<u64> { headers.get(name)?.to_str().ok()?.trim().parse().ok() };
+    if number("x-ratelimit-remaining")? != 0 {
+        return None;
+    }
+    Some(UpgradeError::RateLimited {
+        limit: number("x-ratelimit-limit")?,
+        reset_at: crate::unix_secs_to_iso8601(number("x-ratelimit-reset")?),
+    })
 }
 
 fn parse_release_json(body: &str) -> Result<ReleaseInfo> {

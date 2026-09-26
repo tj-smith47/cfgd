@@ -43,6 +43,34 @@ fn upgraded_doc(
     doc.with_data(serde_json::Value::Object(payload))
 }
 
+/// The refusal a failed release check returns. An exhausted GitHub rate limit
+/// is `rate_limited`, carrying the limit, its reset and the variables a token is
+/// read from, so a script can wait it out or supply one; every other failure is
+/// `check_failed`.
+fn check_failed_error(e: cfgd_core::errors::CfgdError) -> anyhow::Error {
+    use cfgd_core::errors::{CfgdError, UpgradeError};
+
+    let current = env!("CARGO_PKG_VERSION");
+    let msg = format!("Failed to check latest version: {e}");
+    if let CfgdError::Upgrade(UpgradeError::RateLimited { limit, reset_at }) = &e {
+        let [first, second] = cfgd_core::upgrade::GITHUB_TOKEN_VARS;
+        let extras = serde_json::json!({
+            "currentVersion": current,
+            "limit": limit,
+            "resetAt": reset_at,
+            "hint": format!("set {first} or {second} to a GitHub token to raise the limit"),
+        });
+        return crate::cli::cli_error_ctx(e.into(), current, "rate_limited", msg, extras);
+    }
+    crate::cli::cli_error_ctx(
+        e.into(),
+        current,
+        "check_failed",
+        msg,
+        serde_json::json!({ "currentVersion": current }),
+    )
+}
+
 // constant-payload-ok: each branch of this command IS the verification outcome
 // it reports — the up-to-date arm ran no install to verify, and the applied arm
 // is reached only after `install_update` verified the downloaded artifact.
@@ -69,16 +97,7 @@ pub fn cmd_upgrade(
 
     if check_only {
         let check = upgrade::check_latest(env!("CARGO_PKG_VERSION"), None, channel, Some(printer))
-            .map_err(|e| {
-                let msg = format!("Failed to check latest version: {e}");
-                crate::cli::cli_error_ctx(
-                    e.into(),
-                    env!("CARGO_PKG_VERSION"),
-                    "check_failed",
-                    msg,
-                    serde_json::json!({ "currentVersion": env!("CARGO_PKG_VERSION") }),
-                )
-            })?;
+            .map_err(check_failed_error)?;
 
         if check.update_available {
             printer.emit(
@@ -122,16 +141,7 @@ pub fn cmd_upgrade(
     printer.heading("Upgrade");
 
     let check = upgrade::check_latest(env!("CARGO_PKG_VERSION"), None, channel, Some(printer))
-        .map_err(|e| {
-            let msg = format!("Failed to check latest version: {e}");
-            crate::cli::cli_error_ctx(
-                e.into(),
-                env!("CARGO_PKG_VERSION"),
-                "check_failed",
-                msg,
-                serde_json::json!({ "currentVersion": env!("CARGO_PKG_VERSION") }),
-            )
-        })?;
+        .map_err(check_failed_error)?;
 
     if !check.update_available {
         printer.emit(
@@ -704,6 +714,89 @@ mod tests {
             "check_failed",
             "error kind must be check_failed"
         );
+    }
+
+    /// Renders a `--check` against a mock answering `status` with `headers`
+    /// through the one error sink under `-o json`, and returns the payload
+    /// bytes parsed plus the exit code.
+    fn check_refusal_payload(
+        status: usize,
+        headers: &[(&str, &str)],
+    ) -> (serde_json::Value, cfgd_core::exit::ExitCode) {
+        let mut server = mockito::Server::new();
+        let mut mock = server
+            .mock("GET", "/repos/tj-smith47/cfgd/releases/latest")
+            .with_status(status)
+            .with_body(r#"{"message": "API rate limit exceeded"}"#);
+        for (name, value) in headers {
+            mock = mock.with_header(*name, value);
+        }
+        let _mock = mock.create();
+        let _guard = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
+
+        let (printer, _cap) = Printer::for_test_doc();
+        let err = cmd_upgrade(
+            &printer,
+            std::path::Path::new("/nonexistent/cfgd.yaml"),
+            true,
+            false,
+        )
+        .expect_err("a refused check must return Err");
+        let (json, buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
+        let code = crate::cli::error::render_cli_error(&json, &err);
+        json.flush();
+        let bytes = cfgd_core::test_helpers::captured_text(&buf);
+        let payload = serde_json::from_str(bytes.trim())
+            .unwrap_or_else(|e| panic!("the payload is one JSON value ({e}): {bytes}"));
+        (payload, code)
+    }
+
+    /// An exhausted rate limit is `rate_limited` under `-o json`, carrying the
+    /// limit, its reset and the two token variables; any other refusal keeps
+    /// `check_failed`.
+    #[test]
+    #[serial]
+    fn cmd_upgrade_check_names_an_exhausted_rate_limit_in_its_payload() {
+        let exhausted = [
+            ("x-ratelimit-limit", "60"),
+            ("x-ratelimit-remaining", "0"),
+            ("x-ratelimit-reset", "1790000000"),
+        ];
+        let (payload, code) = check_refusal_payload(403, &exhausted);
+        assert_eq!(
+            payload,
+            serde_json::json!({
+                "error": "rate_limited",
+                "name": env!("CARGO_PKG_VERSION"),
+                "currentVersion": env!("CARGO_PKG_VERSION"),
+                "limit": 60,
+                "resetAt": "2026-09-21T14:13:20Z",
+                "hint": "set GITHUB_TOKEN or GH_TOKEN to a GitHub token to raise the limit",
+            })
+        );
+        assert_eq!(code, cfgd_core::exit::ExitCode::Error);
+
+        let left = [
+            ("x-ratelimit-limit", "60"),
+            ("x-ratelimit-remaining", "5"),
+            ("x-ratelimit-reset", "1790000000"),
+        ];
+        for (case, headers) in [
+            ("no rate limit headers", &[][..]),
+            ("requests left", &left[..]),
+        ] {
+            let (payload, code) = check_refusal_payload(403, headers);
+            assert_eq!(
+                payload,
+                serde_json::json!({
+                    "error": "check_failed",
+                    "name": env!("CARGO_PKG_VERSION"),
+                    "currentVersion": env!("CARGO_PKG_VERSION"),
+                }),
+                "a 403 with {case}"
+            );
+            assert_eq!(code, cfgd_core::exit::ExitCode::Error, "a 403 with {case}");
+        }
     }
 
     /// Latest version matches current → emits "up to date" Doc, returns Ok.

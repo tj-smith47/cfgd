@@ -855,6 +855,11 @@ pub enum UpgradeError {
     #[error("failed to query GitHub releases: {message}")]
     ApiError { message: String },
 
+    #[error(
+        "GitHub API rate limit of {limit} requests is used up until {reset_at}; set GITHUB_TOKEN or GH_TOKEN to a GitHub token to raise it"
+    )]
+    RateLimited { limit: u64, reset_at: String },
+
     #[error("no release found for {os}/{arch}")]
     NoAsset { os: String, arch: String },
 
