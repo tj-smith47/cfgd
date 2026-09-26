@@ -45,8 +45,8 @@ single-source-of-truth wiring.
   trio leg has settled, so neither races the other. helm/crossplane/olm gate on
   BOTH `publish-trio` and `dispatch-oidc` success (cargo is no longer transitive
   via trio). crates.io dep ordering (`cfgd-schema → cfgd-crd → cfgd-core →
-  trio`) is load-bearing and enforced INSIDE anodizer's workspace topo-sort,
-  not the job graph.
+  trio`) is required, and anodizer's workspace topo-sort enforces it; the
+  job graph plays no part.
 - Determinism lanes come from the tag job's `det_matrix` output: trio
   crates shard across all three OSes, library crates linux-only (via
   determinism-shards' `os-labels` input). Publish legs restore their
@@ -139,7 +139,7 @@ single-source-of-truth wiring.
   is a Taskfile `uname -s` branch like `test:ci`'s and never a leg of
   `task ci`; the script refuses a non-root caller, a non-FreeBSD host, and a
   target user whose uid or home says it is somebody real. `npm` is installed
-  in `prepare` because `IGNORE_OSVERSION` is not
+  in `prepare`; the guest script cannot install it because `IGNORE_OSVERSION` is not
   exported into the `run:` shell. The guest gets `mem: 10240`: rustc compiling cfgd-core's
   test crate was SIGKILLed on the default allotment (run 34063783806), and
   the 16 GB runner can spare it. `task test:freebsd` runs the same leg

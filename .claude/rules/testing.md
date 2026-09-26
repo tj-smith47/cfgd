@@ -119,8 +119,8 @@ inputs have to be supplied by the test, and a test inherits none of them:
 | **stdin TTY** — the interactive-script gate | `execute_script_with_tty(stdin_is_tty, …)`; the `execute_script` wrapper reads `stdin().is_terminal()` and is not used |
 
 Colour is decided ONCE, per `Printer`, at construction, and folded into its theme
-(`Theme::with_colors`), so a capture buffer cannot be styled by construction rather
-than merely stripped by convention. Production supplies the decision as a
+(`Theme::with_colors`), so by construction a capture buffer cannot be styled, and no
+convention is needed to strip it. Production supplies the decision as a
 `ColorChoice` (`Auto` resolves `console`'s detection minus
 `output::printer::colors_must_be_disabled(&format)`; `--no-color` passes `Never`).
 That veto covers only the formats whose payload is a machine contract
@@ -179,8 +179,8 @@ render nothing.
 
 Goldens are captured through a path where all three are pinned — `assert_human_snapshot*`
 strips for its caller, while the raw `assert_snapshot_at` does not, so a caller reaching
-it directly strips first. Goldens are RE-CAPTURED (`INSTA_UPDATE=always`), never
-hand-edited.
+it directly strips first. Goldens are RE-CAPTURED (`INSTA_UPDATE=always`); nobody
+edits one by hand.
 
 Verify both ways before calling a test suite green; a suite only ever observed one way is
 how all of this shipped.

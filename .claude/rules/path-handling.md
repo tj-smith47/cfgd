@@ -3,8 +3,8 @@ paths: ["crates/**/*.rs"]
 ---
 # cfgd Path Handling — fold to `/` at every cross-OS string boundary
 
-A `Path` rendered with the host-native separator is a **runtime correctness bug**,
-not a cosmetic one. On Windows `Path::display()` / `to_string_lossy()` emit `\`.
+A `Path` rendered with the host-native separator is a **runtime correctness bug** that
+changes behaviour. On Windows `Path::display()` / `to_string_lossy()` emit `\`.
 The moment that string becomes a value compared against, stored, serialized, or
 matched on another OS, it silently disagrees with its Unix-authored counterpart.
 
