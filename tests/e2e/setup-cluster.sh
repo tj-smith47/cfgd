@@ -738,6 +738,17 @@ kubectl apply -f "$WEBHOOK_FILE"
 rm -f "$WEBHOOK_FILE"
 
 # --- Step 11: Deploy CSI driver via Helm ---
+# The shared cluster's CSI node plugin is deployed by ArgoCD from
+# /db/manifests/k3s/namespaces/cfgd-system/csi-daemonset.yaml, under the same
+# object names this release uses. Helm installs it only on an e2e cluster where
+# ArgoCD does not own that DaemonSet; an upgrade there would be reverted on the
+# next sync.
+CSI_ARGOCD_MANAGED=false
+if kubectl get daemonset cfgd-csi-csi -n cfgd-system \
+    -o jsonpath='{.metadata.annotations.argocd\.argoproj\.io/tracking-id}' 2>/dev/null | grep -q .; then
+    CSI_ARGOCD_MANAGED=true
+fi
+
 # Skip the Helm redeploy when the CSI image is unchanged AND a release already
 # exists (fresh clusters with no release still install). The DaemonSet keeps
 # running the image it was installed with, so a re-upgrade would be a no-op.
@@ -747,7 +758,9 @@ if [ "${IMAGE_BUILT[cfgd-csi]:-true}" != "true" ] \
     CSI_HELM_NEEDED=false
 fi
 
-if [ "$CSI_HELM_NEEDED" != "true" ]; then
+if [ "$CSI_ARGOCD_MANAGED" = "true" ]; then
+    echo "Deploying CSI driver... DaemonSet managed by ArgoCD — skipping Helm install"
+elif [ "$CSI_HELM_NEEDED" != "true" ]; then
     echo "Deploying CSI driver... cfgd-csi image unchanged and release present — skipping Helm upgrade"
 else
 echo "Deploying CSI driver..."

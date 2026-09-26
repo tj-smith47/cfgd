@@ -39,3 +39,10 @@ e2e_image_tag cfgd-csi    # 0.7.2
 `task e2e:tags:check` runs `common/test-image-tags.sh`, which needs no cluster: it
 resolves each image under every override and fails when a script under `tests/e2e/`
 spells `IMAGE_TAG` or a first-party image reference itself.
+
+## The CSI node plugin
+
+On the shared cluster the CSI node plugin is deployed by ArgoCD from
+`/db/manifests/k3s/namespaces/cfgd-system/csi-daemonset.yaml`. `setup-cluster.sh`
+installs it with Helm only on a cluster where ArgoCD does not own the `cfgd-csi-csi`
+DaemonSet.
