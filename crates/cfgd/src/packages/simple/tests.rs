@@ -876,7 +876,7 @@ fn every_unix_family_declares_the_privilege_its_install_needs() {
     // No seam, so the composition answers from the uid alone.
     let _seams: Vec<_> = families
         .iter()
-        .map(|(_, seam)| cfgd_core::test_helpers::EnvVarGuard::unset(seam.clone().leak()))
+        .map(|(_, seam)| cfgd_core::test_helpers::EnvVarGuard::unset(seam))
         .collect();
     let root = cfgd_core::is_root();
     for (name, _) in &families {
@@ -963,9 +963,9 @@ fn every_family_verb_spawns_with_the_family_env() {
     let _seams: Vec<_> = managers
         .iter()
         .map(|mgr| {
-            cfgd_core::test_helpers::EnvVarGuard::unset(
-                super::super::shared::tool_seam_var(mgr.install_program()).leak(),
-            )
+            cfgd_core::test_helpers::EnvVarGuard::unset(&super::super::shared::tool_seam_var(
+                mgr.install_program(),
+            ))
         })
         .collect();
 
@@ -1070,4 +1070,27 @@ fn zypper_refresh_runs_non_interactive() {
         Some(&["sudo", "zypper", "--non-interactive", "refresh"][..])
     );
     assert!(mgr.install_cmd.contains(&"-y") && mgr.uninstall_cmd.contains(&"-y"));
+}
+
+/// Every program a family spawns has a [`PROGRAM_SEAMS`] row, and each row's
+/// seam is the name `strip_sudo_for_exec` derives for the same program, so the
+/// availability probe, the spawn and the sudo strip read one variable. A family
+/// whose install program had no row would answer unavailable on every host.
+#[test]
+fn every_family_program_spawns_through_its_derived_seam() {
+    for (program, env) in PROGRAM_SEAMS {
+        assert_eq!(
+            *env,
+            super::super::shared::tool_seam_var(program),
+            "{program}'s seam row names the variable its sudo strip reads"
+        );
+    }
+    for (name, build) in SIMPLE_FAMILIES {
+        for program in build().spawned_programs() {
+            assert!(
+                program_seam(program).is_some(),
+                "{name} spawns {program}, which has no row in PROGRAM_SEAMS"
+            );
+        }
+    }
 }

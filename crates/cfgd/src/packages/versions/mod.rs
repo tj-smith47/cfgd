@@ -10,8 +10,8 @@
 //! a real package manager installed. `query_version_info` dispatches the seam
 //! per `manager` arg (pacman / dnf / yum / zypper) so each manager has an
 //! independent override knob. The install/uninstall/list paths in
-//! `packages::simple::mod` still shell out via raw `Command::new` and are not
-//! yet seamed.
+//! `packages::simple::mod` spawn through the same seams, off that module's
+//! `PROGRAM_SEAMS` table.
 
 use cfgd_core::errors::Result;
 use cfgd_core::tool_cmd;
@@ -28,23 +28,21 @@ pub const ZYPPER_BIN_ENV: &str = "CFGD_ZYPPER_BIN";
 pub const DPKG_QUERY_BIN_ENV: &str = "CFGD_DPKG_QUERY_BIN";
 pub const RPM_BIN_ENV: &str = "CFGD_RPM_BIN";
 
-/// Map an `info`-style manager name to its env-var seam. Unknown managers
+/// The seam of the program an `info`-style query spawns, read off
+/// [`PROGRAM_SEAMS`](super::simple::PROGRAM_SEAMS). Unknown managers
 /// debug-assert (catches typos in tests) and log a warning, then fall through
 /// to an empty seam so production keeps working via PATH lookup of `default`.
 fn info_bin_env(manager: &str) -> &'static str {
-    match manager {
-        "pacman" => PACMAN_BIN_ENV,
-        "dnf" => DNF_BIN_ENV,
-        "yum" => YUM_BIN_ENV,
-        "zypper" => ZYPPER_BIN_ENV,
-        other => {
+    match super::simple::program_seam(manager) {
+        Some(env) => env,
+        None => {
             debug_assert!(
                 false,
-                "query_version_info called with unknown manager {other:?}; CFGD_*_BIN seam silently bypassed"
+                "query_version_info called with unknown manager {manager:?}; CFGD_*_BIN seam silently bypassed"
             );
             // tracing-ok: an internal seam gap beside its own debug_assert; nothing user-facing
             tracing::warn!(
-                manager = other,
+                manager,
                 "query_version_info: no CFGD_*_BIN seam registered; falling through to PATH"
             );
             ""
