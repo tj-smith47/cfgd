@@ -119,7 +119,7 @@ spelled into the sentence rather than appended as `key=value`; the field form li
 `debug!` event beside each info line, so `-v` still gives a machine-parseable stream. The
 `Press Ctrl+C to stop` row is the one piece of the startup that is not a log line: it is
 printed only when a terminal is attached, because a service under systemd has no keyboard,
-and it is a note row rather than a hint, so `spec.output.usageHints` cannot take away the
+and it is a note row, so `spec.output.usageHints` cannot take away the
 only statement of how to stop a foreground run.
 
 The `tracing` lines around it are unchanged, so existing log consumers keep working; the

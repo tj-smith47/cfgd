@@ -174,7 +174,7 @@ fn apply_dry_run_waits_for_another_process_creating_the_state_store() {
     );
     assert!(
         status.success(),
-        "a dry-run must wait out another writer's lock, not fail on it; stderr:\n{seen}"
+        "a dry-run must wait out another writer's lock; stderr:\n{seen}"
     );
 }
 
@@ -2565,7 +2565,7 @@ fn profile_delete_inherited_with_ignore_not_found_still_errors() {
 /// asked the machine nothing, and the file on disk is drifted.
 ///
 /// `--hints` because the pointer at the live check is a tutorial hint, and the
-/// subject here is its WORDING rather than the gate it renders behind.
+/// subject here is its WORDING.
 #[test]
 fn status_plain_keeps_recorded_dashboard_despite_live_drift() {
     let dir = tempfile::tempdir().unwrap();
@@ -3086,9 +3086,9 @@ fn hints_are_off_by_default_end_to_end() {
     let out = cfgd_core::output::strip_ansi(&String::from_utf8_lossy(&assert.get_output().stderr));
     assert!(!out.contains('→'), "hint must be gone, got:\n{out}");
     // `trim_end()` would strip any number of trailing newlines, making this
-    // check pass even with a stranded blank line — compare the exact tail
-    // instead: one closing newline, never two, so a surviving blank (which
-    // would leave the string ending "planned\n\n") is falsifiable.
+    // check pass even with a stranded blank line, so the exact tail is
+    // compared: one closing newline and no second one, so a surviving blank
+    // (which would leave the string ending "planned\n\n") is falsifiable.
     assert!(
         out.ends_with("1 action planned\n") && !out.ends_with("\n\n"),
         "the verdict line must be the last line, with no leftover blank, got:\n{out:?}"
@@ -3215,7 +3215,7 @@ fn each_half_of_the_hints_pair_outranks_the_stored_value_end_to_end() {
 
 /// A config carrying the same single-file profile
 /// `cfgd_test_fixtures::tiny_profile_setup` builds, for a suite that spawns
-/// the real binary rather than calling `cmd_plan` in-process.
+/// the real binary.
 fn config_with_tiny_profile(dir: &std::path::Path) {
     std::fs::create_dir_all(dir.join("files")).unwrap();
     std::fs::write(dir.join("files/hello.txt"), "hello world").unwrap();

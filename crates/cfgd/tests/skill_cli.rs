@@ -73,7 +73,7 @@ fn install_in(
     cmd.env("HOME", home)
         // Windows resolves the home directory from USERPROFILE first; without
         // this the fixture HOME is ignored and provider detection inspects the
-        // constructor's home instead of the test fixture.
+        // constructor's home.
         .env("USERPROFILE", home)
         .env("XDG_CONFIG_HOME", home.join(".config"))
         .current_dir(repo)

@@ -636,7 +636,7 @@ impl PackagesSpec {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BrewSpec {
-    /// Path to a Brewfile to apply instead of (or alongside) `taps`,
+    /// Path to a Brewfile to apply in place of (or alongside) `taps`,
     /// `formulae` and `casks`. Relative to the config root.
     #[serde(default)]
     pub file: Option<String>,
@@ -714,8 +714,8 @@ impl FromPackageList for NpmSpec {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CargoSpec {
-    /// Path to a `Cargo.toml` whose binaries to install instead of `packages`.
-    /// Relative to the config root.
+    /// Path to a `Cargo.toml` whose binaries are installed in place of
+    /// `packages`. Relative to the config root.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file: Option<String>,
     /// Crate names to install (`cargo install`).

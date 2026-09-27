@@ -245,8 +245,8 @@ impl<'a> super::Reconciler<'a> {
         // The same fold over the managers already ON this host, whose floor no
         // bootstrap can raise. One node per manager, because two modules
         // flooring one copy of a toolchain are one fact about the machine, and
-        // the node judges the binary again at execution rather than trusting a
-        // version read while the plan was being built.
+        // the node judges the binary again at execution; a version read while
+        // the plan was being built is not trusted.
         let held_floors =
             super::types::fold_held_floors(unmet_held(), |name| floor_managers.get(name).copied());
         let floor_wanted: Vec<String> = floor_routes.keys().cloned().collect();
@@ -346,11 +346,11 @@ impl<'a> super::Reconciler<'a> {
         observe(PhaseName::Secrets);
         let mut secret_actions = self.plan_secrets(&resolved.merged);
 
-        // The bucket order IS `PhaseName::EXECUTION_ORDER`, by construction
-        // rather than by assertion: a plan FILE is read back against that
+        // The bucket order IS `PhaseName::EXECUTION_ORDER`, by construction: a
+        // plan FILE is read back against that
         // const, and a debug-only check is stripped from the release binary
         // that writes the files. The match is exhaustive, so a phase added to
-        // the enum fails to compile here instead of reaching a reader in an
+        // the enum fails to compile here and never reaches a reader in an
         // order it does not expect. Each arm takes its actions once, the
         // phases being distinct.
         let mut buckets: Vec<(PhaseName, Vec<Action>)> = PhaseName::EXECUTION_ORDER

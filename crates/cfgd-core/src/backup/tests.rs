@@ -1116,8 +1116,8 @@ fn the_orphan_note_folds_a_destination_under_the_home_directory() {
         )
     });
     // The premise the claim rests on: this destination is one the fold moves,
-    // so a `~/` spelling in the row is the composer's work rather than the
-    // only form the path has.
+    // so a `~/` spelling in the row is the composer's work: the path has
+    // another form too.
     assert_ne!(
         folded, absolute,
         "the fixture must put the destination under the home it folds against"

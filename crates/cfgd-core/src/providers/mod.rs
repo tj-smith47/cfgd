@@ -404,8 +404,8 @@ pub struct ActionNote {
     /// fallback is a [`Role::Warn`]; a report of work done on the side is a
     /// [`Role::Info`].
     pub role: Role,
-    /// Whether this note is the run's own INSTRUCTION to the reader instead of
-    /// a report of what happened. It is the one fact behind
+    /// Whether this note is the run's own INSTRUCTION to the reader; the other
+    /// notes report what happened. It is the one fact behind
     /// [`is_instruction`](Self::is_instruction), which is the key
     /// [`crate::reconciler::render_caveats`] closes a group on.
     ///
@@ -440,8 +440,8 @@ impl ActionNote {
     /// An untagged INSTRUCTION the reader has to act on once the run is over —
     /// re-sourcing a generated env file, opening a new shell. It names a file
     /// or a machine state, so it renders as a note row under its owner and no
-    /// `usageHints` decision reaches it. [`Role::Info`], never [`Role::Warn`]:
-    /// nothing about it says the apply went wrong.
+    /// `usageHints` decision reaches it. It is [`Role::Info`]: nothing about it
+    /// says the apply went wrong, so [`Role::Warn`] would misstate it.
     pub fn instruction(message: impl Into<String>) -> Self {
         Self {
             tag: None,
@@ -465,8 +465,8 @@ impl ActionNote {
     ///
     /// The one question a render ordering a group's notes asks. Nothing else
     /// answers it: an untagged note is the ordinary shape of a
-    /// `SystemConfigurator`'s report, so the tag says who spoke rather than
-    /// what the note is for.
+    /// `SystemConfigurator`'s report, so the tag says who spoke and nothing
+    /// about what the note is for.
     pub fn is_instruction(&self) -> bool {
         self.instruction
     }
@@ -886,12 +886,11 @@ pub trait PackageManager: Send + Sync {
     /// The command that raises THIS manager's own copy, where the copy is not
     /// its own to raise.
     ///
-    /// [`PackageManager::upgrade_verb`] answers for a PACKAGE the manager
-    /// holds, and reading it as the manager's own raise tells a reader to run
-    /// `cargo install cargo`: cargo's copy comes from rustup, and brew updates
-    /// itself through its own `update` rather than the `upgrade` that raises a
-    /// formula. `None` (the default) is a manager the package verb does raise,
-    /// or one nothing cfgd can run raises at all.
+    /// [`PackageManager::upgrade_verb`] answers for a PACKAGE the manager holds, and reading it as
+    /// the manager's own raise tells a reader to run `cargo install cargo`: cargo's copy comes from
+    /// rustup, and brew updates itself through its own `update`, where `upgrade` raises a formula.
+    /// `None` (the default) is a manager the package verb does raise, or one nothing cfgd can run
+    /// raises at all.
     fn own_raise(&self) -> Option<std::borrow::Cow<'static, str>> {
         None
     }

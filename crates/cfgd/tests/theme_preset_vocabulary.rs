@@ -53,7 +53,7 @@ fn run(home: &Path, args: &[&str]) -> std::process::Output {
 }
 
 /// The same, from a chosen working directory, for `cfgd init` — which writes
-/// its document where it is run rather than at the default config path.
+/// its document where it is run.
 fn run_at(home: &Path, cwd: &Path, args: &[&str]) -> std::process::Output {
     cfgd_bin()
         .unwrap()
@@ -104,8 +104,8 @@ fn the_setter_refuses_the_pascal_case_spelling_of_a_real_preset() {
     write_config(home.path(), "default");
 
     // `Theme::preset` matches the lowercase spelling alone, so the setter
-    // accepts exactly what resolves rather than folding a case the renderer
-    // would then fail to look up.
+    // accepts exactly what resolves. A folded case would be one the renderer
+    // then fails to look up.
     let out = run(home.path(), &["config", "set", "theme.name", "Dracula"]);
     assert_eq!(out.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&out.stderr).contains("`Dracula` is not a theme preset"));
@@ -348,7 +348,7 @@ fn a_field_the_scalar_arm_does_not_carry_reads_as_a_missing_key() {
     assert_eq!(
         out.status.code(),
         Some(6),
-        "absent, not a shape error: {}",
+        "absent (no shape error): {}",
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(
@@ -363,7 +363,7 @@ fn a_key_under_a_genuine_leaf_is_refused_as_a_missing_key_by_both_verbs() {
     let home = tempfile::tempdir().unwrap();
     write_scalar_config(home.path(), "dracula");
     // `fileStrategy` holds a scalar in the document, so the path names a child
-    // of a leaf rather than a key the setter could create.
+    // of a leaf, which the setter cannot create.
     let dir = home.path().join(".config").join("cfgd");
     let doc = std::fs::read_to_string(dir.join("cfgd.yaml")).unwrap();
     std::fs::write(
@@ -397,7 +397,7 @@ fn a_key_under_a_genuine_leaf_is_refused_as_a_missing_key_by_both_verbs() {
         let stdout = String::from_utf8_lossy(&out.stdout);
         assert!(
             stdout.contains("\"key_not_found\""),
-            "a child of a leaf is a missing key, not a parse failure: {stdout}"
+            "a child of a leaf is a missing key: {stdout}"
         );
         assert_eq!(
             out.status.code(),
@@ -412,8 +412,8 @@ fn a_key_named_under_a_declared_list_is_a_missing_key_on_every_verb() {
     // The other half of the shape question: these two documents hold exactly
     // what the schema declares — `spec.sources` and `spec.origin` are both
     // lists — so nothing about them is wrong. The key walkers address no list
-    // element, which makes `sources.name` a key that is not there rather than
-    // a document that contradicts its schema.
+    // element, which makes `sources.name` a key that is not there. The
+    // document does not contradict its schema.
     for (body, key) in [
         (
             "  sources:\n    - name: team\n      origin:\n        type: Git\n        \
@@ -494,33 +494,33 @@ fn a_value_standing_where_a_mapping_belongs_is_a_shape_failure_not_a_missing_key
     // schema declares a section, a scalar where it declares a free-form map,
     // and a scalar where it declares a list. None of them is a key a setter
     // could create. A list standing where the schema declares one is the other
-    // half of this, and is a missing key rather than a shape failure — see
+    // half of this, and is a missing key — see
     // `a_key_named_under_a_declared_list_is_a_missing_key_on_every_verb`.
     for (body, args, refusal) in [
         (
             "  output:\n    theme:\n      - dracula\n",
             vec!["config", "set", "theme.name", "minimal"],
-            "'output.theme' holds a sequence, not a mapping",
+            "'output.theme' holds a sequence where a mapping belongs",
         ),
         (
             "  - a\n",
             vec!["config", "set", "theme.name", "minimal"],
-            "'spec' holds a sequence, not a mapping",
+            "'spec' holds a sequence where a mapping belongs",
         ),
         (
             "  daemon: yes\n",
             vec!["config", "set", "daemon.interval", "5m"],
-            "'daemon' holds a scalar, not a mapping",
+            "'daemon' holds a scalar where a mapping belongs",
         ),
         (
             "  aliases: yes\n",
             vec!["config", "set", "aliases.ll", "ls -la"],
-            "'aliases' holds a scalar, not a mapping",
+            "'aliases' holds a scalar where a mapping belongs",
         ),
         (
             "  sources: team\n",
             vec!["config", "set", "sources.name", "team"],
-            "'sources' holds a scalar, not a mapping",
+            "'sources' holds a scalar where a mapping belongs",
         ),
     ] {
         let home = tempfile::tempdir().unwrap();

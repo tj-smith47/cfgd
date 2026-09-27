@@ -695,7 +695,7 @@ pub fn render_caveats(printer: &Printer, groups: &[(Owner, Vec<ActionNote>)]) {
         // Warnings lead, and the run's own instruction closes the group: it
         // has to be acted on, so it cannot sit between two reports and still
         // read as the last thing the group says. The key is the note's own
-        // marker, never an absent tag. A tag names the subsystem that spoke,
+        // marker. A tag names the subsystem that spoke,
         // and `NoteSink::report` pushes every `SystemConfigurator`'s report
         // untagged because its action line already names the producer, so a
         // key of `tag.is_none()` would rank those reports with the

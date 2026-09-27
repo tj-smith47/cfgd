@@ -125,9 +125,9 @@ pub enum ConfigError {
     #[error("invalid config: {message}")]
     Invalid { message: String },
 
-    // The accepted set is read off the conversion table, not off
-    // `crate::API_VERSION`: a build carrying a second row accepts a version the
-    // constant does not name, and the refusal would call it unsupported.
+    // The accepted set is read off the conversion table. A build carrying a
+    // second row accepts a version `crate::API_VERSION` does not name, and a
+    // refusal reading the constant would call it unsupported.
     #[error(
         "unsupported apiVersion {found:?}; this build supports {}",
         crate::config::readable_api_versions(crate::config::API_VERSION_CONVERSIONS)

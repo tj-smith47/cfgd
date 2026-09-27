@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
 # Build the statically-linked cfgd the demo image copies in, at demo/bin/cfgd.
 #
-# Kept here rather than inline in the Taskfile so a change to how the recorded
+# Kept here, outside the Taskfile, so a change to how the recorded
 # binary is built is a change under demo/scripts, which check-sync.sh counts as
 # a render input.
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
-# musl, not the default gnu target: the demo image is Ubuntu 24.04 (glibc
+# musl: the demo image is Ubuntu 24.04 (glibc
 # 2.39) and this host is newer, so a dynamically-linked build refuses to
 # start in the container. Same artifact the release pipeline ships.
 #
-# zigbuild, not plain cargo build: ring compiles C, and there is no
+# zigbuild: ring compiles C, and there is no
 # x86_64-linux-musl-gcc on this host; zig supplies the cross C toolchain,
 # exactly as the nightly cross-compile job does.
 target=x86_64-unknown-linux-musl
@@ -24,7 +24,7 @@ target=x86_64-unknown-linux-musl
 # selection and target the build below uses. no-dev: a build does not unify
 # dev-dependency features, and the fixtures crate is a dev-dependency.
 tree="$(cargo tree -e features,no-dev --target "$target" -f '{p} {f}' --prefix none)"
-# Read from a here-string, not a pipe: `grep -q` exits at its first match and
+# Read from a here-string: `grep -q` on a pipe exits at its first match and
 # would SIGPIPE a producer under pipefail.
 if ! grep -q '^cfgd-core ' <<<"$tree"; then
   echo "build-binary.sh: cargo tree did not name cfgd-core, so it judged nothing" >&2

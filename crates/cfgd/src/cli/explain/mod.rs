@@ -448,8 +448,8 @@ pub(super) enum DeclaredShape {
 /// contradicts the schema from a key that is simply not there — the two
 /// refusals a reader and a script must be able to tell apart.
 ///
-/// It reads the field's declared SHAPE rather than whether it carries named
-/// children: a free-form map declares a mapping and names no child at all, so
+/// It reads the field's declared SHAPE. A free-form map declares a mapping
+/// and names no child at all, so
 /// a child count calls `spec.aliases` a scalar leaf and lets a document
 /// holding a scalar there pass as a key nobody has set yet.
 ///

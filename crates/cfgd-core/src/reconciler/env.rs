@@ -239,8 +239,8 @@ impl PrimaryEnvWrite {
 /// full; user-authored rc files never pass through here.
 ///
 /// A block header is scaffolding, its `(priority N)` suffix included: it is
-/// the generator's own text naming the layer the lines below it came from,
-/// never a declaration's rendering, so it is skipped with the banner and the
+/// the generator's own text naming the layer the lines below it came from.
+/// No declaration renders it, so it is skipped with the banner and the
 /// blank lines. A layer that disappears takes its header with it, and the
 /// entries under it are what answer for the change.
 fn has_unclaimed_disappearing_line(
@@ -251,9 +251,8 @@ fn has_unclaimed_disappearing_line(
     platform: EnvPlatform,
 ) -> bool {
     let desired_lines: HashSet<&str> = desired.lines().collect();
-    // Blank and comment lines are the generator's own scaffolding (the banner,
-    // each block header, the trailing newline), never a declaration's
-    // rendering.
+    // Blank and comment lines are the generator's own scaffolding: the banner,
+    // each block header, the trailing newline.
     let disappeared: Vec<&str> = baseline
         .lines()
         .filter(|l| !l.is_empty() && !l.starts_with('#') && !desired_lines.contains(l))
@@ -312,7 +311,7 @@ impl<'a> super::Reconciler<'a> {
     ) -> EnvPlanOutcome {
         // The secret exports are a layer of their own AND winners of the merge:
         // their values exist only once a backend has resolved them, so they
-        // reach both halves here rather than through the layer merge.
+        // reach both halves here, outside the layer merge.
         let mut layered = layered.with_secret_envs(secret_envs);
         for (name, value) in secret_envs {
             layered.merged.push(crate::config::EnvVar {
@@ -634,8 +633,8 @@ mod tests {
 
     /// A generated file written before the layered blocks: every line loses
     /// its ` # owner` tail at once. Each old line is still claimed by its own
-    /// declaration's prefix, so the rewrite is an ordinary content update
-    /// rather than a file full of deletions cfgd refuses to own.
+    /// declaration's prefix, so the rewrite is an ordinary content update. A
+    /// file full of deletions would be one cfgd refuses to own.
     #[test]
     fn a_commented_baseline_upgrades_to_blocks_without_an_unclaimed_deletion() {
         let foo = ev("FOO", "bar");

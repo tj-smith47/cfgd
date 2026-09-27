@@ -846,7 +846,7 @@ tokei v12.1.2:
 
     /// A cargo whose version cannot be read is most often a rustup shim whose
     /// home variables are missing, so the clause a reader gets names them
-    /// beside the PATH rather than leaving them to guess.
+    /// beside the PATH.
     #[test]
     fn an_unreadable_cargo_floor_names_the_homes_its_shim_reads() {
         let held = cfgd_core::modules::HeldManager {

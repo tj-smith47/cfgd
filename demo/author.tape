@@ -87,8 +87,8 @@ Sleep 4900ms
 # included, so beat 3's authoring lands against a visible inventory rather
 # than against a name. The render is 90 rows against this grid's 52, measured
 # off a real `cfgd module show nvim -s` in this image at 125x52, so it goes
-# through a pager instead of scrolling 52 rows off the top unread. `less`
-# rather than the `more` ubuntu:26.04 ships: `more` counts the SGR escapes as
+# through a pager, so 52 rows do not scroll off the top unread. The pager is
+# `less`; the `more` ubuntu:26.04 ships counts the SGR escapes as
 # printable width and breaks every highlighted script body at the wrong
 # column, so the demo image installs `less` for this beat. The report writes
 # to stderr like every other cfgd render, so the redirect is what reaches the

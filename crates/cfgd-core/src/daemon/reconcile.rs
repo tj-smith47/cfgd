@@ -345,7 +345,7 @@ fn reconcile_tick(
         // Err, so cache-miss still reconciles local-only.
         //
         // Composed in Report mode so a source security-constraint violation is
-        // collected instead of ending the derivation: the tick below reconciles
+        // collected and the derivation goes on: the tick below reconciles
         // nothing while any stands, exactly as an Enforce composition would, and
         // still checks in, so the gateway hears about the violation from the
         // machine that has it.
@@ -1585,8 +1585,8 @@ pub(super) fn narrow_to_module(
 /// sentence names it.
 ///
 /// A [`crate::reconciler::ManagerAction::HeldFloor`] counts for every module
-/// it names. The node belongs to the managers phase rather than to any one
-/// module, but the floor it failed is the declaring modules' own statement
+/// it names. The node belongs to the managers phase and to no one module,
+/// but the floor it failed is the declaring modules' own statement
 /// about what their packages need, and the run answers it by withholding that
 /// manager from exactly those modules: that is a divergence each of them asked
 /// to hear about.

@@ -820,7 +820,7 @@ pub fn resolve_color_choice(no_color: bool, color: ColorWhen) -> cfgd_core::outp
 /// `name` and nothing else, so the flag means exactly what `cfgd config set
 /// theme.name <preset>` would have persisted: the config's `overrides` still
 /// layer on top. With no config to read it stands alone as the whole block.
-// knob-resolver-ok: composes a whole ThemeConfig block, not one value with a default.
+// knob-resolver-ok: composes a whole ThemeConfig block; no single value has a default here.
 pub fn resolve_theme_config(
     config_path: &Path,
     preset: Option<&str>,
@@ -858,7 +858,7 @@ pub fn unknown_theme_preset(name: &str) -> Option<String> {
 /// beats `env`, which beats the `spec.*` field `stored` reads, which beats the
 /// type's own default.
 ///
-/// The variable is read HERE rather than left to clap's `env =` binding,
+/// The variable is read HERE and not left to clap's `env =` binding,
 /// because that binding fills `flag` only where clap parsed an argv: every
 /// caller holding a path and no argv — a test of a knob, any future entry
 /// point resolving one before dispatch — would otherwise never see it. A knob
@@ -866,7 +866,7 @@ pub fn unknown_theme_preset(name: &str) -> Option<String> {
 /// flag still answers first, and the read below finds the same value the
 /// binding would have.
 ///
-/// A word `T` cannot read is ignored by this resolution rather than fatal,
+/// A word `T` cannot read is ignored by this resolution,
 /// and so is a config that does not load: a printer has to exist before there
 /// is anything to report either through, which is [`resolve_theme_config`]'s
 /// reasoning and the reason every knob resolver is best-effort.
@@ -916,15 +916,12 @@ where
 /// document declares: `--migration-policy` first, then
 /// `CFGD_MIGRATION_POLICY`, and `None` when neither was given.
 ///
-/// The env var has two readers, and which one answers depends on who built
-/// the `Cli`. In the binary clap reads it first, through the
-/// `env = "CFGD_MIGRATION_POLICY"` the flag declares, so `flag` already
-/// carries the variable's word and clap has validated it against the flag's
-/// value list — a bogus word is a usage error rather than a silently dropped
-/// setting. The branch below answers for a `Cli` built in-process (a test, a
-/// library caller), which clap never parsed. That is the same shape
-/// `CFGD_THEME`, `CFGD_COLOR` and `CFGD_MASK_ENV_VALUES` carry beside
-/// [`resolve_knob`]'s own env read.
+/// The env var has two readers, and which one answers depends on who built the `Cli`. In the binary
+/// clap reads it first, through the `env = "CFGD_MIGRATION_POLICY"` the flag declares, so `flag`
+/// already carries the variable's word and clap has validated it against the flag's value list — a
+/// bogus word is a usage error. The branch below answers for a `Cli` built in-process (a test, a
+/// library caller), which clap never parsed. That is the same shape `CFGD_THEME`, `CFGD_COLOR` and
+/// `CFGD_MASK_ENV_VALUES` carry beside [`resolve_knob`]'s own env read.
 ///
 /// This is the one knob whose stored half is NOT read here. The load-time
 /// gate parses the document for itself to find out what is missing from it,
@@ -949,7 +946,7 @@ pub fn migration_policy_override(flag: Option<&str>) -> Option<cfgd_schema::Migr
 /// this returns, so turning tutorials off never leaves a reader without the
 /// instruction a declined command's whole value is.
 ///
-/// `CFGD_USAGE_HINTS` is read by [`resolve_knob`] rather than bound to either
+/// `CFGD_USAGE_HINTS` is read by [`resolve_knob`] and bound to neither
 /// half via `#[arg(env = …)]`: `--no-hints` has the OPPOSITE polarity to the
 /// env var, and binding the env var to `--hints` alone would let it be
 /// outranked by nothing, since clap cannot express "this env var sets that
@@ -970,7 +967,7 @@ pub fn resolve_hints_enabled(config_path: &Path, hints: Option<bool>) -> bool {
 /// so a word neither spelling accepts is a usage error before this runs;
 /// [`resolve_knob`]'s own read of it answers a caller that parsed no argv.
 ///
-/// A missing, unreadable or malformed config masks rather than failing, which
+/// A missing, unreadable or malformed config masks, which
 /// is also the safe direction — a config cfgd cannot read never reveals a
 /// value.
 pub fn resolve_mask_env_values(
@@ -1239,8 +1236,8 @@ impl Cli {
 
 #[derive(Parser, Clone)]
 pub struct ApplyArgs {
-    /// Apply the plan recorded by `cfgd plan -o json`, instead of planning
-    /// again. The file is the approval: cfgd refuses it if the config changed
+    /// Apply the plan recorded by `cfgd plan -o json`, with no second
+    /// planning pass. The file is the approval: cfgd refuses it if the config changed
     /// or an apply has run since it was written, and every filter is refused
     /// with it — the file already says what this run does.
     #[arg(long, value_name = "FILE", conflicts_with_all = [
@@ -1422,13 +1419,13 @@ pub enum Command {
 
     /// Apply the configuration (use --dry-run to preview without applying)
     #[command(
-        long_about = "Apply the active profile to this machine.\n\n--from accepts any git URL, a local path, or the GitHub shorthand `owner/repo`.\n\n--phase and --skip take a dotted `<phase>[.<selector>]` path: the whole phase,\none owner group within it, or one manager (family-collapsed, e.g. `brew` also\ncovers `brew-tap`/`brew-cask`).\n\n--module resolves and applies ONLY the named module(s) and their dependencies,\nisolated from the active profile — repeat it for several modules. Add\n--with-profile to apply the full profile PLUS the named module(s) instead.\n--only module:<name>/--skip module:<name> filter an ALREADY-composed plan by\nowner and never resolve a module of their own — pair with --module to bring an\nout-of-profile module into scope first.\n\n--plan replays the plan `cfgd plan -o json` recorded instead of planning\nagain: the file is the approval, so cfgd refuses it once the config it was\nderived from has changed or another apply has run since it was written.\nEvery selector is refused alongside it — the file already says what this\nrun does.\n\n--on-conflict decides what happens when a managed target already holds a file\ncfgd has never written: ask (default — prompts, or backs up when nothing can be\nasked), backup, overwrite, skip, fail. A target that already holds exactly the\ndesired bytes is left alone under every policy.\n\nExamples:\n  cfgd apply\n  cfgd apply --dry-run\n  cfgd apply --plan plan.json                                    # replay a recorded plan\n  cfgd apply --phase packages --yes\n  cfgd apply --phase bootstrap.managers --yes                    # one owner group\n  cfgd apply --skip bootstrap.session                            # skip the broadcast half\n  cfgd apply --skip bootstrap.shell                              # env file only, no rc line\n  cfgd apply --skip bootstrap.brew                               # skip one manager\n  cfgd apply --module nettools                                   # nettools + deps, isolated\n  cfgd apply --module nettools --module lpass-tools              # several modules\n  cfgd apply --module nettools --with-profile                    # full profile PLUS nettools\n  cfgd apply --yes --on-conflict backup                          # copy each conflict aside\n  cfgd apply --yes --on-conflict fail                            # refuse to touch strangers\n  cfgd apply --from acme/cfgd-config --yes                       # GitHub shorthand\n  cfgd apply --from https://gitlab.example.com/acme/config.git --yes\n  cfgd apply --context reconcile"
+        long_about = "Apply the active profile to this machine.\n\n--from accepts any git URL, a local path, or the GitHub shorthand `owner/repo`.\n\n--phase and --skip take a dotted `<phase>[.<selector>]` path: the whole phase,\none owner group within it, or one manager (family-collapsed, e.g. `brew` also\ncovers `brew-tap`/`brew-cask`).\n\n--module resolves and applies ONLY the named module(s) and their dependencies,\nisolated from the active profile — repeat it for several modules. Add\n--with-profile to apply the full profile PLUS the named module(s).\n--only module:<name>/--skip module:<name> filter an ALREADY-composed plan by\nowner and never resolve a module of their own — pair with --module to bring an\nout-of-profile module into scope first.\n\n--plan replays the plan `cfgd plan -o json` recorded, with no second\nplanning pass: the file is the approval, so cfgd refuses it once the config it was\nderived from has changed or another apply has run since it was written.\nEvery selector is refused alongside it — the file already says what this\nrun does.\n\n--on-conflict decides what happens when a managed target already holds a file\ncfgd has never written: ask (default — prompts, or backs up when nothing can be\nasked), backup, overwrite, skip, fail. A target that already holds exactly the\ndesired bytes is left alone under every policy.\n\nExamples:\n  cfgd apply\n  cfgd apply --dry-run\n  cfgd apply --plan plan.json                                    # replay a recorded plan\n  cfgd apply --phase packages --yes\n  cfgd apply --phase bootstrap.managers --yes                    # one owner group\n  cfgd apply --skip bootstrap.session                            # skip the broadcast half\n  cfgd apply --skip bootstrap.shell                              # env file only, no rc line\n  cfgd apply --skip bootstrap.brew                               # skip one manager\n  cfgd apply --module nettools                                   # nettools + deps, isolated\n  cfgd apply --module nettools --module lpass-tools              # several modules\n  cfgd apply --module nettools --with-profile                    # full profile PLUS nettools\n  cfgd apply --yes --on-conflict backup                          # copy each conflict aside\n  cfgd apply --yes --on-conflict fail                            # refuse to touch strangers\n  cfgd apply --from acme/cfgd-config --yes                       # GitHub shorthand\n  cfgd apply --from https://gitlab.example.com/acme/config.git --yes\n  cfgd apply --context reconcile"
     )]
     Apply(ApplyArgs),
 
     /// Preview the reconciliation plan without applying
     #[command(
-        long_about = "Render the reconciliation plan without applying it.\n\n--from accepts any git URL, a local path, or the GitHub shorthand `owner/repo`.\n\n--phase and --skip take a dotted `<phase>[.<selector>]` path: the whole phase,\none owner group within it, or one manager (family-collapsed, e.g. `brew` also\ncovers `brew-tap`/`brew-cask`).\n\n--module resolves and previews ONLY the named module(s) and their dependencies,\nisolated from the active profile — repeat it for several modules. Add\n--with-profile to preview the full profile PLUS the named module(s) instead.\n\nExamples:\n  cfgd plan\n  cfgd plan --phase system\n  cfgd plan --phase bootstrap.managers                           # one owner group\n  cfgd plan --skip bootstrap.session                             # skip the broadcast half\n  cfgd plan --skip bootstrap.shell                               # env file only, no rc line\n  cfgd plan --module nettools                                    # nettools + deps, isolated\n  cfgd plan --module nettools --with-profile                     # full profile PLUS nettools\n  cfgd plan --from acme/cfgd-config                              # GitHub shorthand\n  cfgd plan --from https://gitlab.example.com/acme/config.git\n  cfgd plan --skip packages.brew --only files"
+        long_about = "Render the reconciliation plan without applying it.\n\n--from accepts any git URL, a local path, or the GitHub shorthand `owner/repo`.\n\n--phase and --skip take a dotted `<phase>[.<selector>]` path: the whole phase,\none owner group within it, or one manager (family-collapsed, e.g. `brew` also\ncovers `brew-tap`/`brew-cask`).\n\n--module resolves and previews ONLY the named module(s) and their dependencies,\nisolated from the active profile — repeat it for several modules. Add\n--with-profile to preview the full profile PLUS the named module(s).\n\nExamples:\n  cfgd plan\n  cfgd plan --phase system\n  cfgd plan --phase bootstrap.managers                           # one owner group\n  cfgd plan --skip bootstrap.session                             # skip the broadcast half\n  cfgd plan --skip bootstrap.shell                               # env file only, no rc line\n  cfgd plan --module nettools                                    # nettools + deps, isolated\n  cfgd plan --module nettools --with-profile                     # full profile PLUS nettools\n  cfgd plan --from acme/cfgd-config                              # GitHub shorthand\n  cfgd plan --from https://gitlab.example.com/acme/config.git\n  cfgd plan --skip packages.brew --only files"
     )]
     Plan(PlanArgs),
 

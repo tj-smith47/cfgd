@@ -1944,8 +1944,8 @@ mod tests {
         );
 
         // The same question one depth in. The blank a hint is preceded by is
-        // armed by the group the SECTION opened, not by the hint's own call,
-        // so a nested hint could suppress its text and still leave the blank
+        // armed by the group the SECTION opened; the hint's own call arms
+        // nothing, so a nested hint could suppress its text and still leave the blank
         // the section's boundary had already put in place.
         let (nested_on, buf_nested_on) = Printer::for_test_at(Verbosity::Normal);
         let nested_on = nested_on.with_hints_enabled(true);
@@ -2011,8 +2011,8 @@ mod tests {
         );
     }
 
-    /// `note`/`deprecation`/`alert` are NOT hints — they report what a run
-    /// did or will do, not what to run next — so `--hints`/`--no-hints` and
+    /// `note`/`deprecation`/`alert` are NOT hints: they report what a run
+    /// did or will do. A hint says what to run next, so `--hints`/`--no-hints` and
     /// their env/config twins must never touch them. Only `render_hint` reads
     /// `hints_enabled`.
     #[cfg(feature = "test-helpers")]

@@ -18,9 +18,10 @@ use cfgd_core::output::HintCommands;
 /// `.hint(...)` calls the old call sites attached to their error `Doc`);
 /// they never appear in the structured payload. Every one of them follows a
 /// refusal, so [`render_cli_error`] renders them unconditionally: `usageHints`
-/// decides tutorials, not the way out of a command that declined to run. A
+/// decides tutorials; the way out of a command that declined to run always
+/// renders. A
 /// hint whose payload is a colon-introduced command carries it as
-/// [`HintCommands::commands`] rather than inside the sentence, and renders as
+/// [`HintCommands::commands`], outside the sentence, and renders as
 /// the same `$` block every other surface's hints do.
 #[derive(Debug, Clone)]
 pub struct CliErrorMeta {

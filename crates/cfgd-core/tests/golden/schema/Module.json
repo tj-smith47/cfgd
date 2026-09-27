@@ -216,7 +216,7 @@
           "type": "array"
         },
         "script": {
-          "description": "Shell script to run instead of a manager install, selected via `prefer: [script]`.",
+          "description": "Shell script that takes the place of a manager install, selected via `prefer: [script]`.",
           "type": [
             "string",
             "null"
@@ -289,7 +289,7 @@
       "description": "The mapping form of a script entry: a command with a timeout, shell, guard condition or working directory.",
       "properties": {
         "continueOnError": {
-          "description": "Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.",
+          "description": "Treat a non-zero exit as success, so reconciliation continues and the run does not fail. Default: `false`.",
           "type": [
             "boolean",
             "null"
@@ -310,7 +310,7 @@
           ]
         },
         "interactive": {
-          "description": "Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo \"press Enter when done\"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning rather than hanging on instant EOF.",
+          "description": "Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo \"press Enter when done\"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning, so it cannot hang on instant EOF.",
           "type": "boolean"
         },
         "onlyIf": {
@@ -507,7 +507,7 @@
       "type": "array"
     },
     "platforms": {
-      "description": "Platform tags gating the whole module. When non-empty and the current platform matches none of them, the module is skipped entirely (it appears as a skipped action rather than vanishing). Tags are matched against the machine's OS, distro, and arch; use `macos` for macOS.",
+      "description": "Platform tags gating the whole module. When non-empty and the current platform matches none of them, the module is skipped entirely (it still appears, as a skipped action). Tags are matched against the machine's OS, distro, and arch; use `macos` for macOS.",
       "items": {
         "type": "string"
       },

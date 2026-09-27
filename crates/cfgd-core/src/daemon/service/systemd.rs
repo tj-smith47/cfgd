@@ -6,7 +6,7 @@ use crate::output::Role;
 /// Both failing arms below word it once: a systemd user manager only runs
 /// while the user has a session unless lingering is enabled, and nothing else
 /// on the screen says so. It states THIS host's session state, so it renders
-/// as a note row beside the failure rather than as a hint.
+/// as a note row beside the failure.
 const LINGER_SESSION_STATE: &str =
     "If you have no active login session, enable lingering: loginctl enable-linger $USER";
 

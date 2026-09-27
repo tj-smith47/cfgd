@@ -726,13 +726,13 @@ const MIGRATIONS: &[&str] = &[
                   AND instr(resource_id, ':') = length(resource_id) - 6
                   AND instr(resource_id, '/') = 0));",
     // Migration 28: the answer a reader gave the load-time migration prompt.
-    // Keyed on the config file rather than the machine, because a host may
+    // Keyed on the config file, because a host may
     // hold several (`--config`, a source checkout's own), and each is a
     // separate document with its own answer. `offered_keys` is the question
     // itself: an answer covers a later run only when every key that run
     // found was already on the table when the reader said yes or no, so a
-    // release that adds a field asks about it rather than inheriting a
-    // verdict on a different question.
+    // release that adds a field asks about it and inherits no verdict on a
+    // different question.
     // space-run-ok: a table definition's own column layout.
     "CREATE TABLE IF NOT EXISTS config_migrations (
         config_path  TEXT NOT NULL,
@@ -792,8 +792,8 @@ const MIGRATIONS: &[&str] = &[
          THEN substr(resource_id, 1, instr(resource_id, '/') - 1)
        END;",
     // Migration 30: the store's own identity, which a saved plan records so a
-    // replay under another `--state-dir` is refused. Minted once, here, rather
-    // than derived from the path: a store copied or moved to another directory
+    // replay under another `--state-dir` is refused. Minted once, here, with
+    // no input from the path: a store copied or moved to another directory
     // is the same store and keeps it, and a fresh store gets its own. An
     // upgraded store gains one at this migration, before any plan asks. The
     // value is a random UUIDv4 in its canonical spelling; the guard keeps a
@@ -1097,7 +1097,7 @@ impl StateStore {
     /// string that follows the database file wherever it is copied or moved,
     /// and that no other store shares.
     ///
-    /// Read, never minted here: a store with no identity row is
+    /// Read here, and minted by the migration alone: a store with no identity row is
     /// [`StateError::IdentityMissing`], because a fresh id on read would give
     /// two reads of one store two answers.
     pub fn store_id(&self) -> Result<String> {

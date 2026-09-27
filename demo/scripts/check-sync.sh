@@ -59,10 +59,10 @@ while read -r gif tape sha extra || [ -n "$gif" ]; do
         continue
     fi
     # A take commits its GIF after the commit it recorded, so a stamp that is not
-    # a strict ancestor of the GIF's last commit was written by hand, not by a take.
+    # a strict ancestor of the GIF's last commit was written by hand.
     gif_at="$(git log -1 --format=%H -- "demo/$gif")"
     if [ -z "$gif_at" ] || [ "$gif_at" = "$sha" ] || ! git merge-base --is-ancestor "$sha" "$gif_at"; then
-        echo "demo/$gif: stamped at $sha, but the GIF was last committed at ${gif_at:-nowhere}, not after that commit, so no take wrote the stamp. Re-record the GIF."
+        echo "demo/$gif: stamped at $sha, but the GIF was last committed at ${gif_at:-nowhere}, which is no later commit, so no take wrote the stamp. Re-record the GIF."
         failed=1
         continue
     fi

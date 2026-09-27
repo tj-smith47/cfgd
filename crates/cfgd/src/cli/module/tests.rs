@@ -5783,14 +5783,14 @@ fn print_module_review_summary_shows_control_characters_on_every_row() {
     for marker in ["dep-", "pkg-", "src-", "ENV=", "al="] {
         let row = out
             .lines()
-            // doc-comment-ok: a rendered row, not a source line
+            // doc-comment-ok: the haystack is a rendered row
             .find(|l| l.contains(marker))
             .unwrap_or_else(|| panic!("row {marker:?} missing; screen holds: {out}"));
         assert!(
             row.contains("\\x0d") && row.contains("\\x1b[2K"),
             "row {marker:?} hid what it is asking the operator to approve: {row:?}"
         );
-        // doc-comment-ok: a rendered row, not a source line
+        // doc-comment-ok: the haystack is a rendered row
         let payload = &row[row.find(marker).unwrap_or(0)..];
         assert!(
             !payload.contains('\r'),
@@ -5828,14 +5828,14 @@ fn print_module_review_summary_shows_control_characters_in_heading_and_trailer()
     for marker in ["module:mod-", "commit-", "sha256-"] {
         let row = out
             .lines()
-            // doc-comment-ok: a rendered row, not a source line
+            // doc-comment-ok: the haystack is a rendered row
             .find(|l| l.contains(marker))
             .unwrap_or_else(|| panic!("row {marker:?} missing; screen holds: {out}"));
         assert!(
             row.contains("\\x0d") && row.contains("\\x1b[2K"),
             "row {marker:?} hid what it is asking the operator to approve: {row:?}"
         );
-        // doc-comment-ok: a rendered row, not a source line
+        // doc-comment-ok: the haystack is a rendered row
         let payload = &row[row.find(marker).unwrap_or(0)..];
         assert!(
             !payload.contains('\r'),
@@ -8417,7 +8417,7 @@ fn module_show_resolved_rows_states_each_of_the_three_resolutions() {
             assert_eq!(
                 summary, "obscure-tool (prefer: nix; min: 1.0)",
                 "every declared clause sits inside the ONE parenthetical, \
-                 separated as clauses rather than as a comma list"
+                 separated as clauses"
             );
             assert!(!error.is_empty(), "the row states why it could not resolve");
             // A page showing this row was typed by hand once and went on
@@ -8455,7 +8455,7 @@ fn module_show_resolved_rows_states_each_of_the_three_resolutions() {
             assert_eq!(
                 summary, "gated-tool (platforms: linux; prefer: nix)",
                 "the gate is one of the declared clauses, so the row names it \
-                 once rather than appending it a second time"
+                 once"
             );
             assert_eq!(
                 summary.matches("platforms:").count(),

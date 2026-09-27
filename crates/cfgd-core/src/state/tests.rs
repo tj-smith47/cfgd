@@ -4712,7 +4712,7 @@ fn switch_to_wal_waits_in_the_busy_handler_while_another_connection_writes_the_f
     conn.busy_handler(Some(hand_off_to_holder)).unwrap();
     let switched = switch_to_wal(&conn);
     // Wakes a holder the busy handler never reached, so a switch that gave
-    // up at once fails the assertion below instead of hanging the test.
+    // up at once fails the assertion below and the test does not hang.
     let _ = tell_holder.send("switch returned");
     let first = release.join().unwrap();
 
@@ -5157,7 +5157,7 @@ fn a_recorded_migration_answer_is_reused_only_for_the_keys_it_covered() {
             .migration_answer(Path::new("/other/cfgd.yaml"), "cfgd.io/v1alpha1", &offered)
             .unwrap(),
         None,
-        "the answer is keyed on the config file, not the machine"
+        "the answer is keyed on the config file"
     );
 
     store
@@ -5261,8 +5261,8 @@ fn migration_29_backfills_kind_and_manager_as_the_writer_records_them() {
     let path = dir.path().join("state.db");
     {
         let store = StateStore::open(&path).unwrap();
-        // Hardcoded, not `MIGRATIONS.len() - 1`: this test means "replay the
-        // kind backfill", so a later migration must not re-point it.
+        // Hardcoded: this test means "replay the kind backfill", so a later
+        // migration must not re-point it through `MIGRATIONS.len() - 1`.
         rewind_schema_version(&store, 29);
         for (rtype, rid, _, _) in KIND_BACKFILL_ROWS {
             store
@@ -5318,7 +5318,7 @@ fn assert_uuid_v4(id: &str) {
 }
 
 /// Migration 30 gives a store that predates it an identity, once: re-opening
-/// the upgraded store reads the same id back rather than minting a second one,
+/// the upgraded store reads the same id back and mints no second one,
 /// because a saved plan compares against it.
 #[test]
 fn migration_30_mints_one_store_identity_and_reopening_keeps_it() {
@@ -5330,8 +5330,8 @@ fn migration_30_mints_one_store_identity_and_reopening_keeps_it() {
             .conn
             .execute_batch("DROP TABLE store_identity")
             .unwrap();
-        // Hardcoded, not `MIGRATIONS.len() - 1`: this test means "replay the
-        // identity mint", so a later migration must not re-point it.
+        // Hardcoded: this test means "replay the identity mint", so a later
+        // migration must not re-point it through `MIGRATIONS.len() - 1`.
         rewind_schema_version(&store, 30);
     }
 
@@ -5391,8 +5391,8 @@ fn migration_30_mints_a_v4_shape_id_on_two_hundred_fresh_stores() {
     }
 }
 
-/// A store whose identity row is gone reports it rather than minting one on
-/// read, which would give two reads of one store two answers.
+/// A store whose identity row is gone reports it. Minting one on read would
+/// give two reads of one store two answers.
 #[test]
 fn a_store_with_no_identity_row_is_an_error_on_read() {
     let store = StateStore::open_in_memory().unwrap();

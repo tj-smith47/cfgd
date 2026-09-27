@@ -116,8 +116,8 @@ pub enum Component {
         text: String,
         #[serde(skip_serializing_if = "Vec::is_empty")]
         commands: Vec<String>,
-        /// Render-only: the class decides whether the renderer prints the row,
-        /// never what `-o json` says about it. Skipped so no `.json` golden
+        /// Render-only: the class decides whether the renderer prints the row
+        /// and leaves `-o json` alone. Skipped so no `.json` golden
         /// gains a key for a decision the payload does not make.
         #[serde(skip)]
         gated: bool,

@@ -1277,7 +1277,7 @@ pub fn module_scope(
         // (`held_manager_version_drift`), so the scope claims it too or a
         // scoped run that found the machine converged leaves the row standing.
         .chain(module.held_managers.iter().map(|h| {
-            // held-id-reader-ok: a scope claims the id, never the floor behind it
+            // held-id-reader-ok: a scope claims the id alone; the floor behind it stays unread
             super::package_entry_drift_id(
                 &h.package,
                 &h.package,
@@ -2055,7 +2055,7 @@ mod tests {
                 manager,
                 via,
                 declared,
-                // A version rather than a name, and still an operand: the
+                // A version in the name's place, and still an operand: the
                 // reader approved a floor, and a row that does not state it is
                 // not the row they answered about.
                 floor,
@@ -2213,8 +2213,7 @@ mod tests {
 
     /// A reader who answered "provision cargo via rustup instead?" for a 1.85
     /// floor is approving this row, so the row states 1.85 — beside the
-    /// declared package where an entry named one, in the same parenthetical
-    /// rather than a second one.
+    /// declared package where an entry named one, in the same parenthetical.
     #[test]
     fn a_confirmed_floor_rides_the_same_parenthetical_as_the_declared_package() {
         let floored = |package: &str| ManagerAction::Provision {

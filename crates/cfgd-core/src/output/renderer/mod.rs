@@ -26,8 +26,8 @@ pub use table::Table;
 
 /// The ONE `"  ".repeat(depth)` in the workspace. Every surface that indents
 /// by depth — the renderer's own line pusher, kv blocks, and the three live
-/// primitives (`Spinner`, `OutputWindow`, `LiveRow`) — calls through here
-/// rather than re-deriving the multiplication at its own site.
+/// primitives (`Spinner`, `OutputWindow`, `LiveRow`) — calls through here, so
+/// no site re-derives the multiplication.
 pub(crate) fn indent_prefix(depth: usize) -> String {
     "  ".repeat(depth)
 }
@@ -405,7 +405,7 @@ pub struct Renderer {
     /// `Printer::with_hints_enabled` (from `--hints` / `--no-hints` /
     /// `CFGD_USAGE_HINTS` / `spec.output.usageHints`) and then read by every
     /// renderer sharing this printer's decision — `SectionGuard` and `Doc`
-    /// rendering hold their own `Arc<Renderer>` clone rather than asking the
+    /// rendering hold their own `Arc<Renderer>` clone and never ask the
     /// `Printer`, so the flag has to live here, at the one seam every hint
     /// producer already reaches. An unconditional hint ignores it entirely.
     /// `AtomicBool` rather than a constructor parameter: threading a new
@@ -414,7 +414,7 @@ pub struct Renderer {
     /// It starts FALSE, matching the product default, so a printer nobody
     /// resolved a decision for (the kubectl plugin's minimal global-flag
     /// subset carries no hints flag at all) renders what a default cfgd run
-    /// renders rather than a tutorial nothing asked for.
+    /// renders, with no tutorial nothing asked for.
     pub(crate) hints_enabled: AtomicBool,
 }
 
@@ -1236,12 +1236,11 @@ impl Renderer {
     /// Also the ONE seam `--hints` / `CFGD_USAGE_HINTS` /
     /// `spec.output.usageHints` decides through: the early return below fires
     /// before `open_top_group` arms the leading blank line a hint would
-    /// otherwise own, so a suppressed hint drops its blank line with it rather
-    /// than leaving a bare blank behind. Only a `gated` hint asks — a
-    /// remediation an invocation cannot be acted on without renders whatever
-    /// the reader decided about tutorials. `note`/`deprecation`/`alert` are
-    /// NOT hints and never ask — they report what the run did or will do, not
-    /// what to run next.
+    /// otherwise own, so a suppressed hint drops its blank line with it. Only a
+    /// `gated` hint asks — a remediation an invocation cannot be acted on
+    /// without renders whatever the reader decided about tutorials.
+    /// `note`/`deprecation`/`alert` are NOT hints and never ask — they report
+    /// what the run did or will do.
     pub fn render_hint(
         &self,
         w: &dyn Writer,

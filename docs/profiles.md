@@ -264,7 +264,7 @@ alias v="nvim"
   subscription's priority, a [subscriber override](sources.md) one step above it,
   a required tier above your local profiles. Each states its own number, so a
   value an override replaced is still in the file, above the line that beat it.
-- `PATH` is the one exception: its declarations concatenate rather than displace,
+- `PATH` is the one exception: its declarations concatenate,
   so it is one composed line in its own `# path` block, ahead of everything else
   so a declared value may name a binary on a bootstrapped manager's `PATH`. It is
   also the one line that still carries a trailing `# kind:name` comment, because
@@ -368,7 +368,7 @@ alias v="nvim"
 Every layer's own declaration is there, the outranked ones included: `base` sets
 `PAGER=less` and `work` sets it to `bat`, and the shell's own last-wins leaves `bat` set.
 The file is the inheritance you can read, so a value you did not expect is answered by the
-block it sits under rather than by re-deriving the merge. A subscribed source's block is
+block it sits under, with no merge to re-derive. A subscribed source's block is
 headed `# source: acme (priority 500)`, and a source whose required tier outranks your
 local profile takes a second block below it, headed by the same owner at the higher
 priority (`# source: acme (priority 1500)`).
@@ -391,8 +391,7 @@ export PATH="$HOME/.cargo/bin:/opt/brewroot/bin:$HOME/.npm-global/bin:$PATH" # m
 ```
 
 `environment.d` takes the banner's block-free form and the winning values alone: systemd
-documents no last-wins for a repeated key, so a block there would be an undefined result
-rather than something the reader resolves. The macOS LaunchAgent takes neither: it is XML,
+documents no last-wins for a repeated key, so a block there would be an undefined result. The macOS LaunchAgent takes neither: it is XML,
 one `launchctl setenv` per winner, and a comment line would corrupt it.
 
 The three owner groups separate what cfgd authored from what it edited from what is not

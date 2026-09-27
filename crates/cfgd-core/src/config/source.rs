@@ -793,8 +793,8 @@ subscription:
         assert!(spec.subscription.reject.is_null());
 
         // And the load is lossless in the direction that matters: writing it
-        // back drops the nulls rather than preserving them, so one `source
-        // update` migrates the document to the shape the writer now emits.
+        // back drops the nulls, so one `source update` migrates the document
+        // to the shape the writer now emits.
         let rewritten = serde_yaml::to_string(&spec).unwrap();
         assert!(
             !rewritten.contains("overrides:") && !rewritten.contains("reject:"),

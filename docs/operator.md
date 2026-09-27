@@ -225,7 +225,7 @@ Created by the gateway when a device reports drifted **system settings** during 
 device's report covers the answers of its system configurators alone: packages, managed files,
 env vars and aliases are checked on the device by `cfgd diff` and reach the fleet through the
 check-in's compliance summary (its counts and the first 200 checks that did not pass, on
-`MachineConfig.status.compliance`), never as a DriftAlert.
+`MachineConfig.status.compliance`); no DriftAlert carries it.
 
 ```yaml
 apiVersion: cfgd.io/v1alpha1
@@ -478,8 +478,7 @@ A check-in carries the device identity (id, hostname, OS, arch) and the hash of 
 desired system configuration. `cfgd checkin` also posts any drifted **system settings** it finds
 to `/api/v1/devices/{id}/drift`. The daemon's own periodic check-in sends the identity and hash,
 and reports the same device-only facts below; it authenticates with the credential `cfgd enroll`
-stored, and a machine holding none for that gateway logs the skip rather than posting
-anonymously.
+stored, and a machine holding none for that gateway logs the skip and posts nothing.
 
 It also carries the facts only the device can answer: `packageVersions`, the versions it holds
 for the packages it declares (keyed `<manager>/<package>`), `backupScheduleOwners`, which layer

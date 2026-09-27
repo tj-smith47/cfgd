@@ -92,9 +92,9 @@ fn is_schema_sketch(body: &str) -> bool {
 /// A real cfgd resource block begins with the cfgd `apiVersion` and is not a
 /// schema sketch.
 ///
-/// The test is the API GROUP, never a version: the parser accepts every version
-/// the conversion table names, so an example written under a second accepted
-/// version is one this harness must validate rather than silently skip.
+/// The test is the API GROUP: the parser accepts every version the conversion
+/// table names, so an example written under a second accepted version is one
+/// this harness must validate.
 ///
 /// A block may open on a comment naming the layer the example belongs to
 /// (`# Cluster: fleet-wide schedule policy`), so the `apiVersion` test skips

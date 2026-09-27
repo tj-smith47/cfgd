@@ -1360,8 +1360,8 @@ mod tests {
     // A deliberately self-referential pair. `edge` and `target` are bare
     // (non-optional) `$ref`s — the shape `resolve_ref` follows — so the walk
     // recurses Node -> Edge -> Node -> Edge. Without a cycle guard this
-    // overflows the stack and aborts the process. Written as a literal rather
-    // than derived: the cycle is total, so no value of the pair exists for a
+    // overflows the stack and aborts the process. Written as a literal: the
+    // cycle is total, so no value of the pair exists for a
     // schemars derive to be grounded against. The literal keeps the layout a
     // derive emits for a recursive root: Node inline at the root, Edge under
     // `$defs`, and the way back to Node spelled as the root ref `#`.

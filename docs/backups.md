@@ -119,7 +119,7 @@ notes-db  ~/.local/share/notes/notes.db.cfgd-backup  6h ago   8.0 KB
 `cfgd backup run [name]` runs every declared backup when `name` is omitted, or the named one.
 An unknown name is a typed error (exit code `6`, see [Exit Codes](cli-reference.md#exit-codes))
 that lists every valid name: in human mode as a `→` hint line below the failure, in `-o json`
-as the payload's `hint` field. That line is a refusal's remediation, not a tutorial pointer, so
+as the payload's `hint` field. That line is a refusal's remediation, so
 it renders whatever `spec.output.usageHints` says. A run whose snapshot did not complete
 cleanly (see [Run Semantics](#run-semantics)) also exits nonzero, so a script can detect it
 without parsing output.
@@ -782,9 +782,8 @@ staging removed      ← on every path, success or failure
   its schedule out. Its path is reported as `safetyCopy` in `-o json` and as a `◉` note row in
   human output, worded the way an adoption row words the same copy: `Previous contents backed up to
   <path>`, or `Previous contents already backed up at <path>` when a sidecar already holding exactly
-  the current bytes was reused rather than written (`safetyCopyReused` in `-o json`). A note row is
-  a row the run leaves under its owner rather than a closing hint, so `spec.output.usageHints` never
-  takes it away. A sidecar holding different bytes is kept and the new copy lands at a stamped
+  the current bytes was reused (`safetyCopyReused` in `-o json`). A note row is a row the run
+  leaves under its owner, so `spec.output.usageHints` cannot take it away. A sidecar holding different bytes is kept and the new copy lands at a stamped
   `<path>.cfgd-backup.<stamp>` name instead, so an older copy is never overwritten. If the copy
   cannot be written, the restore is **abandoned**: cfgd will not overwrite data whose current
   contents were not captured.

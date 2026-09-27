@@ -1,8 +1,7 @@
 //! `cfgd apply --plan <file>`: the replay, and the refusals.
 //!
 //! Every plan file here is produced by the real `cmd_plan` under `-o json`, so
-//! the producer and the consumer are pinned against each other rather than
-//! against a hand-written payload.
+//! the producer and the consumer are pinned against each other.
 
 use cfgd_test_fixtures as common;
 
@@ -17,10 +16,9 @@ use cfgd_core::test_helpers::test_printer;
 
 use common::{apply_args, cli_for, plan_args, tiny_profile_setup};
 
-/// Write what `cfgd plan -o json` produced to `dest`, exactly as a shell
-/// redirect would. `dest` is in the STATE directory, never the config
-/// directory: a file written inside the config directory is itself a change to
-/// what the derivation read, which is the very thing the refusal tests move.
+/// Write what `cfgd plan -o json` produced to `dest`, exactly as a shell redirect would. `dest` is
+/// in the STATE directory: a file written inside the config directory is itself a change to what
+/// the derivation read, which is the very thing the refusal tests move.
 fn record_plan_file(cli: &Cli, args: &PlanArgs, dest: &Path) {
     let (printer, cap) = Printer::for_test_doc_with_format(OutputFormat::Json);
     cmd_plan(cli, &printer, args).unwrap();
@@ -37,8 +35,8 @@ fn replay_args(path: &Path) -> ApplyArgs {
     }
 }
 
-/// What a refusal puts on the wire, rendered through the CLI's own error sink
-/// rather than read off the carrier, so a pin sees the bytes a script reads.
+/// What a refusal puts on the wire, rendered through the CLI's own error sink,
+/// so a pin sees the bytes a script reads.
 fn payload_of(err: &anyhow::Error) -> serde_json::Value {
     let (printer, cap) = Printer::for_test_doc_with_format(OutputFormat::Json);
     let _ = cfgd::cli::error::render_cli_error(&printer, err);
@@ -106,7 +104,7 @@ fn a_saved_plan_is_refused_once_the_config_moves() {
 
     // The recorded stamp is (mtime, len), so APPENDING moves it whatever the
     // filesystem's timestamp granularity is — a same-length rewrite inside one
-    // mtime tick would not, and this test is about the refusal, not the probe.
+    // mtime tick would not, and this test is about the refusal.
     let profile = config_dir.path().join("profiles").join("tiny.yaml");
     let body = std::fs::read_to_string(&profile).unwrap();
     std::fs::write(&profile, format!("{body}# the operator edited this\n")).unwrap();
@@ -182,7 +180,7 @@ fn a_filtered_payload_is_refused_as_a_plan_file() {
 }
 
 /// What a refused replay puts on the wire, rendered through the CLI's own
-/// error sink rather than read off the carrier.
+/// error sink.
 ///
 /// Each refusal names the question the file failed, so a script can tell
 /// "re-plan" (`stale`) from "you named the wrong file" (`not_found`) from
@@ -264,7 +262,7 @@ fn a_plan_file_whose_phases_were_reordered_is_refused() {
     let err = refusal.to_string();
     assert!(
         err.contains("is not a plan cfgd wrote"),
-        "a duplicated phase is a shape refusal, not a staleness one: {err}"
+        "a duplicated phase is a shape refusal: {err}"
     );
     assert!(err.contains("Files"), "the refusal names the phases: {err}");
     assert!(!target.exists(), "a refused plan runs nothing: {err}");
@@ -290,8 +288,8 @@ fn a_filter_is_refused_with_a_plan_file() {
         let bad = Cli::try_parse_hermetic(["cfgd", "apply", "--plan", "p.json", flag]);
         assert!(bad.is_err(), "`{flag}` must be refused with --plan");
     }
-    // The execution knobs stay legal: they say HOW this run behaves, not what
-    // it does, which is the file's to say.
+    // The execution knobs stay legal: they say HOW this run behaves. What it
+    // does is the file's to say.
     assert!(Cli::try_parse_hermetic(["cfgd", "apply", "--plan", "p.json", "--dry-run"]).is_ok());
     assert!(Cli::try_parse_hermetic(["cfgd", "apply", "--plan", "p.json", "--yes"]).is_ok());
     assert!(
@@ -342,7 +340,7 @@ fn a_plan_recorded_under_another_config_is_refused() {
     let err = refusal.to_string();
     assert!(
         err.contains("is not a plan cfgd wrote for this config"),
-        "a foreign config is a shape refusal, not a staleness one: {err}"
+        "a foreign config is a shape refusal: {err}"
     );
     assert!(
         !err.contains("is stale"),
@@ -362,9 +360,8 @@ fn a_plan_recorded_under_another_config_is_refused() {
 
 #[test]
 fn a_relative_spelling_of_the_same_config_replays_the_plan() {
-    // The identity question above is asked about the FILE, not about the
-    // string: a `..` walking back through a component names the same config
-    // the derivation read, and must not refuse.
+    // The identity question above is asked about the FILE: a `..` walking back through a component
+    // names the same config the derivation read, and must not refuse.
     let (config_dir, state_dir, target) = tiny_profile_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
     let plan_file = state_dir.path().join("plan.json");
@@ -556,12 +553,10 @@ fn a_json_document_that_is_no_plan_output_is_refused_as_one() {
 fn every_apply_arg_is_refused_with_a_plan_file_or_is_an_execution_knob() {
     use clap::CommandFactory;
 
-    // These say HOW the run behaves, not WHAT it does, which is the file's to
-    // say. `plan` itself is not an argument of the run. The list holds only
-    // ids clap really declares here: `--yes` is global (`from_global`) and
-    // `--help`/`--version` belong to the root command, so none of the three
-    // reaches this walk, and naming them would exempt a future argument that
-    // took one of those ids.
+    // These say HOW the run behaves. WHAT it does is the file's to say. `plan` itself is not an
+    // argument of the run. The list holds only ids clap really declares here: `--yes` is global
+    // (`from_global`) and `--help`/`--version` belong to the root command, so none of the three
+    // reaches this walk, and naming them would exempt a future argument that took one of those ids.
     const EXECUTION_KNOBS: [&str; 4] = ["plan", "dry_run", "shell", "on_conflict"];
 
     let command = ApplyArgs::command();
@@ -596,7 +591,7 @@ fn every_apply_arg_is_refused_with_a_plan_file_or_is_an_execution_knob() {
         assert_eq!(
             err.kind(),
             clap::error::ErrorKind::ArgumentConflict,
-            "`{flag}` is refused as a conflict, not for some other reason: {err}"
+            "`{flag}` is refused as a conflict: {err}"
         );
         refused += 1;
     }
@@ -687,7 +682,7 @@ fn a_store_mismatch_is_refused_by_store_even_when_the_serial_also_differs() {
         err.contains(&format!(
             "it was derived against state store {recorded}, and this run opened store {opened}"
         )),
-        "the store wording speaks, not the serial wording: {err}"
+        "the store wording speaks: {err}"
     );
     assert!(
         !err.contains("has run since it was written"),
@@ -738,7 +733,7 @@ fn a_plan_file_naming_no_store_is_refused_as_written_before_the_key() {
 
 #[test]
 fn a_plan_replays_against_its_store_copied_to_another_directory() {
-    // The identity lives in the database rather than in the path, so the same
+    // The identity lives in the database, so the same
     // store under another `--state-dir` is still the store the plan names.
     let (config_dir, state_dir, target) = tiny_profile_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());

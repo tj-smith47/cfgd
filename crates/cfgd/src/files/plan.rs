@@ -43,8 +43,7 @@ fn is_linked_to(source_path: &Path, target_path: &Path, strategy: FileStrategy) 
             .read_link()
             .map(|link| link == source_path)
             .unwrap_or(false),
-        // Two DISTINCT paths sharing an inode, not two spellings of one
-        // path.
+        // Two DISTINCT paths sharing an inode.
         // same-path-ok: a hardlink convergence check.
         FileStrategy::Hardlink => cfgd_core::is_same_inode(source_path, target_path),
         _ => false,

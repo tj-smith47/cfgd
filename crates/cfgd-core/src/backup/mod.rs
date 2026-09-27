@@ -537,10 +537,10 @@ pub(super) fn outcome_detail(error: Option<&str>, size: Option<String>) -> Optio
 /// take a safety copy, and both close on this one sentence so a wording edit
 /// cannot land in one and not the other. The verb inside `safety.detail()`
 /// is the sidecar's own — a copy that was REUSED must not read as one written
-/// this time. A row rather than a hint: it names the path holding the
+/// this time. A row, so no hint setting hides it: it names the path holding the
 /// reader's own data, which is the whole value of the run that displaced it.
-// note-row-ok: a note beside the run's rows, not one of them, so it states a
-// sentence rather than the lowercase imperative an action row takes
+// note-row-ok: a note beside the run's rows, so it states a sentence; an
+// action row takes the lowercase imperative
 pub(super) fn safety_copy_note(safety: &crate::reconciler::SidecarOutcome, name: &str) -> String {
     format!(
         "Previous contents {}; put them back with `cfgd backup rollback {name}`",
@@ -1252,14 +1252,14 @@ fn prune_retention(store: &StateStore, unit: &BackupUnit<'_>, printer: &Printer)
 /// Rendered by [`run_backup_group`] rather than by the prune itself, because
 /// the prune runs under the unit's lock and the snapshot's own row is not on
 /// screen until that lock is released. It fires once, on the run that
-/// discovers them, because an orphaned row is never re-marked. A row rather
-/// than a hint: it names a directory still holding data nothing will prune.
+/// discovers them, because an orphaned row is never re-marked. A row, so no
+/// hint setting hides it: it names a directory still holding data nothing will prune.
 ///
 /// The destination folds here. The hint slot this sentence used to take folds
 /// its own text at render, while the status row it takes now folds nothing, so
 /// a declared `~/backups/notes` would otherwise read back absolute.
-// note-row-ok: a note beside the run's rows, not one of them, so it states a
-// sentence rather than the lowercase imperative an action row takes
+// note-row-ok: a note beside the run's rows, so it states a sentence; an
+// action row takes the lowercase imperative
 fn orphan_note(count: usize, name: &str, destination: &Path) -> String {
     format!(
         "Run `cfgd backup gc {name}` to remove the {} left outside the destination {} by a \

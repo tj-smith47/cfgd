@@ -321,7 +321,7 @@ fn main() -> anyhow::Result<()> {
     tracing_writer.attach(&printer);
 
     // A stored name no preset answers to renders as the default palette, and
-    // nothing else on the surface says so. A warning rather than a refusal:
+    // nothing else on the surface says so. It is a warning and no refusal:
     // the config may not be this user's to edit, and every command must still
     // run under it.
     if let Some(theme) = theme_config.as_ref()

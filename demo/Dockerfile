@@ -87,7 +87,7 @@ ENV COLORTERM=truecolor
 # use for. Staged at demo/bin/cfgd before `docker build` runs (see
 # .dockerignore — target/ itself never enters the build context).
 #
-# Built for x86_64-unknown-linux-musl, not the default gnu target: a
+# Built for x86_64-unknown-linux-musl: a
 # dynamically-linked gnu binary refuses to run against a libc older than the
 # one it was linked against, so a gnu build would tie this image's glibc to
 # the build host's (they match today, at 2.43, and diverge the moment either

@@ -1,7 +1,7 @@
 //! Shared integration-test fixtures for the `cfgd` binary crate's `tests/`.
 //!
-//! A lib crate rather than a `tests/common/mod.rs`: every integration crate
-//! compiles that file with a different used subset, so the pattern needs a
+//! A lib crate. Every integration crate compiles a `tests/common/mod.rs` with
+//! a different used subset, so that pattern needs a
 //! blanket `dead_code` allowance to build. A lib's `pub` items are its API and
 //! need none.
 

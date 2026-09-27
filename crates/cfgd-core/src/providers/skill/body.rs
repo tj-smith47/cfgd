@@ -116,7 +116,7 @@ comment beside each included one.** Omit a field the subject does not use or who
 would equal the default; note a non-obvious omission in a comment too."
     );
     let _ = writeln!(
-        out, // floor-sentence-ok: what a script KIND offers the author, not what a manager offers for a package
+        out, // floor-sentence-ok: what a script KIND offers the author; no manager or package is named
         "4. **Draft.** Declare every dependency the subject needs at run time, transitive \
 ones included. Set a version floor only where a feature needs it, and say which. Gate \
 platform-specific entries with `platforms`. Make each script step safe to re-run (`onlyIf` \
@@ -313,7 +313,7 @@ mod tests {
             "6. **Self-critique",
         ] {
             let at = body
-                // doc-comment-ok: a rendered skill body, not a source line
+                // doc-comment-ok: the haystack is a rendered skill body
                 .find(marker)
                 .unwrap_or_else(|| panic!("step marker absent: {marker}"));
             assert!(at >= last, "step out of order: {marker}");

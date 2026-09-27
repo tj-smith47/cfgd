@@ -399,7 +399,7 @@ fn the_folding_writer_fence_recognizes_every_spelling() {
     }
 }
 
-/// Whether this code line DECLARES a type rather than reaching one: the keyword
+/// Whether this code line DECLARES a type: the keyword
 /// [`crate::test_helpers::item_keyword`] reads off it is `struct`, `enum`,
 /// `union`, `trait` or `impl`.
 ///
@@ -407,7 +407,7 @@ fn the_folding_writer_fence_recognizes_every_spelling() {
 /// `impl` block written for it as readily as the fixtures that construct it,
 /// and those lines sit outside every function, where no attribute can be hung
 /// on them. Skipping them is what lets a needle be spelled as the type is
-/// really written, rather than narrowed until it dodges them and misses a
+/// really written. A needle narrowed until it dodges them misses a
 /// construction with it.
 fn declares_a_type(code: &str) -> bool {
     matches!(
@@ -3247,8 +3247,8 @@ fn names_a_hatch_marker(name: &str) -> bool {
 /// The complement is what makes PLACEMENT stop mattering. A cut at a file's
 /// first `#[cfg(test)]` reads every production line below a test-only item as
 /// test text, so moving an item from beside the production code it serves to
-/// the foot of the file changed a walk's verdict; blanking instead of cutting
-/// also keeps a line's number its own, so an offender can be opened where it is
+/// the foot of the file changed a walk's verdict; blanking in place also keeps
+/// a line's number its own, so an offender can be opened where it is
 /// reported.
 fn test_region(path: &Path, body: &str) -> String {
     let scaffolding = crate::test_helpers::is_test_source(path)
@@ -3263,13 +3263,13 @@ fn test_region(path: &Path, body: &str) -> String {
 /// rebuilt into the file again: each row takes the region's line where a marked
 /// item claims the row and the next production line where none does.
 ///
-/// Membership is the RANGES, never the mask's content. A blank line inside a
+/// Membership is the RANGES. A blank line inside a
 /// test item is blank in the mask exactly as a blanked production row is, so a
 /// reader asking `is_empty()` hands that row to the production half, takes a
 /// line that belongs further down, and every row after it is off by one.
 fn assert_reassembles(file: &str) {
     let region = test_region(Path::new("src/thing.rs"), file);
-    // unfloored-slice-ok: the subject is one fixture held in memory, not a source on disk
+    // unfloored-slice-ok: the subject is one fixture held in memory; no source on disk is read
     let slice = crate::test_helpers::production_slice(file);
     let production: Vec<&str> = slice.lines().collect();
     let ranges = crate::test_helpers::inline_test_item_ranges(file);
@@ -3311,7 +3311,7 @@ fn assert_reassembles(file: &str) {
 /// opens a region in a file that may hold no test at all.
 #[test]
 fn the_test_region_is_every_inline_test_item_and_nothing_else() {
-    // Assembled rather than spelled: a `#[cfg(test)]` written out here would
+    // Assembled from two literals: a `#[cfg(test)]` written out here would
     // read as this scaffolding file declaring a second test region of its own.
     let gate = concat!("#[cfg", "(test)]");
     // Line 5 and line 14 are blank INSIDE a test item and line 8 is blank
@@ -3383,14 +3383,14 @@ fn the_test_region_is_every_inline_test_item_and_nothing_else() {
         file.lines().count(),
         "a blanked line still occupies its own row, or an offender cannot be opened where it is reported"
     );
-    // The partition stated as a REASSEMBLY rather than a count: each row takes
+    // The partition stated as a REASSEMBLY: each row takes
     // the region's line where the row belongs to a marked item and the next
     // production line where it does not, and the result has to be the file
     // again with every production line spent. A count is satisfied by two lines
     // that swapped halves in opposite directions; this is not.
     assert_reassembles(file);
     assert_eq!(
-        // unfloored-slice-ok: the subject is one fixture held in memory, not a source on disk
+        // unfloored-slice-ok: the subject is one fixture held in memory; no source on disk is read
         crate::test_helpers::production_slice(file)
             .lines()
             .filter(|line| line.is_empty())
@@ -3446,11 +3446,11 @@ const ITEM_LEAD_EDGE_READERS: [&str; 7] = [
 
 /// Whether a string literal's content is a hand-written item-lead fold.
 ///
-/// The NEEDLE's shape is the tell, not the name of the reader it was handed to:
+/// The NEEDLE's shape is the tell, whatever the reader it was handed to:
 /// a needle that folds a lead is the lead itself plus at most the item keyword
 /// behind it (`"pub "`, `"pub("`, `"pub fn "`, `"unsafe fn "`), and a needle
 /// carrying anything item-SPECIFIC after that names one declaration this tree
-/// really holds rather than folding a lead off any. So `contains("pub fn ")` is
+/// really holds, and folds no lead off any. So `contains("pub fn ")` is
 /// a fold and `find("pub enum BackupCommand {")` is not.
 ///
 /// The reader decides ONE case: a bare lead word carrying no boundary at all.
@@ -3597,7 +3597,7 @@ fn the_item_lead_tell_reads_a_fold_and_not_a_mention() {
         r#"if code.contains("pub") {}"#,
         r#"let by_name = map.get("default");"#,
         // A continued literal the walk must read without panicking, and which
-        // joins to a needle that names one declaration rather than a lead.
+        // joins to a needle that names one declaration.
         "let held = \"pub enum \\\n    BackupCommand {\";",
         "let held = 1;\nlet fixture = \"pub fn kept() {}\";",
     ];
@@ -3636,7 +3636,7 @@ fn the_item_lead_tell_reads_a_fold_and_not_a_mention() {
 /// of the production half. [`crate::test_helpers::item_lead`] is the one
 /// spelling of the list: it folds the lead and says whether that lead was a
 /// VISIBILITY, which is what a reader asking whether a declaration is public
-/// reads instead of spelling `pub` itself. [`item_keyword`] asks what the item
+/// reads; spelling `pub` by hand misses it. [`item_keyword`] asks what the item
 /// is, [`crate::test_helpers::opens_function`] whether it is a function, and
 /// `declared_fn_name` what it is called.
 ///
@@ -3661,7 +3661,7 @@ fn no_test_scope_scanner_folds_an_item_lead_by_hand() {
 }
 
 /// A hatch is read off a source line through
-/// [`crate::test_helpers::carries_hatch`], never through a bare `contains`.
+/// [`crate::test_helpers::carries_hatch`]; a bare `contains` misreads it.
 ///
 /// `"/// name-row-ok: …"` contains `"// name-row-ok:"`, so a lookup asking only
 /// whether a line holds the marker accepts a rustdoc line as the hatch, and
@@ -3676,12 +3676,12 @@ fn no_test_scope_scanner_folds_an_item_lead_by_hand() {
 /// all. `contains`, `split_once` and `find` are the three that read the marker
 /// from anywhere on the line, so they are the three that can be fooled.
 ///
-/// Two escapes the tell cannot see, stated rather than left silent. A marker
+/// Two escapes the tell cannot see, stated here. A marker
 /// const named outside the `*_HATCH` / `*_MARKER` / `marker` / `hatch`
 /// convention is invisible to [`names_a_hatch_marker`], which has the name
 /// alone to go on; `NOT_A_CHILD` is the one such const today and it is routed.
-/// And the statement scan below asks only whether a routed call appears, not
-/// which marker it was asked about, so a chain filtering on one marker and
+/// And the statement scan below asks only whether a routed call appears; it
+/// never asks which marker, so a chain filtering on one marker and
 /// destructuring another would pass. That same latitude is what lets the
 /// legitimate filter-then-destructure shape work.
 ///
@@ -3791,7 +3791,7 @@ fn every_hatch_a_walk_reads_comes_from_the_one_line_reader() {
 }
 
 /// The marker lookups each crate holds, so a walk that stopped reading one of
-/// them fails by that crate's name rather than by a total the other still fills.
+/// them fails by that crate's name; the other's count cannot fill it.
 const FLOORS: [(&str, usize); 2] = [("cfgd", 79), ("cfgd-core", 28)];
 
 /// Every fence in this file is a claim about a POPULATION, so the walk that
@@ -5891,10 +5891,10 @@ fn the_validator_tell_reads_a_whole_field_token_outside_the_call_name() {
 /// Every file the plan-file format is spread across, and how many optional
 /// fields each holds today.
 ///
-/// The count is a per-file floor, not a total: one aggregate number stays
+/// The count is a per-file floor: one aggregate number stays
 /// satisfied while a whole file is renamed out of the walk. Each file is also
 /// floored on the readers it declares, which is what says the walk still reaches
-/// the types it names rather than a file that stopped holding any.
+/// the types it names in a file still holding them.
 ///
 /// `cfgd-schema` is on the list because the serialized action graph reaches into
 /// it: `PatchSpec` rides in `FileAction::{Create,Update}`, `ScriptEntry` and
@@ -6232,8 +6232,8 @@ fn no_string_literal_carries_a_mid_sentence_space_run() {
 }
 
 /// The offending fragment of a literal body, or `None` when its spacing is a
-/// leading indent, a trailing pad or a column rather than a break inside a
-/// sentence.
+/// leading indent, a trailing pad or a column; only a break inside a sentence
+/// is an offence.
 ///
 /// A run following an escaped line break is the next line's INDENT, and an
 /// embedded YAML fixture is nothing but those, so the two bytes `\n` end a
@@ -6278,7 +6278,7 @@ fn mid_sentence_space_run(literal: &str) -> Option<String> {
 
 /// The crate roots the floor-sentence walk reads, workspace-relative, each
 /// with a floor under the production sources it holds today, so a tree going
-/// dark fails on its own name rather than inside a total.
+/// dark fails on its own name.
 const FLOOR_SENTENCE_ROOTS: &[(&str, usize)] = &[
     ("crates/cfgd-core/src", 150),
     ("crates/cfgd-crd/src", 1),
@@ -6391,8 +6391,8 @@ fn no_production_site_outside_the_resolver_composes_a_floor_shortfall_sentence()
 /// makes the run act on one manager's facts in another's name.
 const LEADER_SCOPED_PROVISION_FIELDS: &[&str] = &["*manager =", "*declared =", "*floor ="];
 
-/// Whether `code` ASSIGNS through one of those tells rather than comparing
-/// through it. A match arm reading `if *manager == route.package` carries the
+/// Whether `code` ASSIGNS through one of those tells; a comparison through
+/// one answers false. A match arm reading `if *manager == route.package` carries the
 /// assignment's own bytes as a prefix, and a reader that stops at the first
 /// `=` calls a guard a re-lead.
 fn assigns_leader_scoped_field(code: &str, field: &str) -> bool {
@@ -6486,7 +6486,7 @@ fn the_floor_sentence_matcher_reads_a_literal_and_not_a_comment() {
     assert_eq!(
         composes_a_floor_sentence("    // the tail reads below the declared minVersion <floor>"),
         None,
-        "a comment explains the rule rather than breaking it"
+        "a comment explains the rule and breaks nothing"
     );
     assert_eq!(
         composes_a_floor_sentence("    let n = 1; // {mgr} offers {pkg} is the clause"),
@@ -6854,7 +6854,7 @@ fn is_test_source_judges_only_components_below_the_workspace_root() {
 /// Both floors equal the population they were counted from, so a scan that stops
 /// reading files, or a routed site that stops asking, fails here. The `asks`
 /// count leaves out the tests that define the rule, whose calls check the
-/// helper rather than route a scan through it, and reads each line with its
+/// helper itself and route no scan through it, and reads each line with its
 /// string literals blanked, so a message quoting the call counts for nothing.
 #[test]
 fn no_scan_hand_copies_the_test_source_naming_rule() {

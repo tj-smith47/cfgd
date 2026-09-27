@@ -452,13 +452,21 @@ fn set_nested_yaml_value_writes_through_a_bare_section() {
 #[test]
 fn set_nested_yaml_value_refuses_a_parent_of_another_shape_by_name() {
     for (yaml, path, refusal) in [
-        ("a: 3\n", "a.b", "'root.a' holds a scalar, not a mapping"),
+        (
+            "a: 3\n",
+            "a.b",
+            "'root.a' holds a scalar where a mapping belongs",
+        ),
         (
             "a: [1]\n",
             "a.b.c",
-            "'root.a' holds a sequence, not a mapping",
+            "'root.a' holds a sequence where a mapping belongs",
         ),
-        ("just text\n", "b", "'root' holds a scalar, not a mapping"),
+        (
+            "just text\n",
+            "b",
+            "'root' holds a scalar where a mapping belongs",
+        ),
     ] {
         let mut root: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
         let before = root.clone();

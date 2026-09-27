@@ -1579,8 +1579,8 @@ fn blank_literal(blanked: Blanked, out: &mut [u8], from: usize, to: usize) {
     }
 }
 
-/// Whether a source line is a plain `//` comment rather than a `///` or `//!`
-/// doc comment.
+/// Whether a source line is a plain `//` comment: a `///` or `//!` doc comment
+/// answers false.
 ///
 /// Every hatch a source-walking pin reads is maintainer text, which
 /// `critical.md` rule 8 puts in a `//` comment; a `///` block is USER text, and
@@ -1596,7 +1596,8 @@ pub fn is_plain_line_comment(line: &str) -> bool {
 }
 
 /// Whether this source line carries `marker` as a HATCH — the marker written
-/// where a walk will read it, rather than merely spelled somewhere on the line.
+/// where a walk will read it; a marker merely spelled somewhere on the line
+/// does not count.
 ///
 /// A hatch is written either as a comment line of its own above the subject or
 /// as a trailing comment on the subject itself, so both shapes answer true. A
@@ -1750,8 +1751,8 @@ pub fn callers_reaching(
 /// nor any line inside it can be continued.
 ///
 /// Which rows are source at all is [`LineMask`]'s answer: an `r#` written
-/// inside an ordinary literal or a comment is masked rather than read as an
-/// opener, so the scan stays in step with the rows below it. A scan tracking
+/// inside an ordinary literal or a comment is masked, so the scan stays in step
+/// with the rows below it. A scan tracking
 /// raw literals alone reads the `r"` ending a word like `"…provider"` as one,
 /// and the rows below it are glued onto the line that word sits on until the
 /// next quote closes the literal it thinks it is in.
@@ -1792,7 +1793,7 @@ pub fn logical_source_lines(body: &str) -> Vec<(usize, String)> {
 ///
 /// A raw literal spanning rows is left alone, and so is every row inside one:
 /// it reproduces another file's bytes, where a quote is that fixture's text
-/// rather than a delimiter. [`LineMask`] is what earns that claim — a quote
+/// and delimits nothing. [`LineMask`] is what earns that claim — a quote
 /// inside an ordinary literal or a comment is not a delimiter either, and a
 /// scanner reading bytes alone takes the `r"` at the end of `"…provider"` for
 /// an opener and desynchronizes every row below it.
@@ -1956,8 +1957,8 @@ impl LineMask {
                         // The escaped byte sits at i + 2, so the closing-quote
                         // search starts past it: searched from i + 2, an
                         // escaped quote (`'\''`) is its own first hit and the
-                        // scan lands on the escaped byte instead of past the
-                        // literal.
+                        // scan would land on the escaped byte, short of the
+                        // literal's end.
                         let after_escape = (i + 3).min(bytes.len());
                         let close = bytes[after_escape..]
                             .iter()
@@ -2194,7 +2195,7 @@ pub fn two_layer_profile() -> crate::config::ResolvedProfile {
 /// priced against.
 ///
 /// `home` is the file's own spelling of the home directory, so a walk over
-/// several platforms gets each one's rather than Linux's everywhere.
+/// several platforms gets each one's own.
 ///
 /// [`LayeredEnv`]: crate::reconciler::LayeredEnv
 pub fn layered_fixture(
@@ -3185,7 +3186,7 @@ pub fn path_env_exclusive_guard_held() -> bool {
 /// The holder is parked on the helper, so it mutates nothing while the helper
 /// runs, and every other thread stays shut out by the lock the holder still
 /// owns. The helper therefore counts as the holder: its guards are re-entrant
-/// no-ops instead of waiting on a lock its own waiter holds. Take it as the
+/// no-ops, so none waits on a lock its own waiter holds. Take it as the
 /// helper's first statement; it releases nothing, because the holder owns
 /// the lock.
 // env-mutator-ok: sets a thread-local Cell; writes no env var.
@@ -4347,7 +4348,7 @@ pub struct MockPackageManager {
     /// out and can fail to spawn.
     comparisons_fail: bool,
     /// The command `own_raise()` answers with, for a family whose own copy is
-    /// raised by the tool behind its shim rather than by its package verb.
+    /// raised by the tool behind its shim; its package verb cannot raise it.
     own_raise: Option<String>,
     /// Whether `upgrade_verb()` answers `None` — a manager that cannot raise
     /// a package in place at all, so a below-floor package is a check error
@@ -4362,8 +4363,8 @@ pub struct MockPackageManager {
     /// OFFERS, which is a different question from what it holds installed and
     /// is the one `fill_available_versions` asks.
     offered: std::collections::BTreeMap<String, String>,
-    /// Whether this manager reads its family's own version grammar rather than
-    /// the shared loose-semver one. See
+    /// Whether this manager reads its family's own version grammar; `false`
+    /// reads the shared loose-semver one. See
     /// [`reading_its_own_version_grammar`](MockPackageManager::reading_its_own_version_grammar).
     own_grammar: bool,
 }
@@ -5227,7 +5228,7 @@ pub fn production_slice(src: &str) -> String {
 /// The complement of [`production_slice`]: every line inside a column-0
 /// `#[cfg(test)]` item kept, every other line blanked.
 ///
-/// Blanked rather than cut, so a line's number in the mask is its number in the
+/// Blanked in place, so a line's number in the mask is its number in the
 /// file and a walk reporting an offender names a line its reader can open. A
 /// file's test text is therefore whatever `production_slice` drops, WHEREVER it
 /// sits and whatever item carries the marker — a walk over the mask gives the
@@ -5382,8 +5383,8 @@ pub fn item_lead(code: &str) -> (ItemLead, &str) {
     }
 }
 
-/// [`item_lead`]'s fold alone, for a reader that asks what the item IS rather
-/// than who can see it.
+/// [`item_lead`]'s fold alone, for a reader that asks what the item IS and
+/// not who can see it.
 pub fn strip_item_lead(code: &str) -> &str {
     item_lead(code).1
 }
@@ -5436,7 +5437,7 @@ pub fn opens_function(code: &str) -> bool {
 }
 
 /// Put the managed env files a CONVERGED machine holds onto `home`, taken from
-/// the generator rather than spelled by hand, and hand them back.
+/// the generator, and hand them back.
 ///
 /// The one way a CLI fixture reproduces a converged machine: a hand-written
 /// file is one block with no header, which is not the shape the planner writes
@@ -6111,8 +6112,8 @@ mod tests {
     /// visibility lead read as part of the keyword made every one of them leave
     /// the production half; a doc comment between the marker and the
     /// declaration is blanked to spaces by the fold the scan reads through, so
-    /// a head taken from the line after the attribute run is a blank line
-    /// rather than the declaration.
+    /// a head taken from the line after the attribute run is a blank line,
+    /// which misses the declaration.
     #[test]
     fn production_slice_keeps_a_file_whose_test_module_is_a_mid_file_declaration() {
         let attr = format!("#[cfg({})]", "test");

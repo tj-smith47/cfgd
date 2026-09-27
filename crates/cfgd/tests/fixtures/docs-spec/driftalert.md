@@ -11,8 +11,8 @@ is the answers of the system configurators its profile declares (`sysctl`, `kern
 `macosDefaults`, `windowsRegistry`, ...) and nothing else. Managed files, packages, env vars and
 aliases are checked on the device by `cfgd diff`, and reach the fleet through a check-in's
 compliance summary (its counts and the first 200 checks that did not pass, on
-`MachineConfig.status.compliance`), never as a DriftAlert. A device with no open DriftAlert
-is a device whose system settings matched, not a device proven in sync.
+`MachineConfig.status.compliance`); no DriftAlert carries it. A device with no open DriftAlert
+is a device whose system settings matched; it is not proven in sync.
 
 **API group:** `cfgd.io/v1alpha1`
 **Scope:** Namespaced

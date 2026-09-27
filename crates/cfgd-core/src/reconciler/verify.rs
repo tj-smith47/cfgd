@@ -498,7 +498,7 @@ pub fn held_manager_version_drift(
             .get(&held.package)
             .map(|f| f.floor.as_str())
             .unwrap_or(held.floor.as_str());
-        // Judged again rather than read off the node: an operator who changed
+        // Judged again, with nothing read off the node: an operator who changed
         // toolchains since the resolution changed the answer, and this pass
         // exists to see that. Judged against the FOLDED floor, so every
         // declarant of one manager reaches the same verdict and the dedup
@@ -614,7 +614,7 @@ pub struct EnvLayer {
     pub owner: String,
     /// The merge priority this layer holds in the fold, which its block header
     /// states so a reader can see WHY the blocks stand in the order they do.
-    /// `None` for a layer the fold ranks by position rather than by number:
+    /// `None` for a layer the fold ranks by position:
     /// a module (it folds on top of the whole layer merge) and the resolved
     /// secrets (they reach the file after every merge).
     pub priority: Option<u32>,
@@ -630,8 +630,7 @@ impl EnvLayer {
     ///
     /// `PATH` is in no block: its declarations CONCATENATE, so it has as many
     /// authors as contributed to it and one composed line of its own. N
-    /// verbatim `export PATH=` lines would each clobber the last instead of
-    /// layering onto it.
+    /// verbatim `export PATH=` lines would each clobber the last.
     fn declared(
         owner: &str,
         priority: Option<u32>,
@@ -654,8 +653,8 @@ impl EnvLayer {
 }
 
 /// One block per module, in resolution order. A module's entries were already
-/// filtered when it resolved, so the filter above runs twice rather than
-/// stating a second policy.
+/// filtered when it resolved, so the filter above runs twice and states no
+/// second policy.
 fn module_layers(modules: &[ResolvedModule]) -> impl Iterator<Item = EnvLayer> + '_ {
     modules.iter().map(|module| {
         EnvLayer::declared(
@@ -676,8 +675,8 @@ fn module_layers(modules: &[ResolvedModule]) -> impl Iterator<Item = EnvLayer> +
 /// tier, each opted-in profile and its standard profiles all take the
 /// subscription's own number (`composition::layers`) — and they all spell
 /// `source:<name>` (`ProfileLayer::owner_token`). A block is headed by an
-/// owner and a rank, so those read as one repeated section rather than as the
-/// layers they are, and joining them keeps every declaration in the order the
+/// owner and a rank, so those would read as one repeated section, and joining
+/// them keeps every declaration in the order the
 /// layers were declared in.
 ///
 /// A rank change ends the run even under one owner. A subscriber override
@@ -763,14 +762,14 @@ pub struct LayeredEnv {
     /// declaration order, while each of its other tiers — a subscriber
     /// override one step above, a required tier that outranks local — takes a
     /// block of its own headed by that tier's number. A block left holding
-    /// neither an env var nor an alias is dropped rather than carried as a
-    /// header with nothing under it.
+    /// neither an env var nor an alias is dropped, so no header stands with
+    /// nothing under it.
     pub layers: Vec<EnvLayer>,
     /// The surviving env vars, as the merge decided them.
     pub merged: Vec<crate::config::EnvVar>,
     /// The surviving aliases, as the merge decided them.
     pub merged_aliases: Vec<crate::config::ShellAlias>,
-    // `pub(super)`, not `pub`: `EnvOrigins` is `pub(super)` in `env_engine`,
+    // `pub(super)`: `EnvOrigins` is `pub(super)` in `env_engine`,
     // and a `pub` field may not carry a type this crate's consumers cannot
     // name. Every reader of it is inside `reconciler`.
     pub(super) origins: EnvOrigins,
@@ -812,7 +811,7 @@ impl LayeredEnv {
 
     /// The same view for a caller holding one layer's declarations and no
     /// [`ResolvedProfile`]: `owner` is that layer's `kind:name` token, taken as
-    /// spelled rather than rebuilt from a profile name, `env`/`aliases` are
+    /// spelled (never rebuilt from a profile name), `env`/`aliases` are
     /// what it declares, and the modules follow it.
     pub fn from_parts(
         owner: &str,
@@ -840,10 +839,9 @@ impl LayeredEnv {
     /// the layer that claimed it — a resolved preference is folded in after the
     /// layer loop and claimed by the last layer that ranked it, so it lands
     /// there and needs no header of its own, and an entry no claim answers for
-    /// lands in the last block that DECLARES something rather than in none.
-    /// Env vars and aliases are placed the same way, each over its own half of
-    /// the claim map. A block left with nothing is dropped rather than printed
-    /// empty.
+    /// lands in the last block that DECLARES something. Env vars and aliases
+    /// are placed the same way, each over its own half of the claim map. A
+    /// block left with nothing is dropped.
     fn assemble(
         layers: Vec<EnvLayer>,
         merged: (
@@ -930,7 +928,7 @@ impl LayeredEnv {
 
     /// The resolved secret exports, appended as the last layer: a secret's
     /// VALUE exists only once a backend has resolved it, so it reaches the file
-    /// here rather than through the merge.
+    /// here, outside the merge.
     pub fn with_secret_envs(mut self, secret_envs: &[(String, String)]) -> Self {
         let env: Vec<crate::config::EnvVar> = secret_envs
             .iter()

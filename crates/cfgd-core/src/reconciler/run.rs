@@ -1490,8 +1490,8 @@ fn outcome_clauses(tally: &RunTally) -> Vec<(Role, String)> {
             clauses.push((Role::Skipped, format!("{} skipped", tally.skipped)));
         }
     }
-    // `Role::Fail`, not `Role::Accent`: these are status lines in a status
-    // block, and `Accent` reserves no glyph column. The failure count hung one
+    // `Role::Fail`: these are status lines in a status block, and
+    // `Role::Accent` reserves no glyph column. The failure count hung one
     // column left of the two lines above it, the only unmarked line in a
     // report where every failed action row carries a red glyph, so the bad
     // news read as a stray fragment of the green line above it.

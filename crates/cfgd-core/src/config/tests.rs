@@ -86,7 +86,7 @@ fn every_api_version_the_table_names_converts_to_the_current_one() {
     }
 }
 
-/// The refusal names every version the table holds, not the current one alone.
+/// The refusal names every version the table holds, the current one included.
 ///
 /// A build carrying a second conversion row accepts a document the constant
 /// does not name, so a message spelling the constant would refuse a version the
@@ -149,8 +149,8 @@ fn the_unsupported_api_version_refusal_names_every_readable_version() {
 /// `api_version` or `apiVersion` on one side of `==`, `!=`, `matches!(`,
 /// `.starts_with(`, `.contains(`, `.eq(` or `.ne(`, and `API_VERSION` or an
 /// inline literal on the other, in either direction and at every place the
-/// operator appears in the text. The question is put to a STATEMENT rather
-/// than to a row: rows are gathered from one terminator to the next and
+/// operator appears in the text. The question is put to a STATEMENT: rows
+/// are gathered from one terminator to the next and
 /// joined, so a comparison split across rows is one text while two
 /// neighbouring statements stay two. A `;`, `{` or `}` terminates wherever it
 /// falls, and so does a `,` at the statement's own bracket depth, which is
@@ -161,13 +161,13 @@ fn the_unsupported_api_version_refusal_names_every_readable_version() {
 ///
 /// The population is every `<crate>/src` under `crates/`, read off the
 /// directory so a crate added to the workspace joins it, and NAMED so a renamed
-/// root fails by name rather than being restored by whatever else appears. The
+/// root fails by name, and whatever else appears cannot stand in for it. The
 /// floor is stated per root: one number for the workspace is the biggest tree's
 /// count plus the rest, so `crates/cfgd/src` could go dark inside it.
 ///
-/// `validate_api_version` and `convertible_from` are exempt BY NAME rather than
-/// by hatch, because they ARE the comparison every other site is routed to. The
-/// validator is judged instead by the reach check below, which is what catches
+/// `validate_api_version` and `convertible_from` are exempt BY NAME, with no
+/// hatch, because they ARE the comparison every other site is routed to. The
+/// validator is judged by the reach check below, which is what catches
 /// a body that keeps the table call and compares anyway.
 #[test]
 fn no_production_site_compares_an_api_version_by_hand() {
@@ -178,7 +178,7 @@ fn no_production_site_compares_an_api_version_by_hand() {
 
     /// Every crate root the walk must still be reading, workspace-relative,
     /// with a floor at the production sources each holds today, so a tree going
-    /// dark fails on its own name rather than inside a total.
+    /// dark fails on its own name.
     const WALK_ROOTS: &[(&str, usize)] = &[
         ("crates/cfgd-core/src", 191),
         ("crates/cfgd-crd/src", 1),
@@ -371,7 +371,7 @@ fn no_production_site_compares_an_api_version_by_hand() {
         "the walk no longer reads {unread:?}; it read {read:?} — a renamed or moved \
          crate root leaves its apiVersion comparisons judged by nobody"
     );
-    // A root the walk never reported on reads as zero rather than as absent: a
+    // A root the walk never reported on reads as zero: a
     // missing entry is the whole tree going dark, which is what the floor is for.
     let short: Vec<(&str, usize, usize)> = WALK_ROOTS
         .iter()
@@ -421,8 +421,8 @@ fn no_production_site_compares_an_api_version_by_hand() {
         !statements(&validator_rows)
             .iter()
             .any(|(.., statement)| compares_by_hand(statement)),
-        "validate_api_version compares a version string itself instead of letting \
-         the table answer:\n{validator}"
+        "validate_api_version compares a version string itself where the table \
+         should answer:\n{validator}"
     );
 }
 

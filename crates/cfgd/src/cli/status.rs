@@ -633,7 +633,7 @@ fn classify_recorded_drift_for_chain(
                 // scanned` beside the finding — the file rows' rule, applied
                 // to every resource kind. A held manager is on the machine and
                 // nothing installs it, so its row seeds nothing: its inventory
-                // row states the floor verdict instead of an absence.
+                // row states the floor verdict.
                 if owner.name == cx.mod_name && resolved.is_some() {
                     scanned_packages
                         .entry(declared.clone())
@@ -4237,7 +4237,7 @@ mod tests {
         assert_eq!(
             (drift[0].surface, drift[0].item.as_str()),
             (super::SURFACE_PACKAGES, "cargo"),
-            "the row prints the manager the module declared, not the minted id"
+            "the row prints the manager the module declared; the minted id stays off it"
         );
         assert!(
             scanned_packages.is_empty(),
@@ -9086,7 +9086,7 @@ mod tests {
         );
         // The two operands the sentence compares also travel as fields, under
         // the names `cfgd module show` already publishes: a consumer deciding
-        // how far short a host is should read numbers, not parse prose, and
+        // how far short a host is should read numbers and parse no prose, and
         // two surfaces answering one question in different shapes is the drift
         // this half pins.
         assert_eq!(
@@ -9098,8 +9098,8 @@ mod tests {
             held.min_version, "1.85",
             "and the floor it was judged against"
         );
-        // Serialized where the documentation says to look for it, rather than
-        // off the inner value alone: a consumer reaches these numbers down
+        // Serialized where the documentation says to look for it: a consumer
+        // reaches these numbers down
         // `packageState[].held`, so a rename anywhere along that path breaks
         // the promise even while the inner struct still serializes. The route
         // a floor nothing met would take is published beside them, down its
@@ -11122,8 +11122,8 @@ mod tests {
         assert!(
             drift_ids.is_empty(),
             concat!(
-                "a row the scan could not re-check is the store's answer, never one of this ",
-                "run's own findings, got: {}"
+                "a row the scan could not re-check is the store's answer; this run found ",
+                "nothing of its own there, got: {}"
             ),
             parsed
         );

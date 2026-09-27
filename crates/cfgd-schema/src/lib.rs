@@ -145,8 +145,8 @@ pub struct PatchSpec {
     /// construction — every evaluation path funnels through `compute_patched`,
     /// which refuses a marked spec.
     // plan-skip-ok: a plan file reads it back `None`, so the poison a composition
-    // applied does not survive one — a file-driven run recomposes rather than
-    // trusting the mark. Serializing it would add a key to the published schema
+    // applied does not survive one — a file-driven run recomposes and leaves
+    // the mark untrusted. Serializing it would add a key to the published schema
     // that `deny_unknown_fields` then refuses in YAML, and rewrite every stored
     // `plan_hash`, this spec riding inside `FileAction::{Create,Update}`.
     #[serde(skip)]
@@ -307,8 +307,8 @@ pub struct ScriptCommand {
         rename = "idleTimeout"
     )]
     pub idle_timeout: Option<String>,
-    /// Treat a non-zero exit as success and continue reconciliation instead
-    /// of failing the run. Default: `false`.
+    /// Treat a non-zero exit as success, so reconciliation continues and the
+    /// run does not fail. Default: `false`.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -338,7 +338,7 @@ pub struct ScriptCommand {
     /// no spinner, no output capture, no idle timeout) so it can prompt the
     /// user — e.g. `echo "press Enter when done"; read`. Requires a TTY: when
     /// stdin is not a terminal (CI, piped input, or any daemon-run phase) the
-    /// script is skipped with a warning rather than hanging on instant EOF.
+    /// script is skipped with a warning, so it cannot hang on instant EOF.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub interactive: bool,
     /// Working directory for the script. By default every lifecycle script
@@ -663,8 +663,8 @@ pub struct BackupSpec {
     /// the list. Keys the `destination` default, run records, and CLI
     /// selection. Becomes a directory component (`<state_dir>/backups/<name>/`)
     /// and a lock filename (`<state_dir>/locks/backup-<name>.lock`), so it must
-    /// be non-empty, non-blank, a single segment (no `/` or `\`), not a
-    /// directory reference (`.`, `..`), not rooted (`/daily`, `C:/daily`), and
+    /// be non-empty and non-blank, a single segment (no `/` or `\`), neither a
+    /// directory reference (`.`, `..`) nor rooted (`/daily`, `C:/daily`), and
     /// free of `:` anywhere — a drive and NTFS data-stream separator on Windows.
     /// Windows shapes are rejected on every platform so a name written on one
     /// OS stays valid on the others.
@@ -677,8 +677,8 @@ pub struct BackupSpec {
     /// on Windows) needs an explicit `namePattern` that leaves `{filename}` out.
     pub source: PathBuf,
     /// Where snapshots are written. Defaults to `<state_dir>/backups/<name>/`
-    /// when omitted — resolved by the backup engine, not at parse time, since
-    /// the state dir depends on runtime scope/overrides.
+    /// when omitted — resolved by the backup engine at run time, since the
+    /// state dir depends on runtime scope/overrides.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub destination: Option<PathBuf>,
     /// Filename template for each snapshot. Supports `{name}`, `{filename}`,
@@ -713,8 +713,8 @@ pub struct BackupSpec {
     pub schedule_owner: ScheduleOwner,
     /// Number of newest snapshots to keep for this backup; older snapshots are
     /// pruned from disk and from the run history. Must be at least 1 (`0` would
-    /// keep no backups, which is a misconfiguration rather than a supported
-    /// "unlimited" mode). Defaults to 10.
+    /// keep no backups, which is a misconfiguration; there is no "unlimited"
+    /// mode). Defaults to 10.
     #[serde(default = "default_backup_retention")]
     #[schemars(range(min = 1))]
     pub retention: u32,
@@ -1274,7 +1274,7 @@ mod tests {
                 .to_string();
             assert!(
                 refusal.contains("a mapping key must be a string"),
-                "the refusal is this rule's, not a parse failure: {refusal}"
+                "the refusal is this rule's own; no parse failure produced it: {refusal}"
             );
             assert!(
                 !refusal.contains("did you mean"),

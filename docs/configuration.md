@@ -2,7 +2,7 @@
 
 cfgd config files follow a structure inspired by the [Kubernetes Resource Model](https://github.com/kubernetes/design-proposals-archive/blob/main/architecture/resource-management.md): every document has `apiVersion`, `kind`, `metadata`, and `spec` fields. This gives a consistent shape across configs, profiles, modules, and sources. TOML is also supported (use `.toml` extension): a `cfgd.toml` is found wherever a `cfgd.yaml` would be, and every command that writes the config (`init`, `config set`, `config unset`, `config migrate`, `profile switch`, the `source` and `module registry` verbs, and the alignment a load writes under `migrationPolicy: Update`) writes it back as TOML in the order it declares its keys.
 
-Every document declares an `apiVersion`, with `cfgd.io/v1alpha1` the current one, and a document written under a version this build cannot read is rejected at parse time with an error naming the versions it can, rather than being silently loaded under the current schema.
+Every document declares an `apiVersion`, with `cfgd.io/v1alpha1` the current one, and a document written under a version this build cannot read is rejected at parse time with an error naming the versions it can.
 
 For the complete field-by-field reference, see the [Config spec reference](spec/config.md).
 
@@ -418,7 +418,7 @@ the rest.
 > The file that line loads is cfgd's alone. It opens with a banner saying it is
 > regenerated on every apply, and every line sits under a `# profile:` /
 > `# source:` / `# module:` / `# secrets` block header naming what to edit
-> instead of the file (see
+> in place of the file (see
 > [What the file looks like](profiles.md#what-the-file-looks-like)).
 
 Any `spec.env` or `spec.aliases` entry can be gated to named platforms with the

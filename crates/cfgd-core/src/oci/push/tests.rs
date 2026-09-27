@@ -185,8 +185,8 @@ fn push_module_inner_uploads_blobs_and_manifest() {
 /// this one judges the module push, which builds its own `OciManifest` inline
 /// and is the path whose two runs a second apart produced two digests. The
 /// mock only matches a body whose annotation object spells
-/// `cfgd.io/platform` before `org.opencontainers.image.created` — the sorted
-/// order, not the insertion order the function writes them in — so a manifest
+/// `cfgd.io/platform` before `org.opencontainers.image.created` (the sorted
+/// order; the function inserts them the other way round), so a manifest
 /// that serialized them the other way never reaches this mock and
 /// `manifest_mock.assert()` reports it.
 #[test]

@@ -42,7 +42,7 @@ impl PhaseName {
     /// a unit file exists before `systemctl enable` names it. The planner keeps
     /// no second list: `Reconciler::plan_observed` BUILDS its buckets by
     /// mapping this const through an exhaustive `match`, so a phase added to
-    /// the enum fails to compile there rather than reaching a reader in an
+    /// the enum fails to compile there and never reaches a reader in an
     /// order it does not expect.
     /// `every_phase_the_planner_can_name_sits_in_the_execution_order_exactly_once`
     /// pins that every variant sits here exactly once.
@@ -142,8 +142,8 @@ pub enum EnvAction {
         /// would rewrite every stored `plan_hash` for a value nothing matches
         /// on.
         // plan-skip-ok: a plan file reads both back as 0, and `env_write_summary`
-        // states no detail at 0 — the re-read row names the path alone rather
-        // than a count that would be wrong. The counts describe `content`, which
+        // states no detail at 0 — the re-read row names the path alone; a
+        // count there would be wrong. The counts describe `content`, which
         // the same action carries.
         #[serde(skip)]
         vars: usize,
@@ -260,7 +260,7 @@ pub enum ManagerAction {
     /// for it. It installs nothing (a bootstrap cannot raise a manager that is
     /// already present) and the check runs at execution, against the binary.
     ///
-    /// The fact rides in the plan rather than ending the run that builds one:
+    /// The fact rides in the plan, and the run that builds one goes on:
     /// every drift policy crosses `Reconciler::plan`, the daemon included, so a
     /// refusal there left a tick that records nothing, heals nothing and fires
     /// no hook for as long as one toolchain stays short.
@@ -281,7 +281,7 @@ pub enum ManagerAction {
         /// manager are one fact and one node, and a module-scoped run reads
         /// this to tell whether the fact is its own.
         ///
-        /// The per-module numbers are carried rather than folded away because
+        /// The per-module numbers are carried beside the fold because
         /// the fold above answers a question about the MACHINE (one copy of
         /// the manager satisfies every declarant) while a sentence addressed
         /// to one module answers a question about that module's own file. A
@@ -298,7 +298,7 @@ pub enum ManagerAction {
 
 /// One module's own `minVersion` for a manager this host already holds.
 ///
-/// Paired with the module rather than folded into the node's `floor`, because
+/// Paired with the module and kept out of the node's `floor`, because
 /// the two answer different questions: see
 /// [`ManagerAction::HeldFloor::declared`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -376,7 +376,7 @@ pub fn fold_held_floors<'h, 'm>(
 ///
 /// The cross-phase twin of `Reconciler::unprovisioned` for a manager that IS on
 /// the machine: no DAG edge reaches from the `Bootstrap` node to the `Packages`
-/// work it forbids, and the forbidding is per module rather than per run.
+/// work it forbids, and the forbidding is per module.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WithheldFloor {
     pub manager: String,
@@ -1302,11 +1302,11 @@ fn batch_survives(batched: usize, kept: usize) -> bool {
 /// A phase in the reconciliation plan, as owner groups in display order.
 ///
 /// `groups` is private, so a phase whose owners are out of [`Owner::sort_key`]
-/// order is unrepresentable rather than merely discouraged: no caller can write
+/// order is unrepresentable: no caller can write
 /// a struct literal, insert a group, or re-sort the vec. Two constructors reach
 /// the field, and both settle the same facts: [`Phase::from_actions`] from a
 /// flat action list, and the `Deserialize` impl below from a plan file, which
-/// re-establishes them instead of taking the file's word. A fact added to one
+/// re-establishes them and takes nothing on the file's word. A fact added to one
 /// is added to the other, or a plan file carries the shape the other forbids.
 /// The mutators below only ever shrink an existing
 /// ordering ([`Phase::retain_groups`], [`Phase::retain_actions`],
@@ -1320,7 +1320,7 @@ pub struct Phase {
 
 /// A phase read back from a plan file.
 ///
-/// Hand-written rather than derived because `groups` is private, and the
+/// Hand-written because `groups` is private, and the
 /// invariants above are the whole reason it is: a derive would hand a file's
 /// own shape straight into the field every surface renders. A plan file is an
 /// input like any other, so the four facts [`Phase::from_actions`] establishes
@@ -1333,7 +1333,7 @@ pub struct Phase {
 /// owner is what a consumer partitions on (`apply::dispatched_in_lanes`,
 /// `daemon::reconcile::narrow_to_module` both ask `Owner::is_managers`), so a
 /// misplaced action would be dispatched and filtered unlike every planner-built
-/// one. It is refused rather than corrected, because a file disagreeing with
+/// one. It is refused, with no correction attempted, because a file disagreeing with
 /// [`determined_owner`] is a file cfgd did not write. An action whose owner is
 /// the planning PROFILE names no owner of its own, and the file's answer is
 /// taken as given — nothing in the phase says which profile planned it.
@@ -1673,8 +1673,8 @@ impl Plan {
     /// serialization instead of Debug formatting for stability across compiler
     /// versions.
     ///
-    /// An action serde_json cannot write ends the whole composition rather than
-    /// leaving the rest: the string is what `applies.plan_hash` stores, so a
+    /// An action serde_json cannot write ends the whole composition, the rest
+    /// included: the string is what `applies.plan_hash` stores, so a
     /// dropped action would let a run that deploys a file and a run that does
     /// not record one hash, and every surface comparing stored hashes would
     /// read them as the same plan. Every action that serializes contributes the
@@ -2087,8 +2087,8 @@ pub fn package_entry_drift_id(
 /// ([`super::verify::held_manager_version_drift`]) both write this row, and the
 /// store UPSERTs on its id, so the two have to agree on every part of it: the
 /// manager name passed to both halves of [`package_entry_drift_id`], the
-/// `package` type, and the FOLDED floor in `expected` rather than whichever
-/// module's own number the producer happened to be holding. Composed apart from
+/// `package` type, and the FOLDED floor in `expected`, whichever module's own
+/// number the producer happened to be holding. Composed apart from
 /// either of them because a second mint beside one producer is invisible to the
 /// other until a machine records two rows.
 ///
@@ -2413,7 +2413,7 @@ pub fn action_drift_rows(
         },
         // The row the live floor re-check (`held_manager_version_drift`) mints
         // for the same manager, so whichever side looks next settles the other's
-        // row instead of standing a second one beside it. The version is what
+        // row and stands no second one beside it. The version is what
         // the machine answers at execution, so the operand this side states is
         // the floor alone; `record_drift` COALESCEs the empty side over
         // whatever a re-check already wrote.

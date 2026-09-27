@@ -1154,7 +1154,7 @@ fn sorted_annotations_json() -> String {
 /// the caller built them in, so two packs of identical input produce one
 /// digest.
 ///
-/// Compared against a LITERAL rather than against a second call: two calls
+/// Compared against a LITERAL: two calls
 /// built from one value agree however wrongly they both order it, which makes
 /// a self-comparison green under the very regression it exists to catch. The
 /// literal spells the sorted sequence, so an unordered map fails it.
@@ -1224,7 +1224,7 @@ fn build_layered_manifest_serializes_its_annotations_in_sorted_key_order() {
 /// elides it, which is exactly why the field's ordering cannot be read off any
 /// manifest pin: an empty map serializes identically whatever its type. The
 /// descriptor is a wire shape a registry reads, so the guarantee belongs to the
-/// type rather than to today's callers, and it is asserted here directly.
+/// type whoever calls it, and it is asserted here directly.
 #[test]
 fn an_oci_descriptor_serializes_its_annotations_in_sorted_key_order() {
     let descriptor = OciDescriptor {

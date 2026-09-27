@@ -202,7 +202,7 @@ pub(super) fn scalar_union_field(segments: &[&str]) -> Option<&'static str> {
 
 /// Whether this value is a scalar a union's mapping arm could have been
 /// written as. A sequence is no arm of any union here, so it stays a shape
-/// error rather than being promoted into one.
+/// error.
 pub(super) fn is_union_scalar(value: &serde_yaml::Value) -> bool {
     blocking_shape(value) == SHAPE_SCALAR
 }
@@ -230,7 +230,7 @@ pub(in crate::cli) fn blocking_shape(value: &serde_yaml::Value) -> &'static str 
 
 /// A descent blocked by a value that is no mapping and no union arm cfgd can
 /// promote. Typed, so the classifier reads the failure the walker actually hit
-/// instead of matching a message four situations shared.
+/// with no match on a message four situations shared.
 #[derive(Debug)]
 pub(super) struct ShapeBlocked {
     /// The key path that blocked, or `None` for the document itself, which no
@@ -243,10 +243,14 @@ pub(super) struct ShapeBlocked {
 impl std::fmt::Display for ShapeBlocked {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.path {
-            Some(path) => write!(f, "'{path}' holds {}, not {}", self.found, self.wanted),
+            Some(path) => write!(
+                f,
+                "'{path}' holds {} where {} belongs",
+                self.found, self.wanted
+            ),
             None => write!(
                 f,
-                "the config document holds {}, not {}",
+                "the config document holds {} where {} belongs",
                 self.found, self.wanted
             ),
         }
@@ -279,7 +283,7 @@ fn empty_segment(path: &str) -> anyhow::Error {
 /// The mapping a section of a config document holds, where a section holding
 /// nothing becomes an empty one; `None` for any other shape. A bare `key:` and
 /// a serialized `None` both read back as Null, and both mean the section is
-/// not there yet, so a writer creates it rather than refusing the document.
+/// not there yet, so a writer creates it.
 pub(in crate::cli) fn section_mapping_mut(
     value: &mut serde_yaml::Value,
 ) -> Option<&mut serde_yaml::Mapping> {
@@ -408,7 +412,7 @@ fn descent_blocked(path: &[&str], asked: &[&str], found: &'static str) -> anyhow
 }
 
 /// Rewrite a union's scalar arm in place as the mapping it stands for, so a
-/// write to a field beneath it descends instead of refusing.
+/// write to a field beneath it descends.
 fn promote_scalar_union(value: &mut serde_yaml::Value, segments: &[&str]) {
     let Some(field) = scalar_union_field(segments) else {
         return;
@@ -456,7 +460,7 @@ pub(super) fn walk_yaml_path<'a>(
             other => {
                 // A union's scalar arm is its mapping with one field set, so
                 // that field answers from the scalar itself and every other
-                // field of the arm is absent rather than a shape error.
+                // field of the arm is absent.
                 if is_union_scalar(other)
                     && let Some(field) = scalar_union_field(&segments[..i])
                 {
@@ -628,11 +632,10 @@ pub fn cmd_config_get(cli: &Cli, printer: &Printer, key: &str) -> anyhow::Result
     // A legacy flat key names the nested one; a document that still carries
     // the flat spelling is answered from it rather than reported missing.
     let resolved = nested_output_key(key).unwrap_or_else(|| key.to_string());
-    // The fallback is the flat twin of the key the walk RESOLVED to, not of
-    // the one the caller wrote: a caller writing the legacy spelling already
-    // resolves to the nested key, and asking for its own twin again would
-    // leave `theme.name` — the spelling the docs print — with no fallback at
-    // all on a document nothing has migrated.
+    // The fallback is the flat twin of the key the walk RESOLVED to: a caller writing the legacy
+    // spelling already resolves to the nested key, and asking for its own twin again would leave
+    // `theme.name` — the spelling the docs print — with no fallback at all on a document nothing
+    // has migrated.
     let alias = flat_output_key(&resolved);
     let value = match walk_yaml_path(spec, &resolved).or_else(|e| match alias.as_deref() {
         // Only a key that is not there is worth asking the other spelling
@@ -717,7 +720,7 @@ pub fn cmd_config_set(cli: &Cli, printer: &Printer, key: &str, value: &str) -> a
     // hand, which is what `Theme::from_preset`'s render-time fallback does not,
     // so the refusal belongs here. Both spellings of the block are covered:
     // `output.theme` carrying a scalar IS the name. The word judged is the one
-    // the caller wrote rather than the `String` arm of the parsed value:
+    // the caller wrote, whatever the parsed value's `String` arm holds:
     // `123`, `true`, `null` and `3.14` each parse as another YAML shape, and a
     // shape that is no scalar at all reads back as no preset either.
     if matches!(written_key.as_str(), "output.theme" | "output.theme.name")
@@ -1105,8 +1108,8 @@ spec:
     }
 
     // 'a' exists and holds a scalar the schema declares no fields under, so
-    // 'a.b' is a key that can never exist rather than a shape the document
-    // got wrong — the walk names the path it could not reach.
+    // 'a.b' is a key that can never exist — the walk names the path it could
+    // not reach.
     #[test]
     fn walk_yaml_path_missing_key_errs_with_partial_path() {
         let yaml: serde_yaml::Value = serde_yaml::from_str("a: 1\n").unwrap();
@@ -1121,18 +1124,21 @@ spec:
     fn walk_yaml_path_at_a_declared_mapping_names_the_shape_it_found() {
         let yaml: serde_yaml::Value = serde_yaml::from_str("daemon: yes\n").unwrap();
         let err = walk_yaml_path(&yaml, "daemon.reconcile").unwrap_err();
-        assert_eq!(err.to_string(), "'daemon' holds a scalar, not a mapping");
+        assert_eq!(
+            err.to_string(),
+            "'daemon' holds a scalar where a mapping belongs"
+        );
     }
 
-    // The document itself is no key, so its refusal names it in words rather
-    // than quoting a path nobody wrote.
+    // The document itself is no key, so its refusal names it in words; no
+    // path is quoted.
     #[test]
     fn a_config_document_that_is_not_a_mapping_is_refused_in_its_own_words() {
         let mut root: serde_yaml::Value = serde_yaml::from_str("just a string\n").unwrap();
         let err = spec_mapping_mut(&mut root, Path::new("cfgd.yaml")).unwrap_err();
         assert_eq!(
             err.to_string(),
-            "the config document holds a scalar, not a mapping"
+            "the config document holds a scalar where a mapping belongs"
         );
         assert!(
             err.chain()
@@ -1423,10 +1429,9 @@ spec:
     // The population walk behind `descent_blocked`: for every field the Config
     // schema names, plant a value of the wrong shape under it and ask for a
     // key beneath it, then check the refusal against what the schema declares
-    // there rather than against a hand-picked list of paths. A free-form map
-    // (`spec.aliases`) is a mapping that names no child field, and a list is a
-    // shape the key walker cannot address rather than one the document got
-    // wrong; both read the same as their neighbours under a child count.
+    // there. A free-form map (`spec.aliases`) is a mapping that names no child
+    // field, and a list is a shape the key walker cannot address, which the
+    // document did not get wrong; both read the same as their neighbours under a child count.
     #[test]
     fn every_config_spec_field_refuses_a_wrong_shape_by_its_declared_shape() {
         use crate::cli::explain::DeclaredShape;
@@ -1447,9 +1452,8 @@ spec:
         // The loop below reads its expected refusal from `config_field_shape`,
         // the same function `descent_blocked` asks, so it pins the mapping and
         // not the oracle. These rows say what the schema declares, so an oracle
-        // that answers a child count again fails here rather than agreeing with
-        // itself. One row per `type_desc` spelling the reflection holds rather
-        // than one per `DeclaredShape` arm, because the spelling is what the
+        // that answers a child count again fails here. One row per `type_desc`
+        // spelling the reflection holds, because the spelling is what the
         // oracle branches on: a demoted `[]string` or `boolean` arm reads as a
         // scalar, the loop below agrees with it, and only a row named at that
         // spelling can see it.
@@ -1518,8 +1522,8 @@ spec:
                     "read walk on {key} over {planted:?} (declared {declared:?}): {err}"
                 );
 
-                // The setter promotes a union's scalar arm rather than
-                // refusing it, so only the read walk answers there.
+                // The setter promotes a union's scalar arm, so only the read
+                // walk answers there.
                 if union_arm && planted.is_string() {
                     continue;
                 }
@@ -1538,12 +1542,15 @@ spec:
 
     // The schema names no `a`, so a value there is a leaf as far as the key
     // walker can tell, and a sequence standing at one is a shape the document
-    // got wrong rather than a list the walker declines to index into.
+    // got wrong.
     #[test]
     fn walk_yaml_path_blocked_by_a_sequence_names_it() {
         let yaml: serde_yaml::Value = serde_yaml::from_str("a:\n  - 1\n").unwrap();
         let err = walk_yaml_path(&yaml, "a.b").unwrap_err();
-        assert_eq!(err.to_string(), "'a' holds a sequence, not a mapping");
+        assert_eq!(
+            err.to_string(),
+            "'a' holds a sequence where a mapping belongs"
+        );
     }
 
     #[test]
@@ -2177,7 +2184,10 @@ spec:
     fn walk_yaml_path_mut_at_a_declared_mapping_names_the_shape_it_found() {
         let mut yaml: serde_yaml::Value = serde_yaml::from_str("daemon: yes\n").unwrap();
         let err = walk_yaml_path_mut(&mut yaml, "daemon.reconcile.interval").unwrap_err();
-        assert_eq!(err.to_string(), "'daemon' holds a scalar, not a mapping");
+        assert_eq!(
+            err.to_string(),
+            "'daemon' holds a scalar where a mapping belongs"
+        );
     }
 
     // The root of the walk is `spec` itself, which no segment names.
@@ -2185,7 +2195,10 @@ spec:
     fn walk_yaml_path_mut_names_the_root_when_the_document_is_not_a_mapping() {
         let mut yaml: serde_yaml::Value = serde_yaml::from_str("- a\n").unwrap();
         let err = walk_yaml_path_mut(&mut yaml, "profile").unwrap_err();
-        assert_eq!(err.to_string(), "'spec' holds a sequence, not a mapping");
+        assert_eq!(
+            err.to_string(),
+            "'spec' holds a sequence where a mapping belongs"
+        );
     }
 
     // `daemon: null` is how a serialized `None` section reads back (and how a
@@ -2343,7 +2356,7 @@ spec:
 
     /// Every `cmd_config_*` taking a caller-written key folds the `spec.`
     /// prefix before anything reads it. The population is read off the source
-    /// rather than listed, so a fourth key verb joins it by being compiled.
+    /// with no hand list, so a fourth key verb joins it by being compiled.
     #[test]
     fn every_config_key_verb_folds_the_spec_prefix_before_it_reads_the_key() {
         use cfgd_core::test_helpers::{calls_free_fn, fn_declarations, production_slice_of};

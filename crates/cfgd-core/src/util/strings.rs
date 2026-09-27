@@ -615,7 +615,7 @@ pub fn agreeing_verb(count: usize, verb: &str) -> String {
 /// so every joiner whose members are sentences, `Display`ed errors, or
 /// `format!`s carrying commas reads from here and none spells `"; "` itself.
 ///
-/// The rule is about the MEMBERS, not the surface: a list of package names on
+/// The rule is about the MEMBERS: a list of package names on
 /// the same report keeps its comma, because no name can hold one.
 pub fn join_clauses(clauses: impl IntoIterator<Item = impl AsRef<str>>) -> String {
     const SEPARATOR: &str = "; ";
@@ -807,7 +807,7 @@ mod tests {
         );
         // One member is the whole string: nothing is appended to a list of one.
         assert_eq!(join_clauses(["only this"]), "only this");
-        // An empty list renders nothing rather than a bare separator.
+        // An empty list renders the empty string: no separator either.
         assert_eq!(join_clauses(Vec::<String>::new()), "");
         // Owned members and borrowed ones reach the same bytes.
         assert_eq!(

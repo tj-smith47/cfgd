@@ -54,7 +54,7 @@
       "type": "object"
     }
   },
-  "description": "Drifted system settings a device reported at check-in. A device's report covers its system settings alone — the answers of the system configurators its profile declares (`sysctl`, `kernelModules`, `macosDefaults`, `windowsRegistry`, ...). Packages, managed files, env vars and aliases are checked on the device by `cfgd diff` and reach the fleet through its compliance summary (`MachineConfig.status.compliance`), never as a DriftAlert — so a device with no DriftAlert is a device whose system settings matched, not a device proven in sync.",
+  "description": "Drifted system settings a device reported at check-in. A device's report covers its system settings alone — the answers of the system configurators its profile declares (`sysctl`, `kernelModules`, `macosDefaults`, `windowsRegistry`, ...). Packages, managed files, env vars and aliases are checked on the device by `cfgd diff` and reach the fleet through its compliance summary (`MachineConfig.status.compliance`); no DriftAlert carries them, so a device with no DriftAlert is a device whose system settings matched. It is not proven in sync.",
   "properties": {
     "deviceId": {
       "description": "Identifier of the device that reported the drift, as it enrolled.",

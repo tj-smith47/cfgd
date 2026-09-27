@@ -43,8 +43,8 @@ pub(super) fn banner(comment: &str, blocks: bool) -> Vec<String> {
 /// header is never preceded by a space, and its colon is never followed by one
 /// in the token form.
 ///
-/// `priority` is `None` for a block the fold ranks by position rather than by
-/// number — the `path` fold, a module, and the resolved `secrets` — and such a
+/// `priority` is `None` for a block the fold ranks by position — the `path`
+/// fold, a module, and the resolved `secrets` — and such a
 /// header carries no parenthetical.
 pub(super) fn block_header(comment: &str, owner: &str, priority: Option<u32>) -> String {
     let rank = match priority {
@@ -95,8 +95,8 @@ pub(super) enum Dialect {
 impl Dialect {
     /// The dialect cfgd's PRIMARY managed env file is written in for
     /// `platform` — bash/zsh syntax on Unix, PowerShell on Windows. Fish is
-    /// never that file: it is a second target chosen by [`fish_in_use`], not
-    /// by the platform.
+    /// never that file: it is a second target chosen by [`fish_in_use`]
+    /// whatever the platform.
     pub(super) fn of(platform: super::env_engine::EnvPlatform) -> Self {
         if platform == super::env_engine::EnvPlatform::Windows {
             Self::PowerShell
@@ -145,10 +145,9 @@ impl Dialect {
             return None;
         }
         Some(match self {
-            // The body is quoted, not interpolated: a `$(…)` in the command
-            // becomes part of the alias and runs when the user invokes it,
-            // instead of running once while the login shell is still sourcing
-            // this file.
+            // The body is quoted: a `$(…)` in the command becomes part of the
+            // alias and runs when the user invokes it. Interpolated, it would
+            // run once while the login shell is still sourcing this file.
             Dialect::Posix => format!(
                 "alias {}={}",
                 alias.name,
@@ -187,7 +186,7 @@ impl Dialect {
                 path.value(crate::escape_double_quoted, "$PATH", ":"),
                 path.comment
             ),
-            // Fish uses a space-separated list for PATH, not colon-separated,
+            // Fish uses a space-separated list for PATH,
             // and a bare `$PATH` splices its existing list variable in place;
             // single quotes suppress fish expansion of each entry, which is why
             // the fold spelled every directory literally.
@@ -212,7 +211,7 @@ impl Dialect {
 /// under it, as the generator composed them.
 ///
 /// Returned beside the content so a reader takes the boundaries the generator
-/// DREW rather than recognising them in the finished text. A declared value
+/// DREW, with nothing recognised in the finished text. A declared value
 /// may hold a blank line or a physical row opening with `#`, and either one
 /// fakes a boundary for a parser reading the bytes back.
 pub(super) struct EnvFileBlock {
@@ -226,7 +225,7 @@ pub(super) struct EnvFileBlock {
 ///
 /// A block carries no per-line provenance. Its header names the owner once,
 /// and a line inside an outranked layer's block that named an owner would name
-/// the layer whose value WON rather than the one that wrote the line.
+/// the layer whose value WON, which need not be the one that wrote the line.
 fn compose_blocks(
     dialect: Dialect,
     layered: &super::verify::LayeredEnv,
@@ -373,7 +372,7 @@ pub(super) fn generate_powershell_env_content(
 /// all.
 ///
 /// No provenance reaches the line. The generated file states an owner in a
-/// block header, never beside an assignment, so a render carrying a claim map
+/// block header and nowhere beside an assignment, so a render carrying a claim map
 /// would quote something no file holds — and the `PATH` line's own comment
 /// rides on the fold, which is why it survives here.
 pub(super) fn primary_env_var_line(
@@ -869,7 +868,7 @@ pub(super) fn generate_blocks(
 /// plus the trailing ` # <kind>:<name>` that generation carried on every line.
 ///
 /// A migration fixture synthesises an un-upgraded machine's file through this
-/// rather than spelling one by hand, which is why [`EnvOrigins`]' per-entry
+/// with nothing spelled by hand, which is why [`EnvOrigins`]' per-entry
 /// comment half outlives the generator that used to call it.
 ///
 /// [`EnvOrigins`]: super::env_engine::EnvOrigins
@@ -1519,8 +1518,8 @@ mod tests {
     /// generators cannot disagree.
     ///
     /// The three display helpers used to take `generated.lines().nth(…)`, which
-    /// reads "the line after the header" — a fact about the banner, not about the
-    /// entry. One renderer, called by all three, is what survives the banner
+    /// reads "the line after the header" — a fact about the banner. It says
+    /// nothing about the entry. One renderer, called by all three, is what survives the banner
     /// growing, so each helper is driven here beside the file it must match.
     /// Fish reaches no helper: [`Dialect::of`] never yields it, since the fish
     /// snippet is a second target chosen by the user's shell.
@@ -1542,7 +1541,7 @@ mod tests {
             std::slice::from_ref(&alias),
             &origins,
         );
-        // Every `EnvPlatform` variant, not one per dialect: three of the four
+        // Every `EnvPlatform` variant, beyond one per dialect: three of the four
         // resolve to Posix, and a display helper that answered only for Linux
         // would leave macOS and FreeBSD reporting lines nothing checked.
         let legs = [

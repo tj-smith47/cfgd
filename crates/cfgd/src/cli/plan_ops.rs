@@ -549,8 +549,8 @@ pub(in crate::cli) enum DecisionWrites<'a> {
 /// that regresses that promise.
 ///
 /// `saved` is the approval contract an UNFILTERED run records (see
-/// [`SavedPlan`]); it is a parameter rather than something this builder derives
-/// so that the one question "may this run be replayed" is answered where the
+/// [`SavedPlan`]); it is a parameter, which this builder never derives, so
+/// that the one question "may this run be replayed" is answered where the
 /// run's own scope is known, and every caller has to answer it.
 pub(in crate::cli) fn build_plan_output(
     plan: &reconciler::Plan,
@@ -695,7 +695,7 @@ struct SavedPlanIn {
     config_inputs: cfgd_core::ConfigInputs,
     serial: i64,
     /// `None` for a file written before the key existed, which is refused with
-    /// its own sentence rather than serde's missing-field one.
+    /// its own sentence; serde's missing-field one never reaches the reader.
     store_id: Option<String>,
 }
 
@@ -723,8 +723,8 @@ fn phases_in_execution_order(plan: &reconciler::Plan) -> bool {
 }
 
 /// A refusal of the file `--plan` named, typed so a structured consumer reads
-/// which question the document failed instead of the `internal` kind a bare
-/// `anyhow!` falls back to.
+/// which question the document failed. A bare `anyhow!` would fall back to
+/// the `internal` kind.
 ///
 /// Every payload carries the file, because the path is what names the document
 /// a caller handed cfgd; `extras` adds whatever the one refusal knows on top.
@@ -749,7 +749,7 @@ fn plan_refusal(
 /// the state store the plan was derived against, the `applies` serial it was
 /// written against, and whether every config input the derivation read still
 /// has the stamp it had. All three are refusals
-/// rather than warnings — the file IS the approval, and an approval of a plan
+/// — the file IS the approval, and an approval of a plan
 /// the machine has moved past approves actions nobody looked at.
 ///
 /// Ahead of those two comes the question of whether the file is a plan cfgd
@@ -769,7 +769,7 @@ pub(in crate::cli) fn load_saved_plan(
     config: &std::path::Path,
     state: &cfgd_core::state::StateStore,
 ) -> anyhow::Result<LoadedPlan> {
-    let shown = path.display(); // native-ok: a human-facing error, not a key
+    let shown = path.display(); // native-ok: a human-facing error; no key is built from it
     let body = std::fs::read_to_string(path).map_err(|e| {
         // The two io outcomes a reader scripts differently: a path that is not
         // there at all, and one cfgd was not allowed to open.
@@ -857,7 +857,7 @@ pub(in crate::cli) fn load_saved_plan(
                 "{shown} is not a plan cfgd wrote for this config: nothing its derivation read \
                  was {config}, so the actions in it were priced against another machine picture \
                  — run `cfgd plan -o json` under this config",
-                // native-ok: a human-facing error, not a key
+                // native-ok: a human-facing error; no key is built from it
                 config = config.display()
             ),
             serde_json::json!({ "config": config.display_posix() }),
@@ -915,7 +915,7 @@ pub(in crate::cli) fn load_saved_plan(
         let moved_path = saved.config_inputs.first_moved();
         let moved = moved_path.as_ref().map_or_else(
             || "the config".to_string(),
-            |p| p.display().to_string(), // native-ok: a human-facing error, not a key
+            |p| p.display().to_string(), // native-ok: a human-facing error; no key is built from it
         );
         return Err(plan_refusal(
             path,
@@ -942,11 +942,10 @@ pub(in crate::cli) fn load_saved_plan(
 /// AFTER a plan is built: `Reconciler::package_survives_elision` asks the floor
 /// whether the copy the machine holds is new enough, and would elide an
 /// outdated one as converged. The resolution that fills them has already run on
-/// the replay path, so they are taken from it rather than trusted from the
-/// file.
+/// the replay path, so they are taken from it; the file's copy is not trusted.
 ///
 /// A package the file names and the modules no longer resolve the same way is
-/// a REFUSAL, not a pass-through. The config-input check above does not cover
+/// a REFUSAL. The config-input check above does not cover
 /// it: [`cfgd_core::modules::resolve_package`] picks a manager by what this
 /// host holds, so a package installed between the plan and the replay moves
 /// the `(manager, canonical_name)` key while every recorded input still stats
@@ -958,7 +957,7 @@ pub(in crate::cli) fn restore_module_planner_inputs(
     modules: &[cfgd_core::modules::ResolvedModule],
     path: &std::path::Path,
 ) -> anyhow::Result<()> {
-    let shown = path.display(); // native-ok: a human-facing error, not a key
+    let shown = path.display(); // native-ok: a human-facing error; no key is built from it
     for phase in &mut plan.phases {
         for (_, actions) in phase.groups_mut() {
             for action in actions {
@@ -1184,7 +1183,7 @@ pub(in crate::cli) fn report_plan_verdict(
 /// plan/printer/state it acts on) so the call stays under clippy's
 /// too-many-arguments budget as fields accrue.
 ///
-/// Passed by value rather than by reference because `saved_plan` owns the
+/// Passed by value because `saved_plan` owns the
 /// recorded action graph, which the payload builder takes whole; copying it to
 /// hand it over would double a plan-sized JSON value for nothing.
 pub(in crate::cli) struct PlanPreviewArgs<'a> {

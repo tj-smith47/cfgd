@@ -10,8 +10,8 @@ use cfgd_core::state::BackupRunRecord;
 
 /// How a rollback copy comes to exist, read by both the empty listing's note
 /// row and the "nothing to roll back to" error's remediation: a `cfgd backup
-/// restore` or an adopting `cfgd apply` is what leaves one beside a source,
-/// never the rollback itself.
+/// restore` or an adopting `cfgd apply` is what leaves one beside a source.
+/// The rollback itself leaves none.
 const ROLLBACK_COPY_ORIGIN: &str = "A copy is left beside a source by `cfgd backup restore <name>`, and by any file `cfgd apply` adopts";
 
 fn backup_not_found_error(name: &str, valid: Vec<String>) -> anyhow::Error {

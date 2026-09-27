@@ -16016,7 +16016,7 @@ spec: {}
 
         assert!(
             resolved_modules.is_empty(),
-            "the tick refuses the route rather than taking it: {resolved_modules:?}"
+            "the tick refuses the route: {resolved_modules:?}"
         );
         let journal = crate::test_helpers::tracing_journal();
         assert!(
@@ -17004,9 +17004,9 @@ spec: {}
     /// log lines beside it say everything except how to stop it.
     ///
     /// A capture printer answers `can_prompt()` false, so the branch the row
-    /// lives in is reached by pinning the printer's own terminal answer rather
-    /// than the process's — the same field a production printer probes once at
-    /// construction.
+    /// lives in is reached by pinning the printer's own terminal answer, the
+    /// same field a production printer probes once at construction. The
+    /// process's terminal stays out of it.
     #[test]
     fn print_startup_banner_states_the_stop_key_as_a_note_row() {
         let (mut printer, buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
@@ -17029,7 +17029,7 @@ spec: {}
         );
         assert!(
             !out.contains('\u{2192}'),
-            "and reaches the reader as a row, not as a hint: {out}"
+            "and reaches the reader as a row with no hint arrow: {out}"
         );
     }
 
@@ -19837,7 +19837,7 @@ mod ipc_socket_security {
         let mut judged = Vec::new();
         let mut undocumented = Vec::new();
         for (i, line) in lines.iter().enumerate() {
-            // Column 0 is the rule, not a spelling of the lead: an indented
+            // Column 0 is the rule, whatever the lead is spelled: an indented
             // item belongs to the block above it.
             if line.starts_with(char::is_whitespace)
                 || crate::test_helpers::item_lead(line).0 != crate::test_helpers::ItemLead::Visible
@@ -21865,8 +21865,8 @@ mod backup_timers {
     }
 
     /// The periodic check-in reports the snapshot the daemon's own compliance
-    /// tick collected, never whatever row is newest in the store (another
-    /// profile's `cfgd compliance` run writes there too), and reports none while
+    /// tick collected. The newest row in the store may be another profile's
+    /// `cfgd compliance` run, so it is not what goes out. It reports none while
     /// the config this tick loaded has compliance off.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_tick_reports_the_compliance_its_own_tick_collected_only_while_enabled() {
@@ -24206,8 +24206,7 @@ mod log_dialect {
         );
         assert!(
             !logs.contains("succeeded, 1"),
-            "the failure clause joins the list rather than being appended with \
-             a comma: {logs}"
+            "the failure clause joins the list; no comma appends it: {logs}"
         );
     }
 

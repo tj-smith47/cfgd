@@ -128,7 +128,7 @@ fn run(
         .arg(state)
         .env("HOME", home)
         // Windows resolves `~` from USERPROFILE first, so HOME alone would
-        // leave the child under the constructor's home instead of this one.
+        // leave the child under the constructor's home.
         .env("USERPROFILE", home)
         // Keeps the module cache under the home this test re-points; the
         // constructor's own cache override sits outside it.
@@ -1214,7 +1214,7 @@ fn every_scoped_exit_code_surface_renders_and_prices_a_standing_row() {
         // is a marker no other rendered path can produce, so its presence
         // proves the STANDING ROW ITSELF made it onto the screen.
         assert!(
-            // doc-comment-ok: rendered command output, not a source line
+            // doc-comment-ok: the haystack is rendered command output
             text.contains(STANDING_ROW_MARKER),
             "cfgd {render_args:?}: renders the row it left standing, got: {text}"
         );
@@ -1346,7 +1346,7 @@ fn a_module_scoped_scan_renders_and_prices_a_script_shaped_standing_row() {
     // the terse fallback a NO-operand row renders and a substring of the
     // clean "No drift detected" verdict — see the sibling test above.
     assert!(
-        // doc-comment-ok: rendered command output, not a source line
+        // doc-comment-ok: the haystack is rendered command output
         text.contains(STANDING_ROW_MARKER),
         "cfgd {render_args:?}: renders the script-shaped row it left standing, got: {text}"
     );

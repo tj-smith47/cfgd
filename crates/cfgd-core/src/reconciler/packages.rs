@@ -772,8 +772,8 @@ impl<'x> PackageExec<'x> {
                 }
                 .into());
             }
-            // Nothing to install: the node is the CHECK. Asked here rather than
-            // read off the resolution, for the reason the floored provision
+            // Nothing to install: the node is the CHECK. The node asks here and
+            // reads nothing off the resolution, for the reason the floored provision
             // asks it here too: an operator who raised the toolchain between
             // the plan and the apply has changed the answer, and a run that
             // failed on the older one would be reporting a machine that no
@@ -804,7 +804,7 @@ impl<'x> PackageExec<'x> {
                     .into());
                 }
                 // A floor that was already met changed nothing, and the row
-                // says so: the node settles rather than claiming work.
+                // says so: the node settles and claims no work.
                 changed = false;
             }
         }

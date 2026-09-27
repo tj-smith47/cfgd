@@ -1335,7 +1335,7 @@ pub(crate) fn run_state_dir(
     scope: cfgd_core::Scope,
 ) -> anyhow::Result<PathBuf> {
     // The typed StateError stays in the chain, so the refusal's kind is its
-    // own `state` domain rather than the text of a restated message.
+    // own `state` domain. A restated message would carry only its text.
     cfgd_core::resolve_state_dir(state_over, scope).map_err(|e| {
         let message = format!("cannot determine state directory: {e}");
         anyhow::Error::from(e).context(message)

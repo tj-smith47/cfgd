@@ -21,7 +21,7 @@ pub enum PackageDisplay {
     },
     /// The entry names a manager this host already holds. A resolution like the
     /// one above it, judged against the declared floor by the manager's own
-    /// binary rather than by a listing, which is why it is a variant of its
+    /// binary with no listing consulted, which is why it is a variant of its
     /// own. `met` is whether that judgment cleared the floor; `clause` words
     /// it either way.
     #[serde(rename = "held", rename_all = "camelCase")]

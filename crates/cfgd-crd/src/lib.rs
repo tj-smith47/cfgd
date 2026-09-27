@@ -370,9 +370,9 @@ pub struct MachineConfigReference {
 /// system configurators its profile declares (`sysctl`, `kernelModules`,
 /// `macosDefaults`, `windowsRegistry`, ...). Packages, managed files, env vars
 /// and aliases are checked on the device by `cfgd diff` and reach the fleet
-/// through its compliance summary (`MachineConfig.status.compliance`), never as
-/// a DriftAlert — so a device with no DriftAlert is a device whose system
-/// settings matched, not a device proven in sync.
+/// through its compliance summary (`MachineConfig.status.compliance`); no
+/// DriftAlert carries them, so a device with no DriftAlert is a device whose
+/// system settings matched. It is not proven in sync.
 #[derive(CustomResource, Deserialize, Serialize, Clone, Debug, JsonSchema)]
 #[kube(
     group = "cfgd.io",
@@ -733,9 +733,9 @@ pub struct ModuleSpec {
     pub mount_policy: MountPolicy,
     /// Platform tags gating the whole module on a machine reconciling it.
     /// When non-empty and the machine matches none of them, the module is
-    /// skipped entirely (it appears as a skipped action rather than
-    /// vanishing). Tags are matched against the machine's OS, distro, and
-    /// arch; use `macos` for macOS.
+    /// skipped entirely (it still appears, as a skipped action). Tags are
+    /// matched against the machine's OS, distro, and arch; use `macos` for
+    /// macOS.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub platforms: Vec<String>,
     /// Shell aliases this module contributes to the machines that apply it.

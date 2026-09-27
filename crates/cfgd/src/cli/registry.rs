@@ -345,7 +345,7 @@ pub(in crate::cli) const NATIVE_OFFERS_CARGO: &str = "1.75";
 
 /// What the fake `cargo` manager's own binary reports once this host holds it.
 /// Above `FLOOR_MODULE_YAML`'s floor, which is what makes the entry resolve as
-/// held rather than as a route.
+/// held.
 #[cfg(test)]
 pub(in crate::cli) const CARGO_REPORTS_ABOVE_FLOOR: &str = "1.90.0";
 
@@ -396,7 +396,7 @@ fn hermetic_managers_beside_a_holder() -> Vec<Box<dyn cfgd_core::providers::Pack
     managers
 }
 
-/// The registered `cargo` manager is REPLACED rather than dropped: a floor
+/// The registered `cargo` manager is REPLACED and stays registered: a floor
 /// route is looked up BY NAME in the registry's `manager_map`, which holds
 /// every registered manager whether or not this host has it.
 #[cfg(test)]

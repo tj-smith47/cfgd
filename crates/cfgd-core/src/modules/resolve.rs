@@ -51,7 +51,7 @@ pub struct FloorBootstrap {
 
 /// What a caller's policy answers a [`FloorBootstrap`] question with.
 ///
-/// Three-way rather than a bool because the two refusals are not one refusal:
+/// Three-way because the two refusals are not one refusal:
 /// a person who answered no has already been asked, and telling them to re-run
 /// on a terminal is nonsense.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,7 +67,7 @@ pub enum FloorAnswer {
 
 /// A caller's policy on floor bootstrap routes, taken by [`resolve_modules`].
 ///
-/// Every call site states its own rather than inheriting a default: `plan` and
+/// Every call site states its own, with no default to inherit: `plan` and
 /// `apply` may ask, and a read-only or scaffolding verb installs nothing, so a
 /// `status` that prompted would be a trap in scripts.
 pub type FloorConfirm<'a> = dyn Fn(&FloorBootstrap) -> FloorAnswer + 'a;
@@ -120,7 +120,7 @@ impl FloorBootstrap {
         )
     }
 
-    /// The route as a NOTE rather than a question: what this host offers, and
+    /// The route as a NOTE, asking nothing: what this host offers, and
     /// the bootstrap that would meet the floor. The surfaces that state a
     /// route without asking about it (`cfgd doctor`, `cfgd module show
     /// --resolved`, `cfgd status <module>`) read this, so none of them can
@@ -160,7 +160,7 @@ impl FloorBootstrap {
     /// What a provision settles with when the route it took delivered a version
     /// still short of the floor the confirmation was given for.
     ///
-    /// An associated function rather than a method: the node holds the four
+    /// An associated function: the node holds the four
     /// values as plain strings by then, the route itself having been folded
     /// into the plan. It shares [`Self::BELOW_DECLARED_FLOOR`] with
     /// [`Self::offer_clause`], so the question cfgd asked and the failure it
@@ -186,8 +186,8 @@ impl FloorBootstrap {
     /// A floor the run could not judge at all, and why.
     ///
     /// A comparator that cannot read its operands answers no question, so the
-    /// node says the floor is unproven rather than settling green or claiming
-    /// a shortfall it did not measure: cfgd asked for a version and must not
+    /// node says the floor is unproven. It neither settles green nor claims a
+    /// shortfall it did not measure: cfgd asked for a version and must not
     /// report success for an answer it never read.
     pub fn floor_unproven(package: &str, floor: &str, cause: &str) -> String {
         format!("cannot judge {package} against the declared minVersion {floor}: {cause}")
@@ -198,7 +198,7 @@ impl FloorBootstrap {
 /// registered manager this host holds, and [`judgment`](Self::judgment) is what
 /// that manager's binary reports, judged against the floor in its own grammar.
 ///
-/// The judgment travels on the node rather than deciding, at resolution time,
+/// The judgment travels on the node; it never decides, at resolution time,
 /// whether the entry resolves at all. A manager below its floor is a fact about
 /// the machine, so every read surface reports it and only the install paths
 /// refuse: the alternative ended `status`, `verify`, `diff` and every daemon
@@ -222,7 +222,7 @@ impl HeldManager {
     /// `mgr` is the registered manager this entry names, where the caller has
     /// the registry in hand. It is read only to word the raise a shortfall
     /// names and the home variables an unreadable version asks about; `None`
-    /// keeps both generic rather than dropping them, because a surface with no
+    /// keeps both generic and still states them, because a surface with no
     /// registry still has to say what is wrong.
     pub fn clause(&self, mgr: Option<&dyn PackageManager>) -> String {
         match &self.judgment {
@@ -248,8 +248,8 @@ impl HeldManager {
 
     /// How the manager itself is raised. A bootstrap cannot raise a manager
     /// already on the machine and nothing cfgd plans installs one over itself,
-    /// so the sentence names a real raise and stops there rather than
-    /// composing a command that would put a second copy beside the one in use.
+    /// so the sentence names a real raise and stops there. A composed install
+    /// command would put a second copy beside the one in use.
     ///
     /// The manager answers for its own copy first
     /// ([`PackageManager::own_raise`]), because a family whose binary is a
@@ -276,7 +276,7 @@ impl HeldManager {
     /// copy it stands for through the family's own home variables, and a
     /// systemd unit carries neither unless the unit sets them, which is exactly
     /// where this verdict is reached. The variables are named by the manager
-    /// ([`PackageManager::home_env_vars`]) rather than listed here, so a family
+    /// ([`PackageManager::home_env_vars`]), with no list here, so a family
     /// that gains one joins the sentence with it.
     fn readable_version_clause(&self, mgr: Option<&dyn PackageManager>) -> String {
         let vars = mgr.map(PackageManager::home_env_vars).unwrap_or(&[]);
@@ -299,7 +299,7 @@ impl HeldManager {
 ///
 /// It rides on [`HeldManager`], so it reaches the wire: internally tagged under
 /// the same `state` key `PackageDisplay` names its own arms with, which keeps a
-/// reader's match on one string rather than on which key a map happens to hold.
+/// reader's match on one string whichever key a map happens to hold.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "state", rename_all = "camelCase")]
 pub enum FloorJudgment {
@@ -322,9 +322,9 @@ impl FloorJudgment {
     }
 
     /// The version the judgment was made against, or `None` where nothing
-    /// could be read. A surface rendering the operand takes it from here
-    /// rather than re-reading the binary, which would answer a later moment
-    /// than the verdict beside it.
+    /// could be read. A surface rendering the operand takes it from here. A
+    /// second read of the binary would answer a later moment than the verdict
+    /// beside it.
     pub fn version(&self) -> Option<&str> {
         match self {
             Self::Met { version } | Self::Short { version } => Some(version),
@@ -338,7 +338,7 @@ impl FloorJudgment {
 /// The comparison belongs to the family that packages the tool: `1:2.30`,
 /// `1.2.3,4567` and `2.2.2.0` are all versions a family reads and the shared
 /// parser refuses, so a `false` from the shared parser would be an artifact of
-/// the parse rather than a fact about the machine.
+/// the parse. It would say nothing about the machine.
 pub fn judge_declared_floor(
     mgr: &dyn PackageManager,
     subject: &str,
@@ -642,7 +642,7 @@ pub fn resolve_package(
     if proven_below
         // Only a proven-below floor can be rescued this way. "No manager at
         // all" is already answered by the optimistic `bootstrappable` arm
-        // above, which resolves rather than refusing.
+        // above, which resolves.
         && let Some(route) = floor_bootstrap_route(entry, module_name, managers, &best_found)
     {
         return Ok(Some(PackageResolution::Bootstrap(route)));
@@ -715,7 +715,7 @@ fn floor_bootstrap_route(
 ) -> Option<FloorBootstrap> {
     let (mgr, route) = floor_bootstrap_via(&entry.name, entry, module_name, managers, found)?;
     // The manager the route runs through, asked of the value the derivation
-    // resolved rather than of a second lookup: a manager already on this host
+    // resolved, with no second lookup: a manager already on this host
     // has nothing left to bootstrap, because a second copy of it would not
     // raise what it offers, and the refusal stands.
     (!mgr.is_available()).then_some(route)
@@ -1152,7 +1152,7 @@ pub fn resolve_modules(
         Ok(())
     })?;
 
-    // Asked after the narrate block closes, never inside it: `inquire` writes
+    // Asked after the narrate block closes: `inquire` writes
     // straight to the terminal past the renderer, so a confirm drawn under a
     // live spinner is painted over by the next tick. Asked after every module
     // resolved, too — a hard refusal has already ended the run by then, which

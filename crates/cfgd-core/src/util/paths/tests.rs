@@ -1020,8 +1020,8 @@ fn lexically_normalized_keeps_every_dotdot_it_has_nothing_to_pop() {
 /// the walk-back goes through a component that does not exist, so no inode
 /// question can be asked about it at all, and the symlink is two genuinely
 /// different paths the fold cannot equate. The negatives matter as much: a
-/// side that is absent answers `false` rather than panicking or reading a
-/// missing file as a match.
+/// side that is absent answers `false`: no panic, and a missing file is no
+/// match.
 #[test]
 fn names_the_same_path_answers_both_spellings_and_neither_stranger() {
     let dir = tempfile::TempDir::new().unwrap();
@@ -1050,7 +1050,7 @@ fn names_the_same_path_answers_both_spellings_and_neither_stranger() {
         Path::new("./a/b/../b/cfgd.yaml")
     ));
 
-    // Two files, not two spellings.
+    // Two files, each spelled once.
     assert!(!names_the_same_path(&file, &other));
     // A side that is not there is not a match, and asking costs no panic.
     assert!(!names_the_same_path(&file, &root.join("gone.yaml")));

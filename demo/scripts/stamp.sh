@@ -37,7 +37,7 @@ if [ ! -f "$SIDECAR" ]; then
 fi
 sha="$(cat "$SIDECAR")"
 if ! [[ "$sha" =~ ^[0-9a-f]{40}$ ]]; then
-    echo "$SIDECAR holds \`$sha\`, not a 40-hex commit, so demo/$TAPE's take cannot be stamped." >&2
+    echo "$SIDECAR holds \`$sha\`, which is no 40-hex commit, so demo/$TAPE's take cannot be stamped." >&2
     exit 1
 fi
 

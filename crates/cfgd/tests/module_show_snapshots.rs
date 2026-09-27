@@ -471,7 +471,7 @@ fn module_show_resolved_renders_what_this_host_made_of_the_declaration() {
 
 /// The bytes the one composer words for a held `cargo` against a `1.85` floor,
 /// read through the registry's own cargo. The rows below state their detail
-/// against this rather than against a sentence typed beside them: a rendering
+/// against this: a rendering
 /// that still matches a wording the producer stopped writing pins nothing.
 fn held_manager_clause(judgment: cfgd_core::modules::FloorJudgment) -> String {
     let registered = cfgd::packages::all_package_managers();
@@ -489,7 +489,7 @@ fn held_manager_clause(judgment: cfgd_core::modules::FloorJudgment) -> String {
 }
 
 /// A package this host reads as a manager it already holds at the declared
-/// floor is a SATISFIED row, not an unresolved one: the manager is the
+/// floor is a SATISFIED row: the manager is the
 /// delivery, so the row states the version its binary reports and the floor
 /// that version clears.
 #[test]

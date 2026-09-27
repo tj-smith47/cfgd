@@ -20,16 +20,15 @@ use super::git::resolve_subdir;
 
 /// The package a resolution that must not have routed produced. A test whose
 /// subject IS a bootstrap route matches the arm itself; every other one reads
-/// its package through here, so an unexpected route fails by name rather than
-/// as an absent field.
+/// its package through here, so an unexpected route fails by name.
 fn package_of(resolution: PackageResolution) -> ResolvedPackage {
     match resolution {
         PackageResolution::Package(pkg) => *pkg,
         PackageResolution::Bootstrap(route) => {
-            panic!("the package resolves to a manager, not to a route: {route:?}")
+            panic!("the package resolves to a manager; this one is a route: {route:?}")
         }
         PackageResolution::HeldByManager(held) => {
-            panic!("the package resolves to a manager, not to a held one: {held:?}")
+            panic!("the package resolves to a manager; this one is held: {held:?}")
         }
     }
 }
@@ -700,7 +699,7 @@ fn resolve_package_unresolvable() {
 }
 
 /// A floor every available manager is proven below, for a package that names a
-/// manager this host can bootstrap, is a DECISION rather than a refusal.
+/// manager this host can bootstrap, is a DECISION.
 #[test]
 fn a_floor_no_manager_meets_resolves_to_a_bootstrap_route() {
     let apt = MockManager::new("apt").with_package("cargo", "1.75");
@@ -721,7 +720,7 @@ fn a_floor_no_manager_meets_resolves_to_a_bootstrap_route() {
 
     let route = match resolve_package(&entry, "nvim", &linux_ubuntu_platform(), &managers, None) {
         Ok(Some(PackageResolution::Bootstrap(route))) => route,
-        other => panic!("a bootstrappable manager is a route, not a refusal: {other:?}"),
+        other => panic!("a bootstrappable manager is a route: {other:?}"),
     };
     assert_eq!(route.package, "cargo");
     assert_eq!(route.module, "nvim");
@@ -743,7 +742,7 @@ fn a_floor_on_a_package_that_names_no_bootstrappable_manager_still_refuses() {
     let apt = MockManager::new("apt").with_package("neovim", "0.6.1");
     // Registered, bootstrappable and not a candidate: the only thing between
     // this entry and a route is that `neovim` names no manager, so the claim
-    // rests on the lookup by name rather than on an empty registry.
+    // rests on the lookup by name; the registry is not empty.
     let cargo = crate::test_helpers::MockPackageManager::new("cargo")
         .unavailable()
         .bootstrappable_via("rustup");
@@ -764,8 +763,8 @@ fn a_floor_on_a_package_that_names_no_bootstrappable_manager_still_refuses() {
 }
 
 /// A manager already on this host has nothing left to bootstrap, so a floor it
-/// falls short of is a verdict about the machine rather than a refusal of the
-/// declaration. The clause names the manager, the version it reports and the
+/// falls short of is a verdict about the machine. The declaration stands. The
+/// clause names the manager, the version it reports and the
 /// raise, and a reader asking what the machine looks like gets an answer for
 /// every other entry beside it.
 #[test]
@@ -783,7 +782,7 @@ fn a_floor_a_held_manager_falls_short_of_resolves_and_names_the_raise() {
     };
     let held = match resolve_package(&entry, "nvim", &linux_ubuntu_platform(), &managers, None) {
         Ok(Some(PackageResolution::HeldByManager(held))) => held,
-        other => panic!("a held manager below its floor is reported, not refused: {other:?}"),
+        other => panic!("a held manager below its floor is reported: {other:?}"),
     };
     assert!(!held.judgment.met());
     assert_eq!(
@@ -812,7 +811,7 @@ fn a_held_manager_with_no_raise_verb_says_the_raise_is_by_hand() {
     };
     let held = match resolve_package(&entry, "nvim", &linux_ubuntu_platform(), &managers, None) {
         Ok(Some(PackageResolution::HeldByManager(held))) => held,
-        other => panic!("a held manager below its floor is reported, not refused: {other:?}"),
+        other => panic!("a held manager below its floor is reported: {other:?}"),
     };
     assert_eq!(
         held.clause(managers.get("cargo").copied()),
@@ -850,13 +849,13 @@ fn a_floor_the_manager_this_host_already_holds_meets_resolves_as_held() {
         crate::modules::FloorJudgment::Met {
             version: "1.90".into()
         },
-        "the version is what the manager's own binary reports, not what a listing offers"
+        "the version is what the manager's own binary reports"
     );
     assert_eq!(held.floor, "1.85");
 }
 
 /// A manager whose binary states no version has answered nothing, so the
-/// verdict says so rather than claiming a shortfall it never measured, and the
+/// verdict says so and claims no shortfall it never measured, and the
 /// clause names what a reader would look at to make the version readable.
 #[test]
 fn a_floor_a_held_manager_states_no_version_for_resolves_as_unproven() {
@@ -870,7 +869,7 @@ fn a_floor_a_held_manager_states_no_version_for_resolves_as_unproven() {
     };
     let held = match resolve_package(&entry, "nvim", &linux_ubuntu_platform(), &managers, None) {
         Ok(Some(PackageResolution::HeldByManager(held))) => held,
-        other => panic!("a floor nothing could judge is reported, not refused: {other:?}"),
+        other => panic!("a floor nothing could judge is reported: {other:?}"),
     };
     assert!(!held.judgment.met());
     assert_eq!(
@@ -971,7 +970,7 @@ spec:
 }
 
 /// Write one module body under `root/modules/<name>`, for a resolution fixture
-/// whose subject is which package a refusal names rather than the body itself.
+/// whose subject is which package a refusal names.
 fn write_module_packages(root: &std::path::Path, name: &str, packages: &str) {
     let module_dir = root.join("modules").join(name);
     std::fs::create_dir_all(&module_dir).unwrap();
@@ -5225,7 +5224,7 @@ fn resolve_modules_allows_an_unreferenced_script_module_beside_a_referenced_one(
 fn resolve_modules_allows_a_referenced_script_module_from_a_permitted_source() {
     // A source whose subscriber permits scripts (scripts_permitted: true) must
     // never be refused for a referenced script-bearing module — the whole
-    // ScriptsNotAllowed gate is conditioned on the source, not the module.
+    // ScriptsNotAllowed gate is conditioned on the source alone.
     let consumer = tempfile::tempdir().unwrap();
     let source = tempfile::tempdir().unwrap();
     let modules_dir = write_source_module_with_script(source.path(), "risky", &[]);
@@ -5272,8 +5271,7 @@ fn resolve_modules_does_not_refuse_a_referenced_script_module_the_platform_gate_
     // Same not-permitted source as resolve_modules_rejects_a_referenced_script_module,
     // but the script module is gated to a platform ("windows") the resolution
     // is not running on (macos). A platform-skipped module never runs its
-    // body, so it must be excluded from the noScripts gate entirely rather
-    // than refused.
+    // body, so it must be excluded from the noScripts gate entirely.
     let consumer = tempfile::tempdir().unwrap();
     let source = tempfile::tempdir().unwrap();
     let modules_dir = write_source_module_with_script(source.path(), "risky", &["windows"]);
@@ -5306,7 +5304,7 @@ fn resolve_modules_does_not_refuse_a_referenced_script_module_the_platform_gate_
     assert_eq!(resolved.len(), 1);
     assert!(
         resolved[0].platform_skip_reason.is_some(),
-        "a platform-skipped module resolves to its skip placeholder, not a refusal"
+        "a platform-skipped module resolves to its skip placeholder"
     );
     assert!(resolved[0].pre_apply_scripts.is_empty());
 }

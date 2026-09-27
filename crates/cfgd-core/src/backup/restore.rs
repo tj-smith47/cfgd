@@ -132,10 +132,9 @@ pub fn report_restore(printer: &Printer, outcome: &RestoreOutcome) -> crate::rec
         }
     }
     if let Some(safety) = &outcome.safety_copy {
-        // A status row, not `Printer::note` or a hint: where the overwritten
-        // data went is the one thing an operator needs after a restore they
-        // regret, and `note` is Verbose-only while a hint is what `usageHints`
-        // can eat.
+        // A status row: where the overwritten data went is the one thing an
+        // operator needs after a restore they regret, and `Printer::note` is
+        // Verbose-only while a hint is what `usageHints` can eat.
         group.status_simple(Role::Info, super::safety_copy_note(safety, &outcome.name));
     }
     crate::reconciler::RunTally {

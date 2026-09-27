@@ -1029,8 +1029,8 @@ mod tests {
 
     /// The row reads the ONE composer whatever the floor answer is, and a
     /// manager below its floor is something to fix: the clause goes where every
-    /// other shortfall goes, so the module's verdict fails on it instead of the
-    /// row claiming a satisfied fact nobody measured.
+    /// other shortfall goes, so the module's verdict fails on it and the row
+    /// claims no satisfied fact nobody measured.
     #[test]
     fn a_held_manager_below_its_floor_is_a_shortfall_on_the_doctor_row() {
         let cargo = cfgd_core::test_helpers::MockPackageManager::new("cargo")
@@ -1071,8 +1071,8 @@ mod tests {
     }
 
     /// The same row at the floor is the satisfied half: the clause is the same
-    /// composer's, and it joins the facts the module states rather than the
-    /// list its verdict fails on.
+    /// composer's, and it joins the facts the module states; the list its
+    /// verdict fails on stays without it.
     #[test]
     fn a_held_manager_at_its_floor_states_what_is_here_on_the_doctor_row() {
         let cargo = cfgd_core::test_helpers::MockPackageManager::new("cargo")

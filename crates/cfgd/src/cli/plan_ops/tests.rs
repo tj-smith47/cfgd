@@ -2417,8 +2417,8 @@ fn the_plan_json_payload_is_the_same_bytes_under_a_preset_that_overrides_the_arr
 ///
 /// That equality holds over THIS fixture's plan, which reaches no hatched
 /// field: a `// plan-skip-ok:` skip is a blessed shape, so one added to a type
-/// this fixture carries is a reason to move the fixture off that type, never a
-/// reason to read the failure as a broken plan format.
+/// this fixture carries is a reason to move the fixture off that type. The
+/// failure then says nothing about the plan format.
 #[test]
 fn a_saved_plan_hashes_to_what_it_hashed_before_the_payload_carried_it() {
     let plan = make_plan(vec![(PhaseName::System, vec![system_set()])]);
@@ -2456,7 +2456,7 @@ fn a_plan_output_with_no_saved_plan_omits_the_key() {
     let json = serde_json::to_value(&output).expect("the payload serializes");
     assert!(
         json.get("savedPlan").is_none(),
-        "an unrecorded contract is absent, not null: {json}"
+        "an unrecorded contract is absent (no null key): {json}"
     );
 }
 
@@ -3943,7 +3943,7 @@ fn a_plan_naming_a_package_the_modules_no_longer_route_the_same_way_is_refused()
 }
 
 /// The keys [`super::is_plan_payload`] asks for are ones `cfgd plan -o json`
-/// cannot omit, read off the real serialization rather than off a comment: a
+/// cannot omit, read off the real serialization: a
 /// key gaining a `skip_serializing_if` would make a plan cfgd wrote fail the
 /// question and earn a stranger's sentence.
 #[test]

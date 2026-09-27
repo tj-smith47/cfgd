@@ -361,9 +361,9 @@ golden_doc!(regression, sync_per_source_owner_group, |p, cap| {
 // Surface: the reminder `cfgd apply` prints once at the end of a run whose Env
 // phase changed something — the running shell predates the file, so the
 // bootstrapped manager's PATH entries are one command away. Anchors the exact
-// wording and the row shape: an instruction, not a warning (nothing went
-// wrong) and not a hint (`usageHints` may not decide whether a reader is told
-// which file their stale shell has to source).
+// wording and the row shape: an instruction. Nothing went wrong, so it is no
+// warning, and `usageHints` may not decide whether a reader is told which file
+// their stale shell has to source, so it is no hint.
 golden_doc!(regression, apply_shell_env_reminder, |p, cap| {
     let s = p.section_caveats();
     let owner = s.section_owner(&OwnerLabel::new("cfgd", "env"));

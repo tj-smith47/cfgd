@@ -115,7 +115,7 @@ pub struct ModuleSpec {
 
     /// Platform tags gating the whole module. When non-empty and the current
     /// platform matches none of them, the module is skipped entirely (it
-    /// appears as a skipped action rather than vanishing). Tags are matched
+    /// still appears, as a skipped action). Tags are matched
     /// against the machine's OS, distro, and arch; use `macos` for macOS.
     #[serde(
         default,
@@ -192,7 +192,7 @@ pub struct ModulePackageEntry {
     #[schemars(with = "Option<std::collections::HashMap<String, String>>")]
     pub aliases: HashMap<String, String>,
 
-    /// Shell script to run instead of a manager install, selected via
+    /// Shell script that takes the place of a manager install, selected via
     /// `prefer: [script]`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub script: Option<String>,

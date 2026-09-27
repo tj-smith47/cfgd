@@ -67,12 +67,12 @@ pub fn record_config_input(path: &Path) {
 /// One recorded input as a plan file carries it.
 ///
 /// The path is a POSIX-folded key that is also REOPENED to re-stat, so it takes
-/// [`crate::to_posix_fs_key`] rather than the unconditional fold (see
+/// [`crate::to_posix_fs_key`], which folds on Windows alone (see
 /// `path-handling.md`). The reopen holds for a path the wire can spell: a
 /// component that is not UTF-8 folds lossily and reads back as a path that
 /// re-stats to nothing, so that entry reports as moved on every comparison.
 /// Serde's own `PathBuf` refuses such a path outright, which would fail the
-/// whole document rather than one entry, and over-reporting a change only
+/// whole document over one entry, and over-reporting a change only
 /// recomputes a derivation. `mtime` is nanoseconds since the epoch, the exact
 /// value `SystemTime` reconstructs from, so a set written and read back
 /// compares equal to the one the derivation recorded.

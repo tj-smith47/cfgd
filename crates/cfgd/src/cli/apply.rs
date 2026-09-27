@@ -236,7 +236,7 @@ pub fn run_apply(
     // here. An isolated run resolved no profile, so it carries none and the
     // header omits the row.
     //
-    // Opened around the whole derivation, not around the config parse alone:
+    // Opened around the whole derivation, config parse included:
     // the profile chain, the module bodies, the lockfiles and the declared
     // package manifests are all inputs a replay must re-check, and each reports
     // itself from its own read. A run that is not a dry run records nothing, so
@@ -531,8 +531,7 @@ pub fn run_apply(
         });
     let mut plan = match saved_plan {
         // `manager_declared` and `min_version` are planner inputs the format
-        // does not carry, so they come from the modules this run resolved
-        // rather than from the file.
+        // does not carry, so they come from the modules this run resolved.
         Some((mut recorded, path)) => {
             plan_ops::restore_module_planner_inputs(&mut recorded, &resolved_modules, path)?;
             recorded
@@ -542,7 +541,7 @@ pub fn run_apply(
             // same string is the persisted action description and the module's
             // recorded packages hash — priced survivor-gated (a package the
             // machine already holds is elided and never queried), and under this
-            // bar so the wait is narrated, not dead air.
+            // bar so the wait is narrated.
             sp.set_message("Resolving package versions");
             reconciler.fill_planned_versions(&mut resolved_modules, &registry.manager_map());
             reconciler.plan_observed(

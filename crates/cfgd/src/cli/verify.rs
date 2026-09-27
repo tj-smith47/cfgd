@@ -732,7 +732,7 @@ mod tests {
         let _home = cfgd_core::with_test_home_guard(tmp_home.path());
 
         // The files the planner would write for the same two layers, taken
-        // from the generator rather than spelled here: the module's line has to
+        // from the generator: the module's line has to
         // stand in its own block below the profile's for the premise to hold.
         let profile_env = vec![cfgd_core::config::EnvVar {
             name: "EDITOR".to_string(),
@@ -828,8 +828,8 @@ mod tests {
     /// `deployed_env_item_line` takes the LAST line claiming a name, so the
     /// outranked tier's value standing verbatim above the winner's is never
     /// read as what the machine holds: a converged file reports equal operands,
-    /// and a hand-edited override reports the OVERRIDE tier's line as `have`,
-    /// never the standard tier's. Nothing else exercises this shape — the
+    /// and a hand-edited override reports the OVERRIDE tier's line as `have`.
+    /// Nothing else exercises this shape — the
     /// sibling pin above plants a profile and a module, which are two owners.
     #[test]
     #[serial]
@@ -858,7 +858,7 @@ mod tests {
         let _home = cfgd_core::with_test_home_guard(tmp_home.path());
 
         // The file a converged machine holds for those two tiers, composed by
-        // the generator rather than spelled here.
+        // the generator.
         let tier = |priority: u32, value: &str| cfgd_core::config::ProfileLayer {
             source: "team".to_string(),
             profile_name: format!("team-{priority}"),

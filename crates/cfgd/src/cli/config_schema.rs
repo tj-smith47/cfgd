@@ -370,7 +370,7 @@ pub fn cmd_config_migrate(cli: &Cli, printer: &Printer, write: bool) -> anyhow::
     let (role, subject) = match (pending.keys.is_empty(), wrote) {
         (true, _) => (
             Role::Ok,
-            // verdict-row-ok: a state verdict about the document, not an act cfgd performed
+            // verdict-row-ok: a state verdict about the document; cfgd performed no act
             "Config declares every field this build reads".to_string(),
         ),
         (false, true) => (
@@ -412,11 +412,11 @@ pub fn cmd_config_migrate(cli: &Cli, printer: &Printer, write: bool) -> anyhow::
 /// fold is taken here, over the override and the stored policy alike, because
 /// the stored half never passes through the caller at all. With nothing
 /// overridden the stored policy is read
-/// off the parse below rather than a second load of the same file, so a gate
+/// off the parse below, with no second load of the same file, so a gate
 /// costs one read of the document whatever it decides — and an overridden
 /// `Ignore` costs none at all.
 ///
-/// The state store is opened HERE rather than at the call site, and only
+/// The state store is opened HERE, and only
 /// where there is an answer to hold: `cfgd paths`, `cfgd explain` and every
 /// other read that records nothing leave the state root as they found it.
 pub fn gate_on_load(printer: &Printer, invocation: &GateInvocation<'_>, config_path: &Path) {
@@ -761,7 +761,7 @@ mod tests {
     /// above exercises `spec.theme` alone. This walks every member of
     /// `LEGACY_OUTPUT_KEYS` (`spec.theme` and `spec.usageHints` today), so a
     /// third legacy key added later must supply a fixture value here before
-    /// this test can pass, rather than riding on `spec.theme`'s coverage.
+    /// this test can pass; `spec.theme`'s coverage does not carry it.
     #[test]
     fn migrate_write_does_not_duplicate_any_legacy_output_key_into_its_nested_key() {
         for (old, new) in cfgd_core::config::LEGACY_OUTPUT_KEYS {
@@ -1034,8 +1034,7 @@ mod tests {
 
     /// A capture holding a scripted answer, at the verbosity an alert renders
     /// at. `can_prompt()` is true while the queue holds something, which is
-    /// what puts the gate on its real `Prompt` path instead of the non-TTY
-    /// degrade.
+    /// what puts the gate on its real `Prompt` path.
     fn prompting_printer(answers: Vec<cfgd_core::output::PromptAnswer>) -> (Printer, PromptBuffer) {
         use cfgd_core::output::Verbosity;
         Printer::for_test_with_prompt_responses_at(answers, Verbosity::Normal)
@@ -1231,7 +1230,7 @@ mod tests {
         assert_eq!(
             text.matches("no such table").count(),
             2,
-            "each half carries what the store said, not a wording of its own: {text}"
+            "each half carries what the store said: {text}"
         );
     }
 
@@ -1798,7 +1797,7 @@ mod tests {
                 .keys
                 .iter()
                 .any(|key| key.starts_with("spec.origin.")),
-            "what a declared element carries is data, not a pending key: {:?}",
+            "what a declared element carries is data; no pending key names it: {:?}",
             pending.keys
         );
         assert!(
@@ -1859,7 +1858,7 @@ mod tests {
     fn a_legacy_flat_key_is_not_reported_as_a_pending_nested_one() {
         // One fixture value per LEGACY_OUTPUT_KEYS entry, keyed by the flat
         // spelling, so a key added to the table trips this walk until it
-        // gains a fixture rather than passing by omission.
+        // gains a fixture.
         let legacy_values: &[(&str, &str)] =
             &[("spec.theme", "dracula"), ("spec.usageHints", "true")];
         for (old, _) in cfgd_core::config::LEGACY_OUTPUT_KEYS {

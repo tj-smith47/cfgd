@@ -565,7 +565,7 @@ mod tests {
 
         assert_eq!(
             err.to_string(),
-            "'sources[acme].subscription' holds a scalar, not a mapping"
+            "'sources[acme].subscription' holds a scalar where a mapping belongs"
         );
         assert_eq!(
             std::fs::read_to_string(&path).expect("read config"),

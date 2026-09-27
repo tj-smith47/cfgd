@@ -99,7 +99,7 @@ pub fn standing_section(
 /// loops: file and package kinds only) still passes one, and the recompute is
 /// a no-op for any other `resource_type`. The modules folded into it are what
 /// make a module-declared entry renderable at all — its entries live in the
-/// module rather than in the profile's own `env`/`aliases`, and the block the
+/// module, outside the profile's own `env`/`aliases`, and the block the
 /// file on disk holds them under is headed by the module.
 pub(super) fn drift_event_from(
     r: &VerifyResult,
@@ -315,7 +315,7 @@ pub(super) fn scoped_version_drift(
     let (mut results, mut check_errors) =
         cfgd_core::reconciler::package_version_drift(&effective, registry, cx)?;
     // The floor of a manager this chain's own entry names is answered by the
-    // binary rather than by a listing, and a scoped run that skipped it would
+    // binary with no listing consulted, and a scoped run that skipped it would
     // heal a version row nothing re-examined.
     let (held, held_errors) =
         cfgd_core::reconciler::held_manager_version_drift(modules, registry, &results);

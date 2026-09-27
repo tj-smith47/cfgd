@@ -1005,7 +1005,7 @@ fn valid_export_pairs(env: &[EnvVar]) -> Vec<(String, String)> {
 pub(super) fn generate_environment_d_content(env: &[EnvVar]) -> String {
     // The banner's block-free form, and no block header under it: systemd
     // documents no last-wins for a repeated key, so this one publishes the
-    // winners the merge already decided rather than every layer — and a file
+    // winners the merge already decided, one line per name — and a file
     // holding no blocks may not tell its reader to go edit one.
     let mut lines = banner(SHELL_COMMENT, false);
     for ev in env {
@@ -1080,8 +1080,8 @@ pub fn launchd_env_plist(label: &str, vars: &BTreeMap<String, String>) -> String
 #[cfg(test)]
 impl EnvPlatform {
     /// Every variant, so a walk over the platforms takes the population from
-    /// the type rather than from a hand list that stops growing the day a
-    /// variant is added. `env_platform_all_covers_every_variant` fails to
+    /// the type; a hand list stops growing the day a variant is added.
+    /// `env_platform_all_covers_every_variant` fails to
     /// compile until a new variant joins it.
     pub(super) const ALL: [Self; 4] = [Self::Linux, Self::MacOs, Self::FreeBsd, Self::Windows];
 }
@@ -1354,8 +1354,7 @@ mod tests {
     /// appears in two of them — that is the inheritance the file exists to
     /// show, and the shell's last-wins resolves it. `PATH` is the exception on
     /// both counts: its declarations CONCATENATE into one folded line, so a
-    /// second `PATH` assignment anywhere in the file would clobber the fold
-    /// rather than layer onto it.
+    /// second `PATH` assignment anywhere in the file would clobber the fold.
     ///
     /// A file holding two `export PATH=` lines also made every count over it
     /// choose between naming written lines and naming variables — which is how
@@ -1382,7 +1381,7 @@ mod tests {
                 ev("EDITOR", "nvim"),
             ];
             let dirs = dirs(&crate::to_posix_string(home));
-            // Built through the real fold rather than `for_test`, and carrying
+            // Built through the real fold (`for_test` skips it), and carrying
             // a resolved secret named `PATH`: `with_secret_envs` is the one
             // producer that puts a `PATH` entry in a layer at all, so it is
             // what the `path_lines` half of this pin has to be shown.
@@ -1498,7 +1497,7 @@ mod tests {
                     continue;
                 }
                 talkers += 1;
-                // A header the generator composed, not a shape guessed at:
+                // A header the generator composed:
                 // the one layer `for_test` builds is what every block in this
                 // body is headed by.
                 let header = crate::reconciler::env_files::block_header(
@@ -1521,7 +1520,7 @@ mod tests {
 
     /// `environment.d(5)` takes the banner's block-free form, byte for byte.
     ///
-    /// Written out rather than composed through `banner`, which would compare
+    /// Written out by hand: composing it through `banner` would compare
     /// the generator against the one function it already called.
     #[test]
     fn the_environment_d_file_opens_on_the_block_free_banner() {
@@ -1716,13 +1715,13 @@ mod tests {
     ///
     /// The population is `env_target_basenames()` narrowed to the files this
     /// engine WRITES, so a sixth generated file joins the walk with the
-    /// dialect that added it instead of being classified by omission: it
+    /// dialect that added it, and nothing is classified by omission: it
     /// either carries the blocks or is named in `NO_BLOCKS`, and a `NO_BLOCKS`
     /// name the engine has stopped writing fails here too. `environment.d`
     /// reads `KEY=VALUE` with no documented last-wins for a repeated key, and
     /// a LaunchAgent is XML; both publish the winners alone.
     ///
-    /// The floor is the (platform, file) MATRIX, not the set of file names: a
+    /// The floor is the (platform, file) MATRIX: a
     /// name three platform arms produce would otherwise let the fourth stop
     /// producing it with nothing going red.
     #[test]
@@ -1762,7 +1761,7 @@ mod tests {
             );
         }
         // Every optional dialect present, so the walk reaches the fish file and
-        // the Git Bash one rather than reading fewer targets than it claims.
+        // the Git Bash one and reads every target it claims.
         let probe = EnvHostProbe {
             shell: "/bin/zsh".to_string(),
             fish_present: true,

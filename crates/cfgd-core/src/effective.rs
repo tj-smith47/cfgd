@@ -155,7 +155,7 @@ pub fn effective_system_map(
 /// that — claimed alone by one module — is a check error the reader must see.
 ///
 /// Every answer is the same in both argument orders. Neither floor being
-/// stricter is an ordinary outcome, not an edge case: `1.85` and `1.85.0` are
+/// stricter is an ordinary outcome: `1.85` and `1.85.0` are
 /// one floor spelled twice, and two floors nothing can read are two typos.
 /// Keeping the CLAIMED one there hands the survivor to whichever module the
 /// resolution happened to reach first, and the spelling that survives is the
@@ -190,8 +190,8 @@ fn stricter_of<'a>(
     }
     let meets = |x: &str, y: &str| match mgr {
         // A comparator that failed to spawn (FreeBSD `pkg version -t`) answered
-        // nothing, so the shared comparator stands in rather than one side
-        // winning on a transient failure.
+        // nothing, so the shared comparator stands in and neither side wins
+        // on a transient failure.
         Some(m) => m
             .version_meets_minimum_checked(x, y)
             .unwrap_or_else(|_| crate::version_meets_floor(x, y)),

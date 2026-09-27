@@ -3030,7 +3030,7 @@ fn a_relative_in_tree_manifest_path_is_read() {
 /// tick reusing a derivation notices a Brewfile that changed under it.
 ///
 /// Absence is recorded as a state of its own: a manifest that only appears
-/// later reads as a change rather than as nothing at all, which is why the
+/// later reads as a change, which is why the
 /// record is taken before the caller's `exists()`.
 #[test]
 fn resolving_a_declared_manifest_records_it_as_a_config_input() {
@@ -5789,7 +5789,7 @@ fn every_registered_manager_declares_how_its_family_raises_a_held_package() {
 /// below a declared floor names the command that moves it. `cargo install
 /// cargo` fetches a second copy from crates.io and leaves the toolchain where
 /// it was, so the clause is worded from the manager's own raise and held here
-/// against the REGISTERED cargo rather than a mock that could answer anything.
+/// against the REGISTERED cargo; a mock could answer anything.
 #[test]
 fn a_held_cargo_below_its_floor_names_rustup_as_the_raise() {
     let managers = all_package_managers();
@@ -5815,7 +5815,7 @@ fn a_held_cargo_below_its_floor_names_rustup_as_the_raise() {
     );
     assert!(
         clause.contains("raise it with `rustup update`"),
-        "a slipped toolchain is raised by rustup, not by cargo's package verb: {clause}"
+        "a slipped toolchain is raised by rustup; cargo's package verb cannot: {clause}"
     );
 }
 

@@ -89,9 +89,8 @@ impl Printer {
     ///
     /// Only a test capture ever holds a queue, so this widens nothing a
     /// shipped binary does. What it buys is that a caller which asks
-    /// `can_prompt()` and only then prompts — rather than prompting and
-    /// reading the refusal — can be driven through its real path instead of
-    /// degrading the moment a test looks at it.
+    /// `can_prompt()` and only then prompts can be driven through its real
+    /// path, where it would otherwise degrade the moment a test looks at it.
     fn has_queued_prompt_answer(&self) -> bool {
         self.prompt_queue
             .as_ref()

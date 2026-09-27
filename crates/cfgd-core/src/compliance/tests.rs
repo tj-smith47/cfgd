@@ -580,7 +580,7 @@ fn collect_package_checks_installed_package_compliant() {
 /// invisible to the control plane: nothing installs a held manager, so it is
 /// in no desired-package set and the fleet saw a module declaring nothing at
 /// all. It gets a row of its own, under the manager's own name, and the row
-/// carries the floor verdict rather than a presence nobody measured.
+/// carries the floor verdict the manager's binary measured.
 #[test]
 fn collect_package_checks_gives_a_held_manager_a_row_under_its_own_name() {
     use crate::config::MergedProfile;
@@ -639,7 +639,7 @@ fn collect_package_checks_gives_a_held_manager_a_row_under_its_own_name() {
 /// The check-in reports what this machine holds for what it declares, and a
 /// held manager is a declaration no listing answers for: its version comes
 /// from the judgment the resolution already made. A floor nothing could judge
-/// contributes no key rather than a placeholder a policy would compare.
+/// contributes no key, so a policy has no placeholder to compare.
 #[test]
 fn declared_package_versions_reports_a_held_manager_under_its_own_name() {
     use crate::config::MergedProfile;

@@ -34,7 +34,7 @@ pub fn cmd_plan(
 
     super::apply::refuse_with_profile_without_module(with_profile, module_filter)?;
 
-    // Opened around the whole derivation, not around the config parse alone:
+    // Opened around the whole derivation, config parse included:
     // the profile chain, the module bodies, the lockfiles and the declared
     // package manifests are all inputs a replay must re-check, and each reports
     // itself from its own read.

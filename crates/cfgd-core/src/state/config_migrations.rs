@@ -7,7 +7,7 @@ use crate::errors::{Result, StateError};
 
 /// The row key for a config file. Folded lexically so `--config ../cfg/cfgd.yaml` and
 /// its absolute spelling are one row; never canonicalized, so a symlinked config keeps
-/// the name the reader gave it (`absolutize_path`'s own rule). A key, never rendered.
+/// the name the reader gave it (`absolutize_path`'s own rule). A key; nothing renders it.
 fn config_row_key(config_path: &Path) -> String {
     crate::to_posix_string(crate::lexically_normalized(&crate::absolutize_path(
         config_path,
@@ -48,13 +48,11 @@ impl StateStore {
         Ok(())
     }
 
-    /// `Some(accepted)` when this exact question was already answered: the
-    /// recorded `offered_keys` covers every key `offered` names. `None` when
-    /// it was never asked, or asked about less, so a release that adds a
-    /// field asks about it rather than inheriting a verdict on a different
-    /// question. A question naming no key is answered by nothing. An
-    /// `offered_keys` column that no longer decodes is read as covering
-    /// nothing, so the reader is asked again rather than answered for.
+    /// `Some(accepted)` when this exact question was already answered: the recorded `offered_keys`
+    /// covers every key `offered` names. `None` when it was never asked, or asked about less, so a
+    /// release that adds a field asks about it and inherits no verdict on a different question. A
+    /// question naming no key is answered by nothing. An `offered_keys` column that no longer
+    /// decodes is read as covering nothing, so the reader is asked again.
     pub fn migration_answer(
         &self,
         config_path: &Path,

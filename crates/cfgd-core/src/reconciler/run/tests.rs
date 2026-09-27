@@ -157,7 +157,7 @@ fn rollup_lines_covers_every_apply_status() {
     let cases: Vec<(ApplyStatus, usize, Vec<Role>)> = vec![
         // The tally below carries a failure under every status, this one
         // included. A `Success` holding one is a tally no apply path produces,
-        // and the clause list states it rather than dropping it: the one
+        // and the clause list states it: the one
         // decomposition is what every arm reads, so a surface cannot lose an
         // outcome by which status word happens to sit above it.
         (ApplyStatus::Success, 2, vec![Role::Ok, Role::Fail]),
@@ -1162,8 +1162,7 @@ fn an_after_plan_surface_that_changed_nothing_is_skipped_and_never_converged() {
     );
     // The daemon keeps the one account the rendered rollup does, so a skip
     // cannot read as converged on the journal line either, and the planned
-    // failures are a clause of that same list rather than a tail appended
-    // after it.
+    // failures are a clause of that same list.
     assert_eq!(
         outcome_counts(&tally),
         format!(
@@ -2027,7 +2026,7 @@ fn preview_bullet_styles_a_scripts_marker() {
     let (_, accent) = crate::output::renderer::role_glyph(&theme, Role::Accent);
     let styled_marker = accent.apply_to("run postApply script:").to_string();
     assert!(
-        // doc-comment-ok: a styled span in captured output, not a source line
+        // doc-comment-ok: the haystack is a styled span in captured output
         raw.contains(&styled_marker),
         "the marker must carry Role::Accent styling: {raw:?}"
     );

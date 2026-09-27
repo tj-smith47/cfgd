@@ -63,7 +63,7 @@ fn run(args: &[&str], config: &Path, state: &Path, home: &Path) -> std::process:
         .arg(state)
         .env("HOME", home)
         // Windows resolves `~` from USERPROFILE first, so HOME alone would
-        // leave the child under the constructor's home instead of this one.
+        // leave the child under the constructor's home.
         .env("USERPROFILE", home)
         // Keeps the module cache under the home this test re-points; the
         // constructor's own cache override sits outside it.

@@ -110,8 +110,8 @@ pub struct ResolvedPackage {
     /// already in the module's own spec.
     // plan-skip-ok: a plan file reads it back `false`, which `declared_manager_routes`
     // and `Reconciler::package_survives_elision` read as cfgd's own platform default
-    // — so a run driven from a file, rather than from the resolver that filled this,
-    // must resolve the module again instead of trusting the field. Serializing it
+    // — so a run driven from a file, where no resolver filled this, must resolve
+    // the module again and leave the field untrusted. Serializing it
     // would put it in `Plan::to_hash_string` and rewrite every stored `plan_hash`.
     #[serde(skip)]
     pub manager_declared: bool,
@@ -189,7 +189,7 @@ pub struct ResolvedModule {
     /// this host. Nothing is planned for one: the manager is the delivery, so
     /// an entry whose floor is met is satisfied where it would once have been
     /// refused, and one below its floor or with no readable version is a fact
-    /// the read surfaces report rather than a refusal of every command.
+    /// the read surfaces report, and no command is refused over it.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub held_managers: Vec<HeldManager>,
     pub files: Vec<ResolvedFile>,

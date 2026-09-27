@@ -107,8 +107,8 @@ pub(super) fn planned_file_converged(
         {
             return false;
         }
-        // Two DISTINCT paths sharing an inode (a declared hardlink still
-        // pointing at its source), not two spellings of one path.
+        // Two DISTINCT paths sharing an inode: a declared hardlink still
+        // pointing at its source.
         // same-path-ok: a hardlink convergence check.
         return crate::is_same_inode(&file.source, target);
     }

@@ -163,8 +163,8 @@ fn missing_config_json_emits_one_payload_never_silent() {
 /// The same class decision, over the real binary's dispatch: a refusal's
 /// remediation survives `CFGD_USAGE_HINTS=false`.
 ///
-/// `usageHints` decides tutorial pointers, never the one statement of what
-/// would let a refused command run. The child's stderr is read raw — a piped
+/// `usageHints` decides tutorial pointers; the one statement of what would let
+/// a refused command run always renders. The child's stderr is read raw — a piped
 /// child resolves `ColorChoice::Auto` to no colour, so there is nothing to
 /// strip — and the fixture declares a module, because the not-found hint names
 /// the modules that DO exist and a config declaring none carries no hint to
@@ -206,7 +206,7 @@ fn a_refusal_names_its_fix_end_to_end_with_usage_hints_off() {
 }
 
 /// The `-o json` payload a refusal leaves on stdout, run against a valid
-/// config so each command reaches its own refusal rather than a missing file.
+/// config so each command reaches its own refusal past the config read.
 fn json_refusal(dir: &std::path::Path, args: &[&str]) -> serde_json::Value {
     create_valid_config(dir);
     json_refusal_against(&dir.join("cfgd.yaml"), args)
@@ -407,7 +407,7 @@ fn a_spec_that_is_not_a_mapping_is_refused_naming_what_it_holds() {
     let (_, stderr, code) = run(&[&args[..], &["--config", config.to_str().unwrap()]].concat());
     assert_eq!(code, Some(1), "{stderr}");
     assert!(
-        stderr.contains("'spec' holds a scalar, not a mapping"),
+        stderr.contains("'spec' holds a scalar where a mapping belongs"),
         "the refusal names what the document holds: {stderr}"
     );
     assert_eq!(std::fs::read_to_string(&config).unwrap(), before);

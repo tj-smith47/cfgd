@@ -2237,7 +2237,7 @@ fn held_module(module: &str, manager: &str, floor: &str) -> ResolvedModule {
         package: manager.to_string(),
         module: module.to_string(),
         floor: floor.to_string(),
-        // The stored verdict, which this pass re-asks rather than trusts.
+        // The stored verdict, which this pass re-asks.
         judgment: crate::modules::FloorJudgment::Met {
             version: "1.90".to_string(),
         },
@@ -2246,7 +2246,7 @@ fn held_module(module: &str, manager: &str, floor: &str) -> ResolvedModule {
 }
 
 /// A binary that states no version has answered nothing, so the pass reports a
-/// check that could not run rather than a shortfall it never measured, and the
+/// check that could not run, claiming no shortfall it never measured, and the
 /// error carries the clause naming what a reader would look at.
 #[test]
 fn a_held_manager_whose_version_cannot_be_read_is_a_check_that_could_not_run() {
@@ -4112,9 +4112,9 @@ fn generate_powershell_env_empty() {
     );
     // The banner and nothing else, in its block-free form: no declaration
     // means no block to head, and the two sentences about blocks would name
-    // something this file does not hold. Written out rather than composed
-    // through `banner`, which would compare the generator against the one
-    // function it already called.
+    // something this file does not hold. Written out by hand: composing it
+    // through `banner` would compare the generator against the one function
+    // it already called.
     assert_eq!(
         content,
         "# managed by cfgd \u{2014} do not edit\n\
@@ -9272,8 +9272,8 @@ fn plan_to_hash_string_multiple_phases() {
 /// on every machine at once: the next run reads its own stored hash as a
 /// different plan and reports work nobody asked for.
 ///
-/// Held against bytes written here rather than against a second call of the
-/// producer, which agrees with itself however the fields are spelled. Two
+/// Held against bytes written here. A second call of the producer agrees with
+/// itself however the fields are spelled. Two
 /// arms, because the two shapes break separately: an ordinary plan, whose
 /// nodes leave their optional fields absent, and a held-floor node with no
 /// declarants, which is what that field's `skip_serializing_if` promises
@@ -10594,7 +10594,7 @@ fn a_confirmed_floor_route_provisions_the_manager_ahead_of_the_module() {
         ),
         "the provision carries the floor it was confirmed for: {bootstrap:#?}"
     );
-    // Counted rather than matched on the phase's presence: an empty phase is
+    // Counted: an empty phase is
     // pruned, so "absent" and "present with no action" are the same answer.
     let installs = plan
         .phases
@@ -10964,7 +10964,7 @@ fn a_floored_manager_keeps_its_own_node_instead_of_joining_a_batch() {
 /// change nobody made and every converged host re-plans.
 ///
 /// The literal is the string a run of the hash produced before the field was
-/// added, kept byte for byte rather than retyped from the struct: it holds the
+/// added, kept byte for byte (never retyped from the struct): it holds the
 /// variant's own field ORDER, and `depends_on` in the snake_case spelling serde
 /// gives it, since `rename_all = "camelCase"` on the enum renames variants and
 /// not fields. A literal composed from the type by hand would agree with
@@ -16696,7 +16696,7 @@ fn an_env_var_several_blocks_assign_reads_back_as_the_last_line_that_claims_it()
     let _home = crate::with_test_home_guard(tmp_home.path());
 
     // A REAL generated file: two layers both declaring `PAGER`, written
-    // through the engine's own targets rather than a hand-spelled fixture.
+    // through the engine's own targets.
     let (layered, path_dirs) =
         crate::test_helpers::layered_fixture(&crate::to_posix_string(tmp_home.path()));
     let view = super::verify::MergedEnvItems::new(&layered, &path_dirs);
@@ -17036,8 +17036,8 @@ fn team_layer(priority: u32, env: Vec<crate::config::EnvVar>) -> crate::config::
 /// subscription delivered, and its recommended tier, its opted-in profiles and
 /// its standard profiles all take the subscription's own number, so a source
 /// contributing two such layers would hand the view two blocks with identical
-/// headers — a repeated section rather than two layers a reader could tell
-/// apart. They are joined in declaration order with every declaration kept.
+/// headers — a repeated section a reader could not tell apart as two layers.
+/// They are joined in declaration order with every declaration kept.
 #[test]
 fn two_layers_of_one_subscription_at_one_rank_share_one_block() {
     let layers = vec![
@@ -17405,8 +17405,8 @@ fn straddling_source_profile() -> crate::config::ResolvedProfile {
 fn the_layered_env_folds_back_to_the_merge() {
     let mut resolved = crate::test_helpers::two_layer_profile();
     // What a resolved preference does after the layer loop: fold in and claim
-    // the last layer that ranked it. Written here rather than resolved for
-    // real, so this pin needs no session probe.
+    // the last layer that ranked it. Written here by hand, so this pin needs
+    // no session probe.
     resolved.merged.env.push(crate::config::EnvVar {
         name: "CFGD_CLIPBOARD".to_string(),
         value: "xclip".to_string(),
@@ -17431,7 +17431,7 @@ fn the_layered_env_folds_back_to_the_merge() {
     // The same two halves with NO claim behind them. Every winner has to be
     // set by the generated file, and the last block is the only position a
     // shell folding the blocks in order resolves to the merge's own value, so
-    // an entry no claim answers for lands there rather than being dropped.
+    // an entry no claim answers for lands there and is kept.
     resolved.merged.env.push(crate::config::EnvVar {
         name: "CFGD_UNCLAIMED".to_string(),
         value: "1".to_string(),
@@ -17468,7 +17468,7 @@ fn the_layered_env_folds_back_to_the_merge() {
             .collect::<Vec<_>>(),
         ["profile:base", "profile:work", "module:nvim"],
         "blocks arrive low precedence first, and a block with nothing in it is \
-         dropped rather than printed as an empty header",
+         dropped, so no empty header prints",
     );
     // The outranked value is in its own block, verbatim — the whole point of
     // the layered file, and the one thing a winners-only split cannot hold.
@@ -27313,8 +27313,8 @@ fn to_hash_string_is_stable_across_group_permutation() {
 
 /// Every `Action` variant survives the plan-file round trip.
 ///
-/// The match takes no wildcard, so a ninth variant fails to COMPILE here rather
-/// than shipping a plan file cfgd cannot read back. Every optional field is left
+/// The match takes no wildcard, so a ninth variant fails to COMPILE here and
+/// never ships a plan file cfgd cannot read back. Every optional field is left
 /// empty, which is the case a `skip_serializing_if` with no `#[serde(default)]`
 /// fails on: the key is absent from the wire entirely.
 #[test]
@@ -27550,13 +27550,13 @@ fn a_plan_file_filing_a_profile_owned_action_under_any_owner_reads_back() {
     );
 }
 
-/// An action `serde_json` cannot write ends the hash rather than vanishing from it.
+/// An action `serde_json` cannot write ends the hash; it never vanishes from it.
 ///
 /// `applies.plan_hash` is a serialization of the actions, so an action dropped
 /// from the composition would let a run that deploys a file and a run that does
 /// not record the same hash, and every surface comparing stored hashes would
-/// read the two runs as the same plan. The unwritable shape is built here rather
-/// than parsed: `PatchSpec`'s own reader refuses a mapping key that is not a
+/// read the two runs as the same plan. The unwritable shape is built here by
+/// hand: `PatchSpec`'s own reader refuses a mapping key that is not a
 /// string, which is the other half of the same rule, so this is the residual a
 /// caller holding the struct can still reach.
 #[test]
@@ -29736,10 +29736,10 @@ fn every_caveat_names_the_subject_that_produced_it() {
 ///
 /// The re-source reminder names the file this apply wrote. A reader whose
 /// shell is stale and whose config says "no tutorials" still has to be told
-/// which file to source, so it is a note row under its owner rather than a
-/// hint the gate can eat.
+/// which file to source, so it is a note row under its owner, out of the
+/// hint gate's reach.
 ///
-/// `for_test_at(Normal)`, not `for_test()`: a note row is a `status_simple`,
+/// `for_test_at(Normal)`: a note row is a `status_simple`,
 /// and every non-`Fail` role is suppressed at `Verbosity::Quiet`, so the
 /// Quiet capture would read back empty whichever slot carried the sentence.
 #[test]
@@ -29765,7 +29765,7 @@ fn the_re_source_reminder_renders_with_usage_hints_off() {
 /// the glyph a problem wears and stood among the run's real warnings; it
 /// renders as an `Info` note row, below every note its group holds — the
 /// warnings and the reports of work done alike — and reads as an instruction
-/// ("Run", not "run"). The fixture hands the four in the order that discovers
+/// (capitalised "Run"). The fixture hands the four in the order that discovers
 /// a sort keyed on the role alone, which would leave the instruction between
 /// the warning and the reports.
 ///
@@ -29825,7 +29825,7 @@ fn an_instruction_renders_as_an_info_row_below_the_warnings() {
     );
     assert!(
         !step.contains('\u{2192}'),
-        "an instruction is a row, not a hint the gate can eat: {step:?}"
+        "an instruction is a row, out of the hint gate's reach: {step:?}"
     );
     assert!(
         step.contains("Run `source"),
@@ -30420,7 +30420,7 @@ fn plan_observed_reports_every_computed_phase_in_order() {
         )
         .unwrap();
 
-    // Computation order, not render order: `Bootstrap` is planned from the
+    // Computation order: `Bootstrap` is planned from the
     // package work that survived dedup, so it cannot be reported before
     // `Packages` even though it renders ahead of it. `PostScripts` never fires
     // — its actions are computed in the same passes as `PreScripts` and
@@ -30554,7 +30554,7 @@ fn a_held_manager_below_its_floor_is_planned_as_a_step_of_its_own() {
                 vec![module],
                 ReconcileContext::Apply,
             )
-            .expect("a held floor rides in the plan rather than ending it");
+            .expect("a held floor rides in the plan and the plan completes");
         plan.phases
             .iter()
             .flat_map(Phase::actions)
@@ -30990,7 +30990,7 @@ fn each_refused_row_names_the_floor_its_own_module_declared() {
     assert_eq!(
         row_for("ripgrep").error.as_deref(),
         Some("cargo is below the minVersion 1.85 module 'rust' declared"),
-        "the module that wrote 1.85 hears 1.85, not the fold"
+        "the module that wrote 1.85 hears 1.85 itself"
     );
     assert_eq!(
         row_for("just").error.as_deref(),
@@ -31000,7 +31000,7 @@ fn each_refused_row_names_the_floor_its_own_module_declared() {
 }
 
 /// Both blocks of the apply fence `docs/modules.md` prints for a held floor are
-/// what a run renders, taken from the run here rather than typed there.
+/// what a run renders, taken from the run here.
 ///
 /// A page showing rows nobody produced is how a glyph, a column or a sentence
 /// drifts out from under a reader who is matching the page against their own
@@ -31096,7 +31096,7 @@ fn the_docs_apply_fence_for_a_held_floor_is_what_the_run_renders() {
     let body = crate::test_helpers::walked_file_body(&page);
     // The page indents its fenced blocks under a numbered list item, so the
     // comparison is per line against the same indent the neighbouring blocks
-    // carry rather than against the raw capture.
+    // carry.
     let indented = |block: &str| -> String {
         block
             .lines()
@@ -33023,10 +33023,8 @@ fn an_unreserved_target_is_not_copied_aside() {
 
 /// The header line of every block a generated env file holds, in file order.
 ///
-/// Taken from the generator's own [`EnvFileBlock`]s rather than recognised in
-/// the finished text: a declared value may hold a blank line or a row opening
-/// with `#`, and either one fakes a boundary for a reader parsing the bytes
-/// back.
+/// Taken from the generator's own [`EnvFileBlock`]s: a declared value may hold a blank line or a
+/// row opening with `#`, and either one fakes a boundary for a reader parsing the bytes back.
 ///
 /// [`EnvFileBlock`]: super::env_files::EnvFileBlock
 fn block_headers(blocks: &[super::env_files::EnvFileBlock]) -> Vec<&str> {
@@ -33043,7 +33041,7 @@ fn block_of<'a>(blocks: &'a [super::env_files::EnvFileBlock], line: &str) -> Opt
 }
 
 /// The blocks behind an env file THIS host's generator wrote, for a pin
-/// holding the file rather than the string a named dialect returned.
+/// holding the file itself.
 ///
 /// The file under assertion came out of the same generator over the same
 /// layers, so the blocks it returns are that file's own boundaries.
@@ -33124,7 +33122,7 @@ fn every_generated_env_line_sits_in_the_block_that_declared_it() {
     ];
     let fold = FoldedPath::derived(&path_dirs);
 
-    // Every DIALECT, not just one: each generator composes its own blocks, and
+    // Every DIALECT: each generator composes its own blocks, and
     // dropping any one of those calls has to fail here.
     for (dialect, content) in [
         (
@@ -33405,11 +33403,10 @@ fn every_surviving_path_declaration_reaches_the_one_generated_line() {
     }
 }
 
-/// A file the planner wrote must read back as current rather than as
-/// permanent drift. Every owner kind is on the file at once — profile layer,
-/// module and the bootstrapped PATH line's manager — because the planner and
-/// the verifier share ONE merge, and a line either side rendered differently
-/// would be drift nothing can fix.
+/// A file the planner wrote must read back as current. Every owner kind is on the file at once —
+/// profile layer, module and the bootstrapped PATH line's manager — because the planner and the
+/// verifier share ONE merge, and a line either side rendered differently would be drift nothing can
+/// fix.
 #[test]
 #[serial_test::serial]
 fn every_line_the_planner_wrote_verifies_as_current() {

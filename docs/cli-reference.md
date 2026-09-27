@@ -206,7 +206,7 @@ cfgd apply --plan plan.json             # run the plan `cfgd plan -o json` recor
 | `--context <ctx>` | `apply` (default) or `reconcile` — selects which hooks run |
 | `--shell <auto\|sh\|bash\|zsh\|pwsh\|cmd>` | Force every *inline* lifecycle script under this interpreter, overriding each entry's own `shell:`. File and shebang scripts are unaffected. For debugging a script that behaves differently under another shell |
 | `--on-conflict <ask\|backup\|overwrite\|skip\|fail>` | What to do with a managed target that already holds a file cfgd never wrote (default `ask`) |
-| `--plan <file>` | Run the plan `cfgd plan -o json` recorded, instead of planning again (see [Applying a saved plan](#applying-a-saved-plan)). Every flag that would narrow or re-aim the run is refused with it: `--from`, `--phase`, `--skip`, `--only`, `--module`, `--with-profile`, `--skip-scripts`, `--context` |
+| `--plan <file>` | Run the plan `cfgd plan -o json` recorded, with no second planning pass (see [Applying a saved plan](#applying-a-saved-plan)). Every flag that would narrow or re-aim the run is refused with it: `--from`, `--phase`, `--skip`, `--only`, `--module`, `--with-profile`, `--skip-scripts`, `--context` |
 
 #### What the closing rollup accounts for
 
@@ -334,7 +334,7 @@ Phase: Files
 ```
 
 Three facts decide whether the file still describes this machine, and all three are
-refusals (exit 1) rather than warnings. The state store the replay opened has to be
+refusals (exit 1). The state store the replay opened has to be
 the one the plan was derived against. A plan taken under one `--state-dir` and
 replayed under another names a different store:
 
@@ -393,7 +393,7 @@ $ cfgd apply --config /etc/cfgd/other.yaml --plan plan.json
 ```
 
 There is no `--force` over any of these refusals. A plan the machine has moved past is
-replaced by a new one, not overridden: the file is the approval, and forcing it would
+replaced by a new one: the file is the approval, and forcing it would
 approve actions nobody looked at.
 
 Per-action safety is unchanged. The replay runs the same unmanaged-file sweep a fresh
@@ -415,7 +415,7 @@ host: ...`) with the same next step: run `cfgd plan -o json` again. A package
 installed by hand between the plan and the replay is the usual cause, since it
 moves the manager the resolver picks while every recorded stamp still matches.
 `--dry-run`, `--yes` and `--on-conflict` stay legal, since they say how the run
-behaves rather than what it does.
+behaves; what it does is the file's.
 
 ### `cfgd plan`
 
@@ -598,7 +598,7 @@ sentence: `state` is `present` (an already-installed manager's index refresh),
 `prerequisite` (a tool a provision's installer shells out to; `manager` names
 the tool, `via` names the installer), `refused` (a manager that can't be
 provisioned, `reason` naming why: a refusal is still something the run
-decided, so `-o json` carries it rather than dropping it silently), or `held`
+decided, so `-o json` carries it), or `held`
 (a manager this host already has, below the `minVersion` a module declared for
 it; `floor` carries that floor and `reason` names the modules that declared it).
 A `held` action installs nothing: it re-reads the manager's own binary when the
@@ -774,7 +774,7 @@ a run judges ownership against is always the store it opened.
 An unfiltered run carries one further key, `savedPlan`, holding the typed action
 graph, the files the derivation read with their stamps, the id of the last
 recorded apply, and the identity of the state store it was derived against; every
-structured format carries it, not `-o json` alone. A scoped
+structured format carries it, `-o json` among them. A scoped
 run (`--phase`, `--only`, `--skip`, `--skip-scripts`, `--module`) omits it, and so
 does a run holding a withheld source decision. See
 [The saved plan](reconciliation.md#the-saved-plan-savedplan).
@@ -1254,7 +1254,7 @@ entries inside it do not read as one kind. The whole-file row is omitted wheneve
 the item rows below it already name which entry the file is missing, and the
 closing tally counts only the rows the report showed. A drifted env var's
 `want` / `have` is recomputed from the declaration, so it names the winning
-block's value rather than the first line in the file that mentions the name (the
+block's value, which need not be the first line in the file that mentions the name (the
 file holds one block per layer, so an outranked layer's line for the same name
 is above it).
 
@@ -2842,8 +2842,8 @@ gateway through the compliance summary a check-in carries when
 checks that did not pass, each with the name `cfgd compliance -o json` carries (for a file, its
 absolute path) and the detail [`cfgd compliance`](#cfgd-compliance) shows (violations first, then
 warnings), a source's security-constraint violations included. They are written to the machine's `MachineConfig.status.compliance`
-and in the gateway's device listing, never as a DriftAlert. A device the
-fleet dashboard shows as healthy is a device whose system settings matched, not a device proven
+and in the gateway's device listing; no DriftAlert carries them. A device the
+fleet dashboard shows as healthy is a device whose system settings matched. It is not proven
 in sync.
 
 | Flag | Description |
@@ -2854,7 +2854,7 @@ in sync.
 
 The payload also carries what only this machine can answer: `packageVersions`, the installed
 version of each package the resolved profile declares (keyed `<manager>/<package>`, from the
-managers available here, never a full listing; a package a manifest such as a `Cargo.toml` or a
+managers available here, with no full listing; a package a manifest such as a `Cargo.toml` or a
 Brewfile names counts as declared), and `backupScheduleOwners`, each declared backup
 unit's [`scheduleOwner`](backups.md#scheduleowner). Both reach the machine's `MachineConfig.status`
 in the cluster, each applied whole under its own field manager: a key this machine stopped
