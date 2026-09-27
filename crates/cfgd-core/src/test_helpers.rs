@@ -1700,8 +1700,8 @@ pub fn declaration_end<S: AsRef<str>>(code: &[S], start: usize) -> usize {
     for (n, c) in code.iter().enumerate().skip(start) {
         let c = c.as_ref();
         depth += c.matches('{').count() as i32 - c.matches('}').count() as i32;
-        // Asked of the line, not the depth: a body opened and closed on one
-        // line (`fn f() {}`) never leaves depth zero.
+        // A body opened and closed on one line (`fn f() {}`) never leaves
+        // depth zero, so the opening is read off the line's own `{`.
         opened |= c.contains('{');
         end = n;
         if opened && depth <= 0 {
