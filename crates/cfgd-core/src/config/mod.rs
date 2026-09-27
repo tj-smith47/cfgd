@@ -14,6 +14,7 @@ mod origin;
 mod output;
 mod parse;
 mod platform;
+mod preferences;
 mod profile_spec;
 mod resolve;
 mod root;
@@ -50,6 +51,7 @@ pub use parse::{
     resolve_config_path, scan_profile_manifests, scan_profiles, scan_profiles_tolerant,
 };
 pub use platform::{PlatformInfo, detect_platform, match_platform_profile, source_profile_names};
+pub use preferences::{PreferencesSpec, resolved_env, validate_preferences};
 pub use profile_spec::{
     AptSpec, BrewSpec, CargoSpec, CustomManagerSpec, EncryptionConstraint, EnvScope, FilesSpec,
     FlatpakSpec, ManagedFileSpec, MergeSpec, NpmSpec, PackagesSpec, ProfileDocument,
