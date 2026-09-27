@@ -1929,7 +1929,7 @@ const SERIAL_FLOORS: &[(&str, usize)] = &[
     ("crates/cfgd/src/cli/paths.rs", 11),
     ("crates/cfgd/src/cli/plan_ops/tests.rs", 3),
     ("crates/cfgd/src/cli/plugin/tests.rs", 7),
-    ("crates/cfgd/src/cli/profile/tests.rs", 3),
+    ("crates/cfgd/src/cli/profile/tests.rs", 4),
     ("crates/cfgd/src/cli/registry.rs", 1),
     ("crates/cfgd/src/cli/source/remove.rs", 1),
     ("crates/cfgd/src/cli/status.rs", 5),

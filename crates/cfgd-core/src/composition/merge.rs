@@ -20,8 +20,7 @@ pub(super) fn merge_with_policy(
     let mut merged = MergedProfile::default();
     // Resolved once after the loop, as `config::merge_layers` does, so a
     // subscribed machine exports the same preference a local one would.
-    let mut preferences = crate::config::PreferencesSpec::default();
-    let mut preferences_owner = String::new();
+    let mut preferences = crate::config::ChainPreferences::new();
     // Track file ownership for conflict detection
     let mut file_owners: HashMap<std::path::PathBuf, FileOwner> = HashMap::new();
 
@@ -48,9 +47,7 @@ pub(super) fn merge_with_policy(
         } = &layer.spec;
 
         let layer_owner = layer.owner_token();
-        if preferences.absorb(layer_preferences) {
-            preferences_owner = layer_owner.clone();
-        }
+        preferences.absorb(layer_preferences, layer);
         // Platform-gated entries are filtered BEFORE the fold, for the same
         // reason `config::merge_layers` filters before its own: an entry that
         // does not apply here must not displace one that does.
@@ -225,6 +222,6 @@ pub(super) fn merge_with_policy(
         union_extend(&mut merged.modules, modules);
     }
 
-    crate::config::fold_preferences(&mut merged, &preferences, &preferences_owner);
+    crate::config::fold_preferences(&mut merged, &preferences);
     Ok(merged)
 }

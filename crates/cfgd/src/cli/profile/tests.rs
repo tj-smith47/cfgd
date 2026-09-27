@@ -2185,8 +2185,17 @@ fn profile_show_displays_packages_section() {
     );
 }
 
+#[cfg(unix)]
 #[test]
+#[serial_test::serial]
 fn profile_show_lists_the_declared_ranking_and_the_resolved_view_lists_the_winner() {
+    // No display signal, so both X/Wayland candidates are refused whatever
+    // this host runs, and `osc52` (no tool, every session) is the winner.
+    let _guard = cfgd_core::test_helpers::path_env_mutation_guard();
+    let _path = cfgd_core::test_helpers::ProbePath::containing(&["wl-copy", "xclip"]);
+    let _w = cfgd_core::test_helpers::EnvVarGuard::unset("WAYLAND_DISPLAY");
+    let _d = cfgd_core::test_helpers::EnvVarGuard::unset("DISPLAY");
+    let _x = cfgd_core::test_helpers::EnvVarGuard::unset("XDG_SESSION_TYPE");
     let dir = setup_config_dir();
     std::fs::write(
         dir.path().join("profiles").join("prefs.yaml"),
@@ -2220,7 +2229,6 @@ fn profile_show_lists_the_declared_ranking_and_the_resolved_view_lists_the_winne
         "the ranking renders in the author's order: {declared}"
     );
 
-    // `osc52` needs no tool and reaches every session, so every host has a winner.
     let resolved = render(true);
     assert!(
         resolved.contains("CFGD_CLIPBOARD"),
@@ -2229,6 +2237,34 @@ fn profile_show_lists_the_declared_ranking_and_the_resolved_view_lists_the_winne
     assert!(
         !resolved.contains("Preferences"),
         "the resolved view restates no declared ranking: {resolved}"
+    );
+
+    // The text view masks the value; the JSON payload carries it.
+    let json_cli = test_cli_json(dir.path());
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
+    cmd_profile_show(
+        &json_cli,
+        &printer,
+        Some("prefs"),
+        true,
+        crate::cli::InventoryDetail::default(),
+    )
+    .unwrap();
+    drop(printer);
+    let output = cfgd_core::test_helpers::captured_text(&buf);
+    let start = output.find('{').expect("a JSON object in the output");
+    let json: serde_json::Value = serde_json::from_str(output[start..].trim()).unwrap();
+    let env = json["resolved"]["merged"]["env"]
+        .as_array()
+        .unwrap_or_else(|| panic!("resolved.merged.env is a list: {json}"));
+    let winner = env
+        .iter()
+        .find(|e| e["name"] == "CFGD_CLIPBOARD")
+        .unwrap_or_else(|| panic!("CFGD_CLIPBOARD in the merged env: {env:?}"));
+    assert_eq!(
+        winner["value"], "osc52",
+        "a display-less session exports the only reachable candidate"
     );
 }
 

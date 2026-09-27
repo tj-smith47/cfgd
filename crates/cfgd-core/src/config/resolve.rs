@@ -427,10 +427,7 @@ fn resolve_inheritance_order(
 /// - backups: append (deduplicated by name, later overrides)
 pub fn merge_layers(layers: &[ProfileLayer]) -> MergedProfile {
     let mut merged = MergedProfile::default();
-    // A ranking is one ordered statement, so the last layer to make it owns
-    // the whole list, the way `env_scope` resolves.
-    let mut preferences = super::PreferencesSpec::default();
-    let mut preferences_owner = String::new();
+    let mut preferences = super::ChainPreferences::new();
 
     for layer in layers {
         // Destructured with no `..`: a field added to `ProfileSpec` must fail
@@ -460,9 +457,7 @@ pub fn merge_layers(layers: &[ProfileLayer]) -> MergedProfile {
         union_extend(&mut merged.modules, modules);
 
         let layer_owner = layer.owner_token();
-        if preferences.absorb(layer_preferences) {
-            preferences_owner = layer_owner.clone();
-        }
+        preferences.absorb(layer_preferences, layer);
         // Platform-gated entries are filtered BEFORE the fold: an entry this
         // host is not part of the desired state of must never reach a
         // last-writer-wins merge, where it would displace the value that does
@@ -574,13 +569,13 @@ pub fn merge_layers(layers: &[ProfileLayer]) -> MergedProfile {
         crate::merge_backups(&mut merged.backups, backups);
     }
 
-    fold_preferences(&mut merged, &preferences, &preferences_owner);
+    fold_preferences(&mut merged, &preferences);
     merged
 }
 
-/// Resolve the chain's final `preferences` against the running session and
-/// fold the winners into `merged.env`, each claimed by `owner`, the last layer
-/// that ranked a domain.
+/// Resolve the chain's `preferences` against the running session and fold
+/// each winner into `merged.env`, claimed by the layer that last ranked its
+/// domain.
 ///
 /// Runs once, after every layer is merged: the winner depends on the whole
 /// chain's ranking, and a per-layer resolution would probe `PATH` once per
@@ -589,14 +584,18 @@ pub fn merge_layers(layers: &[ProfileLayer]) -> MergedProfile {
 /// the fold displaces no var a layer declared.
 pub(crate) fn fold_preferences(
     merged: &mut MergedProfile,
-    preferences: &super::PreferencesSpec,
-    owner: &str,
+    preferences: &super::ChainPreferences<'_, &ProfileLayer>,
 ) {
-    let pref_env = super::resolved_env(preferences, &crate::platform::Session::detect());
-    crate::fold_env_layer(&mut merged.env, &pref_env, crate::PATH_LIST_SEPARATOR);
-    merged
-        .entry_owners
-        .claim_env_names(owner, pref_env.iter().map(|e| e.name.as_str()));
+    for (var, layer) in preferences.resolve(&crate::platform::Session::detect()) {
+        crate::fold_env_layer(
+            &mut merged.env,
+            std::slice::from_ref(&var),
+            crate::PATH_LIST_SEPARATOR,
+        );
+        merged
+            .entry_owners
+            .claim_env_names(&layer.owner_token(), [var.name.as_str()]);
+    }
 }
 
 /// Every built-in package-manager name [`desired_packages_for_spec`] resolves.

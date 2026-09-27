@@ -182,6 +182,37 @@ fn compose_exports_the_preference_a_source_ranked_under_that_source_layer() {
 }
 
 #[test]
+fn compose_gives_a_domain_both_layers_rank_to_the_later_local_layer() {
+    let mut local = make_local_profile();
+    local.layers[0].spec.preferences.clipboard = vec!["osc52".into()];
+    let owner = local.layers[0].owner_token();
+    let mut source = make_source_input("acme", 500);
+    source.layers = vec![source_layer(ProfileSpec {
+        preferences: PreferencesSpec {
+            clipboard: vec!["osc52".into()],
+        },
+        ..Default::default()
+    })];
+    let result = compose(&local, &[source], ConstraintMode::Enforce).unwrap();
+    let merged = &result.resolved.merged;
+    assert_eq!(
+        merged
+            .env
+            .iter()
+            .filter(|e| e.name == "CFGD_CLIPBOARD")
+            .count(),
+        1,
+        "exactly one preference var: {:?}",
+        merged.env
+    );
+    assert_eq!(
+        merged.entry_owners.env.get("CFGD_CLIPBOARD"),
+        Some(&owner),
+        "the higher-priority local layer is the last to rank the domain and owns it"
+    );
+}
+
+#[test]
 fn compose_refuses_an_unknown_candidate_a_source_delivers() {
     let local = make_local_profile();
     let mut source = make_source_input("acme", 500);

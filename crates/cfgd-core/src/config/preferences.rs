@@ -23,23 +23,6 @@ pub struct PreferencesSpec {
     pub clipboard: Vec<String>,
 }
 
-impl PreferencesSpec {
-    /// Fold `overlay` over this one, returning whether it claimed any domain.
-    ///
-    /// The LAST layer to declare a domain wins that domain's whole ranking: a
-    /// ranking is one ordered statement, and a union of two rankings is an
-    /// order no layer wrote. `envScope` resolves the same way.
-    pub fn absorb(&mut self, overlay: &PreferencesSpec) -> bool {
-        let PreferencesSpec { clipboard } = overlay;
-        let mut claimed = false;
-        if !clipboard.is_empty() {
-            self.clipboard = clipboard.clone();
-            claimed = true;
-        }
-        claimed
-    }
-}
-
 /// One candidate: the spelling an author writes, the binary whose presence on
 /// `PATH` means it is installed, and the sessions it can actually reach.
 struct Candidate {
@@ -90,9 +73,12 @@ const CLIPBOARD: &[Candidate] = &[
 /// domain is undeclared) and the candidate table the ranking is read against.
 type Domain<'a> = (&'static str, &'a [String], &'static [Candidate]);
 
+/// How many domains `PreferencesSpec` offers; `domains` returns one entry each.
+const DOMAIN_COUNT: usize = 1;
+
 /// Every domain `PreferencesSpec` offers, paired with `prefs`'s ranking for it,
-/// the one table both resolution and validation read.
-fn domains(prefs: &PreferencesSpec) -> [Domain<'_>; 1] {
+/// the one table resolution, validation and the chain fold all read.
+fn domains(prefs: &PreferencesSpec) -> [Domain<'_>; DOMAIN_COUNT] {
     // No `..`: a domain added to `PreferencesSpec` fails to compile here until
     // someone says what it resolves to.
     let PreferencesSpec { clipboard } = prefs;
@@ -114,16 +100,74 @@ fn env_var_name(domain: &str) -> String {
 /// yields none contributes nothing, so a machine that can reach no candidate
 /// exports no var for it.
 pub fn resolved_env(prefs: &PreferencesSpec, session: &Session) -> Vec<EnvVar> {
-    domains(prefs)
+    let mut chain = ChainPreferences::new();
+    chain.absorb(prefs, ());
+    chain
+        .resolve(session)
         .into_iter()
-        .filter_map(|(domain, ranked, table)| {
-            first_admitted(ranked, table, session).map(|pick| EnvVar {
-                name: env_var_name(domain),
-                value: pick.to_string(),
-                platforms: Vec::new(),
-            })
-        })
+        .map(|(var, ())| var)
         .collect()
+}
+
+/// A layer chain's preferences: per domain, the ranking of the LAST layer
+/// that declared it and that layer's owner `O`.
+///
+/// A ranking is one ordered statement, and a union of two rankings is an
+/// order no layer wrote, so the last declaring layer wins the whole list,
+/// the way `envScope` resolves. Ownership is per domain: a layer ranking only
+/// one domain leaves every other domain with the layer that ranked it.
+/// Rankings stay borrowed from their layers until `resolve`, which copies only
+/// the winner.
+pub(crate) struct ChainPreferences<'a, O> {
+    slots: [Option<(&'a [String], O)>; DOMAIN_COUNT],
+}
+
+impl<'a, O: Copy> ChainPreferences<'a, O> {
+    /// A chain no layer has declared a domain in.
+    pub(crate) fn new() -> Self {
+        Self {
+            slots: [None; DOMAIN_COUNT],
+        }
+    }
+
+    /// Fold one layer's declared rankings, in chain order, under `owner`.
+    pub(crate) fn absorb(&mut self, layer: &'a PreferencesSpec, owner: O) {
+        claim_declared(&mut self.slots, domains(layer).map(|(_, r, _)| r), owner);
+    }
+
+    /// Each domain's winner for `session` as its env var, beside the owner of
+    /// the ranking that produced it. A domain with no winner is absent.
+    pub(crate) fn resolve(&self, session: &Session) -> Vec<(EnvVar, O)> {
+        let undeclared = PreferencesSpec::default();
+        domains(&undeclared)
+            .into_iter()
+            .zip(&self.slots)
+            .filter_map(|((domain, _, table), slot)| {
+                let (ranked, owner) = (*slot)?;
+                let pick = first_admitted(ranked, table, session)?;
+                let var = EnvVar {
+                    name: env_var_name(domain),
+                    value: pick.to_string(),
+                    platforms: Vec::new(),
+                };
+                Some((var, owner))
+            })
+            .collect()
+    }
+}
+
+/// Point each slot a layer's non-empty ranking declares at that ranking and
+/// `owner`; a slot the layer leaves empty keeps what an earlier layer set.
+fn claim_declared<'a, O: Copy, const N: usize>(
+    slots: &mut [Option<(&'a [String], O)>; N],
+    rankings: [&'a [String]; N],
+    owner: O,
+) {
+    for (slot, ranked) in slots.iter_mut().zip(rankings) {
+        if !ranked.is_empty() {
+            *slot = Some((ranked, owner));
+        }
+    }
 }
 
 /// The first candidate in the author's order that the running session admits
@@ -276,11 +320,47 @@ mod tests {
 
     #[test]
     fn a_later_layer_replaces_a_domains_whole_ranking() {
-        let mut base = ranked(&["xclip", "osc52"]);
-        assert!(base.absorb(&ranked(&["osc52"])));
-        assert_eq!(base.clipboard, vec!["osc52".to_string()]);
-        assert!(!base.absorb(&PreferencesSpec::default()));
-        assert_eq!(base.clipboard, vec!["osc52".to_string()]);
+        let (base, child, silent) = (
+            ranked(&["xclip", "osc52"]),
+            ranked(&["osc52"]),
+            PreferencesSpec::default(),
+        );
+        let mut chain = ChainPreferences::new();
+        chain.absorb(&base, "base");
+        chain.absorb(&child, "child");
+        chain.absorb(&silent, "silent");
+        let picked = chain.resolve(&session(None, false, false));
+        assert_eq!(picked.len(), 1);
+        assert_eq!(picked[0].0.value, "osc52");
+        assert_eq!(
+            picked[0].1, "child",
+            "a layer declaring nothing leaves the owner alone"
+        );
+    }
+
+    /// Two domains run through the same fold the chain uses: a layer ranking
+    /// only the second domain takes that domain alone, and the first stays
+    /// with the layer that ranked it.
+    #[test]
+    fn a_layer_ranking_one_domain_takes_ownership_of_that_domain_alone() {
+        let (a1, a2, b2) = (
+            vec!["xclip".to_string()],
+            vec!["firefox".to_string()],
+            vec!["chromium".to_string()],
+        );
+        let mut slots: [Option<(&[String], &str)>; 2] = [None, None];
+        claim_declared(&mut slots, [a1.as_slice(), a2.as_slice()], "parent");
+        claim_declared(&mut slots, [&[], b2.as_slice()], "child");
+        assert_eq!(
+            slots[0],
+            Some((a1.as_slice(), "parent")),
+            "the domain the child left unranked stays with the parent"
+        );
+        assert_eq!(
+            slots[1],
+            Some((b2.as_slice(), "child")),
+            "the child owns what it ranked"
+        );
     }
 
     /// Every domain the schema offers must carry a candidate table and a
