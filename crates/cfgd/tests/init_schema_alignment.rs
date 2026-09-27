@@ -168,3 +168,58 @@ fn every_spelling_of_yes_the_parser_accepts_takes_the_load_time_prompt() {
         );
     }
 }
+
+/// What `config migrate` prints of a document declaring every field.
+const DECLARES_EVERY_FIELD: &str = "Config declares every field this build reads";
+
+#[test]
+fn a_config_set_that_creates_a_section_leaves_nothing_for_the_next_migrate_to_name() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    source_repo(&src);
+    let dest = tmp.path().join("dest");
+    cfgd_bin()
+        .unwrap()
+        .args([
+            "init",
+            &dest.display().to_string(),
+            "--from",
+            &src.display().to_string(),
+            "--yes",
+        ])
+        .env("CFGD_ALLOW_LOCAL_SOURCES", "1")
+        .assert()
+        .success();
+    let config = dest.join("cfgd.yaml");
+    let config_str = config.display().to_string();
+    assert!(
+        !std::fs::read_to_string(&config)
+            .unwrap()
+            .contains("daemon:"),
+        "the document starts with no daemon section for the write to create"
+    );
+
+    cfgd_bin()
+        .unwrap()
+        .args([
+            "--config",
+            &config_str,
+            "config",
+            "set",
+            "daemon.reconcile.autoApply",
+            "true",
+        ])
+        .assert()
+        .success();
+
+    let migrate = cfgd_bin()
+        .unwrap()
+        .args(["--config", &config_str, "config", "migrate"])
+        .assert()
+        .success();
+    let (out, err) = (stdout_of(&migrate), stderr_of(&migrate));
+    assert!(
+        format!("{out}{err}").contains(DECLARES_EVERY_FIELD),
+        "the section the write created declares its siblings: stdout={out} stderr={err}"
+    );
+}

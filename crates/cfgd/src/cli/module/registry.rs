@@ -878,7 +878,7 @@ pub fn cmd_module_registry_add(
     // `already_present` short-circuits the "added" success message after the
     // helper's write (still a harmless idempotent rewrite).
     let mut already_present = false;
-    super::mutate_config_yaml(&cli.config, true, |doc| {
+    super::mutate_config_yaml(&cli.config, |doc| {
         use crate::cli::config_cmd;
         let spec = config_cmd::spec_mapping_mut(doc, &cli.config)?;
         let modules = spec
@@ -962,7 +962,7 @@ pub fn cmd_module_registry_remove(
     }
 
     let mut outcome = RegistryRemoveOutcome::NoRegistries;
-    super::mutate_config_yaml(&cli.config, true, |doc| {
+    super::mutate_config_yaml(&cli.config, |doc| {
         let registries = doc
             .get_mut("spec")
             .and_then(|s| s.get_mut("modules"))
@@ -1113,7 +1113,7 @@ pub fn cmd_module_registry_rename(
     }
 
     // Update registry name in cfgd.yaml via the shared mutate-write helper.
-    super::mutate_config_yaml(&cli.config, true, |doc| {
+    super::mutate_config_yaml(&cli.config, |doc| {
         if let Some(registries) = doc
             .get_mut("spec")
             .and_then(|s| s.get_mut("modules"))

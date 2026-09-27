@@ -52342,10 +52342,11 @@ fn every_write_into_the_config_document_takes_the_section_rule() {
     /// The calls into the rule each writer file makes today.
     const FLOOR_PER_FILE: &[(&str, usize)] = &[
         ("src/cli/config_cmd.rs", 9),
-        ("src/cli/config_schema.rs", 1),
         ("src/cli/helpers.rs", 2),
+        ("src/cli/init/cmd_init.rs", 4),
         ("src/cli/module/registry.rs", 3),
-        ("src/cli/source/helpers.rs", 4),
+        ("src/cli/profile/switch.rs", 1),
+        ("src/cli/source/helpers.rs", 5),
         ("src/cli/source/override_cmd.rs", 4),
         ("src/cli/source/priority.rs", 1),
         ("src/cli/source/replace.rs", 1),
@@ -52442,6 +52443,196 @@ fn every_write_into_the_config_document_takes_the_section_rule() {
         unanswered.is_empty(),
         "a `{SECTION_WRITE_HATCH}` mark answers for no reach on its line or below it:\n{}",
         unanswered.join("\n")
+    );
+}
+
+/// The mark excusing a write of `cfgd.yaml` from [`crate::cli::mutate_config_yaml`],
+/// read off the line or the comment block directly above it.
+const CONFIG_WRITE_HATCH: &str = "config-write-ok:";
+
+/// The writers that replace a file wholesale, which a write of `cfgd.yaml`
+/// must not reach on its own.
+const WHOLE_FILE_WRITERS: &[&str] = &[
+    "rewrite_user_yaml(",
+    "rewrite_user_yaml_with_original(",
+    "atomic_write_str(",
+];
+
+/// Whether `text` names the config document: its path parameter, the
+/// filename constant or literal, or the `--config` path.
+fn names_the_config_document(text: &str) -> bool {
+    [
+        "config_path",
+        "CONFIG_FILENAME",
+        "\"cfgd.yaml\"",
+        "cli.config",
+    ]
+    .iter()
+    .any(|name| text.contains(name))
+}
+
+/// Every call to a [`WHOLE_FILE_WRITERS`] member in `src` (comments already
+/// blanked), as `(line index, enclosing fn, whether its path argument names
+/// the config document)`. A path argument that is a bare binding is resolved
+/// to the `let` that bound it inside the same function, so
+/// `let p = dir.join("cfgd.yaml"); atomic_write_str(&p, ..)` is seen.
+fn whole_file_writes(src: &str) -> Vec<(usize, String, bool)> {
+    let lines: Vec<&str> = src.lines().collect();
+    let mut out = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        for writer in WHOLE_FILE_WRITERS {
+            for (at, _) in line.match_indices(writer) {
+                let before = &line[..at];
+                if before.trim_end().ends_with("fn")
+                    || before
+                        .chars()
+                        .next_back()
+                        .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+                {
+                    continue;
+                }
+                let rest: String = std::iter::once(&line[at + writer.len()..])
+                    .chain(lines[i + 1..].iter().copied())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let mut depth = 0i32;
+                let arg: String = rest
+                    .chars()
+                    .take_while(|&c| {
+                        match c {
+                            '(' | '[' | '{' => depth += 1,
+                            ')' | ']' | '}' if depth == 0 => return false,
+                            ')' | ']' | '}' => depth -= 1,
+                            ',' if depth == 0 => return false,
+                            _ => {}
+                        }
+                        true
+                    })
+                    .collect();
+                let fn_start = (0..=i)
+                    .rev()
+                    .find(|&k| cfgd_core::test_helpers::declared_fn_name(lines[k]).is_some())
+                    .unwrap_or(0);
+                let within =
+                    cfgd_core::test_helpers::declared_fn_name(lines[fn_start]).unwrap_or_default();
+                let binding = arg
+                    .trim()
+                    .trim_start_matches('&')
+                    .trim_start_matches("mut ");
+                let bound = (!binding.is_empty()
+                    && binding
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '_'))
+                .then(|| {
+                    (fn_start..i).rev().find_map(|k| {
+                        let after = lines[k].split_once("let ")?.1.trim_start_matches("mut ");
+                        let named = after.strip_prefix(binding)?;
+                        named
+                            .trim_start()
+                            .starts_with(['=', ':'])
+                            .then(|| lines[k..=i].join("\n"))
+                            .map(|from| from.split(';').next().unwrap_or("").to_string())
+                    })
+                })
+                .flatten();
+                let derived = names_the_config_document(&arg)
+                    || bound.as_deref().is_some_and(names_the_config_document);
+                out.push((i, within, derived));
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn every_whole_file_write_shape_is_seen_by_the_config_writer_walk() {
+    let derived = |src: &str| -> Vec<(usize, bool)> {
+        whole_file_writes(src)
+            .into_iter()
+            .map(|(i, _, d)| (i + 1, d))
+            .collect()
+    };
+    let direct = "fn f(config_path: &Path) {\n    rewrite_user_yaml(&config_path, &cfg)?;\n}";
+    assert_eq!(derived(direct), [(2, true)]);
+    let bound = "fn f(dir: &Path) {\n    let p = dir.join(\"cfgd.yaml\");\n    cfgd_core::atomic_write_str(&p, &body)?;\n}";
+    assert_eq!(derived(bound), [(3, true)]);
+    let wrapped = "fn f(cli: &Cli) {\n    crate::cli::helpers::rewrite_user_yaml_with_original(\n        &cli.config,\n        &original,\n        &cfg,\n    )?;\n}";
+    assert_eq!(derived(wrapped), [(2, true)]);
+    let profile = "fn f(dir: &Path) {\n    let profile_path = dir.join(\"profiles\").join(name);\n    rewrite_user_yaml(&profile_path, &doc)?;\n}";
+    assert_eq!(derived(profile), [(3, false)]);
+    let definition = "pub fn rewrite_user_yaml(path: &Path) {}\nfn atomic_write_str_twice() {}";
+    assert_eq!(derived(definition), []);
+}
+
+/// Every write of `cfgd.yaml` from the CLI goes through
+/// [`crate::cli::mutate_config_yaml`], which parses and aligns the document
+/// before it replaces the file. A writer that serializes a typed config
+/// straight to the path skips the alignment, and the section it touched is
+/// left partial: the next command's migration gate then asks about siblings
+/// the reader never wrote. The population is every call in the CLI's
+/// production sources to a writer that replaces a file wholesale whose path
+/// argument names the config document; the call inside `mutate_config_yaml`
+/// itself is the one write it routes to. The hatch
+/// `// config-write-ok: <why>` exists for a writer that cannot route, and is
+/// held at a ceiling of none.
+#[test]
+fn no_config_document_writer_bypasses_mutate_config_yaml() {
+    /// The whole-file writes the CLI's production sources make today; a walk
+    /// seeing fewer has stopped finding them.
+    const FLOOR_CALLS: usize = 22;
+
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut calls = 0;
+    let mut routed = 0;
+    let mut offenders = Vec::new();
+    let mut hatched = Vec::new();
+    for (path, body) in cli_production_bodies() {
+        let file = cfgd_core::to_posix_string(path.strip_prefix(root).unwrap_or(&path));
+        let code = cfgd_core::test_helpers::blank_comments(&body);
+        let raw_lines: Vec<&str> = body.lines().collect();
+        for (i, within, derived) in whole_file_writes(&code) {
+            calls += 1;
+            if !derived {
+                continue;
+            }
+            if within == "mutate_config_yaml" {
+                routed += 1;
+                continue;
+            }
+            let mut k = i;
+            let mut mark = carries_hatch(raw_lines[k], CONFIG_WRITE_HATCH);
+            while !mark && k > 0 && cfgd_core::test_helpers::is_plain_line_comment(raw_lines[k - 1])
+            {
+                k -= 1;
+                mark = carries_hatch(raw_lines[k], CONFIG_WRITE_HATCH);
+            }
+            let at = format!("{file}:{}: {}", i + 1, raw_lines[i].trim());
+            if mark {
+                hatched.push(at);
+            } else {
+                offenders.push(at);
+            }
+        }
+    }
+    assert!(
+        calls >= FLOOR_CALLS,
+        "{calls} whole-file writes seen, fewer than the {FLOOR_CALLS} today"
+    );
+    assert_eq!(
+        routed, 1,
+        "the one write `mutate_config_yaml` routes every config write to is seen"
+    );
+    assert!(
+        hatched.is_empty(),
+        "`// {CONFIG_WRITE_HATCH}` is held at a ceiling of none, and excuses:\n{}",
+        hatched.join("\n")
+    );
+    assert!(
+        offenders.is_empty(),
+        "a write of cfgd.yaml bypasses `mutate_config_yaml`, so it neither validates nor \
+         aligns the document; route it through `mutate_config_yaml` with a closure editing \
+         the raw document:\n{}",
+        offenders.join("\n")
     );
 }
 

@@ -210,7 +210,7 @@ pub(crate) fn add_source_to_config(
         ));
     }
 
-    mutate_config_yaml(config_path, true, |raw| {
+    mutate_config_yaml(config_path, |raw| {
         use crate::cli::config_cmd;
         let sources = config_cmd::spec_mapping_mut(raw, config_path)?
             .entry(serde_yaml::Value::String("sources".into()))
@@ -227,14 +227,15 @@ pub(crate) fn add_source_to_config(
         let source_value = serde_yaml::to_value(source)?;
         seq.push(source_value);
         Ok(())
-    })
+    })?;
+    Ok(())
 }
 
 pub(crate) fn remove_source_from_config(config_path: &Path, name: &str) -> anyhow::Result<()> {
     if !config_path.exists() {
         return Ok(());
     }
-    mutate_config_yaml(config_path, true, |raw| {
+    mutate_config_yaml(config_path, |raw| {
         if let Some(spec) = raw.get_mut("spec")
             && let Some(sources) = spec.get_mut("sources")
             // section-write-ok: a remover; an absent list holds no entry to remove
@@ -248,7 +249,8 @@ pub(crate) fn remove_source_from_config(config_path: &Path, name: &str) -> anyho
             });
         }
         Ok(())
-    })
+    })?;
+    Ok(())
 }
 
 fn find_source_in_config<'a>(
@@ -268,45 +270,55 @@ fn find_source_in_config<'a>(
         })
 }
 
-/// Generalized read-parse-mutate-write loop for `cfgd.yaml`.
+/// The one read-parse-mutate-write loop for `cfgd.yaml`, returning the typed
+/// config the written document parses to.
 ///
 /// Loads the YAML at `config_path`, hands the mutable root `serde_yaml::Value`
-/// to `f`, then serializes and atomically writes the result. When `validate`
-/// is `true`, the serialized output is round-tripped through
-/// `config::parse_config` before write, so a closure that could produce a
-/// schema-invalid document cannot leave one on disk. Every caller that writes
-/// a VALUE — `config set`/`unset`, `source add`/`remove`, the registry verbs —
-/// passes `true`. The one `false` is [`with_source_config`], which edits a
-/// field inside an entry the document already carries and pays no typed-parse
-/// cost for it.
+/// to `f`, parses the result as a `Config`, aligns it, and atomically writes
+/// it with the file's leading comment block re-prepended. A closure that
+/// leaves a document the parser refuses writes nothing: the refusal is
+/// `parse_failed`, naming the parser's reason.
 ///
-/// Use this instead of open-coding the `read_to_string → from_str → mutate →
-/// to_string → atomic_write_str` pattern, which diverged in validation
-/// behavior (set/unset validated; add/remove did not) before this helper.
-pub(crate) fn mutate_config_yaml<F>(config_path: &Path, validate: bool, f: F) -> anyhow::Result<()>
+/// Aligning is what keeps the load-time migration gate asking one question.
+/// A present section declares every scalar this build reads under it, so a
+/// write that brings a section into existence (`config set daemon.reconcile.autoApply`
+/// on a document with no `daemon`) would otherwise leave it partial, and the
+/// next command would offer to add the siblings the reader never touched.
+/// Every scalar the parse carries that the document does not declare is
+/// written with the value the parse gave it, which is exactly what
+/// `cfgd config migrate --write` writes, so after any write the gate only
+/// names fields a newer build introduced. The alignment is silent: the verb's
+/// own confirmation stands for the write.
+///
+/// Use this for every write of `cfgd.yaml`; the open-coded `read_to_string →
+/// from_str → mutate → to_string → atomic_write_str` pattern is how writers
+/// once diverged on validation.
+pub(crate) fn mutate_config_yaml<F>(config_path: &Path, f: F) -> anyhow::Result<config::CfgdConfig>
 where
     F: FnOnce(&mut serde_yaml::Value) -> anyhow::Result<()>,
 {
     let contents = std::fs::read_to_string(config_path)?;
     let mut raw: serde_yaml::Value = serde_yaml::from_str(&contents)?;
     f(&mut raw)?;
-    let output = cfgd_core::config::with_leading_comments(&contents, &serde_yaml::to_string(&raw)?);
-    if validate {
-        config::parse_config(&output, config_path).map_err(|e| {
-            crate::cli::cli_error(
-                cfgd_core::to_posix_string(config_path),
-                "parse_failed",
-                format!("config would become invalid: {}", e),
-                serde_json::json!({
-                    "path": cfgd_core::to_posix_string(config_path),
-                    "reason": e.to_string(),
-                }),
-            )
-        })?;
+    let mut body = serde_yaml::to_string(&raw)?;
+    let cfg = config::parse_config(&body, config_path).map_err(|e| {
+        crate::cli::cli_error(
+            cfgd_core::to_posix_string(config_path),
+            "parse_failed",
+            format!("config would become invalid: {}", e),
+            serde_json::json!({
+                "path": cfgd_core::to_posix_string(config_path),
+                "reason": e.to_string(),
+            }),
+        )
+    })?;
+    if align_to_parse(&mut raw, &cfg)? {
+        body = serde_yaml::to_string(&raw)?;
     }
+    let output = cfgd_core::config::with_leading_comments(&contents, &body);
     // Pre-flight the config dir for real write access so a read-only dir surfaces
-    // the typed TargetNotWritable (naming the path) instead of a bare
-    // `Permission denied (os error 13)` from the atomic write below.
+    // the typed TargetNotWritable naming the path; the atomic write below would
+    // only report a bare `Permission denied (os error 13)`.
     if let Some(parent) = config_path.parent()
         && parent.exists()
         && matches!(
@@ -322,11 +334,42 @@ where
         .into());
     }
     cfgd_core::atomic_write_str(config_path, &output)?;
-    Ok(())
+    Ok(cfg)
+}
+
+/// Materialize into `raw` every scalar `cfg` carries that `raw` does not
+/// declare, with the value `cfg` carries. `cfg` is the parse of `raw`, so the
+/// two differ by exactly what the deserializer defaulted. Returns whether
+/// anything was written.
+///
+/// The keys are the ones `config_schema::pending_alignment` reports, read by
+/// the same [`crate::cli::helpers::undeclared_scalar_keys`] over the tree
+/// already in hand, so the gate's report and this write cannot disagree. The
+/// mutable walker creates the intermediate mappings a key under an absent
+/// section needs, the way `cfgd config set` relies on it.
+fn align_to_parse(raw: &mut serde_yaml::Value, cfg: &config::CfgdConfig) -> anyhow::Result<bool> {
+    let keys = crate::cli::helpers::undeclared_scalar_keys(cfg, raw);
+    if keys.is_empty() {
+        return Ok(false);
+    }
+    let materialized = serde_yaml::to_value(cfg)?;
+    for key in &keys {
+        // Every key was read off `materialized` in the first place, so a miss
+        // is a state this cannot reach; skipping it keeps a write the reader
+        // asked for from failing over a key nobody asked for.
+        let Ok(value) = crate::cli::config_cmd::walk_yaml_path(&materialized, key) else {
+            continue;
+        };
+        let (parent, leaf) = crate::cli::config_cmd::walk_yaml_path_mut(raw, key)?;
+        parent.insert(serde_yaml::Value::String(leaf), value.clone());
+    }
+    Ok(true)
 }
 
 /// Load config YAML, find a named source, apply a mutation, and write back.
-/// The closure receives the mutable source entry; the helper handles I/O.
+/// The closure receives the mutable source entry; the helper handles I/O,
+/// and the write is refused and aligned by [`mutate_config_yaml`] like every
+/// other write of the document.
 pub(super) fn with_source_config<F>(
     config_path: &Path,
     source_name: &str,
@@ -335,7 +378,7 @@ pub(super) fn with_source_config<F>(
 where
     F: FnOnce(&mut serde_yaml::Value) -> anyhow::Result<()>,
 {
-    mutate_config_yaml(config_path, false, |raw| {
+    mutate_config_yaml(config_path, |raw| {
         let source = find_source_in_config(raw, source_name).ok_or_else(|| {
             crate::cli::cli_error(
                 source_name,
@@ -345,7 +388,8 @@ where
             )
         })?;
         f(source)
-    })
+    })?;
+    Ok(())
 }
 
 // --- Conflict-preview helpers (cmd_source_add) ---
@@ -503,5 +547,28 @@ mod tests {
     fn parse_priority_input_accepts_typical_value() {
         let result = parse_priority_input("500");
         assert_eq!(result.unwrap(), 500);
+    }
+
+    // An edit inside a source entry is a write of the whole document, so a
+    // value the parser refuses there is refused the way `config set` refuses
+    // one, and the file keeps the bytes it had.
+    #[test]
+    fn a_source_entry_edit_the_parser_refuses_is_refused_and_writes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cfgd.yaml");
+        let doc = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  sources:\n    - name: acme\n      origin:\n        type: Git\n        url: https://example.com/acme.git\n";
+        std::fs::write(&path, doc).unwrap();
+
+        let err = with_source_config(&path, "acme", |entry| {
+            entry["subscription"] = serde_yaml::Value::String("not a mapping".into());
+            Ok(())
+        })
+        .expect_err("the parser refuses a scalar subscription");
+
+        let meta = err
+            .downcast_ref::<crate::cli::CliErrorMeta>()
+            .expect("the refusal carries its kind");
+        assert_eq!(meta.error_kind, "parse_failed");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), doc);
     }
 }

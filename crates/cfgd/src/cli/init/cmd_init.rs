@@ -350,11 +350,14 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                 if let Err(e) = cfgd_core::config::find_profile_path(&profiles_dir, name) {
                     return Err(crate::cli::profile::profile_lookup_error(e, name));
                 }
-                // Set as active profile in cfgd.yaml
-                let mut cfg = config::load_config(&config_path)?;
+                let mut cfg = crate::cli::mutate_config_yaml(&config_path, |raw| {
+                    crate::cli::config_cmd::spec_mapping_mut(raw, &config_path)?.insert(
+                        serde_yaml::Value::String("profile".into()),
+                        serde_yaml::Value::String(name.to_string()),
+                    );
+                    Ok(())
+                })?;
                 drain_config_deprecations(printer, &mut cfg);
-                cfg.spec.profile = Some(name.to_string());
-                crate::cli::helpers::rewrite_user_yaml(&config_path, &cfg)?;
                 printer
                     .status(Role::Ok, "Set active profile")
                     .qualifier(name);
@@ -614,19 +617,34 @@ fn apply_clone_overrides(
         return Ok(());
     }
 
-    let mut cfg = config::load_config(config_path)?;
-    if let Some(name) = name {
-        cfg.metadata.name = name.to_string();
-    }
-    if let Some(theme) = theme {
-        let mut output = cfg.spec.output.take().unwrap_or_default();
-        output.theme = Some(config::ThemeConfig {
-            name: theme.to_string(),
-            overrides: config::ThemeOverrides::default(),
-        });
-        cfg.spec.output = Some(output);
-    }
-    crate::cli::helpers::rewrite_user_yaml(config_path, &cfg)?;
+    use crate::cli::config_cmd;
+    crate::cli::mutate_config_yaml(config_path, |raw| {
+        if let Some(name) = name {
+            let (metadata, leaf) = config_cmd::walk_yaml_path_mut(raw, "metadata.name")?;
+            metadata.insert(
+                serde_yaml::Value::String(leaf),
+                serde_yaml::Value::String(name.to_string()),
+            );
+        }
+        if let Some(theme) = theme {
+            let spec = config_cmd::spec_mapping_mut(raw, config_path)?;
+            // The flag names the whole theme, so the flat spelling a document
+            // may still carry goes with the block it is replaced by, and any
+            // overrides the cloned block held are dropped with it.
+            spec.remove("theme");
+            let (output, leaf) = config_cmd::walk_spec_path_mut(spec, "output.theme")?;
+            let mut block = serde_yaml::Mapping::new();
+            block.insert(
+                serde_yaml::Value::String("name".into()),
+                serde_yaml::Value::String(theme.to_string()),
+            );
+            output.insert(
+                serde_yaml::Value::String(leaf),
+                serde_yaml::Value::Mapping(block),
+            );
+        }
+        Ok(())
+    })?;
     Ok(())
 }
 
@@ -937,7 +955,7 @@ pub(super) fn ensure_dir_writable(dir: &Path) -> anyhow::Result<()> {
     }
 }
 
-pub(super) fn scaffold(
+pub(in crate::cli) fn scaffold(
     dir: &Path,
     name: Option<&str>,
     theme: Option<&str>,

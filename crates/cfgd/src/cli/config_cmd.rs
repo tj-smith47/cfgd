@@ -735,7 +735,7 @@ pub fn cmd_config_set(cli: &Cli, printer: &Printer, key: &str, value: &str) -> a
         ));
     }
 
-    let mutate_result = mutate_config_yaml(config_path, true, |raw| {
+    let mutate_result = mutate_config_yaml(config_path, |raw| {
         let spec = spec_mapping_mut(raw, config_path)?;
         if nested.is_some() {
             let flat = serde_yaml::Value::String(
@@ -800,7 +800,7 @@ pub fn cmd_config_unset(cli: &Cli, printer: &Printer, key: &str) -> anyhow::Resu
 
     let nested = nested_output_key(key);
     let written_key = nested.clone().unwrap_or_else(|| key.to_string());
-    let mutate_result = mutate_config_yaml(config_path, true, |raw| {
+    let mutate_result = mutate_config_yaml(config_path, |raw| {
         let spec = spec_mapping_mut(raw, config_path)?;
         // Unsetting a presentation knob clears both spellings: one left
         // standing is a value the reader believes they removed.
@@ -1114,10 +1114,18 @@ spec:
     /// schema declares a mapping at, to any depth. A sequence's element fields
     /// are left out because no key path names an element.
     fn addressable_config_paths() -> Vec<Vec<String>> {
+        addressable_config_fields()
+            .into_iter()
+            .map(|(path, _)| path)
+            .collect()
+    }
+
+    /// [`addressable_config_paths`] with the schema node each path names.
+    fn addressable_config_fields() -> Vec<(Vec<String>, cfgd_core::schema::FieldNode)> {
         fn walk(
             fields: &[cfgd_core::schema::FieldNode],
             at: &[String],
-            out: &mut Vec<Vec<String>>,
+            out: &mut Vec<(Vec<String>, cfgd_core::schema::FieldNode)>,
         ) {
             for field in fields {
                 if field.is_variant {
@@ -1125,7 +1133,7 @@ spec:
                 }
                 let mut path = at.to_vec();
                 path.push(field.name.clone());
-                out.push(path.clone());
+                out.push((path.clone(), field.clone()));
                 if field.type_desc == "object" {
                     walk(&field.children, &path, out);
                 }
@@ -1135,6 +1143,176 @@ spec:
         let mut out = Vec::new();
         walk(&schema.fields, &[], &mut out);
         out
+    }
+
+    /// Every scalar leaf [`addressable_config_fields`] reads, as the dotted
+    /// key `config set` takes and a value the parser accepts for the leaf's
+    /// declared type: `true` for a boolean, the first accepted word of an
+    /// enum, and for a free string the value the typed config gives the leaf
+    /// once its section is present, or a plain word where it gives none.
+    fn settable_config_leaves() -> Vec<(String, String)> {
+        let path = std::path::Path::new("cfgd.yaml");
+        addressable_config_fields()
+            .into_iter()
+            .filter(|(_, node)| node.type_desc != "object" && !node.type_desc.starts_with("[]"))
+            .map(|(segments, node)| {
+                let key = segments.join(".");
+                let value = if node.type_desc == "boolean" {
+                    "true".to_string()
+                } else if let Some(word) = node.enum_values.first() {
+                    word.clone()
+                } else {
+                    let section = spec_holding(
+                        &segments[..segments.len() - 1],
+                        serde_yaml::Value::Mapping(serde_yaml::Mapping::new()),
+                    );
+                    let doc = format!(
+                        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n{}",
+                        serde_yaml::to_string(&section)
+                            .unwrap()
+                            .lines()
+                            .map(|l| format!("  {l}\n"))
+                            .collect::<String>()
+                    );
+                    cfgd_core::config::parse_config(&doc, path)
+                        .ok()
+                        .and_then(|cfg| serde_yaml::to_value(cfg.spec).ok())
+                        .and_then(|spec| walk_yaml_path(&spec, &key).ok().cloned())
+                        .and_then(|v| v.as_str().map(str::to_string))
+                        .unwrap_or_else(|| "probe".to_string())
+                };
+                (key, value)
+            })
+            .collect()
+    }
+
+    /// A fresh `cfgd init` scaffold in `dir`, returning the `cfgd.yaml` path.
+    fn scaffolded(dir: &std::path::Path) -> std::path::PathBuf {
+        crate::cli::init::cmd_init::scaffold(dir, Some("t"), None, &test_printer()).unwrap();
+        dir.join("cfgd.yaml")
+    }
+
+    /// Why a written document is not aligned: the keys the load-time gate
+    /// would still ask about, and every scalar of the section holding `key`
+    /// that the typed value carries and the bytes do not declare.
+    fn misalignment(path: &std::path::Path, key: &str) -> Option<String> {
+        let bytes = std::fs::read_to_string(path).unwrap();
+        let parsed = match cfgd_core::config::parse_config(&bytes, path) {
+            Ok(parsed) => parsed,
+            Err(e) => return Some(format!("the written document does not parse: {e}")),
+        };
+        let pending = crate::cli::config_schema::pending_alignment(&parsed, &bytes).keys;
+        let declared: serde_yaml::Value = serde_yaml::from_str(&bytes).unwrap();
+        let typed = serde_yaml::to_value(&parsed.spec).unwrap();
+        let section = key.rsplit_once('.').map_or(".", |(parent, _)| parent);
+        let missing: Vec<String> = walk_yaml_path(&typed, section)
+            .ok()
+            .and_then(serde_yaml::Value::as_mapping)
+            .into_iter()
+            .flatten()
+            .filter(|(_, v)| {
+                matches!(
+                    v,
+                    serde_yaml::Value::Bool(_)
+                        | serde_yaml::Value::Number(_)
+                        | serde_yaml::Value::String(_)
+                )
+            })
+            .filter_map(|(k, _)| {
+                let sibling = match section {
+                    "." => format!("spec.{}", k.as_str()?),
+                    parent => format!("spec.{parent}.{}", k.as_str()?),
+                };
+                walk_yaml_path(&declared, &sibling)
+                    .is_err()
+                    .then_some(sibling)
+            })
+            .collect();
+        (!pending.is_empty() || !missing.is_empty())
+            .then(|| format!("pending {pending:?}, section siblings not declared {missing:?}"))
+    }
+
+    /// The scalar leaves the Config schema names today; a walk finding fewer
+    /// has stopped reading the schema.
+    const SETTABLE_LEAF_FLOOR: usize = 63;
+
+    // The population is every scalar leaf the schema names, so a field added
+    // to any section later is set here by being declared. A `config set` that
+    // brings a section into existence (`daemon.reconcile.autoApply` on a
+    // fresh scaffold, which declares no `daemon`) must leave that section
+    // declaring every sibling the build reads, or the next command's
+    // migration gate asks about fields the reader never touched.
+    #[test]
+    fn every_config_document_write_leaves_it_aligned() {
+        let leaves = settable_config_leaves();
+        assert!(
+            leaves.len() >= SETTABLE_LEAF_FLOOR,
+            "{} settable leaves, fewer than the {SETTABLE_LEAF_FLOOR} the schema names today",
+            leaves.len()
+        );
+        assert!(
+            leaves
+                .iter()
+                .any(|(key, _)| key == "daemon.reconcile.autoApply"),
+            "the leaf the defect was found on is in the population"
+        );
+        let printer = test_printer();
+        let mut offenders = Vec::new();
+        for (key, value) in &leaves {
+            let dir = tempfile::tempdir().unwrap();
+            let path = scaffolded(dir.path());
+            let cli = test_cli_for(path.clone());
+            if let Err(e) = cmd_config_set(&cli, &printer, key, value) {
+                offenders.push(format!("config set {key} {value}: refused: {e}"));
+                continue;
+            }
+            if let Some(why) = misalignment(&path, key) {
+                offenders.push(format!("config set {key} {value}: {why}"));
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "a config set left the document partial:\n{}",
+            offenders.join("\n")
+        );
+    }
+
+    // The unset half, on a document declaring every leaf: removing a key
+    // with a default re-declares it at that default, and removing the last
+    // key of a section leaves either the section complete or no section at
+    // all, both of which the gate reads as aligned.
+    #[test]
+    fn every_config_document_unset_leaves_it_aligned() {
+        let leaves = settable_config_leaves();
+        let printer = test_printer();
+        let full = tempfile::tempdir().unwrap();
+        let full_path = scaffolded(full.path());
+        let full_cli = test_cli_for(full_path.clone());
+        for (key, value) in &leaves {
+            cmd_config_set(&full_cli, &printer, key, value)
+                .unwrap_or_else(|e| panic!("config set {key} {value}: {e}"));
+        }
+        let full_doc = std::fs::read_to_string(&full_path).unwrap();
+
+        let mut offenders = Vec::new();
+        for (key, _) in &leaves {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("cfgd.yaml");
+            std::fs::write(&path, &full_doc).unwrap();
+            let cli = test_cli_for(path.clone());
+            if let Err(e) = cmd_config_unset(&cli, &printer, key) {
+                offenders.push(format!("config unset {key}: refused: {e}"));
+                continue;
+            }
+            if let Some(why) = misalignment(&path, key) {
+                offenders.push(format!("config unset {key}: {why}"));
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "a config unset left the document partial:\n{}",
+            offenders.join("\n")
+        );
     }
 
     /// A `spec` document holding `leaf` at `path` and nothing else.

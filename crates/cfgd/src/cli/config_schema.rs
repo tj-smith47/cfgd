@@ -155,35 +155,13 @@ fn read_pair(config_path: &Path) -> Option<(CfgdConfig, String)> {
 }
 
 /// Materialize every pending key with the value the typed config already
-/// carries. The ONE writer this feature has: `--write`, the `Update` policy
-/// and an accepted prompt all reach it, so no two of them can write
-/// differently. `mutate_config_yaml` re-prepends the leading comment block
-/// and re-parses the result before it replaces the file.
-///
-/// The two path walkers are `cli::config_cmd`'s own: the mutable one creates
-/// the intermediate mappings a key under an absent section needs, which is
-/// what `cfgd config set` already relies on.
-fn write_alignment(
-    config_path: &Path,
-    cfg: &CfgdConfig,
-    pending: &PendingAlignment,
-) -> anyhow::Result<()> {
-    let materialized = serde_yaml::to_value(cfg)?;
-    mutate_config_yaml(config_path, true, |raw| {
-        for key in &pending.keys {
-            // Every pending key was read off `materialized` in the first
-            // place, so a miss here is not a state this can reach; skipping
-            // is still the right answer to one, since the alternative is
-            // failing a write over a key nobody asked for.
-            let Ok(value) = crate::cli::config_cmd::walk_yaml_path(&materialized, key) else {
-                continue;
-            };
-            let value = value.clone();
-            let (parent, leaf) = crate::cli::config_cmd::walk_yaml_path_mut(raw, key)?;
-            parent.insert(serde_yaml::Value::String(leaf), value);
-        }
-        Ok(())
-    })
+/// carries. The write is [`mutate_config_yaml`] with nothing of its own to
+/// change: every write of the document aligns it, so the gate's write IS the
+/// alignment step, and `--write`, the `Update` policy and an accepted prompt
+/// cannot write differently from each other or from any other writer.
+fn write_alignment(config_path: &Path) -> anyhow::Result<()> {
+    mutate_config_yaml(config_path, |_| Ok(()))?;
+    Ok(())
 }
 
 /// What a reader is told about a document behind the schema: what is
@@ -213,8 +191,8 @@ fn prompt_message(pending: &PendingAlignment) -> String {
 /// write is an alert: this runs before dispatch, so there is no command for
 /// the error to fail, and a reader who said yes and got silence would believe
 /// the file had been written.
-fn align(printer: &Printer, config_path: &Path, cfg: &CfgdConfig, pending: &PendingAlignment) {
-    match write_alignment(config_path, cfg, pending) {
+fn align(printer: &Printer, config_path: &Path, pending: &PendingAlignment) {
+    match write_alignment(config_path) {
         Ok(()) => printer.status_simple(
             Role::Ok,
             format!(
@@ -313,7 +291,7 @@ pub fn cmd_config_migrate(cli: &Cli, printer: &Printer, write: bool) -> anyhow::
     let pending = pending_alignment(&cfg, &on_disk);
     let wrote = write && !pending.keys.is_empty();
     if wrote {
-        write_alignment(config_path, &cfg, &pending)?;
+        write_alignment(config_path)?;
     }
 
     // Each row is the key and the value the write would materialize, read
@@ -415,7 +393,7 @@ pub fn gate_on_load(printer: &Printer, invocation: &GateInvocation<'_>, config_p
         other => other,
     };
     match effective {
-        MigrationPolicy::Update => align(printer, config_path, &cfg, &pending),
+        MigrationPolicy::Update => align(printer, config_path, &pending),
         MigrationPolicy::Warn => printer.alert(warn_message(&pending)),
         MigrationPolicy::Prompt => {
             let Some((held, recorded)) = consult_recorded(
@@ -434,7 +412,7 @@ pub fn gate_on_load(printer: &Printer, invocation: &GateInvocation<'_>, config_p
                 .prompt_confirm(&prompt_message(&pending))
                 .unwrap_or(false);
             if accepted {
-                align(printer, config_path, &cfg, &pending);
+                align(printer, config_path, &pending);
             }
             // Recorded whichever way it was answered: a "no" is an answer,
             // and asking it again every run is how a knob nobody wants
@@ -766,14 +744,13 @@ mod tests {
 
     /// `source add`'s own write path leaves no folded twin either.
     ///
-    /// `config migrate` walks `pending_alignment`/`write_alignment`; `source
-    /// add` does not — it appends to `spec.sources` through
-    /// `add_source_to_config`, which re-serializes the whole document and
-    /// round-trips it through `parse_config` before writing. That validating
-    /// branch is where a folded twin would most plausibly appear, so the pin
-    /// calls the real writer with a real `SourceSpec` rather than a
-    /// hand-rolled closure: a document declaring only the legacy `spec.theme`
-    /// still reloads with no "both set" advisory and nothing pending.
+    /// `source add` appends to `spec.sources` through `add_source_to_config`,
+    /// and the alignment every write of the document performs then
+    /// materializes what the parse carries that the document does not declare.
+    /// That alignment is where a folded twin would most plausibly appear, so
+    /// the pin calls the real writer with a real `SourceSpec`: a document
+    /// declaring only the legacy `spec.theme` still reloads with no "both set"
+    /// advisory and nothing pending.
     #[test]
     fn a_source_add_write_does_not_materialize_a_legacy_output_keys_folded_twin() {
         let dir = tempfile::tempdir().unwrap();
@@ -1277,26 +1254,30 @@ mod tests {
         }
     }
 
-    /// The gate's write re-parses what it materialized before it replaces the
-    /// file, so a value the parser refuses leaves the document untouched
-    /// rather than half-written. `Patch` is the one global `fileStrategy` the
-    /// parser rejects, which is what makes it a value the typed config can
-    /// carry and the document cannot.
+    /// Every write parses the document the closure leaves before it aligns or
+    /// replaces anything, so a value the parser refuses leaves the file as it
+    /// was. `Patch` is the one global `fileStrategy` the parser rejects, and it
+    /// lands on a key the alignment would otherwise have materialized.
     #[test]
-    fn a_materialized_value_the_parser_refuses_leaves_the_document_untouched() {
+    fn a_value_the_parser_refuses_leaves_the_document_untouched() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("cfgd.yaml");
         std::fs::write(&path, BEHIND_DOC).unwrap();
-        let mut cfg = cfgd_core::config::parse_config(BEHIND_DOC, &path).unwrap();
-        let pending = pending_alignment(&cfg, BEHIND_DOC);
+        let cfg = cfgd_core::config::parse_config(BEHIND_DOC, &path).unwrap();
         assert!(
-            pending.keys.contains(&"spec.fileStrategy".to_string()),
-            "the key the refusal lands on is pending: {:?}",
-            pending.keys
+            pending_alignment(&cfg, BEHIND_DOC)
+                .keys
+                .contains(&"spec.fileStrategy".to_string()),
+            "the key the refusal lands on is one the alignment would write"
         );
 
-        cfg.spec.file_strategy = cfgd_core::config::FileStrategy::Patch;
-        let err = write_alignment(&path, &cfg, &pending).expect_err("the parser refuses Patch");
+        let err = mutate_config_yaml(&path, |raw| {
+            let (spec, leaf) =
+                crate::cli::config_cmd::walk_yaml_path_mut(raw, "spec.fileStrategy")?;
+            spec.insert(leaf.into(), "Patch".into());
+            Ok(())
+        })
+        .expect_err("the parser refuses Patch");
         assert!(
             format!("{err}").contains("fileStrategy"),
             "the refusal names the field: {err}"
