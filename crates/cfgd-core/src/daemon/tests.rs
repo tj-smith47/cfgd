@@ -14744,6 +14744,7 @@ spec:
         // a panicking reconcile fires to confirm the loop's
         // continue-on-error behavior is engaged, then shutdown.
         let tmp = tempfile::TempDir::new().unwrap();
+        let _optouts = crate::test_helpers::clear_update_optouts();
         let _g = crate::with_test_home_guard(tmp.path());
         let (ctx, _state, mut ran_rx) = make_panicking_plan_files_ctx(&tmp);
         let (triggers, senders) = make_triggers();
@@ -16478,6 +16479,7 @@ spec: {}
     ) -> Arc<Mutex<DaemonState>> {
         let state = Arc::new(Mutex::new(DaemonState::new()));
         let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+        let _optouts = crate::test_helpers::clear_update_optouts();
         let _g = crate::with_test_home_guard(&home);
         super::super::sync::handle_version_check(cfg, &state, &notifier, env!("CARGO_PKG_VERSION"))
             .await;
@@ -16634,6 +16636,7 @@ spec: {}
         // a non-Manual policy, so the gate returns before any network or
         // skill-surface work and leaves both update surfaces untouched.
         let tmp = tempfile::TempDir::new().unwrap();
+        let _optouts = crate::test_helpers::clear_update_optouts();
         let _g = crate::with_test_home_guard(tmp.path());
 
         // Stamp a check "now" into the test-home version cache; with the default
@@ -16664,71 +16667,128 @@ spec: {}
 
     // ----- handle_version_check_tick: the invocation's posture -----
 
-    /// One version tick of a daemon whose config declares `declared` and which
-    /// was started with `override_policy`, against a release feed that always
-    /// offers a newer version. Returns the update the tick recorded, if any.
-    async fn drive_version_tick(
-        declared: &str,
-        override_policy: Option<config::UpdatePolicy>,
-    ) -> Option<String> {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let mut server = mockito::Server::new_async().await;
-        let _mock = server
-            .mock("GET", "/repos/tj-smith47/cfgd/releases/latest")
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(r#"{"tag_name": "v999.0.0", "assets": []}"#)
-            .create_async()
-            .await;
-        let _api = crate::test_helpers::EnvVarGuard::set("CFGD_GITHUB_API_BASE", &server.url());
-        let (mut ctx, state, _buf) = make_test_ctx(&tmp, false, false, None);
-        ctx.config_path = tmp.path().join("cfgd.yaml");
-        std::fs::write(
-            &ctx.config_path,
-            format!(
-                "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  profile: default\n  update:\n    policy: {declared}\n"
-            ),
-        )
-        .unwrap();
-        ctx.update_policy_override = override_policy;
-        let _g = crate::with_test_home_guard(tmp.path());
-        runner::handle_version_check_tick(&ctx)
-            .await
-            .expect("a version tick never fails the loop");
-        state.lock().await.update_available.clone()
+    /// One daemon's version-tick world: a config file on disk, a release feed
+    /// offering v999.0.0 that expects exactly `requests` requests, every opt-out
+    /// variable cleared and the test home installed. Fields drop in order, so
+    /// the home and env guards are restored before the tempdir goes.
+    struct VersionTickRig {
+        ctx: DaemonLoopContext,
+        state: Arc<Mutex<DaemonState>>,
+        feed: mockito::Mock,
+        _home: crate::TestHomeGuard,
+        _api: crate::test_helpers::EnvVarGuard,
+        _optouts: [crate::test_helpers::EnvVarGuard; crate::upgrade::OPTOUT_VARS.len()],
+        _server: mockito::ServerGuard,
+        _tmp: tempfile::TempDir,
     }
 
-    // current_thread so the test-home guard survives the tick's `.await`.
+    impl VersionTickRig {
+        async fn new(
+            declared: &str,
+            override_policy: Option<config::UpdatePolicy>,
+            requests: usize,
+        ) -> Self {
+            let tmp = tempfile::TempDir::new().unwrap();
+            let optouts = crate::test_helpers::clear_update_optouts();
+            let mut server = mockito::Server::new_async().await;
+            let feed = server
+                .mock("GET", "/repos/tj-smith47/cfgd/releases/latest")
+                .with_status(200)
+                .with_header("content-type", "application/json")
+                .with_body(r#"{"tag_name": "v999.0.0", "assets": []}"#)
+                .expect(requests)
+                .create_async()
+                .await;
+            let api = crate::test_helpers::EnvVarGuard::set("CFGD_GITHUB_API_BASE", &server.url());
+            let (mut ctx, state, _buf) = make_test_ctx(&tmp, false, false, None);
+            ctx.config_path = tmp.path().join("cfgd.yaml");
+            ctx.update_policy_override = override_policy;
+            let home = crate::with_test_home_guard(tmp.path());
+            let rig = Self {
+                ctx,
+                state,
+                feed,
+                _home: home,
+                _api: api,
+                _optouts: optouts,
+                _server: server,
+                _tmp: tmp,
+            };
+            rig.declare(declared);
+            rig
+        }
+
+        /// Rewrite the config so it declares `spec.update.policy: {policy}`.
+        fn declare(&self, policy: &str) {
+            std::fs::write(
+                &self.ctx.config_path,
+                format!(
+                    "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  profile: default\n  update:\n    policy: {policy}\n"
+                ),
+            )
+            .unwrap();
+        }
+
+        /// One version tick, then the update the daemon has recorded so far.
+        async fn tick(&self) -> Option<String> {
+            // optouts-held: only `new` builds a rig, and it clears them into `_optouts`.
+            runner::handle_version_check_tick(&self.ctx)
+                .await
+                .expect("a version tick never fails the loop");
+            self.state.lock().await.update_available.clone()
+        }
+    }
+
+    // current_thread so the test-home guard survives each tick's `.await`.
     #[tokio::test(flavor = "current_thread")]
     #[serial_test::serial]
     async fn a_daemon_started_with_update_policy_manual_makes_no_check_whatever_its_config_says() {
+        let rig = VersionTickRig::new("Notify", Some(config::UpdatePolicy::Manual), 0).await;
         assert_eq!(
-            drive_version_tick("Notify", Some(config::UpdatePolicy::Manual)).await,
+            rig.tick().await,
             None,
-            "`cfgd --update-policy manual daemon` must not check, even over a config declaring Notify"
+            "first tick: Manual flag over a Notify file records nothing"
+        );
+        assert_eq!(
+            rig.tick().await,
+            None,
+            "second tick: the flag still holds on a later tick"
+        );
+        rig.feed.assert_async().await;
+        assert!(
+            crate::upgrade::last_checked_secs().is_none(),
+            "a Manual daemon stamps no check, so it never reached the release feed"
         );
     }
 
     #[tokio::test(flavor = "current_thread")]
     #[serial_test::serial]
     async fn a_daemon_started_with_update_policy_notify_checks_over_a_manual_config() {
+        let rig = VersionTickRig::new("Manual", Some(config::UpdatePolicy::Notify), 1).await;
         assert_eq!(
-            drive_version_tick("Manual", Some(config::UpdatePolicy::Notify))
-                .await
-                .as_deref(),
+            rig.tick().await.as_deref(),
             Some("999.0.0"),
-            "the invocation's posture outranks the config's in both directions"
+            "a Notify flag over a Manual file checks and records the newer release"
         );
+        rig.feed.assert_async().await;
     }
 
     #[tokio::test(flavor = "current_thread")]
     #[serial_test::serial]
-    async fn a_daemon_started_without_update_policy_follows_the_config_it_rereads() {
+    async fn a_daemon_started_without_update_policy_is_retuned_by_editing_its_config() {
+        let rig = VersionTickRig::new("Manual", None, 1).await;
         assert_eq!(
-            drive_version_tick("Manual", None).await,
+            rig.tick().await,
             None,
-            "with no flag the tick reads spec.update.policy off the file, so editing it retunes a running daemon"
+            "first tick: the file says Manual, nothing is checked"
         );
+        rig.declare("Notify");
+        assert_eq!(
+            rig.tick().await.as_deref(),
+            Some("999.0.0"),
+            "second tick: the file now says Notify, and the same daemon checks and records it"
+        );
+        rig.feed.assert_async().await;
     }
 
     // ----- init_daemon_state tests -----

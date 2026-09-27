@@ -1714,6 +1714,7 @@ fn a_producer_tell_matches_only_a_whole_identifier() {
 const ENV_MUTATORS: &[&str] = &[
     "EnvVarGuard::set",
     "EnvVarGuard::unset",
+    "clear_update_optouts",
     "EditorGuard::set",
     "ProbePath::containing",
     "install_named_path_shim",

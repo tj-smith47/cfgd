@@ -1271,6 +1271,7 @@ fn the_update_policy_flag_is_global_and_its_value_is_not_a_subcommand() {
 #[serial_test::serial]
 fn the_startup_check_honours_the_invocations_policy_over_the_declared_one() {
     use cfgd_core::config::UpdatePolicy;
+    let _optouts = cfgd_core::test_helpers::clear_update_optouts();
     let home = tempfile::tempdir().expect("tempdir");
     cfgd_core::with_test_home(home.path(), || {
         let path = home.path().join("cfgd.yaml");
@@ -1297,6 +1298,139 @@ fn the_startup_check_honours_the_invocations_policy_over_the_declared_one() {
             "a Manual invocation runs no check, whatever the config declares"
         );
     });
+}
+
+/// The calls through which a test reaches the automatic update check's gate,
+/// the reader of the opt-out variables: the gate itself, the three checks
+/// built on it, the daemon's tick and the loop's version-check trigger.
+const UPDATE_CHECK_ENTRIES: [&str; 6] = [
+    "should_check(",
+    "run_update_check(",
+    "handle_version_check(",
+    "handle_version_check_tick(",
+    "startup_update_check(",
+    "version_check_tx.send(",
+];
+
+/// What a function reaching the update check through guards it does not take
+/// itself (a rig whose constructor took them) says for itself.
+const OPTOUT_HATCH: &str = "optouts-held:";
+
+/// The function openers in `region` whose function names an
+/// [`UPDATE_CHECK_ENTRIES`] call without also calling `clear_update_optouts(`
+/// or carrying [`OPTOUT_HATCH`], as 0-based line numbers, and how many
+/// functions named an entry at all. Calls are read off `region` with its
+/// comments and literals blanked; a function runs from its opener to the next.
+fn update_check_callers_without_optout_clear(region: &str) -> (usize, Vec<usize>) {
+    fn calls(segment: &str, name: &str) -> bool {
+        segment.match_indices(name).any(|(at, _)| {
+            !segment[..at]
+                .chars()
+                .next_back()
+                .is_some_and(|c| c.is_alphanumeric() || c == '_')
+        })
+    }
+    let code = cfgd_core::test_helpers::blank_non_code(region);
+    let raw: Vec<&str> = region.lines().collect();
+    let lines: Vec<&str> = code.lines().collect();
+    let openers: Vec<usize> = (0..lines.len())
+        .filter(|&n| cfgd_core::test_helpers::opens_function(lines[n]))
+        .collect();
+    let mut judged = 0usize;
+    let mut offenders = Vec::new();
+    for (i, &from) in openers.iter().enumerate() {
+        let to = openers.get(i + 1).copied().unwrap_or(lines.len());
+        let segment = lines[from..to].join("\n");
+        if UPDATE_CHECK_ENTRIES
+            .iter()
+            .any(|entry| calls(&segment, entry))
+        {
+            judged += 1;
+            let hatched = raw[from..to]
+                .iter()
+                .any(|l| cfgd_core::test_helpers::carries_hatch(l, OPTOUT_HATCH));
+            if !hatched && !calls(&segment, "clear_update_optouts(") {
+                offenders.push(from);
+            }
+        }
+    }
+    (judged, offenders)
+}
+
+/// Every test function that reaches the automatic update check clears the
+/// opt-out variables first, through `cfgd_core::test_helpers::clear_update_optouts`.
+///
+/// The gate reads `CFGD_NO_UPDATE_CHECK` and its two siblings off the process,
+/// so on a machine exporting one a test expecting a check fails and a test
+/// expecting none passes without reaching the gate it names. The judged unit is
+/// a function whose body names one of [`UPDATE_CHECK_ENTRIES`] itself, so a
+/// driver that clears the variables carries every test calling it. Judged over
+/// every crate's test regions, with a floor on the functions found.
+#[test]
+fn every_test_reaching_the_update_check_clears_the_opt_out_variables() {
+    let crates_dir = cfgd_core::test_helpers::workspace_root().join("crates");
+    let mut judged = 0usize;
+    let mut offenders: Vec<String> = Vec::new();
+    for path in cfgd_core::test_helpers::rust_sources_under(&crates_dir) {
+        // unfloored-slice-ok: the test regions judged here are cut from the whole file below.
+        let body = cfgd_core::test_helpers::walked_file_body(&path);
+        let region = if cfgd_core::test_helpers::is_test_source(&path) {
+            body
+        } else {
+            cfgd_core::test_helpers::test_region_mask(&body)
+        };
+        let (found, missing) = update_check_callers_without_optout_clear(&region);
+        judged += found;
+        let label = cfgd_core::to_posix_string(path.strip_prefix(&crates_dir).unwrap_or(&path));
+        for n in missing {
+            offenders.push(format!(
+                "{label}:{}: {}",
+                n + 1,
+                region.lines().nth(n).unwrap_or("").trim()
+            ));
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "a test reaching the update check takes `cfgd_core::test_helpers::clear_update_optouts()` \
+         first, or says which guard it runs under with `// {OPTOUT_HATCH} <why>`; otherwise an \
+         exported opt-out variable decides its verdict:\n{}",
+        offenders.join("\n")
+    );
+    // `upgrade/check.rs` holds most of them; the daemon's version drivers and
+    // the startup-check pin hold the rest.
+    assert!(
+        judged >= 27,
+        "the walk found {judged} test functions reaching the update check; it has gone blind"
+    );
+}
+
+/// The walk judges a function by its own body: one naming an entry without the
+/// clear is an offence, one that clears first is not, and a function naming no
+/// entry is none of its business.
+#[test]
+fn the_update_check_walk_reads_an_offence_it_plants_itself() {
+    // Assembled rather than spelled, so the walk above does not read this
+    // fixture as one of the workspace's own tests.
+    let entry = format!("should_{}", "check(");
+    let clear = format!("clear_update_{}", "optouts()");
+    let hatch = OPTOUT_HATCH;
+    let code = format!(
+        "fn bare() {{\n    {entry}a, b);\n}}\n\
+         fn cleared() {{\n    let _g = {clear};\n    {entry}a, b);\n}}\n\
+         fn unrelated() {{\n    my_{entry}a);\n}}\n\
+         fn rigged() {{\n    // {hatch} the rig took them\n    {entry}a, b);\n}}\n"
+    );
+    let (judged, offenders) = update_check_callers_without_optout_clear(&code);
+    assert_eq!(
+        judged, 3,
+        "three functions name the gate; `my_should_check` is another name"
+    );
+    assert_eq!(
+        offenders,
+        vec![0],
+        "only the function that neither clears nor says why is an offence"
+    );
 }
 
 /// Every `CFGD_*` environment name production binds or reads is spelled as a

@@ -304,20 +304,11 @@ pub fn run_update_check(
 mod tests {
     use super::*;
     use crate::config::SkillUpdateConfig;
-    use crate::test_helpers::EnvVarGuard;
+    use crate::test_helpers::{EnvVarGuard, clear_update_optouts};
     use semver::Version;
     use serial_test::serial;
 
     const HOUR: u64 = 3600;
-
-    /// Guard every opt-out var unset. Every test that reaches
-    /// [`should_check`] needs this: the gate reads the process environment, so a
-    /// `DO_NOT_TRACK` exported in the developer's shell profile — or on a CI
-    /// runner, which is exactly this feature's audience — would otherwise
-    /// suppress the check a test expects to happen and fail it spuriously.
-    fn all_unset() -> [EnvVarGuard; OPTOUT_VARS.len()] {
-        OPTOUT_VARS.map(EnvVarGuard::unset)
-    }
 
     fn config(policy: UpdatePolicy) -> UpdateConfig {
         UpdateConfig {
@@ -447,7 +438,7 @@ mod tests {
     #[test]
     #[serial]
     fn manual_policy_never_checks() {
-        let _env = all_unset();
+        let _env = clear_update_optouts();
         assert!(!should_check(
             UpdatePolicy::Manual,
             Duration::from_secs(0),
@@ -459,7 +450,7 @@ mod tests {
     #[test]
     #[serial]
     fn no_last_checked_always_checks() {
-        let _env = all_unset();
+        let _env = clear_update_optouts();
         assert!(should_check(
             UpdatePolicy::Prompt,
             Duration::from_secs(HOUR),
@@ -471,7 +462,7 @@ mod tests {
     #[test]
     #[serial]
     fn within_interval_does_not_check() {
-        let _env = all_unset();
+        let _env = clear_update_optouts();
         // last check 1h ago, interval 24h → suppressed.
         assert!(!should_check(
             UpdatePolicy::Notify,
@@ -484,7 +475,7 @@ mod tests {
     #[test]
     #[serial]
     fn past_interval_checks() {
-        let _env = all_unset();
+        let _env = clear_update_optouts();
         assert!(should_check(
             UpdatePolicy::Notify,
             Duration::from_secs(HOUR),
@@ -496,7 +487,7 @@ mod tests {
     #[test]
     #[serial]
     fn backwards_clock_suppresses_rather_than_forces() {
-        let _env = all_unset();
+        let _env = clear_update_optouts();
         // now < last_checked: saturating_sub → 0 < interval → no check.
         assert!(!should_check(
             UpdatePolicy::Auto,
@@ -563,7 +554,7 @@ mod tests {
     #[test]
     #[serial]
     fn manual_policy_skips_check_entirely() {
-        let _env = all_unset();
+        let _env = clear_update_optouts();
         let spy = Spy::new();
         let mut effects = spy.effects(true, false, check(true), true, true, true);
         let outcome = run_update_check(&config(UpdatePolicy::Manual), 100, None, &mut effects);
@@ -584,7 +575,7 @@ mod tests {
     #[test]
     #[serial]
     fn notify_records_available_without_applying() {
-        let _env = all_unset();
+        let _env = clear_update_optouts();
         let spy = Spy::new();
         let mut effects = spy.effects(true, false, check(true), true, false, true);
         let outcome = run_update_check(&config(UpdatePolicy::Notify), 100, None, &mut effects);
@@ -600,7 +591,7 @@ mod tests {
     #[test]
     #[serial]
     fn auto_applies_without_prompting() {
-        let _env = all_unset();
+        let _env = clear_update_optouts();
         let spy = Spy::new();
         let mut effects = spy.effects(true, false, check(true), true, false, true);
         let outcome = run_update_check(&config(UpdatePolicy::Auto), 100, None, &mut effects);
@@ -612,7 +603,7 @@ mod tests {
     #[test]
     #[serial]
     fn prompt_interactive_confirms_then_applies() {
-        let _env = all_unset();
+        let _env = clear_update_optouts();
         let spy = Spy::new();
         let mut effects = spy.effects(true, false, check(true), true, true, true);
         let outcome = run_update_check(&config(UpdatePolicy::Prompt), 100, None, &mut effects);
@@ -624,7 +615,7 @@ mod tests {
     #[test]
     #[serial]
     fn prompt_declined_degrades_to_surface() {
-        let _env = all_unset();
+        let _env = clear_update_optouts();
         let spy = Spy::new();
         let mut effects = spy.effects(true, false, check(true), true, false, true);
         let outcome = run_update_check(&config(UpdatePolicy::Prompt), 100, None, &mut effects);
@@ -637,7 +628,7 @@ mod tests {
     #[test]
     #[serial]
     fn prompt_non_interactive_degrades_to_notify() {
-        let _env = all_unset();
+        let _env = clear_update_optouts();
         let spy = Spy::new();
         let mut effects = spy.effects(false, false, check(true), true, true, true);
         let outcome = run_update_check(&config(UpdatePolicy::Prompt), 100, None, &mut effects);
@@ -649,7 +640,7 @@ mod tests {
     #[test]
     #[serial]
     fn no_update_available_records_but_does_not_surface() {
-        let _env = all_unset();
+        let _env = clear_update_optouts();
         let spy = Spy::new();
         let mut effects = spy.effects(true, false, check(false), true, false, true);
         let outcome = run_update_check(&config(UpdatePolicy::Auto), 100, None, &mut effects);
@@ -661,7 +652,7 @@ mod tests {
     #[test]
     #[serial]
     fn within_interval_short_circuits_before_fetch() {
-        let _env = all_unset();
+        let _env = clear_update_optouts();
         let spy = Spy::new();
         let mut effects = spy.effects(true, false, check(true), true, true, true);
         // last check 1h ago vs default 24h interval.
@@ -678,7 +669,7 @@ mod tests {
     #[test]
     #[serial]
     fn fetch_error_is_non_fatal_and_records_check() {
-        let _env = all_unset();
+        let _env = clear_update_optouts();
         let spy = Spy::new();
         let mut effects = spy.effects(true, false, check(true), false, true, true);
         let outcome = run_update_check(&config(UpdatePolicy::Auto), 100, None, &mut effects);
@@ -695,7 +686,7 @@ mod tests {
     #[test]
     #[serial]
     fn channel_is_threaded_to_fetch() {
-        let _env = all_unset();
+        let _env = clear_update_optouts();
         let spy = Spy::new();
         let mut cfg = config(UpdatePolicy::Notify);
         cfg.channel = Some("beta".to_string());
@@ -711,7 +702,7 @@ mod tests {
     #[test]
     #[serial]
     fn apply_failure_degrades_to_surface() {
-        let _env = all_unset();
+        let _env = clear_update_optouts();
         let spy = Spy::new();
         // Auto policy, apply returns false (install failed).
         let mut effects = spy.effects(true, false, check(true), true, false, false);
@@ -732,7 +723,7 @@ mod tests {
         #[test]
         #[serial]
         fn none_set_behaves_as_today() {
-            let _g = all_unset();
+            let _g = clear_update_optouts();
             assert_eq!(update_optout_var(), None);
             assert!(should_check(
                 UpdatePolicy::Notify,
@@ -745,7 +736,7 @@ mod tests {
         #[test]
         #[serial]
         fn cfgd_var_opts_out() {
-            let _g = all_unset();
+            let _g = clear_update_optouts();
             let _set = EnvVarGuard::set(OPTOUT_VARS[0], "1");
             assert_eq!(update_optout_var(), Some(OPTOUT_VARS[0]));
             assert!(!should_check(
@@ -759,7 +750,7 @@ mod tests {
         #[test]
         #[serial]
         fn npm_convention_var_opts_out() {
-            let _g = all_unset();
+            let _g = clear_update_optouts();
             let _set = EnvVarGuard::set(OPTOUT_VARS[1], "1");
             assert_eq!(update_optout_var(), Some(OPTOUT_VARS[1]));
             assert!(!should_check(
@@ -773,7 +764,7 @@ mod tests {
         #[test]
         #[serial]
         fn do_not_track_var_opts_out() {
-            let _g = all_unset();
+            let _g = clear_update_optouts();
             let _set = EnvVarGuard::set(OPTOUT_VARS[2], "1");
             assert_eq!(update_optout_var(), Some(OPTOUT_VARS[2]));
             assert!(!should_check(
@@ -787,7 +778,7 @@ mod tests {
         #[test]
         #[serial]
         fn do_not_track_zero_is_not_an_optout() {
-            let _g = all_unset();
+            let _g = clear_update_optouts();
             let _set = EnvVarGuard::set(OPTOUT_VARS[2], "0");
             assert_eq!(update_optout_var(), None);
             assert!(should_check(
@@ -801,7 +792,7 @@ mod tests {
         #[test]
         #[serial]
         fn do_not_track_false_and_empty_are_not_an_optout() {
-            let _g = all_unset();
+            let _g = clear_update_optouts();
             {
                 let _set = EnvVarGuard::set(OPTOUT_VARS[2], "false");
                 assert_eq!(update_optout_var(), None);
@@ -813,7 +804,7 @@ mod tests {
         #[test]
         #[serial]
         fn two_set_returns_higher_precedence() {
-            let _g = all_unset();
+            let _g = clear_update_optouts();
             let _npm = EnvVarGuard::set(OPTOUT_VARS[1], "1");
             let _dnt = EnvVarGuard::set(OPTOUT_VARS[2], "1");
             assert_eq!(update_optout_var(), Some(OPTOUT_VARS[1]));
@@ -822,7 +813,7 @@ mod tests {
         #[test]
         #[serial]
         fn optout_wins_over_auto_policy_with_interval_elapsed() {
-            let _g = all_unset();
+            let _g = clear_update_optouts();
             let _set = EnvVarGuard::set(OPTOUT_VARS[0], "1");
             // Auto + no prior check would otherwise always check — the gate
             // must win regardless.

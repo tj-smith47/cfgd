@@ -3896,6 +3896,19 @@ impl EnvVarGuard {
     }
 }
 
+/// Every automatic-update opt-out variable ([`crate::upgrade::OPTOUT_VARS`])
+/// unset for as long as the returned guards live.
+///
+/// The update check's gate reads them off the process environment, so a
+/// `DO_NOT_TRACK` exported by a developer's shell or a CI runner suppresses a
+/// check a test expects, and lets a test expecting none pass without reaching
+/// the gate it names. Every test reaching the check takes these first;
+/// `every_test_reaching_the_update_check_clears_the_opt_out_variables` fails
+/// until it does.
+pub fn clear_update_optouts() -> [EnvVarGuard; crate::upgrade::OPTOUT_VARS.len()] {
+    crate::upgrade::OPTOUT_VARS.map(EnvVarGuard::unset)
+}
+
 /// `PATH` is read by every `command_path` resolution and by every spawn, so a
 /// write to it is only sound inside the window [`path_env_mutation_guard`]
 /// holds: the guard is what blocks a concurrent reader, and declaring it AFTER
