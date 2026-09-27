@@ -10,11 +10,24 @@ use cfgd_binary::cfgd_bin;
 
 const SUMMARY_LINE: &str = "loaded config document";
 
-fn stderr_of(config: Option<&std::path::Path>, verb: &[&str]) -> String {
+/// How `stderr_of` names the config document to the run.
+enum Config<'a> {
+    Default,
+    Flag(&'a std::path::Path),
+    Env(&'a std::path::Path),
+}
+
+fn stderr_of(config: Config<'_>, verb: &[&str]) -> String {
     let mut cmd = cfgd_bin().expect("the cfgd binary builds");
     cmd.env_remove("RUST_LOG").arg("-v");
-    if let Some(config) = config {
-        cmd.arg("--config").arg(config);
+    match config {
+        Config::Default => {}
+        Config::Flag(path) => {
+            cmd.arg("--config").arg(path);
+        }
+        Config::Env(path) => {
+            cmd.env(cfgd_core::CFGD_CONFIG_ENV, path);
+        }
     }
     let output = cmd.args(verb).output().expect("cfgd runs");
     String::from_utf8_lossy(&output.stderr).into_owned()
@@ -34,15 +47,15 @@ fn write_fixture(dir: &std::path::Path) {
     .expect("write profile");
 }
 
-fn assert_read_once(verb: &[&str], stderr: &str) {
+fn assert_reads(verb: &[&str], stderr: &str, reads: u32) {
     let lines: Vec<&str> = stderr
         .lines()
         .filter(|l| l.contains(SUMMARY_LINE))
         .collect();
-    assert_eq!(lines.len(), 1, "{verb:?}: one startup document:\n{stderr}");
+    assert_eq!(lines.len(), 1, "{verb:?}: one summary line:\n{stderr}");
     assert!(
-        lines[0].contains("reads=1") && lines[0].contains("found=true"),
-        "{verb:?}: read once and found:\n{stderr}"
+        lines[0].contains(&format!("reads={reads} ")) && lines[0].contains("found=true"),
+        "{verb:?}: {reads} reads, and the document found:\n{stderr}"
     );
 }
 
@@ -57,7 +70,7 @@ fn every_verb_reads_the_config_document_once_before_dispatch() {
         &["profile", "show"][..],
         &["config", "get", "theme.name"][..],
     ] {
-        assert_read_once(verb, &stderr_of(Some(&config), verb));
+        assert_reads(verb, &stderr_of(Config::Flag(&config), verb), 1);
     }
 }
 
@@ -73,5 +86,20 @@ fn a_run_without_config_reads_the_default_document_once() {
         .map(std::path::PathBuf::from)
         .expect("cfgd_bin isolates XDG_CONFIG_HOME");
     write_fixture(&config_home.join("cfgd"));
-    assert_read_once(&["status"], &stderr_of(None, &["status"]));
+    assert_reads(&["status"], &stderr_of(Config::Default, &["status"]), 1);
+}
+
+/// `CFGD_CONFIG` is clap's alone: the alias pass reads the default document,
+/// and the summary line counts the second read that lands on the named one.
+#[test]
+fn a_config_named_only_in_the_environment_is_read_a_second_time() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write_fixture(dir.path());
+    let config = dir.path().join("cfgd.yaml");
+    let stderr = stderr_of(Config::Env(&config), &["status"]);
+    assert_reads(&["status"], &stderr, 2);
+    assert!(
+        stderr.contains(&config.display().to_string()),
+        "the line names the document clap settled on:\n{stderr}"
+    );
 }

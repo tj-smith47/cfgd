@@ -304,12 +304,6 @@ fn main() -> anyhow::Result<()> {
     // `--color always` deliberately outranks them.
     let color_choice = cli::resolve_color_choice(cli.no_color, cli.color);
 
-    tracing::debug!(
-        path = %startup.path().display(), // native-ok: log line
-        reads = startup.reads(),
-        found = startup.config().is_some(),
-        "loaded config document"
-    );
     let theme_config = cli::resolve_theme_config(startup.config(), cli.theme.as_deref());
     let hints_enabled =
         cli::resolve_hints_enabled(startup.config(), cli::paired_flag(cli.hints, cli.no_hints));
@@ -371,6 +365,14 @@ fn main() -> anyhow::Result<()> {
         cli.config = cfgd_core::config::resolve_config_path(&new_config);
     }
     let startup = startup.reload_if_moved(&cli.config);
+    // Here, after the last place the path can move, so the count covers every
+    // read the startup document made.
+    tracing::debug!(
+        path = %startup.path().display(), // native-ok: log line
+        reads = startup.reads(),
+        found = startup.config().is_some(),
+        "loaded config document"
+    );
 
     // The load-time migration gate, reached once per invocation, after the
     // config path has settled and before dispatch. It is withheld from the
@@ -378,8 +380,8 @@ fn main() -> anyhow::Result<()> {
     // which runs it against the document it writes. The daemon fold is
     // the gate's own: it has to fold the STORED policy too, so folding the
     // override here as well would be the same decision taken twice. With
-    // nothing overridden the gate reads `spec.migrationPolicy` off the one
-    // parse it makes of the document.
+    // nothing overridden the gate reads `spec.migrationPolicy` off the
+    // startup document.
     if cli::config_schema::gate_exempt(cli.command.as_ref()).is_none() {
         cli::config_schema::gate_on_load(
             &printer,
