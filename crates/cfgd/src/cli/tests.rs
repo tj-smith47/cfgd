@@ -54174,10 +54174,10 @@ fn every_pre_dispatch_reader_answers_the_same_from_the_shared_document() {
     use cfgd_core::config::UpdatePolicy;
     use cfgd_core::output::{Printer, Verbosity};
 
-    let _theme = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_THEME");
-    let _hints = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_USAGE_HINTS");
-    let _mask = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_MASK_ENV_VALUES");
-    let _policy = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_MIGRATION_POLICY");
+    let _theme = cfgd_core::test_helpers::EnvVarGuard::unset(cfgd_core::CFGD_THEME_ENV);
+    let _hints = cfgd_core::test_helpers::EnvVarGuard::unset(cfgd_core::CFGD_USAGE_HINTS_ENV);
+    let _mask = cfgd_core::test_helpers::EnvVarGuard::unset(cfgd_core::CFGD_MASK_ENV_VALUES_ENV);
+    let _policy = cfgd_core::test_helpers::EnvVarGuard::unset(cfgd_core::CFGD_MIGRATION_POLICY_ENV);
     let dir = tempfile::tempdir().expect("tempdir");
     let state = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("cfgd.yaml");
