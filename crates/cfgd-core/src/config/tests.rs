@@ -183,7 +183,7 @@ fn no_production_site_compares_an_api_version_by_hand() {
         ("crates/cfgd-core/src", 191),
         ("crates/cfgd-crd/src", 1),
         ("crates/cfgd-csi/src", 8),
-        ("crates/cfgd-operator/src", 46),
+        ("crates/cfgd-operator/src", 42),
         ("crates/cfgd-schema/src", 2),
         ("crates/cfgd/src", 144),
     ];
@@ -305,12 +305,13 @@ fn no_production_site_compares_an_api_version_by_hand() {
     for (root, relative_root) in roots.iter().zip(read.clone()) {
         let mut files = 0usize;
         for path in rust_sources_under(root) {
-            let name = path.file_name().unwrap_or_default().to_string_lossy();
-            // Test scaffolding carries no `#[cfg(test)]` for the slice to cut
-            // at, and `test_helpers.rs` ships as production while holding an
-            // inline test module the slice WOULD cut at, leaving a fraction of
-            // the file behind.
-            if crate::test_helpers::is_test_source(&path) || name == "test_helpers.rs" {
+            // Test scaffolding carries no `#[cfg(test)]` for the slice to cut at. A file built
+            // only for tests (`is_test_only_file`) is named out as well: no shipped binary
+            // compiles it, and cfgd-core's `test_helpers.rs` holds an inline test module the
+            // slice would cut at, leaving a fraction of the file behind.
+            if crate::test_helpers::is_test_source(&path)
+                || crate::test_helpers::is_test_only_file(&path)
+            {
                 continue;
             }
             let production = production_slice_of(&path);

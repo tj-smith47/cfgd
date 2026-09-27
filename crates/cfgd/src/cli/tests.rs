@@ -1322,9 +1322,10 @@ fn the_startup_check_honours_the_invocations_policy_over_the_declared_one() {
 ///   to a reader (`env_or`, `tool_cmd`, `resolve_knob`, …), derived from the
 ///   sources.
 ///
-/// Files built only for tests are outside the rule: cfgd-core's `test_helpers.rs`
-/// and the `fake-cosign` fixture binary (both behind the `test-helpers`
-/// feature), and cfgd-operator's `test_helpers.rs` (a `#[cfg(test)]` module).
+/// Files built only for tests are outside the rule, as
+/// `cfgd_core::test_helpers::is_test_only_file` names them: cfgd-core's
+/// `test_helpers.rs` and the `fake-cosign` fixture binary (both behind the
+/// `test-helpers` feature), and every module declared under `#[cfg(test)]`.
 /// Tests keep their literals, since they assert the wire spelling. Each crate's
 /// count of spellings has a floor, so a tree the walk stops reading fails.
 #[test]
@@ -1395,24 +1396,10 @@ fn every_cfgd_env_name_is_spelled_once_in_production() {
     // The per-root reader hands back paths under `<cfgd>/..`, so the prefix to
     // strip is spelled the same way.
     let crates_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
-    // Compiled only for tests, so no shipped binary reads what they spell:
-    // cfgd-core's two sit behind the `test-helpers` feature (fake-cosign through
-    // its `required-features`), and cfgd-operator declares its module
-    // `#[cfg(test)] mod test_helpers;`, which the per-file test cut cannot see.
-    // Matched by path, so a production file of the same name elsewhere is read.
-    const TEST_ONLY_FILES: [&str; 3] = [
-        "cfgd-core/src/test_helpers.rs",
-        "cfgd-core/src/bin/fake_cosign.rs",
-        "cfgd-operator/src/test_helpers.rs",
-    ];
-    let test_only = |path: &std::path::Path| {
-        let rel = path.strip_prefix(&crates_dir).unwrap_or(path);
-        TEST_ONLY_FILES.contains(&cfgd_core::to_posix_string(rel).as_str())
-    };
     let sources: Vec<(String, String)> = trees
         .iter()
         .flat_map(|(_, files)| files)
-        .filter(|(path, _)| !test_only(path))
+        .filter(|(path, _)| !cfgd_core::test_helpers::is_test_only_file(path))
         .map(|(path, production)| {
             let rel = path.strip_prefix(&crates_dir).unwrap_or(path);
             (
@@ -1476,7 +1463,8 @@ fn every_cfgd_env_name_is_spelled_once_in_production() {
     for (tree, files) in &trees {
         let mut spelled = 0usize;
         for (path, production) in files {
-            if test_only(path) {
+            // Built only for tests, so no shipped binary reads what they spell.
+            if cfgd_core::test_helpers::is_test_only_file(path) {
                 continue;
             }
             for (i, raw) in production.lines().enumerate() {
@@ -10633,11 +10621,9 @@ fn every_system_configurator_and_secret_provider_names_its_tool_or_says_why_not(
     let mut marked: Vec<String> = Vec::new();
     let mut offenders: Vec<String> = Vec::new();
     for path in files {
-        let name = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or_default();
-        if cfgd_core::test_helpers::is_test_source(&path) || name == "test_helpers.rs" {
+        if cfgd_core::test_helpers::is_test_source(&path)
+            || cfgd_core::test_helpers::is_test_only_file(&path)
+        {
             continue;
         }
         let production = cfgd_core::test_helpers::production_slice_of(&path);
@@ -34769,7 +34755,9 @@ fn every_core_minted_package_drift_id_comes_from_its_composer() {
             .and_then(|n| n.to_str())
             .unwrap_or_default()
             .to_string();
-        if cfgd_core::test_helpers::is_test_source(&path) || name == "test_helpers.rs" {
+        if cfgd_core::test_helpers::is_test_source(&path)
+            || cfgd_core::test_helpers::is_test_only_file(&path)
+        {
             continue;
         }
         let production = cfgd_core::test_helpers::production_slice_of(&path);
@@ -35389,13 +35377,8 @@ fn no_production_site_outside_format_rs_splits_a_module_id() {
         let files = rust_sources_under(root);
         let (mut seen, mut anchors) = (0usize, 0usize);
         for path in files {
-            let name = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or_default()
-                .to_string();
             if cfgd_core::test_helpers::is_test_source(&path)
-                || name == "test_helpers.rs"
+                || cfgd_core::test_helpers::is_test_only_file(&path)
                 || path == exempt
             {
                 continue;
@@ -35585,13 +35568,14 @@ fn reconciler_removal_methods() -> Vec<String> {
 /// binding's own function and over the call graph of the file it sits in.
 /// Neither the setter's name nor the constructors' are spelled here.
 ///
-/// Two file names are excluded. A `tests.rs` is a test region whole, so
+/// Two kinds of file are excluded. A `tests.rs` is a test region whole, so
 /// `production_slice_of` has no `#[cfg(test)]` to cut at and a fixture's own
-/// reconciler would be judged as production. `test_helpers.rs` is the shipped
-/// harness, which is not a route any command takes; it builds three
-/// reconcilers (`plan`, `plan_with_actions`, `apply_with_filter`) and only the
-/// last reaches an apply, where it mirrors `cmd_apply`'s scope test directly
-/// rather than through this walk.
+/// reconciler would be judged as production. A file built only for tests
+/// (`is_test_only_file`) is harness, which is not a route any command takes;
+/// cfgd-core's `test_helpers.rs` builds three reconcilers (`plan`,
+/// `plan_with_actions`, `apply_with_filter`) and only the last reaches an
+/// apply, where it mirrors `cmd_apply`'s scope test directly, outside this
+/// walk.
 #[test]
 fn every_reconciler_a_production_site_builds_says_which_picture_it_saw() {
     const HATCH: &str = "// whole-picture-ok:";
@@ -35631,12 +35615,9 @@ fn every_reconciler_a_production_site_builds_says_which_picture_it_saw() {
     for root in &roots {
         let before = sites;
         for path in rust_sources_under(root) {
-            let name = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or_default()
-                .to_string();
-            if cfgd_core::test_helpers::is_test_source(&path) || name == "test_helpers.rs" {
+            if cfgd_core::test_helpers::is_test_source(&path)
+                || cfgd_core::test_helpers::is_test_only_file(&path)
+            {
                 continue;
             }
             let production = cfgd_core::test_helpers::production_slice_of(&path);
@@ -35762,9 +35743,9 @@ fn every_reconciler_a_production_site_builds_says_which_picture_it_saw() {
 ///
 /// The class is "a file that IS scaffolding", not "a file named `tests.rs`",
 /// so the population is every crate of the workspace, judged by the predicate
-/// those four walks share. A `test_helpers.rs` is scaffolding that ALSO
-/// carries its own inline test module, so it is named out here exactly as it
-/// is named out there.
+/// those four walks share. A file built only for tests under another name
+/// (`test_helpers.rs`, which carries its own inline test module) is no
+/// scaffolding by that predicate, so this walk never reads it.
 #[test]
 fn no_tests_file_carries_a_cfg_test_attribute_of_its_own() {
     /// Every crate of the workspace, each with the floor of scaffolding files
@@ -35803,16 +35784,10 @@ fn no_tests_file_carries_a_cfg_test_attribute_of_its_own() {
     for (krate, floor) in WALK_ROOTS {
         let mut read = 0usize;
         for path in rust_sources_under(&crates_dir.join(krate).join("src")) {
-            let name = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or_default()
-                .to_string();
             // A file that IS test scaffolding carries no `#[cfg(test)]` for a
-            // production slice to cut at. `test_helpers.rs` is the one that
-            // holds an inline test module as well, so it is named out.
+            // production slice to cut at.
             let scaffolding = cfgd_core::test_helpers::is_test_source(&path);
-            if !scaffolding || name == "test_helpers.rs" {
+            if !scaffolding {
                 continue;
             }
             read += 1;
@@ -36447,12 +36422,9 @@ fn no_core_production_site_compares_a_manager_name_to_a_bare_script_literal() {
         let files = rust_sources_under(root);
         let mut seen = 0usize;
         for path in files {
-            let name = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or_default()
-                .to_string();
-            if cfgd_core::test_helpers::is_test_source(&path) || name == "test_helpers.rs" {
+            if cfgd_core::test_helpers::is_test_source(&path)
+                || cfgd_core::test_helpers::is_test_only_file(&path)
+            {
                 continue;
             }
             seen += 1;
@@ -36557,7 +36529,9 @@ fn every_module_drift_id_names_the_file_it_stands_for() {
                 .and_then(|n| n.to_str())
                 .unwrap_or_default()
                 .to_string();
-            if cfgd_core::test_helpers::is_test_source(&path) || name == "test_helpers.rs" {
+            if cfgd_core::test_helpers::is_test_source(&path)
+                || cfgd_core::test_helpers::is_test_only_file(&path)
+            {
                 continue;
             }
             seen += 1;
@@ -36653,11 +36627,9 @@ fn every_resolved_package_producer_routes_through_the_one_resolver() {
         let mut files = rust_sources_under(root);
         files.sort();
         for path in files {
-            let name = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or_default();
-            if cfgd_core::test_helpers::is_test_source(&path) || name == "test_helpers.rs" {
+            if cfgd_core::test_helpers::is_test_source(&path)
+                || cfgd_core::test_helpers::is_test_only_file(&path)
+            {
                 continue;
             }
             seen += 1;
@@ -41448,13 +41420,8 @@ fn no_production_site_hand_rolls_the_v_strip_or_the_owner_token_split() {
         let files = rust_sources_under(root);
         let mut seen = 0usize;
         for path in files {
-            let name = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or_default()
-                .to_string();
             if cfgd_core::test_helpers::is_test_source(&path)
-                || name == "test_helpers.rs"
+                || cfgd_core::test_helpers::is_test_only_file(&path)
                 || path.ends_with("util/hashing.rs")
                 || path.ends_with("output/owner_label.rs")
             {
@@ -41537,13 +41504,8 @@ fn no_production_site_hand_rolls_the_same_path_comparison() {
         let files = rust_sources_under(root);
         let mut seen = 0usize;
         for path in files {
-            let name = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or_default()
-                .to_string();
             if cfgd_core::test_helpers::is_test_source(&path)
-                || name == "test_helpers.rs"
+                || cfgd_core::test_helpers::is_test_only_file(&path)
                 || path.ends_with("util/paths.rs")
                 || path.ends_with("util/fs_perms.rs")
             {
@@ -41611,13 +41573,8 @@ fn no_production_site_joins_the_module_cache_segment_by_hand() {
         let files = rust_sources_under(root);
         let mut seen = 0usize;
         for path in files {
-            let name = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or_default()
-                .to_string();
             if cfgd_core::test_helpers::is_test_source(&path)
-                || name == "test_helpers.rs"
+                || cfgd_core::test_helpers::is_test_only_file(&path)
                 || path.ends_with("util/paths.rs")
                 || path.ends_with("daemon/mod.rs")
                 || path.ends_with("modules/loader.rs")
@@ -41683,12 +41640,9 @@ fn every_recorded_origin_names_the_layer_that_delivered_it() {
     for (r, root) in roots.iter().enumerate() {
         let mut seen = 0usize;
         for path in rust_sources_under(root) {
-            let name = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or_default()
-                .to_string();
-            if cfgd_core::test_helpers::is_test_source(&path) || name == "test_helpers.rs" {
+            if cfgd_core::test_helpers::is_test_source(&path)
+                || cfgd_core::test_helpers::is_test_only_file(&path)
+            {
                 continue;
             }
             seen += 1;
@@ -41786,12 +41740,9 @@ fn no_serialized_payload_field_is_built_from_a_themed_arrow() {
         let files = rust_sources_under(root);
         let mut seen = 0usize;
         for path in files {
-            let name = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or_default()
-                .to_string();
-            if cfgd_core::test_helpers::is_test_source(&path) || name == "test_helpers.rs" {
+            if cfgd_core::test_helpers::is_test_source(&path)
+                || cfgd_core::test_helpers::is_test_only_file(&path)
+            {
                 continue;
             }
             seen += 1;
@@ -43029,7 +42980,7 @@ fn every_display_slot_of_both_crates_folds_the_home_directory() {
     // a single composer today, so an aggregate floor of eight is cleared by
     // `cfgd-core` alone the moment it gains one and this crate's member goes
     // dark.
-    const FLOOR_SOURCES: [usize; ROOTS.len()] = [145, 191];
+    const FLOOR_SOURCES: [usize; ROOTS.len()] = [144, 191];
     const FLOOR_SLOTS: [usize; ROOTS.len()] = [100, 36];
     const FLOOR_COMPOSERS: [usize; ROOTS.len()] = [1, 11];
 
@@ -43038,14 +42989,11 @@ fn every_display_slot_of_both_crates_folds_the_home_directory() {
     let mut sources: Vec<WalkedSource> = Vec::new();
     for (at, root) in roots.iter().enumerate() {
         for path in rust_sources_under(root) {
-            let name = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or_default()
-                .to_string();
             // A test region renders paths of its own and asserts on them, so
             // the population is the production sources alone.
-            if cfgd_core::test_helpers::is_test_source(&path) || name == "test_helpers.rs" {
+            if cfgd_core::test_helpers::is_test_source(&path)
+                || cfgd_core::test_helpers::is_test_only_file(&path)
+            {
                 continue;
             }
             let production = cfgd_core::test_helpers::production_slice_of(&path);
@@ -43283,7 +43231,7 @@ fn no_serialized_payload_slot_renders_a_path_with_the_host_separator() {
         let before = files;
         for path in rust_sources_under(root) {
             if cfgd_core::test_helpers::is_test_source(&path)
-                || path.file_name().is_some_and(|n| n == "test_helpers.rs")
+                || cfgd_core::test_helpers::is_test_only_file(&path)
             {
                 continue;
             }
@@ -45916,12 +45864,9 @@ fn every_require_tool_call_site_names_the_command_that_provisions_the_tool() {
     for root in &roots {
         let before = sites;
         for path in rust_sources_under(root) {
-            let name = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or_default()
-                .to_string();
-            if cfgd_core::test_helpers::is_test_source(&path) || name == "test_helpers.rs" {
+            if cfgd_core::test_helpers::is_test_source(&path)
+                || cfgd_core::test_helpers::is_test_only_file(&path)
+            {
                 continue;
             }
             let production = cfgd_core::test_helpers::production_slice_of(&path);
@@ -49815,8 +49760,9 @@ fn every_integration_test_spawns_the_binary_through_the_one_isolating_constructo
     let core_src = cfgd_core::test_helpers::workspace_root().join("crates/cfgd-core/src");
     let mut systemd_dirs: Vec<String> = Vec::new();
     for path in cfgd_core::test_helpers::rust_sources_under(&core_src) {
-        let rel = cfgd_core::to_posix_string(path.strip_prefix(&core_src).unwrap_or(&path));
-        if cfgd_core::test_helpers::is_test_source(&path) || rel == "test_helpers.rs" {
+        if cfgd_core::test_helpers::is_test_source(&path)
+            || cfgd_core::test_helpers::is_test_only_file(&path)
+        {
             continue;
         }
         let body = walked_file_body(&path);

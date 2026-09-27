@@ -4766,10 +4766,10 @@ fn every_production_journal_mode_switch_goes_through_enable_wal() {
         ("crates/cfgd-core/src", 192),
         ("crates/cfgd-crd/src", 1),
         ("crates/cfgd-csi/src", 8),
-        ("crates/cfgd-operator/src", 46),
+        ("crates/cfgd-operator/src", 42),
         ("crates/cfgd-schema/src", 2),
         ("crates/cfgd-test-fixtures/src", 1),
-        ("crates/cfgd/src", 145),
+        ("crates/cfgd/src", 144),
     ];
     const HELPER_FILE: &str = "crates/cfgd-core/src/state/mod.rs";
 
@@ -4799,8 +4799,9 @@ fn every_production_journal_mode_switch_goes_through_enable_wal() {
     for (root, floor) in WALK_ROOTS {
         let mut files = 0usize;
         for path in rust_sources_under(&workspace.join(root)) {
-            let name = path.file_name().unwrap_or_default().to_string_lossy();
-            if crate::test_helpers::is_test_source(&path) || name == "test_helpers.rs" {
+            if crate::test_helpers::is_test_source(&path)
+                || crate::test_helpers::is_test_only_file(&path)
+            {
                 continue;
             }
             files += 1;

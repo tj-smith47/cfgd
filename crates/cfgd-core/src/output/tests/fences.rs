@@ -2056,8 +2056,8 @@ fn every_test_mutating_the_process_environment_serializes_itself() {
         // A roster entry earns its place by COUNTING the source lines that CALL
         // it — inside the declarations this walk cut, never the file's own
         // `use` block, which names a helper without reaching it.
-        // `test_helpers.rs` is where the helpers live, so its mentions prove
-        // nothing.
+        // The files built only for tests are where the helpers live, so their
+        // mentions prove nothing.
         //
         // Cutting to declarations is what makes an import not a call, and it is
         // also this count's ceiling: a needle reached from file scope — a macro
@@ -2066,7 +2066,7 @@ fn every_test_mutating_the_process_environment_serializes_itself() {
         //
         // The fold does not depend on the entry, so it happens once for the
         // file's declarations rather than once per entry per declaration.
-        if !path.ends_with(Path::new("test_helpers.rs")) {
+        if !crate::test_helpers::is_test_only_file(&path) {
             let code: Vec<String> = sources
                 .values()
                 .flatten()
@@ -2235,8 +2235,9 @@ fn every_test_mutating_the_process_environment_serializes_itself() {
 /// ([`crate::test_helpers::install_tracing_journal`]) is one as well, and it has
 /// no guard: one buffer holds what every thread logs, one wrapper per binary
 /// clears it, and the daemon-loop tests read it back. Its `set_global_default`
-/// lives in `test_helpers.rs`, which this walk skips, so the pin is the wrapper
-/// the journal is cleared through and the reader is the journal read itself.
+/// lives in `test_helpers.rs`, a file built only for tests, which this walk
+/// skips, so the pin is the wrapper the journal is cleared through and the
+/// reader is the journal read itself.
 ///
 /// A declaration that STARTS A DAEMON is a writer of that journal and joins the
 /// group too, which the `run_daemon_with` and `run_daemon_loop` rows are: a
@@ -2378,9 +2379,9 @@ fn every_test_pinning_a_serialized_seam_joins_its_own_group() {
 
     for path in workspace_rust_files() {
         // This file spells every needle in order to hunt for it, and
-        // `test_helpers.rs` is where the guards themselves are declared.
+        // the files built only for tests are where the guards are declared.
         if path.ends_with(Path::new("output/tests/fences.rs"))
-            || path.ends_with(Path::new("test_helpers.rs"))
+            || crate::test_helpers::is_test_only_file(&path)
         {
             continue;
         }
@@ -2650,9 +2651,9 @@ fn every_scoped_tracing_capture_installs_the_journal_under_it() {
 
     for path in workspace_rust_files() {
         // This file spells every needle in order to hunt for it, and
-        // `test_helpers.rs` declares the floor itself.
+        // the files built only for tests declare the floor itself.
         if path.ends_with(Path::new("output/tests/fences.rs"))
-            || path.ends_with(Path::new("test_helpers.rs"))
+            || crate::test_helpers::is_test_only_file(&path)
         {
             continue;
         }
@@ -2764,7 +2765,7 @@ fn every_production_path_read_takes_the_read_guard() {
         // corpus mutates `PATH` on purpose.
         if path.ends_with(Path::new("output/tests/fences.rs"))
             || crate::test_helpers::is_test_source(&path)
-            || path.ends_with(Path::new("test_helpers.rs"))
+            || crate::test_helpers::is_test_only_file(&path)
         {
             continue;
         }
@@ -2993,8 +2994,8 @@ fn calls_named(body: &str, name: &str) -> bool {
 /// route is a shared name went underived, so nothing demanded it and nothing
 /// said why.
 ///
-/// Scoped to `test_helpers.rs`, the workspace's only `test-helpers`-gated
-/// module. Run over every source instead, the same derivation adds exactly
+/// Scoped to the files built only for tests (`is_test_only_file`), where the
+/// helpers live. Run over every source instead, the same derivation adds exactly
 /// one public reacher — CLI startup code that writes `XDG_CONFIG_HOME` before
 /// any thread exists — which is a production concern with its own safety
 /// argument, not a helper a test calls.
@@ -3009,7 +3010,7 @@ fn every_env_mutating_test_helper_is_named_in_the_mutator_roster() {
     let mut offenders = Vec::new();
 
     for path in workspace_rust_files() {
-        if path.file_name() != Some(std::ffi::OsStr::new("test_helpers.rs")) {
+        if !crate::test_helpers::is_test_only_file(&path) {
             continue;
         }
         files_read += 1;
@@ -3156,7 +3157,7 @@ fn every_multi_file_production_walk_reads_through_the_floored_helper() {
         // PRODUCTION region is judged, because the unit tests of the cut below
         // hold one body each and legitimately call the pure form, and a
         // declaration line names the cut rather than reaching it.
-        let own_file = path.file_name() == Some(std::ffi::OsStr::new("test_helpers.rs"));
+        let own_file = crate::to_posix_string(&path).ends_with("cfgd-core/src/test_helpers.rs");
         let body = if own_file {
             crate::test_helpers::production_slice_of(&path)
         } else {
@@ -3257,8 +3258,8 @@ fn names_a_hatch_marker(name: &str) -> bool {
 /// a line's number its own, so an offender can be opened where it is
 /// reported.
 fn test_region(path: &Path, body: &str) -> String {
-    let scaffolding = crate::test_helpers::is_test_source(path)
-        || path.file_name().is_some_and(|n| n == "test_helpers.rs");
+    let scaffolding =
+        crate::test_helpers::is_test_source(path) || crate::test_helpers::is_test_only_file(path);
     if scaffolding {
         return body.to_string();
     }
@@ -4980,15 +4981,10 @@ fn every_production_spawn_in_the_workspace_goes_through_the_one_ladder() {
         let dir = root.join(named);
         let mut files = 0usize;
         for path in crate::test_helpers::rust_sources_under(&dir) {
-            let name = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or_default()
-                .to_string();
             // A file that IS test scaffolding carries no production slice of
             // its own; the predicate is the one four sibling walks share.
             let scaffolding = crate::test_helpers::is_test_source(&path);
-            if scaffolding || name == "test_helpers.rs" {
+            if scaffolding || crate::test_helpers::is_test_only_file(&path) {
                 continue;
             }
             files += 1;
@@ -5293,18 +5289,19 @@ fn no_walk_silently_drops_a_file_it_enumerated() {
     let mut offenders = Vec::new();
     for path in workspace_rust_files() {
         let posix = crate::to_posix_string(&path);
-        let name = posix.rsplit('/').next().unwrap_or(&posix);
         files += 1;
         let body = walked_file_body(&path);
         let lines: Vec<&str> = body.lines().collect();
         // Scaffolding is judged whole: a `tests.rs` carries no `#[cfg(test)]`
-        // to cut at, and a `test_helpers.rs` carries one whose region is a
-        // fraction of the file;
+        // to cut at, and a file built only for tests (`is_test_only_file`) may
+        // carry one whose region is a fraction of the file;
         // every other file is judged from its first one on, the anchor
         // `production_slice` reads from the other side, so the production
         // carve-out falls out of the REGION and a walk written in an inline test
         // module is inside the population rather than outside it.
-        let from = if crate::test_helpers::is_test_source(&path) || name.starts_with("test_") {
+        let from = if crate::test_helpers::is_test_source(&path)
+            || crate::test_helpers::is_test_only_file(&path)
+        {
             Some(0)
         } else {
             lines.iter().position(|l| opens_a_test_region(l))
@@ -5433,10 +5430,11 @@ fn every_path_a_test_substitutes_for_a_label_goes_through_the_one_normalizer() {
     let mut offenders = Vec::new();
     for path in workspace_rust_files() {
         let posix = crate::to_posix_string(&path);
-        let name = posix.rsplit('/').next().unwrap_or(&posix);
         let body = walked_file_body(&path);
         let lines: Vec<&str> = body.lines().collect();
-        let from = if crate::test_helpers::is_test_source(&path) || name.starts_with("test_") {
+        let from = if crate::test_helpers::is_test_source(&path)
+            || crate::test_helpers::is_test_only_file(&path)
+        {
             Some(0)
         } else {
             lines.iter().position(|l| opens_a_test_region(l))
@@ -6539,8 +6537,8 @@ fn the_floor_sentence_matcher_reads_a_literal_and_not_a_comment() {
 /// `process::` and `tokio::process::` spellings all end in the one tell.
 ///
 /// The test regions are the partition the other test-text walks read: a
-/// scaffolding file (`tests.rs`, anything under a `tests` directory,
-/// `test_helpers.rs`) whole, and the `#[cfg(test)]` items of every other
+/// scaffolding file (`tests.rs`, anything under a `tests` directory, a file
+/// `is_test_only_file` names) whole, and the `#[cfg(test)]` items of every other
 /// file; `every_production_spawn_in_the_workspace_goes_through_the_one_ladder`
 /// judges the rest.
 ///
@@ -6791,9 +6789,92 @@ fn is_test_source_names_every_test_only_file_shape_and_nothing_else() {
     ] {
         assert!(
             !crate::test_helpers::is_test_source(Path::new(production)),
-            "{production} is no test-only source"
+            "{production} is not a test-only source by its name"
         );
     }
+}
+
+/// The workspace's files built only for tests, gated from outside themselves,
+/// are derived from the declarations and manifests; a production path sharing
+/// a helper's file name is not one, and a walk's `..` path still is.
+#[test]
+fn is_test_only_file_names_the_workspace_files_built_only_for_tests() {
+    let derived = crate::test_helpers::test_only_files_below(&workspace_root());
+    let derived: Vec<String> = derived.iter().map(crate::to_posix_string).collect();
+    assert_eq!(
+        derived,
+        [
+            "crates/cfgd/src/cli/test_support.rs",
+            "crates/cfgd-core/src/bin/fake_cosign.rs",
+            "crates/cfgd-core/src/test_helpers.rs",
+            "crates/cfgd-operator/src/controllers/test_fixtures.rs",
+            "crates/cfgd-operator/src/controllers/test_kube_harness.rs",
+            "crates/cfgd-operator/src/gateway/test_state.rs",
+            "crates/cfgd-operator/src/test_helpers.rs",
+            "crates/cfgd-operator/src/webhook/test_router.rs",
+        ],
+        "the files the workspace builds only for tests"
+    );
+    let root = workspace_root();
+    let is = crate::test_helpers::is_test_only_file;
+    assert!(is(&root.join("crates/cfgd-core/src/test_helpers.rs")));
+    assert!(is(
+        &root.join("crates/cfgd/../cfgd-core/src/bin/fake_cosign.rs")
+    ));
+    assert!(!is(&root.join("crates/cfgd-csi/src/test_helpers.rs")));
+    assert!(!is(&root.join("crates/cfgd/src/bin/fake_cosign.rs")));
+}
+
+/// Each way a file comes to be built only for tests is read: a gated
+/// declaration in a crate root, in a `mod.rs`, and in a plain module file
+/// (whose children live in the directory named after it), and a `[[bin]]`
+/// requiring `test-helpers`. An ungated declaration, a differently gated one,
+/// and a file `is_test_source` already names are left out.
+#[test]
+fn test_only_files_are_derived_from_gated_declarations_and_manifests() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    let files = [
+        (
+            "crates/a/Cargo.toml",
+            "[package]\nname = \"a\"\n\n[[bin]]\nname = \"fixture\"\npath = \"src/bin/fixture.rs\"\n\
+             required-features = [\"test-helpers\"]\n\n[[bin]]\nname = \"real\"\npath = \"src/bin/real.rs\"\n",
+        ),
+        (
+            "crates/a/src/lib.rs",
+            "#[cfg(test)]\nmod helper;\n#[cfg(any(test, feature = \"test-helpers\"))]\npub mod shared;\n\
+             pub mod open;\n#[cfg(unix)]\nmod unix_only;\n#[cfg(test)]\nmod tests;\npub mod nested;\n",
+        ),
+        ("crates/a/src/helper.rs", "fn h() {}\n"),
+        ("crates/a/src/shared.rs", "fn s() {}\n"),
+        ("crates/a/src/open.rs", "#[cfg(test)]\nmod fixture;\n"),
+        ("crates/a/src/open/fixture.rs", "fn f() {}\n"),
+        ("crates/a/src/unix_only.rs", "fn u() {}\n"),
+        ("crates/a/src/tests.rs", "fn t() {}\n"),
+        ("crates/a/src/nested/mod.rs", "#[cfg(test)]\nmod deep;\n"),
+        ("crates/a/src/nested/deep/mod.rs", "fn d() {}\n"),
+        ("crates/a/src/bin/fixture.rs", "fn main() {}\n"),
+        ("crates/a/src/bin/real.rs", "fn main() {}\n"),
+    ];
+    for (rel, body) in files {
+        let file = ws.join(rel);
+        std::fs::create_dir_all(file.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&file, body).expect("write fixture");
+    }
+    let derived: Vec<String> = crate::test_helpers::test_only_files_below(ws)
+        .iter()
+        .map(crate::to_posix_string)
+        .collect();
+    assert_eq!(
+        derived,
+        [
+            "crates/a/src/bin/fixture.rs",
+            "crates/a/src/helper.rs",
+            "crates/a/src/nested/deep/mod.rs",
+            "crates/a/src/open/fixture.rs",
+            "crates/a/src/shared.rs",
+        ]
+    );
 }
 
 /// A checkout that sits under a directory named `tests` classifies its files
@@ -6846,6 +6927,53 @@ fn is_test_source_judges_only_components_below_the_workspace_root() {
             physical.display()
         );
     }
+}
+
+/// A scan skipping the files built only for tests asks
+/// `is_test_only_file(path)`. A bare `"test_helpers.rs"` skips every file of
+/// that name in any crate, production ones included, and misses the fixture
+/// binary and any module gated the same way. A copy of
+/// either name in any source fails here; a full path naming one specific file
+/// is a different question and passes.
+#[test]
+fn no_scan_hand_copies_the_test_only_file_rule() {
+    const FILES: usize = 575;
+    const ASKS: usize = 34;
+    // Built from pieces so this file's own needles are not read as copies.
+    let tells = [
+        concat!("\"test_", "helpers.rs\""),
+        concat!("\"fake_", "cosign.rs\""),
+    ];
+    let mut files = 0usize;
+    let mut asks = 0usize;
+    let mut offenders = Vec::new();
+    for path in workspace_rust_files() {
+        files += 1;
+        let body = walked_file_body(&path);
+        for (row, line) in body.lines().enumerate() {
+            let code = crate::test_helpers::code_span(line);
+            asks += crate::test_helpers::code_line(line)
+                .matches("is_test_only_file(")
+                .count();
+            if tells.iter().any(|tell| code.contains(tell)) {
+                offenders.push(format!("{}:{}: {}", path.display(), row + 1, line.trim()));
+            }
+        }
+    }
+    assert!(
+        files >= FILES,
+        "the scan read {files} sources under crates/, fewer than the {FILES} the workspace holds"
+    );
+    assert!(
+        asks >= ASKS,
+        "{asks} sites ask is_test_only_file, fewer than the {ASKS} that route a scan through it"
+    );
+    assert!(
+        offenders.is_empty(),
+        "these lines skip a test-only file by its name; ask \
+         `cfgd_core::test_helpers::is_test_only_file(path)` instead:\n{}",
+        offenders.join("\n")
+    );
 }
 
 /// Every scan that skips test-only files asks `is_test_source` which ones

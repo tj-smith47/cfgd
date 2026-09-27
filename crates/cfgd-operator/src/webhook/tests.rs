@@ -2266,12 +2266,13 @@ fn the_env_gate_and_the_module_gate_share_one_predicate() {
     let mut files_walked = 0usize;
     let mut tag_sites: Vec<String> = Vec::new();
     for path in cfgd_core::test_helpers::rust_sources_under(&root) {
-        // Test scaffolding carries no `#[cfg(test)]` of its own for the slice
-        // to cut at, so it is named out here instead. `test_helpers.rs` is
-        // named out for the other reason: it ships as production and holds an
-        // inline test module the slice would cut at.
-        let name = path.file_name().unwrap_or_default().to_string_lossy();
-        if name == "test_helpers.rs" || cfgd_core::test_helpers::is_test_source(&path) {
+        // Test scaffolding carries no `#[cfg(test)]` of its own for the slice to cut at, so it
+        // is named out here instead. A file built only for tests (`is_test_only_file`) is named
+        // out as well: no shipped binary compiles it, and cfgd-core's `test_helpers.rs` holds
+        // an inline test module the slice would cut at, leaving a fraction of the file behind.
+        if cfgd_core::test_helpers::is_test_only_file(&path)
+            || cfgd_core::test_helpers::is_test_source(&path)
+        {
             continue;
         }
         let production = cfgd_core::test_helpers::production_slice_of(&path);

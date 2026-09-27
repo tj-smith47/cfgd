@@ -5599,6 +5599,131 @@ pub fn is_test_source_below(root: &Path, path: &Path) -> bool {
         || rel.components().any(|c| c.as_os_str() == "tests")
 }
 
+/// Whether `path` is a workspace source built only for tests although its name
+/// does not say so, which [`is_test_source`] answers from the name alone: a
+/// module its parent declares under a test gate (`#[cfg(test)] mod x;`, or
+/// cfgd-core's `test_helpers` behind `any(test, feature = "test-helpers")`),
+/// and a `[[bin]]` whose `required-features` names `test-helpers` (the
+/// `fake-cosign` fixture).
+///
+/// No shipped binary compiles such a file, and the gate sits outside it, so it
+/// carries no inner `#[cfg(test)]` for `production_slice` to cut at. A scan
+/// judging production code skips it by asking here. A production file that
+/// shares a helper's name elsewhere is then still read. The set is derived
+/// once per test process from every crate's sources and manifest (one read of
+/// each), so a module gated the same way joins it with no list to keep.
+pub fn is_test_only_file(path: &Path) -> bool {
+    static FILES: std::sync::LazyLock<std::collections::BTreeSet<PathBuf>> =
+        std::sync::LazyLock::new(|| test_only_files_below(&WORKSPACE_ROOT));
+    // Folded lexically, since a walk rooted at `<crate>/../<sibling>` hands
+    // back paths carrying the `..`.
+    let mut folded = PathBuf::new();
+    for part in path.components() {
+        match part {
+            std::path::Component::ParentDir => {
+                folded.pop();
+            }
+            std::path::Component::CurDir => {}
+            other => folded.push(other),
+        }
+    }
+    FILES.contains(folded.strip_prefix(&*WORKSPACE_ROOT).unwrap_or(&folded))
+}
+
+/// The attributes that build a module only for tests, spelled as rustfmt lays
+/// them out on the line above the declaration.
+const TEST_ONLY_GATES: [&str; 2] = [
+    "#[cfg(test)]",
+    "#[cfg(any(test, feature = \"test-helpers\"))]",
+];
+
+/// [`is_test_only_file`]'s set for the workspace at `root`, each path relative
+/// to `root`; files [`is_test_source_below`] already names are left out.
+pub fn test_only_files_below(root: &Path) -> std::collections::BTreeSet<PathBuf> {
+    let crates = root.join("crates");
+    let mut out = std::collections::BTreeSet::new();
+    let mut crate_dirs: Vec<PathBuf> = std::fs::read_dir(&crates)
+        .unwrap_or_else(|e| {
+            panic!(
+                "{}: the walk must read every directory: {e}",
+                crates.display()
+            )
+        })
+        .map(|entry| {
+            entry
+                .unwrap_or_else(|e| {
+                    panic!("{}: the walk must read every entry: {e}", crates.display())
+                })
+                .path()
+        })
+        .filter(|dir| dir.join("Cargo.toml").is_file())
+        .collect();
+    crate_dirs.sort();
+    for dir in &crate_dirs {
+        let manifest: toml::Table = walked_file_body(&dir.join("Cargo.toml"))
+            .parse()
+            .unwrap_or_else(|e| panic!("{}: Cargo.toml must parse: {e}", dir.display()));
+        let bins = manifest.get("bin").and_then(toml::Value::as_array);
+        for bin in bins.into_iter().flatten() {
+            let gated = bin
+                .get("required-features")
+                .and_then(toml::Value::as_array)
+                .is_some_and(|f| f.iter().any(|f| f.as_str() == Some("test-helpers")));
+            if let (true, Some(file)) = (gated, bin.get("path").and_then(toml::Value::as_str)) {
+                let file = dir.join(file);
+                out.insert(file.strip_prefix(root).unwrap_or(&file).to_path_buf());
+            }
+        }
+    }
+    for source in rust_sources_under(&crates) {
+        if is_test_source_below(root, &source) {
+            continue;
+        }
+        let body = walked_file_body(&source);
+        let lines: Vec<&str> = body.lines().collect();
+        for (at, line) in lines.iter().enumerate() {
+            let code = code_line(line);
+            if item_keyword(&code) != "mod" {
+                continue;
+            }
+            let Some(name) = strip_item_lead(&code)
+                .strip_prefix("mod ")
+                .and_then(|rest| rest.trim_end().strip_suffix(';'))
+            else {
+                continue;
+            };
+            let gated = lines[..at]
+                .iter()
+                .rev()
+                .map(|l| l.trim())
+                .take_while(|l| l.starts_with("#["))
+                .any(|attr| TEST_ONLY_GATES.contains(&attr));
+            if !gated {
+                continue;
+            }
+            // A crate root or `mod.rs` declares its children beside itself;
+            // any other file declares them in the directory named after it.
+            let parent = source.parent().unwrap_or(root);
+            let stem = source.file_stem().unwrap_or_default();
+            let base = if ["lib", "main", "mod"].iter().any(|r| stem == *r) {
+                parent.to_path_buf()
+            } else {
+                parent.join(stem)
+            };
+            let file = [
+                base.join(format!("{name}.rs")),
+                base.join(name).join("mod.rs"),
+            ]
+            .into_iter()
+            .find(|candidate| candidate.is_file());
+            if let Some(file) = file.filter(|f| !is_test_source_below(root, f)) {
+                out.insert(file.strip_prefix(root).unwrap_or(&file).to_path_buf());
+            }
+        }
+    }
+    out
+}
+
 /// Every path-based chmod in the production sources of every crate under
 /// `crates_dir`, and the ones that do not say why following a symlink is safe.
 ///
@@ -5721,13 +5846,13 @@ pub fn path_based_chmod_population(crates_dir: &Path) -> ChmodPopulation {
         let (mut files, mut chmods) = (0usize, 0usize);
         for path in rust_sources_under(root) {
             let name = path.file_name().unwrap_or_default().to_string_lossy();
-            // Test scaffolding carries no `#[cfg(test)]` of its own for the slice
-            // to cut at, so it is named out here instead. `test_helpers.rs` is
-            // named out for the other reason: it ships as production and holds an
-            // inline test module the slice would cut at, leaving a fraction of the
-            // file behind.
+            // Test scaffolding carries no `#[cfg(test)]` of its own for the slice to cut at, so
+            // it is named out here instead. A file built only for tests (`is_test_only_file`)
+            // is named out as well: no shipped binary compiles it, and cfgd-core's
+            // `test_helpers.rs` holds an inline test module the slice would cut at, leaving a
+            // fraction of the file behind.
             if name.starts_with("tests")
-                || name == "test_helpers.rs"
+                || is_test_only_file(&path)
                 || path.parent().is_some_and(|p| p.ends_with("tests"))
             {
                 continue;

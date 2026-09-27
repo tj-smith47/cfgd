@@ -1701,13 +1701,14 @@ mod tests {
             .flat_map(|root| crate::test_helpers::rust_sources_under(root))
         {
             let relative = crate::to_posix_string(path.strip_prefix(&workspace).unwrap_or(&path));
-            let name = relative.rsplit('/').next().unwrap_or(&relative);
-            // Test scaffolding carries no `#[cfg(test)]` for the slice to cut
-            // at, so it is named out rather than read as production.
-            // `test_helpers.rs` is named out for the other reason: it ships as
-            // production and holds an inline test module the slice would cut at,
+            // Test scaffolding carries no `#[cfg(test)]` for the slice to cut at, so it is
+            // named out. A file built only for tests
+            // (`is_test_only_file`) is named out as well: no shipped binary compiles it, and
+            // cfgd-core's `test_helpers.rs` holds an inline test module the slice would cut at,
             // leaving a fraction of the file behind.
-            if crate::test_helpers::is_test_source(&path) || name == "test_helpers.rs" {
+            if crate::test_helpers::is_test_source(&path)
+                || crate::test_helpers::is_test_only_file(&path)
+            {
                 continue;
             }
             sources.push((
