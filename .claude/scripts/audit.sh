@@ -3,7 +3,8 @@
 # Uses block-aware test filtering: an awk pass strips #[cfg(test)] blocks
 # by tracking brace depth, so violations inside test modules are correctly ignored.
 #
-# Workspace layout: crates/{cfgd-schema,cfgd-crd,cfgd-core,cfgd,cfgd-csi,cfgd-operator,cfgd-test-fixtures}/src/
+# Workspace layout: crates/<crate>/src/, one per crate: cfgd-schema, cfgd-crd, cfgd-core,
+# cfgd, cfgd-csi, cfgd-operator, cfgd-test-fixtures.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
@@ -1048,7 +1049,8 @@ else
     log_ok "No kebab-case explicit serde rename attributes"
 fi
 
-# Detect kebab-case config field names in user-visible strings (not comments, not CLI flags, not file paths)
+# Detect kebab-case config field names in user-visible strings. Comments, CLI flags and
+# file paths are exempt.
 # Dynamically generate field name patterns from config struct definitions across config/*.rs.
 # This auto-updates as new fields are added — no manual list to maintain.
 config_fields=$(grep -rE '^\s+pub [a-z_]+:' crates/cfgd-core/src/config/ --include='*.rs' \
