@@ -42,6 +42,7 @@ fn inert_migration_gate() -> cfgd::cli::config_schema::GateInvocation<'static> {
         policy_override: Some(cfgd_schema::MigrationPolicy::Ignore),
         assume_yes: false,
         is_daemon: false,
+        preview: false,
         state_dir: None,
         scope: cfgd_core::Scope::User,
     }
@@ -273,8 +274,9 @@ fn init_with_apply_renders_apply_status_streaming() {
     // the scaffold surface (scaffold status lines + git-init success) and
     // the apply surface (apply header + "Nothing to do" status; a preview
     // writes no profile, so no "Set active profile" line), with no buffered
-    // human content trailing it. The streaming → buffered one-blank-line invariant under apply data is
-    // asserted by the `init_apply_then_next_steps_bridge_invariant` test
+    // human content trailing it. The streaming → buffered one-blank-line
+    // invariant under apply data is asserted by the
+    // `init_apply_then_next_steps_bridge_invariant` test
     // below — kept separate because exercising it requires a buffered Doc
     // with human content, which cmd_init does not emit on the apply branch.
     let tmp = tempfile::tempdir().unwrap();

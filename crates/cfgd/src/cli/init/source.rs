@@ -42,13 +42,19 @@ pub(super) fn held_config_document(dir: &Path) -> Option<PathBuf> {
 /// [`refuse_occupied_default_destination`].
 ///
 /// The path is absolutized first, so a relative `--config cfgd.yaml` names the
-/// working directory rather than an empty parent. Whether the file already
-/// exists is deliberately not part of the answer: reading an existing
-/// `--config` as "no destination given" is what sent a run pointed at a
-/// scratch directory into the invoking user's own config directory instead.
+/// working directory. A `--config` naming an existing directory is that
+/// directory; any other `--config` names a document, and its parent is the
+/// destination. Whether the document already exists is deliberately not part
+/// of the answer: reading an existing `--config` as "no destination given" is
+/// what sent a run pointed at a scratch directory into the invoking user's own
+/// config directory.
 pub(crate) fn from_destination(config: &Path) -> Option<PathBuf> {
     let config = cfgd_core::absolutize_path(config);
-    let dir = config.parent()?;
+    let dir = if config.is_dir() {
+        config.as_path()
+    } else {
+        config.parent()?
+    };
     (dir != cfgd_core::default_config_dir()).then(|| dir.to_path_buf())
 }
 
@@ -127,15 +133,15 @@ pub(crate) fn resolve_from(
 /// A plain directory is the config the reader named, so its own document is
 /// read. A clone lands where `config` points, and the repository decides
 /// whether it carries a `cfgd.yaml` or a `cfgd.toml`, so a `config` naming the
-/// destination's document by either default name is resolved again after the
-/// clone; a `config` naming any other file is kept as written.
+/// destination directory, or its document by either default name, is resolved
+/// again after the clone; a `config` naming any other file is kept as written.
 pub(crate) fn from_run_config(from: &str, config: &Path, dest: &Path) -> PathBuf {
     let from = &*cfgd_core::resolve_repo_reference(from);
     let names_the_default_document = config.file_name().is_some_and(|name| {
         name == cfgd_core::config::CONFIG_FILENAME
             || name == cfgd_core::config::CONFIG_FILENAME_TOML
     });
-    if is_clonable_source(from) && !names_the_default_document {
+    if is_clonable_source(from) && !names_the_default_document && !config.is_dir() {
         return config.to_path_buf();
     }
     cfgd_core::config::config_document_in(dest)

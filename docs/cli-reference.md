@@ -105,7 +105,7 @@ repository reference: `cfgd apply --from`, `cfgd plan --from`,
 | `--branch <name>` | Git branch (default: master) |
 | `--name <name>` | Config name in metadata (default: directory name) |
 | `--apply` | Apply configuration after scaffolding |
-| `--dry-run` | Preview the `--apply` step without applying (used with `--apply`/`--apply-profile`/`--apply-module`); the preview plans against the profile `--apply-profile` names and leaves the config document as it was |
+| `--dry-run` | Preview the `--apply` step without applying (used with `--apply`/`--apply-profile`/`--apply-module`); the preview plans against the profile `--apply-profile` names and leaves the config document as it was: neither the fields the running build would add nor `--name` / `--theme` are written |
 | `--apply-profile <name>` | Activate and apply a specific profile (implies --apply, exits `6` if not found) |
 | `--apply-module <name>` | Apply a specific module (repeatable, implies --apply, errors if not found) |
 | `--on-conflict <ask\|backup\|overwrite\|skip\|fail>` | What the `--apply` step does with a target that already holds a file cfgd never wrote (default `ask`; see [`cfgd apply`](#unmanaged-files-at-a-managed-target)) |
@@ -119,15 +119,16 @@ re-scaffolds. With `--from` and a named destination, the run continues to the
 `--theme` are applied as overrides.
 
 A repository or directory carrying a `cfgd.toml` is read and written as TOML at
-every step: `--name`, `--theme` and the profile `--apply-profile` activates
-(outside `--dry-run`) are written into that file, in the order it declares its keys, and no `cfgd.yaml` is
-created beside it.
+every step: outside `--dry-run`, `--name`, `--theme` and the profile
+`--apply-profile` activates are written into that file, in the order it declares
+its keys, and no `cfgd.yaml` is created beside it.
 
 Once the config is on disk, `init` aligns it to the running build before its
 `--apply` step reads it, by the same check and rules as
 [`cfgd config migrate`](#cfgd-config-migrate) describes: `--yes` writes each field
 the document does not declare, an interactive run is asked, and a run with no
-terminal reports them.
+terminal reports them. A `--dry-run` preview writes nothing whatever the policy
+or `--yes`, answering `Prompt` and `Update` the way `Warn` does.
 
 With `--from` and **no** destination named, the config lands in the default
 config directory (`~/.config/cfgd`, or `$XDG_CONFIG_HOME/cfgd`), and cfgd

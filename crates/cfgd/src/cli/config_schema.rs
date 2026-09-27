@@ -104,10 +104,10 @@ pub fn gate_exempt(command: Option<&Command>) -> Option<&'static str> {
 }
 
 /// What one invocation brings to the load-time gate: the policy it named on
-/// its own, whether it answered yes up front, whether it is the daemon, and
-/// the state root an answer is recorded under. Every caller builds it with
-/// [`GateInvocation::of`], so the load-time call and `cfgd init`'s cannot read
-/// those four facts two ways.
+/// its own, whether it answered yes up front, whether it is the daemon or a
+/// preview, and the state root an answer is recorded under. Every caller
+/// builds it with [`GateInvocation::of`], so the load-time call and `cfgd
+/// init`'s cannot read those facts two ways; `init` marks its own preview.
 #[derive(Clone, Copy)]
 pub struct GateInvocation<'a> {
     /// `--migration-policy` / `CFGD_MIGRATION_POLICY`, unfolded.
@@ -115,6 +115,9 @@ pub struct GateInvocation<'a> {
     /// `--yes` / `CFGD_YES`.
     pub assume_yes: bool,
     pub is_daemon: bool,
+    /// A preview (`init --dry-run`), which writes nothing, so the gate
+    /// answers `Prompt` and `Update` as `Warn`, the way it does for the daemon.
+    pub preview: bool,
     /// `--state-dir`, where a prompt's answer is held.
     pub state_dir: Option<&'a Path>,
     pub scope: cfgd_core::Scope,
@@ -127,6 +130,7 @@ impl<'a> GateInvocation<'a> {
             policy_override: crate::cli::migration_policy_override(cli.migration_policy.as_deref()),
             assume_yes: cli.yes,
             is_daemon,
+            preview: false,
             state_dir: cli.state_dir.as_deref(),
             scope: cli.scope(),
         }
@@ -396,17 +400,20 @@ pub fn gate_on_load(printer: &Printer, invocation: &GateInvocation<'_>, config_p
         policy_override,
         assume_yes,
         is_daemon,
+        preview,
         ..
     } = *invocation;
-    let overridden = policy_override.map(|policy| daemon_folded_policy(is_daemon, policy));
+    // A preview answers to the daemon's fold: neither may rewrite the file.
+    let writes_nothing = is_daemon || preview;
+    let overridden = policy_override.map(|policy| daemon_folded_policy(writes_nothing, policy));
     if overridden == Some(MigrationPolicy::Ignore) {
         return;
     }
     let Some((cfg, on_disk)) = read_pair(config_path) else {
         return;
     };
-    let policy =
-        overridden.unwrap_or_else(|| daemon_folded_policy(is_daemon, cfg.spec.migration_policy));
+    let policy = overridden
+        .unwrap_or_else(|| daemon_folded_policy(writes_nothing, cfg.spec.migration_policy));
     if policy == MigrationPolicy::Ignore {
         return;
     }

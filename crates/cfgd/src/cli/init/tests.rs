@@ -10,6 +10,7 @@ fn inert_migration_gate() -> crate::cli::config_schema::GateInvocation<'static> 
         policy_override: Some(cfgd_schema::MigrationPolicy::Ignore),
         assume_yes: false,
         is_daemon: false,
+        preview: false,
         state_dir: None,
         scope: cfgd_core::Scope::User,
     }
@@ -5606,8 +5607,42 @@ mod cmd_init_apply_orchestration {
         assert_eq!(cfg.spec.profile.as_deref(), Some("default"));
     }
 
+    /// A `--from` clone under a `--config` naming an existing directory lands in
+    /// that directory, and the run reads the document the repository brought.
+    #[test]
+    #[serial]
+    fn a_from_clone_under_a_config_directory_reads_that_directorys_document() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp.path());
+        let bare = make_bare_repo_holding(
+            tmp.path(),
+            &[
+                (
+                    "cfgd.toml",
+                    "apiVersion = \"cfgd.io/v1alpha1\"\nkind = \"Config\"\n\n[metadata]\nname = \"cloned-cfg\"\n",
+                ),
+                ("profiles/default.yaml", DEFAULT_PROFILE),
+            ],
+        );
+        let config_dir = tmp.path().join("dst");
+        std::fs::create_dir(&config_dir).unwrap();
+        let url = cfgd_core::test_helpers::file_url(&bare);
+
+        let target = super::super::source::from_destination(&config_dir);
+        assert_eq!(target.as_deref(), Some(config_dir.as_path()));
+        let dest = resolve_from(&url, target.as_deref(), "master", &quiet_printer())
+            .expect("the clone lands in the named directory");
+        assert_eq!(dest, config_dir);
+        assert_eq!(
+            super::super::source::from_run_config(&url, &config_dir, &dest),
+            config_dir.join("cfgd.toml")
+        );
+    }
+
     /// `init --apply-profile --dry-run` plans against the named profile and
-    /// leaves a cloned `cfgd.yaml` byte for byte as the clone put it.
+    /// leaves a cloned `cfgd.yaml` byte for byte as the clone put it: no
+    /// profile, no `--name` / `--theme` override, and no field the migration
+    /// gate would add under `--yes`.
     #[test]
     #[serial]
     fn cmd_init_apply_profile_dry_run_leaves_a_cfgd_yaml_unchanged() {
@@ -5643,20 +5678,30 @@ mod cmd_init_apply_orchestration {
         let state_dir = tmp.path().join("state");
         let url = cfgd_core::test_helpers::file_url(&bare);
 
+        // A live gate that would write: no override, the policy the document
+        // defaults to, and `--yes` taking its prompt.
+        let gate = crate::cli::config_schema::GateInvocation {
+            policy_override: None,
+            assume_yes: true,
+            is_daemon: false,
+            preview: false,
+            state_dir: Some(&state_dir),
+            scope: cfgd_core::Scope::User,
+        };
         let (printer, cap) = Printer::for_test_doc();
         with_state_dir(&state_dir, || {
             let args = InitArgs {
-                migration_gate: inert_migration_gate(),
+                migration_gate: gate,
                 on_conflict: crate::cli::OnConflict::Ask,
                 path: Some(target.to_str().unwrap()),
                 from: Some(&url),
                 branch: "master",
-                name: None,
+                name: Some("acme"),
                 apply: false,
                 dry_run: true,
                 yes: true,
                 install_daemon: false,
-                theme: None,
+                theme: Some("dracula"),
                 apply_profile: Some("other"),
                 apply_modules: &[],
                 cache_dir: None,
@@ -5678,6 +5723,10 @@ mod cmd_init_apply_orchestration {
             out.lines()
                 .any(|l| l.split_whitespace().collect::<Vec<_>>() == ["Profile", "other"]),
             "{document}: the preview plans against the named profile: {out}"
+        );
+        assert!(
+            out.contains("this build reads"),
+            "{document}: the gate reports the fields it would add: {out}"
         );
         assert!(
             !out.contains("Set active profile"),
@@ -6382,6 +6431,7 @@ fn an_answer_given_to_inits_migration_prompt_is_the_one_the_next_command_reads()
         policy_override: None,
         assume_yes: false,
         is_daemon: false,
+        preview: false,
         state_dir: Some(state.path()),
         scope: cfgd_core::Scope::User,
     };
