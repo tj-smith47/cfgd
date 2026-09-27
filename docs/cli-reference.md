@@ -118,6 +118,12 @@ reports `Already initialized at <dir>` and neither clones nor re-scaffolds. With
 `--apply-module` step against the existing config; `--name` / `--theme` are
 applied as overrides.
 
+Once the config is on disk, `init` aligns it to the running build before its
+`--apply` step reads it, by the same check and rules as
+[`cfgd config migrate`](#cfgd-config-migrate) describes: `--yes` writes each field
+the document does not declare, an interactive run is asked, and a run with no
+terminal reports them.
+
 With `--from` and **no** destination named, the config lands in the default
 config directory (`~/.config/cfgd`, or `$XDG_CONFIG_HOME/cfgd`), and cfgd
 refuses when that directory is already somebody's — it holds a `cfgd.yaml`, it
@@ -2762,12 +2768,19 @@ The same check runs at load time under `spec.migrationPolicy` (`--migration-poli
 the answer is remembered — yes or no; a release that adds another field asks
 again, because the question changed. A run with no terminal reports instead and
 records no answer, and the daemon does the same: it never rewrites a tracked file.
+Every write the check makes prints the fields it added.
 
 Four invocations are withheld from that load-time check, because the migration
 question is their own subject: this verb, `cfgd config edit`, and
 `cfgd config set` / `cfgd config unset` on `migrationPolicy`. A check that ran
 first would write the file this report is about, open the editor on bytes it had
 just rewritten, or act on the value the caller is replacing.
+
+`cfgd init` runs the check later in the same invocation, against the config it
+wrote: at load time that file does not exist yet, and its path need not be the
+one `--config` names. The check runs once the file is on disk and before the
+`--apply` step reads it, so a config fresh from `init` asks nothing of the next
+command.
 
 Structured output carries `path`, `pendingKeys` and `written`.
 
