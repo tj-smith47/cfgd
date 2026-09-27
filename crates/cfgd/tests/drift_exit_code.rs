@@ -1136,13 +1136,17 @@ fn every_full_exit_code_surface_renders_and_prices_a_standing_row() {
         );
 
         let state = StateStore::open(&state_tmp.path().join("state.db")).unwrap();
+        // Sorted: the rows come newest first on a one-second clock, so a scan
+        // re-stamping both across a second boundary swaps them.
+        let mut unresolved = state
+            .unresolved_drift()
+            .unwrap()
+            .into_iter()
+            .map(|e| (e.resource_type, e.resource_id))
+            .collect::<Vec<_>>();
+        unresolved.sort();
         assert_eq!(
-            state
-                .unresolved_drift()
-                .unwrap()
-                .into_iter()
-                .map(|e| (e.resource_type, e.resource_id))
-                .collect::<Vec<_>>(),
+            unresolved,
             vec![
                 ("script".to_string(), "echo hook".to_string()),
                 ("script".to_string(), "echo silent".to_string()),
@@ -1287,13 +1291,17 @@ fn every_scoped_exit_code_surface_renders_and_prices_a_standing_row() {
         );
 
         let state = StateStore::open(&state_tmp.path().join("state.db")).unwrap();
+        // Sorted: the rows come newest first on a one-second clock, so a scan
+        // re-stamping both across a second boundary swaps them.
+        let mut unresolved = state
+            .unresolved_drift()
+            .unwrap()
+            .into_iter()
+            .map(|e| (e.resource_type, e.resource_id))
+            .collect::<Vec<_>>();
+        unresolved.sort();
         assert_eq!(
-            state
-                .unresolved_drift()
-                .unwrap()
-                .into_iter()
-                .map(|e| (e.resource_type, e.resource_id))
-                .collect::<Vec<_>>(),
+            unresolved,
             vec![
                 ("module".to_string(), "envmod".to_string()),
                 ("module".to_string(), "envmod:script".to_string()),
