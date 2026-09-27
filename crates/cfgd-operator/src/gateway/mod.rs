@@ -109,7 +109,7 @@ pub async fn start_gateway(
         .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })?
         .with_metrics(config.metrics.clone());
 
-    if std::env::var("CFGD_API_KEY").is_ok() {
+    if std::env::var(cfgd_core::CFGD_API_KEY_ENV).is_ok() {
         tracing::info!("device gateway: API key authentication enabled");
     } else {
         tracing::warn!(

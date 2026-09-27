@@ -79,7 +79,7 @@ async fn web_auth_middleware(
     request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Result<axum::response::Response, GatewayError> {
-    if let Ok(expected_key) = std::env::var("CFGD_API_KEY") {
+    if let Ok(expected_key) = std::env::var(cfgd_core::CFGD_API_KEY_ENV) {
         // 1. Authorization header
         if let Some(token) = extract_bearer_token(&headers)
             && secret_eq(&token, &expected_key)

@@ -1173,7 +1173,7 @@ pub fn default_state_dir() -> Result<PathBuf> {
 /// `/Library/Application Support/cfgd/state`, Windows `%ProgramData%\cfgd\state`)
 /// and consults no home directory, so it never errors. Pure path logic.
 pub fn default_state_dir_for(scope: Scope) -> Result<PathBuf> {
-    if let Ok(dir) = std::env::var("CFGD_STATE_DIR") {
+    if let Ok(dir) = std::env::var(crate::CFGD_STATE_DIR_ENV) {
         return Ok(PathBuf::from(dir));
     }
     if let Some(dir) = crate::systemd_dir("STATE_DIRECTORY") {

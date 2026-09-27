@@ -16,10 +16,10 @@ const MCP_HELP_EXAMPLES: &str = "Examples:\n  \
 /// canonical `true`/`false` before parsing — keeping `CFGD_QUIET=1` ergonomic
 /// without touching the per-arg `#[arg(env = …)]` sites.
 const BOOL_ENV_VARS: &[&str] = &[
-    cli::CFGD_YES_ENV,
-    cli::CFGD_QUIET_ENV,
-    cli::CFGD_REQUIRE_COSIGN_ENV,
-    cli::CFGD_LIST_ENVELOPE_ENV,
+    cfgd_core::CFGD_YES_ENV,
+    cfgd_core::CFGD_QUIET_ENV,
+    cfgd_core::CFGD_REQUIRE_COSIGN_ENV,
+    cfgd_core::CFGD_LIST_ENVELOPE_ENV,
 ];
 
 /// Rewrite a boolish env var to the canonical `true`/`false` spelling clap's
@@ -44,13 +44,13 @@ fn normalize_boolish_env(var: &str) {
 /// (`canonical_bool_str` returns `None` for `2`, so `CFGD_VERBOSE=2` still means
 /// trace) and leave unrecognized values for clap to reject.
 fn normalize_cfgd_verbose_env() {
-    if let Ok(raw) = std::env::var(cli::CFGD_VERBOSE_ENV)
+    if let Ok(raw) = std::env::var(cfgd_core::CFGD_VERBOSE_ENV)
         && let Some(canonical) = canonical_bool_str(&raw)
     {
         let count = if canonical == "true" { "1" } else { "0" };
         // Safe here: runs at the very start of main(), before any threads spawn.
         unsafe {
-            std::env::set_var(cli::CFGD_VERBOSE_ENV, count);
+            std::env::set_var(cfgd_core::CFGD_VERBOSE_ENV, count);
         }
     }
 }
@@ -130,7 +130,7 @@ fn main() -> anyhow::Result<()> {
     // Gate for the macOS config-location migration prompt (evaluated below,
     // after the Printer exists): an explicit `--config`/`CFGD_CONFIG` pins the
     // location.
-    let explicit_config = std::env::var_os(cli::CFGD_CONFIG_ENV).is_some()
+    let explicit_config = std::env::var_os(cfgd_core::CFGD_CONFIG_ENV).is_some()
         || expanded
             .iter()
             .any(|a| a == "--config" || a.starts_with("--config="));

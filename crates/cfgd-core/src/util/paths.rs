@@ -517,7 +517,7 @@ pub fn default_runtime_dir() -> Option<std::path::PathBuf> {
 /// `/Library/Application Support/cfgd/runtime`, Windows `%ProgramData%\cfgd\runtime`)
 /// and is therefore always `Some` — it needs no home directory. Pure path logic.
 pub fn default_runtime_dir_for(scope: Scope) -> Option<std::path::PathBuf> {
-    if let Ok(dir) = std::env::var("CFGD_RUNTIME_DIR") {
+    if let Ok(dir) = std::env::var(crate::CFGD_RUNTIME_DIR_ENV) {
         return Some(std::path::PathBuf::from(dir));
     }
     if let Some(dir) = systemd_dir("RUNTIME_DIRECTORY") {
@@ -604,7 +604,7 @@ pub fn default_cache_dir() -> crate::errors::Result<std::path::PathBuf> {
 /// `/Library/Caches/cfgd`, Windows `%ProgramData%\cfgd\cache`) and consults no
 /// home directory. Pure path logic — never touches the filesystem.
 pub fn default_cache_dir_for(scope: Scope) -> crate::errors::Result<std::path::PathBuf> {
-    if let Ok(dir) = std::env::var("CFGD_CACHE_DIR") {
+    if let Ok(dir) = std::env::var(crate::CFGD_CACHE_DIR_ENV) {
         return Ok(std::path::PathBuf::from(dir));
     }
     if let Some(dir) = systemd_dir("CACHE_DIRECTORY") {

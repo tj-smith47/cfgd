@@ -209,11 +209,14 @@ pub(crate) struct ScriptEnvContext<'a> {
 pub(crate) fn build_script_env(ctx: &ScriptEnvContext<'_>) -> Vec<(String, String)> {
     let mut env = vec![
         (
-            "CFGD_CONFIG_DIR".to_string(),
+            crate::CFGD_CONFIG_DIR_ENV.to_string(),
             // absolute-path-ok: an env var the script itself reads, not a display slot
             ctx.config_dir.display().to_string(),
         ),
-        ("CFGD_PROFILE".to_string(), ctx.profile_name.to_string()),
+        (
+            crate::CFGD_PROFILE_ENV.to_string(),
+            ctx.profile_name.to_string(),
+        ),
         (
             "CFGD_CONTEXT".to_string(),
             match ctx.context {

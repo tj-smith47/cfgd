@@ -43,6 +43,14 @@ pub mod verify;
 pub mod workflow;
 
 pub(in crate::cli) use cfgd_core::reconciler::DecisionContents;
+use cfgd_core::{
+    CFGD_API_KEY_ENV, CFGD_CACHE_DIR_ENV, CFGD_COLOR_ENV, CFGD_CONFIG_DIR_ENV, CFGD_CONFIG_ENV,
+    CFGD_DEVICE_ID_ENV, CFGD_ENROLL_TOKEN_ENV, CFGD_ENROLL_USERNAME_ENV, CFGD_LIST_ENVELOPE_ENV,
+    CFGD_MASK_ENV_VALUES_ENV, CFGD_MIGRATION_POLICY_ENV, CFGD_PROFILE_ENV, CFGD_QUIET_ENV,
+    CFGD_REQUIRE_COSIGN_ENV, CFGD_RUNTIME_DIR_ENV, CFGD_SCOPE_ENV, CFGD_SERVER_URL_ENV,
+    CFGD_STATE_DIR_ENV, CFGD_THEME_ENV, CFGD_UPDATE_POLICY_ENV, CFGD_USAGE_HINTS_ENV,
+    CFGD_VERBOSE_ENV, CFGD_YES_ENV,
+};
 pub use error::{
     CliErrorMeta, cli_error, cli_error_ctx, cli_error_ctx_with_hints,
     cli_error_ctx_with_hints_and_block, cli_error_with_hints, emit_not_found_ignored,
@@ -1036,23 +1044,6 @@ impl From<OutputFormatArg> for clap::builder::OsStr {
     }
 }
 
-/// The environment variables cfgd reads in place of a flag, each spelled once:
-/// the clap `env =` binding and every production reader of the same variable
-/// name it through these, so a rename cannot leave one reader on the old word.
-pub const CFGD_CONFIG_ENV: &str = "CFGD_CONFIG";
-pub const CFGD_VERBOSE_ENV: &str = "CFGD_VERBOSE";
-pub const CFGD_QUIET_ENV: &str = "CFGD_QUIET";
-pub const CFGD_YES_ENV: &str = "CFGD_YES";
-pub const CFGD_COLOR_ENV: &str = "CFGD_COLOR";
-pub const CFGD_THEME_ENV: &str = "CFGD_THEME";
-pub const CFGD_MASK_ENV_VALUES_ENV: &str = "CFGD_MASK_ENV_VALUES";
-pub const CFGD_MIGRATION_POLICY_ENV: &str = "CFGD_MIGRATION_POLICY";
-pub const CFGD_UPDATE_POLICY_ENV: &str = "CFGD_UPDATE_POLICY";
-pub const CFGD_LIST_ENVELOPE_ENV: &str = "CFGD_LIST_ENVELOPE";
-pub const CFGD_USAGE_HINTS_ENV: &str = "CFGD_USAGE_HINTS";
-pub const CFGD_REQUIRE_COSIGN_ENV: &str = "CFGD_REQUIRE_COSIGN";
-pub const CFGD_SERVER_URL_ENV: &str = "CFGD_SERVER_URL";
-
 #[derive(Parser, Clone)]
 #[command(
     name = "cfgd",
@@ -1080,7 +1071,7 @@ pub struct Cli {
     pub config_explicit: bool,
 
     /// Profile to use (overrides config file)
-    #[arg(long, global = true, env = "CFGD_PROFILE")]
+    #[arg(long, global = true, env = CFGD_PROFILE_ENV)]
     pub profile: Option<String>,
 
     /// Verbose output (-v = debug, -vv = trace). Also accepts CFGD_VERBOSE as an on/off flag.
@@ -1211,21 +1202,21 @@ pub struct Cli {
     pub jsonpath: Option<String>,
 
     /// Override state directory (default: $CFGD_STATE_DIR or platform data dir)
-    #[arg(long, global = true, env = "CFGD_STATE_DIR")]
+    #[arg(long, global = true, env = CFGD_STATE_DIR_ENV)]
     pub state_dir: Option<PathBuf>,
 
     /// Override config directory (default: $CFGD_CONFIG_DIR or platform config dir). --config wins.
-    #[arg(long, global = true, env = "CFGD_CONFIG_DIR")]
+    #[arg(long, global = true, env = CFGD_CONFIG_DIR_ENV)]
     pub config_dir: Option<PathBuf>,
 
     /// Override cache directory for sources + modules (default: $CFGD_CACHE_DIR or platform cache
     /// dir)
-    #[arg(long, global = true, env = "CFGD_CACHE_DIR")]
+    #[arg(long, global = true, env = CFGD_CACHE_DIR_ENV)]
     pub cache_dir: Option<PathBuf>,
 
     /// Override runtime directory for sockets + locks (default: $CFGD_RUNTIME_DIR or platform
     /// runtime dir)
-    #[arg(long, global = true, env = "CFGD_RUNTIME_DIR")]
+    #[arg(long, global = true, env = CFGD_RUNTIME_DIR_ENV)]
     pub runtime_dir: Option<PathBuf>,
 
     /// Installation scope: `user` (per-user XDG / `~/...` roots — the default) or
@@ -1239,7 +1230,7 @@ pub struct Cli {
         value_enum,
         value_name = "SCOPE",
         default_value = "user",
-        env = "CFGD_SCOPE"
+        env = CFGD_SCOPE_ENV
     )]
     pub scope_arg: ScopeArg,
 
@@ -1741,11 +1732,11 @@ pub enum Command {
         server_url: String,
 
         /// API key for authentication
-        #[arg(long, env = "CFGD_API_KEY")]
+        #[arg(long, env = CFGD_API_KEY_ENV)]
         api_key: Option<String>,
 
         /// Device identifier (defaults to hostname)
-        #[arg(long, env = "CFGD_DEVICE_ID")]
+        #[arg(long, env = CFGD_DEVICE_ID_ENV)]
         device_id: Option<String>,
     },
 
@@ -1759,7 +1750,7 @@ pub enum Command {
         server_url: String,
 
         /// Bootstrap token for token-based enrollment
-        #[arg(long, env = "CFGD_ENROLL_TOKEN")]
+        #[arg(long, env = CFGD_ENROLL_TOKEN_ENV)]
         token: Option<String>,
 
         /// SSH key file for signing (default: auto-detect from agent or ~/.ssh/)
@@ -1771,7 +1762,7 @@ pub enum Command {
         gpg_key: Option<String>,
 
         /// Username to enroll as (default: current system user)
-        #[arg(long, env = "CFGD_ENROLL_USERNAME")]
+        #[arg(long, env = CFGD_ENROLL_USERNAME_ENV)]
         username: Option<String>,
     },
 

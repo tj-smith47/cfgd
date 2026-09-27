@@ -1299,11 +1299,12 @@ fn the_startup_check_honours_the_invocations_policy_over_the_declared_one() {
 }
 
 /// Every environment variable a clap argument binds is spelled as a literal on at
-/// most one production line of this crate. A second spelling, in a reader beside
-/// the binding or in a second binding, is a copy a rename leaves behind: the flag
-/// keeps working while the other reader goes quiet. The population is clap's own
-/// (`get_env` over the whole command tree), so a new binding joins it unasked.
-/// Tests keep their literals, since they assert the wire spelling.
+/// most one production line of the workspace: its `CFGD_*_ENV` const in cfgd-core.
+/// A second spelling, in a reader beside the binding, a second binding, or a
+/// writer exporting the name to a child, is a copy a rename leaves behind: the
+/// flag keeps working while the other site goes quiet. The population is clap's
+/// own (`get_env` over the whole command tree), so a new binding joins it
+/// unasked. Tests keep their literals, since they assert the wire spelling.
 #[test]
 fn every_clap_bound_env_var_is_spelled_once_in_production() {
     fn bound_env_names(cmd: &clap::Command, out: &mut std::collections::BTreeSet<String>) {
@@ -1320,41 +1321,67 @@ fn every_clap_bound_env_var_is_spelled_once_in_production() {
     let mut names = std::collections::BTreeSet::new();
     bound_env_names(&Cli::command(), &mut names);
     assert!(
-        names.len() >= 10,
+        names.len() >= 20,
         "clap reported only {} env-bound arguments; the scan has stopped seeing the bindings",
         names.len()
     );
 
-    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    // Each root's floor is the literal spellings it holds once every name has
+    // its const: cfgd-core holds one per name in `env_names.rs`, and every other
+    // root holds none, but is read so a second spelling there is caught.
+    const WALK_ROOTS: &[(&str, usize)] = &[
+        ("cfgd", 0),
+        ("cfgd-core", 22),
+        ("cfgd-crd", 0),
+        ("cfgd-csi", 0),
+        ("cfgd-operator", 0),
+        ("cfgd-schema", 0),
+        ("cfgd-test-fixtures", 0),
+    ];
+    let root_names: Vec<&str> = WALK_ROOTS.iter().map(|(k, _)| *k).collect();
+    let trees = production_sources_per_root(&root_names);
+    // The per-root reader hands back paths under `<cfgd>/..`, so the prefix to
+    // strip is spelled the same way.
+    let crates_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     let mut spellings: std::collections::BTreeMap<&str, Vec<String>> =
         names.iter().map(|n| (n.as_str(), Vec::new())).collect();
-    let mut files_read = 0;
-    for path in rust_sources_under(&src) {
-        let file = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or_default();
-        if cfgd_core::test_helpers::is_test_source(&path) || file == "test_helpers.rs" {
-            continue;
-        }
-        files_read += 1;
-        let production = floored_production_body(&path);
-        for (i, raw) in production.lines().enumerate() {
-            // `code_line` cuts a trailing comment at the same byte it finds it in
-            // the raw line, so the raw prefix is the code with its literals intact.
-            let code = &raw[..code_line(raw).len()];
-            for (name, sites) in spellings.iter_mut() {
-                if code.contains(&format!("\"{name}\"")) {
-                    let rel = path.strip_prefix(&src).unwrap_or(&path);
-                    sites.push(format!("src/{}:{}", cfgd_core::to_posix_string(rel), i + 1));
+    let mut per_root: Vec<(&str, usize)> = Vec::new();
+    for (tree, files) in &trees {
+        let mut spelled = 0usize;
+        for (path, production) in files {
+            // Compiled only under the `test-helpers` feature, so no shipped binary
+            // reads what it spells.
+            if path.file_name().is_some_and(|n| n == "test_helpers.rs") {
+                continue;
+            }
+            for (i, raw) in production.lines().enumerate() {
+                // `code_line` cuts a trailing comment at the same byte it finds it
+                // in the raw line, so the raw prefix is the code with its literals
+                // intact.
+                let code = &raw[..code_line(raw).len()];
+                for (name, sites) in spellings.iter_mut() {
+                    if code.contains(&format!("\"{name}\"")) {
+                        let rel = path.strip_prefix(&crates_dir).unwrap_or(path);
+                        let rel = cfgd_core::to_posix_string(rel);
+                        sites.push(format!("crates/{rel}:{}", i + 1));
+                        spelled += 1;
+                    }
                 }
             }
         }
+        per_root.push((tree.as_str(), spelled));
     }
-    assert!(
-        files_read > 100,
-        "the scan read {files_read} production files"
-    );
+    for (root, floor) in WALK_ROOTS {
+        let spelled = per_root
+            .iter()
+            .find(|(k, _)| k == root)
+            .map(|(_, c)| *c)
+            .unwrap_or_default();
+        assert!(
+            spelled >= *floor,
+            "the {root} tree spelled {spelled} clap-bound env names, below its floor of {floor}"
+        );
+    }
     let repeated: Vec<String> = spellings
         .iter()
         .filter(|(_, sites)| sites.len() > 1)
@@ -1362,9 +1389,22 @@ fn every_clap_bound_env_var_is_spelled_once_in_production() {
         .collect();
     assert!(
         repeated.is_empty(),
-        "an env var clap binds is spelled on more than one production line; name it through a \
-         `CFGD_*_ENV` const in cli/mod.rs:\n{}",
+        "an env var clap binds is spelled on more than one production line; read and write it \
+         through its const in crates/cfgd-core/src/util/env_names.rs:\n{}",
         repeated.join("\n")
+    );
+    let unowned: Vec<&str> = spellings
+        .iter()
+        .filter(|(_, sites)| {
+            !sites
+                .iter()
+                .any(|s| s.starts_with("crates/cfgd-core/src/util/env_names.rs:"))
+        })
+        .map(|(name, _)| *name)
+        .collect();
+    assert!(
+        unowned.is_empty(),
+        "an env var clap binds has no const in crates/cfgd-core/src/util/env_names.rs: {unowned:?}"
     );
 }
 

@@ -522,7 +522,7 @@ async fn auth_middleware(
     let bearer_token = extract_bearer_token(&headers);
 
     // Check admin key first (constant-time comparison to prevent timing attacks)
-    if let Ok(expected_key) = std::env::var("CFGD_API_KEY") {
+    if let Ok(expected_key) = std::env::var(cfgd_core::CFGD_API_KEY_ENV) {
         if let Some(ref token) = bearer_token
             && hash_token(token)
                 .as_bytes()
@@ -566,7 +566,7 @@ async fn admin_auth_middleware(
     request: axum::extract::Request,
     next: Next,
 ) -> Result<axum::response::Response, GatewayError> {
-    if let Ok(expected_key) = std::env::var("CFGD_API_KEY") {
+    if let Ok(expected_key) = std::env::var(cfgd_core::CFGD_API_KEY_ENV) {
         match extract_bearer_token(&headers) {
             Some(token)
                 if hash_token(&token)
@@ -579,7 +579,7 @@ async fn admin_auth_middleware(
         // Server misconfig — log at error so the operator notices, but present
         // as 401 to the client to avoid leaking the env-var name.
         tracing::error!(
-            env = "CFGD_API_KEY",
+            env = cfgd_core::CFGD_API_KEY_ENV,
             "admin endpoint hit but CFGD_API_KEY is not set — refusing access"
         );
         return Err(GatewayError::Unauthorized);
