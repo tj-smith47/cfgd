@@ -332,20 +332,24 @@ fn open_store(printer: &Printer, invocation: &GateInvocation<'_>) -> Option<Stat
 /// declare, and under `write` materialize it.
 pub fn cmd_config_migrate(cli: &Cli, printer: &Printer, write: bool) -> anyhow::Result<()> {
     let config_path = &cli.config;
-    let document = StartupDocument::load(config_path);
-    let (Some(cfg), Some(on_disk)) = (document.config(), document.on_disk()) else {
-        return Err(no_config_error(printer, config_path));
+    // startup-load-ok: the verb's own load, so a document it cannot read says why.
+    let (cfg, on_disk) = match cfgd_core::config::read_config_document(config_path) {
+        Ok(pair) => pair,
+        Err(cfgd_core::errors::CfgdError::Config(cfgd_core::errors::ConfigError::NotFound {
+            ..
+        })) => return Err(no_config_error(printer, config_path)),
+        Err(error) => return Err(error.into()),
     };
-    let pending = pending_alignment(cfg, on_disk, config_path);
+    let pending = pending_alignment(&cfg, &on_disk, config_path);
     let wrote = write && !pending.keys.is_empty();
     if wrote {
-        write_alignment(config_path, cfg, &pending)?;
+        write_alignment(config_path, &cfg, &pending)?;
     }
 
     // Each row is the key and the value the write would materialize, read
     // off the same typed value the write reads, so the report and the write
     // cannot name two things.
-    let materialized = serde_yaml::to_value(cfg).unwrap_or(serde_yaml::Value::Null);
+    let materialized = serde_yaml::to_value(&cfg).unwrap_or(serde_yaml::Value::Null);
     let rows: Vec<(String, String)> = pending
         .keys
         .iter()
@@ -671,6 +675,36 @@ mod tests {
     /// write path, so the leading comment block and the schema modeline
     /// survive and the result re-parses. Without `--write` the file is
     /// byte-identical.
+    /// `config migrate` is a verb, so a document it cannot read is reported for
+    /// what is wrong with it: a malformed file names the parse, and only a
+    /// missing one says it was not found.
+    #[test]
+    fn config_migrate_reports_why_it_cannot_read_the_document() {
+        let dir = tempfile::tempdir().unwrap();
+        let printer = cfgd_core::test_helpers::test_printer();
+
+        let missing = dir.path().join("absent.yaml");
+        let error = cmd_config_migrate(&cli_with_config(&missing, None), &printer, false)
+            .expect_err("a missing document fails");
+        assert!(
+            format!("{error:#}").contains("config file not found"),
+            "{error:#}"
+        );
+
+        let malformed = dir.path().join("cfgd.yaml");
+        std::fs::write(
+            &malformed,
+            "apiVersion: cfgd.io/v1alpha1\nkind: [unclosed\n",
+        )
+        .unwrap();
+        let error = cmd_config_migrate(&cli_with_config(&malformed, None), &printer, false)
+            .expect_err("a malformed document fails");
+        assert!(
+            !format!("{error:#}").contains("config file not found"),
+            "a malformed document is not a missing one: {error:#}"
+        );
+    }
+
     #[test]
     fn config_migrate_writes_only_under_write_and_keeps_the_modeline() {
         let dir = tempfile::tempdir().unwrap();

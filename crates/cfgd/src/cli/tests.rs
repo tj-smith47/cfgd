@@ -54078,7 +54078,6 @@ fn the_pre_dispatch_path_loads_the_document_once() {
     let expected: std::collections::BTreeMap<&str, usize> = [
         ("cli/mod.rs", 1),
         ("cli/plugin/mod.rs", 1),
-        ("cli/config_schema.rs", 1),
         ("cli/init/cmd_init.rs", 2),
         ("cli/startup.rs", 1),
     ]
