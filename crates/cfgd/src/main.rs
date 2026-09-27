@@ -365,14 +365,18 @@ fn main() -> anyhow::Result<()> {
 
     // The load-time migration gate, reached once per invocation, after the
     // config path has settled and before dispatch. It is withheld from the
-    // verbs whose own subject is the migration question. The daemon fold is
+    // verbs whose own subject is the migration question, and from `cfgd init`,
+    // which runs it against the document it writes. The daemon fold is
     // the gate's own: it has to fold the STORED policy too, so folding the
     // override here as well would be the same decision taken twice. With
     // nothing overridden the gate reads `spec.migrationPolicy` off the one
     // parse it makes of the document.
     if cli::config_schema::gate_exempt(cli.command.as_ref()).is_none() {
-        let migration_override = cli::migration_policy_override(cli.migration_policy.as_deref());
-        cli::config_schema::gate_on_load(&printer, &cli, is_daemon, migration_override, assume_yes);
+        cli::config_schema::gate_on_load(
+            &printer,
+            &cli::config_schema::GateInvocation::of(&cli, is_daemon),
+            &cli.config,
+        );
     }
 
     // Policy-driven self-update check (interval-gated, cheap when within

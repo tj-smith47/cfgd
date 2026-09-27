@@ -60,12 +60,23 @@ fn names_migration_policy(key: &str) -> bool {
 /// underneath. Every other verb is a reader the advisory is written for, or
 /// has no document for the gate to read.
 ///
+/// `cfgd init` is withheld here because it runs the gate itself, against
+/// the document it wrote, once that document exists: at load time there is
+/// usually nothing on disk yet, and the path it writes need not be the one
+/// `--config` names.
+///
 /// The reasons are documentation — nothing renders them — and the match names
 /// every `config` subcommand, so one added later fails to compile until it is
 /// classified either way.
 pub fn gate_exempt(command: Option<&Command>) -> Option<&'static str> {
-    let Some(Command::Config { command }) = command else {
-        return None;
+    let command = match command {
+        Some(Command::Init { .. }) => {
+            return Some(
+                "the verb writes the config, and runs the gate against the document it wrote",
+            );
+        }
+        Some(Command::Config { command }) => command,
+        _ => return None,
     };
     match command {
         ConfigCommand::Migrate { .. } => Some(
@@ -83,6 +94,36 @@ pub fn gate_exempt(command: Option<&Command>) -> Option<&'static str> {
         | ConfigCommand::Get { .. }
         | ConfigCommand::Set { .. }
         | ConfigCommand::Unset { .. } => None,
+    }
+}
+
+/// What one invocation brings to the load-time gate: the policy it named on
+/// its own, whether it answered yes up front, whether it is the daemon, and
+/// the state root an answer is recorded under. Every caller builds it with
+/// [`GateInvocation::of`], so the load-time call and `cfgd init`'s cannot read
+/// those four facts two ways.
+#[derive(Clone, Copy)]
+pub struct GateInvocation<'a> {
+    /// `--migration-policy` / `CFGD_MIGRATION_POLICY`, unfolded.
+    pub policy_override: Option<MigrationPolicy>,
+    /// `--yes` / `CFGD_YES`.
+    pub assume_yes: bool,
+    pub is_daemon: bool,
+    /// `--state-dir`, where a prompt's answer is held.
+    pub state_dir: Option<&'a Path>,
+    pub scope: cfgd_core::Scope,
+}
+
+impl<'a> GateInvocation<'a> {
+    /// The invocation `cli` parsed to.
+    pub fn of(cli: &'a Cli, is_daemon: bool) -> Self {
+        Self {
+            policy_override: crate::cli::migration_policy_override(cli.migration_policy.as_deref()),
+            assume_yes: cli.yes,
+            is_daemon,
+            state_dir: cli.state_dir.as_deref(),
+            scope: cli.scope(),
+        }
     }
 }
 
@@ -170,9 +211,17 @@ fn prompt_message(pending: &PendingAlignment) -> String {
 /// failure reported rather than dropped. This runs before dispatch, so there
 /// is no command for the error to fail — but a reader who said yes and got
 /// silence would believe the file had been written.
+///
+/// A write that succeeded is announced the same way: the reader's own file
+/// changed under a command that was about something else.
 fn align(printer: &Printer, config_path: &Path, cfg: &CfgdConfig, pending: &PendingAlignment) {
-    if let Err(e) = write_alignment(config_path, cfg, pending) {
-        printer.alert(format!("Could not update this config: {e}"));
+    match write_alignment(config_path, cfg, pending) {
+        Ok(()) => printer.alert(format!(
+            "Added {} this build reads to your config ({})",
+            cfgd_core::pluralize(pending.keys.len(), "field"),
+            pending.keys.join(", ")
+        )),
+        Err(e) => printer.alert(format!("Could not update this config: {e}")),
     }
 }
 
@@ -220,12 +269,12 @@ fn record_answer(
 /// a state directory that could not be resolved or opened, already reported.
 fn consult_recorded(
     printer: &Printer,
-    cli: &Cli,
+    invocation: &GateInvocation<'_>,
     config_path: &Path,
     api_version: &str,
     keys: &[String],
 ) -> Option<(Option<StateStore>, Option<bool>)> {
-    let dir = match crate::cli::helpers::run_state_dir(cli.state_dir.as_deref(), cli.scope()) {
+    let dir = match crate::cli::helpers::run_state_dir(invocation.state_dir, invocation.scope) {
         Ok(dir) => dir,
         Err(e) => {
             printer.alert(format!("Could not resolve the state directory: {e}"));
@@ -235,15 +284,15 @@ fn consult_recorded(
     if !dir.join(cfgd_core::state::STATE_DB_FILENAME).exists() {
         return Some((None, None));
     }
-    let store = open_store(printer, cli)?;
+    let store = open_store(printer, invocation)?;
     let answer = recorded_answer(printer, &store, config_path, api_version, keys);
     Some((Some(store), answer))
 }
 
 /// The state store, opened to HOLD something. Every failure is reported: a
 /// reader who answered and got silence would believe the answer was kept.
-fn open_store(printer: &Printer, cli: &Cli) -> Option<StateStore> {
-    match crate::cli::registry::open_state_store(cli.state_dir.as_deref(), cli.scope()) {
+fn open_store(printer: &Printer, invocation: &GateInvocation<'_>) -> Option<StateStore> {
+    match crate::cli::registry::open_state_store(invocation.state_dir, invocation.scope) {
         Ok(store) => Some(store),
         Err(e) => {
             printer.alert(format!("Could not open the state store: {e}"));
@@ -316,10 +365,12 @@ pub fn cmd_config_migrate(cli: &Cli, printer: &Printer, write: bool) -> anyhow::
     Ok(())
 }
 
-/// The load-time gate: what a document behind this build's schema earns
-/// before dispatch, per `spec.migrationPolicy`.
+/// The load-time gate: what the document at `config_path`, behind this
+/// build's schema, earns per `spec.migrationPolicy`. It runs before dispatch
+/// against `--config`, and inside `cfgd init` against the document init
+/// wrote.
 ///
-/// `policy_override` is what this invocation said on its own
+/// `invocation.policy_override` is what this invocation said on its own
 /// (`--migration-policy` / `CFGD_MIGRATION_POLICY`), unfolded: the daemon
 /// fold is taken here, over the override and the stored policy alike, because
 /// the stored half never passes through the caller at all. With nothing
@@ -331,18 +382,17 @@ pub fn cmd_config_migrate(cli: &Cli, printer: &Printer, write: bool) -> anyhow::
 /// The state store is opened HERE rather than at the call site, and only
 /// where there is an answer to hold: `cfgd paths`, `cfgd explain` and every
 /// other read that records nothing leave the state root as they found it.
-pub fn gate_on_load(
-    printer: &Printer,
-    cli: &Cli,
-    is_daemon: bool,
-    policy_override: Option<MigrationPolicy>,
-    assume_yes: bool,
-) {
+pub fn gate_on_load(printer: &Printer, invocation: &GateInvocation<'_>, config_path: &Path) {
+    let GateInvocation {
+        policy_override,
+        assume_yes,
+        is_daemon,
+        ..
+    } = *invocation;
     let overridden = policy_override.map(|policy| daemon_folded_policy(is_daemon, policy));
     if overridden == Some(MigrationPolicy::Ignore) {
         return;
     }
-    let config_path = &cli.config;
     let Some((cfg, on_disk)) = read_pair(config_path) else {
         return;
     };
@@ -366,9 +416,13 @@ pub fn gate_on_load(
         MigrationPolicy::Update => align(printer, config_path, &cfg, &pending),
         MigrationPolicy::Warn => printer.alert(warn_message(&pending)),
         MigrationPolicy::Prompt => {
-            let Some((held, recorded)) =
-                consult_recorded(printer, cli, config_path, &cfg.api_version, &pending.keys)
-            else {
+            let Some((held, recorded)) = consult_recorded(
+                printer,
+                invocation,
+                config_path,
+                &cfg.api_version,
+                &pending.keys,
+            ) else {
                 return;
             };
             if recorded.is_some() {
@@ -386,7 +440,7 @@ pub fn gate_on_load(
             // held, or one opened now that there is something to put in it.
             let store = match held {
                 Some(store) => Some(store),
-                None => open_store(printer, cli),
+                None => open_store(printer, invocation),
             };
             if let Some(store) = store {
                 record_answer(
@@ -433,6 +487,22 @@ mod tests {
         }
         argv.extend(verb.iter().map(|part| (*part).to_string()));
         Cli::try_parse_hermetic(argv).expect("the fixture argv parses")
+    }
+
+    /// The gate as `cli` would run it, with the policy and the up-front yes
+    /// the case under test names in place of what the argv parsed to.
+    fn gate(
+        printer: &Printer,
+        cli: &Cli,
+        policy_override: Option<MigrationPolicy>,
+        assume_yes: bool,
+    ) {
+        let invocation = GateInvocation {
+            policy_override,
+            assume_yes,
+            ..GateInvocation::of(cli, false)
+        };
+        gate_on_load(printer, &invocation, &cli.config);
     }
 
     /// `--write` materializes the missing keys through the config crate's own
@@ -628,7 +698,7 @@ mod tests {
         // test.
         let (printer, _stdout, stderr) = Printer::for_test_split_streams(Verbosity::Normal);
 
-        gate_on_load(&printer, &cli, false, Some(MigrationPolicy::Prompt), false);
+        gate(&printer, &cli, Some(MigrationPolicy::Prompt), false);
         printer.flush();
 
         assert_eq!(
@@ -666,7 +736,7 @@ mod tests {
             std::fs::write(&path, doc).unwrap();
             let cli = cli_with_config(&path, Some(state.path()));
             let (printer, _stdout, stderr) = Printer::for_test_split_streams(Verbosity::Normal);
-            gate_on_load(&printer, &cli, false, Some(policy), assume_yes);
+            gate(&printer, &cli, Some(policy), assume_yes);
             printer.flush();
             let after = std::fs::read_to_string(&path).unwrap();
             (
@@ -730,7 +800,7 @@ mod tests {
             let cli = cli_with_config(&path, Some(state.path()));
 
             let (printer, _buf) = prompting_printer(vec![PromptAnswer::Confirm(accepted)]);
-            gate_on_load(&printer, &cli, false, Some(MigrationPolicy::Prompt), false);
+            gate(&printer, &cli, Some(MigrationPolicy::Prompt), false);
             printer.flush();
 
             let after = std::fs::read_to_string(&path).unwrap();
@@ -753,7 +823,7 @@ mod tests {
             // all would pop it; returning on the recorded one leaves it in the
             // queue and the document exactly as the first run left it.
             let (again, _buf2) = prompting_printer(vec![PromptAnswer::Confirm(!accepted)]);
-            gate_on_load(&again, &cli, false, Some(MigrationPolicy::Prompt), false);
+            gate(&again, &cli, Some(MigrationPolicy::Prompt), false);
             again.flush();
             assert_eq!(
                 std::fs::read_to_string(&path).unwrap(),
@@ -783,9 +853,14 @@ mod tests {
         let printer = cfgd_core::test_helpers::test_printer();
         let db = state.path().join(cfgd_core::state::STATE_DB_FILENAME);
 
-        let (held, recorded) =
-            consult_recorded(&printer, &cli, &path, cfgd_core::API_VERSION, &keys)
-                .expect("a resolvable state root answers");
+        let (held, recorded) = consult_recorded(
+            &printer,
+            &GateInvocation::of(&cli, false),
+            &path,
+            cfgd_core::API_VERSION,
+            &keys,
+        )
+        .expect("a resolvable state root answers");
         assert!(held.is_none(), "nothing was opened");
         assert_eq!(recorded, None, "and nothing was read");
         assert!(!db.exists(), "no state root was created to read an answer");
@@ -796,9 +871,14 @@ mod tests {
             .unwrap();
         drop(store);
 
-        let (held, recorded) =
-            consult_recorded(&printer, &cli, &path, cfgd_core::API_VERSION, &keys)
-                .expect("a resolvable state root answers");
+        let (held, recorded) = consult_recorded(
+            &printer,
+            &GateInvocation::of(&cli, false),
+            &path,
+            cfgd_core::API_VERSION,
+            &keys,
+        )
+        .expect("a resolvable state root answers");
         assert!(held.is_some(), "a store that holds an answer comes back");
         assert_eq!(recorded, Some(false), "and the answer with it");
     }
@@ -827,7 +907,7 @@ mod tests {
 
         let answered = consult_recorded(
             &printer,
-            &cli,
+            &GateInvocation::of(&cli, false),
             &path,
             cfgd_core::API_VERSION,
             &["spec.migrationPolicy".to_string()],
@@ -880,7 +960,7 @@ mod tests {
         drop(store);
 
         let (printer, buf) = prompting_printer(vec![PromptAnswer::Confirm(false)]);
-        gate_on_load(&printer, &cli, false, Some(MigrationPolicy::Prompt), false);
+        gate(&printer, &cli, Some(MigrationPolicy::Prompt), false);
         printer.flush();
 
         let text = cfgd_core::test_helpers::captured_text(&buf);
@@ -917,7 +997,7 @@ mod tests {
             .unwrap();
             let cli = cli_with_config(&path, Some(state.path()));
             let (printer, _stdout, stderr) = Printer::for_test_split_streams(Verbosity::Normal);
-            gate_on_load(&printer, &cli, false, over, false);
+            gate(&printer, &cli, over, false);
             printer.flush();
             let after = std::fs::read_to_string(&path).unwrap();
             (

@@ -2,6 +2,19 @@ use super::*;
 use cfgd_core::output::{Printer, Verbosity};
 use cfgd_core::test_helpers::test_printer as quiet_printer;
 
+/// The migration gate held off: these tests are about what init scaffolds
+/// and applies, and the gate's own run inside init is exercised against the
+/// real binary, where a state root is isolated per test.
+fn inert_migration_gate() -> crate::cli::config_schema::GateInvocation<'static> {
+    crate::cli::config_schema::GateInvocation {
+        policy_override: Some(cfgd_schema::MigrationPolicy::Ignore),
+        assume_yes: false,
+        is_daemon: false,
+        state_dir: None,
+        scope: cfgd_core::Scope::User,
+    }
+}
+
 /// Drive `cmd_init` while holding the `PATH` read guard.
 ///
 /// `cmd_init` resolves `git` from the process `PATH` and calls `exit(1)` when
@@ -655,6 +668,7 @@ fn cmd_init_scaffolds_local_directory() {
 
     let printer = quiet_printer();
     let args = InitArgs {
+        migration_gate: inert_migration_gate(),
         on_conflict: crate::cli::OnConflict::Ask,
         path: Some(target.to_str().unwrap()),
         from: None,
@@ -712,6 +726,7 @@ fn cmd_init_skips_if_already_initialized() {
 
     let printer = quiet_printer();
     let args = InitArgs {
+        migration_gate: inert_migration_gate(),
         on_conflict: crate::cli::OnConflict::Ask,
         path: Some(target.to_str().unwrap()),
         from: None,
@@ -745,6 +760,7 @@ fn cmd_init_creates_directory_if_missing() {
 
     let printer = quiet_printer();
     let args = InitArgs {
+        migration_gate: inert_migration_gate(),
         on_conflict: crate::cli::OnConflict::Ask,
         path: Some(target.to_str().unwrap()),
         from: None,
@@ -959,6 +975,7 @@ fn cmd_init_with_from_local_path() {
     let (printer, cap) = Printer::for_test_doc();
     let source_str = source.display().to_string();
     let args = InitArgs {
+        migration_gate: inert_migration_gate(),
         on_conflict: crate::cli::OnConflict::Ask,
         path: None,
         from: Some(&source_str),
@@ -1016,6 +1033,7 @@ fn cmd_init_apply_module_prices_the_package_it_installs() {
     let target_str = target.display().to_string();
     let modules = ["priced-init-mod".to_string()];
     let args = InitArgs {
+        migration_gate: inert_migration_gate(),
         on_conflict: crate::cli::OnConflict::Ask,
         path: Some(&target_str),
         from: None,
@@ -1077,6 +1095,7 @@ fn cmd_init_apply_module_leaves_a_tool_another_manager_holds_alone() {
     let target_str = target.display().to_string();
     let modules = ["held-init-mod".to_string()];
     let args = InitArgs {
+        migration_gate: inert_migration_gate(),
         on_conflict: crate::cli::OnConflict::Ask,
         path: Some(&target_str),
         from: None,
@@ -1142,6 +1161,7 @@ fn cmd_init_apply_profile_with_a_module_prices_the_package_it_installs() {
     let target_str = target.display().to_string();
     let modules = ["priced-profile-mod".to_string()];
     let args = InitArgs {
+        migration_gate: inert_migration_gate(),
         on_conflict: crate::cli::OnConflict::Ask,
         path: Some(&target_str),
         from: None,
@@ -1188,6 +1208,7 @@ fn cmd_init_apply_module_only_unknown_module_is_a_typed_not_found_error() {
     let target_str = target.display().to_string();
     let modules = ["no-such-module".to_string()];
     let args = InitArgs {
+        migration_gate: inert_migration_gate(),
         on_conflict: crate::cli::OnConflict::Ask,
         path: Some(&target_str),
         from: None,
@@ -1244,6 +1265,7 @@ fn cmd_init_apply_profile_with_unknown_module_is_a_typed_not_found_error() {
     let target_str = target.display().to_string();
     let modules = ["no-such-module".to_string()];
     let args = InitArgs {
+        migration_gate: inert_migration_gate(),
         on_conflict: crate::cli::OnConflict::Ask,
         path: Some(&target_str),
         from: None,
@@ -1321,6 +1343,7 @@ fn cmd_init_scaffold_to_new_dir() {
     let (printer, cap) = Printer::for_test_doc();
     let target_str = target.display().to_string();
     let args = InitArgs {
+        migration_gate: inert_migration_gate(),
         on_conflict: crate::cli::OnConflict::Ask,
         path: Some(&target_str),
         from: None,
@@ -1378,6 +1401,7 @@ fn cmd_init_already_initialized() {
     let (printer, cap) = Printer::for_test_doc();
     let target_str = target.display().to_string();
     let args = InitArgs {
+        migration_gate: inert_migration_gate(),
         on_conflict: crate::cli::OnConflict::Ask,
         path: Some(&target_str),
         from: None,
@@ -1414,6 +1438,7 @@ fn cmd_init_with_theme() {
     let printer = quiet_printer();
     let target_str = target.display().to_string();
     let args = InitArgs {
+        migration_gate: inert_migration_gate(),
         on_conflict: crate::cli::OnConflict::Ask,
         path: Some(&target_str),
         from: None,
@@ -1907,6 +1932,7 @@ fn cmd_init_with_name_overrides_dir_name() {
     let printer = quiet_printer();
     let target_str = target.display().to_string();
     let args = InitArgs {
+        migration_gate: inert_migration_gate(),
         on_conflict: crate::cli::OnConflict::Ask,
         path: Some(&target_str),
         from: None,
@@ -1942,6 +1968,7 @@ fn cmd_init_creates_git_repo() {
     let printer = quiet_printer();
     let target_str = target.display().to_string();
     let args = InitArgs {
+        migration_gate: inert_migration_gate(),
         on_conflict: crate::cli::OnConflict::Ask,
         path: Some(&target_str),
         from: None,
@@ -1979,6 +2006,7 @@ fn cmd_init_with_theme_and_name_together() {
     let printer = quiet_printer();
     let target_str = target.display().to_string();
     let args = InitArgs {
+        migration_gate: inert_migration_gate(),
         on_conflict: crate::cli::OnConflict::Ask,
         path: Some(&target_str),
         from: None,
@@ -2302,6 +2330,7 @@ fn cmd_init_from_local_path_uses_source_dir() {
     let (printer, cap) = Printer::for_test_doc();
     let source_str = source.display().to_string();
     let args = InitArgs {
+        migration_gate: inert_migration_gate(),
         on_conflict: crate::cli::OnConflict::Ask,
         path: None,
         from: Some(&source_str),
@@ -3200,6 +3229,7 @@ fn cmd_init_from_git_source_with_explicit_target() {
     let origin_str = origin.display().to_string();
     let target_str = target.display().to_string();
     let args = InitArgs {
+        migration_gate: inert_migration_gate(),
         on_conflict: crate::cli::OnConflict::Ask,
         path: Some(&target_str),
         from: Some(&origin_str),
@@ -3267,6 +3297,7 @@ fn init_heading_commits_before_the_clone_window_paints() {
     let origin_str = origin.display().to_string();
     let target_str = target.display().to_string();
     let args = InitArgs {
+        migration_gate: inert_migration_gate(),
         on_conflict: crate::cli::OnConflict::Ask,
         path: Some(&target_str),
         from: Some(&origin_str),
@@ -3345,6 +3376,7 @@ fn cmd_init_from_git_leaves_an_already_initialized_target_intact() {
     let origin_str = origin.display().to_string();
     let target_str = target.display().to_string();
     let args = InitArgs {
+        migration_gate: inert_migration_gate(),
         on_conflict: crate::cli::OnConflict::Ask,
         path: Some(&target_str),
         from: Some(&origin_str),
@@ -3400,6 +3432,7 @@ fn cmd_init_from_plain_path_does_not_rescaffold_over_the_config_it_points_at() {
     let printer = quiet_printer();
     let source_str = source.display().to_string();
     let args = InitArgs {
+        migration_gate: inert_migration_gate(),
         on_conflict: crate::cli::OnConflict::Ask,
         path: None,
         from: Some(&source_str),
@@ -3459,6 +3492,7 @@ fn cmd_init_from_git_with_theme_override() {
     let origin_str = origin.display().to_string();
     let target_str = target.display().to_string();
     let args = InitArgs {
+        migration_gate: inert_migration_gate(),
         on_conflict: crate::cli::OnConflict::Ask,
         path: Some(&target_str),
         from: Some(&origin_str),
@@ -3520,6 +3554,7 @@ fn cmd_init_from_git_applies_name_and_theme_overrides_together() {
     let origin_str = origin.display().to_string();
     let target_str = target.display().to_string();
     let args = InitArgs {
+        migration_gate: inert_migration_gate(),
         on_conflict: crate::cli::OnConflict::Ask,
         path: Some(&target_str),
         from: Some(&origin_str),
@@ -4914,6 +4949,7 @@ mod cmd_init_from_local_bare {
 
         let printer = quiet_printer();
         let args = InitArgs {
+            migration_gate: inert_migration_gate(),
             on_conflict: crate::cli::OnConflict::Ask,
             path: Some(target.to_str().unwrap()),
             from: Some(&url),
@@ -4961,6 +4997,7 @@ mod cmd_init_from_local_bare {
 
         let printer = quiet_printer();
         let args = InitArgs {
+            migration_gate: inert_migration_gate(),
             on_conflict: crate::cli::OnConflict::Ask,
             path: Some(target.to_str().unwrap()),
             from: Some(&url),
@@ -4999,6 +5036,7 @@ mod cmd_init_from_local_bare {
 
         let printer = quiet_printer();
         let args = InitArgs {
+            migration_gate: inert_migration_gate(),
             on_conflict: crate::cli::OnConflict::Ask,
             path: Some(target.to_str().unwrap()),
             from: Some(&url),
@@ -5067,6 +5105,7 @@ mod cmd_init_apply_orchestration {
         let printer = quiet_printer();
         with_state_dir(&state_dir, || {
             let args = InitArgs {
+                migration_gate: inert_migration_gate(),
                 on_conflict: crate::cli::OnConflict::Ask,
                 path: Some(target.to_str().unwrap()),
                 from: None,
@@ -5113,6 +5152,7 @@ mod cmd_init_apply_orchestration {
         with_state_dir(&state_dir, || {
             let modules = vec!["ghost-module".to_string()];
             let args = InitArgs {
+                migration_gate: inert_migration_gate(),
                 on_conflict: crate::cli::OnConflict::Ask,
                 path: Some(target.to_str().unwrap()),
                 from: None,
@@ -5164,6 +5204,7 @@ mod cmd_init_apply_orchestration {
         let printer = quiet_printer();
         with_state_dir(&state_dir, || {
             let args = InitArgs {
+                migration_gate: inert_migration_gate(),
                 on_conflict: crate::cli::OnConflict::Ask,
                 path: Some(target.to_str().unwrap()),
                 from: None,
@@ -5273,6 +5314,7 @@ mod cmd_init_apply_orchestration {
         let (printer, cap) = Printer::for_test_doc();
         with_state_dir(&state_dir, || {
             let args = InitArgs {
+                migration_gate: inert_migration_gate(),
                 on_conflict: crate::cli::OnConflict::Ask,
                 path: Some(target.to_str().unwrap()),
                 from: Some(&url),
@@ -5333,6 +5375,7 @@ mod cmd_init_apply_orchestration {
         let (printer, cap) = Printer::for_test_doc();
         with_state_dir(&state_dir, || {
             let args = InitArgs {
+                migration_gate: inert_migration_gate(),
                 on_conflict: crate::cli::OnConflict::Ask,
                 path: Some(target.to_str().unwrap()),
                 from: Some(&url),
@@ -5385,6 +5428,7 @@ mod cmd_init_apply_orchestration {
         let (printer, cap) = Printer::for_test_doc();
         with_state_dir(&state_dir, || {
             let args = InitArgs {
+                migration_gate: inert_migration_gate(),
                 on_conflict: crate::cli::OnConflict::Ask,
                 path: Some(target.to_str().unwrap()),
                 from: Some(&url),
@@ -5482,6 +5526,7 @@ mod cmd_init_apply_orchestration {
         let (printer, cap) = Printer::for_test_doc();
         with_state_dir(&state_dir, || {
             let args = InitArgs {
+                migration_gate: inert_migration_gate(),
                 on_conflict: crate::cli::OnConflict::Ask,
                 path: Some(target.to_str().unwrap()),
                 from: Some(&url),
@@ -5577,6 +5622,7 @@ mod cmd_init_apply_orchestration {
         let (printer, cap) = Printer::for_test_doc();
         with_state_dir(&state_dir, || {
             let args = InitArgs {
+                migration_gate: inert_migration_gate(),
                 on_conflict: crate::cli::OnConflict::Ask,
                 path: Some(target.to_str().unwrap()),
                 from: Some(&url),
@@ -5684,6 +5730,7 @@ mod cmd_init_apply_orchestration {
         let modules = vec!["extra".to_string()];
         with_state_dir(&state_dir, || {
             let args = InitArgs {
+                migration_gate: inert_migration_gate(),
                 on_conflict: crate::cli::OnConflict::Ask,
                 path: Some(target.to_str().unwrap()),
                 from: Some(&url),
@@ -5747,6 +5794,7 @@ mod cmd_init_apply_orchestration {
         let modules = vec!["ghost-extra".to_string()];
         with_state_dir(&state_dir, || {
             let args = InitArgs {
+                migration_gate: inert_migration_gate(),
                 on_conflict: crate::cli::OnConflict::Ask,
                 path: Some(target.to_str().unwrap()),
                 from: Some(&url),
@@ -5799,6 +5847,7 @@ mod cmd_init_apply_orchestration {
 
         let (printer, cap) = Printer::for_test_doc();
         let args = InitArgs {
+            migration_gate: inert_migration_gate(),
             on_conflict: crate::cli::OnConflict::Ask,
             path: Some(target.to_str().unwrap()),
             from: None,
@@ -5856,6 +5905,7 @@ mod cmd_init_apply_orchestration {
 
         let (printer, cap) = Printer::for_test_doc();
         let args = InitArgs {
+            migration_gate: inert_migration_gate(),
             on_conflict: crate::cli::OnConflict::Ask,
             path: Some(target.to_str().unwrap()),
             from: None,

@@ -49959,17 +49959,20 @@ fn no_walk_bearing_source_scans_syntax_by_hand() {
 /// verbs and not others. The population is derived from the call graph rather
 /// than listed, so a boundary added later joins it by being compiled.
 ///
-/// The gate runs once per process, in `main.rs`, above every boundary under
-/// `cli/` — so the claim this pin holds is that nothing under `cli/` opens a
-/// second path into it, which is what makes the `main.rs` call the whole
-/// population. The daemon is inside that one call: `cfgd-core` cannot reach a
+/// The gate runs once per process: in `main.rs`, above every boundary under
+/// `cli/`, for every verb but `cfgd init`, and inside `cmd_init` for init,
+/// which withholds it at load time because the document it answers about is
+/// the one init is about to write. The claim this test holds is that nothing
+/// else under `cli/` opens a path into it and that `main.rs` withholds init,
+/// which together make the two calls the whole population and never both in
+/// one run. The daemon is inside the `main.rs` call: `cfgd-core` cannot reach a
 /// function of this crate, so the policy it runs under is folded by
 /// `is_daemon` — once, inside `gate_on_load`, which is the only site holding
 /// both the override and the stored policy the fold applies to.
 #[test]
 fn every_config_load_site_answers_the_migration_policy() {
     use cfgd_core::test_helpers::{
-        callers_reaching, fn_declarations, production_slice_of, rust_sources_under, workspace_root,
+        fn_declarations, production_slice_of, rust_sources_under, workspace_root,
     };
     let root = workspace_root().join("crates/cfgd/src/cli");
     let sources = rust_sources_under(&root);
@@ -49987,13 +49990,42 @@ fn every_config_load_site_answers_the_migration_policy() {
         "the walk found {} functions",
         declarations.len()
     );
-    // `callers_reaching` returns the seed with its callers, so a set of one IS
-    // the claim: nothing under `cli/` reaches the gate.
-    let gated = callers_reaching(&declarations, &[("gate_on_load".to_string(), None)]);
+    let direct: Vec<&str> = declarations
+        .iter()
+        .filter(|(name, _, body)| {
+            name != "gate_on_load" && cfgd_core::test_helpers::calls_free_fn(body, "gate_on_load")
+        })
+        .map(|(name, _, _)| name.as_str())
+        .collect();
     assert_eq!(
-        gated.len(),
-        1,
-        "the gate runs once, above every command boundary: {gated:?}"
+        direct,
+        ["cmd_init"],
+        "the gate runs above every command boundary, and init is the one verb that runs it itself"
+    );
+    let init = workspace_root().join("crates/cfgd/src/cli/init/cmd_init.rs");
+    let init = production_slice_of(&init);
+    let (_, _, init_body) = fn_declarations(&init)
+        .into_iter()
+        .find(|(name, owner, _)| name == "cmd_init" && owner.is_none())
+        .expect("`cmd_init` is declared in cmd_init.rs");
+    let gate_at = init_body
+        .find("gate_on_load(")
+        .expect("cmd_init runs the gate");
+    let apply_at = init_body
+        .find("should_run_apply(")
+        .expect("cmd_init decides whether to apply");
+    assert!(
+        gate_at < apply_at,
+        "init aligns the document before its own apply reads it"
+    );
+    let init_cli = {
+        use crate::cli::HermeticParse;
+        Cli::try_parse_hermetic(["cfgd", "init"]).expect("`cfgd init` parses")
+    };
+    let exempt = crate::cli::config_schema::gate_exempt(init_cli.command.as_ref());
+    assert!(
+        exempt.is_some(),
+        "main.rs withholds init, or its config is gated twice"
     );
     let main = production_slice_of(&workspace_root().join("crates/cfgd/src/main.rs"));
     assert!(

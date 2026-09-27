@@ -1008,6 +1008,9 @@ ALLOWED_FN_PAIRS=(
     # slice of sibling fields rather than a single source; a fourth unrelated
     # `of`. `Tier::of` still keeps the budget.
     "of crates/cfgd/src/cli/explain/mod.rs"
+    # `GateInvocation::of` is the same convention again, deriving what one
+    # invocation brings to the migration gate from the parsed `Cli`.
+    "of crates/cfgd/src/cli/config_schema.rs"
     # `AfterPlanCounts::of` is that convention once more, over a finished
     # `ApplyResult`: a fifth unrelated `of`, and the one seam that turns the
     # after-plan class into its wire counts.

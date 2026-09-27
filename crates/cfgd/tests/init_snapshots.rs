@@ -35,12 +35,25 @@ use cfgd_core::output::Printer;
 
 const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
 
+/// The migration gate held off: these goldens pin what init scaffolds and
+/// applies, and the gate's run inside init is covered against the real binary.
+fn inert_migration_gate() -> cfgd::cli::config_schema::GateInvocation<'static> {
+    cfgd::cli::config_schema::GateInvocation {
+        policy_override: Some(cfgd_schema::MigrationPolicy::Ignore),
+        assume_yes: false,
+        is_daemon: false,
+        state_dir: None,
+        scope: cfgd_core::Scope::User,
+    }
+}
+
 #[test]
 fn init_happy_human() {
     let tmp = tempfile::tempdir().unwrap();
     let target = tmp.path().join("happy-cfg");
     let target_str = target.to_string_lossy().into_owned();
     let args = InitArgs {
+        migration_gate: inert_migration_gate(),
         on_conflict: cfgd::cli::OnConflict::Ask,
         path: Some(&target_str),
         from: None,
@@ -109,6 +122,7 @@ fn init_from_a_local_repo_names_the_destination_once() {
     let target_str = target.to_string_lossy().into_owned();
     let source_str = source.to_string_lossy().into_owned();
     let args = InitArgs {
+        migration_gate: inert_migration_gate(),
         on_conflict: cfgd::cli::OnConflict::Ask,
         path: Some(&target_str),
         from: Some(&source_str),
@@ -167,6 +181,7 @@ fn init_happy_json() {
     let target = tmp.path().join("happy-cfg-json");
     let target_str = target.to_string_lossy().into_owned();
     let args = InitArgs {
+        migration_gate: inert_migration_gate(),
         on_conflict: cfgd::cli::OnConflict::Ask,
         path: Some(&target_str),
         from: None,
@@ -214,6 +229,7 @@ fn init_already_initialized_human() {
 
     let target_str = target.to_string_lossy().into_owned();
     let args = InitArgs {
+        migration_gate: inert_migration_gate(),
         on_conflict: cfgd::cli::OnConflict::Ask,
         path: Some(&target_str),
         from: None,
@@ -289,6 +305,7 @@ fn init_with_apply_renders_apply_status_streaming() {
     .unwrap();
 
     let args = InitArgs {
+        migration_gate: inert_migration_gate(),
         on_conflict: cfgd::cli::OnConflict::Ask,
         path: Some(&target_str),
         from: None,
@@ -371,6 +388,7 @@ fn init_theme_rethemed_printer_still_owes_apply_a_blank_line() {
 
     let apply_modules = vec!["empty-mod".to_string()];
     let args = InitArgs {
+        migration_gate: inert_migration_gate(),
         on_conflict: cfgd::cli::OnConflict::Ask,
         path: Some(&target_str),
         from: None,
@@ -562,6 +580,7 @@ fn init_apply_lock_honors_state_dir_override() {
     .unwrap();
 
     let args = InitArgs {
+        migration_gate: inert_migration_gate(),
         on_conflict: cfgd::cli::OnConflict::Ask,
         path: Some(&target_str),
         from: None,

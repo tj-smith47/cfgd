@@ -28,6 +28,9 @@ pub struct InitArgs<'a> {
     pub runtime_dir: Option<&'a Path>,
     pub scope: cfgd_core::Scope,
     pub on_conflict: crate::cli::OnConflict,
+    /// What this invocation brings to the migration gate, which runs here
+    /// against the config init wrote rather than at load time.
+    pub migration_gate: crate::cli::config_schema::GateInvocation<'a>,
 }
 
 /// Structured-output payload for `cfgd init`. Drives `-o json|yaml|jsonpath|template`.
@@ -104,6 +107,11 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
             row = row.detail(detail);
         }
         drop(row);
+        crate::cli::config_schema::gate_on_load(
+            printer,
+            &args.migration_gate,
+            &planned_dir.join(cfgd_core::config::CONFIG_FILENAME),
+        );
         let output = InitOutput {
             target_dir: cfgd_core::to_posix_string(&planned_dir),
         };
@@ -210,6 +218,16 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
     // run renders in it, instead of `--theme` taking effect only next command.
     let rethemed = args.theme.map(|t| printer.rethemed(t));
     let printer = rethemed.as_ref().unwrap_or(printer);
+
+    // The load-time gate is withheld from init because the document did not
+    // exist yet; it runs now, before the apply below reads the file, so the
+    // question a behind-schema config earns is settled during setup instead
+    // of on the first command after it.
+    crate::cli::config_schema::gate_on_load(
+        printer,
+        &args.migration_gate,
+        &target_dir.join(cfgd_core::config::CONFIG_FILENAME),
+    );
 
     // 7. Apply if requested
     let should_apply = should_run_apply(args.apply, args.apply_profile, args.apply_modules);

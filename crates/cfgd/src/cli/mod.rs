@@ -3295,6 +3295,7 @@ pub fn execute(
                 runtime_dir: cli.runtime_dir.as_deref(),
                 scope: cli.scope(),
                 on_conflict: *on_conflict,
+                migration_gate: config_schema::GateInvocation::of(cli, false),
             },
         ),
         Command::Module { command } => match command {
