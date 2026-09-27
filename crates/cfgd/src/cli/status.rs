@@ -5595,6 +5595,57 @@ mod tests {
         }
     }
 
+    /// `plan --from <dir>` and `apply --from <dir>` run against the document
+    /// that directory holds, in either format: the header names that file and
+    /// its profile, and the default config (declaring another profile) is
+    /// never read.
+    #[test]
+    #[serial_test::serial]
+    fn a_from_run_on_a_local_directory_reads_the_document_it_holds() {
+        let tmp_home = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp_home.path());
+        let (_default_dir, state_dir, default_config) = setup_env();
+        let from_yaml = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: from\nspec:\n  profile: other\n";
+        let from_toml = "apiVersion = \"cfgd.io/v1alpha1\"\nkind = \"Config\"\n\n[metadata]\nname = \"from\"\n\n[spec]\nprofile = \"other\"\n";
+        let other_profile = PROFILE_YAML.replace("name: default", "name: other");
+        for (name, body) in [("cfgd.yaml", from_yaml), ("cfgd.toml", from_toml)] {
+            let from_dir = tempfile::tempdir().unwrap();
+            let document = from_dir.path().join(name);
+            std::fs::write(&document, body).unwrap();
+            std::fs::create_dir_all(from_dir.path().join("profiles")).unwrap();
+            std::fs::write(from_dir.path().join("profiles/other.yaml"), &other_profile).unwrap();
+            let cli = test_cli_for(default_config.clone(), state_dir.path());
+            let from = Some(from_dir.path().display().to_string());
+            let plan_args = crate::cli::PlanArgs {
+                from: from.clone(),
+                ..header_plan_args()
+            };
+            let apply_args = crate::cli::ApplyArgs {
+                from,
+                ..header_apply_args()
+            };
+            let config = cfgd_core::fold_home_in_text(&document.display().to_string());
+            for verb in ["plan", "apply"] {
+                let (printer, buf) = test_printers();
+                if verb == "plan" {
+                    crate::cli::plan::cmd_plan(&cli, &printer, &plan_args).unwrap();
+                } else {
+                    crate::cli::apply::run_apply(&cli, &printer, &apply_args).unwrap();
+                }
+                drop(printer);
+                let rows = rendered_header_rows(&cfgd_core::test_helpers::captured_text(&buf));
+                assert!(
+                    rows.iter().any(|row| row == &format!("Config {config}")),
+                    "{verb} --from, {name}: the header names the document the directory holds: {rows:?}"
+                );
+                assert!(
+                    rows.iter().any(|row| row == "Profile other"),
+                    "{verb} --from, {name}: the run reads that document's profile: {rows:?}"
+                );
+            }
+        }
+    }
+
     /// A preview `cfgd apply`: the same header over the same plan, without the
     /// pin having to converge a machine to read it.
     fn header_apply_args() -> crate::cli::ApplyArgs {

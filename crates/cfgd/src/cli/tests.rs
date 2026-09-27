@@ -52756,19 +52756,23 @@ fn every_config_document_read_shape_is_seen_by_the_reader_walk() {
 /// are the ones allowed to hold the raw parse.
 #[test]
 fn no_config_document_reader_parses_its_bytes_outside_config_tree() {
-    /// The reads of the config document the CLI's production sources make
-    /// today; a walk seeing fewer has stopped finding them.
-    const FLOOR_READS: usize = 3;
+    /// The files reading the config document today and the reads each makes
+    /// at least; a file seeing fewer has stopped being found.
+    const FLOOR_READS: [(&str, usize); 3] = [
+        ("src/cli/source/helpers.rs", 1),
+        ("src/cli/config_schema.rs", 1),
+        ("src/cli/config_cmd.rs", 1),
+    ];
     const OWN_FORMAT: &[&str] = &["src/cli/source/helpers.rs", "src/cli/config_schema.rs"];
 
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let mut reads = 0;
+    let mut reads: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
     let mut offenders = Vec::new();
     for (path, body) in cli_production_bodies() {
         let file = cfgd_core::to_posix_string(path.strip_prefix(root).unwrap_or(&path));
         let code = cfgd_core::test_helpers::blank_comments(&body);
         let (seen, parses) = config_document_parses(&code);
-        reads += seen;
+        *reads.entry(file.clone()).or_default() += seen;
         if OWN_FORMAT.contains(&file.as_str()) {
             continue;
         }
@@ -52779,10 +52783,13 @@ fn no_config_document_reader_parses_its_bytes_outside_config_tree() {
                 .map(|i| format!("{file}:{}: {}", i + 1, raw_lines[i].trim())),
         );
     }
-    assert!(
-        reads >= FLOOR_READS,
-        "{reads} reads of the config document seen, fewer than the {FLOOR_READS} today"
-    );
+    for (file, floor) in FLOOR_READS {
+        let seen = reads.get(file).copied().unwrap_or(0);
+        assert!(
+            seen >= floor,
+            "{file}: {seen} reads of the config document seen, fewer than the {floor} it makes today"
+        );
+    }
     assert!(
         offenders.is_empty(),
         "a read of the config document parses its bytes as YAML whatever the file's \
@@ -52803,30 +52810,49 @@ fn joins_the_document_filename(arg: &str) -> bool {
         || arg.contains("\"cfgd.toml\"")
 }
 
-/// Every site in the `cfgd` crate's production sources that names the config
+/// Every site in the workspace's production sources that names the config
 /// document a directory holds reaches it through
 /// `cfgd_core::config::config_document_in`, which reads a `cfgd.toml` where the
 /// directory carries one. A `.join` of the `cfgd.yaml` filename names a file a
 /// TOML directory does not have, so the run drops what it was asked to write
 /// there or refuses the document as missing. The population is every `.join`
-/// whose argument spells either filename; `// document-name-ok: <why>` marks a
-/// site that writes a new document under the name it is created as.
+/// whose argument spells either filename, in every crate read off `crates/`;
+/// `// document-name-ok: <why>` marks the resolver itself and a site that
+/// writes a new document under the name it is created as.
 #[test]
 fn every_directory_held_config_document_is_named_through_config_document_in() {
-    /// The sites the crate's production sources hold today, all of them
-    /// hatched writers of a new document; a walk seeing fewer has stopped
-    /// finding them.
-    const FLOOR_HATCHED: usize = 1;
+    /// The hatched sites each file holds today: the scaffold's write in init,
+    /// and the three joins the resolver is built from. A file seeing fewer has
+    /// stopped being read.
+    const FLOOR_HATCHED: [(&str, usize); 2] = [
+        ("cfgd/src/cli/init/cmd_init.rs", 1),
+        ("cfgd-core/src/config/parse.rs", 3),
+    ];
 
-    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let mut hatched = Vec::new();
+    let crates_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let mut roots: Vec<std::path::PathBuf> = std::fs::read_dir(&crates_dir)
+        .expect("the workspace's crate directory is readable")
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        // An unpublished crate ships in no binary: the fixture crate writes
+        // new documents for tests to read, which is no production site.
+        .filter(|krate| {
+            !cfgd_core::test_helpers::walked_file_body(&krate.join("Cargo.toml"))
+                .lines()
+                .any(|line| line.trim() == "publish = false")
+        })
+        .map(|krate| krate.join("src"))
+        .filter(|src| src.is_dir())
+        .collect();
+    roots.sort();
+    let mut hatched: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
     let mut offenders = Vec::new();
-    for path in rust_sources_under(&src)
-        .into_iter()
+    for path in roots
+        .iter()
+        .flat_map(|root| rust_sources_under(root))
         .filter(|path| !cfgd_core::test_helpers::is_test_source(path))
     {
-        let file = cfgd_core::to_posix_string(path.strip_prefix(root).unwrap_or(&path));
+        let file = cfgd_core::to_posix_string(path.strip_prefix(&crates_dir).unwrap_or(&path));
         let body = cfgd_core::test_helpers::production_slice_of(&path);
         let code = cfgd_core::test_helpers::blank_comments(&body);
         let lines: Vec<&str> = code.lines().collect();
@@ -52845,21 +52871,21 @@ fn every_directory_held_config_document_is_named_through_config_document_in() {
                     k -= 1;
                     mark = carries_hatch(raw_lines[k], DOCUMENT_NAME_HATCH);
                 }
-                let at = format!("{file}:{}: {}", i + 1, raw_lines[i].trim());
                 if mark {
-                    hatched.push(at);
+                    *hatched.entry(file.clone()).or_default() += 1;
                 } else {
-                    offenders.push(at);
+                    offenders.push(format!("{file}:{}: {}", i + 1, raw_lines[i].trim()));
                 }
             }
         }
     }
-    assert!(
-        hatched.len() >= FLOOR_HATCHED,
-        "{} hatched document writers seen, fewer than the {FLOOR_HATCHED} today:\n{}",
-        hatched.len(),
-        hatched.join("\n")
-    );
+    for (file, floor) in FLOOR_HATCHED {
+        let seen = hatched.get(file).copied().unwrap_or(0);
+        assert!(
+            seen >= floor,
+            "{file}: {seen} hatched document names seen, fewer than the {floor} it holds today"
+        );
+    }
     assert!(
         offenders.is_empty(),
         "a site names the config document a directory holds by its filename, so a \

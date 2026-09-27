@@ -319,10 +319,12 @@ pub fn resolve_config_path(path: &Path) -> PathBuf {
     if !path.is_dir() {
         return path.to_path_buf();
     }
+    // document-name-ok: the resolver every other site asks
     let yaml = path.join(CONFIG_FILENAME);
     if yaml.exists() {
         return yaml;
     }
+    // document-name-ok: the resolver every other site asks
     let toml = path.join(CONFIG_FILENAME_TOML);
     if toml.exists() {
         return toml;
@@ -340,6 +342,7 @@ pub fn config_document_in(dir: &Path) -> PathBuf {
     if dir.is_dir() {
         resolve_config_path(dir)
     } else {
+        // document-name-ok: a directory that does not exist yet holds no document
         dir.join(CONFIG_FILENAME)
     }
 }

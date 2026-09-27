@@ -489,16 +489,15 @@ fn made_pending_by_the_write(
     if declared {
         return true;
     }
-    let created = |now: Option<&serde_yaml::Value>| matches!(now, Some(serde_yaml::Value::Mapping(map)) if !map.is_empty());
     let segments: Vec<&str> = key.split('.').collect();
     let mut node = before;
     let mut now = Some(written);
     for segment in &segments[..segments.len() - 1] {
         let now_below = now.and_then(|n| n.get(segment));
         match node.get(segment) {
-            None | Some(serde_yaml::Value::Null) => return created(now_below),
+            None | Some(serde_yaml::Value::Null) => return holds_entries(now_below),
             Some(serde_yaml::Value::Mapping(map)) if map.is_empty() => {
-                return created(now_below);
+                return holds_entries(now_below);
             }
             Some(section @ serde_yaml::Value::Mapping(_)) => {
                 node = section;
@@ -509,6 +508,13 @@ fn made_pending_by_the_write(
         }
     }
     false
+}
+
+/// Whether the written tree holds a non-empty section where the document held
+/// none, which is how [`made_pending_by_the_write`] tells a section the write
+/// created.
+fn holds_entries(written: Option<&serde_yaml::Value>) -> bool {
+    matches!(written, Some(serde_yaml::Value::Mapping(map)) if !map.is_empty())
 }
 
 /// Load config YAML, find a named source, apply a mutation, and write back.

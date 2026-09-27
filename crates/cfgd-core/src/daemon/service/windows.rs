@@ -418,7 +418,7 @@ pub(crate) fn windows_service_main() -> std::result::Result<(), Box<dyn std::err
     // Parse config/profile from process args.
     // SCM invokes: cfgd.exe daemon service --config "C:\..." [--profile "name"]
     let args: Vec<String> = std::env::args().collect();
-    let mut config_path = crate::default_config_dir().join(crate::config::CONFIG_FILENAME);
+    let mut config_path = crate::config::config_document_in(&crate::default_config_dir());
     let mut profile_override: Option<String> = None;
     let mut scope = crate::Scope::User;
     let mut dirs = DaemonDirOverrides::default();

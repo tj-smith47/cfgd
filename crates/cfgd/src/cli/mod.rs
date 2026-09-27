@@ -1036,7 +1036,7 @@ impl From<OutputFormatArg> for clap::builder::OsStr {
     }
 }
 
-#[derive(Parser)]
+#[derive(Parser, Clone)]
 #[command(
     name = "cfgd",
     version,
@@ -1231,7 +1231,7 @@ impl Cli {
     }
 }
 
-#[derive(Parser)]
+#[derive(Parser, Clone)]
 pub struct ApplyArgs {
     /// Apply the plan recorded by `cfgd plan -o json`, instead of planning
     /// again. The file is the approval: cfgd refuses it if the config changed
@@ -1310,7 +1310,7 @@ pub enum OnConflict {
     Fail,
 }
 
-#[derive(Parser)]
+#[derive(Parser, Clone)]
 pub struct PlanArgs {
     /// Config source: git URL on any host, GitHub `owner/repo` shorthand, or local path
     /// to an existing config directory (an existing path wins over the shorthand)
@@ -1346,7 +1346,7 @@ pub struct PlanArgs {
     pub context: String,
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Clone)]
 pub enum Command {
     /// Initialize a new cfgd configuration repository
     #[command(
@@ -1392,7 +1392,8 @@ pub enum Command {
         #[arg(long)]
         install_daemon: bool,
 
-        /// Theme preset to write into the new config's spec.output.theme
+        /// Theme preset written to the config's spec.output.theme (an override on an
+        /// existing or cloned config)
         #[arg(
             long,
             value_name = "NAME",
@@ -1796,7 +1797,7 @@ pub enum Command {
 }
 
 /// Subcommands for `cfgd image`.
-#[derive(Subcommand)]
+#[derive(Subcommand, Clone)]
 pub enum ImageCommand {
     /// Pack a directory into a standard OCI image and push to a registry
     #[command(
@@ -1850,7 +1851,7 @@ pub enum ImageCommand {
     },
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Clone)]
 pub enum ComplianceCommand {
     /// Export compliance snapshot to file or stdout
     Export,
@@ -1874,7 +1875,7 @@ pub enum ComplianceCommand {
     },
 }
 
-#[derive(Parser)]
+#[derive(Parser, Clone)]
 pub struct SourceAddArgs {
     /// Git URL of the source, on any host — or the GitHub shorthand `owner/repo`
     pub url: String,
@@ -1926,7 +1927,7 @@ pub struct SourceAddArgs {
     pub yes: bool,
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Clone)]
 pub enum SourceCommand {
     /// Subscribe to a config source
     Add(Box<SourceAddArgs>),
@@ -2049,7 +2050,7 @@ pub enum SourceCommand {
     },
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Clone)]
 pub enum BackupCommand {
     /// Run one declarative backup, or every declared backup when name is omitted
     Run {
@@ -2115,7 +2116,7 @@ pub enum BackupCommand {
     },
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Clone)]
 pub enum DaemonCommand {
     /// Run daemon in foreground (default when no subcommand given)
     Run,
@@ -2138,7 +2139,7 @@ pub enum DaemonCommand {
     },
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Clone)]
 pub enum SecretCommand {
     /// Encrypt a file
     Encrypt {
@@ -2159,7 +2160,7 @@ pub enum SecretCommand {
     Init,
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Clone)]
 pub enum ConfigCommand {
     /// Show the current cfgd configuration (alias: ls)
     #[command(alias = "ls")]
@@ -2196,7 +2197,7 @@ pub enum ConfigCommand {
     },
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Clone)]
 pub enum WorkflowCommand {
     /// Generate or regenerate GitHub Actions workflows for releases
     Generate {
@@ -2206,7 +2207,7 @@ pub enum WorkflowCommand {
     },
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Clone)]
 pub enum AliasCommand {
     /// Add or update an alias (alias: add)
     #[command(alias = "add")]
@@ -2232,7 +2233,7 @@ pub enum AliasCommand {
     },
 }
 
-#[derive(Parser)]
+#[derive(Parser, Clone)]
 #[allow(rustdoc::invalid_html_tags)]
 pub struct ProfileCreateArgs {
     /// Profile name
@@ -2286,7 +2287,7 @@ pub struct ProfileCreateArgs {
     pub on_drift: Vec<String>,
 }
 
-#[derive(Parser)]
+#[derive(Parser, Clone)]
 #[allow(rustdoc::invalid_html_tags)]
 pub struct ProfileUpdateArgs {
     /// Profile name (default: active profile)
@@ -2348,7 +2349,7 @@ pub struct ProfileUpdateArgs {
     pub allow_unsigned: bool,
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Clone)]
 pub enum ProfileCommand {
     /// List available profiles
     #[command(alias = "ls")]
@@ -2415,7 +2416,7 @@ pub enum ProfileCommand {
     },
 }
 
-#[derive(Parser)]
+#[derive(Parser, Clone)]
 #[allow(rustdoc::invalid_html_tags)]
 pub struct ModuleCreateArgs {
     /// Module name
@@ -2456,7 +2457,7 @@ pub struct ModuleCreateArgs {
     pub yes: bool,
 }
 
-#[derive(Parser)]
+#[derive(Parser, Clone)]
 #[allow(rustdoc::invalid_html_tags)]
 pub struct ModuleUpdateArgs {
     /// Module name
@@ -2493,7 +2494,7 @@ pub struct ModuleUpdateArgs {
     pub sets: Vec<String>,
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Clone)]
 pub enum ModuleCommand {
     /// List available modules and their status
     #[command(alias = "ls")]
@@ -2681,7 +2682,7 @@ pub enum ModuleKeysCommand {
 /// CRD-kind subcommand container: a verb-last noun tree currently holding only
 /// `validate`, leaving room to grow (mirrors `module`/`source`). One enum per
 /// CRD kind keeps each kind's help text and future verbs independent.
-#[derive(Subcommand)]
+#[derive(Subcommand, Clone)]
 pub enum MachineConfigCommand {
     /// Validate a MachineConfig document against the schema
     Validate {
@@ -2691,7 +2692,7 @@ pub enum MachineConfigCommand {
     },
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Clone)]
 pub enum ConfigPolicyCommand {
     /// Validate a ConfigPolicy document against the schema
     Validate {
@@ -2701,7 +2702,7 @@ pub enum ConfigPolicyCommand {
     },
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Clone)]
 pub enum ClusterConfigPolicyCommand {
     /// Validate a ClusterConfigPolicy document against the schema
     Validate {
@@ -2711,7 +2712,7 @@ pub enum ClusterConfigPolicyCommand {
     },
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Clone)]
 pub enum SkillCommand {
     /// Install an agent skill for one author kind across detected providers
     #[command(
@@ -3138,7 +3139,7 @@ pub(crate) fn apply_shell_to_script_shell(s: ApplyShell) -> cfgd_core::config::S
     }
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Clone)]
 pub enum ModuleRegistryCommand {
     /// Add a module registry
     Add {

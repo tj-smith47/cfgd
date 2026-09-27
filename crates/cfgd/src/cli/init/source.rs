@@ -121,6 +121,26 @@ pub(crate) fn resolve_from(
     Ok(dest)
 }
 
+/// The config document a `--from` run reads once [`resolve_from`] has put the
+/// source at `dest`.
+///
+/// A plain directory is the config the reader named, so its own document is
+/// read. A clone lands where `config` points, and the repository decides
+/// whether it carries a `cfgd.yaml` or a `cfgd.toml`, so a `config` naming the
+/// destination's document by either default name is resolved again after the
+/// clone; a `config` naming any other file is kept as written.
+pub(crate) fn from_run_config(from: &str, config: &Path, dest: &Path) -> PathBuf {
+    let from = &*cfgd_core::resolve_repo_reference(from);
+    let names_the_default_document = config.file_name().is_some_and(|name| {
+        name == cfgd_core::config::CONFIG_FILENAME
+            || name == cfgd_core::config::CONFIG_FILENAME_TOML
+    });
+    if is_clonable_source(from) && !names_the_default_document {
+        return config.to_path_buf();
+    }
+    cfgd_core::config::config_document_in(dest)
+}
+
 /// What the default config directory was found to hold, worded for the refusal
 /// below, or `None` when it is free for this run to write into.
 ///

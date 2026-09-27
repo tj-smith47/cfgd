@@ -1373,7 +1373,7 @@ spec:
             }
             let payload = cap.json().expect("doc captured json");
             let written: serde_yaml::Value =
-                serde_yaml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+                serde_yaml::from_str(&cfgd_core::test_helpers::walked_file_body(&path)).unwrap();
             let on_file = walk_yaml_path(&written, &format!("spec.{key}")).ok();
             match on_file {
                 None if payload["removed"] != true => offenders.push(format!(

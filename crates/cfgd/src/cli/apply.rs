@@ -201,11 +201,21 @@ pub fn run_apply(
     // its plan was priced for.
     let flag_context = parse_reconcile_context(&args.context)?;
 
-    // --from: clone from git source or use local path as config directory.
-    if let Some(from) = &args.from {
-        let target = init::from_destination(&cli.config);
-        init::resolve_from(from, target.as_deref(), "master", printer)?;
-    }
+    // --from: clone from a git source, or read a local config directory in
+    // place; either way the run reads the document the source put there.
+    let from_cli;
+    let cli = match &args.from {
+        Some(from) => {
+            let target = init::from_destination(&cli.config);
+            let dest = init::resolve_from(from, target.as_deref(), "master", printer)?;
+            from_cli = Cli {
+                config: init::from_run_config(from, &cli.config, &dest),
+                ..cli.clone()
+            };
+            &from_cli
+        }
+        None => cli,
+    };
 
     let dry_run = args.dry_run;
     let yes = args.yes;

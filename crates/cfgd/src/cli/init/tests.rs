@@ -1498,6 +1498,33 @@ fn resolve_from_local_path_holding_cfgd_toml_is_a_config_repo() {
     assert_eq!(result, dir.path());
 }
 
+/// Which document a `--from` run reads once the source is in place: a plain
+/// directory's own, a clone's under either default name, and a `--config`
+/// naming another file kept as written.
+#[test]
+fn a_from_run_reads_the_document_its_source_put_in_place() {
+    let dest = tempfile::tempdir().unwrap();
+    std::fs::write(dest.path().join("cfgd.toml"), "").unwrap();
+    let toml = dest.path().join("cfgd.toml");
+    let named_yaml = dest.path().join("cfgd.yaml");
+    let custom = dest.path().join("custom.yaml");
+    let plain = dest.path().display().to_string();
+    let clone = "https://example.invalid/you/config.git";
+
+    assert_eq!(
+        super::source::from_run_config(&plain, &named_yaml, dest.path()),
+        toml
+    );
+    assert_eq!(
+        super::source::from_run_config(clone, &named_yaml, dest.path()),
+        toml
+    );
+    assert_eq!(
+        super::source::from_run_config(clone, &custom, dest.path()),
+        custom
+    );
+}
+
 #[test]
 fn resolve_from_local_path_no_config_fails() {
     let dir = tempfile::tempdir().unwrap();
@@ -5467,7 +5494,7 @@ mod cmd_init_apply_orchestration {
         //   1. validate profiles/default.yaml exists
         //   2. write spec.profile=default into cfgd.yaml (even though the
         //      clone already has it — exercises the mutate-on-set arm)
-        //   3. run the profile-based apply (dry_run → zero-action exit)
+        //   3. run the profile-based apply (an empty profile → zero-action exit)
         let tmp = tempfile::tempdir().unwrap();
         let _home = cfgd_core::with_test_home_guard(tmp.path());
         let bare = make_bare_config_repo_with_default(tmp.path(), "");
@@ -5485,7 +5512,7 @@ mod cmd_init_apply_orchestration {
                 branch: "master",
                 name: None,
                 apply: false,
-                dry_run: true,
+                dry_run: false,
                 yes: true,
                 install_daemon: false,
                 theme: None,
@@ -5548,7 +5575,7 @@ mod cmd_init_apply_orchestration {
                 branch: "master",
                 name: Some("acme"),
                 apply: false,
-                dry_run: true,
+                dry_run: false,
                 yes: true,
                 install_daemon: false,
                 theme: Some("dracula"),
@@ -5577,6 +5604,85 @@ mod cmd_init_apply_orchestration {
         assert_eq!(cfg.metadata.name, "acme");
         assert_eq!(cfg.spec.theme().map(|t| t.name.as_str()), Some("dracula"));
         assert_eq!(cfg.spec.profile.as_deref(), Some("default"));
+    }
+
+    /// `init --apply-profile --dry-run` plans against the named profile and
+    /// leaves a cloned `cfgd.yaml` byte for byte as the clone put it.
+    #[test]
+    #[serial]
+    fn cmd_init_apply_profile_dry_run_leaves_a_cfgd_yaml_unchanged() {
+        dry_run_apply_profile_leaves_document_unchanged(
+            "cfgd.yaml",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: cloned-cfg\nspec:\n  profile: default\n",
+        );
+    }
+
+    /// The same preview over a cloned `cfgd.toml`.
+    #[test]
+    #[serial]
+    fn cmd_init_apply_profile_dry_run_leaves_a_cfgd_toml_unchanged() {
+        dry_run_apply_profile_leaves_document_unchanged(
+            "cfgd.toml",
+            "apiVersion = \"cfgd.io/v1alpha1\"\nkind = \"Config\"\n\n[metadata]\nname = \"cloned-cfg\"\n\n[spec]\nprofile = \"default\"\n",
+        );
+    }
+
+    fn dry_run_apply_profile_leaves_document_unchanged(document: &str, contents: &str) {
+        let tmp = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp.path());
+        let other = DEFAULT_PROFILE.replace("name: default", "name: other");
+        let bare = make_bare_repo_holding(
+            tmp.path(),
+            &[
+                (document, contents),
+                ("profiles/default.yaml", DEFAULT_PROFILE),
+                ("profiles/other.yaml", &other),
+            ],
+        );
+        let target = tmp.path().join("dst");
+        let state_dir = tmp.path().join("state");
+        let url = cfgd_core::test_helpers::file_url(&bare);
+
+        let (printer, cap) = Printer::for_test_doc();
+        with_state_dir(&state_dir, || {
+            let args = InitArgs {
+                migration_gate: inert_migration_gate(),
+                on_conflict: crate::cli::OnConflict::Ask,
+                path: Some(target.to_str().unwrap()),
+                from: Some(&url),
+                branch: "master",
+                name: None,
+                apply: false,
+                dry_run: true,
+                yes: true,
+                install_daemon: false,
+                theme: None,
+                apply_profile: Some("other"),
+                apply_modules: &[],
+                cache_dir: None,
+                state_dir: None,
+                runtime_dir: None,
+                scope: cfgd_core::Scope::User,
+            };
+            cmd_init_guarded(&printer, &args).expect("a dry-run init previews the profile");
+        });
+        drop(printer);
+
+        let out = cfgd_core::output::strip_ansi(&cap.human());
+        assert_eq!(
+            std::fs::read_to_string(target.join(document)).unwrap(),
+            contents,
+            "{document}: a preview leaves the config document as the clone put it"
+        );
+        assert!(
+            out.lines()
+                .any(|l| l.split_whitespace().collect::<Vec<_>>() == ["Profile", "other"]),
+            "{document}: the preview plans against the named profile: {out}"
+        );
+        assert!(
+            !out.contains("Set active profile"),
+            "{document}: a preview announces no profile write: {out}"
+        );
     }
 
     /// `--apply-profile` on a clone that carries no config document refuses
@@ -5881,13 +5987,13 @@ mod cmd_init_apply_orchestration {
     #[serial]
     fn cmd_init_combined_apply_profile_and_apply_module_merges_module_into_profile_plan() {
         // `--apply-profile default --apply-module extra` drives the
-        // profile-based branch (lines 162-174 in cmd_init: set spec.profile,
-        // load it) AND the apply-modules merge (lines 195-198: extend
-        // module_names with names passed in --apply-module that the profile
-        // doesn't already list). With dry_run=true, the reconciler plan
-        // bails at "Nothing to do" since the module declares nothing — what
-        // this pins is the *control flow*: profile validated + persisted
-        // + module name carried through into the plan.
+        // profile-based branch (validate the profile, plan against it) AND
+        // the apply-modules merge (extend module_names with names passed in
+        // --apply-module that the profile doesn't already list). With
+        // dry_run=true, the reconciler plan bails at "Nothing to do" since
+        // the module declares nothing — what this pins is the *control
+        // flow*: profile validated + module name carried through into the
+        // plan, with the preview writing no profile into the document.
         let tmp = tempfile::tempdir().unwrap();
         let _home = cfgd_core::with_test_home_guard(tmp.path());
         let bare = make_bare_config_repo_with_default_and_module(tmp.path(), "extra");
@@ -5923,10 +6029,10 @@ mod cmd_init_apply_orchestration {
 
         drop(printer);
         let out = cfgd_core::output::strip_ansi(&cap.human());
-        // Profile-validation arm fires.
+        // A preview writes no profile into the document.
         assert!(
-            out.contains("Set active profile: default"),
-            "combined arm should still announce profile selection: {out}"
+            !out.contains("Set active profile"),
+            "a preview announces no profile write: {out}"
         );
         // The run header carries both: the profile arm's `Profile` row and the
         // module the flag merged into it.

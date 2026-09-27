@@ -144,14 +144,14 @@ pub(in crate::cli) fn build_registry_with_profile(
 /// ([`cfgd_core::config::config_document_in`]), which a `--config` naming
 /// another file in that directory leaves where it is. `run` is the CLI
 /// caller's [`RunContext`]: when the two paths coincide (the common case —
-/// `--config` unset or pointed at the directory's document) the run has already parsed that exact file, so this
-/// takes the parse it already holds instead of reading the same bytes a third
-/// time, and its deprecations were surfaced once by whoever loaded it. When they
-/// differ (a `--config` naming a non-default filename), this reads a genuinely
-/// different file whose deprecations nothing else in the invocation would ever
-/// surface, so it parses and drains here instead. The daemon's
-/// `WorkstationDaemonHooks::plan_files`/`build_file_manager` call sites pass
-/// `None` — they run on every reconcile tick, and draining there would repeat
+/// `--config` unset or pointed at the directory's document) the run has
+/// already parsed that exact file, so this takes the parse it already holds
+/// and reads no bytes a third time, and its deprecations were surfaced once by
+/// whoever loaded it. When they differ (a `--config` naming a non-default
+/// filename), this reads a genuinely different file whose deprecations nothing
+/// else in the invocation would ever surface, so it parses and drains here.
+/// The daemon's `WorkstationDaemonHooks::plan_files`/`build_file_manager` call
+/// sites pass `None` — they run on every reconcile tick, and draining there would repeat
 /// the same notice every interval for the life of the daemon process (the same
 /// reasoning documented for the daemon's other per-tick reloads).
 pub(in crate::cli) fn build_compliance_file_manager(

@@ -334,18 +334,25 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                 if let Err(e) = cfgd_core::config::find_profile_path(&profiles_dir, name) {
                     return Err(crate::cli::profile::profile_lookup_error(e, name));
                 }
-                let mut cfg = crate::cli::mutate_config_yaml(&config_path, |raw| {
-                    crate::cli::config_cmd::spec_mapping_mut(raw, &config_path)?.insert(
-                        serde_yaml::Value::String("profile".into()),
-                        serde_yaml::Value::String(name.to_string()),
-                    );
-                    Ok(())
-                })?
-                .config;
-                drain_config_deprecations(printer, &mut cfg);
-                printer
-                    .status(Role::Ok, "Set active profile")
-                    .qualifier(name);
+                // A preview plans against the named profile and leaves the
+                // document naming the one it named before.
+                if args.dry_run {
+                    let mut cfg = config::load_config(&config_path)?;
+                    drain_config_deprecations(printer, &mut cfg);
+                } else {
+                    let mut cfg = crate::cli::mutate_config_yaml(&config_path, |raw| {
+                        crate::cli::config_cmd::spec_mapping_mut(raw, &config_path)?.insert(
+                            serde_yaml::Value::String("profile".into()),
+                            serde_yaml::Value::String(name.to_string()),
+                        );
+                        Ok(())
+                    })?
+                    .config;
+                    drain_config_deprecations(printer, &mut cfg);
+                    printer
+                        .status(Role::Ok, "Set active profile")
+                        .qualifier(name);
+                }
                 name.to_string()
             } else {
                 // No --apply-profile: use whatever the config document names, or pick interactively

@@ -271,9 +271,9 @@ fn init_with_apply_renders_apply_status_streaming() {
     // `printer.emit(...)`, so the final Doc carries only the InitOutput
     // payload — NOT a buffered human surface. This capture therefore covers
     // the scaffold surface (scaffold status lines + git-init success) and
-    // the apply surface (apply header + "Set active profile" + "Nothing to
-    // do" status), with no buffered human content trailing it. The
-    // streaming → buffered one-blank-line invariant under apply data is
+    // the apply surface (apply header + "Nothing to do" status; a preview
+    // writes no profile, so no "Set active profile" line), with no buffered
+    // human content trailing it. The streaming → buffered one-blank-line invariant under apply data is
     // asserted by the `init_apply_then_next_steps_bridge_invariant` test
     // below — kept separate because exercising it requires a buffered Doc
     // with human content, which cmd_init does not emit on the apply branch.
@@ -355,8 +355,8 @@ fn init_theme_rethemed_printer_still_owes_apply_a_blank_line() {
     // "Initialized at …" whenever `--theme` was passed.
     //
     // Module-only (`apply_profile: None`), not profile-based like the sibling
-    // test above: the profile branch prints "Set active profile: …" on the
-    // rethemed printer BEFORE the Apply header, and that status line's own
+    // test above: the profile branch outside `--dry-run` prints "Set active
+    // profile: …" on the rethemed printer BEFORE the Apply header, and that status line's own
     // group-close re-arms blank-pending independently — masking this exact
     // bug. `cfgd init --theme dracula --apply-module nvim --yes` (the README
     // demo's actual command) takes the module-only branch, which has no such

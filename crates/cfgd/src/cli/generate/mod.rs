@@ -13,7 +13,7 @@ use crate::packages;
 
 use super::{Cli, MSG_RUN_APPLY, config_dir};
 
-#[derive(Debug, Args)]
+#[derive(Debug, Clone, Args)]
 pub struct GenerateArgs {
     #[command(subcommand)]
     pub target: Option<GenerateTarget>,
@@ -47,7 +47,7 @@ pub struct GenerateArgs {
     pub home: Option<String>,
 }
 
-#[derive(Debug, Subcommand)]
+#[derive(Debug, Clone, Subcommand)]
 pub enum GenerateTarget {
     /// Generate a module for a specific tool
     Module {

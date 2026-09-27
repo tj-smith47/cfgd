@@ -10,11 +10,21 @@ pub fn cmd_plan(
 ) -> anyhow::Result<()> {
     let reconcile_context = super::apply::parse_reconcile_context(&args.context)?;
 
-    // --from: mirror cmd_apply so `plan` can be pointed at a git source or local path.
-    if let Some(from) = &args.from {
-        let target = init::from_destination(&cli.config);
-        init::resolve_from(from, target.as_deref(), "master", printer)?;
-    }
+    // --from: clone from a git source, or read a local config directory in
+    // place; either way the run reads the document the source put there.
+    let from_cli;
+    let cli = match &args.from {
+        Some(from) => {
+            let target = init::from_destination(&cli.config);
+            let dest = init::resolve_from(from, target.as_deref(), "master", printer)?;
+            from_cli = Cli {
+                config: init::from_run_config(from, &cli.config, &dest),
+                ..cli.clone()
+            };
+            &from_cli
+        }
+        None => cli,
+    };
 
     let config_dir = config_dir(cli);
     let ctx = RunContext::new(cli, printer);

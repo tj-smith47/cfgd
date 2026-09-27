@@ -105,12 +105,12 @@ repository reference: `cfgd apply --from`, `cfgd plan --from`,
 | `--branch <name>` | Git branch (default: master) |
 | `--name <name>` | Config name in metadata (default: directory name) |
 | `--apply` | Apply configuration after scaffolding |
-| `--dry-run` | Preview the `--apply` step without applying (used with `--apply`/`--apply-profile`/`--apply-module`) |
+| `--dry-run` | Preview the `--apply` step without applying (used with `--apply`/`--apply-profile`/`--apply-module`); the preview plans against the profile `--apply-profile` names and leaves the config document as it was |
 | `--apply-profile <name>` | Activate and apply a specific profile (implies --apply, exits `6` if not found) |
 | `--apply-module <name>` | Apply a specific module (repeatable, implies --apply, errors if not found) |
 | `--on-conflict <ask\|backup\|overwrite\|skip\|fail>` | What the `--apply` step does with a target that already holds a file cfgd never wrote (default `ask`; see [`cfgd apply`](#unmanaged-files-at-a-managed-target)) |
 | `--install-daemon` | Install daemon service after init |
-| `--theme <name>` | Theme name (default, dracula, solarized-dark, solarized-light, nord, monokai, adventure-time, catppuccin-mocha, gruvbox-dark, tokyo-night, one-dark, minimal) |
+| `--theme <name>` | Theme preset written to the config's `spec.output.theme`, an override on an existing or cloned config (default, dracula, solarized-dark, solarized-light, nord, monokai, adventure-time, catppuccin-mocha, gruvbox-dark, tokyo-night, one-dark, minimal) |
 
 `init` never writes over a config directory that already has a `cfgd.yaml` or
 `cfgd.toml`: it reports `Already initialized at <dir>` and neither clones nor
@@ -119,8 +119,8 @@ re-scaffolds. With `--from` and a named destination, the run continues to the
 `--theme` are applied as overrides.
 
 A repository or directory carrying a `cfgd.toml` is read and written as TOML at
-every step: `--name`, `--theme` and the profile `--apply-profile` activates are
-written into that file, in the order it declares its keys, and no `cfgd.yaml` is
+every step: `--name`, `--theme` and the profile `--apply-profile` activates
+(outside `--dry-run`) are written into that file, in the order it declares its keys, and no `cfgd.yaml` is
 created beside it.
 
 Once the config is on disk, `init` aligns it to the running build before its
@@ -193,7 +193,7 @@ cfgd apply --plan plan.json             # run the plan `cfgd plan -o json` recor
 
 | Flag | Description |
 |---|---|
-| `--from <url\|owner/repo\|path>` | Config source: git URL on any host, GitHub `owner/repo` shorthand, or local path to an existing config directory holding a `cfgd.yaml` or `cfgd.toml` (an existing path wins over the shorthand) |
+| `--from <url\|owner/repo\|path>` | Config source: git URL on any host, GitHub `owner/repo` shorthand, or local path to an existing config directory holding a `cfgd.yaml` or `cfgd.toml` (an existing path wins over the shorthand). The run reads the config document a local directory holds in place; after a clone it reads the `cfgd.yaml` or `cfgd.toml` the repository brings, unless `--config` names a file of another name |
 | `--dry-run` | Preview changes without applying (supports `-o json`) |
 | `--phase <name>` | Apply only a specific phase; takes a dotted `<phase>[.<selector>]` path (see below) |
 | `--module <name>` | Resolve and apply ONLY this module and its dependencies, isolated from the active profile: every profile-owned contribution (env, aliases, packages, files, system settings, secrets, scripts, backups) is zeroed, not composed. Repeatable: unions several modules |
@@ -433,7 +433,7 @@ cfgd plan -o json                       # structured plan output
 
 | Flag | Description |
 |---|---|
-| `--from <url\|owner/repo\|path>` | Config source: git URL on any host, GitHub `owner/repo` shorthand, or local path to an existing config directory holding a `cfgd.yaml` or `cfgd.toml` (an existing path wins over the shorthand) |
+| `--from <url\|owner/repo\|path>` | Config source: git URL on any host, GitHub `owner/repo` shorthand, or local path to an existing config directory holding a `cfgd.yaml` or `cfgd.toml` (an existing path wins over the shorthand). The run reads the config document a local directory holds in place; after a clone it reads the `cfgd.yaml` or `cfgd.toml` the repository brings, unless `--config` names a file of another name |
 | `--phase <name>` | Show only a specific phase; takes a dotted `<phase>[.<selector>]` path (see below) |
 | `--module <name>` | Resolve and plan ONLY this module and its dependencies, isolated from the active profile: every profile-owned contribution (env, aliases, packages, files, system settings, secrets, scripts, backups) is zeroed, not composed. Repeatable: unions several modules |
 | `--with-profile` | Compose `--module`'s named module(s) WITH the full active profile instead of isolating them. Rejected (with an error) if passed without `--module` |

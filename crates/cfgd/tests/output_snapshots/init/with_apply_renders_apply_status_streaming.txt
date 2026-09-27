@@ -8,8 +8,6 @@ Initialize cfgd
   ✓ Initialized git repository
   ✓ Initialized at <TARGET_DIR>
 
-✓ Set active profile: default
-
 Plan
   Config   <TARGET_DIR>/cfgd.yaml
   Profile  default
