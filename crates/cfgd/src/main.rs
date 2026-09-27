@@ -127,17 +127,13 @@ fn main() -> anyhow::Result<()> {
     let raw_args: Vec<String> = std::env::args().collect();
     let expanded = cli::expand_aliases(raw_args);
 
-    // Gates for the macOS config-location migration prompt (evaluated below,
-    // after the Printer exists). An explicit `--config`/`CFGD_CONFIG` pins the
-    // location, and `--yes`/`CFGD_YES` means "don't prompt".
+    // Gate for the macOS config-location migration prompt (evaluated below,
+    // after the Printer exists): an explicit `--config`/`CFGD_CONFIG` pins the
+    // location.
     let explicit_config = std::env::var_os("CFGD_CONFIG").is_some()
         || expanded
             .iter()
             .any(|a| a == "--config" || a.starts_with("--config="));
-    let assume_yes = std::env::var("CFGD_YES")
-        .map(|v| v == "true")
-        .unwrap_or(false)
-        || expanded.iter().any(|a| a == "--yes" || a == "-y");
 
     let brontes_cfg = cfgd::mcp::brontes::config();
     let mcp_command = brontes::command(Some(&brontes_cfg)).after_help(MCP_HELP_EXAMPLES);
@@ -158,6 +154,10 @@ fn main() -> anyhow::Result<()> {
     }
 
     let mut cli = cli::Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
+    // Read off the parse, which is what every verb reads `--yes` from, so a
+    // `CFGD_YES=1` or a `-qy` means the same thing to the prompts below as to
+    // the command that follows them.
+    let assume_yes = cli.yes;
 
     // Capture the effective source (flag / env / default) of each directory
     // override before the ArgMatches is dropped — `cfgd paths` reports it and
