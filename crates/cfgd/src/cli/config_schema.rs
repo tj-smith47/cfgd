@@ -505,6 +505,73 @@ mod tests {
         gate_on_load(printer, &invocation, &cli.config);
     }
 
+    /// Every `cfgd.yaml` a demo setup script writes is aligned to this build,
+    /// so a recorded tape never stops on the migration prompt. The fixtures
+    /// are the heredoc bodies the scripts `cat` into a `cfgd.yaml`; a `${VAR}`
+    /// the shell would expand is replaced by a URL, the one shape the
+    /// fixtures interpolate. A field added to the schema fails this until the
+    /// fixtures declare it.
+    #[test]
+    fn every_demo_fixture_config_declares_every_field_this_build_reads() {
+        let scripts = cfgd_core::test_helpers::workspace_root().join("demo/scripts");
+        let mut setups: Vec<_> = std::fs::read_dir(&scripts)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("setup-") && name.ends_with(".sh"))
+            })
+            .collect();
+        setups.sort();
+
+        let mut fixtures = Vec::new();
+        for script in &setups {
+            let text = std::fs::read_to_string(script).unwrap();
+            let mut lines = text.lines().enumerate();
+            while let Some((n, line)) = lines.next() {
+                let line = line.trim();
+                if !(line.starts_with("cat > ") && line.contains("/cfgd.yaml\" <<")) {
+                    continue;
+                }
+                let body: Vec<&str> = lines
+                    .by_ref()
+                    .map(|(_, line)| line)
+                    .take_while(|line| *line != "EOF")
+                    .collect();
+                let mut doc = String::new();
+                let mut rest = body.join("\n");
+                while let Some(open) = rest.find("${") {
+                    let close = open + rest[open..].find('}').expect("a `${` closes");
+                    doc.push_str(&rest[..open]);
+                    doc.push_str("http://demo.invalid:8080");
+                    rest = rest[close + 1..].to_string();
+                }
+                doc.push_str(&rest);
+                doc.push('\n');
+                fixtures.push((format!("{}:{}", script.display(), n + 1), doc));
+            }
+        }
+        assert!(
+            fixtures.len() >= 2,
+            "the walk found {} cfgd.yaml fixtures under {}",
+            fixtures.len(),
+            scripts.display()
+        );
+
+        for (at, doc) in &fixtures {
+            let path = std::path::Path::new("cfgd.yaml");
+            let cfg = cfgd_core::config::parse_config(doc, path)
+                .unwrap_or_else(|e| panic!("{at}: the fixture parses: {e}"));
+            let pending = pending_alignment(&cfg, doc);
+            assert!(
+                pending.keys.is_empty(),
+                "{at}: the fixture leaves {:?} for the migration gate to ask about",
+                pending.keys
+            );
+        }
+    }
+
     /// `--write` materializes the missing keys through the config crate's own
     /// write path, so the leading comment block and the schema modeline
     /// survive and the result re-parses. Without `--write` the file is
