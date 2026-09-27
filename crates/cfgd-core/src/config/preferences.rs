@@ -225,11 +225,13 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
     #[test]
     #[serial_test::serial]
     fn a_display_less_ssh_session_falls_past_every_installed_x_tool_to_osc52() {
         let _guard = crate::test_helpers::path_env_mutation_guard();
+        // Where `ProbePath` exists the X tools are installed, so only the
+        // display gate can refuse them.
+        #[cfg(unix)]
         let _path = ProbePath::containing(&["xclip", "wl-copy"]);
         let picked = resolved_env(
             &ranked(&["wl-clipboard", "xclip", "osc52"]),

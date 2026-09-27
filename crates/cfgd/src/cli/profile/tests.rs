@@ -2185,13 +2185,15 @@ fn profile_show_displays_packages_section() {
     );
 }
 
-#[cfg(unix)]
 #[test]
 #[serial_test::serial]
 fn profile_show_lists_the_declared_ranking_and_the_resolved_view_lists_the_winner() {
     // No display signal, so both X/Wayland candidates are refused whatever
     // this host runs, and `osc52` (no tool, every session) is the winner.
+    // Where `ProbePath` exists their tools are installed too, so only the
+    // display gate can refuse them.
     let _guard = cfgd_core::test_helpers::path_env_mutation_guard();
+    #[cfg(unix)]
     let _path = cfgd_core::test_helpers::ProbePath::containing(&["wl-copy", "xclip"]);
     let _w = cfgd_core::test_helpers::EnvVarGuard::unset("WAYLAND_DISPLAY");
     let _d = cfgd_core::test_helpers::EnvVarGuard::unset("DISPLAY");
