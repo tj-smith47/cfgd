@@ -54476,6 +54476,50 @@ fn the_pre_dispatch_path_loads_the_document_once() {
     );
 }
 
+/// The debug summary of the startup document comes after the LAST place the
+/// config path can move, so its read count covers the reload that move makes.
+///
+/// On a host other than macOS the second reload is an identity, so no run here
+/// can tell a summary above it from one below it; the order is read off
+/// `main.rs` instead. Positions come from the body with its literals and
+/// comments blanked, so a commented-out call or a message quoting one is no
+/// call.
+#[test]
+fn the_startup_document_summary_follows_the_last_reload() {
+    const SUMMARY: &str = "\"loaded config document\"";
+    let main = cfgd_core::test_helpers::workspace_root().join("crates/cfgd/src/main.rs");
+    let body = floored_production_body(&main);
+    let code = cfgd_core::test_helpers::blank_non_code(&body);
+    let reloads: Vec<usize> = code
+        .match_indices("reload_if_moved(")
+        .map(|(at, _)| at)
+        .collect();
+    // One reload after the plain config path settles, one after the macOS move.
+    assert!(
+        reloads.len() >= 2,
+        "main.rs holds {} reload_if_moved calls; the walk has stopped reading them",
+        reloads.len()
+    );
+    let summaries: Vec<usize> = body
+        .match_indices(SUMMARY)
+        .map(|(at, _)| at)
+        .filter(|at| code.as_bytes()[*at] == b'"')
+        .collect();
+    let [summary] = summaries[..] else {
+        panic!(
+            "main.rs logs the startup document summary {} times; it logs it once",
+            summaries.len()
+        );
+    };
+    let last_reload = reloads.iter().copied().max().unwrap_or_default();
+    let opener = code[..summary].rfind("tracing::").unwrap_or_default();
+    assert!(
+        code[opener..].starts_with("tracing::debug!(") && opener > last_reload,
+        "the startup document summary is a `tracing::debug!` after the last \
+         `reload_if_moved`, so its read count covers every reload"
+    );
+}
+
 /// The scan behind the pin above: a loader call is a read, one inside
 /// `StartupDocument::load` or under the hatch is not, and a `read_to_string`
 /// counts only when it names the config.
