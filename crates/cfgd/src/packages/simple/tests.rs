@@ -1175,9 +1175,11 @@ fn every_family_program_spawns_through_its_derived_seam() {
     }
     // The version queries spawn by name through `cmd_with_seam`, read off the
     // module's code with comments dropped.
-    let source = include_str!("../versions/mod.rs");
-    let code = cfgd_core::test_helpers::blank_comments(source);
-    let production = code.split("#[cfg(test)]").next().unwrap_or_default();
+    let versions =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/packages/versions/mod.rs");
+    let production = cfgd_core::test_helpers::blank_comments(
+        &cfgd_core::test_helpers::production_slice_of(&versions),
+    );
     let mut queried = 0;
     for (at, _) in production.match_indices("cmd_with_seam(\"") {
         let rest = &production[at + "cmd_with_seam(\"".len()..];

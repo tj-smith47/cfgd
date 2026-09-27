@@ -3895,8 +3895,8 @@ pub struct NoHostManagers {
 impl NoHostManagers {
     /// Pin every seam of [`MANAGER_SEAMS`] at [`ABSENT_SEAM_PATH`], holding
     /// [`path_env_mutation_guard`] while they are pinned, so a guarded seam
-    /// read on another thread (a sibling test's real-host plan) waits instead
-    /// of finding every manager missing.
+    /// read on another thread (a sibling test's real-host plan) waits until
+    /// they are restored.
     pub fn pinned_missing() -> Self {
         let exclusive = path_env_mutation_guard();
         Self {

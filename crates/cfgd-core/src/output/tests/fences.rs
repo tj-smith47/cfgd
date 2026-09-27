@@ -2777,7 +2777,7 @@ fn every_production_path_read_takes_the_read_guard() {
          `path_env_read_guard()`, or carry `// {HATCH} <why>`:\n{}",
         offenders.join("\n")
     );
-    // Three, not four: brew's PATH composition now routes through
+    // Three: brew's PATH composition routes through
     // `process_path_with_dirs_prepended` and reads nothing of its own.
     assert!(
         reads >= 3,
