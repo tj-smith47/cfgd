@@ -49982,7 +49982,10 @@ fn every_config_load_site_answers_the_migration_policy() {
         sources.len()
     );
     let mut declarations = Vec::new();
-    for path in &sources {
+    for path in sources
+        .iter()
+        .filter(|path| !cfgd_core::test_helpers::is_test_source(path))
+    {
         declarations.extend(fn_declarations(&production_slice_of(path)));
     }
     assert!(
@@ -50008,14 +50011,22 @@ fn every_config_load_site_answers_the_migration_policy() {
         .into_iter()
         .find(|(name, owner, _)| name == "cmd_init" && owner.is_none())
         .expect("`cmd_init` is declared in cmd_init.rs");
-    let gate_at = init_body
-        .find("gate_on_load(")
-        .expect("cmd_init runs the gate");
     let apply_at = init_body
         .find("should_run_apply(")
         .expect("cmd_init decides whether to apply");
+    // Two calls: the `Already initialized` return, and the one after the
+    // clone or scaffold. Both have to come before the apply reads the file.
+    let gates: Vec<usize> = init_body
+        .match_indices("gate_on_load(")
+        .map(|(at, _)| at)
+        .collect();
+    assert_eq!(
+        gates.len(),
+        2,
+        "cmd_init gates the config on each path that leaves one on disk"
+    );
     assert!(
-        gate_at < apply_at,
+        gates.iter().all(|at| *at < apply_at),
         "init aligns the document before its own apply reads it"
     );
     let init_cli = {
