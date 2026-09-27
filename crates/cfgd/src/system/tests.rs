@@ -887,8 +887,8 @@ fn read_command_output_multiline_output() {
 /// answers to nobody's login shell, and neither is a COMMENT line: a doc
 /// sentence naming a writer is documentation, not a call site, and one reported
 /// as an offender or counted toward the floor is a walk lying in both
-/// directions. The floor sits AT what this module holds rather than under it, so
-/// a writer cannot vanish inside a margin.
+/// directions. The floor is a minimum set at what this module holds, so a writer
+/// cannot be removed silently; a count above it passes.
 #[test]
 fn every_privileged_writer_says_whether_a_non_root_reader_opens_its_file() {
     let system_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/system");

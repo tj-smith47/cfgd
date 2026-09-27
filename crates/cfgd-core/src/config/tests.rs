@@ -177,7 +177,8 @@ fn no_production_site_compares_an_api_version_by_hand() {
 
     /// Every crate root the walk must still be reading, workspace-relative,
     /// with a floor at the production sources each holds today, so a tree going
-    /// dark fails on its own name.
+    /// dark fails on its own name. Each floor is a minimum the root must keep,
+    /// and a count above it passes.
     const WALK_ROOTS: &[(&str, usize)] = &[
         ("crates/cfgd-core/src", 191),
         ("crates/cfgd-crd/src", 1),

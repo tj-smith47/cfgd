@@ -1247,10 +1247,11 @@ fn const_items_outside_functions(source: &SourceLabel, body: &str) -> Vec<(usize
 /// one judgement so a fixture cannot escape it by being written at file scope.
 /// A `const` holding a hand-spelled env-file body is the same regression as a
 /// function holding one — the generator still never ran, and the ps1/POSIX
-/// split still decides which host reads the file. The items half is empty
-/// today and floored at the count it reads, the way
-/// [`no_item_outside_a_function_body_mutates_the_process_environment`] floors
-/// the same scan for the mutation tells.
+/// split still decides which host reads the file. The items half holds no
+/// offender today, and the item count it reads has a floor: a minimum the scan
+/// must keep, so file-scope items cannot drop out of it silently, and a count
+/// above it passes. The same scan for the mutation tells is floored by
+/// [`no_item_outside_a_function_body_mutates_the_process_environment`].
 #[test]
 fn no_core_env_file_fixture_hardcodes_the_primary_env_files_name_or_dialect() {
     let joins = [
@@ -1371,9 +1372,10 @@ fn no_core_env_file_fixture_hardcodes_the_primary_env_files_name_or_dialect() {
         checked > 2000,
         "the walk no longer reaches cfgd-core's functions — it read {checked}"
     );
-    // The items half is floored AT the population rather than under it: it
-    // holds no offender, and an empty offender list reads the same whether the
-    // scan saw every file-scope item or none of them.
+    // The item count is a minimum the scan must keep, so an item cannot drop
+    // out of it silently, and a count above it passes. The items half holds no
+    // offender, and an empty offender list reads the same whether the scan saw
+    // every file-scope item or none of them.
     assert!(
         items >= 315,
         "the walk read {items} items outside a function body in cfgd-core; it \
@@ -4070,12 +4072,12 @@ fn an_uncalled_entry_hatch_is_read_only_inside_the_roster() {
 /// classifies as declaring shell items AND running a verb in this process:
 /// the population it finds today.
 ///
-/// The floor sits AT that population rather than under it, the way
-/// [`SERIAL_FLOORS`] does. A member that falls out of needle reach — a fixture
-/// respelled, a verb renamed — is the finding, and a floor below the count
-/// absorbs it silently, which is the blindness the walk exists to prevent.
-/// Adding a member raises this; a count that FELL is never re-calibrated
-/// downward to make a red walk green.
+/// The floor is a minimum the population must keep, so a member cannot be
+/// removed silently, and a count above it passes; [`SERIAL_FLOORS`] works the
+/// same way. A member that falls out of needle reach (a fixture respelled, a
+/// verb renamed) is the finding, and a floor set below the count would absorb
+/// it silently. Adding a member raises this; a count that FELL is never
+/// re-calibrated downward to make a failing check pass.
 ///
 /// It stood at 4 while [`source_functions`] cut a slice at the next `fn`: the
 /// file-scope consts under `module_upgrade_happy_human_json` carry a YAML
@@ -4276,8 +4278,8 @@ fn every_in_process_test_declaring_shell_items_holds_a_test_home() {
 /// so this floor says only that the derived roots still hold goldens at all.
 const GOLDEN_FLOOR: usize = 300;
 
-/// The padded-header population sits AT its floor, so a member falling out of
-/// it is the finding rather than slack quietly absorbing the loss.
+/// The padded-header count is a minimum the goldens must keep, so a member
+/// cannot be removed silently; a count above it passes.
 const GOLDEN_HEADER_FLOOR: usize = 7;
 
 /// `docs/` carries rendered tables too, and one of them keeps a padded header;
@@ -4834,23 +4836,23 @@ fn every_gc_failed_removal_pin_holds_its_payload_through_the_one_fixture() {
 /// every node), `cfgd-crd` and `cfgd-schema` judged by nobody. One population
 /// also means no site is judged twice.
 ///
-/// The floor sits AT what the workspace holds rather than under it, so a call
-/// site cannot vanish inside a margin: a `>=` floor never trips on an addition,
-/// and the assertion prints the numbers it read. It is stated PER ROOT, because
-/// one number for the whole workspace is the biggest tree's count plus the
-/// rest: `crates/cfgd/src` could stop contributing entirely and `cfgd-core`
-/// alone would still clear it. The roots are named as well as counted, for the
-/// reason [`crate::test_helpers::KNOWN_GOLDEN_ROOTS`] is named: a count
-/// survives a root renamed or moved out of `crates/` as long as some other
-/// crate appears to restore it.
+/// Each root's floor is a minimum set at what the workspace holds, so a call
+/// site cannot be removed silently; an addition passes, and the assertion
+/// prints the numbers it read. The floor is stated PER ROOT, because one number
+/// for the whole workspace is the biggest tree's count plus the rest:
+/// `crates/cfgd/src` could stop contributing entirely and `cfgd-core` alone
+/// would still clear it. The roots are named as well as counted, for the reason
+/// [`crate::test_helpers::KNOWN_GOLDEN_ROOTS`] is named: a count survives a
+/// root renamed or moved out of `crates/` as long as some other crate appears
+/// to restore it.
 #[test]
 fn every_path_based_chmod_in_the_workspace_says_why_the_follow_is_safe() {
     /// Every crate root the walk must still be reading, workspace-relative,
     /// with a floor under the production sources each holds today, so a tree
-    /// going dark fails on its own name rather than inside a total. The two
-    /// crates holding a couple of files each floor AT their count, because a
-    /// root going empty is what the assertion is for and a margin under two is
-    /// no margin.
+    /// going dark fails on its own name. Each floor is a minimum the root must
+    /// keep, and a count above it passes; the two crates holding a couple of
+    /// files each set theirs at that count, because a root going empty is what
+    /// the assertion is for and a margin under two is no margin.
     const CHMOD_WALK_ROOTS: &[(&str, usize)] = &[
         ("crates/cfgd-core/src", 170),
         ("crates/cfgd-crd/src", 1),
@@ -4938,9 +4940,10 @@ fn every_production_spawn_in_the_workspace_goes_through_the_one_ladder() {
     /// Every crate root the walk must still be reading, workspace-relative,
     /// with a floor UNDER the count each holds today, so deleting a file is
     /// free; an aggregate floor is one tree's count plus another's, which the
-    /// biggest tree alone clears. The three crates holding a couple of files
-    /// each floor at their count, because a root going empty is what the assertion
-    /// against `crates/` below defends.
+    /// biggest tree alone clears. Each floor is a minimum the root must keep,
+    /// and a count above it passes; the three crates holding a couple of files
+    /// each set theirs at that count, because a root going empty is what the
+    /// assertion against `crates/` below defends.
     const SPAWN_WALK_ROOTS: &[(&str, usize)] = &[
         ("crates/cfgd-core/src", 180),
         ("crates/cfgd-crd/src", 1),

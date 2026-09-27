@@ -35107,8 +35107,9 @@ fn every_reconciler_a_production_site_builds_says_which_picture_it_saw() {
 fn no_tests_file_carries_a_cfg_test_attribute_of_its_own() {
     /// Every crate of the workspace, each with the floor of scaffolding files
     /// its own `src/` must yield. Per root, because an aggregate is one tree's
-    /// count plus another's and the larger tree alone clears it; the two
-    /// crates holding one file each floor AT their count, and `cfgd-schema`
+    /// count plus another's and the larger tree alone clears it. Each floor is
+    /// a minimum the crate must keep, and a count above it passes; the two
+    /// crates holding one file each set theirs at that count, and `cfgd-schema`
     /// and `cfgd-test-fixtures` hold none, which the assertion against
     /// `crates/` is what defends.
     const WALK_ROOTS: &[(&str, usize)] = &[
@@ -35216,9 +35217,10 @@ fn every_two_root_walk_guards_each_root_it_reads() {
     ];
     /// Each file holding multi-root walks today, with a floor under the 25 and
     /// the 2 they hold, so retiring one walk is free and a file dropping out of
-    /// the population fails on its own name. The second floors AT its count:
-    /// two is already the smallest number that can state the rule, and a file
-    /// that stops holding one at all is what this table is for.
+    /// the population fails on its own name. Each floor is a minimum the file
+    /// must keep, and a count above it passes; the second is set at its count,
+    /// because two is already the smallest number that can state the rule, and
+    /// a file that stops holding one at all is what this table is for.
     const WALK_FILES: &[(&str, usize)] = &[
         ("cfgd/src/cli/tests.rs", 20),
         ("cfgd-core/src/output/tests/fences.rs", 2),
@@ -49864,10 +49866,11 @@ fn every_declared_env_value_a_surface_masks_is_decided_by_the_one_masking() {
 /// code part) and `code_span` (that cut taken on the raw line). Those four are
 /// the whole vocabulary; a tell below is a fifth being born.
 ///
-/// Both files that hold walks are read, each floored at its own length: the
-/// rule is about the SHAPE of a walk, whichever crate it happens to be
+/// Both files that hold tree scans are read, each with a minimum line count it
+/// must keep, so a file cannot stop being read silently; a longer file passes.
+/// The rule is about the SHAPE of a tree scan, whichever crate it happens to be
 /// written in, and `fences.rs` grew a hand-rolled comment cut of its own while
-/// this walk read one file.
+/// this check read one file.
 #[test]
 fn no_walk_bearing_source_scans_syntax_by_hand() {
     const HATCH: &str = "// hand-scan-ok:";
