@@ -51,6 +51,53 @@ pub fn service_binpath_argv(
     argv
 }
 
+/// What the SCM-launched `daemon service` process reads back off its argv.
+#[cfg(any(windows, test))]
+pub(crate) struct ServiceLaunch {
+    pub config_path: PathBuf,
+    pub profile_override: Option<String>,
+    pub scope: crate::Scope,
+    pub dirs: DaemonDirOverrides,
+}
+
+/// The inverse of [`service_binpath_argv`]: the service settings its tokens
+/// carry, read off the process argv the SCM hands back.
+///
+/// Platform-independent for the same reason as its twin, so a token the
+/// install bakes in and the service never reads back fails on the Linux CI
+/// host.
+#[cfg(any(windows, test))]
+pub(crate) fn parse_service_argv(args: &[String]) -> ServiceLaunch {
+    let mut config_path: Option<PathBuf> = None;
+    let mut profile_override: Option<String> = None;
+    let mut scope = crate::Scope::User;
+    let mut dirs = DaemonDirOverrides::default();
+    let mut i = 0;
+    while i < args.len() {
+        let value = args.get(i + 1);
+        match (args[i].as_str(), value) {
+            ("--config", Some(v)) => config_path = Some(PathBuf::from(v)),
+            ("--profile", Some(v)) => profile_override = Some(v.clone()),
+            ("--scope", Some(v)) => scope = crate::Scope::from_system_flag(v == "system"),
+            ("--state-dir", Some(v)) => dirs.state_dir = Some(PathBuf::from(v)),
+            ("--runtime-dir", Some(v)) => dirs.runtime_dir = Some(PathBuf::from(v)),
+            ("--cache-dir", Some(v)) => dirs.cache_dir = Some(PathBuf::from(v)),
+            _ => {
+                i += 1;
+                continue;
+            }
+        }
+        i += 2;
+    }
+    ServiceLaunch {
+        config_path: config_path
+            .unwrap_or_else(|| crate::config::config_document_in(&crate::default_config_dir())),
+        profile_override,
+        scope,
+        dirs,
+    }
+}
+
 /// Quote a single binPath token for the sc.exe command-line string. Values that
 /// carry a space or a backslash (every Windows path) must be quoted so sc.exe
 /// stores them as one argument; bare flag names and subcommands need no quotes.
@@ -416,48 +463,12 @@ pub(crate) fn windows_service_main() -> std::result::Result<(), Box<dyn std::err
         process_id: None,
     })?;
 
-    // Parse config/profile from process args.
-    // SCM invokes: cfgd.exe daemon service --config "C:\..." [--profile "name"]
-    let args: Vec<String> = std::env::args().collect();
-    let mut config_path = crate::config::config_document_in(&crate::default_config_dir());
-    let mut profile_override: Option<String> = None;
-    let mut scope = crate::Scope::User;
-    let mut dirs = DaemonDirOverrides::default();
-    let mut i = 0;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--config" if i + 1 < args.len() => {
-                config_path = PathBuf::from(&args[i + 1]);
-                i += 2;
-            }
-            "--profile" if i + 1 < args.len() => {
-                profile_override = Some(args[i + 1].clone());
-                i += 2;
-            }
-            // `install_windows_service` bakes `--scope system` into the binPath
-            // for a machine-wide install (mirroring the systemd unit / launchd
-            // plist ExecStart), so the SCM-launched daemon resolves the same
-            // %ProgramData% roots the install registered against.
-            "--scope" if i + 1 < args.len() => {
-                scope = crate::Scope::from_system_flag(args[i + 1] == "system");
-                i += 2;
-            }
-            // Baked into the binPath by `install_windows_service` whenever the
-            // install carried them, so the SCM-launched daemon resolves the
-            // same state/runtime roots the operator's CLI does.
-            "--state-dir" if i + 1 < args.len() => {
-                dirs.state_dir = Some(PathBuf::from(&args[i + 1]));
-                i += 2;
-            }
-            "--runtime-dir" if i + 1 < args.len() => {
-                dirs.runtime_dir = Some(PathBuf::from(&args[i + 1]));
-                i += 2;
-            }
-            _ => {
-                i += 1;
-            }
-        }
-    }
+    let ServiceLaunch {
+        config_path,
+        profile_override,
+        scope,
+        dirs,
+    } = parse_service_argv(&std::env::args().collect::<Vec<_>>());
 
     // Retrieve hooks stored by run_as_windows_service
     let hooks = SERVICE_HOOKS
@@ -537,4 +548,33 @@ pub(crate) fn windows_service_main() -> std::result::Result<(), Box<dyn std::err
     })?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every setting the install bakes into the binPath reaches the service
+    /// that reads it back: config, profile, scope and all three directories.
+    #[test]
+    fn the_service_reads_back_every_setting_its_install_baked_in() {
+        let config = PathBuf::from("/srv/cfgd/cfgd.yaml");
+        let dirs = DaemonDirOverrides {
+            state_dir: Some(PathBuf::from("/srv/cfgd/state")),
+            runtime_dir: Some(PathBuf::from("/srv/cfgd/run")),
+            cache_dir: Some(PathBuf::from("/srv/cfgd/cache")),
+        };
+        let argv = service_binpath_argv(&config, Some("srv"), true, crate::Scope::System, &dirs);
+        let args: Vec<String> = std::iter::once("cfgd".to_string()).chain(argv).collect();
+        let launch = parse_service_argv(&args);
+        assert_eq!(launch.config_path, config, "--config");
+        assert_eq!(launch.profile_override.as_deref(), Some("srv"), "--profile");
+        assert_eq!(launch.scope, crate::Scope::System, "--scope system");
+        assert_eq!(launch.dirs.state_dir, dirs.state_dir, "--state-dir");
+        assert_eq!(launch.dirs.runtime_dir, dirs.runtime_dir, "--runtime-dir");
+        assert_eq!(
+            launch.dirs.cache_dir, dirs.cache_dir,
+            "--cache-dir: the service composes sources from the cache its install named"
+        );
+    }
 }
