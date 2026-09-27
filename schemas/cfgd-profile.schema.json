@@ -872,6 +872,21 @@
       },
       "type": "object"
     },
+    "PreferencesSpec": {
+      "additionalProperties": false,
+      "description": "`spec.preferences`: one ranked candidate list per domain.\n\nA domain joins as a sibling field; nothing about the block's shape changes.",
+      "properties": {
+        "clipboard": {
+          "default": [],
+          "description": "Clipboard mechanisms in preference order, most-wanted first. cfgd picks\nthe first one the running session can reach and whose tool is\ninstalled, and exports it as `CFGD_CLIPBOARD`. Candidates:\n`wl-clipboard`, `xclip`, `xsel`, `pbcopy`, `clip.exe`, `osc52`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
     "ProfileMetadata": {
       "additionalProperties": false,
       "description": "`metadata`: identifying information for a profile.",
@@ -964,6 +979,20 @@
           ],
           "default": null,
           "description": "Packages this profile installs, grouped by manager."
+        },
+        "preferences": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PreferencesSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": {
+            "clipboard": []
+          },
+          "description": "Ranked candidate lists per domain (`clipboard`, …). cfgd picks the\nfirst candidate the running session can reach and exports it as\n`CFGD_<DOMAIN>`."
         },
         "scripts": {
           "anyOf": [

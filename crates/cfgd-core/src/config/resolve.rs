@@ -359,6 +359,11 @@ pub fn resolve_profile(profile_name: &str, profiles_dir: &Path) -> Result<Resolv
 
     let merged = merge_layers(&layers);
 
+    // Each layer's DECLARED ranking: a typo in a layer a later one outranks is
+    // still a typo its author wants told about.
+    for layer in &layers {
+        super::validate_preferences(&layer.spec.preferences)?;
+    }
     validate_secret_specs(&merged.secrets)?;
     validate_managed_file_specs(&merged.files.managed)?;
     validate_package_specs(&merged.packages)?;
@@ -422,6 +427,10 @@ fn resolve_inheritance_order(
 /// - backups: append (deduplicated by name, later overrides)
 pub fn merge_layers(layers: &[ProfileLayer]) -> MergedProfile {
     let mut merged = MergedProfile::default();
+    // A ranking is one ordered statement, so the last layer to make it owns
+    // the whole list, the way `env_scope` resolves.
+    let mut preferences = super::PreferencesSpec::default();
+    let mut preferences_owner = String::new();
 
     for layer in layers {
         // Destructured with no `..`: a field added to `ProfileSpec` must fail
@@ -444,12 +453,16 @@ pub fn merge_layers(layers: &[ProfileLayer]) -> MergedProfile {
             secrets,
             scripts,
             backups,
+            preferences: layer_preferences,
         } = &layer.spec;
 
         // Modules: union
         union_extend(&mut merged.modules, modules);
 
         let layer_owner = layer.owner_token();
+        if preferences.absorb(layer_preferences) {
+            preferences_owner = layer_owner.clone();
+        }
         // Platform-gated entries are filtered BEFORE the fold: an entry this
         // host is not part of the desired state of must never reach a
         // last-writer-wins merge, where it would displace the value that does
@@ -561,7 +574,29 @@ pub fn merge_layers(layers: &[ProfileLayer]) -> MergedProfile {
         crate::merge_backups(&mut merged.backups, backups);
     }
 
+    fold_preferences(&mut merged, &preferences, &preferences_owner);
     merged
+}
+
+/// Resolve the chain's final `preferences` against the running session and
+/// fold the winners into `merged.env`, each claimed by `owner`, the last layer
+/// that ranked a domain.
+///
+/// Runs once, after every layer is merged: the winner depends on the whole
+/// chain's ranking, and a per-layer resolution would probe `PATH` once per
+/// layer and could export a candidate a later layer ranked away. `CFGD_*` is
+/// a namespace `validate_env_var_user_name` refuses a `spec.env` author, so
+/// the fold displaces no var a layer declared.
+pub(crate) fn fold_preferences(
+    merged: &mut MergedProfile,
+    preferences: &super::PreferencesSpec,
+    owner: &str,
+) {
+    let pref_env = super::resolved_env(preferences, &crate::platform::Session::detect());
+    crate::fold_env_layer(&mut merged.env, &pref_env, crate::PATH_LIST_SEPARATOR);
+    merged
+        .entry_owners
+        .claim_env_names(owner, pref_env.iter().map(|e| e.name.as_str()));
 }
 
 /// Every built-in package-manager name [`desired_packages_for_spec`] resolves.
@@ -1088,6 +1123,72 @@ mod tests {
         )
         .expect("a profile of real package spellings parses");
         validate_package_specs(&spec).expect("every spelling a real ecosystem uses is admitted");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn the_merged_env_carries_the_preference_the_last_declaring_layer_ranked() {
+        let _guard = crate::test_helpers::path_env_mutation_guard();
+        let _path = crate::test_helpers::ProbePath::containing(&["xclip"]);
+        let _d = crate::test_helpers::EnvVarGuard::set("DISPLAY", ":0");
+        let _w = crate::test_helpers::EnvVarGuard::unset("WAYLAND_DISPLAY");
+        let mut base = layer("base", None);
+        base.spec.preferences.clipboard = vec!["osc52".to_string()];
+        let mut child = layer("child", None);
+        child.spec.preferences.clipboard = vec!["xclip".to_string(), "osc52".to_string()];
+        let merged = merge_layers(&[base, child]);
+        let vars: Vec<&EnvVar> = merged
+            .env
+            .iter()
+            .filter(|e| e.name == "CFGD_CLIPBOARD")
+            .collect();
+        assert_eq!(
+            vars.len(),
+            1,
+            "exactly one preference var: {:?}",
+            merged.env
+        );
+        assert_eq!(
+            vars[0].value, "xclip",
+            "the child's ranking decides the winner"
+        );
+        assert_eq!(
+            merged
+                .entry_owners
+                .env
+                .get("CFGD_CLIPBOARD")
+                .map(String::as_str),
+            Some("profile:child"),
+            "the var is claimed by the last layer that ranked the domain"
+        );
+    }
+
+    #[test]
+    fn a_chain_declaring_no_preferences_mints_no_preference_var() {
+        let merged = merge_layers(&[layer("base", None)]);
+        assert!(!merged.env.iter().any(|e| e.name.starts_with("CFGD_")));
+    }
+
+    #[test]
+    fn an_unknown_candidate_in_an_outranked_layer_fails_resolution() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("base.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: base\n\
+             spec:\n  preferences:\n    clipboard: [xclipp]\n",
+        )
+        .expect("write base");
+        std::fs::write(
+            dir.path().join("child.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: child\n\
+             spec:\n  inherits: [base]\n  preferences:\n    clipboard: [osc52]\n",
+        )
+        .expect("write child");
+        let err = resolve_profile("child", dir.path())
+            .expect_err("the base layer's typo is refused")
+            .to_string();
+        assert!(err.contains("xclipp"), "names the typo: {err}");
     }
 
     fn layer(name: &str, env_scope: Option<EnvScope>) -> ProfileLayer {

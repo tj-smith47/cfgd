@@ -199,6 +199,15 @@ spec:
   # optional, default: All
   envScope: All
 
+  # Ranked candidate lists per domain. cfgd picks the first candidate THIS session
+  # can reach (display server / SSH / WSL) and whose tool is installed, and
+  # exports it as CFGD_<DOMAIN> into the managed env file.
+  # optional, default: {}
+  preferences:
+    # optional, list of strings, most-wanted first. Candidates:
+    # wl-clipboard, xclip, xsel, pbcopy, clip.exe, osc52.
+    clipboard: [wl-clipboard, xclip, osc52]
+
   # Per-manager package declarations.
   # optional
   #

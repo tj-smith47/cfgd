@@ -1906,6 +1906,21 @@
       {
         "children": [
           {
+            "description": "Clipboard mechanisms in preference order, most-wanted first. cfgd picks the first one the running session can reach and whose tool is installed, and exports it as `CFGD_CLIPBOARD`. Candidates: `wl-clipboard`, `xclip`, `xsel`, `pbcopy`, `clip.exe`, `osc52`.",
+            "name": "clipboard",
+            "required": false,
+            "type": "[]string"
+          }
+        ],
+        "description": "Ranked candidate lists per domain (`clipboard`, …). cfgd picks the first candidate the running session can reach and exports it as `CFGD_<DOMAIN>`.",
+        "name": "preferences",
+        "required": false,
+        "type": "object",
+        "typeName": "PreferencesSpec"
+      },
+      {
+        "children": [
+          {
             "description": "Run when a watched file changes on disk (requires `daemon.reconcile.onChange`).",
             "name": "onChange",
             "required": false,

@@ -3,7 +3,8 @@ use std::path::PathBuf;
 
 use crate::config::{
     EnvVar, LOCAL_LAYER, ProfileLayer, ResolvedProfile, validate_backup_specs,
-    validate_managed_file_specs, validate_package_specs, validate_secret_specs,
+    validate_managed_file_specs, validate_package_specs, validate_preferences,
+    validate_secret_specs,
 };
 use crate::errors::{CfgdError, CompositionError, Result};
 
@@ -128,6 +129,11 @@ pub fn compose(
         }
     }
 
+    // Each layer's declared ranking, so an unknown candidate a source delivers
+    // fails the way a local one does.
+    for layer in &all_layers {
+        validate_preferences(&layer.spec.preferences)?;
+    }
     // Validate secrets from all sources (catches invalid specs from ConfigSources)
     validate_secret_specs(&merged.secrets)?;
     validate_managed_file_specs(&merged.files.managed)?;

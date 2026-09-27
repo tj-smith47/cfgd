@@ -67,6 +67,7 @@ pub use cfgd_schema::{
     PatchSpec, ScheduleOwner, ScriptCommand, ScriptEntry, ScriptShell, ScriptSpec,
 };
 pub(crate) use profile_spec::{profile_spec_from_value, validate_backup_name};
+pub(crate) use resolve::fold_preferences;
 pub use resolve::{
     ALL_MANAGER_NAMES, DEFAULT_PACKAGE_NOUN, EntryOwners, LOCAL_LAYER, LOCAL_LAYER_PRIORITY,
     LayerPolicy, LayerSources, MergedProfile, PACKAGE_SCHEMA_PATHS, PackageClaim,

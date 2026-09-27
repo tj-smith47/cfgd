@@ -15,6 +15,9 @@
           "inherits": [],
           "modules": [],
           "packages": null,
+          "preferences": {
+            "clipboard": []
+          },
           "scripts": null,
           "secrets": [],
           "system": {}
@@ -92,6 +95,9 @@
             "winget": [],
             "yum": [],
             "zypper": []
+          },
+          "preferences": {
+            "clipboard": []
           },
           "scripts": null,
           "secrets": [

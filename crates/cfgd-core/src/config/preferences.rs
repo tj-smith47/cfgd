@@ -86,22 +86,26 @@ const CLIPBOARD: &[Candidate] = &[
     },
 ];
 
-/// One domain of `prefs`: its field name, the author's ranking, the candidate
-/// table the ranking is read against, and the var its winner exports under.
-type Domain<'a> = (
-    &'static str,
-    &'a [String],
-    &'static [Candidate],
-    &'static str,
-);
+/// One domain of `prefs`: its field name, the author's ranking (empty when the
+/// domain is undeclared) and the candidate table the ranking is read against.
+type Domain<'a> = (&'static str, &'a [String], &'static [Candidate]);
 
-/// Every domain `prefs` declares, the one table both resolution and validation
-/// read.
+/// Every domain `PreferencesSpec` offers, paired with `prefs`'s ranking for it,
+/// the one table both resolution and validation read.
 fn domains(prefs: &PreferencesSpec) -> [Domain<'_>; 1] {
     // No `..`: a domain added to `PreferencesSpec` fails to compile here until
     // someone says what it resolves to.
     let PreferencesSpec { clipboard } = prefs;
-    [("clipboard", clipboard, CLIPBOARD, "CFGD_CLIPBOARD")]
+    [("clipboard", clipboard, CLIPBOARD)]
+}
+
+/// The var a domain's winner exports under: `CFGD_` and the upper-cased
+/// domain name, so a domain's field name and its var cannot disagree.
+fn env_var_name(domain: &str) -> String {
+    let mut name = String::with_capacity("CFGD_".len() + domain.len());
+    name.push_str("CFGD_");
+    name.extend(domain.chars().map(|c| c.to_ascii_uppercase()));
+    name
 }
 
 /// The env vars this host's session resolves `prefs` to.
@@ -112,9 +116,9 @@ fn domains(prefs: &PreferencesSpec) -> [Domain<'_>; 1] {
 pub fn resolved_env(prefs: &PreferencesSpec, session: &Session) -> Vec<EnvVar> {
     domains(prefs)
         .into_iter()
-        .filter_map(|(_, ranked, table, var)| {
+        .filter_map(|(domain, ranked, table)| {
             first_admitted(ranked, table, session).map(|pick| EnvVar {
-                name: var.to_string(),
+                name: env_var_name(domain),
                 value: pick.to_string(),
                 platforms: Vec::new(),
             })
@@ -143,7 +147,7 @@ fn first_admitted<'a>(
 /// A typo would otherwise resolve to nothing at all and read as "cfgd ignored
 /// my preference" on a machine where every listed tool is installed.
 pub fn validate_preferences(prefs: &PreferencesSpec) -> Result<()> {
-    for (domain, ranked, table, _) in domains(prefs) {
+    for (domain, ranked, table) in domains(prefs) {
         for name in ranked {
             if !table.iter().any(|c| c.name == name.as_str()) {
                 let known: Vec<&str> = table.iter().map(|c| c.name).collect();
@@ -277,5 +281,47 @@ mod tests {
         assert_eq!(base.clipboard, vec!["osc52".to_string()]);
         assert!(!base.absorb(&PreferencesSpec::default()));
         assert_eq!(base.clipboard, vec!["osc52".to_string()]);
+    }
+
+    /// Every domain the schema offers must carry a candidate table and a
+    /// documented section. A domain added to `PreferencesSpec` with neither
+    /// accepts the author's ranking and then resolves nothing.
+    #[test]
+    fn every_preferences_domain_the_schema_offers_has_a_resolver_and_a_doc_section() {
+        let value =
+            serde_json::to_value(PreferencesSpec::default()).expect("PreferencesSpec serializes");
+        let keys: Vec<String> = value
+            .as_object()
+            .expect("a mapping")
+            .keys()
+            .cloned()
+            .collect();
+        assert!(
+            !keys.is_empty(),
+            "PreferencesSpec must offer at least one domain"
+        );
+
+        let doc =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/spec/profile.md");
+        let body = crate::test_helpers::walked_file_body(&doc);
+        // A whole-line match: `### spec.preferences` is also a prefix of every
+        // domain's own heading, which a substring search would accept for it.
+        let has_heading = |h: &str| body.lines().any(|l| l.trim_end() == h);
+        assert!(
+            has_heading("### spec.preferences"),
+            "docs/spec/profile.md must document spec.preferences"
+        );
+        let undeclared = PreferencesSpec::default();
+        let offered = domains(&undeclared);
+        for key in &keys {
+            assert!(
+                offered.iter().any(|(d, _, _)| *d == key.as_str()),
+                "spec.preferences.{key} has no candidate table in `domains`"
+            );
+            assert!(
+                has_heading(&format!("### spec.preferences.{key}")),
+                "spec.preferences.{key} has no `### spec.preferences.{key}` section in docs/spec/profile.md"
+            );
+        }
     }
 }

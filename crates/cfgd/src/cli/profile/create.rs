@@ -281,6 +281,7 @@ pub fn cmd_profile_create(
             secrets,
             scripts,
             backups: Vec::new(),
+            preferences: config::PreferencesSpec::default(),
         },
     };
 

@@ -1865,6 +1865,7 @@ fn attribute_block_start(lines: &[&str], open: usize) -> usize {
 /// the finding.
 const SERIAL_FLOORS: &[(&str, usize)] = &[
     ("crates/cfgd-core/src/config/preferences.rs", 5),
+    ("crates/cfgd-core/src/config/resolve.rs", 1),
     ("crates/cfgd-core/src/daemon/health_ipc.rs", 5),
     ("crates/cfgd-core/src/daemon/service/systemd.rs", 4),
     ("crates/cfgd-core/src/daemon/tests.rs", 40),

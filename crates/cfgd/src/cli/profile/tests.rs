@@ -2186,6 +2186,53 @@ fn profile_show_displays_packages_section() {
 }
 
 #[test]
+fn profile_show_lists_the_declared_ranking_and_the_resolved_view_lists_the_winner() {
+    let dir = setup_config_dir();
+    std::fs::write(
+        dir.path().join("profiles").join("prefs.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: prefs\n\
+         spec:\n  preferences:\n    clipboard: [wl-clipboard, xclip, osc52]\n",
+    )
+    .unwrap();
+    let cli = test_cli(dir.path());
+    let render = |resolved: bool| {
+        let (printer, buf) =
+            cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+        cmd_profile_show(
+            &cli,
+            &printer,
+            Some("prefs"),
+            resolved,
+            crate::cli::InventoryDetail::default(),
+        )
+        .unwrap();
+        drop(printer);
+        cfgd_core::test_helpers::captured_text(&buf)
+    };
+
+    let declared = render(false);
+    assert!(
+        declared.contains("Preferences"),
+        "the declared view lists the rankings: {declared}"
+    );
+    assert!(
+        declared.contains("clipboard") && declared.contains("wl-clipboard, xclip, osc52"),
+        "the ranking renders in the author's order: {declared}"
+    );
+
+    // `osc52` needs no tool and reaches every session, so every host has a winner.
+    let resolved = render(true);
+    assert!(
+        resolved.contains("CFGD_CLIPBOARD"),
+        "the resolved view lists the winner under Env: {resolved}"
+    );
+    assert!(
+        !resolved.contains("Preferences"),
+        "the resolved view restates no declared ranking: {resolved}"
+    );
+}
+
+#[test]
 fn profile_show_displays_secrets_section() {
     let dir = setup_config_dir();
     let profile_with_secrets = r#"apiVersion: cfgd.io/v1alpha1

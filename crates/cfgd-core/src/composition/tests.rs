@@ -153,6 +153,51 @@ fn compose_keeps_the_env_scope_the_operator_declared() {
 }
 
 #[test]
+fn compose_exports_the_preference_a_source_ranked_under_that_source_layer() {
+    let local = make_local_profile();
+    let mut source = make_source_input("acme", 500);
+    let ranked = source_layer(ProfileSpec {
+        preferences: PreferencesSpec {
+            clipboard: vec!["osc52".into()],
+        },
+        ..Default::default()
+    });
+    let owner = ranked.owner_token();
+    source.layers = vec![ranked];
+    let result = compose(&local, &[source], ConstraintMode::Enforce).unwrap();
+    let merged = &result.resolved.merged;
+    let vars: Vec<&EnvVar> = merged
+        .env
+        .iter()
+        .filter(|e| e.name == "CFGD_CLIPBOARD")
+        .collect();
+    assert_eq!(
+        vars.len(),
+        1,
+        "exactly one preference var: {:?}",
+        merged.env
+    );
+    assert_eq!(vars[0].value, "osc52");
+    assert_eq!(merged.entry_owners.env.get("CFGD_CLIPBOARD"), Some(&owner));
+}
+
+#[test]
+fn compose_refuses_an_unknown_candidate_a_source_delivers() {
+    let local = make_local_profile();
+    let mut source = make_source_input("acme", 500);
+    source.layers = vec![source_layer(ProfileSpec {
+        preferences: PreferencesSpec {
+            clipboard: vec!["xclipp".into()],
+        },
+        ..Default::default()
+    })];
+    let err = compose(&local, &[source], ConstraintMode::Enforce)
+        .expect_err("the source's typo is refused")
+        .to_string();
+    assert!(err.contains("xclipp"), "names the typo: {err}");
+}
+
+#[test]
 fn compose_applies_required_packages() {
     let local = make_local_profile();
     let input = make_source_input("acme", 500);

@@ -195,6 +195,7 @@ shared)` when `work` extends other profiles, no annotation at all when it inheri
 | `secrets` | Append — deduplicated by target path, later wins on conflict |
 | `scripts` | Append — all scripts from all layers run in resolution order |
 | `backups` | Append: deduplicated by `name`, later layer overrides |
+| `preferences` | Per domain: the last profile to declare a ranking wins the whole list |
 | `modules` | Union — all modules from all layers combined, deduplicated |
 
 ## Env Vars
@@ -208,6 +209,11 @@ cfgd writes a managed `~/.cfgd.env` and wires it into the user's shells and sess
 | `All` *(default)* | Interactive + login shells, `systemd --user` / Wayland GUI (`~/.config/environment.d`), macOS GUI (LaunchAgent), and an immediate live-session refresh (`launchctl setenv` / `systemctl --user set-environment` / `setx`). No re-login needed. |
 | `Login` | Interactive + login shells (`~/.zshenv`, `~/.profile`, and an existing `~/.bash_profile`). |
 | `Interactive` | Interactive shells only (`~/.bashrc`/`~/.zshrc`, fish `conf.d`) — the historical behavior. |
+
+[`spec.preferences`](spec/profile.md#specpreferences) resolves into the same managed file: each
+domain's winner for this session is exported as `CFGD_<DOMAIN>` (`CFGD_CLIPBOARD=osc52` over a
+display-less SSH login, for example). `CFGD_*` is cfgd's own namespace, so `spec.env` refuses
+those names. The value is the candidate's own spelling, ready for a shell or editor to branch on.
 
 `spec.env` is **per-user**. For system-wide (all-users, privileged) variables, use [`spec.system.environment`](system-configurators.md). See the [profile spec](spec/profile.md#specenvscope) for the full target list and the dotfile-safety rules.
 

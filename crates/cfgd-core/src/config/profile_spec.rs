@@ -9,6 +9,7 @@ use cfgd_schema::{
     case_insensitive_enum,
 };
 
+use super::PreferencesSpec;
 use super::source::{EnvVar, ShellAlias};
 use crate::PathDisplayExt;
 use crate::errors::{ConfigError, Result};
@@ -395,6 +396,13 @@ pub struct ProfileSpec {
     /// Declarative backup jobs this profile schedules.
     #[serde(default)]
     pub backups: Vec<BackupSpec>,
+
+    /// Ranked candidate lists per domain (`clipboard`, …). cfgd picks the
+    /// first candidate the running session can reach and exports it as
+    /// `CFGD_<DOMAIN>`.
+    #[serde(default, deserialize_with = "crate::config::null_as_default")]
+    #[schemars(with = "Option<PreferencesSpec>")]
+    pub preferences: PreferencesSpec,
 }
 
 /// How far `spec.env` exports reach across the current user's environment.

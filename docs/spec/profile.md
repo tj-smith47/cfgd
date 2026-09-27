@@ -191,6 +191,7 @@ spec:
 | `secrets` | list | No | `[]` | Secret references to decrypt and place on disk. See [spec.secrets[]](#specsecrets). |
 | `scripts` | object | No | — | Lifecycle scripts (pre/post apply, pre/post reconcile, onChange, onDrift). See [spec.scripts](#specscripts). |
 | `backups` | list | No | `[]` | Declarative file/directory snapshot backups. See [spec.backups[]](#specbackups). |
+| `preferences` | object | No | `{}` | Ranked candidate lists per domain, resolved against this session. See [spec.preferences](#specpreferences). |
 
 ---
 
@@ -309,6 +310,56 @@ spec:
       value: nvim
   envScope: All        # default; narrow to Login or Interactive to opt out of broader reach
 ```
+
+---
+
+### spec.preferences
+
+Ranked candidate lists, one per domain. cfgd walks a domain's list in the order you wrote it and
+picks the first candidate that **this session can reach** and whose tool is installed, then
+exports the winner as `CFGD_<DOMAIN>` into the managed env file
+([`spec.envScope`](#specenvscope) decides how far that reaches). A domain whose list yields no
+winner exports nothing, so the variable only ever names a mechanism that works on this machine.
+
+"This session" is the display server, remoteness and container the run is under, read from
+`WAYLAND_DISPLAY`, `DISPLAY`, `XDG_SESSION_TYPE`, `SSH_TTY`/`SSH_CONNECTION` and
+`WSL_DISTRO_NAME`. A session offering both `WAYLAND_DISPLAY` and `DISPLAY` is a **Wayland**
+session: XWayland sets `DISPLAY` too.
+
+A candidate keeps the tool's own spelling, and a name outside a domain's table fails resolution
+with the list of known candidates, in every layer of the chain. The last layer of an inheritance
+or source chain that declares a domain wins that domain's **whole** ranking; a layer omitting it
+inherits. `CFGD_*` is cfgd's own namespace, so [`spec.env`](#specenv) refuses those names and a
+preference never displaces a variable you declared.
+
+### spec.preferences.clipboard
+
+Exported as `CFGD_CLIPBOARD`.
+
+| Candidate | Tool that must be installed | Reaches |
+|-----------|-----------------------------|---------|
+| `wl-clipboard` | `wl-copy` | Wayland sessions |
+| `xclip` | `xclip` | any session with a display (X11, and Wayland via XWayland) |
+| `xsel` | `xsel` | any session with a display |
+| `pbcopy` | `pbcopy` | local sessions only: over SSH `pbcopy` writes the *server's* clipboard |
+| `clip.exe` | `clip.exe` | WSL |
+| `osc52` | — | any terminal, including an SSH login with no display |
+
+**Example:**
+```yaml
+apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: base
+spec:
+  preferences:
+    clipboard: [wl-clipboard, xclip, osc52]
+```
+
+On a Wayland desktop with `wl-copy` installed that exports `CFGD_CLIPBOARD=wl-clipboard`. Over an
+SSH login with no forwarded display it skips both X tools, installed or not, and exports
+`CFGD_CLIPBOARD=osc52`. Editor and shell config read the variable and branch on it; cfgd writes no
+editor config of its own.
 
 ---
 
@@ -894,3 +945,4 @@ all layers in resolution order (earliest ancestor first, current profile last).
 | `secrets` | Append, deduplicated by `target`. |
 | `scripts` | Append in order — parent scripts run before child scripts. |
 | `backups` | Append, deduplicated by `name`; later layer overrides. |
+| `preferences` | Per domain, the last layer that declares a ranking wins the whole list; a layer that omits a domain inherits it. |
