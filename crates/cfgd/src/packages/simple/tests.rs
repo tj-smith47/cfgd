@@ -139,52 +139,18 @@ fn non_pkg_manager_identity_is_unchanged() {
 }
 
 #[test]
-fn simple_manager_name_matches() {
-    let managers: Vec<SimpleManager> = vec![
-        apt_manager(),
-        dnf_manager(),
-        yum_manager(),
-        apk_manager(),
-        pacman_manager(),
-        zypper_manager(),
-        pkg_manager(),
-    ];
-    let expected_names = ["apt", "dnf", "yum", "apk", "pacman", "zypper", "pkg"];
-    for (mgr, expected) in managers.iter().zip(expected_names.iter()) {
-        assert_eq!(mgr.name(), *expected);
-    }
-}
-
-#[test]
 fn simple_manager_none_plans_a_bootstrap() {
-    let managers: Vec<SimpleManager> = vec![
-        apt_manager(),
-        dnf_manager(),
-        apk_manager(),
-        pacman_manager(),
-        zypper_manager(),
-        pkg_manager(),
-    ];
-    for mgr in &managers {
+    for (family, build) in SIMPLE_FAMILIES {
         assert!(
-            mgr.bootstrap_plan().is_none(),
-            "{} should not be bootstrappable",
-            mgr.name()
+            build().bootstrap_plan().is_none(),
+            "{family} ships with its distribution, so it plans no bootstrap"
         );
     }
 }
 
 #[test]
 fn all_simple_managers_have_list_cmd() {
-    let managers = [
-        apt_manager(),
-        dnf_manager(),
-        yum_manager(),
-        apk_manager(),
-        pacman_manager(),
-        zypper_manager(),
-        pkg_manager(),
-    ];
+    let managers: Vec<SimpleManager> = SIMPLE_FAMILIES.iter().map(|(_, build)| build()).collect();
     for mgr in &managers {
         assert!(
             !mgr.list_cmd.is_empty(),
@@ -206,15 +172,7 @@ fn all_simple_managers_have_list_cmd() {
 
 #[test]
 fn all_simple_managers_have_update_cmd() {
-    let managers = [
-        apt_manager(),
-        dnf_manager(),
-        yum_manager(),
-        apk_manager(),
-        pacman_manager(),
-        zypper_manager(),
-        pkg_manager(),
-    ];
+    let managers: Vec<SimpleManager> = SIMPLE_FAMILIES.iter().map(|(_, build)| build()).collect();
     for mgr in &managers {
         assert!(
             mgr.update_cmd.is_some(),
@@ -305,15 +263,7 @@ fn pkg_manager_install_uses_dash_y() {
 /// carries would render junk the moment a surface displays it.
 #[test]
 fn every_simple_family_names_its_raise_verb_from_its_own_command() {
-    for mgr in [
-        apt_manager(),
-        dnf_manager(),
-        yum_manager(),
-        apk_manager(),
-        pacman_manager(),
-        zypper_manager(),
-        pkg_manager(),
-    ] {
+    for mgr in SIMPLE_FAMILIES.iter().map(|(_, build)| build()) {
         let cmd = mgr.upgrade_cmd.unwrap_or(mgr.install_cmd);
         let verb = mgr
             .upgrade_verb()
@@ -452,6 +402,7 @@ fn simple_manager_query_version_fns_name_their_own_manager_when_the_tool_is_miss
     let _seams: Vec<_> = [
         "CFGD_APT_CACHE_BIN",
         "CFGD_DNF_BIN",
+        "CFGD_YUM_BIN",
         "CFGD_APK_BIN",
         "CFGD_PACMAN_BIN",
         "CFGD_ZYPPER_BIN",
@@ -462,14 +413,7 @@ fn simple_manager_query_version_fns_name_their_own_manager_when_the_tool_is_miss
     .collect();
     let _empty = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
 
-    let managers: Vec<SimpleManager> = vec![
-        apt_manager(),
-        dnf_manager(),
-        apk_manager(),
-        pacman_manager(),
-        zypper_manager(),
-        pkg_manager(),
-    ];
+    let managers: Vec<SimpleManager> = SIMPLE_FAMILIES.iter().map(|(_, build)| build()).collect();
     for mgr in &managers {
         let err = mgr
             .available_version("nonexistent-package-12345")
@@ -903,16 +847,16 @@ mod seam_tests {
 #[test]
 #[serial_test::serial]
 fn every_unix_family_declares_the_privilege_its_install_needs() {
-    let families = [
-        ("apt", APT_GET_BIN_ENV),
-        ("dnf", DNF_BIN_ENV),
-        ("yum", YUM_BIN_ENV),
-        ("apk", APK_BIN_ENV),
-        ("pacman", PACMAN_BIN_ENV),
-        ("zypper", ZYPPER_BIN_ENV),
-        ("pkg", PKG_BIN_ENV),
-    ];
-    for (name, _) in families {
+    let families: Vec<(&str, String)> = SIMPLE_FAMILIES
+        .iter()
+        .map(|(name, build)| {
+            (
+                *name,
+                super::super::shared::tool_seam_var(build().install_program()),
+            )
+        })
+        .collect();
+    for (name, _) in &families {
         let mgr = simple_manager(name).unwrap_or_else(|| panic!("{name} is a family"));
         for (slot, cmd) in [
             ("install_cmd", Some(mgr.install_cmd)),
@@ -932,10 +876,10 @@ fn every_unix_family_declares_the_privilege_its_install_needs() {
     // No seam, so the composition answers from the uid alone.
     let _seams: Vec<_> = families
         .iter()
-        .map(|(_, seam)| cfgd_core::test_helpers::EnvVarGuard::unset(seam))
+        .map(|(_, seam)| cfgd_core::test_helpers::EnvVarGuard::unset(seam.clone().leak()))
         .collect();
     let root = cfgd_core::is_root();
-    for (name, _) in families {
+    for (name, _) in &families {
         let cmd = family_install_command(name, &["ripgrep"])
             .unwrap_or_else(|| panic!("{name} composes an install"));
         let program = cmd.get_program().to_string_lossy().into_owned();
@@ -1020,7 +964,7 @@ fn every_family_verb_spawns_with_the_family_env() {
         .iter()
         .map(|mgr| {
             cfgd_core::test_helpers::EnvVarGuard::unset(
-                super::super::shared::tool_seam_var(mgr.install_cmd[1]).leak(),
+                super::super::shared::tool_seam_var(mgr.install_program()).leak(),
             )
         })
         .collect();
@@ -1047,6 +991,11 @@ fn every_family_verb_spawns_with_the_family_env() {
         } = mgr;
         let expected = expected_env(name);
         assert_eq!(*env, expected, "{name}'s declared environment");
+        assert_eq!(
+            super::super::shared::arm_tool(name),
+            Some(mgr.install_program()),
+            "{name}'s bootstrap arm spawns the program its own install runs"
+        );
         // (slot, argv, whether the verb runs dpkg on an apt host)
         for (slot, parts, runs_dpkg) in [
             ("install_cmd", Some(*install_cmd), true),

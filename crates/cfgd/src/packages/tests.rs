@@ -472,32 +472,45 @@ fn apply_calls_uninstall_on_correct_manager() {
     assert_eq!(uninstalls[0], vec!["bat"]);
 }
 
+/// The registry holds every manager exactly once: the managers outside the
+/// system family table by name, and every family of that table by reading it,
+/// so a row added to the table without a registry entry fails here, and so does
+/// a registry entry that is neither a named manager nor a table row.
 #[test]
 fn all_package_managers_creates_all() {
+    const OUTSIDE_THE_FAMILY_TABLE: [&str; 13] = [
+        "brew",
+        "brew-tap",
+        "brew-cask",
+        "cargo",
+        "npm",
+        "pipx",
+        "snap",
+        "flatpak",
+        "nix",
+        "go",
+        "winget",
+        "chocolatey",
+        "scoop",
+    ];
     let managers = all_package_managers();
-    assert_eq!(managers.len(), 20);
-
     let names: Vec<&str> = managers.iter().map(|m| m.name()).collect();
-    assert!(names.contains(&"brew"));
-    assert!(names.contains(&"brew-tap"));
-    assert!(names.contains(&"brew-cask"));
-    assert!(names.contains(&"apt"));
-    assert!(names.contains(&"cargo"));
-    assert!(names.contains(&"npm"));
-    assert!(names.contains(&"pipx"));
-    assert!(names.contains(&"dnf"));
-    assert!(names.contains(&"apk"));
-    assert!(names.contains(&"pacman"));
-    assert!(names.contains(&"zypper"));
-    assert!(names.contains(&"yum"));
-    assert!(names.contains(&"pkg"));
-    assert!(names.contains(&"snap"));
-    assert!(names.contains(&"flatpak"));
-    assert!(names.contains(&"nix"));
-    assert!(names.contains(&"go"));
-    assert!(names.contains(&"winget"));
-    assert!(names.contains(&"chocolatey"));
-    assert!(names.contains(&"scoop"));
+    let once = |name: &str| names.iter().filter(|n| **n == name).count() == 1;
+
+    for name in OUTSIDE_THE_FAMILY_TABLE {
+        assert!(once(name), "{name} is registered exactly once: {names:?}");
+    }
+    for (family, _) in simple::SIMPLE_FAMILIES {
+        assert!(
+            once(family),
+            "the {family} family has a table row, so the registry must hold it exactly once: {names:?}"
+        );
+    }
+    assert_eq!(
+        managers.len(),
+        OUTSIDE_THE_FAMILY_TABLE.len() + simple::SIMPLE_FAMILIES.len(),
+        "every registry entry is a named manager or a family table row: {names:?}"
+    );
 }
 
 #[test]

@@ -690,6 +690,12 @@ pub fn manager_install_script(manager: &str, packages: &[String]) -> Option<Mana
     })
 }
 
+/// The name of every data-driven system family, read off the family table.
+#[cfg(test)]
+pub(crate) fn system_family_names() -> impl Iterator<Item = &'static str> {
+    simple::SIMPLE_FAMILIES.iter().map(|(name, _)| *name)
+}
+
 /// Build the default provider registry with all workstation package managers.
 pub fn all_package_managers() -> Vec<Box<dyn PackageManager>> {
     vec![
