@@ -2361,10 +2361,11 @@ fn every_enum_valued_global_flag_accepts_its_config_spelling() {
 /// parameter is where the config comes from: the startup document
 /// (`Option<&CfgdConfig>`, a `StartupDocument`) or a path (`&Path` however its
 /// reference and lifetime are spelled, `impl AsRef<Path>`, or a generic bounded
-/// by it). That is the SHAPE of a resolver folding a flag, a `CFGD_*` variable and a `spec.*` field into one
-/// answer: a parameter name is the author's to pick, so admitting on one lets
-/// the next resolver spell its way out of the rule. `resolve_color_choice` and
-/// `resolve_phase_filter` read no config and fall out on that test. An
+/// by it). That is the SHAPE of a resolver folding a flag, a `CFGD_*`
+/// variable and a `spec.*` field into one answer: a parameter name is the
+/// author's to pick, so admitting on one lets the next resolver spell its way
+/// out of the rule. `resolve_color_choice` and `resolve_phase_filter` read no
+/// config and fall out on that test. An
 /// exemption is a `// knob-resolver-ok:` line at the production site, where a
 /// maintainer editing the function sees it, and never a list held here.
 #[test]
@@ -2444,10 +2445,10 @@ fn every_knob_resolver_routes_through_resolve_knob() {
     /// Whether that parameter is the config a knob resolver reads: any type
     /// whose spelling NAMES `CfgdConfig`, `StartupDocument`, `Path` or
     /// `PathBuf`, judged once the `&` and any lifetime are off. The borrowed
-    /// form, the owned one, an `Option` of either, an `impl AsRef<Path>` and a generic parameter the
-    /// declaration bounds by `AsRef<Path>` in its generic list or its `where`
-    /// clause are all admitted, so a resolver cannot spell its way out of the
-    /// rule through its signature.
+    /// form, the owned one, an `Option` of either, an `impl AsRef<Path>` and a
+    /// generic parameter the declaration bounds by `AsRef<Path>` in its generic
+    /// list or its `where` clause are all admitted, so a resolver cannot spell
+    /// its way out of the rule through its signature.
     fn reads_a_config((declared, signature): &(String, String)) -> bool {
         // Any spelling of these types counts, qualified or not: the question
         // is what the parameter NAMES, and a wider read can only pull one more
