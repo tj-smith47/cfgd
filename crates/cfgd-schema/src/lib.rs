@@ -982,7 +982,7 @@ pub fn validate_plain_name(raw: &str) -> Result<(), String> {
         }
         if segment == "." || segment == ".." {
             return Err(format!(
-                "the segment '{segment}' is a directory reference, not a name"
+                "the segment '{segment}' is a directory reference; every segment must name something"
             ));
         }
         // Windows reads `C:name` as drive-relative and `name:stream` as an NTFS
@@ -1154,11 +1154,11 @@ pub fn validate_package_name(subject: &str, name: &str) -> Result<(), PackageNam
         )));
     }
     // Every manager appends names positionally, and the system family runs
-    // under sudo, so a leading dash is read as an option by the manager rather
-    // than as a package on every platform, shim or no shim.
+    // under sudo, so the manager reads a leading dash as an option on every
+    // platform, shim or no shim.
     if name.starts_with('-') {
         return Err(PackageNameError(format!(
-            "{subject}: package name '{name}' must not begin with '-'; a leading dash makes it an option to the package manager rather than a package"
+            "{subject}: package name '{name}' must not begin with '-'; a leading dash makes the package manager read it as an option"
         )));
     }
     // A version spec is spelled in range operators, three of which (`^`, `>`,

@@ -328,7 +328,7 @@ async fn policy_owned_schedules(
                     tracing::warn!(
                         namespace = %namespace,
                         error = %e,
-                        "failed to list BackupPolicies for a device check-in; the device is told nothing rather than that the cluster owns nothing"
+                        "failed to list BackupPolicies for a device check-in; the device is told nothing, so a failed list never reads as the cluster owning no BackupPolicy"
                     );
                     return None;
                 }

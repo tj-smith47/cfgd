@@ -129,8 +129,8 @@ pub fn cmd_profile_create(
                     "--package",
                     &format!("{mgr}:{}", pkg.name),
                     format!(
-                        "'{mgr}' is declared by profile '{parent}'; '{name}' does not declare it. Add the package \
-                         there with `cfgd profile update {parent} --package {mgr}:{}`, or declare \
+                        "'{mgr}' is declared by profile '{parent}'; '{name}' does not declare it. \
+                         Add the package there with `cfgd profile update {parent} --package {mgr}:{}`, or declare \
                          {mgr} under spec.packages.custom in this profile",
                         pkg.name
                     ),
