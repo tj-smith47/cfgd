@@ -450,12 +450,17 @@ pub fn cmd_double_quoted(value: &str) -> String {
 /// A value as one argument of a Windows command line that the MSVC runtime and
 /// `CommandLineToArgvW` split back into the same value.
 ///
-/// Quotes only when the value needs it (empty, or holding whitespace or `"`),
-/// the same rule `std::process::Command` applies. Inside the quotes a `"` is
-/// escaped as `\"`, and a run of backslashes is doubled when a `"` follows it,
-/// including the closing quote: `C:\dir with space\` wrapped bare reads its
-/// last `\"` as a literal quote and swallows every argument after it. Not for
-/// `cmd.exe`, which parses its own command line ([`cmd_double_quoted`]).
+/// The escaping matches `Command::arg`: inside the quotes a `"` is written as
+/// `\"`, and a run of backslashes is doubled when a `"` follows it, including
+/// the closing quote. Without that doubling `C:\dir with space\` wrapped bare
+/// ends in `\"`, which the split reads as a literal quote, swallowing every
+/// argument after it.
+///
+/// `Command::arg` quotes a value that is empty or holds a space or a tab; this
+/// also quotes one holding a `"`, a newline or a vertical tab, so a bare `"`
+/// never opens a quoted span of its own and no whitespace is left outside
+/// quotes. Not for `cmd.exe`, which parses its own command line
+/// ([`cmd_double_quoted`]).
 pub fn msvc_argv_quoted(value: &str) -> String {
     if !value.is_empty() && !value.contains([' ', '\t', '\n', '\u{b}', '"']) {
         return value.to_string();
