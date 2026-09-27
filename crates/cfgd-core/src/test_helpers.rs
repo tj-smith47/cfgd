@@ -3887,16 +3887,24 @@ pub const MANAGER_SEAMS: &[&str] = &[
 /// filled before the window answers from what the host had.
 pub struct NoHostManagers {
     _seams: Vec<EnvVarGuard>,
+    // Declared last so it drops last: the seams are restored before a guarded
+    // reader on another thread can see them.
+    _exclusive: ExclusiveEnvGuard,
 }
 
 impl NoHostManagers {
-    /// Pin every seam of [`MANAGER_SEAMS`] at [`ABSENT_SEAM_PATH`].
+    /// Pin every seam of [`MANAGER_SEAMS`] at [`ABSENT_SEAM_PATH`], holding
+    /// [`path_env_mutation_guard`] while they are pinned, so a guarded seam
+    /// read on another thread (a sibling test's real-host plan) waits instead
+    /// of finding every manager missing.
     pub fn pinned_missing() -> Self {
+        let exclusive = path_env_mutation_guard();
         Self {
             _seams: MANAGER_SEAMS
                 .iter()
                 .map(|seam| EnvVarGuard::set(seam, ABSENT_SEAM_PATH))
                 .collect(),
+            _exclusive: exclusive,
         }
     }
 }
@@ -6669,6 +6677,38 @@ mod tests {
         for thread in [holder, writer, joiner] {
             thread.join().expect("thread");
         }
+    }
+
+    /// A guarded seam read on another thread waits while [`NoHostManagers`]
+    /// holds its pins, so a sibling test planning against the real host never
+    /// reads a manager pinned missing.
+    #[test]
+    #[serial_test::serial]
+    fn a_guarded_seam_read_waits_out_the_no_host_managers_pins() {
+        let seam = MANAGER_SEAMS[0];
+        let pins = NoHostManagers::pinned_missing();
+        let (read_in, read) = std::sync::mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            let _guard = path_env_read_guard();
+            read_in
+                .send(std::env::var(seam).ok())
+                .expect("report the seam read");
+        });
+        assert!(
+            read.recv_timeout(std::time::Duration::from_millis(200))
+                .is_err(),
+            "a guarded read ran while the pins were held"
+        );
+        drop(pins);
+        let seen = read
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the read runs once the pins are dropped");
+        assert_ne!(
+            seen.as_deref(),
+            Some(ABSENT_SEAM_PATH),
+            "the read saw {seam} pinned missing"
+        );
+        reader.join().expect("reader thread");
     }
 
     /// The spawn-environment guards must compose: a test that pins the working

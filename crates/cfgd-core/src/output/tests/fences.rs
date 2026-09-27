@@ -2763,13 +2763,92 @@ fn every_scoped_tracing_capture_installs_the_journal_under_it() {
 /// guard is gated on.
 #[test]
 fn every_production_path_read_takes_the_read_guard() {
-    const NEEDLES: &[&str] = &["env::var(", "env::var_os("];
     const HATCH: &str = "path-read-ok:";
+    // The literal is blanked out of the code half, so the variable NAME is read
+    // off the raw line and only its `env::var` call off the half that proves it
+    // is code at all.
+    let (reads, offenders) = unguarded_env_reads(
+        |line, code| line.contains("\"PATH\"") && ENV_READ_NEEDLES.iter().any(|n| code.contains(n)),
+        HATCH,
+    );
+    assert!(
+        offenders.is_empty(),
+        "a production read of `PATH` must sit in a span that takes \
+         `path_env_read_guard()`, or carry `// {HATCH} <why>`:\n{}",
+        offenders.join("\n")
+    );
+    // Three, not four: brew's PATH composition now routes through
+    // `process_path_with_dirs_prepended` and reads nothing of its own.
+    assert!(
+        reads >= 3,
+        "the walk found {reads} production `PATH` reads; it has stopped \
+         finding them"
+    );
+}
+
+/// Every production read of a `CFGD_*_BIN` tool seam sits inside a
+/// `path_env_read_guard()` span, as a `PATH` read does.
+///
+/// A test pins a seam process-wide (`NoHostManagers`, `ToolShim`) under
+/// `path_env_mutation_guard`, so an unguarded read on another thread answers
+/// from that window: a manager whose seam is pinned missing there reports this
+/// host's real binary absent, and a plan running beside the pin finds no
+/// manager at all.
+///
+/// A seam read is an `env::var` call naming a `*_BIN_ENV` const or a
+/// `tool_seam_var(..)` derivation, or reading a parameter spelled `env_var`,
+/// the name every cfgd-core seam helper takes its seam by. That spelling is the
+/// walk's ceiling: a seam read through another name goes unseen.
+/// `// unseamed-read-ok: <why>` on the read's line, or the line above it,
+/// hatches an `env_var` parameter that names no tool.
+#[test]
+fn every_production_seam_read_takes_the_read_guard() {
+    const HATCH: &str = "unseamed-read-ok:";
+    let (reads, offenders) = unguarded_env_reads(
+        |_, code| {
+            ENV_READ_NEEDLES.iter().any(|n| code.contains(n))
+                && (code.contains("BIN_ENV")
+                    || code.contains("tool_seam_var(")
+                    || code.contains("var(env_var)")
+                    || code.contains("var_os(env_var)"))
+        },
+        HATCH,
+    );
+    assert!(
+        offenders.is_empty(),
+        "a production read of a tool seam must sit in a span that takes \
+         `path_env_read_guard()`, or carry `// {HATCH} <why>`:\n{}",
+        offenders.join("\n")
+    );
+    // Three cfgd-core seam helpers, ten cfgd readers and the two hatched
+    // configuration reads.
+    assert!(
+        reads >= 15,
+        "the walk found {reads} production seam reads; it has stopped finding them"
+    );
+}
+
+/// The two `env::var` spellings a guarded-read walk looks for.
+const ENV_READ_NEEDLES: &[&str] = &["env::var(", "env::var_os("];
+
+/// Every production line `is_read` accepts (handed the raw line and its
+/// [`code_half`]), counted, and the ones outside a span naming
+/// `path_env_read_guard()` that carry no `hatch`, labelled.
+///
+/// The judgement is the INNERMOST declaration the read sits in, and the guard
+/// has to be named on a code line of that declaration: it is held to the end
+/// of the span it was taken in, and an enclosing declaration's guard says
+/// nothing about a nested one that runs on its own. A guard taken by a callee
+/// is deliberately not accepted, since the span it holds is the callee's. A
+/// read outside every declaration (a file-scope `static` or `LazyLock`
+/// initializer) is counted and fails: an initializer runs ordered by first use,
+/// inside no span any guard could bracket.
+fn unguarded_env_reads(is_read: impl Fn(&str, &str) -> bool, hatch: &str) -> (usize, Vec<String>) {
     let mut reads = 0usize;
     let mut offenders = Vec::new();
     for path in workspace_rust_files() {
         // This file spells every needle in order to hunt for it, and the test
-        // corpus mutates `PATH` on purpose.
+        // corpus mutates the environment on purpose.
         if path.ends_with(Path::new("output/tests/fences.rs"))
             || crate::test_helpers::is_test_source(&path)
             || crate::test_helpers::is_test_only_file(&path)
@@ -2798,11 +2877,7 @@ fn every_production_path_read_takes_the_read_guard() {
         // once per enclosing slice would inflate the floor a deletion has to
         // clear.
         for (at, line) in lines.iter().enumerate() {
-            let code = code_half(line);
-            // The literal is blanked out of the code half, so the variable
-            // NAME is read off the raw line and only its `env::var` call
-            // off the half that proves it is code at all.
-            if !line.contains("\"PATH\"") || !NEEDLES.iter().any(|n| code.contains(n)) {
+            if !is_read(line, &code_half(line)) {
                 continue;
             }
             reads += 1;
@@ -2810,26 +2885,13 @@ fn every_production_path_read_takes_the_read_guard() {
                 .iter()
                 .filter(|(span, _)| span.contains(&at))
                 .min_by_key(|(span, _)| span.end() - span.start());
-            if innermost.is_some_and(|(_, guarded)| *guarded) || hatched(&lines, at, HATCH) {
+            if innermost.is_some_and(|(_, guarded)| *guarded) || hatched(&lines, at, hatch) {
                 continue;
             }
             offenders.push(format!("{relative}:{}: {}", at + 1, line.trim()));
         }
     }
-
-    assert!(
-        offenders.is_empty(),
-        "a production read of `PATH` must sit in a span that takes \
-         `path_env_read_guard()`, or carry `// {HATCH} <why>`:\n{}",
-        offenders.join("\n")
-    );
-    // Three, not four: brew's PATH composition now routes through
-    // `process_path_with_dirs_prepended` and reads nothing of its own.
-    assert!(
-        reads >= 3,
-        "the walk found {reads} production `PATH` reads; it has stopped \
-         finding them"
-    );
+    (reads, offenders)
 }
 
 #[test]

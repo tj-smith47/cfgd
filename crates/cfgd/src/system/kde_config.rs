@@ -36,6 +36,9 @@ pub struct KdeConfigConfigurator;
 /// seam's to answer: `tool_cmd` discards the default, and probing the host for
 /// a generation the spawn will not use describes the wrong machine.
 fn seam_is_set(env_var: &str) -> bool {
+    // A sibling test pins this seam under the PATH lock; the read waits it out.
+    #[cfg(test)]
+    let _seam_guard = cfgd_core::test_helpers::path_env_read_guard();
     std::env::var_os(env_var).is_some()
 }
 

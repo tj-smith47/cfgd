@@ -133,6 +133,7 @@ impl Scope {
 /// present in a systemd-managed process, so honoring them whenever set (in any
 /// scope) routes cfgd to exactly the directory systemd provisioned.
 pub(crate) fn systemd_dir(env_var: &str) -> Option<std::path::PathBuf> {
+    // unseamed-read-ok: a systemd directory variable, which names no tool
     let raw = std::env::var_os(env_var)?;
     if raw.is_empty() {
         return None;

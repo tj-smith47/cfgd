@@ -208,6 +208,9 @@ fn find_pip() -> Option<PipRoute> {
 /// non-zero exit is that pip's failure rather than a reason to resolve a second
 /// one.
 fn seam_pip() -> Option<PipRoute> {
+    // A sibling test pins this seam under the PATH lock; the read waits it out.
+    #[cfg(test)]
+    let _seam_guard = cfgd_core::test_helpers::path_env_read_guard();
     pip_tool_order().into_iter().find_map(|tool| {
         let planted = PathBuf::from(std::env::var(tool_seam_var(tool)).ok()?);
         planted.is_file().then(|| PipRoute::direct(tool, planted))

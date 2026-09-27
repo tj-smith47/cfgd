@@ -33,6 +33,9 @@ impl RegKeySnapshot {
     /// registry has nothing to ask, but a `reg` STANDING IN for one is exactly
     /// how the spawn count is proven off Windows, where the suite runs.
     fn read(key_path: &str) -> Self {
+        // A sibling test pins this seam under the PATH lock; the read waits it out.
+        #[cfg(test)]
+        let _seam_guard = cfgd_core::test_helpers::path_env_read_guard();
         if !cfg!(windows) && std::env::var(cfgd_core::REG_BIN_ENV).is_err() {
             return Self::default();
         }

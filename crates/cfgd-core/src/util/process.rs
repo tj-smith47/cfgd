@@ -969,6 +969,10 @@ pub fn require_tool(name: &str, install_hint: Option<&str>) -> std::result::Resu
 /// Pair every seam consumer with `serial_test::serial` because env-var mutation
 /// is process-global.
 pub fn tool_binary_name(env_var: &str, default: &str) -> String {
+    // A sibling test pins this seam under the PATH lock; the read waits it out.
+    // Compiled out of release builds.
+    #[cfg(any(test, feature = "test-helpers"))]
+    let _seam_guard = crate::test_helpers::path_env_read_guard();
     if env_var.is_empty() {
         return default.to_string();
     }
@@ -999,6 +1003,10 @@ pub fn require_tool_with_seam(
     default: &str,
     install_hint: Option<&str>,
 ) -> std::result::Result<(), String> {
+    // A sibling test pins this seam under the PATH lock; the read waits it out.
+    // Compiled out of release builds.
+    #[cfg(any(test, feature = "test-helpers"))]
+    let _seam_guard = crate::test_helpers::path_env_read_guard();
     if let Ok(custom) = std::env::var(env_var) {
         let p = std::path::Path::new(&custom);
         if p.is_file() {
@@ -1059,6 +1067,10 @@ pub fn reg_cmd() -> std::process::Command {
 /// points at an existing file. Use in `is_available()` checks where the
 /// caller wants a bool, not a `Result`.
 pub fn command_available_with_seam(env_var: &str, default: &str) -> bool {
+    // A sibling test pins this seam under the PATH lock; the read waits it out.
+    // Compiled out of release builds.
+    #[cfg(any(test, feature = "test-helpers"))]
+    let _seam_guard = crate::test_helpers::path_env_read_guard();
     if let Ok(custom) = std::env::var(env_var) {
         return std::path::Path::new(&custom).is_file();
     }

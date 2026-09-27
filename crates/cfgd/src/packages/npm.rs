@@ -516,6 +516,9 @@ fn ensure_npm_fallback_prefix(prefix: &Path) -> Result<()> {
 /// emptying `PATH` to mean "no manager here" then reached whatever node the
 /// runner's own `~/.nvm` holds.
 pub(super) fn find_npm() -> Option<PathBuf> {
+    // A sibling test pins this seam under the PATH lock; the read waits it out.
+    #[cfg(test)]
+    let _seam_guard = cfgd_core::test_helpers::path_env_read_guard();
     if let Ok(custom) = std::env::var(tool_seam_var("npm")) {
         let p = PathBuf::from(custom);
         return p.is_file().then_some(p);
