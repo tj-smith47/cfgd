@@ -5922,10 +5922,10 @@ fn build_script_env_includes_expected_vars() {
     });
     let map: HashMap<String, String> = env.into_iter().collect();
     assert_eq!(
-        map.get("CFGD_CONFIG_DIR").unwrap(),
+        map.get(crate::CFGD_CONFIG_DIR_ENV).unwrap(),
         "/home/user/.config/cfgd"
     );
-    assert_eq!(map.get("CFGD_PROFILE").unwrap(), "default");
+    assert_eq!(map.get(crate::CFGD_PROFILE_ENV).unwrap(), "default");
     assert_eq!(map.get("CFGD_CONTEXT").unwrap(), "apply");
     assert_eq!(map.get("CFGD_PHASE").unwrap(), "preApply");
     assert!(!map.contains_key("CFGD_DRY_RUN"));
@@ -15917,7 +15917,7 @@ fn build_script_env_reconcile_context() {
     let map: HashMap<String, String> = env.into_iter().collect();
     assert_eq!(map.get("CFGD_CONTEXT").unwrap(), "reconcile");
     assert_eq!(map.get("CFGD_PHASE").unwrap(), "postReconcile");
-    assert_eq!(map.get("CFGD_PROFILE").unwrap(), "server");
+    assert_eq!(map.get(crate::CFGD_PROFILE_ENV).unwrap(), "server");
 }
 
 #[test]

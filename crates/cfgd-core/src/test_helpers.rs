@@ -4190,7 +4190,7 @@ impl Drop for CosignTestShim {
         // SAFETY: callers wrap with `serial_test::serial`, so no concurrent
         // reader observes a mid-update env state.
         unsafe {
-            restore_env("CFGD_COSIGN_BIN", self.prior.bin.take());
+            restore_env(crate::COSIGN_BIN_ENV, self.prior.bin.take());
             restore_env("CFGD_FAKE_COSIGN_LOG", self.prior.log.take());
             restore_env("CFGD_FAKE_COSIGN_KEYGEN", self.prior.keygen.take());
             restore_env("CFGD_FAKE_COSIGN_STDERR", self.prior.stderr.take());
@@ -4272,7 +4272,7 @@ impl CosignTestShimBuilder {
         let spawn_excl = path_env_mutation_guard();
         // Capture prior values of every var the shim mutates.
         let prior = CosignEnvSnapshot {
-            bin: std::env::var_os("CFGD_COSIGN_BIN"),
+            bin: std::env::var_os(crate::COSIGN_BIN_ENV),
             log: std::env::var_os("CFGD_FAKE_COSIGN_LOG"),
             keygen: std::env::var_os("CFGD_FAKE_COSIGN_KEYGEN"),
             stderr: std::env::var_os("CFGD_FAKE_COSIGN_STDERR"),
@@ -4283,7 +4283,7 @@ impl CosignTestShimBuilder {
         // reader observes a mid-update env state. Path values stay as
         // `Path`/`OsStr` so `Command::new` receives the host-native form.
         unsafe {
-            std::env::set_var("CFGD_COSIGN_BIN", &bin_path);
+            std::env::set_var(crate::COSIGN_BIN_ENV, &bin_path);
             if self.argv_logging {
                 std::env::set_var("CFGD_FAKE_COSIGN_LOG", &log_path);
             } else {
@@ -7385,7 +7385,7 @@ mod tests {
         /// stderr_string). Reads $CFGD_COSIGN_BIN like real consumers.
         fn run_shim(args: &[&str]) -> (i32, String) {
             let _path = crate::test_helpers::path_env_read_guard();
-            let bin = std::env::var("CFGD_COSIGN_BIN").expect("CFGD_COSIGN_BIN set");
+            let bin = std::env::var(crate::COSIGN_BIN_ENV).expect("CFGD_COSIGN_BIN set");
             let output = std::process::Command::new(&bin)
                 .args(args)
                 .output()
@@ -7401,13 +7401,13 @@ mod tests {
         fn install_sets_cosign_bin_and_drop_restores_prior() {
             // SAFETY: serial gates env mutation across tests.
             unsafe {
-                std::env::set_var("CFGD_COSIGN_BIN", "/prior/value");
+                std::env::set_var(crate::COSIGN_BIN_ENV, "/prior/value");
             }
 
             {
                 let _shim = CosignTestShim::install();
                 let observed =
-                    std::env::var("CFGD_COSIGN_BIN").expect("install sets CFGD_COSIGN_BIN");
+                    std::env::var(crate::COSIGN_BIN_ENV).expect("install sets CFGD_COSIGN_BIN");
                 assert_ne!(observed, "/prior/value", "shim must override prior value");
                 assert!(
                     std::path::Path::new(&observed).is_file(),
@@ -7416,14 +7416,14 @@ mod tests {
             }
 
             assert_eq!(
-                std::env::var("CFGD_COSIGN_BIN").ok().as_deref(),
+                std::env::var(crate::COSIGN_BIN_ENV).ok().as_deref(),
                 Some("/prior/value"),
                 "drop must restore the prior value"
             );
 
             // SAFETY: serial gates env mutation across tests.
             unsafe {
-                std::env::remove_var("CFGD_COSIGN_BIN");
+                std::env::remove_var(crate::COSIGN_BIN_ENV);
             }
         }
 
@@ -7432,17 +7432,17 @@ mod tests {
         fn install_with_no_prior_value_removes_on_drop() {
             // SAFETY: serial gates env mutation across tests.
             unsafe {
-                std::env::remove_var("CFGD_COSIGN_BIN");
+                std::env::remove_var(crate::COSIGN_BIN_ENV);
             }
-            assert!(std::env::var("CFGD_COSIGN_BIN").is_err());
+            assert!(std::env::var(crate::COSIGN_BIN_ENV).is_err());
 
             {
                 let _shim = CosignTestShim::install();
-                assert!(std::env::var("CFGD_COSIGN_BIN").is_ok());
+                assert!(std::env::var(crate::COSIGN_BIN_ENV).is_ok());
             }
 
             assert!(
-                std::env::var("CFGD_COSIGN_BIN").is_err(),
+                std::env::var(crate::COSIGN_BIN_ENV).is_err(),
                 "drop must remove when no prior value existed"
             );
         }
@@ -7495,7 +7495,7 @@ mod tests {
             let _shim = CosignTestShim::builder().with_keygen(true).install();
             let workdir = tempfile::TempDir::new().expect("workdir");
 
-            let bin = std::env::var("CFGD_COSIGN_BIN").unwrap();
+            let bin = std::env::var(crate::COSIGN_BIN_ENV).unwrap();
             let status = std::process::Command::new(&bin)
                 .arg("generate-key-pair")
                 .current_dir(workdir.path())
@@ -7528,7 +7528,7 @@ mod tests {
             let _shim = CosignTestShim::builder().with_keygen(true).install();
             let workdir = tempfile::TempDir::new().expect("workdir");
 
-            let bin = std::env::var("CFGD_COSIGN_BIN").unwrap();
+            let bin = std::env::var(crate::COSIGN_BIN_ENV).unwrap();
             let status = std::process::Command::new(&bin)
                 .arg("sign")
                 .arg("ghcr.io/test/x:v1")

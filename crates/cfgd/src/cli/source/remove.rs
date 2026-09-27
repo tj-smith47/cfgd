@@ -1028,7 +1028,8 @@ mod tests {
     #[serial_test::serial]
     fn keep_all_copies_the_sources_entries_into_the_local_profile() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let _allow = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _allow =
+            cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
         let (cli, local_profile) = seed_source_declaring_entries(dir.path());
         prime_source_cache(&cli);
 

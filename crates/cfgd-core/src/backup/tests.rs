@@ -587,7 +587,10 @@ fn hooks_see_the_backup_phase_in_the_environment() {
     let post = h.root.join("post-phase");
     let mut s = spec("db", &source);
     s.pre_backup = vec![echo_env_hook(&["CFGD_PHASE"], &pre)];
-    s.post_backup = vec![echo_env_hook(&["CFGD_PHASE", "CFGD_PROFILE"], &post)];
+    s.post_backup = vec![echo_env_hook(
+        &["CFGD_PHASE", crate::CFGD_PROFILE_ENV],
+        &post,
+    )];
 
     h.run(&s);
 

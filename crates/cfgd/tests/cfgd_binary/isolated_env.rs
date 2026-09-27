@@ -21,9 +21,9 @@ pub const ISOLATED_ENV: &[(&str, &str)] = &[
     ("XDG_CACHE_HOME", "home/.cache"),
     ("XDG_RUNTIME_DIR", "home/.cache/cfgd-runtime-base"),
     ("LOCALAPPDATA", "home/AppData/Local"),
-    ("CFGD_STATE_DIR", "state"),
-    ("CFGD_CACHE_DIR", "home/.cache/cfgd"),
-    ("CFGD_RUNTIME_DIR", "home/runtime"),
+    (cfgd_core::CFGD_STATE_DIR_ENV, "state"),
+    (cfgd_core::CFGD_CACHE_DIR_ENV, "home/.cache/cfgd"),
+    (cfgd_core::CFGD_RUNTIME_DIR_ENV, "home/runtime"),
 ];
 
 /// Every environment variable `cfgd_bin()` removes outright: the directories

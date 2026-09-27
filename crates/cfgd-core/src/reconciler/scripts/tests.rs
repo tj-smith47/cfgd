@@ -40,7 +40,7 @@ fn module_env_vars_propagated_to_script_env() {
     assert_eq!(lookup("GOPATH"), Some("/foo"));
     // Runtime metadata is still present.
     assert_eq!(lookup("CFGD_MODULE_NAME"), Some("nvim"));
-    assert_eq!(lookup("CFGD_PROFILE"), Some("workstation"));
+    assert_eq!(lookup(crate::CFGD_PROFILE_ENV), Some("workstation"));
     assert_eq!(lookup("CFGD_PHASE"), Some("postApply"));
 }
 
@@ -2163,12 +2163,12 @@ fn build_script_env_reconcile_context_and_module_dir() {
     let lookup = |k: &str| env.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
 
     assert_eq!(lookup("CFGD_CONTEXT"), Some("reconcile"));
-    assert_eq!(lookup("CFGD_PROFILE"), Some("node"));
+    assert_eq!(lookup(crate::CFGD_PROFILE_ENV), Some("node"));
     assert_eq!(
         lookup("CFGD_PHASE"),
         Some(ScriptPhase::OnDrift.display_name())
     );
-    assert_eq!(lookup("CFGD_CONFIG_DIR"), Some("/cfg"));
+    assert_eq!(lookup(crate::CFGD_CONFIG_DIR_ENV), Some("/cfg"));
     assert_eq!(lookup("CFGD_MODULE_DIR"), Some("/mods/x"));
     assert_eq!(
         lookup("CFGD_MODULE_NAME"),

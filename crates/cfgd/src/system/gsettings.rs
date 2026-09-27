@@ -10,7 +10,7 @@ use super::read_command_output;
 use super::{diff_nested_mapping, yaml_value_to_string};
 
 /// Test seam for every `gsettings` spawn in this configurator.
-const GSETTINGS_BIN_ENV: &str = "CFGD_GSETTINGS_BIN";
+pub const GSETTINGS_BIN_ENV: &str = "CFGD_GSETTINGS_BIN";
 
 fn gsettings_cmd() -> std::process::Command {
     cfgd_core::tool_cmd(GSETTINGS_BIN_ENV, "gsettings")

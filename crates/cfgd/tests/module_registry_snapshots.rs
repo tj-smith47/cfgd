@@ -324,7 +324,8 @@ fn module_add_bridge_one_blank_line() {
     // exactly one blank line in the human render — no more, no fewer.
     let (config_dir, state_dir) = registry_test_setup();
     let _home = cfgd_core::with_test_home_guard(config_dir.path());
-    let _env = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _env =
+        cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
     let bare_root = tempfile::tempdir().unwrap();
     let bare = make_bare_module_repo(bare_root.path(), "bridgemod", "v1.0.0");
@@ -374,7 +375,8 @@ fn module_add_bridge_one_blank_line() {
 fn module_add_happy_json() {
     let (config_dir, state_dir) = registry_test_setup();
     let _home = cfgd_core::with_test_home_guard(config_dir.path());
-    let _env = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _env =
+        cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
     let bare_root = tempfile::tempdir().unwrap();
     let bare = make_bare_module_repo(bare_root.path(), "jsonmod", "v1.0.0");
@@ -404,7 +406,8 @@ fn module_add_happy_json() {
 fn module_add_fetch_settle_line_nests_under_the_fetch_section_header() {
     let (config_dir, state_dir) = registry_test_setup();
     let _home = cfgd_core::with_test_home_guard(config_dir.path());
-    let _env = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _env =
+        cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
     let bare_root = tempfile::tempdir().unwrap();
     let bare = make_bare_module_repo(bare_root.path(), "depthmod", "v1.0.0");
@@ -430,7 +433,8 @@ fn module_add_from_registry_bridge_one_blank_line() {
     // buffered summary bridge from a one-step-removed entry point.
     let (config_dir, state_dir) = registry_test_setup();
     let _home = cfgd_core::with_test_home_guard(config_dir.path());
-    let _env = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _env =
+        cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
     let src_root = tempfile::tempdir().unwrap();
     let src = init_registry_source_for_test(src_root.path(), "alpha", "1.0.0", "Alpha module");
@@ -511,7 +515,8 @@ fn module_search_no_registries_human() {
 fn module_search_happy_json() {
     let (config_dir, _state_dir) = registry_test_setup();
     let _home = cfgd_core::with_test_home_guard(config_dir.path());
-    let _env = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _env =
+        cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
     let src_root = tempfile::tempdir().unwrap();
     let src = init_registry_source_for_test(src_root.path(), "alpha", "1.0.0", "Alpha module");

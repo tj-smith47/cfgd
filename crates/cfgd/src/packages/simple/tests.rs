@@ -284,8 +284,8 @@ fn yum_manager_yields_to_dnf_wherever_both_resolve() {
     // PATH rather than the host's: on a host carrying neither binary — every
     // CI runner cfgd builds on — a test that reads the host proves only that
     // false is false, and the yields-to-dnf rule it exists for never runs.
-    let _dnf_seam = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_DNF_BIN");
-    let _yum_seam = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_YUM_BIN");
+    let _dnf_seam = cfgd_core::test_helpers::EnvVarGuard::unset(crate::seams::DNF_BIN_ENV);
+    let _yum_seam = cfgd_core::test_helpers::EnvVarGuard::unset(crate::seams::YUM_BIN_ENV);
     let _path_lock = cfgd_core::test_helpers::path_env_mutation_guard();
     let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
     let yum = yum_manager();
@@ -311,7 +311,7 @@ fn yum_manager_yields_to_dnf_wherever_both_resolve() {
 fn simple_manager_without_a_custom_fn_probes_its_own_name() {
     // apk_manager carries `is_available_fn: None`, so availability falls
     // through to a probe for the manager's own name.
-    let _seam = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_APK_BIN");
+    let _seam = cfgd_core::test_helpers::EnvVarGuard::unset(crate::seams::APK_BIN_ENV);
     let _path_lock = cfgd_core::test_helpers::path_env_mutation_guard();
     let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
     let apk = apk_manager();
@@ -400,13 +400,13 @@ fn simple_manager_query_version_fns_name_their_own_manager_when_the_tool_is_miss
     let _path_lock = cfgd_core::test_helpers::path_env_mutation_guard();
     let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
     let _seams: Vec<_> = [
-        "CFGD_APT_CACHE_BIN",
-        "CFGD_DNF_BIN",
-        "CFGD_YUM_BIN",
-        "CFGD_APK_BIN",
-        "CFGD_PACMAN_BIN",
-        "CFGD_ZYPPER_BIN",
-        "CFGD_PKG_BIN",
+        crate::seams::APT_CACHE_BIN_ENV,
+        crate::seams::DNF_BIN_ENV,
+        crate::seams::YUM_BIN_ENV,
+        crate::seams::APK_BIN_ENV,
+        crate::seams::PACMAN_BIN_ENV,
+        crate::seams::ZYPPER_BIN_ENV,
+        crate::seams::PKG_BIN_ENV,
     ]
     .iter()
     .map(|v| cfgd_core::test_helpers::EnvVarGuard::unset(v))

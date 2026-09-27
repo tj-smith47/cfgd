@@ -1045,7 +1045,7 @@ fn save_credential_real_path_roundtrips_through_state_dir() {
     use crate::test_helpers::EnvVarGuard;
 
     let dir = tempfile::tempdir().unwrap();
-    let _guard = EnvVarGuard::set("CFGD_STATE_DIR", dir.path().to_str().unwrap());
+    let _guard = EnvVarGuard::set(crate::CFGD_STATE_DIR_ENV, dir.path().to_str().unwrap());
 
     let cred = DeviceCredential {
         server_url: "https://cfgd.example.com".into(),
@@ -1088,7 +1088,7 @@ fn load_credential_returns_none_when_absent_in_state_dir() {
     use crate::test_helpers::EnvVarGuard;
 
     let dir = tempfile::tempdir().unwrap();
-    let _guard = EnvVarGuard::set("CFGD_STATE_DIR", dir.path().to_str().unwrap());
+    let _guard = EnvVarGuard::set(crate::CFGD_STATE_DIR_ENV, dir.path().to_str().unwrap());
 
     let loaded = load_credential().expect("load_credential must not error on empty dir");
     assert!(loaded.is_none(), "no credential should be present");

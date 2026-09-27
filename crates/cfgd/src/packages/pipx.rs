@@ -838,7 +838,7 @@ mod tests {
             })
             .collect();
         held.push(cfgd_core::test_helpers::EnvVarGuard::set(
-            "CFGD_BREW_BIN",
+            crate::seams::BREW_BIN_ENV,
             "/nonexistent/cfgd-no-brew-on-this-host",
         ));
         held
@@ -1403,7 +1403,7 @@ mod tests {
         #[test]
         #[serial]
         fn pipx_bootstrap_via_brew_returns_ok() {
-            let s = ToolShim::install("CFGD_BREW_BIN", 0, "", "");
+            let s = ToolShim::install(crate::seams::BREW_BIN_ENV, 0, "", "");
             let p = test_printer();
             PipxManager
                 .bootstrap(&cfgd_core::test_helpers::test_bootstrap_context(&p))

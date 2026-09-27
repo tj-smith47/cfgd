@@ -415,7 +415,10 @@ mod tests {
         // manager, so every manager is pinned missing too: without it this pin
         // installs cosign on whoever runs the suite.
         let _managers = cfgd_core::test_helpers::NoHostManagers::pinned_missing();
-        let _g = EnvVarGuard::set("CFGD_COSIGN_BIN", cfgd_core::test_helpers::ABSENT_SEAM_PATH);
+        let _g = EnvVarGuard::set(
+            cfgd_core::COSIGN_BIN_ENV,
+            cfgd_core::test_helpers::ABSENT_SEAM_PATH,
+        );
         let (printer, _cap) = Printer::for_test_doc();
         let err = cmd_module_keys_generate(&printer, None).unwrap_err();
         assert!(
@@ -691,7 +694,10 @@ mod tests {
         // Every manager is pinned missing, or the absent seam sends the verb to
         // this host's own package manager to go and get cosign.
         let _managers = cfgd_core::test_helpers::NoHostManagers::pinned_missing();
-        let _g = EnvVarGuard::set("CFGD_COSIGN_BIN", cfgd_core::test_helpers::ABSENT_SEAM_PATH);
+        let _g = EnvVarGuard::set(
+            cfgd_core::COSIGN_BIN_ENV,
+            cfgd_core::test_helpers::ABSENT_SEAM_PATH,
+        );
         let tmp = tempfile::tempdir().expect("tempdir");
         let dir_str = tmp.path().to_str().expect("utf8 path");
         // Write a key so the not-found check doesn't short-circuit first.

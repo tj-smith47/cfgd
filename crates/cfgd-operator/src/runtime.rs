@@ -215,7 +215,7 @@ mod tests {
     #[serial]
     fn build_gateway_config_reads_port_env() {
         with_test_env_var("DEVICE_GATEWAY_PORT", Some("9999"), || {
-            with_test_env_var("CFGD_SERVER_DB_PATH", None, || {
+            with_test_env_var(cfgd_core::CFGD_SERVER_DB_PATH_ENV, None, || {
                 let port = env::parse_port_env("DEVICE_GATEWAY_PORT", 8080);
                 assert_eq!(port, 9999);
             });
@@ -233,8 +233,11 @@ mod tests {
     #[test]
     #[serial]
     fn build_gateway_config_reads_retention_env() {
-        with_test_env_var("CFGD_RETENTION_DAYS", Some("30"), || {
-            assert_eq!(env::parse_u32_env("CFGD_RETENTION_DAYS", 90), 30);
+        with_test_env_var(cfgd_core::CFGD_RETENTION_DAYS_ENV, Some("30"), || {
+            assert_eq!(
+                env::parse_u32_env(cfgd_core::CFGD_RETENTION_DAYS_ENV, 90),
+                30
+            );
         });
     }
 }

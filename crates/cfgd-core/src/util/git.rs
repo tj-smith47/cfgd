@@ -686,10 +686,10 @@ mod tests {
         let bin = tmp.path().join("anything");
         fs::write(&bin, "").expect("write");
 
-        let _guard = EnvVarGuard::capture("CFGD_COSIGN_BIN");
+        let _guard = EnvVarGuard::capture(crate::COSIGN_BIN_ENV);
         // SAFETY: serial.
         unsafe {
-            std::env::set_var("CFGD_COSIGN_BIN", &bin);
+            std::env::set_var(crate::COSIGN_BIN_ENV, &bin);
         }
         require_cosign().expect("env-var pointing to existing file → Ok");
     }
@@ -697,10 +697,10 @@ mod tests {
     #[test]
     #[serial]
     fn require_cosign_with_env_var_pointing_to_missing_file_errors_out() {
-        let _guard = EnvVarGuard::capture("CFGD_COSIGN_BIN");
+        let _guard = EnvVarGuard::capture(crate::COSIGN_BIN_ENV);
         // SAFETY: serial.
         unsafe {
-            std::env::set_var("CFGD_COSIGN_BIN", "/no/such/file/at/all");
+            std::env::set_var(crate::COSIGN_BIN_ENV, "/no/such/file/at/all");
         }
         let err = require_cosign().expect_err("missing file → Err");
         assert!(

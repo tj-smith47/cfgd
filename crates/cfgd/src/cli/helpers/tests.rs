@@ -1043,7 +1043,7 @@ fn compose_with_sources_with_local_source_merges_source_profile() {
     std::fs::create_dir_all(&profiles_dir).unwrap();
     std::fs::write(profiles_dir.join("default.yaml"), PROFILE_YAML).unwrap();
 
-    let _allow = EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _allow = EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
     let mut cli = make_cli(config_path.clone());
     cli.state_dir = Some(tmp.path().join("state"));
     cli.cache_dir = Some(tmp.path().join("cache"));
@@ -1110,7 +1110,7 @@ fn compose_with_sources_merges_canonical_form_source_profile() {
     std::fs::create_dir_all(&profiles_dir).unwrap();
     std::fs::write(profiles_dir.join("default.yaml"), PROFILE_YAML).unwrap();
 
-    let _allow = EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _allow = EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
     let mut cli = make_cli(config_path.clone());
     cli.state_dir = Some(tmp.path().join("state"));
     cli.cache_dir = Some(tmp.path().join("cache"));
@@ -1162,7 +1162,7 @@ fn resolve_desired_state_read_path_sees_source_package_and_module() {
     let source_repo = create_local_source_repo(tmp.path(), "team");
     let config_path = write_config_with_local_source(tmp.path(), &source_repo, "team");
 
-    let _allow = EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _allow = EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
     let mut cli = make_cli(config_path.clone());
     cli.state_dir = Some(tmp.path().join("state"));
     cli.cache_dir = Some(tmp.path().join("cache"));
@@ -1233,7 +1233,7 @@ fn resolve_desired_state_read_path_cache_miss_falls_back_to_local() {
     let source_repo = create_local_source_repo(tmp.path(), "team");
     let config_path = write_config_with_local_source(tmp.path(), &source_repo, "team");
 
-    let _allow = EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _allow = EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
     let mut cli = make_cli(config_path.clone());
     // Point the source cache at a fresh, empty dir so the source is "never
     // synced" — no refresh primes it.
@@ -1301,7 +1301,7 @@ fn resolve_desired_state_apply_and_read_compute_same_module_set() {
     let source_repo = create_local_source_repo(tmp.path(), "team");
     let config_path = write_config_with_local_source(tmp.path(), &source_repo, "team");
 
-    let _allow = EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _allow = EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
     let mut cli = make_cli(config_path.clone());
     cli.state_dir = Some(tmp.path().join("state"));
     cli.cache_dir = Some(tmp.path().join("cache"));
@@ -1699,7 +1699,7 @@ fn resolve_desired_state_module_blocked_by_scripts_not_allowed_surfaces_the_real
     // resolves `source-module` directly via `--module`, never through the
     // profile's own module list.
 
-    let _allow = EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _allow = EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
     let mut cli = make_cli(config_path.clone());
     cli.state_dir = Some(tmp.path().join("state"));
     cli.cache_dir = Some(tmp.path().join("cache"));

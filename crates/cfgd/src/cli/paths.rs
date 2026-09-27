@@ -367,8 +367,8 @@ mod tests {
             "STATE_DIRECTORY",
             "CACHE_DIRECTORY",
             "RUNTIME_DIRECTORY",
-            "CFGD_STATE_DIR",
-            "CFGD_CACHE_DIR",
+            cfgd_core::CFGD_STATE_DIR_ENV,
+            cfgd_core::CFGD_CACHE_DIR_ENV,
         ]
         .into_iter()
         .map(EnvVarGuard::unset)
@@ -444,7 +444,7 @@ mod tests {
     #[test]
     #[serial]
     fn output_has_all_four_roots_with_camelcase_keys() {
-        let _ipc = EnvVarGuard::unset("CFGD_DAEMON_IPC_PATH");
+        let _ipc = EnvVarGuard::unset(cfgd_core::CFGD_DAEMON_IPC_PATH_ENV);
         let state = tempfile::tempdir().unwrap();
         let cache = tempfile::tempdir().unwrap();
         let cli = test_cli(
@@ -471,7 +471,7 @@ mod tests {
     #[test]
     #[serial]
     fn overrides_set_dir_and_source_to_flag() {
-        let _ipc = EnvVarGuard::unset("CFGD_DAEMON_IPC_PATH");
+        let _ipc = EnvVarGuard::unset(cfgd_core::CFGD_DAEMON_IPC_PATH_ENV);
         let state = tempfile::tempdir().unwrap();
         let cache = tempfile::tempdir().unwrap();
         let cli = test_cli(
@@ -519,7 +519,7 @@ mod tests {
     #[test]
     #[serial]
     fn ipc_override_replaces_socket_path() {
-        let _ipc = EnvVarGuard::set("CFGD_DAEMON_IPC_PATH", "/custom/cfgd.sock");
+        let _ipc = EnvVarGuard::set(cfgd_core::CFGD_DAEMON_IPC_PATH_ENV, "/custom/cfgd.sock");
         let cli = test_cli(None, None);
         let output =
             collect_paths_output(&cli, &DirSources::all_default()).expect("collect must succeed");
@@ -532,7 +532,7 @@ mod tests {
     #[test]
     #[serial]
     fn config_dir_is_parent_of_resolved_file_and_source_flag() {
-        let _ipc = EnvVarGuard::unset("CFGD_DAEMON_IPC_PATH");
+        let _ipc = EnvVarGuard::unset(cfgd_core::CFGD_DAEMON_IPC_PATH_ENV);
         let cfg_dir = tempfile::tempdir().unwrap();
         let cfg_file = cfg_dir.path().join("cfgd.yaml");
         let mut cli = test_cli(None, None);
@@ -559,7 +559,7 @@ mod tests {
     #[test]
     #[serial]
     fn socket_falls_back_to_tmp_when_no_home() {
-        let _ipc = EnvVarGuard::unset("CFGD_DAEMON_IPC_PATH");
+        let _ipc = EnvVarGuard::unset(cfgd_core::CFGD_DAEMON_IPC_PATH_ENV);
         let _xdg = EnvVarGuard::unset("XDG_RUNTIME_DIR");
         let _home = EnvVarGuard::unset("HOME");
         let cli = test_cli(None, None);
@@ -574,7 +574,7 @@ mod tests {
     #[test]
     #[serial]
     fn runtime_dir_override_places_socket_under_it() {
-        let _ipc = EnvVarGuard::unset("CFGD_DAEMON_IPC_PATH");
+        let _ipc = EnvVarGuard::unset(cfgd_core::CFGD_DAEMON_IPC_PATH_ENV);
         let rt = tempfile::tempdir().unwrap();
         let mut cli = test_cli(None, None);
         cli.runtime_dir = Some(rt.path().to_path_buf());
@@ -604,7 +604,7 @@ mod tests {
     #[test]
     #[serial]
     fn cmd_paths_renders_all_roots_human() {
-        let _ipc = EnvVarGuard::unset("CFGD_DAEMON_IPC_PATH");
+        let _ipc = EnvVarGuard::unset(cfgd_core::CFGD_DAEMON_IPC_PATH_ENV);
         let state = tempfile::tempdir().unwrap();
         let cache = tempfile::tempdir().unwrap();
         let cli = test_cli(
@@ -624,7 +624,7 @@ mod tests {
     #[test]
     #[serial]
     fn cmd_paths_json_shape() {
-        let _ipc = EnvVarGuard::unset("CFGD_DAEMON_IPC_PATH");
+        let _ipc = EnvVarGuard::unset(cfgd_core::CFGD_DAEMON_IPC_PATH_ENV);
         let state = tempfile::tempdir().unwrap();
         let cache = tempfile::tempdir().unwrap();
         let cli = test_cli(
@@ -647,7 +647,7 @@ mod tests {
     #[test]
     #[serial]
     fn default_scope_is_user_in_payload_and_doc() {
-        let _ipc = EnvVarGuard::unset("CFGD_DAEMON_IPC_PATH");
+        let _ipc = EnvVarGuard::unset(cfgd_core::CFGD_DAEMON_IPC_PATH_ENV);
         let _systemd = unset_systemd_dir_vars();
         let state = tempfile::tempdir().unwrap();
         let cache = tempfile::tempdir().unwrap();
@@ -671,7 +671,7 @@ mod tests {
     #[test]
     #[serial]
     fn system_scope_yields_system_label_and_fhs_roots() {
-        let _ipc = EnvVarGuard::unset("CFGD_DAEMON_IPC_PATH");
+        let _ipc = EnvVarGuard::unset(cfgd_core::CFGD_DAEMON_IPC_PATH_ENV);
         let _systemd = unset_systemd_dir_vars();
         let mut cli = test_cli(None, None);
         cli.scope_arg = crate::cli::ScopeArg::System;
@@ -707,7 +707,7 @@ mod tests {
     #[test]
     #[serial]
     fn system_scope_fhs_absolute_roots_linux() {
-        let _ipc = EnvVarGuard::unset("CFGD_DAEMON_IPC_PATH");
+        let _ipc = EnvVarGuard::unset(cfgd_core::CFGD_DAEMON_IPC_PATH_ENV);
         let _systemd = unset_systemd_dir_vars();
         let mut cli = test_cli(None, None);
         cli.scope_arg = crate::cli::ScopeArg::System;

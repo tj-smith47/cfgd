@@ -88,7 +88,7 @@ fn normalize_commit_hashes(raw: &str) -> String {
 #[test]
 #[serial]
 fn sync_happy_human() {
-    let _allow = EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _allow = EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
     let (_workspace, config_dir, state_dir, _branch_a, _branch_b) = two_source_setup();
 
@@ -209,7 +209,7 @@ fn sync_local_pull_failure_withholds_the_synced_verdict() {
 #[test]
 #[serial]
 fn sync_perm_changes_rejection_human() {
-    let _allow = EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _allow = EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
     let (_workspace, config_dir, state_dir, _branch) = permission_change_source_setup();
 
@@ -234,7 +234,7 @@ fn sync_perm_changes_rejection_human() {
 #[test]
 #[serial]
 fn sync_perm_changes_accept_human() {
-    let _allow = EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _allow = EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
     let (_workspace, config_dir, state_dir, _branch) = permission_change_source_setup();
 
@@ -288,7 +288,7 @@ fn assert_movement_ends_differ(human: &str) {
 #[test]
 #[serial]
 fn sync_source_failure_human() {
-    let _disallow = EnvVarGuard::unset("CFGD_ALLOW_LOCAL_SOURCES");
+    let _disallow = EnvVarGuard::unset(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV);
 
     let (config_dir, state_dir) = unreachable_source_setup();
 
@@ -346,7 +346,7 @@ fn a_successful_sync_records_the_fetch_so_status_stops_saying_not_yet_fetched() 
     // freshness ledger used to hear only from `source add` / `source update`,
     // so `cfgd status` right after a green sync still reported the source as
     // never fetched.
-    let _allow = EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _allow = EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
     let (_workspace, config_dir, state_dir, _target) = common::opted_in_script_source_setup(false);
     let cli = cli_for(config_dir.path(), state_dir.path());
 
@@ -444,7 +444,7 @@ fn a_successful_sync_records_the_fetch_so_status_stops_saying_not_yet_fetched() 
 #[test]
 #[serial]
 fn sync_source_failure_settles_the_spinner_exactly_once_never_via_drop() {
-    let _disallow = EnvVarGuard::unset("CFGD_ALLOW_LOCAL_SOURCES");
+    let _disallow = EnvVarGuard::unset(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV);
 
     let (config_dir, state_dir) = unreachable_source_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());

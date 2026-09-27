@@ -1277,28 +1277,38 @@ async fn with_metrics_attaches_metrics_field() {
 #[tokio::test(flavor = "current_thread")]
 #[serial_test::serial]
 async fn reader_pool_size_from_env_parses_valid_value() {
-    let _g = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_GATEWAY_DB_READ_POOL_SIZE", "4");
+    let _g = cfgd_core::test_helpers::EnvVarGuard::set(
+        cfgd_core::CFGD_GATEWAY_DB_READ_POOL_SIZE_ENV,
+        "4",
+    );
     assert_eq!(super::reader_pool_size_from_env(), 4);
 }
 
 #[tokio::test(flavor = "current_thread")]
 #[serial_test::serial]
 async fn reader_pool_size_from_env_rejects_zero_falls_back_to_default() {
-    let _g = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_GATEWAY_DB_READ_POOL_SIZE", "0");
+    let _g = cfgd_core::test_helpers::EnvVarGuard::set(
+        cfgd_core::CFGD_GATEWAY_DB_READ_POOL_SIZE_ENV,
+        "0",
+    );
     assert_eq!(super::reader_pool_size_from_env(), DEFAULT_READER_POOL_SIZE);
 }
 
 #[tokio::test(flavor = "current_thread")]
 #[serial_test::serial]
 async fn reader_pool_size_from_env_rejects_non_numeric_falls_back_to_default() {
-    let _g = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_GATEWAY_DB_READ_POOL_SIZE", "abc");
+    let _g = cfgd_core::test_helpers::EnvVarGuard::set(
+        cfgd_core::CFGD_GATEWAY_DB_READ_POOL_SIZE_ENV,
+        "abc",
+    );
     assert_eq!(super::reader_pool_size_from_env(), DEFAULT_READER_POOL_SIZE);
 }
 
 #[tokio::test(flavor = "current_thread")]
 #[serial_test::serial]
 async fn reader_pool_size_from_env_uses_default_when_unset() {
-    let _g = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_GATEWAY_DB_READ_POOL_SIZE");
+    let _g =
+        cfgd_core::test_helpers::EnvVarGuard::unset(cfgd_core::CFGD_GATEWAY_DB_READ_POOL_SIZE_ENV);
     assert_eq!(super::reader_pool_size_from_env(), DEFAULT_READER_POOL_SIZE);
 }
 

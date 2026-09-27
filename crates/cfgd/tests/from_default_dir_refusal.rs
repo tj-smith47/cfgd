@@ -45,8 +45,8 @@ fn run(home: &Path, args: &[&str]) -> assert_cmd::assert::Assert {
         // Windows resolves `~` from USERPROFILE first.
         .env("USERPROFILE", home)
         .env("XDG_CONFIG_HOME", home.join(".config"))
-        .env("CFGD_CACHE_DIR", home.join("cache"))
-        .env("CFGD_ALLOW_LOCAL_SOURCES", "1")
+        .env(cfgd_core::CFGD_CACHE_DIR_ENV, home.join("cache"))
+        .env(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1")
         .assert()
 }
 
@@ -511,8 +511,8 @@ fn init_from_refuses_an_occupied_default_dir_before_provisioning_git() {
         .env("HOME", &home)
         .env("USERPROFILE", &home)
         .env("XDG_CONFIG_HOME", home.join(".config"))
-        .env("CFGD_CACHE_DIR", home.join("cache"))
-        .env("CFGD_ALLOW_LOCAL_SOURCES", "1")
+        .env(cfgd_core::CFGD_CACHE_DIR_ENV, home.join("cache"))
+        .env(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1")
         // git is the whole prerequisite `init` provisions, and an empty PATH is
         // what takes it off the machine for this child alone.
         .env("PATH", "");

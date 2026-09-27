@@ -398,7 +398,8 @@ fn backup_run_aborts_on_a_source_constraint_violation_but_list_still_reports() {
     // source's own constraints must stop the run, not be recorded and run
     // anyway. `backup list` only reads, so it stays on Report and still shows
     // the inventory.
-    let _allow = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _allow =
+        cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
     let (_workspace, config_dir, state_dir, rejected_destination) =
         common::violating_backup_source_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
@@ -2137,7 +2138,8 @@ fn a_restore_completes_over_a_module_whose_source_cannot_be_reached() {
 #[test]
 #[serial_test::serial]
 fn a_restore_over_a_conflicting_source_composes_once() {
-    let _allow = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _allow =
+        cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
     let (_workspace, config_dir, state_dir, source) =
         common::backup_profile_with_conflicting_source_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());

@@ -578,7 +578,10 @@ mod tests {
         // Use a non-conflicting port and a tempfile DB path.
         let tmp = tempfile::tempdir().expect("tempdir");
         let db_path = tmp.path().join("test-gateway.db");
-        let _g2 = EnvVarGuard::set("CFGD_SERVER_DB_PATH", db_path.to_str().expect("valid utf8"));
+        let _g2 = EnvVarGuard::set(
+            cfgd_core::CFGD_SERVER_DB_PATH_ENV,
+            db_path.to_str().expect("valid utf8"),
+        );
         // Let the OS pick a free port to never clash with other tests.
         let _g3 = EnvVarGuard::set("DEVICE_GATEWAY_PORT", "0");
 
@@ -608,7 +611,7 @@ mod tests {
     async fn run_operator_gateway_that_never_binds_leaves_the_pod_unready() {
         let _g1 = EnvVarGuard::set("DEVICE_GATEWAY_ENABLED", "true");
         let _g2 = EnvVarGuard::set(
-            "CFGD_SERVER_DB_PATH",
+            cfgd_core::CFGD_SERVER_DB_PATH_ENV,
             "/proc/cfgd-this-path-cannot-exist/gateway.db",
         );
         let _g3 = EnvVarGuard::set("DEVICE_GATEWAY_PORT", "0");
@@ -794,7 +797,10 @@ mod tests {
         let _g_gp = EnvVarGuard::set("DEVICE_GATEWAY_PORT", "0");
 
         let db_path = tmp.path().join("standalone-gateway.db");
-        let _g_db = EnvVarGuard::set("CFGD_SERVER_DB_PATH", db_path.to_str().expect("valid utf8"));
+        let _g_db = EnvVarGuard::set(
+            cfgd_core::CFGD_SERVER_DB_PATH_ENV,
+            db_path.to_str().expect("valid utf8"),
+        );
 
         let _g_sa = EnvVarGuard::set("DEVICE_GATEWAY_STANDALONE", "true");
         let _g_le = EnvVarGuard::unset("LEADER_ELECTION_ENABLED");

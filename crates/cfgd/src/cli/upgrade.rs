@@ -875,7 +875,7 @@ mod tests {
             .with_body(release_json_current_version())
             .create();
         let _guard = EnvVarGuard::set(cfgd_core::CFGD_GITHUB_API_BASE_ENV, &server.url());
-        let _no_update_check = EnvVarGuard::set("CFGD_NO_UPDATE_CHECK", "1");
+        let _no_update_check = EnvVarGuard::set(cfgd_core::CFGD_NO_UPDATE_CHECK_ENV, "1");
         let _no_update_notifier = EnvVarGuard::set("NO_UPDATE_NOTIFIER", "1");
         let _do_not_track = EnvVarGuard::set("DO_NOT_TRACK", "1");
         assert!(
@@ -1317,7 +1317,10 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let project = tempfile::tempdir().unwrap();
         let runtime = tempfile::tempdir().unwrap();
-        let _rt = EnvVarGuard::set("CFGD_RUNTIME_DIR", &runtime.path().to_string_lossy());
+        let _rt = EnvVarGuard::set(
+            cfgd_core::CFGD_RUNTIME_DIR_ENV,
+            &runtime.path().to_string_lossy(),
+        );
         let _cwd = CwdGuard::set(project.path()).unwrap();
 
         with_test_home(home.path(), || {
@@ -1345,7 +1348,10 @@ mod tests {
     fn wired_binary_pending_suppresses_skill_surface() {
         let home = tempfile::tempdir().unwrap();
         let runtime = tempfile::tempdir().unwrap();
-        let _rt = EnvVarGuard::set("CFGD_RUNTIME_DIR", &runtime.path().to_string_lossy());
+        let _rt = EnvVarGuard::set(
+            cfgd_core::CFGD_RUNTIME_DIR_ENV,
+            &runtime.path().to_string_lossy(),
+        );
 
         with_test_home(home.path(), || {
             seed_stale(SkillKind::Module, SkillScope::User);
@@ -1373,7 +1379,10 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let project = tempfile::tempdir().unwrap();
         let runtime = tempfile::tempdir().unwrap();
-        let _rt = EnvVarGuard::set("CFGD_RUNTIME_DIR", &runtime.path().to_string_lossy());
+        let _rt = EnvVarGuard::set(
+            cfgd_core::CFGD_RUNTIME_DIR_ENV,
+            &runtime.path().to_string_lossy(),
+        );
         let _cwd = CwdGuard::set(project.path()).unwrap();
 
         with_test_home(home.path(), || {
@@ -1409,7 +1418,10 @@ mod tests {
     fn wired_manual_standalone_stale_is_silent() {
         let home = tempfile::tempdir().unwrap();
         let runtime = tempfile::tempdir().unwrap();
-        let _rt = EnvVarGuard::set("CFGD_RUNTIME_DIR", &runtime.path().to_string_lossy());
+        let _rt = EnvVarGuard::set(
+            cfgd_core::CFGD_RUNTIME_DIR_ENV,
+            &runtime.path().to_string_lossy(),
+        );
 
         with_test_home(home.path(), || {
             seed_stale(SkillKind::Module, SkillScope::User);

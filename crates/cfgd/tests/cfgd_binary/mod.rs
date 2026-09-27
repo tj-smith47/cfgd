@@ -58,7 +58,7 @@ pub fn cfgd_bin() -> Result<Command, CargoError> {
     for var in REMOVED_ENV {
         cmd.env_remove(var);
     }
-    cmd.env("CFGD_NO_UPDATE_CHECK", "1");
+    cmd.env(cfgd_core::CFGD_NO_UPDATE_CHECK_ENV, "1");
     ROOT.with(|root| {
         for (var, path) in ISOLATED_ENV {
             cmd.env(var, root.path().join(path));

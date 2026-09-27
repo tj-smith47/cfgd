@@ -150,7 +150,8 @@ fn profile_update_add_module_remote_hybrid_human() {
     // confirmations through the unified Printer surface.
     let (config_dir, state_dir) = profile_test_config_setup();
     let _home = cfgd_core::with_test_home_guard(config_dir.path());
-    let _env = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _env =
+        cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
     let bare_root = tempfile::tempdir().unwrap();
     let bare = make_bare_module_repo(bare_root.path(), "mymod", "v1.0.0");

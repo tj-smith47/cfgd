@@ -290,7 +290,8 @@ fn module_upgrade_no_change_human_json() {
     // short-circuit fires.
     let (config_dir, state_dir) = upgrade_test_setup();
     let _home = cfgd_core::with_test_home_guard(config_dir.path());
-    let _env = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _env =
+        cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
     let bare_root = tempfile::tempdir().unwrap();
     let bare = make_bare_module_repo(bare_root.path(), "upmod", "v1.0.0");
@@ -329,7 +330,8 @@ fn module_upgrade_cancelled_human() {
     // diff path runs. Prompt declined → Cancelled Doc.
     let (config_dir, state_dir) = upgrade_test_setup();
     let _home = cfgd_core::with_test_home_guard(config_dir.path());
-    let _env = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _env =
+        cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
     let bare_root = tempfile::tempdir().unwrap();
     let bare = make_bare_module_repo(bare_root.path(), "upmod", "v1.0.0");
@@ -369,7 +371,8 @@ fn module_upgrade_cancelled_human() {
 fn module_upgrade_happy_human_json() {
     let (config_dir, state_dir) = upgrade_test_setup();
     let _home = cfgd_core::with_test_home_guard(config_dir.path());
-    let _env = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _env =
+        cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
     let bare_root = tempfile::tempdir().unwrap();
     let bare = make_bare_module_repo(bare_root.path(), "upmod", "v1.0.0");
@@ -445,7 +448,8 @@ fn module_upgrade_shows_real_spec_diff_human() {
     // HashSet's iteration order is not).
     let (config_dir, state_dir) = upgrade_test_setup();
     let _home = cfgd_core::with_test_home_guard(config_dir.path());
-    let _env = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _env =
+        cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
     let bare_root = tempfile::tempdir().unwrap();
     let bare = make_bare_module_repo_with_spec(bare_root.path(), "diffmod", "v1.0.0", SPEC_DIFF_V1);

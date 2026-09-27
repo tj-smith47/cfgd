@@ -5155,7 +5155,7 @@ mod tests {
     /// from has a source to name.
     fn setup_env_with_resolved_modules() -> ResolvedModulesEnv {
         let allow_local =
-            cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+            cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
         let config_dir = tempfile::tempdir().unwrap();
         let state_dir = tempfile::tempdir().unwrap();
         let config_path = config_dir.path().join("cfgd.yaml");

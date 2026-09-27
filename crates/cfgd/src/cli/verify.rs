@@ -1064,7 +1064,7 @@ mod tests {
         use crate::cli::helpers::tests::{make_cli, quiet_printer};
 
         let _shim = cfgd_core::test_helpers::ToolShim::install(
-            "CFGD_GSETTINGS_BIN",
+            crate::seams::GSETTINGS_BIN_ENV,
             0,
             "org.gnome.cfgd key 'declared'\n",
             "",

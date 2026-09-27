@@ -774,7 +774,7 @@ async fn checkin_config_changed_detection() {
 fn enrollment_method_defaults_to_token() {
     // Clear the env var so from_env returns the default
     // SAFETY: test-only; single-threaded test runner for this module
-    unsafe { std::env::remove_var("CFGD_ENROLLMENT_METHOD") };
+    unsafe { std::env::remove_var(cfgd_core::CFGD_ENROLLMENT_METHOD_ENV) };
     let method = EnrollmentMethod::from_env();
     assert_eq!(method, EnrollmentMethod::Token);
 }
@@ -783,20 +783,20 @@ fn enrollment_method_defaults_to_token() {
 #[serial]
 fn enrollment_method_key_from_env() {
     // SAFETY: test-only; single-threaded test runner for this module
-    unsafe { std::env::set_var("CFGD_ENROLLMENT_METHOD", "key") };
+    unsafe { std::env::set_var(cfgd_core::CFGD_ENROLLMENT_METHOD_ENV, "key") };
     let method = EnrollmentMethod::from_env();
     assert_eq!(method, EnrollmentMethod::Key);
-    unsafe { std::env::remove_var("CFGD_ENROLLMENT_METHOD") };
+    unsafe { std::env::remove_var(cfgd_core::CFGD_ENROLLMENT_METHOD_ENV) };
 }
 
 #[test]
 #[serial]
 fn enrollment_method_unknown_falls_back_to_token() {
     // SAFETY: test-only; single-threaded test runner for this module
-    unsafe { std::env::set_var("CFGD_ENROLLMENT_METHOD", "magic") };
+    unsafe { std::env::set_var(cfgd_core::CFGD_ENROLLMENT_METHOD_ENV, "magic") };
     let method = EnrollmentMethod::from_env();
     assert_eq!(method, EnrollmentMethod::Token);
-    unsafe { std::env::remove_var("CFGD_ENROLLMENT_METHOD") };
+    unsafe { std::env::remove_var(cfgd_core::CFGD_ENROLLMENT_METHOD_ENV) };
 }
 
 // --- verify_ssh_signature ---

@@ -590,7 +590,8 @@ fn strip_ansi(s: &str) -> String {
 #[test]
 #[serial_test::serial]
 fn plan_composed_source_human() {
-    let _env = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _env =
+        cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
     // The delivered profile writes env, whose targets hang off `$HOME`; an
     // unguarded test home is named after the pid and would not be host-stable.
     let home = tempfile::tempdir().unwrap();
@@ -690,7 +691,8 @@ fn plan_json_records_no_saved_plan_for_a_filtered_run() {
 #[test]
 #[serial_test::serial]
 fn plan_json_records_no_saved_plan_while_a_source_decision_is_pending() {
-    let _env = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _env =
+        cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
     let (_workspace, config_dir, state_dir) = common::local_source_setup("", |_workspace| {
         (
             "apiVersion: cfgd.io/v1alpha1\nkind: ConfigSource\nmetadata:\n  name: acme\n  version: \"1.0.0\"\nspec:\n  provides:\n    profiles:\n      - default\n".to_string(),

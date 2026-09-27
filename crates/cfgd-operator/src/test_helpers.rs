@@ -147,7 +147,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     #[serial]
     async fn gateway_test_app_enrollment_happy_path() {
-        let _g = EnvVarGuard::unset("CFGD_API_KEY");
+        let _g = EnvVarGuard::unset(cfgd_core::CFGD_API_KEY_ENV);
         let app = GatewayTestApp::new();
 
         // Provision a bootstrap token for enrollment.
@@ -189,7 +189,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     #[serial]
     async fn gateway_test_app_device_listing_after_enrollment() {
-        let _g = EnvVarGuard::set("CFGD_API_KEY", TEST_ADMIN_KEY);
+        let _g = EnvVarGuard::set(cfgd_core::CFGD_API_KEY_ENV, TEST_ADMIN_KEY);
         let app = GatewayTestApp::new();
 
         // Provision a separate bootstrap token per device (tokens are single-use).
@@ -242,7 +242,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     #[serial]
     async fn gateway_test_app_unauthenticated_device_list_returns_401() {
-        let _g = EnvVarGuard::unset("CFGD_API_KEY");
+        let _g = EnvVarGuard::unset(cfgd_core::CFGD_API_KEY_ENV);
         let app = GatewayTestApp::new();
 
         let resp = app.get("/api/v1/devices").await;
@@ -252,7 +252,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     #[serial]
     async fn gateway_test_app_admin_token_create_then_delete() {
-        let _g = EnvVarGuard::set("CFGD_API_KEY", TEST_ADMIN_KEY);
+        let _g = EnvVarGuard::set(cfgd_core::CFGD_API_KEY_ENV, TEST_ADMIN_KEY);
         let app = GatewayTestApp::new();
 
         let created = app

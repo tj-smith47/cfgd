@@ -604,7 +604,7 @@ fn auth_test_app(state: SharedState) -> axum::Router {
 #[serial_test::serial]
 async fn auth_middleware_allows_when_no_api_key_set() {
     // Ensure CFGD_API_KEY is not set
-    unsafe { std::env::remove_var("CFGD_API_KEY") };
+    unsafe { std::env::remove_var(cfgd_core::CFGD_API_KEY_ENV) };
 
     let (state, _tmp) = test_state();
     let app = auth_test_app(state);
@@ -618,7 +618,7 @@ async fn auth_middleware_allows_when_no_api_key_set() {
 #[tokio::test]
 #[serial_test::serial]
 async fn auth_middleware_rejects_without_credentials_when_key_set() {
-    unsafe { std::env::set_var("CFGD_API_KEY", "test-secret-key") };
+    unsafe { std::env::set_var(cfgd_core::CFGD_API_KEY_ENV, "test-secret-key") };
 
     let (state, _tmp) = test_state();
     let app = auth_test_app(state);
@@ -628,13 +628,13 @@ async fn auth_middleware_rejects_without_credentials_when_key_set() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 
-    unsafe { std::env::remove_var("CFGD_API_KEY") };
+    unsafe { std::env::remove_var(cfgd_core::CFGD_API_KEY_ENV) };
 }
 
 #[tokio::test]
 #[serial_test::serial]
 async fn auth_middleware_accepts_valid_bearer_token() {
-    unsafe { std::env::set_var("CFGD_API_KEY", "test-secret-key") };
+    unsafe { std::env::set_var(cfgd_core::CFGD_API_KEY_ENV, "test-secret-key") };
 
     let (state, _tmp) = test_state();
     let app = auth_test_app(state);
@@ -650,13 +650,13 @@ async fn auth_middleware_accepts_valid_bearer_token() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
-    unsafe { std::env::remove_var("CFGD_API_KEY") };
+    unsafe { std::env::remove_var(cfgd_core::CFGD_API_KEY_ENV) };
 }
 
 #[tokio::test]
 #[serial_test::serial]
 async fn auth_middleware_rejects_wrong_bearer_token() {
-    unsafe { std::env::set_var("CFGD_API_KEY", "test-secret-key") };
+    unsafe { std::env::set_var(cfgd_core::CFGD_API_KEY_ENV, "test-secret-key") };
 
     let (state, _tmp) = test_state();
     let app = auth_test_app(state);
@@ -672,13 +672,13 @@ async fn auth_middleware_rejects_wrong_bearer_token() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 
-    unsafe { std::env::remove_var("CFGD_API_KEY") };
+    unsafe { std::env::remove_var(cfgd_core::CFGD_API_KEY_ENV) };
 }
 
 #[tokio::test]
 #[serial_test::serial]
 async fn auth_middleware_accepts_valid_session_cookie() {
-    unsafe { std::env::set_var("CFGD_API_KEY", "test-secret-key") };
+    unsafe { std::env::set_var(cfgd_core::CFGD_API_KEY_ENV, "test-secret-key") };
 
     let (state, _tmp) = test_state();
     state.web_sessions.insert("sess-registered", SESSION_TTL);
@@ -695,13 +695,13 @@ async fn auth_middleware_accepts_valid_session_cookie() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
-    unsafe { std::env::remove_var("CFGD_API_KEY") };
+    unsafe { std::env::remove_var(cfgd_core::CFGD_API_KEY_ENV) };
 }
 
 #[tokio::test]
 #[serial_test::serial]
 async fn auth_middleware_rejects_unknown_session_cookie() {
-    unsafe { std::env::set_var("CFGD_API_KEY", "test-secret-key") };
+    unsafe { std::env::set_var(cfgd_core::CFGD_API_KEY_ENV, "test-secret-key") };
 
     let (state, _tmp) = test_state();
     let app = auth_test_app(state);
@@ -717,14 +717,14 @@ async fn auth_middleware_rejects_unknown_session_cookie() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 
-    unsafe { std::env::remove_var("CFGD_API_KEY") };
+    unsafe { std::env::remove_var(cfgd_core::CFGD_API_KEY_ENV) };
 }
 
 #[tokio::test]
 #[serial_test::serial]
 async fn auth_middleware_rejects_raw_api_key_as_session_cookie() {
     // Regression: the raw CFGD_API_KEY must NOT be accepted as a cfgd_session value.
-    unsafe { std::env::set_var("CFGD_API_KEY", "test-secret-key") };
+    unsafe { std::env::set_var(cfgd_core::CFGD_API_KEY_ENV, "test-secret-key") };
 
     let (state, _tmp) = test_state();
     let app = auth_test_app(state);
@@ -740,13 +740,13 @@ async fn auth_middleware_rejects_raw_api_key_as_session_cookie() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 
-    unsafe { std::env::remove_var("CFGD_API_KEY") };
+    unsafe { std::env::remove_var(cfgd_core::CFGD_API_KEY_ENV) };
 }
 
 #[tokio::test]
 #[serial_test::serial]
 async fn auth_middleware_accepts_cookie_among_multiple() {
-    unsafe { std::env::set_var("CFGD_API_KEY", "test-secret-key") };
+    unsafe { std::env::set_var(cfgd_core::CFGD_API_KEY_ENV, "test-secret-key") };
 
     let (state, _tmp) = test_state();
     state.web_sessions.insert("sess-abc", SESSION_TTL);
@@ -766,13 +766,13 @@ async fn auth_middleware_accepts_cookie_among_multiple() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
-    unsafe { std::env::remove_var("CFGD_API_KEY") };
+    unsafe { std::env::remove_var(cfgd_core::CFGD_API_KEY_ENV) };
 }
 
 #[tokio::test]
 #[serial_test::serial]
 async fn auth_middleware_token_query_param_redirects_and_sets_cookie() {
-    unsafe { std::env::set_var("CFGD_API_KEY", "test-secret-key") };
+    unsafe { std::env::set_var(cfgd_core::CFGD_API_KEY_ENV, "test-secret-key") };
 
     let (state, _tmp) = test_state();
     let app = auth_test_app(state);
@@ -810,13 +810,13 @@ async fn auth_middleware_token_query_param_redirects_and_sets_cookie() {
     assert!(set_cookie.contains("SameSite=Strict"));
     assert!(set_cookie.contains("Max-Age=86400"));
 
-    unsafe { std::env::remove_var("CFGD_API_KEY") };
+    unsafe { std::env::remove_var(cfgd_core::CFGD_API_KEY_ENV) };
 }
 
 #[tokio::test]
 #[serial_test::serial]
 async fn auth_middleware_wrong_token_query_param_rejected() {
-    unsafe { std::env::set_var("CFGD_API_KEY", "test-secret-key") };
+    unsafe { std::env::set_var(cfgd_core::CFGD_API_KEY_ENV, "test-secret-key") };
 
     let (state, _tmp) = test_state();
     let app = auth_test_app(state);
@@ -831,7 +831,7 @@ async fn auth_middleware_wrong_token_query_param_rejected() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 
-    unsafe { std::env::remove_var("CFGD_API_KEY") };
+    unsafe { std::env::remove_var(cfgd_core::CFGD_API_KEY_ENV) };
 }
 
 // --- COMMON_STYLES ---
@@ -857,7 +857,7 @@ async fn router_wires_routes() {
     let app = router(state.clone()).with_state(state);
 
     // Ensure CFGD_API_KEY is not set so auth middleware lets us through
-    unsafe { std::env::remove_var("CFGD_API_KEY") };
+    unsafe { std::env::remove_var(cfgd_core::CFGD_API_KEY_ENV) };
 
     // Dashboard route
     let resp = app

@@ -53,7 +53,7 @@ fn resolve_state_dir_returns_override_when_some() {
 #[test]
 #[serial_test::serial]
 fn resolve_state_dir_falls_through_to_default_when_none() {
-    let _cfgd = EnvVarGuard::set("CFGD_STATE_DIR", "/from/env/state");
+    let _cfgd = EnvVarGuard::set(crate::CFGD_STATE_DIR_ENV, "/from/env/state");
     assert_eq!(
         resolve_state_dir(None, Scope::User).unwrap(),
         crate::state::default_state_dir().unwrap()
@@ -102,7 +102,7 @@ fn resolve_runtime_dir_falls_through_to_default_when_none() {
 #[test]
 #[serial_test::serial]
 fn default_state_dir_honors_cfgd_state_dir_env() {
-    let _cfgd = EnvVarGuard::set("CFGD_STATE_DIR", "/verbatim/state/dir");
+    let _cfgd = EnvVarGuard::set(crate::CFGD_STATE_DIR_ENV, "/verbatim/state/dir");
     assert_eq!(
         crate::state::default_state_dir().unwrap(),
         PathBuf::from("/verbatim/state/dir")
@@ -114,7 +114,7 @@ fn default_state_dir_honors_cfgd_state_dir_env() {
 #[serial_test::serial]
 fn default_state_dir_honors_xdg_state_home_on_linux() {
     let dir = tempfile::tempdir().unwrap();
-    let _cfgd = EnvVarGuard::unset("CFGD_STATE_DIR");
+    let _cfgd = EnvVarGuard::unset(crate::CFGD_STATE_DIR_ENV);
     let _sd = EnvVarGuard::unset("STATE_DIRECTORY");
     let _xdg = EnvVarGuard::set("XDG_STATE_HOME", dir.path().to_str().unwrap());
     let _home = EnvVarGuard::set("HOME", dir.path().to_str().unwrap());
@@ -137,7 +137,7 @@ fn default_state_dir_honors_xdg_state_home_on_linux() {
 #[serial_test::serial]
 fn default_cache_dir_tail_is_cfgd() {
     let dir = tempfile::tempdir().unwrap();
-    let _cfgd = EnvVarGuard::unset("CFGD_CACHE_DIR");
+    let _cfgd = EnvVarGuard::unset(crate::CFGD_CACHE_DIR_ENV);
     let _sd = EnvVarGuard::unset("CACHE_DIRECTORY");
     let _home = with_test_home_guard(dir.path());
     let cache = default_cache_dir().unwrap();
@@ -156,7 +156,7 @@ fn default_cache_dir_tail_is_cfgd() {
 #[test]
 #[serial_test::serial]
 fn default_cache_dir_honors_cfgd_cache_dir_env() {
-    let _cfgd = EnvVarGuard::set("CFGD_CACHE_DIR", "/verbatim/cache/dir");
+    let _cfgd = EnvVarGuard::set(crate::CFGD_CACHE_DIR_ENV, "/verbatim/cache/dir");
     assert_eq!(
         default_cache_dir().unwrap(),
         PathBuf::from("/verbatim/cache/dir")
@@ -170,8 +170,8 @@ fn default_cache_dir_honors_cfgd_cache_dir_env() {
 fn resolved_dirs_sources_and_modules_share_one_cache_root() {
     let dir = tempfile::tempdir().unwrap();
     let _home = with_test_home_guard(dir.path());
-    let _cfgd = EnvVarGuard::unset("CFGD_STATE_DIR");
-    let _cache = EnvVarGuard::unset("CFGD_CACHE_DIR");
+    let _cfgd = EnvVarGuard::unset(crate::CFGD_STATE_DIR_ENV);
+    let _cache = EnvVarGuard::unset(crate::CFGD_CACHE_DIR_ENV);
     let _config_sd = EnvVarGuard::unset("CONFIGURATION_DIRECTORY");
     let _state_sd = EnvVarGuard::unset("STATE_DIRECTORY");
     let _cache_sd = EnvVarGuard::unset("CACHE_DIRECTORY");
@@ -211,7 +211,7 @@ fn resolved_dirs_resolve_threads_overrides() {
 #[test]
 #[serial_test::serial]
 fn default_runtime_dir_honors_cfgd_runtime_dir_env() {
-    let _cfgd = EnvVarGuard::set("CFGD_RUNTIME_DIR", "/verbatim/runtime/dir");
+    let _cfgd = EnvVarGuard::set(crate::CFGD_RUNTIME_DIR_ENV, "/verbatim/runtime/dir");
     assert_eq!(
         default_runtime_dir(),
         Some(PathBuf::from("/verbatim/runtime/dir"))
@@ -224,7 +224,7 @@ fn default_runtime_dir_honors_cfgd_runtime_dir_env() {
 #[test]
 #[serial_test::serial]
 fn default_runtime_dir_uses_xdg_runtime_dir_when_set() {
-    let _cfgd = EnvVarGuard::unset("CFGD_RUNTIME_DIR");
+    let _cfgd = EnvVarGuard::unset(crate::CFGD_RUNTIME_DIR_ENV);
     let _sd = EnvVarGuard::unset("RUNTIME_DIRECTORY");
     let _xdg = EnvVarGuard::set("XDG_RUNTIME_DIR", "/run/user/4242");
     let runtime = default_runtime_dir().expect("runtime dir resolves with XDG set");
@@ -236,7 +236,7 @@ fn default_runtime_dir_uses_xdg_runtime_dir_when_set() {
 #[serial_test::serial]
 fn default_runtime_dir_falls_back_to_cache_runtime_subdir_on_linux() {
     let dir = tempfile::tempdir().unwrap();
-    let _cfgd = EnvVarGuard::unset("CFGD_RUNTIME_DIR");
+    let _cfgd = EnvVarGuard::unset(crate::CFGD_RUNTIME_DIR_ENV);
     let _sd = EnvVarGuard::unset("RUNTIME_DIRECTORY");
     let _xdg = EnvVarGuard::unset("XDG_RUNTIME_DIR");
     let _home = with_test_home_guard(dir.path());
@@ -480,7 +480,7 @@ fn config_user_scope_matches_zero_arg_default() {
 #[test]
 #[serial_test::serial]
 fn state_cfgd_env_wins_over_systemd_and_system_scope() {
-    let _cfgd = EnvVarGuard::set("CFGD_STATE_DIR", "/from/cfgd/env");
+    let _cfgd = EnvVarGuard::set(crate::CFGD_STATE_DIR_ENV, "/from/cfgd/env");
     let _sd = EnvVarGuard::set("STATE_DIRECTORY", "/from/systemd");
     assert_eq!(
         crate::state::default_state_dir_for(Scope::System).unwrap(),
@@ -491,7 +491,7 @@ fn state_cfgd_env_wins_over_systemd_and_system_scope() {
 #[test]
 #[serial_test::serial]
 fn state_systemd_dir_wins_over_system_scope() {
-    let _cfgd = EnvVarGuard::unset("CFGD_STATE_DIR");
+    let _cfgd = EnvVarGuard::unset(crate::CFGD_STATE_DIR_ENV);
     let _sd = EnvVarGuard::set("STATE_DIRECTORY", "/from/systemd/state");
     assert_eq!(
         crate::state::default_state_dir_for(Scope::System).unwrap(),
@@ -503,7 +503,7 @@ fn state_systemd_dir_wins_over_system_scope() {
 #[serial_test::serial]
 #[cfg(target_os = "linux")]
 fn state_system_scope_is_var_lib_on_linux() {
-    let _cfgd = EnvVarGuard::unset("CFGD_STATE_DIR");
+    let _cfgd = EnvVarGuard::unset(crate::CFGD_STATE_DIR_ENV);
     let _sd = EnvVarGuard::unset("STATE_DIRECTORY");
     assert_eq!(
         crate::state::default_state_dir_for(Scope::System).unwrap(),
@@ -515,7 +515,7 @@ fn state_system_scope_is_var_lib_on_linux() {
 #[serial_test::serial]
 #[cfg(target_os = "macos")]
 fn state_system_scope_is_library_on_macos() {
-    let _cfgd = EnvVarGuard::unset("CFGD_STATE_DIR");
+    let _cfgd = EnvVarGuard::unset(crate::CFGD_STATE_DIR_ENV);
     let _sd = EnvVarGuard::unset("STATE_DIRECTORY");
     assert_eq!(
         crate::state::default_state_dir_for(Scope::System).unwrap(),
@@ -528,7 +528,7 @@ fn state_system_scope_is_library_on_macos() {
 #[test]
 #[serial_test::serial]
 fn cache_cfgd_env_wins_over_systemd_and_system_scope() {
-    let _cfgd = EnvVarGuard::set("CFGD_CACHE_DIR", "/from/cfgd/cache");
+    let _cfgd = EnvVarGuard::set(crate::CFGD_CACHE_DIR_ENV, "/from/cfgd/cache");
     let _sd = EnvVarGuard::set("CACHE_DIRECTORY", "/from/systemd/cache");
     assert_eq!(
         default_cache_dir_for(Scope::System).unwrap(),
@@ -539,7 +539,7 @@ fn cache_cfgd_env_wins_over_systemd_and_system_scope() {
 #[test]
 #[serial_test::serial]
 fn cache_systemd_dir_wins_over_system_scope() {
-    let _cfgd = EnvVarGuard::unset("CFGD_CACHE_DIR");
+    let _cfgd = EnvVarGuard::unset(crate::CFGD_CACHE_DIR_ENV);
     let _sd = EnvVarGuard::set("CACHE_DIRECTORY", "/from/systemd/cache");
     assert_eq!(
         default_cache_dir_for(Scope::System).unwrap(),
@@ -551,7 +551,7 @@ fn cache_systemd_dir_wins_over_system_scope() {
 #[serial_test::serial]
 #[cfg(target_os = "linux")]
 fn cache_system_scope_is_var_cache_on_linux() {
-    let _cfgd = EnvVarGuard::unset("CFGD_CACHE_DIR");
+    let _cfgd = EnvVarGuard::unset(crate::CFGD_CACHE_DIR_ENV);
     let _sd = EnvVarGuard::unset("CACHE_DIRECTORY");
     assert_eq!(
         default_cache_dir_for(Scope::System).unwrap(),
@@ -563,7 +563,7 @@ fn cache_system_scope_is_var_cache_on_linux() {
 #[serial_test::serial]
 #[cfg(target_os = "macos")]
 fn cache_system_scope_is_library_caches_on_macos() {
-    let _cfgd = EnvVarGuard::unset("CFGD_CACHE_DIR");
+    let _cfgd = EnvVarGuard::unset(crate::CFGD_CACHE_DIR_ENV);
     let _sd = EnvVarGuard::unset("CACHE_DIRECTORY");
     assert_eq!(
         default_cache_dir_for(Scope::System).unwrap(),
@@ -576,7 +576,7 @@ fn cache_system_scope_is_library_caches_on_macos() {
 #[test]
 #[serial_test::serial]
 fn runtime_cfgd_env_wins_over_systemd_and_system_scope() {
-    let _cfgd = EnvVarGuard::set("CFGD_RUNTIME_DIR", "/from/cfgd/runtime");
+    let _cfgd = EnvVarGuard::set(crate::CFGD_RUNTIME_DIR_ENV, "/from/cfgd/runtime");
     let _sd = EnvVarGuard::set("RUNTIME_DIRECTORY", "/from/systemd/runtime");
     assert_eq!(
         default_runtime_dir_for(Scope::System),
@@ -587,7 +587,7 @@ fn runtime_cfgd_env_wins_over_systemd_and_system_scope() {
 #[test]
 #[serial_test::serial]
 fn runtime_systemd_dir_wins_over_system_scope() {
-    let _cfgd = EnvVarGuard::unset("CFGD_RUNTIME_DIR");
+    let _cfgd = EnvVarGuard::unset(crate::CFGD_RUNTIME_DIR_ENV);
     let _sd = EnvVarGuard::set("RUNTIME_DIRECTORY", "/from/systemd/runtime");
     assert_eq!(
         default_runtime_dir_for(Scope::System),
@@ -599,7 +599,7 @@ fn runtime_systemd_dir_wins_over_system_scope() {
 #[serial_test::serial]
 #[cfg(target_os = "linux")]
 fn runtime_system_scope_is_run_cfgd_on_linux() {
-    let _cfgd = EnvVarGuard::unset("CFGD_RUNTIME_DIR");
+    let _cfgd = EnvVarGuard::unset(crate::CFGD_RUNTIME_DIR_ENV);
     let _sd = EnvVarGuard::unset("RUNTIME_DIRECTORY");
     assert_eq!(
         default_runtime_dir_for(Scope::System),
@@ -611,7 +611,7 @@ fn runtime_system_scope_is_run_cfgd_on_linux() {
 #[serial_test::serial]
 #[cfg(target_os = "macos")]
 fn runtime_system_scope_is_library_on_macos() {
-    let _cfgd = EnvVarGuard::unset("CFGD_RUNTIME_DIR");
+    let _cfgd = EnvVarGuard::unset(crate::CFGD_RUNTIME_DIR_ENV);
     let _sd = EnvVarGuard::unset("RUNTIME_DIRECTORY");
     assert_eq!(
         default_runtime_dir_for(Scope::System),
@@ -638,9 +638,9 @@ fn resolved_dirs_system_scope_resolves_fhs_roots() {
     let _state_sd = EnvVarGuard::unset("STATE_DIRECTORY");
     let _cache_sd = EnvVarGuard::unset("CACHE_DIRECTORY");
     let _runtime_sd = EnvVarGuard::unset("RUNTIME_DIRECTORY");
-    let _cfgd_state = EnvVarGuard::unset("CFGD_STATE_DIR");
-    let _cfgd_cache = EnvVarGuard::unset("CFGD_CACHE_DIR");
-    let _cfgd_runtime = EnvVarGuard::unset("CFGD_RUNTIME_DIR");
+    let _cfgd_state = EnvVarGuard::unset(crate::CFGD_STATE_DIR_ENV);
+    let _cfgd_cache = EnvVarGuard::unset(crate::CFGD_CACHE_DIR_ENV);
+    let _cfgd_runtime = EnvVarGuard::unset(crate::CFGD_RUNTIME_DIR_ENV);
     let dirs = ResolvedDirs::resolve(None, None, None, None, Scope::System).unwrap();
     assert_eq!(dirs.config, PathBuf::from("/etc/cfgd"));
     assert_eq!(dirs.state, PathBuf::from("/var/lib/cfgd"));

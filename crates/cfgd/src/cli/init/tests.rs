@@ -554,8 +554,13 @@ fn is_clonable_source_classifies_file_urls_without_reading_the_env_gate() {
     // either way, or the answer depends on unrelated tests.
     for allow in [Some("1"), None] {
         let _guard = match allow {
-            Some(v) => cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", v),
-            None => cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_ALLOW_LOCAL_SOURCES"),
+            Some(v) => cfgd_core::test_helpers::EnvVarGuard::set(
+                cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV,
+                v,
+            ),
+            None => {
+                cfgd_core::test_helpers::EnvVarGuard::unset(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV)
+            }
         };
         assert!(
             is_clonable_source("file:///srv/git/config"),
@@ -2245,7 +2250,7 @@ fn check_prerequisites_installs_git_through_the_tool_table() {
     // Every other manager is pinned missing first, so the shim below is the
     // only thing on this host `provision_tool` can reach.
     let _managers = cfgd_core::test_helpers::NoHostManagers::pinned_missing();
-    let shim = cfgd_core::test_helpers::ToolShim::install("CFGD_BREW_BIN", 0, "", "");
+    let shim = cfgd_core::test_helpers::ToolShim::install(crate::seams::BREW_BIN_ENV, 0, "", "");
     let _empty = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
 
     let (printer, cap) = Printer::for_test_doc();
@@ -2532,8 +2537,10 @@ fn sign_with_ssh_bails_when_ssh_keygen_unavailable() {
     // real `ssh-keygen -Y sign` blocks on a console passphrase prompt no
     // amount of stdin redirection can defeat. Mirrors the CFGD_COSIGN_BIN
     // "/nonexistent" idiom used across the module tests.
-    let _g =
-        cfgd_core::test_helpers::EnvVarGuard::set("CFGD_SSH_KEYGEN_BIN", "/nonexistent/ssh-keygen");
+    let _g = cfgd_core::test_helpers::EnvVarGuard::set(
+        cfgd_core::CFGD_SSH_KEYGEN_BIN_ENV,
+        "/nonexistent/ssh-keygen",
+    );
     let result = sign_with_ssh("test-nonce", "/nonexistent/key");
     assert!(result.is_err(), "must error when ssh-keygen is unavailable");
 }
@@ -2571,7 +2578,7 @@ fn sign_with_ssh_does_not_hang_when_key_prompts_on_stdin() {
     // seam rather than through `PATH`: the signing call runs on a worker
     // thread, and the `PATH` window is exclusive to the thread that opened it.
     let _seam = cfgd_core::test_helpers::EnvVarGuard::set(
-        "CFGD_SSH_KEYGEN_BIN",
+        cfgd_core::CFGD_SSH_KEYGEN_BIN_ENV,
         fake.to_str().expect("shim path must be valid UTF-8"),
     );
 
@@ -4024,102 +4031,115 @@ mod enroll_mockito {
     #[serial]
     fn cmd_enroll_token_path_succeeds_against_mock() {
         let tmp = tempfile::tempdir().unwrap();
-        with_test_env_var("CFGD_STATE_DIR", Some(tmp.path().to_str().unwrap()), || {
-            let mut server = mockito::Server::new();
-            let m = server
-                .mock("POST", "/api/v1/enroll")
-                .with_status(200)
-                .with_header("content-type", "application/json")
-                .with_body(enroll_response_json())
-                .create();
+        with_test_env_var(
+            cfgd_core::CFGD_STATE_DIR_ENV,
+            Some(tmp.path().to_str().unwrap()),
+            || {
+                let mut server = mockito::Server::new();
+                let m = server
+                    .mock("POST", "/api/v1/enroll")
+                    .with_status(200)
+                    .with_header("content-type", "application/json")
+                    .with_body(enroll_response_json())
+                    .create();
 
-            let (printer, cap) = Printer::for_test_doc();
-            let url = server.url();
-            let result = cmd_enroll(
-                &printer,
-                &url,
-                Some("bootstrap-token-xyz"),
-                None,
-                None,
-                Some("alice"),
-            );
-            assert!(result.is_ok(), "cmd_enroll should succeed: {result:?}");
-            m.assert();
+                let (printer, cap) = Printer::for_test_doc();
+                let url = server.url();
+                let result = cmd_enroll(
+                    &printer,
+                    &url,
+                    Some("bootstrap-token-xyz"),
+                    None,
+                    None,
+                    Some("alice"),
+                );
+                assert!(result.is_ok(), "cmd_enroll should succeed: {result:?}");
+                m.assert();
 
-            // Credential file should have been written under the tempdir.
-            let cred_path = tmp.path().join("device-credential.json");
-            assert!(
-                cred_path.exists(),
-                "credential file should be at {}",
-                cred_path.display()
-            );
-            let cred: serde_json::Value =
-                serde_json::from_str(&std::fs::read_to_string(&cred_path).unwrap()).unwrap();
-            assert_eq!(cred["apiKey"], "key-xyz-789");
-            assert_eq!(cred["username"], "alice");
+                // Credential file should have been written under the tempdir.
+                let cred_path = tmp.path().join("device-credential.json");
+                assert!(
+                    cred_path.exists(),
+                    "credential file should be at {}",
+                    cred_path.display()
+                );
+                let cred: serde_json::Value =
+                    serde_json::from_str(&std::fs::read_to_string(&cred_path).unwrap()).unwrap();
+                assert_eq!(cred["apiKey"], "key-xyz-789");
+                assert_eq!(cred["username"], "alice");
 
-            // Printer output should announce success and emit the Next
-            // Steps section heading.
-            drop(printer);
-            let captured = cap.human();
-            assert!(
-                captured.contains("Enrolled as user 'alice'"),
-                "expected success message in: {captured}"
-            );
-            assert!(
-                captured.contains("Next Steps"),
-                "expected next-steps header in: {captured}"
-            );
-        });
+                // Printer output should announce success and emit the Next
+                // Steps section heading.
+                drop(printer);
+                let captured = cap.human();
+                assert!(
+                    captured.contains("Enrolled as user 'alice'"),
+                    "expected success message in: {captured}"
+                );
+                assert!(
+                    captured.contains("Next Steps"),
+                    "expected next-steps header in: {captured}"
+                );
+            },
+        );
     }
 
     #[test]
     #[serial]
     fn cmd_enroll_token_path_fails_on_server_error() {
         let tmp = tempfile::tempdir().unwrap();
-        with_test_env_var("CFGD_STATE_DIR", Some(tmp.path().to_str().unwrap()), || {
-            let mut server = mockito::Server::new();
-            // 400 is a non-retryable client error — request_error path.
-            let _m = server
-                .mock("POST", "/api/v1/enroll")
-                .with_status(400)
-                .with_body(r#"{"error":"invalid token"}"#)
-                .create();
+        with_test_env_var(
+            cfgd_core::CFGD_STATE_DIR_ENV,
+            Some(tmp.path().to_str().unwrap()),
+            || {
+                let mut server = mockito::Server::new();
+                // 400 is a non-retryable client error — request_error path.
+                let _m = server
+                    .mock("POST", "/api/v1/enroll")
+                    .with_status(400)
+                    .with_body(r#"{"error":"invalid token"}"#)
+                    .create();
 
-            let printer = super::quiet_printer();
-            let url = server.url();
-            let result = cmd_enroll(&printer, &url, Some("bad-token"), None, None, Some("alice"));
-            assert!(result.is_err());
-            // No credential written on failure.
-            assert!(!tmp.path().join("device-credential.json").exists());
-        });
+                let printer = super::quiet_printer();
+                let url = server.url();
+                let result =
+                    cmd_enroll(&printer, &url, Some("bad-token"), None, None, Some("alice"));
+                assert!(result.is_err());
+                // No credential written on failure.
+                assert!(!tmp.path().join("device-credential.json").exists());
+            },
+        );
     }
 
     #[test]
     #[serial]
     fn cmd_enroll_key_based_rejects_server_with_token_method() {
         let tmp = tempfile::tempdir().unwrap();
-        with_test_env_var("CFGD_STATE_DIR", Some(tmp.path().to_str().unwrap()), || {
-            let mut server = mockito::Server::new();
-            // Server says it only supports token enrollment.
-            let _m = server
-                .mock("GET", "/api/v1/enroll/info")
-                .with_status(200)
-                .with_header("content-type", "application/json")
-                .with_body(r#"{"method":"token"}"#)
-                .create();
+        with_test_env_var(
+            cfgd_core::CFGD_STATE_DIR_ENV,
+            Some(tmp.path().to_str().unwrap()),
+            || {
+                let mut server = mockito::Server::new();
+                // Server says it only supports token enrollment.
+                let _m = server
+                    .mock("GET", "/api/v1/enroll/info")
+                    .with_status(200)
+                    .with_header("content-type", "application/json")
+                    .with_body(r#"{"method":"token"}"#)
+                    .create();
 
-            let printer = super::quiet_printer();
-            let url = server.url();
-            // No --token but key-based attempted: should error with a
-            // pointer to the token form.
-            let result = cmd_enroll(&printer, &url, None, None, None, Some("alice"));
-            let err = result.unwrap_err().to_string();
-            assert!(
-                err.contains("bootstrap token enrollment") || err.contains("--token"),
-                "expected token-required error, got: {err}"
-            );
-        });
+                let printer = super::quiet_printer();
+                let url = server.url();
+                // No --token but key-based attempted: should error with a
+                // pointer to the token form.
+                let result = cmd_enroll(&printer, &url, None, None, None, Some("alice"));
+                let err = result.unwrap_err().to_string();
+                assert!(
+                    err.contains("bootstrap token enrollment") || err.contains("--token"),
+                    "expected token-required error, got: {err}"
+                );
+            },
+        );
     }
 
     #[test]
@@ -4134,33 +4154,38 @@ mod enroll_mockito {
         let home_dir = tempfile::tempdir().unwrap();
         let _home_guard = cfgd_core::with_test_home_guard(home_dir.path());
 
-        with_test_env_var("CFGD_STATE_DIR", Some(tmp.path().to_str().unwrap()), || {
-            let mut server = mockito::Server::new();
-            let _m = server
-                .mock("GET", "/api/v1/enroll/info")
-                .with_status(200)
-                .with_header("content-type", "application/json")
-                .with_body(r#"{"method":"key"}"#)
-                .create();
+        with_test_env_var(
+            cfgd_core::CFGD_STATE_DIR_ENV,
+            Some(tmp.path().to_str().unwrap()),
+            || {
+                let mut server = mockito::Server::new();
+                let _m = server
+                    .mock("GET", "/api/v1/enroll/info")
+                    .with_status(200)
+                    .with_header("content-type", "application/json")
+                    .with_body(r#"{"method":"key"}"#)
+                    .create();
 
-            let printer = super::quiet_printer();
-            let url = server.url();
-            let result = cmd_enroll(&printer, &url, None, None, None, Some("alice"));
-            let err = result.unwrap_err().to_string();
-            assert!(
-                err.contains("no signing key found"),
-                "expected no-SSH-key bail, got: {err}"
-            );
-            // The message states what happened; the hint is the ONE place the
-            // re-run naming a key appears, so neither restates the other.
-            let hint = super::enroll::enroll_error_hint("no_key").expect("`no_key` carries a hint");
-            assert!(
-                hint.commands
-                    .iter()
-                    .any(|c| c.contains("--ssh-key") && c.contains("--gpg-key")),
-                "expected the hint to name both key flags, got: {hint:?}"
-            );
-        });
+                let printer = super::quiet_printer();
+                let url = server.url();
+                let result = cmd_enroll(&printer, &url, None, None, None, Some("alice"));
+                let err = result.unwrap_err().to_string();
+                assert!(
+                    err.contains("no signing key found"),
+                    "expected no-SSH-key bail, got: {err}"
+                );
+                // The message states what happened; the hint is the ONE place the
+                // re-run naming a key appears, so neither restates the other.
+                let hint =
+                    super::enroll::enroll_error_hint("no_key").expect("`no_key` carries a hint");
+                assert!(
+                    hint.commands
+                        .iter()
+                        .any(|c| c.contains("--ssh-key") && c.contains("--gpg-key")),
+                    "expected the hint to name both key flags, got: {hint:?}"
+                );
+            },
+        );
     }
 
     #[test]
@@ -4171,25 +4196,29 @@ mod enroll_mockito {
         // failed query — pins the early-fail contract before any key
         // detection / challenge plumbing runs.
         let tmp = tempfile::tempdir().unwrap();
-        with_test_env_var("CFGD_STATE_DIR", Some(tmp.path().to_str().unwrap()), || {
-            let mut server = mockito::Server::new();
-            let _m = server
-                .mock("GET", "/api/v1/enroll/info")
-                .with_status(500)
-                .with_body("internal error")
-                .create();
+        with_test_env_var(
+            cfgd_core::CFGD_STATE_DIR_ENV,
+            Some(tmp.path().to_str().unwrap()),
+            || {
+                let mut server = mockito::Server::new();
+                let _m = server
+                    .mock("GET", "/api/v1/enroll/info")
+                    .with_status(500)
+                    .with_body("internal error")
+                    .create();
 
-            let printer = super::quiet_printer();
-            let url = server.url();
-            let result = cmd_enroll(&printer, &url, None, None, None, Some("alice"));
-            let err = result.unwrap_err().to_string();
-            assert!(
-                err.contains("enrollment info") || err.contains("500"),
-                "expected enroll_info failure surfaced, got: {err}"
-            );
-            // No credential written when the pre-check fails.
-            assert!(!tmp.path().join("device-credential.json").exists());
-        });
+                let printer = super::quiet_printer();
+                let url = server.url();
+                let result = cmd_enroll(&printer, &url, None, None, None, Some("alice"));
+                let err = result.unwrap_err().to_string();
+                assert!(
+                    err.contains("enrollment info") || err.contains("500"),
+                    "expected enroll_info failure surfaced, got: {err}"
+                );
+                // No credential written when the pre-check fails.
+                assert!(!tmp.path().join("device-credential.json").exists());
+            },
+        );
     }
 
     #[test]
@@ -4206,93 +4235,98 @@ mod enroll_mockito {
         // programmatically, and snapshots the combined output for
         // regression coverage.
         let tmp = tempfile::tempdir().unwrap();
-        with_test_env_var("CFGD_STATE_DIR", Some(tmp.path().to_str().unwrap()), || {
-            let mut server = mockito::Server::new();
-            let m = server
-                .mock("POST", "/api/v1/enroll")
-                .with_status(200)
-                .with_header("content-type", "application/json")
-                .with_body(enroll_response_json())
-                .create();
+        with_test_env_var(
+            cfgd_core::CFGD_STATE_DIR_ENV,
+            Some(tmp.path().to_str().unwrap()),
+            || {
+                let mut server = mockito::Server::new();
+                let m = server
+                    .mock("POST", "/api/v1/enroll")
+                    .with_status(200)
+                    .with_header("content-type", "application/json")
+                    .with_body(enroll_response_json())
+                    .create();
 
-            let (printer, cap) = Printer::for_test_doc();
-            let url = server.url();
-            let result = cmd_enroll(
-                &printer,
-                &url,
-                Some("bootstrap-token-xyz"),
-                None,
-                None,
-                Some("alice"),
-            );
-            assert!(result.is_ok(), "cmd_enroll should succeed: {result:?}");
-            m.assert();
-            drop(printer);
-
-            let captured = strip_ansi(&cap.human());
-
-            // Sanity: streaming portion present before the buffered Doc.
-            assert!(
-                captured.contains("Token Enrollment"),
-                "missing streaming heading in:\n{captured}"
-            );
-            assert!(
-                captured.contains("Enrolled as user 'alice'"),
-                "missing streaming status line in:\n{captured}"
-            );
-            assert!(
-                captured.contains("Next Steps"),
-                "missing buffered section header in:\n{captured}"
-            );
-            assert!(
-                captured.find("Token Enrollment").unwrap() < captured.find("Next Steps").unwrap(),
-                "streaming surface must precede buffered surface in:\n{captured}"
-            );
-
-            // Bridge invariant: exactly one blank line between the last
-            // streaming line and the first buffered line. Two newlines in
-            // a row = one blank line; three or more = more than one.
-            assert!(
-                captured.contains("\n\n"),
-                "expected at least one blank line in:\n{captured}"
-            );
-            assert!(
-                !captured.contains("\n\n\n"),
-                "expected at most one blank line gap in:\n{captured}"
-            );
-
-            // Normalize the mockito-allocated server URL (a 127.0.0.1
-            // address with a random port) so the golden survives across
-            // runs / hosts. Route the credential-save path through
-            // `normalize_for_snapshot` so it posixifies on Windows before
-            // substituting (production now emits forward-slash paths on
-            // every OS via `to_posix_string`).
-            let cred_path = tmp.path().join("device-credential.json");
-            let normalized =
-                cfgd_core::normalize_for_snapshot(&captured, &[(&cred_path, "<CRED_PATH>")]);
-            let normalized = normalized.replace(&url, "<SERVER_URL>");
-            // Normalize the host-dependent device-id (default_device_id
-            // returns the running machine's hostname).
-            let device_id = cfgd_core::hostname_string();
-            let normalized = normalized.replace(&device_id, "<DEVICE_ID>");
-
-            let snap_path =
-                std::path::Path::new("tests/output_snapshots/enroll/cmd_token_flow.txt");
-            if std::env::var("INSTA_UPDATE").as_deref() == Ok("always") || !snap_path.exists() {
-                std::fs::create_dir_all(snap_path.parent().unwrap()).unwrap();
-                std::fs::write(snap_path, &normalized).unwrap();
-            } else {
-                let expected = std::fs::read_to_string(snap_path).unwrap();
-                // CRLF→LF: windows captures `\r\n`; committed snapshot is LF.
-                let actual_norm = normalized.replace("\r\n", "\n");
-                let expected_norm = expected.replace("\r\n", "\n");
-                pretty_assertions::assert_eq!(
-                    actual_norm,
-                    expected_norm,
-                    "snapshot mismatch: enroll/cmd_token_flow.txt"
+                let (printer, cap) = Printer::for_test_doc();
+                let url = server.url();
+                let result = cmd_enroll(
+                    &printer,
+                    &url,
+                    Some("bootstrap-token-xyz"),
+                    None,
+                    None,
+                    Some("alice"),
                 );
-            }
-        });
+                assert!(result.is_ok(), "cmd_enroll should succeed: {result:?}");
+                m.assert();
+                drop(printer);
+
+                let captured = strip_ansi(&cap.human());
+
+                // Sanity: streaming portion present before the buffered Doc.
+                assert!(
+                    captured.contains("Token Enrollment"),
+                    "missing streaming heading in:\n{captured}"
+                );
+                assert!(
+                    captured.contains("Enrolled as user 'alice'"),
+                    "missing streaming status line in:\n{captured}"
+                );
+                assert!(
+                    captured.contains("Next Steps"),
+                    "missing buffered section header in:\n{captured}"
+                );
+                assert!(
+                    captured.find("Token Enrollment").unwrap()
+                        < captured.find("Next Steps").unwrap(),
+                    "streaming surface must precede buffered surface in:\n{captured}"
+                );
+
+                // Bridge invariant: exactly one blank line between the last
+                // streaming line and the first buffered line. Two newlines in
+                // a row = one blank line; three or more = more than one.
+                assert!(
+                    captured.contains("\n\n"),
+                    "expected at least one blank line in:\n{captured}"
+                );
+                assert!(
+                    !captured.contains("\n\n\n"),
+                    "expected at most one blank line gap in:\n{captured}"
+                );
+
+                // Normalize the mockito-allocated server URL (a 127.0.0.1
+                // address with a random port) so the golden survives across
+                // runs / hosts. Route the credential-save path through
+                // `normalize_for_snapshot` so it posixifies on Windows before
+                // substituting (production now emits forward-slash paths on
+                // every OS via `to_posix_string`).
+                let cred_path = tmp.path().join("device-credential.json");
+                let normalized =
+                    cfgd_core::normalize_for_snapshot(&captured, &[(&cred_path, "<CRED_PATH>")]);
+                let normalized = normalized.replace(&url, "<SERVER_URL>");
+                // Normalize the host-dependent device-id (default_device_id
+                // returns the running machine's hostname).
+                let device_id = cfgd_core::hostname_string();
+                let normalized = normalized.replace(&device_id, "<DEVICE_ID>");
+
+                let snap_path =
+                    std::path::Path::new("tests/output_snapshots/enroll/cmd_token_flow.txt");
+                if std::env::var("INSTA_UPDATE").as_deref() == Ok("always") || !snap_path.exists() {
+                    std::fs::create_dir_all(snap_path.parent().unwrap()).unwrap();
+                    std::fs::write(snap_path, &normalized).unwrap();
+                } else {
+                    let expected = std::fs::read_to_string(snap_path).unwrap();
+                    // CRLF→LF: windows captures `\r\n`; committed snapshot is LF.
+                    let actual_norm = normalized.replace("\r\n", "\n");
+                    let expected_norm = expected.replace("\r\n", "\n");
+                    pretty_assertions::assert_eq!(
+                        actual_norm,
+                        expected_norm,
+                        "snapshot mismatch: enroll/cmd_token_flow.txt"
+                    );
+                }
+            },
+        );
     }
 
     /// ANSI-stripping helper local to this module — mirrors the one in
@@ -4320,43 +4354,47 @@ mod enroll_mockito {
     #[serial]
     fn cmd_enroll_token_path_persists_desired_config_when_present() {
         let tmp = tempfile::tempdir().unwrap();
-        with_test_env_var("CFGD_STATE_DIR", Some(tmp.path().to_str().unwrap()), || {
-            let mut server = mockito::Server::new();
-            // EnrollResponse with desiredConfig populated → exercises the
-            // save_pending_server_config branch in finish_enrollment.
-            let body = serde_json::json!({
-                "status": "ok",
-                "deviceId": "dev-abc-123",
-                "apiKey": "key-xyz-789",
-                "username": "alice",
-                "team": null,
-                "desiredConfig": {
-                    "apiVersion": "cfgd.io/v1alpha1",
-                    "kind": "Cfgd",
-                    "metadata": {"name": "from-server"},
-                    "spec": {}
-                }
-            })
-            .to_string();
-            let m = server
-                .mock("POST", "/api/v1/enroll")
-                .with_status(200)
-                .with_header("content-type", "application/json")
-                .with_body(body)
-                .create();
+        with_test_env_var(
+            cfgd_core::CFGD_STATE_DIR_ENV,
+            Some(tmp.path().to_str().unwrap()),
+            || {
+                let mut server = mockito::Server::new();
+                // EnrollResponse with desiredConfig populated → exercises the
+                // save_pending_server_config branch in finish_enrollment.
+                let body = serde_json::json!({
+                    "status": "ok",
+                    "deviceId": "dev-abc-123",
+                    "apiKey": "key-xyz-789",
+                    "username": "alice",
+                    "team": null,
+                    "desiredConfig": {
+                        "apiVersion": "cfgd.io/v1alpha1",
+                        "kind": "Cfgd",
+                        "metadata": {"name": "from-server"},
+                        "spec": {}
+                    }
+                })
+                .to_string();
+                let m = server
+                    .mock("POST", "/api/v1/enroll")
+                    .with_status(200)
+                    .with_header("content-type", "application/json")
+                    .with_body(body)
+                    .create();
 
-            let (printer, cap) = Printer::for_test_doc();
-            let url = server.url();
-            let result = cmd_enroll(&printer, &url, Some("token"), None, None, Some("alice"));
-            assert!(result.is_ok(), "cmd_enroll should succeed: {result:?}");
-            m.assert();
-            drop(printer);
-            let captured = cap.human();
-            assert!(
-                captured.contains("Server pushed desired config"),
-                "expected desired-config notice in: {captured}"
-            );
-        });
+                let (printer, cap) = Printer::for_test_doc();
+                let url = server.url();
+                let result = cmd_enroll(&printer, &url, Some("token"), None, None, Some("alice"));
+                assert!(result.is_ok(), "cmd_enroll should succeed: {result:?}");
+                m.assert();
+                drop(printer);
+                let captured = cap.human();
+                assert!(
+                    captured.contains("Server pushed desired config"),
+                    "expected desired-config notice in: {captured}"
+                );
+            },
+        );
     }
 
     #[test]
@@ -4465,38 +4503,42 @@ mod enroll_mockito {
         let tmp = tempfile::tempdir().unwrap();
         let blocker = tmp.path().join("blocker");
         std::fs::write(&blocker, "I am a file, not a dir").unwrap();
-        with_test_env_var("CFGD_STATE_DIR", Some(blocker.to_str().unwrap()), || {
-            let mut server = mockito::Server::new();
-            let _m = server
-                .mock("POST", "/api/v1/enroll")
-                .with_status(200)
-                .with_header("content-type", "application/json")
-                .with_body(
-                    serde_json::json!({
-                        "status": "ok",
-                        "deviceId": "dev-fail-cred",
-                        "apiKey": "key-fail-cred",
-                        "username": "charlie",
-                    })
-                    .to_string(),
-                )
-                .create();
+        with_test_env_var(
+            cfgd_core::CFGD_STATE_DIR_ENV,
+            Some(blocker.to_str().unwrap()),
+            || {
+                let mut server = mockito::Server::new();
+                let _m = server
+                    .mock("POST", "/api/v1/enroll")
+                    .with_status(200)
+                    .with_header("content-type", "application/json")
+                    .with_body(
+                        serde_json::json!({
+                            "status": "ok",
+                            "deviceId": "dev-fail-cred",
+                            "apiKey": "key-fail-cred",
+                            "username": "charlie",
+                        })
+                        .to_string(),
+                    )
+                    .create();
 
-            let (printer, cap) = Printer::for_test_doc();
-            let url = server.url();
-            let result = cmd_enroll(&printer, &url, Some("tok"), None, None, Some("charlie"));
-            drop(printer);
-            let human = cap.human();
+                let (printer, cap) = Printer::for_test_doc();
+                let url = server.url();
+                let result = cmd_enroll(&printer, &url, Some("tok"), None, None, Some("charlie"));
+                drop(printer);
+                let human = cap.human();
 
-            assert!(
-                result.is_ok(),
-                "credential-save failure must not fail cmd_enroll: {result:?}"
-            );
-            assert!(
-                human.contains("Failed to save credential") || human.contains("--api-key"),
-                "save-failure warning must appear in output: {human}"
-            );
-        });
+                assert!(
+                    result.is_ok(),
+                    "credential-save failure must not fail cmd_enroll: {result:?}"
+                );
+                assert!(
+                    human.contains("Failed to save credential") || human.contains("--api-key"),
+                    "save-failure warning must appear in output: {human}"
+                );
+            },
+        );
     }
 
     #[test]
@@ -4512,36 +4554,40 @@ mod enroll_mockito {
         let blocker = tmp.path().join("pending-server-config.json");
         std::fs::create_dir_all(&blocker).unwrap();
 
-        with_test_env_var("CFGD_STATE_DIR", Some(tmp.path().to_str().unwrap()), || {
-            let mut server = mockito::Server::new();
-            let _m = server
-                .mock("POST", "/api/v1/enroll")
-                .with_status(200)
-                .with_header("content-type", "application/json")
-                .with_body(
-                    serde_json::json!({
-                        "status": "ok",
-                        "deviceId": "dev-pdcfg",
-                        "apiKey": "key-pdcfg",
-                        "username": "dave",
-                        "desiredConfig": {"apiVersion": "cfgd.io/v1alpha1", "kind": "Cfgd"}
-                    })
-                    .to_string(),
-                )
-                .create();
+        with_test_env_var(
+            cfgd_core::CFGD_STATE_DIR_ENV,
+            Some(tmp.path().to_str().unwrap()),
+            || {
+                let mut server = mockito::Server::new();
+                let _m = server
+                    .mock("POST", "/api/v1/enroll")
+                    .with_status(200)
+                    .with_header("content-type", "application/json")
+                    .with_body(
+                        serde_json::json!({
+                            "status": "ok",
+                            "deviceId": "dev-pdcfg",
+                            "apiKey": "key-pdcfg",
+                            "username": "dave",
+                            "desiredConfig": {"apiVersion": "cfgd.io/v1alpha1", "kind": "Cfgd"}
+                        })
+                        .to_string(),
+                    )
+                    .create();
 
-            let printer = super::quiet_printer();
-            let url = server.url();
-            let result = cmd_enroll(&printer, &url, Some("tok"), None, None, Some("dave"));
-            assert!(
-                result.is_ok(),
-                "pending-config save failure must not fail cmd_enroll: {result:?}"
-            );
-            assert!(
-                tmp.path().join("device-credential.json").exists(),
-                "credential must still be written even when pending-config save fails"
-            );
-        });
+                let printer = super::quiet_printer();
+                let url = server.url();
+                let result = cmd_enroll(&printer, &url, Some("tok"), None, None, Some("dave"));
+                assert!(
+                    result.is_ok(),
+                    "pending-config save failure must not fail cmd_enroll: {result:?}"
+                );
+                assert!(
+                    tmp.path().join("device-credential.json").exists(),
+                    "credential must still be written even when pending-config save fails"
+                );
+            },
+        );
     }
 
     #[test]
@@ -4609,25 +4655,29 @@ mod enroll_mockito {
         // Port 1 is never listening — every connection attempt fails
         // immediately. cmd_enroll must propagate the network error as Err.
         let tmp = tempfile::tempdir().unwrap();
-        with_test_env_var("CFGD_STATE_DIR", Some(tmp.path().to_str().unwrap()), || {
-            let printer = super::quiet_printer();
-            let result = cmd_enroll(
-                &printer,
-                "http://127.0.0.1:1",
-                Some("any-token"),
-                None,
-                None,
-                Some("alice"),
-            );
-            assert!(
-                result.is_err(),
-                "connection-refused must surface as Err, got Ok"
-            );
-            assert!(
-                !tmp.path().join("device-credential.json").exists(),
-                "no credential must be written on connection failure"
-            );
-        });
+        with_test_env_var(
+            cfgd_core::CFGD_STATE_DIR_ENV,
+            Some(tmp.path().to_str().unwrap()),
+            || {
+                let printer = super::quiet_printer();
+                let result = cmd_enroll(
+                    &printer,
+                    "http://127.0.0.1:1",
+                    Some("any-token"),
+                    None,
+                    None,
+                    Some("alice"),
+                );
+                assert!(
+                    result.is_err(),
+                    "connection-refused must surface as Err, got Ok"
+                );
+                assert!(
+                    !tmp.path().join("device-credential.json").exists(),
+                    "no credential must be written on connection failure"
+                );
+            },
+        );
     }
 
     #[test]
@@ -4635,27 +4685,31 @@ mod enroll_mockito {
     fn cmd_enroll_token_path_gateway_500_returns_err() {
         // 500 triggers the retry loop then surfaces an error; no credential written.
         let tmp = tempfile::tempdir().unwrap();
-        with_test_env_var("CFGD_STATE_DIR", Some(tmp.path().to_str().unwrap()), || {
-            let mut server = mockito::Server::new();
-            let _m = server
-                .mock("POST", "/api/v1/enroll")
-                .with_status(500)
-                .with_body("internal server error")
-                .expect_at_least(2)
-                .create();
+        with_test_env_var(
+            cfgd_core::CFGD_STATE_DIR_ENV,
+            Some(tmp.path().to_str().unwrap()),
+            || {
+                let mut server = mockito::Server::new();
+                let _m = server
+                    .mock("POST", "/api/v1/enroll")
+                    .with_status(500)
+                    .with_body("internal server error")
+                    .expect_at_least(2)
+                    .create();
 
-            let printer = super::quiet_printer();
-            let url = server.url();
-            let result = cmd_enroll(&printer, &url, Some("tok"), None, None, Some("alice"));
-            assert!(
-                result.is_err(),
-                "gateway 500 must surface as Err, got: {result:?}"
-            );
-            assert!(
-                !tmp.path().join("device-credential.json").exists(),
-                "no credential must be written after 500 response"
-            );
-        });
+                let printer = super::quiet_printer();
+                let url = server.url();
+                let result = cmd_enroll(&printer, &url, Some("tok"), None, None, Some("alice"));
+                assert!(
+                    result.is_err(),
+                    "gateway 500 must surface as Err, got: {result:?}"
+                );
+                assert!(
+                    !tmp.path().join("device-credential.json").exists(),
+                    "no credential must be written after 500 response"
+                );
+            },
+        );
     }
 
     #[test]
@@ -4669,19 +4723,22 @@ mod enroll_mockito {
         // deterministically on every OS (a real Windows ssh-keygen would block
         // on a console passphrase prompt).
         let _kg = cfgd_core::test_helpers::EnvVarGuard::set(
-            "CFGD_SSH_KEYGEN_BIN",
+            cfgd_core::CFGD_SSH_KEYGEN_BIN_ENV,
             "/nonexistent/ssh-keygen",
         );
         let tmp = tempfile::tempdir().unwrap();
-        with_test_env_var("CFGD_STATE_DIR", Some(tmp.path().to_str().unwrap()), || {
-            let mut server = mockito::Server::new();
-            let _info = server
-                .mock("GET", "/api/v1/enroll/info")
-                .with_status(200)
-                .with_header("content-type", "application/json")
-                .with_body(r#"{"method":"key"}"#)
-                .create();
-            let _challenge = server
+        with_test_env_var(
+            cfgd_core::CFGD_STATE_DIR_ENV,
+            Some(tmp.path().to_str().unwrap()),
+            || {
+                let mut server = mockito::Server::new();
+                let _info = server
+                    .mock("GET", "/api/v1/enroll/info")
+                    .with_status(200)
+                    .with_header("content-type", "application/json")
+                    .with_body(r#"{"method":"key"}"#)
+                    .create();
+                let _challenge = server
                 .mock("POST", "/api/v1/enroll/challenge")
                 .with_status(200)
                 .with_header("content-type", "application/json")
@@ -4690,31 +4747,32 @@ mod enroll_mockito {
                 )
                 .create();
 
-            let (printer, _cap) = Printer::for_test_doc();
-            let url = server.url();
-            let result = cmd_enroll(
-                &printer,
-                &url,
-                None,
-                Some("/nonexistent/fake.pub"),
-                None,
-                Some("alice"),
-            );
+                let (printer, _cap) = Printer::for_test_doc();
+                let url = server.url();
+                let result = cmd_enroll(
+                    &printer,
+                    &url,
+                    None,
+                    Some("/nonexistent/fake.pub"),
+                    None,
+                    Some("alice"),
+                );
 
-            let err = result.expect_err("sign_with_ssh on a nonexistent key must fail");
-            let meta = err
-                .downcast_ref::<crate::cli::CliErrorMeta>()
-                .expect("signing failure returns CliErrorMeta");
-            assert_eq!(
-                meta.error_kind, "signing_failed",
-                "signing failure must carry the signing_failed kind: {meta:?}"
-            );
-            assert_eq!(
-                meta.extras["keyType"], "ssh",
-                "extras must record the SSH key type: {:?}",
-                meta.extras
-            );
-        });
+                let err = result.expect_err("sign_with_ssh on a nonexistent key must fail");
+                let meta = err
+                    .downcast_ref::<crate::cli::CliErrorMeta>()
+                    .expect("signing failure returns CliErrorMeta");
+                assert_eq!(
+                    meta.error_kind, "signing_failed",
+                    "signing failure must carry the signing_failed kind: {meta:?}"
+                );
+                assert_eq!(
+                    meta.extras["keyType"], "ssh",
+                    "extras must record the SSH key type: {:?}",
+                    meta.extras
+                );
+            },
+        );
     }
 
     #[test]
@@ -4725,17 +4783,23 @@ mod enroll_mockito {
         // found) — either way sign_with_gpg returns Err and signing_failed Doc fires.
         // Route gpg at a nonexistent binary so the signing failure is
         // deterministic regardless of whether the host has gpg installed.
-        let _gpg = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_GPG_BIN", "/nonexistent/gpg");
+        let _gpg = cfgd_core::test_helpers::EnvVarGuard::set(
+            crate::seams::GPG_BIN_ENV,
+            "/nonexistent/gpg",
+        );
         let tmp = tempfile::tempdir().unwrap();
-        with_test_env_var("CFGD_STATE_DIR", Some(tmp.path().to_str().unwrap()), || {
-            let mut server = mockito::Server::new();
-            let _info = server
-                .mock("GET", "/api/v1/enroll/info")
-                .with_status(200)
-                .with_header("content-type", "application/json")
-                .with_body(r#"{"method":"key"}"#)
-                .create();
-            let _challenge = server
+        with_test_env_var(
+            cfgd_core::CFGD_STATE_DIR_ENV,
+            Some(tmp.path().to_str().unwrap()),
+            || {
+                let mut server = mockito::Server::new();
+                let _info = server
+                    .mock("GET", "/api/v1/enroll/info")
+                    .with_status(200)
+                    .with_header("content-type", "application/json")
+                    .with_body(r#"{"method":"key"}"#)
+                    .create();
+                let _challenge = server
                 .mock("POST", "/api/v1/enroll/challenge")
                 .with_status(200)
                 .with_header("content-type", "application/json")
@@ -4744,31 +4808,32 @@ mod enroll_mockito {
                 )
                 .create();
 
-            let (printer, _cap) = Printer::for_test_doc();
-            let url = server.url();
-            let result = cmd_enroll(
-                &printer,
-                &url,
-                None,
-                None,
-                Some("DEADBEEFNONEXISTENTKEYID"),
-                Some("alice"),
-            );
+                let (printer, _cap) = Printer::for_test_doc();
+                let url = server.url();
+                let result = cmd_enroll(
+                    &printer,
+                    &url,
+                    None,
+                    None,
+                    Some("DEADBEEFNONEXISTENTKEYID"),
+                    Some("alice"),
+                );
 
-            let err = result.expect_err("sign_with_gpg on a nonexistent key must fail");
-            let meta = err
-                .downcast_ref::<crate::cli::CliErrorMeta>()
-                .expect("signing failure returns CliErrorMeta");
-            assert_eq!(
-                meta.error_kind, "signing_failed",
-                "signing failure must carry the signing_failed kind: {meta:?}"
-            );
-            assert_eq!(
-                meta.extras["keyType"], "gpg",
-                "extras must record the GPG key type: {:?}",
-                meta.extras
-            );
-        });
+                let err = result.expect_err("sign_with_gpg on a nonexistent key must fail");
+                let meta = err
+                    .downcast_ref::<crate::cli::CliErrorMeta>()
+                    .expect("signing failure returns CliErrorMeta");
+                assert_eq!(
+                    meta.error_kind, "signing_failed",
+                    "signing failure must carry the signing_failed kind: {meta:?}"
+                );
+                assert_eq!(
+                    meta.extras["keyType"], "gpg",
+                    "extras must record the GPG key type: {:?}",
+                    meta.extras
+                );
+            },
+        );
     }
 
     #[test]
@@ -4778,40 +4843,45 @@ mod enroll_mockito {
         // is written and the enrollment response username (not the env value)
         // is what gets stored in the credential.
         let tmp = tempfile::tempdir().unwrap();
-        with_test_env_var("CFGD_STATE_DIR", Some(tmp.path().to_str().unwrap()), || {
-            with_test_env_var("USER", Some("env-driven-user"), || {
-                let mut server = mockito::Server::new();
-                let _m = server
-                    .mock("POST", "/api/v1/enroll")
-                    .with_status(200)
-                    .with_header("content-type", "application/json")
-                    .with_body(
-                        serde_json::json!({
-                            "status": "ok",
-                            "deviceId": "dev-env",
-                            "apiKey": "key-env",
-                            "username": "server-side-user",
-                        })
-                        .to_string(),
-                    )
-                    .create();
+        with_test_env_var(
+            cfgd_core::CFGD_STATE_DIR_ENV,
+            Some(tmp.path().to_str().unwrap()),
+            || {
+                with_test_env_var("USER", Some("env-driven-user"), || {
+                    let mut server = mockito::Server::new();
+                    let _m = server
+                        .mock("POST", "/api/v1/enroll")
+                        .with_status(200)
+                        .with_header("content-type", "application/json")
+                        .with_body(
+                            serde_json::json!({
+                                "status": "ok",
+                                "deviceId": "dev-env",
+                                "apiKey": "key-env",
+                                "username": "server-side-user",
+                            })
+                            .to_string(),
+                        )
+                        .create();
 
-                let printer = super::quiet_printer();
-                let url = server.url();
-                let result = cmd_enroll(&printer, &url, Some("tok"), None, None, None);
-                assert!(
-                    result.is_ok(),
-                    "username-from-env enrollment must succeed: {result:?}"
-                );
-                let cred_path = tmp.path().join("device-credential.json");
-                let cred: serde_json::Value =
-                    serde_json::from_str(&std::fs::read_to_string(&cred_path).unwrap()).unwrap();
-                assert_eq!(
-                    cred["username"], "server-side-user",
-                    "credential must store server-returned username: {cred}"
-                );
-            });
-        });
+                    let printer = super::quiet_printer();
+                    let url = server.url();
+                    let result = cmd_enroll(&printer, &url, Some("tok"), None, None, None);
+                    assert!(
+                        result.is_ok(),
+                        "username-from-env enrollment must succeed: {result:?}"
+                    );
+                    let cred_path = tmp.path().join("device-credential.json");
+                    let cred: serde_json::Value =
+                        serde_json::from_str(&std::fs::read_to_string(&cred_path).unwrap())
+                            .unwrap();
+                    assert_eq!(
+                        cred["username"], "server-side-user",
+                        "credential must store server-returned username: {cred}"
+                    );
+                });
+            },
+        );
     }
 
     #[test]
@@ -4820,39 +4890,43 @@ mod enroll_mockito {
         // EnrollResponse with team=null → finish_enrollment's `if let Some(ref team)`
         // arm is skipped; credential is written without a team field.
         let tmp = tempfile::tempdir().unwrap();
-        with_test_env_var("CFGD_STATE_DIR", Some(tmp.path().to_str().unwrap()), || {
-            let mut server = mockito::Server::new();
-            let _m = server
-                .mock("POST", "/api/v1/enroll")
-                .with_status(200)
-                .with_header("content-type", "application/json")
-                .with_body(
-                    serde_json::json!({
-                        "status": "ok",
-                        "deviceId": "dev-noteam",
-                        "apiKey": "key-noteam",
-                        "username": "solo",
-                    })
-                    .to_string(),
-                )
-                .create();
+        with_test_env_var(
+            cfgd_core::CFGD_STATE_DIR_ENV,
+            Some(tmp.path().to_str().unwrap()),
+            || {
+                let mut server = mockito::Server::new();
+                let _m = server
+                    .mock("POST", "/api/v1/enroll")
+                    .with_status(200)
+                    .with_header("content-type", "application/json")
+                    .with_body(
+                        serde_json::json!({
+                            "status": "ok",
+                            "deviceId": "dev-noteam",
+                            "apiKey": "key-noteam",
+                            "username": "solo",
+                        })
+                        .to_string(),
+                    )
+                    .create();
 
-            let printer = super::quiet_printer();
-            let url = server.url();
-            let result = cmd_enroll(&printer, &url, Some("tok"), None, None, Some("solo"));
-            assert!(
-                result.is_ok(),
-                "no-team enrollment must succeed: {result:?}"
-            );
-            let cred: serde_json::Value = serde_json::from_str(
-                &std::fs::read_to_string(tmp.path().join("device-credential.json")).unwrap(),
-            )
-            .unwrap();
-            assert!(
-                cred.get("team").is_none() || cred["team"].is_null(),
-                "credential team field must be absent/null when response has no team: {cred}"
-            );
-        });
+                let printer = super::quiet_printer();
+                let url = server.url();
+                let result = cmd_enroll(&printer, &url, Some("tok"), None, None, Some("solo"));
+                assert!(
+                    result.is_ok(),
+                    "no-team enrollment must succeed: {result:?}"
+                );
+                let cred: serde_json::Value = serde_json::from_str(
+                    &std::fs::read_to_string(tmp.path().join("device-credential.json")).unwrap(),
+                )
+                .unwrap();
+                assert!(
+                    cred.get("team").is_none() || cred["team"].is_null(),
+                    "credential team field must be absent/null when response has no team: {cred}"
+                );
+            },
+        );
     }
 
     #[test]
@@ -4872,19 +4946,22 @@ mod enroll_mockito {
         // detect_ssh_key still finds and names the .pub; only the signing step is
         // routed at a nonexistent ssh-keygen so it fails fast on every OS.
         let _kg = cfgd_core::test_helpers::EnvVarGuard::set(
-            "CFGD_SSH_KEYGEN_BIN",
+            cfgd_core::CFGD_SSH_KEYGEN_BIN_ENV,
             "/nonexistent/ssh-keygen",
         );
 
-        with_test_env_var("CFGD_STATE_DIR", Some(tmp.path().to_str().unwrap()), || {
-            let mut server = mockito::Server::new();
-            let _info = server
-                .mock("GET", "/api/v1/enroll/info")
-                .with_status(200)
-                .with_header("content-type", "application/json")
-                .with_body(r#"{"method":"key"}"#)
-                .create();
-            let _challenge = server
+        with_test_env_var(
+            cfgd_core::CFGD_STATE_DIR_ENV,
+            Some(tmp.path().to_str().unwrap()),
+            || {
+                let mut server = mockito::Server::new();
+                let _info = server
+                    .mock("GET", "/api/v1/enroll/info")
+                    .with_status(200)
+                    .with_header("content-type", "application/json")
+                    .with_body(r#"{"method":"key"}"#)
+                    .create();
+                let _challenge = server
                 .mock("POST", "/api/v1/enroll/challenge")
                 .with_status(200)
                 .with_header("content-type", "application/json")
@@ -4893,25 +4970,26 @@ mod enroll_mockito {
                 )
                 .create();
 
-            let (printer, cap) = Printer::for_test_doc();
-            let url = server.url();
-            let result = cmd_enroll(&printer, &url, None, None, None, Some("alice"));
-            drop(printer);
-            let human = cap.human();
+                let (printer, cap) = Printer::for_test_doc();
+                let url = server.url();
+                let result = cmd_enroll(&printer, &url, None, None, None, Some("alice"));
+                drop(printer);
+                let human = cap.human();
 
-            let err = result.expect_err("sign_with_ssh on a fake key must fail");
-            assert_eq!(
-                err.downcast_ref::<crate::cli::CliErrorMeta>()
-                    .expect("signing failure returns CliErrorMeta")
-                    .error_kind,
-                "signing_failed",
-                "auto-detect signing failure must carry the signing_failed kind"
-            );
-            assert!(
-                human.contains("id_ed25519") || human.contains("SSH"),
-                "auto-detect info line must reference the discovered key: {human}"
-            );
-        });
+                let err = result.expect_err("sign_with_ssh on a fake key must fail");
+                assert_eq!(
+                    err.downcast_ref::<crate::cli::CliErrorMeta>()
+                        .expect("signing failure returns CliErrorMeta")
+                        .error_kind,
+                    "signing_failed",
+                    "auto-detect signing failure must carry the signing_failed kind"
+                );
+                assert!(
+                    human.contains("id_ed25519") || human.contains("SSH"),
+                    "auto-detect info line must reference the discovered key: {human}"
+                );
+            },
+        );
     }
 }
 
@@ -5146,12 +5224,12 @@ mod cmd_init_apply_orchestration {
     fn with_state_dir<F: FnOnce()>(dir: &std::path::Path, f: F) {
         // SAFETY: serialized via #[serial].
         unsafe {
-            std::env::set_var("CFGD_STATE_DIR", dir);
+            std::env::set_var(cfgd_core::CFGD_STATE_DIR_ENV, dir);
         }
         f();
         // SAFETY: serialized via #[serial].
         unsafe {
-            std::env::remove_var("CFGD_STATE_DIR");
+            std::env::remove_var(cfgd_core::CFGD_STATE_DIR_ENV);
         }
     }
 

@@ -102,7 +102,7 @@ fn own_state_dir() -> std::path::PathBuf {
     cfgd_bin()
         .unwrap()
         .get_envs()
-        .find(|(var, _)| *var == "CFGD_STATE_DIR")
+        .find(|(var, _)| *var == cfgd_core::CFGD_STATE_DIR_ENV)
         .and_then(|(_, dir)| dir)
         .map(std::path::PathBuf::from)
         .expect("cfgd_bin() sets CFGD_STATE_DIR")
@@ -205,7 +205,7 @@ fn config_env_var_dir_infers_config_file() {
     cfgd_bin()
         .unwrap()
         .args(["apply", "--dry-run"])
-        .env("CFGD_CONFIG", config_dir)
+        .env(cfgd_core::CFGD_CONFIG_ENV, config_dir)
         .assert()
         .success();
 }
@@ -256,7 +256,7 @@ fn config_env_var_is_respected() {
     cfgd_bin()
         .unwrap()
         .arg("status")
-        .env("CFGD_CONFIG", &nonexistent)
+        .env(cfgd_core::CFGD_CONFIG_ENV, &nonexistent)
         .assert()
         .failure();
 }
@@ -578,7 +578,7 @@ fn status_with_valid_config_succeeds() {
     cfgd_bin()
         .unwrap()
         .arg("status")
-        .env("CFGD_CONFIG", dir.path().join("cfgd.yaml"))
+        .env(cfgd_core::CFGD_CONFIG_ENV, dir.path().join("cfgd.yaml"))
         .assert()
         .success();
 }
@@ -593,7 +593,7 @@ fn plan_with_valid_config_succeeds() {
     cfgd_bin()
         .unwrap()
         .arg("plan")
-        .env("CFGD_CONFIG", dir.path().join("cfgd.yaml"))
+        .env(cfgd_core::CFGD_CONFIG_ENV, dir.path().join("cfgd.yaml"))
         .assert()
         .success();
 }
@@ -608,7 +608,7 @@ fn verify_with_valid_config_succeeds() {
     cfgd_bin()
         .unwrap()
         .arg("verify")
-        .env("CFGD_CONFIG", dir.path().join("cfgd.yaml"))
+        .env(cfgd_core::CFGD_CONFIG_ENV, dir.path().join("cfgd.yaml"))
         .assert()
         .success();
 }
@@ -813,7 +813,7 @@ fn diff_with_valid_config_succeeds() {
     cfgd_bin()
         .unwrap()
         .arg("diff")
-        .env("CFGD_CONFIG", dir.path().join("cfgd.yaml"))
+        .env(cfgd_core::CFGD_CONFIG_ENV, dir.path().join("cfgd.yaml"))
         .assert()
         .success();
 }
@@ -828,7 +828,7 @@ fn doctor_with_valid_config_succeeds() {
     cfgd_bin()
         .unwrap()
         .arg("doctor")
-        .env("CFGD_CONFIG", dir.path().join("cfgd.yaml"))
+        .env(cfgd_core::CFGD_CONFIG_ENV, dir.path().join("cfgd.yaml"))
         .assert()
         .success();
 }
@@ -852,7 +852,7 @@ fn doctor_fails_the_run_and_reports_git_false_when_git_is_not_on_path() {
         let out = cfgd_bin()
             .unwrap()
             .args(["doctor", "-o", "json"])
-            .env("CFGD_CONFIG", dir.path().join("cfgd.yaml"))
+            .env(cfgd_core::CFGD_CONFIG_ENV, dir.path().join("cfgd.yaml"))
             .env("PATH", tools.path())
             .output()
             .unwrap();
@@ -886,7 +886,7 @@ fn doctor_with_missing_explicit_config_fails() {
     cfgd_bin()
         .unwrap()
         .arg("doctor")
-        .env("CFGD_CONFIG", &nonexistent)
+        .env(cfgd_core::CFGD_CONFIG_ENV, &nonexistent)
         .assert()
         .failure()
         .code(1)
@@ -904,8 +904,8 @@ fn doctor_without_config_at_default_path_succeeds() {
     cfgd_bin()
         .unwrap()
         .arg("doctor")
-        .env_remove("CFGD_CONFIG")
-        .env_remove("CFGD_CONFIG_DIR")
+        .env_remove(cfgd_core::CFGD_CONFIG_ENV)
+        .env_remove(cfgd_core::CFGD_CONFIG_DIR_ENV)
         .env("HOME", home.path())
         .env("USERPROFILE", home.path())
         .env("XDG_CONFIG_HOME", home.path().join(".config"))
@@ -928,8 +928,8 @@ fn log_with_valid_config_shows_empty() {
     cfgd_bin()
         .unwrap()
         .arg("log")
-        .env("CFGD_CONFIG", dir.path().join("cfgd.yaml"))
-        .env("CFGD_STATE_DIR", &state_dir)
+        .env(cfgd_core::CFGD_CONFIG_ENV, dir.path().join("cfgd.yaml"))
+        .env(cfgd_core::CFGD_STATE_DIR_ENV, &state_dir)
         .assert()
         .success();
 }
@@ -944,7 +944,7 @@ fn module_list_with_valid_config() {
     cfgd_bin()
         .unwrap()
         .args(["module", "list"])
-        .env("CFGD_CONFIG", dir.path().join("cfgd.yaml"))
+        .env(cfgd_core::CFGD_CONFIG_ENV, dir.path().join("cfgd.yaml"))
         .assert()
         .success();
 }
@@ -959,7 +959,7 @@ fn profile_list_with_valid_config() {
     cfgd_bin()
         .unwrap()
         .args(["profile", "list"])
-        .env("CFGD_CONFIG", dir.path().join("cfgd.yaml"))
+        .env(cfgd_core::CFGD_CONFIG_ENV, dir.path().join("cfgd.yaml"))
         .assert()
         .success();
 }
@@ -974,7 +974,7 @@ fn profile_show_with_valid_config() {
     cfgd_bin()
         .unwrap()
         .args(["profile", "show"])
-        .env("CFGD_CONFIG", dir.path().join("cfgd.yaml"))
+        .env(cfgd_core::CFGD_CONFIG_ENV, dir.path().join("cfgd.yaml"))
         .assert()
         .success();
 }
@@ -989,7 +989,7 @@ fn source_list_with_valid_config() {
     cfgd_bin()
         .unwrap()
         .args(["source", "list"])
-        .env("CFGD_CONFIG", dir.path().join("cfgd.yaml"))
+        .env(cfgd_core::CFGD_CONFIG_ENV, dir.path().join("cfgd.yaml"))
         .assert()
         .success();
 }
@@ -1047,7 +1047,7 @@ fn config_show_with_valid_config() {
     cfgd_bin()
         .unwrap()
         .args(["config", "show"])
-        .env("CFGD_CONFIG", dir.path().join("cfgd.yaml"))
+        .env(cfgd_core::CFGD_CONFIG_ENV, dir.path().join("cfgd.yaml"))
         .assert()
         .success();
 }
@@ -1062,7 +1062,7 @@ fn status_json_output() {
     cfgd_bin()
         .unwrap()
         .args(["status", "-o", "json"])
-        .env("CFGD_CONFIG", dir.path().join("cfgd.yaml"))
+        .env(cfgd_core::CFGD_CONFIG_ENV, dir.path().join("cfgd.yaml"))
         .assert()
         .success();
 }
@@ -1075,7 +1075,7 @@ fn plan_json_output() {
     cfgd_bin()
         .unwrap()
         .args(["plan", "-o", "json"])
-        .env("CFGD_CONFIG", dir.path().join("cfgd.yaml"))
+        .env(cfgd_core::CFGD_CONFIG_ENV, dir.path().join("cfgd.yaml"))
         .assert()
         .success();
 }
@@ -1090,7 +1090,7 @@ fn status_yaml_output() {
     cfgd_bin()
         .unwrap()
         .args(["status", "-o", "yaml"])
-        .env("CFGD_CONFIG", dir.path().join("cfgd.yaml"))
+        .env(cfgd_core::CFGD_CONFIG_ENV, dir.path().join("cfgd.yaml"))
         .assert()
         .success();
 }
@@ -1105,7 +1105,7 @@ fn verbose_flag_accepted() {
     cfgd_bin()
         .unwrap()
         .args(["--verbose", "status"])
-        .env("CFGD_CONFIG", dir.path().join("cfgd.yaml"))
+        .env(cfgd_core::CFGD_CONFIG_ENV, dir.path().join("cfgd.yaml"))
         .assert()
         .success();
 }
@@ -1118,7 +1118,7 @@ fn quiet_flag_accepted() {
     cfgd_bin()
         .unwrap()
         .args(["--quiet", "status"])
-        .env("CFGD_CONFIG", dir.path().join("cfgd.yaml"))
+        .env(cfgd_core::CFGD_CONFIG_ENV, dir.path().join("cfgd.yaml"))
         .assert()
         .success();
 }
@@ -1143,7 +1143,7 @@ fn no_color_flag_accepted() {
     cfgd_bin()
         .unwrap()
         .args(["--no-color", "status"])
-        .env("CFGD_CONFIG", dir.path().join("cfgd.yaml"))
+        .env(cfgd_core::CFGD_CONFIG_ENV, dir.path().join("cfgd.yaml"))
         .assert()
         .success();
 }
@@ -1158,7 +1158,7 @@ fn plan_with_phase_filter() {
     cfgd_bin()
         .unwrap()
         .args(["plan", "--phase", "packages"])
-        .env("CFGD_CONFIG", dir.path().join("cfgd.yaml"))
+        .env(cfgd_core::CFGD_CONFIG_ENV, dir.path().join("cfgd.yaml"))
         .assert()
         .success();
 }
@@ -1173,7 +1173,7 @@ fn apply_dry_run_with_skip_flag() {
     cfgd_bin()
         .unwrap()
         .args(["apply", "--dry-run", "--skip", "packages.brew.ripgrep"])
-        .env("CFGD_CONFIG", dir.path().join("cfgd.yaml"))
+        .env(cfgd_core::CFGD_CONFIG_ENV, dir.path().join("cfgd.yaml"))
         .assert()
         .success();
 }
@@ -1186,7 +1186,7 @@ fn apply_dry_run_with_only_flag() {
     cfgd_bin()
         .unwrap()
         .args(["apply", "--dry-run", "--only", "packages"])
-        .env("CFGD_CONFIG", dir.path().join("cfgd.yaml"))
+        .env(cfgd_core::CFGD_CONFIG_ENV, dir.path().join("cfgd.yaml"))
         .assert()
         .success();
 }
@@ -1245,7 +1245,7 @@ fn sync_without_config_shows_error() {
     cfgd_bin()
         .unwrap()
         .arg("sync")
-        .env("CFGD_CONFIG", &nonexistent)
+        .env(cfgd_core::CFGD_CONFIG_ENV, &nonexistent)
         .assert()
         .failure();
 }
@@ -1258,7 +1258,7 @@ fn pull_without_config_shows_error() {
     cfgd_bin()
         .unwrap()
         .arg("pull")
-        .env("CFGD_CONFIG", &nonexistent)
+        .env(cfgd_core::CFGD_CONFIG_ENV, &nonexistent)
         .assert()
         .failure();
 }
@@ -1330,8 +1330,8 @@ fn log_with_limit_flag() {
     cfgd_bin()
         .unwrap()
         .args(["log", "-n", "5"])
-        .env("CFGD_CONFIG", dir.path().join("cfgd.yaml"))
-        .env("CFGD_STATE_DIR", &state_dir)
+        .env(cfgd_core::CFGD_CONFIG_ENV, dir.path().join("cfgd.yaml"))
+        .env(cfgd_core::CFGD_STATE_DIR_ENV, &state_dir)
         .assert()
         .success();
 }
@@ -1346,7 +1346,7 @@ fn diff_without_config_shows_error() {
     cfgd_bin()
         .unwrap()
         .arg("diff")
-        .env("CFGD_CONFIG", &nonexistent)
+        .env(cfgd_core::CFGD_CONFIG_ENV, &nonexistent)
         .assert()
         .failure();
 }
@@ -1361,7 +1361,7 @@ fn verify_without_config_shows_error() {
     cfgd_bin()
         .unwrap()
         .arg("verify")
-        .env("CFGD_CONFIG", &nonexistent)
+        .env(cfgd_core::CFGD_CONFIG_ENV, &nonexistent)
         .assert()
         .failure();
 }
@@ -1376,7 +1376,7 @@ fn module_list_without_config_shows_warning() {
     cfgd_bin()
         .unwrap()
         .args(["module", "list"])
-        .env("CFGD_CONFIG", &nonexistent)
+        .env(cfgd_core::CFGD_CONFIG_ENV, &nonexistent)
         .assert()
         .success();
 }
@@ -1391,7 +1391,7 @@ fn profile_list_without_config_shows_warning() {
     cfgd_bin()
         .unwrap()
         .args(["profile", "list"])
-        .env("CFGD_CONFIG", &nonexistent)
+        .env(cfgd_core::CFGD_CONFIG_ENV, &nonexistent)
         .assert()
         .success();
 }
@@ -1406,7 +1406,7 @@ fn apply_dry_run_with_skip_scripts() {
     cfgd_bin()
         .unwrap()
         .args(["apply", "--dry-run", "--skip-scripts"])
-        .env("CFGD_CONFIG", dir.path().join("cfgd.yaml"))
+        .env(cfgd_core::CFGD_CONFIG_ENV, dir.path().join("cfgd.yaml"))
         .assert()
         .success();
 }
@@ -1421,7 +1421,7 @@ fn plan_with_context_reconcile() {
     cfgd_bin()
         .unwrap()
         .args(["plan", "--context", "reconcile"])
-        .env("CFGD_CONFIG", dir.path().join("cfgd.yaml"))
+        .env(cfgd_core::CFGD_CONFIG_ENV, dir.path().join("cfgd.yaml"))
         .assert()
         .success();
 }
@@ -1436,7 +1436,7 @@ fn profile_override_flag() {
     cfgd_bin()
         .unwrap()
         .args(["--profile", "base", "status"])
-        .env("CFGD_CONFIG", dir.path().join("cfgd.yaml"))
+        .env(cfgd_core::CFGD_CONFIG_ENV, dir.path().join("cfgd.yaml"))
         .assert()
         .success();
 }
@@ -1465,7 +1465,7 @@ fn jsonpath_malformed_expr_is_clap_usage_error_no_panic() {
     let assert = cfgd_bin()
         .unwrap()
         .args(["profile", "list", "-o", "jsonpath={.items["])
-        .env("CFGD_CONFIG", dir.path().join("cfgd.yaml"))
+        .env(cfgd_core::CFGD_CONFIG_ENV, dir.path().join("cfgd.yaml"))
         .assert()
         .code(2)
         .stdout(predicate::str::is_empty());
@@ -1488,7 +1488,7 @@ fn template_malformed_is_clap_usage_error() {
     let assert = cfgd_bin()
         .unwrap()
         .args(["profile", "list", "-o", "template={{range}"])
-        .env("CFGD_CONFIG", dir.path().join("cfgd.yaml"))
+        .env(cfgd_core::CFGD_CONFIG_ENV, dir.path().join("cfgd.yaml"))
         .assert()
         .code(2)
         .stdout(predicate::str::is_empty());
@@ -1512,7 +1512,7 @@ fn template_file_missing_is_runtime_error_on_stderr() {
             "-o",
             &format!("template-file={}", missing.display()),
         ])
-        .env("CFGD_CONFIG", dir.path().join("cfgd.yaml"))
+        .env(cfgd_core::CFGD_CONFIG_ENV, dir.path().join("cfgd.yaml"))
         .assert()
         .failure()
         .stdout(predicate::str::is_empty());
@@ -1547,7 +1547,7 @@ fn json_list_emits_bare_array_and_exits_zero() {
     let assert = cfgd_bin()
         .unwrap()
         .args(["profile", "list", "-o", "json"])
-        .env("CFGD_CONFIG", dir.path().join("cfgd.yaml"))
+        .env(cfgd_core::CFGD_CONFIG_ENV, dir.path().join("cfgd.yaml"))
         .assert()
         .success();
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
@@ -1567,7 +1567,7 @@ fn jsonpath_bare_array_index_prints_scalar() {
     cfgd_bin()
         .unwrap()
         .args(["profile", "list", "-o", "jsonpath={[0].name}"])
-        .env("CFGD_CONFIG", dir.path().join("cfgd.yaml"))
+        .env(cfgd_core::CFGD_CONFIG_ENV, dir.path().join("cfgd.yaml"))
         .assert()
         .success()
         .stdout(predicate::str::contains("base"));
@@ -2671,7 +2671,7 @@ fn yes_flag_is_global_in_every_spelling() {
     };
     let run = |dir: &std::path::Path, before: &[&str], after: &[&str], env: Option<&str>| {
         let mut cmd = cfgd_bin().unwrap();
-        cmd.env_remove("CFGD_YES");
+        cmd.env_remove(cfgd_core::CFGD_YES_ENV);
         cmd.args(before)
             .args(["profile", "delete", "scratch"])
             .args(after)
@@ -2679,7 +2679,7 @@ fn yes_flag_is_global_in_every_spelling() {
             .arg(dir.join("cfgd.yaml"))
             .stdin(std::process::Stdio::null());
         if let Some(v) = env {
-            cmd.env("CFGD_YES", v);
+            cmd.env(cfgd_core::CFGD_YES_ENV, v);
         }
         cmd.assert()
     };
@@ -2728,7 +2728,7 @@ fn cfgd_quiet_boolish_engages_quiet() {
             cmd.arg("-q");
         }
         if let Some(v) = env_quiet {
-            cmd.env("CFGD_QUIET", v);
+            cmd.env(cfgd_core::CFGD_QUIET_ENV, v);
         }
         cmd.assert().success().get_output().stderr.clone()
     };
@@ -2779,7 +2779,7 @@ fn cfgd_verbose_boolish_on_engages_verbose() {
             cmd.arg("-v");
         }
         if let Some(v) = env_verbose {
-            cmd.env("CFGD_VERBOSE", v);
+            cmd.env(cfgd_core::CFGD_VERBOSE_ENV, v);
         }
         cmd.assert().failure().get_output().stderr.clone()
     };
@@ -3128,7 +3128,7 @@ fn cfgd_usage_hints_env_true_renders_the_hint_end_to_end() {
 
     let assert = cfgd_bin()
         .unwrap()
-        .env("CFGD_USAGE_HINTS", "true")
+        .env(cfgd_core::CFGD_USAGE_HINTS_ENV, "true")
         .arg("plan")
         .arg("--config")
         .arg(dir.path().join("cfgd.yaml"))

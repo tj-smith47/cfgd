@@ -66,7 +66,7 @@ fn run_at(home: &Path, cwd: &Path, args: &[&str]) -> std::process::Output {
         .env("XDG_CACHE_HOME", home.join(".cache"))
         .env("XDG_DATA_HOME", home.join(".local").join("share"))
         .env("XDG_STATE_HOME", home.join(".local").join("state"))
-        .env("CFGD_CACHE_DIR", home.join("cache"))
+        .env(cfgd_core::CFGD_CACHE_DIR_ENV, home.join("cache"))
         .env("NO_COLOR", "1")
         .output()
         .unwrap()

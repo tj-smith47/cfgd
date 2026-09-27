@@ -10,7 +10,7 @@ use super::read_command_output;
 use super::{diff_nested_mapping, yaml_value_to_string};
 
 /// Test seam for every `xfconf-query` spawn in this configurator.
-const XFCONF_QUERY_BIN_ENV: &str = "CFGD_XFCONF_QUERY_BIN";
+pub const XFCONF_QUERY_BIN_ENV: &str = "CFGD_XFCONF_QUERY_BIN";
 
 fn xfconf_cmd() -> std::process::Command {
     cfgd_core::tool_cmd(XFCONF_QUERY_BIN_ENV, "xfconf-query")

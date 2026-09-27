@@ -287,7 +287,7 @@ fn init_with_apply_renders_apply_status_streaming() {
     std::fs::create_dir_all(&state_dir).unwrap();
     // SAFETY: serialized via #[serial].
     unsafe {
-        std::env::set_var("CFGD_STATE_DIR", &state_dir);
+        std::env::set_var(cfgd_core::CFGD_STATE_DIR_ENV, &state_dir);
     }
     let target = tmp.path().join("bridge-cfg");
     let target_str = target.to_string_lossy().into_owned();
@@ -331,7 +331,7 @@ fn init_with_apply_renders_apply_status_streaming() {
     drop(printer);
     // SAFETY: serialized via #[serial].
     unsafe {
-        std::env::remove_var("CFGD_STATE_DIR");
+        std::env::remove_var(cfgd_core::CFGD_STATE_DIR_ENV);
     }
     result.unwrap();
 
@@ -372,7 +372,7 @@ fn init_theme_rethemed_printer_still_owes_apply_a_blank_line() {
     std::fs::create_dir_all(&state_dir).unwrap();
     // SAFETY: serialized via #[serial].
     unsafe {
-        std::env::set_var("CFGD_STATE_DIR", &state_dir);
+        std::env::set_var(cfgd_core::CFGD_STATE_DIR_ENV, &state_dir);
     }
     let target = tmp.path().join("themed-cfg");
     let target_str = target.to_string_lossy().into_owned();
@@ -419,7 +419,7 @@ fn init_theme_rethemed_printer_still_owes_apply_a_blank_line() {
     drop(printer);
     // SAFETY: serialized via #[serial].
     unsafe {
-        std::env::remove_var("CFGD_STATE_DIR");
+        std::env::remove_var(cfgd_core::CFGD_STATE_DIR_ENV);
     }
     result.unwrap();
 
@@ -557,7 +557,7 @@ fn init_apply_lock_honors_state_dir_override() {
     let _home_guard = cfgd_core::test_helpers::EnvVarGuard::set("HOME", home.to_str().unwrap());
     // The override must win over CFGD_STATE_DIR too; leave it unset so the only
     // way the lock reaches `state_dir` is via the flag chain under test.
-    let _state_env = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_STATE_DIR");
+    let _state_env = cfgd_core::test_helpers::EnvVarGuard::unset(cfgd_core::CFGD_STATE_DIR_ENV);
 
     let state_dir = tmp.path().join("explicit-state");
     let cache_dir = tmp.path().join("explicit-cache");

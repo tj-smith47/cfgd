@@ -1074,7 +1074,7 @@ fn age_backend_needs_both_a_key_file_and_the_cli() {
     // half from a probe PATH: read off the host, the two halves of the AND
     // are never both true on a runner without `age`, and the test passes
     // while proving only that a missing CLI is missing.
-    let _g = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_AGE_BIN");
+    let _g = cfgd_core::test_helpers::EnvVarGuard::unset(crate::seams::AGE_BIN_ENV);
     let _path_lock = cfgd_core::test_helpers::path_env_mutation_guard();
     let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
     let dir = tempfile::tempdir().unwrap();
@@ -1317,7 +1317,7 @@ mod age_shim {
     #[test]
     #[serial]
     fn age_is_available_returns_true_when_seam_points_at_real_file() {
-        let _shim = ToolShim::install("CFGD_AGE_BIN", 0, "", "");
+        let _shim = ToolShim::install(crate::seams::AGE_BIN_ENV, 0, "", "");
         let (_dir, key) = key_fixture();
         let backend = AgeBackend::new(key);
         assert!(
@@ -1329,7 +1329,7 @@ mod age_shim {
     #[test]
     #[serial]
     fn age_encrypt_forwards_recipient_from_key_and_replaces_original() {
-        let shim = ToolShim::install("CFGD_AGE_BIN", 0, "", "");
+        let shim = ToolShim::install(crate::seams::AGE_BIN_ENV, 0, "", "");
         let (_keydir, key) = key_fixture();
         let datadir = tempfile::tempdir().expect("tempdir");
         let plain = datadir.path().join("secret.txt");
@@ -1380,7 +1380,7 @@ mod age_shim {
     #[test]
     #[serial]
     fn age_encrypt_propagates_failure_with_stderr_in_message() {
-        let _shim = ToolShim::install("CFGD_AGE_BIN", 1, "", "no recipient");
+        let _shim = ToolShim::install(crate::seams::AGE_BIN_ENV, 1, "", "no recipient");
         let (_keydir, key) = key_fixture();
         let datadir = tempfile::tempdir().expect("tempdir");
         let plain = datadir.path().join("secret.txt");
@@ -1398,7 +1398,7 @@ mod age_shim {
     #[test]
     #[serial]
     fn age_decrypt_returns_stdout_bytes_through_secret_string() {
-        let _shim = ToolShim::install("CFGD_AGE_BIN", 0, "decrypted-payload", "");
+        let _shim = ToolShim::install(crate::seams::AGE_BIN_ENV, 0, "decrypted-payload", "");
         let (_keydir, key) = key_fixture();
         let datadir = tempfile::tempdir().expect("tempdir");
         let cipher = datadir.path().join("secret.age");
@@ -1416,7 +1416,7 @@ mod age_shim {
     #[test]
     #[serial]
     fn age_decrypt_uses_identity_flag_with_key_path() {
-        let shim = ToolShim::install("CFGD_AGE_BIN", 0, "decrypted", "");
+        let shim = ToolShim::install(crate::seams::AGE_BIN_ENV, 0, "decrypted", "");
         let (_keydir, key) = key_fixture();
         let datadir = tempfile::tempdir().expect("tempdir");
         let cipher = datadir.path().join("secret.age");
@@ -1443,7 +1443,7 @@ mod age_shim {
     #[test]
     #[serial]
     fn age_decrypt_propagates_failure_with_stderr_and_path() {
-        let _shim = ToolShim::install("CFGD_AGE_BIN", 1, "", "bad identity");
+        let _shim = ToolShim::install(crate::seams::AGE_BIN_ENV, 1, "", "bad identity");
         let (_keydir, key) = key_fixture();
         let datadir = tempfile::tempdir().expect("tempdir");
         let cipher = datadir.path().join("secret.age");
@@ -1479,7 +1479,7 @@ mod age_shim {
         // /bin/true exits 0 without opening the temp file, so the decrypted
         // payload remains identical after the editor returns. edit_file must
         // hit the `edited == decrypted` early-return arm and NOT re-encrypt.
-        let shim = ToolShim::install("CFGD_AGE_BIN", 0, "unchanged-secret\n", "");
+        let shim = ToolShim::install(crate::seams::AGE_BIN_ENV, 0, "unchanged-secret\n", "");
         let (_keydir, key) = key_fixture();
         let datadir = tempfile::tempdir().expect("tempdir");
         let cipher = datadir.path().join("secret.age");
@@ -1518,7 +1518,7 @@ mod age_shim {
         // /bin/false exits 1 → edit_file must surface the editor non-zero
         // exit as a SecretError::EncryptionFailed with the editor name in
         // the message.
-        let _shim = ToolShim::install("CFGD_AGE_BIN", 0, "payload", "");
+        let _shim = ToolShim::install(crate::seams::AGE_BIN_ENV, 0, "payload", "");
         let (_keydir, key) = key_fixture();
         let datadir = tempfile::tempdir().expect("tempdir");
         let cipher = datadir.path().join("secret.age");
@@ -1568,7 +1568,7 @@ mod sops_shim {
     #[test]
     #[serial]
     fn sops_is_available_returns_true_when_seam_points_at_real_file() {
-        let _shim = ToolShim::install("CFGD_SOPS_BIN", 0, "", "");
+        let _shim = ToolShim::install(crate::seams::SOPS_BIN_ENV, 0, "", "");
         let backend = SopsBackend::new(None);
         assert!(
             backend.is_available(),
@@ -1579,7 +1579,7 @@ mod sops_shim {
     #[test]
     #[serial]
     fn sops_encrypt_uses_encrypt_in_place_with_sops_config_when_present() {
-        let shim = ToolShim::install("CFGD_SOPS_BIN", 0, "", "");
+        let shim = ToolShim::install(crate::seams::SOPS_BIN_ENV, 0, "", "");
         let dir = tempfile::tempdir().expect("tempdir");
         // .sops.yaml in the config dir → --config <path> appears in argv.
         let sops_yaml = dir.path().join(".sops.yaml");
@@ -1614,7 +1614,7 @@ mod sops_shim {
     #[test]
     #[serial]
     fn sops_encrypt_omits_config_flag_when_no_sops_yaml_present() {
-        let shim = ToolShim::install("CFGD_SOPS_BIN", 0, "", "");
+        let shim = ToolShim::install(crate::seams::SOPS_BIN_ENV, 0, "", "");
         let dir = tempfile::tempdir().expect("tempdir");
         // No .sops.yaml created.
         let plain = dir.path().join("secret.yaml");
@@ -1633,7 +1633,7 @@ mod sops_shim {
     #[test]
     #[serial]
     fn sops_encrypt_propagates_failure_with_stderr() {
-        let _shim = ToolShim::install("CFGD_SOPS_BIN", 1, "", "no kms key configured");
+        let _shim = ToolShim::install(crate::seams::SOPS_BIN_ENV, 1, "", "no kms key configured");
         let dir = tempfile::tempdir().expect("tempdir");
         let plain = dir.path().join("secret.yaml");
         std::fs::write(&plain, "key: value\n").expect("write");
@@ -1650,7 +1650,7 @@ mod sops_shim {
     #[test]
     #[serial]
     fn sops_decrypt_returns_stdout_through_secret_string() {
-        let _shim = ToolShim::install("CFGD_SOPS_BIN", 0, "decrypted-yaml: 42", "");
+        let _shim = ToolShim::install(crate::seams::SOPS_BIN_ENV, 0, "decrypted-yaml: 42", "");
         let dir = tempfile::tempdir().expect("tempdir");
         let cipher = dir.path().join("secret.enc.yaml");
         std::fs::write(&cipher, "x").expect("write cipher");
@@ -1667,7 +1667,7 @@ mod sops_shim {
     #[test]
     #[serial]
     fn sops_decrypt_propagates_failure_with_stderr_and_path() {
-        let _shim = ToolShim::install("CFGD_SOPS_BIN", 1, "", "MAC mismatch");
+        let _shim = ToolShim::install(crate::seams::SOPS_BIN_ENV, 1, "", "MAC mismatch");
         let dir = tempfile::tempdir().expect("tempdir");
         let cipher = dir.path().join("secret.enc.yaml");
         std::fs::write(&cipher, "x").expect("write cipher");
@@ -1724,7 +1724,7 @@ mod provider_shim {
     #[test]
     #[serial]
     fn vault_resolve_with_field_uses_dash_field_form_and_path_terminator() {
-        let shim = ToolShim::install("CFGD_VAULT_BIN", 0, "secret-payload\n", "");
+        let shim = ToolShim::install(crate::seams::VAULT_BIN_ENV, 0, "secret-payload\n", "");
         let secret = VaultProvider
             .resolve("secret/db/creds#password")
             .expect("happy path → Ok");
@@ -1752,7 +1752,7 @@ mod provider_shim {
     #[test]
     #[serial]
     fn vault_resolve_without_field_defaults_to_field_value() {
-        let shim = ToolShim::install("CFGD_VAULT_BIN", 0, "x", "");
+        let shim = ToolShim::install(crate::seams::VAULT_BIN_ENV, 0, "x", "");
         VaultProvider.resolve("secret/db/creds").expect("Ok");
         let argv = shim.argv_log();
         assert!(
@@ -1764,7 +1764,7 @@ mod provider_shim {
     #[test]
     #[serial]
     fn vault_resolve_propagates_failure_with_stderr_in_unresolvable_ref() {
-        let _shim = ToolShim::install("CFGD_VAULT_BIN", 1, "", "permission denied");
+        let _shim = ToolShim::install(crate::seams::VAULT_BIN_ENV, 1, "", "permission denied");
         let err = VaultProvider
             .resolve("secret/locked#password")
             .expect_err("non-zero → Err");
@@ -1784,7 +1784,7 @@ mod provider_shim {
     #[test]
     #[serial]
     fn op_resolve_prepends_op_scheme_when_missing() {
-        let shim = ToolShim::install("CFGD_OP_BIN", 0, "topsecret", "");
+        let shim = ToolShim::install(crate::seams::OP_BIN_ENV, 0, "topsecret", "");
         OnePasswordProvider
             .resolve("Personal/Login/password")
             .expect("Ok");
@@ -1799,7 +1799,7 @@ mod provider_shim {
     #[test]
     #[serial]
     fn op_resolve_passes_through_op_scheme_unchanged() {
-        let shim = ToolShim::install("CFGD_OP_BIN", 0, "x", "");
+        let shim = ToolShim::install(crate::seams::OP_BIN_ENV, 0, "x", "");
         OnePasswordProvider
             .resolve("op://Vault/Item/Section/Field")
             .expect("Ok");
@@ -1818,7 +1818,7 @@ mod provider_shim {
     #[test]
     #[serial]
     fn op_resolve_returns_stdout_through_secret_string() {
-        let _shim = ToolShim::install("CFGD_OP_BIN", 0, "topsecret", "");
+        let _shim = ToolShim::install(crate::seams::OP_BIN_ENV, 0, "topsecret", "");
         let secret = OnePasswordProvider
             .resolve("op://Vault/Item/password")
             .expect("Ok");
@@ -1828,7 +1828,7 @@ mod provider_shim {
     #[test]
     #[serial]
     fn op_resolve_propagates_failure_with_stderr_in_error() {
-        let _shim = ToolShim::install("CFGD_OP_BIN", 1, "", "could not find item");
+        let _shim = ToolShim::install(crate::seams::OP_BIN_ENV, 1, "", "could not find item");
         let err = OnePasswordProvider
             .resolve("op://Personal/Login/password")
             .expect_err("non-zero → Err");
@@ -1846,7 +1846,7 @@ mod provider_shim {
     #[test]
     #[serial]
     fn op_resolve_passes_separator_to_prevent_argument_injection() {
-        let shim = ToolShim::install("CFGD_OP_BIN", 0, "val", "");
+        let shim = ToolShim::install(crate::seams::OP_BIN_ENV, 0, "val", "");
         OnePasswordProvider
             .resolve("op://Vault/--help/field")
             .expect("Ok");
@@ -1860,7 +1860,7 @@ mod provider_shim {
     #[test]
     #[serial]
     fn op_is_available_true_when_seam_points_to_existing_file() {
-        let shim = ToolShim::install("CFGD_OP_BIN", 0, "", "");
+        let shim = ToolShim::install(crate::seams::OP_BIN_ENV, 0, "", "");
         assert!(
             OnePasswordProvider.is_available(),
             "seam points at installed shim binary: {}",
@@ -1872,11 +1872,11 @@ mod provider_shim {
     #[serial]
     fn op_is_available_false_when_seam_points_to_missing_file() {
         unsafe {
-            std::env::set_var("CFGD_OP_BIN", "/nonexistent/path/to/op");
+            std::env::set_var(crate::seams::OP_BIN_ENV, "/nonexistent/path/to/op");
         }
         let available = OnePasswordProvider.is_available();
         unsafe {
-            std::env::remove_var("CFGD_OP_BIN");
+            std::env::remove_var(crate::seams::OP_BIN_ENV);
         }
         assert!(
             !available,
@@ -1889,7 +1889,7 @@ mod provider_shim {
     #[test]
     #[serial]
     fn lpass_resolve_with_field_uses_field_flag() {
-        let shim = ToolShim::install("CFGD_LPASS_BIN", 0, "v", "");
+        let shim = ToolShim::install(crate::seams::LPASS_BIN_ENV, 0, "v", "");
         LastPassProvider
             .resolve("Folder/MyItem/username")
             .expect("Ok");
@@ -1908,7 +1908,7 @@ mod provider_shim {
     #[test]
     #[serial]
     fn lpass_resolve_without_field_uses_password_flag() {
-        let shim = ToolShim::install("CFGD_LPASS_BIN", 0, "p", "");
+        let shim = ToolShim::install(crate::seams::LPASS_BIN_ENV, 0, "p", "");
         LastPassProvider.resolve("LonelyItem").expect("Ok");
         let argv = shim.argv_log();
         assert!(
@@ -1924,7 +1924,7 @@ mod provider_shim {
     #[test]
     #[serial]
     fn lpass_resolve_propagates_stderr_in_error_message() {
-        let _shim = ToolShim::install("CFGD_LPASS_BIN", 1, "", "not logged in");
+        let _shim = ToolShim::install(crate::seams::LPASS_BIN_ENV, 1, "", "not logged in");
         let err = LastPassProvider
             .resolve("Folder/Item/password")
             .expect_err("non-zero → Err");
@@ -1940,7 +1940,7 @@ mod provider_shim {
     #[test]
     #[serial]
     fn bw_resolve_extracts_item_name_from_folder_slash_item() {
-        let shim = ToolShim::install("CFGD_BW_BIN", 0, "bw-secret", "");
+        let shim = ToolShim::install(crate::seams::BW_BIN_ENV, 0, "bw-secret", "");
         let secret = BitwardenProvider.resolve("Personal/MyLogin").expect("Ok");
         assert_eq!(secret.expose_secret(), "bw-secret", "stdout → SecretString");
 
@@ -1958,7 +1958,7 @@ mod provider_shim {
     #[test]
     #[serial]
     fn bw_resolve_uses_full_reference_when_no_slash() {
-        let shim = ToolShim::install("CFGD_BW_BIN", 0, "x", "");
+        let shim = ToolShim::install(crate::seams::BW_BIN_ENV, 0, "x", "");
         BitwardenProvider.resolve("BareItem").expect("Ok");
         let argv = shim.argv_log();
         assert!(
@@ -1982,7 +1982,7 @@ mod build_backend_tilde {
         let home = tempfile::tempdir().expect("tempdir");
         let _home_guard = cfgd_core::with_test_home_guard(home.path());
         std::fs::write(home.path().join("age-key.txt"), "AGE-SECRET-KEY-1\n").expect("write key");
-        let _shim = ToolShim::install("CFGD_AGE_BIN", 0, "", "");
+        let _shim = ToolShim::install(crate::seams::AGE_BIN_ENV, 0, "", "");
 
         let backend = build_secret_backend("age", Some(PathBuf::from("~/age-key.txt")), None);
         // Without tilde expansion the literal "~/age-key.txt" never resolves and

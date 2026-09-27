@@ -8,7 +8,7 @@ use cfgd_core::{command_available_with_seam, tool_cmd};
 
 use super::run_provider_cmd;
 
-const VAULT_BIN_ENV: &str = "CFGD_VAULT_BIN";
+pub const VAULT_BIN_ENV: &str = "CFGD_VAULT_BIN";
 
 pub struct VaultProvider;
 

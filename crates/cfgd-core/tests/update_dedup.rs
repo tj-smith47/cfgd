@@ -71,7 +71,10 @@ fn rule2_skill_refresh_rides_along_with_binary_upgrade_no_second_prompt() {
     // in the SAME action — no second prompt.
     let home = tempfile::tempdir().expect("home tempdir");
     let runtime = tempfile::tempdir().expect("runtime tempdir");
-    let _runtime_env = EnvVarGuard::set("CFGD_RUNTIME_DIR", &runtime.path().to_string_lossy());
+    let _runtime_env = EnvVarGuard::set(
+        cfgd_core::CFGD_RUNTIME_DIR_ENV,
+        &runtime.path().to_string_lossy(),
+    );
 
     with_test_home(home.path(), || {
         // A user-scope skill must already be installed for the ride-along to
@@ -103,7 +106,10 @@ fn ride_along_does_not_install_kinds_the_user_never_had() {
     // — it refreshes present skills, never fresh-installs.
     let home = tempfile::tempdir().expect("home tempdir");
     let runtime = tempfile::tempdir().expect("runtime tempdir");
-    let _runtime_env = EnvVarGuard::set("CFGD_RUNTIME_DIR", &runtime.path().to_string_lossy());
+    let _runtime_env = EnvVarGuard::set(
+        cfgd_core::CFGD_RUNTIME_DIR_ENV,
+        &runtime.path().to_string_lossy(),
+    );
 
     with_test_home(home.path(), || {
         let outcome = refresh_user_scope_skills(
@@ -130,7 +136,10 @@ fn ride_along_does_not_install_kinds_the_user_never_had() {
 fn notify_and_manual_policies_do_not_write_during_ride_along() {
     let home = tempfile::tempdir().expect("home tempdir");
     let runtime = tempfile::tempdir().expect("runtime tempdir");
-    let _runtime_env = EnvVarGuard::set("CFGD_RUNTIME_DIR", &runtime.path().to_string_lossy());
+    let _runtime_env = EnvVarGuard::set(
+        cfgd_core::CFGD_RUNTIME_DIR_ENV,
+        &runtime.path().to_string_lossy(),
+    );
 
     with_test_home(home.path(), || {
         ClaudeCodeProvider
@@ -164,7 +173,10 @@ fn project_scope_skills_are_never_auto_rewritten() {
     let home = tempfile::tempdir().expect("home tempdir");
     let project = tempfile::tempdir().expect("project tempdir");
     let runtime = tempfile::tempdir().expect("runtime tempdir");
-    let _runtime_env = EnvVarGuard::set("CFGD_RUNTIME_DIR", &runtime.path().to_string_lossy());
+    let _runtime_env = EnvVarGuard::set(
+        cfgd_core::CFGD_RUNTIME_DIR_ENV,
+        &runtime.path().to_string_lossy(),
+    );
     let _cwd = CwdGuard::set(project.path()).expect("set cwd to project dir");
 
     with_test_home(home.path(), || {
@@ -206,7 +218,10 @@ fn aggregate_counts_stale_skills_per_scope() {
     let home = tempfile::tempdir().expect("home tempdir");
     let project = tempfile::tempdir().expect("project tempdir");
     let runtime = tempfile::tempdir().expect("runtime tempdir");
-    let _runtime_env = EnvVarGuard::set("CFGD_RUNTIME_DIR", &runtime.path().to_string_lossy());
+    let _runtime_env = EnvVarGuard::set(
+        cfgd_core::CFGD_RUNTIME_DIR_ENV,
+        &runtime.path().to_string_lossy(),
+    );
     let _cwd = CwdGuard::set(project.path()).expect("set cwd to project dir");
 
     with_test_home(home.path(), || {
@@ -231,7 +246,10 @@ fn binary_pending_suppresses_wired_skill_surface() {
     // compute_update_surfaces fed the real aggregate yields binary-only.
     let home = tempfile::tempdir().expect("home tempdir");
     let runtime = tempfile::tempdir().expect("runtime tempdir");
-    let _runtime_env = EnvVarGuard::set("CFGD_RUNTIME_DIR", &runtime.path().to_string_lossy());
+    let _runtime_env = EnvVarGuard::set(
+        cfgd_core::CFGD_RUNTIME_DIR_ENV,
+        &runtime.path().to_string_lossy(),
+    );
 
     with_test_home(home.path(), || {
         seed_stale_skill(SkillKind::Module, SkillScope::User);
@@ -254,7 +272,10 @@ fn auto_standalone_refresh_clears_user_staleness_only() {
     let home = tempfile::tempdir().expect("home tempdir");
     let project = tempfile::tempdir().expect("project tempdir");
     let runtime = tempfile::tempdir().expect("runtime tempdir");
-    let _runtime_env = EnvVarGuard::set("CFGD_RUNTIME_DIR", &runtime.path().to_string_lossy());
+    let _runtime_env = EnvVarGuard::set(
+        cfgd_core::CFGD_RUNTIME_DIR_ENV,
+        &runtime.path().to_string_lossy(),
+    );
     let _cwd = CwdGuard::set(project.path()).expect("set cwd to project dir");
 
     with_test_home(home.path(), || {
@@ -294,7 +315,10 @@ fn run_action_notify_yields_one_consolidated_notice_both_scopes() {
     let home = tempfile::tempdir().expect("home tempdir");
     let project = tempfile::tempdir().expect("project tempdir");
     let runtime = tempfile::tempdir().expect("runtime tempdir");
-    let _runtime_env = EnvVarGuard::set("CFGD_RUNTIME_DIR", &runtime.path().to_string_lossy());
+    let _runtime_env = EnvVarGuard::set(
+        cfgd_core::CFGD_RUNTIME_DIR_ENV,
+        &runtime.path().to_string_lossy(),
+    );
     let _cwd = CwdGuard::set(project.path()).expect("set cwd to project dir");
 
     with_test_home(home.path(), || {
@@ -322,7 +346,10 @@ fn run_action_notify_yields_one_consolidated_notice_both_scopes() {
 fn run_action_binary_pending_suppresses() {
     let home = tempfile::tempdir().expect("home tempdir");
     let runtime = tempfile::tempdir().expect("runtime tempdir");
-    let _runtime_env = EnvVarGuard::set("CFGD_RUNTIME_DIR", &runtime.path().to_string_lossy());
+    let _runtime_env = EnvVarGuard::set(
+        cfgd_core::CFGD_RUNTIME_DIR_ENV,
+        &runtime.path().to_string_lossy(),
+    );
 
     with_test_home(home.path(), || {
         seed_stale_skill(SkillKind::Module, SkillScope::User);
@@ -342,7 +369,10 @@ fn run_action_auto_refreshes_user_then_notices_project_only() {
     let home = tempfile::tempdir().expect("home tempdir");
     let project = tempfile::tempdir().expect("project tempdir");
     let runtime = tempfile::tempdir().expect("runtime tempdir");
-    let _runtime_env = EnvVarGuard::set("CFGD_RUNTIME_DIR", &runtime.path().to_string_lossy());
+    let _runtime_env = EnvVarGuard::set(
+        cfgd_core::CFGD_RUNTIME_DIR_ENV,
+        &runtime.path().to_string_lossy(),
+    );
     let _cwd = CwdGuard::set(project.path()).expect("set cwd to project dir");
 
     with_test_home(home.path(), || {
@@ -377,7 +407,10 @@ fn run_action_auto_refreshes_user_then_notices_project_only() {
 fn run_action_auto_with_only_user_stale_is_refreshed_no_notice() {
     let home = tempfile::tempdir().expect("home tempdir");
     let runtime = tempfile::tempdir().expect("runtime tempdir");
-    let _runtime_env = EnvVarGuard::set("CFGD_RUNTIME_DIR", &runtime.path().to_string_lossy());
+    let _runtime_env = EnvVarGuard::set(
+        cfgd_core::CFGD_RUNTIME_DIR_ENV,
+        &runtime.path().to_string_lossy(),
+    );
 
     with_test_home(home.path(), || {
         seed_stale_skill(SkillKind::Module, SkillScope::User);
@@ -404,7 +437,10 @@ fn run_action_auto_with_only_user_stale_is_refreshed_no_notice() {
 fn run_action_manual_is_silent() {
     let home = tempfile::tempdir().expect("home tempdir");
     let runtime = tempfile::tempdir().expect("runtime tempdir");
-    let _runtime_env = EnvVarGuard::set("CFGD_RUNTIME_DIR", &runtime.path().to_string_lossy());
+    let _runtime_env = EnvVarGuard::set(
+        cfgd_core::CFGD_RUNTIME_DIR_ENV,
+        &runtime.path().to_string_lossy(),
+    );
 
     with_test_home(home.path(), || {
         seed_stale_skill(SkillKind::Module, SkillScope::User);
@@ -422,7 +458,10 @@ fn run_action_manual_is_silent() {
 fn run_action_nothing_stale_is_suppressed() {
     let home = tempfile::tempdir().expect("home tempdir");
     let runtime = tempfile::tempdir().expect("runtime tempdir");
-    let _runtime_env = EnvVarGuard::set("CFGD_RUNTIME_DIR", &runtime.path().to_string_lossy());
+    let _runtime_env = EnvVarGuard::set(
+        cfgd_core::CFGD_RUNTIME_DIR_ENV,
+        &runtime.path().to_string_lossy(),
+    );
 
     with_test_home(home.path(), || {
         // Nothing installed → nothing stale → suppressed even under Notify.

@@ -1338,7 +1338,8 @@ spec:
         #[serial_test::serial]
         fn sign_with_kms_key_reference_reads_the_public_key_from_cosign() {
             const PEM: &str = "-----BEGIN PUBLIC KEY-----\nMFk=\n-----END PUBLIC KEY-----";
-            let shim = cfgd_core::test_helpers::ToolShim::install("CFGD_COSIGN_BIN", 0, PEM, "");
+            let shim =
+                cfgd_core::test_helpers::ToolShim::install(cfgd_core::COSIGN_BIN_ENV, 0, PEM, "");
             let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
             let module_doc = parse_module(MINIMAL_MODULE_YAML).expect("parse module.yaml");
             let signature =
@@ -1377,7 +1378,7 @@ spec:
         #[serial_test::serial]
         fn sign_with_pkcs11_key_cosign_cannot_read_warns_and_fails_disallow_unsigned_admission() {
             let _shim = cfgd_core::test_helpers::ToolShim::install(
-                "CFGD_COSIGN_BIN",
+                cfgd_core::COSIGN_BIN_ENV,
                 1,
                 "",
                 "no such token",

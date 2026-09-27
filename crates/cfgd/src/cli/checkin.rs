@@ -545,7 +545,7 @@ spec: {}
         // available and answers its bulk read, so the shim's log is the count
         // of times checkin asked the machine anything at all.
         let shim = cfgd_core::test_helpers::ToolShim::install(
-            "CFGD_GSETTINGS_BIN",
+            crate::seams::GSETTINGS_BIN_ENV,
             0,
             "org.gnome.cfgd-checkin color-scheme 'default'\n",
             "",
@@ -574,7 +574,10 @@ spec:
 
         let state_dir = tempfile::tempdir().unwrap();
         let _home = cfgd_core::with_test_home_guard(config_dir.path());
-        let _state_env = EnvVarGuard::set("CFGD_STATE_DIR", state_dir.path().to_str().unwrap());
+        let _state_env = EnvVarGuard::set(
+            cfgd_core::CFGD_STATE_DIR_ENV,
+            state_dir.path().to_str().unwrap(),
+        );
 
         let mut server = mockito::Server::new();
         let checkin = server
@@ -654,7 +657,10 @@ spec:
 
         let state_dir = tempfile::tempdir().unwrap();
         let _home = cfgd_core::with_test_home_guard(root);
-        let _state_env = EnvVarGuard::set("CFGD_STATE_DIR", state_dir.path().to_str().unwrap());
+        let _state_env = EnvVarGuard::set(
+            cfgd_core::CFGD_STATE_DIR_ENV,
+            state_dir.path().to_str().unwrap(),
+        );
         let cli = test_cli_for(root, state_dir.path());
 
         let (quiet, _) = Printer::for_test_doc();
@@ -714,7 +720,10 @@ spec:
         let config_dir = make_test_config_dir();
         let state_dir = tempfile::tempdir().unwrap();
         let _home = cfgd_core::with_test_home_guard(config_dir.path());
-        let _state_env = EnvVarGuard::set("CFGD_STATE_DIR", state_dir.path().to_str().unwrap());
+        let _state_env = EnvVarGuard::set(
+            cfgd_core::CFGD_STATE_DIR_ENV,
+            state_dir.path().to_str().unwrap(),
+        );
 
         let mut server = mockito::Server::new();
         let checkin = server
@@ -770,7 +779,7 @@ spec:
     #[serial_test::serial]
     fn cmd_checkin_drift_settle_line_nests_under_the_system_settings_section_header() {
         let shim = cfgd_core::test_helpers::ToolShim::install(
-            "CFGD_GSETTINGS_BIN",
+            crate::seams::GSETTINGS_BIN_ENV,
             0,
             "org.gnome.cfgd-checkin color-scheme 'default'\n",
             "",
@@ -799,7 +808,10 @@ spec:
 
         let state_dir = tempfile::tempdir().unwrap();
         let _home = cfgd_core::with_test_home_guard(config_dir.path());
-        let _state_env = EnvVarGuard::set("CFGD_STATE_DIR", state_dir.path().to_str().unwrap());
+        let _state_env = EnvVarGuard::set(
+            cfgd_core::CFGD_STATE_DIR_ENV,
+            state_dir.path().to_str().unwrap(),
+        );
 
         let mut server = mockito::Server::new();
         let checkin = server
@@ -852,7 +864,7 @@ spec:
         // does — and the machine must not have been scanned for a report
         // nobody will read.
         let shim = cfgd_core::test_helpers::ToolShim::install(
-            "CFGD_GSETTINGS_BIN",
+            crate::seams::GSETTINGS_BIN_ENV,
             0,
             "org.gnome.cfgd-lazy color-scheme 'default'\n",
             "",
@@ -875,7 +887,10 @@ spec:
 
         let state_dir = tempfile::tempdir().unwrap();
         let _home = cfgd_core::with_test_home_guard(config_dir.path());
-        let _state_env = EnvVarGuard::set("CFGD_STATE_DIR", state_dir.path().to_str().unwrap());
+        let _state_env = EnvVarGuard::set(
+            cfgd_core::CFGD_STATE_DIR_ENV,
+            state_dir.path().to_str().unwrap(),
+        );
 
         let mut server = mockito::Server::new();
         // The client retries a 5xx, so the count is "at least one attempt".
@@ -912,7 +927,10 @@ spec:
         let config_dir = make_test_config_dir();
         let state_dir = tempfile::tempdir().unwrap();
         let _home = cfgd_core::with_test_home_guard(config_dir.path());
-        let _state_env = EnvVarGuard::set("CFGD_STATE_DIR", state_dir.path().to_str().unwrap());
+        let _state_env = EnvVarGuard::set(
+            cfgd_core::CFGD_STATE_DIR_ENV,
+            state_dir.path().to_str().unwrap(),
+        );
 
         let mut server = mockito::Server::new();
         let mock = server
@@ -970,7 +988,10 @@ spec:
         let config_dir = make_test_config_dir();
         let state_dir = tempfile::tempdir().unwrap();
         let _home = cfgd_core::with_test_home_guard(config_dir.path());
-        let _state_env = EnvVarGuard::set("CFGD_STATE_DIR", state_dir.path().to_str().unwrap());
+        let _state_env = EnvVarGuard::set(
+            cfgd_core::CFGD_STATE_DIR_ENV,
+            state_dir.path().to_str().unwrap(),
+        );
 
         let mut server = mockito::Server::new();
         let mock = server
@@ -1003,7 +1024,10 @@ spec:
         let config_dir = make_test_config_dir();
         let state_dir = tempfile::tempdir().unwrap();
         let _home = cfgd_core::with_test_home_guard(config_dir.path());
-        let _state_env = EnvVarGuard::set("CFGD_STATE_DIR", state_dir.path().to_str().unwrap());
+        let _state_env = EnvVarGuard::set(
+            cfgd_core::CFGD_STATE_DIR_ENV,
+            state_dir.path().to_str().unwrap(),
+        );
 
         let mut server = mockito::Server::new();
         let mock = server
@@ -1076,7 +1100,10 @@ spec:
         let cli_state = tempfile::tempdir().unwrap();
         let cli_written = {
             let _home = cfgd_core::with_test_home_guard(cli_config.path());
-            let _state_env = EnvVarGuard::set("CFGD_STATE_DIR", cli_state.path().to_str().unwrap());
+            let _state_env = EnvVarGuard::set(
+                cfgd_core::CFGD_STATE_DIR_ENV,
+                cli_state.path().to_str().unwrap(),
+            );
             let mut server = mockito::Server::new();
             let _mock = server
                 .mock("POST", "/api/v1/checkin")
@@ -1100,8 +1127,10 @@ spec:
         let daemon_home = tempfile::tempdir().unwrap();
         let daemon_written = {
             let _home = cfgd_core::with_test_home_guard(daemon_home.path());
-            let _state_env =
-                EnvVarGuard::set("CFGD_STATE_DIR", daemon_home.path().to_str().unwrap());
+            let _state_env = EnvVarGuard::set(
+                cfgd_core::CFGD_STATE_DIR_ENV,
+                daemon_home.path().to_str().unwrap(),
+            );
             let mut server = mockito::Server::new();
             let _mock = server
                 .mock("POST", "/api/v1/checkin")
@@ -1160,7 +1189,10 @@ spec:
         let config_dir = make_test_config_dir();
         let state_dir = tempfile::tempdir().unwrap();
         let _home = cfgd_core::with_test_home_guard(config_dir.path());
-        let _state_env = EnvVarGuard::set("CFGD_STATE_DIR", state_dir.path().to_str().unwrap());
+        let _state_env = EnvVarGuard::set(
+            cfgd_core::CFGD_STATE_DIR_ENV,
+            state_dir.path().to_str().unwrap(),
+        );
 
         let mut server = mockito::Server::new();
         // The retry logic retries 500s, so allow at least 2 hits.
@@ -1233,7 +1265,10 @@ spec:
 
         let state_dir = tempfile::tempdir().unwrap();
         let _home = cfgd_core::with_test_home_guard(config_dir.path());
-        let _state_env = EnvVarGuard::set("CFGD_STATE_DIR", state_dir.path().to_str().unwrap());
+        let _state_env = EnvVarGuard::set(
+            cfgd_core::CFGD_STATE_DIR_ENV,
+            state_dir.path().to_str().unwrap(),
+        );
 
         // Spelled out rather than read back through the merge under test: the
         // expectation is the map a reader of the two YAML files above would
@@ -1314,13 +1349,16 @@ spec:
 
     impl TwoSenderMachine {
         fn new() -> Self {
-            let allow = EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+            let allow = EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
             let (workspace, config_dir, state_dir, destination) =
                 cfgd_test_fixtures::violating_backup_source_setup();
             let cache_dir = tempfile::tempdir().unwrap();
             let root = config_dir.path().to_path_buf();
             let home = cfgd_core::with_test_home_guard(&root);
-            let state_env = EnvVarGuard::set("CFGD_STATE_DIR", state_dir.path().to_str().unwrap());
+            let state_env = EnvVarGuard::set(
+                cfgd_core::CFGD_STATE_DIR_ENV,
+                state_dir.path().to_str().unwrap(),
+            );
 
             let posted =
                 std::sync::Arc::new(std::sync::Mutex::new(Vec::<serde_json::Value>::new()));

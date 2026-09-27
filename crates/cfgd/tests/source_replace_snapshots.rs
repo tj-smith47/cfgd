@@ -71,7 +71,8 @@ use cfgd_core::output::test_capture::strip_spinner_duration;
 #[test]
 #[serial]
 fn source_replace_happy_human() {
-    let _allow = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _allow =
+        cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
     let (config_dir, state_dir) = source_test_config_setup();
     let bare_root = tempfile::tempdir().unwrap();
     let bare_old = make_bare_source_repo(bare_root.path(), "replace-old", None);
@@ -139,7 +140,8 @@ fn source_replace_happy_human() {
 #[test]
 #[serial]
 fn source_replace_carries_every_subscription_field() {
-    let _allow = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _allow =
+        cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
     let (config_dir, state_dir) = source_test_config_setup();
     let bare_root = tempfile::tempdir().unwrap();
     let bare_old = make_bare_source_repo(bare_root.path(), "carry-old", None);

@@ -144,7 +144,8 @@ fn source_update_no_sources_human() {
 #[test]
 #[serial]
 fn source_update_source_failure_human() {
-    let _disallow = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_ALLOW_LOCAL_SOURCES");
+    let _disallow =
+        cfgd_core::test_helpers::EnvVarGuard::unset(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV);
     let (config_dir, state_dir) = common::unreachable_source_setup();
 
     let cli = cli_for(config_dir.path(), state_dir.path());
@@ -198,7 +199,8 @@ fn source_update_source_failure_human() {
 #[test]
 #[serial]
 fn source_update_failed_fetch_still_writes_the_knob_human() {
-    let _disallow = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_ALLOW_LOCAL_SOURCES");
+    let _disallow =
+        cfgd_core::test_helpers::EnvVarGuard::unset(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV);
     let (config_dir, state_dir) = common::unreachable_source_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
@@ -246,7 +248,8 @@ fn source_update_failed_fetch_still_writes_the_knob_human() {
 #[test]
 #[serial]
 fn source_update_failed_fetch_still_writes_the_knob_json() {
-    let _disallow = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_ALLOW_LOCAL_SOURCES");
+    let _disallow =
+        cfgd_core::test_helpers::EnvVarGuard::unset(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV);
     let (config_dir, state_dir) = common::unreachable_source_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
@@ -303,7 +306,8 @@ fn source_update_not_found_human() {
 #[test]
 #[serial]
 fn source_update_happy_human() {
-    let _allow = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _allow =
+        cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
     let (config_dir, state_dir) = source_test_config_setup();
     let bare_root = tempfile::tempdir().unwrap();
     let bare = make_bare_source_repo(bare_root.path(), "upd-src", None);
@@ -340,7 +344,8 @@ fn source_update_happy_human() {
 #[test]
 #[serial]
 fn source_update_trust_knob_hints_the_sync_that_meets_it_human() {
-    let _allow = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _allow =
+        cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
     let (config_dir, state_dir) = source_test_config_setup();
     let bare_root = tempfile::tempdir().unwrap();
     let bare = make_bare_source_repo(bare_root.path(), "trust-src", None);
@@ -388,7 +393,8 @@ fn source_update_trust_knob_hints_the_sync_that_meets_it_human() {
 #[test]
 #[serial]
 fn source_update_happy_json() {
-    let _allow = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _allow =
+        cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
     let (config_dir, state_dir) = source_test_config_setup();
     let bare_root = tempfile::tempdir().unwrap();
     let bare = make_bare_source_repo(bare_root.path(), "upd-src", None);
@@ -421,7 +427,8 @@ fn perm_change_fixture(
     tempfile::TempDir,
     std::path::PathBuf,
 ) {
-    let _allow = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _allow =
+        cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
     let (config_dir, state_dir) = source_test_config_setup();
     let bare_root = tempfile::tempdir().unwrap();
     let bare = make_bare_source_repo(bare_root.path(), source_name, None);
@@ -447,7 +454,8 @@ fn perm_change_fixture(
 #[test]
 #[serial]
 fn source_update_accept_human() {
-    let _allow = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _allow =
+        cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
     let (config_dir, state_dir, bare_root, bare) = perm_change_fixture("accept-src");
 
     let cli = cli_for(config_dir.path(), state_dir.path());
@@ -492,7 +500,8 @@ fn source_update_accept_human() {
 #[test]
 #[serial]
 fn source_update_rejection_human() {
-    let _allow = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _allow =
+        cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
     let (config_dir, state_dir, bare_root, bare) = perm_change_fixture("reject-src");
 
     let cli = cli_for(config_dir.path(), state_dir.path());
@@ -522,7 +531,8 @@ fn source_update_rejection_human() {
 #[test]
 #[serial]
 fn source_update_bridge_one_blank_line() {
-    let _allow = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _allow =
+        cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
     let (config_dir, state_dir) = source_test_config_setup();
     let bare_root = tempfile::tempdir().unwrap();
     let bare = make_bare_source_repo(bare_root.path(), "bridge-upd", None);

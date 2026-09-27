@@ -13,7 +13,7 @@ fn sign_artifact_rejects_when_cosign_missing() {
     // Declared before the PATH override so it drops last, bracketing the
     // empty-PATH window against concurrent script-interpreter spawns.
     let _spawn_excl = crate::test_helpers::path_env_mutation_guard();
-    let _g = EnvVarGuard::unset("CFGD_COSIGN_BIN");
+    let _g = EnvVarGuard::unset(crate::COSIGN_BIN_ENV);
     let _path = EnvVarGuard::set("PATH", "");
     let result = sign_artifact("ghcr.io/test/mod:v1", None);
     assert!(matches!(result, Err(OciError::ToolNotFound { .. })));
@@ -36,7 +36,7 @@ fn verify_signature_rejects_keyless_without_identity() {
 #[serial_test::serial]
 fn verify_signature_rejects_when_cosign_missing() {
     let _spawn_excl = crate::test_helpers::path_env_mutation_guard();
-    let _g = EnvVarGuard::unset("CFGD_COSIGN_BIN");
+    let _g = EnvVarGuard::unset(crate::COSIGN_BIN_ENV);
     let _path = EnvVarGuard::set("PATH", "");
     let result = verify_signature(
         "ghcr.io/test/mod:v1",
@@ -55,7 +55,7 @@ fn verify_signature_rejects_when_cosign_missing() {
 #[serial_test::serial]
 fn attach_attestation_rejects_when_cosign_missing() {
     let _spawn_excl = crate::test_helpers::path_env_mutation_guard();
-    let _g = EnvVarGuard::unset("CFGD_COSIGN_BIN");
+    let _g = EnvVarGuard::unset(crate::COSIGN_BIN_ENV);
     let _path = EnvVarGuard::set("PATH", "");
     let result = attach_attestation("ghcr.io/test/mod:v1", "provenance.json", None);
     assert!(matches!(result, Err(OciError::ToolNotFound { .. })));
@@ -79,7 +79,7 @@ fn verify_attestation_rejects_keyless_without_identity() {
 #[serial_test::serial]
 fn verify_attestation_rejects_when_cosign_missing() {
     let _spawn_excl = crate::test_helpers::path_env_mutation_guard();
-    let _g = EnvVarGuard::unset("CFGD_COSIGN_BIN");
+    let _g = EnvVarGuard::unset(crate::COSIGN_BIN_ENV);
     let _path = EnvVarGuard::set("PATH", "");
     let result = verify_attestation(
         "ghcr.io/test/mod:v1",
@@ -841,7 +841,7 @@ mod fake_cosign {
         let bin = dir.path().join("fake-cosign-noexec");
         // Mode 0o644 — a real file (passes require_cosign) that cannot be exec'd.
         std::fs::write(&bin, "not an executable\n").expect("write file");
-        let guard = EnvVarGuard::set("CFGD_COSIGN_BIN", bin.to_str().unwrap());
+        let guard = EnvVarGuard::set(crate::COSIGN_BIN_ENV, bin.to_str().unwrap());
         (guard, dir)
     }
 
@@ -1088,7 +1088,7 @@ fn a_registry_cosign_could_not_reach_is_not_a_verdict() {
 #[serial_test::serial]
 fn a_missing_cosign_is_not_a_verdict() {
     let _spawn_excl = crate::test_helpers::path_env_mutation_guard();
-    let _g = EnvVarGuard::unset("CFGD_COSIGN_BIN");
+    let _g = EnvVarGuard::unset(crate::COSIGN_BIN_ENV);
     let _path = EnvVarGuard::set("PATH", "");
     let check = check_signature(
         "ghcr.io/myorg/mod:v1",

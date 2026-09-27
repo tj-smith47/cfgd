@@ -40,10 +40,10 @@ mod parsers;
 mod pipx;
 mod scoop;
 mod scripted;
-mod shared;
-mod simple;
+pub(crate) mod shared;
+pub(crate) mod simple;
 mod snap;
-mod versions;
+pub(crate) mod versions;
 mod winget;
 
 pub use brew::{BrewCaskManager, BrewManager, BrewTapManager};

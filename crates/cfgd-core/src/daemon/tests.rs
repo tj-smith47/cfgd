@@ -1805,8 +1805,10 @@ async fn a_daemon_on_a_foreign_config_mints_no_decisions_into_the_default_store(
     let staging = tempfile::tempdir().unwrap();
     let _home = crate::with_test_home_guard(staging.path());
     let cache_root = staging.path().join("cache-root").join("cfgd");
-    let _cache =
-        crate::test_helpers::EnvVarGuard::set("CFGD_CACHE_DIR", cache_root.to_str().unwrap());
+    let _cache = crate::test_helpers::EnvVarGuard::set(
+        crate::CFGD_CACHE_DIR_ENV,
+        cache_root.to_str().unwrap(),
+    );
     stage_cached_source(
         &cache_root,
         "acme",
@@ -10362,8 +10364,10 @@ async fn auto_apply_tick_withholds_the_resources_awaiting_a_source_decision() {
     // not be a source whose undecided items suddenly apply.
     let cache_root = tmp.path().join("cache-root-empty").join("cfgd");
     std::fs::create_dir_all(&cache_root).unwrap();
-    let _cache =
-        crate::test_helpers::EnvVarGuard::set("CFGD_CACHE_DIR", cache_root.to_str().unwrap());
+    let _cache = crate::test_helpers::EnvVarGuard::set(
+        crate::CFGD_CACHE_DIR_ENV,
+        cache_root.to_str().unwrap(),
+    );
 
     let state_dir = tmp.path().join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
@@ -10612,8 +10616,10 @@ async fn a_tick_that_cannot_record_a_decision_still_withholds_the_item() {
     let _g = crate::with_test_home_guard(tmp.path());
     let cache_root = tmp.path().join("cache-root").join("cfgd");
     std::fs::create_dir_all(&cache_root).unwrap();
-    let _cache =
-        crate::test_helpers::EnvVarGuard::set("CFGD_CACHE_DIR", cache_root.to_str().unwrap());
+    let _cache = crate::test_helpers::EnvVarGuard::set(
+        crate::CFGD_CACHE_DIR_ENV,
+        cache_root.to_str().unwrap(),
+    );
     // `acme` delivers `bat` on a recommended layer; the config sets no policy,
     // so the item falls to `newRecommended`'s `Notify` default and must be
     // asked about before it installs.
@@ -10786,8 +10792,10 @@ async fn secret_env_tick_leaks(seed_pending_decision: bool) -> Vec<PathBuf> {
     // variable, not about one the operator declared for themselves.
     let cache_root = tmp.path().join("cache-root").join("cfgd");
     std::fs::create_dir_all(&cache_root).unwrap();
-    let _cache =
-        crate::test_helpers::EnvVarGuard::set("CFGD_CACHE_DIR", cache_root.to_str().unwrap());
+    let _cache = crate::test_helpers::EnvVarGuard::set(
+        crate::CFGD_CACHE_DIR_ENV,
+        cache_root.to_str().unwrap(),
+    );
     stage_cached_source(
         &cache_root,
         "acme",
@@ -15565,8 +15573,10 @@ spec:
         let _g = crate::with_test_home_guard(tmp.path());
         let cache_root = tmp.path().join("cache-root-empty").join("cfgd");
         std::fs::create_dir_all(&cache_root).unwrap();
-        let _cache =
-            crate::test_helpers::EnvVarGuard::set("CFGD_CACHE_DIR", cache_root.to_str().unwrap());
+        let _cache = crate::test_helpers::EnvVarGuard::set(
+            crate::CFGD_CACHE_DIR_ENV,
+            cache_root.to_str().unwrap(),
+        );
 
         let work = clone_with_pending_upstream_commit(&tmp);
         let config_path = write_sync_apply_fixture(
@@ -15980,7 +15990,7 @@ spec: {}
     #[serial_test::serial]
     #[serial_test::serial(tracing_dispatcher)]
     fn a_daemon_tick_takes_no_floor_route_even_with_cfgd_yes_exported() {
-        let _yes = crate::test_helpers::EnvVarGuard::set("CFGD_YES", "1");
+        let _yes = crate::test_helpers::EnvVarGuard::set(crate::CFGD_YES_ENV, "1");
         crate::test_helpers::reset_tracing_journal();
         let tmp = tempfile::TempDir::new().unwrap();
         let _g = crate::with_test_home_guard(tmp.path());
@@ -16048,7 +16058,8 @@ spec: {}
         // exactly like `build_pre_loop_setup` resolves a source's checkout. A
         // module whose file lives at a git URL must be fetched under the
         // CALLER's `--cache-dir`, never the ignored scope default.
-        let _guard = crate::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _guard =
+            crate::test_helpers::EnvVarGuard::set(crate::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
         let tmp = tempfile::TempDir::new().unwrap();
         let _g = crate::with_test_home_guard(tmp.path());
 
@@ -16501,7 +16512,8 @@ spec: {}
             .with_body(r#"{"tag_name": "v999.0.0", "assets": []}"#)
             .create_async()
             .await;
-        let _api = crate::test_helpers::EnvVarGuard::set("CFGD_GITHUB_API_BASE", &server.url());
+        let _api =
+            crate::test_helpers::EnvVarGuard::set(crate::CFGD_GITHUB_API_BASE_ENV, &server.url());
 
         let state = drive_version_check(tmp.path().to_path_buf(), &notify_update_cfg()).await;
 
@@ -16521,7 +16533,7 @@ spec: {}
         let tmp = tempfile::TempDir::new().unwrap();
         let runtime = tempfile::TempDir::new().unwrap();
         let _rt = crate::test_helpers::EnvVarGuard::set(
-            "CFGD_RUNTIME_DIR",
+            crate::CFGD_RUNTIME_DIR_ENV,
             &runtime.path().to_string_lossy(),
         );
 
@@ -16540,7 +16552,8 @@ spec: {}
             .with_body(format!(r#"{{"tag_name": "{tag}", "assets": []}}"#))
             .create_async()
             .await;
-        let _api = crate::test_helpers::EnvVarGuard::set("CFGD_GITHUB_API_BASE", &server.url());
+        let _api =
+            crate::test_helpers::EnvVarGuard::set(crate::CFGD_GITHUB_API_BASE_ENV, &server.url());
 
         let state = drive_version_check(tmp.path().to_path_buf(), &notify_update_cfg()).await;
 
@@ -16568,7 +16581,8 @@ spec: {}
             .with_body(format!(r#"{{"tag_name": "{tag}", "assets": []}}"#))
             .create_async()
             .await;
-        let _api = crate::test_helpers::EnvVarGuard::set("CFGD_GITHUB_API_BASE", &server.url());
+        let _api =
+            crate::test_helpers::EnvVarGuard::set(crate::CFGD_GITHUB_API_BASE_ENV, &server.url());
 
         let state = drive_version_check(tmp.path().to_path_buf(), &notify_update_cfg()).await;
 
@@ -16603,7 +16617,7 @@ spec: {}
         let tmp = tempfile::TempDir::new().unwrap();
         let runtime = tempfile::TempDir::new().unwrap();
         let _rt = crate::test_helpers::EnvVarGuard::set(
-            "CFGD_RUNTIME_DIR",
+            crate::CFGD_RUNTIME_DIR_ENV,
             &runtime.path().to_string_lossy(),
         );
         {
@@ -16699,7 +16713,10 @@ spec: {}
                 .expect(requests)
                 .create_async()
                 .await;
-            let api = crate::test_helpers::EnvVarGuard::set("CFGD_GITHUB_API_BASE", &server.url());
+            let api = crate::test_helpers::EnvVarGuard::set(
+                crate::CFGD_GITHUB_API_BASE_ENV,
+                &server.url(),
+            );
             let (mut ctx, state, _buf) = make_test_ctx(&tmp, false, false, None);
             ctx.config_path = tmp.path().join("cfgd.yaml");
             ctx.update_policy_override = override_policy;
@@ -16815,7 +16832,7 @@ spec: {}
         // resolver returns `Err` before consulting `directories::BaseDirs`, so
         // the fallback is exercised regardless of the runner's XDG layout or a
         // systemd-launched `STATE_DIRECTORY`.
-        let _cfgd = EnvVarGuard::unset("CFGD_STATE_DIR");
+        let _cfgd = EnvVarGuard::unset(crate::CFGD_STATE_DIR_ENV);
         let _systemd = EnvVarGuard::unset("STATE_DIRECTORY");
         let _home = EnvVarGuard::unset("HOME");
         let _userprofile = EnvVarGuard::unset("USERPROFILE");
@@ -16846,7 +16863,7 @@ spec: {}
         // tier above the home-based resolution and install no test-home
         // override, so resolution always fails and the warning always fires.
         use crate::test_helpers::EnvVarGuard;
-        let _cfgd = EnvVarGuard::unset("CFGD_STATE_DIR");
+        let _cfgd = EnvVarGuard::unset(crate::CFGD_STATE_DIR_ENV);
         let _systemd = EnvVarGuard::unset("STATE_DIRECTORY");
         let _home = EnvVarGuard::unset("HOME");
         let _userprofile = EnvVarGuard::unset("USERPROFILE");
@@ -16882,8 +16899,8 @@ spec: {}
     #[serial_test::serial]
     fn run_daemon_with_system_scope_ipc_resolves_fhs() {
         use crate::test_helpers::EnvVarGuard;
-        let _ipc = EnvVarGuard::unset("CFGD_DAEMON_IPC_PATH");
-        let _runtime = EnvVarGuard::unset("CFGD_RUNTIME_DIR");
+        let _ipc = EnvVarGuard::unset(crate::CFGD_DAEMON_IPC_PATH_ENV);
+        let _runtime = EnvVarGuard::unset(crate::CFGD_RUNTIME_DIR_ENV);
         let _xdg = EnvVarGuard::unset("XDG_RUNTIME_DIR");
         let _runtime_dir = EnvVarGuard::unset("RUNTIME_DIRECTORY");
 
@@ -16908,8 +16925,8 @@ spec: {}
     #[serial_test::serial]
     fn run_daemon_with_system_scope_ipc_resolves_application_support() {
         use crate::test_helpers::EnvVarGuard;
-        let _ipc = EnvVarGuard::unset("CFGD_DAEMON_IPC_PATH");
-        let _runtime = EnvVarGuard::unset("CFGD_RUNTIME_DIR");
+        let _ipc = EnvVarGuard::unset(crate::CFGD_DAEMON_IPC_PATH_ENV);
+        let _runtime = EnvVarGuard::unset(crate::CFGD_RUNTIME_DIR_ENV);
 
         let overrides = super::super::DaemonRunOverrides {
             scope: crate::Scope::System,
@@ -16932,7 +16949,7 @@ spec: {}
     #[serial_test::serial]
     fn init_daemon_state_with_warning_system_scope_uses_fhs_state_dir() {
         use crate::test_helpers::EnvVarGuard;
-        let _cfgd = EnvVarGuard::unset("CFGD_STATE_DIR");
+        let _cfgd = EnvVarGuard::unset(crate::CFGD_STATE_DIR_ENV);
         let _systemd = EnvVarGuard::unset("STATE_DIRECTORY");
         let _home = EnvVarGuard::unset("HOME");
         let _userprofile = EnvVarGuard::unset("USERPROFILE");
@@ -16952,7 +16969,7 @@ spec: {}
     #[serial_test::serial]
     fn init_daemon_state_with_warning_system_scope_uses_application_support_state_dir() {
         use crate::test_helpers::EnvVarGuard;
-        let _cfgd = EnvVarGuard::unset("CFGD_STATE_DIR");
+        let _cfgd = EnvVarGuard::unset(crate::CFGD_STATE_DIR_ENV);
         let _systemd = EnvVarGuard::unset("STATE_DIRECTORY");
 
         let (st, _warning) =
@@ -16970,7 +16987,7 @@ spec: {}
     #[serial_test::serial]
     fn init_daemon_state_with_warning_system_scope_uses_program_data_state_dir() {
         use crate::test_helpers::EnvVarGuard;
-        let _cfgd = EnvVarGuard::unset("CFGD_STATE_DIR");
+        let _cfgd = EnvVarGuard::unset(crate::CFGD_STATE_DIR_ENV);
 
         let expected = crate::program_data_dir().join("cfgd").join("state");
         let (st, _warning) =
@@ -17286,7 +17303,7 @@ spec: {}
         // (env) outranks the thread-local override, so a concurrently mutating
         // test could redirect resolution out from under these assertions.
         let tmp = tempfile::TempDir::new().unwrap();
-        let _sd = crate::test_helpers::EnvVarGuard::unset("CFGD_STATE_DIR");
+        let _sd = crate::test_helpers::EnvVarGuard::unset(crate::CFGD_STATE_DIR_ENV);
         let _sysd = crate::test_helpers::EnvVarGuard::unset("STATE_DIRECTORY");
         let _g = crate::with_test_home_guard(tmp.path());
         let resolved_state = crate::state::default_state_dir().unwrap();
@@ -18997,8 +19014,10 @@ async fn handle_reconcile_constraint_violation_skips_tick_and_preserves_source_p
     // is honored only by the Linux `directories` backend — so pin the cache root
     // with `CFGD_CACHE_DIR` to stay correct on Linux, macOS, and Windows.
     let cache_root = tmp.path().join("cache-root").join("cfgd");
-    let _cache =
-        crate::test_helpers::EnvVarGuard::set("CFGD_CACHE_DIR", cache_root.to_str().unwrap());
+    let _cache = crate::test_helpers::EnvVarGuard::set(
+        crate::CFGD_CACHE_DIR_ENV,
+        cache_root.to_str().unwrap(),
+    );
     stage_constraint_violating_cached_source(&cache_root, "test-src");
 
     let state_dir = tmp.path().join("state");
@@ -19157,8 +19176,10 @@ async fn handle_reconcile_never_synced_source_reconciles_local_only() {
     // every-platform `CFGD_CACHE_DIR` short-circuit instead.
     let cache_root = tmp.path().join("cache-root-empty").join("cfgd");
     std::fs::create_dir_all(&cache_root).unwrap();
-    let _cache =
-        crate::test_helpers::EnvVarGuard::set("CFGD_CACHE_DIR", cache_root.to_str().unwrap());
+    let _cache = crate::test_helpers::EnvVarGuard::set(
+        crate::CFGD_CACHE_DIR_ENV,
+        cache_root.to_str().unwrap(),
+    );
 
     let state_dir = tmp.path().join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
@@ -19223,8 +19244,10 @@ async fn handle_reconcile_required_uncached_source_skips_tick_and_preserves_pack
     // short-circuit instead.
     let cache_root = tmp.path().join("cache-root-empty").join("cfgd");
     std::fs::create_dir_all(&cache_root).unwrap();
-    let _cache =
-        crate::test_helpers::EnvVarGuard::set("CFGD_CACHE_DIR", cache_root.to_str().unwrap());
+    let _cache = crate::test_helpers::EnvVarGuard::set(
+        crate::CFGD_CACHE_DIR_ENV,
+        cache_root.to_str().unwrap(),
+    );
 
     let state_dir = tmp.path().join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
@@ -19411,8 +19434,10 @@ async fn a_tick_renotifies_a_changed_source_and_stays_silent_on_an_unchanged_one
     // only by the Linux `directories` backend, so pin the cache root with the
     // process-global, every-platform `CFGD_CACHE_DIR` short-circuit.
     let cache_root = tmp.path().join("cache-root").join("cfgd");
-    let _cache =
-        crate::test_helpers::EnvVarGuard::set("CFGD_CACHE_DIR", cache_root.to_str().unwrap());
+    let _cache = crate::test_helpers::EnvVarGuard::set(
+        crate::CFGD_CACHE_DIR_ENV,
+        cache_root.to_str().unwrap(),
+    );
     stage_cached_source(
         &cache_root,
         "acme",
@@ -19520,7 +19545,7 @@ mod ipc_socket_security {
     #[test]
     #[serial_test::serial]
     fn resolve_default_ipc_path_env_override_wins() {
-        let _g = EnvVarGuard::set("CFGD_DAEMON_IPC_PATH", "/custom/cfgd.sock");
+        let _g = EnvVarGuard::set(crate::CFGD_DAEMON_IPC_PATH_ENV, "/custom/cfgd.sock");
         assert_eq!(
             resolve_default_ipc_path(None, crate::Scope::User),
             std::path::PathBuf::from("/custom/cfgd.sock")
@@ -19531,7 +19556,7 @@ mod ipc_socket_security {
     #[test]
     #[serial_test::serial]
     fn resolve_default_ipc_path_uses_xdg_runtime_dir_when_set() {
-        let _unset_override = EnvVarGuard::unset("CFGD_DAEMON_IPC_PATH");
+        let _unset_override = EnvVarGuard::unset(crate::CFGD_DAEMON_IPC_PATH_ENV);
         let _xdg = EnvVarGuard::set("XDG_RUNTIME_DIR", "/tmp/test-xdg");
         assert_eq!(
             resolve_default_ipc_path(None, crate::Scope::User),
@@ -19543,7 +19568,7 @@ mod ipc_socket_security {
     #[test]
     #[serial_test::serial]
     fn resolve_default_ipc_path_falls_back_to_home_cache_when_xdg_unset_linux() {
-        let _unset_override = EnvVarGuard::unset("CFGD_DAEMON_IPC_PATH");
+        let _unset_override = EnvVarGuard::unset(crate::CFGD_DAEMON_IPC_PATH_ENV);
         let _unset_xdg = EnvVarGuard::unset("XDG_RUNTIME_DIR");
         let tmp = tempfile::tempdir().unwrap();
         let _home = EnvVarGuard::set("HOME", tmp.path().to_str().unwrap());
@@ -19564,7 +19589,7 @@ mod ipc_socket_security {
     #[test]
     #[serial_test::serial]
     fn resolve_default_ipc_path_windows_scope_selects_distinct_pipe() {
-        let _unset_override = EnvVarGuard::unset("CFGD_DAEMON_IPC_PATH");
+        let _unset_override = EnvVarGuard::unset(crate::CFGD_DAEMON_IPC_PATH_ENV);
         let user = resolve_default_ipc_path(None, crate::Scope::User);
         let system = resolve_default_ipc_path(None, crate::Scope::System);
         assert_eq!(user, std::path::PathBuf::from(r"\\.\pipe\cfgd"));
@@ -19579,7 +19604,7 @@ mod ipc_socket_security {
     #[test]
     #[serial_test::serial]
     fn resolve_default_ipc_path_uses_application_support_on_macos() {
-        let _unset_override = EnvVarGuard::unset("CFGD_DAEMON_IPC_PATH");
+        let _unset_override = EnvVarGuard::unset(crate::CFGD_DAEMON_IPC_PATH_ENV);
         let tmp = tempfile::tempdir().unwrap();
         let _home = EnvVarGuard::set("HOME", tmp.path().to_str().unwrap());
         let expected = tmp
@@ -20183,7 +20208,7 @@ mod ipc_socket_security {
             }
         });
 
-        let _g = EnvVarGuard::set("CFGD_DAEMON_IPC_PATH", sock_path.to_str().unwrap());
+        let _g = EnvVarGuard::set(crate::CFGD_DAEMON_IPC_PATH_ENV, sock_path.to_str().unwrap());
         let result = tokio::task::spawn_blocking(|| query_daemon_status(None, crate::Scope::User))
             .await
             .unwrap();
@@ -20217,7 +20242,10 @@ mod query_daemon_status_paths {
     fn query_daemon_status_returns_none_when_socket_path_missing() {
         let tmp = tempfile::tempdir().unwrap();
         let nonexistent = tmp.path().join("nope.sock");
-        let _g = EnvVarGuard::set("CFGD_DAEMON_IPC_PATH", nonexistent.to_str().unwrap());
+        let _g = EnvVarGuard::set(
+            crate::CFGD_DAEMON_IPC_PATH_ENV,
+            nonexistent.to_str().unwrap(),
+        );
         let result =
             query_daemon_status(None, crate::Scope::User).expect("missing socket must not error");
         assert!(
@@ -20276,7 +20304,7 @@ mod query_daemon_status_paths {
             }
         });
 
-        let _g = EnvVarGuard::set("CFGD_DAEMON_IPC_PATH", sock_path.to_str().unwrap());
+        let _g = EnvVarGuard::set(crate::CFGD_DAEMON_IPC_PATH_ENV, sock_path.to_str().unwrap());
         let result = tokio::task::spawn_blocking(|| query_daemon_status(None, crate::Scope::User))
             .await
             .unwrap();
@@ -20318,7 +20346,7 @@ mod query_daemon_status_paths {
             }
         });
 
-        let _g = EnvVarGuard::set("CFGD_DAEMON_IPC_PATH", sock_path.to_str().unwrap());
+        let _g = EnvVarGuard::set(crate::CFGD_DAEMON_IPC_PATH_ENV, sock_path.to_str().unwrap());
         let result = tokio::task::spawn_blocking(|| query_daemon_status(None, crate::Scope::User))
             .await
             .unwrap();
@@ -20364,7 +20392,7 @@ mod query_daemon_status_paths {
             }
         });
 
-        let _g = EnvVarGuard::set("CFGD_DAEMON_IPC_PATH", sock_path.to_str().unwrap());
+        let _g = EnvVarGuard::set(crate::CFGD_DAEMON_IPC_PATH_ENV, sock_path.to_str().unwrap());
         let result = tokio::task::spawn_blocking(|| query_daemon_status(None, crate::Scope::User))
             .await
             .unwrap();
@@ -20736,7 +20764,7 @@ mod handle_reconcile_extra_branches {
         // the file is removed.
         let pending_root = tempfile::tempdir().unwrap();
         let _g = crate::test_helpers::EnvVarGuard::set(
-            "CFGD_STATE_DIR",
+            crate::CFGD_STATE_DIR_ENV,
             pending_root.path().to_str().unwrap(),
         );
 
@@ -20954,7 +20982,8 @@ mod tests_run_daemon_wrapper {
     #[serial_test::serial]
     fn cli_run_overrides_carry_the_state_dir_and_runtime_dir_flags() {
         use crate::daemon::cli_run_overrides;
-        let _unset_override = crate::test_helpers::EnvVarGuard::unset("CFGD_DAEMON_IPC_PATH");
+        let _unset_override =
+            crate::test_helpers::EnvVarGuard::unset(crate::CFGD_DAEMON_IPC_PATH_ENV);
         let state = PathBuf::from("/srv/cfgd-state");
         let runtime = PathBuf::from("/srv/cfgd-run");
         let cache = PathBuf::from("/srv/cfgd-cache");
@@ -22914,7 +22943,7 @@ mod backup_timers {
     ) -> (PathBuf, crate::test_helpers::EnvVarGuard) {
         let cache_root = tmp.path().join(".cache").join("cfgd");
         let guard = crate::test_helpers::EnvVarGuard::set(
-            "CFGD_CACHE_DIR",
+            crate::CFGD_CACHE_DIR_ENV,
             cache_root.to_str().expect("utf-8 cache root"),
         );
         let cache = cache_root.join("sources").join("team");
@@ -23932,8 +23961,10 @@ async fn a_touched_cached_source_profile_re_derives() {
     // the reconcile runs on a blocking worker where the thread-local test home
     // does not reach.
     let cache_root = tmp.path().join("cache-root").join("cfgd");
-    let _cache_env =
-        crate::test_helpers::EnvVarGuard::set("CFGD_CACHE_DIR", cache_root.to_str().unwrap());
+    let _cache_env = crate::test_helpers::EnvVarGuard::set(
+        crate::CFGD_CACHE_DIR_ENV,
+        cache_root.to_str().unwrap(),
+    );
     stage_cached_source(
         &cache_root,
         "test-src",
@@ -24029,8 +24060,10 @@ async fn a_never_synced_source_is_warned_about_on_every_tick() {
     // every platform. The directory is deliberately never created — that is the
     // condition under test.
     let cache_root = tmp.path().join("cache-root").join("cfgd");
-    let _cache_env =
-        crate::test_helpers::EnvVarGuard::set("CFGD_CACHE_DIR", cache_root.to_str().unwrap());
+    let _cache_env = crate::test_helpers::EnvVarGuard::set(
+        crate::CFGD_CACHE_DIR_ENV,
+        cache_root.to_str().unwrap(),
+    );
 
     let state_dir = tmp.path().join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
@@ -24111,8 +24144,10 @@ async fn a_re_pointed_source_origin_re_derives() {
     let tmp = tempfile::tempdir().unwrap();
     let _g = crate::with_test_home_guard(tmp.path());
     let cache_root = tmp.path().join("cache-root").join("cfgd");
-    let _cache_env =
-        crate::test_helpers::EnvVarGuard::set("CFGD_CACHE_DIR", cache_root.to_str().unwrap());
+    let _cache_env = crate::test_helpers::EnvVarGuard::set(
+        crate::CFGD_CACHE_DIR_ENV,
+        cache_root.to_str().unwrap(),
+    );
     stage_cached_source(
         &cache_root,
         "test-src",

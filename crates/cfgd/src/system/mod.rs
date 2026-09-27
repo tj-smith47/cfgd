@@ -10,15 +10,15 @@ pub mod git_config;
 pub use git_config::GitConfigurator;
 
 mod environment;
-mod gsettings;
-mod kde_config;
+pub(crate) mod gsettings;
+pub(crate) mod kde_config;
 mod launch_agent;
-mod macos_defaults;
+pub(crate) mod macos_defaults;
 mod shell;
 mod systemd_unit;
 mod windows_registry;
 mod windows_service;
-mod xfconf;
+pub(crate) mod xfconf;
 
 pub use environment::EnvironmentConfigurator;
 pub use gsettings::GsettingsConfigurator;

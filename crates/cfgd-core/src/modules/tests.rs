@@ -4525,7 +4525,7 @@ fn a_locked_entry_resolves_from_the_cache_with_the_remote_gone() {
     // is nothing a fetch could learn. Removing the upstream after the cache is
     // materialized turns that into a hard assertion — any transfer attempt now
     // fails loudly, so a load that still succeeds is a load that stayed local.
-    let _guard = crate::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _guard = crate::test_helpers::EnvVarGuard::set(crate::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
     // Pinned shut, so the per-repository transfer window cannot be what spared
     // the load its fetch — only resolving the entry by its commit can.
     let _window = crate::test_helpers::GitRefreshWindowGuard::always_expired();

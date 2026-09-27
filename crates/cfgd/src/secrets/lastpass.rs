@@ -8,7 +8,7 @@ use cfgd_core::{command_available_with_seam, tool_cmd};
 
 use super::run_provider_cmd;
 
-const LPASS_BIN_ENV: &str = "CFGD_LPASS_BIN";
+pub const LPASS_BIN_ENV: &str = "CFGD_LPASS_BIN";
 
 pub struct LastPassProvider;
 

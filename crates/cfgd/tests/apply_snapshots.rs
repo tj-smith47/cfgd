@@ -503,7 +503,7 @@ fn apply_phase_tree_human() {
     // Every brew invocation — availability probe, index refresh, install —
     // lands on a shim that exits 0 and says nothing, so the plan and the
     // transcript are the same on a host with brew and a host without.
-    let _brew = cfgd_core::test_helpers::ToolShim::install("CFGD_BREW_BIN", 0, "", "");
+    let _brew = cfgd_core::test_helpers::ToolShim::install(cfgd::seams::BREW_BIN_ENV, 0, "", "");
     let (config_dir, state_dir, target) = profile_with_packages_setup();
 
     let cli = cli_for(config_dir.path(), state_dir.path());
@@ -547,7 +547,8 @@ fn apply_phase_tree_human() {
 #[test]
 #[serial_test::serial]
 fn apply_env_owner_groups_human() {
-    let _systemctl = cfgd_core::test_helpers::ToolShim::install("CFGD_SYSTEMCTL_BIN", 0, "", "");
+    let _systemctl =
+        cfgd_core::test_helpers::ToolShim::install(cfgd_core::SYSTEMCTL_BIN_ENV, 0, "", "");
     // The env targets hang off `$HOME`; an unguarded test home is named after
     // the pid and would not be host-stable.
     let home = tempfile::tempdir().unwrap();

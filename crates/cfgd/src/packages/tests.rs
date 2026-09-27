@@ -1821,10 +1821,7 @@ fn detect_system_method_names_only_a_manager_this_host_can_run() {
     // would be a guaranteed failure. Whichever it picks, the command that
     // would run it must resolve.
     let runnable = |tool: &str| {
-        cfgd_core::command_available_with_seam(
-            &format!("CFGD_{}_BIN", tool.to_uppercase().replace('-', "_")),
-            tool,
-        )
+        cfgd_core::command_available_with_seam(&crate::packages::shared::tool_seam_var(tool), tool)
     };
     // snap's real arms: every Linux mediator, and no FreeBSD port. A manager
     // that declines an arm must never have it named, or the plan binds
@@ -1865,10 +1862,10 @@ fn detect_system_method_names_the_pkg_arm_only_for_a_manager_that_declares_one()
     let _path_excl = cfgd_core::test_helpers::path_env_mutation_guard();
     let _path = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
     let _seams: Vec<_> = [
-        "CFGD_APT_GET_BIN",
-        "CFGD_DNF_BIN",
-        "CFGD_ZYPPER_BIN",
-        "CFGD_PKG_BIN",
+        crate::seams::APT_GET_BIN_ENV,
+        crate::seams::DNF_BIN_ENV,
+        crate::seams::ZYPPER_BIN_ENV,
+        crate::seams::PKG_BIN_ENV,
     ]
     .into_iter()
     .map(cfgd_core::test_helpers::EnvVarGuard::unset)
@@ -1960,15 +1957,25 @@ fn every_mediated_arm_installs_through_its_own_managers_argv() {
         (
             "npm",
             "pacman",
-            "CFGD_PACMAN_BIN",
+            crate::seams::PACMAN_BIN_ENV,
             "-S --noconfirm nodejs npm".into(),
         ),
-        ("npm", "apk", "CFGD_APK_BIN", "add nodejs npm".into()),
-        ("npm", "yum", "CFGD_YUM_BIN", "install -y nodejs npm".into()),
+        (
+            "npm",
+            "apk",
+            crate::seams::APK_BIN_ENV,
+            "add nodejs npm".into(),
+        ),
+        (
+            "npm",
+            "yum",
+            crate::seams::YUM_BIN_ENV,
+            "install -y nodejs npm".into(),
+        ),
         (
             "npm",
             "zypper",
-            "CFGD_ZYPPER_BIN",
+            crate::seams::ZYPPER_BIN_ENV,
             "install -y nodejs24 npm24".into(),
         ),
         (
@@ -1992,14 +1999,14 @@ fn every_mediated_arm_installs_through_its_own_managers_argv() {
         (
             "pipx",
             "pacman",
-            "CFGD_PACMAN_BIN",
+            crate::seams::PACMAN_BIN_ENV,
             "-S --noconfirm python-pipx".into(),
         ),
-        ("pipx", "apk", "CFGD_APK_BIN", "add pipx".into()),
+        ("pipx", "apk", crate::seams::APK_BIN_ENV, "add pipx".into()),
         (
             "pipx",
             "zypper",
-            "CFGD_ZYPPER_BIN",
+            crate::seams::ZYPPER_BIN_ENV,
             "install -y python3-pipx".into(),
         ),
         (
@@ -2012,12 +2019,22 @@ fn every_mediated_arm_installs_through_its_own_managers_argv() {
         (
             "go",
             "pacman",
-            "CFGD_PACMAN_BIN",
+            crate::seams::PACMAN_BIN_ENV,
             "-S --noconfirm go".into(),
         ),
-        ("go", "apk", "CFGD_APK_BIN", "add go".into()),
-        ("go", "yum", "CFGD_YUM_BIN", "install -y golang".into()),
-        ("go", "zypper", "CFGD_ZYPPER_BIN", "install -y go".into()),
+        ("go", "apk", crate::seams::APK_BIN_ENV, "add go".into()),
+        (
+            "go",
+            "yum",
+            crate::seams::YUM_BIN_ENV,
+            "install -y golang".into(),
+        ),
+        (
+            "go",
+            "zypper",
+            crate::seams::ZYPPER_BIN_ENV,
+            "install -y go".into(),
+        ),
         ("go", "winget", "CFGD_WINGET_BIN", winget("GoLang.Go")),
         (
             "go",
@@ -2282,9 +2299,9 @@ fn a_failed_toolchain_step_behind_a_windows_arm_names_rustup_and_not_the_mediato
 fn a_mediator_that_declined_an_arm_refuses_a_plan_naming_it() {
     let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
     for (manager, method, seam) in [
-        ("pipx", "yum", "CFGD_YUM_BIN"),
-        ("cargo", "apt", "CFGD_APT_GET_BIN"),
-        ("cargo", "pkg", "CFGD_PKG_BIN"),
+        ("pipx", "yum", crate::seams::YUM_BIN_ENV),
+        ("cargo", "apt", crate::seams::APT_GET_BIN_ENV),
+        ("cargo", "pkg", crate::seams::PKG_BIN_ENV),
     ] {
         let shim = cfgd_core::test_helpers::ToolShim::install(seam, 0, "", "");
         let (printer, _buf) =
@@ -3192,7 +3209,7 @@ fn simple_manager_available_version_dispatches() {
     // named for. Asserting only that the manager is called "apt" pinned its
     // name, not the pointer.
     let shim = cfgd_core::test_helpers::ToolShim::install(
-        "CFGD_APT_CACHE_BIN",
+        crate::seams::APT_CACHE_BIN_ENV,
         0,
         "vim:\n  Installed: (none)\n  Candidate: 2:9.0.1378-2\n",
         "",
@@ -4696,7 +4713,7 @@ fn brew_path_dirs_through_trait() {
     // `brew_path_dirs` answers from `CFGD_BREW_BIN` when it is set, so the
     // platform arm this pins is only reachable with the seam clear; a sibling
     // test's brew shim is a process-global that would answer in its place.
-    let _no_seam = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_BREW_BIN");
+    let _no_seam = cfgd_core::test_helpers::EnvVarGuard::unset(crate::seams::BREW_BIN_ENV);
     let printer = cfgd_core::test_helpers::test_printer();
     let state = cfgd_core::test_helpers::test_state();
     let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
@@ -5675,7 +5692,7 @@ const MANAGER_RAISE_VERBS: &[(&str, RaiseVerb, OwnRaise)] = &[
     (
         "brew-tap",
         RaiseVerb::None {
-            listing_seam: "CFGD_BREW_BIN",
+            listing_seam: crate::seams::BREW_BIN_ENV,
         },
         OwnRaise::PackageVerb,
     ),
@@ -6072,13 +6089,17 @@ fn silence_every_mediator_but_pkg() -> SilencedMediators {
     let path_excl = cfgd_core::test_helpers::path_env_mutation_guard();
     let path = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
     let brew = cfgd_core::test_helpers::EnvVarGuard::set(
-        "CFGD_BREW_BIN",
+        crate::seams::BREW_BIN_ENV,
         "/nonexistent/cfgd-no-brew-on-this-host",
     );
-    let seams = ["CFGD_APT_GET_BIN", "CFGD_DNF_BIN", "CFGD_PKG_BIN"]
-        .into_iter()
-        .map(cfgd_core::test_helpers::EnvVarGuard::unset)
-        .collect();
+    let seams = [
+        crate::seams::APT_GET_BIN_ENV,
+        crate::seams::DNF_BIN_ENV,
+        crate::seams::PKG_BIN_ENV,
+    ]
+    .into_iter()
+    .map(cfgd_core::test_helpers::EnvVarGuard::unset)
+    .collect();
     SilencedMediators {
         _memo: memo,
         _seams: seams,

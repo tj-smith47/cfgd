@@ -74,7 +74,8 @@ use cfgd_core::output::test_capture::strip_spinner_duration;
 #[test]
 #[serial]
 fn source_add_happy_human() {
-    let _allow = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _allow =
+        cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
     let (config_dir, state_dir) = source_test_config_setup();
     let bare_root = tempfile::tempdir().unwrap();
     let bare = make_bare_source_repo(bare_root.path(), "team-config", None);
@@ -102,7 +103,8 @@ fn source_add_happy_human() {
 #[test]
 #[serial]
 fn source_add_happy_json() {
-    let _allow = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _allow =
+        cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
     let (config_dir, state_dir) = source_test_config_setup();
     let bare_root = tempfile::tempdir().unwrap();
     let bare = make_bare_source_repo(bare_root.path(), "team-config", None);
@@ -124,7 +126,8 @@ fn source_add_happy_json() {
 #[test]
 #[serial]
 fn source_add_already_exists_human() {
-    let _allow = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _allow =
+        cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
     let (config_dir, state_dir) = source_test_config_with_source_setup(
         "team-config",
         "https://github.com/team/config",
@@ -160,7 +163,8 @@ fn source_add_clone_failure_human() {
     // Point cmd_source_add at a non-existent bare repo. SourceManager::load_source
     // fails (git can't open the URL), and cmd_source_add bails after emitting
     // the `load_failed` Doc.
-    let _allow = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _allow =
+        cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
     let (config_dir, state_dir) = source_test_config_setup();
     let bogus_root = tempfile::tempdir().unwrap();
     let bogus = bogus_root.path().join("nonexistent-bare.git");
@@ -204,7 +208,8 @@ fn source_add_bridge_one_blank_line() {
     // has exactly one blank line. Hand-rolled because the Printer captures all
     // human-surface output via the test capture; only that captured surface
     // captured surface here.
-    let _allow = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _allow =
+        cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
     let (config_dir, state_dir) = source_test_config_setup();
     let bare_root = tempfile::tempdir().unwrap();
     let bare = make_bare_source_repo(bare_root.path(), "bridge-src", None);

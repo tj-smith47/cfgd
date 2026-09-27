@@ -183,7 +183,7 @@ fn a_refusal_names_its_fix_end_to_end_with_usage_hints_off() {
 
     let out = cfgd_bin()
         .unwrap()
-        .env("CFGD_USAGE_HINTS", "false")
+        .env(cfgd_core::CFGD_USAGE_HINTS_ENV, "false")
         .args(["module", "show", "nope", "--config"])
         .arg(dir.path().join("cfgd.yaml"))
         .output()

@@ -1093,7 +1093,7 @@ mod cmd_generate_mockito {
         let _api = EnvVarGuard::set("ANTHROPIC_API_KEY", "test-key-abc");
 
         let mut server = mockito::Server::new();
-        let _url = EnvVarGuard::set("CFGD_ANTHROPIC_URL", &server.url());
+        let _url = EnvVarGuard::set(cfgd_core::CFGD_ANTHROPIC_URL_ENV, &server.url());
 
         // Single API turn — text-only response with end_turn breaks the
         // loop after one iteration without spawning any tool dispatch.
@@ -1160,7 +1160,7 @@ mod cmd_generate_mockito {
         let _api = EnvVarGuard::set("ANTHROPIC_API_KEY", "test-key-abc");
 
         let mut server = mockito::Server::new();
-        let _url = EnvVarGuard::set("CFGD_ANTHROPIC_URL", &server.url());
+        let _url = EnvVarGuard::set(cfgd_core::CFGD_ANTHROPIC_URL_ENV, &server.url());
 
         let mock = server
             .mock("POST", "/v1/messages")
@@ -1214,7 +1214,7 @@ mod cmd_generate_mockito {
         let _api = EnvVarGuard::set("ANTHROPIC_API_KEY", "test-key-xyz");
 
         let mut server = mockito::Server::new();
-        let _url = EnvVarGuard::set("CFGD_ANTHROPIC_URL", &server.url());
+        let _url = EnvVarGuard::set(cfgd_core::CFGD_ANTHROPIC_URL_ENV, &server.url());
 
         let turn1 = server
             .mock("POST", "/v1/messages")
@@ -1304,7 +1304,7 @@ mod cmd_generate_mockito {
         let _api = EnvVarGuard::set("ANTHROPIC_API_KEY", "test-key-pyaml");
 
         let mut server = mockito::Server::new();
-        let _url = EnvVarGuard::set("CFGD_ANTHROPIC_URL", &server.url());
+        let _url = EnvVarGuard::set(cfgd_core::CFGD_ANTHROPIC_URL_ENV, &server.url());
 
         let turn1 = server
             .mock("POST", "/v1/messages")
@@ -1392,7 +1392,7 @@ mod cmd_generate_mockito {
         let _api = EnvVarGuard::set("ANTHROPIC_API_KEY", "test-key-xyz");
 
         let mut server = mockito::Server::new();
-        let _url = EnvVarGuard::set("CFGD_ANTHROPIC_URL", &server.url());
+        let _url = EnvVarGuard::set(cfgd_core::CFGD_ANTHROPIC_URL_ENV, &server.url());
 
         // A mock that MUST NOT fire — if the consent path failed open and
         // an HTTP call went out, this would record a hit. This asserts below
@@ -1528,7 +1528,7 @@ mod cmd_generate_mockito {
             .expect("git config name must succeed");
 
         let mut server = mockito::Server::new();
-        let _url = EnvVarGuard::set("CFGD_ANTHROPIC_URL", &server.url());
+        let _url = EnvVarGuard::set(cfgd_core::CFGD_ANTHROPIC_URL_ENV, &server.url());
 
         let turn1 = server
             .mock("POST", "/v1/messages")
@@ -1637,7 +1637,7 @@ mod cmd_generate_mockito {
         let _api = EnvVarGuard::set("ANTHROPIC_API_KEY", "test-key-prof");
 
         let mut server = mockito::Server::new();
-        let _url = EnvVarGuard::set("CFGD_ANTHROPIC_URL", &server.url());
+        let _url = EnvVarGuard::set(cfgd_core::CFGD_ANTHROPIC_URL_ENV, &server.url());
 
         let mock = server
             .mock("POST", "/v1/messages")
@@ -1688,7 +1688,7 @@ mod cmd_generate_mockito {
         let _api = EnvVarGuard::set("ANTHROPIC_API_KEY", "test-key-err");
 
         let mut server = mockito::Server::new();
-        let _url = EnvVarGuard::set("CFGD_ANTHROPIC_URL", &server.url());
+        let _url = EnvVarGuard::set(cfgd_core::CFGD_ANTHROPIC_URL_ENV, &server.url());
 
         let turn1 = server
             .mock("POST", "/v1/messages")
@@ -1758,7 +1758,7 @@ mod cmd_generate_mockito {
         let _api = EnvVarGuard::set("ANTHROPIC_API_KEY", "test-key-abort");
 
         let mut server = mockito::Server::new();
-        let _url = EnvVarGuard::set("CFGD_ANTHROPIC_URL", &server.url());
+        let _url = EnvVarGuard::set(cfgd_core::CFGD_ANTHROPIC_URL_ENV, &server.url());
 
         let must_not_fire = server
             .mock("POST", "/v1/messages")
@@ -1828,7 +1828,7 @@ mod cmd_generate_mockito {
             .expect("git config name");
 
         let mut server = mockito::Server::new();
-        let _url = EnvVarGuard::set("CFGD_ANTHROPIC_URL", &server.url());
+        let _url = EnvVarGuard::set(cfgd_core::CFGD_ANTHROPIC_URL_ENV, &server.url());
 
         let turn1 = server
             .mock("POST", "/v1/messages")
@@ -1939,7 +1939,7 @@ mod cmd_generate_mockito {
         let _api = EnvVarGuard::set("ANTHROPIC_API_KEY", "test-key-nocommit");
 
         let mut server = mockito::Server::new();
-        let _url = EnvVarGuard::set("CFGD_ANTHROPIC_URL", &server.url());
+        let _url = EnvVarGuard::set(cfgd_core::CFGD_ANTHROPIC_URL_ENV, &server.url());
 
         let turn1 = server
             .mock("POST", "/v1/messages")

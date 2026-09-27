@@ -28,7 +28,7 @@ use super::versions::{
     query_version_pkg,
 };
 
-pub(super) const APT_GET_BIN_ENV: &str = "CFGD_APT_GET_BIN";
+pub const APT_GET_BIN_ENV: &str = "CFGD_APT_GET_BIN";
 
 /// Map a SimpleManager `mgr_name` to the `CFGD_*_BIN` env-var seam that targets
 /// the SAME binary. Used so `is_available()` honors the same test-shim seam

@@ -386,7 +386,10 @@ mod tests {
         // abort the aggregate — the other providers' stale counts still surface.
         let home = tempfile::tempdir().expect("home tempdir");
         let runtime = tempfile::tempdir().expect("runtime tempdir");
-        let _rt = EnvVarGuard::set("CFGD_RUNTIME_DIR", &runtime.path().to_string_lossy());
+        let _rt = EnvVarGuard::set(
+            crate::CFGD_RUNTIME_DIR_ENV,
+            &runtime.path().to_string_lossy(),
+        );
 
         crate::with_test_home(home.path(), || {
             // A genuinely-stale codex skill (a healthy provider with a real count).
@@ -415,7 +418,10 @@ mod tests {
         // ride-along still returns a clean, non-prompting outcome.
         let home = tempfile::tempdir().expect("home tempdir");
         let runtime = tempfile::tempdir().expect("runtime tempdir");
-        let _rt = EnvVarGuard::set("CFGD_RUNTIME_DIR", &runtime.path().to_string_lossy());
+        let _rt = EnvVarGuard::set(
+            crate::CFGD_RUNTIME_DIR_ENV,
+            &runtime.path().to_string_lossy(),
+        );
 
         crate::with_test_home(home.path(), || {
             make_claude_list_error(home.path());
@@ -444,7 +450,10 @@ mod tests {
 
         let outcome = crate::with_test_home(home.path(), || {
             // Install with a WORKING runtime dir so the skill is genuinely present.
-            let _rt = EnvVarGuard::set("CFGD_RUNTIME_DIR", &runtime.path().to_string_lossy());
+            let _rt = EnvVarGuard::set(
+                crate::CFGD_RUNTIME_DIR_ENV,
+                &runtime.path().to_string_lossy(),
+            );
             CodexProvider
                 .install(
                     &skill_model_for(SkillKind::Module, env!("CARGO_PKG_VERSION")),
@@ -457,7 +466,7 @@ mod tests {
             // inside the re-render `install`, exercising the install-error arm.
             let bad = runtime.path().join("runtime-is-a-file");
             std::fs::write(&bad, b"not a dir").expect("write runtime-blocking file");
-            let _bad_rt = EnvVarGuard::set("CFGD_RUNTIME_DIR", &bad.to_string_lossy());
+            let _bad_rt = EnvVarGuard::set(crate::CFGD_RUNTIME_DIR_ENV, &bad.to_string_lossy());
 
             with_trace_subscriber(|| {
                 refresh_user_scope_skills(&auto_cfg(), env!("CARGO_PKG_VERSION"))

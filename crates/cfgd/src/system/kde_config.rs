@@ -12,8 +12,8 @@ use super::{diff_yaml_mapping, yaml_value_to_string};
 
 /// Test seams for the two KDE binaries. Named separately because a host carries
 /// one generation of each and a test drives one at a time.
-const KREADCONFIG_BIN_ENV: &str = "CFGD_KREADCONFIG_BIN";
-const KWRITECONFIG_BIN_ENV: &str = "CFGD_KWRITECONFIG_BIN";
+pub const KREADCONFIG_BIN_ENV: &str = "CFGD_KREADCONFIG_BIN";
+pub const KWRITECONFIG_BIN_ENV: &str = "CFGD_KWRITECONFIG_BIN";
 
 /// KdeConfigConfigurator — reads/writes KDE Plasma settings via `kwriteconfig5`/`kwriteconfig6`.
 ///

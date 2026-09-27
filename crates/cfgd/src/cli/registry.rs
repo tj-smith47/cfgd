@@ -927,7 +927,7 @@ mod tests {
     fn a_scope_system_run_resolves_the_machine_state_root_not_the_user_one() {
         let home = tempfile::tempdir().expect("tempdir");
         let _home = cfgd_core::with_test_home_guard(home.path());
-        let _cfgd = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_STATE_DIR");
+        let _cfgd = cfgd_core::test_helpers::EnvVarGuard::unset(cfgd_core::CFGD_STATE_DIR_ENV);
         let _sd = cfgd_core::test_helpers::EnvVarGuard::unset("STATE_DIRECTORY");
 
         let user = super::helpers::run_state_dir(None, cfgd_core::Scope::User)

@@ -594,7 +594,7 @@ mod tests {
         #[test]
         #[serial]
         fn build_module_passes_platform_flag() {
-            let _shim = ToolShim::install("CFGD_DOCKER_BIN", 0, "", "");
+            let _shim = ToolShim::install(crate::oci::build::DOCKER_BIN_ENV, 0, "", "");
             let dir = tempfile::tempdir().unwrap();
             std::fs::write(dir.path().join("module.yaml"), sample_module_yaml()).unwrap();
 
@@ -607,7 +607,12 @@ mod tests {
         #[test]
         #[serial]
         fn build_module_failure_propagates_error() {
-            let _shim = ToolShim::install("CFGD_DOCKER_BIN", 1, "", "build error: out of disk");
+            let _shim = ToolShim::install(
+                crate::oci::build::DOCKER_BIN_ENV,
+                1,
+                "",
+                "build error: out of disk",
+            );
             let dir = tempfile::tempdir().unwrap();
             std::fs::write(dir.path().join("module.yaml"), sample_module_yaml()).unwrap();
 
@@ -623,7 +628,7 @@ mod tests {
         #[test]
         #[serial]
         fn build_module_passes_tag_flag() {
-            let _shim = ToolShim::install("CFGD_DOCKER_BIN", 0, "", "");
+            let _shim = ToolShim::install(crate::oci::build::DOCKER_BIN_ENV, 0, "", "");
             let dir = tempfile::tempdir().unwrap();
             std::fs::write(dir.path().join("module.yaml"), sample_module_yaml()).unwrap();
 
@@ -641,10 +646,10 @@ mod tests {
         fn detect_runtime_podman_fallback() {
             // Docker shim missing (env var set to non-existent path), podman present
             let _docker_guard = crate::test_helpers::EnvVarGuard::set(
-                "CFGD_DOCKER_BIN",
+                crate::oci::build::DOCKER_BIN_ENV,
                 "/nonexistent/docker-fake",
             );
-            let _podman_shim = ToolShim::install("CFGD_PODMAN_BIN", 0, "", "");
+            let _podman_shim = ToolShim::install(crate::oci::build::PODMAN_BIN_ENV, 0, "", "");
 
             let rt = detect_container_runtime();
             assert_eq!(rt, Some("podman"));
@@ -653,8 +658,8 @@ mod tests {
         #[test]
         #[serial]
         fn detect_runtime_docker_preferred() {
-            let _docker_shim = ToolShim::install("CFGD_DOCKER_BIN", 0, "", "");
-            let _podman_shim = ToolShim::install("CFGD_PODMAN_BIN", 0, "", "");
+            let _docker_shim = ToolShim::install(crate::oci::build::DOCKER_BIN_ENV, 0, "", "");
+            let _podman_shim = ToolShim::install(crate::oci::build::PODMAN_BIN_ENV, 0, "", "");
 
             let rt = detect_container_runtime();
             assert_eq!(rt, Some("docker"));
@@ -664,11 +669,11 @@ mod tests {
         #[serial]
         fn detect_runtime_none_available() {
             let _docker_guard = crate::test_helpers::EnvVarGuard::set(
-                "CFGD_DOCKER_BIN",
+                crate::oci::build::DOCKER_BIN_ENV,
                 "/nonexistent/docker-fake",
             );
             let _podman_guard = crate::test_helpers::EnvVarGuard::set(
-                "CFGD_PODMAN_BIN",
+                crate::oci::build::PODMAN_BIN_ENV,
                 "/nonexistent/podman-fake",
             );
 

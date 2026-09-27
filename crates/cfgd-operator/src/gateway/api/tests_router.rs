@@ -87,7 +87,7 @@ async fn body_bytes(response: axum::response::Response) -> Vec<u8> {
 async fn list_devices_returns_401_when_no_bearer_token_and_no_api_key() {
     // Safety: serial_test ensures no other test concurrently mutates this env var.
     unsafe {
-        std::env::remove_var("CFGD_API_KEY");
+        std::env::remove_var(cfgd_core::CFGD_API_KEY_ENV);
     }
     let (state, _tmp) = test_state();
     let router = router_with_state(state);
@@ -100,7 +100,7 @@ async fn list_devices_returns_401_when_no_bearer_token_and_no_api_key() {
 #[serial]
 async fn list_devices_returns_401_with_invalid_bearer_when_no_api_key() {
     unsafe {
-        std::env::remove_var("CFGD_API_KEY");
+        std::env::remove_var(cfgd_core::CFGD_API_KEY_ENV);
     }
     let (state, _tmp) = test_state();
     let router = router_with_state(state);
@@ -120,7 +120,7 @@ async fn list_devices_returns_401_with_invalid_bearer_when_no_api_key() {
 #[serial]
 async fn list_devices_returns_200_with_admin_key() {
     unsafe {
-        std::env::set_var("CFGD_API_KEY", TEST_ADMIN_KEY);
+        std::env::set_var(cfgd_core::CFGD_API_KEY_ENV, TEST_ADMIN_KEY);
     }
     let (state, _tmp) = test_state();
     let router = router_with_state(state);
@@ -139,7 +139,7 @@ async fn list_devices_returns_200_with_admin_key() {
     assert_eq!(devices.len(), 0, "no devices in fresh state");
 
     unsafe {
-        std::env::remove_var("CFGD_API_KEY");
+        std::env::remove_var(cfgd_core::CFGD_API_KEY_ENV);
     }
 }
 
@@ -147,7 +147,7 @@ async fn list_devices_returns_200_with_admin_key() {
 #[serial]
 async fn admin_endpoint_returns_401_when_api_key_not_set() {
     unsafe {
-        std::env::remove_var("CFGD_API_KEY");
+        std::env::remove_var(cfgd_core::CFGD_API_KEY_ENV);
     }
     let (state, _tmp) = test_state();
     let router = router_with_state(state);
@@ -160,7 +160,7 @@ async fn admin_endpoint_returns_401_when_api_key_not_set() {
 #[serial]
 async fn admin_endpoint_returns_401_with_wrong_admin_key() {
     unsafe {
-        std::env::set_var("CFGD_API_KEY", TEST_ADMIN_KEY);
+        std::env::set_var(cfgd_core::CFGD_API_KEY_ENV, TEST_ADMIN_KEY);
     }
     let (state, _tmp) = test_state();
     let router = router_with_state(state);
@@ -172,7 +172,7 @@ async fn admin_endpoint_returns_401_with_wrong_admin_key() {
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 
     unsafe {
-        std::env::remove_var("CFGD_API_KEY");
+        std::env::remove_var(cfgd_core::CFGD_API_KEY_ENV);
     }
 }
 
@@ -180,7 +180,7 @@ async fn admin_endpoint_returns_401_with_wrong_admin_key() {
 #[serial]
 async fn admin_endpoint_returns_200_with_correct_admin_key() {
     unsafe {
-        std::env::set_var("CFGD_API_KEY", TEST_ADMIN_KEY);
+        std::env::set_var(cfgd_core::CFGD_API_KEY_ENV, TEST_ADMIN_KEY);
     }
     let (state, _tmp) = test_state();
     let router = router_with_state(state);
@@ -192,7 +192,7 @@ async fn admin_endpoint_returns_200_with_correct_admin_key() {
     assert_eq!(response.status(), StatusCode::OK);
 
     unsafe {
-        std::env::remove_var("CFGD_API_KEY");
+        std::env::remove_var(cfgd_core::CFGD_API_KEY_ENV);
     }
 }
 
@@ -204,7 +204,7 @@ async fn admin_endpoint_returns_200_with_correct_admin_key() {
 #[serial]
 async fn enroll_info_returns_method_without_authentication() {
     unsafe {
-        std::env::remove_var("CFGD_API_KEY");
+        std::env::remove_var(cfgd_core::CFGD_API_KEY_ENV);
     }
     let (state, _tmp) = test_state();
     let router = router_with_state(state);
@@ -226,7 +226,7 @@ async fn enroll_info_returns_method_without_authentication() {
 #[serial]
 async fn enroll_with_invalid_payload_returns_400() {
     unsafe {
-        std::env::remove_var("CFGD_API_KEY");
+        std::env::remove_var(cfgd_core::CFGD_API_KEY_ENV);
     }
     let (state, _tmp) = test_state();
     let router = router_with_state(state);
@@ -250,7 +250,7 @@ async fn enroll_with_invalid_payload_returns_400() {
 #[serial]
 async fn enroll_with_empty_device_id_returns_400() {
     unsafe {
-        std::env::remove_var("CFGD_API_KEY");
+        std::env::remove_var(cfgd_core::CFGD_API_KEY_ENV);
     }
     let (state, _tmp) = test_state();
     let router = router_with_state(state);
@@ -284,7 +284,7 @@ async fn enroll_with_empty_device_id_returns_400() {
 #[serial]
 async fn unknown_route_returns_404() {
     unsafe {
-        std::env::set_var("CFGD_API_KEY", TEST_ADMIN_KEY);
+        std::env::set_var(cfgd_core::CFGD_API_KEY_ENV, TEST_ADMIN_KEY);
     }
     let (state, _tmp) = test_state();
     let router = router_with_state(state);
@@ -296,7 +296,7 @@ async fn unknown_route_returns_404() {
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 
     unsafe {
-        std::env::remove_var("CFGD_API_KEY");
+        std::env::remove_var(cfgd_core::CFGD_API_KEY_ENV);
     }
 }
 
@@ -308,7 +308,7 @@ async fn unknown_route_returns_404() {
 #[serial]
 async fn enroll_with_unconfigured_token_returns_4xx() {
     unsafe {
-        std::env::remove_var("CFGD_API_KEY");
+        std::env::remove_var(cfgd_core::CFGD_API_KEY_ENV);
     }
     // Default state uses Token enrollment.
     let (state, _tmp) = test_state();
@@ -338,7 +338,7 @@ async fn enroll_with_unconfigured_token_returns_4xx() {
 #[serial]
 async fn enroll_with_empty_token_returns_400() {
     unsafe {
-        std::env::remove_var("CFGD_API_KEY");
+        std::env::remove_var(cfgd_core::CFGD_API_KEY_ENV);
     }
     let (state, _tmp) = test_state();
     let router = router_with_state(state);
@@ -368,7 +368,7 @@ async fn enroll_with_empty_token_returns_400() {
 #[serial]
 async fn enroll_with_valid_bootstrap_token_returns_201_and_api_key() {
     unsafe {
-        std::env::remove_var("CFGD_API_KEY");
+        std::env::remove_var(cfgd_core::CFGD_API_KEY_ENV);
     }
     let (state, _tmp) = test_state();
 
@@ -422,7 +422,7 @@ async fn enroll_with_valid_bootstrap_token_returns_201_and_api_key() {
 #[serial]
 async fn checkin_with_device_token_succeeds_after_enrollment() {
     unsafe {
-        std::env::remove_var("CFGD_API_KEY");
+        std::env::remove_var(cfgd_core::CFGD_API_KEY_ENV);
     }
     let (state, _tmp) = test_state();
 
@@ -470,7 +470,7 @@ async fn checkin_with_device_token_succeeds_after_enrollment() {
 #[serial]
 async fn device_token_cannot_access_resources_of_other_device() {
     unsafe {
-        std::env::remove_var("CFGD_API_KEY");
+        std::env::remove_var(cfgd_core::CFGD_API_KEY_ENV);
     }
     let (state, _tmp) = test_state();
 
@@ -527,7 +527,7 @@ fn oversize_config_body() -> Vec<u8> {
 #[serial]
 async fn set_device_config_over_policy_returns_specific_400_through_router() {
     unsafe {
-        std::env::set_var("CFGD_API_KEY", TEST_ADMIN_KEY);
+        std::env::set_var(cfgd_core::CFGD_API_KEY_ENV, TEST_ADMIN_KEY);
     }
     let (state, _tmp) = test_state();
     state
@@ -559,7 +559,7 @@ async fn set_device_config_over_policy_returns_specific_400_through_router() {
     );
 
     unsafe {
-        std::env::remove_var("CFGD_API_KEY");
+        std::env::remove_var(cfgd_core::CFGD_API_KEY_ENV);
     }
 }
 
@@ -567,7 +567,7 @@ async fn set_device_config_over_policy_returns_specific_400_through_router() {
 #[serial]
 async fn set_device_config_over_body_backstop_returns_413_through_router() {
     unsafe {
-        std::env::set_var("CFGD_API_KEY", TEST_ADMIN_KEY);
+        std::env::set_var(cfgd_core::CFGD_API_KEY_ENV, TEST_ADMIN_KEY);
     }
     let (state, _tmp) = test_state();
     state
@@ -596,7 +596,7 @@ async fn set_device_config_over_body_backstop_returns_413_through_router() {
     );
 
     unsafe {
-        std::env::remove_var("CFGD_API_KEY");
+        std::env::remove_var(cfgd_core::CFGD_API_KEY_ENV);
     }
 }
 
@@ -604,7 +604,7 @@ async fn set_device_config_over_body_backstop_returns_413_through_router() {
 #[serial]
 async fn set_device_config_under_policy_succeeds_through_router() {
     unsafe {
-        std::env::set_var("CFGD_API_KEY", TEST_ADMIN_KEY);
+        std::env::set_var(cfgd_core::CFGD_API_KEY_ENV, TEST_ADMIN_KEY);
     }
     let (state, _tmp) = test_state();
     state
@@ -633,7 +633,7 @@ async fn set_device_config_under_policy_succeeds_through_router() {
     );
 
     unsafe {
-        std::env::remove_var("CFGD_API_KEY");
+        std::env::remove_var(cfgd_core::CFGD_API_KEY_ENV);
     }
 }
 
@@ -825,7 +825,7 @@ fn status_object(body: &serde_json::Value) -> &serde_json::Map<String, serde_jso
 #[serial]
 async fn the_device_reads_return_the_checks_a_checkin_reported() {
     unsafe {
-        std::env::remove_var("CFGD_API_KEY");
+        std::env::remove_var(cfgd_core::CFGD_API_KEY_ENV);
     }
     let (state, _tmp) = test_state();
     let token = enrolled_device(&state, "dev-1", "host-1").await;
@@ -847,7 +847,7 @@ async fn the_device_reads_return_the_checks_a_checkin_reported() {
     assert_eq!(response.status(), StatusCode::OK);
 
     unsafe {
-        std::env::set_var("CFGD_API_KEY", TEST_ADMIN_KEY);
+        std::env::set_var(cfgd_core::CFGD_API_KEY_ENV, TEST_ADMIN_KEY);
     }
     let listed = router_with_state(state.clone())
         .oneshot(get_with_bearer("/api/v1/devices", TEST_ADMIN_KEY))
@@ -858,7 +858,7 @@ async fn the_device_reads_return_the_checks_a_checkin_reported() {
         .await
         .unwrap();
     unsafe {
-        std::env::remove_var("CFGD_API_KEY");
+        std::env::remove_var(cfgd_core::CFGD_API_KEY_ENV);
     }
 
     assert_eq!(listed.status(), StatusCode::OK);
@@ -876,7 +876,7 @@ async fn the_device_reads_return_the_checks_a_checkin_reported() {
 #[serial]
 async fn checkin_with_an_unreadable_compliance_report_still_applies_the_rest() {
     unsafe {
-        std::env::remove_var("CFGD_API_KEY");
+        std::env::remove_var(cfgd_core::CFGD_API_KEY_ENV);
     }
     let (ctx, _registry, harness) = MockKubeHarness::new(checkin_kube_calls());
     let (state, _tmp) = crate::gateway::test_state::test_state_with_kube(ctx.client.clone());
@@ -913,7 +913,7 @@ async fn checkin_with_an_unreadable_compliance_report_still_applies_the_rest() {
 #[serial]
 async fn checkin_trims_a_compliance_list_longer_than_the_status_accepts() {
     unsafe {
-        std::env::remove_var("CFGD_API_KEY");
+        std::env::remove_var(cfgd_core::CFGD_API_KEY_ENV);
     }
     let (ctx, _registry, harness) = MockKubeHarness::new(vec![
         ExpectedCall::list("/apis/cfgd.io/v1alpha1/machineconfigs")
@@ -964,7 +964,7 @@ async fn checkin_trims_a_compliance_list_longer_than_the_status_accepts() {
 #[serial]
 async fn checkin_applies_the_reported_compliance_under_its_own_field_manager() {
     unsafe {
-        std::env::remove_var("CFGD_API_KEY");
+        std::env::remove_var(cfgd_core::CFGD_API_KEY_ENV);
     }
     let (ctx, _registry, harness) = MockKubeHarness::new(vec![
         ExpectedCall::list("/apis/cfgd.io/v1alpha1/machineconfigs")
@@ -1019,7 +1019,7 @@ async fn checkin_applies_the_reported_compliance_under_its_own_field_manager() {
 #[serial]
 async fn checkin_patches_the_devices_machine_config_status() {
     unsafe {
-        std::env::remove_var("CFGD_API_KEY");
+        std::env::remove_var(cfgd_core::CFGD_API_KEY_ENV);
     }
     let (ctx, _registry, harness) = MockKubeHarness::new(checkin_kube_calls());
     let (state, _tmp) = crate::gateway::test_state::test_state_with_kube(ctx.client.clone());
@@ -1060,7 +1060,7 @@ async fn checkin_patches_the_devices_machine_config_status() {
 #[serial]
 async fn each_reported_map_is_applied_under_its_own_field_manager() {
     unsafe {
-        std::env::remove_var("CFGD_API_KEY");
+        std::env::remove_var(cfgd_core::CFGD_API_KEY_ENV);
     }
     let (ctx, _registry, harness) = MockKubeHarness::new(checkin_kube_calls());
     let (state, _tmp) = crate::gateway::test_state::test_state_with_kube(ctx.client.clone());
@@ -1112,7 +1112,7 @@ async fn each_reported_map_is_applied_under_its_own_field_manager() {
 #[serial]
 async fn a_device_reporting_one_map_leaves_the_others_field_manager_silent() {
     unsafe {
-        std::env::remove_var("CFGD_API_KEY");
+        std::env::remove_var(cfgd_core::CFGD_API_KEY_ENV);
     }
     let (ctx, _registry, harness) = MockKubeHarness::new(vec![
         ExpectedCall::list("/apis/cfgd.io/v1alpha1/machineconfigs")
@@ -1167,7 +1167,7 @@ async fn a_device_reporting_one_map_leaves_the_others_field_manager_silent() {
 #[serial]
 async fn a_device_that_stops_reporting_a_unit_clears_its_row() {
     unsafe {
-        std::env::remove_var("CFGD_API_KEY");
+        std::env::remove_var(cfgd_core::CFGD_API_KEY_ENV);
     }
     let (ctx, _registry, harness) = MockKubeHarness::new(checkin_kube_calls());
     let (state, _tmp) = crate::gateway::test_state::test_state_with_kube(ctx.client.clone());
@@ -1205,7 +1205,7 @@ async fn a_device_that_stops_reporting_a_unit_clears_its_row() {
 #[serial]
 async fn a_device_that_reports_no_units_clears_the_map() {
     unsafe {
-        std::env::remove_var("CFGD_API_KEY");
+        std::env::remove_var(cfgd_core::CFGD_API_KEY_ENV);
     }
     let (ctx, _registry, harness) = MockKubeHarness::new(checkin_kube_calls());
     let (state, _tmp) = crate::gateway::test_state::test_state_with_kube(ctx.client.clone());
@@ -1245,7 +1245,7 @@ async fn a_device_that_reports_no_units_clears_the_map() {
 #[serial]
 async fn a_device_that_reports_neither_map_writes_no_status() {
     unsafe {
-        std::env::remove_var("CFGD_API_KEY");
+        std::env::remove_var(cfgd_core::CFGD_API_KEY_ENV);
     }
     let (ctx, _registry, harness) = MockKubeHarness::new(vec![
         ExpectedCall::list("/apis/cfgd.io/v1alpha1/machineconfigs")
@@ -1286,7 +1286,7 @@ async fn a_device_that_reports_neither_map_writes_no_status() {
 #[serial]
 async fn a_machine_config_with_no_namespace_is_never_addressed() {
     unsafe {
-        std::env::remove_var("CFGD_API_KEY");
+        std::env::remove_var(cfgd_core::CFGD_API_KEY_ENV);
     }
     let namespace_less = serde_json::json!({
         "apiVersion": "cfgd.io/v1alpha1",
@@ -1327,7 +1327,7 @@ async fn a_machine_config_with_no_namespace_is_never_addressed() {
 #[serial]
 async fn checkin_succeeds_when_the_status_patch_is_refused() {
     unsafe {
-        std::env::remove_var("CFGD_API_KEY");
+        std::env::remove_var(cfgd_core::CFGD_API_KEY_ENV);
     }
     let (ctx, _registry, harness) = MockKubeHarness::new(vec![
         ExpectedCall::list("/apis/cfgd.io/v1alpha1/machineconfigs")
@@ -1362,7 +1362,7 @@ async fn checkin_succeeds_when_the_status_patch_is_refused() {
 #[serial]
 async fn checkin_answers_with_the_cluster_owned_projection_and_never_a_local_pin() {
     unsafe {
-        std::env::remove_var("CFGD_API_KEY");
+        std::env::remove_var(cfgd_core::CFGD_API_KEY_ENV);
     }
     let policy = backup_policy(
         "fleet",
@@ -1454,7 +1454,7 @@ async fn checkin_answers_with_the_cluster_owned_projection_and_never_a_local_pin
 #[serial]
 async fn checkin_answers_from_the_published_cache_without_listing_policies() {
     unsafe {
-        std::env::remove_var("CFGD_API_KEY");
+        std::env::remove_var(cfgd_core::CFGD_API_KEY_ENV);
     }
     let policy: crate::crds::BackupPolicy = serde_json::from_value(backup_policy(
         "fleet",
@@ -1504,7 +1504,7 @@ async fn checkin_answers_from_the_published_cache_without_listing_policies() {
 #[serial]
 async fn checkin_prefers_the_older_policy_when_two_name_one_unit() {
     unsafe {
-        std::env::remove_var("CFGD_API_KEY");
+        std::env::remove_var(cfgd_core::CFGD_API_KEY_ENV);
     }
     let unit = |schedule: &str, retention: u32| {
         serde_json::json!({
@@ -1565,7 +1565,7 @@ async fn checkin_prefers_the_older_policy_when_two_name_one_unit() {
 #[serial]
 async fn a_cluster_that_schedules_nothing_answers_with_an_empty_projection() {
     unsafe {
-        std::env::remove_var("CFGD_API_KEY");
+        std::env::remove_var(cfgd_core::CFGD_API_KEY_ENV);
     }
     let (ctx, _registry, harness) = MockKubeHarness::new(checkin_kube_calls());
     let (state, _tmp) = crate::gateway::test_state::test_state_with_kube(ctx.client.clone());
@@ -1598,7 +1598,7 @@ async fn a_cluster_that_schedules_nothing_answers_with_an_empty_projection() {
 #[serial]
 async fn a_machine_config_list_that_fails_answers_with_no_projection() {
     unsafe {
-        std::env::remove_var("CFGD_API_KEY");
+        std::env::remove_var(cfgd_core::CFGD_API_KEY_ENV);
     }
     let (ctx, _registry, harness) = MockKubeHarness::new(vec![
         ExpectedCall::list("/apis/cfgd.io/v1alpha1/machineconfigs")
@@ -1636,7 +1636,7 @@ async fn a_machine_config_list_that_fails_answers_with_no_projection() {
 #[serial]
 async fn a_backup_policy_list_that_fails_answers_with_no_projection() {
     unsafe {
-        std::env::remove_var("CFGD_API_KEY");
+        std::env::remove_var(cfgd_core::CFGD_API_KEY_ENV);
     }
     let (ctx, _registry, harness) = MockKubeHarness::new(vec![
         ExpectedCall::list("/apis/cfgd.io/v1alpha1/machineconfigs")

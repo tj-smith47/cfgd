@@ -347,7 +347,8 @@ fn a_source_barred_from_scripts_cannot_run_its_patch_filter_from_any_surface() {
     // `diff` and `verify` evaluate every `Patch` file, and evaluating one runs
     // the filter. Report mode keeps composing so the read can still render, so
     // the block has to live in the spec itself rather than in the abort.
-    let _allow = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _allow =
+        cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
     let (_workspace, config_dir, state_dir, target, marker) =
         common::barred_patch_script_source_setup();
     let home = tempfile::tempdir().unwrap();
@@ -455,7 +456,8 @@ fn a_source_barred_from_scripts_cannot_run_its_patch_filter_from_any_surface() {
 fn the_allow_scripts_disclosure_reaches_the_operator_at_default_verbosity() {
     // The one line telling an operator that third-party code will run on their
     // machine cannot live behind `-v`.
-    let _allow = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _allow =
+        cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
     let (_workspace, config_dir, state_dir, _target) = common::opted_in_script_source_setup(true);
     let home = tempfile::tempdir().unwrap();
     let cli = cli_for(config_dir.path(), state_dir.path());
@@ -488,7 +490,8 @@ fn a_sync_resolving_its_sources_still_discloses_the_scripts_they_carry() {
     // and that resolution is the one that raises the disclosure. Only the two
     // advisories whose remedy IS `cfgd sync` are held back; everything else
     // the composition has to say still reaches the operator.
-    let _allow = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _allow =
+        cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
     let (_workspace, config_dir, state_dir, _target) = common::opted_in_script_source_setup(true);
     let cli = cli_for(config_dir.path(), state_dir.path());
 
@@ -514,7 +517,8 @@ fn a_sync_resolving_its_sources_still_discloses_the_scripts_they_carry() {
 #[test]
 #[serial_test::serial]
 fn no_disclosure_is_printed_for_an_opted_in_source_that_ships_no_scripts() {
-    let _allow = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _allow =
+        cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
     let (_workspace, config_dir, state_dir, _target) = common::opted_in_script_source_setup(false);
     let home = tempfile::tempdir().unwrap();
     let cli = cli_for(config_dir.path(), state_dir.path());

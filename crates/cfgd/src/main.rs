@@ -501,10 +501,10 @@ mod tests {
     #[serial]
     fn normalize_boolish_env_rewrites_truthy_to_true() {
         for raw in ["1", "yes", "on", "Y", "True"] {
-            let _g = EnvVarGuard::set("CFGD_QUIET", raw);
-            normalize_boolish_env("CFGD_QUIET");
+            let _g = EnvVarGuard::set(cfgd_core::CFGD_QUIET_ENV, raw);
+            normalize_boolish_env(cfgd_core::CFGD_QUIET_ENV);
             assert_eq!(
-                std::env::var("CFGD_QUIET").as_deref(),
+                std::env::var(cfgd_core::CFGD_QUIET_ENV).as_deref(),
                 Ok("true"),
                 "{raw:?} should normalize to true"
             );
@@ -515,10 +515,10 @@ mod tests {
     #[serial]
     fn normalize_boolish_env_rewrites_falsey_to_false() {
         for raw in ["0", "no", "off", "N", "False"] {
-            let _g = EnvVarGuard::set("CFGD_QUIET", raw);
-            normalize_boolish_env("CFGD_QUIET");
+            let _g = EnvVarGuard::set(cfgd_core::CFGD_QUIET_ENV, raw);
+            normalize_boolish_env(cfgd_core::CFGD_QUIET_ENV);
             assert_eq!(
-                std::env::var("CFGD_QUIET").as_deref(),
+                std::env::var(cfgd_core::CFGD_QUIET_ENV).as_deref(),
                 Ok("false"),
                 "{raw:?} should normalize to false"
             );
@@ -528,27 +528,30 @@ mod tests {
     #[test]
     #[serial]
     fn normalize_boolish_env_leaves_invalid_untouched() {
-        let _g = EnvVarGuard::set("CFGD_QUIET", "garbage");
-        normalize_boolish_env("CFGD_QUIET");
-        assert_eq!(std::env::var("CFGD_QUIET").as_deref(), Ok("garbage"));
+        let _g = EnvVarGuard::set(cfgd_core::CFGD_QUIET_ENV, "garbage");
+        normalize_boolish_env(cfgd_core::CFGD_QUIET_ENV);
+        assert_eq!(
+            std::env::var(cfgd_core::CFGD_QUIET_ENV).as_deref(),
+            Ok("garbage")
+        );
     }
 
     #[test]
     #[serial]
     fn normalize_boolish_env_noop_when_unset() {
-        let _g = EnvVarGuard::unset("CFGD_QUIET");
-        normalize_boolish_env("CFGD_QUIET");
-        assert!(std::env::var("CFGD_QUIET").is_err());
+        let _g = EnvVarGuard::unset(cfgd_core::CFGD_QUIET_ENV);
+        normalize_boolish_env(cfgd_core::CFGD_QUIET_ENV);
+        assert!(std::env::var(cfgd_core::CFGD_QUIET_ENV).is_err());
     }
 
     #[test]
     #[serial]
     fn normalize_cfgd_verbose_env_maps_boolish_on_to_one() {
         for raw in ["on", "yes", "true", "y"] {
-            let _g = EnvVarGuard::set("CFGD_VERBOSE", raw);
+            let _g = EnvVarGuard::set(cfgd_core::CFGD_VERBOSE_ENV, raw);
             normalize_cfgd_verbose_env();
             assert_eq!(
-                std::env::var("CFGD_VERBOSE").as_deref(),
+                std::env::var(cfgd_core::CFGD_VERBOSE_ENV).as_deref(),
                 Ok("1"),
                 "{raw:?} should map to count 1"
             );
@@ -559,10 +562,10 @@ mod tests {
     #[serial]
     fn normalize_cfgd_verbose_env_maps_boolish_off_to_zero() {
         for raw in ["off", "no", "false", "n"] {
-            let _g = EnvVarGuard::set("CFGD_VERBOSE", raw);
+            let _g = EnvVarGuard::set(cfgd_core::CFGD_VERBOSE_ENV, raw);
             normalize_cfgd_verbose_env();
             assert_eq!(
-                std::env::var("CFGD_VERBOSE").as_deref(),
+                std::env::var(cfgd_core::CFGD_VERBOSE_ENV).as_deref(),
                 Ok("0"),
                 "{raw:?} should map to count 0"
             );
@@ -573,10 +576,10 @@ mod tests {
     #[serial]
     fn normalize_cfgd_verbose_env_leaves_integers_untouched() {
         for raw in ["1", "2", "10"] {
-            let _g = EnvVarGuard::set("CFGD_VERBOSE", raw);
+            let _g = EnvVarGuard::set(cfgd_core::CFGD_VERBOSE_ENV, raw);
             normalize_cfgd_verbose_env();
             assert_eq!(
-                std::env::var("CFGD_VERBOSE").as_deref(),
+                std::env::var(cfgd_core::CFGD_VERBOSE_ENV).as_deref(),
                 Ok(raw),
                 "{raw:?} (bare integer) must pass through unchanged"
             );

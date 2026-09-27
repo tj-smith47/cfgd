@@ -362,8 +362,8 @@ mod tests_start_gateway {
     #[serial]
     async fn start_gateway_with_invalid_db_path_returns_err() {
         let _g_origins = EnvVarGuard::unset(cfgd_core::CFGD_GATEWAY_ALLOWED_ORIGINS_ENV);
-        let _g_api = EnvVarGuard::unset("CFGD_API_KEY");
-        let _g_method = EnvVarGuard::unset("CFGD_ENROLLMENT_METHOD");
+        let _g_api = EnvVarGuard::unset(cfgd_core::CFGD_API_KEY_ENV);
+        let _g_method = EnvVarGuard::unset(cfgd_core::CFGD_ENROLLMENT_METHOD_ENV);
 
         let config = GatewayConfig {
             port: 0,
@@ -392,8 +392,8 @@ mod tests_start_gateway {
     #[serial]
     async fn start_gateway_setup_runs_without_metrics_until_serve_loop_blocks() {
         let _g_origins = EnvVarGuard::unset(cfgd_core::CFGD_GATEWAY_ALLOWED_ORIGINS_ENV);
-        let _g_api = EnvVarGuard::unset("CFGD_API_KEY");
-        let _g_method = EnvVarGuard::unset("CFGD_ENROLLMENT_METHOD");
+        let _g_api = EnvVarGuard::unset(cfgd_core::CFGD_API_KEY_ENV);
+        let _g_method = EnvVarGuard::unset(cfgd_core::CFGD_ENROLLMENT_METHOD_ENV);
 
         let tmp = tempfile::tempdir().expect("tempdir");
         let config = GatewayConfig {
@@ -425,8 +425,8 @@ mod tests_start_gateway {
     #[serial]
     async fn start_gateway_setup_runs_with_metrics_and_api_key_branch() {
         let _g_origins = EnvVarGuard::set(cfgd_core::CFGD_GATEWAY_ALLOWED_ORIGINS_ENV, "*");
-        let _g_api = EnvVarGuard::set("CFGD_API_KEY", "test-key");
-        let _g_method = EnvVarGuard::unset("CFGD_ENROLLMENT_METHOD");
+        let _g_api = EnvVarGuard::set(cfgd_core::CFGD_API_KEY_ENV, "test-key");
+        let _g_method = EnvVarGuard::unset(cfgd_core::CFGD_ENROLLMENT_METHOD_ENV);
 
         let tmp = tempfile::tempdir().expect("tempdir");
         let mut registry = Registry::default();

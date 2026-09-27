@@ -70,7 +70,7 @@ fn init_with_yes_aligns_the_config_it_cloned_and_the_next_command_says_nothing_a
             &src.display().to_string(),
             "--yes",
         ])
-        .env("CFGD_ALLOW_LOCAL_SOURCES", "1")
+        .env(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1")
         .assert()
         .success();
     let said = stderr_of(&init);
@@ -117,7 +117,7 @@ fn init_without_yes_off_a_terminal_warns_and_leaves_the_cloned_config_alone() {
             "--from",
             &src.display().to_string(),
         ])
-        .env("CFGD_ALLOW_LOCAL_SOURCES", "1")
+        .env(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1")
         .assert()
         .success()
         .stderr(predicate::str::contains(ALIGNED_LINE).not());
@@ -156,7 +156,7 @@ fn every_spelling_of_yes_the_parser_accepts_takes_the_load_time_prompt() {
             .args(*flags)
             .arg("status");
         if let Some(value) = env {
-            cmd.env("CFGD_YES", value);
+            cmd.env(cfgd_core::CFGD_YES_ENV, value);
         }
         cmd.assert().success();
 
@@ -188,7 +188,7 @@ fn a_config_set_that_creates_a_section_leaves_nothing_for_the_next_migrate_to_na
             &src.display().to_string(),
             "--yes",
         ])
-        .env("CFGD_ALLOW_LOCAL_SOURCES", "1")
+        .env(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1")
         .assert()
         .success();
     let config = dest.join("cfgd.yaml");

@@ -1004,8 +1004,10 @@ mod tests {
         const RESP: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"running\":true,\"pid\":4242,\"uptimeSecs\":99,\"lastReconcile\":\"2026-06-13T00:00:00Z\",\"lastSync\":\"2026-06-13T01:00:00Z\",\"driftCount\":7,\"sources\":[{\"name\":\"remote\",\"lastSync\":null,\"lastReconcile\":null,\"driftCount\":2,\"status\":\"degraded\"}]}";
         let handle = spawn_fake_daemon(sock.clone(), RESP);
 
-        let _guard =
-            crate::test_helpers::EnvVarGuard::set("CFGD_DAEMON_IPC_PATH", sock.to_str().unwrap());
+        let _guard = crate::test_helpers::EnvVarGuard::set(
+            crate::CFGD_DAEMON_IPC_PATH_ENV,
+            sock.to_str().unwrap(),
+        );
         let status = query_daemon_status(None, crate::Scope::User)
             .expect("client must parse a well-formed daemon response")
             .expect("a non-empty body must deserialize to Some(status)");
@@ -1038,8 +1040,10 @@ mod tests {
             b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n";
         let handle = spawn_fake_daemon(sock.clone(), RESP);
 
-        let _guard =
-            crate::test_helpers::EnvVarGuard::set("CFGD_DAEMON_IPC_PATH", sock.to_str().unwrap());
+        let _guard = crate::test_helpers::EnvVarGuard::set(
+            crate::CFGD_DAEMON_IPC_PATH_ENV,
+            sock.to_str().unwrap(),
+        );
         let result = query_daemon_status(None, crate::Scope::User)
             .expect("an empty body is a clean Ok(None), not an error");
         handle.join().unwrap();
@@ -1053,8 +1057,10 @@ mod tests {
         // sees the path does not exist and returns None → Ok(None), not an error.
         let tmp = tempfile::tempdir().unwrap();
         let sock = tmp.path().join("never-bound.sock");
-        let _guard =
-            crate::test_helpers::EnvVarGuard::set("CFGD_DAEMON_IPC_PATH", sock.to_str().unwrap());
+        let _guard = crate::test_helpers::EnvVarGuard::set(
+            crate::CFGD_DAEMON_IPC_PATH_ENV,
+            sock.to_str().unwrap(),
+        );
         let result = query_daemon_status(None, crate::Scope::User)
             .expect("an unreachable daemon is not an error");
         assert!(result.is_none(), "no socket file → Ok(None)");
@@ -1069,8 +1075,10 @@ mod tests {
         const RESP: &[u8] = b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n{not valid json at all";
         let handle = spawn_fake_daemon(sock.clone(), RESP);
 
-        let _guard =
-            crate::test_helpers::EnvVarGuard::set("CFGD_DAEMON_IPC_PATH", sock.to_str().unwrap());
+        let _guard = crate::test_helpers::EnvVarGuard::set(
+            crate::CFGD_DAEMON_IPC_PATH_ENV,
+            sock.to_str().unwrap(),
+        );
         let err = query_daemon_status(None, crate::Scope::User)
             .expect_err("a malformed body must surface a HealthSocketError");
         handle.join().unwrap();
@@ -1114,8 +1122,10 @@ mod tests {
             }
         });
 
-        let _guard =
-            crate::test_helpers::EnvVarGuard::set("CFGD_DAEMON_IPC_PATH", sock.to_str().unwrap());
+        let _guard = crate::test_helpers::EnvVarGuard::set(
+            crate::CFGD_DAEMON_IPC_PATH_ENV,
+            sock.to_str().unwrap(),
+        );
         let err = query_daemon_status(None, crate::Scope::User)
             .expect_err("an over-cap response must be rejected, not parsed");
         let _ = handle.join();

@@ -132,9 +132,9 @@ fn run(
         .env("USERPROFILE", home)
         // Keeps the module cache under the home this test re-points; the
         // constructor's own cache override sits outside it.
-        .env("CFGD_CACHE_DIR", home.join("cache"));
+        .env(cfgd_core::CFGD_CACHE_DIR_ENV, home.join("cache"));
     if let Some(gpg) = gpg {
-        cmd.env("CFGD_GPG_BIN", gpg);
+        cmd.env(cfgd::seams::GPG_BIN_ENV, gpg);
     }
     cmd.output().unwrap()
 }
@@ -283,7 +283,7 @@ fn a_manager_that_cannot_be_listed_is_one_row_on_every_exit_code_surface() {
             .arg(state_tmp.path())
             .env("HOME", home_tmp.path())
             .env("USERPROFILE", home_tmp.path())
-            .env("CFGD_CACHE_DIR", home_tmp.path().join("cache"))
+            .env(cfgd_core::CFGD_CACHE_DIR_ENV, home_tmp.path().join("cache"))
             .env("CFGD_PIPX_BIN", &pipx)
             .env("CFGD_CARGO_BIN", &cargo)
             .output()
@@ -385,8 +385,8 @@ fn a_pinned_package_whose_version_cannot_be_read_escalates_on_every_exit_code_su
             .arg(state_tmp.path())
             .env("HOME", home_tmp.path())
             .env("USERPROFILE", home_tmp.path())
-            .env("CFGD_CACHE_DIR", home_tmp.path().join("cache"))
-            .env("CFGD_APK_BIN", &apk)
+            .env(cfgd_core::CFGD_CACHE_DIR_ENV, home_tmp.path().join("cache"))
+            .env(cfgd::seams::APK_BIN_ENV, &apk)
             .output()
             .unwrap();
         let text = format!(
@@ -445,8 +445,8 @@ fn a_pinned_package_whose_manager_states_no_offer_still_resolves() {
             .arg(state_tmp.path())
             .env("HOME", home_tmp.path())
             .env("USERPROFILE", home_tmp.path())
-            .env("CFGD_CACHE_DIR", home_tmp.path().join("cache"))
-            .env("CFGD_APK_BIN", &apk)
+            .env(cfgd_core::CFGD_CACHE_DIR_ENV, home_tmp.path().join("cache"))
+            .env(cfgd::seams::APK_BIN_ENV, &apk)
             .output()
             .unwrap();
         let text = format!(
@@ -541,9 +541,9 @@ fn a_pinned_package_below_its_floor_exits_drift_detected_on_every_surface() {
             .arg(state_tmp.path())
             .env("HOME", home_tmp.path())
             .env("USERPROFILE", home_tmp.path())
-            .env("CFGD_CACHE_DIR", home_tmp.path().join("cache"))
-            .env("CFGD_DNF_BIN", &dnf)
-            .env("CFGD_RPM_BIN", &rpm)
+            .env(cfgd_core::CFGD_CACHE_DIR_ENV, home_tmp.path().join("cache"))
+            .env(cfgd::seams::DNF_BIN_ENV, &dnf)
+            .env(cfgd::seams::RPM_BIN_ENV, &rpm)
             .output()
             .unwrap();
         let text = format!(
@@ -597,9 +597,9 @@ fn a_pinned_package_below_its_floor_is_drift_on_both_scoped_surfaces() {
             .arg(state_tmp.path())
             .env("HOME", home_tmp.path())
             .env("USERPROFILE", home_tmp.path())
-            .env("CFGD_CACHE_DIR", home_tmp.path().join("cache"))
-            .env("CFGD_DNF_BIN", &dnf)
-            .env("CFGD_RPM_BIN", &rpm)
+            .env(cfgd_core::CFGD_CACHE_DIR_ENV, home_tmp.path().join("cache"))
+            .env(cfgd::seams::DNF_BIN_ENV, &dnf)
+            .env(cfgd::seams::RPM_BIN_ENV, &rpm)
             .output()
             .unwrap();
         let text = format!(
@@ -637,8 +637,8 @@ fn a_pinned_package_whose_version_cannot_be_read_escalates_on_both_scoped_surfac
             .arg(state_tmp.path())
             .env("HOME", home_tmp.path())
             .env("USERPROFILE", home_tmp.path())
-            .env("CFGD_CACHE_DIR", home_tmp.path().join("cache"))
-            .env("CFGD_APK_BIN", &apk)
+            .env(cfgd_core::CFGD_CACHE_DIR_ENV, home_tmp.path().join("cache"))
+            .env(cfgd::seams::APK_BIN_ENV, &apk)
             .output()
             .unwrap();
         let text = format!(
@@ -681,9 +681,9 @@ fn a_scoped_run_does_not_heal_a_version_row_the_machine_still_holds() {
             .arg(state_tmp.path())
             .env("HOME", home_tmp.path())
             .env("USERPROFILE", home_tmp.path())
-            .env("CFGD_CACHE_DIR", home_tmp.path().join("cache"))
-            .env("CFGD_DNF_BIN", &dnf)
-            .env("CFGD_RPM_BIN", &rpm)
+            .env(cfgd_core::CFGD_CACHE_DIR_ENV, home_tmp.path().join("cache"))
+            .env(cfgd::seams::DNF_BIN_ENV, &dnf)
+            .env(cfgd::seams::RPM_BIN_ENV, &rpm)
             .output()
             .unwrap();
         let text = format!(
@@ -1527,8 +1527,8 @@ fn a_brew_formula_clearing_its_floor_is_converged_on_every_surface() {
             .arg(state_tmp.path())
             .env("HOME", home_tmp.path())
             .env("USERPROFILE", home_tmp.path())
-            .env("CFGD_CACHE_DIR", home_tmp.path().join("cache"))
-            .env("CFGD_BREW_BIN", &brew)
+            .env(cfgd_core::CFGD_CACHE_DIR_ENV, home_tmp.path().join("cache"))
+            .env(cfgd::seams::BREW_BIN_ENV, &brew)
             .output()
             .unwrap();
         let text = format!(
@@ -1559,8 +1559,8 @@ fn a_brew_formula_clearing_its_floor_is_converged_on_every_surface() {
         .arg(state_tmp.path())
         .env("HOME", home_tmp.path())
         .env("USERPROFILE", home_tmp.path())
-        .env("CFGD_CACHE_DIR", home_tmp.path().join("cache"))
-        .env("CFGD_BREW_BIN", &brew)
+        .env(cfgd_core::CFGD_CACHE_DIR_ENV, home_tmp.path().join("cache"))
+        .env(cfgd::seams::BREW_BIN_ENV, &brew)
         .output()
         .unwrap();
     let text = format!(
@@ -1602,8 +1602,8 @@ fn a_brew_formula_below_its_floor_exits_drift_detected_on_every_surface() {
             .arg(state_tmp.path())
             .env("HOME", home_tmp.path())
             .env("USERPROFILE", home_tmp.path())
-            .env("CFGD_CACHE_DIR", home_tmp.path().join("cache"))
-            .env("CFGD_BREW_BIN", &brew)
+            .env(cfgd_core::CFGD_CACHE_DIR_ENV, home_tmp.path().join("cache"))
+            .env(cfgd::seams::BREW_BIN_ENV, &brew)
             .output()
             .unwrap();
         let text = format!(
@@ -1657,8 +1657,8 @@ fn a_brew_formula_below_its_floor_is_drift_on_both_scoped_surfaces() {
             .arg(state_tmp.path())
             .env("HOME", home_tmp.path())
             .env("USERPROFILE", home_tmp.path())
-            .env("CFGD_CACHE_DIR", home_tmp.path().join("cache"))
-            .env("CFGD_BREW_BIN", &brew)
+            .env(cfgd_core::CFGD_CACHE_DIR_ENV, home_tmp.path().join("cache"))
+            .env(cfgd::seams::BREW_BIN_ENV, &brew)
             .output()
             .unwrap();
         let text = format!(
@@ -1704,8 +1704,8 @@ fn a_scoped_brew_run_does_not_heal_a_version_row_the_machine_still_holds() {
             .arg(state_tmp.path())
             .env("HOME", home_tmp.path())
             .env("USERPROFILE", home_tmp.path())
-            .env("CFGD_CACHE_DIR", home_tmp.path().join("cache"))
-            .env("CFGD_BREW_BIN", &brew)
+            .env(cfgd_core::CFGD_CACHE_DIR_ENV, home_tmp.path().join("cache"))
+            .env(cfgd::seams::BREW_BIN_ENV, &brew)
             .output()
             .unwrap();
         let text = format!(

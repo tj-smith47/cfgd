@@ -18,15 +18,15 @@ use cfgd_core::tool_cmd;
 
 use super::shared::{run_pkg_cmd, run_pkg_query};
 
-pub(super) const APT_CACHE_BIN_ENV: &str = "CFGD_APT_CACHE_BIN";
-pub(super) const APK_BIN_ENV: &str = "CFGD_APK_BIN";
-pub(super) const PKG_BIN_ENV: &str = "CFGD_PKG_BIN";
-pub(super) const PACMAN_BIN_ENV: &str = "CFGD_PACMAN_BIN";
-pub(super) const DNF_BIN_ENV: &str = "CFGD_DNF_BIN";
-pub(super) const YUM_BIN_ENV: &str = "CFGD_YUM_BIN";
-pub(super) const ZYPPER_BIN_ENV: &str = "CFGD_ZYPPER_BIN";
-pub(super) const DPKG_QUERY_BIN_ENV: &str = "CFGD_DPKG_QUERY_BIN";
-pub(super) const RPM_BIN_ENV: &str = "CFGD_RPM_BIN";
+pub const APT_CACHE_BIN_ENV: &str = "CFGD_APT_CACHE_BIN";
+pub const APK_BIN_ENV: &str = "CFGD_APK_BIN";
+pub const PKG_BIN_ENV: &str = "CFGD_PKG_BIN";
+pub const PACMAN_BIN_ENV: &str = "CFGD_PACMAN_BIN";
+pub const DNF_BIN_ENV: &str = "CFGD_DNF_BIN";
+pub const YUM_BIN_ENV: &str = "CFGD_YUM_BIN";
+pub const ZYPPER_BIN_ENV: &str = "CFGD_ZYPPER_BIN";
+pub const DPKG_QUERY_BIN_ENV: &str = "CFGD_DPKG_QUERY_BIN";
+pub const RPM_BIN_ENV: &str = "CFGD_RPM_BIN";
 
 /// Map an `info`-style manager name to its env-var seam. Unknown managers
 /// debug-assert (catches typos in tests) and log a warning, then fall through

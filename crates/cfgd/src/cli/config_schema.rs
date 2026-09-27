@@ -1176,7 +1176,7 @@ mod tests {
         use cfgd_core::output::{Printer, Verbosity};
         use cfgd_core::test_helpers::EnvVarGuard;
 
-        let _state = EnvVarGuard::unset("CFGD_STATE_DIR");
+        let _state = EnvVarGuard::unset(cfgd_core::CFGD_STATE_DIR_ENV);
         let _systemd = EnvVarGuard::unset("STATE_DIRECTORY");
         let _home = EnvVarGuard::unset("HOME");
         let _profile = EnvVarGuard::unset("USERPROFILE");
@@ -1265,7 +1265,8 @@ mod tests {
     #[serial_test::serial]
     fn the_gate_reads_the_stored_policy_off_its_own_parse_and_an_override_outranks_it() {
         use cfgd_core::output::{Printer, Verbosity};
-        let _unset = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_MIGRATION_POLICY");
+        let _unset =
+            cfgd_core::test_helpers::EnvVarGuard::unset(cfgd_core::CFGD_MIGRATION_POLICY_ENV);
         let stored = |declared: &str, over: Option<MigrationPolicy>| {
             let dir = tempfile::tempdir().unwrap();
             let state = tempfile::tempdir().unwrap();

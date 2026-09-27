@@ -257,7 +257,7 @@ mod tests {
             // two answers disagree.
             let runnable = |tool: &str| {
                 cfgd_core::command_available_with_seam(
-                    &format!("CFGD_{}_BIN", tool.to_uppercase().replace('-', "_")),
+                    &crate::packages::shared::tool_seam_var(tool),
                     tool,
                 )
             };

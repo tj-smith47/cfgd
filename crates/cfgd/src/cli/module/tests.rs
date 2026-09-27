@@ -2057,7 +2057,7 @@ fn cmd_module_keys_generate_no_cosign_fails() {
     // A manager answers available from its own install prefix as well as from
     // PATH, so an emptied PATH alone would still leave one for cfgd to spawn.
     let _managers = cfgd_core::test_helpers::NoHostManagers::pinned_missing();
-    let _g = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_COSIGN_BIN");
+    let _g = cfgd_core::test_helpers::EnvVarGuard::unset(cfgd_core::COSIGN_BIN_ENV);
     let _path = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
     let printer = make_printer();
     let err = cmd_module_keys_generate(&printer, None).unwrap_err();
@@ -4811,7 +4811,7 @@ fn cmd_module_keys_rotate_no_cosign_fails() {
     // A manager answers available from its own install prefix as well as from
     // PATH, so an emptied PATH alone would still leave one for cfgd to spawn.
     let _managers = cfgd_core::test_helpers::NoHostManagers::pinned_missing();
-    let _g = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_COSIGN_BIN");
+    let _g = cfgd_core::test_helpers::EnvVarGuard::unset(cfgd_core::COSIGN_BIN_ENV);
     let _path = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
     // The key the verb would rotate: its absence is a precondition that
     // refuses ahead of the install, so a pin about the missing TOOL has to get
@@ -4840,7 +4840,7 @@ fn cmd_module_keys_rotate_no_existing_key_fails() {
     let fake = dir.path().join("cosign");
     std::fs::write(&fake, "").unwrap();
     let _g = cfgd_core::test_helpers::EnvVarGuard::set(
-        "CFGD_COSIGN_BIN",
+        cfgd_core::COSIGN_BIN_ENV,
         fake.to_str().expect("tempdir path is valid UTF-8"),
     );
     let printer = make_printer();
@@ -5210,9 +5210,10 @@ mod keys_with_fake_cosign {
         // logs every argv: the claim is that NOTHING was spawned to get a tool
         // the verb never needed.
         let _managers = cfgd_core::test_helpers::NoHostManagers::pinned_missing();
-        let shim = cfgd_core::test_helpers::ToolShim::install("CFGD_BREW_BIN", 0, "", "");
+        let shim =
+            cfgd_core::test_helpers::ToolShim::install(crate::seams::BREW_BIN_ENV, 0, "", "");
         let _seam = cfgd_core::test_helpers::EnvVarGuard::set(
-            "CFGD_COSIGN_BIN",
+            cfgd_core::COSIGN_BIN_ENV,
             cfgd_core::test_helpers::ABSENT_SEAM_PATH,
         );
         let _empty = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
@@ -5270,7 +5271,7 @@ mod keys_with_fake_cosign {
         std::fs::set_permissions(&shim_path, perms).expect("chmod shim");
 
         let _g = cfgd_core::test_helpers::EnvVarGuard::set(
-            "CFGD_COSIGN_BIN",
+            cfgd_core::COSIGN_BIN_ENV,
             shim_path.to_str().expect("shim path utf8"),
         );
 
@@ -6692,7 +6693,7 @@ mod cmd_module_add_remote_local_bare {
     fn cmd_module_add_remote_against_local_bare_adds_to_lockfile_and_profile() {
         let work = setup_config_dir();
         let _home = cfgd_core::with_test_home_guard(work.path());
-        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _env = EnvGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
         let bare_root = tempfile::tempdir().unwrap();
         let bare = make_bare_with_module(bare_root.path(), "mymod", "v1.0.0");
@@ -6730,7 +6731,7 @@ mod cmd_module_add_remote_local_bare {
     fn cmd_module_add_remote_is_idempotent_when_module_already_in_lockfile() {
         let work = setup_config_dir();
         let _home = cfgd_core::with_test_home_guard(work.path());
-        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _env = EnvGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
         let bare_root = tempfile::tempdir().unwrap();
         let bare = make_bare_with_module(bare_root.path(), "mymod", "v1.0.0");
@@ -6758,7 +6759,7 @@ mod cmd_module_add_remote_local_bare {
     fn cmd_module_add_remote_bails_when_local_module_with_same_name_exists() {
         let work = setup_config_dir();
         let _home = cfgd_core::with_test_home_guard(work.path());
-        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _env = EnvGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
         // Seed a local module under <config>/modules/<name>/ so the
         // local-vs-remote name collision check fires.
@@ -6786,7 +6787,7 @@ mod cmd_module_add_remote_local_bare {
     fn cmd_module_upgrade_against_local_bare_replaces_lockfile_entry() {
         let work = setup_config_dir();
         let _home = cfgd_core::with_test_home_guard(work.path());
-        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _env = EnvGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
         let bare_root = tempfile::tempdir().unwrap();
         let bare = make_bare_with_module(bare_root.path(), "mymod", "v1.0.0");
@@ -6824,7 +6825,7 @@ mod cmd_module_add_remote_local_bare {
     fn cmd_module_upgrade_returns_early_when_module_not_in_lockfile() {
         let work = setup_config_dir();
         let _home = cfgd_core::with_test_home_guard(work.path());
-        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _env = EnvGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
         let cli = test_cli(work.path());
         let printer = make_printer();
@@ -6848,7 +6849,7 @@ mod cmd_module_add_remote_local_bare {
         // HEAD and short-circuit at "already at this version".
         let work = setup_config_dir();
         let _home = cfgd_core::with_test_home_guard(work.path());
-        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _env = EnvGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
         let bare_root = tempfile::tempdir().unwrap();
         let bare = make_bare_with_prefixed_tag(bare_root.path(), "mymod", "1.0.0");
@@ -6911,7 +6912,7 @@ mod cmd_module_add_remote_local_bare {
         // falling back to a branch HEAD.
         let work = setup_config_dir();
         let _home = cfgd_core::with_test_home_guard(work.path());
-        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _env = EnvGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
         // `make_bare_with_module` tags the commit `v1.0.0` (no `mymod/` prefix),
         // so there is no `mymod/v*` version tag for "latest" to resolve.
@@ -6951,7 +6952,7 @@ mod cmd_module_add_remote_local_bare {
         // BEFORE rewriting the lockfile.
         let work = setup_config_dir();
         let _home = cfgd_core::with_test_home_guard(work.path());
-        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _env = EnvGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
         let bare_root = tempfile::tempdir().unwrap();
         let bare = make_bare_with_module(bare_root.path(), "mymod", "v1.0.0");
@@ -6990,7 +6991,7 @@ mod cmd_module_add_remote_local_bare {
     fn cmd_module_upgrade_bails_when_target_is_a_local_module() {
         let work = setup_config_dir();
         let _home = cfgd_core::with_test_home_guard(work.path());
-        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _env = EnvGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
         // Module exists only as a local module — no lockfile entry.
         let local_mod_yaml =
@@ -7134,7 +7135,7 @@ mod cmd_module_add_from_registry_local {
     fn cmd_module_add_from_registry_explicit_tag_writes_lockfile_and_profile() {
         let work = setup_config_dir();
         let _home = cfgd_core::with_test_home_guard(work.path());
-        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _env = EnvGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
         let src_root = tempfile::tempdir().unwrap();
         let src = init_registry_source(src_root.path(), "alpha", "1.0.0", "Alpha module");
@@ -7178,7 +7179,7 @@ mod cmd_module_add_from_registry_local {
     fn cmd_module_add_from_registry_no_tag_resolves_latest_version() {
         let work = setup_config_dir();
         let _home = cfgd_core::with_test_home_guard(work.path());
-        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _env = EnvGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
         let src_root = tempfile::tempdir().unwrap();
         let src = init_registry_source(src_root.path(), "beta", "1.0.0", "Beta v1");
@@ -7212,7 +7213,7 @@ mod cmd_module_add_from_registry_local {
     fn cmd_module_add_from_registry_unknown_registry_errors() {
         let work = setup_config_dir();
         let _home = cfgd_core::with_test_home_guard(work.path());
-        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _env = EnvGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
         // cfgd.yaml left without any registries declared.
         let cli = test_cli(work.path());
@@ -7231,7 +7232,7 @@ mod cmd_module_add_from_registry_local {
     fn cmd_module_add_from_registry_invalid_reference_format_errors() {
         let work = setup_config_dir();
         let _home = cfgd_core::with_test_home_guard(work.path());
-        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _env = EnvGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
         let cli = test_cli(work.path());
         let printer = make_printer();
@@ -7250,7 +7251,7 @@ mod cmd_module_add_from_registry_local {
     fn cmd_module_add_from_registry_unknown_module_errors_when_no_tags() {
         let work = setup_config_dir();
         let _home = cfgd_core::with_test_home_guard(work.path());
-        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _env = EnvGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
         let src_root = tempfile::tempdir().unwrap();
         let src = init_registry_source(src_root.path(), "alpha", "1.0.0", "Alpha");
@@ -7282,7 +7283,7 @@ mod cmd_module_add_from_registry_local {
     fn cmd_module_search_returns_matching_module_in_table() {
         let work = setup_config_dir();
         let _home = cfgd_core::with_test_home_guard(work.path());
-        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _env = EnvGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
         let src_root = tempfile::tempdir().unwrap();
         let src = init_registry_source(src_root.path(), "alpha", "1.0.0", "Alpha module");
@@ -7316,7 +7317,7 @@ mod cmd_module_add_from_registry_local {
     fn cmd_module_search_reports_no_matches_when_query_misses() {
         let work = setup_config_dir();
         let _home = cfgd_core::with_test_home_guard(work.path());
-        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _env = EnvGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
         let src_root = tempfile::tempdir().unwrap();
         let src = init_registry_source(src_root.path(), "alpha", "1.0.0", "Alpha module");
@@ -7345,7 +7346,7 @@ mod cmd_module_add_from_registry_local {
     fn cmd_module_search_wide_format_includes_registry_column() {
         let work = setup_config_dir();
         let _home = cfgd_core::with_test_home_guard(work.path());
-        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _env = EnvGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
         let src_root = tempfile::tempdir().unwrap();
         let src = init_registry_source(src_root.path(), "alpha", "1.0.0", "Alpha module");
@@ -7380,7 +7381,7 @@ mod cmd_module_add_from_registry_local {
     fn cmd_module_search_json_emits_results_array() {
         let work = setup_config_dir();
         let _home = cfgd_core::with_test_home_guard(work.path());
-        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _env = EnvGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
         let src_root = tempfile::tempdir().unwrap();
         let src = init_registry_source(src_root.path(), "alpha", "1.0.0", "Alpha module");
@@ -7410,7 +7411,7 @@ mod cmd_module_add_from_registry_local {
     fn cmd_module_search_unreachable_registry_emits_failure_warning() {
         let work = setup_config_dir();
         let _home = cfgd_core::with_test_home_guard(work.path());
-        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _env = EnvGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
         // Point the registry URL at a path that doesn't exist — the
         // file:// resolver should fail to clone, the search should NOT

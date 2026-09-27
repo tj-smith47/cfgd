@@ -14,7 +14,7 @@ use cfgd_core::providers::{ActionNote, PackageContext};
 
 /// Compute the canonical env-var seam name for a package-manager binary.
 /// Pattern: `CFGD_<NAME>_BIN`, with hyphens turned into underscores so
-/// `brew-cask` maps to `CFGD_BREW_CASK_BIN`. Used by tests via ToolShim.
+/// `brew-cask` maps to `CFGD_BREW_CASK_BIN`.
 pub(super) fn tool_seam_var(name: &str) -> String {
     format!("CFGD_{}_BIN", name.to_uppercase().replace('-', "_"))
 }
@@ -741,7 +741,7 @@ const LINUXBREW_PATH: &str = "/home/linuxbrew/.linuxbrew/bin/brew";
 /// Tests set this to a `cfgd_core::test_helpers::ToolShim` script path,
 /// short-circuiting the linuxbrew detection logic so install/uninstall/etc
 /// flows can be exercised without a real Homebrew installation.
-const BREW_BIN_ENV: &str = "CFGD_BREW_BIN";
+pub const BREW_BIN_ENV: &str = "CFGD_BREW_BIN";
 
 /// Check if brew is available, including linuxbrew fallback on Linux.
 ///

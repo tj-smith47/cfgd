@@ -485,7 +485,7 @@ fn every_show_values_flag_conflicts_with_the_global_masking_knob() {
     );
     assert_eq!(
         global.get_env().and_then(|e| e.to_str()),
-        Some("CFGD_MASK_ENV_VALUES")
+        Some(cfgd_core::CFGD_MASK_ENV_VALUES_ENV)
     );
 
     let mut built = Cli::command();
@@ -548,7 +548,10 @@ fn no_subcommand_declares_its_own_yes_flag() {
         .expect("Cli carries a --yes");
     assert!(global.is_global_set(), "--yes on Cli must be global");
     assert_eq!(global.get_short(), Some('y'));
-    assert_eq!(global.get_env().and_then(|e| e.to_str()), Some("CFGD_YES"));
+    assert_eq!(
+        global.get_env().and_then(|e| e.to_str()),
+        Some(cfgd_core::CFGD_YES_ENV)
+    );
 
     let mut seen = 0;
     walk(&root, "cfgd", &mut seen);
@@ -1022,8 +1025,9 @@ fn theme_flag_is_global_and_refuses_an_unknown_preset() {
 #[serial_test::serial]
 fn theme_flag_reads_cfgd_theme_from_the_environment() {
     use cfgd_core::test_helpers::EnvVarGuard;
-    let _g = EnvVarGuard::set("CFGD_THEME", "nord");
-    let cli = Cli::try_parse_reading_env(["cfgd", "status"], &["CFGD_THEME"]).expect("parse");
+    let _g = EnvVarGuard::set(cfgd_core::CFGD_THEME_ENV, "nord");
+    let cli = Cli::try_parse_reading_env(["cfgd", "status"], &[cfgd_core::CFGD_THEME_ENV])
+        .expect("parse");
     assert_eq!(cli.theme.as_deref(), Some("nord"));
 }
 
@@ -1109,7 +1113,7 @@ fn resolve_theme_config_falls_back_to_the_default_theme_when_it_cannot_read_one(
 #[test]
 #[serial_test::serial]
 fn resolve_hints_enabled_defaults_off_with_no_config_flag_or_env() {
-    let _unset = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_USAGE_HINTS");
+    let _unset = cfgd_core::test_helpers::EnvVarGuard::unset(cfgd_core::CFGD_USAGE_HINTS_ENV);
     let dir = tempfile::tempdir().expect("tempdir");
     assert!(
         !super::resolve_hints_enabled(
@@ -1125,7 +1129,7 @@ fn resolve_hints_enabled_defaults_off_with_no_config_flag_or_env() {
 #[test]
 #[serial_test::serial]
 fn resolve_hints_enabled_reads_a_stored_demand_for_hints() {
-    let _unset = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_USAGE_HINTS");
+    let _unset = cfgd_core::test_helpers::EnvVarGuard::unset(cfgd_core::CFGD_USAGE_HINTS_ENV);
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("cfgd.yaml");
     std::fs::write(
@@ -1142,7 +1146,7 @@ fn resolve_hints_enabled_reads_a_stored_demand_for_hints() {
 #[test]
 #[serial_test::serial]
 fn resolve_hints_enabled_reads_spec_output_usage_hints() {
-    let _unset = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_USAGE_HINTS");
+    let _unset = cfgd_core::test_helpers::EnvVarGuard::unset(cfgd_core::CFGD_USAGE_HINTS_ENV);
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("cfgd.yaml");
     std::fs::write(
@@ -1161,7 +1165,7 @@ fn resolve_hints_enabled_reads_spec_output_usage_hints() {
 #[test]
 #[serial_test::serial]
 fn resolve_hints_enabled_reads_the_legacy_flat_usage_hints_key() {
-    let _unset = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_USAGE_HINTS");
+    let _unset = cfgd_core::test_helpers::EnvVarGuard::unset(cfgd_core::CFGD_USAGE_HINTS_ENV);
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("cfgd.yaml");
     std::fs::write(
@@ -1178,7 +1182,7 @@ fn resolve_hints_enabled_reads_the_legacy_flat_usage_hints_key() {
 #[test]
 #[serial_test::serial]
 fn resolve_mask_env_values_defaults_to_masking_every_value() {
-    let _unset = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_MASK_ENV_VALUES");
+    let _unset = cfgd_core::test_helpers::EnvVarGuard::unset(cfgd_core::CFGD_MASK_ENV_VALUES_ENV);
     let dir = tempfile::tempdir().expect("tempdir");
     assert!(
         super::resolve_mask_env_values(
@@ -1197,7 +1201,7 @@ fn resolve_mask_env_values_defaults_to_masking_every_value() {
 #[test]
 #[serial_test::serial]
 fn resolve_mask_env_values_precedence_flag_beats_spec_beats_default() {
-    let _unset = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_MASK_ENV_VALUES");
+    let _unset = cfgd_core::test_helpers::EnvVarGuard::unset(cfgd_core::CFGD_MASK_ENV_VALUES_ENV);
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("cfgd.yaml");
     std::fs::write(
@@ -1226,18 +1230,18 @@ fn the_update_policy_field_carries_the_flag_over_the_env_var() {
     use cfgd_core::config::UpdatePolicy;
     use cfgd_core::test_helpers::EnvVarGuard;
     let parsed = |argv: &[&str]| {
-        Cli::try_parse_reading_env(argv.iter().copied(), &["CFGD_UPDATE_POLICY"])
+        Cli::try_parse_reading_env(argv.iter().copied(), &[cfgd_core::CFGD_UPDATE_POLICY_ENV])
             .expect("parses")
             .update_policy_override()
     };
-    let unset = EnvVarGuard::unset("CFGD_UPDATE_POLICY");
+    let unset = EnvVarGuard::unset(cfgd_core::CFGD_UPDATE_POLICY_ENV);
     assert_eq!(
         parsed(&["cfgd", "status"]),
         None,
         "nothing said, nothing overridden"
     );
     drop(unset);
-    let _env = EnvVarGuard::set("CFGD_UPDATE_POLICY", "Notify");
+    let _env = EnvVarGuard::set(cfgd_core::CFGD_UPDATE_POLICY_ENV, "Notify");
     assert_eq!(
         parsed(&["cfgd", "status"]),
         Some(UpdatePolicy::Notify),
@@ -1522,8 +1526,9 @@ fn the_update_check_walk_reads_an_offence_it_plants_itself() {
 /// `cfgd_core::test_helpers::is_test_only_file` names them: cfgd-core's
 /// `test_helpers.rs` and the `fake-cosign` fixture binary (both behind the
 /// `test-helpers` feature), and every module declared under `#[cfg(test)]`.
-/// Tests keep their literals, since they assert the wire spelling. Each crate's
-/// count of spellings has a floor, so a tree the walk stops reading fails.
+/// Test code is `every_test_names_a_cfgd_variable_through_its_const`'s to judge.
+/// Each crate's count of spellings has a floor, so a tree the walk stops
+/// reading fails.
 #[test]
 fn every_cfgd_env_name_is_spelled_once_in_production() {
     fn bound_env_names(cmd: &clap::Command, out: &mut std::collections::BTreeSet<String>) {
@@ -1863,6 +1868,234 @@ fn signature_split(decl: &str, name: &str) -> Option<(Vec<String>, String)> {
     Some((params, decl[close..].to_string()))
 }
 
+/// A test names a `CFGD_*` variable through the const production reads it by,
+/// wherever that const is reachable from the test, so a renamed variable breaks
+/// the build of every test that sets, clears or reads it. A literal left behind
+/// keeps setting the old name: the test goes on passing while it configures a
+/// variable nothing reads.
+///
+/// The population is every `CFGD_*` const a production file declares on one
+/// line. A `pub const` in cfgd-core (`env_names.rs` and the seams `util/`
+/// re-exports) is reachable from every crate's tests; any other const, from
+/// the tests of its own crate's library, and from its `tests/` when the
+/// crate's test-gated `seams` module re-exports it (`src/bin` and `tests/`
+/// build as crates of their own). A crate carrying `seams` lists every const
+/// it owns there, or its integration tests fall back to a literal. A name with
+/// no const (a derived `CFGD_<TOOL>_BIN` seam, a script variable, a fixture's
+/// invented name) stays a literal.
+///
+/// The test region is every file `is_test_source` or `is_test_only_file` names
+/// and the inline `#[cfg(test)]` items of the rest, read as code
+/// (`code_span`), so a comment naming a variable is prose. A literal that is
+/// rendered TEXT is no variable name: an argument of `contains(` or a
+/// `should_panic(expected = …)` asserts what a message says, and a line
+/// carrying `// env-literal-ok: <why>` says so for any other shape; a golden
+/// is a text file the walk never reads. A
+/// `CFGD_<TOOL>_BIN` seam name composed in a `format!` is refused too:
+/// `packages::shared::tool_seam_var` is the one derivation, and a copy of it
+/// keeps probing the old name after the derivation changes. Each root's count
+/// of test files read has a floor, so a tree the walk stops reading fails.
+#[test]
+fn every_test_names_a_cfgd_variable_through_its_const() {
+    const HATCH: &str = "env-literal-ok:";
+    // Split so this line is not the composition it looks for.
+    const COMPOSED_SEAM: &str = concat!("\"CFGD", "_{");
+    // The test files each root holds today: whole test files plus the
+    // sources carrying an inline test item. cfgd-test-fixtures holds none.
+    const WALK_ROOTS: &[(&str, usize)] = &[
+        ("cfgd", 189),
+        ("cfgd-core", 170),
+        ("cfgd-crd", 1),
+        ("cfgd-csi", 8),
+        ("cfgd-operator", 36),
+        ("cfgd-schema", 1),
+        ("cfgd-test-fixtures", 0),
+    ];
+    let crates_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let root_names: Vec<&str> = WALK_ROOTS.iter().map(|(k, _)| *k).collect();
+
+    // name -> (Some(owning crate) for a crate-local const or None for one every
+    // crate reaches, the const's identifier).
+    let mut owners: std::collections::BTreeMap<String, (Option<String>, String)> =
+        Default::default();
+    for (root, files) in production_sources_per_root(&root_names) {
+        for (_, production) in files {
+            for raw in production.lines() {
+                let code = cfgd_core::test_helpers::code_span(raw);
+                if cfgd_core::test_helpers::item_keyword(code) != "const" {
+                    continue;
+                }
+                let head = code.trim_start();
+                let (_, rest) = cfgd_core::test_helpers::item_lead(head);
+                let everywhere =
+                    root == "cfgd-core" && head[..head.len() - rest.len()].trim() == "pub";
+                let ident = code
+                    .split("const ")
+                    .nth(1)
+                    .and_then(|t| t.split(':').next());
+                for name in cfgd_env_literals(code) {
+                    owners.insert(
+                        name.to_string(),
+                        (
+                            (!everywhere).then(|| root.clone()),
+                            ident.unwrap_or_default().trim().to_string(),
+                        ),
+                    );
+                }
+            }
+        }
+    }
+    let everywhere = owners.values().filter(|(o, _)| o.is_none()).count();
+
+    // A crate whose `lib.rs` re-exports its seams under `seams` reaches its
+    // own `tests/` with them too, so every const that crate owns is listed there.
+    let mut reexported: std::collections::BTreeSet<(String, String)> = Default::default();
+    let mut seam_roots: std::collections::BTreeSet<String> = Default::default();
+    for root in &root_names {
+        let lib = crates_dir.join(root).join("src").join("lib.rs");
+        if !lib.is_file() {
+            continue;
+        }
+        // unfloored-slice-ok: `seams` is test-gated, which the production cut drops.
+        let body = cfgd_core::test_helpers::walked_file_body(&lib);
+        let Some(at) = body.find("pub mod seams {") else {
+            continue;
+        };
+        seam_roots.insert(root.to_string());
+        let block = &body[at..at + body[at..].find('}').unwrap_or(0)];
+        for line in block.lines() {
+            let used = line.trim().strip_suffix(';');
+            if let Some((_, ident)) = used.and_then(|u| u.rsplit_once("::")) {
+                reexported.insert((root.to_string(), ident.to_string()));
+            }
+        }
+    }
+    let unlisted: Vec<String> = owners
+        .iter()
+        .filter_map(|(name, (owner, ident))| {
+            let owner = owner.as_ref().filter(|o| seam_roots.contains(*o))?;
+            (!reexported.contains(&(owner.clone(), ident.clone())))
+                .then(|| format!("crates/{owner}: {ident} (\"{name}\")"))
+        })
+        .collect();
+    assert!(
+        seam_roots.contains("cfgd") && unlisted.is_empty(),
+        "a crate re-exporting its seams under `seams` leaves one out, so its \
+         integration tests cannot name it:\n{}",
+        unlisted.join("\n")
+    );
+    // 36 env_names.rs consts plus the three `pub` seams util/ re-exports reach
+    // every crate; 27 more are crate-local seams.
+    assert!(
+        everywhere >= 39 && owners.len() >= 66,
+        "the const population is {} names, {everywhere} reachable from every crate; the \
+         scan has stopped reading the consts",
+        owners.len()
+    );
+
+    let mut offenders: Vec<String> = Vec::new();
+    for (root, floor) in WALK_ROOTS {
+        let mut read = 0usize;
+        for dir in ["src", "tests"] {
+            let tree = crates_dir.join(root).join(dir);
+            if !tree.is_dir() {
+                continue;
+            }
+            for path in rust_sources_under(&tree) {
+                let whole = cfgd_core::test_helpers::is_test_source(&path)
+                    || cfgd_core::test_helpers::is_test_only_file(&path);
+                // unfloored-slice-ok: the test region is cut from the whole file here.
+                let body = cfgd_core::test_helpers::walked_file_body(&path);
+                let region = if whole {
+                    body.clone()
+                } else {
+                    cfgd_core::test_helpers::test_region_mask(&body)
+                };
+                if region.trim().is_empty() {
+                    continue;
+                }
+                read += 1;
+                let rel =
+                    cfgd_core::to_posix_string(path.strip_prefix(&crates_dir).unwrap_or(&path));
+                let own_library = dir == "src" && !rel.contains("/src/bin/");
+                let raw_lines: Vec<&str> = body.lines().collect();
+                for (i, line) in region.lines().enumerate() {
+                    let code = cfgd_core::test_helpers::code_span(line);
+                    if cfgd_core::test_helpers::carries_hatch(line, HATCH)
+                        || (i > 0
+                            && cfgd_core::test_helpers::carries_hatch(raw_lines[i - 1], HATCH))
+                    {
+                        continue;
+                    }
+                    if code.contains(COMPOSED_SEAM) {
+                        offenders.push(format!(
+                            "crates/{rel}:{}: a seam name composed by hand; call `tool_seam_var`",
+                            i + 1
+                        ));
+                    }
+                    for name in cfgd_env_literals(code) {
+                        let reachable = match owners.get(name) {
+                            Some((None, _)) => true,
+                            Some((Some(owner), ident)) => {
+                                owner == root
+                                    && (own_library
+                                        || (dir != "src"
+                                            && reexported
+                                                .contains(&(owner.clone(), ident.clone()))))
+                            }
+                            None => false,
+                        };
+                        if reachable && !names_rendered_text(code, name) {
+                            offenders.push(format!("crates/{rel}:{}: \"{name}\"", i + 1));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            read >= *floor,
+            "the walk read {read} test files under crates/{root}, under its floor of {floor}"
+        );
+    }
+    assert!(
+        offenders.is_empty(),
+        "a test spells a CFGD_* variable its const already names; take the const (a \
+         crate-local one widened as far as the test needs), or say why the literal is \
+         rendered text with `// {HATCH} <why>`:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// Whether every `"<name>"` literal on a code line is an assertion about
+/// rendered text: the argument of `contains(`, or a `should_panic` expectation.
+fn names_rendered_text(code: &str, name: &str) -> bool {
+    let literal = format!("\"{name}\"");
+    code.match_indices(&literal).all(|(at, _)| {
+        let before = code[..at].trim_end();
+        before.ends_with("contains(") || before.ends_with("expected =")
+    })
+}
+
+#[test]
+fn a_rendered_variable_name_is_told_from_a_variable_name() {
+    assert!(names_rendered_text(
+        r#"assert!(err.contains("CFGD_X"));"#,
+        "CFGD_X"
+    ));
+    assert!(names_rendered_text(
+        r#"#[should_panic(expected = "CFGD_X")]"#,
+        "CFGD_X"
+    ));
+    assert!(!names_rendered_text(
+        r#"EnvVarGuard::set("CFGD_X", "1");"#,
+        "CFGD_X"
+    ));
+    assert!(!names_rendered_text(
+        r#"x.contains("CFGD_X") && set("CFGD_X")"#,
+        "CFGD_X"
+    ));
+}
+
 /// Every whole `"CFGD_<NAME>"` literal in `text`, in order, without its quotes.
 fn cfgd_env_literals(text: &str) -> impl Iterator<Item = &str> {
     text.match_indices("\"CFGD_").filter_map(|(at, _)| {
@@ -2028,7 +2261,7 @@ fn every_enum_knob_under_spec_is_classified_against_the_global_flag_table() {
 #[test]
 #[serial_test::serial]
 fn an_unparseable_config_still_masks_every_env_value() {
-    let _unset = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_MASK_ENV_VALUES");
+    let _unset = cfgd_core::test_helpers::EnvVarGuard::unset(cfgd_core::CFGD_MASK_ENV_VALUES_ENV);
     let dir = tempfile::tempdir().expect("tempdir");
     let broken = dir.path().join("broken.yaml");
     std::fs::write(&broken, "spec: 'this is not a mapping\n").expect("write broken config");
@@ -2049,26 +2282,26 @@ fn resolve_hints_enabled_precedence_flag_beats_env_beats_spec_beats_default() {
     .expect("write config");
 
     // spec.usageHints: false, no env, no flag -> off.
-    let _unset = EnvVarGuard::unset("CFGD_USAGE_HINTS");
+    let _unset = EnvVarGuard::unset(cfgd_core::CFGD_USAGE_HINTS_ENV);
     assert!(!super::resolve_hints_enabled(
         StartupDocument::load(&path).config(),
         None
     ));
 
     // The env var beats a config that says the opposite.
-    let _on_env = EnvVarGuard::set("CFGD_USAGE_HINTS", "true");
+    let _on_env = EnvVarGuard::set(cfgd_core::CFGD_USAGE_HINTS_ENV, "true");
     assert!(
         super::resolve_hints_enabled(StartupDocument::load(&path).config(), None),
         "CFGD_USAGE_HINTS=true must outrank spec.usageHints: false"
     );
 
     // The flag beats an env var that says the opposite, in both directions.
-    let _off_env = EnvVarGuard::set("CFGD_USAGE_HINTS", "true");
+    let _off_env = EnvVarGuard::set(cfgd_core::CFGD_USAGE_HINTS_ENV, "true");
     assert!(
         !super::resolve_hints_enabled(StartupDocument::load(&path).config(), Some(false)),
         "--no-hints must outrank CFGD_USAGE_HINTS=true"
     );
-    let _back_off = EnvVarGuard::set("CFGD_USAGE_HINTS", "false");
+    let _back_off = EnvVarGuard::set(cfgd_core::CFGD_USAGE_HINTS_ENV, "false");
     assert!(
         super::resolve_hints_enabled(StartupDocument::load(&path).config(), Some(true)),
         "--hints must outrank CFGD_USAGE_HINTS=false"
@@ -2086,14 +2319,14 @@ fn the_migration_policy_flag_outranks_the_env_var_and_says_nothing_on_its_own() 
     use cfgd_core::test_helpers::EnvVarGuard;
     use cfgd_schema::MigrationPolicy;
 
-    let _unset = EnvVarGuard::unset("CFGD_MIGRATION_POLICY");
+    let _unset = EnvVarGuard::unset(cfgd_core::CFGD_MIGRATION_POLICY_ENV);
     assert_eq!(
         super::migration_policy_override(None),
         None,
         "with nothing said, the invocation overrides nothing and the document decides"
     );
 
-    let _env = EnvVarGuard::set("CFGD_MIGRATION_POLICY", "ignore");
+    let _env = EnvVarGuard::set(cfgd_core::CFGD_MIGRATION_POLICY_ENV, "ignore");
     assert_eq!(
         super::migration_policy_override(None),
         Some(MigrationPolicy::Ignore),
@@ -2123,7 +2356,7 @@ fn resolve_hints_enabled_folds_the_boolish_spellings_of_its_env_var() {
     use cfgd_core::test_helpers::EnvVarGuard;
 
     let dir = tempfile::tempdir().expect("tempdir");
-    let _unset = EnvVarGuard::unset("CFGD_USAGE_HINTS");
+    let _unset = EnvVarGuard::unset(cfgd_core::CFGD_USAGE_HINTS_ENV);
     let stored_config = |demand: bool| {
         let path = dir.path().join(format!("hints-{demand}.yaml"));
         std::fs::write(
@@ -2146,7 +2379,7 @@ fn resolve_hints_enabled_folds_the_boolish_spellings_of_its_env_var() {
         ("off", false),
         ("false", false),
     ] {
-        let _env = EnvVarGuard::set("CFGD_USAGE_HINTS", raw);
+        let _env = EnvVarGuard::set(cfgd_core::CFGD_USAGE_HINTS_ENV, raw);
         assert_eq!(
             super::resolve_hints_enabled(
                 StartupDocument::load(&stored_config(!expected)).config(),
@@ -2158,7 +2391,7 @@ fn resolve_hints_enabled_folds_the_boolish_spellings_of_its_env_var() {
     }
 
     for demand in [true, false] {
-        let _env = EnvVarGuard::set("CFGD_USAGE_HINTS", "bogus");
+        let _env = EnvVarGuard::set(cfgd_core::CFGD_USAGE_HINTS_ENV, "bogus");
         assert_eq!(
             super::resolve_hints_enabled(
                 StartupDocument::load(&stored_config(demand)).config(),
@@ -2216,7 +2449,7 @@ fn every_enum_valued_global_flag_accepts_its_config_spelling() {
         Knob {
             field: "mask_env_values",
             flag: "--mask-env-values",
-            env: "CFGD_MASK_ENV_VALUES",
+            env: cfgd_core::CFGD_MASK_ENV_VALUES_ENV,
             tokens: cfgd_core::config::MaskEnvValues::ALL
                 .iter()
                 .map(|v| v.as_str())
@@ -2231,7 +2464,7 @@ fn every_enum_valued_global_flag_accepts_its_config_spelling() {
         Knob {
             field: "migration_policy",
             flag: "--migration-policy",
-            env: "CFGD_MIGRATION_POLICY",
+            env: cfgd_core::CFGD_MIGRATION_POLICY_ENV,
             tokens: cfgd_schema::MigrationPolicy::ALL
                 .iter()
                 .map(|v| v.as_str())
@@ -2246,7 +2479,7 @@ fn every_enum_valued_global_flag_accepts_its_config_spelling() {
         Knob {
             field: "update_policy",
             flag: "--update-policy",
-            env: "CFGD_UPDATE_POLICY",
+            env: cfgd_core::CFGD_UPDATE_POLICY_ENV,
             tokens: cfgd_core::config::UpdatePolicy::ALL
                 .iter()
                 .map(|v| v.as_str())
@@ -7056,7 +7289,7 @@ fn run_apply_home_unset_errors_and_creates_no_state() {
     let _home = EnvVarGuard::unset("HOME");
     let _xdg_cfg = EnvVarGuard::unset("XDG_CONFIG_HOME");
     let _xdg_data = EnvVarGuard::unset("XDG_DATA_HOME");
-    let _state_env = EnvVarGuard::unset("CFGD_STATE_DIR");
+    let _state_env = EnvVarGuard::unset(cfgd_core::CFGD_STATE_DIR_ENV);
 
     // The default config path keeps a literal `~` once home cannot be resolved.
     let config = super::default_config_file();
@@ -22882,7 +23115,7 @@ fn open_state_store_override_matches_default_filename() {
     use cfgd_core::test_helpers::EnvVarGuard;
 
     let dir = tempfile::tempdir().unwrap();
-    let _state_env = EnvVarGuard::set("CFGD_STATE_DIR", dir.path().to_str().unwrap());
+    let _state_env = EnvVarGuard::set(cfgd_core::CFGD_STATE_DIR_ENV, dir.path().to_str().unwrap());
 
     // The default path honors CFGD_STATE_DIR; the override path is handed the
     // same dir. They must land on identical basenames.
@@ -23024,7 +23257,7 @@ fn cmd_module_keys_generate_no_cosign_fails() {
     // A manager answers available from its own install prefix as well as from
     // PATH, so an emptied PATH alone would still leave one for cfgd to spawn.
     let _managers = cfgd_core::test_helpers::NoHostManagers::pinned_missing();
-    let _g = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_COSIGN_BIN");
+    let _g = cfgd_core::test_helpers::EnvVarGuard::unset(cfgd_core::COSIGN_BIN_ENV);
     let _path = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
     let printer = test_printer();
 
@@ -23051,7 +23284,7 @@ fn cmd_module_keys_rotate_no_cosign_fails() {
     // A manager answers available from its own install prefix as well as from
     // PATH, so an emptied PATH alone would still leave one for cfgd to spawn.
     let _managers = cfgd_core::test_helpers::NoHostManagers::pinned_missing();
-    let _g = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_COSIGN_BIN");
+    let _g = cfgd_core::test_helpers::EnvVarGuard::unset(cfgd_core::COSIGN_BIN_ENV);
     let _path = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
     let printer = test_printer();
 
@@ -24346,7 +24579,7 @@ fn is_unmanaged_file_module_cache_symlink_under_test_home() {
     let _guard = cfgd_core::with_test_home_guard(dir.path());
     let cache_root = dir.path().join("elsewhere-cache");
     let _cache = cfgd_core::test_helpers::EnvVarGuard::set(
-        "CFGD_CACHE_DIR",
+        cfgd_core::CFGD_CACHE_DIR_ENV,
         &cfgd_core::to_posix_string(&cache_root),
     );
     let state = StateStore::open_in_memory().unwrap();
@@ -28900,7 +29133,7 @@ fn a_source_refused_for_an_unsigned_head_syncs_once_a_signed_commit_lands() {
     )
     .unwrap();
 
-    let _allow_local = EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _allow_local = EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
     let _cfg_global =
         EnvVarGuard::set("GIT_CONFIG_GLOBAL", &cfgd_core::to_posix_string(&gitconfig));
     let _cfg_system = EnvVarGuard::set("GIT_CONFIG_NOSYSTEM", "1");
@@ -29075,7 +29308,8 @@ fn a_stale_signature_header_reading_is_a_starting_point_not_a_refusal() {
 #[test]
 #[serial_test::serial]
 fn a_config_resolution_failure_the_fetch_cannot_repair_still_refuses_the_sync() {
-    let _allow = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _allow =
+        cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
     let remote = cfgd_core::test_helpers::BareGitRepo::builder()
         .commit(
             "team source",
@@ -29171,7 +29405,7 @@ fn a_cached_manifest_the_fetch_replaces_is_a_starting_point_not_a_refusal() {
     let scratch = tempfile::tempdir().unwrap();
     let gitconfig = scratch.path().join("gitconfig");
     std::fs::write(&gitconfig, "[user]\n\tname = t\n\temail = t@cfgd.test\n").unwrap();
-    let _allow_local = EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _allow_local = EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
     let _cfg_global =
         EnvVarGuard::set("GIT_CONFIG_GLOBAL", &cfgd_core::to_posix_string(&gitconfig));
     let _cfg_system = EnvVarGuard::set("GIT_CONFIG_NOSYSTEM", "1");
@@ -29701,7 +29935,7 @@ mod cmd_source_add_local {
     #[test]
     #[serial]
     fn cmd_source_add_against_local_bare_repo_writes_config() {
-        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+        with_test_env_var(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, Some("1"), || {
             let scratch = tempfile::tempdir().unwrap();
             let bare = make_bare_with_manifest(&scratch, "local-team", None);
             let h = CliTestHarness::builder().build();
@@ -29728,7 +29962,7 @@ mod cmd_source_add_local {
     #[test]
     #[serial]
     fn cmd_source_add_pin_version_persists_to_config() {
-        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+        with_test_env_var(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, Some("1"), || {
             let scratch = tempfile::tempdir().unwrap();
             // Pin resolves against git tags now, so the bare must carry a tag.
             let bare = make_bare_with_tag(&scratch, "pinned-src", "v1.2.3");
@@ -29752,7 +29986,7 @@ mod cmd_source_add_local {
     #[test]
     #[serial]
     fn cmd_source_add_rejects_branch_and_pin_together() {
-        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+        with_test_env_var(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, Some("1"), || {
             let scratch = tempfile::tempdir().unwrap();
             let bare = make_bare_with_tag(&scratch, "conflict-src", "v1.0.0");
             let h = CliTestHarness::builder().build();
@@ -29786,7 +30020,7 @@ mod cmd_source_add_local {
     fn cmd_source_add_rejects_dash_leading_pin_version() {
         // Argument-injection guard at the CLI boundary: a `-`-leading pin is
         // rejected before any clone, with a clear error.
-        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+        with_test_env_var(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, Some("1"), || {
             let scratch = tempfile::tempdir().unwrap();
             let bare = make_bare_with_tag(&scratch, "dash-pin-src", "v1.0.0");
             let h = CliTestHarness::builder().build();
@@ -29816,7 +30050,7 @@ mod cmd_source_add_local {
     #[test]
     #[serial]
     fn cmd_source_add_records_opt_in_sync_interval_and_auto_apply_in_config() {
-        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+        with_test_env_var(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, Some("1"), || {
             let scratch = tempfile::tempdir().unwrap();
             let bare = make_bare_with_manifest(&scratch, "opt-in-src", None);
             let h = CliTestHarness::builder().build();
@@ -29854,7 +30088,7 @@ mod cmd_source_add_local {
     #[test]
     #[serial]
     fn cmd_source_add_duplicate_name_via_local_bare_fails() {
-        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+        with_test_env_var(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, Some("1"), || {
             let scratch = tempfile::tempdir().unwrap();
             let bare = make_bare_with_manifest(&scratch, "dup-name", None);
             let h = CliTestHarness::builder().build();
@@ -29958,7 +30192,7 @@ mod cmd_source_add_local {
         if std::env::consts::OS != "linux" {
             return;
         }
-        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+        with_test_env_var(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, Some("1"), || {
             let scratch = tempfile::tempdir().unwrap();
             let bare = make_bare_with_platform_profiles(
                 &scratch,
@@ -29990,7 +30224,7 @@ mod cmd_source_add_local {
         // rejects the source before ever reaching the profile-selection arms
         // of cmd_source_add — encoding the contract that a subscribable
         // source must expose at least one profile or at least one module.
-        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+        with_test_env_var(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, Some("1"), || {
             let scratch = tempfile::tempdir().unwrap();
             let bare = scratch.path().join("empty-bare.git");
             let _ = git2::Repository::init_bare(&bare).unwrap();
@@ -30045,7 +30279,7 @@ mod cmd_source_add_local {
     #[test]
     #[serial]
     fn cmd_source_add_with_branch_override_respects_branch_flag() {
-        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+        with_test_env_var(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, Some("1"), || {
             let scratch = tempfile::tempdir().unwrap();
             let bare = make_bare_with_manifest(&scratch, "branched", None);
             let h = CliTestHarness::builder().build();
@@ -30092,7 +30326,7 @@ mod cmd_source_add_local {
     #[test]
     #[serial]
     fn cmd_source_update_all_walks_happy_path_and_records_success() {
-        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+        with_test_env_var(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, Some("1"), || {
             let scratch = tempfile::tempdir().unwrap();
             let bare = make_bare_with_manifest(&scratch, "upd-src", None);
             let h = CliTestHarness::builder().build();
@@ -30127,7 +30361,7 @@ mod cmd_source_add_local {
     #[test]
     #[serial]
     fn cmd_source_update_named_walks_happy_path_for_single_source_only() {
-        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+        with_test_env_var(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, Some("1"), || {
             let scratch = tempfile::tempdir().unwrap();
             let bare_a = make_bare_with_manifest(&scratch, "src-a", None);
             let bare_b = make_bare_with_manifest(&scratch, "src-b", None);
@@ -30237,7 +30471,7 @@ mod cmd_source_add_local {
         // cmd_source_show. With a successfully-cached manifest, show.rs
         // enters its manifest-display block: Name + Description + the
         // Policy Summary subheader with per-tier item listings.
-        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+        with_test_env_var(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, Some("1"), || {
             let scratch = tempfile::tempdir().unwrap();
             let bare = make_bare_with_manifest(&scratch, "shown-src", Some("2.0.0"));
             let h = CliTestHarness::builder().build();
@@ -30335,7 +30569,7 @@ mod cmd_source_add_local {
         // in test mode returns Err → the Err(_) arm prints
         // the group's `skipped (prompt cancelled)` line and continue's out of the
         // loop. Pins the prompt-cancel branch (lines 72-77 in source/update.rs).
-        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+        with_test_env_var(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, Some("1"), || {
             let scratch = tempfile::tempdir().unwrap();
             let bare = make_bare_with_manifest(&scratch, "perm-src", None);
             let h = CliTestHarness::builder().build();
@@ -30394,7 +30628,7 @@ mod cmd_source_add_local {
     #[test]
     #[serial]
     fn cmd_source_update_records_error_status_when_upstream_unreachable() {
-        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+        with_test_env_var(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, Some("1"), || {
             // Stage a real source so cmd_source_add succeeds — then bulldoze
             // the bare upstream so the *next* fetch fails. cmd_source_update
             // should surface the failure as an `update failed` row under the
@@ -32001,7 +32235,8 @@ impl Default for DecisionShape<'_> {
 }
 
 fn decision_fixture_shaped(shape: DecisionShape<'_>) -> DecisionFixture {
-    let allow_local = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let allow_local =
+        cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
     let staging = tempfile::tempdir().unwrap();
     let home = cfgd_core::with_test_home_guard(staging.path());
     let out = staging.path().join("out");
@@ -32119,7 +32354,7 @@ struct SourceEnvFixture {
 impl SourceEnvFixture {
     fn build() -> Self {
         let allow_local =
-            cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+            cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
         let staging = tempfile::tempdir().unwrap();
         let home = cfgd_core::with_test_home_guard(staging.path());
         let remote = cfgd_core::test_helpers::BareGitRepo::builder()
@@ -44844,15 +45079,15 @@ const ABSENT_SEAM_PATH: &str = cfgd_core::test_helpers::ABSENT_SEAM_PATH;
 #[test]
 #[serial_test::serial]
 fn provision_tool_answers_from_the_seam_without_reaching_a_manager() {
-    let shim = cfgd_core::test_helpers::ToolShim::install("CFGD_BREW_BIN", 0, "", "");
+    let shim = cfgd_core::test_helpers::ToolShim::install(crate::seams::BREW_BIN_ENV, 0, "", "");
     let here = std::env::current_exe().expect("the running test binary is a real file");
     let _seam = cfgd_core::test_helpers::EnvVarGuard::set(
-        "CFGD_COSIGN_BIN",
+        cfgd_core::COSIGN_BIN_ENV,
         here.to_string_lossy().as_ref(),
     );
     let printer = test_printer();
     let registry = brew_only_registry();
-    helpers::provision_tool(&printer, &registry, "cosign", "CFGD_COSIGN_BIN")
+    helpers::provision_tool(&printer, &registry, "cosign", cfgd_core::COSIGN_BIN_ENV)
         .expect("the seam names a real file, so the tool is already here");
     assert_eq!(
         shim.argv_log(),
@@ -44867,11 +45102,12 @@ fn provision_tool_installs_through_the_manager_the_tool_table_routes_to() {
     // The registry below is narrowed to one manager behind a shim; this pins
     // the host's own managers missing, so the fall-through reaches none of them.
     let _managers = cfgd_core::test_helpers::NoHostManagers::pinned_missing();
-    let shim = cfgd_core::test_helpers::ToolShim::install("CFGD_BREW_BIN", 0, "", "");
-    let _seam = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_COSIGN_BIN", ABSENT_SEAM_PATH);
+    let shim = cfgd_core::test_helpers::ToolShim::install(crate::seams::BREW_BIN_ENV, 0, "", "");
+    let _seam =
+        cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::COSIGN_BIN_ENV, ABSENT_SEAM_PATH);
     let printer = test_printer();
     let registry = brew_only_registry();
-    let err = helpers::provision_tool(&printer, &registry, "cosign", "CFGD_COSIGN_BIN")
+    let err = helpers::provision_tool(&printer, &registry, "cosign", cfgd_core::COSIGN_BIN_ENV)
         .expect_err("the seam still names no file once the shimmed install returns");
     let argv = shim.argv_log();
     assert!(
@@ -44916,7 +45152,7 @@ fn provision_tool_reports_success_once_the_install_lands_the_binary() {
     // the host's own managers missing, so the fall-through reaches none of them.
     let _managers = cfgd_core::test_helpers::NoHostManagers::pinned_missing();
     let probe = cfgd_core::test_helpers::ProbePath::containing(&[]);
-    let shim = cfgd_core::test_helpers::ToolShim::install("CFGD_BREW_BIN", 0, "", "");
+    let shim = cfgd_core::test_helpers::ToolShim::install(crate::seams::BREW_BIN_ENV, 0, "", "");
 
     assert!(
         !cfgd_core::command_available("cosign"),
@@ -44953,11 +45189,12 @@ fn provision_tool_with_no_manager_names_the_routes_it_considered_and_spawns_noth
     let _managers = cfgd_core::test_helpers::NoHostManagers::pinned_missing();
     // host-tool-ok: a seam naming a missing file refuses without a PATH lookup,
     // and the registry handed over holds no manager for a route to reach.
-    let shim = cfgd_core::test_helpers::ToolShim::install("CFGD_BREW_BIN", 0, "", "");
-    let _seam = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_COSIGN_BIN", ABSENT_SEAM_PATH);
+    let shim = cfgd_core::test_helpers::ToolShim::install(crate::seams::BREW_BIN_ENV, 0, "", "");
+    let _seam =
+        cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::COSIGN_BIN_ENV, ABSENT_SEAM_PATH);
     let printer = test_printer();
     let registry = cfgd_core::providers::ProviderRegistry::new();
-    let err = helpers::provision_tool(&printer, &registry, "cosign", "CFGD_COSIGN_BIN")
+    let err = helpers::provision_tool(&printer, &registry, "cosign", cfgd_core::COSIGN_BIN_ENV)
         .expect_err("no manager is registered, so nothing can install it");
     assert_eq!(
         err,
@@ -45002,8 +45239,9 @@ fn doctor_fix_installs_every_missing_tool_through_the_tool_table() {
     // Every other manager is pinned missing first, so the shim below is the
     // only thing on this host `provision_tool` can reach.
     let _managers = cfgd_core::test_helpers::NoHostManagers::pinned_missing();
-    let shim = cfgd_core::test_helpers::ToolShim::install("CFGD_BREW_BIN", 0, "", "");
-    let _sops = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_SOPS_BIN", ABSENT_SEAM_PATH);
+    let shim = cfgd_core::test_helpers::ToolShim::install(crate::seams::BREW_BIN_ENV, 0, "", "");
+    let _sops =
+        cfgd_core::test_helpers::EnvVarGuard::set(crate::seams::SOPS_BIN_ENV, ABSENT_SEAM_PATH);
     let _empty = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
 
     let dir = tempfile::tempdir().unwrap();
@@ -45042,8 +45280,9 @@ fn doctor_without_fix_installs_nothing() {
     // Every other manager is pinned missing first, so the shim below is the
     // only thing on this host `provision_tool` can reach.
     let _managers = cfgd_core::test_helpers::NoHostManagers::pinned_missing();
-    let shim = cfgd_core::test_helpers::ToolShim::install("CFGD_BREW_BIN", 0, "", "");
-    let _sops = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_SOPS_BIN", ABSENT_SEAM_PATH);
+    let shim = cfgd_core::test_helpers::ToolShim::install(crate::seams::BREW_BIN_ENV, 0, "", "");
+    let _sops =
+        cfgd_core::test_helpers::EnvVarGuard::set(crate::seams::SOPS_BIN_ENV, ABSENT_SEAM_PATH);
     let _empty = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
 
     let dir = tempfile::tempdir().unwrap();
@@ -45215,7 +45454,8 @@ fn a_configurator_whose_seam_points_at_its_tool_plans_no_prerequisite_for_it() {
     // The shim holds the exclusive window from here on, which also keeps the
     // process-global PATH still; the read guard below is a re-entrant no-op
     // inside it, and a read taken first could not be upgraded.
-    let _shim = cfgd_core::test_helpers::ToolShim::install("CFGD_GSETTINGS_BIN", 0, "", "");
+    let _shim =
+        cfgd_core::test_helpers::ToolShim::install(crate::seams::GSETTINGS_BIN_ENV, 0, "", "");
     let _path_lock = cfgd_core::test_helpers::path_env_read_guard();
     let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
     let _paths = cfgd_core::test_helpers::CommandPathMemoTtlGuard::always_expired();
@@ -45513,7 +45753,8 @@ fn a_declared_sops_secret_plans_sops_ahead_of_the_decryption() {
     let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
     let _paths = cfgd_core::test_helpers::CommandPathMemoTtlGuard::always_expired();
     let _avail = cfgd_core::test_helpers::AvailabilityMemoTtlGuard::always_expired();
-    let _seam = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_SOPS_BIN", ABSENT_SEAM_PATH);
+    let _seam =
+        cfgd_core::test_helpers::EnvVarGuard::set(crate::seams::SOPS_BIN_ENV, ABSENT_SEAM_PATH);
     let registry = apt_only_registry();
     let state = cfgd_core::test_helpers::test_state();
     let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &state);
@@ -45883,8 +46124,7 @@ fn no_test_reaches_a_real_package_manager_through_the_tool_provisioner() {
             let absent_seam = text.lines().any(|l| {
                 l.contains("ABSENT_SEAM_PATH") || (l.contains("/nonexistent") && !l.contains("://"))
             });
-            let planted_seam = (text.contains("CFGD_COSIGN_BIN")
-                || text.contains("CosignTestShim"))
+            let planted_seam = (text.contains("COSIGN_BIN_ENV") || text.contains("CosignTestShim"))
                 && !absent_seam;
             if !no_managers && !planted_seam {
                 offenders.push(format!("{}: {name}", path.display()));
@@ -46324,7 +46564,7 @@ spec:
 #[serial_test::serial]
 fn a_status_scan_reports_an_erroring_system_check_as_its_own_row() {
     let _shim = cfgd_core::test_helpers::ToolShim::install(
-        "CFGD_GPG_BIN",
+        crate::seams::GPG_BIN_ENV,
         1,
         "",
         "gpg: keyring unavailable",
@@ -46352,7 +46592,7 @@ fn a_status_scan_reports_an_erroring_system_check_as_its_own_row() {
 #[serial_test::serial]
 fn a_status_scan_carries_an_erroring_check_in_its_json_payload() {
     let _shim = cfgd_core::test_helpers::ToolShim::install(
-        "CFGD_GPG_BIN",
+        crate::seams::GPG_BIN_ENV,
         1,
         "",
         "gpg: keyring unavailable",
@@ -46388,7 +46628,7 @@ fn a_status_scan_carries_an_erroring_check_in_its_json_payload() {
 #[serial_test::serial]
 fn diff_and_scan_agree_on_the_findings() {
     let _shim = cfgd_core::test_helpers::ToolShim::install(
-        "CFGD_GPG_BIN",
+        crate::seams::GPG_BIN_ENV,
         1,
         "",
         "gpg: keyring unavailable",
@@ -50017,9 +50257,9 @@ fn every_integration_test_spawns_the_binary_through_the_one_isolating_constructo
         "XDG_CACHE_HOME",
         "XDG_RUNTIME_DIR",
         "LOCALAPPDATA",
-        "CFGD_STATE_DIR",
-        "CFGD_CACHE_DIR",
-        "CFGD_RUNTIME_DIR",
+        cfgd_core::CFGD_STATE_DIR_ENV,
+        cfgd_core::CFGD_CACHE_DIR_ENV,
+        cfgd_core::CFGD_RUNTIME_DIR_ENV,
     ] {
         assert!(
             ISOLATED_ENV.iter().any(|(var, _)| *var == required),
@@ -50029,7 +50269,7 @@ fn every_integration_test_spawns_the_binary_through_the_one_isolating_constructo
     assert!(
         ISOLATED_ENV
             .iter()
-            .all(|(var, _)| *var != "CFGD_CONFIG_DIR"),
+            .all(|(var, _)| *var != cfgd_core::CFGD_CONFIG_DIR_ENV),
         "CFGD_CONFIG_DIR is an explicit --config-dir to the CLI, so setting it would \
          move every spawn off the default config directory it runs against"
     );
@@ -50122,12 +50362,16 @@ fn every_integration_test_spawns_the_binary_through_the_one_isolating_constructo
         // a literal holds survives; the name is then the statement's FIRST
         // literal, paired off the raw span at the same byte range because a
         // literal's body is what the blanking spaces out.
+        // The variable is named by its `env_names.rs` const, `<NAME>_ENV`, or
+        // spelled as the statement's first literal.
         let code = &blanked[open..open + helper.len()];
+        let optout_const = format!("cfgd_core::{OPTOUT}_ENV");
         let sets_optout = code.match_indices(".env(").any(|(at, _)| {
             let end = code[at..].find(';').map_or(code.len(), |n| at + n);
-            span_literals(&code[at..end], &helper[at..end])
-                .first()
-                .is_some_and(|(_, var)| *var == OPTOUT)
+            squeeze(&code[at..end]).starts_with(&format!(".env({optout_const},"))
+                || span_literals(&code[at..end], &helper[at..end])
+                    .first()
+                    .is_some_and(|(_, var)| *var == OPTOUT)
         });
         if !sets_optout {
             offenders.push(format!(
@@ -50192,13 +50436,13 @@ fn every_integration_test_spawns_the_binary_through_the_one_isolating_constructo
 #[serial_test::serial]
 fn the_hermetic_parser_reads_only_the_environment_it_is_handed() {
     use cfgd_core::test_helpers::EnvVarGuard;
-    let _yes = EnvVarGuard::set("CFGD_YES", "not-a-bool");
-    let _theme = EnvVarGuard::set("CFGD_THEME", "dracula");
+    let _yes = EnvVarGuard::set(cfgd_core::CFGD_YES_ENV, "not-a-bool");
+    let _theme = EnvVarGuard::set(cfgd_core::CFGD_THEME_ENV, "dracula");
     let cli = Cli::try_parse_hermetic(["cfgd", "status"]).expect("an exported CFGD_* is ignored");
     assert!(!cli.yes);
     assert_eq!(cli.theme, None);
 
-    let cli = Cli::try_parse_reading_env(["cfgd", "status"], &["CFGD_THEME"])
+    let cli = Cli::try_parse_reading_env(["cfgd", "status"], &[cfgd_core::CFGD_THEME_ENV])
         .expect("only the named binding is in force");
     assert!(!cli.yes);
     assert_eq!(cli.theme.as_deref(), Some("dracula"));

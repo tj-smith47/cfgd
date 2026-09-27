@@ -507,7 +507,8 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn caller_owned_bootstrap_settles_no_line_of_its_own() {
-        let _shim = cfgd_core::test_helpers::ToolShim::install("CFGD_BREW_BIN", 0, "", "");
+        let _shim =
+            cfgd_core::test_helpers::ToolShim::install(crate::seams::BREW_BIN_ENV, 0, "", "");
         let settled = |transcript: &str| {
             cfgd_core::test_helpers::settled_status_lines(&cfgd_core::output::strip_ansi(
                 transcript,
@@ -1157,7 +1158,7 @@ mod tests {
         #[test]
         #[serial]
         fn go_bootstrap_via_brew_runs_brew_install_go() {
-            let s = ToolShim::install("CFGD_BREW_BIN", 0, "", "");
+            let s = ToolShim::install(crate::seams::BREW_BIN_ENV, 0, "", "");
             let p = test_printer();
             GoInstallManager
                 .bootstrap(&cfgd_core::test_helpers::test_bootstrap_context(&p))

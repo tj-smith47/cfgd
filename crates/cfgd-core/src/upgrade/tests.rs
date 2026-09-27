@@ -2610,7 +2610,7 @@ mod cosign_verify_blob {
         // fails with std::io::Error. The function maps that to DownloadFailed.
         // RAII guards restore both vars even if an assertion below panics, so a
         // failed run can't leak a stale CFGD_COSIGN_BIN into sibling tests.
-        let _bin = EnvVarGuard::set("CFGD_COSIGN_BIN", "/no/such/cosign/binary");
+        let _bin = EnvVarGuard::set(crate::COSIGN_BIN_ENV, "/no/such/cosign/binary");
         let _log = EnvVarGuard::unset("CFGD_FAKE_COSIGN_LOG");
         let (_dir, checksums, bundle) = dummy_paths();
         let err =
@@ -3286,13 +3286,13 @@ mod download_and_install_to {
         impl Drop for MissingCosignGuard {
             fn drop(&mut self) {
                 unsafe {
-                    std::env::remove_var("CFGD_COSIGN_BIN");
+                    std::env::remove_var(crate::COSIGN_BIN_ENV);
                 }
             }
         }
         unsafe {
             std::env::set_var(
-                "CFGD_COSIGN_BIN",
+                crate::COSIGN_BIN_ENV,
                 "/nonexistent/cfgd-test-cosign-shim-does-not-exist",
             );
         }
@@ -3376,13 +3376,13 @@ mod download_and_install_to {
         impl Drop for MissingCosignGuard {
             fn drop(&mut self) {
                 unsafe {
-                    std::env::remove_var("CFGD_COSIGN_BIN");
+                    std::env::remove_var(crate::COSIGN_BIN_ENV);
                 }
             }
         }
         unsafe {
             std::env::set_var(
-                "CFGD_COSIGN_BIN",
+                crate::COSIGN_BIN_ENV,
                 "/nonexistent/cfgd-test-strict-cosign-shim-does-not-exist",
             );
         }
@@ -3882,8 +3882,10 @@ fn cache_dir_honors_cfgd_cache_dir_env() {
     // falling through to a home-directory lookup that can fail and emit a
     // spurious "cannot determine cache directory" warning.
     let redirect = tempfile::tempdir().unwrap();
-    let _env =
-        crate::test_helpers::EnvVarGuard::set("CFGD_CACHE_DIR", redirect.path().to_str().unwrap());
+    let _env = crate::test_helpers::EnvVarGuard::set(
+        crate::CFGD_CACHE_DIR_ENV,
+        redirect.path().to_str().unwrap(),
+    );
 
     let dir = cache_dir().expect("cache_dir must honor CFGD_CACHE_DIR");
     assert_eq!(

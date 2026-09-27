@@ -4374,7 +4374,8 @@ mod profile_update_remote_module_yes {
 
         let work = setup_with_registry("myorg", &reg_url);
         let _home = cfgd_core::with_test_home_guard(work.path());
-        let _env = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _env =
+            cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
         let cli = test_cli(work.path());
         let printer = make_printer();
@@ -4415,7 +4416,8 @@ mod profile_update_remote_module_yes {
 
         let work = setup_with_registry("myorg", &reg_url);
         let _home = cfgd_core::with_test_home_guard(work.path());
-        let _env = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _env =
+            cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
         let cli = test_cli(work.path());
         let printer = make_printer();

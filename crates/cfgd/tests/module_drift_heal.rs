@@ -67,8 +67,8 @@ fn run(args: &[&str], config: &Path, state: &Path, home: &Path) -> std::process:
         .env("USERPROFILE", home)
         // Keeps the module cache under the home this test re-points; the
         // constructor's own cache override sits outside it.
-        .env("CFGD_CACHE_DIR", home.join("cache"))
-        .env("CFGD_COLOR", "never");
+        .env(cfgd_core::CFGD_CACHE_DIR_ENV, home.join("cache"))
+        .env(cfgd_core::CFGD_COLOR_ENV, "never");
     cmd.output().unwrap()
 }
 

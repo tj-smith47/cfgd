@@ -1939,7 +1939,7 @@ mod tests {
         #[test]
         #[serial]
         fn npm_bootstrap_via_brew_returns_ok() {
-            let s = ToolShim::install("CFGD_BREW_BIN", 0, "", "");
+            let s = ToolShim::install(crate::seams::BREW_BIN_ENV, 0, "", "");
             let p = test_printer();
             NpmManager
                 .bootstrap(&cfgd_core::test_helpers::test_bootstrap_context(&p))
