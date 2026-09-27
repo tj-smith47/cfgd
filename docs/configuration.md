@@ -116,7 +116,7 @@ spec:
 | `spec.daemon.sync.autoPull` | no | `false` | Auto-pull from remote |
 | `spec.daemon.sync.autoPush` | no | `false` | Auto-commit and push local changes |
 | `spec.daemon.notify.method` | no | `Desktop` | `Desktop`, `Stdout`, or `Webhook` |
-| `spec.update.policy` | no | `Prompt` | cfgd binary self-update behavior: `Auto`, `Prompt`, `Notify`, or `Manual` (see [Update behavior](#update-behavior-specupdate)) |
+| `spec.update.policy` | no | `Prompt` | cfgd binary self-update behavior: `Auto`, `Prompt`, `Notify`, or `Manual`. `--update-policy` / `CFGD_UPDATE_POLICY` override it for one invocation (see [Update behavior](#update-behavior-specupdate)) |
 | `spec.update.interval` | no | `24h` | Update-check cadence when `policy != Manual` (e.g. `30m`, `24h`, `7d`) |
 | `spec.update.channel` | no | — | Release channel to track (e.g. `stable`, `prerelease`); unset uses cfgd's built-in default channel |
 | `spec.update.skills.policy` | no | `Inherit` | Authored-skill refresh policy: `Inherit` (follow `spec.update.policy`), `Auto`, `Prompt`, `Notify`, or `Manual` |
@@ -151,9 +151,10 @@ Enum-valued fields (e.g. `spec.fileStrategy`, `spec.daemon.reconcile.driftPolicy
 
 ## Update behavior (`spec.update`)
 
-cfgd can check for its own updates (it doesn't by default; `cfgd upgrade` is
-otherwise purely manual), and separately decide whether installed [authoring
-skills](skill.md) are re-rendered when cfgd moves. Both are governed by
+cfgd checks for its own updates (by default once every 24h, asking before it
+installs one; `cfgd upgrade` runs the same install on demand), and separately
+decides whether installed [authoring skills](skill.md) are re-rendered when
+cfgd moves. Both are governed by
 `spec.update`:
 
 ```yaml
@@ -176,6 +177,18 @@ binary and skill refresh. Override `spec.update.skills.policy` only to decouple
 skill refresh from the binary. "update" is the umbrella verb for keeping things
 current; "upgrade" is the specific binary-replacement action (`cfgd upgrade`),
 which `policy: Auto`/`Prompt` drives.
+
+For a single run, `--update-policy` (or `CFGD_UPDATE_POLICY`) replaces the
+posture without touching the file:
+
+```sh
+cfgd --update-policy manual status          # no update check on this command
+cfgd --update-policy notify apply           # report an available update and leave it uninstalled
+CFGD_UPDATE_POLICY=Manual cfgd profile show # the PascalCase spelling is accepted too
+```
+
+Only the posture moves. `interval`, `channel` and `skills` stay whatever the
+config declares.
 
 ### Update policies
 
@@ -945,6 +958,7 @@ These flags work with any subcommand:
 | `--no-hints` | — | `CFGD_USAGE_HINTS` | Suppress them again for this invocation, over a config or env var that turned them on; a suppressed hint drops its leading blank line with it. Note the polarity: the env var and the config field name what stays ON, so `CFGD_USAGE_HINTS=false` is the persistent form of this flag |
 | `--mask-env-values <all\|secrets\|none>` | — | `CFGD_MASK_ENV_VALUES` | Which declared env values render masked. `all` (default) masks every value as `***` plus its last three characters; `secrets` masks only the values a declared secret exports (every name listed in a `spec.secrets[].envs` of the resolved chain) and renders the rest in full; `none` renders them all in full. The flag outranks `CFGD_MASK_ENV_VALUES`, which outranks `spec.output.maskEnvValues`. `--show-values` is the per-verb alias for `none` and conflicts with this flag |
 | `--migration-policy <prompt\|warn\|update\|ignore>` | — | `CFGD_MIGRATION_POLICY` | What to do when `cfgd.yaml` is behind this build's schema. The flag outranks `CFGD_MIGRATION_POLICY`, which outranks `spec.migrationPolicy`; the default is `prompt`. A run with no terminal degrades `prompt` to `warn` and records no answer, and the daemon degrades both `prompt` and `update` to `warn` — it never rewrites a tracked file. `--yes` / `CFGD_YES` takes the prompt |
+| `--update-policy <auto\|prompt\|notify\|manual>` | — | `CFGD_UPDATE_POLICY` | Update posture for this invocation: `auto` applies an available update, `prompt` asks first, `notify` reports only, `manual` runs no automatic check at all. The flag outranks `CFGD_UPDATE_POLICY`, which outranks `spec.update.policy`; the default is `prompt`. Only the posture is overridden: `spec.update.interval`, `channel` and `skills` still apply. `cfgd upgrade` is explicit and runs whatever this says; the three opt-out variables in [Suppressing the automatic check](#suppressing-the-automatic-check) silence the automatic check regardless |
 | `--scope <user\|system>` | — | `CFGD_SCOPE` | Installation scope: `user` (default) or `system`. `system` switches all four directory roots to system/FHS defaults (`/etc/cfgd`, `/var/lib/cfgd`, …). See [System scope](configuration.md#system-scope). |
 | — | — | `CFGD_NO_UPDATE_CHECK` | Silence the automatic update check (see [Suppressing the automatic check](#suppressing-the-automatic-check)) |
 | — | — | `NO_UPDATE_NOTIFIER` | Same, via npm's `update-notifier` convention |

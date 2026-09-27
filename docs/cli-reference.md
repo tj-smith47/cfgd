@@ -1545,6 +1545,11 @@ CFGD_REQUIRE_COSIGN=1 cfgd upgrade
 GITHUB_TOKEN=$(gh auth token) cfgd upgrade --check
 ```
 
+`cfgd upgrade` is the explicit verb: it runs whatever `spec.update.policy` or
+`--update-policy` says, because you asked for it by name. The policy governs the
+*automatic* check that other commands run at startup and the daemon runs on a
+timer; `cfgd --update-policy manual status` makes no check at all.
+
 #### GitHub token and rate limit
 
 The release check queries the GitHub Releases API, which answers 60 requests an

@@ -33,6 +33,7 @@ fn test_cli_in(dir: &std::path::Path) -> Cli {
         theme: None,
         mask_env_values: None,
         migration_policy: None,
+        update_policy: None,
         jsonpath: None,
         yes: false,
         state_dir: None,

@@ -642,6 +642,7 @@ fn is_value_taking_flag(flag: &str) -> bool {
             | "--color"
             | "--mask-env-values"
             | "--migration-policy"
+            | "--update-policy"
     )
 }
 
@@ -664,6 +665,7 @@ fn is_value_taking_flag_inline(arg: &str) -> bool {
         "--color=",
         "--mask-env-values=",
         "--migration-policy=",
+        "--update-policy=",
     ];
     PREFIXES.iter().any(|p| arg.starts_with(p))
 }
@@ -984,6 +986,25 @@ pub fn resolve_mask_env_values(
     )
 }
 
+/// Resolve the update posture in force for this invocation, folding
+/// `--update-policy`, `CFGD_UPDATE_POLICY` and `spec.update.policy` into the
+/// one answer the startup check reads. A config cfgd cannot read falls to
+/// `Prompt`, which checks and asks before acting: a self-update check must
+/// never be the reason a normal command cannot run. The three opt-out env
+/// vars sit ahead of the decision entirely, inside `upgrade::should_check`.
+pub fn resolve_update_policy(
+    config_path: &Path,
+    flag: Option<&str>,
+) -> cfgd_core::config::UpdatePolicy {
+    use std::str::FromStr;
+    resolve_knob(
+        config_path,
+        flag.and_then(|raw| cfgd_core::config::UpdatePolicy::from_str(raw).ok()),
+        "CFGD_UPDATE_POLICY",
+        |spec| spec.update.as_ref().map(|u| u.policy),
+    )
+}
+
 #[derive(Debug, Clone)]
 pub struct OutputFormatArg(pub cfgd_core::output::OutputFormat);
 
@@ -1147,6 +1168,23 @@ pub struct Cli {
         value_parser = clap::builder::PossibleValuesParser::new(["prompt", "warn", "update", "ignore"])
     )]
     pub migration_policy: Option<String>,
+
+    /// Update posture for this invocation: auto (apply an available update),
+    /// prompt (ask first), notify (report only) or manual (no automatic
+    /// check at all). `spec.update.policy` does the same thing persistently;
+    /// this flag wins over it. `cfgd upgrade` is explicit and runs whatever
+    /// this says.
+    // `spec.update.policy` serializes PascalCase, so the flag and its env var
+    // accept that spelling as well as the lowercase one this list prints.
+    #[arg(
+        long = "update-policy",
+        global = true,
+        value_name = "POLICY",
+        env = "CFGD_UPDATE_POLICY",
+        ignore_case = true,
+        value_parser = clap::builder::PossibleValuesParser::new(["auto", "prompt", "notify", "manual"])
+    )]
+    pub update_policy: Option<String>,
 
     /// Output format: table, wide, json, yaml, name, jsonpath=EXPR, template=TMPL,
     /// template-file=PATH

@@ -309,6 +309,10 @@ fn main() -> anyhow::Result<()> {
         std::path::Path::new(&cli.config),
         cli.mask_env_values.as_deref(),
     );
+    let update_policy = cli::resolve_update_policy(
+        std::path::Path::new(&cli.config),
+        cli.update_policy.as_deref(),
+    );
     let printer = cfgd_core::output::Printer::with_theme_config(
         verbosity,
         theme_config.as_ref(),
@@ -391,7 +395,12 @@ fn main() -> anyhow::Result<()> {
         Some(cli::Command::Daemon { .. }) | Some(cli::Command::Upgrade { .. }) | None
     );
     if !skip_startup_check {
-        cli::upgrade::startup_update_check(&printer, std::path::Path::new(&cli.config), assume_yes);
+        cli::upgrade::startup_update_check(
+            &printer,
+            std::path::Path::new(&cli.config),
+            assume_yes,
+            update_policy,
+        );
     }
 
     if let Err(e) = cli::execute(&cli, &printer, &dir_sources) {

@@ -229,6 +229,7 @@ impl CliTestHarness {
             theme: None,
             mask_env_values: None,
             migration_policy: None,
+            update_policy: None,
             jsonpath: None,
             yes: false,
             state_dir: Some(self.state_dir.path().to_path_buf()),
@@ -1196,6 +1197,267 @@ fn resolve_mask_env_values_precedence_flag_beats_spec_beats_default() {
     );
 }
 
+/// The update policy resolves the way every other per-invocation knob does:
+/// the flag beats `CFGD_UPDATE_POLICY` beats `spec.update.policy` beats the
+/// `Prompt` default. It runs `resolve_knob` itself, so a reader of one knob
+/// has read them all.
+///
+/// The env var is asserted through a direct call with no argv, which works
+/// because `resolve_knob` reads `CFGD_UPDATE_POLICY` itself as well as clap's
+/// `env =` binding.
+#[test]
+#[serial_test::serial]
+fn the_update_policy_flag_outranks_the_env_var_and_the_config_field() {
+    use cfgd_core::config::UpdatePolicy;
+    use cfgd_core::test_helpers::EnvVarGuard;
+    // The ambient environment answers this variable on a developer's machine
+    // as readily as the guard below does; the stored-field assertion means
+    // nothing without it.
+    let _clear = EnvVarGuard::unset("CFGD_UPDATE_POLICY");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("cfgd.yaml");
+    std::fs::write(
+        &path,
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  update:\n    policy: Notify\n",
+    )
+    .expect("write config");
+    assert_eq!(
+        super::resolve_update_policy(&path, None),
+        UpdatePolicy::Notify,
+        "the stored field answers when nothing overrides it"
+    );
+    let env = EnvVarGuard::set("CFGD_UPDATE_POLICY", "auto");
+    assert_eq!(
+        super::resolve_update_policy(&path, None),
+        UpdatePolicy::Auto,
+        "the env var outranks the stored field, and is matched case-insensitively"
+    );
+    assert_eq!(
+        super::resolve_update_policy(&path, Some("manual")),
+        UpdatePolicy::Manual,
+        "the flag outranks both"
+    );
+    let absent = dir.path().join("absent.yaml");
+    assert_eq!(
+        super::resolve_update_policy(&absent, None),
+        UpdatePolicy::Auto,
+        "with no readable config the env var still answers"
+    );
+    drop(env);
+    assert_eq!(
+        super::resolve_update_policy(&absent, None),
+        UpdatePolicy::Prompt,
+        "no readable config and no variable falls to the default, which checks and asks"
+    );
+}
+
+/// The flag parses before and after the subcommand, refuses a word the enum
+/// does not spell, and its value is never read as the subcommand.
+#[test]
+fn the_update_policy_flag_is_global_and_its_value_is_not_a_subcommand() {
+    for argv in [
+        ["cfgd", "status", "--update-policy", "manual"],
+        ["cfgd", "--update-policy", "manual", "status"],
+    ] {
+        let cli = Cli::try_parse_hermetic(argv).expect("parses");
+        assert_eq!(cli.update_policy.as_deref(), Some("manual"), "{argv:?}");
+    }
+    assert!(Cli::try_parse_hermetic(["cfgd", "--update-policy", "sometimes", "status"]).is_err());
+    let args = [
+        "cfgd".to_string(),
+        "--update-policy".into(),
+        "manual".into(),
+        "status".into(),
+    ];
+    assert_eq!(
+        super::find_subcommand_index(&args),
+        Some(3),
+        "the policy word is consumed as the flag's value, so the subcommand is the word after it"
+    );
+}
+
+/// The invocation's posture reaches the startup check: a config declaring
+/// `Auto` plus `--update-policy manual` makes no network call and stamps no
+/// check. `Manual` short-circuits inside `should_check` before any fetch, so
+/// the absent version-cache timestamp is the observable and no HTTP mock is
+/// needed.
+#[test]
+#[serial_test::serial]
+fn the_startup_check_honours_the_invocations_policy_over_the_declared_one() {
+    use cfgd_core::config::UpdatePolicy;
+    let home = tempfile::tempdir().expect("tempdir");
+    cfgd_core::with_test_home(home.path(), || {
+        let path = home.path().join("cfgd.yaml");
+        std::fs::write(
+            &path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  update:\n    policy: Auto\n    interval: 0s\n",
+        )
+        .expect("write config");
+        let printer = cfgd_core::test_helpers::test_printer();
+        assert_eq!(
+            cfgd_core::upgrade::last_checked_secs(),
+            None,
+            "nothing checked yet"
+        );
+        crate::cli::upgrade::startup_update_check(&printer, &path, false, UpdatePolicy::Manual);
+        assert_eq!(
+            cfgd_core::upgrade::last_checked_secs(),
+            None,
+            "a Manual invocation runs no check, whatever the config declares"
+        );
+    });
+}
+
+/// Every enum-valued scalar knob under `spec` is classified: it either carries a
+/// global flag that overrides it for one invocation, or this table says why a
+/// per-run override would be wrong. A knob only a config's owner can set is the
+/// gap `--update-policy` closed; the population comes from the published schema,
+/// so the next enum knob fails here before it ships unclassified.
+///
+/// List-item knobs (`spec.sources[].origin.type`) are out: one global flag
+/// cannot name which item it means. Booleans are out: they answer the
+/// `--x`/`--no-x` rule instead.
+#[test]
+fn every_enum_knob_under_spec_is_classified_against_the_global_flag_table() {
+    /// `(path, Some(global flag) | None, reason a None needs no flag)`.
+    const SPEC_ENUM_KNOBS: &[(&str, Option<&str>, &str)] = &[
+        (
+            "spec.compliance.export.format",
+            None,
+            "names the format of a file the daemon writes; -o is the per-invocation render",
+        ),
+        (
+            "spec.daemon.notify.method",
+            None,
+            "re-read every tick so a running daemon can be retuned; a flag pins it for the \
+             process's life",
+        ),
+        (
+            "spec.daemon.reconcile.driftPolicy",
+            None,
+            "same per-tick re-read",
+        ),
+        (
+            "spec.daemon.reconcile.policy.lockedConflict",
+            None,
+            "same per-tick re-read",
+        ),
+        (
+            "spec.daemon.reconcile.policy.newOptional",
+            None,
+            "same per-tick re-read",
+        ),
+        (
+            "spec.daemon.reconcile.policy.newRecommended",
+            None,
+            "same per-tick re-read",
+        ),
+        (
+            "spec.fileStrategy",
+            None,
+            "the deploy method is recorded in the file manifest; a one-run override leaves the \
+             record disagreeing with the declaration",
+        ),
+        ("spec.migrationPolicy", Some("--migration-policy"), ""),
+        ("spec.output.maskEnvValues", Some("--mask-env-values"), ""),
+        ("spec.output.theme.name", Some("--theme"), ""),
+        ("spec.update.policy", Some("--update-policy"), ""),
+        (
+            "spec.update.skills.policy",
+            None,
+            "Inherit is its default, so --update-policy already moves it; an explicit value is \
+             set to decouple skill refresh from the binary, which a one-run flag would undo",
+        ),
+    ];
+
+    let golden = cfgd_core::test_helpers::workspace_root()
+        .join("crates/cfgd-core/tests/golden/schema/Config.json");
+    let body = cfgd_core::test_helpers::walked_file_body(&golden);
+    let schema: serde_json::Value = serde_json::from_str(&body).expect("the golden is JSON");
+    let defs = schema["definitions"].clone();
+
+    // schemars renders a doc-carrying enum as a `oneOf` of `const`s and a bare
+    // one as an `enum` list, so both shapes count as a knob.
+    fn enum_paths(
+        node: &serde_json::Value,
+        defs: &serde_json::Value,
+        path: &str,
+        seen: &mut Vec<String>,
+        out: &mut Vec<String>,
+    ) {
+        let Some(map) = node.as_object() else { return };
+        if let Some(r) = map.get("$ref").and_then(|v| v.as_str()) {
+            let name = r.rsplit('/').next().unwrap_or_default().to_string();
+            if seen.contains(&name) {
+                return;
+            }
+            seen.push(name.clone());
+            enum_paths(&defs[&name], defs, path, seen, out);
+            seen.pop();
+            return;
+        }
+        let branches = map.get("oneOf").or_else(|| map.get("anyOf"));
+        let const_union = branches
+            .and_then(|b| b.as_array())
+            .is_some_and(|a| !a.is_empty() && a.iter().all(|x| x.get("const").is_some()));
+        if map.contains_key("enum") || const_union {
+            out.push(path.to_string());
+            return;
+        }
+        for branch in branches.and_then(|b| b.as_array()).into_iter().flatten() {
+            enum_paths(branch, defs, path, seen, out);
+        }
+        let props = map.get("properties").and_then(|p| p.as_object());
+        for (key, value) in props.into_iter().flatten() {
+            enum_paths(value, defs, &format!("{path}.{key}"), seen, out);
+        }
+        if let Some(items) = map.get("items") {
+            enum_paths(items, defs, &format!("{path}[]"), seen, out);
+        }
+    }
+
+    let mut found = Vec::new();
+    enum_paths(
+        &schema["properties"]["spec"],
+        &defs,
+        "spec",
+        &mut Vec::new(),
+        &mut found,
+    );
+    found.retain(|p| !p.contains("[]"));
+    found.sort();
+    found.dedup();
+    assert!(
+        found.len() >= 12,
+        "the schema scan found only {} enum knobs under spec; it has stopped reading the golden",
+        found.len()
+    );
+
+    for path in &found {
+        let row = SPEC_ENUM_KNOBS.iter().find(|(p, _, _)| p == path);
+        let (_, flag, reason) = row.unwrap_or_else(|| {
+            panic!(
+                "{path} is an enum knob under spec that no row classifies: give it a global \
+                 flag, or say why a per-invocation override would be wrong"
+            )
+        });
+        match flag {
+            Some(flag) => assert!(
+                super::is_value_taking_flag(flag)
+                    && super::is_value_taking_flag_inline(&format!("{flag}=x")),
+                "{path} names {flag}, which the subcommand locator does not know"
+            ),
+            None => assert!(!reason.is_empty(), "{path} carries no flag and no reason"),
+        }
+    }
+    for (path, _, _) in SPEC_ENUM_KNOBS {
+        assert!(
+            found.iter().any(|p| p == path),
+            "{path} is classified but the schema no longer declares it"
+        );
+    }
+}
+
 /// An unreadable config masks rather than failing, which is the safe
 /// direction: a config cfgd cannot parse never reveals a value.
 #[test]
@@ -1404,6 +1666,21 @@ fn every_enum_valued_global_flag_accepts_its_config_spelling() {
             read: |cli| cli.migration_policy.clone(),
             canonical: |raw| {
                 cfgd_schema::MigrationPolicy::from_str(raw)
+                    .ok()
+                    .map(|v| v.as_str())
+            },
+        },
+        Knob {
+            field: "update_policy",
+            flag: "--update-policy",
+            env: "CFGD_UPDATE_POLICY",
+            tokens: cfgd_core::config::UpdatePolicy::ALL
+                .iter()
+                .map(|v| v.as_str())
+                .collect(),
+            read: |cli| cli.update_policy.clone(),
+            canonical: |raw| {
+                cfgd_core::config::UpdatePolicy::from_str(raw)
                     .ok()
                     .map(|v| v.as_str())
             },
@@ -2727,6 +3004,7 @@ fn test_cli_with_state(dir: &Path, state_dir: Option<PathBuf>) -> Cli {
         theme: None,
         mask_env_values: None,
         migration_policy: None,
+        update_policy: None,
         jsonpath: None,
         yes: false,
         state_dir,
@@ -6224,6 +6502,7 @@ fn run_apply_home_unset_errors_and_creates_no_state() {
         theme: None,
         mask_env_values: None,
         migration_policy: None,
+        update_policy: None,
         jsonpath: None,
         yes: false,
         state_dir: None,
@@ -6800,6 +7079,7 @@ fn execute_with_no_subcommand_prints_help_and_returns_ok() {
         theme: None,
         mask_env_values: None,
         migration_policy: None,
+        update_policy: None,
         jsonpath: None,
         yes: false,
         state_dir: Some(h.state_path().to_path_buf()),
