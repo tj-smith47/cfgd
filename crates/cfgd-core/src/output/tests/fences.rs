@@ -3257,7 +3257,7 @@ fn every_multi_file_production_walk_reads_through_the_floored_helper() {
             walks += 1;
             for (k, line) in func.lines().enumerate() {
                 let code = line.trim_start();
-                if code.starts_with("//") || code.contains("fn ") {
+                if code.starts_with("//") || crate::test_helpers::opens_function(code) {
                     continue;
                 }
                 let n = open - 1 + k;
