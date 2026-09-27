@@ -15800,8 +15800,8 @@ spec:
         // Only the __default__ reconcile task (no module patches)
         assert_eq!(setup.reconcile_tasks.len(), 1);
         assert_eq!(setup.reconcile_tasks[0].entity, "__default__");
-        // No external sources → only the seeded "local" source status (added in run_daemon, not
-        // setup)
+        // No external sources → only the seeded "local" source status (seeded by run_daemon;
+        // setup adds none)
         // Setup itself just produces the additions, which is empty here.
         assert!(setup.initial_source_status.is_empty());
         // No files in default profile → no managed paths

@@ -1890,8 +1890,8 @@ impl DeliveredItems {
 /// - `env.<NAME>`: every `Env` action. There is no per-variable action to withhold: one
 ///   `WriteEnvFile` renders every declared variable into one file, `InjectSourceLine` loads that
 ///   file and `RefreshLiveSession` mirrors it — so the env surface is withheld as the unit it is
-///   generated as, and a decided variable waits with the undecided one rather than an undecided one
-///   reaching the machine. That includes the post-apply regeneration: a manager bootstrapped in a
+///   generated as: a decided variable waits with the undecided one, so no undecided variable
+///   reaches the machine. That includes the post-apply regeneration: a manager bootstrapped in a
 ///   withholding tick does not get its PATH dir into `~/.cfgd.env` until the decision clears (the
 ///   next non-withholding tick plans env unconditionally and converges it)
 /// - `system.<configurator>`: every `System` action for that configurator. The decision names a

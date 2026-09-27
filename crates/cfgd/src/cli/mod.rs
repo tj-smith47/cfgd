@@ -620,10 +620,10 @@ fn builtin_aliases() -> HashMap<String, String> {
 /// Mirrors the `#[arg(global = true)]` flags on the `Cli` struct that are NOT
 /// `ArgAction::Count` / `bool`.
 /// `every_value_taking_global_flag_is_skipped_by_the_subcommand_locator` walks the clap definition
-/// against this list and its inline sibling, so a new global flag that forgets them fails there
-/// rather than by reading its value as the subcommand. The short-flag-glued form (`-oVALUE`) is not
-/// covered: cfgd's docs and tests only show the space form (`-o VALUE`) and
-/// the inline-`=` form (`-o=VALUE`), both of which this scanner handles
+/// against this list and its inline sibling, so a new global flag that forgets them fails that
+/// test; otherwise the locator would read the flag's value as the subcommand. The
+/// short-flag-glued form (`-oVALUE`) is not covered: cfgd's docs and tests only show the space
+/// form (`-o VALUE`) and the inline-`=` form (`-o=VALUE`), both of which this scanner handles
 /// via the same helpers used for long flags — no dedicated short-flag branch.
 fn is_value_taking_flag(flag: &str) -> bool {
     matches!(
