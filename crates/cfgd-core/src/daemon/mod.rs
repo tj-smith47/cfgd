@@ -1018,6 +1018,7 @@ pub async fn run_compliance_and_reconcile_ticks(
         cache_dir,
     )?;
     let ctx = DaemonLoopContext {
+        update_policy_override: None,
         state: Arc::new(Mutex::new(DaemonState::new())),
         abort: Arc::new(crate::AbortFlag::new()),
         hooks,
@@ -1062,6 +1063,13 @@ pub struct DaemonDirOverrides {
 /// daemon's self-update check and skill-staleness probes compare against the
 /// binary that is actually running, never cfgd-core's own crate version (the
 /// crates version independently).
+///
+/// `update_policy` is the posture the starting invocation named
+/// (`--update-policy`, which clap fills from `CFGD_UPDATE_POLICY`). `Some`
+/// replaces `spec.update.policy` on every version tick for the life of the
+/// daemon; `None` leaves each tick reading the policy off the config file, so
+/// editing it retunes a running daemon.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_daemon(
     config_path: PathBuf,
     profile_override: Option<String>,
@@ -1069,6 +1077,7 @@ pub async fn run_daemon(
     printer: Arc<Printer>,
     hooks: Arc<dyn DaemonHooks>,
     scope: crate::Scope,
+    update_policy: Option<crate::config::UpdatePolicy>,
     cfgd_version: &str,
 ) -> Result<()> {
     run_daemon_with(
@@ -1076,7 +1085,7 @@ pub async fn run_daemon(
         profile_override,
         printer,
         hooks,
-        cli_run_overrides(dirs, scope),
+        cli_run_overrides(dirs, scope, update_policy),
         cfgd_version,
     )
     .await
@@ -1099,12 +1108,14 @@ pub async fn run_daemon(
 pub(super) fn cli_run_overrides(
     dirs: DaemonDirOverrides,
     scope: crate::Scope,
+    update_policy: Option<crate::config::UpdatePolicy>,
 ) -> DaemonRunOverrides {
     DaemonRunOverrides {
         ipc_path: Some(resolve_default_ipc_path(dirs.runtime_dir.as_deref(), scope)),
         state_dir_override: dirs.state_dir,
         cache_dir_override: dirs.cache_dir,
         scope,
+        update_policy,
         ..DaemonRunOverrides::default()
     }
 }
@@ -1142,6 +1153,10 @@ pub(super) struct DaemonRunOverrides {
     pub skip_startup_checkin: bool,
     pub(in crate::daemon) external_triggers: Option<DaemonTriggers>,
     pub scope: crate::Scope,
+    /// The posture `--update-policy` named for this daemon, carried to
+    /// `DaemonLoopContext::update_policy_override`. `None` keeps the
+    /// per-tick re-read of `spec.update.policy`.
+    pub update_policy: Option<crate::config::UpdatePolicy>,
 }
 
 impl Default for DaemonRunOverrides {
@@ -1154,6 +1169,7 @@ impl Default for DaemonRunOverrides {
             skip_startup_checkin: false,
             external_triggers: None,
             scope: crate::Scope::User,
+            update_policy: None,
         }
     }
 }
@@ -1412,6 +1428,7 @@ pub(super) async fn run_daemon_with(
     };
 
     let ctx = DaemonLoopContext {
+        update_policy_override: overrides.update_policy,
         state: Arc::clone(&state),
         abort: Arc::clone(&abort),
         hooks: Arc::clone(&hooks),

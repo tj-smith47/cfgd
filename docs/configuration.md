@@ -185,10 +185,13 @@ posture without touching the file:
 cfgd --update-policy manual status          # no update check on this command
 cfgd --update-policy notify apply           # report an available update and leave it uninstalled
 CFGD_UPDATE_POLICY=Manual cfgd profile show # the PascalCase spelling is accepted too
+CFGD_UPDATE_POLICY=manual cfgd daemon       # the daemon this starts never checks
 ```
 
 Only the posture moves. `interval`, `channel` and `skills` stay whatever the
-config declares.
+config declares. A daemon keeps the posture it was started with for its whole
+life; one started without the flag re-reads `spec.update.policy` on every
+version tick, so editing the file retunes a running daemon.
 
 ### Update policies
 

@@ -120,6 +120,10 @@ pub(super) struct DaemonLoopContext {
     /// passed in by the binary — the daemon's update check and skill-staleness
     /// probes compare against the *binary*, never cfgd-core's own version.
     pub cfgd_version: String,
+    /// The posture `cfgd --update-policy … daemon` named, if any. `None` keeps
+    /// the per-tick re-read of `spec.update.policy` in charge, which is how a
+    /// running daemon is retuned without a restart.
+    pub update_policy_override: Option<config::UpdatePolicy>,
     /// What the daemon has already derived from its config files, shared by
     /// every reconcile tick so an unchanged config is parsed, composed and
     /// mapped to providers ONCE rather than once per tick. See `tick_cache.rs`.
@@ -733,10 +737,11 @@ pub(super) async fn handle_version_check_tick(ctx: &DaemonLoopContext) -> Result
     // Load the live config so the check honors `spec.update.policy`. A load
     // failure degrades to the default policy (Prompt → Notify in the daemon's
     // non-interactive context) rather than skipping the check entirely.
-    let update_cfg = config::load_config(&ctx.config_path)
+    let declared = config::load_config(&ctx.config_path)
         .ok()
         .and_then(|c| c.spec.update)
         .unwrap_or_default();
+    let update_cfg = crate::upgrade::effective_update_config(declared, ctx.update_policy_override);
     handle_version_check(&update_cfg, &ctx.state, &ctx.notifier, &ctx.cfgd_version).await;
     Ok(())
 }

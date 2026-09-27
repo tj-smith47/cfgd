@@ -392,18 +392,12 @@ fn main() -> anyhow::Result<()> {
     );
     if !skip_startup_check {
         // Only the override is resolved here; the stored half comes off the one
-        // load the check already makes. The field carries `CFGD_UPDATE_POLICY`
-        // too, since the flag binds it and clap has already refused a word
-        // neither spelling accepts.
-        let update_policy_override = cli
-            .update_policy
-            .as_deref()
-            .and_then(|raw| raw.parse::<cfgd_core::config::UpdatePolicy>().ok());
+        // load the check already makes.
         cli::upgrade::startup_update_check(
             &printer,
             std::path::Path::new(&cli.config),
             assume_yes,
-            update_policy_override,
+            cli.update_policy_override(),
         );
     }
 

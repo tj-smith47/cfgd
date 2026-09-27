@@ -302,7 +302,7 @@ pub fn startup_update_check(
         .ok()
         .and_then(|c| c.spec.update)
         .unwrap_or_default();
-    let update_cfg = upgrade::effective_update_config(&declared, override_policy);
+    let update_cfg = upgrade::effective_update_config(declared, override_policy);
 
     // Cheap interval/Manual gate before constructing any effects.
     let now = cfgd_core::unix_secs_now();

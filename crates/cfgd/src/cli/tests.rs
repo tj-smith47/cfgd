@@ -1199,9 +1199,9 @@ fn resolve_mask_env_values_precedence_flag_beats_spec_beats_default() {
 
 /// The run's update-posture override is the flag, then `CFGD_UPDATE_POLICY`,
 /// both read off the one `cli.update_policy` field: the flag binds the env var,
-/// so clap fills the field from it when the flag is absent. `main` reads that
-/// field alone and leaves `spec.update.policy` to the load the startup check
-/// already makes.
+/// so clap fills the field from it when the flag is absent. The startup check
+/// and `cfgd daemon` both read it through `Cli::update_policy_override` and
+/// leave `spec.update.policy` to the config load each already makes.
 #[test]
 #[serial_test::serial]
 fn the_update_policy_field_carries_the_flag_over_the_env_var() {
@@ -1210,11 +1210,7 @@ fn the_update_policy_field_carries_the_flag_over_the_env_var() {
     let parsed = |argv: &[&str]| {
         Cli::try_parse_reading_env(argv.iter().copied(), &["CFGD_UPDATE_POLICY"])
             .expect("parses")
-            .update_policy
-            .map(|raw| {
-                raw.parse::<UpdatePolicy>()
-                    .expect("clap admitted only enum words")
-            })
+            .update_policy_override()
     };
     let unset = EnvVarGuard::unset("CFGD_UPDATE_POLICY");
     assert_eq!(
@@ -1233,6 +1229,11 @@ fn the_update_policy_field_carries_the_flag_over_the_env_var() {
         parsed(&["cfgd", "--update-policy", "manual", "status"]),
         Some(UpdatePolicy::Manual),
         "the flag outranks the env var"
+    );
+    assert_eq!(
+        parsed(&["cfgd", "daemon", "--update-policy", "auto"]),
+        Some(UpdatePolicy::Auto),
+        "the daemon reads the same field, so its flag outranks the env var too"
     );
 }
 

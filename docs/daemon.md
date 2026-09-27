@@ -12,6 +12,8 @@ The daemon runs as a long-lived process that watches for drift and optionally au
 
 4. **Backup timers**: runs each `spec.backups[]` entry that declares a `schedule`, on its own interval or cron. See [Declarative Backups](backups.md#daemon-scheduling).
 
+5. **Update check**: on a daily tick, runs the automatic cfgd update check (gated by `spec.update.interval`) under `spec.update.policy`, read from the config file on every tick so an edit takes effect without a restart. A daemon started with `--update-policy` (or `CFGD_UPDATE_POLICY`) uses that posture instead for as long as it runs: `cfgd --update-policy manual daemon` never checks. See [Update behavior](configuration.md#update-behavior-specupdate).
+
 ![an edit committed on machine A landing on machine B through the daemon's sync and reconcile loops](../demo/cfgd-sync.gif)
 
 ## Architecture

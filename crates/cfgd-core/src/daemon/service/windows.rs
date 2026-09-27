@@ -482,6 +482,10 @@ pub(crate) fn windows_service_main() -> std::result::Result<(), Box<dyn std::err
             printer,
             hooks,
             scope,
+            // `install_windows_service` bakes no `--update-policy` into the
+            // binPath, so a service's posture is `spec.update.policy`, re-read
+            // on every tick.
+            None,
             &cfgd_version,
         )
         .await

@@ -1260,6 +1260,17 @@ impl Cli {
     pub fn scope(&self) -> cfgd_core::Scope {
         self.scope_arg.into()
     }
+
+    /// The update posture this invocation named through `--update-policy` or
+    /// `CFGD_UPDATE_POLICY`, or `None` when neither is set and the config's
+    /// `spec.update.policy` governs.
+    pub fn update_policy_override(&self) -> Option<cfgd_core::config::UpdatePolicy> {
+        // clap has already refused any word outside the value list, so a parse
+        // failure here cannot happen for a value that reached this field.
+        self.update_policy
+            .as_deref()
+            .and_then(|raw| raw.parse().ok())
+    }
 }
 
 #[derive(Parser, Clone)]

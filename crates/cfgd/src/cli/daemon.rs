@@ -64,6 +64,7 @@ pub(super) fn cmd_daemon(
             daemon_printer,
             hooks,
             cli.scope(),
+            cli.update_policy_override(),
             env!("CARGO_PKG_VERSION"),
         )
         .await

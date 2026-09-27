@@ -12424,6 +12424,7 @@ mod harness {
         let (printer, buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
         let printer = Arc::new(printer);
         let ctx = DaemonLoopContext {
+            update_policy_override: None,
             abort: Arc::new(crate::AbortFlag::new()),
             cfgd_version: env!("CARGO_PKG_VERSION").to_string(),
             tick_cache: Arc::new(super::tick_cache::TickCache::new()),
@@ -14545,6 +14546,7 @@ spec:
         let printer = Arc::new(printer);
         let (ran_tx, ran_rx) = tokio::sync::mpsc::unbounded_channel();
         let ctx = DaemonLoopContext {
+            update_policy_override: None,
             abort: Arc::new(crate::AbortFlag::new()),
             cfgd_version: env!("CARGO_PKG_VERSION").to_string(),
             tick_cache: Arc::new(super::tick_cache::TickCache::new()),
@@ -14635,6 +14637,7 @@ spec:
         let (printer, _buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
         let printer = Arc::new(printer);
         let ctx = DaemonLoopContext {
+            update_policy_override: None,
             abort: Arc::new(crate::AbortFlag::new()),
             cfgd_version: env!("CARGO_PKG_VERSION").to_string(),
             tick_cache: Arc::new(super::tick_cache::TickCache::new()),
@@ -14894,6 +14897,7 @@ spec:
             build_registry_calls: Arc::clone(&build_registry_calls),
         });
         let ctx = DaemonLoopContext {
+            update_policy_override: None,
             abort: Arc::new(crate::AbortFlag::new()),
             cfgd_version: env!("CARGO_PKG_VERSION").to_string(),
             tick_cache: Arc::new(super::tick_cache::TickCache::new()),
@@ -14972,6 +14976,7 @@ spec:
             build_registry_calls: Arc::clone(&build_registry_calls),
         });
         let ctx = DaemonLoopContext {
+            update_policy_override: None,
             abort: Arc::new(crate::AbortFlag::new()),
             cfgd_version: env!("CARGO_PKG_VERSION").to_string(),
             tick_cache: Arc::new(super::tick_cache::TickCache::new()),
@@ -15035,6 +15040,7 @@ spec:
             build_registry_calls: Arc::clone(&build_registry_calls),
         });
         let ctx = DaemonLoopContext {
+            update_policy_override: None,
             abort: Arc::new(crate::AbortFlag::new()),
             cfgd_version: env!("CARGO_PKG_VERSION").to_string(),
             tick_cache: Arc::new(super::tick_cache::TickCache::new()),
@@ -16656,6 +16662,75 @@ spec: {}
         );
     }
 
+    // ----- handle_version_check_tick: the invocation's posture -----
+
+    /// One version tick of a daemon whose config declares `declared` and which
+    /// was started with `override_policy`, against a release feed that always
+    /// offers a newer version. Returns the update the tick recorded, if any.
+    async fn drive_version_tick(
+        declared: &str,
+        override_policy: Option<config::UpdatePolicy>,
+    ) -> Option<String> {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("GET", "/repos/tj-smith47/cfgd/releases/latest")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"tag_name": "v999.0.0", "assets": []}"#)
+            .create_async()
+            .await;
+        let _api = crate::test_helpers::EnvVarGuard::set("CFGD_GITHUB_API_BASE", &server.url());
+        let (mut ctx, state, _buf) = make_test_ctx(&tmp, false, false, None);
+        ctx.config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(
+            &ctx.config_path,
+            format!(
+                "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  profile: default\n  update:\n    policy: {declared}\n"
+            ),
+        )
+        .unwrap();
+        ctx.update_policy_override = override_policy;
+        let _g = crate::with_test_home_guard(tmp.path());
+        runner::handle_version_check_tick(&ctx)
+            .await
+            .expect("a version tick never fails the loop");
+        state.lock().await.update_available.clone()
+    }
+
+    // current_thread so the test-home guard survives the tick's `.await`.
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn a_daemon_started_with_update_policy_manual_makes_no_check_whatever_its_config_says() {
+        assert_eq!(
+            drive_version_tick("Notify", Some(config::UpdatePolicy::Manual)).await,
+            None,
+            "`cfgd --update-policy manual daemon` must not check, even over a config declaring Notify"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn a_daemon_started_with_update_policy_notify_checks_over_a_manual_config() {
+        assert_eq!(
+            drive_version_tick("Manual", Some(config::UpdatePolicy::Notify))
+                .await
+                .as_deref(),
+            Some("999.0.0"),
+            "the invocation's posture outranks the config's in both directions"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn a_daemon_started_without_update_policy_follows_the_config_it_rereads() {
+        assert_eq!(
+            drive_version_tick("Manual", None).await,
+            None,
+            "with no flag the tick reads spec.update.policy off the file, so editing it retunes a running daemon"
+        );
+    }
+
     // ----- init_daemon_state tests -----
 
     #[test]
@@ -17385,6 +17460,7 @@ spec: {}
             skip_startup_checkin: true,
             external_triggers: Some(triggers),
             scope: crate::Scope::User,
+            update_policy: None,
         }
     }
 
@@ -17697,6 +17773,7 @@ spec: {}
             skip_startup_checkin: true,
             external_triggers: Some(triggers),
             scope: crate::Scope::User,
+            update_policy: None,
         };
         let daemon = tokio::spawn(super::super::run_daemon_with(
             config_path,
@@ -17759,6 +17836,7 @@ spec: {}
             skip_startup_checkin: true,
             external_triggers: Some(triggers),
             scope: crate::Scope::User,
+            update_policy: None,
         };
         let result = super::super::run_daemon_with(
             config_path,
@@ -18048,6 +18126,7 @@ spec: {}
             skip_startup_checkin: true,
             external_triggers: None,
             scope: crate::Scope::User,
+            update_policy: None,
         };
 
         let daemon = tokio::spawn(super::super::run_daemon_with(
@@ -18282,6 +18361,7 @@ spec: {}
             skip_startup_checkin: true,
             external_triggers: Some(triggers),
             scope: crate::Scope::User,
+            update_policy: None,
         };
         let daemon = tokio::spawn(super::super::run_daemon_with(
             config_path,
@@ -18351,6 +18431,7 @@ spec: {}
             skip_startup_checkin: true,
             external_triggers: Some(triggers),
             scope: crate::Scope::User,
+            update_policy: None,
         };
         let daemon = tokio::spawn(super::super::run_daemon_with(
             config_path.clone(),
@@ -20824,6 +20905,12 @@ mod tests_run_daemon_wrapper {
                 cache_dir: Some(cache.clone()),
             },
             crate::Scope::User,
+            Some(crate::config::UpdatePolicy::Manual),
+        );
+        assert_eq!(
+            over.update_policy,
+            Some(crate::config::UpdatePolicy::Manual),
+            "--update-policy must reach the loop, or `cfgd --update-policy manual daemon` still checks on its timer"
         );
         assert_eq!(
             over.state_dir_override.as_deref(),
@@ -20860,7 +20947,11 @@ mod tests_run_daemon_wrapper {
     #[test]
     fn cli_run_overrides_leave_both_dirs_to_the_defaults_when_unset() {
         use crate::daemon::cli_run_overrides;
-        let over = cli_run_overrides(DaemonDirOverrides::default(), crate::Scope::User);
+        let over = cli_run_overrides(DaemonDirOverrides::default(), crate::Scope::User, None);
+        assert!(
+            over.update_policy.is_none(),
+            "no flag → the version tick re-reads spec.update.policy every time"
+        );
         assert!(
             over.state_dir_override.is_none(),
             "no flag → fall through to CFGD_STATE_DIR / the scope default"
@@ -20884,6 +20975,7 @@ mod tests_run_daemon_wrapper {
             printer,
             hooks,
             crate::Scope::User,
+            None,
             env!("CARGO_PKG_VERSION"),
         )
         .await;

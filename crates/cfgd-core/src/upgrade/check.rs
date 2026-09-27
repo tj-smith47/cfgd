@@ -118,14 +118,13 @@ fn is_optout_value_set(var: &str) -> bool {
 /// since the override names a posture and leaves the rest of the block alone.
 /// `None` returns the declared block unchanged.
 pub fn effective_update_config(
-    declared: &UpdateConfig,
+    declared: UpdateConfig,
     override_policy: Option<UpdatePolicy>,
 ) -> UpdateConfig {
-    let mut effective = declared.clone();
-    if let Some(policy) = override_policy {
-        effective.policy = policy;
+    match override_policy {
+        Some(policy) => UpdateConfig { policy, ..declared },
+        None => declared,
     }
-    effective
 }
 
 /// The opt-out/interval/`Manual` gate: should a fresh network check run *now*?
@@ -411,7 +410,7 @@ mod tests {
         declared.channel = Some("beta".to_string());
         declared.skills.policy = SkillUpdatePolicy::Notify;
 
-        let overridden = effective_update_config(&declared, Some(UpdatePolicy::Manual));
+        let overridden = effective_update_config(declared.clone(), Some(UpdatePolicy::Manual));
         assert_eq!(
             overridden.policy,
             UpdatePolicy::Manual,
@@ -432,7 +431,7 @@ mod tests {
             "the declared skill policy still applies"
         );
 
-        let untouched = effective_update_config(&declared, None);
+        let untouched = effective_update_config(declared, None);
         assert_eq!(
             untouched.policy,
             UpdatePolicy::Auto,
