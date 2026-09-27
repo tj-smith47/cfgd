@@ -3103,3 +3103,18 @@ fn every_test_reading_brews_path_dirs_settles_the_seam_and_serializes() {
         offenders.join("\n")
     );
 }
+
+/// The order a mediated bootstrap tries the Unix families in is a contract.
+/// The arms are read off the family table's row order, so a reordered table
+/// row reorders the bootstrap, and this list is spelled out as the expectation.
+#[test]
+fn the_unix_arms_are_tried_in_the_bootstrap_order() {
+    let order: Vec<&str> = SYSTEM_MANAGER_ARMS
+        .iter()
+        .map(|(method, _)| *method)
+        .collect();
+    assert_eq!(
+        order,
+        ["apt", "dnf", "yum", "zypper", "pacman", "apk", "pkg"]
+    );
+}
