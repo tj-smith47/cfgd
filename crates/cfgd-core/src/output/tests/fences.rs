@@ -1856,11 +1856,11 @@ fn attribute_block_start(lines: &[&str], open: usize) -> usize {
 /// Serialized reachers each file must still yield: one row per file the walk
 /// finds non-zero, floor = the count it finds there today.
 ///
-/// A floor sits AT the count rather than under it, so a file losing one
-/// reacher fails here instead of drifting silently — the failure mode a
-/// blinded needle takes. A re-calibration REPLACES a row with what the walk
-/// now finds; it never lowers one to make a red walk green, because a count
-/// that fell is the finding.
+/// Each floor is a minimum, so a fence cannot be removed from a file silently.
+/// A file losing one reacher fails here: the failure mode a blinded needle
+/// takes. A re-calibration REPLACES a row with what the scan now finds; it
+/// never lowers one to make a failing check pass, because a count that fell is
+/// the finding.
 const SERIAL_FLOORS: &[(&str, usize)] = &[
     ("crates/cfgd-core/src/daemon/health_ipc.rs", 5),
     ("crates/cfgd-core/src/daemon/service/systemd.rs", 4),
@@ -1878,7 +1878,7 @@ const SERIAL_FLOORS: &[(&str, usize)] = &[
     ("crates/cfgd-core/src/output/tests/hyperlinks.rs", 5),
     ("crates/cfgd-core/src/output/tests/themes_raw.rs", 4),
     ("crates/cfgd-core/src/output/theme.rs", 8),
-    ("crates/cfgd-core/src/platform/session.rs", 5),
+    ("crates/cfgd-core/src/platform/session.rs", 8),
     ("crates/cfgd-core/src/providers/skill/gemini.rs", 1),
     ("crates/cfgd-core/src/reconciler/managers.rs", 4),
     ("crates/cfgd-core/src/reconciler/scripts/tests.rs", 7),
@@ -2476,6 +2476,7 @@ fn every_test_pinning_a_serialized_seam_joins_its_own_group() {
         files_read >= 15,
         "the walk read {files_read} files holding a pin or a reader; it has stopped seeing them"
     );
+    // Each floor is a minimum, so a fence cannot be removed from a file silently.
     for (pin, _, _, floor) in SERIAL_PINS {
         let found = hits.get(*pin).copied().unwrap_or(0);
         assert!(
@@ -4646,8 +4647,9 @@ fn no_production_site_spells_an_env_resource_type_instead_of_its_constant() {
 /// Files holding a pin of gc's failed-removal arm, and the number of pins each
 /// still has to yield.
 ///
-/// A floor per file, so a pin whose shape drifts out of needle reach fails here
-/// rather than leaving the walk reading three members of a class of four.
+/// A floor per file makes a test of that arm whose shape drifts out of needle
+/// reach fail here.
+/// Each floor is a minimum, so a fence cannot be removed from a file silently.
 const GC_FAILED_REMOVAL_PINS: &[(&str, usize)] = &[
     ("crates/cfgd-core/src/backup/tests.rs", 2),
     ("crates/cfgd/tests/backup_exit_code.rs", 1),

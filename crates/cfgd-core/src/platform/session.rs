@@ -108,6 +108,31 @@ mod tests {
 
     #[test]
     #[serial_test::serial]
+    fn an_ssh_connection_alone_marks_the_session_as_ssh() {
+        let _c = cleared();
+        let _s = EnvVarGuard::set("SSH_CONNECTION", "10.0.0.2 51000 10.0.0.1 22");
+        assert!(Session::detect().ssh);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn xdg_session_type_wayland_answers_when_neither_display_var_is_set() {
+        let _c = cleared();
+        let _t = EnvVarGuard::set("XDG_SESSION_TYPE", "wayland");
+        assert_eq!(Session::detect().display, Some(DisplayServer::Wayland));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn a_display_var_outranks_the_xdg_session_type() {
+        let _c = cleared();
+        let _x = EnvVarGuard::set("DISPLAY", ":0");
+        let _t = EnvVarGuard::set("XDG_SESSION_TYPE", "wayland");
+        assert_eq!(Session::detect().display, Some(DisplayServer::X11));
+    }
+
+    #[test]
+    #[serial_test::serial]
     fn an_empty_display_is_not_a_display() {
         let _c = cleared();
         let _x = EnvVarGuard::set("DISPLAY", "");
