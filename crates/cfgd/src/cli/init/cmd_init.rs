@@ -28,8 +28,8 @@ pub struct InitArgs<'a> {
     pub runtime_dir: Option<&'a Path>,
     pub scope: cfgd_core::Scope,
     pub on_conflict: crate::cli::OnConflict,
-    /// What this invocation brings to the migration gate, which runs here
-    /// against the config init wrote rather than at load time.
+    /// What this invocation brings to the migration gate, which init runs
+    /// against the config it wrote.
     pub migration_gate: crate::cli::config_schema::GateInvocation<'a>,
 }
 
@@ -220,9 +220,8 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
     let printer = rethemed.as_ref().unwrap_or(printer);
 
     // The load-time gate is withheld from init because the document did not
-    // exist yet; it runs now, before the apply below reads the file, so the
-    // question a behind-schema config earns is settled during setup instead
-    // of on the first command after it.
+    // exist yet. It runs now, before the apply below reads the file, so the
+    // question a behind-schema config earns is settled during setup.
     crate::cli::config_schema::gate_on_load(
         printer,
         &args.migration_gate,
