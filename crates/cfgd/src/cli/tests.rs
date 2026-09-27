@@ -1886,7 +1886,9 @@ struct SeamPopulation {
 /// takes one from (`packages::shared::tabled_seam_tools`). A reader handed a
 /// variable must sit in a function drawing from one of those tables, or in a
 /// reader forwarding its own parameter; any other such call fails the walk,
-/// because the tools it reads are ones neither source sees. A registry manager
+/// because the tools it reads are ones neither source sees. A function trusted
+/// that way which hands a reader no variable fails it too, and so does a file
+/// whose count of such calls drops below today's. A registry manager
 /// name is no source: `apt` and `brew-cask` derive seams nothing reads.
 fn manager_seam_population() -> SeamPopulation {
     const READERS: &[&str] = &[
@@ -1905,6 +1907,16 @@ fn manager_seam_population() -> SeamPopulation {
         "bootstrap_system_arms",
         "strip_sudo_for_exec",
     ];
+    // The readers whose own body hands the reader below them the parameter it
+    // was given.
+    const FORWARDERS: &[&str] = &[
+        "resolve_tool_with_fallbacks",
+        "system_tool_available",
+        "sudo_cmd_with_seam",
+    ];
+    // Draws per file today: shared/mod.rs holds five table draws and the three
+    // forwards, pipx.rs the two pip draws.
+    const FILE_FLOORS: &[(&str, usize)] = &[("shared/mod.rs", 8), ("pipx.rs", 2)];
     let packages = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/packages");
     let mut seams: std::collections::BTreeMap<String, String> = Default::default();
     let mut tools: std::collections::BTreeSet<String> =
@@ -1913,7 +1925,12 @@ fn manager_seam_population() -> SeamPopulation {
             .map(str::to_string)
             .collect();
     let mut read = 0usize;
-    let mut drawn = 0usize;
+    let mut drawn: std::collections::BTreeMap<String, usize> = TABLED
+        .iter()
+        .chain(FORWARDERS)
+        .map(|name| (name.to_string(), 0))
+        .collect();
+    let mut drawn_in: std::collections::BTreeMap<String, usize> = Default::default();
     let mut unsourced: Vec<String> = Vec::new();
     for path in rust_sources_under(&packages) {
         let production = floored_production_body(&path);
@@ -1921,9 +1938,12 @@ fn manager_seam_population() -> SeamPopulation {
             continue;
         }
         read += 1;
+        let rel = cfgd_core::to_posix_string(path.strip_prefix(&packages).unwrap_or(&path));
         let mut enclosing = "";
+        let mut enclosing_indent = 0usize;
         for (n, raw) in production.lines().enumerate() {
             let code = cfgd_core::test_helpers::code_span(raw);
+            let indent = code.len() - code.trim_start().len();
             if cfgd_core::test_helpers::opens_function(code.trim_start())
                 && let Some((_, rest)) = code.split_once("fn ")
             {
@@ -1931,6 +1951,16 @@ fn manager_seam_population() -> SeamPopulation {
                     .split(|c: char| !(c.is_alphanumeric() || c == '_'))
                     .next()
                     .unwrap_or_default();
+                enclosing_indent = indent;
+            } else if indent <= enclosing_indent
+                && matches!(
+                    cfgd_core::test_helpers::item_keyword(code),
+                    "const" | "static" | "struct" | "enum" | "impl" | "trait" | "type" | "mod"
+                )
+            {
+                // An item beside the function ends it; one inside its body (a
+                // local `static`) does not.
+                enclosing = "";
             }
             let ident = code
                 .split("const ")
@@ -1945,20 +1975,19 @@ fn manager_seam_population() -> SeamPopulation {
             }
             for reader in READERS {
                 for (at, _) in code.match_indices(reader) {
+                    // The reader's own signature names no tool.
+                    if code[..at].ends_with("fn ") {
+                        continue;
+                    }
                     let arg = &code[at + reader.len()..];
                     if let Some(tool) = arg.strip_prefix('"').and_then(|a| a.split('"').next()) {
                         tools.insert(tool.to_string());
-                    } else if TABLED.contains(&enclosing)
-                        || READERS
-                            .iter()
-                            .any(|r| r.strip_suffix('(') == Some(enclosing))
-                    {
-                        drawn += 1;
+                    } else if let Some(count) = drawn.get_mut(enclosing) {
+                        *count += 1;
+                        *drawn_in.entry(rel.clone()).or_default() += 1;
                     } else {
-                        let rel = path.strip_prefix(&packages).unwrap_or(&path);
                         unsourced.push(format!(
-                            "packages/{}:{}: {reader}… in `{enclosing}`",
-                            rel.display(),
+                            "packages/{rel}:{}: {reader}… in `{enclosing}`",
                             n + 1
                         ));
                     }
@@ -1977,12 +2006,24 @@ fn manager_seam_population() -> SeamPopulation {
         read >= 17,
         "the walk read {read} production files under packages/"
     );
-    // Seven table draws and the three readers forwarding their own parameter.
+    let idle: Vec<&str> = drawn
+        .iter()
+        .filter(|(_, count)| **count == 0)
+        .map(|(name, _)| name.as_str())
+        .collect();
     assert!(
-        drawn >= 10,
-        "the walk classified {drawn} calls handing a reader a variable; it has stopped \
-         reading them"
+        idle.is_empty(),
+        "these functions are trusted to draw a reader's tool from a table, and hand a \
+         reader no variable: {idle:?}"
     );
+    for (file, floor) in FILE_FLOORS {
+        let count = drawn_in.get(*file).copied().unwrap_or_default();
+        assert!(
+            count >= *floor,
+            "the walk classified {count} calls handing a reader a variable in \
+             packages/{file}; it has stopped reading them"
+        );
+    }
     let consts = seams.len();
     for tool in &tools {
         seams
@@ -22414,6 +22455,7 @@ fn no_apply_path_warn_restates_a_printer_line() {
             }
         }
     }
+    // The events the reconciler and the package managers log today.
     assert!(
         scanned >= 24,
         "the population shrank to {scanned} events, so a green run no longer \
@@ -22455,7 +22497,6 @@ fn no_column_hand_rolls_its_own_yes_no_rendering() {
             // line and the bool on the next, and matches neither.
             let complete = code.matches('(').count() == code.matches(')').count();
             let window = if complete {
-                // The events the reconciler and the package managers log today.
                 code.to_string()
             } else {
                 lines[n..lines.len().min(n + 3)].join(" ")
