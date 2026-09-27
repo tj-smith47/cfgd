@@ -5482,7 +5482,23 @@ pub fn walked_file_body(path: &Path) -> String {
 /// module and nothing else, so a shorter read is a walk that went blind partway
 /// down the file. A walk over several files reads every one through this;
 /// [`production_slice`] stays the pure cut for a caller holding one body.
+///
+/// A file that holds tests alone ([`is_test_source`]) or is built only for
+/// tests ([`is_test_only_file`]) has no production region, so it slices to
+/// the empty string: a walk judging production code through here leaves it
+/// out whether or not the walk asks either predicate itself.
 pub fn production_slice_of(path: &Path) -> String {
+    if is_test_source(path) || is_test_only_file(path) {
+        return String::new();
+    }
+    test_module_cut_of(path)
+}
+
+/// The Rust source at `path` with its trailing test module cut, floored the
+/// way [`production_slice_of`] is, for any file: a walk over the helpers built
+/// only for tests reads their shipped-to-tests region through here, where
+/// [`production_slice_of`] would answer that they hold no production code.
+pub fn test_module_cut_of(path: &Path) -> String {
     let body = std::fs::read_to_string(path)
         .unwrap_or_else(|e| panic!("{}: the walk must read every source: {e}", path.display()));
     // unfloored-slice-ok: the floor over what this cut returned is the assert below.
@@ -5601,10 +5617,11 @@ pub fn is_test_source_below(root: &Path, path: &Path) -> bool {
 
 /// Whether `path` is a workspace source built only for tests although its name
 /// does not say so, which [`is_test_source`] answers from the name alone: a
-/// module its parent declares under a test gate (`#[cfg(test)] mod x;`, or
-/// cfgd-core's `test_helpers` behind `any(test, feature = "test-helpers")`),
-/// and a `[[bin]]` whose `required-features` names `test-helpers` (the
-/// `fake-cosign` fixture).
+/// module gated to tests (`#[cfg(test)] mod x;`, `feature = "test-helpers"`,
+/// or any combination [`cfg_requires_test`] holds for, on the declaration or
+/// as the file's inner attribute), every module such a file declares, and a
+/// `[[bin]]` whose `required-features` names `test-helpers` (the `fake-cosign`
+/// fixture).
 ///
 /// No shipped binary compiles such a file, and the gate sits outside it, so it
 /// carries no inner `#[cfg(test)]` for `production_slice` to cut at. A scan
@@ -5630,18 +5647,137 @@ pub fn is_test_only_file(path: &Path) -> bool {
     FILES.contains(folded.strip_prefix(&*WORKSPACE_ROOT).unwrap_or(&folded))
 }
 
-/// The attributes that build a module only for tests, spelled as rustfmt lays
-/// them out on the line above the declaration.
-const TEST_ONLY_GATES: [&str; 2] = [
-    "#[cfg(test)]",
-    "#[cfg(any(test, feature = \"test-helpers\"))]",
-];
+/// Whether a `cfg` predicate (the text inside `cfg(…)`) holds only in a test
+/// build: `test`, `feature = "test-helpers"` (a feature only test builds turn
+/// on), an `all(…)` with such a member, or an `any(…)` whose every member is
+/// one. A `not(…)`, and any other atom, holds in some shipped build.
+pub fn cfg_requires_test(predicate: &str) -> bool {
+    let p = predicate.trim();
+    if p == "test" {
+        return true;
+    }
+    if let Some(value) = p
+        .strip_prefix("feature")
+        .and_then(|rest| rest.trim_start().strip_prefix('='))
+    {
+        return value.trim() == "\"test-helpers\"";
+    }
+    let call = |op: &str| {
+        p.strip_prefix(op)
+            .map(str::trim_start)
+            .and_then(|rest| rest.strip_prefix('('))
+            .and_then(|rest| rest.strip_suffix(')'))
+            .map(cfg_members)
+    };
+    if let Some(members) = call("any") {
+        return !members.is_empty() && members.iter().all(|m| cfg_requires_test(m));
+    }
+    if let Some(members) = call("all") {
+        return members.iter().any(|m| cfg_requires_test(m));
+    }
+    false
+}
+
+/// The comma-separated members of a `cfg` combinator's argument list, split
+/// only at the top level so a nested `all(a, b)` stays one member.
+fn cfg_members(list: &str) -> Vec<&str> {
+    let (mut out, mut depth, mut quoted, mut start) = (Vec::new(), 0usize, false, 0);
+    for (at, c) in list.char_indices() {
+        match c {
+            '"' => quoted = !quoted,
+            '(' if !quoted => depth += 1,
+            ')' if !quoted => depth = depth.saturating_sub(1),
+            ',' if !quoted && depth == 0 => {
+                out.push(&list[start..at]);
+                start = at + 1;
+            }
+            _ => {}
+        }
+    }
+    out.push(&list[start..]);
+    out.into_iter().filter(|m| !m.trim().is_empty()).collect()
+}
+
+/// Whether an attribute line (outer `#[cfg(…)]` or inner `#![cfg(…)]`, as
+/// rustfmt lays it on one line) builds its item only for tests.
+fn is_test_gate(attr: &str) -> bool {
+    attr.strip_prefix("#![cfg(")
+        .or_else(|| attr.strip_prefix("#[cfg("))
+        .and_then(|rest| rest.strip_suffix(")]"))
+        .is_some_and(cfg_requires_test)
+}
+
+/// Every `mod x;` the Rust source at `source` declares, as the file it loads
+/// (after any `#[path = "…"]`) and whether its attributes gate it to tests.
+/// A declaration that names no file fails, since the crate could not build.
+fn declared_module_files(source: &Path) -> Vec<(PathBuf, bool)> {
+    let body = walked_file_body(source);
+    let lines: Vec<&str> = body.lines().collect();
+    // A crate root or `mod.rs` declares its children beside itself; any other
+    // file declares them in the directory named after it.
+    let parent = source.parent().unwrap_or(Path::new(""));
+    let stem = source.file_stem().unwrap_or_default();
+    let base = if ["lib", "main", "mod"].iter().any(|r| stem == *r)
+        || source.parent().and_then(Path::file_name) == Some("bin".as_ref())
+    {
+        parent.to_path_buf()
+    } else {
+        parent.join(stem)
+    };
+    let mut out = Vec::new();
+    for (at, line) in lines.iter().enumerate() {
+        let code = code_line(line);
+        if item_keyword(&code) != "mod" {
+            continue;
+        }
+        let Some(name) = strip_item_lead(&code)
+            .strip_prefix("mod ")
+            .and_then(|rest| rest.trim_end().strip_suffix(';'))
+        else {
+            continue;
+        };
+        let attrs: Vec<&str> = lines[..at]
+            .iter()
+            .rev()
+            .map(|l| l.trim())
+            .take_while(|l| l.starts_with("#["))
+            .collect();
+        let explicit = attrs.iter().find_map(|a| {
+            a.strip_prefix("#[path = \"")
+                .and_then(|rest| rest.strip_suffix("\"]"))
+                .map(|p| parent.join(p))
+        });
+        let file = explicit
+            .into_iter()
+            .chain([
+                base.join(format!("{name}.rs")),
+                base.join(name).join("mod.rs"),
+            ])
+            .find(|candidate| candidate.is_file())
+            .unwrap_or_else(|| {
+                panic!(
+                    "{}:{}: `mod {name};` names no file under {}",
+                    source.display(),
+                    at + 1,
+                    base.display()
+                )
+            });
+        out.push((file, attrs.iter().any(|a| is_test_gate(a))));
+    }
+    out
+}
 
 /// [`is_test_only_file`]'s set for the workspace at `root`, each path relative
 /// to `root`; files [`is_test_source_below`] already names are left out.
+///
+/// A file joins when a `[[bin]]` naming `test-helpers` in its
+/// `required-features` builds it, when its declaration or its own inner
+/// attributes carry a gate [`cfg_requires_test`] holds for, or when a file
+/// already in the set declares it: a child of a test-only module is built only
+/// when its parent is.
 pub fn test_only_files_below(root: &Path) -> std::collections::BTreeSet<PathBuf> {
     let crates = root.join("crates");
-    let mut out = std::collections::BTreeSet::new();
+    let mut found: Vec<PathBuf> = Vec::new();
     let mut crate_dirs: Vec<PathBuf> = std::fs::read_dir(&crates)
         .unwrap_or_else(|e| {
             panic!(
@@ -5663,63 +5799,79 @@ pub fn test_only_files_below(root: &Path) -> std::collections::BTreeSet<PathBuf>
         let manifest: toml::Table = walked_file_body(&dir.join("Cargo.toml"))
             .parse()
             .unwrap_or_else(|e| panic!("{}: Cargo.toml must parse: {e}", dir.display()));
+        let package = manifest
+            .get("package")
+            .and_then(|p| p.get("name"))
+            .and_then(toml::Value::as_str);
         let bins = manifest.get("bin").and_then(toml::Value::as_array);
         for bin in bins.into_iter().flatten() {
             let gated = bin
                 .get("required-features")
                 .and_then(toml::Value::as_array)
                 .is_some_and(|f| f.iter().any(|f| f.as_str() == Some("test-helpers")));
-            if let (true, Some(file)) = (gated, bin.get("path").and_then(toml::Value::as_str)) {
-                let file = dir.join(file);
-                out.insert(file.strip_prefix(root).unwrap_or(&file).to_path_buf());
-            }
-        }
-    }
-    for source in rust_sources_under(&crates) {
-        if is_test_source_below(root, &source) {
-            continue;
-        }
-        let body = walked_file_body(&source);
-        let lines: Vec<&str> = body.lines().collect();
-        for (at, line) in lines.iter().enumerate() {
-            let code = code_line(line);
-            if item_keyword(&code) != "mod" {
-                continue;
-            }
-            let Some(name) = strip_item_lead(&code)
-                .strip_prefix("mod ")
-                .and_then(|rest| rest.trim_end().strip_suffix(';'))
-            else {
-                continue;
-            };
-            let gated = lines[..at]
-                .iter()
-                .rev()
-                .map(|l| l.trim())
-                .take_while(|l| l.starts_with("#["))
-                .any(|attr| TEST_ONLY_GATES.contains(&attr));
             if !gated {
                 continue;
             }
-            // A crate root or `mod.rs` declares its children beside itself;
-            // any other file declares them in the directory named after it.
-            let parent = source.parent().unwrap_or(root);
-            let stem = source.file_stem().unwrap_or_default();
-            let base = if ["lib", "main", "mod"].iter().any(|r| stem == *r) {
-                parent.to_path_buf()
-            } else {
-                parent.join(stem)
+            let name = bin.get("name").and_then(toml::Value::as_str).unwrap_or("");
+            // Cargo's inferred target path when the manifest gives none.
+            let file = match bin.get("path").and_then(toml::Value::as_str) {
+                Some(file) => dir.join(file),
+                None => [
+                    dir.join("src/bin").join(format!("{name}.rs")),
+                    dir.join("src/bin").join(name).join("main.rs"),
+                ]
+                .into_iter()
+                .chain((package == Some(name)).then(|| dir.join("src/main.rs")))
+                .find(|candidate| candidate.is_file())
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{}: [[bin]] `{name}` resolves to no file",
+                        dir.join("Cargo.toml").display()
+                    )
+                }),
             };
-            let file = [
-                base.join(format!("{name}.rs")),
-                base.join(name).join("mod.rs"),
-            ]
-            .into_iter()
-            .find(|candidate| candidate.is_file());
-            if let Some(file) = file.filter(|f| !is_test_source_below(root, f)) {
-                out.insert(file.strip_prefix(root).unwrap_or(&file).to_path_buf());
-            }
+            found.push(file);
         }
+    }
+    let sources: Vec<PathBuf> = rust_sources_under(&crates)
+        .into_iter()
+        .filter(|source| !is_test_source_below(root, source))
+        .collect();
+    let mut declared: Vec<(PathBuf, Vec<(PathBuf, bool)>)> = Vec::new();
+    for source in &sources {
+        let body = walked_file_body(source);
+        let inner_gate = body
+            .lines()
+            .map(str::trim)
+            .take_while(|l| l.is_empty() || l.starts_with("//") || l.starts_with("#!["))
+            .any(is_test_gate);
+        if inner_gate {
+            found.push(source.clone());
+        }
+        let children = declared_module_files(source);
+        found.extend(
+            children
+                .iter()
+                .filter(|(_, gated)| *gated)
+                .map(|(f, _)| f.clone()),
+        );
+        declared.push((source.clone(), children));
+    }
+    let mut out = std::collections::BTreeSet::new();
+    while let Some(file) = found.pop() {
+        if is_test_source_below(root, &file) {
+            continue;
+        }
+        let rel = file.strip_prefix(root).unwrap_or(&file).to_path_buf();
+        if !out.insert(rel) {
+            continue;
+        }
+        let children = declared.iter().find(|(source, _)| *source == file);
+        found.extend(
+            children
+                .into_iter()
+                .flat_map(|(_, c)| c.iter().map(|(f, _)| f.clone())),
+        );
     }
     out
 }

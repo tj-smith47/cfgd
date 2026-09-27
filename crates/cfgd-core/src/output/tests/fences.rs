@@ -3016,7 +3016,7 @@ fn every_env_mutating_test_helper_is_named_in_the_mutator_roster() {
         files_read += 1;
         // The trailing test module exercises the helpers, so its own tests
         // reach every seed and would be derived as helpers themselves.
-        let body = crate::test_helpers::production_slice_of(&path);
+        let body = crate::test_helpers::test_module_cut_of(&path);
         let lines: Vec<&str> = body.lines().collect();
         let owners = impl_owners(&lines);
         let relative = source_label(&path);
@@ -6806,6 +6806,7 @@ fn is_test_only_file_names_the_workspace_files_built_only_for_tests() {
         [
             "crates/cfgd/src/cli/test_support.rs",
             "crates/cfgd-core/src/bin/fake_cosign.rs",
+            "crates/cfgd-core/src/output/test_capture.rs",
             "crates/cfgd-core/src/test_helpers.rs",
             "crates/cfgd-operator/src/controllers/test_fixtures.rs",
             "crates/cfgd-operator/src/controllers/test_kube_harness.rs",
@@ -6823,12 +6824,57 @@ fn is_test_only_file_names_the_workspace_files_built_only_for_tests() {
     ));
     assert!(!is(&root.join("crates/cfgd-csi/src/test_helpers.rs")));
     assert!(!is(&root.join("crates/cfgd/src/bin/fake_cosign.rs")));
+
+    // Neither kind of test-only file has a production region to judge.
+    let slice = crate::test_helpers::production_slice_of;
+    for held in [
+        "crates/cfgd-core/src/test_helpers.rs",
+        "crates/cfgd-core/src/output/tests/fences.rs",
+    ] {
+        assert_eq!(slice(&root.join(held)), "", "{held} slices to nothing");
+    }
+    assert!(!slice(&root.join("crates/cfgd-core/src/lib.rs")).is_empty());
 }
 
-/// Each way a file comes to be built only for tests is read: a gated
-/// declaration in a crate root, in a `mod.rs`, and in a plain module file
-/// (whose children live in the directory named after it), and a `[[bin]]`
-/// requiring `test-helpers`. An ungated declaration, a differently gated one,
+/// The shell scans (`.claude/scripts/audit.sh` and the review lenses) cannot
+/// ask [`crate::test_helpers::is_test_only_file`], so they read its set from a
+/// checked-in list, one workspace-relative posix path per line in sorted
+/// order. The list goes stale the moment the derivation moves, and this pin is
+/// what says so. `task test-only-files:bless` rewrites it.
+#[test]
+fn test_only_files_list_matches_the_derivation() {
+    let list = workspace_root().join(".claude/scripts/test-only-files.txt");
+    let mut derived: Vec<String> = crate::test_helpers::test_only_files_below(&workspace_root())
+        .iter()
+        .map(crate::to_posix_string)
+        .collect();
+    derived.sort();
+    let current: String = derived.iter().map(|p| format!("{p}\n")).collect();
+    if std::env::var("CFGD_BLESS_TEST_ONLY_FILES").is_ok() {
+        std::fs::write(&list, &current)
+            .unwrap_or_else(|e| panic!("{}: cannot write the list: {e}", list.display()));
+        return;
+    }
+    let committed = std::fs::read_to_string(&list).unwrap_or_else(|e| {
+        panic!(
+            "{}: {e}; run `task test-only-files:bless` to write it",
+            list.display()
+        )
+    });
+    assert_eq!(
+        committed,
+        current,
+        "{} is stale against the derived test-only files; run `task test-only-files:bless`",
+        list.display()
+    );
+}
+
+/// Each way a file comes to be built only for tests is read: a declaration
+/// under each test gate spelling in a crate root, in a `mod.rs`, and in a plain
+/// module file (whose children live in the directory named after it), one
+/// moved by `#[path]`, a file gated by its own inner attribute, a module a
+/// test-only file declares, and a `[[bin]]` requiring `test-helpers` with and
+/// without a `path`. An ungated declaration, a gate some shipped build meets,
 /// and a file `is_test_source` already names are left out.
 #[test]
 fn test_only_files_are_derived_from_gated_declarations_and_manifests() {
@@ -6838,14 +6884,21 @@ fn test_only_files_are_derived_from_gated_declarations_and_manifests() {
         (
             "crates/a/Cargo.toml",
             "[package]\nname = \"a\"\n\n[[bin]]\nname = \"fixture\"\npath = \"src/bin/fixture.rs\"\n\
-             required-features = [\"test-helpers\"]\n\n[[bin]]\nname = \"real\"\npath = \"src/bin/real.rs\"\n",
+             required-features = [\"test-helpers\"]\n\n[[bin]]\nname = \"real\"\npath = \"src/bin/real.rs\"\n\
+             \n[[bin]]\nname = \"implied\"\nrequired-features = [\"test-helpers\"]\n",
         ),
         (
             "crates/a/src/lib.rs",
             "#[cfg(test)]\nmod helper;\n#[cfg(any(test, feature = \"test-helpers\"))]\npub mod shared;\n\
-             pub mod open;\n#[cfg(unix)]\nmod unix_only;\n#[cfg(test)]\nmod tests;\npub mod nested;\n",
+             pub mod open;\n#[cfg(unix)]\nmod unix_only;\n#[cfg(test)]\nmod tests;\npub mod nested;\n\
+             #[cfg(feature = \"test-helpers\")]\npub mod feature_only;\n#[cfg(all(test, unix))]\n\
+             mod all_test;\n\
+             #[cfg(all(unix, feature = \"test-helpers\"))]\nmod all_feature;\n\
+             #[cfg(any(windows, test))]\nmod any_shipped;\n#[cfg(not(test))]\nmod not_test;\n\
+             pub mod inner;\n#[cfg(test)]\n#[path = \"elsewhere/moved.rs\"]\nmod moved;\n",
         ),
-        ("crates/a/src/helper.rs", "fn h() {}\n"),
+        ("crates/a/src/helper.rs", "mod child;\n"),
+        ("crates/a/src/helper/child.rs", "fn c() {}\n"),
         ("crates/a/src/shared.rs", "fn s() {}\n"),
         ("crates/a/src/open.rs", "#[cfg(test)]\nmod fixture;\n"),
         ("crates/a/src/open/fixture.rs", "fn f() {}\n"),
@@ -6853,8 +6906,19 @@ fn test_only_files_are_derived_from_gated_declarations_and_manifests() {
         ("crates/a/src/tests.rs", "fn t() {}\n"),
         ("crates/a/src/nested/mod.rs", "#[cfg(test)]\nmod deep;\n"),
         ("crates/a/src/nested/deep/mod.rs", "fn d() {}\n"),
+        ("crates/a/src/feature_only.rs", "fn g() {}\n"),
+        ("crates/a/src/all_test.rs", "fn g() {}\n"),
+        ("crates/a/src/all_feature.rs", "fn g() {}\n"),
+        ("crates/a/src/any_shipped.rs", "fn g() {}\n"),
+        ("crates/a/src/not_test.rs", "fn g() {}\n"),
+        (
+            "crates/a/src/inner.rs",
+            "//! Held for tests.\n#![cfg(test)]\nfn i() {}\n",
+        ),
+        ("crates/a/src/elsewhere/moved.rs", "fn m() {}\n"),
         ("crates/a/src/bin/fixture.rs", "fn main() {}\n"),
         ("crates/a/src/bin/real.rs", "fn main() {}\n"),
+        ("crates/a/src/bin/implied/main.rs", "fn main() {}\n"),
     ];
     for (rel, body) in files {
         let file = ws.join(rel);
@@ -6868,13 +6932,50 @@ fn test_only_files_are_derived_from_gated_declarations_and_manifests() {
     assert_eq!(
         derived,
         [
+            "crates/a/src/all_feature.rs",
+            "crates/a/src/all_test.rs",
             "crates/a/src/bin/fixture.rs",
+            "crates/a/src/bin/implied/main.rs",
+            "crates/a/src/elsewhere/moved.rs",
+            "crates/a/src/feature_only.rs",
+            "crates/a/src/helper/child.rs",
             "crates/a/src/helper.rs",
+            "crates/a/src/inner.rs",
             "crates/a/src/nested/deep/mod.rs",
             "crates/a/src/open/fixture.rs",
             "crates/a/src/shared.rs",
         ]
     );
+}
+
+/// Each `cfg` predicate shape the workspace spells is judged by whether a
+/// shipped build can meet it.
+#[test]
+fn cfg_requires_test_holds_only_for_predicates_no_shipped_build_meets() {
+    let judge = crate::test_helpers::cfg_requires_test;
+    for held in [
+        "test",
+        "feature = \"test-helpers\"",
+        "any(test, feature = \"test-helpers\")",
+        "all(test, unix)",
+        "all(unix, feature = \"test-helpers\")",
+        "all(test, not(windows))",
+        "all(test, feature = \"crd\")",
+        "any(all(test, unix), test)",
+    ] {
+        assert!(judge(held), "cfg({held}) is met only by a test build");
+    }
+    for open in [
+        "unix",
+        "feature = \"crd\"",
+        "any(windows, test)",
+        "any(target_os = \"macos\", test)",
+        "not(test)",
+        "not(any(test, feature = \"test-helpers\"))",
+        "any()",
+    ] {
+        assert!(!judge(open), "cfg({open}) is met by some shipped build");
+    }
 }
 
 /// A checkout that sits under a directory named `tests` classifies its files
@@ -6937,36 +7038,71 @@ fn is_test_source_judges_only_components_below_the_workspace_root() {
 /// is a different question and passes.
 #[test]
 fn no_scan_hand_copies_the_test_only_file_rule() {
-    const FILES: usize = 575;
-    const ASKS: usize = 34;
+    // Per crate root: the `.rs` files below `crates/<root>` (`find … -name '*.rs'`)
+    // and the lines calling `is_test_only_file(` there, its definition in
+    // cfgd-core's test_helpers.rs left out, both counted when the rule last moved.
+    const FLOORS: [(&str, usize, usize); 7] = [
+        ("cfgd", 257, 18),
+        ("cfgd-core", 243, 14),
+        ("cfgd-crd", 2, 0),
+        ("cfgd-csi", 11, 0),
+        ("cfgd-operator", 64, 1),
+        ("cfgd-schema", 2, 0),
+        ("cfgd-test-fixtures", 1, 0),
+    ];
     // Built from pieces so this file's own needles are not read as copies.
     let tells = [
         concat!("\"test_", "helpers.rs\""),
         concat!("\"fake_", "cosign.rs\""),
     ];
-    let mut files = 0usize;
-    let mut asks = 0usize;
+    let crates = workspace_root().join("crates");
+    let mut counted: std::collections::BTreeMap<String, (usize, usize)> =
+        std::collections::BTreeMap::new();
     let mut offenders = Vec::new();
     for path in workspace_rust_files() {
-        files += 1;
+        let root = path
+            .strip_prefix(&crates)
+            .ok()
+            .and_then(|rel| rel.components().next())
+            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let entry = counted.entry(root).or_default();
+        entry.0 += 1;
         let body = walked_file_body(&path);
         for (row, line) in body.lines().enumerate() {
             let code = crate::test_helpers::code_span(line);
-            asks += crate::test_helpers::code_line(line)
-                .matches("is_test_only_file(")
-                .count();
+            let stripped = crate::test_helpers::code_line(line);
+            if !crate::test_helpers::strip_item_lead(&stripped).starts_with("fn is_test_only_file(")
+            {
+                entry.1 += stripped.matches("is_test_only_file(").count();
+            }
             if tells.iter().any(|tell| code.contains(tell)) {
                 offenders.push(format!("{}:{}: {}", path.display(), row + 1, line.trim()));
             }
         }
     }
+    let short: Vec<String> = FLOORS
+        .iter()
+        .filter_map(|&(root, files, asks)| {
+            let (read, asked) = counted.get(root).copied().unwrap_or_default();
+            (read < files || asked < asks).then(|| {
+                format!("{root}: {read} sources (floor {files}), {asked} calls (floor {asks})")
+            })
+        })
+        .collect();
     assert!(
-        files >= FILES,
-        "the scan read {files} sources under crates/, fewer than the {FILES} the workspace holds"
+        short.is_empty(),
+        "the scan read fewer sources, or found fewer calls routing a scan through \
+         is_test_only_file, than each crate root holds:\n{}\ncounted: {counted:?}",
+        short.join("\n")
     );
+    let unfloored: Vec<&String> = counted
+        .keys()
+        .filter(|root| !FLOORS.iter().any(|(r, _, _)| r == root))
+        .collect();
     assert!(
-        asks >= ASKS,
-        "{asks} sites ask is_test_only_file, fewer than the {ASKS} that route a scan through it"
+        unfloored.is_empty(),
+        "crate roots with no floor above: {unfloored:?}"
     );
     assert!(
         offenders.is_empty(),

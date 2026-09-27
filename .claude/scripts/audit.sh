@@ -8,6 +8,33 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
+# The workspace files built only for tests although their names do not say so.
+# cfgd-core's `test_only_files_below` derives the set, and the test
+# `test_only_files_list_matches_the_derivation` fails when this copy is stale.
+TEST_ONLY_LIST=.claude/scripts/test-only-files.txt
+if [[ ! -s "$TEST_ONLY_LIST" ]]; then
+    echo "audit: $TEST_ONLY_LIST is missing or empty; run: task test-only-files:bless" >&2
+    exit 2
+fi
+declare -A TEST_ONLY_FILES=()
+TEST_ONLY_GLOBS=()
+while IFS= read -r f; do
+    [[ -n "$f" ]] || continue
+    TEST_ONLY_FILES["$f"]=1
+    TEST_ONLY_GLOBS+=(--glob "!$f")
+done < "$TEST_ONLY_LIST"
+# One `<path>:` alternative per listed file, for filters over `file:line:` hits.
+TEST_ONLY_RE="$(sed -e 's/[.]/\\./g' -e 's/$/:/' "$TEST_ONLY_LIST" | paste -sd'|')"
+
+# Whether a scanned file holds tests alone: named as a test module (the rule
+# cfgd-core's `is_test_source` states) or listed above.
+is_test_file() {
+    case "$1" in
+        */tests.rs|*/tests_*.rs|*/tests/*) return 0 ;;
+    esac
+    [[ -n "${TEST_ONLY_FILES["crates/${1#*crates/}"]-}" ]]
+}
+
 ERRORS=0
 WARNINGS=0
 
@@ -381,12 +408,10 @@ extract_test_blocks_from_file() {
 
 _extract_test_blocks_uncached() {
     local filepath="$1"
-    case "$filepath" in
-        */tests.rs|*_test.rs|*/test_*.rs|*/tests_*.rs|*/test_helpers.rs|*/tests/*)
-            awk -v filepath="$filepath" '{ print filepath ":" NR ":" $0 }' "$filepath"
-            return 0
-            ;;
-    esac
+    if is_test_file "$filepath"; then
+        awk -v filepath="$filepath" '{ print filepath ":" NR ":" $0 }' "$filepath"
+        return 0
+    fi
     awk -v filepath="$filepath" "$AWK_LIB"'
     BEGIN { in_test = 0; test_depth = 0 }
     { code = code_only($0) }
@@ -560,16 +585,14 @@ log_section "No Unwrap in Library Code"
 # Match .unwrap() but NOT .unwrap_or(), .unwrap_or_default(), .unwrap_or_else()
 # Exclusions:
 #   - main.rs / gen_crds.rs: binary entry points (expect is acceptable)
-#   - test_helpers.rs: shared test scaffolding
-#   - tests.rs / *_test.rs: inline #[cfg(test)] modules — test code is allowed
-#     to unwrap freely (matches the anodizer anti-patterns convention).
-#   - test_*.rs / tests_*.rs: test-only modules gated by #![cfg(test)]
-#     (e.g. test_kube_harness.rs, tests_drift_alert.rs).
+#   - tests.rs / tests_*.rs: test modules — test code is allowed to unwrap
+#     freely (matches the anodizer anti-patterns convention).
+#   - every file TEST_ONLY_LIST names (test_helpers.rs, test_kube_harness.rs, …)
 #   - src/**/tests/*.rs: a directory declared `#[cfg(test)] mod tests;` from its parent
 check_pattern error \
     "No .unwrap()/.expect() in library code" \
     '\.unwrap\(\)[^_]|\.unwrap\(\)$|\.expect\(' \
-    'main\.rs:|gen_crds\.rs:|test_helpers\.rs:|/tests\.rs:|_test\.rs:|/test_[^/]*\.rs:|/tests_[^/]*\.rs:|^[^:]*/src/([^:]*/)?tests/[^/:]*\.rs:'
+    'main\.rs:|gen_crds\.rs:|/tests\.rs:|/tests_[^/]*\.rs:|^[^:]*/src/([^:]*/)?tests/[^/:]*\.rs:|'"$TEST_ONLY_RE"
 
 log_section "One Noun Per Concept"
 # A counted package reads `3 packages` on every human surface — the status
@@ -624,9 +647,7 @@ advisory_scope_dirs=(crates/cfgd-core/src/config crates/cfgd-core/src/modules cr
 require_dirs "user-facing advisory scan" "${advisory_scope_dirs[@]}" || true
 advisory_violations=""
 while IFS= read -r -d '' rsfile; do
-    case "$rsfile" in
-        */tests.rs|*_test.rs|*/test_*.rs|*/tests_*.rs|*/test_helpers.rs) continue ;;
-    esac
+    is_test_file "$rsfile" && continue
     file_hits=$(strip_test_blocks_from_file "$rsfile" | awk "$AWK_LIB"'
         { code = code_only($0); comment = LAST_COMMENT }
         code ~ /tracing::(info|warn|error)!/ &&
@@ -665,9 +686,9 @@ narration_scope_dirs=(crates/cfgd-core/src crates/cfgd/src)
 require_dirs "duplicate narration scan" "${narration_scope_dirs[@]}" || true
 narration_violations=""
 while IFS= read -r -d '' rsfile; do
+    is_test_file "$rsfile" && continue
     case "$rsfile" in
         */daemon/*) continue ;;
-        */tests.rs|*_test.rs|*/test_*.rs|*/tests_*.rs|*/test_helpers.rs) continue ;;
     esac
     file_hits=$(strip_test_blocks_from_file "$rsfile" | awk "$AWK_LIB"'
         { code = code_only($0); comment = LAST_COMMENT }
@@ -755,15 +776,15 @@ log_section "Controlled Shell Execution"
 # util/{git,process,env_session}.rs are the cfgd-core controlled-execution seams
 #   catalogued in .claude/rules/module-boundaries.md (git_cmd_*/cosign_cmd,
 #   command_output_with_timeout, launchctl/systemctl/setx session refresh).
-# test_helpers.rs is test scaffolding (Command::new appears only in #[cfg(test)]
-# submodules and doc comments).
+# The files TEST_ONLY_LIST names are built only for tests (test_helpers.rs among
+# them), so a Command there does not ship.
 # providers/mod.rs only NAMES the type, in SystemContext::run_silent's signature,
 #   and forwards to output/; it constructs and spawns nothing. The exclusion is
 #   anchored to that exact parameter line so any other Command use there is caught.
 check_pattern warn \
     "std::process::Command confined to packages/, secrets/, system/, reconciler/, platform/, cli/, gateway/, output/, generate/, oci, daemon/, util/{git,process,env_session}.rs" \
     'std::process::Command|Command::new' \
-    'packages/|secrets/|system/|reconciler/|platform/|cli/|gateway/|output/|generate/|oci|daemon/|util/git\.rs:|util/process\.rs:|util/env_session\.rs:|providers/mod\.rs:[0-9]+:[[:space:]]+cmd: &mut std::process::Command,$|test_helpers\.rs:|lib\.rs:'
+    'packages/|secrets/|system/|reconciler/|platform/|cli/|gateway/|output/|generate/|oci|daemon/|util/git\.rs:|util/process\.rs:|util/env_session\.rs:|providers/mod\.rs:[0-9]+:[[:space:]]+cmd: &mut std::process::Command,$|lib\.rs:|'"$TEST_ONLY_RE"
 
 log_section "Error Type Discipline"
 check_pattern error \
@@ -805,9 +826,7 @@ build_production_corpus() {
     local rsfile
     : > "$PRODUCTION_CORPUS"
     while IFS= read -r -d '' rsfile; do
-        case "$rsfile" in
-            */tests.rs|*_test.rs|*/test_*.rs|*/tests_*.rs|*/test_helpers.rs) continue ;;
-        esac
+        is_test_file "$rsfile" && continue
         strip_test_blocks_from_file "$rsfile" >> "$PRODUCTION_CORPUS"
     done < <(audit_scan_files)
 }
@@ -877,8 +896,8 @@ else
 fi
 
 log_section "DRY — Repeated String Literals"
-# Whole-file test modules (tests.rs, *_test.rs, test_*.rs, tests_*.rs,
-# test_helpers.rs) carry no inline #[cfg(test)] marker, so strip_test_blocks
+# Whole-file test modules (is_test_file: tests.rs, tests_*.rs, tests/ and the
+# TEST_ONLY_LIST files) carry no inline #[cfg(test)] marker, so strip_test_blocks
 # cannot strip them. Skip them outright: this gate measures production-code DRY,
 # and test fixtures legitimately repeat the same scaffold strings.
 # output/ is the deliberate parallel-builder API (Printer/SectionGuard/Doc mirror
@@ -906,8 +925,9 @@ log_section "DRY — Repeated String Literals"
 # being the subject of this gate; raw and plain strings stay candidates, a
 # repeated raw literal being a repeat like any other.
 dupes=$(while IFS= read -r -d '' rsfile; do
+    is_test_file "$rsfile" && continue
     case "$rsfile" in
-        */tests.rs|*_test.rs|*/test_*.rs|*/tests_*.rs|*/test_helpers.rs|*/output/*) continue ;;
+        */output/*) continue ;;
     esac
     strip_test_blocks_from_file "$rsfile" \
         | strip_attr_lines \
@@ -998,8 +1018,9 @@ FN_DEFINITIONS_AWK='
 allowed_pairs_file="$STRIP_CACHE_DIR/allowed-fn-pairs"
 printf '%s\n' "${ALLOWED_FN_PAIRS[@]}" > "$allowed_pairs_file"
 fn_dupes=$(while IFS= read -r -d '' rsfile; do
+    is_test_file "$rsfile" && continue
     case "$rsfile" in
-        */tests.rs|*_test.rs|*/test_*.rs|*/tests_*.rs|*/test_helpers.rs|*/output/*) continue ;;
+        */output/*) continue ;;
     esac
     strip_test_blocks_from_file "$rsfile" \
         | drop_trait_impl_lines \
@@ -1086,14 +1107,14 @@ log_section "Config Parsing Boundary"
 # KIND_REGISTRY validators; generate/validate.rs delegates straight into schema/).
 # lockfile.rs (modules/ and sources/) parses lock artifacts (resolved commit SHAs),
 # not application config, so every lockfile loader is excluded.
-# Inline #[cfg(test)] blocks are stripped; whole-file test modules (tests.rs,
-# *_test.rs, test_helpers.rs) carry no inline marker, so skip them outright —
+# Inline #[cfg(test)] blocks are stripped; whole-file test modules
+# (is_test_file) carry no inline marker, so skip them outright —
 # tests deserialize fixtures freely.
 config_parse_violations=""
 while IFS= read -r -d '' rsfile; do
+    is_test_file "$rsfile" && continue
     case "$rsfile" in
         */config/*|*/generate/*|*/lockfile.rs|*/schema/*|*/lib.rs) continue ;;
-        */tests.rs|*_test.rs|*/test_*.rs|*/tests_*.rs|*/test_helpers.rs) continue ;;
     esac
     # Deserializing into an untyped serde_yaml::Value is document inspection
     # (e.g. SOPS-marker detection), not config-struct parsing — exempt it.
@@ -1382,12 +1403,13 @@ fi
 log_section "Path-handling consolidation (cross-OS portability)"
 
 # Wave 2: no inline `format!("file://...")` outside cfgd_core::to_file_url itself
-# (and its test_helpers::file_url alias). Anything else must go through
+# and the files built only for tests (its test_helpers::file_url alias lives
+# there). Anything else must go through
 # `cfgd_core::to_file_url(...)`.
 if w2=$(rg --type rust -n 'format!\("file://' \
       "${CFGD_AUDIT_PATH:-crates/}" \
       --glob '!crates/cfgd-core/src/util/paths.rs' \
-      --glob '!crates/cfgd-core/src/test_helpers.rs' \
+      "${TEST_ONLY_GLOBS[@]}" \
       2>/dev/null) && [ -n "$w2" ]; then
   log_error "Wave 2 violation: inline file:// formatter (use cfgd_core::to_file_url):"
   echo "$w2"
@@ -1427,7 +1449,7 @@ if w1=$(rg --type rust -n '(serde_json::json!|rusqlite::|conn\.execute|to_yaml|a
       "${CFGD_AUDIT_PATH:-crates/}" \
       --glob '!**/tests.rs' \
       --glob '!**/tests/**' \
-      --glob '!crates/cfgd-core/src/test_helpers.rs' \
+      "${TEST_ONLY_GLOBS[@]}" \
       2>/dev/null \
       | grep -E '\.display\(\)|\.to_string_lossy\(\)') && [ -n "$w1" ]; then
   log_error "Wave 1 violation: path-to-string at serialization boundary (use cfgd_core::to_posix_string):"
@@ -1444,7 +1466,7 @@ if w4=$(rg --type rust -n '(tracing::(info|warn|error)!|anyhow!|bail!|printer\.(
       "${CFGD_AUDIT_PATH:-crates/}" \
       --glob '!**/tests.rs' \
       --glob '!**/tests/**' \
-      --glob '!crates/cfgd-core/src/test_helpers.rs' \
+      "${TEST_ONLY_GLOBS[@]}" \
       --glob '!crates/cfgd-core/src/util/paths.rs' \
       2>/dev/null \
       | grep -E '\.display\(\)') && [ -n "$w4" ]; then
@@ -1467,8 +1489,9 @@ log_section "Test-home-safe blocking dispatch (workspace)"
 # and inherited only from a comment line directly above — never from a previous
 # call that happened to carry its own marker.
 raw_spawns=$(while IFS= read -r -d '' rsfile; do
+    is_test_file "$rsfile" && continue
     case "$rsfile" in
-        */util/paths.rs|*/tests.rs|*_test.rs|*/test_*.rs|*/tests_*.rs|*/test_helpers.rs|*/tests/*) continue ;;
+        */util/paths.rs) continue ;;
     esac
     strip_test_blocks_from_file "$rsfile" | awk "$AWK_LIB"'
         { code = code_only($0); comment = LAST_COMMENT }
@@ -1529,11 +1552,11 @@ log_section "Raw Printer capture-buffer reads in test code (raw-capture-ok:)"
 # the very thing being asserted on), or a buffer that is provably not a
 # Printer text capture (e.g. an Arc<Mutex<Vec<u8>>> tracing-log sink, which
 # captured_text does not even type-check against).
-# test_helpers.rs is excluded: it is captured_text's own implementation, the
+# cfgd-core's test_helpers.rs is excluded: it is captured_text's own implementation, the
 # one legitimate raw read the helper itself performs.
 raw_capture_violations=$(while IFS= read -r -d '' rsfile; do
     case "$rsfile" in
-        */test_helpers.rs) continue ;;
+        */cfgd-core/src/test_helpers.rs) continue ;;
     esac
     extract_test_blocks_from_file "$rsfile" | awk "$AWK_LIB"'
         { code = code_only($0); comment = LAST_COMMENT }

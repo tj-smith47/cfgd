@@ -406,6 +406,12 @@ tasks:
     cmds:
       - CFGD_BLESS_SKILL=1 cargo test -p cfgd-core --features cfgd-core/test-helpers --test skill_golden
 
+  test-only-files:bless:
+    desc: Regenerate .claude/scripts/test-only-files.txt, the list of workspace files built only for tests that the shell audits read, after a module or fixture binary gains or loses its test gate. The pin test (test_only_files_list_matches_the_derivation, run by `task test`) is the drift gate; this target is its bless writer.
+    deps: [_check:tmp-headroom]
+    cmds:
+      - CFGD_BLESS_TEST_ONLY_FILES=1 cargo test -p cfgd-core --features cfgd-core/test-helpers --lib test_only_files_list_matches_the_derivation
+
   coverage:check:
     desc: Run workspace test coverage and write cobertura.xml. Prints the same percentage the README badge shows. No branch switching, no push.
     cmds:

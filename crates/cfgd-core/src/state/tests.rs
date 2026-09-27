@@ -4763,7 +4763,9 @@ fn every_production_journal_mode_switch_goes_through_enable_wal() {
     use crate::test_helpers::{production_slice_of, rust_sources_under, workspace_root};
 
     const WALK_ROOTS: &[(&str, usize)] = &[
-        ("crates/cfgd-core/src", 192),
+        // 196 sources `is_test_source` leaves in, less the 3 built only for tests
+        // (bin/fake_cosign.rs, output/test_capture.rs, test_helpers.rs).
+        ("crates/cfgd-core/src", 193),
         ("crates/cfgd-crd/src", 1),
         ("crates/cfgd-csi/src", 8),
         ("crates/cfgd-operator/src", 42),

@@ -42979,8 +42979,10 @@ fn every_display_slot_of_both_crates_folds_the_home_directory() {
     // because an aggregate is one tree's number plus the other's: `cfgd` holds
     // a single composer today, so an aggregate floor of eight is cleared by
     // `cfgd-core` alone the moment it gains one and this crate's member goes
-    // dark.
-    const FLOOR_SOURCES: [usize; ROOTS.len()] = [144, 191];
+    // dark. `cfgd-core`'s 193 is the 196 sources `is_test_source` leaves in,
+    // less the 3 built only for tests (bin/fake_cosign.rs,
+    // output/test_capture.rs, test_helpers.rs).
+    const FLOOR_SOURCES: [usize; ROOTS.len()] = [144, 193];
     const FLOOR_SLOTS: [usize; ROOTS.len()] = [100, 36];
     const FLOOR_COMPOSERS: [usize; ROOTS.len()] = [1, 11];
 

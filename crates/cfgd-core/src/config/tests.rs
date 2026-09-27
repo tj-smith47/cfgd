@@ -180,7 +180,9 @@ fn no_production_site_compares_an_api_version_by_hand() {
     /// dark fails on its own name. Each floor is a minimum the root must keep,
     /// and a count above it passes.
     const WALK_ROOTS: &[(&str, usize)] = &[
-        ("crates/cfgd-core/src", 191),
+        // 196 sources `is_test_source` leaves in, less the 3 built only for tests
+        // (bin/fake_cosign.rs, output/test_capture.rs, test_helpers.rs).
+        ("crates/cfgd-core/src", 193),
         ("crates/cfgd-crd/src", 1),
         ("crates/cfgd-csi/src", 8),
         ("crates/cfgd-operator/src", 42),
