@@ -1536,6 +1536,17 @@ pub fn blank_comments(body: &str) -> String {
     mask_body(body, Blanked::CommentsOnly)
 }
 
+/// The same body with its LITERAL bodies alone blanked, quotes kept and every
+/// comment left as it stands: the text a hatch is read from.
+///
+/// A marker is a hatch only where a maintainer wrote it as a comment. Read off
+/// the raw body, the const or fixture string that spells a marker hatches the
+/// function holding it; read off this, [`carries_hatch`] sees comment text and
+/// code alone, and code cannot spell a marker outside a literal.
+pub fn blank_literals(body: &str) -> String {
+    mask_body(body, Blanked::LiteralsOnly)
+}
+
 /// Which bytes a masking pass writes as spaces.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Blanked {
@@ -1543,6 +1554,8 @@ enum Blanked {
     NonCode,
     /// Comments alone.
     CommentsOnly,
+    /// Literal bodies alone.
+    LiteralsOnly,
 }
 
 fn mask_body(body: &str, blanked: Blanked) -> String {
@@ -1574,7 +1587,14 @@ fn blank(out: &mut [u8], from: usize, to: usize) {
 
 /// [`blank`] where this pass blanks literal bodies at all.
 fn blank_literal(blanked: Blanked, out: &mut [u8], from: usize, to: usize) {
-    if blanked == Blanked::NonCode {
+    if blanked != Blanked::CommentsOnly {
+        blank(out, from, to);
+    }
+}
+
+/// [`blank`] where this pass blanks comments at all.
+fn blank_comment(blanked: Blanked, out: &mut [u8], from: usize, to: usize) {
+    if blanked != Blanked::LiteralsOnly {
         blank(out, from, to);
     }
 }
@@ -1659,20 +1679,36 @@ pub fn fn_declarations(src: &str) -> Vec<(String, Option<String>, String)> {
         let Some(name) = declared_fn_name(line) else {
             continue;
         };
-        let mut depth = 0i32;
-        let mut opened = false;
-        let mut end = i;
-        for (n, c) in code.iter().enumerate().skip(i) {
-            depth += c.matches('{').count() as i32 - c.matches('}').count() as i32;
-            opened |= depth > 0;
-            end = n;
-            if opened && depth <= 0 {
-                break;
-            }
-        }
+        let end = declaration_end(&code, i);
         out.push((name, impl_owner(&code, i), code[i..=end].join("\n")));
     }
     out
+}
+
+/// The line on which the declaration opened on line `start` of `code` closes:
+/// the first line after its first `{` where the brace depth is back to zero,
+/// or the last line when it never is.
+///
+/// `code` is CODE, one entry per source line with literals and comments
+/// blanked ([`code_line`] per line or [`blank_non_code`] over the body), so a
+/// brace inside either does not move the depth. Bounding a function by its own
+/// close keeps a declaration below it out of its body.
+pub fn declaration_end<S: AsRef<str>>(code: &[S], start: usize) -> usize {
+    let mut depth = 0i32;
+    let mut opened = false;
+    let mut end = start;
+    for (n, c) in code.iter().enumerate().skip(start) {
+        let c = c.as_ref();
+        depth += c.matches('{').count() as i32 - c.matches('}').count() as i32;
+        // Asked of the line, not the depth: a body opened and closed on one
+        // line (`fn f() {}`) never leaves depth zero.
+        opened |= c.contains('{');
+        end = n;
+        if opened && depth <= 0 {
+            break;
+        }
+    }
+    end
 }
 
 /// Whether this CODE reaches the function `name` declared in `owner`'s impl.
@@ -1886,8 +1922,9 @@ impl LineMask {
 
     /// [`advance`](Self::advance) blanking as it steps: every byte it passes
     /// over as comment text (delimiters included) is written as a space in
-    /// `out`, which holds that same line's bytes, and so is every literal body
-    /// unless the caller asked for [`Blanked::CommentsOnly`].
+    /// `out`, which holds that same line's bytes, unless the caller asked for
+    /// [`Blanked::LiteralsOnly`], and so is every literal body unless the
+    /// caller asked for [`Blanked::CommentsOnly`].
     ///
     /// One state machine answers both questions, so a syntax the masking
     /// knows cannot be one the blanking misses. The hand-rolled scanners this
@@ -1932,17 +1969,17 @@ impl LineMask {
             if self.comment_depth > 0 {
                 if bytes[i] == b'*' && bytes.get(i + 1) == Some(&b'/') {
                     self.comment_depth -= 1;
-                    blank(out, i, i + 2);
+                    blank_comment(blanked, out, i, i + 2);
                     i += 2;
                     if self.comment_depth == 0 {
                         self.resumed_at.get_or_insert(i);
                     }
                 } else if bytes[i] == b'/' && bytes.get(i + 1) == Some(&b'*') {
                     self.comment_depth += 1;
-                    blank(out, i, i + 2);
+                    blank_comment(blanked, out, i, i + 2);
                     i += 2;
                 } else {
-                    blank(out, i, i + 1);
+                    blank_comment(blanked, out, i, i + 1);
                     i += 1;
                 }
                 continue;
@@ -1974,12 +2011,12 @@ impl LineMask {
                     }
                 }
                 b'/' if bytes.get(i + 1) == Some(&b'/') => {
-                    blank(out, i, bytes.len());
+                    blank_comment(blanked, out, i, bytes.len());
                     return;
                 }
                 b'/' if bytes.get(i + 1) == Some(&b'*') => {
                     self.comment_depth += 1;
-                    blank(out, i, i + 2);
+                    blank_comment(blanked, out, i, i + 2);
                     i += 2;
                 }
                 _ => {

@@ -1300,56 +1300,94 @@ fn the_startup_check_honours_the_invocations_policy_over_the_declared_one() {
     });
 }
 
-/// The calls through which a test reaches the automatic update check's gate,
-/// the reader of the opt-out variables: the gate itself, the three checks
-/// built on it, the daemon's tick and the loop's version-check trigger.
-const UPDATE_CHECK_ENTRIES: [&str; 6] = [
-    "should_check(",
-    "run_update_check(",
-    "handle_version_check(",
-    "handle_version_check_tick(",
-    "startup_update_check(",
-    "version_check_tx.send(",
-];
+/// The function whose reach of the update check depends on a trigger its
+/// caller sends: the daemon's loop runs the check only on a version-check tick,
+/// so the fold stops there and a test is judged by the send, [`LOOP_VERSION_TICK`].
+///
+/// Folded through, the loop drags in everything above it, down to `cli::execute`,
+/// and every dispatch test of every verb would be judged by a gate its verb never
+/// reaches.
+const TRIGGERED_ENTRY: &str = "run_daemon_loop";
+
+/// How a test driving the daemon's loop reaches the update check.
+const LOOP_VERSION_TICK: &str = "version_check_tx.send(";
+
+/// Every production function through which a test reaches the automatic update
+/// check's gate, the reader of the opt-out variables: `upgrade::should_check`
+/// and every function calling it, folded until the set stops growing, the fold
+/// stopping at [`TRIGGERED_ENTRY`].
+///
+/// A hand list is only as long as whoever wrote it knew the call graph; a new
+/// wrapper on the path would leave every test calling it unjudged.
+fn update_check_entries() -> Vec<(String, Option<String>)> {
+    // one-root-population-ok: a blind cfgd-core loses the stop asserted below,
+    // and a blind cfgd loses `startup_update_check` and its pin's share of the
+    // walk's floor.
+    let declarations: Vec<(String, Option<String>, String)> = production_sources_per_root(&[
+        "cfgd",
+        "cfgd-core",
+        "cfgd-crd",
+        "cfgd-csi",
+        "cfgd-operator",
+        "cfgd-schema",
+        "cfgd-test-fixtures",
+    ])
+    .into_iter()
+    .flat_map(|(_, sources)| sources)
+    .flat_map(|(_, production)| fn_declarations(&production))
+    .collect();
+    let seeds = [("should_check".to_string(), None)];
+    // A stop that no longer reaches the gate would silently stop nothing.
+    assert!(
+        cfgd_core::test_helpers::callers_reaching(&declarations, &seeds)
+            .iter()
+            .any(|(name, _)| name == TRIGGERED_ENTRY),
+        "`{TRIGGERED_ENTRY}` no longer reaches `should_check`; the fold's stop names nothing"
+    );
+    let stopped: Vec<(String, Option<String>, String)> = declarations
+        .into_iter()
+        .filter(|(name, _, _)| name != TRIGGERED_ENTRY)
+        .collect();
+    let mut entries = cfgd_core::test_helpers::callers_reaching(&stopped, &seeds);
+    entries.sort();
+    entries.dedup();
+    entries
+}
 
 /// What a function reaching the update check through guards it does not take
 /// itself (a rig whose constructor took them) says for itself.
 const OPTOUT_HATCH: &str = "optouts-held:";
 
-/// The function openers in `region` whose function names an
-/// [`UPDATE_CHECK_ENTRIES`] call without also calling `clear_update_optouts(`
-/// or carrying [`OPTOUT_HATCH`], as 0-based line numbers, and how many
-/// functions named an entry at all. Calls are read off `region` with its
-/// comments and literals blanked; a function runs from its opener to the next.
-fn update_check_callers_without_optout_clear(region: &str) -> (usize, Vec<usize>) {
-    fn calls(segment: &str, name: &str) -> bool {
-        segment.match_indices(name).any(|(at, _)| {
-            !segment[..at]
-                .chars()
-                .next_back()
-                .is_some_and(|c| c.is_alphanumeric() || c == '_')
-        })
-    }
-    let code = cfgd_core::test_helpers::blank_non_code(region);
-    let raw: Vec<&str> = region.lines().collect();
+/// The function openers in `region` whose function reaches one of `entries` or
+/// sends [`LOOP_VERSION_TICK`] without also calling `clear_update_optouts` or
+/// carrying [`OPTOUT_HATCH`] in a comment, as 0-based line numbers, and how
+/// many functions reached the check at all. Calls are read off `region` with
+/// its comments and literals blanked, and a function runs from its opener to
+/// its own closing brace.
+fn update_check_callers_without_optout_clear(
+    region: &str,
+    entries: &[(String, Option<String>)],
+) -> (usize, Vec<usize>) {
+    let code = blank_non_code(region);
     let lines: Vec<&str> = code.lines().collect();
-    let openers: Vec<usize> = (0..lines.len())
-        .filter(|&n| cfgd_core::test_helpers::opens_function(lines[n]))
-        .collect();
+    let commented = cfgd_core::test_helpers::blank_literals(region);
+    let commented: Vec<&str> = commented.lines().collect();
     let mut judged = 0usize;
     let mut offenders = Vec::new();
-    for (i, &from) in openers.iter().enumerate() {
-        let to = openers.get(i + 1).copied().unwrap_or(lines.len());
-        let segment = lines[from..to].join("\n");
-        if UPDATE_CHECK_ENTRIES
-            .iter()
-            .any(|entry| calls(&segment, entry))
-        {
+    for from in (0..lines.len()).filter(|&n| cfgd_core::test_helpers::opens_function(lines[n])) {
+        let to = cfgd_core::test_helpers::declaration_end(&lines, from);
+        let segment = lines[from..=to].join("\n");
+        let reaches = segment.contains(LOOP_VERSION_TICK)
+            || entries.iter().any(|(name, owner)| {
+                cfgd_core::test_helpers::reaches_fn(&segment, name, owner.as_deref())
+            });
+        if reaches {
             judged += 1;
-            let hatched = raw[from..to]
+            let hatched = commented[from..=to]
                 .iter()
-                .any(|l| cfgd_core::test_helpers::carries_hatch(l, OPTOUT_HATCH));
-            if !hatched && !calls(&segment, "clear_update_optouts(") {
+                .any(|l| carries_hatch(l, OPTOUT_HATCH));
+            if !hatched && !cfgd_core::test_helpers::calls_free_fn(&segment, "clear_update_optouts")
+            {
                 offenders.push(from);
             }
         }
@@ -1363,11 +1401,12 @@ fn update_check_callers_without_optout_clear(region: &str) -> (usize, Vec<usize>
 /// The gate reads `CFGD_NO_UPDATE_CHECK` and its two siblings off the process,
 /// so on a machine exporting one a test expecting a check fails and a test
 /// expecting none passes without reaching the gate it names. The judged unit is
-/// a function whose body names one of [`UPDATE_CHECK_ENTRIES`] itself, so a
-/// driver that clears the variables carries every test calling it. Judged over
-/// every crate's test regions, with a floor on the functions found.
+/// a function whose own body reaches one of [`update_check_entries`], so a driver
+/// that clears the variables carries every test calling it. Judged over every
+/// crate's test regions, with a floor on the functions found.
 #[test]
 fn every_test_reaching_the_update_check_clears_the_opt_out_variables() {
+    let entries = update_check_entries();
     let crates_dir = cfgd_core::test_helpers::workspace_root().join("crates");
     let mut judged = 0usize;
     let mut offenders: Vec<String> = Vec::new();
@@ -1379,7 +1418,7 @@ fn every_test_reaching_the_update_check_clears_the_opt_out_variables() {
         } else {
             cfgd_core::test_helpers::test_region_mask(&body)
         };
-        let (found, missing) = update_check_callers_without_optout_clear(&region);
+        let (found, missing) = update_check_callers_without_optout_clear(&region, &entries);
         judged += found;
         let label = cfgd_core::to_posix_string(path.strip_prefix(&crates_dir).unwrap_or(&path));
         for n in missing {
@@ -1394,42 +1433,46 @@ fn every_test_reaching_the_update_check_clears_the_opt_out_variables() {
         offenders.is_empty(),
         "a test reaching the update check takes `cfgd_core::test_helpers::clear_update_optouts()` \
          first, or says which guard it runs under with `// {OPTOUT_HATCH} <why>`; otherwise an \
-         exported opt-out variable decides its verdict:\n{}",
+         exported opt-out variable decides its verdict ({entries:?} reach it):\n{}",
         offenders.join("\n")
     );
-    // `upgrade/check.rs` holds most of them; the daemon's version drivers and
-    // the startup-check pin hold the rest.
+    // 27 = cfgd-core `upgrade/check.rs` 22, cfgd-core `daemon/tests.rs` 4 (two
+    // `handle_version_check` drivers, the rig's `tick`, the loop test sending a
+    // version tick),
+    // cfgd `cli/tests.rs` 1 (the startup-check pin).
     assert!(
         judged >= 27,
         "the walk found {judged} test functions reaching the update check; it has gone blind"
     );
 }
 
-/// The walk judges a function by its own body: one naming an entry without the
-/// clear is an offence, one that clears first is not, and a function naming no
-/// entry is none of its business.
+/// The walk judges a function by its own body, from its opener to its own
+/// closing brace: one calling an entry or sending the loop a version tick
+/// without the clear is an offence, one that clears first or says why in a
+/// comment is not, a marker spelled in a string hatches nothing, and a function
+/// calling no entry is none of its business.
 #[test]
 fn the_update_check_walk_reads_an_offence_it_plants_itself() {
-    // Assembled rather than spelled, so the walk above does not read this
-    // fixture as one of the workspace's own tests.
-    let entry = format!("should_{}", "check(");
-    let clear = format!("clear_update_{}", "optouts()");
-    let hatch = OPTOUT_HATCH;
-    let code = format!(
-        "fn bare() {{\n    {entry}a, b);\n}}\n\
-         fn cleared() {{\n    let _g = {clear};\n    {entry}a, b);\n}}\n\
-         fn unrelated() {{\n    my_{entry}a);\n}}\n\
-         fn rigged() {{\n    // {hatch} the rig took them\n    {entry}a, b);\n}}\n"
-    );
-    let (judged, offenders) = update_check_callers_without_optout_clear(&code);
+    let code = "fn bare() {\n    should_check(a, b);\n}\n\
+                fn cleared() {\n    let _g = clear_update_optouts();\n    should_check(a, b);\n}\n\
+                fn unrelated() {\n    my_should_check(a);\n}\n\
+                fn rigged() {\n    // optouts-held: the rig took them\n    should_check(a, b);\n}\n\
+                fn quoted() {\n    let _m = \"optouts-held: a string\";\n    should_check(a, b);\n}\n\
+                fn gated() {\n    should_check(a, b);\n}\n\
+                // optouts-held: a comment below the function hatches nothing above it\n\
+                fn after() {}\n\
+                fn looped() {\n    senders.version_check_tx.send(());\n}\n";
+    let (judged, offenders) =
+        update_check_callers_without_optout_clear(code, &[("should_check".to_string(), None)]);
     assert_eq!(
-        judged, 3,
-        "three functions name the gate; `my_should_check` is another name"
+        judged, 6,
+        "five functions call the gate and one sends the loop a version tick; \
+         `my_should_check` is another name"
     );
     assert_eq!(
         offenders,
-        vec![0],
-        "only the function that neither clears nor says why is an offence"
+        vec![0, 14, 18, 23],
+        "an offence is a function that neither clears nor says why in a comment of its own"
     );
 }
 
@@ -17399,21 +17442,12 @@ fn no_kv_block_renders_at_column_zero_under_a_heading() {
 /// [`cfgd_core::reconciler::primary_env_file`] like everything here.
 #[test]
 fn no_env_file_fixture_hardcodes_the_primary_env_files_name_or_dialect() {
-    // Assembled rather than written whole, so this walk's own needles are not
-    // the first thing it reports.
-    let joins: [String; 2] = [
-        format!("join(\"{}\")", ".cfgd.env"),
-        format!("join(\"{}\")", ".cfgd-env.ps1"),
-    ];
+    let joins = ["join(\".cfgd.env\")", "join(\".cfgd-env.ps1\")"];
     // Every owner kind the generator can emit, `manager` included: the PATH
     // line's comment names the managers whose directories it publishes, and a
     // fixture spelling that line by hand is the same bug as one spelling a
     // module's.
-    let owner_comments = [
-        format!("# {}:", "module"),
-        format!("# {}:", "profile"),
-        format!("# {}:", "manager"),
-    ];
+    let owner_comments = ["# module:", "# profile:", "# manager:"];
     let cli_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli");
     let mut offenders: Vec<String> = Vec::new();
     let mut checked = 0usize;
@@ -17430,7 +17464,7 @@ fn no_env_file_fixture_hardcodes_the_primary_env_files_name_or_dialect() {
             // A fixture joining a generated file's name onto a directory
             // is building a path; a bare mention in an assertion needle or
             // a synthesized row's id is not.
-            if joins.iter().any(|j| line.contains(j.as_str())) {
+            if joins.iter().any(|j| line.contains(j)) {
                 offenders.push(format!(
                     "{where_}: joins a hardcoded env file name — take \
                      `cfgd_core::reconciler::primary_env_file(home)`"
@@ -17438,9 +17472,7 @@ fn no_env_file_fixture_hardcodes_the_primary_env_files_name_or_dialect() {
             }
             // A generated line carries its owner comment, which is what a
             // hand-edited (deliberately non-generated) fixture body lacks.
-            if line.contains("managed by cfgd")
-                && owner_comments.iter().any(|c| line.contains(c.as_str()))
-            {
+            if line.contains("managed by cfgd") && owner_comments.iter().any(|c| line.contains(c)) {
                 offenders.push(format!(
                     "{where_}: spells a generated env line by hand — render \
                      it through `MergedEnvItems::declared_line`"
@@ -43732,9 +43764,7 @@ fn no_test_fixture_writes_a_native_path_into_a_declared_document() {
 /// business.
 #[test]
 fn the_declared_document_walk_reads_a_native_path_it_plants_itself() {
-    // Assembled rather than spelled, so the walk above does not read this
-    // fixture's own offence as one of the workspace's.
-    let native = format!(".dis{}", "play()");
+    let native = ".display()";
     let document = "        \"apiVersion: cfgd.io/v1alpha1\\nkind: Profile\\nspec:\\n  \
                     files:\\n    managed:\\n      - target: {}\\n\",";
     let offending =
@@ -43866,7 +43896,7 @@ fn the_declared_document_walk_reads_a_native_path_it_plants_itself() {
             ),
         ),
     ] {
-        let region = format!("{statement}{below}").replace("NATIVE", &native);
+        let region = format!("{statement}{below}").replace("NATIVE", native);
         let (found, _) = native_paths_in_declared_documents(&region);
         assert!(
             found.is_empty(),
@@ -43881,7 +43911,7 @@ fn the_declared_document_walk_reads_a_native_path_it_plants_itself() {
         "    let profile = format!({head}{{}}\\n\",\n        open_one_paren!(\n{}{below}",
         "        let filler = 1;\n".repeat(70)
     )
-    .replace("NATIVE", &native);
+    .replace("NATIVE", native);
     let (found, _) = native_paths_in_declared_documents(&unbalanced);
     assert!(
         found.is_empty(),
