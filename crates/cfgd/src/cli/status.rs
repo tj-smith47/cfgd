@@ -2241,14 +2241,13 @@ fn finding_owner(
 ///
 /// The owner is the one each [`ManagedResourceRow`] already carries and the
 /// module counts are the recorded tallies already on `output.modules`, so this
-/// section and the table cannot attribute one row to two owners or two
-/// counts. The verdicts
-/// pass [`cfgd_core::state::module_status_display`] the RECORDED drift
-/// verdict — whether this owner holds an unresolved recorded finding — so a
-/// row reads `Drifted`/warn exactly when its nested findings say why, over
+/// section and the table cannot attribute one row to two owners or two counts.
+/// The verdicts pass [`cfgd_core::state::module_status_display`] the RECORDED
+/// drift verdict — whether this owner holds an unresolved recorded finding — so
+/// a row reads `Drifted`/warn exactly when its nested findings say why, over
 /// the SAME one walk ([`finding_owner`] per event, never a second pass). A
-/// drifted owner's counts clause states the shortfall (`1 of 6 files`); a
-/// clean owner keeps its inventory.
+/// drifted owner's counts clause states the shortfall (`1 of 6 files`); a clean
+/// owner keeps its inventory.
 fn component_health_rows(output: &StatusOutput, profile: Option<&str>) -> ComponentHealth {
     use cfgd_core::reconciler::Owner;
     let profile_owner = profile.map(Owner::profile);

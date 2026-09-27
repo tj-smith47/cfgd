@@ -947,8 +947,9 @@ mod module_status_tests {
             ("Failed", Role::Fail)
         );
         // No check covers the module, so the word is the record's own fact.
-        // `Ok`: the apply really did complete, and only the
-        // claim about the machine agreeing with it is missing.
+        // The role is `Ok`, since `Pending` would say the apply has not
+        // finished: the apply really did complete, and only the claim about
+        // the machine agreeing with it is missing.
         assert_eq!(
             module_status_display(MODULE_STATUS_INSTALLED, DriftVerdict::Unchecked),
             ("Applied", Role::Ok)

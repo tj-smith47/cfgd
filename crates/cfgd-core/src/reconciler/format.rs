@@ -1646,13 +1646,12 @@ mod tests {
 
     /// No `FileAction::Skip` reason spends the verb its own row already spelled.
     ///
-    /// The one-slot member of the same family: this action composes as
-    /// `skip <target>: <reason>`, ONE string, so `pre_skip_doubling_error`'s
-    /// two-slot question cannot be asked of it (see
+    /// The one-slot member of the same family: this action composes as `skip
+    /// <target>: <reason>`, ONE string, so `pre_skip_doubling_error`'s two-slot
+    /// question cannot be asked of it (see
     /// [`super::file_skip_reason_doubling_error`], which states why) and the
-    /// golden that first rendered
-    /// `∅ skip <target>: skipped: target exists as unmanaged file` had no walk
-    /// to trip.
+    /// golden that first rendered `∅ skip <target>: skipped: target exists as
+    /// unmanaged file` had no walk to trip.
     ///
     /// The population is DERIVED rather than listed: every production mint of
     /// the `reason` field in either crate's sources, read through

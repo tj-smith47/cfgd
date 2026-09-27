@@ -12096,8 +12096,8 @@ fn reset_daemon_log() {
 /// reaches none of them.
 ///
 /// Its readers ask it only whether a line is there.
-/// [`crate::test_helpers::tracing_journal`] carries why an absence or a count is
-/// not this journal's to answer, and
+/// [`crate::test_helpers::tracing_journal`] carries why an absence or a count
+/// is not this journal's to answer, and
 /// `no_reader_of_the_global_daemon_journal_asserts_an_absence` walks every
 /// crate's sources for one, the journal being reachable from all of them.
 ///
@@ -19059,14 +19059,14 @@ async fn handle_reconcile_never_synced_source_reconciles_local_only() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial_test::serial]
 async fn handle_reconcile_required_uncached_source_skips_tick_and_preserves_package() {
-    // A `sync.required: true` source with NO cache must NOT degrade to local-only
-    // (which the daemon's pruning reconcile would treat as the required source's
-    // packages being phantom drift, uninstalling them under autoApply). The
-    // compose chokepoint returns RequiredSourceUnavailable → tick SKIPPED, the
-    // tracked source-delivered package survives, last_reconcile untouched, alert
-    // raised. Parallels
-    // handle_reconcile_constraint_violation_skips_tick_and_preserves_source_package but for the
-    // cache-only fail-OPEN gap the chokepoint fix closes.
+    // A `sync.required: true` source with NO cache must NOT degrade to
+    // local-only (which the daemon's pruning reconcile would treat as the
+    // required source's packages being phantom drift, uninstalling them under
+    // autoApply). The compose chokepoint returns RequiredSourceUnavailable →
+    // tick SKIPPED, the tracked source-delivered package survives,
+    // last_reconcile untouched, alert raised. Parallels
+    // handle_reconcile_constraint_violation_skips_tick_and_preserves_source_package
+    // but for the cache-only fail-OPEN gap the chokepoint fix closes.
     let tmp = tempfile::tempdir().unwrap();
     let _g = crate::with_test_home_guard(tmp.path());
     // Pin the unified cache root to an EMPTY dir → the required source is
@@ -19680,8 +19680,8 @@ mod ipc_socket_security {
     ///
     /// Both trees sit under the sticky temporary root the walk admits by its
     /// writability rule, which is the shape every fixture of this module builds
-    /// in. Both arms hold at any uid; the escaping arm, which needs the power to
-    /// `chown`, is the sibling
+    /// in. Both arms hold at any uid; the escaping arm, which needs the power
+    /// to `chown`, is the sibling
     /// `the_socket_directory_refuses_a_link_component_aimed_at_another_owner_as_root`.
     #[cfg(unix)]
     #[test]

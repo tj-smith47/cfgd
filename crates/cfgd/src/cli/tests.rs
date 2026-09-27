@@ -1510,11 +1510,11 @@ fn every_enum_valued_global_flag_accepts_its_config_spelling() {
 /// The population is the free `resolve_*` functions of `cli/mod.rs` whose first
 /// parameter is a path (`&Path` however its reference and lifetime are spelled,
 /// `impl AsRef<Path>`, or a generic bounded by it), which is the SHAPE of a
-/// resolver folding a flag, a
-/// `CFGD_*` variable and a `spec.*` field into one answer: a parameter name is
-/// the author's to pick, so admitting on one lets the next resolver spell its
-/// way out of the rule. `resolve_color_choice` and `resolve_phase_filter` read
-/// no config and fall out on that test. An exemption is a
+/// resolver folding a flag, a `CFGD_*` variable and a `spec.*` field into one
+/// answer: a parameter name is the author's to pick, so admitting on one lets
+/// the next resolver spell its way out of the rule. `resolve_color_choice` and
+/// `resolve_phase_filter` read no config and fall out on that test. An
+/// exemption is a
 /// `// knob-resolver-ok:` line at the production site, where a maintainer
 /// editing the function sees it, and never a list held here.
 #[test]
@@ -29178,12 +29178,11 @@ mod cmd_source_add_local {
     // ─── cmd_source_update end-to-end against the local bare fixture ─────────
     //
     // cmd_source_add seeds cfgd.yaml + a clone under <state>/sources/<name>.
-    // cmd_source_update then walks the happy-path arm that has previously
-    // only had error-path coverage (no-sources, name-not-found, load-failure):
-    // refresh the source manifest, upsert the state-store row, and emit
-    // the `source:<name>` group's `updated` line. The "load failure" arm is
-    // exercised by pointing
-    // at a non-existent file:// URL.
+    // cmd_source_update then walks the happy-path arm that has previously only
+    // had error-path coverage (no-sources, name-not-found, load-failure):
+    // refresh the source manifest, upsert the state-store row, and emit the
+    // `source:<name>` group's `updated` line. The "load failure" arm is
+    // exercised by pointing at a non-existent file:// URL.
 
     #[test]
     #[serial]
@@ -46558,15 +46557,14 @@ fn no_command_paints_its_heading_before_the_wait_that_fills_it() {
 /// `success_next_step` is the RUN's closing next step, so it renders at the
 /// run's own depth — never through a section-scoped hint.
 ///
-/// The hint is the last thing a mutating verb says, addressed to the whole
-/// run, and every mutating verb but three rendered it flush left. `module
-/// push` / `pull` / `build` passed it to their own `SectionGuard`, which
-/// indented the run's last word to the section's depth and its `$` command
-/// block one further, so the run's closing word read as a note on the section
-/// above it. A hint that
-/// really does qualify the ROW above it (the `sync` local-pull failure, a
-/// backup's rollback note) is a different thing and stays inside its section;
-/// it is not built from `success_next_step`.
+/// The hint is the last thing a mutating verb says, addressed to the whole run,
+/// and every mutating verb but three rendered it flush left. `module push` /
+/// `pull` / `build` passed it to their own `SectionGuard`, which indented the
+/// run's last word to the section's depth and its `$` command block one
+/// further, so the run's closing word read as a note on the section above it. A
+/// hint that really does qualify the ROW above it (the `sync` local-pull
+/// failure, a backup's rollback note) is a different thing and stays inside its
+/// section; it is not built from `success_next_step`.
 ///
 /// The population is every production `success_next_step(` under `cli/`,
 /// including one bound to a variable and handed to a hint later. A receiver

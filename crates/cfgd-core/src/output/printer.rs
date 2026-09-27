@@ -1,11 +1,10 @@
-//! User-facing handle. Holds the Renderer (single layout authority), the
-//! active OutputFormat, and the writers for stderr (status output) +
-//! stdout (structured/data output). Sinks: `sink_stderr` for status,
-//! `sink_stdout` for `data_line`, `multi_progress` for spinners and progress
-//! bars, `syntax_set` for `syntax_highlight` (whose palette comes from the
-//! renderer's own `Theme`). The
-//! `test_doc_capture` and `prompt_queue` fields are populated by test
-//! helpers (gated on the `test-helpers` feature).
+//! User-facing handle. Holds the Renderer (single layout authority), the active
+//! OutputFormat, and the writers for stderr (status output) + stdout
+//! (structured/data output). Sinks: `sink_stderr` for status, `sink_stdout` for
+//! `data_line`, `multi_progress` for spinners and progress bars, `syntax_set`
+//! for `syntax_highlight` (whose palette comes from the renderer's own
+//! `Theme`). The `test_doc_capture` and `prompt_queue` fields are populated by
+//! test helpers (gated on the `test-helpers` feature).
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};

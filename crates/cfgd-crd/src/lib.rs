@@ -2,12 +2,11 @@
 //!
 //! This crate hosts the `cfgd.io/v1alpha1` CRD spec types (`MachineConfig`,
 //! `ConfigPolicy`, `ClusterConfigPolicy`, `DriftAlert`, `Module`,
-//! `BackupPolicy`), their
-//! `schemars`-derived JSON schemas, and the cross-field `validate()` impls used
-//! by both the admission webhook and the CLI. It sits at the bottom of the
-//! workspace dependency graph (depended on by `cfgd-core`), so it carries no
-//! Kubernetes client/runtime, no HTTP server, and no telemetry — only the
-//! schema-bearing types.
+//! `BackupPolicy`), their `schemars`-derived JSON schemas, and the cross-field
+//! `validate()` impls used by both the admission webhook and the CLI. It sits
+//! at the bottom of the workspace dependency graph (depended on by
+//! `cfgd-core`), so it carries no Kubernetes client/runtime, no HTTP server,
+//! and no telemetry — only the schema-bearing types.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
@@ -794,11 +793,10 @@ pub struct ModuleStatus {
     /// The signature verdict as ONE word (`verified` / `unverified` /
     /// `unsigned` / `unknown`), and the only field the `Signature` printer
     /// column may be bound to. `verified` is the same verdict as a raw bool,
-    /// which reads as
-    /// `true` in a column beside a `kubectl cfgd status` row saying
-    /// `(verified)` about the same module — one fact, two vocabularies. Absent
-    /// when no reconcile has written it, so the JSONPath resolves to nothing
-    /// and the cell stays blank.
+    /// which reads as `true` in a column beside a `kubectl cfgd status` row
+    /// saying `(verified)` about the same module — one fact, two vocabularies.
+    /// Absent when no reconcile has written it, so the JSONPath resolves to
+    /// nothing and the cell stays blank.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signature: Option<String>,
     /// Digest of the cosign signature (if verified).

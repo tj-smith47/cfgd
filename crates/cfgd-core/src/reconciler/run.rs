@@ -1757,8 +1757,9 @@ pub fn render_run_rollup(
     let shortfall = tally.shortfall();
     // The `did not run` arm already names the whole shortfall in its own line.
     if shortfall > 0 && !(tally.status == ApplyStatus::Success && tally.nothing_attempted()) {
-        // `Role::Info`: this is a final count, and nothing it names is still
-        // going to happen.
+        // The role is `Role::Info`, since `Role::Pending` would say the work
+        // is still under way: this is a final count, and nothing it names is
+        // still going to happen.
         lines.push((
             Role::Info,
             format!("{} not attempted", pluralize(shortfall, "action")),

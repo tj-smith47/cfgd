@@ -3799,12 +3799,12 @@ pub const ABSENT_SEAM_PATH: &str = "/nonexistent/cfgd-tool-that-is-not-here";
 /// availability from.
 ///
 /// Held here rather than in the `cfgd` crate because the guard below is what
-/// tests take, and the two crates compile separately. The roster is kept
-/// honest from the other side by
-/// `no_registered_manager_is_reachable_under_the_no_host_managers_guard`,
-/// which asks the real registry whether any manager is still reachable under
-/// the guard: a manager added with a seam missing from this list fails that
-/// pin on every host rather than quietly spawning a real install.
+/// tests take, and the two crates compile separately. The roster is kept honest
+/// from the other side by
+/// `no_registered_manager_is_reachable_under_the_no_host_managers_guard`, which
+/// asks the real registry whether any manager is still reachable under the
+/// guard: a manager added with a seam missing from this list fails that pin on
+/// every host, so it cannot quietly spawn a real install.
 pub const MANAGER_SEAMS: &[&str] = &[
     "CFGD_APK_BIN",
     "CFGD_APT_CACHE_BIN",
@@ -5625,23 +5625,22 @@ pub fn is_test_source_below(root: &Path, path: &Path) -> bool {
 ///
 /// What counts and what offends are deliberately different sets.
 /// [`ChmodPopulation::per_root`]'s chmod count holds EVERY chmod-shaped call
-/// the walk read,
-/// no-follow ones included, because the follow-capable sites are the ones this
-/// rule drives to zero and flooring on those alone would turn a fully converted
-/// crate into a failure. Only the two path-based spellings can be misdirected,
-/// so only they are asked the question. A chmod through a descriptor
-/// (`file.set_permissions(…)` on a handle the caller opened) cannot be pointed
-/// at a second file and is in neither set, and a `set_mode` on a `Permissions`
-/// value reaches the filesystem only through one of the calls already judged. A
-/// `.mode(0o…)` on an `OpenOptions` is outside both sets too (and outside the
-/// class): a create-with-mode that follows a planted link either writes the
-/// victim, which is `atomic_write`'s question, or creates cfgd's own file, and
-/// either way no existing file's mode moves. A
-/// COMMENT line counts for nothing either way: a doc sentence naming the
-/// primitive is documentation, not a call site, and a floor a rustdoc paragraph
-/// could hold up would let the real population shrink with the walk none the
-/// wiser. A function DECLARATION is skipped on the same grounds, and so is a
-/// tell inside a STRING LITERAL, and so is a source that IS test scaffolding.
+/// the walk read, no-follow ones included, because the follow-capable sites are
+/// the ones this rule drives to zero and flooring on those alone would turn a
+/// fully converted crate into a failure. Only the two path-based spellings can
+/// be misdirected, so only they are asked the question. A chmod through a
+/// descriptor (`file.set_permissions(…)` on a handle the caller opened) cannot
+/// be pointed at a second file and is in neither set, and a `set_mode` on a
+/// `Permissions` value reaches the filesystem only through one of the calls
+/// already judged. A `.mode(0o…)` on an `OpenOptions` is outside both sets too
+/// (and outside the class): a create-with-mode that follows a planted link
+/// either writes the victim, which is `atomic_write`'s question, or creates
+/// cfgd's own file, and either way no existing file's mode moves. A COMMENT
+/// line counts for nothing either way: a doc sentence naming the primitive is
+/// documentation with no call in it, and a floor a rustdoc paragraph could hold
+/// up would let the real population shrink with the walk none the wiser. A
+/// function DECLARATION is skipped on the same grounds, and so is a tell inside
+/// a STRING LITERAL, and so is a source that IS test scaffolding.
 pub struct ChmodPopulation {
     /// Crate `src` roots the walk read, workspace-relative.
     ///

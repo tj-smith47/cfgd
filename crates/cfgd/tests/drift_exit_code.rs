@@ -485,19 +485,20 @@ fn a_pinned_package_whose_manager_states_no_offer_still_resolves() {
 ///
 /// The three cells built on this pair are the file's only `#[cfg(unix)]` ones,
 /// and the gate is the FIXTURE's, not the contract's: dnf's installed listing
-/// is `rpm --query --all --queryformat "%{NAME}\t%{VERSION}\n"`, whose
-/// trailing newline `std::process::Command` refuses to pass to a `.cmd` — a
-/// newline truncates a `cmd.exe` command line, and a `.cmd` is what the
-/// Windows arm of `write_tool_shim` has to be. (The `%` is not the problem;
-/// std neutralizes those.) The distro grammar this pair carries — an
+/// is `rpm --query --all --queryformat "%{NAME}\t%{VERSION}\n"`, whose trailing
+/// newline `std::process::Command` refuses to pass to a `.cmd` — a newline
+/// truncates a `cmd.exe` command line, and a `.cmd` is what the Windows arm of
+/// `write_tool_shim` has to be. (The `%` is not the problem; std neutralizes
+/// those.) The distro grammar this pair carries — an
 /// `<epoch>:<upstream>-<revision>` version compared on its upstream part — is
 /// reachable nowhere else, so the trio stays here rather than moving to a
 /// manager Windows can shim. What Windows loses is only the GRAMMAR: each of
 /// the three cells has a brew twin proving the same outcome there — the
 /// unscoped walk in
 /// `a_brew_formula_below_its_floor_exits_drift_detected_on_every_surface`, the
-/// scoped pass in `a_brew_formula_below_its_floor_is_drift_on_both_scoped_surfaces`,
-/// and the non-heal in
+/// scoped pass in
+/// `a_brew_formula_below_its_floor_is_drift_on_both_scoped_surfaces`, and the
+/// non-heal in
 /// `a_scoped_brew_run_does_not_heal_a_version_row_the_machine_still_holds`.
 #[cfg(unix)]
 fn below_floor_dnf(dir: &Path) -> (std::path::PathBuf, std::path::PathBuf) {

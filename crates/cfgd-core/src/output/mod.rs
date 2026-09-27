@@ -12,17 +12,16 @@
 //! **FOLD** ([`cursor_safe`]) is the default and covers every renderer slot
 //! carrying caller text: the status subject, qualifier, detail, label, marker
 //! and target path; the always-visible advisory; both halves of a kv row plus
-//! its annotation; both columns of a `command_list`; the bullet, a hint and
-//! its command lines, the note, paragraph, code-block line and streamed child
-//! line; every table header and
-//! cell; a heading and a section's name and empty-state placeholder; and every
-//! live-region label, which funnels through `spinner.rs`'s composer (that one
-//! folds and then PAINTS, so the fold cannot eat its own coat). Two slots sit
-//! outside the renderer and fold at their own write: `structured.rs`'s human
-//! stderr diagnostic under the selector formats, and
-//! `tracing_writer.rs`'s sink, which folds the whole formatted event on both
-//! destinations and so covers every `warn!`/`error!` site by construction — a
-//! subscriber taking that writer passes `.with_ansi(false)`, since the fold
+//! its annotation; both columns of a `command_list`; the bullet, a hint and its
+//! command lines, the note, paragraph, code-block line and streamed child line;
+//! every table header and cell; a heading and a section's name and empty-state
+//! placeholder; and every live-region label, which funnels through
+//! `spinner.rs`'s composer (that one folds and then PAINTS, so the fold cannot
+//! eat its own coat). Two slots sit outside the renderer and fold at their own
+//! write: `structured.rs`'s human stderr diagnostic under the selector formats,
+//! and `tracing_writer.rs`'s sink, which folds the whole formatted event on
+//! both destinations and so covers every `warn!`/`error!` site by construction
+//! — a subscriber taking that writer passes `.with_ansi(false)`, since the fold
 //! strips ANSI and telling an `ESC [ 0 m` from an `ESC [ 2 K` would mean a
 //! second policy with its own parser.
 //!
@@ -278,12 +277,12 @@ pub fn strip_ansi(s: &str) -> String {
 ///
 /// The ONE sanitation every renderer slot that carries text cfgd did not author
 /// applies — a status subject, its qualifier, its detail, an advisory, a kv key
-/// or value, a bullet, a hint and its command lines, a note, a code-block
-/// line, a table cell, a
-/// heading and a section name. The guarantee is narrow and total: what comes back occupies exactly
-/// the columns it displays, on the line the renderer put it on. Nothing in it can
-/// reposition the cursor, erase what is already on screen, or repaint the
-/// description of the very thing an operator is being asked to approve.
+/// or value, a bullet, a hint and its command lines, a note, a code-block line,
+/// a table cell, a heading and a section name. The guarantee is narrow and
+/// total: what comes back occupies exactly the columns it displays, on the line
+/// the renderer put it on. Nothing in it can reposition the cursor, erase what
+/// is already on screen, or repaint the description of the very thing an
+/// operator is being asked to approve.
 ///
 /// [`strip_ansi`] alone does not give that. It consumes sequences introduced by
 /// `ESC`, so a lone `\r`, a `\x08`, or a C1 `U+009B` walks straight through it
