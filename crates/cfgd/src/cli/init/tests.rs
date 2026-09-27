@@ -6305,7 +6305,7 @@ fn every_checkout_row_spells_its_revision_through_the_one_derivation() {
         {
             continue;
         }
-        let body = std::fs::read_to_string(&path).expect("readable source");
+        let body = cfgd_core::test_helpers::production_slice_of(&path);
         let lines: Vec<&str> = body.lines().collect();
         for (n, line) in lines.iter().enumerate() {
             if !line.contains("checkout_facts(") || line.contains("fn checkout_facts(") {

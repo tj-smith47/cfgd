@@ -419,6 +419,8 @@ mod tests {
         for path in crate::test_helpers::rust_sources_under(
             &crate::test_helpers::workspace_root().join("crates"),
         ) {
+            // A test spawning git runs the same argv, so test code is judged too.
+            // unfloored-slice-ok: test regions and test files are in the population.
             let body = std::fs::read_to_string(&path).unwrap_or_else(|e| {
                 panic!("{}: the walk must read every source: {e}", path.display())
             });

@@ -159,6 +159,13 @@ no timeout to fire;
 (`output/tests/fences.rs`) walks every crate for an inverted pair and has no
 hatch.
 
+A walk over several sources reads each production file through its guarded entry
+point (`production_slice_of`, or `floored_production_body` in the `cfgd` crate),
+which slices a test-only file to nothing; a walk whose subject is the whole file
+reads it raw and says why with `// unfloored-slice-ok: <why>`.
+`every_multi_file_production_walk_reads_through_the_floored_helper` fails a raw read in
+any source walk that carries neither.
+
 Colour off means NO escapes — attributes included. `ThemedStyle::apply_to` is the ONE
 gate a styled span becomes bytes through, and a printer whose `ColorChoice` resolved
 `false` gets bare text: bold, dim, italic, underline and OSC 8 are withheld with the

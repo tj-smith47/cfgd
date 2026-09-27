@@ -17283,6 +17283,7 @@ fn no_env_file_fixture_hardcodes_the_primary_env_files_name_or_dialect() {
     let mut offenders: Vec<String> = Vec::new();
     let mut checked = 0usize;
     for p in rust_sources_under(&cli_dir) {
+        // unfloored-slice-ok: the fixtures judged here live in test regions.
         let body = std::fs::read_to_string(&p)
             .unwrap_or_else(|e| panic!("{}: the walk must read every source: {e}", p.display()));
         checked += 1;
@@ -17509,10 +17510,7 @@ fn every_daemon_log_marker_the_e2e_suites_grep_for_is_a_string_the_daemon_emits(
             if cfgd_core::test_helpers::is_test_source(&p) {
                 continue;
             }
-            let body = std::fs::read_to_string(&p).unwrap_or_else(|e| {
-                panic!("{}: the walk must read every source: {e}", p.display())
-            });
-            sources.push_str(&body);
+            sources.push_str(&floored_production_body(&p));
             sources.push('\n');
             read += 1;
         }
@@ -17549,6 +17547,7 @@ fn every_daemon_log_marker_the_e2e_suites_grep_for_is_a_string_the_daemon_emits(
         if path.extension().is_none_or(|e| e != "sh") {
             continue;
         }
+        // unfloored-slice-ok: a shell script has no test region to cut.
         let body = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("{}: the walk must read every script: {e}", path.display()));
         for (n, line) in body.lines().enumerate() {
@@ -35816,11 +35815,11 @@ fn no_tests_file_carries_a_cfg_test_attribute_of_its_own() {
     /// and `cfgd-test-fixtures` hold none, which the assertion against
     /// `crates/` is what defends.
     const WALK_ROOTS: &[(&str, usize)] = &[
-        ("cfgd", 26),
-        ("cfgd-core", 38),
+        ("cfgd", 27),
+        ("cfgd-core", 39),
         ("cfgd-crd", 1),
         ("cfgd-csi", 1),
-        ("cfgd-operator", 15),
+        ("cfgd-operator", 16),
         ("cfgd-schema", 0),
         ("cfgd-test-fixtures", 0),
     ];
@@ -37793,7 +37792,7 @@ fn every_closing_hint_names_a_command() {
     // them out moved no count.
     const WALK_ROOTS: &[(&str, usize)] = &[
         ("cfgd", 27),
-        ("cfgd-core", 0),
+        ("cfgd-core", 2),
         ("cfgd-crd", 0),
         ("cfgd-csi", 0),
         ("cfgd-operator", 0),
@@ -37870,10 +37869,12 @@ fn every_closing_hint_names_a_command() {
         }
         per_root.push((tree, checked));
     }
-    // One floor per root: every root but `cfgd` holds only composed hints
-    // today, so each is floored on the sources it must still be reading
-    // (asserted by `production_sources_per_root`), and floored together the
-    // `cfgd` tree could go dark behind a count another root met.
+    // One floor per root, each at the count it holds: `cfgd-core`'s 2 are the
+    // systemd unit's start and stop hints (`daemon/service/systemd.rs`), and
+    // the roots holding no literal hint are floored at zero and held by
+    // `production_sources_per_root`, which fails a root that reads as empty.
+    // Floored together, the `cfgd` tree could go dark behind a count another
+    // root met.
     for (tree, floor) in WALK_ROOTS {
         let found = per_root
             .iter()
@@ -39146,9 +39147,7 @@ fn no_status_detail_trails_a_verdict_word_behind_its_counts() {
             if cfgd_core::test_helpers::is_test_source(&path) {
                 continue;
             }
-            let body = std::fs::read_to_string(&path).unwrap_or_else(|e| {
-                panic!("{}: the walk must read every source: {e}", path.display())
-            });
+            let body = floored_production_body(&path);
             read += 1;
             let mut from = 0usize;
             while let Some(at) = body[from..].find(".detail(format!(\"") {
@@ -39962,9 +39961,7 @@ fn every_empty_drift_verdict_states_whether_a_check_ran() {
     ] {
         let mut read = 0usize;
         for path in rust_sources_under(&dir) {
-            let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
-                panic!("{}: the walk must read every source: {e}", path.display())
-            });
+            let text = floored_production_body(&path);
             read += 1;
             if text.contains("No drift detected") || text.contains("No drift recorded") {
                 carriers.push(path);
@@ -39979,10 +39976,7 @@ fn every_empty_drift_verdict_states_whether_a_check_ran() {
     );
     let allowed = |p: &std::path::Path| {
         let s = cfgd_core::to_posix_string(p);
-        // The two production homes, plus test files asserting about them.
-        s.ends_with("cli/status.rs")
-            || s.ends_with("cli/diff.rs")
-            || cfgd_core::test_helpers::is_test_source(p)
+        s.ends_with("cli/status.rs") || s.ends_with("cli/diff.rs")
     };
     let offenders: Vec<String> = carriers
         .iter()
@@ -40011,7 +40005,7 @@ fn every_empty_drift_verdict_states_whether_a_check_ran() {
     // and the per-module Drift section's scan note. A surface that renders a
     // recorded verdict without routing its freshness through the composer
     // re-opens the undated-"no drift" gap this pair exists to close.
-    let status_src = std::fs::read_to_string(root.join("crates/cfgd/src/cli/status.rs")).unwrap();
+    let status_src = floored_production_body(&root.join("crates/cfgd/src/cli/status.rs"));
     let call_sites = status_src
         .matches("drift_checked_note(")
         .count()

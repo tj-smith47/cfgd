@@ -1238,7 +1238,7 @@ fn every_defaulted_config_section_reads_null_as_its_default() {
         if !file.ends_with(".rs") || crate::test_helpers::is_test_source(&path) {
             continue;
         }
-        let src = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{file}: {e}"));
+        let src = crate::test_helpers::production_slice_of(&path);
         let lines: Vec<&str> = src.lines().collect();
         for (n, line) in lines.iter().enumerate() {
             let Some((_, target)) = line.split_once("Deserialize<'de> for ") else {

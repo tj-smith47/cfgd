@@ -2358,9 +2358,7 @@ mod outranked_tests {
                 continue;
             }
             scanned += 1;
-            let body = std::fs::read_to_string(&path).unwrap_or_else(|e| {
-                panic!("{}: the walk must read every source: {e}", path.display())
-            });
+            let body = crate::test_helpers::production_slice_of(&path);
             for (n, line) in body.lines().enumerate() {
                 let code = line.trim_start();
                 if code.starts_with("//") {

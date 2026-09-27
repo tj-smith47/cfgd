@@ -2479,8 +2479,7 @@ fn command_failure_reason_is_the_only_place_a_managers_stderr_becomes_a_message(
         if cfgd_core::test_helpers::is_test_source(&path) {
             continue;
         }
-        let body = std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("{}: the walk must read every source: {e}", path.display()));
+        let body = cfgd_core::test_helpers::production_slice_of(&path);
         for (n, line) in body.lines().enumerate() {
             if !line.contains(".stderr") {
                 continue;

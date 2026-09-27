@@ -1142,6 +1142,7 @@ mod condense_script_label_tests {
             if path.ends_with("renderer/wrap.rs") {
                 continue;
             }
+            // unfloored-slice-ok: each test item is skipped below, at the file's own line numbers.
             let body = std::fs::read_to_string(&path).unwrap();
             let lines: Vec<&str> = body.lines().collect();
             // Each test item is skipped where it stands: `output/mod.rs`,
