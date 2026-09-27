@@ -69,7 +69,9 @@ pub(crate) fn service_dir_flags(dirs: &DaemonDirOverrides) -> Vec<(&'static str,
 ///
 /// `dirs` is the invoking process's `--state-dir` / `--runtime-dir` /
 /// `--cache-dir`; all three are baked into the generated unit so the installed
-/// daemon resolves the same directories the operator's CLI does.
+/// daemon resolves the same directories the operator's CLI does. The
+/// invocation's `--update-policy` is not: the installed daemon checks under
+/// `spec.update.policy`, re-read on every tick.
 pub fn install_service(
     config_path: &Path,
     profile: Option<&str>,
