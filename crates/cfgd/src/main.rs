@@ -16,10 +16,10 @@ const MCP_HELP_EXAMPLES: &str = "Examples:\n  \
 /// canonical `true`/`false` before parsing — keeping `CFGD_QUIET=1` ergonomic
 /// without touching the per-arg `#[arg(env = …)]` sites.
 const BOOL_ENV_VARS: &[&str] = &[
-    "CFGD_YES",
-    "CFGD_QUIET",
-    "CFGD_REQUIRE_COSIGN",
-    "CFGD_LIST_ENVELOPE",
+    cli::CFGD_YES_ENV,
+    cli::CFGD_QUIET_ENV,
+    cli::CFGD_REQUIRE_COSIGN_ENV,
+    cli::CFGD_LIST_ENVELOPE_ENV,
 ];
 
 /// Rewrite a boolish env var to the canonical `true`/`false` spelling clap's
@@ -44,13 +44,13 @@ fn normalize_boolish_env(var: &str) {
 /// (`canonical_bool_str` returns `None` for `2`, so `CFGD_VERBOSE=2` still means
 /// trace) and leave unrecognized values for clap to reject.
 fn normalize_cfgd_verbose_env() {
-    if let Ok(raw) = std::env::var("CFGD_VERBOSE")
+    if let Ok(raw) = std::env::var(cli::CFGD_VERBOSE_ENV)
         && let Some(canonical) = canonical_bool_str(&raw)
     {
         let count = if canonical == "true" { "1" } else { "0" };
         // Safe here: runs at the very start of main(), before any threads spawn.
         unsafe {
-            std::env::set_var("CFGD_VERBOSE", count);
+            std::env::set_var(cli::CFGD_VERBOSE_ENV, count);
         }
     }
 }
@@ -130,7 +130,7 @@ fn main() -> anyhow::Result<()> {
     // Gate for the macOS config-location migration prompt (evaluated below,
     // after the Printer exists): an explicit `--config`/`CFGD_CONFIG` pins the
     // location.
-    let explicit_config = std::env::var_os("CFGD_CONFIG").is_some()
+    let explicit_config = std::env::var_os(cli::CFGD_CONFIG_ENV).is_some()
         || expanded
             .iter()
             .any(|a| a == "--config" || a.starts_with("--config="));
@@ -309,10 +309,6 @@ fn main() -> anyhow::Result<()> {
         std::path::Path::new(&cli.config),
         cli.mask_env_values.as_deref(),
     );
-    let update_policy = cli::resolve_update_policy(
-        std::path::Path::new(&cli.config),
-        cli.update_policy.as_deref(),
-    );
     let printer = cfgd_core::output::Printer::with_theme_config(
         verbosity,
         theme_config.as_ref(),
@@ -395,11 +391,19 @@ fn main() -> anyhow::Result<()> {
         Some(cli::Command::Daemon { .. }) | Some(cli::Command::Upgrade { .. }) | None
     );
     if !skip_startup_check {
+        // Only the override is resolved here; the stored half comes off the one
+        // load the check already makes. The field carries `CFGD_UPDATE_POLICY`
+        // too, since the flag binds it and clap has already refused a word
+        // neither spelling accepts.
+        let update_policy_override = cli
+            .update_policy
+            .as_deref()
+            .and_then(|raw| raw.parse::<cfgd_core::config::UpdatePolicy>().ok());
         cli::upgrade::startup_update_check(
             &printer,
             std::path::Path::new(&cli.config),
             assume_yes,
-            update_policy,
+            update_policy_override,
         );
     }
 

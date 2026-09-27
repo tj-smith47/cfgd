@@ -1197,57 +1197,42 @@ fn resolve_mask_env_values_precedence_flag_beats_spec_beats_default() {
     );
 }
 
-/// The update policy resolves the way every other per-invocation knob does:
-/// the flag beats `CFGD_UPDATE_POLICY` beats `spec.update.policy` beats the
-/// `Prompt` default. It runs `resolve_knob` itself, so a reader of one knob
-/// has read them all.
-///
-/// The env var is asserted through a direct call with no argv, which works
-/// because `resolve_knob` reads `CFGD_UPDATE_POLICY` itself as well as clap's
-/// `env =` binding.
+/// The run's update-posture override is the flag, then `CFGD_UPDATE_POLICY`,
+/// both read off the one `cli.update_policy` field: the flag binds the env var,
+/// so clap fills the field from it when the flag is absent. `main` reads that
+/// field alone and leaves `spec.update.policy` to the load the startup check
+/// already makes.
 #[test]
 #[serial_test::serial]
-fn the_update_policy_flag_outranks_the_env_var_and_the_config_field() {
+fn the_update_policy_field_carries_the_flag_over_the_env_var() {
     use cfgd_core::config::UpdatePolicy;
     use cfgd_core::test_helpers::EnvVarGuard;
-    // The ambient environment answers this variable on a developer's machine
-    // as readily as the guard below does; the stored-field assertion means
-    // nothing without it.
-    let _clear = EnvVarGuard::unset("CFGD_UPDATE_POLICY");
-    let dir = tempfile::tempdir().expect("tempdir");
-    let path = dir.path().join("cfgd.yaml");
-    std::fs::write(
-        &path,
-        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  update:\n    policy: Notify\n",
-    )
-    .expect("write config");
+    let parsed = |argv: &[&str]| {
+        Cli::try_parse_reading_env(argv.iter().copied(), &["CFGD_UPDATE_POLICY"])
+            .expect("parses")
+            .update_policy
+            .map(|raw| {
+                raw.parse::<UpdatePolicy>()
+                    .expect("clap admitted only enum words")
+            })
+    };
+    let unset = EnvVarGuard::unset("CFGD_UPDATE_POLICY");
     assert_eq!(
-        super::resolve_update_policy(&path, None),
-        UpdatePolicy::Notify,
-        "the stored field answers when nothing overrides it"
+        parsed(&["cfgd", "status"]),
+        None,
+        "nothing said, nothing overridden"
     );
-    let env = EnvVarGuard::set("CFGD_UPDATE_POLICY", "auto");
+    drop(unset);
+    let _env = EnvVarGuard::set("CFGD_UPDATE_POLICY", "Notify");
     assert_eq!(
-        super::resolve_update_policy(&path, None),
-        UpdatePolicy::Auto,
-        "the env var outranks the stored field, and is matched case-insensitively"
+        parsed(&["cfgd", "status"]),
+        Some(UpdatePolicy::Notify),
+        "the env var fills the field in its PascalCase spelling"
     );
     assert_eq!(
-        super::resolve_update_policy(&path, Some("manual")),
-        UpdatePolicy::Manual,
-        "the flag outranks both"
-    );
-    let absent = dir.path().join("absent.yaml");
-    assert_eq!(
-        super::resolve_update_policy(&absent, None),
-        UpdatePolicy::Auto,
-        "with no readable config the env var still answers"
-    );
-    drop(env);
-    assert_eq!(
-        super::resolve_update_policy(&absent, None),
-        UpdatePolicy::Prompt,
-        "no readable config and no variable falls to the default, which checks and asks"
+        parsed(&["cfgd", "--update-policy", "manual", "status"]),
+        Some(UpdatePolicy::Manual),
+        "the flag outranks the env var"
     );
 }
 
@@ -1299,13 +1284,88 @@ fn the_startup_check_honours_the_invocations_policy_over_the_declared_one() {
             None,
             "nothing checked yet"
         );
-        crate::cli::upgrade::startup_update_check(&printer, &path, false, UpdatePolicy::Manual);
+        crate::cli::upgrade::startup_update_check(
+            &printer,
+            &path,
+            false,
+            Some(UpdatePolicy::Manual),
+        );
         assert_eq!(
             cfgd_core::upgrade::last_checked_secs(),
             None,
             "a Manual invocation runs no check, whatever the config declares"
         );
     });
+}
+
+/// Every environment variable a clap argument binds is spelled as a literal on at
+/// most one production line of this crate. A second spelling, in a reader beside
+/// the binding or in a second binding, is a copy a rename leaves behind: the flag
+/// keeps working while the other reader goes quiet. The population is clap's own
+/// (`get_env` over the whole command tree), so a new binding joins it unasked.
+/// Tests keep their literals, since they assert the wire spelling.
+#[test]
+fn every_clap_bound_env_var_is_spelled_once_in_production() {
+    fn bound_env_names(cmd: &clap::Command, out: &mut std::collections::BTreeSet<String>) {
+        for arg in cmd.get_arguments() {
+            if let Some(env) = arg.get_env().and_then(|e| e.to_str()) {
+                out.insert(env.to_string());
+            }
+        }
+        for sub in cmd.get_subcommands() {
+            bound_env_names(sub, out);
+        }
+    }
+    use clap::CommandFactory;
+    let mut names = std::collections::BTreeSet::new();
+    bound_env_names(&Cli::command(), &mut names);
+    assert!(
+        names.len() >= 10,
+        "clap reported only {} env-bound arguments; the scan has stopped seeing the bindings",
+        names.len()
+    );
+
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut spellings: std::collections::BTreeMap<&str, Vec<String>> =
+        names.iter().map(|n| (n.as_str(), Vec::new())).collect();
+    let mut files_read = 0;
+    for path in rust_sources_under(&src) {
+        let file = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default();
+        if cfgd_core::test_helpers::is_test_source(&path) || file == "test_helpers.rs" {
+            continue;
+        }
+        files_read += 1;
+        let production = floored_production_body(&path);
+        for (i, raw) in production.lines().enumerate() {
+            // `code_line` cuts a trailing comment at the same byte it finds it in
+            // the raw line, so the raw prefix is the code with its literals intact.
+            let code = &raw[..code_line(raw).len()];
+            for (name, sites) in spellings.iter_mut() {
+                if code.contains(&format!("\"{name}\"")) {
+                    let rel = path.strip_prefix(&src).unwrap_or(&path);
+                    sites.push(format!("src/{}:{}", cfgd_core::to_posix_string(rel), i + 1));
+                }
+            }
+        }
+    }
+    assert!(
+        files_read > 100,
+        "the scan read {files_read} production files"
+    );
+    let repeated: Vec<String> = spellings
+        .iter()
+        .filter(|(_, sites)| sites.len() > 1)
+        .map(|(name, sites)| format!("{name}: {}", sites.join(", ")))
+        .collect();
+    assert!(
+        repeated.is_empty(),
+        "an env var clap binds is spelled on more than one production line; name it through a \
+         `CFGD_*_ENV` const in cli/mod.rs:\n{}",
+        repeated.join("\n")
+    );
 }
 
 /// Every enum-valued scalar knob under `spec` is classified: it either carries a

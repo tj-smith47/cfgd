@@ -937,7 +937,7 @@ pub fn migration_policy_override(flag: Option<&str>) -> Option<cfgd_schema::Migr
     if let Some(raw) = flag {
         return cfgd_schema::MigrationPolicy::from_str(raw).ok();
     }
-    cfgd_schema::MigrationPolicy::from_str(&std::env::var("CFGD_MIGRATION_POLICY").ok()?).ok()
+    cfgd_schema::MigrationPolicy::from_str(&std::env::var(CFGD_MIGRATION_POLICY_ENV).ok()?).ok()
 }
 
 /// Resolve whether closing `→` usage hints render, folding the
@@ -957,7 +957,7 @@ pub fn migration_policy_override(flag: Option<&str>) -> Option<cfgd_schema::Migr
 /// flag's negation". Boolish spellings are accepted through the same table
 /// every other `CFGD_*` boolean env var uses.
 pub fn resolve_hints_enabled(config_path: &Path, hints: Option<bool>) -> bool {
-    resolve_knob(config_path, hints, "CFGD_USAGE_HINTS", |spec| {
+    resolve_knob(config_path, hints, CFGD_USAGE_HINTS_ENV, |spec| {
         spec.usage_hints()
     })
 }
@@ -981,27 +981,8 @@ pub fn resolve_mask_env_values(
     resolve_knob(
         config_path,
         flag.and_then(|raw| cfgd_core::config::MaskEnvValues::from_str(raw).ok()),
-        "CFGD_MASK_ENV_VALUES",
+        CFGD_MASK_ENV_VALUES_ENV,
         |spec| spec.mask_env_values(),
-    )
-}
-
-/// Resolve the update posture in force for this invocation, folding
-/// `--update-policy`, `CFGD_UPDATE_POLICY` and `spec.update.policy` into the
-/// one answer the startup check reads. A config cfgd cannot read falls to
-/// `Prompt`, which checks and asks before acting: a self-update check must
-/// never be the reason a normal command cannot run. The three opt-out env
-/// vars sit ahead of the decision entirely, inside `upgrade::should_check`.
-pub fn resolve_update_policy(
-    config_path: &Path,
-    flag: Option<&str>,
-) -> cfgd_core::config::UpdatePolicy {
-    use std::str::FromStr;
-    resolve_knob(
-        config_path,
-        flag.and_then(|raw| cfgd_core::config::UpdatePolicy::from_str(raw).ok()),
-        "CFGD_UPDATE_POLICY",
-        |spec| spec.update.as_ref().map(|u| u.policy),
     )
 }
 
@@ -1055,6 +1036,23 @@ impl From<OutputFormatArg> for clap::builder::OsStr {
     }
 }
 
+/// The environment variables cfgd reads in place of a flag, each spelled once:
+/// the clap `env =` binding and every production reader of the same variable
+/// name it through these, so a rename cannot leave one reader on the old word.
+pub const CFGD_CONFIG_ENV: &str = "CFGD_CONFIG";
+pub const CFGD_VERBOSE_ENV: &str = "CFGD_VERBOSE";
+pub const CFGD_QUIET_ENV: &str = "CFGD_QUIET";
+pub const CFGD_YES_ENV: &str = "CFGD_YES";
+pub const CFGD_COLOR_ENV: &str = "CFGD_COLOR";
+pub const CFGD_THEME_ENV: &str = "CFGD_THEME";
+pub const CFGD_MASK_ENV_VALUES_ENV: &str = "CFGD_MASK_ENV_VALUES";
+pub const CFGD_MIGRATION_POLICY_ENV: &str = "CFGD_MIGRATION_POLICY";
+pub const CFGD_UPDATE_POLICY_ENV: &str = "CFGD_UPDATE_POLICY";
+pub const CFGD_LIST_ENVELOPE_ENV: &str = "CFGD_LIST_ENVELOPE";
+pub const CFGD_USAGE_HINTS_ENV: &str = "CFGD_USAGE_HINTS";
+pub const CFGD_REQUIRE_COSIGN_ENV: &str = "CFGD_REQUIRE_COSIGN";
+pub const CFGD_SERVER_URL_ENV: &str = "CFGD_SERVER_URL";
+
 #[derive(Parser, Clone)]
 #[command(
     name = "cfgd",
@@ -1067,7 +1065,7 @@ pub struct Cli {
     // and the generated man page: the man page is built on a release runner
     // whose $HOME differs from the user's, so a rendered default would point
     // at the runner's path. The doc comment carries the portable default.
-    #[arg(long, global = true, default_value_os_t = default_config_file(), hide_default_value = true, env = "CFGD_CONFIG")]
+    #[arg(long, global = true, default_value_os_t = default_config_file(), hide_default_value = true, env = CFGD_CONFIG_ENV)]
     pub config: PathBuf,
 
     /// Whether the config path was supplied by the user (`--config`,
@@ -1091,7 +1089,7 @@ pub struct Cli {
         short,
         global = true,
         action = clap::ArgAction::Count,
-        env = "CFGD_VERBOSE",
+        env = CFGD_VERBOSE_ENV,
         conflicts_with = "quiet"
     )]
     pub verbose: u8,
@@ -1101,13 +1099,13 @@ pub struct Cli {
         long,
         short,
         global = true,
-        env = "CFGD_QUIET",
+        env = CFGD_QUIET_ENV,
         conflicts_with = "verbose"
     )]
     pub quiet: bool,
 
     /// Skip confirmation prompts (answer yes to every question)
-    #[arg(long, short, global = true, env = "CFGD_YES")]
+    #[arg(long, short, global = true, env = CFGD_YES_ENV)]
     pub yes: bool,
 
     /// Disable colored output (alias for --color never)
@@ -1119,7 +1117,7 @@ pub struct Cli {
         long,
         global = true,
         value_name = "WHEN",
-        env = "CFGD_COLOR",
+        env = CFGD_COLOR_ENV,
         default_value = "auto"
     )]
     pub color: ColorWhen,
@@ -1130,7 +1128,7 @@ pub struct Cli {
         long,
         global = true,
         value_name = "NAME",
-        env = "CFGD_THEME",
+        env = CFGD_THEME_ENV,
         value_parser = clap::builder::PossibleValuesParser::new(cfgd_core::output::Theme::PRESET_NAMES)
     )]
     pub theme: Option<String>,
@@ -1148,7 +1146,7 @@ pub struct Cli {
         long = "mask-env-values",
         global = true,
         value_name = "MODE",
-        env = "CFGD_MASK_ENV_VALUES",
+        env = CFGD_MASK_ENV_VALUES_ENV,
         ignore_case = true,
         value_parser = clap::builder::PossibleValuesParser::new(["all", "secrets", "none"])
     )]
@@ -1163,7 +1161,7 @@ pub struct Cli {
         long = "migration-policy",
         global = true,
         value_name = "POLICY",
-        env = "CFGD_MIGRATION_POLICY",
+        env = CFGD_MIGRATION_POLICY_ENV,
         ignore_case = true,
         value_parser = clap::builder::PossibleValuesParser::new(["prompt", "warn", "update", "ignore"])
     )]
@@ -1172,15 +1170,15 @@ pub struct Cli {
     /// Update posture for this invocation: auto (apply an available update),
     /// prompt (ask first), notify (report only) or manual (no automatic
     /// check at all). `spec.update.policy` does the same thing persistently;
-    /// this flag wins over it. `cfgd upgrade` is explicit and runs whatever
-    /// this says.
+    /// this flag wins over it. The explicit `cfgd upgrade` runs regardless of
+    /// this setting.
     // `spec.update.policy` serializes PascalCase, so the flag and its env var
     // accept that spelling as well as the lowercase one this list prints.
     #[arg(
         long = "update-policy",
         global = true,
         value_name = "POLICY",
-        env = "CFGD_UPDATE_POLICY",
+        env = CFGD_UPDATE_POLICY_ENV,
         ignore_case = true,
         value_parser = clap::builder::PossibleValuesParser::new(["auto", "prompt", "notify", "manual"])
     )]
@@ -1193,7 +1191,7 @@ pub struct Cli {
 
     /// Wrap top-level array payloads under -o json/yaml in a KRM List envelope ({apiVersion, kind:
     /// List, items})
-    #[arg(long, global = true, env = "CFGD_LIST_ENVELOPE")]
+    #[arg(long, global = true, env = CFGD_LIST_ENVELOPE_ENV)]
     pub list_envelope: bool,
 
     /// Render closing `→` usage hints for this invocation. `CFGD_USAGE_HINTS=true`
@@ -1624,7 +1622,7 @@ pub enum Command {
         /// Fail the upgrade if cosign signature verification cannot be performed
         /// (missing cosign bundle, or cosign CLI not installed)
         /// instead of falling back to SHA256-only.
-        #[arg(long, env = "CFGD_REQUIRE_COSIGN")]
+        #[arg(long, env = CFGD_REQUIRE_COSIGN_ENV)]
         require_cosign: bool,
     },
 
@@ -1739,7 +1737,7 @@ pub enum Command {
     )]
     Checkin {
         /// Device gateway URL
-        #[arg(long, env = "CFGD_SERVER_URL")]
+        #[arg(long, env = CFGD_SERVER_URL_ENV)]
         server_url: String,
 
         /// API key for authentication
@@ -1757,7 +1755,7 @@ pub enum Command {
     )]
     Enroll {
         /// Device gateway URL
-        #[arg(long, env = "CFGD_SERVER_URL")]
+        #[arg(long, env = CFGD_SERVER_URL_ENV)]
         server_url: String,
 
         /// Bootstrap token for token-based enrollment

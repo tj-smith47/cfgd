@@ -102,6 +102,28 @@ fn is_optout_value_set(var: &str) -> bool {
     }
 }
 
+/// The update block a check runs under: `declared` with this invocation's
+/// posture folded in.
+///
+/// The posture resolves flag first, then `CFGD_UPDATE_POLICY`, then
+/// `spec.update.policy`, then `Prompt`. The first two arrive together as
+/// `override_policy`, because the `--update-policy` flag binds the env var and
+/// clap reads it when the flag is absent; the last two are `declared.policy`,
+/// which serde fills with the default when the field is missing. `Some`
+/// replaces only `policy`: `interval`, `channel` and `skills` stay as declared,
+/// since the override names a posture and leaves the rest of the block alone.
+/// `None` returns the declared block unchanged.
+pub fn effective_update_config(
+    declared: &UpdateConfig,
+    override_policy: Option<UpdatePolicy>,
+) -> UpdateConfig {
+    let mut effective = declared.clone();
+    if let Some(policy) = override_policy {
+        effective.policy = policy;
+    }
+    effective
+}
+
 /// The opt-out/interval/`Manual` gate: should a fresh network check run *now*?
 ///
 /// * an opt-out env var is set (see [`update_optout_var`]) → never (`false`),
@@ -374,6 +396,47 @@ mod tests {
                 record_checked: Box::new(move |t| self.recorded.set(Some(t))),
             }
         }
+    }
+
+    #[test]
+    fn effective_update_config_replaces_only_the_posture_and_keeps_the_declared_block_without_an_override()
+     {
+        use crate::config::SkillUpdatePolicy;
+        let mut declared = config(UpdatePolicy::Auto);
+        declared.interval = "6h".to_string();
+        declared.channel = Some("beta".to_string());
+        declared.skills.policy = SkillUpdatePolicy::Notify;
+
+        let overridden = effective_update_config(&declared, Some(UpdatePolicy::Manual));
+        assert_eq!(
+            overridden.policy,
+            UpdatePolicy::Manual,
+            "the override names the posture"
+        );
+        assert_eq!(
+            overridden.interval, "6h",
+            "the declared interval still applies"
+        );
+        assert_eq!(
+            overridden.channel.as_deref(),
+            Some("beta"),
+            "the declared channel still applies"
+        );
+        assert_eq!(
+            overridden.skills.policy,
+            SkillUpdatePolicy::Notify,
+            "the declared skill policy still applies"
+        );
+
+        let untouched = effective_update_config(&declared, None);
+        assert_eq!(
+            untouched.policy,
+            UpdatePolicy::Auto,
+            "no override keeps the declared posture"
+        );
+        assert_eq!(untouched.interval, "6h");
+        assert_eq!(untouched.channel.as_deref(), Some("beta"));
+        assert_eq!(untouched.skills.policy, SkillUpdatePolicy::Notify);
     }
 
     // ----- the check gate -----

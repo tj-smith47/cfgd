@@ -278,8 +278,9 @@ pub fn cmd_upgrade(
 /// network call — a within-interval startup makes no API request. `Manual`
 /// short-circuits inside [`cfgd_core::upgrade::run_update_check`].
 ///
-/// `policy` is this invocation's posture ([`super::resolve_update_policy`]) and
-/// replaces `spec.update.policy` for the run.
+/// `override_policy` is this invocation's posture (`--update-policy` or
+/// `CFGD_UPDATE_POLICY`); when present it replaces `spec.update.policy` for the
+/// run, through [`cfgd_core::upgrade::effective_update_config`].
 ///
 /// Best-effort: any error is swallowed (logged via tracing) so a self-update
 /// check never fails a normal command.
@@ -287,7 +288,7 @@ pub fn startup_update_check(
     printer: &Printer,
     config_path: &std::path::Path,
     assume_yes: bool,
-    policy: cfgd_core::config::UpdatePolicy,
+    override_policy: Option<cfgd_core::config::UpdatePolicy>,
 ) {
     use cfgd_core::config;
     use cfgd_core::upgrade::{self, UpdateCheckEffects};
@@ -297,14 +298,11 @@ pub fn startup_update_check(
         return;
     }
 
-    // The invocation's own posture replaces the declared one; interval, channel
-    // and the skill cascade stay whatever the config says, because the flag
-    // names a posture and leaves the rest of the update block alone.
-    let mut update_cfg = config::load_config(config_path)
+    let declared = config::load_config(config_path)
         .ok()
         .and_then(|c| c.spec.update)
         .unwrap_or_default();
-    update_cfg.policy = policy;
+    let update_cfg = upgrade::effective_update_config(&declared, override_policy);
 
     // Cheap interval/Manual gate before constructing any effects.
     let now = cfgd_core::unix_secs_now();

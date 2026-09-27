@@ -34,7 +34,7 @@ pub(in crate::cli) struct PluginCli {
         long,
         global = true,
         value_name = "WHEN",
-        env = "CFGD_COLOR",
+        env = crate::cli::CFGD_COLOR_ENV,
         default_value = "auto"
     )]
     color: ColorWhen,
@@ -45,7 +45,7 @@ pub(in crate::cli) struct PluginCli {
         long,
         global = true,
         value_name = "NAME",
-        env = "CFGD_THEME",
+        env = crate::cli::CFGD_THEME_ENV,
         value_parser = clap::builder::PossibleValuesParser::new(cfgd_core::output::Theme::PRESET_NAMES)
     )]
     theme: Option<String>,
@@ -341,7 +341,7 @@ pub fn plugin_main() -> anyhow::Result<()> {
     // The plugin carries no `--config` flag of its own, so it honours the rest
     // of the primary CLI's precedence: the environment override first, then the
     // default location.
-    let config_path = std::env::var_os("CFGD_CONFIG")
+    let config_path = std::env::var_os(crate::cli::CFGD_CONFIG_ENV)
         .map(std::path::PathBuf::from)
         .unwrap_or_else(crate::cli::default_config_file);
     let theme_config = crate::cli::resolve_theme_config(&config_path, cli.theme.as_deref());
