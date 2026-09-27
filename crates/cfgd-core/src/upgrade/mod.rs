@@ -25,7 +25,6 @@ pub use dedup::{
 };
 
 const GITHUB_API_BASE: &str = "https://api.github.com";
-const GITHUB_API_BASE_ENV: &str = "CFGD_GITHUB_API_BASE";
 const DEFAULT_REPO: &str = "tj-smith47/cfgd";
 
 /// OIDC issuer asserted by the keyless cosign signature: the GitHub Actions
@@ -54,7 +53,7 @@ const COSIGN_IDENTITY_REGEXP: &str = r"^https://github\.com/tj-smith47/cfgd/\.gi
 /// to redirect at a mockito server; production calls fall through to the
 /// real api.github.com base.
 fn github_api_base() -> String {
-    std::env::var(GITHUB_API_BASE_ENV).unwrap_or_else(|_| GITHUB_API_BASE.to_string())
+    std::env::var(crate::CFGD_GITHUB_API_BASE_ENV).unwrap_or_else(|_| GITHUB_API_BASE.to_string())
 }
 const CACHE_TTL_SECS: u64 = 86400; // 24 hours
 const CACHE_FILENAME: &str = "version-check.json";

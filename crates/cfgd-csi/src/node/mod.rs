@@ -20,11 +20,6 @@ use crate::csi::v1::{
 };
 use crate::metrics::{CsiMetrics, ModuleLabels, PublishLabels, PullLabels};
 
-/// Env var holding the registry allow-list for CSI module pulls.
-/// Comma-separated list of `host[:port]` entries; `*` disables the check.
-/// Unset leaves the check disabled but emits a startup warning.
-pub const ALLOWED_REGISTRIES_ENV: &str = "CFGD_CSI_ALLOWED_REGISTRIES";
-
 pub struct CfgdNode {
     cache: Arc<Cache>,
     metrics: Arc<CsiMetrics>,
@@ -41,15 +36,15 @@ impl CfgdNode {
         let allowed_registries = parse_allowed_registries_from_env();
         match &allowed_registries {
             None => tracing::warn!(
-                env = ALLOWED_REGISTRIES_ENV,
+                env = cfgd_core::CFGD_CSI_ALLOWED_REGISTRIES_ENV,
                 "CSI registry allow-list is not configured — accepting any ociRef from volume context. In multi-tenant clusters set this env (comma-separated host[:port]) to restrict pulls."
             ),
             Some(list) if list.is_empty() => tracing::warn!(
-                env = ALLOWED_REGISTRIES_ENV,
+                env = cfgd_core::CFGD_CSI_ALLOWED_REGISTRIES_ENV,
                 "CSI registry allow-list is explicitly empty — all module pulls will be refused."
             ),
             Some(list) => tracing::info!(
-                env = ALLOWED_REGISTRIES_ENV,
+                env = cfgd_core::CFGD_CSI_ALLOWED_REGISTRIES_ENV,
                 count = list.len(),
                 "CSI registry allow-list active"
             ),
@@ -64,7 +59,7 @@ impl CfgdNode {
 }
 
 fn parse_allowed_registries_from_env() -> Option<Vec<String>> {
-    let raw = std::env::var(ALLOWED_REGISTRIES_ENV).ok()?;
+    let raw = std::env::var(cfgd_core::CFGD_CSI_ALLOWED_REGISTRIES_ENV).ok()?;
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return None;
@@ -145,7 +140,8 @@ fn check_registry_allowed(
         return Ok(());
     }
     Err(Status::permission_denied(format!(
-        "registry '{registry}' is not in the CSI allow-list (set {ALLOWED_REGISTRIES_ENV})"
+        "registry '{registry}' is not in the CSI allow-list (set {})",
+        cfgd_core::CFGD_CSI_ALLOWED_REGISTRIES_ENV
     )))
 }
 

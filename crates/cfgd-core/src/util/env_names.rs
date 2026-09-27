@@ -3,6 +3,8 @@
 //! every name a production read (`std::env::var`, `env_or`, a `*_BIN` seam such
 //! as `tool_cmd`) would otherwise spell as a literal. A `*_BIN` seam a module
 //! already names with its own const beside its command factory keeps that const.
+//! The `fake-cosign` fixture binary, built only under the `test-helpers`
+//! feature, keeps the names it reads, since no shipped binary reads them.
 //!
 //! A clap `env =` binding and every other reader or writer of the same variable
 //! name it through these, so a rename moves every reader together.
@@ -74,3 +76,17 @@ pub const CFGD_SERVER_DB_PATH_ENV: &str = "CFGD_SERVER_DB_PATH";
 pub const CFGD_RETENTION_DAYS_ENV: &str = "CFGD_RETENTION_DAYS";
 /// Test seam: the `ssh-keygen` binary enrollment signs a challenge with.
 pub const CFGD_SSH_KEYGEN_BIN_ENV: &str = "CFGD_SSH_KEYGEN_BIN";
+/// Base URL of the GitHub Releases API that the update check and `cfgd upgrade`
+/// query, in place of `https://api.github.com`.
+pub const CFGD_GITHUB_API_BASE_ENV: &str = "CFGD_GITHUB_API_BASE";
+/// Set to anything but empty, `0` or `false`, silences the automatic update check.
+pub const CFGD_NO_UPDATE_CHECK_ENV: &str = "CFGD_NO_UPDATE_CHECK";
+/// Registries the CSI node plugin may pull modules from: comma-separated
+/// `host[:port]` entries, `*` for any. Unset accepts any registry and warns at
+/// startup.
+pub const CFGD_CSI_ALLOWED_REGISTRIES_ENV: &str = "CFGD_CSI_ALLOWED_REGISTRIES";
+/// Browser origins the device gateway accepts cross-origin requests from:
+/// comma-separated scheme+host(+port) URLs such as `https://fleet.internal`,
+/// `*` for any (development only). Unset or empty refuses every cross-origin
+/// request; same-origin requests from the dashboard still work.
+pub const CFGD_GATEWAY_ALLOWED_ORIGINS_ENV: &str = "CFGD_GATEWAY_ALLOWED_ORIGINS";

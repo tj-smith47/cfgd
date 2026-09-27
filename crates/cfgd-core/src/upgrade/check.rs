@@ -80,7 +80,11 @@ pub fn resolved_interval(config: &UpdateConfig) -> Duration {
 /// conventions shared with npm's `update-notifier` and consoledonottrack.com,
 /// so a workstation already opted out of those tools' checks is opted out of
 /// cfgd's too without new configuration.
-pub const OPTOUT_VARS: [&str; 3] = ["CFGD_NO_UPDATE_CHECK", "NO_UPDATE_NOTIFIER", "DO_NOT_TRACK"];
+pub const OPTOUT_VARS: [&str; 3] = [
+    crate::CFGD_NO_UPDATE_CHECK_ENV,
+    "NO_UPDATE_NOTIFIER",
+    "DO_NOT_TRACK",
+];
 
 /// The environment variable currently suppressing the automatic update check,
 /// or `None` when no opt-out is in effect. Precedence: `CFGD_NO_UPDATE_CHECK`,

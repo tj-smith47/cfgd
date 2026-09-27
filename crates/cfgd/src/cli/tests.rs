@@ -1346,7 +1346,7 @@ fn every_cfgd_env_name_is_spelled_once_in_production() {
         .filter_map(|l| l.split('"').nth(1).map(str::to_string))
         .collect();
     assert!(
-        declared.len() >= 32,
+        declared.len() >= 36,
         "env_names.rs declared only {} consts; the scan has stopped reading the module",
         declared.len()
     );
@@ -1359,13 +1359,17 @@ fn every_cfgd_env_name_is_spelled_once_in_production() {
          on one line: {consts:#?}"
     );
     names.extend(declared);
+    let bound = names.clone();
 
     // Each root's floor is the literal spellings it holds once every name has
-    // its const: cfgd-core holds one per name in `env_names.rs`, and every other
-    // root holds none, but is read so a second spelling there is caught.
+    // its const. cfgd-core holds the 36 in `env_names.rs` plus the 7 `*_BIN`
+    // seam consts its modules keep (oci/build.rs 2, env_session.rs 2, git.rs,
+    // process.rs 2); cfgd holds its 23 module `*_BIN` seam consts (secrets 6,
+    // system 6, packages 11). Every other root holds none, but is read so a
+    // second spelling there is caught.
     const WALK_ROOTS: &[(&str, usize)] = &[
-        ("cfgd", 0),
-        ("cfgd-core", 32),
+        ("cfgd", 23),
+        ("cfgd-core", 43),
         ("cfgd-crd", 0),
         ("cfgd-csi", 0),
         ("cfgd-operator", 0),
@@ -1377,15 +1381,78 @@ fn every_cfgd_env_name_is_spelled_once_in_production() {
     // The per-root reader hands back paths under `<cfgd>/..`, so the prefix to
     // strip is spelled the same way.
     let crates_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    // Compiled only under the `test-helpers` feature (the fake-cosign binary
+    // through its `required-features`), so no shipped binary reads what they
+    // spell.
+    let feature_only = |path: &std::path::Path| {
+        path.file_name()
+            .is_some_and(|n| n == "test_helpers.rs" || n == "fake_cosign.rs")
+    };
+    let sources: Vec<(String, String)> = trees
+        .iter()
+        .flat_map(|(_, files)| files)
+        .filter(|(path, _)| !feature_only(path))
+        .map(|(path, production)| {
+            let rel = path.strip_prefix(&crates_dir).unwrap_or(path);
+            (
+                format!("crates/{}", cfgd_core::to_posix_string(rel)),
+                production.clone(),
+            )
+        })
+        .collect();
+
+    // Every `CFGD_*` literal a production const holds, scalar or array element,
+    // joins the population, so a module's own name is held to one spelling too.
+    // Outside `env_names.rs` only a `*_BIN` seam may keep a const of its own.
+    let mut stray_consts: Vec<String> = Vec::new();
+    for (rel, production) in &sources {
+        let code = blank_non_code(production);
+        let readable = cfgd_core::test_helpers::blank_comments(production);
+        let mut start = 0usize;
+        for line in code.split_inclusive('\n') {
+            let at = start;
+            start += line.len();
+            if cfgd_core::test_helpers::item_keyword(line) != "const"
+                || cfgd_core::test_helpers::opens_function(line)
+            {
+                continue;
+            }
+            // The `;` inside an array type `[&str; 3]` does not end the item.
+            let mut depth = 0i32;
+            let end = code[at..]
+                .char_indices()
+                .find(|&(_, c)| {
+                    match c {
+                        '(' | '[' | '{' => depth += 1,
+                        ')' | ']' | '}' => depth -= 1,
+                        _ => {}
+                    }
+                    c == ';' && depth == 0
+                })
+                .map_or(code.len(), |(e, _)| at + e);
+            for name in cfgd_env_literals(&readable[at..end]) {
+                if !rel.ends_with("cfgd-core/src/util/env_names.rs") && !name.ends_with("_BIN") {
+                    let line_no = production[..at].matches('\n').count() + 1;
+                    stray_consts.push(format!("{rel}:{line_no}: \"{name}\""));
+                }
+                names.insert(name.to_string());
+            }
+        }
+    }
+    assert!(
+        stray_consts.is_empty(),
+        "a production const outside crates/cfgd-core/src/util/env_names.rs holds a CFGD_* name \
+         that is no `*_BIN` seam; move it there as `CFGD_<NAME>_ENV`:\n{}",
+        stray_consts.join("\n")
+    );
+
     let mut spellings: std::collections::BTreeMap<&str, Vec<String>> =
         names.iter().map(|n| (n.as_str(), Vec::new())).collect();
     let mut per_root: Vec<(&str, usize)> = Vec::new();
     for (tree, files) in &trees {
         let mut spelled = 0usize;
         for (path, production) in files {
-            // Compiled only under the `test-helpers` feature, so no shipped binary
-            // reads what it spells.
-            if path.file_name().is_some_and(|n| n == "test_helpers.rs") {
+            if feature_only(path) {
                 continue;
             }
             for (i, raw) in production.lines().enumerate() {
@@ -1410,18 +1477,6 @@ fn every_cfgd_env_name_is_spelled_once_in_production() {
     // read is itself a reader, folded until the set stops growing, so a
     // `CFGD_*` literal passed through `env_or`, `tool_cmd` or `resolve_knob`
     // is caught the same as one passed to `std::env::var`.
-    let sources: Vec<(String, String)> = trees
-        .iter()
-        .flat_map(|(_, files)| files)
-        .filter(|(path, _)| !path.file_name().is_some_and(|n| n == "test_helpers.rs"))
-        .map(|(path, production)| {
-            let rel = path.strip_prefix(&crates_dir).unwrap_or(path);
-            (
-                format!("crates/{}", cfgd_core::to_posix_string(rel)),
-                production.clone(),
-            )
-        })
-        .collect();
     let declarations: Vec<(String, Vec<String>, String)> = sources
         .iter()
         .flat_map(|(_, production)| fn_declarations(production))
@@ -1470,7 +1525,7 @@ fn every_cfgd_env_name_is_spelled_once_in_production() {
         let code = blank_non_code(production);
         for reader in &readers {
             for span in free_call_args(&code, reader) {
-                if let Some(name) = cfgd_env_literal(&production[span.clone()]) {
+                if let Some(name) = cfgd_env_literals(&production[span.clone()]).next() {
                     let line = production[..span.start].matches('\n').count() + 1;
                     literal_reads.push(format!("{rel}:{line}: {reader}(\"{name}\")"));
                 }
@@ -1509,6 +1564,7 @@ fn every_cfgd_env_name_is_spelled_once_in_production() {
     );
     let unowned: Vec<&str> = spellings
         .iter()
+        .filter(|(name, _)| bound.contains(**name))
         .filter(|(_, sites)| {
             !sites
                 .iter()
@@ -1594,9 +1650,9 @@ fn signature_split(decl: &str, name: &str) -> Option<(Vec<String>, String)> {
     Some((params, decl[close..].to_string()))
 }
 
-/// The first whole `"CFGD_<NAME>"` literal in `text`, without its quotes.
-fn cfgd_env_literal(text: &str) -> Option<&str> {
-    text.match_indices("\"CFGD_").find_map(|(at, _)| {
+/// Every whole `"CFGD_<NAME>"` literal in `text`, in order, without its quotes.
+fn cfgd_env_literals(text: &str) -> impl Iterator<Item = &str> {
+    text.match_indices("\"CFGD_").filter_map(|(at, _)| {
         let body = &text[at + 1..];
         let len =
             body.find(|c: char| !(c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_'))?;

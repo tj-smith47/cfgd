@@ -4019,7 +4019,7 @@ mod api_base_env_shim {
         // var redirects the whole chain to mockito, covering lines 718-730.
         let mut server = mockito::Server::new();
         let mock = mock_release_response(&mut server);
-        let _env = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
+        let _env = EnvVarGuard::set(crate::CFGD_GITHUB_API_BASE_ENV, &server.url());
 
         let result = check_latest(env!("CARGO_PKG_VERSION"), Some("test/repo"), None, None)
             .expect("env-shim redirect should make the call succeed against mockito");
@@ -4050,7 +4050,7 @@ mod api_base_env_shim {
 
         let mut server = mockito::Server::new();
         let mock = mock_release_response(&mut server);
-        let _env = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
+        let _env = EnvVarGuard::set(crate::CFGD_GITHUB_API_BASE_ENV, &server.url());
 
         let result = check_with_cache(env!("CARGO_PKG_VERSION"), Some("test/repo"), None, None)
             .expect("cache miss + env-shim redirect should succeed");
@@ -4103,7 +4103,7 @@ mod api_base_env_shim {
                 }"#,
             )
             .create();
-        let _env = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
+        let _env = EnvVarGuard::set(crate::CFGD_GITHUB_API_BASE_ENV, &server.url());
 
         let result = check_with_cache(env!("CARGO_PKG_VERSION"), Some("test/repo"), None, None)
             .expect("expired cache + API success should succeed");
@@ -4135,7 +4135,7 @@ mod api_base_env_shim {
             .with_header("content-type", "application/json")
             .with_body(r#"{"tag_name": "v777.0.0", "assets": []}"#)
             .create();
-        let _env = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
+        let _env = EnvVarGuard::set(crate::CFGD_GITHUB_API_BASE_ENV, &server.url());
 
         let result = check_latest(env!("CARGO_PKG_VERSION"), None, None, None)
             .expect("None repo should use default and hit mockito");
@@ -4157,7 +4157,7 @@ mod api_base_env_shim {
             .with_header("content-type", "application/json")
             .with_body(r#"{"tag_name": "v666.0.0", "assets": []}"#)
             .create();
-        let _env = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
+        let _env = EnvVarGuard::set(crate::CFGD_GITHUB_API_BASE_ENV, &server.url());
 
         let result = check_with_cache(env!("CARGO_PKG_VERSION"), None, None, None)
             .expect("None repo should use default and hit mockito");
@@ -4178,7 +4178,7 @@ mod api_base_env_shim {
             .with_header("content-type", "application/json")
             .with_body(r#"{"tag_name": "v555.0.0", "assets": []}"#)
             .create();
-        let _env = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
+        let _env = EnvVarGuard::set(crate::CFGD_GITHUB_API_BASE_ENV, &server.url());
 
         let result = fetch_latest_release("tj-smith47/cfgd", None)
             .expect("env shim should redirect to mockito");
@@ -4211,7 +4211,7 @@ mod api_base_env_shim {
             .with_body(r#"{"tag_name": "v9.9.0", "assets": []}"#)
             .expect(0)
             .create();
-        let _env = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
+        let _env = EnvVarGuard::set(crate::CFGD_GITHUB_API_BASE_ENV, &server.url());
 
         let result = check_latest(
             env!("CARGO_PKG_VERSION"),
@@ -4254,7 +4254,7 @@ mod api_base_env_shim {
             .with_body(r#"[{"tag_name": "v9.9.1-rc.1", "assets": []}]"#)
             .expect(0)
             .create();
-        let _env = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
+        let _env = EnvVarGuard::set(crate::CFGD_GITHUB_API_BASE_ENV, &server.url());
 
         let result = check_latest(
             env!("CARGO_PKG_VERSION"),
@@ -4289,7 +4289,7 @@ mod api_base_env_shim {
             .with_body(r#"[{"tag_name": "v9.9.1-rc.1", "assets": []}]"#)
             .expect(0)
             .create();
-        let _env = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
+        let _env = EnvVarGuard::set(crate::CFGD_GITHUB_API_BASE_ENV, &server.url());
 
         let result = check_latest(env!("CARGO_PKG_VERSION"), Some("test/repo"), None, None)
             .expect("None channel should hit releases/latest");
@@ -4320,7 +4320,7 @@ mod api_base_env_shim {
             .with_body(r#"[{"tag_name": "v9.9.1-rc.1", "assets": []}]"#)
             .expect(0)
             .create();
-        let _env = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
+        let _env = EnvVarGuard::set(crate::CFGD_GITHUB_API_BASE_ENV, &server.url());
 
         let result = check_latest(
             env!("CARGO_PKG_VERSION"),
@@ -4349,7 +4349,7 @@ mod api_base_env_shim {
             .with_header("content-type", "application/json")
             .with_body("not json")
             .create();
-        let _env = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
+        let _env = EnvVarGuard::set(crate::CFGD_GITHUB_API_BASE_ENV, &server.url());
 
         let err = check_latest(
             env!("CARGO_PKG_VERSION"),
@@ -4377,7 +4377,7 @@ mod api_base_env_shim {
             .with_header("content-type", "application/json")
             .with_body("{}")
             .create();
-        let _env = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
+        let _env = EnvVarGuard::set(crate::CFGD_GITHUB_API_BASE_ENV, &server.url());
 
         let err = check_latest(
             env!("CARGO_PKG_VERSION"),
@@ -4405,7 +4405,7 @@ mod api_base_env_shim {
             .with_header("content-type", "application/json")
             .with_body("[]")
             .create();
-        let _env = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
+        let _env = EnvVarGuard::set(crate::CFGD_GITHUB_API_BASE_ENV, &server.url());
 
         let err = check_latest(
             env!("CARGO_PKG_VERSION"),
@@ -4433,7 +4433,7 @@ mod api_base_env_shim {
             .with_header("content-type", "application/json")
             .with_body(r#"[{"tag_name": "not-a-version", "assets": []}]"#)
             .create();
-        let _env = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
+        let _env = EnvVarGuard::set(crate::CFGD_GITHUB_API_BASE_ENV, &server.url());
 
         let err = check_latest(
             env!("CARGO_PKG_VERSION"),
@@ -4567,7 +4567,7 @@ fn github_api_base_falls_back_to_production_constant_when_unset() {
     use crate::test_helpers::EnvVarGuard;
     // Explicitly unset and confirm the production fallback. Pin the URL so
     // an inadvertent edit to GITHUB_API_BASE constant surfaces here.
-    let _guard = EnvVarGuard::unset(GITHUB_API_BASE_ENV);
+    let _guard = EnvVarGuard::unset(crate::CFGD_GITHUB_API_BASE_ENV);
     assert_eq!(github_api_base(), "https://api.github.com");
 }
 
@@ -4575,7 +4575,10 @@ fn github_api_base_falls_back_to_production_constant_when_unset() {
 #[serial_test::serial]
 fn github_api_base_honors_env_override() {
     use crate::test_helpers::EnvVarGuard;
-    let _guard = EnvVarGuard::set(GITHUB_API_BASE_ENV, "https://custom-api.example.com");
+    let _guard = EnvVarGuard::set(
+        crate::CFGD_GITHUB_API_BASE_ENV,
+        "https://custom-api.example.com",
+    );
     assert_eq!(github_api_base(), "https://custom-api.example.com");
 }
 

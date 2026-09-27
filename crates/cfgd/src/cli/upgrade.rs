@@ -493,8 +493,6 @@ mod tests {
 
     use super::*;
 
-    const GITHUB_API_BASE_ENV: &str = "CFGD_GITHUB_API_BASE";
-
     /// Downcast a returned upgrade error to its `CliErrorMeta` so tests can pin
     /// the `error_kind` / `extras` schema the central sink now renders (the
     /// handler returns the carrier instead of emitting an error Doc).
@@ -675,7 +673,7 @@ mod tests {
             .with_status(500)
             .with_body(r#"{"message": "Internal Server Error"}"#)
             .create();
-        let _guard = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
+        let _guard = EnvVarGuard::set(cfgd_core::CFGD_GITHUB_API_BASE_ENV, &server.url());
 
         let (printer, _cap) = Printer::for_test_doc();
         let result = cmd_upgrade(
@@ -708,7 +706,7 @@ mod tests {
             .with_status(404)
             .with_body(r#"{"message": "Not Found"}"#)
             .create();
-        let _guard = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
+        let _guard = EnvVarGuard::set(cfgd_core::CFGD_GITHUB_API_BASE_ENV, &server.url());
 
         let (printer, _cap) = Printer::for_test_doc();
         let result = cmd_upgrade(
@@ -742,7 +740,7 @@ mod tests {
             mock = mock.with_header(*name, value);
         }
         let _mock = mock.create();
-        let _guard = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
+        let _guard = EnvVarGuard::set(cfgd_core::CFGD_GITHUB_API_BASE_ENV, &server.url());
 
         let (printer, _cap) = Printer::for_test_doc();
         let err = cmd_upgrade(
@@ -820,7 +818,7 @@ mod tests {
             .with_header("content-type", "application/json")
             .with_body(release_json_current_version())
             .create();
-        let _guard = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
+        let _guard = EnvVarGuard::set(cfgd_core::CFGD_GITHUB_API_BASE_ENV, &server.url());
 
         let (printer, cap) = Printer::for_test_doc();
         let result = cmd_upgrade(
@@ -867,7 +865,7 @@ mod tests {
             .with_header("content-type", "application/json")
             .with_body(release_json_current_version())
             .create();
-        let _guard = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
+        let _guard = EnvVarGuard::set(cfgd_core::CFGD_GITHUB_API_BASE_ENV, &server.url());
         let _no_update_check = EnvVarGuard::set("CFGD_NO_UPDATE_CHECK", "1");
         let _no_update_notifier = EnvVarGuard::set("NO_UPDATE_NOTIFIER", "1");
         let _do_not_track = EnvVarGuard::set("DO_NOT_TRACK", "1");
@@ -949,7 +947,7 @@ mod tests {
             .with_header("content-type", "application/json")
             .with_body(r#"{"tag_name": "v9.9.9", "assets": []}"#)
             .create();
-        let _guard = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
+        let _guard = EnvVarGuard::set(cfgd_core::CFGD_GITHUB_API_BASE_ENV, &server.url());
 
         let (printer, _cap) = Printer::for_test_doc();
         let _ = cmd_upgrade(
@@ -970,7 +968,7 @@ mod tests {
             .mock("GET", "/repos/tj-smith47/cfgd/releases/latest")
             .with_status(500)
             .create();
-        let _guard = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
+        let _guard = EnvVarGuard::set(cfgd_core::CFGD_GITHUB_API_BASE_ENV, &server.url());
 
         let (printer, _cap) = Printer::for_test_doc();
         let result = cmd_upgrade(
@@ -999,7 +997,7 @@ mod tests {
             .with_header("content-type", "application/json")
             .with_body(release_json_current_version())
             .create();
-        let _guard = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
+        let _guard = EnvVarGuard::set(cfgd_core::CFGD_GITHUB_API_BASE_ENV, &server.url());
 
         let (printer, cap) = Printer::for_test_doc();
         let result = cmd_upgrade(
@@ -1057,7 +1055,7 @@ mod tests {
                 }"#,
             )
             .create();
-        let _guard = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
+        let _guard = EnvVarGuard::set(cfgd_core::CFGD_GITHUB_API_BASE_ENV, &server.url());
 
         let (printer, _cap) = Printer::for_test_doc();
         let result = cmd_upgrade(
@@ -1118,7 +1116,7 @@ mod tests {
             .with_status(500)
             .create();
 
-        let _guard = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
+        let _guard = EnvVarGuard::set(cfgd_core::CFGD_GITHUB_API_BASE_ENV, &server.url());
         let home = tempfile::tempdir().unwrap();
         let _home_guard = cfgd_core::with_test_home_guard(home.path());
 
@@ -1214,7 +1212,7 @@ mod tests {
             .with_body(&checksum_body)
             .create();
 
-        let _guard = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
+        let _guard = EnvVarGuard::set(cfgd_core::CFGD_GITHUB_API_BASE_ENV, &server.url());
         let home = tempfile::tempdir().unwrap();
         let _home_guard = cfgd_core::with_test_home_guard(home.path());
 

@@ -24,15 +24,8 @@ use crate::metrics::Metrics;
 // almost certainly a DoS attempt.
 const GATEWAY_MAX_BODY_BYTES: usize = 1024 * 1024;
 
-// Env var listing allowed browser origins, comma-separated. When unset or
-// empty, the gateway rejects all cross-origin requests (same-origin fetches
-// from the dashboard continue to work). `*` re-enables the legacy permissive
-// behaviour (dev-only). Each entry must be a scheme+host(+port) URL, e.g.
-// `https://fleet.internal,https://ops.example.com`.
-const GATEWAY_ALLOWED_ORIGINS_ENV: &str = "CFGD_GATEWAY_ALLOWED_ORIGINS";
-
 fn build_cors_layer() -> CorsLayer {
-    let raw = std::env::var(GATEWAY_ALLOWED_ORIGINS_ENV).unwrap_or_default();
+    let raw = std::env::var(cfgd_core::CFGD_GATEWAY_ALLOWED_ORIGINS_ENV).unwrap_or_default();
     let trimmed = raw.trim();
 
     let base = CorsLayer::new()
@@ -44,7 +37,7 @@ fn build_cors_layer() -> CorsLayer {
 
     if trimmed.is_empty() {
         tracing::info!(
-            env = GATEWAY_ALLOWED_ORIGINS_ENV,
+            env = cfgd_core::CFGD_GATEWAY_ALLOWED_ORIGINS_ENV,
             "gateway CORS: no cross-origin browsers allowed (set env to a comma-separated origin list to enable)"
         );
         return base.allow_origin(AllowOrigin::list(std::iter::empty::<HeaderValue>()));
@@ -52,7 +45,7 @@ fn build_cors_layer() -> CorsLayer {
 
     if trimmed == "*" {
         tracing::warn!(
-            env = GATEWAY_ALLOWED_ORIGINS_ENV,
+            env = cfgd_core::CFGD_GATEWAY_ALLOWED_ORIGINS_ENV,
             "gateway CORS: wildcard origin — allowing any browser origin. Restrict in production by setting explicit origins."
         );
         return base.allow_origin(AllowOrigin::any());
@@ -73,7 +66,7 @@ fn build_cors_layer() -> CorsLayer {
 
     if parsed.is_empty() {
         tracing::warn!(
-            env = GATEWAY_ALLOWED_ORIGINS_ENV,
+            env = cfgd_core::CFGD_GATEWAY_ALLOWED_ORIGINS_ENV,
             raw = %trimmed,
             "gateway CORS: no valid origins parsed from env; denying cross-origin"
         );
@@ -81,7 +74,7 @@ fn build_cors_layer() -> CorsLayer {
     }
 
     tracing::info!(
-        env = GATEWAY_ALLOWED_ORIGINS_ENV,
+        env = cfgd_core::CFGD_GATEWAY_ALLOWED_ORIGINS_ENV,
         count = parsed.len(),
         "gateway CORS: allowing explicit origins"
     );
@@ -211,7 +204,7 @@ mod tests {
     //! asserts the resulting `access-control-allow-origin` header. The header
     //! is present only when the requesting origin is allowed by the layer —
     //! absence is the deny-cross-origin signal.
-    use super::{GATEWAY_ALLOWED_ORIGINS_ENV, build_cors_layer};
+    use super::build_cors_layer;
     use axum::Router;
     use axum::body::Body;
     use axum::http::{Method, Request, header};
@@ -246,14 +239,14 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     #[serial]
     async fn build_cors_layer_with_unset_env_denies_cross_origin() {
-        let _g = EnvVarGuard::unset(GATEWAY_ALLOWED_ORIGINS_ENV);
+        let _g = EnvVarGuard::unset(cfgd_core::CFGD_GATEWAY_ALLOWED_ORIGINS_ENV);
         assert!(allow_origin_header_for(TEST_ORIGIN).await.is_none());
     }
 
     #[tokio::test(flavor = "current_thread")]
     #[serial]
     async fn build_cors_layer_with_empty_string_env_denies_cross_origin() {
-        let _g = EnvVarGuard::set(GATEWAY_ALLOWED_ORIGINS_ENV, "");
+        let _g = EnvVarGuard::set(cfgd_core::CFGD_GATEWAY_ALLOWED_ORIGINS_ENV, "");
         assert!(allow_origin_header_for(TEST_ORIGIN).await.is_none());
     }
 
@@ -262,14 +255,14 @@ mod tests {
     async fn build_cors_layer_with_whitespace_only_env_denies_cross_origin() {
         // Trips `trimmed.is_empty()` on a non-empty raw — distinct branch
         // from the unset/empty case at the `unwrap_or_default` boundary.
-        let _g = EnvVarGuard::set(GATEWAY_ALLOWED_ORIGINS_ENV, "   ");
+        let _g = EnvVarGuard::set(cfgd_core::CFGD_GATEWAY_ALLOWED_ORIGINS_ENV, "   ");
         assert!(allow_origin_header_for(TEST_ORIGIN).await.is_none());
     }
 
     #[tokio::test(flavor = "current_thread")]
     #[serial]
     async fn build_cors_layer_with_wildcard_allows_any_origin() {
-        let _g = EnvVarGuard::set(GATEWAY_ALLOWED_ORIGINS_ENV, "*");
+        let _g = EnvVarGuard::set(cfgd_core::CFGD_GATEWAY_ALLOWED_ORIGINS_ENV, "*");
         // `AllowOrigin::any()` echoes back `*` regardless of the requesting
         // origin — this is the documented permissive-mode behaviour.
         assert_eq!(
@@ -282,7 +275,7 @@ mod tests {
     #[serial]
     async fn build_cors_layer_with_explicit_origins_allows_listed_origin() {
         let _g = EnvVarGuard::set(
-            GATEWAY_ALLOWED_ORIGINS_ENV,
+            cfgd_core::CFGD_GATEWAY_ALLOWED_ORIGINS_ENV,
             "https://allowed.example, https://also.example",
         );
         // `AllowOrigin::list` echoes the matching origin (not `*`); proves
@@ -300,7 +293,10 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     #[serial]
     async fn build_cors_layer_with_explicit_origins_denies_unlisted_origin() {
-        let _g = EnvVarGuard::set(GATEWAY_ALLOWED_ORIGINS_ENV, "https://allowed.example");
+        let _g = EnvVarGuard::set(
+            cfgd_core::CFGD_GATEWAY_ALLOWED_ORIGINS_ENV,
+            "https://allowed.example",
+        );
         // Same layer as above; an origin not on the list yields no header.
         assert!(
             allow_origin_header_for("https://stranger.example")
@@ -317,7 +313,7 @@ mod tests {
         // dropped via the `filter_map` warn arm. The remaining valid
         // entry continues to be allowed.
         let _g = EnvVarGuard::set(
-            GATEWAY_ALLOWED_ORIGINS_ENV,
+            cfgd_core::CFGD_GATEWAY_ALLOWED_ORIGINS_ENV,
             "\x7fbad,https://allowed.example",
         );
         assert_eq!(
@@ -335,7 +331,10 @@ mod tests {
         // `\x01` (SOH) and `\x7f` (DEL) are both control chars outside the
         // visible-ASCII range, so each entry fails `HeaderValue::from_str`.
         // `\x00` is avoided because `std::env::set_var` rejects nul bytes.
-        let _g = EnvVarGuard::set(GATEWAY_ALLOWED_ORIGINS_ENV, "\x7fbad,\x01more");
+        let _g = EnvVarGuard::set(
+            cfgd_core::CFGD_GATEWAY_ALLOWED_ORIGINS_ENV,
+            "\x7fbad,\x01more",
+        );
         assert!(allow_origin_header_for(TEST_ORIGIN).await.is_none());
     }
 }
@@ -362,7 +361,7 @@ mod tests_start_gateway {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[serial]
     async fn start_gateway_with_invalid_db_path_returns_err() {
-        let _g_origins = EnvVarGuard::unset(super::GATEWAY_ALLOWED_ORIGINS_ENV);
+        let _g_origins = EnvVarGuard::unset(cfgd_core::CFGD_GATEWAY_ALLOWED_ORIGINS_ENV);
         let _g_api = EnvVarGuard::unset("CFGD_API_KEY");
         let _g_method = EnvVarGuard::unset("CFGD_ENROLLMENT_METHOD");
 
@@ -392,7 +391,7 @@ mod tests_start_gateway {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[serial]
     async fn start_gateway_setup_runs_without_metrics_until_serve_loop_blocks() {
-        let _g_origins = EnvVarGuard::unset(super::GATEWAY_ALLOWED_ORIGINS_ENV);
+        let _g_origins = EnvVarGuard::unset(cfgd_core::CFGD_GATEWAY_ALLOWED_ORIGINS_ENV);
         let _g_api = EnvVarGuard::unset("CFGD_API_KEY");
         let _g_method = EnvVarGuard::unset("CFGD_ENROLLMENT_METHOD");
 
@@ -425,7 +424,7 @@ mod tests_start_gateway {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[serial]
     async fn start_gateway_setup_runs_with_metrics_and_api_key_branch() {
-        let _g_origins = EnvVarGuard::set(super::GATEWAY_ALLOWED_ORIGINS_ENV, "*");
+        let _g_origins = EnvVarGuard::set(cfgd_core::CFGD_GATEWAY_ALLOWED_ORIGINS_ENV, "*");
         let _g_api = EnvVarGuard::set("CFGD_API_KEY", "test-key");
         let _g_method = EnvVarGuard::unset("CFGD_ENROLLMENT_METHOD");
 
