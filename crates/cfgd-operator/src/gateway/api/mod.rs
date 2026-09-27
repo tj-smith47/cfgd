@@ -75,7 +75,7 @@ pub enum EnrollmentMethod {
 
 impl EnrollmentMethod {
     pub fn from_env() -> Self {
-        match std::env::var("CFGD_ENROLLMENT_METHOD")
+        match std::env::var(cfgd_core::CFGD_ENROLLMENT_METHOD_ENV)
             .unwrap_or_default()
             .as_str()
         {

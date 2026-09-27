@@ -80,7 +80,7 @@ pub struct AnthropicClient {
 
 impl AnthropicClient {
     pub fn new(api_key: String, model: String) -> Self {
-        let base_url = std::env::var("CFGD_ANTHROPIC_URL")
+        let base_url = std::env::var(cfgd_core::CFGD_ANTHROPIC_URL_ENV)
             .unwrap_or_else(|_| DEFAULT_ANTHROPIC_BASE_URL.to_string());
         Self {
             api_key,

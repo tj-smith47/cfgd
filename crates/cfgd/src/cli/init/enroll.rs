@@ -433,7 +433,7 @@ fn signature_unreadable(sig_path: &Path, message: String) -> anyhow::Error {
 }
 
 pub(super) fn sign_with_ssh(nonce: &str, key_path: &str) -> anyhow::Result<String> {
-    if !cfgd_core::command_available_with_seam("CFGD_SSH_KEYGEN_BIN", "ssh-keygen") {
+    if !cfgd_core::command_available_with_seam(cfgd_core::CFGD_SSH_KEYGEN_BIN_ENV, "ssh-keygen") {
         return Err(signing_tool_missing(
             "ssh-keygen",
             "ssh-keygen not found — is OpenSSH installed?",
@@ -453,7 +453,7 @@ pub(super) fn sign_with_ssh(nonce: &str, key_path: &str) -> anyhow::Result<Strin
     // close it (EOF → non-zero exit); on Windows it reads the console directly,
     // which stdin can't defeat, so the timeout is the real backstop there.
     // `CFGD_SSH_KEYGEN_BIN` is the test seam that routes this at a shim.
-    let mut cmd = cfgd_core::tool_cmd("CFGD_SSH_KEYGEN_BIN", "ssh-keygen");
+    let mut cmd = cfgd_core::tool_cmd(cfgd_core::CFGD_SSH_KEYGEN_BIN_ENV, "ssh-keygen");
     cmd.args([
         "-Y",
         "sign",
@@ -500,7 +500,7 @@ pub(super) fn sign_with_ssh(nonce: &str, key_path: &str) -> anyhow::Result<Strin
 }
 
 pub(super) fn sign_with_gpg(nonce: &str, gpg_key_id: &str) -> anyhow::Result<String> {
-    if !cfgd_core::command_available_with_seam("CFGD_GPG_BIN", "gpg") {
+    if !cfgd_core::command_available_with_seam(crate::system::gpg_keys::GPG_BIN_ENV, "gpg") {
         return Err(signing_tool_missing(
             "gpg",
             "gpg not found — is GnuPG installed?",
@@ -523,7 +523,7 @@ pub(super) fn sign_with_gpg(nonce: &str, gpg_key_id: &str) -> anyhow::Result<Str
     // misconfigured gpg-agent/pinentry can still block. Close stdin and bound
     // the call with a timeout so enrollment can never hang on signing.
     // `CFGD_GPG_BIN` is the test seam that routes this at a shim.
-    let mut cmd = cfgd_core::tool_cmd("CFGD_GPG_BIN", "gpg");
+    let mut cmd = cfgd_core::tool_cmd(crate::system::gpg_keys::GPG_BIN_ENV, "gpg");
     cmd.args([
         "--batch",
         "--yes",

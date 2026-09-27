@@ -7,7 +7,7 @@ use cfgd_core::providers::{SystemConfigurator, SystemContext, SystemDrift};
 /// Test seam env var for redirecting `gpg` invocations to a shim binary.
 /// Production code never sets this; tests point it at a `/bin/sh` shim
 /// installed via `cfgd_core::test_helpers::ToolShim`.
-const GPG_BIN_ENV: &str = "CFGD_GPG_BIN";
+pub(crate) const GPG_BIN_ENV: &str = "CFGD_GPG_BIN";
 
 /// Build a `Command` for `gpg`, honoring [`GPG_BIN_ENV`] for tests. Mirrors
 /// the `cosign_cmd` / `tool_cmd` pattern used elsewhere in the codebase.

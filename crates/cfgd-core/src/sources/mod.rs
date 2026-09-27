@@ -477,7 +477,7 @@ impl SourceManager {
         // an absolute one, so accepting those left the guard naming a rule it did
         // not enforce. CFGD_ALLOW_LOCAL_SOURCES bypasses this for dev/test
         // environments only.
-        let allow_local = std::env::var("CFGD_ALLOW_LOCAL_SOURCES").is_ok();
+        let allow_local = std::env::var(crate::CFGD_ALLOW_LOCAL_SOURCES_ENV).is_ok();
         if !allow_local && !is_remote_origin_url(&spec.origin.url) {
             return Err(SourceError::GitError {
                 name: spec.name.clone(),

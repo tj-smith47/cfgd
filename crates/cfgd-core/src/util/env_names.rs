@@ -1,6 +1,8 @@
-//! Every `CFGD_*` environment name production binds or reads, one const each and
-//! spelled once for the whole workspace, whether clap binds it to a flag or a
-//! resolver reads it itself.
+//! The `CFGD_*` environment names production binds or reads, one const each and
+//! spelled once for the whole workspace: every name clap binds to a flag, and
+//! every name a production read (`std::env::var`, `env_or`, a `*_BIN` seam such
+//! as `tool_cmd`) would otherwise spell as a literal. A `*_BIN` seam a module
+//! already names with its own const beside its command factory keeps that const.
 //!
 //! A clap `env =` binding and every other reader or writer of the same variable
 //! name it through these, so a rename moves every reader together.
@@ -53,3 +55,22 @@ pub const CFGD_ENROLL_USERNAME_ENV: &str = "CFGD_ENROLL_USERNAME";
 /// Whether tutorial usage hints render; no flag binds it, since `--hints` and
 /// `--no-hints` have opposite polarities.
 pub const CFGD_USAGE_HINTS_ENV: &str = "CFGD_USAGE_HINTS";
+/// Set to anything, lets a source or module be fetched from a local path or
+/// `file://` URL; for development and test hosts.
+pub const CFGD_ALLOW_LOCAL_SOURCES_ENV: &str = "CFGD_ALLOW_LOCAL_SOURCES";
+/// Base URL of the Anthropic API the `cfgd` AI client talks to.
+pub const CFGD_ANTHROPIC_URL_ENV: &str = "CFGD_ANTHROPIC_URL";
+/// `1` or `true` adds the Windows Event Log sink to a Windows daemon.
+pub const CFGD_WINDOWS_EVENT_LOG_ENV: &str = "CFGD_WINDOWS_EVENT_LOG";
+/// Path of the daemon's IPC socket or pipe, in place of the derived default.
+pub const CFGD_DAEMON_IPC_PATH_ENV: &str = "CFGD_DAEMON_IPC_PATH";
+/// Size of the device gateway's SQLite reader pool.
+pub const CFGD_GATEWAY_DB_READ_POOL_SIZE_ENV: &str = "CFGD_GATEWAY_DB_READ_POOL_SIZE";
+/// Enrollment method the device gateway offers: `key`, or a token otherwise.
+pub const CFGD_ENROLLMENT_METHOD_ENV: &str = "CFGD_ENROLLMENT_METHOD";
+/// Path of the device gateway's SQLite database.
+pub const CFGD_SERVER_DB_PATH_ENV: &str = "CFGD_SERVER_DB_PATH";
+/// Days the device gateway keeps check-in history.
+pub const CFGD_RETENTION_DAYS_ENV: &str = "CFGD_RETENTION_DAYS";
+/// Test seam: the `ssh-keygen` binary enrollment signs a challenge with.
+pub const CFGD_SSH_KEYGEN_BIN_ENV: &str = "CFGD_SSH_KEYGEN_BIN";

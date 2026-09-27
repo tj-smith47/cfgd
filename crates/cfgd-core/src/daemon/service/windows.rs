@@ -332,7 +332,7 @@ extern "system" fn ffi_service_main(_argc: u32, _argv: *mut *mut u16) {
 /// The file appender is always installed; this only adds a *second* sink.
 #[cfg(windows)]
 fn event_log_requested() -> bool {
-    if std::env::var("CFGD_WINDOWS_EVENT_LOG")
+    if std::env::var(crate::CFGD_WINDOWS_EVENT_LOG_ENV)
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false)
     {

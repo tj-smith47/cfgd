@@ -351,7 +351,7 @@ const WINDOWS_SYSTEM_PIPE_PATH: &str = r"\\.\pipe\cfgd-system";
 /// under env/default; a user passing `--runtime-dir`/`--scope system` must pass it
 /// consistently to both sides.
 pub fn resolve_default_ipc_path(runtime_over: Option<&Path>, scope: crate::Scope) -> PathBuf {
-    if let Some(override_path) = std::env::var_os("CFGD_DAEMON_IPC_PATH") {
+    if let Some(override_path) = std::env::var_os(crate::CFGD_DAEMON_IPC_PATH_ENV) {
         return PathBuf::from(override_path);
     }
     #[cfg(unix)]

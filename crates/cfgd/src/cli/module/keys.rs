@@ -8,7 +8,7 @@ use cfgd_core::output::{Doc, ICON_ARROW, Printer, Role};
 /// so the one route to it is resolved once here.
 fn provision_cosign(printer: &Printer) -> std::result::Result<(), String> {
     let registry = crate::cli::build_registry();
-    crate::cli::helpers::provision_tool(printer, &registry, "cosign", "CFGD_COSIGN_BIN")
+    crate::cli::helpers::provision_tool(printer, &registry, "cosign", cfgd_core::COSIGN_BIN_ENV)
 }
 
 /// cosign was provisioned but could not be started.

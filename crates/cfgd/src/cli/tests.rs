@@ -4,8 +4,8 @@ use std::sync::{Arc, Mutex};
 
 use cfgd_core::PathDisplayExt;
 use cfgd_core::test_helpers::{
-    blank_non_code, blank_string_literals, carries_hatch, code_line, rust_sources_under,
-    walked_file_body,
+    blank_non_code, blank_string_literals, carries_hatch, code_line, fn_declarations,
+    rust_sources_under, walked_file_body,
 };
 
 const TEST_CONFIG_YAML: &str =
@@ -1298,15 +1298,21 @@ fn the_startup_check_honours_the_invocations_policy_over_the_declared_one() {
     });
 }
 
-/// Every `CFGD_*` environment name the command line binds or reads in place of a
-/// flag is spelled as a literal on exactly one production line of the workspace:
-/// its `CFGD_*_ENV` const in cfgd-core. A second spelling, in a reader beside the
-/// binding, a second binding, or a writer exporting the name to a child, is a copy
-/// a rename leaves behind: the flag keeps working while the other site goes quiet.
-/// The population is clap's own (`get_env` over the whole command tree) joined
-/// with every const `env_names.rs` declares, so a new binding and a new
-/// resolver-read const both join it unasked. Tests keep their literals, since
-/// they assert the wire spelling.
+/// Every `CFGD_*` environment name production binds or reads is spelled as a
+/// literal on exactly one production line of the workspace: its `CFGD_*_ENV`
+/// const in cfgd-core. A second spelling, in a reader beside the binding, a
+/// second binding, or a writer exporting the name to a child, is a copy a rename
+/// leaves behind: the flag keeps working while the other site goes quiet. The
+/// population is clap's own (`get_env` over the whole command tree) joined with
+/// every const `env_names.rs` declares, so a new binding and a new resolver-read
+/// const both join it unasked.
+///
+/// A production read never names its variable as a `"CFGD_…"` literal: the
+/// readers are `std::env::var`, `var_os`, `env!`, `option_env!` and every
+/// function that passes one of its own parameters on to a reader (`env_or`,
+/// `tool_cmd`, `resolve_knob`, …), derived from the sources, so a literal read
+/// the population above cannot see fails here by file and line. Tests keep their
+/// literals, since they assert the wire spelling.
 #[test]
 fn every_cfgd_env_name_is_spelled_once_in_production() {
     fn bound_env_names(cmd: &clap::Command, out: &mut std::collections::BTreeSet<String>) {
@@ -1332,7 +1338,7 @@ fn every_cfgd_env_name_is_spelled_once_in_production() {
     let module_body = walked_file_body(&module);
     let consts: Vec<&str> = module_body
         .lines()
-        .filter(|l| l.starts_with("pub const "))
+        .filter(|l| cfgd_core::test_helpers::item_keyword(l) == "const")
         .collect();
     let declared: Vec<String> = consts
         .iter()
@@ -1340,7 +1346,7 @@ fn every_cfgd_env_name_is_spelled_once_in_production() {
         .filter_map(|l| l.split('"').nth(1).map(str::to_string))
         .collect();
     assert!(
-        declared.len() >= 23,
+        declared.len() >= 32,
         "env_names.rs declared only {} consts; the scan has stopped reading the module",
         declared.len()
     );
@@ -1359,7 +1365,7 @@ fn every_cfgd_env_name_is_spelled_once_in_production() {
     // root holds none, but is read so a second spelling there is caught.
     const WALK_ROOTS: &[(&str, usize)] = &[
         ("cfgd", 0),
-        ("cfgd-core", 23),
+        ("cfgd-core", 32),
         ("cfgd-crd", 0),
         ("cfgd-csi", 0),
         ("cfgd-operator", 0),
@@ -1399,6 +1405,86 @@ fn every_cfgd_env_name_is_spelled_once_in_production() {
         }
         per_root.push((tree.as_str(), spelled));
     }
+
+    // Every function that hands one of its own parameters to an environment
+    // read is itself a reader, folded until the set stops growing, so a
+    // `CFGD_*` literal passed through `env_or`, `tool_cmd` or `resolve_knob`
+    // is caught the same as one passed to `std::env::var`.
+    let sources: Vec<(String, String)> = trees
+        .iter()
+        .flat_map(|(_, files)| files)
+        .filter(|(path, _)| !path.file_name().is_some_and(|n| n == "test_helpers.rs"))
+        .map(|(path, production)| {
+            let rel = path.strip_prefix(&crates_dir).unwrap_or(path);
+            (
+                format!("crates/{}", cfgd_core::to_posix_string(rel)),
+                production.clone(),
+            )
+        })
+        .collect();
+    let declarations: Vec<(String, Vec<String>, String)> = sources
+        .iter()
+        .flat_map(|(_, production)| fn_declarations(production))
+        .filter_map(|(name, _, decl)| {
+            let (params, body) = signature_split(&decl, &name)?;
+            Some((name, params, body))
+        })
+        .collect();
+    let mut readers: std::collections::BTreeSet<String> = ["var", "var_os", "env!", "option_env!"]
+        .map(str::to_string)
+        .into();
+    loop {
+        let known = readers.len();
+        for (name, params, body) in &declarations {
+            let passes_a_param = readers.iter().any(|reader| {
+                free_call_args(body, reader).into_iter().any(|span| {
+                    top_level_args(&body[span]).iter().any(|arg| {
+                        params
+                            .iter()
+                            .any(|p| p == arg.trim().trim_start_matches('&'))
+                    })
+                })
+            });
+            if passes_a_param {
+                readers.insert(name.clone());
+            }
+        }
+        if readers.len() == known {
+            break;
+        }
+    }
+    for anchor in [
+        "env_or",
+        "tool_cmd",
+        "command_available_with_seam",
+        "resolve_knob",
+    ] {
+        assert!(
+            readers.contains(anchor),
+            "the reader fold no longer reaches `{anchor}`, so literals passed to it go unread: \
+             {readers:?}"
+        );
+    }
+    let mut literal_reads: Vec<String> = Vec::new();
+    for (rel, production) in &sources {
+        let code = blank_non_code(production);
+        for reader in &readers {
+            for span in free_call_args(&code, reader) {
+                if let Some(name) = cfgd_env_literal(&production[span.clone()]) {
+                    let line = production[..span.start].matches('\n').count() + 1;
+                    literal_reads.push(format!("{rel}:{line}: {reader}(\"{name}\")"));
+                }
+            }
+        }
+    }
+    assert!(
+        literal_reads.is_empty(),
+        "a production read of a CFGD_* environment variable names it as a literal; give the \
+         name a const in crates/cfgd-core/src/util/env_names.rs (or read the const its module \
+         already declares):\n{}",
+        literal_reads.join("\n")
+    );
+
     for (root, floor) in WALK_ROOTS {
         let spelled = per_root
             .iter()
@@ -1434,6 +1520,88 @@ fn every_cfgd_env_name_is_spelled_once_in_production() {
         unowned.is_empty(),
         "a CFGD_* env name clap binds has no const in crates/cfgd-core/src/util/env_names.rs: {unowned:?}"
     );
+}
+
+/// The byte range of the argument list of every call to the free function
+/// `name` in `code`, which is already blanked so a parenthesis inside a literal
+/// or a comment is not counted. A declaration `fn name(` is no call.
+fn free_call_args(code: &str, name: &str) -> Vec<std::ops::Range<usize>> {
+    let needle = format!("{name}(");
+    let mut out = Vec::new();
+    for (at, _) in code.match_indices(&needle) {
+        // The one character before the match is what `calls_free_fn` judges a
+        // method call or a longer identifier by, so the slice starts there.
+        let from = code[..at].char_indices().next_back().map_or(0, |(i, _)| i);
+        if !cfgd_core::test_helpers::calls_free_fn(&code[from..at + needle.len()], name)
+            || code[..at].trim_end().ends_with("fn")
+        {
+            continue;
+        }
+        let open = at + needle.len();
+        let mut depth = 1i32;
+        for (i, c) in code[open..].char_indices() {
+            match c {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        out.push(open..open + i);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
+/// A declaration's parameter names and the code after its parameter list,
+/// read off the code `fn_declarations` returns for `name`.
+fn signature_split(decl: &str, name: &str) -> Option<(Vec<String>, String)> {
+    let head = decl.find(&format!("fn {name}"))? + "fn ".len() + name.len();
+    let mut open = head;
+    if decl[head..].starts_with('<') {
+        let mut depth = 0i32;
+        for (i, c) in decl[head..].char_indices() {
+            match c {
+                '<' => depth += 1,
+                '>' => depth -= 1,
+                _ => {}
+            }
+            if depth == 0 {
+                open = head + i + 1;
+                break;
+            }
+        }
+    }
+    let open = open + decl[open..].find('(')? + 1;
+    let mut depth = 1i32;
+    let close = decl[open..].char_indices().find_map(|(i, c)| {
+        match c {
+            '(' => depth += 1,
+            ')' => depth -= 1,
+            _ => {}
+        }
+        (depth == 0).then_some(open + i)
+    })?;
+    let params = top_level_args(&decl[open..close])
+        .iter()
+        .filter_map(|p| p.split(':').next())
+        .map(|p| p.trim().trim_start_matches("mut ").trim().to_string())
+        .filter(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
+        .collect();
+    Some((params, decl[close..].to_string()))
+}
+
+/// The first whole `"CFGD_<NAME>"` literal in `text`, without its quotes.
+fn cfgd_env_literal(text: &str) -> Option<&str> {
+    text.match_indices("\"CFGD_").find_map(|(at, _)| {
+        let body = &text[at + 1..];
+        let len =
+            body.find(|c: char| !(c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_'))?;
+        (len > "CFGD_".len() && body[len..].starts_with('"')).then_some(&body[..len])
+    })
 }
 
 /// Every enum-valued scalar knob under `spec` is classified: it either carries a

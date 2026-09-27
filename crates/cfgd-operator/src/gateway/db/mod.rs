@@ -168,7 +168,7 @@ impl r2d2::CustomizeConnection<Connection, rusqlite::Error> for ReaderCustomizer
 }
 
 fn reader_pool_size_from_env() -> u32 {
-    std::env::var("CFGD_GATEWAY_DB_READ_POOL_SIZE")
+    std::env::var(cfgd_core::CFGD_GATEWAY_DB_READ_POOL_SIZE_ENV)
         .ok()
         .and_then(|s| s.parse().ok())
         .filter(|&n: &u32| n >= 1)

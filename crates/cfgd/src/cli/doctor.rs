@@ -22,7 +22,7 @@ pub(super) fn cmd_doctor(cli: &Cli, printer: &Printer, fix: bool) -> anyhow::Res
 /// Tools or Secrets section joins this list with it. The optional secret
 /// providers are deliberately absent: their rows say "optional", and a reader
 /// asking cfgd to repair its prerequisites did not ask for four vendor CLIs.
-const FIXABLE_TOOLS: &[(&str, &str)] = &[("git", ""), ("sops", "CFGD_SOPS_BIN")];
+const FIXABLE_TOOLS: &[(&str, &str)] = &[("git", ""), ("sops", crate::secrets::SOPS_BIN_ENV)];
 
 /// Install every tool of [`FIXABLE_TOOLS`] this host is missing, before the
 /// probes run.

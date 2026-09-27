@@ -71,10 +71,10 @@ pub fn build_gateway_config(
 ) -> GatewayConfig {
     GatewayConfig {
         port: env::parse_port_env("DEVICE_GATEWAY_PORT", 8080),
-        db_path: cfgd_core::env_or("CFGD_SERVER_DB_PATH", "/data/cfgd-gateway.db"),
+        db_path: cfgd_core::env_or(cfgd_core::CFGD_SERVER_DB_PATH_ENV, "/data/cfgd-gateway.db"),
         kube_client: client,
         backup_policies,
-        retention_days: env::parse_u32_env("CFGD_RETENTION_DAYS", 90),
+        retention_days: env::parse_u32_env(cfgd_core::CFGD_RETENTION_DAYS_ENV, 90),
         metrics: Some(metrics),
     }
 }

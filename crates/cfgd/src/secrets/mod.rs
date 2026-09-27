@@ -20,6 +20,7 @@ pub use age::AgeBackend;
 pub use bitwarden::BitwardenProvider;
 pub use lastpass::LastPassProvider;
 pub use onepassword::OnePasswordProvider;
+pub(crate) use sops::SOPS_BIN_ENV;
 pub use sops::SopsBackend;
 pub use vault::VaultProvider;
 

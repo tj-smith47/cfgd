@@ -50,7 +50,7 @@ pub fn is_git_source(source: &str) -> bool {
     {
         return true;
     }
-    if source.starts_with("file://") && std::env::var("CFGD_ALLOW_LOCAL_SOURCES").is_ok() {
+    if source.starts_with("file://") && std::env::var(crate::CFGD_ALLOW_LOCAL_SOURCES_ENV).is_ok() {
         return true;
     }
     false
