@@ -46388,20 +46388,45 @@ fn every_function_that_can_reach_the_tool_provisioner_is_named_here() {
 /// Nothing this host runs is reachable while [`NoHostManagers`] is held.
 ///
 /// The guard's claim is about the manager REGISTRY, not about the seams it
-/// writes, so it is asked of the registry itself: a manager cfgd gains, or one
-/// whose seam is renamed, fails here rather than in whatever suite next installs
-/// a package on the person running it.
+/// writes, so it is asked of the registry itself, on a `PATH` holding every tool
+/// a manager resolves: a seam the roster leaves out lets its manager find the
+/// planted tool and answer available. The roster is held equal to the seams the
+/// managers read (`manager_seam_population`), so an entry nothing reads, or a
+/// renamed one, fails too.
 ///
 /// [`NoHostManagers`]: cfgd_core::test_helpers::NoHostManagers
 #[test]
 #[serial_test::serial]
 fn no_registered_manager_is_reachable_under_the_no_host_managers_guard() {
+    let population = manager_seam_population();
+    let read: std::collections::BTreeSet<&str> = population.keys().map(String::as_str).collect();
+    let roster: std::collections::BTreeSet<&str> = cfgd_core::test_helpers::MANAGER_SEAMS
+        .iter()
+        .copied()
+        .collect();
+    assert_eq!(
+        roster, read,
+        "MANAGER_SEAMS is every seam a package manager reads, and nothing else"
+    );
+
+    let host = tempfile::tempdir().expect("tempdir");
+    for name in &read {
+        let tool = name
+            .trim_start_matches("CFGD_")
+            .trim_end_matches("_BIN")
+            .to_lowercase()
+            .replace('_', "-");
+        cfgd_core::test_helpers::write_probe_tool(host.path(), &tool);
+    }
     let _path_lock = cfgd_core::test_helpers::path_env_mutation_guard();
     let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
     let _paths = cfgd_core::test_helpers::CommandPathMemoTtlGuard::always_expired();
     let _avail = cfgd_core::test_helpers::AvailabilityMemoTtlGuard::always_expired();
     let _managers = cfgd_core::test_helpers::NoHostManagers::pinned_missing();
-    let _empty = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
+    let _tools = cfgd_core::test_helpers::EnvVarGuard::set(
+        "PATH",
+        host.path().to_str().expect("utf-8 tempdir"),
+    );
 
     let registry = super::build_registry();
     let reachable: Vec<&str> = registry

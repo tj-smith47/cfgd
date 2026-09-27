@@ -3839,15 +3839,15 @@ pub const ABSENT_SEAM_PATH: &str = "/nonexistent/cfgd-tool-that-is-not-here";
 /// tests take, and the two crates compile separately. The roster is kept honest
 /// from the other side by
 /// `no_registered_manager_is_reachable_under_the_no_host_managers_guard`, which
-/// asks the real registry whether any manager is still reachable under the
-/// guard: a manager added with a seam missing from this list fails that pin on
-/// every host, so it cannot quietly spawn a real install.
+/// holds it equal to the seams cfgd's managers read and then asks the real
+/// registry, with every one of their tools on `PATH`, whether any manager is
+/// still reachable under the guard: a seam missing from this list, or one no
+/// manager reads, fails that pin on every host.
 pub const MANAGER_SEAMS: &[&str] = &[
     "CFGD_APK_BIN",
     "CFGD_APT_CACHE_BIN",
     "CFGD_APT_GET_BIN",
     "CFGD_BREW_BIN",
-    "CFGD_BREW_CASK_BIN",
     "CFGD_CARGO_BIN",
     "CFGD_CHOCO_BIN",
     "CFGD_DNF_BIN",
