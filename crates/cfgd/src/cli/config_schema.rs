@@ -140,14 +140,15 @@ impl<'a> GateInvocation<'a> {
 /// The policy a run answers to once the daemon is accounted for.
 ///
 /// A daemon never blocks on a prompt and never rewrites a file something else
-/// tracks, so both arms that would write fold to a report; `Warn` and
-/// `Ignore` pass through, and off the daemon nothing folds at all. The fold
-/// lives here because the reconcile loop is in `cfgd-core` and cannot call
-/// into this crate, and [`gate_on_load`] is its one caller: the override and
-/// the stored policy fold at the same site, so the two halves of one decision
-/// cannot be taken in two places.
-pub fn daemon_folded_policy(is_daemon: bool, policy: MigrationPolicy) -> MigrationPolicy {
-    match (is_daemon, policy) {
+/// tracks, so both arms that would write fold to a report; `Warn` and `Ignore`
+/// pass through. A preview (`init --dry-run`) adds no field to the document
+/// either, so it folds the same way the daemon does; any other run folds
+/// nothing. The fold lives here because the reconcile loop is in `cfgd-core`
+/// and cannot call into this crate, and [`gate_on_load`] is its one caller: the
+/// override and the stored policy fold at the same site, so the two halves of
+/// one decision cannot be taken in two places.
+pub fn daemon_folded_policy(writes_nothing: bool, policy: MigrationPolicy) -> MigrationPolicy {
+    match (writes_nothing, policy) {
         (true, MigrationPolicy::Prompt | MigrationPolicy::Update) => MigrationPolicy::Warn,
         (_, policy) => policy,
     }

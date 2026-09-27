@@ -127,8 +127,9 @@ Once the config is on disk, `init` aligns it to the running build before its
 `--apply` step reads it, by the same check and rules as
 [`cfgd config migrate`](#cfgd-config-migrate) describes: `--yes` writes each field
 the document does not declare, an interactive run is asked, and a run with no
-terminal reports them. A `--dry-run` preview writes nothing whatever the policy
-or `--yes`, answering `Prompt` and `Update` the way `Warn` does.
+terminal reports them. Under `--dry-run` the check adds no field to the document,
+whatever the policy or `--yes`, answering `Prompt` and `Update` the way `Warn`
+does.
 
 With `--from` and **no** destination named, the config lands in the default
 config directory (`~/.config/cfgd`, or `$XDG_CONFIG_HOME/cfgd`), and cfgd
