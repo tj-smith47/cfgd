@@ -5678,16 +5678,21 @@ mod cmd_init_apply_orchestration {
         let state_dir = tmp.path().join("state");
         let url = cfgd_core::test_helpers::file_url(&bare);
 
-        // A live gate that would write: no override, the policy the document
-        // defaults to, and `--yes` taking its prompt.
-        let gate = crate::cli::config_schema::GateInvocation {
-            policy_override: None,
-            assume_yes: true,
-            is_daemon: false,
-            preview: false,
-            state_dir: Some(&state_dir),
-            scope: cfgd_core::Scope::User,
-        };
+        // The gate as `cfgd --yes init --dry-run` parses to: no override, the
+        // policy the document defaults to, and `--yes` taking its prompt, so
+        // only the preview the parse derives keeps the document unwritten.
+        use crate::cli::HermeticParse;
+        let cli = crate::cli::Cli::try_parse_hermetic([
+            "cfgd",
+            "--yes",
+            "--state-dir",
+            state_dir.to_str().unwrap(),
+            "init",
+            "--dry-run",
+        ])
+        .expect("the fixture argv parses");
+        let gate = crate::cli::config_schema::GateInvocation::of(&cli, false);
+        assert!(gate.preview, "`init --dry-run` parses to a preview");
         let (printer, cap) = Printer::for_test_doc();
         with_state_dir(&state_dir, || {
             let args = InitArgs {

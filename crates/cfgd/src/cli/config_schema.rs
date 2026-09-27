@@ -9,7 +9,9 @@ use cfgd_core::state::StateStore;
 use cfgd_schema::MigrationPolicy;
 
 use crate::cli::helpers::no_config_error;
-use crate::cli::{Cli, Command, ConfigCommand, Mutation, mutate_config_yaml, success_next_step};
+use crate::cli::{
+    Cli, Command, ConfigCommand, Mutation, ProfileCommand, mutate_config_yaml, success_next_step,
+};
 
 /// Dotted key paths the typed value carries that the document on disk does
 /// not name.
@@ -107,7 +109,7 @@ pub fn gate_exempt(command: Option<&Command>) -> Option<&'static str> {
 /// its own, whether it answered yes up front, whether it is the daemon or a
 /// preview, and the state root an answer is recorded under. Every caller
 /// builds it with [`GateInvocation::of`], so the load-time call and `cfgd
-/// init`'s cannot read those facts two ways; `init` marks its own preview.
+/// init`'s cannot read those facts two ways.
 #[derive(Clone, Copy)]
 pub struct GateInvocation<'a> {
     /// `--migration-policy` / `CFGD_MIGRATION_POLICY`, unfolded.
@@ -115,8 +117,8 @@ pub struct GateInvocation<'a> {
     /// `--yes` / `CFGD_YES`.
     pub assume_yes: bool,
     pub is_daemon: bool,
-    /// A preview (`init --dry-run`), which writes nothing, so the gate
-    /// answers `Prompt` and `Update` as `Warn`, the way it does for the daemon.
+    /// A preview ([`is_preview`]), which writes nothing, so the gate answers
+    /// `Prompt` and `Update` as `Warn`, the way it does for the daemon.
     pub preview: bool,
     /// `--state-dir`, where a prompt's answer is held.
     pub state_dir: Option<&'a Path>,
@@ -130,10 +132,31 @@ impl<'a> GateInvocation<'a> {
             policy_override: crate::cli::migration_policy_override(cli.migration_policy.as_deref()),
             assume_yes: cli.yes,
             is_daemon,
-            preview: false,
+            preview: is_preview(cli.command.as_ref()),
             state_dir: cli.state_dir.as_deref(),
             scope: cli.scope(),
         }
+    }
+}
+
+/// Whether `command` is a preview: a run that shows what it would do and
+/// changes nothing. `cfgd plan` always is; `apply`, `init` and `profile
+/// migrate` are under `--dry-run`. A preview that let the gate write would
+/// change the document it promised to leave alone, so the gate folds for it
+/// the way it folds for the daemon.
+///
+/// Every verb carrying a `--dry-run` flag belongs here, which
+/// `every_dry_run_verb_runs_the_migration_gate_as_a_preview` holds against
+/// clap's own command tree.
+pub fn is_preview(command: Option<&Command>) -> bool {
+    match command {
+        Some(Command::Plan(_)) => true,
+        Some(Command::Apply(args)) => args.dry_run,
+        Some(Command::Init { dry_run, .. }) => *dry_run,
+        Some(Command::Profile {
+            command: ProfileCommand::Migrate { dry_run, .. },
+        }) => *dry_run,
+        _ => false,
     }
 }
 
@@ -141,7 +164,7 @@ impl<'a> GateInvocation<'a> {
 ///
 /// A daemon never blocks on a prompt and never rewrites a file something else
 /// tracks, so both arms that would write fold to a report; `Warn` and `Ignore`
-/// pass through. A preview (`init --dry-run`) adds no field to the document
+/// pass through. A preview ([`is_preview`]) adds no field to the document
 /// either, so it folds the same way the daemon does; any other run folds
 /// nothing. The fold lives here because the reconcile loop is in `cfgd-core`
 /// and cannot call into this crate, and [`gate_on_load`] is its one caller: the
@@ -1257,9 +1280,9 @@ mod tests {
         assert!(wrote, "the invocation's own policy outranks the document's");
     }
 
-    /// A daemon never blocks on a prompt and never rewrites a file something
-    /// else tracks, so both writing arms fold to a report; off the daemon
-    /// nothing folds. Every pair is written out.
+    /// A run that writes nothing (the daemon, a preview) folds both writing
+    /// arms to a report; any other run folds nothing. Every pair is written
+    /// out.
     #[test]
     fn a_daemon_folds_both_writing_policies_to_a_report_and_nothing_else() {
         let expected = [
@@ -1272,11 +1295,161 @@ mod tests {
             (true, MigrationPolicy::Update, MigrationPolicy::Warn),
             (true, MigrationPolicy::Ignore, MigrationPolicy::Ignore),
         ];
-        for (is_daemon, policy, want) in expected {
+        for (writes_nothing, policy, want) in expected {
             assert_eq!(
-                daemon_folded_policy(is_daemon, policy),
+                daemon_folded_policy(writes_nothing, policy),
                 want,
-                "is_daemon={is_daemon}, policy={policy:?}"
+                "writes_nothing={writes_nothing}, policy={policy:?}"
+            );
+        }
+    }
+
+    /// Every verb clap offers says whether it is a preview, against a
+    /// hand-written expectation: a top-level verb added later fails this walk
+    /// until it is classified, and so does a `--dry-run` flag added at any
+    /// depth. A verb taking `--dry-run` is read twice, since the flag is what
+    /// decides it.
+    #[test]
+    fn every_dry_run_verb_runs_the_migration_gate_as_a_preview() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cfgd.yaml");
+        // (the clap path, the argv, whether the gate runs as a preview)
+        let cases: &[(&str, &[&str], bool)] = &[
+            ("init", &["init"], false),
+            ("init", &["init", "--dry-run"], true),
+            ("apply", &["apply"], false),
+            ("apply", &["apply", "--dry-run"], true),
+            ("plan", &["plan"], true),
+            ("status", &["status"], false),
+            ("diff", &["diff"], false),
+            ("log", &["log"], false),
+            ("sync", &["sync"], false),
+            ("pull", &["pull"], false),
+            ("daemon", &["daemon", "status"], false),
+            ("secret", &["secret", "init"], false),
+            ("profile", &["profile", "list"], false),
+            ("profile migrate", &["profile", "migrate", "--all"], false),
+            (
+                "profile migrate",
+                &["profile", "migrate", "--all", "--dry-run"],
+                true,
+            ),
+            ("verify", &["verify"], false),
+            ("doctor", &["doctor"], false),
+            ("paths", &["paths"], false),
+            ("module", &["module", "list"], false),
+            ("source", &["source", "list"], false),
+            ("backup", &["backup", "list"], false),
+            ("upgrade", &["upgrade", "--check"], false),
+            ("decide", &["decide"], false),
+            ("explain", &["explain"], false),
+            (
+                "machineconfig",
+                &["machineconfig", "validate", "mc.yaml"],
+                false,
+            ),
+            (
+                "configpolicy",
+                &["configpolicy", "validate", "cp.yaml"],
+                false,
+            ),
+            (
+                "clusterconfigpolicy",
+                &["clusterconfigpolicy", "validate", "ccp.yaml"],
+                false,
+            ),
+            ("skill", &["skill", "list"], false),
+            ("config", &["config", "show"], false),
+            ("alias", &["alias", "list"], false),
+            ("workflow", &["workflow", "generate"], false),
+            (
+                "checkin",
+                &["checkin", "--server-url", "https://gw.example"],
+                false,
+            ),
+            (
+                "enroll",
+                &["enroll", "--server-url", "https://gw.example"],
+                false,
+            ),
+            ("completion", &["completion", "bash"], false),
+            ("man", &["man"], false),
+            ("generate", &["generate"], false),
+            ("rollback", &["rollback", "1"], false),
+            ("mcp-server", &["mcp-server"], false),
+            ("compliance", &["compliance"], false),
+            (
+                "image",
+                &["image", "pack", "dir", "ghcr.io/acme/img:1"],
+                false,
+            ),
+        ];
+
+        use clap::CommandFactory;
+        let command = Cli::command();
+        let top: Vec<&str> = command
+            .get_subcommands()
+            .map(|sub| sub.get_name())
+            .filter(|name| *name != "help")
+            .collect();
+        assert!(
+            top.len() >= 36,
+            "the walk found only {} top-level verbs: {top:?}",
+            top.len()
+        );
+        for name in &top {
+            assert!(
+                cases.iter().any(|(case, _, _)| case == name),
+                "`cfgd {name}` is not classified: say whether it is a preview"
+            );
+        }
+
+        // Every verb at any depth taking `--dry-run`, named by its clap path.
+        fn dry_run_verbs(cmd: &clap::Command, prefix: &str, out: &mut Vec<String>) {
+            for sub in cmd.get_subcommands() {
+                let name = if prefix.is_empty() {
+                    sub.get_name().to_string()
+                } else {
+                    format!("{prefix} {}", sub.get_name())
+                };
+                if sub
+                    .get_arguments()
+                    .any(|arg| arg.get_long() == Some("dry-run"))
+                {
+                    out.push(name.clone());
+                }
+                dry_run_verbs(sub, &name, out);
+            }
+        }
+        let mut dry_run = Vec::new();
+        dry_run_verbs(&command, "", &mut dry_run);
+        assert!(
+            dry_run.len() >= 3,
+            "the walk found only {} verbs taking --dry-run: {dry_run:?}",
+            dry_run.len()
+        );
+        for name in &dry_run {
+            let (with, without) = (
+                cases
+                    .iter()
+                    .any(|(case, argv, want)| case == name && argv.contains(&"--dry-run") && *want),
+                cases.iter().any(|(case, argv, want)| {
+                    case == name && !argv.contains(&"--dry-run") && !want
+                }),
+            );
+            assert!(
+                with && without,
+                "`cfgd {name}` takes --dry-run: classify it with and without the flag"
+            );
+        }
+
+        for (name, argv, preview) in cases {
+            let cli = cli_running(&path, None, argv);
+            assert_eq!(
+                GateInvocation::of(&cli, false).preview,
+                *preview,
+                "`cfgd {}` ({name})",
+                argv.join(" ")
             );
         }
     }

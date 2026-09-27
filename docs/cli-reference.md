@@ -2787,7 +2787,10 @@ The same check runs at load time under `spec.migrationPolicy` (`--migration-poli
 the answer is remembered — yes or no; a release that adds another field asks
 again, because the question changed. A run with no terminal reports instead and
 records no answer, and the daemon does the same: it never rewrites a tracked file.
-Every write the check makes prints the fields it added.
+A preview (`cfgd plan`, `cfgd apply --dry-run`, `cfgd profile migrate --dry-run`
+and `cfgd init --dry-run`) adds no field to the document either, answering
+`Prompt` and `Update` the way `Warn` does. Every write the check makes prints the
+fields it added.
 
 Four invocations are withheld from that load-time check, because the migration
 question is their own subject: this verb, `cfgd config edit`, and

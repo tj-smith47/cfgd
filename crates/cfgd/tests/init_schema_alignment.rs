@@ -2,9 +2,10 @@
 //!
 //! The load-time migration gate runs before dispatch, when the document
 //! `init` is about to write does not exist yet; init runs the same gate once
-//! the document is on disk, under the same `--yes` and terminal rules. These
-//! run the real binary, because what they claim is what the next command in
-//! the same home prints.
+//! the document is on disk, under the same `--yes` and terminal rules. A
+//! preview runs the gate as the daemon does, adding nothing to the document.
+//! These run the real binary, because what they claim is what the next
+//! command in the same home prints.
 
 use std::path::Path;
 
@@ -222,4 +223,46 @@ fn a_config_set_that_creates_a_section_leaves_nothing_for_the_next_migrate_to_na
         format!("{out}{err}").contains(DECLARES_EVERY_FIELD),
         "the section the write created declares its siblings: stdout={out} stderr={err}"
     );
+}
+
+/// A document asking for `Update` that is behind this build, beside a legacy
+/// flat profile `profile migrate` would move.
+const UPDATE_BEHIND: &str = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: preview\nspec:\n  profile: work\n  migrationPolicy: Update\n";
+
+/// Every preview leaves the document byte for byte as it was, under the one
+/// policy that writes without asking.
+#[test]
+fn every_preview_leaves_an_update_policy_document_unwritten() {
+    let previews: &[&[&str]] = &[
+        &["profile", "migrate", "--all", "--dry-run"],
+        &["plan"],
+        &["apply", "--dry-run"],
+    ];
+    for argv in previews {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = tmp.path().join("cfgd.yaml");
+        std::fs::write(&config, UPDATE_BEHIND).unwrap();
+        std::fs::create_dir_all(tmp.path().join("profiles")).unwrap();
+        let profile = PROFILE.replace("name: base", "name: work");
+        std::fs::write(tmp.path().join("profiles/work.yaml"), &profile).unwrap();
+
+        let run = cfgd_bin()
+            .unwrap()
+            .args(["--config", &config.display().to_string()])
+            .args(*argv)
+            .assert()
+            .success();
+        let (out, err) = (stdout_of(&run), stderr_of(&run));
+        assert_eq!(
+            std::fs::read_to_string(&config).unwrap(),
+            UPDATE_BEHIND,
+            "`cfgd {}` rewrote the document: stdout={out} stderr={err}",
+            argv.join(" ")
+        );
+        assert!(
+            err.contains("does not declare") || out.contains("does not declare"),
+            "`cfgd {}` reports what it would add: stdout={out} stderr={err}",
+            argv.join(" ")
+        );
+    }
 }

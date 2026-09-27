@@ -39,16 +39,6 @@ pub(crate) struct InitOutput {
     pub(crate) target_dir: String,
 }
 
-/// The load-time gate as this run answers it: a `--dry-run` preview writes
-/// nothing, so the gate reports what it would add where it would have asked
-/// or written.
-fn migration_gate<'a>(args: &InitArgs<'a>) -> crate::cli::config_schema::GateInvocation<'a> {
-    crate::cli::config_schema::GateInvocation {
-        preview: args.dry_run,
-        ..args.migration_gate
-    }
-}
-
 /// Scaffold a new cfgd configuration repository.
 pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
     // `section` (not `heading`) so every line this phase prints — the
@@ -114,7 +104,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
             row = row.detail(detail);
         }
         drop(row);
-        crate::cli::config_schema::gate_on_load(printer, &migration_gate(args), &document);
+        crate::cli::config_schema::gate_on_load(printer, &args.migration_gate, &document);
         let output = InitOutput {
             target_dir: cfgd_core::to_posix_string(&planned_dir),
         };
@@ -222,7 +212,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
     // The load-time gate is withheld from init because the document did not
     // exist yet. It runs now, before the apply below reads the file, so the
     // question a behind-schema config earns is settled during setup.
-    crate::cli::config_schema::gate_on_load(printer, &migration_gate(args), &config_path);
+    crate::cli::config_schema::gate_on_load(printer, &args.migration_gate, &config_path);
 
     // 7. Apply if requested
     let should_apply = should_run_apply(args.apply, args.apply_profile, args.apply_modules);
