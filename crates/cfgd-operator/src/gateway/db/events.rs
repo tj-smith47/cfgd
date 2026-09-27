@@ -70,7 +70,7 @@ pub fn list_drift_events_tx(
     get_device_tx(conn, device_id)?;
 
     let mut stmt = conn.prepare_cached(
-        "SELECT id, device_id, timestamp, details FROM drift_events WHERE device_id = ?1 ORDER BY timestamp DESC",
+        "SELECT id, device_id, timestamp, details FROM drift_events WHERE device_id = ?1 ORDER BY timestamp DESC, rowid DESC",
     )?;
     let events = stmt
         .query_map(params![device_id], map_drift_event_row)?
@@ -111,7 +111,7 @@ pub fn list_checkin_events_tx(
 ) -> Result<Vec<CheckinEvent>, GatewayError> {
     get_device_tx(conn, device_id)?;
     let mut stmt = conn.prepare_cached(
-        "SELECT id, device_id, timestamp, config_hash, config_changed FROM checkin_events WHERE device_id = ?1 ORDER BY timestamp DESC LIMIT 100",
+        "SELECT id, device_id, timestamp, config_hash, config_changed FROM checkin_events WHERE device_id = ?1 ORDER BY timestamp DESC, rowid DESC LIMIT 100",
     )?;
     let events = stmt
         .query_map(params![device_id], map_checkin_event_row)?
@@ -128,7 +128,7 @@ pub fn list_fleet_events_paginated_tx(
         "SELECT timestamp, device_id, 'drift' as event_type, details as summary FROM drift_events
          UNION ALL
          SELECT timestamp, device_id, CASE WHEN config_changed THEN 'config-changed' ELSE 'checkin' END, config_hash FROM checkin_events
-         ORDER BY timestamp DESC LIMIT ?1 OFFSET ?2",
+         ORDER BY timestamp DESC, device_id, event_type, summary LIMIT ?1 OFFSET ?2",
     )?;
     let rows = stmt
         .query_map(params![limit, offset], map_fleet_event_row)?

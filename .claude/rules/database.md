@@ -14,3 +14,4 @@ All SQLite databases (`StateStore` in `cfgd-core`, `GatewayDb` in `cfgd-operator
 - Hash with `cfgd_core::sha256_hex()` — not inline `Sha256::new()` + `update()` + `finalize()` chains, and not `Sha256::digest()` directly outside the helper
 
 See `shared-utils.md` for the timestamp and hashing helpers.
+- A listing ordered by a time column (`timestamp`, `*_at`) names a second key after it: stamps have one-second resolution, so rows written in the same second otherwise list in whatever order SQLite's sort leaves them. The state store breaks the tie with `id DESC`, the gateway (TEXT ids) with `rowid DESC`. `every_time_ordered_state_listing_breaks_ties` (`cfgd-core/src/state/tests.rs`) walks both databases

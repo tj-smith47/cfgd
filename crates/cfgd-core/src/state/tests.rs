@@ -5416,3 +5416,136 @@ fn a_store_with_no_identity_row_is_an_error_on_read() {
         "{err}"
     );
 }
+
+/// Two rows stamped in the same second come back newest first. The stamps have
+/// one-second resolution, so without the `id` tiebreak their order is
+/// whatever SQLite's sort leaves them in.
+#[test]
+fn same_second_rows_list_newest_first() {
+    const SAME_SECOND: &str = "2026-01-01T00:00:00Z";
+    let store = StateStore::open_in_memory().unwrap();
+    store
+        .record_drift("file", "older", None, None, "local")
+        .unwrap();
+    store
+        .record_drift("file", "newer", None, None, "local")
+        .unwrap();
+    for resource in ["older", "newer"] {
+        store
+            .upsert_pending_decision("acme", resource, "recommended", "install", resource, None)
+            .unwrap();
+    }
+    store
+        .conn
+        .execute(
+            "UPDATE drift_events SET timestamp = ?1",
+            params![SAME_SECOND],
+        )
+        .unwrap();
+    store
+        .conn
+        .execute(
+            "UPDATE pending_decisions SET created_at = ?1",
+            params![SAME_SECOND],
+        )
+        .unwrap();
+
+    let drift: Vec<String> = store
+        .unresolved_drift()
+        .unwrap()
+        .into_iter()
+        .map(|e| e.resource_id)
+        .collect();
+    assert_eq!(drift, ["newer", "older"], "unresolved_drift");
+    let resources = |rows: Vec<PendingDecision>| -> Vec<String> {
+        rows.into_iter().map(|d| d.resource).collect()
+    };
+    assert_eq!(
+        resources(store.pending_decisions().unwrap()),
+        ["newer", "older"],
+        "pending_decisions"
+    );
+    assert_eq!(
+        resources(store.withheld_decisions().unwrap()),
+        ["newer", "older"],
+        "withheld_decisions"
+    );
+    assert_eq!(
+        resources(store.pending_decisions_for_source("acme").unwrap()),
+        ["newer", "older"],
+        "pending_decisions_for_source"
+    );
+}
+
+/// Every `ORDER BY` in `source` whose leading key is a time column
+/// (`timestamp`, `*_at`) and that has no second key to break a tie.
+fn time_orders_without_a_tiebreak(source: &str) -> (usize, Vec<String>) {
+    let flat = source.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut timed = 0;
+    let mut offenders = Vec::new();
+    for (at, _) in flat.match_indices("ORDER BY ") {
+        let clause = &flat[at + "ORDER BY ".len()..];
+        let end = clause
+            .find(['"', ')'])
+            .into_iter()
+            .chain(clause.find(" LIMIT"))
+            .min()
+            .unwrap_or(clause.len());
+        let clause = &clause[..end];
+        let lead = clause.split(',').next().unwrap_or("").trim();
+        let column = lead.split_whitespace().next().unwrap_or("");
+        let column = column.rsplit('.').next().unwrap_or(column);
+        if column == "timestamp" || column.ends_with("_at") {
+            timed += 1;
+            if !clause.contains(',') {
+                offenders.push(clause.to_string());
+            }
+        }
+    }
+    (timed, offenders)
+}
+
+/// A listing ordered by a one-second stamp names a second key, so rows written
+/// in the same second list in one order on every run. Both SQLite databases
+/// are walked: the state store and the device gateway's.
+#[test]
+fn every_time_ordered_state_listing_breaks_ties() {
+    let root = crate::test_helpers::workspace_root();
+    let mut timed = 0;
+    let mut offenders = Vec::new();
+    let files = [
+        "crates/cfgd-core/src/state",
+        "crates/cfgd-operator/src/gateway/db",
+    ]
+    .into_iter()
+    .flat_map(|dir| crate::test_helpers::rust_sources_under(&root.join(dir)));
+    for file in files {
+        let (seen, found) =
+            time_orders_without_a_tiebreak(&crate::test_helpers::production_slice_of(&file));
+        timed += seen;
+        offenders.extend(
+            found
+                .into_iter()
+                .map(|c| format!("{}: {c}", file.display())),
+        );
+    }
+    assert!(
+        offenders.is_empty(),
+        "name a second key after the stamp (`, id DESC`, or `, rowid DESC` for a TEXT id):\n{}",
+        offenders.join("\n")
+    );
+    assert!(timed >= 9, "the walk found {timed} time-ordered listings");
+}
+
+#[test]
+fn the_tiebreak_scan_reads_the_leading_key_and_its_follower() {
+    let fixture = r#"
+        "SELECT a FROM t WHERE x ORDER BY created_at DESC"
+        "SELECT a FROM t ORDER BY d.timestamp DESC, id DESC LIMIT 1"
+        "SELECT a FROM t ORDER BY id DESC"
+    "#;
+    assert_eq!(
+        time_orders_without_a_tiebreak(fixture),
+        (2, vec!["created_at DESC".to_string()])
+    );
+}

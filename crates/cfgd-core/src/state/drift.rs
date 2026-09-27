@@ -386,7 +386,7 @@ impl StateStore {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT id, timestamp, resource_type, resource_id, expected, actual, resolved_by, source FROM drift_events WHERE resolved_by IS NULL AND resolved_at IS NULL ORDER BY timestamp DESC",
+                "SELECT id, timestamp, resource_type, resource_id, expected, actual, resolved_by, source FROM drift_events WHERE resolved_by IS NULL AND resolved_at IS NULL ORDER BY timestamp DESC, id DESC",
             )
             ?;
 
