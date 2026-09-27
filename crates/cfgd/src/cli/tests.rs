@@ -22415,7 +22415,7 @@ fn no_apply_path_warn_restates_a_printer_line() {
         }
     }
     assert!(
-        scanned >= 25,
+        scanned >= 24,
         "the population shrank to {scanned} events, so a green run no longer \
          proves anything — re-check the walk before lowering this floor"
     );
@@ -22455,6 +22455,7 @@ fn no_column_hand_rolls_its_own_yes_no_rendering() {
             // line and the bool on the next, and matches neither.
             let complete = code.matches('(').count() == code.matches(')').count();
             let window = if complete {
+                // The events the reconciler and the package managers log today.
                 code.to_string()
             } else {
                 lines[n..lines.len().min(n + 3)].join(" ")

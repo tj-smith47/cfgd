@@ -59,10 +59,10 @@ pub(super) fn program_seam(prog: &str) -> Option<&'static str> {
 /// Build a `Command` for a package-manager binary, routing through its
 /// [`PROGRAM_SEAMS`] seam. A program with no row (most commonly `"sudo"`)
 /// falls through to plain `Command::new`. This is the single entry point for
-/// install / uninstall / update / list shell-outs in this module, so a test
-/// that shims CFGD_DPKG_QUERY_BIN sees its shim drive both
+/// every family shell-out, the version queries in `versions` included, so a
+/// test that shims CFGD_DPKG_QUERY_BIN sees its shim drive both
 /// `installed_packages` and `list_apt_with_versions`.
-fn cmd_with_seam(prog: &str) -> Command {
+pub(super) fn cmd_with_seam(prog: &str) -> Command {
     match program_seam(prog) {
         Some(env) => tool_cmd(env, prog),
         None => Command::new(prog),

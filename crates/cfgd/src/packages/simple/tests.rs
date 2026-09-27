@@ -1076,6 +1076,8 @@ fn zypper_refresh_runs_non_interactive() {
 /// seam is the name `strip_sudo_for_exec` derives for the same program, so the
 /// availability probe, the spawn and the sudo strip read one variable. A family
 /// whose install program had no row would answer unavailable on every host.
+/// Every row names a program a family command or a version query spawns, so a
+/// row nothing reads fails too.
 #[test]
 fn every_family_program_spawns_through_its_derived_seam() {
     for (program, env) in PROGRAM_SEAMS {
@@ -1085,12 +1087,35 @@ fn every_family_program_spawns_through_its_derived_seam() {
             "{program}'s seam row names the variable its sudo strip reads"
         );
     }
+    let mut spawned: std::collections::BTreeSet<&str> = Default::default();
     for (name, build) in SIMPLE_FAMILIES {
         for program in build().spawned_programs() {
             assert!(
                 program_seam(program).is_some(),
                 "{name} spawns {program}, which has no row in PROGRAM_SEAMS"
             );
+            spawned.insert(program);
         }
+    }
+    // The version queries spawn by name through `cmd_with_seam`, read off the
+    // module's code with comments dropped.
+    let source = include_str!("../versions/mod.rs");
+    let code = cfgd_core::test_helpers::blank_comments(source);
+    let production = code.split("#[cfg(test)]").next().unwrap_or_default();
+    let mut queried = 0;
+    for (at, _) in production.match_indices("cmd_with_seam(\"") {
+        let rest = &production[at + "cmd_with_seam(\"".len()..];
+        if let Some(program) = rest.split('"').next() {
+            queried += 1;
+            spawned.insert(program);
+        }
+    }
+    // apt-cache, apk, pkg twice, dpkg-query and rpm.
+    assert!(queried >= 6, "read {queried} version-query spawns");
+    for (program, _) in PROGRAM_SEAMS {
+        assert!(
+            spawned.contains(program),
+            "the PROGRAM_SEAMS row for {program} names a program nothing spawns"
+        );
     }
 }
