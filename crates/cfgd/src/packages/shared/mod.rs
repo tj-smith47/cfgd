@@ -829,10 +829,12 @@ pub(super) fn host_arms() -> &'static [SystemArm] {
     }
 }
 
-/// Every tool a resolver takes from a table before handing it to
-/// [`tool_seam_var`]: both arm tables, whichever host this is, and the pip
-/// fallback's two names. A walk deriving the seam population reads these beside the names it
-/// finds spelled at a call.
+/// Every tool a resolver takes from a table before handing it to a seam
+/// reader: both arm tables, whichever host this is, the pip fallback's two
+/// names, the program each command of every data-driven family spawns, and
+/// every program those families' seam table pairs with a seam (the version
+/// queries spawn `apt-cache` and `rpm`). A walk deriving the seam population
+/// reads these beside the names it finds spelled at a call.
 #[cfg(test)]
 pub(crate) fn tabled_seam_tools() -> Vec<&'static str> {
     SYSTEM_MANAGER_ARMS
@@ -840,6 +842,16 @@ pub(crate) fn tabled_seam_tools() -> Vec<&'static str> {
         .chain(WINDOWS_MANAGER_ARMS)
         .map(|(_, tool)| *tool)
         .chain(super::pipx::pip_tool_order())
+        .chain(
+            super::simple::SIMPLE_FAMILIES
+                .iter()
+                .flat_map(|(_, build)| build().spawned_programs()),
+        )
+        .chain(
+            super::simple::PROGRAM_SEAMS
+                .iter()
+                .map(|(program, _)| *program),
+        )
         .collect()
 }
 

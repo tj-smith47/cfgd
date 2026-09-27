@@ -1868,38 +1868,70 @@ fn signature_split(decl: &str, name: &str) -> Option<(Vec<String>, String)> {
     Some((params, decl[close..].to_string()))
 }
 
-/// Every `CFGD_*_BIN` seam a package manager reads a tool's path from, keyed by
-/// the name and valued by how a test names it: the const a `packages/` file
-/// declares, or the `tool_seam_var("<tool>")` call for a name production derives.
+/// The `CFGD_*_BIN` seams the package managers read, and the tools those seams
+/// name.
+struct SeamPopulation {
+    /// Every seam name, valued by how a test names it: the const a `packages/`
+    /// file declares, or the `tool_seam_var("<tool>")` call for a name
+    /// production derives.
+    seams: std::collections::BTreeMap<String, String>,
+    /// Every tool a seam reader is handed, at a call or out of a table.
+    tools: std::collections::BTreeSet<String>,
+}
+
+/// The seams a package manager reads a tool's path from, walked off production.
 ///
-/// The derived tools are read off production: a tool a seam reader is handed by
-/// name at a call (`resolve_tool_with_fallbacks("go", …)`), and the tables a
-/// resolver hands one out of (`packages::shared::tabled_seam_tools`). A
-/// registry manager name is no source: `apt` and `brew-cask` derive seams
-/// nothing reads.
-fn manager_seam_population() -> std::collections::BTreeMap<String, String> {
+/// A tool joins where a seam reader is handed it by name at a call
+/// (`resolve_tool_with_fallbacks("go", …)`), or out of the tables a resolver
+/// takes one from (`packages::shared::tabled_seam_tools`). A reader handed a
+/// variable must sit in a function drawing from one of those tables, or in a
+/// reader forwarding its own parameter; any other such call fails the walk,
+/// because the tools it reads are ones neither source sees. A registry manager
+/// name is no source: `apt` and `brew-cask` derive seams nothing reads.
+fn manager_seam_population() -> SeamPopulation {
     const READERS: &[&str] = &[
         "resolve_tool_with_fallbacks(",
         "system_tool_available(",
         "sudo_cmd_with_seam(",
         "tool_seam_var(",
     ];
+    // The functions handing a reader a tool out of a table `tabled_seam_tools`
+    // returns: the pip names, the arm tables and the family command tables.
+    const TABLED: &[&str] = &[
+        "find_pip",
+        "seam_pip",
+        "pip_python_version",
+        "detect_system_arm",
+        "bootstrap_system_arms",
+        "strip_sudo_for_exec",
+    ];
     let packages = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/packages");
-    let mut population: std::collections::BTreeMap<String, String> = Default::default();
+    let mut seams: std::collections::BTreeMap<String, String> = Default::default();
     let mut tools: std::collections::BTreeSet<String> =
         crate::packages::shared::tabled_seam_tools()
             .into_iter()
             .map(str::to_string)
             .collect();
     let mut read = 0usize;
+    let mut drawn = 0usize;
+    let mut unsourced: Vec<String> = Vec::new();
     for path in rust_sources_under(&packages) {
         let production = floored_production_body(&path);
         if production.trim().is_empty() {
             continue;
         }
         read += 1;
-        for raw in production.lines() {
+        let mut enclosing = "";
+        for (n, raw) in production.lines().enumerate() {
             let code = cfgd_core::test_helpers::code_span(raw);
+            if cfgd_core::test_helpers::opens_function(code.trim_start())
+                && let Some((_, rest)) = code.split_once("fn ")
+            {
+                enclosing = rest
+                    .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+                    .next()
+                    .unwrap_or_default();
+            }
             let ident = code
                 .split("const ")
                 .nth(1)
@@ -1908,7 +1940,7 @@ fn manager_seam_population() -> std::collections::BTreeMap<String, String> {
                 && let Some(ident) = ident
             {
                 for name in cfgd_env_literals(code).filter(|n| n.ends_with("_BIN")) {
-                    population.insert(name.to_string(), ident.trim().to_string());
+                    seams.insert(name.to_string(), ident.trim().to_string());
                 }
             }
             for reader in READERS {
@@ -1916,30 +1948,55 @@ fn manager_seam_population() -> std::collections::BTreeMap<String, String> {
                     let arg = &code[at + reader.len()..];
                     if let Some(tool) = arg.strip_prefix('"').and_then(|a| a.split('"').next()) {
                         tools.insert(tool.to_string());
+                    } else if TABLED.contains(&enclosing)
+                        || READERS
+                            .iter()
+                            .any(|r| r.strip_suffix('(') == Some(enclosing))
+                    {
+                        drawn += 1;
+                    } else {
+                        let rel = path.strip_prefix(&packages).unwrap_or(&path);
+                        unsourced.push(format!(
+                            "packages/{}:{}: {reader}… in `{enclosing}`",
+                            rel.display(),
+                            n + 1
+                        ));
                     }
                 }
             }
         }
     }
+    assert!(
+        unsourced.is_empty(),
+        "these calls hand a seam reader a tool no table `tabled_seam_tools` returns, \
+         so the seam they read is in no population:\n  {}",
+        unsourced.join("\n  ")
+    );
     // The production files packages/ holds today.
     assert!(
         read >= 17,
         "the walk read {read} production files under packages/"
     );
-    let consts = population.len();
+    // Seven table draws and the three readers forwarding their own parameter.
+    assert!(
+        drawn >= 10,
+        "the walk classified {drawn} calls handing a reader a variable; it has stopped \
+         reading them"
+    );
+    let consts = seams.len();
     for tool in &tools {
-        population
+        seams
             .entry(crate::packages::shared::tool_seam_var(tool))
             .or_insert_with(|| format!("tool_seam_var(\"{tool}\")"));
     }
     // 11 consts (brew, apt-get and the nine query tools) and 14 derived names.
     assert!(
-        consts >= 11 && population.len() >= 25,
+        consts >= 11 && seams.len() >= 25,
         "the seam population is {} names, {consts} of them consts; the walk has stopped \
          reading a reader or a table",
-        population.len()
+        seams.len()
     );
-    population
+    SeamPopulation { seams, tools }
 }
 
 /// A test names a `CFGD_*` variable through the const production reads it by,
@@ -2022,7 +2079,7 @@ fn every_test_names_a_cfgd_variable_through_its_const() {
         }
     }
     let everywhere = owners.values().filter(|(o, _)| o.is_none()).count();
-    for (name, ident) in manager_seam_population() {
+    for (name, ident) in manager_seam_population().seams {
         owners
             .entry(name)
             .or_insert_with(|| (Some("cfgd".to_string()), ident));
@@ -46387,19 +46444,22 @@ fn every_function_that_can_reach_the_tool_provisioner_is_named_here() {
 
 /// Nothing this host runs is reachable while [`NoHostManagers`] is held.
 ///
-/// The guard's claim is about the manager REGISTRY, not about the seams it
-/// writes, so it is asked of the registry itself, on a `PATH` holding every tool
-/// a manager resolves: a seam the roster leaves out lets its manager find the
-/// planted tool and answer available. The roster is held equal to the seams the
-/// managers read (`manager_seam_population`), so an entry nothing reads, or a
-/// renamed one, fails too.
+/// The guard's claim is about the manager REGISTRY, so it is asked of the
+/// registry itself, on a `PATH` holding every tool a seam reader resolves and
+/// every registered manager's own name: a seam the
+/// roster leaves out lets its manager find the planted tool and answer
+/// available, and a manager probing `PATH` under a name no seam covers finds
+/// its own. The roster is held equal to the seams the managers read
+/// (`manager_seam_population`), so an entry nothing reads, or a renamed one,
+/// fails too.
 ///
 /// [`NoHostManagers`]: cfgd_core::test_helpers::NoHostManagers
 #[test]
 #[serial_test::serial]
 fn no_registered_manager_is_reachable_under_the_no_host_managers_guard() {
     let population = manager_seam_population();
-    let read: std::collections::BTreeSet<&str> = population.keys().map(String::as_str).collect();
+    let read: std::collections::BTreeSet<&str> =
+        population.seams.keys().map(String::as_str).collect();
     let roster: std::collections::BTreeSet<&str> = cfgd_core::test_helpers::MANAGER_SEAMS
         .iter()
         .copied()
@@ -46409,14 +46469,31 @@ fn no_registered_manager_is_reachable_under_the_no_host_managers_guard() {
         "MANAGER_SEAMS is every seam a package manager reads, and nothing else"
     );
 
+    let registry = super::build_registry();
+    let mut planted = population.tools.clone();
+    planted.extend(
+        registry
+            .package_managers()
+            .iter()
+            .map(|pm| pm.name().to_string()),
+    );
+    let unplanted: Vec<&str> = read
+        .iter()
+        .copied()
+        .filter(|seam| {
+            !planted
+                .iter()
+                .any(|tool| crate::packages::shared::tool_seam_var(tool) == *seam)
+        })
+        .collect();
+    assert!(
+        unplanted.is_empty(),
+        "no planted tool is named by these seams, so a manager reading one finds nothing \
+         on PATH whatever the guard does: {unplanted:?}"
+    );
     let host = tempfile::tempdir().expect("tempdir");
-    for name in &read {
-        let tool = name
-            .trim_start_matches("CFGD_")
-            .trim_end_matches("_BIN")
-            .to_lowercase()
-            .replace('_', "-");
-        cfgd_core::test_helpers::write_probe_tool(host.path(), &tool);
+    for tool in &planted {
+        cfgd_core::test_helpers::write_probe_tool(host.path(), tool);
     }
     let _path_lock = cfgd_core::test_helpers::path_env_mutation_guard();
     let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
@@ -46428,7 +46505,6 @@ fn no_registered_manager_is_reachable_under_the_no_host_managers_guard() {
         host.path().to_str().expect("utf-8 tempdir"),
     );
 
-    let registry = super::build_registry();
     let reachable: Vec<&str> = registry
         .package_managers()
         .iter()
