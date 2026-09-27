@@ -207,20 +207,22 @@ fn prompt_message(pending: &PendingAlignment) -> String {
     )
 }
 
-/// The gate's own write: the same [`write_alignment`] the verb calls, with the
-/// failure reported rather than dropped. This runs before dispatch, so there
-/// is no command for the error to fail — but a reader who said yes and got
-/// silence would believe the file had been written.
-///
-/// A write that succeeded is announced the same way: the reader's own file
-/// changed under a command that was about something else.
+/// The gate's own write: the same [`write_alignment`] the verb calls, with
+/// both outcomes reported. A written file earns an `Ok` row naming the fields
+/// added, the way `cfgd config migrate --write` reports its write. A failed
+/// write is an alert: this runs before dispatch, so there is no command for
+/// the error to fail, and a reader who said yes and got silence would believe
+/// the file had been written.
 fn align(printer: &Printer, config_path: &Path, cfg: &CfgdConfig, pending: &PendingAlignment) {
     match write_alignment(config_path, cfg, pending) {
-        Ok(()) => printer.alert(format!(
-            "Added {} this build reads to your config ({})",
-            cfgd_core::pluralize(pending.keys.len(), "field"),
-            pending.keys.join(", ")
-        )),
+        Ok(()) => printer.status_simple(
+            Role::Ok,
+            format!(
+                "Added {} this build reads to your config ({})",
+                cfgd_core::pluralize(pending.keys.len(), "field"),
+                pending.keys.join(", ")
+            ),
+        ),
         Err(e) => printer.alert(format!("Could not update this config: {e}")),
     }
 }
@@ -802,25 +804,47 @@ mod tests {
             let path = dir.path().join("cfgd.yaml");
             std::fs::write(&path, doc).unwrap();
             let cli = cli_with_config(&path, Some(state.path()));
-            let (printer, _stdout, stderr) = Printer::for_test_split_streams(Verbosity::Normal);
+            let (printer, stdout, stderr) = Printer::for_test_split_streams(Verbosity::Normal);
             gate(&printer, &cli, Some(policy), assume_yes);
             printer.flush();
             let after = std::fs::read_to_string(&path).unwrap();
             (
                 after != doc,
-                cfgd_core::test_helpers::captured_text(&stderr),
+                format!(
+                    "{}{}",
+                    cfgd_core::test_helpers::captured_text(&stdout),
+                    cfgd_core::test_helpers::captured_text(&stderr)
+                ),
                 state
                     .path()
                     .join(cfgd_core::state::STATE_DB_FILENAME)
                     .exists(),
             )
         };
-        assert!(written(MigrationPolicy::Update, false).0, "Update writes");
-        let (yes_wrote, _yes_said, yes_stored) = written(MigrationPolicy::Prompt, true);
+        let theme = cfgd_core::output::Theme::default();
+        let (update_wrote, update_said, _) = written(MigrationPolicy::Update, false);
+        assert!(update_wrote, "Update writes");
+        let (yes_wrote, yes_said, yes_stored) = written(MigrationPolicy::Prompt, true);
         assert!(
             yes_wrote,
             "`--yes` takes the prompt, and taking it is answering yes"
         );
+        // A write the reader asked for is a success row, the way
+        // `cfgd config migrate --write` reports the same write.
+        for said in [&update_said, &yes_said] {
+            let row = said
+                .lines()
+                .find(|line| line.contains("Added 2 fields this build reads to your config"))
+                .unwrap_or_else(|| panic!("the write names what it added: {said}"));
+            assert!(
+                row.contains(&theme.icon_ok),
+                "the write is an Ok row: {row}"
+            );
+            assert!(
+                !said.contains(&theme.icon_warn),
+                "nothing about a completed write is a warning: {said}"
+            );
+        }
         assert!(
             !yes_stored,
             "nobody was asked, so nothing was answered and no state root was created to hold it"
