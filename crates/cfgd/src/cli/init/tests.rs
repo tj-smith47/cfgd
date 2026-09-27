@@ -1900,6 +1900,28 @@ fn scaffold_config_has_api_version() {
     );
 }
 
+/// The config init scaffolds is aligned to the build that scaffolded it: the
+/// migration gate init runs over it finds nothing to ask, so a new user is
+/// never asked to add fields to a file cfgd wrote a moment ago.
+#[test]
+fn scaffold_config_declares_every_field_this_build_reads() {
+    for theme in [None, Some("dracula")] {
+        let dir = tempfile::tempdir().unwrap();
+        let printer = quiet_printer();
+        scaffold(dir.path(), Some("my-cfg"), theme, &printer).unwrap();
+
+        let path = dir.path().join("cfgd.yaml");
+        let on_disk = std::fs::read_to_string(&path).unwrap();
+        let cfg = cfgd_core::config::parse_config(&on_disk, &path).unwrap();
+        let pending = crate::cli::config_schema::pending_alignment(&cfg, &on_disk);
+        assert!(
+            pending.keys.is_empty(),
+            "theme {theme:?}: the scaffold leaves {:?} for the gate to ask about",
+            pending.keys
+        );
+    }
+}
+
 #[test]
 fn scaffold_readme_contains_structure_docs() {
     let dir = tempfile::tempdir().unwrap();

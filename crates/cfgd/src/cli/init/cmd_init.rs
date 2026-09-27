@@ -970,6 +970,7 @@ spec:
   output:
     theme: {theme_value}
   fileStrategy: Symlink
+  migrationPolicy: Prompt
   aliases:
     add: "profile update --file"
     remove: "profile update --file"
