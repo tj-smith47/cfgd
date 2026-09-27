@@ -69,14 +69,14 @@ fn diff_returns_empty_for_empty_or_wrong_type_input() {
 #[test]
 fn containerd_default_config_path() {
     let desired = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
-    let path = ContainerdConfigurator::config_path(&desired);
+    let path = super::config_path(&desired, ContainerdConfigurator::DEFAULT_CONFIG_PATH);
     assert_eq!(path, PathBuf::from("/etc/containerd/config.toml"));
 }
 
 #[test]
 fn kubelet_default_config_path() {
     let desired = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
-    let path = KubeletConfigurator::config_path(&desired);
+    let path = super::config_path(&desired, KubeletConfigurator::DEFAULT_CONFIG_PATH);
     assert_eq!(path, PathBuf::from("/var/lib/kubelet/config.yaml"));
 }
 
@@ -520,7 +520,7 @@ fn containerd_config_path_custom() {
         serde_yaml::Value::String("/custom/containerd.toml".into()),
     );
     let desired = serde_yaml::Value::Mapping(mapping);
-    let path = ContainerdConfigurator::config_path(&desired);
+    let path = super::config_path(&desired, ContainerdConfigurator::DEFAULT_CONFIG_PATH);
     assert_eq!(path, PathBuf::from("/custom/containerd.toml"));
 }
 
@@ -703,7 +703,7 @@ fn kubelet_config_path_custom() {
         serde_yaml::Value::String("/custom/kubelet.yaml".into()),
     );
     let desired = serde_yaml::Value::Mapping(mapping);
-    let path = KubeletConfigurator::config_path(&desired);
+    let path = super::config_path(&desired, KubeletConfigurator::DEFAULT_CONFIG_PATH);
     assert_eq!(path, PathBuf::from("/custom/kubelet.yaml"));
 }
 
@@ -2046,7 +2046,7 @@ fn kernel_module_diff_mixed_string_and_non_string() {
 #[test]
 fn containerd_config_path_falls_back_to_default_for_empty_mapping() {
     let desired = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
-    let path = ContainerdConfigurator::config_path(&desired);
+    let path = super::config_path(&desired, ContainerdConfigurator::DEFAULT_CONFIG_PATH);
     assert_eq!(
         path,
         PathBuf::from(ContainerdConfigurator::DEFAULT_CONFIG_PATH)
@@ -2058,7 +2058,7 @@ fn containerd_config_path_falls_back_to_default_for_empty_mapping() {
 #[test]
 fn kubelet_config_path_falls_back_to_default_for_empty_mapping() {
     let desired = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
-    let path = KubeletConfigurator::config_path(&desired);
+    let path = super::config_path(&desired, KubeletConfigurator::DEFAULT_CONFIG_PATH);
     assert_eq!(
         path,
         PathBuf::from(KubeletConfigurator::DEFAULT_CONFIG_PATH)

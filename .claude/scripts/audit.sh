@@ -274,11 +274,13 @@ _strip_test_blocks_uncached() {
 }
 
 # --- Drop the lines inside every `impl <Trait> for <Type>` block ---
-# A method name inside a trait impl is chosen by the TRAIT, not by the author,
-# so it can never be evidence of copy-paste. Reads the `<file>:<line>:<text>`
-# stream `strip_test_blocks_from_file` produces and drops the whole block,
-# header included; the trait's own declaration, every inherent method and every
-# free function still reach the duplicate gate. `for<'a>` (a HRTB bound) needs no
+# A method inside a trait impl is one type's answer to the TRAIT: its name and
+# signature are the trait's, and many types give the same one-line answer
+# (`Ok(None)`, `Some("upgrade")`), so a repeat there is no evidence of
+# copy-paste. Reads the `<file>:<line>:<text>` stream
+# `strip_test_blocks_from_file` produces and drops the whole block, header
+# included; a trait's default methods, every inherent method and every free
+# function still reach the duplicate gate. `for<'a>` (a HRTB bound) needs no
 # exclusion — it carries no space after `for`. Brace depth is counted through
 # `code_only`, so a brace inside a string or a comment cannot desynchronise the
 # tracker, and a header whose `{` sits on a later line (a `where` clause) is
@@ -924,314 +926,99 @@ else
 fi
 
 log_section "DRY — Duplicated Function Definitions"
-# Extract fn names from non-test code across all crates, flag any name defined in >1 file.
-# Excludes trait-standard method names that legitimately repeat across impls.
-# Emits "<fn> <file>" pairs and dedups them (sort -u) so the per-name count is a
-# count of DISTINCT FILES — many impls of one method inside a single file (e.g.
-# the per-struct profile merge_from layering) are not cross-file duplication.
-# Whole-file test modules are skipped (same rationale as the literal gate above).
-# output/ is skipped: Printer/SectionGuard/Doc/StatusBuilder deliberately mirror
-# one fluent method surface (output-module.md), so a method name shared across
-# those builders is intentional API symmetry, not duplicated logic.
+# Flag a function defined twice: one name with one definition (signature and
+# body, comments dropped and whitespace collapsed) in more than one file. Two
+# functions that share only a name, such as `CheckinFacts::collect` and
+# `ComplianceInputs::collect`, are homonyms and pass.
+# Emits one "<name> <definition> <file>" record per function with a body and
+# dedups them, so the count is a count of DISTINCT FILES. A trait's bodiless
+# declaration is not a definition, and a trait impl's methods are dropped whole
+# (`drop_trait_impl_lines`). Whole-file test modules are skipped (same rationale
+# as the literal gate above). output/ is skipped: Printer/SectionGuard/Doc/
+# StatusBuilder deliberately mirror one fluent method surface
+# (output-module.md), so their identical builder steps are API symmetry.
+# `fn new() -> Self { Self::default() }` is the constructor idiom and passes.
 #
-# `len` and `is_empty` are excluded together: clippy's `len_without_is_empty`
-# requires a type offering one to offer the other, so any collection-shaped
-# type in the workspace defines both, and excusing only half of the pair makes
-# the gate fire on the idiom it forced.
-# ALLOWED_FN_PAIRS excuses one *specific* definition rather than a bare name, so
-# the name keeps its budget: `is_clean` is deliberately shared by four backup
-# outcome types — BackupRunReport, RestoreOutcome and RollbackOutcome are
-# listed below, and BackupRunRecord keeps the budget — which answer the
-# exit-code question under one name, but dropping only some of the sites
-# means the next one still trips the gate. Adding a name to the awk list below
-# instead would blind the check to that name forever.
-# `Owner`'s constructors are named after the kind they mint, which is the whole
-# point of the closed vocabulary — the collisions are with unrelated
-# constructors on other types (`PatchBindings::profile`, `BackupJob::source`).
-# Excusing the `Owner` site keeps each name's budget for a real duplicate.
-# `ApplyRun::execute` runs one reconcile; `cli::execute` dispatches clap
-# subcommands. Nothing is shared between them but the verb.
-#
-# `install_cmd_for` is excused by name in the awk list rather than per site: it
-# is the sanctioned per-manager declaration table these Windows managers answer
-# to, composed by `arm_install_commands` (crates/cfgd/src/packages/shared/mod.rs)
-# and stated on each function's own rustdoc (packages/choco.rs, packages/scoop.rs
-# and packages/winget.rs each call it the ONE declaration of how that manager
-# installs), so each manager owning one is the convention itself, and every
-# manager added later owes one too. The walk is
-# every_windows_manager_install_the_cli_emits_comes_from_its_declaration
-# (crates/cfgd/src/cli/tests.rs), which derives its population from this same
-# anchor, so a manager that copies the convention is walked with it.
-#
-# The remaining pairs excuse a name two unrelated TYPES both answer, where
-# nothing but the verb is shared: `Slot::lane` names a package-manager family
-# while `PackageContext::lane` hands back a live output region; `MemberState`'s
-# `node_id` delegates to `ManagerAction`'s own `*_node` derivations rather than
-# re-deriving them; the `cli::output_types` accessors (`token`, `owner`) read a
-# rendered payload's fields, not the reconciler types they name.
-# `CollectOutcome`'s `tally`, `action_count` and `role` answer for a gc run
-# what `ApplyRun`, `Phase` and the status rows answer for theirs, each on its
-# own type; `cli::output_types::is_zero` is a private serde predicate with one
-# user, the twin of `state::types`'s, and `*n == 0` carries no rule to drift.
+# ALLOWED_FN_PAIRS excuses one *specific* definition, so the twin left standing
+# keeps the budget and a third copy still trips the gate.
 ALLOWED_FN_PAIRS=(
-    "is_clean crates/cfgd-core/src/backup/restore.rs"
-    "is_clean crates/cfgd-core/src/backup/mod.rs"
+    # `RestoreOutcome::is_clean` and `RollbackOutcome::is_clean` answer the
+    # backup exit-code question over the same two fields of two outcome types.
     "is_clean crates/cfgd-core/src/backup/rollback.rs"
-    "profile crates/cfgd-core/src/reconciler/types.rs"
-    "module crates/cfgd-core/src/reconciler/types.rs"
-    "source crates/cfgd-core/src/reconciler/types.rs"
-    "execute crates/cfgd-core/src/reconciler/run.rs"
-    "lane crates/cfgd-core/src/providers/mod.rs"
-    "tally crates/cfgd-core/src/backup/gc.rs"
-    "action_count crates/cfgd-core/src/backup/gc.rs"
-    "role crates/cfgd-core/src/backup/gc.rs"
+    # A private serde `skip_serializing_if` predicate with one user, the twin of
+    # `state::types`'s; `*n == 0` carries no rule to drift.
     "is_zero crates/cfgd/src/cli/output_types.rs"
-    "node_id crates/cfgd-core/src/reconciler/managers.rs"
-    "push crates/cfgd-core/src/daemon/service/windows_eventlog.rs"
-    "token crates/cfgd/src/cli/output_types.rs"
-    "owner crates/cfgd/src/cli/output_types.rs"
-    "actions crates/cfgd/src/cli/output_types.rs"
-    # Four conventions and two delegates, each a name two unrelated things
-    # answer. `X::of(source) -> Self` is the derivation convention (`Tier::of`
-    # keeps the budget); `role` maps an enum onto an output `Role`
-    # (`SkillResultStatus` keeps it); `with_config_dir` is the `#[must_use]`
-    # builder convention (`SopsBackend` keeps it); `report` is `sidecar`'s own
-    # private line printer, not one of `providers`' note sinks (which keep it).
-    # The two delegates CALL the definition they share a name with:
-    # `lanes::registers_family_sources` resolves an action's manager and asks
-    # the trait method, and `cli::apply::refresh_link_deployed_hashes` wraps the
-    # reconciler's in the log-and-continue the two apply paths need.
-    "of crates/cfgd-core/src/reconciler/env_engine.rs"
-    "of crates/cfgd-core/src/modules/surfaces.rs"
-    "of crates/cfgd/src/cli/status.rs"
-    # `LevelWidths::of` IS the `X::of(input) -> Self` convention above, over a
-    # slice of sibling fields rather than a single source; a fourth unrelated
-    # `of`. `Tier::of` still keeps the budget.
-    "of crates/cfgd/src/cli/explain/mod.rs"
-    # `GateInvocation::of` is the same convention again, deriving what one
-    # invocation brings to the migration gate from the parsed `Cli`.
-    "of crates/cfgd/src/cli/config_schema.rs"
-    # `AfterPlanCounts::of` is that convention once more, over a finished
-    # `ApplyResult`: a fifth unrelated `of`, and the one seam that turns the
-    # after-plan class into its wire counts.
-    "of crates/cfgd/src/cli/output_types.rs"
-    "role crates/cfgd/src/cli/status.rs"
-    "with_config_dir crates/cfgd-core/src/reconciler/mod.rs"
-    "report crates/cfgd-core/src/reconciler/sidecar.rs"
-    "registers_family_sources crates/cfgd-core/src/reconciler/lanes.rs"
-    "refresh_link_deployed_hashes crates/cfgd/src/cli/apply.rs"
-    # A third delegate: cfgd-schema owns the file shape rule so the Module CRD
-    # applies the same one, and this wrapper only re-labels its bare message as
-    # a ConfigError. cfgd-schema's definition keeps the budget.
-    "validate_file_patch_shape crates/cfgd-core/src/config/profile_spec.rs"
-    # The names below were blanket-excused by NAME until the trait-impl skip
-    # above landed. The skip covers each trait's IMPLS; what still collides is
-    # the trait's own declaration against an unrelated inherent method, a free
-    # function, or a second trait — so each keeps its budget here instead.
-    # Process entry points, one per binary/server, sharing only the verb.
-    "run crates/cfgd-csi/src/app.rs"
-    "run crates/cfgd-operator/src/controllers/mod.rs"
-    "run crates/cfgd/src/mcp/server/mod.rs"
-    # `mcp::resources::read` reads a resource; these three read a withheld
-    # decision, a registry key, and a tool-annotation preset.
-    "read crates/cfgd-core/src/reconciler/pending.rs"
-    "read crates/cfgd/src/mcp/brontes.rs"
-    "read crates/cfgd/src/system/windows_registry.rs"
-    # `SkillProvider::list` is the trait; these build a JSON-RPC method payload.
-    "list crates/cfgd/src/mcp/prompts.rs"
-    "list crates/cfgd/src/mcp/resources.rs"
-    "list crates/cfgd/src/mcp/tools.rs"
-    # `SecretProvider::resolve` is the trait; these resolve a registry
-    # credential and a directory set.
-    "resolve crates/cfgd-core/src/oci/auth/mod.rs"
-    "resolve crates/cfgd-core/src/util/paths.rs"
-    # `PackageManager::install` is the trait; these install a skill and a
-    # signal handler.
-    "install crates/cfgd-core/src/daemon/mod.rs"
-    "install crates/cfgd-core/src/providers/skill/mod.rs"
-    # `SystemConfigurator::apply` is the trait; these run a reconcile.
-    "apply crates/cfgd-core/src/reconciler/apply.rs"
-    "apply crates/cfgd-core/src/reconciler/run.rs"
-    # A spec's own validation vs a web session token's.
-    "validate crates/cfgd-operator/src/gateway/api/mod.rs"
-    # `SkillProvider::render` renders a skill; `IniDoc::render` serializes a file.
-    "render crates/cfgd-core/src/reconciler/patch.rs"
-    # The three `DaemonHooks` methods keep the budget; these are the cfgd-crate
-    # free functions the workstation hooks delegate to.
-    "plan_packages crates/cfgd/src/packages/mod.rs"
-    "plan_packages_observed crates/cfgd/src/packages/mod.rs"
-    "prune_orphaned_packages crates/cfgd/src/packages/mod.rs"
-    # `PackageManager::name` is the trait; this names a scanned profile entry.
-    "name crates/cfgd-core/src/config/parse.rs"
-    # `cfgd_core::expand_tilde` is the shared helper and keeps the budget; the
-    # `DaemonHooks` method is the hook surface over it.
-    "expand_tilde crates/cfgd-core/src/daemon/mod.rs"
-    # `SystemConfigurator::diff` is the trait; this diffs a file's content.
-    "diff crates/cfgd/src/files/plan.rs"
-    # `Platform::detect` is the one platform detection and keeps the budget;
-    # `SkillProvider::detect` finds an installed skill.
-    "detect crates/cfgd-core/src/providers/skill/mod.rs"
-    # The names below became visible when the extraction widened to generic and
-    # restricted-visibility definitions (`fn name<T>(`, `pub(crate) fn name(`).
-    # Each is a homonym: same word, different question, one keeping the budget.
-    # `util::process`'s reader streams 8 KiB byte chunks and signals EOF on a
-    # channel; the script one reads LINES and stamps each with a shared Instant.
-    "spawn_pipe_reader crates/cfgd-core/src/reconciler/scripts.rs"
-    # `patch.rs` assigns into a `toml_edit::Table` carrying the old value's
-    # decor; this converts a `serde_yaml::Value` into a plain `toml::Table`.
-    "set_toml_value crates/cfgd/src/system/node/format.rs"
-    # `LeaderElector::run` drives a callback under a lease; `app::run` is the
-    # process entry point.
-    "run crates/cfgd-operator/src/leader.rs"
-    # The `#[must_use] fn(mut self, &dyn LaneOutput) -> Self` builder convention
-    # on two unrelated types (`PackageContext` keeps the budget, `PackageExec`).
-    "in_lane crates/cfgd-core/src/reconciler/packages.rs"
-    # `ApplyRun::header` renders the run's kv header; this reads one HTTP header.
-    "header crates/cfgd-core/src/oci/transport.rs"
-    # `ConfigInputRecorder::finish` pops a recording frame; `LiveTree::finish`
-    # commits rows and takes the live region down.
-    "finish crates/cfgd-core/src/reconciler/live_tree.rs"
-    # `Platform::detect` / `Platform::current` are the cataloged host detection
-    # and its memo; the env engine's probe reads shell/rc facts under one `home`
-    # and maps `cfg!` flags onto a 4-variant enum its tests drive per platform.
-    "detect crates/cfgd-core/src/reconciler/env_engine.rs"
-    "current crates/cfgd-core/src/reconciler/env_engine.rs"
-    # `RegistryValues::value` reads one Windows registry value by name;
-    # `FoldedPath::value` keeps the budget as the env engine's own PATH
-    # renderer, which takes a dialect's quoting rather than a name.
-    "value crates/cfgd/src/system/windows_registry.rs"
-    # `pack::resolve_platform` parses an explicit `--platform` override or
-    # falls back to the host's (os, arch) pair for an image manifest;
-    # `push::resolve_platform` keeps the budget as the simpler `Option<&str>`
-    # default applied to the annotation string `current_platform` composes.
-    "resolve_platform crates/cfgd-core/src/oci/pack.rs"
-    # `SkillInstallResult::installed` constructs a skill-install report row;
-    # `ActionRun::installed` keeps the budget as the reconciler's own builder
-    # step recording a package count the executor re-read off the machine.
-    "installed crates/cfgd/src/cli/skill/mod.rs"
-    # `ResourceSchema::docs_url` is a delegate — it CALLS `config::docs_url`,
-    # which keeps the budget as the one URL derivation both this and
-    # `field_docs_url` read.
-    "docs_url crates/cfgd/src/cli/explain/mod.rs"
-    # `RateLimiter::check` admits or rejects a peer's request; `ArtifactVerifier
-    # ::check` keeps the budget as the cosign signature verdict for a
-    # reference, an unrelated question sharing only the verb.
-    "check crates/cfgd-operator/src/gateway/rate_limit.rs"
-    # `ApplyStatus::human_display` keeps the budget as the (word, Role) pair
-    # convention (shared-utils.md, "A Title-Cased status word renders with its
-    # role, everywhere"); `ComplianceStatus::human_display` is the same
-    # convention for a compliance snapshot's verdict, a second sanctioned
-    # vocabulary rather than a duplicate to hunt down.
-    "human_display crates/cfgd-core/src/compliance/mod.rs"
-    # `DiffSummary::any_drift` and `VerifyOutput::any_drift` are the same
-    # convention on two verbs' summary types (shared-utils.md, "each
-    # drift-reporting verb COMPOSES ... once"): one name per verb so a reader
-    # of either exit gate finds the same question, over different fields.
-    "any_drift crates/cfgd/src/cli/verify.rs"
-    # `StatusOutput::any_drift` and `ModuleStatus::any_drift` are that same
-    # convention on `status`'s two verdicts, the fleet view's and one module's.
-    "any_drift crates/cfgd/src/cli/status.rs"
-    # `Theme::arrow`/`Printer::arrow` are the output/-excused pair (the ONE
-    # arrow glyph, shared-utils.md); these two CALL `Printer::arrow` to narrow
-    # the surface a caller outside output/ gets, the same shape the two
-    # delegates above take — `SystemContext::arrow` in place of the banned
-    # `printer()` accessor (output-module.md), `LiveTree::arrow` for a wait
-    # row naming a value change.
-    "arrow crates/cfgd-core/src/providers/mod.rs"
+    # `SystemContext::arrow` and `LiveTree::arrow` both CALL `Printer::arrow`
+    # (the ONE arrow glyph, shared-utils.md) to narrow what a caller outside
+    # output/ reaches, in place of the banned `printer()` accessor.
     "arrow crates/cfgd-core/src/reconciler/live_tree.rs"
-    # `Tier::of` / `AfterPlanState::of` in reconciler/types.rs keep the budget as
-    # the cataloged inherent `::of` constructor convention (shared-utils.md,
-    # `ModuleSurfaces::of(spec)` and `AfterPlanState::of`); these two are that
-    # same convention on unrelated types, `SpecChange::of` building one lockfile
-    # diff row and `InventoryDetail::of` folding the `--show-*` trio into a view.
-    # `drop_trait_impl_lines` cannot see an inherent impl, so without these the
-    # check reads these constructors as free functions: four definitions across
-    # three files, reconciler/types.rs holding two, and what the gate counts is
-    # the distinct files, three.
-    "of crates/cfgd-core/src/modules/lockfile.rs"
-    "of crates/cfgd/src/cli/mod.rs"
-    # `LayeredEnv::with_secret_envs` appends the resolved secret exports to a
-    # layered env view as its last block; `cli::EnvValueMasking::with_secret_envs`
-    # keeps the budget as the set of env NAMES a run masks by — different crates,
-    # different types, different argument types, one verb.
-    "with_secret_envs crates/cfgd-core/src/reconciler/verify.rs"
-    # The same `::of` constructor convention on three more unrelated types:
-    # `LayeredEnv::of` folds a resolved profile's layers into one env view,
-    # `Dialect::of` names the shell a platform writes its env file in,
-    # `PackageLayers::of` / `EntryLayers::of` build one run's claim maps, and
-    # `Tier::of` / `AfterPlanState::of` are the pair shared-utils.md already
-    # catalogs. What the gate counts is the distinct FILES, so one entry per
-    # file leaves the last one standing as the name's home.
-    "of crates/cfgd-core/src/reconciler/verify.rs"
-    "of crates/cfgd-core/src/reconciler/env_files.rs"
-    "of crates/cfgd-core/src/reconciler/apply.rs"
-    # `LayerSources::recording_layer` answers "which layer do I record this
-    # `(kind, id)` under"; `PackageLayers::recording_layer` and the free
-    # `recording_layer` beside it keep the budget as that same question asked
-    # of a `(manager, package)` row and of a settled `ActionResult`.
-    "recording_layer crates/cfgd-core/src/reconciler/apply.rs"
-    # `MaskEnvValues::masks` asks whether a POLICY masks anything at all;
-    # `EnvValueMasking::masks` keeps the budget as whether this run masks one
-    # given env NAME — the policy plus the secret names, a different question
-    # over a different argument.
-    "masks crates/cfgd/src/cli/mod.rs"
-    # `DiffSummary::check_failed` / `VerifyOutput::check_failed` are the
-    # `any_drift` convention below on the other exit gate: one name per verb so
-    # a reader of either finds the same question, over different fields.
-    "check_failed crates/cfgd/src/cli/verify.rs"
+    # `DeviceCompliance::counts_line` and `ComplianceSummary::counts_line` both
+    # CALL `cfgd_schema::compliance_counts_line`, the one spelling of the counts,
+    # each over its own type's fields.
+    "counts_line crates/cfgd-crd/src/lib.rs"
 )
+FN_DEFINITIONS_AWK='
+# One `<name>\037<definition>\037<file>` record per function with a body. Every
+# function open at a line (a nested fn inside its parent) takes that line, and
+# closes when brace depth returns to where it opened.
+{
+    file = $0; sub(/:.*/, "", file)
+    line = $0; sub(/^[^:]*:[0-9]+:/, "", line)
+    code = code_only(line)
+    text = substr(line, 1, length(line) - length(LAST_COMMENT))
+    if (code ~ /^[[:space:]]*(pub[^ ]*[[:space:]]+)?(async[[:space:]]+)?fn [a-z0-9_]+[(<]/) {
+        match(code, /fn [a-z0-9_]+[(<]/)
+        n = ++open_count
+        start[n] = depth; opened[n] = 0; body[n] = ""
+        name[n] = substr(code, RSTART + 3, RLENGTH - 4)
+        text = substr(text, RSTART)
+    }
+    gsub(/[[:space:]]+/, " ", text); sub(/^ /, "", text); sub(/ $/, "", text)
+    opens = gsub(/{/, "{", code); closes = gsub(/}/, "}", code)
+    depth += opens - closes
+    for (i = open_count; i >= 1; i--) {
+        if (text != "") body[i] = body[i] (body[i] == "" ? "" : " ") text
+        if (opens > 0) opened[i] = 1
+    }
+    while (open_count > 0) {
+        i = open_count
+        if (!opened[i] && code ~ /;[[:space:]]*$/) { open_count--; continue }
+        if (!opened[i] || depth > start[i]) break
+        printf "%s\037%s\037%s\n", name[i], body[i], file
+        open_count--
+    }
+}
+'
 allowed_pairs_file="$STRIP_CACHE_DIR/allowed-fn-pairs"
 printf '%s\n' "${ALLOWED_FN_PAIRS[@]}" > "$allowed_pairs_file"
-# A digit is a legal character in a Rust fn name, so the extraction takes
-# `[a-z0-9_]` — anchored on `[a-z_]` it read `fn sha256_hex(` as a definition of
-# `sha` and could never count the real name.
 fn_dupes=$(while IFS= read -r -d '' rsfile; do
     case "$rsfile" in
         */tests.rs|*_test.rs|*/test_*.rs|*/tests_*.rs|*/test_helpers.rs|*/output/*) continue ;;
     esac
     strip_test_blocks_from_file "$rsfile" \
         | drop_trait_impl_lines \
-        | grep -E '^\S+:[0-9]+:\s*(pub[^ ]*\s+)?(async\s+)?fn [a-z0-9_]+[(<]' \
-        | sed 's|^\([^:]*\):[0-9]*:.*fn \([a-z0-9_]*\)[(<].*|\2 \1|' \
-        || true
+        | awk "$AWK_LIB$FN_DEFINITIONS_AWK"
 done < <(audit_scan_files) \
-    | sort -u | grep -vxF -f "$allowed_pairs_file" \
-    | awk '{print $1}' | sort | uniq -c | sort -rn \
-    | awk '$1 > 1 && \
-        $2 != "new" && $2 != "get" && $2 != "set" && $2 != "delete" && \
-        $2 != "open" && $2 != "init_tables" && $2 != "build" && \
-        $2 != "test" && $2 != "main" && $2 != "as_str" && $2 != "router" && \
-        $2 != "set_device_config" && $2 != "record_drift_event" && \
-        $2 != "list_drift_events" && $2 != "list_fleet_events" && \
-        $2 != "read_current_config" && $2 != "load_profile" && $2 != "plan" && \
-        $2 != "list_devices" && $2 != "get_device" && $2 != "enroll" && \
-        $2 != "display_name" && $2 != "config_path" && $2 != "checkin" && \
-        $2 != "from_spec" && $2 != "load_module" && $2 != "success" && \
-        $2 != "run_migrations" && $2 != "request_challenge" && \
-        $2 != "is_empty" && $2 != "len" && $2 != "error" && \
-        $2 != "enroll_info" && $2 != "parse" && $2 != "cmd_status" && \
-        $2 != "terminate_process" && $2 != "set_file_permissions" && \
-        $2 != "is_same_inode" && $2 != "is_root" && $2 != "is_executable" && \
-        $2 != "run_health_server" && $2 != "run_as_windows_service" && \
-        $2 != "home_dir_var" && $2 != "file_permissions_mode" && \
-        $2 != "create_symlink_impl" && $2 != "cleanup_old_binary" && \
-        $2 != "atomic_replace" && $2 != "acquire_apply_lock" && \
-        $2 != "recv_sighup" && $2 != "recv_sigterm" && \
-        $2 != "read_command_output" && $2 != "unavailable" && \
-        $2 != "set_fail_apply" && $2 != "status" && $2 != "label" && \
-        $2 != "manager_names" && $2 != "aborted" && $2 != "failed" && \
-        $2 != "skipped" && $2 != "metrics_handler" && $2 != "compose" && \
-        $2 != "default_cache_dir" && $2 != "default_cache_dir_for" && \
-        $2 != "field_tree" && $2 != "resolve_runtime_dir" && \
-        $2 != "probe_dir_writable" && $2 != "surface_stale_skills" && \
-        $2 != "install_cmd_for" \
-        {print}' || true)
+    | sort -u \
+    | awk -F'\037' -v allowed="$allowed_pairs_file" '
+        BEGIN { while ((getline pair < allowed) > 0) excused[pair] = 1 }
+        ($1 " " $3) in excused { next }
+        $2 == "fn new() -> Self { Self::default() }" { next }
+        { files[$1 "\037" $2]++ }
+        END {
+            for (key in files) {
+                if (files[key] < 2) continue
+                split(key, part, "\037")
+                printf "%7d %s: %s\n", files[key], part[1], substr(part[2], 1, 100)
+            }
+        }' \
+    | sort -k2 || true)
 rm -f "$allowed_pairs_file"
 if [[ -n "$fn_dupes" ]]; then
-    log_warn "Function names defined in multiple files (potential duplication):"
+    log_warn "Functions defined identically in multiple files (duplicated logic):"
     echo "$fn_dupes" | first_lines 10
 else
-    log_ok "No duplicated function definitions across files"
+    log_ok "No function defined identically in more than one file"
 fi
 
 if gate_is_in_scope; then

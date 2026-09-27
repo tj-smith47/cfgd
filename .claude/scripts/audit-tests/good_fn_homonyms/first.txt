@@ -1,0 +1,19 @@
+pub trait Source {
+    fn fetch(&self) -> u64;
+}
+
+pub struct Reading {
+    pub value: u64,
+}
+
+pub struct Probe;
+
+impl Probe {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn fetch(&self) -> u64 {
+        7
+    }
+}

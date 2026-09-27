@@ -7,7 +7,9 @@
 # Fixtures are .txt files outside the cargo source tree. The driver tells
 # audit.sh to scope its scan to the fixture directory via CFGD_AUDIT_PATH.
 # rg's --type-add 'rust:*.txt' makes the audit's existing rust-typed regexes
-# match .txt content unchanged.
+# match .txt content unchanged. A fixture that needs more than one file (a gate
+# that compares files, like the duplicated-function check) is a bad_*/ or good_*/
+# directory of .txt files, scanned as one tree.
 set -euo pipefail
 cd "$(dirname "$0")/../../.."
 
@@ -38,7 +40,7 @@ fixture_is_clean() {
     grep -qF '=== Audit Complete: 0 errors, 0 warnings ===' "$TMP/out"
 }
 
-for fix in "$FIXTURE_DIR"/bad_*.txt; do
+for fix in "$FIXTURE_DIR"/bad_*.txt "$FIXTURE_DIR"/bad_*/; do
     name=$(basename "$fix" .txt)
     run_audit_against "$fix"
     if fixture_is_clean; then
@@ -50,7 +52,7 @@ for fix in "$FIXTURE_DIR"/bad_*.txt; do
     fi
 done
 
-for fix in "$FIXTURE_DIR"/good_*.txt; do
+for fix in "$FIXTURE_DIR"/good_*.txt "$FIXTURE_DIR"/good_*/; do
     name=$(basename "$fix" .txt)
     run_audit_against "$fix"
     if fixture_is_clean; then
