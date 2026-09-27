@@ -1514,9 +1514,8 @@ fn every_enum_valued_global_flag_accepts_its_config_spelling() {
 /// answer: a parameter name is the author's to pick, so admitting on one lets
 /// the next resolver spell its way out of the rule. `resolve_color_choice` and
 /// `resolve_phase_filter` read no config and fall out on that test. An
-/// exemption is a
-/// `// knob-resolver-ok:` line at the production site, where a maintainer
-/// editing the function sees it, and never a list held here.
+/// exemption is a `// knob-resolver-ok:` line at the production site, where a
+/// maintainer editing the function sees it, and never a list held here.
 #[test]
 fn every_knob_resolver_routes_through_resolve_knob() {
     use cfgd_core::test_helpers::{
