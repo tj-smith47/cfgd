@@ -447,6 +447,38 @@ pub fn cmd_double_quoted(value: &str) -> String {
     format!("\"{}\"", value.replace('%', "%%"))
 }
 
+/// A value as one argument of a Windows command line that the MSVC runtime and
+/// `CommandLineToArgvW` split back into the same value.
+///
+/// Quotes only when the value needs it (empty, or holding whitespace or `"`),
+/// the same rule `std::process::Command` applies. Inside the quotes a `"` is
+/// escaped as `\"`, and a run of backslashes is doubled when a `"` follows it,
+/// including the closing quote: `C:\dir with space\` wrapped bare reads its
+/// last `\"` as a literal quote and swallows every argument after it. Not for
+/// `cmd.exe`, which parses its own command line ([`cmd_double_quoted`]).
+pub fn msvc_argv_quoted(value: &str) -> String {
+    if !value.is_empty() && !value.contains([' ', '\t', '\n', '\u{b}', '"']) {
+        return value.to_string();
+    }
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('"');
+    let mut backslashes = 0usize;
+    for c in value.chars() {
+        if c == '\\' {
+            backslashes += 1;
+        } else {
+            if c == '"' {
+                out.extend(std::iter::repeat_n('\\', backslashes + 1));
+            }
+            backslashes = 0;
+        }
+        out.push(c);
+    }
+    out.extend(std::iter::repeat_n('\\', backslashes));
+    out.push('"');
+    out
+}
+
 /// The manager family a package manager name belongs to: everything before the
 /// first `-`.
 ///
@@ -1254,6 +1286,27 @@ mod tests {
         );
         assert_eq!(cmd_double_quoted("%USERPROFILE%"), "\"%%USERPROFILE%%\"");
         assert_eq!(cmd_double_quoted("plain"), "\"plain\"");
+    }
+
+    /// Each row walked by hand through the MSVC argv rules: `\` is literal
+    /// unless a run of them precedes a `"`, where `2n` backslashes and a `"`
+    /// read as `n` backslashes and a delimiter, `2n+1` as `n` and a literal `"`.
+    #[test]
+    fn msvc_argv_quoted_survives_the_msvc_split_rules() {
+        let table: [(&str, &str); 9] = [
+            ("daemon", "daemon"),
+            ("", r#""""#),
+            (r"C:\cfgd\cache\", r"C:\cfgd\cache\"),
+            (r"C:\Program Files\cfgd", r#""C:\Program Files\cfgd""#),
+            (r"C:\cfgd cache\", r#""C:\cfgd cache\\""#),
+            (r"C:\cfgd cache\\", r#""C:\cfgd cache\\\\""#),
+            (r#"say "hi""#, r#""say \"hi\"""#),
+            (r#"a\"b"#, r#""a\\\"b""#),
+            ("tab\there", "\"tab\there\""),
+        ];
+        for (value, quoted) in table {
+            assert_eq!(msvc_argv_quoted(value), quoted, "{value:?}");
+        }
     }
 
     #[test]

@@ -420,6 +420,7 @@ Quoting is per-dialect; there is no one correct escaper. Every `*_quoted` helper
 - `powershell_single_quoted(value)` — a complete `'…'` token; fully literal, and the default choice for PowerShell.
 - `powershell_double_quoted(value)` / `escape_powershell_double_quoted(s)` — the interpolating pair, for a declared value carrying `$env:` references.
 - `cmd_double_quoted(value)` — a complete `"…"` token for `cmd.exe`/batch, doubling `%`.
+- `msvc_argv_quoted(value)` — one argument of a Windows command line that the MSVC runtime / `CommandLineToArgvW` splits back unchanged (quotes only when needed; escapes `"` and the backslash runs before it). The Windows service binPath is built from it; `Command::arg` already applies the same rule, so reach for it only where a command line is composed as a string.
 
 A PowerShell function-wrapper alias carries its command as a quoted string built into a script block at CALL time (`function n { & ([scriptblock]::Create('<cmd> @args')) @args }`) — pasted between the braces, a `}` closes the function early.
 

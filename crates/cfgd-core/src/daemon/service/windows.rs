@@ -98,16 +98,20 @@ pub(crate) fn parse_service_argv(args: &[String]) -> ServiceLaunch {
     }
 }
 
-/// Quote a single binPath token for the sc.exe command-line string. Values that
-/// carry a space or a backslash (every Windows path) must be quoted so sc.exe
-/// stores them as one argument; bare flag names and subcommands need no quotes.
+/// The binPath string `sc.exe create` stores: `binary`, then each
+/// [`service_binpath_argv`] token, every one quoted so the SCM-launched
+/// process's argv split hands back the tokens that were written.
+///
+/// The binary goes through the same quoter although the split reads argv[0]
+/// by a simpler rule (up to the closing quote, no escapes): a Windows path
+/// holds no `"` and does not end in `\`, the two cases where the rules differ.
 #[cfg(windows)]
-fn sc_quote(tok: &str) -> String {
-    if tok.is_empty() || tok.contains(' ') || tok.contains('\\') {
-        format!("\"{}\"", tok)
-    } else {
-        tok.to_string()
-    }
+pub(crate) fn service_binpath_command_line(binary: &str, argv: &[String]) -> String {
+    std::iter::once(binary)
+        .chain(argv.iter().map(String::as_str))
+        .map(crate::msvc_argv_quoted)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Install cfgd as a Windows Service via sc.exe.
@@ -141,11 +145,7 @@ pub(crate) fn install_windows_service(
     // rebuild the sc.exe binPath command-line string from those exact tokens so
     // the parsed contract the test pins and the string sc.exe stores never drift.
     let argv = service_binpath_argv(config_path, profile, enable_event_log, scope, dirs);
-    let mut bin_args = format!("\"{}\"", binary_str);
-    for tok in &argv {
-        bin_args.push(' ');
-        bin_args.push_str(&sc_quote(tok));
-    }
+    let bin_args = service_binpath_command_line(binary_str, &argv);
 
     // sc.exe requires key= and value as separate arguments
     let output = crate::command_output(std::process::Command::new("sc.exe").args([
@@ -576,5 +576,66 @@ mod tests {
             launch.dirs.cache_dir, dirs.cache_dir,
             "--cache-dir: the service composes sources from the cache its install named"
         );
+    }
+
+    /// The whole producer-to-consumer path on the OS that runs it: the binPath
+    /// string `sc.exe` stores, split by the same `CommandLineToArgvW` rules the
+    /// SCM-launched process's runtime applies, read back by the service. The
+    /// values carry a trailing `\`, spaces and a `"`, the cases a bare wrap in
+    /// quotes loses.
+    #[cfg(windows)]
+    #[test]
+    fn the_service_reads_back_every_setting_through_the_binpath_string() {
+        use windows_sys::Win32::Foundation::LocalFree;
+        use windows_sys::Win32::UI::Shell::CommandLineToArgvW;
+
+        let config = PathBuf::from(r"C:\cfgd conf\cfgd.yaml");
+        let dirs = DaemonDirOverrides {
+            state_dir: Some(PathBuf::from(r"C:\cfgd\state\")),
+            runtime_dir: Some(PathBuf::from(r"C:\cfgd run\")),
+            cache_dir: Some(PathBuf::from(r"C:\cfgd cache\\")),
+        };
+        let profile = r#"my "srv" \"#;
+        let argv = service_binpath_argv(&config, Some(profile), true, crate::Scope::System, &dirs);
+        let line = service_binpath_command_line(r"C:\Program Files\cfgd\cfgd.exe", &argv);
+
+        let wide: Vec<u16> = line.encode_utf16().chain(std::iter::once(0)).collect();
+        let mut count = 0i32;
+        // SAFETY: `wide` is NUL-terminated and outlives the call; the returned
+        // block is read within `count` and freed once with `LocalFree`.
+        let split: Vec<String> = unsafe {
+            let raw = CommandLineToArgvW(wide.as_ptr(), &mut count);
+            assert!(!raw.is_null(), "CommandLineToArgvW failed on {line}");
+            let args = (0..count as usize)
+                .map(|i| {
+                    let p = *raw.add(i);
+                    let len = (0..).take_while(|&n| *p.add(n) != 0).count();
+                    String::from_utf16_lossy(std::slice::from_raw_parts(p, len))
+                })
+                .collect();
+            LocalFree(raw.cast());
+            args
+        };
+
+        assert_eq!(
+            split[0], r"C:\Program Files\cfgd\cfgd.exe",
+            "the binary is argv[0]: {line}"
+        );
+        assert_eq!(
+            split[1..],
+            argv[..],
+            "every token splits back as written: {line}"
+        );
+        let launch = parse_service_argv(&split);
+        assert_eq!(launch.config_path, config, "--config");
+        assert_eq!(
+            launch.profile_override.as_deref(),
+            Some(profile),
+            "--profile"
+        );
+        assert_eq!(launch.scope, crate::Scope::System, "--scope system");
+        assert_eq!(launch.dirs.state_dir, dirs.state_dir, "--state-dir");
+        assert_eq!(launch.dirs.runtime_dir, dirs.runtime_dir, "--runtime-dir");
+        assert_eq!(launch.dirs.cache_dir, dirs.cache_dir, "--cache-dir");
     }
 }
