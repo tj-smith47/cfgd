@@ -1145,15 +1145,17 @@ mod condense_script_label_tests {
             }
             let body = std::fs::read_to_string(&path).unwrap();
             let lines: Vec<&str> = body.lines().collect();
-            let mut in_tests = false;
+            // Each test item is skipped where it stands: `output/mod.rs`,
+            // `printer.rs`, `renderer/mod.rs` and `reconciler/format.rs` each
+            // carry a test-only item above production code that a cut at the
+            // first `#[cfg(test)]` would drop from the walk.
+            let tests = crate::test_helpers::inline_test_item_ranges(&body);
             for (n, line) in lines.iter().enumerate() {
                 let code = line.trim_start();
-                // The file's own test module opens at column 0; an indented
-                // `#[cfg(test)]` gates one item inside production code.
-                if line.starts_with("#[cfg(test)]") {
-                    in_tests = true;
-                }
-                if in_tests || code.starts_with("//") || code.starts_with("use ") {
+                if tests.iter().any(|(from, to)| (*from..*to).contains(&n))
+                    || code.starts_with("//")
+                    || code.starts_with("use ")
+                {
                     continue;
                 }
                 if !idioms.iter().any(|i| code.contains(i)) {
