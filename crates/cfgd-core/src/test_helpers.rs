@@ -5707,11 +5707,11 @@ fn is_test_gate(attr: &str) -> bool {
         .is_some_and(cfg_requires_test)
 }
 
-/// Every `mod x;` the Rust source at `source` declares, as the file it loads
-/// (after any `#[path = "…"]`) and whether its attributes gate it to tests.
+/// Every `mod x;` the Rust source at `source`, whose text is `body`, declares,
+/// as the file it loads (after any `#[path = "…"]`) and whether its attributes
+/// gate it to tests.
 /// A declaration that names no file fails, since the crate could not build.
-fn declared_module_files(source: &Path) -> Vec<(PathBuf, bool)> {
-    let body = walked_file_body(source);
+fn declared_module_files(source: &Path, body: &str) -> Vec<(PathBuf, bool)> {
     let lines: Vec<&str> = body.lines().collect();
     // A crate root or `mod.rs` declares its children beside itself; any other
     // file declares them in the directory named after it.
@@ -5848,7 +5848,7 @@ pub fn test_only_files_below(root: &Path) -> std::collections::BTreeSet<PathBuf>
         if inner_gate {
             found.push(source.clone());
         }
-        let children = declared_module_files(source);
+        let children = declared_module_files(source, &body);
         found.extend(
             children
                 .iter()

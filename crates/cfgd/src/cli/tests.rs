@@ -1399,7 +1399,6 @@ fn every_cfgd_env_name_is_spelled_once_in_production() {
     let sources: Vec<(String, String)> = trees
         .iter()
         .flat_map(|(_, files)| files)
-        .filter(|(path, _)| !cfgd_core::test_helpers::is_test_only_file(path))
         .map(|(path, production)| {
             let rel = path.strip_prefix(&crates_dir).unwrap_or(path);
             (
@@ -18411,7 +18410,16 @@ fn a_gated_items_extent_ends_where_the_item_does() {
 /// walk outright. A source read as empty is otherwise indistinguishable from one
 /// holding no offender, so a walk that went blind partway down a file still
 /// reports the population as swept.
+///
+/// A file `is_test_source` or `is_test_only_file` names has no production
+/// region, so it reads as the empty string, the same answer
+/// `production_slice_of` gives.
 fn floored_production_body(path: &std::path::Path) -> String {
+    if cfgd_core::test_helpers::is_test_source(path)
+        || cfgd_core::test_helpers::is_test_only_file(path)
+    {
+        return String::new();
+    }
     let body = walked_file_body(path);
     // unfloored-slice-ok: the floor over what this cut returned is the assert below.
     let production = production_body(&body);
@@ -18436,6 +18444,51 @@ fn floored_production_body(path: &std::path::Path) -> String {
     production
 }
 
+/// This crate's floored reader agrees with `production_slice_of`: a file built
+/// only for tests, or holding tests alone, has no production region, and the
+/// per-root population leaves both kinds out.
+#[test]
+fn floored_production_body_reads_no_test_only_file_as_production() {
+    let root = cfgd_core::test_helpers::workspace_root();
+    for held in [
+        "crates/cfgd-core/src/test_helpers.rs",
+        "crates/cfgd/src/cli/test_support.rs",
+        "crates/cfgd/src/cli/tests.rs",
+    ] {
+        assert_eq!(
+            floored_production_body(&root.join(held)),
+            "",
+            "{held} reads as production"
+        );
+    }
+    assert!(!floored_production_body(&root.join("crates/cfgd/src/cli/mod.rs")).is_empty());
+    // one-root-population-ok: the question is an absence, which no root has a
+    // count of; each root's own floor is `production_sources_per_root`'s.
+    let listed: Vec<std::path::PathBuf> = production_sources_per_root(&[
+        "cfgd",
+        "cfgd-core",
+        "cfgd-crd",
+        "cfgd-csi",
+        "cfgd-operator",
+        "cfgd-schema",
+        "cfgd-test-fixtures",
+    ])
+    .into_iter()
+    .flat_map(|(_, sources)| sources.into_iter().map(|(path, _)| path))
+    .collect();
+    let held: Vec<&std::path::PathBuf> = listed
+        .iter()
+        .filter(|p| {
+            cfgd_core::test_helpers::is_test_only_file(p)
+                || cfgd_core::test_helpers::is_test_source(p)
+        })
+        .collect();
+    assert!(
+        held.is_empty(),
+        "the population holds test-only files: {held:?}"
+    );
+}
+
 /// Every crate root's production sources, keyed by the crate's own name, for a
 /// walk whose population is the WHOLE workspace.
 ///
@@ -18445,7 +18498,8 @@ fn floored_production_body(path: &std::path::Path) -> String {
 /// indistinguishable from one holding no offender. The comparison is
 /// order-insensitive: both sides are sorted first, so a caller listing its
 /// roots in its own order is not failed with a message about a crate joining
-/// the workspace. A file `is_test_source` names holds tests alone and is no
+/// the workspace. A file `is_test_source` names holds tests alone, and one
+/// `is_test_only_file` names is built only for tests, so neither is a
 /// production source.
 fn production_sources_per_root(roots: &[&str]) -> Vec<(String, Vec<(std::path::PathBuf, String)>)> {
     let crates_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
@@ -18468,7 +18522,10 @@ fn production_sources_per_root(roots: &[&str]) -> Vec<(String, Vec<(std::path::P
             let files: Vec<(std::path::PathBuf, String)> =
                 rust_sources_under(&crates_dir.join(krate).join("src"))
                     .into_iter()
-                    .filter(|p| !cfgd_core::test_helpers::is_test_source(p))
+                    .filter(|p| {
+                        !cfgd_core::test_helpers::is_test_source(p)
+                            && !cfgd_core::test_helpers::is_test_only_file(p)
+                    })
                     .map(|path| {
                         let production = floored_production_body(&path);
                         (path, production)
@@ -18515,6 +18572,9 @@ fn cli_production_sources() -> Vec<(std::path::PathBuf, String)> {
 fn every_saved_plan_the_cli_records_comes_from_the_one_gate() {
     // The declaration and its one producer both live in `cfgd`; no other crate
     // depends on this one, so nothing else can name the type at all.
+    // The counts these floors hold against are taken over `production_sources_per_root`, which
+    // leaves out the files built only for tests; none of them holds a `SavedPlan` literal, so
+    // leaving them out moved no count.
     const WALK_ROOTS: &[(&str, usize)] = &[
         ("cfgd", 2),
         ("cfgd-core", 0),
@@ -37728,6 +37788,9 @@ fn every_closing_hint_names_a_command() {
     // `providers/` and handed to `printer.hint(...)` lay outside both, which is
     // how the two backup note composers shipped with nobody holding their
     // wording or their class.
+    // The counts these floors hold against are taken over `production_sources_per_root`, which
+    // leaves out the files built only for tests; none of them holds a closing hint, so leaving
+    // them out moved no count.
     const WALK_ROOTS: &[(&str, usize)] = &[
         ("cfgd", 27),
         ("cfgd-core", 0),
@@ -37898,9 +37961,12 @@ fn no_gated_hint_names_a_path_or_a_machine_state() {
     // own name and cannot hide behind another's count;
     // the roots holding no hint today are floored at zero and held by
     // `production_sources_per_root`, which fails a root that reads as empty.
+    // The counts these floors hold against are taken over `production_sources_per_root`, which
+    // leaves out the files built only for tests; none of them holds a gated hint, so leaving them
+    // out moved no count.
     const WALK_ROOTS: &[(&str, usize)] = &[
-        ("cfgd", 63),
-        ("cfgd-core", 5),
+        ("cfgd", 70),
+        ("cfgd-core", 6),
         ("cfgd-crd", 0),
         ("cfgd-csi", 0),
         ("cfgd-operator", 0),
@@ -38045,8 +38111,11 @@ fn composer_class_offence(
 fn every_hint_composer_declares_its_class() {
     // Both crates hold composers today and the other four could; one floor per
     // root, so a tree that stops declaring them fails on its own name.
+    // The counts these floors hold against are taken over `production_sources_per_root`, which
+    // leaves out the files built only for tests; none of them holds a hint composer, so leaving
+    // them out moved no count.
     const WALK_ROOTS: &[(&str, usize)] = &[
-        ("cfgd", 8),
+        ("cfgd", 9),
         ("cfgd-core", 3),
         ("cfgd-crd", 0),
         ("cfgd-csi", 0),
@@ -38637,6 +38706,9 @@ fn every_hint_composer_the_workspace_declares_is_classified() {
     // no composer of their own are floored at zero and held by
     // `production_sources_per_root`, which fails on a root that reads as empty
     // and on a crate joining the workspace unnamed.
+    // The counts these floors hold against are taken over `production_sources_per_root`, which
+    // leaves out the files built only for tests; none of them holds a hint composer or an ungating
+    // call, so leaving them out moved no count.
     const WALK_ROOTS: &[(&str, usize, usize)] = &[
         ("cfgd", 7, 5),
         ("cfgd-core", 3, 4),

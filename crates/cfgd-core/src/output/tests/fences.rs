@@ -3159,7 +3159,7 @@ fn every_multi_file_production_walk_reads_through_the_floored_helper() {
         // declaration line names the cut rather than reaching it.
         let own_file = crate::to_posix_string(&path).ends_with("cfgd-core/src/test_helpers.rs");
         let body = if own_file {
-            crate::test_helpers::production_slice_of(&path)
+            crate::test_helpers::test_module_cut_of(&path)
         } else {
             std::fs::read_to_string(&path).unwrap_or_else(|e| {
                 panic!("{}: the walk must read every source: {e}", path.display())
@@ -7042,7 +7042,7 @@ fn no_scan_hand_copies_the_test_only_file_rule() {
     // and the lines calling `is_test_only_file(` there, its definition in
     // cfgd-core's test_helpers.rs left out, both counted when the rule last moved.
     const FLOORS: [(&str, usize, usize); 7] = [
-        ("cfgd", 257, 18),
+        ("cfgd", 257, 20),
         ("cfgd-core", 243, 14),
         ("cfgd-crd", 2, 0),
         ("cfgd-csi", 11, 0),
