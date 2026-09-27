@@ -54183,20 +54183,23 @@ fn every_pre_dispatch_reader_answers_the_same_from_the_shared_document() {
     let path = dir.path().join("cfgd.yaml");
     std::fs::write(
         &path,
-        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: shared\nspec:\n  profile: default\n  aliases:\n    st: status --verbose\n  migrationPolicy: Warn\n  update:\n    policy: Manual\n  output:\n    theme:\n      name: nord\n    usageHints: true\n    maskEnvValues: none\n",
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: shared\nspec:\n  profile: default\n  aliases:\n    st: status --verbose\n  migrationPolicy: Ignore\n  update:\n    policy: Manual\n  output:\n    theme:\n      name: nord\n    usageHints: true\n    maskEnvValues: none\n",
     )
     .expect("write config");
 
-    let gate_says = |config: &Path| {
-        let cli = Cli::try_parse_hermetic([
+    let gate_says = |config: &Path, policy: Option<&str>| {
+        let mut argv: Vec<&std::ffi::OsStr> = vec![
             "cfgd".as_ref(),
             "--config".as_ref(),
             config.as_os_str(),
             "--state-dir".as_ref(),
             state.path().as_os_str(),
-            "status".as_ref(),
-        ])
-        .expect("the fixture argv parses");
+        ];
+        if let Some(policy) = policy {
+            argv.extend::<[&std::ffi::OsStr; 2]>(["--migration-policy".as_ref(), policy.as_ref()]);
+        }
+        argv.push("status".as_ref());
+        let cli = Cli::try_parse_hermetic(argv).expect("the fixture argv parses");
         let (printer, _stdout, stderr) = Printer::for_test_split_streams(Verbosity::Normal);
         crate::cli::config_schema::gate_on_load(
             &printer,
@@ -54220,9 +54223,15 @@ fn every_pre_dispatch_reader_answers_the_same_from_the_shared_document() {
     );
     assert!(super::resolve_hints_enabled(doc, None));
     assert!(!super::resolve_mask_env_values(doc, None).masks());
+    // The default policy reports a document behind the schema, so only the
+    // stored `Ignore` leaves the gate silent over this one.
     assert!(
-        gate_says(&path).contains("cfgd config migrate"),
-        "a stored Warn reports what the document is behind by"
+        gate_says(&path, Some("warn")).contains("cfgd config migrate"),
+        "the fixture is behind the schema"
+    );
+    assert!(
+        gate_says(&path, None).trim().is_empty(),
+        "a stored Ignore reports nothing"
     );
     assert_eq!(
         crate::cli::upgrade::startup_update_config(doc, None).policy,
@@ -54237,7 +54246,7 @@ fn every_pre_dispatch_reader_answers_the_same_from_the_shared_document() {
     assert!(super::resolve_theme_config(doc, None).is_none());
     assert!(!super::resolve_hints_enabled(doc, None));
     assert!(super::resolve_mask_env_values(doc, None).masks());
-    assert!(gate_says(&absent_path).trim().is_empty());
+    assert!(gate_says(&absent_path, None).trim().is_empty());
     assert_eq!(
         crate::cli::upgrade::startup_update_config(doc, None).policy,
         UpdatePolicy::default()
