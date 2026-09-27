@@ -415,7 +415,7 @@ host: ...`) with the same next step: run `cfgd plan -o json` again. A package
 installed by hand between the plan and the replay is the usual cause, since it
 moves the manager the resolver picks while every recorded stamp still matches.
 `--dry-run`, `--yes` and `--on-conflict` stay legal, since they say how the run
-behaves; what it does is the file's.
+behaves. What the run does comes from the file.
 
 ### `cfgd plan`
 

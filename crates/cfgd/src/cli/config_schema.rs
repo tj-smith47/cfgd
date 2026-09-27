@@ -416,9 +416,9 @@ pub fn cmd_config_migrate(cli: &Cli, printer: &Printer, write: bool) -> anyhow::
 /// costs one read of the document whatever it decides — and an overridden
 /// `Ignore` costs none at all.
 ///
-/// The state store is opened HERE, and only
-/// where there is an answer to hold: `cfgd paths`, `cfgd explain` and every
-/// other read that records nothing leave the state root as they found it.
+/// The state store is opened HERE, and only where there is an answer to hold:
+/// `cfgd paths`, `cfgd explain` and every other read that records nothing leave
+/// the state root as they found it.
 pub fn gate_on_load(printer: &Printer, invocation: &GateInvocation<'_>, config_path: &Path) {
     let GateInvocation {
         policy_override,

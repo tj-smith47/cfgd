@@ -2065,7 +2065,7 @@ fn package_owner(
 /// Shell sections both ask it, so neither can read a key the way the other
 /// would not.
 ///
-/// Asked of the SHAPE and not of the file's name, which the env engine spells
+/// Asked of the SHAPE, because the file's name is one the env engine spells
 /// differently per platform and per dialect: the producer folds the path it
 /// actually probed through `to_posix_string`, so a Windows key keeps its drive
 /// and answers `is_absolute` there exactly as a POSIX key does here. Matching a
@@ -9099,12 +9099,12 @@ mod tests {
             "and the floor it was judged against"
         );
         // Serialized where the documentation says to look for it: a consumer
-        // reaches these numbers down
-        // `packageState[].held`, so a rename anywhere along that path breaks
-        // the promise even while the inner struct still serializes. The route
-        // a floor nothing met would take is published beside them, down its
-        // own documented path, and is added here as a row of its own because
-        // this host holds the manager and so can never produce one.
+        // reaches these numbers down `packageState[].held`, so a rename
+        // anywhere along that path breaks the promise even while the inner
+        // struct still serializes. The route a floor nothing met would take is
+        // published beside them, down its own documented path, and is added
+        // here as a row of its own because this host holds the manager and so
+        // can never produce one.
         let routed = ModulePackageStatus {
             route: Some(FloorRoute {
                 clause: crate::cli::tests::floor_route_clause(),

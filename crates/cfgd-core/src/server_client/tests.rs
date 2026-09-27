@@ -284,7 +284,7 @@ const CAPTURED_CHECKIN_BODY: &str = r#"{"deviceId":"dev-1","hostname":{HOSTNAME}
 
 /// The check-in carries every check that did not pass, violations first, as
 /// the bytes a real check-in sent. The snapshot lists the warning first, so
-/// the order on the wire is the report's own and not the collection's.
+/// the order on the wire is the report's own.
 #[test]
 fn checkin_sends_the_non_compliant_checks_as_a_real_checkin_did() {
     use crate::compliance::{ComplianceCheck, MachineInfo, compute_summary};

@@ -16,9 +16,10 @@ use cfgd_core::test_helpers::test_printer;
 
 use common::{apply_args, cli_for, plan_args, tiny_profile_setup};
 
-/// Write what `cfgd plan -o json` produced to `dest`, exactly as a shell redirect would. `dest` is
-/// in the STATE directory: a file written inside the config directory is itself a change to what
-/// the derivation read, which is the very thing the refusal tests move.
+/// Write what `cfgd plan -o json` produced to `dest`, exactly as a shell
+/// redirect would. `dest` is in the STATE directory: a file written inside the
+/// config directory is itself a change to what the derivation read, which is
+/// the very thing the refusal tests move.
 fn record_plan_file(cli: &Cli, args: &PlanArgs, dest: &Path) {
     let (printer, cap) = Printer::for_test_doc_with_format(OutputFormat::Json);
     cmd_plan(cli, &printer, args).unwrap();
@@ -309,7 +310,7 @@ fn a_plan_recorded_under_another_config_is_refused() {
     record_plan_file(&cli, &plan_args(), &plan_file);
 
     // Both staleness facts are made true first, so the assertion below reads
-    // the ORDER and not just the refusal: the config the derivation read is
+    // the ORDER as well as the refusal: the config the derivation read is
     // moved, and an apply is recorded against the serial the plan carries.
     // With the identity question asked after either of them, a different
     // sentence prints.
@@ -360,8 +361,9 @@ fn a_plan_recorded_under_another_config_is_refused() {
 
 #[test]
 fn a_relative_spelling_of_the_same_config_replays_the_plan() {
-    // The identity question above is asked about the FILE: a `..` walking back through a component
-    // names the same config the derivation read, and must not refuse.
+    // The identity question above is asked about the FILE: a `..` walking back
+    // through a component names the same config the derivation read, and must
+    // not refuse.
     let (config_dir, state_dir, target) = tiny_profile_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
     let plan_file = state_dir.path().join("plan.json");
@@ -553,10 +555,11 @@ fn a_json_document_that_is_no_plan_output_is_refused_as_one() {
 fn every_apply_arg_is_refused_with_a_plan_file_or_is_an_execution_knob() {
     use clap::CommandFactory;
 
-    // These say HOW the run behaves. WHAT it does is the file's to say. `plan` itself is not an
-    // argument of the run. The list holds only ids clap really declares here: `--yes` is global
-    // (`from_global`) and `--help`/`--version` belong to the root command, so none of the three
-    // reaches this walk, and naming them would exempt a future argument that took one of those ids.
+    // These say HOW the run behaves. WHAT it does is the file's to say. `plan`
+    // itself is not an argument of the run. The list holds only ids clap really
+    // declares here: `--yes` is global (`from_global`) and `--help`/`--version`
+    // belong to the root command, so none of the three reaches this walk, and
+    // naming them would exempt a future argument that took one of those ids.
     const EXECUTION_KNOBS: [&str; 4] = ["plan", "dry_run", "shell", "on_conflict"];
 
     let command = ApplyArgs::command();
@@ -733,8 +736,8 @@ fn a_plan_file_naming_no_store_is_refused_as_written_before_the_key() {
 
 #[test]
 fn a_plan_replays_against_its_store_copied_to_another_directory() {
-    // The identity lives in the database, so the same
-    // store under another `--state-dir` is still the store the plan names.
+    // The identity lives in the database, so the same store under another
+    // `--state-dir` is still the store the plan names.
     let (config_dir, state_dir, target) = tiny_profile_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
     let plan_file = state_dir.path().join("plan.json");

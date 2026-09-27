@@ -748,9 +748,9 @@ fn plan_refusal(
 /// Three facts decide that, and they are the three [`saved_plan_for`] records:
 /// the state store the plan was derived against, the `applies` serial it was
 /// written against, and whether every config input the derivation read still
-/// has the stamp it had. All three are refusals
-/// — the file IS the approval, and an approval of a plan
-/// the machine has moved past approves actions nobody looked at.
+/// has the stamp it had. All three are refusals — the file IS the approval, and
+/// an approval of a plan the machine has moved past approves actions nobody
+/// looked at.
 ///
 /// Ahead of those two comes the question of whether the file is a plan cfgd
 /// wrote FOR THIS CONFIG: a payload carrying no `savedPlan` (its run was
@@ -944,11 +944,11 @@ pub(in crate::cli) fn load_saved_plan(
 /// outdated one as converged. The resolution that fills them has already run on
 /// the replay path, so they are taken from it; the file's copy is not trusted.
 ///
-/// A package the file names and the modules no longer resolve the same way is
-/// a REFUSAL. The config-input check above does not cover
-/// it: [`cfgd_core::modules::resolve_package`] picks a manager by what this
-/// host holds, so a package installed between the plan and the replay moves
-/// the `(manager, canonical_name)` key while every recorded input still stats
+/// A package the file names and the modules no longer resolve the same way is a
+/// REFUSAL. The config-input check above does not cover it:
+/// [`cfgd_core::modules::resolve_package`] picks a manager by what this host
+/// holds, so a package installed between the plan and the replay moves the
+/// `(manager, canonical_name)` key while every recorded input still stats
 /// identical. Keeping the file's own `min_version: None` there would let
 /// `Reconciler::package_survives_elision` elide an outdated copy as converged,
 /// which is the one outcome the floor exists to prevent.
@@ -1183,9 +1183,9 @@ pub(in crate::cli) fn report_plan_verdict(
 /// plan/printer/state it acts on) so the call stays under clippy's
 /// too-many-arguments budget as fields accrue.
 ///
-/// Passed by value because `saved_plan` owns the
-/// recorded action graph, which the payload builder takes whole; copying it to
-/// hand it over would double a plan-sized JSON value for nothing.
+/// Passed by value because `saved_plan` owns the recorded action graph, which
+/// the payload builder takes whole; copying it to hand it over would double a
+/// plan-sized JSON value for nothing.
 pub(in crate::cli) struct PlanPreviewArgs<'a> {
     pub context: &'a str,
     /// How this preview was scoped, for the verdict's next step. A bare

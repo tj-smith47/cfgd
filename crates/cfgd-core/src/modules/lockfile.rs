@@ -399,7 +399,7 @@ impl SpecChange {
 /// the Scripts composer (see [`SpecChange::script`]).
 // name-row-ok: every row NAMES the declared kind that changed (`dependency
 // added: nvim`, `env 'EDITOR': vi -> nvim`), so its subject is a schema noun
-// and not a past-tense report of something the command did.
+// with no past-tense report of something the command did.
 pub fn diff_module_specs(old: &LoadedModule, new: &LoadedModule, arrow: &str) -> Vec<SpecChange> {
     let mut changes = Vec::new();
 

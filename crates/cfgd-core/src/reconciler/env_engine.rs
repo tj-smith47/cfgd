@@ -1081,8 +1081,8 @@ pub fn launchd_env_plist(label: &str, vars: &BTreeMap<String, String>) -> String
 impl EnvPlatform {
     /// Every variant, so a walk over the platforms takes the population from
     /// the type; a hand list stops growing the day a variant is added.
-    /// `env_platform_all_covers_every_variant` fails to
-    /// compile until a new variant joins it.
+    /// `env_platform_all_covers_every_variant` fails to compile until a new
+    /// variant joins it.
     pub(super) const ALL: [Self; 4] = [Self::Linux, Self::MacOs, Self::FreeBsd, Self::Windows];
 }
 
@@ -1721,9 +1721,9 @@ mod tests {
     /// reads `KEY=VALUE` with no documented last-wins for a repeated key, and
     /// a LaunchAgent is XML; both publish the winners alone.
     ///
-    /// The floor is the (platform, file) MATRIX: a
-    /// name three platform arms produce would otherwise let the fourth stop
-    /// producing it with nothing going red.
+    /// The floor is the (platform, file) MATRIX. A floor over the set of file
+    /// names alone would let a fourth platform arm stop producing a name the
+    /// other three produce with nothing going red.
     #[test]
     fn every_generated_env_dialect_renders_through_the_one_block_composer() {
         const NO_BLOCKS: [&str; 2] = ["cfgd.conf", MACOS_USER_PLIST_NAME];

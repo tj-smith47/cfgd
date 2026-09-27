@@ -25,10 +25,10 @@ use super::{Action, ModuleActionKind, Owner, Plan};
 /// the profile action's `Skip` reason and the module arm's status line so the
 /// two cannot describe the same decision differently.
 ///
-/// Says WHY the target was left alone and not that it was: the profile arm's
-/// row is composed as `skip <target>: <reason>` and the module arm's detail
-/// hangs under a `Role::Skipped` glyph, so both halves already spell the
-/// decision (`file_skip_reason_doubling_error` is the rule).
+/// Says WHY the target was left alone: the profile arm's row is composed as
+/// `skip <target>: <reason>` and the module arm's detail hangs under a
+/// `Role::Skipped` glyph, so both halves already spell the decision
+/// (`file_skip_reason_doubling_error` is the rule).
 pub const UNMANAGED_SKIP_REASON: &str = "target exists as unmanaged file";
 
 /// A conflict policy that has been SETTLED for one target.

@@ -1146,9 +1146,9 @@ mod condense_script_label_tests {
             let body = std::fs::read_to_string(&path).unwrap();
             let lines: Vec<&str> = body.lines().collect();
             // Each test item is skipped where it stands: `output/mod.rs`,
-            // `printer.rs`, `renderer/mod.rs` and `reconciler/format.rs` each
-            // carry a test-only item above production code that a cut at the
-            // first `#[cfg(test)]` would drop from the walk.
+            // `renderer/mod.rs` and `reconciler/format.rs` each carry a
+            // test-only item above production code that a cut at the first
+            // `#[cfg(test)]` would drop from the walk.
             let tests = crate::test_helpers::inline_test_item_ranges(&body);
             for (n, line) in lines.iter().enumerate() {
                 let code = line.trim_start();

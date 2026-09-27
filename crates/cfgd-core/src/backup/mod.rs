@@ -1251,9 +1251,9 @@ fn prune_retention(store: &StateStore, unit: &BackupUnit<'_>, printer: &Printer)
 ///
 /// Rendered by [`run_backup_group`] rather than by the prune itself, because
 /// the prune runs under the unit's lock and the snapshot's own row is not on
-/// screen until that lock is released. It fires once, on the run that
-/// discovers them, because an orphaned row is never re-marked. A row, so no
-/// hint setting hides it: it names a directory still holding data nothing will prune.
+/// screen until that lock is released. It fires once, on the run that discovers
+/// them, because an orphaned row is never re-marked. A row, so no hint setting
+/// hides it: it names a directory still holding data nothing will prune.
 ///
 /// The destination folds here. The hint slot this sentence used to take folds
 /// its own text at render, while the status row it takes now folds nothing, so

@@ -87,7 +87,7 @@ fn the_setter_refuses_a_theme_name_no_preset_answers_to() {
     for name in cfgd_core::output::Theme::PRESET_NAMES {
         assert!(
             stderr.contains(name),
-            "the refusal names the whole accepted vocabulary, and not {name}: {stderr}"
+            "the refusal names the whole accepted vocabulary, {name} included: {stderr}"
         );
     }
 

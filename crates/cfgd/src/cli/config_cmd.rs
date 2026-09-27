@@ -632,10 +632,10 @@ pub fn cmd_config_get(cli: &Cli, printer: &Printer, key: &str) -> anyhow::Result
     // A legacy flat key names the nested one; a document that still carries
     // the flat spelling is answered from it rather than reported missing.
     let resolved = nested_output_key(key).unwrap_or_else(|| key.to_string());
-    // The fallback is the flat twin of the key the walk RESOLVED to: a caller writing the legacy
-    // spelling already resolves to the nested key, and asking for its own twin again would leave
-    // `theme.name` — the spelling the docs print — with no fallback at all on a document nothing
-    // has migrated.
+    // The fallback is the flat twin of the key the walk RESOLVED to: a caller
+    // writing the legacy spelling already resolves to the nested key, and
+    // asking for its own twin again would leave `theme.name` — the spelling the
+    // docs print — with no fallback at all on a document nothing has migrated.
     let alias = flat_output_key(&resolved);
     let value = match walk_yaml_path(spec, &resolved).or_else(|e| match alias.as_deref() {
         // Only a key that is not there is worth asking the other spelling
@@ -1427,11 +1427,12 @@ spec:
     }
 
     // The population walk behind `descent_blocked`: for every field the Config
-    // schema names, plant a value of the wrong shape under it and ask for a
-    // key beneath it, then check the refusal against what the schema declares
+    // schema names, plant a value of the wrong shape under it and ask for a key
+    // beneath it, then check the refusal against what the schema declares
     // there. A free-form map (`spec.aliases`) is a mapping that names no child
     // field, and a list is a shape the key walker cannot address, which the
-    // document did not get wrong; both read the same as their neighbours under a child count.
+    // document did not get wrong; both read the same as their neighbours under
+    // a child count.
     #[test]
     fn every_config_spec_field_refuses_a_wrong_shape_by_its_declared_shape() {
         use crate::cli::explain::DeclaredShape;
@@ -1450,8 +1451,8 @@ spec:
         }
 
         // The loop below reads its expected refusal from `config_field_shape`,
-        // the same function `descent_blocked` asks, so it pins the mapping and
-        // not the oracle. These rows say what the schema declares, so an oracle
+        // the same function `descent_blocked` asks, so it pins the mapping
+        // itself. These rows say what the schema declares, so an oracle
         // that answers a child count again fails here. One row per `type_desc`
         // spelling the reflection holds, because the spelling is what the
         // oracle branches on: a demoted `[]string` or `boolean` arm reads as a
@@ -1542,7 +1543,8 @@ spec:
 
     // The schema names no `a`, so a value there is a leaf as far as the key
     // walker can tell, and a sequence standing at one is a shape the document
-    // got wrong.
+    // got wrong. A list the walker declines to index into is a different case,
+    // which the document did not get wrong.
     #[test]
     fn walk_yaml_path_blocked_by_a_sequence_names_it() {
         let yaml: serde_yaml::Value = serde_yaml::from_str("a:\n  - 1\n").unwrap();

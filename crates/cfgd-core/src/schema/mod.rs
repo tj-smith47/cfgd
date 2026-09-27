@@ -412,7 +412,7 @@ pub fn field_tree_from_schema(root: &Schema) -> Vec<FieldNode> {
     // The KRM envelope keys are a property of the DOCUMENT root and nothing
     // else: a nested field is never `apiVersion`, and a nested `kind`
     // (`daemon.reconcile.patches[].kind`) is an authoring field the tree must
-    // carry. So the envelope is stripped here, once, and not in the recursion.
+    // carry. So the envelope is stripped here, once, outside the recursion.
     let authoring: Vec<(String, Value)> = top
         .into_iter()
         .filter(|(name, _)| !is_krm_envelope_key(name))
@@ -1361,10 +1361,10 @@ mod tests {
     // (non-optional) `$ref`s — the shape `resolve_ref` follows — so the walk
     // recurses Node -> Edge -> Node -> Edge. Without a cycle guard this
     // overflows the stack and aborts the process. Written as a literal: the
-    // cycle is total, so no value of the pair exists for a
-    // schemars derive to be grounded against. The literal keeps the layout a
-    // derive emits for a recursive root: Node inline at the root, Edge under
-    // `$defs`, and the way back to Node spelled as the root ref `#`.
+    // cycle is total, so no value of the pair exists for a schemars derive to
+    // be grounded against. The literal keeps the layout a derive emits for a
+    // recursive root: Node inline at the root, Edge under `$defs`, and the way
+    // back to Node spelled as the root ref `#`.
     #[test]
     fn self_referential_schema_terminates_with_bounded_tree() {
         let schema: Schema = serde_json::from_value(serde_json::json!({

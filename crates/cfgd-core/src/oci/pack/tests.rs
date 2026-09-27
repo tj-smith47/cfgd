@@ -1154,10 +1154,10 @@ fn sorted_annotations_json() -> String {
 /// the caller built them in, so two packs of identical input produce one
 /// digest.
 ///
-/// Compared against a LITERAL: two calls
-/// built from one value agree however wrongly they both order it, which makes
-/// a self-comparison green under the very regression it exists to catch. The
-/// literal spells the sorted sequence, so an unordered map fails it.
+/// Compared against a LITERAL: two calls built from one value agree however
+/// wrongly they both order it, which makes a self-comparison green under the
+/// very regression it exists to catch. The literal spells the sorted sequence,
+/// so an unordered map fails it.
 #[test]
 fn build_image_manifest_serializes_its_annotations_in_sorted_key_order() {
     let opts = PackOptions {

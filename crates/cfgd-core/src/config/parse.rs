@@ -198,9 +198,9 @@ pub(super) fn warn_on_legacy_theme_keys(raw_yaml: &str) -> Vec<String> {
 
 /// One `apiVersion` this build can read a document written under.
 ///
-/// The conversion is a table because the
-/// document kinds share one validator: a version added here is accepted by
-/// `cfgd.yaml`, a profile, a module and a ConfigSource in one edit.
+/// The conversion is a table because the document kinds share one validator: a
+/// version added here is accepted by `cfgd.yaml`, a profile, a module and a
+/// ConfigSource in one edit.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ApiVersionConversion {
     /// The version as the document spells it.
@@ -230,7 +230,7 @@ pub(crate) fn convertible_from(
 
 /// Every `apiVersion` in `table`, in table order, joined for a refusal to name.
 ///
-/// The refusal names the whole readable set, beyond [`crate::API_VERSION`]:
+/// The refusal names the whole readable set, [`crate::API_VERSION`] included:
 /// a build carrying a second conversion row accepts a document the constant
 /// does not name, and a message spelling the constant alone would call that
 /// document's version unsupported in the same breath as accepting it. `table`

@@ -1357,11 +1357,11 @@ pub fn captured_text(buf: &std::sync::Arc<std::sync::Mutex<String>>) -> String {
 /// `Printer::for_test()`) so it drops in as a direct replacement in fixtures
 /// that don't assert on captured output.
 ///
-/// Built from the capture constructor and not from `Printer::new`, because
-/// `new` inherits the terminal the suite was invoked from: under a pty that
-/// printer reports a live region AND a human at stdin, so a command reaching
-/// an unanswered confirmation prompt BLOCKS for the rest of the run instead of
-/// refusing. Discarding the buffer keeps the surface identical (Quiet, Table).
+/// Built from the capture constructor, because `Printer::new` inherits the
+/// terminal the suite was invoked from: under a pty that printer reports a live
+/// region AND a human at stdin, so a command reaching an unanswered
+/// confirmation prompt BLOCKS for the rest of the run where it should refuse.
+/// Discarding the buffer keeps the surface identical (Quiet, Table).
 pub fn test_printer() -> crate::output::Printer {
     crate::output::Printer::for_test().0
 }
@@ -1752,10 +1752,10 @@ pub fn callers_reaching(
 ///
 /// Which rows are source at all is [`LineMask`]'s answer: an `r#` written
 /// inside an ordinary literal or a comment is masked, so the scan stays in step
-/// with the rows below it. A scan tracking
-/// raw literals alone reads the `r"` ending a word like `"…provider"` as one,
-/// and the rows below it are glued onto the line that word sits on until the
-/// next quote closes the literal it thinks it is in.
+/// with the rows below it. A scan tracking raw literals alone reads the `r"`
+/// ending a word like `"…provider"` as one, and the rows below it are glued
+/// onto the line that word sits on until the next quote closes the literal it
+/// thinks it is in.
 pub fn logical_source_lines(body: &str) -> Vec<(usize, String)> {
     let mut out: Vec<(usize, String)> = Vec::new();
     let mut continues = false;
@@ -5383,8 +5383,7 @@ pub fn item_lead(code: &str) -> (ItemLead, &str) {
     }
 }
 
-/// [`item_lead`]'s fold alone, for a reader that asks what the item IS and
-/// not who can see it.
+/// [`item_lead`]'s fold alone, for a reader that asks what the item IS.
 pub fn strip_item_lead(code: &str) -> &str {
     item_lead(code).1
 }

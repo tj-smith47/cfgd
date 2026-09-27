@@ -1609,7 +1609,7 @@ fn a_brew_formula_below_its_floor_exits_drift_detected_on_every_surface() {
         );
         assert!(
             !text.contains("error checking drift"),
-            "cfgd {args:?}: brew's own grammar reads `0.10.2_1`, so this is drift and not an unanswered check, got: {text}"
+            "cfgd {args:?}: brew's own grammar reads `0.10.2_1`, so this is drift on an answered check, got: {text}"
         );
         // Each surface states the one finding in its own register: `diff` and
         // `verify` print both operands, `status` the terse cause. Brew's
@@ -1664,7 +1664,7 @@ fn a_brew_formula_below_its_floor_is_drift_on_both_scoped_surfaces() {
         );
         assert!(
             !text.contains("error checking drift"),
-            "cfgd {args:?}: brew's own grammar reads `0.10.2_1`, so this is drift and not an unanswered check, got: {text}"
+            "cfgd {args:?}: brew's own grammar reads `0.10.2_1`, so this is drift on an answered check, got: {text}"
         );
         assert!(
             text.contains("neovim"),

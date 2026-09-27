@@ -157,9 +157,9 @@ fn rollup_lines_covers_every_apply_status() {
     let cases: Vec<(ApplyStatus, usize, Vec<Role>)> = vec![
         // The tally below carries a failure under every status, this one
         // included. A `Success` holding one is a tally no apply path produces,
-        // and the clause list states it: the one
-        // decomposition is what every arm reads, so a surface cannot lose an
-        // outcome by which status word happens to sit above it.
+        // and the clause list states it: the one decomposition is what every
+        // arm reads, so a surface cannot lose an outcome by which status word
+        // happens to sit above it.
         (ApplyStatus::Success, 2, vec![Role::Ok, Role::Fail]),
         (
             ApplyStatus::Partial,
@@ -1278,7 +1278,7 @@ fn apply_result_tally_reads_the_reconcilers_planned_total() {
 
 // --- alignment ---
 
-/// The column is per REPORT, not per phase and not per owner group: one long
+/// The column is per REPORT, across phases and owner groups: one long
 /// subject in the FIRST phase moves the column the second phase pads to.
 #[test]
 fn report_align_width_spans_every_phase() {

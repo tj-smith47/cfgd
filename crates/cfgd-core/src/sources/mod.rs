@@ -91,9 +91,10 @@ fn is_remote_origin_url(url: &str) -> bool {
 /// local filesystem path (no scheme at all) is a path like any other display
 /// slot, so it folds under `$HOME`.
 ///
-/// The home fold runs on a PATH and leaves a URL alone: folding `<home>/` inside a
-/// `file://` authority produces `file://~/...`, a string no tool resolves back
-/// into a path, so a scheme ends the fold decision before it starts.
+/// The home fold runs on a PATH and leaves a URL alone: folding `<home>/`
+/// inside a `file://` authority produces `file://~/...`, a string no tool
+/// resolves back into a path, so a scheme ends the fold decision before it
+/// starts.
 pub fn display_source_origin(url: &str) -> String {
     let displayed = crate::display_url(url);
     if displayed.contains("://") || is_remote_origin_url(url) {

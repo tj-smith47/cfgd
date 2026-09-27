@@ -735,7 +735,7 @@ mod tests {
     fn a_wrapped_row_in_a_group_with_a_column_pads_its_last_line_to_that_column() {
         // The group settled a column past where this row's last line ends, so
         // the trailer opens exactly there — where every sibling's trailing
-        // content opens — and not at `cols`.
+        // content opens. `cols` is a different column.
         let (_, unpadded_width) = wrapped_rows(None);
         let column = unpadded_width + 10;
         let (out, last_width) = wrapped_rows(Some(column));

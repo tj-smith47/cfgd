@@ -8397,7 +8397,7 @@ fn module_show_resolved_rows_states_each_of_the_three_resolutions() {
                 version.as_deref(),
                 Some("14.1.0"),
                 "the row states what the manager OFFERS, which is what \
-                 `fill_available_versions` fills and not the installed copy"
+                 `fill_available_versions` fills, whatever the installed copy is"
             );
         }
         other => panic!("a package an available manager holds resolves: {other:#?}"),

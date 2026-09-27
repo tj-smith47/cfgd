@@ -692,15 +692,14 @@ pub fn render_caveats(printer: &Printer, groups: &[(Owner, Vec<ActionNote>)]) {
         }
         let section = section.get_or_insert_with(|| printer.section_caveats());
         let group = section.section_owner(&owner.label());
-        // Warnings lead, and the run's own instruction closes the group: it
-        // has to be acted on, so it cannot sit between two reports and still
-        // read as the last thing the group says. The key is the note's own
-        // marker. A tag names the subsystem that spoke,
-        // and `NoteSink::report` pushes every `SystemConfigurator`'s report
-        // untagged because its action line already names the producer, so a
-        // key of `tag.is_none()` would rank those reports with the
-        // instruction. The sort is stable, so notes sharing both keys keep the
-        // order their actions ran in.
+        // Warnings lead, and the run's own instruction closes the group: it has
+        // to be acted on, so it cannot sit between two reports and still read
+        // as the last thing the group says. The key is the note's own marker. A
+        // tag names the subsystem that spoke, and `NoteSink::report` pushes
+        // every `SystemConfigurator`'s report untagged because its action line
+        // already names the producer, so a key of `tag.is_none()` would rank
+        // those reports with the instruction. The sort is stable, so notes
+        // sharing both keys keep the order their actions ran in.
         reports.sort_by_key(|note| (note.role != Role::Warn, note.is_instruction()));
         for note in reports {
             group.status_simple(note.role, note.body());

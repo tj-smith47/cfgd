@@ -19,7 +19,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// The escape a VT100 terminal shows its cursor on. Written from the signal
-/// hook with a raw `write(2)`, which is why it is bytes and not a `Term` call.
+/// hook with a raw `write(2)`, which is why it is bytes with no `Term` call.
 /// The hook is the only writer and it is `cfg(unix)`, so on Windows the
 /// constant would be dead code — a `-D warnings` build error rather than a
 /// warning.

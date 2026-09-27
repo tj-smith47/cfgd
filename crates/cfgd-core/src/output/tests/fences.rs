@@ -612,8 +612,8 @@ fn impl_header(lines: &[&str]) -> bool {
 }
 
 /// The collector split is what makes the deferred-header flush and the kv
-/// drain unable to re-enter `write_line` — they hold `&mut RenderState`, not a
-/// sink and not the lock. A collector that regained either would deadlock or
+/// drain unable to re-enter `write_line` — they hold `&mut RenderState` alone,
+/// with no sink and no lock. A collector that regained either would deadlock or
 /// emit out of band, and neither failure is visible in a diff.
 #[test]
 fn emit_collectors_take_no_sink() {
@@ -3263,10 +3263,10 @@ fn test_region(path: &Path, body: &str) -> String {
 /// rebuilt into the file again: each row takes the region's line where a marked
 /// item claims the row and the next production line where none does.
 ///
-/// Membership is the RANGES. A blank line inside a
-/// test item is blank in the mask exactly as a blanked production row is, so a
-/// reader asking `is_empty()` hands that row to the production half, takes a
-/// line that belongs further down, and every row after it is off by one.
+/// Membership is the RANGES. A blank line inside a test item is blank in the
+/// mask exactly as a blanked production row is, so a reader asking `is_empty()`
+/// hands that row to the production half, takes a line that belongs further
+/// down, and every row after it is off by one.
 fn assert_reassembles(file: &str) {
     let region = test_region(Path::new("src/thing.rs"), file);
     // unfloored-slice-ok: the subject is one fixture held in memory; no source on disk is read
@@ -3383,11 +3383,11 @@ fn the_test_region_is_every_inline_test_item_and_nothing_else() {
         file.lines().count(),
         "a blanked line still occupies its own row, or an offender cannot be opened where it is reported"
     );
-    // The partition stated as a REASSEMBLY: each row takes
-    // the region's line where the row belongs to a marked item and the next
-    // production line where it does not, and the result has to be the file
-    // again with every production line spent. A count is satisfied by two lines
-    // that swapped halves in opposite directions; this is not.
+    // The partition stated as a REASSEMBLY: each row takes the region's line
+    // where the row belongs to a marked item and the next production line where
+    // it does not, and the result has to be the file again with every
+    // production line spent. A count is satisfied by two lines that swapped
+    // halves in opposite directions; this is not.
     assert_reassembles(file);
     assert_eq!(
         // unfloored-slice-ok: the subject is one fixture held in memory; no source on disk is read
@@ -3676,14 +3676,14 @@ fn no_test_scope_scanner_folds_an_item_lead_by_hand() {
 /// all. `contains`, `split_once` and `find` are the three that read the marker
 /// from anywhere on the line, so they are the three that can be fooled.
 ///
-/// Two escapes the tell cannot see, stated here. A marker
-/// const named outside the `*_HATCH` / `*_MARKER` / `marker` / `hatch`
-/// convention is invisible to [`names_a_hatch_marker`], which has the name
-/// alone to go on; `NOT_A_CHILD` is the one such const today and it is routed.
-/// And the statement scan below asks only whether a routed call appears; it
-/// never asks which marker, so a chain filtering on one marker and
-/// destructuring another would pass. That same latitude is what lets the
-/// legitimate filter-then-destructure shape work.
+/// Two escapes the tell cannot see, stated here. A marker const named outside
+/// the `*_HATCH` / `*_MARKER` / `marker` / `hatch` convention is invisible to
+/// [`names_a_hatch_marker`], which has the name alone to go on; `NOT_A_CHILD`
+/// is the one such const today and it is routed. And the statement scan below
+/// asks only whether a routed call appears; it never asks which marker, so a
+/// chain filtering on one marker and destructuring another would pass. That
+/// same latitude is what lets the legitimate filter-then-destructure shape
+/// work.
 ///
 /// A site whose subject is not a source line — a fixture's own rows, a rendered
 /// screen — says so with `// doc-comment-ok: <why>` on the line or the one above.
@@ -4351,7 +4351,7 @@ fn every_golden_root_is_named() {
         derived, named,
         "a snapshot root the workspace holds is not named in \
          `KNOWN_GOLDEN_ROOTS`, or a named one no longer exists; name the new \
-         root there so its goldens are guarded by name and not only by the \
+         root there so its goldens are guarded by name as well as by the \
          population's floor"
     );
 }
@@ -4823,13 +4823,13 @@ fn every_gc_failed_removal_pin_holds_its_payload_through_the_one_fixture() {
 /// roots by reading `crates/` so a crate added to the workspace joins this
 /// population with it.
 ///
-/// One walk over every crate, not one per crate and not one per directory: the
-/// class was first swept in the reconciler alone, and a chmod turned out to be as
-/// likely in the source cache, the backup engine, the daemon's IPC setup, the
-/// self-upgrade, the secrets backends or the device gateway. A walk reads source
-/// TEXT, so the crate graph does not bound it, and a per-crate body left
-/// `cfgd-csi` (root on every node), `cfgd-crd` and `cfgd-schema` judged by
-/// nobody. One population also means no site is judged twice.
+/// One walk over every crate at once: the class was first swept in the
+/// reconciler alone, and a chmod turned out to be as likely in the source
+/// cache, the backup engine, the daemon's IPC setup, the self-upgrade, the
+/// secrets backends or the device gateway. A walk reads source TEXT, so the
+/// crate graph does not bound it, and a per-crate body left `cfgd-csi` (root on
+/// every node), `cfgd-crd` and `cfgd-schema` judged by nobody. One population
+/// also means no site is judged twice.
 ///
 /// The floor sits AT what the workspace holds rather than under it, so a call
 /// site cannot vanish inside a margin: a `>=` floor never trips on an addition,
@@ -5739,10 +5739,10 @@ fn without_call_name(line: &str) -> String {
 /// that was never there.
 ///
 /// Each holder names the files that validate it rather than validating in
-/// place, because a spec merged from layers is refused where the merge lands
-/// and not where the field is declared. The validating call must NAME the
-/// holder's field in its subject or its argument: a file already refusing one
-/// field would otherwise vouch for a second holder nothing reads.
+/// place, because a spec merged from layers is refused where the merge lands.
+/// The file declaring the field never sees it. The validating call must NAME
+/// the holder's field in its subject or its argument: a file already refusing
+/// one field would otherwise vouch for a second holder nothing reads.
 #[test]
 fn every_deserialized_script_body_is_refused_an_empty_run() {
     let mut found: Vec<(String, String)> = Vec::new();
@@ -6391,9 +6391,9 @@ fn no_production_site_outside_the_resolver_composes_a_floor_shortfall_sentence()
 /// makes the run act on one manager's facts in another's name.
 const LEADER_SCOPED_PROVISION_FIELDS: &[&str] = &["*manager =", "*declared =", "*floor ="];
 
-/// Whether `code` ASSIGNS through one of those tells; a comparison through
-/// one answers false. A match arm reading `if *manager == route.package` carries the
-/// assignment's own bytes as a prefix, and a reader that stops at the first
+/// Whether `code` ASSIGNS through one of those tells; a comparison through one
+/// answers false. A match arm reading `if *manager == route.package` carries
+/// the assignment's own bytes as a prefix, and a reader that stops at the first
 /// `=` calls a guard a re-lead.
 fn assigns_leader_scoped_field(code: &str, field: &str) -> bool {
     code.match_indices(field)

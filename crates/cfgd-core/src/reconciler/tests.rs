@@ -9273,11 +9273,10 @@ fn plan_to_hash_string_multiple_phases() {
 /// different plan and reports work nobody asked for.
 ///
 /// Held against bytes written here. A second call of the producer agrees with
-/// itself however the fields are spelled. Two
-/// arms, because the two shapes break separately: an ordinary plan, whose
-/// nodes leave their optional fields absent, and a held-floor node with no
-/// declarants, which is what that field's `skip_serializing_if` promises
-/// hashes as it did before the field existed.
+/// itself however the fields are spelled. Two arms, because the two shapes
+/// break separately: an ordinary plan, whose nodes leave their optional fields
+/// absent, and a held-floor node with no declarants, which is what that field's
+/// `skip_serializing_if` promises hashes as it did before the field existed.
 #[test]
 fn the_plan_hash_holds_the_bytes_a_stored_hash_was_taken_over() {
     let ordinary = Plan {
@@ -10594,8 +10593,8 @@ fn a_confirmed_floor_route_provisions_the_manager_ahead_of_the_module() {
         ),
         "the provision carries the floor it was confirmed for: {bootstrap:#?}"
     );
-    // Counted: an empty phase is
-    // pruned, so "absent" and "present with no action" are the same answer.
+    // Counted: an empty phase is pruned, so "absent" and "present with no
+    // action" are the same answer.
     let installs = plan
         .phases
         .iter()
@@ -10966,9 +10965,10 @@ fn a_floored_manager_keeps_its_own_node_instead_of_joining_a_batch() {
 /// The literal is the string a run of the hash produced before the field was
 /// added, kept byte for byte (never retyped from the struct): it holds the
 /// variant's own field ORDER, and `depends_on` in the snake_case spelling serde
-/// gives it, since `rename_all = "camelCase"` on the enum renames variants and
-/// not fields. A literal composed from the type by hand would agree with
-/// whatever the type says today and prove nothing about the stored hashes.
+/// gives it, since `rename_all = "camelCase"` on the enum renames variants
+/// only; fields keep their names. A literal composed from the type by hand
+/// would agree with whatever the type says today and prove nothing about the
+/// stored hashes.
 #[test]
 fn a_provision_with_no_floor_hashes_to_the_bytes_it_always_did() {
     let plan = Plan {
@@ -27550,7 +27550,8 @@ fn a_plan_file_filing_a_profile_owned_action_under_any_owner_reads_back() {
     );
 }
 
-/// An action `serde_json` cannot write ends the hash; it never vanishes from it.
+/// An action `serde_json` cannot write ends the hash; it never vanishes from
+/// it.
 ///
 /// `applies.plan_hash` is a serialization of the actions, so an action dropped
 /// from the composition would let a run that deploys a file and a run that does
@@ -29739,9 +29740,10 @@ fn every_caveat_names_the_subject_that_produced_it() {
 /// which file to source, so it is a note row under its owner, out of the
 /// hint gate's reach.
 ///
-/// `for_test_at(Normal)`: a note row is a `status_simple`,
-/// and every non-`Fail` role is suppressed at `Verbosity::Quiet`, so the
-/// Quiet capture would read back empty whichever slot carried the sentence.
+/// `for_test_at(Normal)`, since `for_test()` captures at Quiet: a note row is
+/// a `status_simple`, and every non-`Fail` role is suppressed at
+/// `Verbosity::Quiet`, so the Quiet capture would read back empty whichever
+/// slot carried the sentence.
 #[test]
 fn the_re_source_reminder_renders_with_usage_hints_off() {
     let (printer, buf) = crate::output::Printer::for_test_at(crate::output::Verbosity::Normal);
@@ -30420,11 +30422,10 @@ fn plan_observed_reports_every_computed_phase_in_order() {
         )
         .unwrap();
 
-    // Computation order: `Bootstrap` is planned from the
-    // package work that survived dedup, so it cannot be reported before
-    // `Packages` even though it renders ahead of it. `PostScripts` never fires
-    // — its actions are computed in the same passes as `PreScripts` and
-    // `Modules`.
+    // Computation order: `Bootstrap` is planned from the package work that
+    // survived dedup, so it cannot be reported before `Packages` even though it
+    // renders ahead of it. `PostScripts` never fires — its actions are computed
+    // in the same passes as `PreScripts` and `Modules`.
     assert_eq!(
         seen,
         vec![
@@ -33023,8 +33024,9 @@ fn an_unreserved_target_is_not_copied_aside() {
 
 /// The header line of every block a generated env file holds, in file order.
 ///
-/// Taken from the generator's own [`EnvFileBlock`]s: a declared value may hold a blank line or a
-/// row opening with `#`, and either one fakes a boundary for a reader parsing the bytes back.
+/// Taken from the generator's own [`EnvFileBlock`]s: a declared value may hold
+/// a blank line or a row opening with `#`, and either one fakes a boundary for
+/// a reader parsing the bytes back.
 ///
 /// [`EnvFileBlock`]: super::env_files::EnvFileBlock
 fn block_headers(blocks: &[super::env_files::EnvFileBlock]) -> Vec<&str> {
@@ -33403,10 +33405,10 @@ fn every_surviving_path_declaration_reaches_the_one_generated_line() {
     }
 }
 
-/// A file the planner wrote must read back as current. Every owner kind is on the file at once —
-/// profile layer, module and the bootstrapped PATH line's manager — because the planner and the
-/// verifier share ONE merge, and a line either side rendered differently would be drift nothing can
-/// fix.
+/// A file the planner wrote must read back as current. Every owner kind is on
+/// the file at once — profile layer, module and the bootstrapped PATH line's
+/// manager — because the planner and the verifier share ONE merge, and a line
+/// either side rendered differently would be drift nothing can fix.
 #[test]
 #[serial_test::serial]
 fn every_line_the_planner_wrote_verifies_as_current() {

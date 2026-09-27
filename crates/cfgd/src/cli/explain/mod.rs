@@ -448,10 +448,9 @@ pub(super) enum DeclaredShape {
 /// contradicts the schema from a key that is simply not there — the two
 /// refusals a reader and a script must be able to tell apart.
 ///
-/// It reads the field's declared SHAPE. A free-form map declares a mapping
-/// and names no child at all, so
-/// a child count calls `spec.aliases` a scalar leaf and lets a document
-/// holding a scalar there pass as a key nobody has set yet.
+/// It reads the field's declared SHAPE. A free-form map declares a mapping and
+/// names no child at all, so a child count calls `spec.aliases` a scalar leaf
+/// and lets a document holding a scalar there pass as a key nobody has set yet.
 ///
 /// A scalar-or-mapping union is settled by `config_cmd::scalar_union_field`
 /// before this is asked, so the object arm is the whole answer here.

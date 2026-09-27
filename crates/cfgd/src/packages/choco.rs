@@ -790,9 +790,9 @@ Tags: git vcs dvcs
 
         /// The chocolatey install script warns on stderr about things the user
         /// must act on (an execution policy left in place, a shell restart).
-        /// Those notes are the reason `bootstrap` takes the whole context and
-        /// not a bare printer: they belong to the caller's sink, which renders
-        /// them under the action's own status line.
+        /// Those notes are the reason `bootstrap` takes the whole context: they
+        /// belong to the caller's sink, which renders them under the action's
+        /// own status line.
         #[test]
         #[serial]
         fn bootstrap_caveats_reach_the_callers_sink() {

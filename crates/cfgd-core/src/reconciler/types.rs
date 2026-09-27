@@ -1302,16 +1302,15 @@ fn batch_survives(batched: usize, kept: usize) -> bool {
 /// A phase in the reconciliation plan, as owner groups in display order.
 ///
 /// `groups` is private, so a phase whose owners are out of [`Owner::sort_key`]
-/// order is unrepresentable: no caller can write
-/// a struct literal, insert a group, or re-sort the vec. Two constructors reach
-/// the field, and both settle the same facts: [`Phase::from_actions`] from a
-/// flat action list, and the `Deserialize` impl below from a plan file, which
-/// re-establishes them and takes nothing on the file's word. A fact added to one
-/// is added to the other, or a plan file carries the shape the other forbids.
-/// The mutators below only ever shrink an existing
-/// ordering ([`Phase::retain_groups`], [`Phase::retain_actions`],
-/// [`Phase::retain_actions_and_batches`]) or hand out an owner's action list
-/// ([`Phase::groups_mut`]).
+/// order is unrepresentable: no caller can write a struct literal, insert a
+/// group, or re-sort the vec. Two constructors reach the field, and both settle
+/// the same facts: [`Phase::from_actions`] from a flat action list, and the
+/// `Deserialize` impl below from a plan file, which re-establishes them and
+/// takes nothing on the file's word. A fact added to one is added to the other,
+/// or a plan file carries the shape the other forbids. The mutators below only
+/// ever shrink an existing ordering ([`Phase::retain_groups`],
+/// [`Phase::retain_actions`], [`Phase::retain_actions_and_batches`]) or hand
+/// out an owner's action list ([`Phase::groups_mut`]).
 #[derive(Debug, Serialize)]
 pub struct Phase {
     pub name: PhaseName,
@@ -1320,23 +1319,23 @@ pub struct Phase {
 
 /// A phase read back from a plan file.
 ///
-/// Hand-written because `groups` is private, and the
-/// invariants above are the whole reason it is: a derive would hand a file's
-/// own shape straight into the field every surface renders. A plan file is an
-/// input like any other, so the four facts [`Phase::from_actions`] establishes
-/// are established again here — each action under the owner
-/// [`determined_owner`] names for it, one group per owner, no empty group,
-/// owners in [`Owner::sort_key`] order — leaving a phase no reader can tell
-/// from one the planner built.
+/// Hand-written because `groups` is private, and the invariants above are the
+/// whole reason it is: a derive would hand a file's own shape straight into the
+/// field every surface renders. A plan file is an input like any other, so the
+/// four facts [`Phase::from_actions`] establishes are established again here —
+/// each action under the owner [`determined_owner`] names for it, one group per
+/// owner, no empty group, owners in [`Owner::sort_key`] order — leaving a phase
+/// no reader can tell from one the planner built.
 ///
 /// The first is the one fact a file can state and the reader cannot repair: an
 /// owner is what a consumer partitions on (`apply::dispatched_in_lanes`,
 /// `daemon::reconcile::narrow_to_module` both ask `Owner::is_managers`), so a
 /// misplaced action would be dispatched and filtered unlike every planner-built
-/// one. It is refused, with no correction attempted, because a file disagreeing with
-/// [`determined_owner`] is a file cfgd did not write. An action whose owner is
-/// the planning PROFILE names no owner of its own, and the file's answer is
-/// taken as given — nothing in the phase says which profile planned it.
+/// one. It is refused, with no correction attempted, because a file disagreeing
+/// with [`determined_owner`] is a file cfgd did not write. An action whose
+/// owner is the planning PROFILE names no owner of its own, and the file's
+/// answer is taken as given — nothing in the phase says which profile planned
+/// it.
 impl<'de> Deserialize<'de> for Phase {
     fn deserialize<D: serde::Deserializer<'de>>(de: D) -> std::result::Result<Self, D::Error> {
         #[derive(Deserialize)]

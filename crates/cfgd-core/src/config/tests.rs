@@ -149,15 +149,14 @@ fn the_unsupported_api_version_refusal_names_every_readable_version() {
 /// `api_version` or `apiVersion` on one side of `==`, `!=`, `matches!(`,
 /// `.starts_with(`, `.contains(`, `.eq(` or `.ne(`, and `API_VERSION` or an
 /// inline literal on the other, in either direction and at every place the
-/// operator appears in the text. The question is put to a STATEMENT: rows
-/// are gathered from one terminator to the next and
-/// joined, so a comparison split across rows is one text while two
-/// neighbouring statements stay two. A `;`, `{` or `}` terminates wherever it
-/// falls, and so does a `,` at the statement's own bracket depth, which is
-/// what keeps two comma-separated `match` arms from answering for each other.
-/// Literals and comments are blanked before any of that, so a tell written
-/// inside either is invisible, and an offender is reported at the row its
-/// statement opened on.
+/// operator appears in the text. The question is put to a STATEMENT: rows are
+/// gathered from one terminator to the next and joined, so a comparison split
+/// across rows is one text while two neighbouring statements stay two. A `;`,
+/// `{` or `}` terminates wherever it falls, and so does a `,` at the
+/// statement's own bracket depth, which is what keeps two comma-separated
+/// `match` arms from answering for each other. Literals and comments are
+/// blanked before any of that, so a tell written inside either is invisible,
+/// and an offender is reported at the row its statement opened on.
 ///
 /// The population is every `<crate>/src` under `crates/`, read off the
 /// directory so a crate added to the workspace joins it, and NAMED so a renamed
@@ -371,8 +370,8 @@ fn no_production_site_compares_an_api_version_by_hand() {
         "the walk no longer reads {unread:?}; it read {read:?} — a renamed or moved \
          crate root leaves its apiVersion comparisons judged by nobody"
     );
-    // A root the walk never reported on reads as zero: a
-    // missing entry is the whole tree going dark, which is what the floor is for.
+    // A root the walk never reported on reads as zero: a missing entry is the
+    // whole tree going dark, which is what the floor is for.
     let short: Vec<(&str, usize, usize)> = WALK_ROOTS
         .iter()
         .map(|(named, floor)| {

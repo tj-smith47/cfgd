@@ -674,10 +674,9 @@ fn module_layers(modules: &[ResolvedModule]) -> impl Iterator<Item = EnvLayer> +
 /// A source delivers several layers at the SAME priority — its recommended
 /// tier, each opted-in profile and its standard profiles all take the
 /// subscription's own number (`composition::layers`) — and they all spell
-/// `source:<name>` (`ProfileLayer::owner_token`). A block is headed by an
-/// owner and a rank, so those would read as one repeated section, and joining
-/// them keeps every declaration in the order the
-/// layers were declared in.
+/// `source:<name>` (`ProfileLayer::owner_token`). A block is headed by an owner
+/// and a rank, so those would read as one repeated section, and joining them
+/// keeps every declaration in the order the layers were declared in.
 ///
 /// A rank change ends the run even under one owner. A subscriber override
 /// rides one step above the source's own items, and the header's number is

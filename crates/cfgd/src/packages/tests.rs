@@ -3030,8 +3030,8 @@ fn a_relative_in_tree_manifest_path_is_read() {
 /// tick reusing a derivation notices a Brewfile that changed under it.
 ///
 /// Absence is recorded as a state of its own: a manifest that only appears
-/// later reads as a change, which is why the
-/// record is taken before the caller's `exists()`.
+/// later reads as a change, which is why the record is taken before the
+/// caller's `exists()`.
 #[test]
 fn resolving_a_declared_manifest_records_it_as_a_config_input() {
     let dir = tempfile::tempdir().unwrap();

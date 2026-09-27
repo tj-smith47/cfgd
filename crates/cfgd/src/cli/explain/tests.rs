@@ -1365,7 +1365,7 @@ fn every_field_row_mark_lands_in_a_column() {
 ///   command that runs.
 ///
 /// - every object arm is a NAMED type, so the type span reads
-///   `<([]string | PackageListSpec)>` and not `<([]string | object)>`;
+///   `<([]string | PackageListSpec)>`, with no bare `object` arm;
 /// - a field's description never restates a type its own span already
 ///   shows: `Homebrew packages. Accepts a bare list or a \`BrewSpec\`
 ///   mapping.` under `<([]string | BrewSpec)>` above a `Variants` section

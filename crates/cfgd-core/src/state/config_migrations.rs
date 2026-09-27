@@ -48,11 +48,13 @@ impl StateStore {
         Ok(())
     }
 
-    /// `Some(accepted)` when this exact question was already answered: the recorded `offered_keys`
-    /// covers every key `offered` names. `None` when it was never asked, or asked about less, so a
-    /// release that adds a field asks about it and inherits no verdict on a different question. A
-    /// question naming no key is answered by nothing. An `offered_keys` column that no longer
-    /// decodes is read as covering nothing, so the reader is asked again.
+    /// `Some(accepted)` when this exact question was already answered: the
+    /// recorded `offered_keys` covers every key `offered` names. `None` when it
+    /// was never asked, or asked about less, so a release that adds a field
+    /// asks about it and inherits no verdict on a different question. A
+    /// question naming no key is answered by nothing. An `offered_keys` column
+    /// that no longer decodes is read as covering nothing, so the reader is
+    /// asked again.
     pub fn migration_answer(
         &self,
         config_path: &Path,

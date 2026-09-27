@@ -4255,7 +4255,7 @@ fn remote_origin_urls_are_told_from_local_ones() {
 
 // ---------------------------------------------------------------------------
 // load_source — the source name becomes a cache directory of its own, so it has
-// to be a plain name and not merely free of `..`.
+// to be a plain name; being free of `..` is not enough.
 // ---------------------------------------------------------------------------
 
 fn source_spec_named(name: &str) -> crate::config::SourceSpec {

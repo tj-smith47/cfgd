@@ -257,7 +257,7 @@ pub struct DiffOutput {
     /// same shape `verify` reports a resource: what was expected, what was
     /// found. An unevaluable `strategy: Patch` file lands here with the reason
     /// as its `actual`, so a blocked filter is visible to a structured consumer
-    /// and not only in the terminal.
+    /// as well as in the terminal.
     pub files: Vec<cfgd_core::providers::FileDriftResult>,
     pub packages: Vec<PackageDrift>,
     pub system: Vec<SystemDriftOutput>,

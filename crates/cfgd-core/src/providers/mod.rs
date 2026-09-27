@@ -886,11 +886,12 @@ pub trait PackageManager: Send + Sync {
     /// The command that raises THIS manager's own copy, where the copy is not
     /// its own to raise.
     ///
-    /// [`PackageManager::upgrade_verb`] answers for a PACKAGE the manager holds, and reading it as
-    /// the manager's own raise tells a reader to run `cargo install cargo`: cargo's copy comes from
-    /// rustup, and brew updates itself through its own `update`, where `upgrade` raises a formula.
-    /// `None` (the default) is a manager the package verb does raise, or one nothing cfgd can run
-    /// raises at all.
+    /// [`PackageManager::upgrade_verb`] answers for a PACKAGE the manager
+    /// holds, and reading it as the manager's own raise tells a reader to run
+    /// `cargo install cargo`: cargo's copy comes from rustup, and brew updates
+    /// itself through its own `update`, where `upgrade` raises a formula.
+    /// `None` (the default) is a manager the package verb does raise, or one
+    /// nothing cfgd can run raises at all.
     fn own_raise(&self) -> Option<std::borrow::Cow<'static, str>> {
         None
     }

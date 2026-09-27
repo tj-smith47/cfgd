@@ -2118,7 +2118,7 @@ images:
     fn cmd_deploy_human_mode_prints_pinned_manifest_to_stdout() {
         // In a non-structured (table) printer, the rewritten manifest is written
         // raw to stdout so it can be piped to `kubectl apply -f -`. Assert the
-        // captured stdout carries the pinned digest ref and not the old tag.
+        // captured stdout carries the pinned digest ref in place of the old tag.
         let dir = tempfile::tempdir().expect("tempdir");
         let lock_path = write_valid_lockfile(dir.path());
         let manifest_path = dir.path().join("pod.yaml");

@@ -246,8 +246,8 @@ impl<'x> PackageExec<'x> {
     /// [`PackageManager::created_path_dirs`].
     ///
     /// A directory cfgd made itself belongs in the generated env file however
-    /// the manager got onto the machine, so this runs after every install and
-    /// not only under a provision: npm's `~/.npm-global` is created during
+    /// the manager got onto the machine, so this runs after every install,
+    /// with or without a provision: npm's `~/.npm-global` is created during
     /// `install()`, and a user-installed npm reaches no bootstrap at all.
     ///
     /// A manager that created nothing queues no row at all, so an ordinary
@@ -773,10 +773,10 @@ impl<'x> PackageExec<'x> {
                 .into());
             }
             // Nothing to install: the node is the CHECK. The node asks here and
-            // reads nothing off the resolution, for the reason the floored provision
-            // asks it here too: an operator who raised the toolchain between
-            // the plan and the apply has changed the answer, and a run that
-            // failed on the older one would be reporting a machine that no
+            // reads nothing off the resolution, for the reason the floored
+            // provision asks it here too: an operator who raised the toolchain
+            // between the plan and the apply has changed the answer, and a run
+            // that failed on the older one would be reporting a machine that no
             // longer exists.
             ManagerAction::HeldFloor {
                 manager,

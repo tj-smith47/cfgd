@@ -114,12 +114,12 @@ pub const FILE_SKIP_VERB: &str = "skip";
 /// Enforced at both ends, as the family's other members are, and neither end
 /// covers what the other misses: the composition asserts it in debug builds, so
 /// a reason's actual bytes are judged however they were produced, but only on a
-/// path a debug build executes — in a release build, by nothing. The static half
-/// is `no_file_skip_reason_repeats_the_verb_its_row_already_spelled`, which
-/// judges every production mint whose reason it can read as a string literal or
-/// as a one-line `const`, and REFUSES a mint whose reason it cannot read rather
-/// than passing over it — by the RULE and not by a shape, so a local binding and
-/// a `reason` field-init shorthand are refused exactly as a `format!` is.
+/// path a debug build executes — in a release build, by nothing. The static
+/// half is `no_file_skip_reason_repeats_the_verb_its_row_already_spelled`,
+/// which judges every production mint whose reason it can read as a string
+/// literal or as a one-line `const`, and REFUSES a mint whose reason it cannot
+/// read — by the RULE, whatever the shape, so a local binding and a `reason`
+/// field-init shorthand are refused exactly as a `format!` is.
 pub fn file_skip_reason_doubling_error(reason: &str) -> Option<String> {
     let opener = reason
         .split(|c: char| !c.is_ascii_alphabetic())
@@ -1204,8 +1204,8 @@ pub fn recorded_resource_kind<'a>(resource_type: &'a str, resource_id: &str) -> 
 }
 
 /// Whether a `"module"` row NAMES A FILE — the `<module>/<target>` grammar
-/// [`module_file_resource_id`] mints — and not a script, a skip, or the bare
-/// legacy whole-module id.
+/// [`module_file_resource_id`] mints. A script, a skip and the bare legacy
+/// whole-module id answer false.
 ///
 /// The question a live check asks before resolving a row: only a per-file id
 /// is something a file pass can re-find, and a scan that resolves anything

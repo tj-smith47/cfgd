@@ -1351,10 +1351,10 @@ fn resolve_hints_enabled_folds_the_boolish_spellings_of_its_env_var() {
 ///   answers the lowercase spelling alone, so folding case there would have
 ///   clap accept a name the renderer then drops. Its stored twin
 ///   `spec.output.theme.name` is a free string (no `case_insensitive_enum!`
-///   serializing a canonical token), so what meets the
-///   rule is the documented vocabulary: `Theme::PRESET_NAMES` is the lowercase
-///   list the flag shows, the published schema enumerates, and
-///   `cfgd config set theme.name` refuses any other word against.
+///   serializing a canonical token), so what meets the rule is the documented
+///   vocabulary: `Theme::PRESET_NAMES` is the lowercase list the flag shows,
+///   the published schema enumerates, and `cfgd config set theme.name` refuses
+///   any other word against.
 /// - NO STORED TWIN: `--color` and `--scope` mirror no `spec.*` field, so
 ///   nothing can show a second casing of their words.
 ///
@@ -1596,8 +1596,8 @@ fn every_knob_resolver_routes_through_resolve_knob() {
     /// any lifetime are off. The borrowed form, the owned `PathBuf`, an
     /// `Option` of either, an `impl AsRef<Path>` and a generic parameter the
     /// declaration bounds by `AsRef<Path>` in its generic list or its `where`
-    /// clause are all admitted, so a resolver cannot spell
-    /// its way out of the rule through its signature.
+    /// clause are all admitted, so a resolver cannot spell its way out of the
+    /// rule through its signature.
     fn reads_a_config_path((declared, signature): &(String, String)) -> bool {
         // Any spelling of either type counts, qualified or not: the question
         // is what the parameter NAMES, and a wider read can only pull one more
@@ -12000,12 +12000,12 @@ fn load_config_and_profile_explicit_profile_delivered_by_source_emits_wrap_hint(
 ///
 /// [`super::error::render_cli_error`] is the ONE place a `CliErrorMeta`'s hints
 /// reach a `Doc`, so the class is settled there and this pin reads the sink
-/// itself. The hint handed in is an ordinary gated one
-/// (`From<&str>`), which is the point: the sink flips it, so a producer never
-/// has to know. `Verbosity::Normal` because `render_hint` prints nothing at
-/// all under `Quiet`: both assertions below would then fail whatever the class
-/// is, so the pin could never discriminate. The sink's other ungating mint, the
-/// `NoConfig` closer, is guarded by
+/// itself. The hint handed in is an ordinary gated one (`From<&str>`), which is
+/// the point: the sink flips it, so a producer never has to know.
+/// `Verbosity::Normal` because `render_hint` prints nothing at all under
+/// `Quiet`: both assertions below would then fail whatever the class is, so the
+/// pin could never discriminate. The sink's other ungating mint, the `NoConfig`
+/// closer, is guarded by
 /// `missing_config_human_emits_one_fail_line_and_init_hint`
 /// (`crates/cfgd/tests/cli_error_rendering.rs`).
 #[test]
@@ -15945,10 +15945,10 @@ fn every_result_line_is_sentence_case() {
         .iter()
         .cloned()
         .partition(|(path, _)| is_run_body(path));
-    // The witness that the split is a PARTITION and not two overlapping
-    // opinions: every core source lands on exactly one side, and each side has
-    // members. A third predicate added to either sweep would drop files out of
-    // both, which is the state that let a lowercase result line ship.
+    // The witness that the split is a PARTITION: every core source lands on
+    // exactly one side, and each side has members. A third predicate added to
+    // either sweep would drop files out of both, which is the state that let a
+    // lowercase result line ship.
     assert_eq!(
         bodies.len() + outside.len(),
         core.len(),
@@ -16606,7 +16606,7 @@ fn no_kv_block_renders_at_column_zero_under_a_heading() {
 /// `$env:EDITOR = 'vim' # module:m` here. A fixture hardcoding either wrote
 /// its file where nothing reads, or wrote a line the check can never match —
 /// and the tests asserting an ABSENCE passed anyway, blind rather than red,
-/// which is why this is a walk and not three fixes.
+/// which is why this is a walk over the class.
 ///
 /// Scoped to `cli/`, where a fixture drives the LIVE per-item env check
 /// through a `cmd_*`. `cfgd-core` holds two other populations this walk
@@ -17211,11 +17211,11 @@ fn top_level_args(args: &str) -> Vec<String> {
 /// beside the failure, in the same `hint`, so the answer is on screen with the
 /// question.
 ///
-/// Judged per FUNCTION, because the hint belongs to the failure's own report and
-/// not to the individual line: a function that renders several failure arms
-/// answers them with one hint composer. A failure with genuinely nothing to
-/// suggest — a name the reader already typed, a state cfgd is merely reporting —
-/// says so with `// no-next-step: <why>` on the line or the line above.
+/// Judged per FUNCTION, because the hint belongs to the failure's own report as
+/// a whole: a function that renders several failure arms answers them with one
+/// hint composer. A failure with genuinely nothing to suggest — a name the
+/// reader already typed, a state cfgd is merely reporting — says so with `//
+/// no-next-step: <why>` on the line or the line above.
 #[test]
 fn every_failure_the_cli_renders_says_what_to_do_next() {
     let mut judged = 0usize;
@@ -17860,7 +17860,7 @@ fn cli_production_sources() -> Vec<(std::path::PathBuf, String)> {
 /// left the other one wrong. `plan_ops::saved_plan_for` owns the gate and the
 /// construction; every other production site takes the value it returns.
 ///
-/// The population is every crate's production sources, beyond `src/cli/`'s:
+/// The population is every crate's production sources, `src/cli/` included:
 /// `SavedPlan` is plain `pub` inside `pub mod cli::output_types`, so anything
 /// in this crate can write the literal, and a walk scoped to the module that
 /// happens to hold today's two would report a tree it never read as swept.
@@ -26663,8 +26663,8 @@ fn build_doctor_doc_module_with_a_package_no_manager_can_deliver_emits_fail() {
 
 /// A route's shortfall opens on the package it is about, like every other
 /// member of the list it joins, and states the route as a fact: `doctor`
-/// installs nothing, so the reader is told the floor is
-/// reachable and by what method.
+/// installs nothing, so the reader is told the floor is reachable and by what
+/// method.
 #[test]
 fn a_doctor_route_shortfall_opens_on_the_package_that_fell_short() {
     assert_eq!(
@@ -26746,8 +26746,8 @@ fn build_doctor_doc_module_whose_managers_are_all_here_emits_ok() {
 /// read through the registry's own cargo so the raise the sentence names is the
 /// verb that manager declares.
 ///
-/// Every surface pin below states its row against this: a rendering that still matches a wording
-/// the producer stopped writing is a pin on nothing.
+/// Every surface pin below states its row against this: a rendering that still
+/// matches a wording the producer stopped writing is a pin on nothing.
 pub(crate) fn held_manager_clause(judgment: cfgd_core::modules::FloorJudgment) -> String {
     held_manager_clause_at("1.85", judgment)
 }
@@ -33883,9 +33883,9 @@ fn every_merged_env_view_is_built_once_per_command() {
         ("diff.rs", 2),
         ("remove.rs", 1),
     ];
-    // The `LayeredEnv` builds, counted on their own: `live_drift.rs` builds one for the shared
-    // scoped-drift walk and hands it straight to a check, so it has a layered view and no merge of
-    // its own.
+    // The `LayeredEnv` builds, counted on their own: `live_drift.rs` builds one
+    // for the shared scoped-drift walk and hands it straight to a check, so it
+    // has a layered view and no merge of its own.
     const EXPECTED_LAYERED: [(&str, usize); 5] = [
         ("status.rs", 2),
         ("verify.rs", 1),
@@ -34157,15 +34157,18 @@ fn every_core_minted_package_drift_id_comes_from_its_composer() {
 
 /// The call spans starting at `open`, as `(first line, last line, arguments)`.
 ///
-/// Structure is read off `code`, whose literals and comments are already blanked, so a `(` or a `,`
-/// inside either cannot end an argument; each argument's TEXT is taken from `written` at the same
-/// byte positions, so two literals of one length stay two distinct arguments. `written` is the same
-/// body with its comments alone blanked ([`cfgd_core::test_helpers::blank_comments`]): a comment
-/// belongs to no argument, and left standing its bytes are pushed into whichever argument follows
-/// it, so a call carrying one between two spellings of one value reads as two arguments that
-/// differ. Only the bracket pairs count toward depth: `<` and `>` are comparisons as often as they
-/// are generics, and a lone one swallows the rest of the call. Every occurrence on a line answers,
-/// and a declaration of the function is not a call.
+/// Structure is read off `code`, whose literals and comments are already
+/// blanked, so a `(` or a `,` inside either cannot end an argument; each
+/// argument's TEXT is taken from `written` at the same byte positions, so two
+/// literals of one length stay two distinct arguments. `written` is the same
+/// body with its comments alone blanked
+/// ([`cfgd_core::test_helpers::blank_comments`]): a comment belongs to no
+/// argument, and left standing its bytes are pushed into whichever argument
+/// follows it, so a call carrying one between two spellings of one value reads
+/// as two arguments that differ. Only the bracket pairs count toward depth: `<`
+/// and `>` are comparisons as often as they are generics, and a lone one
+/// swallows the rest of the call. Every occurrence on a line answers, and a
+/// declaration of the function is not a call.
 fn call_argument_spans(
     code: &[&str],
     written: &[&str],
@@ -36181,7 +36184,7 @@ fn every_manager_install_the_cli_emits_spells_its_weak_dependency_policy_once() 
 /// path once split apt's, and the split stays invisible until a package
 /// resolves differently depending on which spawn ran.
 ///
-/// The word is judged by allowlist and not by a tell for the argv builders:
+/// The word is judged by allowlist, with no tell for the argv builders:
 /// outside a declaration the word appears in exactly two shapes that reach no
 /// argv, and anything else carrying the word answers to the declaration or to
 /// the hatch. A tell has to recognize every builder there is, and the first
@@ -36515,12 +36518,11 @@ fn enclosing_fn_name(lines: &[&str], n: usize) -> Option<String> {
 /// through the brace that closes it, or `None` when the file declares no such
 /// function.
 ///
-/// The range, for a walk that reports a LINE of a body and
-/// reads a hatch beside it: a body handed over as one string has no line
-/// numbers left to name.
+/// The range, for a walk that reports a LINE of a body and reads a hatch beside
+/// it: a body handed over as one string has no line numbers left to name.
 ///
-/// BOTH ends of the range are read on code, which is the
-/// reading [`enclosing_fn_span`] states. The opener is a declaration
+/// BOTH ends of the range are read on code, which is the reading
+/// [`enclosing_fn_span`] states. The opener is a declaration
 /// `cfgd_core::test_helpers::declared_fn_name` recognizes, so a `fn <name>(`
 /// spelled inside a literal (a walk's own offender message, a fixture source
 /// built as a string) does not open the span declarations early; the braces are
@@ -36840,13 +36842,15 @@ fn str_consts(
 /// displaced. A tutorial points past a fact the surface above it already
 /// stated, so a reader who turned tutorials off loses nothing by its absence.
 ///
-/// The class travels ON the roster entry: two lists of one set of names agree only while somebody
-/// keeps them agreeing, and a composer renamed in one of them reads as registered in the other.
-/// Three directions hold the pairing: [`every_hint_composer_declares_its_class`] holds each entry
-/// to a composer the workspace really declares and to a body of the class it claims,
-/// [`every_hint_composer_the_workspace_declares_is_classified`] finds no `HintCommands` producer
-/// the roster leaves out, and [`every_hint_composer_states_whether_its_wording_is_unconditional`]
-/// builds hints from the composers it names and asserts the class of each one.
+/// The class travels ON the roster entry: two lists of one set of names agree
+/// only while somebody keeps them agreeing, and a composer renamed in one of
+/// them reads as registered in the other. Three directions hold the pairing:
+/// [`every_hint_composer_declares_its_class`] holds each entry to a composer
+/// the workspace really declares and to a body of the class it claims,
+/// [`every_hint_composer_the_workspace_declares_is_classified`] finds no
+/// `HintCommands` producer the roster leaves out, and
+/// [`every_hint_composer_states_whether_its_wording_is_unconditional`] builds
+/// hints from the composers it names and asserts the class of each one.
 ///
 /// The two classes are not held by the same direction. A TUTORIAL entry is
 /// settled by READING its body, which fails on an ungating tell anywhere in
@@ -36970,12 +36974,12 @@ fn the_hint_minting_doors_are_read_off_the_types_own_declaration() {
     // crate, would mint doors both questions above judge without. Nothing
     // outside that file may declare one.
     //
-    // The file that may is named by its whole path, so
-    // a second `component.rs` anywhere in the workspace is judged like any other
-    // source. A door is matched on the impl head's trailing type name against
-    // the names THIS file can reach the type by, its own plus every `use … as`
-    // alias, because an aliased impl is a door the derivation reads no
-    // differently and a name test against the type's own spelling misses.
+    // The file that may is named by its whole path, so a second `component.rs`
+    // anywhere in the workspace is judged like any other source. A door is
+    // matched on the impl head's trailing type name against the names THIS file
+    // can reach the type by, its own plus every `use … as` alias, because an
+    // aliased impl is a door the derivation reads no differently and a name
+    // test against the type's own spelling misses.
     //
     // one-root-population-ok: the question is an absence, which no root has a
     // count of; each root's own floor is `production_sources_per_root`'s, which
@@ -37085,11 +37089,11 @@ fn composed_call_name(arg: &str) -> Option<String> {
 /// `every_hint_command_block_line_comes_from_the_one_composer` holds those.
 #[test]
 fn every_closing_hint_names_a_command() {
-    // Every crate root, beyond the `cli` and `reconciler` subtrees this walk
-    // used to read: a hint composed in `backup/`, `daemon/service/` or `providers/`
-    // and handed to `printer.hint(...)` lay outside both, which is how the two
-    // backup note composers shipped with nobody holding their wording or
-    // their class.
+    // Every crate root, the `cli` and `reconciler` subtrees this walk used to
+    // read included: a hint composed in `backup/`, `daemon/service/` or
+    // `providers/` and handed to `printer.hint(...)` lay outside both, which is
+    // how the two backup note composers shipped with nobody holding their
+    // wording or their class.
     const WALK_ROOTS: &[(&str, usize)] = &[
         ("cfgd", 27),
         ("cfgd-core", 0),
@@ -37172,8 +37176,7 @@ fn every_closing_hint_names_a_command() {
     // One floor per root: every root but `cfgd` holds only composed hints
     // today, so each is floored on the sources it must still be reading
     // (asserted by `production_sources_per_root`), and floored together the
-    // `cfgd` tree could go dark
-    // behind a count another root met.
+    // `cfgd` tree could go dark behind a count another root met.
     for (tree, floor) in WALK_ROOTS {
         let found = per_root
             .iter()
@@ -37196,8 +37199,9 @@ fn every_closing_hint_names_a_command() {
 /// The functions a hint's argument reaches when it names something on THIS
 /// machine, and the spellings of a home directory a hint's own text can carry.
 ///
-/// Derived from the path surface: a hint interpolating one of these is carrying a fact, and a fact
-/// the reader needs is not a tutorial `spec.output.usageHints` may delete.
+/// Derived from the path surface: a hint interpolating one of these is carrying
+/// a fact, and a fact the reader needs is not a tutorial
+/// `spec.output.usageHints` may delete.
 const PATH_PRODUCERS: &[&str] = &[
     ".posix()",
     ".display()",
@@ -37218,7 +37222,7 @@ const HOME_SPELLINGS: &[&str] = &["~/", "$HOME", "%USERPROFILE%"];
 /// as a `&str`: an interpolated segment with a path separator after it
 /// (`{dir}/cosign.key`).
 ///
-/// Read inside a composer body and not at a call site, because the two say a
+/// Read inside a composer body, because a composer body and a call site say a
 /// path differently: a call site's argument is code, and code that builds a
 /// path calls one of [`PATH_PRODUCERS`], while a composer's parameter arrives
 /// already a string and only the arm's own text can show what it is.
@@ -37343,9 +37347,9 @@ fn no_gated_hint_names_a_path_or_a_machine_state() {
 /// it; `.into()` is the gated arm's own spelling, since `From<&str>` builds a
 /// hint `usageHints` decides.
 ///
-/// The tell is read over the whole body: a composer that
-/// builds every arm gated and ungates the value once at its exit
-/// (`local_pull_next_step`) has no per-arm tell to find. What holds the arms is
+/// The tell is read over the whole body: a composer that builds every arm gated
+/// and ungates the value once at its exit (`local_pull_next_step`) has no
+/// per-arm tell to find. What holds the arms is
 /// [`every_hint_composer_states_whether_its_wording_is_unconditional`], which
 /// calls each composer and asserts the class of every hint it hands back, and
 /// which [`every_hint_composer_declares_its_class`] requires every
@@ -37744,14 +37748,14 @@ const UNGATING_SITE_UNCALLED_HATCH: &str = "ungating-site-uncalled-ok:";
 /// site that moved file keeps its old entry's blessing. Read out of this
 /// file's own source, the way `ENV_MUTATORS` reads its hatch.
 ///
-/// The entry is found by its SPAN, because rustfmt
-/// breaks an entry too long for the line width over four lines, and a marker
-/// written on any of them would otherwise be ignored: four of this roster's
-/// entries were offered a hatch that could not be applied. An entry opens on
-/// the line whose first character is `(`, whichever shape it took, and ends
-/// on its own closing `),`. Read as far as the NEXT entry's opening instead,
-/// the span swallows the comment lines above its neighbour, so a marker
-/// written for entry N+1 blesses a stale entry N beside it.
+/// The entry is found by its SPAN, because rustfmt breaks an entry too long for
+/// the line width over four lines, and a marker written on any of them would
+/// otherwise be ignored: four of this roster's entries were offered a hatch
+/// that could not be applied. An entry opens on the line whose first character
+/// is `(`, whichever shape it took, and ends on its own closing `),`. Read as
+/// far as the NEXT entry's opening instead, the span swallows the comment lines
+/// above its neighbour, so a marker written for entry N+1 blesses a stale entry
+/// N beside it.
 fn ungating_site_hatched(path: &str, name: &str) -> bool {
     let own = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli/tests.rs");
     let body = cfgd_core::test_helpers::walked_file_body(&own);
@@ -37771,9 +37775,8 @@ fn ungating_site_hatched(path: &str, name: &str) -> bool {
     let name_token = format!("\"{name}\"");
     opens.iter().enumerate().any(|(nth, start)| {
         let end = opens.get(nth + 1).copied().unwrap_or(open + len);
-        // The entry's OWN close: a marker
-        // written above entry N+1 lies inside a span that runs that far, and
-        // would hatch entry N with it.
+        // The entry's OWN close: a marker written above entry N+1 lies inside a
+        // span that runs that far, and would hatch entry N with it.
         let close = (*start..end)
             .find(|at| lines[*at].trim_end().ends_with("),"))
             .map_or(end, |at| at + 1);
@@ -37978,12 +37981,11 @@ fn every_hint_composer_states_whether_its_wording_is_unconditional() {
 /// the caller wraps is a different question, held by
 /// `every_closing_hint_names_a_command`'s unregistered-composer arm.
 ///
-/// The population is derived from the PRODUCER, because a
-/// list is what `safety_copy_note` and `orphan_note` escaped while they were
-/// hints: neither was registered anywhere, and the gate silenced the only
-/// statement of where a restore had put the reader's live data. A
-/// composer added to either crate now fails this walk until its class is
-/// written down.
+/// The population is derived from the PRODUCER, because a list is what
+/// `safety_copy_note` and `orphan_note` escaped while they were hints: neither
+/// was registered anywhere, and the gate silenced the only statement of where a
+/// restore had put the reader's live data. A composer added to either crate now
+/// fails this walk until its class is written down.
 ///
 /// The body check is what holds a composer the test cannot call — a private
 /// one, or one needing a whole run to build. An unconditional composer mints
@@ -37994,13 +37996,13 @@ fn every_hint_composer_states_whether_its_wording_is_unconditional() {
 fn every_hint_composer_the_workspace_declares_is_classified() {
     use cfgd_core::test_helpers::fn_declarations;
 
-    // Every crate root, beyond the two that hold the composers today: a hint
+    // Every crate root, the two that hold the composers today included: a hint
     // composed in `cfgd-operator` or `cfgd-csi` would compose one nobody
     // classified, and the walk would report the workspace as swept. One floor
-    // per root, so a tree cannot go dark behind another's
-    // count; the roots with no composer of their own are floored at zero and
-    // held by `production_sources_per_root`, which fails on a root that reads
-    // as empty and on a crate joining the workspace unnamed.
+    // per root, so a tree cannot go dark behind another's count; the roots with
+    // no composer of their own are floored at zero and held by
+    // `production_sources_per_root`, which fails on a root that reads as empty
+    // and on a crate joining the workspace unnamed.
     const WALK_ROOTS: &[(&str, usize, usize)] = &[
         ("cfgd", 7, 5),
         ("cfgd-core", 3, 4),
@@ -42692,7 +42694,7 @@ const DOCUMENT_KEYS: &[&str] = &[
 ///
 /// A `println!` whose format string is `"target: {}\n"` spells a key at the
 /// start of a literal exactly as a one-key document does, and nothing parses the
-/// result back, so a native path in one is a log line and not this walk's
+/// result back, so a native path in one is a log line, outside this walk's
 /// business.
 const PRINTING_MACROS: &[&str] = &["println!", "print!", "eprintln!", "eprint!"];
 
@@ -43463,10 +43465,11 @@ fn bootstrap_plan_bodies<'a>(lines: &'a [&'a str]) -> Vec<(usize, &'a [&'a str])
 /// Whether some manager source declares `name` and gates a bootstrap arm that
 /// this platform withholds.
 ///
-/// Only the source can answer for the platforms this host is not: a plan's arm is `cfg`-selected,
-/// so a documented name nothing offers here is judged against the body that would offer it
-/// elsewhere. The name declaration and the plan body must sit in one `impl`, because a file can
-/// hold several managers (`brew`, `brew-tap` and `brew-cask` share one) and only one of them may
+/// Only the source can answer for the platforms this host is not: a plan's arm
+/// is `cfg`-selected, so a documented name nothing offers here is judged
+/// against the body that would offer it elsewhere. The name declaration and the
+/// plan body must sit in one `impl`, because a file can hold several managers
+/// (`brew`, `brew-tap` and `brew-cask` share one) and only one of them may
 /// carry the arm.
 fn a_withheld_bootstrap_arm_declares(name: &str) -> bool {
     use cfgd_core::test_helpers::{code_line, impl_owner};
@@ -47262,7 +47265,7 @@ const DISPATCHED_RENDERERS: &[(&str, &str)] = &[("alias show", "cmd_config_get")
 /// grepping for its own `cmd_*`. `audit.sh` keeps the same pairs beside its
 /// stale-row check so the row it requires here is not flagged as naming a
 /// function that does not exist — and this walk reads that shell list, so a
-/// pair added to one side and not the other fails rather than sitting there
+/// pair added to one side and not the other fails; it cannot sit there
 /// looking answered.
 #[test]
 fn every_dispatched_renderer_has_a_coverage_row() {
@@ -49872,11 +49875,10 @@ fn every_declared_env_value_a_surface_masks_is_decided_by_the_one_masking() {
 fn no_walk_bearing_source_scans_syntax_by_hand() {
     const HATCH: &str = "// hand-scan-ok:";
     // Each tell is the opening move of one hand-rolled scanner: cutting a
-    // comment by searching for its delimiter, and stepping bytes with the
-    // quote or slash arm a masker already owns. Composed from its pieces,
-    // because a tell lives inside a literal and the
-    // judgement below keeps literals, so a spelled one would name this
-    // declaration as the first offender.
+    // comment by searching for its delimiter, and stepping bytes with the quote
+    // or slash arm a masker already owns. Composed from its pieces, because a
+    // tell lives inside a literal and the judgement below keeps literals, so a
+    // spelled one would name this declaration as the first offender.
     let q = '\'';
     let dq = '"';
     let tells = [
@@ -50064,7 +50066,8 @@ fn every_config_load_site_answers_the_migration_policy() {
 /// moves — the headers pinned elsewhere would then name a rank no layer holds.
 ///
 /// A fixture whose subject IS the rank (two local layers whose ORDER is what
-/// it asserts) composes from the constant, or says why with `// local-rank-ok: <why>`.
+/// it asserts) composes from the constant, or says why with
+/// `// local-rank-ok: <why>`.
 #[test]
 fn every_local_layer_ranks_through_the_one_constant() {
     const HATCH: &str = "// local-rank-ok:";
@@ -50146,8 +50149,8 @@ spec:
 /// declares `minVersion: '1.85'`, and the registered `cargo` manager is absent
 /// but bootstrappable via rustup.
 ///
-/// The factory guard is held for the fixture's whole life: a command rebuilds its registry several
-/// times per run.
+/// The factory guard is held for the fixture's whole life: a command rebuilds
+/// its registry several times per run.
 struct FloorFixture {
     h: CliTestHarness,
     /// The name the fake native manager took — the host's own — which is what
@@ -50245,9 +50248,9 @@ impl FloorFixture {
         super::plan::cmd_plan(&cli, &printer, &self.plan_args()).unwrap();
         drop(printer);
         let payload = capture.json().expect("a plan doc carries a payload");
-        // The state directory: a file written
-        // inside the config directory is itself a move in what the derivation
-        // read, which is the refusal the replay would then hit instead.
+        // The state directory: a file written inside the config directory is
+        // itself a move in what the derivation read, which is the refusal the
+        // replay would then hit instead.
         let dest = self.h.state_path().join("plan.json");
         std::fs::write(&dest, serde_json::to_string(&payload).unwrap()).unwrap();
         dest
@@ -50278,9 +50281,9 @@ impl FloorFixture {
     /// The block is the plan as the file carried it and the replay restored it,
     /// before the executing branch rewrites an adopted file's action and
     /// outside the backup units, which live in no `Plan` at all. That is the
-    /// set the replay may install from, and what comes back here is that
-    /// object itself. On a
-    /// printer of its own, because only a structured run records the block.
+    /// set the replay may install from, and what comes back here is that object
+    /// itself. On a printer of its own, because only a structured run records
+    /// the block.
     fn replayed_plan(&self, path: &Path) -> cfgd_core::reconciler::Plan {
         let (printer, capture) = cfgd_core::output::Printer::for_test_doc_with_format(
             cfgd_core::output::OutputFormat::Json,
@@ -50530,8 +50533,8 @@ fn assert_replay_took_the_route(fx: &FloorFixture) {
 ///
 /// This machine's cargo is below the declared floor, so a fresh resolution
 /// states the route on every run. The claim is an equality over the whole SET:
-/// any minter reachable on the replay
-/// path puts an extra action into the run, so one comparison catches the class.
+/// any minter reachable on the replay path puts an extra action into the run,
+/// so one comparison catches the class.
 ///
 /// Both sides of it are plan OBJECTS, compared through the hash every stored
 /// `applies.plan_hash` is written from, which covers every action of every
@@ -50731,9 +50734,8 @@ const UNCONDITIONALLY_DECLARING: &[&str] = if cfg!(windows) {
 /// cascade.
 ///
 /// The route is derived from `bootstrap_plan_given` off the registry, so a
-/// manager added later joins the population
-/// by existing, and one whose arm stops handing back a plan leaves it the same
-/// way.
+/// manager added later joins the population by existing, and one whose arm
+/// stops handing back a plan leaves it the same way.
 ///
 /// It is asked through `floor_bootstrap_via`, the host-INDEPENDENT half:
 /// `floor_bootstrap_route` withholds a route for a manager this host already
@@ -50812,8 +50814,8 @@ fn every_manager_declaring_a_bootstrap_plan_is_reachable_from_the_floor_route() 
 
 /// The two sentences `docs/modules.md` promises for a held manager that does
 /// not clear its floor are the composer's own bytes, taken from it here: a
-/// reader who finds the page's words in their terminal has
-/// to find them exactly.
+/// reader who finds the page's words in their terminal has to find them
+/// exactly.
 #[test]
 fn the_held_manager_sentences_the_docs_promise_come_from_the_one_composer() {
     let page = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/modules.md");
@@ -51147,10 +51149,9 @@ fn cli_production_bodies() -> Vec<(std::path::PathBuf, String)> {
 /// value it was given.
 ///
 /// A script handed `invalid_argument` fixes its own invocation, so it needs
-/// both halves off the payload. The population
-/// is every call to a refusal constructor passing that kind, read off every
-/// function taking an `error_kind` parameter, so a new producer joins the
-/// check by being written.
+/// both halves off the payload. The population is every call to a refusal
+/// constructor passing that kind, read off every function taking an
+/// `error_kind` parameter, so a new producer joins the check by being written.
 #[test]
 fn every_invalid_argument_refusal_names_its_flag_and_value() {
     /// The producers today: the two composers in `cli/error.rs`, the resource

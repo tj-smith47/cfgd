@@ -3943,9 +3943,9 @@ fn a_plan_naming_a_package_the_modules_no_longer_route_the_same_way_is_refused()
 }
 
 /// The keys [`super::is_plan_payload`] asks for are ones `cfgd plan -o json`
-/// cannot omit, read off the real serialization: a
-/// key gaining a `skip_serializing_if` would make a plan cfgd wrote fail the
-/// question and earn a stranger's sentence.
+/// cannot omit, read off the real serialization: a key gaining a
+/// `skip_serializing_if` would make a plan cfgd wrote fail the question and
+/// earn a stranger's sentence.
 #[test]
 fn is_plan_payload_reads_keys_the_plan_output_always_serializes() {
     // Every optional slot empty, which is the payload most likely to drop a

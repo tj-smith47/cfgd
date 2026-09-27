@@ -95,8 +95,8 @@ pub struct ResolvedPackage {
     /// `true` when the entry carries a `prefer` list (every candidate then
     /// comes from what the author wrote) or an `aliases` key for the manager
     /// resolution picked. `false` for an entry that named neither: the manager
-    /// is then cfgd's own platform default, a choice this crate made and not a
-    /// statement by anyone.
+    /// is then cfgd's own platform default, a choice this crate made that
+    /// nobody stated.
     ///
     /// Recorded HERE because the declaration is only in scope at the resolver;
     /// a second walk over the spec to re-derive it is how the two halves drift.

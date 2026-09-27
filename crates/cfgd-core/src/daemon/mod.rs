@@ -1603,11 +1603,10 @@ pub(super) fn format_interval_lines(
 ///
 /// The Ctrl+C line stays a `Printer` row, and only where a human could press
 /// the key: it reaches a process through a controlling terminal's line
-/// discipline, which a service manager's child does not have. It is a note
-/// row because a daemon holds the terminal until it is
-/// stopped and the three log lines beside it say everything except how to stop
-/// it, so no `usageHints` decision may leave a reader with no way out of a
-/// foreground process.
+/// discipline, which a service manager's child does not have. It is a note row
+/// because a daemon holds the terminal until it is stopped and the three log
+/// lines beside it say everything except how to stop it, so no `usageHints`
+/// decision may leave a reader with no way out of a foreground process.
 ///
 /// The version line is the banner's own, not a restatement of the cadence line
 /// under it: it is the only place on the stream that says WHICH build is

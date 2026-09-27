@@ -44,8 +44,8 @@ pub(super) fn banner(comment: &str, blocks: bool) -> Vec<String> {
 /// in the token form.
 ///
 /// `priority` is `None` for a block the fold ranks by position — the `path`
-/// fold, a module, and the resolved `secrets` — and such a
-/// header carries no parenthetical.
+/// fold, a module, and the resolved `secrets` — and such a header carries no
+/// parenthetical.
 pub(super) fn block_header(comment: &str, owner: &str, priority: Option<u32>) -> String {
     let rank = match priority {
         Some(priority) => format!(" (priority {priority})"),
@@ -186,10 +186,10 @@ impl Dialect {
                 path.value(crate::escape_double_quoted, "$PATH", ":"),
                 path.comment
             ),
-            // Fish uses a space-separated list for PATH,
-            // and a bare `$PATH` splices its existing list variable in place;
-            // single quotes suppress fish expansion of each entry, which is why
-            // the fold spelled every directory literally.
+            // Fish uses a space-separated list for PATH, and a bare `$PATH`
+            // splices its existing list variable in place; single quotes
+            // suppress fish expansion of each entry, which is why the fold
+            // spelled every directory literally.
             Dialect::Fish => format!(
                 "set -gx PATH {}{}",
                 path.value(crate::fish_single_quoted, "$PATH", " "),
@@ -366,14 +366,14 @@ pub(super) fn generate_powershell_env_content(
 /// skips.
 ///
 /// `path` is the file's folded `PATH` assignment, which the caller must supply
-/// for `PATH` itself: that one variable's line is written by the fold and not
-/// by the declaration loop, so rendering it without the fold would produce a
+/// for `PATH` itself: that one variable's line is written by the fold (the
+/// declaration loop skips it), so rendering it without the fold would produce a
 /// line the real file never holds — or, for a declaration alone, no line at
 /// all.
 ///
 /// No provenance reaches the line. The generated file states an owner in a
-/// block header and nowhere beside an assignment, so a render carrying a claim map
-/// would quote something no file holds — and the `PATH` line's own comment
+/// block header and nowhere beside an assignment, so a render carrying a claim
+/// map would quote something no file holds — and the `PATH` line's own comment
 /// rides on the fold, which is why it survives here.
 pub(super) fn primary_env_var_line(
     ev: &crate::config::EnvVar,
@@ -1519,10 +1519,11 @@ mod tests {
     ///
     /// The three display helpers used to take `generated.lines().nth(…)`, which
     /// reads "the line after the header" — a fact about the banner. It says
-    /// nothing about the entry. One renderer, called by all three, is what survives the banner
-    /// growing, so each helper is driven here beside the file it must match.
-    /// Fish reaches no helper: [`Dialect::of`] never yields it, since the fish
-    /// snippet is a second target chosen by the user's shell.
+    /// nothing about the entry. One renderer, called by all three, is what
+    /// survives the banner growing, so each helper is driven here beside the
+    /// file it must match. Fish reaches no helper: [`Dialect::of`] never yields
+    /// it, since the fish snippet is a second target chosen by the user's
+    /// shell.
     #[test]
     fn every_dialect_renders_one_entry_the_same_way_alone_and_in_a_file() {
         let ev = EnvVar {
@@ -1541,9 +1542,10 @@ mod tests {
             std::slice::from_ref(&alias),
             &origins,
         );
-        // Every `EnvPlatform` variant, beyond one per dialect: three of the four
-        // resolve to Posix, and a display helper that answered only for Linux
-        // would leave macOS and FreeBSD reporting lines nothing checked.
+        // Every `EnvPlatform` variant (a dialect can serve several): three of
+        // the four resolve to Posix, and a display helper that answered only
+        // for Linux would leave macOS and FreeBSD reporting lines nothing
+        // checked.
         let legs = [
             (
                 super::Dialect::Posix,

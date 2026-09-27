@@ -9813,7 +9813,7 @@ async fn handle_reconcile_runs_on_drift_scripts() {
 /// no drift and leaves both witnesses alone; the auto-applying policy PERFORMS
 /// the hook, because auto-apply answers to work rather than to drift. That
 /// witness is the proof the plan held the hook all along, so the clean store
-/// above is an answer about the hook and not about an empty plan. The module
+/// above is an answer about the hook; the plan was never empty. The module
 /// declares no packages and no files, which is what keeps its `postReconcile`
 /// hook in the plan ([`crate::reconciler::Reconciler::plan`]) and makes the
 /// hook the only thing any row here could be about.
@@ -9983,7 +9983,7 @@ async fn a_tick_over_a_module_declaring_only_hooks_records_no_drift_row() {
 /// the host already declined. A sentence stating only the drifted number names
 /// fewer rows than the reader just saw. The fixture carries one of each: a
 /// platform-gated module (annotated in the header, drawn nowhere) and a session
-/// publish no manager can perform (drawn, and not drift). Both counts are
+/// publish no manager can perform (drawn, with no drift). Both counts are
 /// asserted against the tree's actual row count, never against literals.
 #[cfg(all(unix, not(target_os = "macos")))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -19541,14 +19541,15 @@ mod ipc_socket_security {
     /// leaf's own kind check, and the directory it points at keeps its mode.
     ///
     /// The leaf is the one component the helper MUTATES, which is where the
-    /// walk's admission of a link component stops: the daemon runs as root under
-    /// systemd while its runtime directory can sit under a HOME an unprivileged
-    /// user owns, and a path-based chmod there would hand `0o700` to whatever
-    /// that user pointed the link at, locking another user out of their own
-    /// directory. The refusal is a sentence this module words and not the
-    /// no-follow chmod's `ELOOP`, so an operator who symlinked the runtime
-    /// directory deliberately is told what cfgd will not do rather than handed a
-    /// kernel errno about a path the walk had just approved. It holds at any uid.
+    /// walk's admission of a link component stops: the daemon runs as root
+    /// under systemd while its runtime directory can sit under a HOME an
+    /// unprivileged user owns, and a path-based chmod there would hand `0o700`
+    /// to whatever that user pointed the link at, locking another user out of
+    /// their own directory. The refusal is a sentence this module words (the
+    /// no-follow chmod's `ELOOP` never reaches it), so an operator who
+    /// symlinked the runtime directory deliberately is told what cfgd will not
+    /// do. A kernel errno about a path the walk had just approved would tell
+    /// them nothing. It holds at any uid.
     #[cfg(unix)]
     #[test]
     fn the_socket_directory_refuses_a_symlink_instead_of_chmodding_what_it_points_at() {
@@ -19585,8 +19586,8 @@ mod ipc_socket_security {
     /// operation after the refusal names the socket by path, so an account owning
     /// any ancestor can rename the directory root created and leave a link of its
     /// own in that component's place. The second arm therefore asserts the
-    /// refusal names the OFFENDING COMPONENT and not the leaf, which passes both
-    /// of the leaf's own checks.
+    /// refusal names the OFFENDING COMPONENT. The leaf passes both of its own
+    /// checks, so naming it would point at nothing wrong.
     ///
     /// Arranging a foreign owner needs the power to `chown`, so every arm here
     /// runs as root and the pin proves nothing at any other uid. That is what

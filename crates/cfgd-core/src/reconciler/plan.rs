@@ -347,12 +347,11 @@ impl<'a> super::Reconciler<'a> {
         let mut secret_actions = self.plan_secrets(&resolved.merged);
 
         // The bucket order IS `PhaseName::EXECUTION_ORDER`, by construction: a
-        // plan FILE is read back against that
-        // const, and a debug-only check is stripped from the release binary
-        // that writes the files. The match is exhaustive, so a phase added to
-        // the enum fails to compile here and never reaches a reader in an
-        // order it does not expect. Each arm takes its actions once, the
-        // phases being distinct.
+        // plan FILE is read back against that const, and a debug-only check is
+        // stripped from the release binary that writes the files. The match is
+        // exhaustive, so a phase added to the enum fails to compile here and
+        // never reaches a reader in an order it does not expect. Each arm takes
+        // its actions once, the phases being distinct.
         let mut buckets: Vec<(PhaseName, Vec<Action>)> = PhaseName::EXECUTION_ORDER
             .into_iter()
             .map(|name| {

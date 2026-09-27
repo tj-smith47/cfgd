@@ -765,8 +765,8 @@ mod role_mapping_tests {
     /// `module list` runs no check of its own, so `Synced` on its rows is a
     /// claim borrowed from somebody else's: the machine-wide scan stamp, or a
     /// scoped scan of that module. With neither, the row states this table's
-    /// own fact — the module is on the machine — which is `Installed` and not
-    /// the `Applied` a dashboard row says about a different question. The word
+    /// own fact — the module is on the machine — which is `Installed`. The
+    /// `Applied` a dashboard row says answers a different question. The word
     /// a person reads changes; the `status` token `-o json` carries does not.
     #[test]
     fn module_list_reads_synced_only_for_a_module_a_check_covers() {

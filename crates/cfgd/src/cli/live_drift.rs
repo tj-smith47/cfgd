@@ -185,7 +185,7 @@ pub(in crate::cli) const FULL_CHECK_RESOLVABLE_TYPES: &[&str] = &[
 /// `reconciler::system_resource_key`; and any row whose key a check ERROR names, whichever check
 /// minted it. That last shape is why the errors travel here at all: a
 /// pinned package whose manager states no version is checked for presence
-/// and not for its floor, so healing its recorded row on the presence answer
+/// alone, so healing its recorded row on the presence answer
 /// alone would erase a version finding nothing re-examined.
 fn full_check_cannot_refind(
     e: &cfgd_core::state::DriftEvent,
@@ -859,11 +859,11 @@ fn live_drift_results_inner(
                     }
                 }
                 // A configurator that errors while probing is a first-class
-                // check error, not drift and not silence: it renders its own
-                // row and outranks `DriftDetected` at every `--exit-code`
-                // gate. Indeterminate cuts both ways for the record: the
-                // recorder keeps this configurator's recorded rows standing
-                // rather than resolving what nothing re-checked.
+                // check error: it renders its own row and outranks
+                // `DriftDetected` at every `--exit-code` gate. Indeterminate
+                // cuts both ways for the record: the recorder keeps this
+                // configurator's recorded rows standing, so nothing unchecked
+                // is resolved.
                 Err(e) => check_errors.push(super::output_types::SystemCheckError {
                     key: configurator.name().to_string(),
                     error: cfgd_core::output::collapse_to_subject_line(e),

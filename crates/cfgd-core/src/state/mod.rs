@@ -726,13 +726,12 @@ const MIGRATIONS: &[&str] = &[
                   AND instr(resource_id, ':') = length(resource_id) - 6
                   AND instr(resource_id, '/') = 0));",
     // Migration 28: the answer a reader gave the load-time migration prompt.
-    // Keyed on the config file, because a host may
-    // hold several (`--config`, a source checkout's own), and each is a
-    // separate document with its own answer. `offered_keys` is the question
-    // itself: an answer covers a later run only when every key that run
-    // found was already on the table when the reader said yes or no, so a
-    // release that adds a field asks about it and inherits no verdict on a
-    // different question.
+    // Keyed on the config file, because a host may hold several (`--config`, a
+    // source checkout's own), and each is a separate document with its own
+    // answer. `offered_keys` is the question itself: an answer covers a later
+    // run only when every key that run found was already on the table when the
+    // reader said yes or no, so a release that adds a field asks about it and
+    // inherits no verdict on a different question.
     // space-run-ok: a table definition's own column layout.
     "CREATE TABLE IF NOT EXISTS config_migrations (
         config_path  TEXT NOT NULL,
@@ -1097,9 +1096,9 @@ impl StateStore {
     /// string that follows the database file wherever it is copied or moved,
     /// and that no other store shares.
     ///
-    /// Read here, and minted by the migration alone: a store with no identity row is
-    /// [`StateError::IdentityMissing`], because a fresh id on read would give
-    /// two reads of one store two answers.
+    /// Read here, and minted by the migration alone: a store with no identity
+    /// row is [`StateError::IdentityMissing`], because a fresh id on read would
+    /// give two reads of one store two answers.
     pub fn store_id(&self) -> Result<String> {
         self.conn
             .query_row("SELECT id FROM store_identity LIMIT 1", [], |row| {

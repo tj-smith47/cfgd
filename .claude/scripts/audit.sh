@@ -655,7 +655,7 @@ log_section "Duplicate Narration (tracing::info! outside daemon/)"
 # The binary's default filter is `warn` for exactly that reason, so an info!
 # outside the daemon is a line nobody sees AND a strand risk when they do.
 #
-# daemon/ is the whole exemption, and not a grandfathered one: there the log IS
+# daemon/ is the whole exemption, on its merits: there the log IS
 # the output — a service under systemd/launchd prints its ticks to journald
 # through this channel and no other, which is why `cfgd daemon run` keeps `info`
 # as its tracing floor (main.rs::runs_reconcile_loop).
@@ -1603,7 +1603,7 @@ cli_command_records() {
             sub(/[[:space:]]+$/, "", variant)
 
             # Isolate the long_about VALUE so `Examples:` is tested against IT
-            # and not against some other key (`about = "… Examples: …"`).
+            # alone; some other key (`about = "… Examples: …"`) would pass by accident.
             la = attr
             has_la = (attr ~ /long_about[[:space:]]*=/)
             sub(/.*long_about[[:space:]]*=[[:space:]]*/, "", la)
