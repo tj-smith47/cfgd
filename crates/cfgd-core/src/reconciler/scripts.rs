@@ -210,7 +210,7 @@ pub(crate) fn build_script_env(ctx: &ScriptEnvContext<'_>) -> Vec<(String, Strin
     let mut env = vec![
         (
             crate::CFGD_CONFIG_DIR_ENV.to_string(),
-            // absolute-path-ok: an env var the script itself reads, not a display slot
+            // absolute-path-ok: the hook script reads this variable as a path to open
             ctx.config_dir.display().to_string(),
         ),
         (
@@ -235,7 +235,7 @@ pub(crate) fn build_script_env(ctx: &ScriptEnvContext<'_>) -> Vec<(String, Strin
     if let Some(dir) = ctx.module_dir {
         env.push((
             crate::CFGD_MODULE_DIR_ENV.to_string(),
-            // absolute-path-ok: an env var the script itself reads, not a display slot
+            // absolute-path-ok: the hook script reads this variable as a path to open
             dir.display().to_string(),
         ));
     }
@@ -1297,7 +1297,7 @@ fn build_inline_command(
             let cmd_str = match cfgd_env_path {
                 Some(p) => format!(
                     "shopt -s expand_aliases; source \"{}\" 2>/dev/null; {}",
-                    // absolute-path-ok: the shell command the child runs, not a display slot
+                    // absolute-path-ok: the shell command the child process runs
                     p.display(),
                     run_str,
                 ),
@@ -1311,7 +1311,7 @@ fn build_inline_command(
             let cmd_str = match cfgd_env_path {
                 Some(p) => format!(
                     "setopt aliases; source \"{}\" 2>/dev/null; {}",
-                    // absolute-path-ok: the shell command the child runs, not a display slot
+                    // absolute-path-ok: the shell command the child process runs
                     p.display(),
                     run_str,
                 ),
