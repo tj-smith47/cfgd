@@ -10,6 +10,20 @@ use super::npm::{find_npm, npm_available, npm_cmd};
 use super::pipx::{find_pipx, pipx_available, pipx_cmd};
 use super::*;
 
+/// Fold `packages`' manifests in with a cache and claims of their own, so each
+/// call parses every manifest afresh.
+fn resolve_manifests_fresh(
+    packages: &mut PackagesSpec,
+    config_dir: &std::path::Path,
+) -> cfgd_core::errors::Result<()> {
+    resolve_manifest_packages_cached(
+        packages,
+        &mut LayerSources::default(),
+        config_dir,
+        &ManifestCache::default(),
+    )
+}
+
 /// Render each action through the real producer (`format_plan_item`) rather
 /// than a hand-rolled duplicate, so these tests fail the moment the display
 /// grammar drifts instead of asserting against a second copy of it.
@@ -1316,7 +1330,7 @@ fn resolve_manifest_packages_merges_with_inline() {
         ..Default::default()
     };
 
-    resolve_manifest_packages(&mut packages, dir.path()).unwrap();
+    resolve_manifests_fresh(&mut packages, dir.path()).unwrap();
 
     // Brew: inline + Brewfile merged
     let brew = packages.brew.as_ref().unwrap();
@@ -1356,7 +1370,7 @@ fn resolve_manifest_missing_file_skipped() {
     };
 
     // Missing file should be silently skipped
-    resolve_manifest_packages(&mut packages, dir.path()).unwrap();
+    resolve_manifests_fresh(&mut packages, dir.path()).unwrap();
 
     let brew = packages.brew.as_ref().unwrap();
     assert_eq!(brew.formulae, vec!["fd"]); // only inline
@@ -1375,7 +1389,7 @@ fn resolve_manifest_no_file_field_noop() {
         ..Default::default()
     };
 
-    resolve_manifest_packages(&mut packages, dir.path()).unwrap();
+    resolve_manifests_fresh(&mut packages, dir.path()).unwrap();
 
     let brew = packages.brew.as_ref().unwrap();
     assert_eq!(brew.formulae, vec!["fd"]);
@@ -1692,7 +1706,7 @@ fn plan_skip_unavailable_no_bootstrap() {
     }
 }
 
-// --- resolve_manifest_packages ---
+// --- resolve_manifest_packages_cached ---
 
 #[test]
 fn resolve_manifest_packages_brewfile() {
@@ -1713,7 +1727,7 @@ fn resolve_manifest_packages_brewfile() {
         ..Default::default()
     };
 
-    resolve_manifest_packages(&mut spec, dir.path()).unwrap();
+    resolve_manifests_fresh(&mut spec, dir.path()).unwrap();
     let brew = spec.brew.unwrap();
     assert!(brew.formulae.contains(&"ripgrep".to_string()));
     assert!(brew.formulae.contains(&"fd".to_string()));
@@ -1736,7 +1750,7 @@ fn resolve_manifest_packages_apt_file() {
         ..Default::default()
     };
 
-    resolve_manifest_packages(&mut spec, dir.path()).unwrap();
+    resolve_manifests_fresh(&mut spec, dir.path()).unwrap();
     let apt = spec.apt.unwrap();
     assert!(apt.packages.contains(&"git".to_string()));
     assert!(apt.packages.contains(&"curl".to_string()));
@@ -2777,7 +2791,7 @@ fn parse_cargo_toml_invalid_toml() {
     assert!(msg.contains("failed to parse Cargo.toml"), "got: {msg}");
 }
 
-// --- resolve_manifest_packages edge cases ---
+// --- resolve_manifest_packages_cached edge cases ---
 
 /// A manifest's names reach the same argv a declared one does, so the merge
 /// judges them against the same grammar the profile parse used, and names the
@@ -2849,7 +2863,7 @@ fn a_manifest_carrying_a_metacharacter_name_is_refused_naming_the_file() {
         ),
     ] {
         let mut spec = spec;
-        let why = resolve_manifest_packages(&mut spec, dir.path())
+        let why = resolve_manifests_fresh(&mut spec, dir.path())
             .expect_err("a manifest name a command line reads as syntax is refused")
             .to_string();
         assert!(
@@ -2889,7 +2903,7 @@ fd-find
         ..Default::default()
     };
 
-    let why = resolve_manifest_packages(&mut spec, dir.path())
+    let why = resolve_manifests_fresh(&mut spec, dir.path())
         .expect_err("the offending manifest is refused")
         .to_string();
     assert!(
@@ -2915,7 +2929,7 @@ fn a_manifest_path_that_climbs_out_of_the_config_dir_is_refused() {
         ..Default::default()
     };
 
-    let why = resolve_manifest_packages(&mut spec, dir.path())
+    let why = resolve_manifests_fresh(&mut spec, dir.path())
         .expect_err("a manifest path leaving the config dir is refused")
         .to_string();
     assert!(
@@ -2942,7 +2956,7 @@ fn an_absolute_manifest_path_is_refused() {
         ..Default::default()
     };
 
-    let why = resolve_manifest_packages(&mut spec, &config_dir)
+    let why = resolve_manifests_fresh(&mut spec, &config_dir)
         .expect_err("an absolute manifest path is refused")
         .to_string();
     assert!(
@@ -2975,7 +2989,7 @@ fn a_manifest_symlink_pointing_out_of_the_config_dir_is_refused() {
         ..Default::default()
     };
 
-    let why = resolve_manifest_packages(&mut spec, &config_dir)
+    let why = resolve_manifests_fresh(&mut spec, &config_dir)
         .expect_err("a manifest symlink escaping the config dir is refused")
         .to_string();
     assert!(
@@ -3004,7 +3018,7 @@ fn a_relative_in_tree_manifest_path_is_read() {
         ..Default::default()
     };
 
-    resolve_manifest_packages(&mut spec, dir.path()).unwrap();
+    resolve_manifests_fresh(&mut spec, dir.path()).unwrap();
     assert_eq!(
         spec.apt.as_ref().map(|apt| apt.packages.clone()),
         Some(vec!["ripgrep".to_string()]),
@@ -3062,7 +3076,7 @@ fn resolve_manifest_packages_npm_file() {
         ..Default::default()
     };
 
-    resolve_manifest_packages(&mut packages, dir.path()).unwrap();
+    resolve_manifests_fresh(&mut packages, dir.path()).unwrap();
     let npm = packages.npm.as_ref().unwrap();
     assert!(npm.global.contains(&"existing".to_string()));
     assert!(npm.global.contains(&"express".to_string()));
@@ -3085,7 +3099,7 @@ fn resolve_manifest_packages_cargo_file() {
         ..Default::default()
     };
 
-    resolve_manifest_packages(&mut packages, dir.path()).unwrap();
+    resolve_manifests_fresh(&mut packages, dir.path()).unwrap();
     let cargo = packages.cargo.as_ref().unwrap();
     assert!(cargo.packages.contains(&"existing".to_string()));
     assert!(cargo.packages.contains(&"clap".to_string()));
@@ -3482,7 +3496,7 @@ fn remove_package_from_empty_simple_managers() {
     }
 }
 
-// --- resolve_manifest_packages all file types at once ---
+// --- resolve_manifest_packages_cached all file types at once ---
 
 #[test]
 fn resolve_manifest_packages_all_file_types_simultaneously() {
@@ -3527,7 +3541,7 @@ fn resolve_manifest_packages_all_file_types_simultaneously() {
         ..Default::default()
     };
 
-    resolve_manifest_packages(&mut packages, dir.path()).unwrap();
+    resolve_manifests_fresh(&mut packages, dir.path()).unwrap();
 
     let brew = packages.brew.as_ref().unwrap();
     assert!(brew.taps.contains(&"custom/tap".to_string()));
@@ -3555,7 +3569,7 @@ fn resolve_manifest_packages_all_file_types_simultaneously() {
 fn resolve_manifest_packages_no_specs_is_noop() {
     let dir = tempfile::tempdir().unwrap();
     let mut packages = PackagesSpec::default();
-    resolve_manifest_packages(&mut packages, dir.path()).unwrap();
+    resolve_manifests_fresh(&mut packages, dir.path()).unwrap();
     // Everything stays default
     assert!(packages.brew.is_none());
     assert!(packages.apt.is_none());
@@ -3583,7 +3597,7 @@ fn resolve_manifest_packages_duplicate_merging() {
         ..Default::default()
     };
 
-    resolve_manifest_packages(&mut packages, dir.path()).unwrap();
+    resolve_manifests_fresh(&mut packages, dir.path()).unwrap();
 
     let brew = packages.brew.as_ref().unwrap();
     // fd should not be duplicated — union_extend deduplicates
@@ -4268,7 +4282,7 @@ fn apply_packages_skip_prints_warning() {
 
 // --- choco list with .extension packages ---
 
-// --- resolve_manifest_packages with dedup across inline+file ---
+// --- resolve_manifest_packages_cached with dedup across inline+file ---
 
 #[test]
 fn resolve_manifest_packages_apt_dedup() {
@@ -4284,7 +4298,7 @@ fn resolve_manifest_packages_apt_dedup() {
         ..Default::default()
     };
 
-    resolve_manifest_packages(&mut packages, dir.path()).unwrap();
+    resolve_manifests_fresh(&mut packages, dir.path()).unwrap();
     let apt = packages.apt.as_ref().unwrap();
     let curl_count = apt.packages.iter().filter(|p| *p == "curl").count();
     assert_eq!(curl_count, 1, "curl should not be duplicated");
@@ -4310,7 +4324,7 @@ fn resolve_manifest_packages_cargo_dedup() {
         ..Default::default()
     };
 
-    resolve_manifest_packages(&mut packages, dir.path()).unwrap();
+    resolve_manifests_fresh(&mut packages, dir.path()).unwrap();
     let cargo = packages.cargo.as_ref().unwrap();
     let serde_count = cargo.packages.iter().filter(|p| *p == "serde").count();
     assert_eq!(serde_count, 1, "serde should not be duplicated");
@@ -4335,7 +4349,7 @@ fn resolve_manifest_packages_npm_dedup() {
         ..Default::default()
     };
 
-    resolve_manifest_packages(&mut packages, dir.path()).unwrap();
+    resolve_manifests_fresh(&mut packages, dir.path()).unwrap();
     let npm = packages.npm.as_ref().unwrap();
     let express_count = npm.global.iter().filter(|p| *p == "express").count();
     assert_eq!(express_count, 1, "express should not be duplicated");
@@ -5058,7 +5072,7 @@ fn a_changed_manifest_is_read_again() {
 }
 
 #[test]
-fn the_uncached_entry_point_never_reuses_a_parse() {
+fn separate_manifest_caches_never_share_a_parse() {
     let dir = tempfile::tempdir().unwrap();
     let manifest = dir.path().join("packages.apt.txt");
     std::fs::write(&manifest, "git\ncurl\n").unwrap();
@@ -5068,7 +5082,7 @@ fn the_uncached_entry_point_never_reuses_a_parse() {
         .set_modified(meta.modified().unwrap());
 
     let mut first = apt_manifest_spec();
-    resolve_manifest_packages(&mut first, dir.path()).unwrap();
+    resolve_manifests_fresh(&mut first, dir.path()).unwrap();
     assert_eq!(resolved_apt(first), vec!["git", "curl"]);
 
     std::fs::write(&manifest, "ab\ncdefg\n").unwrap();
@@ -5080,7 +5094,7 @@ fn the_uncached_entry_point_never_reuses_a_parse() {
         .unwrap();
 
     let mut second = apt_manifest_spec();
-    resolve_manifest_packages(&mut second, dir.path()).unwrap();
+    resolve_manifests_fresh(&mut second, dir.path()).unwrap();
     assert_eq!(resolved_apt(second), vec!["ab", "cdefg"]);
 }
 

@@ -36179,8 +36179,8 @@ fn every_manager_install_the_cli_emits_spells_its_weak_dependency_policy_once() 
 /// declares its own install spawn in its own file, as `install_cmd_for`, read
 /// by that manager's `install` and by the bootstrap arm that delivers a
 /// mediated manager. The population is every file under `packages/` holding
-/// that declaration, derived from the anchor the audit's own DRY exclusion
-/// names, so a fourth manager copying the convention joins the walk with it. A
+/// that declaration, derived from the declaration anchor `fn install_cmd_for(`,
+/// so a fourth manager copying the convention joins the walk with it. A
 /// second install spelling written inside one of those files splits one
 /// declared install into two argvs, the way `cfgd module export` and the apply
 /// path once split apt's, and the split stays invisible until a package

@@ -11,7 +11,7 @@
 //! - The reconciler (`plan_packages`, `apply_packages`, ...).
 //! - `add_package` / `remove_package` profile-spec mutators.
 //! - Native-manifest parsers (Brewfile, package.json, Cargo.toml, apt list)
-//!   and `resolve_manifest_packages`.
+//!   and `resolve_manifest_packages_cached`.
 //! - The provider registry (`all_package_managers`).
 
 use std::collections::{HashMap, HashSet};
@@ -942,7 +942,7 @@ type CachedManifest = (ManifestStamp, ParsedManifest);
 
 /// The manifest files already parsed during one run, keyed by path and kind.
 ///
-/// [`resolve_manifest_packages`] runs twice on a `status` / `diff` / `plan`
+/// [`resolve_manifest_packages_cached`] runs twice on a `status` / `diff` / `plan`
 /// invocation — once over the composed profile and once over the local-only
 /// profile the source-decision scope is classified against — and both passes
 /// read and parse the SAME Brewfile, `package.json` and `Cargo.toml` off disk.
@@ -1000,22 +1000,6 @@ impl ManifestCache {
     }
 }
 
-/// Resolve manifest files referenced in package specs and merge their contents
-/// into the inline package lists. Paths are relative to `config_dir`.
-///
-/// Every parse is fresh, and the claims land in a throwaway [`LayerSources`].
-/// A caller that resolves manifests more than once in a run, or that records
-/// what it installs, reaches [`resolve_manifest_packages_cached`] with the
-/// run's [`ManifestCache`] and its own merged profile's claims instead.
-pub fn resolve_manifest_packages(packages: &mut PackagesSpec, config_dir: &Path) -> Result<()> {
-    resolve_manifest_packages_cached(
-        packages,
-        &mut LayerSources::default(),
-        config_dir,
-        &ManifestCache::default(),
-    )
-}
-
 /// Fold the names one manifest yielded into `list`, claiming each under the
 /// layer that declared the manifest in the same pass.
 ///
@@ -1037,9 +1021,10 @@ fn merge_manifest_names(
     cfgd_core::union_extend(list, names);
 }
 
-/// [`resolve_manifest_packages`], reading each manifest at most once per run
+/// Resolve manifest files referenced in package specs and merge their contents
+/// into the inline package lists, reading each manifest at most once per run
 /// and claiming every package it folds in under the layer that declared the
-/// manifest.
+/// manifest. Paths are relative to `config_dir`.
 pub fn resolve_manifest_packages_cached(
     packages: &mut PackagesSpec,
     sources: &mut LayerSources,

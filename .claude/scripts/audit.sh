@@ -927,9 +927,11 @@ fi
 
 log_section "DRY — Duplicated Function Definitions"
 # Flag a function defined twice: one name with one definition (signature and
-# body, comments dropped and whitespace collapsed) in more than one file. Two
-# functions that share only a name, such as `CheckinFacts::collect` and
-# `ComplianceInputs::collect`, are homonyms and pass.
+# body, `//` comments and one-line `/* */` comments dropped, whitespace
+# collapsed) in more than one file. Qualifiers (`const`, `unsafe`, `extern`)
+# are not part of the definition. Two functions that share only a name, such
+# as `CheckinFacts::collect` and `ComplianceInputs::collect`, are homonyms and
+# pass.
 # Emits one "<name> <definition> <file>" record per function with a body and
 # dedups them, so the count is a count of DISTINCT FILES. A trait's bodiless
 # declaration is not a definition, and a trait impl's methods are dropped whole
@@ -966,13 +968,16 @@ FN_DEFINITIONS_AWK='
     line = $0; sub(/^[^:]*:[0-9]+:/, "", line)
     code = code_only(line)
     text = substr(line, 1, length(line) - length(LAST_COMMENT))
-    if (code ~ /^[[:space:]]*(pub[^ ]*[[:space:]]+)?(async[[:space:]]+)?fn [a-z0-9_]+[(<]/) {
-        match(code, /fn [a-z0-9_]+[(<]/)
+    # `code` holds an ABI string as placeholder bytes, so `extern` takes any
+    # one token after it where the source spells `extern "C"`.
+    if (match(code, /^[[:space:]]*(pub[^ ]*[[:space:]]+)?((const|async|unsafe|extern( [^ ]+)?)[[:space:]]+)*fn [a-z0-9_]+[(<]/)) {
+        match(substr(code, 1, RLENGTH), /fn [a-z0-9_]+[(<]$/)
         n = ++open_count
         start[n] = depth; opened[n] = 0; body[n] = ""
         name[n] = substr(code, RSTART + 3, RLENGTH - 4)
         text = substr(text, RSTART)
     }
+    gsub(/\/\*([^*]|\*+[^*\/])*\*+\//, "", text)
     gsub(/[[:space:]]+/, " ", text); sub(/^ /, "", text); sub(/ $/, "", text)
     opens = gsub(/{/, "{", code); closes = gsub(/}/, "}", code)
     depth += opens - closes

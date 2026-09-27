@@ -40,6 +40,19 @@ fixture_is_clean() {
     grep -qF '=== Audit Complete: 0 errors, 0 warnings ===' "$TMP/out"
 }
 
+# An unmatched glob would otherwise reach the loop as its literal text, a path
+# that does not exist and so audits clean, and a good_ loop over it reports a
+# fixture accepted that was never read. Each kind must also be non-empty, so a
+# renamed or deleted set of fixtures fails here in place of passing silently.
+shopt -s nullglob
+for kind in 'bad_*.txt' 'bad_*/' 'good_*.txt' 'good_*/'; do
+    found=("$FIXTURE_DIR"/$kind)
+    if [ "${#found[@]}" -eq 0 ]; then
+        echo "FAIL: no $kind fixtures found in $FIXTURE_DIR"
+        FAIL=1
+    fi
+done
+
 for fix in "$FIXTURE_DIR"/bad_*.txt "$FIXTURE_DIR"/bad_*/; do
     name=$(basename "$fix" .txt)
     run_audit_against "$fix"
