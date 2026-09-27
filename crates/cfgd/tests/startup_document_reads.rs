@@ -1,9 +1,14 @@
-//! The real binary reads `cfgd.yaml` once before dispatch, whichever verb runs.
+//! The alias pass and clap settle on one startup document, and its reload
+//! count says whether clap moved it.
 //!
-//! The read happens before the tracing subscriber exists, so `main` reports
-//! it in one `loaded config document` debug line carrying how many reads the
-//! startup document took. A second pre-dispatch read shows as `reads=2`, and
-//! a second startup document as a second line.
+//! The alias pass reads the document before the tracing subscriber exists, so
+//! `main` reports the startup document in one `loaded config document` debug
+//! line, after the last place the path can move. `reads=1` means clap settled
+//! on the file the alias pass read; each move clap or the macOS config move
+//! makes adds one. The line counts the startup document alone: a loader call
+//! elsewhere before dispatch never reaches it, and
+//! `the_pre_dispatch_path_loads_the_document_once` (`src/cli/tests.rs`) is the
+//! walk that fails on one.
 
 mod cfgd_binary;
 use cfgd_binary::cfgd_bin;
@@ -60,7 +65,7 @@ fn assert_reads(verb: &[&str], stderr: &str, reads: u32) {
 }
 
 #[test]
-fn every_verb_reads_the_config_document_once_before_dispatch() {
+fn the_alias_pass_and_clap_settle_on_one_document_for_every_verb() {
     let dir = tempfile::tempdir().expect("tempdir");
     write_fixture(dir.path());
     let config = dir.path().join("cfgd.yaml");
@@ -77,7 +82,7 @@ fn every_verb_reads_the_config_document_once_before_dispatch() {
 /// With no `--config`, the alias pass and clap both land on the default
 /// document under the isolated config home.
 #[test]
-fn a_run_without_config_reads_the_default_document_once() {
+fn a_run_without_config_settles_on_the_default_document_with_no_reload() {
     let probe = cfgd_bin().expect("the cfgd binary builds");
     let config_home = probe
         .get_envs()
@@ -92,7 +97,7 @@ fn a_run_without_config_reads_the_default_document_once() {
 /// `CFGD_CONFIG` is clap's alone: the alias pass reads the default document,
 /// and the summary line counts the second read that lands on the named one.
 #[test]
-fn a_config_named_only_in_the_environment_is_read_a_second_time() {
+fn a_config_named_only_in_the_environment_counts_as_one_reload() {
     let dir = tempfile::tempdir().expect("tempdir");
     write_fixture(dir.path());
     let config = dir.path().join("cfgd.yaml");

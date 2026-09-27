@@ -54047,7 +54047,9 @@ fn config_reads_outside_the_startup_document(source: &str) -> Vec<String> {
 /// dispatch is a second read of a file already in hand, and a
 /// `StartupDocument::load` call site outside the counted ones is a second
 /// document. A verb's own load after dispatch carries
-/// `// startup-load-ok: <why>`.
+/// `// startup-load-ok: <why>`. This walk alone holds the no-second-read
+/// claim: the real binary's summary line counts the startup document's own
+/// reloads and cannot see a loader call beside it.
 #[test]
 fn the_pre_dispatch_path_loads_the_document_once() {
     use cfgd_core::test_helpers::{code_line, rust_sources_under, workspace_root};
