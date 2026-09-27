@@ -937,8 +937,11 @@ fn path_entries(composed: &str) -> Vec<String> {
 #[test]
 fn tool_seam_var_uppercases_and_underscores() {
     assert_eq!(tool_seam_var("brew"), crate::seams::BREW_BIN_ENV);
+    // env-literal-ok: pins what the derivation composes
     assert_eq!(tool_seam_var("brew-cask"), "CFGD_BREW_CASK_BIN");
+    // env-literal-ok: pins what the derivation composes
     assert_eq!(tool_seam_var("npm"), "CFGD_NPM_BIN");
+    // env-literal-ok: pins what the derivation composes
     assert_eq!(tool_seam_var("nix-env"), "CFGD_NIX_ENV_BIN");
 }
 

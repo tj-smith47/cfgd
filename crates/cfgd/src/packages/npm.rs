@@ -1193,7 +1193,7 @@ mod tests {
         let fake = dir.path().join("npm");
         std::fs::write(&fake, b"#!/bin/sh\n").unwrap();
         let _g = cfgd_core::test_helpers::EnvVarGuard::set(
-            "CFGD_NPM_BIN",
+            &crate::seams::tool_seam_var("npm"),
             fake.to_str().expect("utf8 tempdir path"),
         );
         let found = find_npm().expect("a real CFGD_NPM_BIN file must short-circuit detection");
@@ -1212,7 +1212,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
 
         let _missing = cfgd_core::test_helpers::EnvVarGuard::set(
-            "CFGD_NPM_BIN",
+            &crate::seams::tool_seam_var("npm"),
             cfgd_core::test_helpers::ABSENT_SEAM_PATH,
         );
         assert_eq!(
@@ -1224,7 +1224,7 @@ mod tests {
         cfgd_core::test_helpers::write_probe_tool(dir.path(), "npm");
         let planted = cfgd_core::test_helpers::probe_tool_path(dir.path(), "npm");
         let _present = cfgd_core::test_helpers::EnvVarGuard::set(
-            "CFGD_NPM_BIN",
+            &crate::seams::tool_seam_var("npm"),
             planted.to_str().expect("probe path is valid UTF-8"),
         );
         assert_eq!(
@@ -1252,7 +1252,8 @@ mod tests {
         // resolution would answer for the npm this one has to not find.
         let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
         let _paths = cfgd_core::test_helpers::CommandPathMemoTtlGuard::always_expired();
-        let _no_seam = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_NPM_BIN");
+        let _no_seam =
+            cfgd_core::test_helpers::EnvVarGuard::unset(&crate::seams::tool_seam_var("npm"));
         let _empty_path = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
 
         let home = tempfile::tempdir().expect("tempdir");
@@ -1283,7 +1284,8 @@ mod tests {
     #[serial_test::serial]
     fn find_npm_returns_a_full_path_for_an_npm_only_the_bootstrapped_registry_can_see() {
         use std::os::unix::fs::PermissionsExt;
-        let _no_seam = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_NPM_BIN");
+        let _no_seam =
+            cfgd_core::test_helpers::EnvVarGuard::unset(&crate::seams::tool_seam_var("npm"));
         let bootstrapped = tempfile::tempdir().unwrap();
         let npm = bootstrapped.path().join("npm");
         std::fs::write(&npm, "#!/bin/sh\nexit 0\n").unwrap();
@@ -1445,7 +1447,8 @@ mod tests {
         use cfgd_core::test_helpers::{EnvVarGuard, ToolShim, test_printer};
         use serial_test::serial;
 
-        const SHIM_ENV: &str = "CFGD_NPM_BIN";
+        static SHIM_ENV: std::sync::LazyLock<String> =
+            std::sync::LazyLock::new(|| crate::seams::tool_seam_var("npm"));
 
         /// Argv-branching CFGD_NPM_BIN shim: answers `npm config get prefix`
         /// with a caller-chosen directory, and every other invocation with a
@@ -1494,7 +1497,7 @@ mod tests {
                 perms.set_mode(0o755);
                 std::fs::set_permissions(&bin_path, perms).expect("chmod");
 
-                let env_guard = EnvVarGuard::set(SHIM_ENV, &bin_path.to_string_lossy());
+                let env_guard = EnvVarGuard::set(&SHIM_ENV, &bin_path.to_string_lossy());
 
                 Self {
                     _env_guard: env_guard,
@@ -1744,7 +1747,7 @@ mod tests {
         #[test]
         #[serial]
         fn npm_install_skips_command_when_empty() {
-            let s = ToolShim::install(SHIM_ENV, 0, "", "");
+            let s = ToolShim::install(&SHIM_ENV, 0, "", "");
             let p = test_printer();
             let state = cfgd_core::test_helpers::test_state();
             let cx = PackageContext::new(&p, &state);
@@ -1795,7 +1798,7 @@ mod tests {
         #[test]
         #[serial]
         fn npm_available_version_runs_view_and_returns_trimmed_stdout() {
-            let _s = ToolShim::install(SHIM_ENV, 0, "5.3.3\n", "");
+            let _s = ToolShim::install(&SHIM_ENV, 0, "5.3.3\n", "");
             let v = NpmManager.available_version("typescript").expect("Ok");
             assert_eq!(v.as_deref(), Some("5.3.3"));
         }
@@ -1803,7 +1806,7 @@ mod tests {
         #[test]
         #[serial]
         fn npm_available_version_passes_view_subcommand_with_package_and_field() {
-            let s = ToolShim::install(SHIM_ENV, 0, "1.0.0", "");
+            let s = ToolShim::install(&SHIM_ENV, 0, "1.0.0", "");
             NpmManager.available_version("typescript").expect("Ok");
             let argv = s.argv_log();
             assert!(
@@ -1815,7 +1818,7 @@ mod tests {
         #[test]
         #[serial]
         fn npm_available_version_returns_none_on_nonzero_exit() {
-            let _s = ToolShim::install(SHIM_ENV, 1, "", "404 not found");
+            let _s = ToolShim::install(&SHIM_ENV, 1, "", "404 not found");
             let v = NpmManager
                 .available_version("nonexistent")
                 .expect("non-zero → Ok(None) not Err");
@@ -1825,7 +1828,7 @@ mod tests {
         #[test]
         #[serial]
         fn npm_available_version_returns_none_on_empty_stdout() {
-            let _s = ToolShim::install(SHIM_ENV, 0, "\n   \n", "");
+            let _s = ToolShim::install(&SHIM_ENV, 0, "\n   \n", "");
             let v = NpmManager
                 .available_version("weird-pkg")
                 .expect("empty stdout → Ok(None)");
@@ -1961,7 +1964,7 @@ mod tests {
             let dir = tempfile::tempdir().expect("tempdir");
             let unspawnable = dir.path().join("npm");
             std::fs::write(&unspawnable, "").expect("write the unspawnable file");
-            let guard = EnvVarGuard::set(SHIM_ENV, unspawnable.to_string_lossy().as_ref());
+            let guard = EnvVarGuard::set(&SHIM_ENV, unspawnable.to_string_lossy().as_ref());
             (dir, guard)
         }
 

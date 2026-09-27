@@ -15,7 +15,7 @@ use cfgd_core::providers::{ActionNote, PackageContext};
 /// Compute the canonical env-var seam name for a package-manager binary.
 /// Pattern: `CFGD_<NAME>_BIN`, with hyphens turned into underscores so
 /// `brew-cask` maps to `CFGD_BREW_CASK_BIN`.
-pub(super) fn tool_seam_var(name: &str) -> String {
+pub fn tool_seam_var(name: &str) -> String {
     format!("CFGD_{}_BIN", name.to_uppercase().replace('-', "_"))
 }
 
@@ -827,6 +827,20 @@ pub(super) fn host_arms() -> &'static [SystemArm] {
     } else {
         &SYSTEM_MANAGER_ARMS
     }
+}
+
+/// Every tool a resolver takes from a table before handing it to
+/// [`tool_seam_var`]: both arm tables, whichever host this is, and the pip
+/// fallback's two names. A walk deriving the seam population reads these beside the names it
+/// finds spelled at a call.
+#[cfg(test)]
+pub(crate) fn tabled_seam_tools() -> Vec<&'static str> {
+    SYSTEM_MANAGER_ARMS
+        .iter()
+        .chain(WINDOWS_MANAGER_ARMS)
+        .map(|(_, tool)| *tool)
+        .chain(super::pipx::pip_tool_order())
+        .collect()
 }
 
 /// The command an arm spawns, whichever table holds it, or `None` for a method

@@ -704,6 +704,7 @@ mod tests {
         }
         let err = require_cosign().expect_err("missing file → Err");
         assert!(
+            // env-literal-ok: asserts the rendered error text
             err.contains("CFGD_COSIGN_BIN") && err.contains("not a file"),
             "error must call out env-var + missing-file: {err}"
         );

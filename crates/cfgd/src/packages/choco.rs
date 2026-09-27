@@ -610,7 +610,12 @@ Tags: git vcs dvcs
         use serial_test::serial;
 
         fn install_choco_shim(exit_code: i32, stdout: &str, stderr: &str) -> ToolShim {
-            ToolShim::install("CFGD_CHOCO_BIN", exit_code, stdout, stderr)
+            ToolShim::install(
+                &crate::seams::tool_seam_var("choco"),
+                exit_code,
+                stdout,
+                stderr,
+            )
         }
 
         #[test]

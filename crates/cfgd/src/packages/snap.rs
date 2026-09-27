@@ -417,7 +417,8 @@ channels:
         // The seam env var is cleared for the whole test: with it set, this
         // asserts about whichever ToolShim ran last rather than about the
         // PATH probe.
-        let _seam = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_SNAP_BIN");
+        let _seam =
+            cfgd_core::test_helpers::EnvVarGuard::unset(&crate::seams::tool_seam_var("snap"));
         let _path_lock = cfgd_core::test_helpers::path_env_mutation_guard();
         let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
         let mgr = SnapManager;
@@ -517,12 +518,13 @@ ripgrep   14.1.0   234    latest/stable  burntsushi    classic
         use cfgd_core::test_helpers::{ToolShim, test_package_context, test_printer, test_state};
         use serial_test::serial;
 
-        const SHIM_ENV: &str = "CFGD_SNAP_BIN";
+        static SHIM_ENV: std::sync::LazyLock<String> =
+            std::sync::LazyLock::new(|| crate::seams::tool_seam_var("snap"));
 
         #[test]
         #[serial]
         fn snap_install_runs_install_subcommand_per_package() {
-            let s = ToolShim::install(SHIM_ENV, 0, "", "");
+            let s = ToolShim::install(&SHIM_ENV, 0, "", "");
             let p = test_printer();
             let st = test_state();
             let cx = test_package_context(&p, &st);
@@ -550,7 +552,7 @@ ripgrep   14.1.0   234    latest/stable  burntsushi    classic
             // instead of re-running `snap install ripgrep`, which would
             // no-op; `fd` is unheld and still installs.
             let listing = "Name    Version  Rev  Tracking  Publisher  Notes\nripgrep 14.1.0   123  stable    canonical  -\n"; // space-run-ok: a fixture reproducing the manager's own column-aligned listing.
-            let s = ToolShim::install(SHIM_ENV, 0, listing, "");
+            let s = ToolShim::install(&SHIM_ENV, 0, listing, "");
             let p = test_printer();
             let st = test_state();
             let cx = test_package_context(&p, &st);
@@ -585,7 +587,7 @@ ripgrep   14.1.0   234    latest/stable  burntsushi    classic
             // open (fresh = every package), so it does not change the retry
             // shape — just adds one more invocation.
             let s = ToolShim::install(
-                SHIM_ENV,
+                &SHIM_ENV,
                 1,
                 "",
                 "snap \"ripgrep\" requires classic confinement",
@@ -614,7 +616,7 @@ ripgrep   14.1.0   234    latest/stable  burntsushi    classic
         #[test]
         #[serial]
         fn snap_uninstall_runs_remove_with_all_packages_in_one_invocation() {
-            let s = ToolShim::install(SHIM_ENV, 0, "", "");
+            let s = ToolShim::install(&SHIM_ENV, 0, "", "");
             let p = test_printer();
             let st = test_state();
             let cx = test_package_context(&p, &st);
@@ -632,7 +634,7 @@ ripgrep   14.1.0   234    latest/stable  burntsushi    classic
         #[test]
         #[serial]
         fn snap_uninstall_is_noop_when_packages_empty() {
-            let s = ToolShim::install(SHIM_ENV, 0, "", "");
+            let s = ToolShim::install(&SHIM_ENV, 0, "", "");
             let p = test_printer();
             let st = test_state();
             let cx = test_package_context(&p, &st);
@@ -643,7 +645,7 @@ ripgrep   14.1.0   234    latest/stable  burntsushi    classic
         #[test]
         #[serial]
         fn snap_declares_no_index_and_refreshing_upgrades_nothing() {
-            let s = ToolShim::install(SHIM_ENV, 0, "", "");
+            let s = ToolShim::install(&SHIM_ENV, 0, "", "");
             let p = test_printer();
             let st = test_state();
             let cx = test_package_context(&p, &st);
@@ -666,7 +668,7 @@ Name      Version  Rev   Tracking       Publisher    Notes
 core22    20240124 1100  latest/stable  canonical**  base
 ripgrep   14.1.0   234   latest/stable  burntsushi   classic
 ";
-            let _s = ToolShim::install(SHIM_ENV, 0, stdout, "");
+            let _s = ToolShim::install(&SHIM_ENV, 0, stdout, "");
             let p = test_printer();
             let st = test_state();
             let cx = test_package_context(&p, &st);
@@ -680,7 +682,7 @@ ripgrep   14.1.0   234   latest/stable  burntsushi   classic
         fn snap_installed_packages_nonzero_exit_is_empty_not_error() {
             // A listing read tolerates a nonzero exit (`run_pkg_query`, not
             // `run_pkg_cmd`) the same way flatpak's and scoop's do.
-            let _s = ToolShim::install(SHIM_ENV, 1, "", "no snaps installed\n");
+            let _s = ToolShim::install(&SHIM_ENV, 1, "", "no snaps installed\n");
             let p = test_printer();
             let st = test_state();
             let cx = test_package_context(&p, &st);
@@ -699,7 +701,7 @@ summary: ripgrep
 channels:
   latest/stable:    14.1.0 2024-03-01 (234) 12MB classic
 ";
-            let s = ToolShim::install(SHIM_ENV, 0, stdout, "");
+            let s = ToolShim::install(&SHIM_ENV, 0, stdout, "");
             let v = SnapManager.available_version("ripgrep").expect("Ok");
             assert_eq!(v.as_deref(), Some("14.1.0"));
             assert!(
@@ -712,7 +714,7 @@ channels:
         #[test]
         #[serial]
         fn snap_available_version_returns_none_on_nonzero_exit() {
-            let _s = ToolShim::install(SHIM_ENV, 1, "", "no such snap");
+            let _s = ToolShim::install(&SHIM_ENV, 1, "", "no such snap");
             let v = SnapManager
                 .available_version("nonexistent")
                 .expect("non-zero → Ok(None)");

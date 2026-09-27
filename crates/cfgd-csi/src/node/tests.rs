@@ -619,6 +619,7 @@ fn check_registry_allowed_rejects_when_registry_not_in_list() {
     assert_eq!(err.code(), tonic::Code::PermissionDenied);
     assert!(err.message().contains("docker.io"));
     assert!(
+        // env-literal-ok: asserts the rendered error text
         err.message().contains("CFGD_CSI_ALLOWED_REGISTRIES"),
         "error should reference the env var so the operator can fix it: {}",
         err.message()

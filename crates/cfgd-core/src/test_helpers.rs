@@ -3905,31 +3905,37 @@ impl NoHostManagers {
 /// drop (or removes the var if no prior value existed). Use in tests that
 /// mutate process-global env state.
 pub struct EnvVarGuard {
-    key: &'static str,
+    key: String,
     prior: Option<String>,
 }
 
 impl EnvVarGuard {
     /// Capture the prior value of `key`, then set it to `value`.
-    pub fn set(key: &'static str, value: &str) -> Self {
+    pub fn set(key: &str, value: &str) -> Self {
         let prior = std::env::var(key).ok();
         refuse_unbracketed_path_write(key);
         // SAFETY: serial_test::serial gates execution; no concurrent reader/writer.
         unsafe {
             std::env::set_var(key, value);
         }
-        Self { key, prior }
+        Self {
+            key: key.to_string(),
+            prior,
+        }
     }
 
     /// Capture the prior value of `key`, then remove it.
-    pub fn unset(key: &'static str) -> Self {
+    pub fn unset(key: &str) -> Self {
         let prior = std::env::var(key).ok();
         refuse_unbracketed_path_write(key);
         // SAFETY: serial_test::serial gates execution; no concurrent reader/writer.
         unsafe {
             std::env::remove_var(key);
         }
-        Self { key, prior }
+        Self {
+            key: key.to_string(),
+            prior,
+        }
     }
 }
 
@@ -3962,12 +3968,12 @@ fn refuse_unbracketed_path_write(key: &str) {
 
 impl Drop for EnvVarGuard {
     fn drop(&mut self) {
-        refuse_unbracketed_path_write(self.key);
+        refuse_unbracketed_path_write(&self.key);
         // SAFETY: serial_test::serial gates execution; no concurrent reader/writer.
         unsafe {
             match self.prior.take() {
-                Some(v) => std::env::set_var(self.key, v),
-                None => std::env::remove_var(self.key),
+                Some(v) => std::env::set_var(&self.key, v),
+                None => std::env::remove_var(&self.key),
             }
         }
     }

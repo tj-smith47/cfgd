@@ -1470,7 +1470,7 @@ spec:
     fn the_daemon_and_cfgd_checkin_post_the_same_check_in() {
         let machine = TwoSenderMachine::new();
         let _cargo = cfgd_core::test_helpers::ToolShim::install(
-            "CFGD_CARGO_BIN",
+            &crate::seams::tool_seam_var("cargo"),
             0,
             "ripgrep v14.1.0:\n    rg\n",
             "",
@@ -1615,7 +1615,7 @@ spec:
     fn an_unreadable_manifest_withholds_versions_and_compliance_from_both_senders() {
         let machine = TwoSenderMachine::new();
         let _cargo = cfgd_core::test_helpers::ToolShim::install(
-            "CFGD_CARGO_BIN",
+            &crate::seams::tool_seam_var("cargo"),
             0,
             "ripgrep v14.1.0:\n    rg\n",
             "",

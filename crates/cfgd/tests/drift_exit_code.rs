@@ -284,8 +284,8 @@ fn a_manager_that_cannot_be_listed_is_one_row_on_every_exit_code_surface() {
             .env("HOME", home_tmp.path())
             .env("USERPROFILE", home_tmp.path())
             .env(cfgd_core::CFGD_CACHE_DIR_ENV, home_tmp.path().join("cache"))
-            .env("CFGD_PIPX_BIN", &pipx)
-            .env("CFGD_CARGO_BIN", &cargo)
+            .env(cfgd::seams::tool_seam_var("pipx"), &pipx)
+            .env(cfgd::seams::tool_seam_var("cargo"), &cargo)
             .output()
             .unwrap();
         let text = format!(

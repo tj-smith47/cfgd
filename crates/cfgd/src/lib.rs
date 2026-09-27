@@ -16,9 +16,12 @@ pub use cli::Cli;
 /// The `CFGD_*_BIN` variables this crate's package managers, secret backends
 /// and system configurators read a tool's path from, for a test pointing one at
 /// a shim. Integration tests build as crates of their own and reach them here.
+/// A manager tool whose variable has no const of its own is named through
+/// `tool_seam_var`, the derivation production reads it by.
 #[cfg(any(test, feature = "test-helpers"))]
 pub mod seams {
     pub use crate::packages::shared::BREW_BIN_ENV;
+    pub use crate::packages::shared::tool_seam_var;
     pub use crate::packages::simple::APT_GET_BIN_ENV;
     pub use crate::packages::versions::APK_BIN_ENV;
     pub use crate::packages::versions::APT_CACHE_BIN_ENV;

@@ -1945,13 +1945,21 @@ fn every_mediated_arm_installs_through_its_own_managers_argv() {
     let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
     // cargo's arms deliver rustup alone, so its bootstrap settles a toolchain
     // behind every one of them; the shim catches that second spawn.
-    let rustup = cfgd_core::test_helpers::ToolShim::install("CFGD_RUSTUP_BIN", 0, "", "");
+    let rustup = cfgd_core::test_helpers::ToolShim::install(
+        &crate::seams::tool_seam_var("rustup"),
+        0,
+        "",
+        "",
+    );
 
     // winget's install argv is one shape whatever the id, so the flags are
     // spelled once here rather than per row.
     let winget = |id: &str| {
         format!("install --id {id} --silent --accept-package-agreements --accept-source-agreements")
     };
+    let winget_seam = crate::seams::tool_seam_var("winget");
+    let choco_seam = crate::seams::tool_seam_var("choco");
+    let scoop_seam = crate::seams::tool_seam_var("scoop");
     // (manager, planned method, the arm's own seam, the argv it must log)
     let cases: Vec<(&str, &str, &str, String)> = vec![
         (
@@ -1981,19 +1989,19 @@ fn every_mediated_arm_installs_through_its_own_managers_argv() {
         (
             "npm",
             "winget",
-            "CFGD_WINGET_BIN",
+            winget_seam.as_str(),
             winget("OpenJS.NodeJS.LTS"),
         ),
         (
             "npm",
             "chocolatey",
-            "CFGD_CHOCO_BIN",
+            choco_seam.as_str(),
             "install -y nodejs-lts".into(),
         ),
         (
             "npm",
             "scoop",
-            "CFGD_SCOOP_BIN",
+            scoop_seam.as_str(),
             "install nodejs-lts".into(),
         ),
         (
@@ -2012,10 +2020,10 @@ fn every_mediated_arm_installs_through_its_own_managers_argv() {
         (
             "pipx",
             "chocolatey",
-            "CFGD_CHOCO_BIN",
+            choco_seam.as_str(),
             "install -y pipx".into(),
         ),
-        ("pipx", "scoop", "CFGD_SCOOP_BIN", "install pipx".into()),
+        ("pipx", "scoop", scoop_seam.as_str(), "install pipx".into()),
         (
             "go",
             "pacman",
@@ -2035,27 +2043,32 @@ fn every_mediated_arm_installs_through_its_own_managers_argv() {
             crate::seams::ZYPPER_BIN_ENV,
             "install -y go".into(),
         ),
-        ("go", "winget", "CFGD_WINGET_BIN", winget("GoLang.Go")),
+        ("go", "winget", winget_seam.as_str(), winget("GoLang.Go")),
         (
             "go",
             "chocolatey",
-            "CFGD_CHOCO_BIN",
+            choco_seam.as_str(),
             "install -y golang".into(),
         ),
-        ("go", "scoop", "CFGD_SCOOP_BIN", "install go".into()),
+        ("go", "scoop", scoop_seam.as_str(), "install go".into()),
         (
             "cargo",
             "winget",
-            "CFGD_WINGET_BIN",
+            winget_seam.as_str(),
             winget("Rustlang.Rustup"),
         ),
         (
             "cargo",
             "chocolatey",
-            "CFGD_CHOCO_BIN",
+            choco_seam.as_str(),
             "install -y rustup.install".into(),
         ),
-        ("cargo", "scoop", "CFGD_SCOOP_BIN", "install rustup".into()),
+        (
+            "cargo",
+            "scoop",
+            scoop_seam.as_str(),
+            "install rustup".into(),
+        ),
     ];
 
     for (manager, method, seam, expected) in cases {
@@ -2088,8 +2101,18 @@ fn every_mediated_arm_installs_through_its_own_managers_argv() {
     // installs pipx with it. Both spawns are asserted rather than the arm
     // alone, each through its own seam, so the row runs on every host.
     {
-        let pip = cfgd_core::test_helpers::ToolShim::install("CFGD_PIP_BIN", 0, "", "");
-        let shim = cfgd_core::test_helpers::ToolShim::install("CFGD_WINGET_BIN", 0, "", "");
+        let pip = cfgd_core::test_helpers::ToolShim::install(
+            &crate::seams::tool_seam_var("pip"),
+            0,
+            "",
+            "",
+        );
+        let shim = cfgd_core::test_helpers::ToolShim::install(
+            &crate::seams::tool_seam_var("winget"),
+            0,
+            "",
+            "",
+        );
         let (printer, _buf) =
             cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
         let cx = cfgd_core::test_helpers::test_bootstrap_context(&printer).for_provision("winget");
@@ -2123,9 +2146,17 @@ fn every_mediated_arm_installs_through_its_own_managers_argv() {
 #[serial_test::serial]
 fn the_winget_route_registers_the_directory_its_pip_came_from() {
     let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
-    let _winget = cfgd_core::test_helpers::ToolShim::install("CFGD_WINGET_BIN", 0, "", "");
-    let _pip = cfgd_core::test_helpers::ToolShim::install("CFGD_PIP_BIN", 0, "", "");
-    let planted = std::path::PathBuf::from(std::env::var("CFGD_PIP_BIN").expect("the seam is set"));
+    let _winget = cfgd_core::test_helpers::ToolShim::install(
+        &crate::seams::tool_seam_var("winget"),
+        0,
+        "",
+        "",
+    );
+    let _pip =
+        cfgd_core::test_helpers::ToolShim::install(&crate::seams::tool_seam_var("pip"), 0, "", "");
+    let planted = std::path::PathBuf::from(
+        std::env::var(crate::seams::tool_seam_var("pip")).expect("the seam is set"),
+    );
     let interpreter_dir = planted.parent().expect("the shim has a directory");
 
     let (printer, _buf) =
@@ -2152,7 +2183,12 @@ fn the_winget_route_registers_the_directory_its_pip_came_from() {
 #[serial_test::serial]
 fn a_failed_pip_step_behind_the_winget_arm_names_pip_and_not_winget() {
     let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
-    let _winget = cfgd_core::test_helpers::ToolShim::install("CFGD_WINGET_BIN", 0, "", "");
+    let _winget = cfgd_core::test_helpers::ToolShim::install(
+        &crate::seams::tool_seam_var("winget"),
+        0,
+        "",
+        "",
+    );
 
     let refusal = |cx_printer: &cfgd_core::output::Printer| {
         let cx =
@@ -2166,8 +2202,12 @@ fn a_failed_pip_step_behind_the_winget_arm_names_pip_and_not_winget() {
     // pip ran and exited non-zero, carrying its own diagnostic.
     let (printer, _buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    let _pip =
-        cfgd_core::test_helpers::ToolShim::install("CFGD_PIP_BIN", 1, "", "no matching dist");
+    let _pip = cfgd_core::test_helpers::ToolShim::install(
+        &crate::seams::tool_seam_var("pip"),
+        1,
+        "",
+        "no matching dist",
+    );
     let failed = refusal(&printer);
     assert!(
         failed.contains("pip could not finish installing pipx")
@@ -2189,8 +2229,10 @@ fn a_failed_pip_step_behind_the_winget_arm_names_pip_and_not_winget() {
     // `pip install --user pipx` here.
     let _path_excl = cfgd_core::test_helpers::path_env_mutation_guard();
     let _path = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
-    let _pip_seam = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_PIP_BIN");
-    let _pip3_seam = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_PIP3_BIN");
+    let _pip_seam =
+        cfgd_core::test_helpers::EnvVarGuard::unset(&crate::seams::tool_seam_var("pip"));
+    let _pip3_seam =
+        cfgd_core::test_helpers::EnvVarGuard::unset(&crate::seams::tool_seam_var("pip3"));
     let empty = tempfile::tempdir().expect("tempdir");
     let empty_dir = empty.path().to_string_lossy().into_owned();
     let _local_appdata =
@@ -2221,9 +2263,18 @@ fn a_failed_pip_step_behind_the_winget_arm_names_pip_and_not_winget() {
 fn a_failing_seam_pip_is_never_retried_against_the_hosts_own_pip() {
     let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
     let _memo = cfgd_core::test_helpers::CommandPathMemoTtlGuard::always_expired();
-    let _winget = cfgd_core::test_helpers::ToolShim::install("CFGD_WINGET_BIN", 0, "", "");
-    let _seam =
-        cfgd_core::test_helpers::ToolShim::install("CFGD_PIP_BIN", 1, "", "no matching dist");
+    let _winget = cfgd_core::test_helpers::ToolShim::install(
+        &crate::seams::tool_seam_var("winget"),
+        0,
+        "",
+        "",
+    );
+    let _seam = cfgd_core::test_helpers::ToolShim::install(
+        &crate::seams::tool_seam_var("pip"),
+        1,
+        "",
+        "no matching dist",
+    );
 
     // A pip that answers every argv with success, reachable by bare name.
     let host = tempfile::tempdir().expect("tempdir");
@@ -2258,17 +2309,26 @@ fn a_failing_seam_pip_is_never_retried_against_the_hosts_own_pip() {
 #[serial_test::serial]
 fn a_failed_toolchain_step_behind_a_windows_arm_names_rustup_and_not_the_mediator() {
     let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
-    let _rustup =
-        cfgd_core::test_helpers::ToolShim::install("CFGD_RUSTUP_BIN", 1, "", "could not download");
+    let _rustup = cfgd_core::test_helpers::ToolShim::install(
+        &crate::seams::tool_seam_var("rustup"),
+        1,
+        "",
+        "could not download",
+    );
     // All three Windows arms deliver rustup alone and reach the toolchain step
     // through the same call, so each one can point the blame at its own
     // mediator.
-    for (method, seam) in [
-        ("winget", "CFGD_WINGET_BIN"),
-        ("chocolatey", "CFGD_CHOCO_BIN"),
-        ("scoop", "CFGD_SCOOP_BIN"),
+    for (method, tool) in [
+        ("winget", "winget"),
+        ("chocolatey", "choco"),
+        ("scoop", "scoop"),
     ] {
-        let _mediator = cfgd_core::test_helpers::ToolShim::install(seam, 0, "", "");
+        let _mediator = cfgd_core::test_helpers::ToolShim::install(
+            &crate::seams::tool_seam_var(tool),
+            0,
+            "",
+            "",
+        );
         let (printer, _buf) =
             cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
         let cx = cfgd_core::test_helpers::test_bootstrap_context(&printer).for_provision(method);
@@ -2333,9 +2393,9 @@ fn a_mediator_that_declined_an_arm_refuses_a_plan_naming_it() {
 #[serial_test::serial]
 fn a_plan_naming_a_windows_mediator_this_host_lacks_is_refused_without_a_spawn() {
     let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
-    let _seams: Vec<_> = ["CFGD_WINGET_BIN", "CFGD_CHOCO_BIN", "CFGD_SCOOP_BIN"]
+    let _seams: Vec<_> = ["winget", "choco", "scoop"]
         .into_iter()
-        .map(cfgd_core::test_helpers::EnvVarGuard::unset)
+        .map(|tool| cfgd_core::test_helpers::EnvVarGuard::unset(&crate::seams::tool_seam_var(tool)))
         .collect();
     let _path_excl = cfgd_core::test_helpers::path_env_mutation_guard();
     let _path = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");

@@ -483,7 +483,12 @@ SomeApp               Some.App                  1.0.0\n";
         use serial_test::serial;
 
         fn install_winget_shim(exit_code: i32, stdout: &str, stderr: &str) -> ToolShim {
-            ToolShim::install("CFGD_WINGET_BIN", exit_code, stdout, stderr)
+            ToolShim::install(
+                &crate::seams::tool_seam_var("winget"),
+                exit_code,
+                stdout,
+                stderr,
+            )
         }
 
         #[test]

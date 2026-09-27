@@ -1868,6 +1868,80 @@ fn signature_split(decl: &str, name: &str) -> Option<(Vec<String>, String)> {
     Some((params, decl[close..].to_string()))
 }
 
+/// Every `CFGD_*_BIN` seam a package manager reads a tool's path from, keyed by
+/// the name and valued by how a test names it: the const a `packages/` file
+/// declares, or the `tool_seam_var("<tool>")` call for a name production derives.
+///
+/// The derived tools are read off production: a tool a seam reader is handed by
+/// name at a call (`resolve_tool_with_fallbacks("go", …)`), and the tables a
+/// resolver hands one out of (`packages::shared::tabled_seam_tools`). A
+/// registry manager name is no source: `apt` and `brew-cask` derive seams
+/// nothing reads.
+fn manager_seam_population() -> std::collections::BTreeMap<String, String> {
+    const READERS: &[&str] = &[
+        "resolve_tool_with_fallbacks(",
+        "system_tool_available(",
+        "sudo_cmd_with_seam(",
+        "tool_seam_var(",
+    ];
+    let packages = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/packages");
+    let mut population: std::collections::BTreeMap<String, String> = Default::default();
+    let mut tools: std::collections::BTreeSet<String> =
+        crate::packages::shared::tabled_seam_tools()
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+    let mut read = 0usize;
+    for path in rust_sources_under(&packages) {
+        let production = floored_production_body(&path);
+        if production.trim().is_empty() {
+            continue;
+        }
+        read += 1;
+        for raw in production.lines() {
+            let code = cfgd_core::test_helpers::code_span(raw);
+            let ident = code
+                .split("const ")
+                .nth(1)
+                .and_then(|t| t.split(':').next());
+            if cfgd_core::test_helpers::item_keyword(code) == "const"
+                && let Some(ident) = ident
+            {
+                for name in cfgd_env_literals(code).filter(|n| n.ends_with("_BIN")) {
+                    population.insert(name.to_string(), ident.trim().to_string());
+                }
+            }
+            for reader in READERS {
+                for (at, _) in code.match_indices(reader) {
+                    let arg = &code[at + reader.len()..];
+                    if let Some(tool) = arg.strip_prefix('"').and_then(|a| a.split('"').next()) {
+                        tools.insert(tool.to_string());
+                    }
+                }
+            }
+        }
+    }
+    // The production files packages/ holds today.
+    assert!(
+        read >= 17,
+        "the walk read {read} production files under packages/"
+    );
+    let consts = population.len();
+    for tool in &tools {
+        population
+            .entry(crate::packages::shared::tool_seam_var(tool))
+            .or_insert_with(|| format!("tool_seam_var(\"{tool}\")"));
+    }
+    // 11 consts (brew, apt-get and the nine query tools) and 14 derived names.
+    assert!(
+        consts >= 11 && population.len() >= 25,
+        "the seam population is {} names, {consts} of them consts; the walk has stopped \
+         reading a reader or a table",
+        population.len()
+    );
+    population
+}
+
 /// A test names a `CFGD_*` variable through the const production reads it by,
 /// wherever that const is reachable from the test, so a renamed variable breaks
 /// the build of every test that sets, clears or reads it. A literal left behind
@@ -1880,17 +1954,19 @@ fn signature_split(decl: &str, name: &str) -> Option<(Vec<String>, String)> {
 /// the tests of its own crate's library, and from its `tests/` when the
 /// crate's test-gated `seams` module re-exports it (`src/bin` and `tests/`
 /// build as crates of their own). A crate carrying `seams` lists every const
-/// it owns there, or its integration tests fall back to a literal. A name with
-/// no const (a derived `CFGD_<TOOL>_BIN` seam, a script variable, a fixture's
-/// invented name) stays a literal.
+/// it owns there, or its integration tests fall back to a literal. A
+/// `CFGD_<TOOL>_BIN` seam production derives (`manager_seam_population`) is
+/// owned the same way by `tool_seam_var("<tool>")`, which `seams` re-exports.
+/// A name with no const and no derivation (a fixture's invented name) stays a
+/// literal.
 ///
 /// The test region is every file `is_test_source` or `is_test_only_file` names
 /// and the inline `#[cfg(test)]` items of the rest, read as code
 /// (`code_span`), so a comment naming a variable is prose. A literal that is
-/// rendered TEXT is no variable name: an argument of `contains(` or a
-/// `should_panic(expected = …)` asserts what a message says, and a line
-/// carrying `// env-literal-ok: <why>` says so for any other shape; a golden
-/// is a text file the walk never reads. A
+/// rendered TEXT is no variable name: a `should_panic(expected = …)` asserts
+/// what a message says, and a line carrying `// env-literal-ok: <why>` says so
+/// for any other shape, an assertion on an error's text included; a golden is
+/// a text file the walk never reads. A
 /// `CFGD_<TOOL>_BIN` seam name composed in a `format!` is refused too:
 /// `packages::shared::tool_seam_var` is the one derivation, and a copy of it
 /// keeps probing the old name after the derivation changes. Each root's count
@@ -1946,10 +2022,16 @@ fn every_test_names_a_cfgd_variable_through_its_const() {
         }
     }
     let everywhere = owners.values().filter(|(o, _)| o.is_none()).count();
+    for (name, ident) in manager_seam_population() {
+        owners
+            .entry(name)
+            .or_insert_with(|| (Some("cfgd".to_string()), ident));
+    }
 
     // A crate whose `lib.rs` re-exports its seams under `seams` reaches its
     // own `tests/` with them too, so every const that crate owns is listed there.
-    let mut reexported: std::collections::BTreeSet<(String, String)> = Default::default();
+    let mut reexported: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> =
+        Default::default();
     let mut seam_roots: std::collections::BTreeSet<String> = Default::default();
     for root in &root_names {
         let lib = crates_dir.join(root).join("src").join("lib.rs");
@@ -1966,7 +2048,10 @@ fn every_test_names_a_cfgd_variable_through_its_const() {
         for line in block.lines() {
             let used = line.trim().strip_suffix(';');
             if let Some((_, ident)) = used.and_then(|u| u.rsplit_once("::")) {
-                reexported.insert((root.to_string(), ident.to_string()));
+                reexported
+                    .entry(root.to_string())
+                    .or_default()
+                    .insert(ident.to_string());
             }
         }
     }
@@ -1974,7 +2059,7 @@ fn every_test_names_a_cfgd_variable_through_its_const() {
         .iter()
         .filter_map(|(name, (owner, ident))| {
             let owner = owner.as_ref().filter(|o| seam_roots.contains(*o))?;
-            (!reexported.contains(&(owner.clone(), ident.clone())))
+            (!is_reexported(&reexported, owner, ident))
                 .then(|| format!("crates/{owner}: {ident} (\"{name}\")"))
         })
         .collect();
@@ -1985,9 +2070,9 @@ fn every_test_names_a_cfgd_variable_through_its_const() {
         unlisted.join("\n")
     );
     // 42 env_names.rs consts plus the three `pub` seams util/ re-exports reach
-    // every crate; 27 more are crate-local seams.
+    // every crate; 27 more are crate-local seams and 14 derived manager seams.
     assert!(
-        everywhere >= 45 && owners.len() >= 72,
+        everywhere >= 45 && owners.len() >= 86,
         "the const population is {} names, {everywhere} reachable from every crate; the \
          scan has stopped reading the consts",
         owners.len()
@@ -2006,10 +2091,10 @@ fn every_test_names_a_cfgd_variable_through_its_const() {
                     || cfgd_core::test_helpers::is_test_only_file(&path);
                 // unfloored-slice-ok: the test region is cut from the whole file here.
                 let body = cfgd_core::test_helpers::walked_file_body(&path);
-                let region = if whole {
-                    body.clone()
+                let region: std::borrow::Cow<str> = if whole {
+                    std::borrow::Cow::Borrowed(&body)
                 } else {
-                    cfgd_core::test_helpers::test_region_mask(&body)
+                    std::borrow::Cow::Owned(cfgd_core::test_helpers::test_region_mask(&body))
                 };
                 if region.trim().is_empty() {
                     continue;
@@ -2040,13 +2125,14 @@ fn every_test_names_a_cfgd_variable_through_its_const() {
                                 owner == root
                                     && (own_library
                                         || (dir != "src"
-                                            && reexported
-                                                .contains(&(owner.clone(), ident.clone()))))
+                                            && is_reexported(&reexported, owner, ident)))
                             }
                             None => false,
                         };
                         if reachable && !names_rendered_text(code, name) {
-                            offenders.push(format!("crates/{rel}:{}: \"{name}\"", i + 1));
+                            let ident = owners.get(name).map_or("", |(_, ident)| ident.as_str());
+                            offenders
+                                .push(format!("crates/{rel}:{}: \"{name}\" is {ident}", i + 1));
                         }
                     }
                 }
@@ -2059,27 +2145,40 @@ fn every_test_names_a_cfgd_variable_through_its_const() {
     }
     assert!(
         offenders.is_empty(),
-        "a test spells a CFGD_* variable its const already names; take the const (a \
-         crate-local one widened as far as the test needs), or say why the literal is \
-         rendered text with `// {HATCH} <why>`:\n{}",
+        "a test spells a CFGD_* variable its const or `tool_seam_var` already names; take \
+         that (a crate-local const widened as far as the test needs), or say why the \
+         literal is rendered text with `// {HATCH} <why>`:\n{}",
         offenders.join("\n")
     );
 }
 
-/// Whether every `"<name>"` literal on a code line is an assertion about
-/// rendered text: the argument of `contains(`, or a `should_panic` expectation.
+/// Whether every `"<name>"` literal on a code line is a `should_panic`
+/// expectation, the one shape that can only be rendered text. A `contains(`
+/// argument is no such shape: its receiver can as well be a set of variable
+/// names, or a negation that goes vacuous once the variable is renamed.
 fn names_rendered_text(code: &str, name: &str) -> bool {
     let literal = format!("\"{name}\"");
-    code.match_indices(&literal).all(|(at, _)| {
-        let before = code[..at].trim_end();
-        before.ends_with("contains(") || before.ends_with("expected =")
-    })
+    code.match_indices(&literal)
+        .all(|(at, _)| code[..at].trim_end().ends_with("expected ="))
+}
+
+/// Whether `owner`'s `seams` module re-exports what `ident` names: the const
+/// itself, or the function a `tool_seam_var("<tool>")` call reaches.
+fn is_reexported(
+    reexported: &std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
+    owner: &str,
+    ident: &str,
+) -> bool {
+    let item = ident.split('(').next().unwrap_or(ident);
+    reexported
+        .get(owner)
+        .is_some_and(|items| items.contains(item))
 }
 
 #[test]
 fn a_rendered_variable_name_is_told_from_a_variable_name() {
-    assert!(names_rendered_text(
-        r#"assert!(err.contains("CFGD_X"));"#,
+    assert!(!names_rendered_text(
+        r#"assert!(!names.contains("CFGD_X"));"#,
         "CFGD_X"
     ));
     assert!(names_rendered_text(
