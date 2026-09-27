@@ -49866,11 +49866,11 @@ fn every_declared_env_value_a_surface_masks_is_decided_by_the_one_masking() {
 /// code part) and `code_span` (that cut taken on the raw line). Those four are
 /// the whole vocabulary; a tell below is a fifth being born.
 ///
-/// Both files that hold tree scans are read, each with a minimum line count it
-/// must keep, so a file cannot stop being read silently; a longer file passes.
-/// The rule is about the SHAPE of a tree scan, whichever crate it happens to be
-/// written in, and `fences.rs` grew a hand-rolled comment cut of its own while
-/// this check read one file.
+/// Both files that hold tree scans are read, each with a minimum line count in
+/// `WALK_FLOORS` it must keep, so a file cannot stop being read silently; a
+/// longer file passes. The rule is about the SHAPE of a tree scan, whichever
+/// crate it happens to be written in, and `fences.rs` grew a hand-rolled
+/// comment cut of its own while this check read one file.
 #[test]
 fn no_walk_bearing_source_scans_syntax_by_hand() {
     const HATCH: &str = "// hand-scan-ok:";
