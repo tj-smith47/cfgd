@@ -132,3 +132,39 @@ fn init_without_yes_off_a_terminal_warns_and_leaves_the_cloned_config_alone() {
         "a report writes nothing"
     );
 }
+
+/// Every spelling of yes the verb itself accepts takes the load-time gate's
+/// prompt too: the gate reads `--yes` off the same parse the command does.
+#[test]
+fn every_spelling_of_yes_the_parser_accepts_takes_the_load_time_prompt() {
+    let spellings: &[(&[&str], Option<&str>)] = &[
+        (&["--yes"], None),
+        (&["-qy"], None),
+        (&[], Some("1")),
+        (&[], Some("true")),
+    ];
+    for (flags, env) in spellings {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = tmp.path().join("cfgd.yaml");
+        std::fs::write(&config, BEHIND).unwrap();
+        std::fs::create_dir_all(tmp.path().join("profiles")).unwrap();
+        std::fs::write(tmp.path().join("profiles/base.yaml"), PROFILE).unwrap();
+
+        let mut cmd = cfgd_bin().unwrap();
+        cmd.args(["--config", &config.display().to_string()])
+            .args(*flags)
+            .arg("status");
+        if let Some(value) = env {
+            cmd.env("CFGD_YES", value);
+        }
+        cmd.assert().success();
+
+        let doc: serde_yaml::Value =
+            serde_yaml::from_str(&std::fs::read_to_string(&config).unwrap()).unwrap();
+        assert_eq!(
+            doc["spec"]["migrationPolicy"],
+            serde_yaml::Value::String("Prompt".to_string()),
+            "flags {flags:?}, CFGD_YES={env:?}: the answer is yes, so the field is written"
+        );
+    }
+}
