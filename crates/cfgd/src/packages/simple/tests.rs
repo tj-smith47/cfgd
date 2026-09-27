@@ -305,26 +305,102 @@ fn yum_manager_yields_to_dnf_wherever_both_resolve() {
     assert!(!yum.is_available(), "no yum binary, no yum manager");
 }
 
+/// A family with no custom availability check answers from the program its
+/// install runs, found through its seam or on `PATH`: present with that
+/// program alone, absent with nothing. apt's own name is no program cfgd runs,
+/// so a host holding only an `apt` is no apt host.
 #[cfg(unix)]
 #[test]
 #[serial_test::serial]
-fn simple_manager_without_a_custom_fn_probes_its_own_name() {
-    // apk_manager carries `is_available_fn: None`, so availability falls
-    // through to a probe for the manager's own name.
-    let _seam = cfgd_core::test_helpers::EnvVarGuard::unset(crate::seams::APK_BIN_ENV);
+fn every_family_without_a_custom_check_answers_from_its_install_program() {
     let _path_lock = cfgd_core::test_helpers::path_env_mutation_guard();
     let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
-    let apk = apk_manager();
-
-    {
-        let _empty = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
-        assert!(!apk.is_available());
+    let _paths = cfgd_core::test_helpers::CommandPathMemoTtlGuard::always_expired();
+    let _avail = cfgd_core::test_helpers::AvailabilityMemoTtlGuard::always_expired();
+    let mut checked = 0;
+    let mut renamed = 0;
+    for (name, build) in SIMPLE_FAMILIES {
+        let mgr = build();
+        if mgr.is_available_fn.is_some() {
+            continue;
+        }
+        checked += 1;
+        let program = mgr.install_program();
+        let _seam = cfgd_core::test_helpers::EnvVarGuard::unset(
+            &super::super::shared::tool_seam_var(program),
+        );
+        {
+            let _probe = cfgd_core::test_helpers::ProbePath::containing(&[program]);
+            assert!(
+                mgr.is_available(),
+                "{name} with {program} on PATH is available"
+            );
+        }
+        {
+            let _empty = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
+            assert!(!mgr.is_available(), "{name} with nothing on PATH is absent");
+        }
+        if mgr.mgr_name != program {
+            renamed += 1;
+            let _probe = cfgd_core::test_helpers::ProbePath::containing(&[mgr.mgr_name]);
+            assert!(
+                !mgr.is_available(),
+                "{name} runs {program}, so a PATH holding only `{name}` is no {name} host"
+            );
+        }
     }
-    let _probe = cfgd_core::test_helpers::ProbePath::containing(&["apk"]);
+    // Every family but yum, whose check yields to dnf; apt alone runs a program
+    // named apart from itself.
     assert!(
-        apk.is_available(),
-        "the binary this manager probes for is named `apk`"
+        checked >= 6 && renamed >= 1,
+        "walked {checked} families and {renamed} renamed programs"
     );
+}
+
+/// A family's `tool_version` reads the banner of the program its install runs,
+/// through that program's seam. Each banner is the real first line of that
+/// program's `--version`: apt-get from ubuntu:24.04, dnf5 from fedora:44, yum
+/// from centos:7, apk from alpine:3, pacman (its whole banner) from archlinux,
+/// zypper from opensuse/tumbleweed, pkg from FreeBSD 14.5.
+#[test]
+#[serial_test::serial]
+fn every_family_reads_its_tool_version_from_its_install_program() {
+    const PACMAN: &str = " .--.                  Pacman v7.1.0 - libalpm v16.0.1
+/ _.-' .-.  .-.  .-.   Copyright (C) 2006-2025 Pacman Development Team
+\\  '-. '-'  '-'  '-'   Copyright (C) 2002-2006 Judd Vinet
+ '--'
+                       This program may be freely redistributed under
+                       the terms of the GNU General Public License.";
+    let banner = |name: &str| -> (&str, &str) {
+        match name {
+            "apt" => ("apt 2.8.3 (amd64)", "2.8.3"),
+            "dnf" => ("dnf5 version 5.4.3.0", "5.4.3.0"),
+            "yum" => ("3.4.3", "3.4.3"),
+            "apk" => ("apk-tools 3.0.8-r0, compiled for x86_64.", "3.0.8-r0"),
+            "pacman" => (PACMAN, "7.1.0"),
+            "zypper" => ("zypper 1.14.101", "1.14.101"),
+            "pkg" => ("2.7.5", "2.7.5"),
+            other => panic!("{other} has no row in the banner table"),
+        }
+    };
+    let mut walked = 0;
+    for (name, build) in SIMPLE_FAMILIES {
+        let mgr = build();
+        let (stdout, version) = banner(name);
+        let seam = super::super::shared::tool_seam_var(mgr.install_program());
+        let shim = cfgd_core::test_helpers::ToolShim::install(&seam, 0, stdout, "");
+        assert_eq!(
+            mgr.tool_version().as_deref(),
+            Some(version),
+            "{name}'s version is its install program's banner"
+        );
+        assert!(
+            shim.argv_log().contains("--version"),
+            "{name} asked the program at {seam} for its version"
+        );
+        walked += 1;
+    }
+    assert!(walked >= 7, "walked {walked} families");
 }
 
 #[test]
