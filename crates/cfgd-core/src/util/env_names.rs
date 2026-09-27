@@ -1,5 +1,6 @@
-//! The `CFGD_*` environment variables the `cfgd` command line binds to a flag,
-//! each spelled once for the whole workspace.
+//! Every `CFGD_*` environment name production binds or reads, one const each and
+//! spelled once for the whole workspace, whether clap binds it to a flag or a
+//! resolver reads it itself.
 //!
 //! A clap `env =` binding and every other reader or writer of the same variable
 //! name it through these, so a rename moves every reader together.

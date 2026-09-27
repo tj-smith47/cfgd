@@ -1298,15 +1298,17 @@ fn the_startup_check_honours_the_invocations_policy_over_the_declared_one() {
     });
 }
 
-/// Every environment variable a clap argument binds is spelled as a literal on at
-/// most one production line of the workspace: its `CFGD_*_ENV` const in cfgd-core.
-/// A second spelling, in a reader beside the binding, a second binding, or a
-/// writer exporting the name to a child, is a copy a rename leaves behind: the
-/// flag keeps working while the other site goes quiet. The population is clap's
-/// own (`get_env` over the whole command tree), so a new binding joins it
-/// unasked. Tests keep their literals, since they assert the wire spelling.
+/// Every `CFGD_*` environment name the command line binds or reads in place of a
+/// flag is spelled as a literal on exactly one production line of the workspace:
+/// its `CFGD_*_ENV` const in cfgd-core. A second spelling, in a reader beside the
+/// binding, a second binding, or a writer exporting the name to a child, is a copy
+/// a rename leaves behind: the flag keeps working while the other site goes quiet.
+/// The population is clap's own (`get_env` over the whole command tree) joined
+/// with every const `env_names.rs` declares, so a new binding and a new
+/// resolver-read const both join it unasked. Tests keep their literals, since
+/// they assert the wire spelling.
 #[test]
-fn every_clap_bound_env_var_is_spelled_once_in_production() {
+fn every_cfgd_env_name_is_spelled_once_in_production() {
     fn bound_env_names(cmd: &clap::Command, out: &mut std::collections::BTreeSet<String>) {
         for arg in cmd.get_arguments() {
             if let Some(env) = arg.get_env().and_then(|e| e.to_str()) {
@@ -1325,13 +1327,39 @@ fn every_clap_bound_env_var_is_spelled_once_in_production() {
         "clap reported only {} env-bound arguments; the scan has stopped seeing the bindings",
         names.len()
     );
+    let module =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../cfgd-core/src/util/env_names.rs");
+    let module_body = walked_file_body(&module);
+    let consts: Vec<&str> = module_body
+        .lines()
+        .filter(|l| l.starts_with("pub const "))
+        .collect();
+    let declared: Vec<String> = consts
+        .iter()
+        .filter(|l| l.starts_with("pub const CFGD_") && l.contains("_ENV: &str = \"CFGD_"))
+        .filter_map(|l| l.split('"').nth(1).map(str::to_string))
+        .collect();
+    assert!(
+        declared.len() >= 23,
+        "env_names.rs declared only {} consts; the scan has stopped reading the module",
+        declared.len()
+    );
+    // A const whose value is built (concat!, a second const) would drop its
+    // name out of the population and leave a resolver-read name unguarded.
+    assert_eq!(
+        declared.len(),
+        consts.len(),
+        "every const in env_names.rs is `pub const CFGD_<NAME>_ENV: &str = \"CFGD_<NAME>\";` \
+         on one line: {consts:#?}"
+    );
+    names.extend(declared);
 
     // Each root's floor is the literal spellings it holds once every name has
     // its const: cfgd-core holds one per name in `env_names.rs`, and every other
     // root holds none, but is read so a second spelling there is caught.
     const WALK_ROOTS: &[(&str, usize)] = &[
         ("cfgd", 0),
-        ("cfgd-core", 22),
+        ("cfgd-core", 23),
         ("cfgd-crd", 0),
         ("cfgd-csi", 0),
         ("cfgd-operator", 0),
@@ -1379,7 +1407,7 @@ fn every_clap_bound_env_var_is_spelled_once_in_production() {
             .unwrap_or_default();
         assert!(
             spelled >= *floor,
-            "the {root} tree spelled {spelled} clap-bound env names, below its floor of {floor}"
+            "the {root} tree spelled {spelled} CFGD_* env names, below its floor of {floor}"
         );
     }
     let repeated: Vec<String> = spellings
@@ -1389,7 +1417,7 @@ fn every_clap_bound_env_var_is_spelled_once_in_production() {
         .collect();
     assert!(
         repeated.is_empty(),
-        "an env var clap binds is spelled on more than one production line; read and write it \
+        "a CFGD_* env name is spelled on more than one production line; read and write it \
          through its const in crates/cfgd-core/src/util/env_names.rs:\n{}",
         repeated.join("\n")
     );
@@ -1404,7 +1432,7 @@ fn every_clap_bound_env_var_is_spelled_once_in_production() {
         .collect();
     assert!(
         unowned.is_empty(),
-        "an env var clap binds has no const in crates/cfgd-core/src/util/env_names.rs: {unowned:?}"
+        "a CFGD_* env name clap binds has no const in crates/cfgd-core/src/util/env_names.rs: {unowned:?}"
     );
 }
 
