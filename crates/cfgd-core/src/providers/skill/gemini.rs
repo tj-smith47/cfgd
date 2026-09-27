@@ -62,7 +62,18 @@ impl SkillProvider for GeminiProvider {
         // rename) so the value carries the literal `cfgd-version` /
         // `cfgd-min-version` keys `parse_version_stamp` expects, with the `toml`
         // crate handling all string escaping.
+        // Inserted in key order: a build unifying `toml`'s `preserve_order`
+        // feature writes insertion order and one without it sorts, and the
+        // skill file must be the same bytes from both.
         let mut table = toml::map::Map::new();
+        table.insert(
+            "cfgd-min-version".to_string(),
+            toml::Value::String(model.min_cfgd_version.to_string()),
+        );
+        table.insert(
+            "cfgd-version".to_string(),
+            toml::Value::String(model.schema_snapshot.cfgd_version.clone()),
+        );
         table.insert(
             "description".to_string(),
             toml::Value::String(model.description.clone()),
@@ -70,14 +81,6 @@ impl SkillProvider for GeminiProvider {
         table.insert(
             "prompt".to_string(),
             toml::Value::String(render_skill_body(model, scope)),
-        );
-        table.insert(
-            "cfgd-version".to_string(),
-            toml::Value::String(model.schema_snapshot.cfgd_version.clone()),
-        );
-        table.insert(
-            "cfgd-min-version".to_string(),
-            toml::Value::String(model.min_cfgd_version.to_string()),
         );
         // The table holds only `String` values under fixed keys, so TOML
         // serialization is total in practice; the error is surfaced rather than

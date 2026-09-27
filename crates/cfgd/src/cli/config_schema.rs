@@ -943,7 +943,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let state = tempfile::tempdir().unwrap();
         let path = dir.path().join("cfgd.toml");
-        let doc = "apiVersion = \"cfgd.io/v1alpha1\"\nkind = \"Config\"\n\n[metadata]\nname = \"t\"\n\n[spec]\nprofile = \"work\"\n";
+        // `kind` ahead of `apiVersion`, so a write that sorted its keys would
+        // move both, and `profile` would land behind the keys the gate adds.
+        let doc = "kind = \"Config\"\napiVersion = \"cfgd.io/v1alpha1\"\n\n[metadata]\nname = \"t\"\n\n[spec]\nprofile = \"work\"\n";
         std::fs::write(&path, doc).unwrap();
         let cfg = cfgd_core::config::parse_config(doc, &path).unwrap();
         let mut behind = pending_alignment(&cfg, doc, &path).keys;
@@ -967,6 +969,23 @@ mod tests {
             table["spec"]["migrationPolicy"].as_str(),
             Some("Prompt"),
             "the alignment declares the policy: {written}"
+        );
+        let at = |needle: &str| {
+            written
+                .find(needle)
+                .unwrap_or_else(|| panic!("{needle} is in the document: {written}"))
+        };
+        let order = [
+            at("kind ="),
+            at("apiVersion ="),
+            at("[metadata]"),
+            at("[spec]"),
+            at("profile ="),
+            at("migrationPolicy ="),
+        ];
+        assert!(
+            order.is_sorted(),
+            "the write keeps the order the document declared its keys in: {written}"
         );
         let reparsed = cfgd_core::config::parse_config(&written, &path).unwrap();
         assert!(
@@ -1365,12 +1384,15 @@ mod tests {
         );
     }
 
-    /// A document behind the schema by one key of a section it already holds
-    /// stays behind by exactly that key through every writer, whatever the
-    /// gate did about it: `Warn` and `Ignore` leave it, and a recorded "no" is
-    /// the reader declining the alignment. A write fills only what it left
+    /// A document behind the schema by keys of a section it already holds
+    /// stays behind by exactly those keys through every writer, whatever the
+    /// gate did about it: `Warn` and `Ignore` leave them, and a recorded "no"
+    /// is the reader declining the alignment. A write fills only what it left
     /// undeclared itself, so none of the three writers answers the question
     /// the reader was asked, and none adds anything beyond its own subject.
+    /// The second fixture holds a section whose defaulted subsection is absent
+    /// (`update` without `skills`): the write neither creates nor touches it,
+    /// so the keys under it stay the reader's question.
     #[test]
     fn a_write_leaves_a_key_the_reader_left_undeclared_undeclared() {
         #[derive(Clone, Copy, Debug)]
@@ -1385,108 +1407,132 @@ mod tests {
             SourceAdd,
             ProfileSwitch,
         }
-        const BEHIND_BY: &str = "spec.fileStrategy";
+        #[derive(Clone, Copy, Debug)]
+        enum Behind {
+            FileStrategy,
+            UpdateSubsection,
+        }
 
         let mut offenders = Vec::new();
-        for handling in [Handling::Warn, Handling::Ignore, Handling::RecordedNo] {
-            for writer in [Writer::ConfigSet, Writer::SourceAdd, Writer::ProfileSwitch] {
-                let case = format!("{handling:?} then {writer:?}");
-                let dir = tempfile::tempdir().unwrap();
-                let state = tempfile::tempdir().unwrap();
-                let printer = cfgd_core::test_helpers::test_printer();
-                crate::cli::init::cmd_init::scaffold(dir.path(), Some("t"), None, &printer)
-                    .unwrap();
-                let path = dir.path().join("cfgd.yaml");
-                let mut tree: serde_yaml::Value =
-                    serde_yaml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-                let spec = tree["spec"].as_mapping_mut().unwrap();
-                spec.remove("fileStrategy");
-                spec.insert("profile".into(), "default".into());
-                std::fs::write(&path, serde_yaml::to_string(&tree).unwrap()).unwrap();
-                std::fs::write(
-                    dir.path().join("profiles").join("other.yaml"),
-                    "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: other\nspec: {}\n",
-                )
-                .unwrap();
-                let pending_now = || {
-                    let bytes = std::fs::read_to_string(&path).unwrap();
-                    let cfg = cfgd_core::config::parse_config(&bytes, &path).unwrap();
-                    pending_alignment(&cfg, &bytes, &path).keys
-                };
-                assert_eq!(
-                    pending_now(),
-                    vec![BEHIND_BY.to_string()],
-                    "{case}: the fixture is behind by one key of the spec section"
-                );
+        for (behind, handling, writer) in [Behind::FileStrategy, Behind::UpdateSubsection]
+            .into_iter()
+            .flat_map(|b| {
+                [Handling::Warn, Handling::Ignore, Handling::RecordedNo]
+                    .into_iter()
+                    .flat_map(move |h| {
+                        [Writer::ConfigSet, Writer::SourceAdd, Writer::ProfileSwitch]
+                            .into_iter()
+                            .map(move |w| (b, h, w))
+                    })
+            })
+        {
+            let behind_by: Vec<String> = match behind {
+                Behind::FileStrategy => vec!["spec.fileStrategy".to_string()],
+                Behind::UpdateSubsection => vec![
+                    "spec.update.interval".to_string(),
+                    "spec.update.skills.policy".to_string(),
+                ],
+            };
+            let case = format!("{behind:?}: {handling:?} then {writer:?}");
+            let dir = tempfile::tempdir().unwrap();
+            let state = tempfile::tempdir().unwrap();
+            let printer = cfgd_core::test_helpers::test_printer();
+            crate::cli::init::cmd_init::scaffold(dir.path(), Some("t"), None, &printer).unwrap();
+            let path = dir.path().join("cfgd.yaml");
+            let mut tree: serde_yaml::Value =
+                serde_yaml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            let spec = tree["spec"].as_mapping_mut().unwrap();
+            match behind {
+                Behind::FileStrategy => {
+                    spec.remove("fileStrategy");
+                }
+                Behind::UpdateSubsection => {
+                    spec.insert(
+                        "update".into(),
+                        serde_yaml::from_str("policy: Notify").unwrap(),
+                    );
+                }
+            }
+            spec.insert("profile".into(), "default".into());
+            std::fs::write(&path, serde_yaml::to_string(&tree).unwrap()).unwrap();
+            std::fs::write(
+                dir.path().join("profiles").join("other.yaml"),
+                "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: other\nspec: {}\n",
+            )
+            .unwrap();
+            let pending_now = || {
+                let bytes = std::fs::read_to_string(&path).unwrap();
+                let cfg = cfgd_core::config::parse_config(&bytes, &path).unwrap();
+                let mut keys = pending_alignment(&cfg, &bytes, &path).keys;
+                keys.sort();
+                keys
+            };
+            assert_eq!(
+                pending_now(),
+                behind_by,
+                "{case}: the fixture is behind by keys of a section it holds"
+            );
 
-                let cli = cli_running(&path, Some(state.path()), &["status"]);
-                let policy = match handling {
-                    Handling::Warn => MigrationPolicy::Warn,
-                    Handling::Ignore => MigrationPolicy::Ignore,
-                    Handling::RecordedNo => {
-                        StateStore::open_in_dir(state.path())
-                            .unwrap()
-                            .record_migration_answer(
-                                &path,
-                                cfgd_core::API_VERSION,
-                                false,
-                                &[BEHIND_BY.to_string()],
-                            )
-                            .unwrap();
-                        MigrationPolicy::Prompt
-                    }
-                };
-                let before_gate = std::fs::read_to_string(&path).unwrap();
-                gate(&printer, &cli, Some(policy), false);
-                assert_eq!(
-                    std::fs::read_to_string(&path).unwrap(),
-                    before_gate,
-                    "{case}: the gate leaves the document as the reader left it"
-                );
+            let cli = cli_running(&path, Some(state.path()), &["status"]);
+            let policy = match handling {
+                Handling::Warn => MigrationPolicy::Warn,
+                Handling::Ignore => MigrationPolicy::Ignore,
+                Handling::RecordedNo => {
+                    StateStore::open_in_dir(state.path())
+                        .unwrap()
+                        .record_migration_answer(&path, cfgd_core::API_VERSION, false, &behind_by)
+                        .unwrap();
+                    MigrationPolicy::Prompt
+                }
+            };
+            let before_gate = std::fs::read_to_string(&path).unwrap();
+            gate(&printer, &cli, Some(policy), false);
+            assert_eq!(
+                std::fs::read_to_string(&path).unwrap(),
+                before_gate,
+                "{case}: the gate leaves the document as the reader left it"
+            );
 
-                let before: serde_yaml::Value = serde_yaml::from_str(&before_gate).unwrap();
-                let subject = match writer {
-                    Writer::ConfigSet => {
-                        crate::cli::config_cmd::cmd_config_set(&cli, &printer, "profile", "other")
-                            .unwrap();
-                        "profile"
-                    }
-                    Writer::SourceAdd => {
-                        let source = cfgd_core::config::SourceSpec {
-                            name: "acme".to_string(),
-                            origin: serde_yaml::from_str(
-                                "type: Git\nurl: https://example.com/x.git\n",
-                            )
+            let before: serde_yaml::Value = serde_yaml::from_str(&before_gate).unwrap();
+            let subject = match writer {
+                Writer::ConfigSet => {
+                    crate::cli::config_cmd::cmd_config_set(&cli, &printer, "profile", "other")
+                        .unwrap();
+                    "profile"
+                }
+                Writer::SourceAdd => {
+                    let source = cfgd_core::config::SourceSpec {
+                        name: "acme".to_string(),
+                        origin: serde_yaml::from_str("type: Git\nurl: https://example.com/x.git\n")
                             .unwrap(),
-                            subscription: Default::default(),
-                            sync: Default::default(),
-                        };
-                        crate::cli::add_source_to_config(&path, &source).unwrap();
-                        "sources"
-                    }
-                    Writer::ProfileSwitch => {
-                        crate::cli::profile::cmd_profile_switch(&cli, "other", &printer).unwrap();
-                        "profile"
-                    }
-                };
+                        subscription: Default::default(),
+                        sync: Default::default(),
+                    };
+                    crate::cli::add_source_to_config(&path, &source).unwrap();
+                    "sources"
+                }
+                Writer::ProfileSwitch => {
+                    crate::cli::profile::cmd_profile_switch(&cli, "other", &printer).unwrap();
+                    "profile"
+                }
+            };
 
-                let pending = pending_now();
-                if pending != [BEHIND_BY] {
-                    offenders.push(format!("{case}: pending after the write {pending:?}"));
-                }
-                let after: serde_yaml::Value =
-                    serde_yaml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-                let without_subject = |doc: &serde_yaml::Value| {
-                    let mut doc = doc.clone();
-                    doc["spec"].as_mapping_mut().unwrap().remove(subject);
-                    doc
-                };
-                if without_subject(&after) != without_subject(&before) {
-                    offenders.push(format!(
-                        "{case}: the write changed more than spec.{subject}:\n{}",
-                        serde_yaml::to_string(&after).unwrap()
-                    ));
-                }
+            let pending = pending_now();
+            if pending != behind_by {
+                offenders.push(format!("{case}: pending after the write {pending:?}"));
+            }
+            let after: serde_yaml::Value =
+                serde_yaml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            let without_subject = |doc: &serde_yaml::Value| {
+                let mut doc = doc.clone();
+                doc["spec"].as_mapping_mut().unwrap().remove(subject);
+                doc
+            };
+            if without_subject(&after) != without_subject(&before) {
+                offenders.push(format!(
+                    "{case}: the write changed more than spec.{subject}:\n{}",
+                    serde_yaml::to_string(&after).unwrap()
+                ));
             }
         }
         assert!(

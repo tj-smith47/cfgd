@@ -52637,6 +52637,238 @@ fn no_config_document_writer_bypasses_mutate_config_yaml() {
     );
 }
 
+/// The call that reads a file's bytes, which the config-document reader walk
+/// follows to the parse that reads what it returned.
+const DOCUMENT_LOADER: &str = "read_to_string(";
+
+/// The raw parse the config document's bytes reach only through
+/// [`crate::cli::source::config_tree`].
+const RAW_YAML_PARSE: &str = "serde_yaml::from_str";
+
+/// Whether `text` spells `name` as a whole identifier.
+fn names_identifier(text: &str, name: &str) -> bool {
+    let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    text.match_indices(name).any(|(at, _)| {
+        !text[..at].chars().next_back().is_some_and(ident)
+            && !text[at + name.len()..].chars().next().is_some_and(ident)
+    })
+}
+
+/// Every read of the config document in `src` (comments blanked), and every
+/// raw YAML parse of the bytes one returned, as `(reads, parse line indexes)`.
+/// A read is a [`DOCUMENT_LOADER`] call whose path argument names the config
+/// document ([`names_the_config_document`], or a `resolve_config_path` of its
+/// directory). Its bytes are the read itself where a parse wraps it, and
+/// otherwise the `let` its statement opens, followed through the rest of the
+/// function.
+fn config_document_parses(src: &str) -> (usize, Vec<usize>) {
+    let names_document =
+        |arg: &str| names_the_config_document(arg) || arg.contains("resolve_config_path");
+    let lines: Vec<&str> = src.lines().collect();
+    let fn_starts: Vec<usize> = (0..lines.len())
+        .filter(|&k| cfgd_core::test_helpers::declared_fn_name(lines[k]).is_some())
+        .collect();
+    let mut reads = 0;
+    let mut parses = std::collections::BTreeSet::new();
+    for (i, line) in lines.iter().enumerate() {
+        for (at, _) in line.match_indices(RAW_YAML_PARSE) {
+            let arg = call_argument(&lines, i, at + RAW_YAML_PARSE.len());
+            if arg.contains(DOCUMENT_LOADER) && names_document(&arg) {
+                parses.insert(i);
+            }
+        }
+        for (at, _) in line.match_indices(DOCUMENT_LOADER) {
+            if !names_document(&call_argument(&lines, i, at)) {
+                continue;
+            }
+            reads += 1;
+            let fn_start = fn_starts
+                .iter()
+                .rev()
+                .copied()
+                .find(|&k| k <= i)
+                .unwrap_or(0);
+            let fn_end = fn_starts
+                .iter()
+                .copied()
+                .find(|&k| k > i)
+                .unwrap_or(lines.len());
+            let mut binding = None;
+            for k in (fn_start..=i).rev() {
+                let text = if k == i { &line[..at] } else { lines[k] };
+                if k < i && text.contains(';') {
+                    break;
+                }
+                if let Some((_, after)) = text.split_once("let ") {
+                    let name: String = after
+                        .trim_start()
+                        .trim_start_matches("mut ")
+                        .chars()
+                        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                        .collect();
+                    binding = (!name.is_empty()).then_some(name);
+                    break;
+                }
+            }
+            let Some(binding) = binding else { continue };
+            for (j, later) in lines.iter().enumerate().take(fn_end).skip(i) {
+                for (p, _) in later.match_indices(RAW_YAML_PARSE) {
+                    if names_identifier(
+                        &call_argument(&lines, j, p + RAW_YAML_PARSE.len()),
+                        &binding,
+                    ) {
+                        parses.insert(j);
+                    }
+                }
+            }
+        }
+    }
+    (reads, parses.into_iter().collect())
+}
+
+#[test]
+fn every_config_document_read_shape_is_seen_by_the_reader_walk() {
+    let seen = |src: &str| {
+        let (reads, parses) = config_document_parses(src);
+        (reads, parses.into_iter().map(|i| i + 1).collect::<Vec<_>>())
+    };
+    let bound = "fn f(cli: &Cli) {\n    let contents = std::fs::read_to_string(&cli.config)?;\n    let raw: Value = match serde_yaml::from_str(&contents) {\n}";
+    assert_eq!(seen(bound), (1, vec![3]));
+    let turbofish = "fn f(config_path: &Path) {\n    let text =\n        std::fs::read_to_string(config_path)?;\n    let v = serde_yaml::from_str::<Value>(&text)?;\n}";
+    assert_eq!(seen(turbofish), (1, vec![4]));
+    let inline = "fn f(dir: &Path) {\n    let v: Value = serde_yaml::from_str(\n        &std::fs::read_to_string(resolve_config_path(dir))?,\n    )?;\n}";
+    assert_eq!(seen(inline), (1, vec![2]));
+    let routed = "fn f(config_path: &Path) {\n    let contents = std::fs::read_to_string(config_path)?;\n    let raw = config_tree(&contents, config_path)?;\n}";
+    assert_eq!(seen(routed), (1, vec![]));
+    let profile = "fn f(profile_path: &Path) {\n    let contents = std::fs::read_to_string(profile_path)?;\n    let doc = serde_yaml::from_str(&contents)?;\n}";
+    assert_eq!(seen(profile), (0, vec![]));
+    let next_fn = "fn f(config_path: &Path) {\n    let contents = std::fs::read_to_string(config_path)?;\n}\nfn g(contents: &str) {\n    serde_yaml::from_str(contents)\n}";
+    assert_eq!(seen(next_fn), (1, vec![]));
+}
+
+/// Every read of the config document under `cli/` parses its bytes through
+/// [`crate::cli::source::config_tree`], which reads a `cfgd.toml` as TOML and
+/// anything else as YAML. A raw `serde_yaml::from_str` of those bytes reads a
+/// `cfgd.toml` as YAML and refuses the document `--config` accepted. The
+/// population is every loader call whose path argument names the config
+/// document, followed to the parse that reads what it returned; the two files
+/// owning the document's format, `source/helpers.rs` and `config_schema.rs`,
+/// are the ones allowed to hold the raw parse.
+#[test]
+fn no_config_document_reader_parses_its_bytes_outside_config_tree() {
+    /// The reads of the config document the CLI's production sources make
+    /// today; a walk seeing fewer has stopped finding them.
+    const FLOOR_READS: usize = 3;
+    const OWN_FORMAT: &[&str] = &["src/cli/source/helpers.rs", "src/cli/config_schema.rs"];
+
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut reads = 0;
+    let mut offenders = Vec::new();
+    for (path, body) in cli_production_bodies() {
+        let file = cfgd_core::to_posix_string(path.strip_prefix(root).unwrap_or(&path));
+        let code = cfgd_core::test_helpers::blank_comments(&body);
+        let (seen, parses) = config_document_parses(&code);
+        reads += seen;
+        if OWN_FORMAT.contains(&file.as_str()) {
+            continue;
+        }
+        let raw_lines: Vec<&str> = body.lines().collect();
+        offenders.extend(
+            parses
+                .into_iter()
+                .map(|i| format!("{file}:{}: {}", i + 1, raw_lines[i].trim())),
+        );
+    }
+    assert!(
+        reads >= FLOOR_READS,
+        "{reads} reads of the config document seen, fewer than the {FLOOR_READS} today"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a read of the config document parses its bytes as YAML whatever the file's \
+         format; parse them through `crate::cli::source::config_tree`:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// The mark excusing a site that names the config document by its filename,
+/// read off the line or the comment block directly above it.
+const DOCUMENT_NAME_HATCH: &str = "document-name-ok:";
+
+/// Whether a `.join(` argument spells the config document's filename.
+fn joins_the_document_filename(arg: &str) -> bool {
+    names_identifier(arg, "CONFIG_FILENAME")
+        || names_identifier(arg, "CONFIG_FILENAME_TOML")
+        || arg.contains("\"cfgd.yaml\"")
+        || arg.contains("\"cfgd.toml\"")
+}
+
+/// Every site in the `cfgd` crate's production sources that names the config
+/// document a directory holds reaches it through
+/// `cfgd_core::config::config_document_in`, which reads a `cfgd.toml` where the
+/// directory carries one. A `.join` of the `cfgd.yaml` filename names a file a
+/// TOML directory does not have, so the run drops what it was asked to write
+/// there or refuses the document as missing. The population is every `.join`
+/// whose argument spells either filename; `// document-name-ok: <why>` marks a
+/// site that writes a new document under the name it is created as.
+#[test]
+fn every_directory_held_config_document_is_named_through_config_document_in() {
+    /// The sites the crate's production sources hold today, all of them
+    /// hatched writers of a new document; a walk seeing fewer has stopped
+    /// finding them.
+    const FLOOR_HATCHED: usize = 1;
+
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut hatched = Vec::new();
+    let mut offenders = Vec::new();
+    for path in rust_sources_under(&src)
+        .into_iter()
+        .filter(|path| !cfgd_core::test_helpers::is_test_source(path))
+    {
+        let file = cfgd_core::to_posix_string(path.strip_prefix(root).unwrap_or(&path));
+        let body = cfgd_core::test_helpers::production_slice_of(&path);
+        let code = cfgd_core::test_helpers::blank_comments(&body);
+        let lines: Vec<&str> = code.lines().collect();
+        let raw_lines: Vec<&str> = body.lines().collect();
+        for (i, line) in lines.iter().enumerate() {
+            for (at, _) in line.match_indices(".join(") {
+                if !joins_the_document_filename(&call_argument(&lines, i, at)) {
+                    continue;
+                }
+                let mut k = i;
+                let mut mark = carries_hatch(raw_lines[k], DOCUMENT_NAME_HATCH);
+                while !mark
+                    && k > 0
+                    && cfgd_core::test_helpers::is_plain_line_comment(raw_lines[k - 1])
+                {
+                    k -= 1;
+                    mark = carries_hatch(raw_lines[k], DOCUMENT_NAME_HATCH);
+                }
+                let at = format!("{file}:{}: {}", i + 1, raw_lines[i].trim());
+                if mark {
+                    hatched.push(at);
+                } else {
+                    offenders.push(at);
+                }
+            }
+        }
+    }
+    assert!(
+        hatched.len() >= FLOOR_HATCHED,
+        "{} hatched document writers seen, fewer than the {FLOOR_HATCHED} today:\n{}",
+        hatched.len(),
+        hatched.join("\n")
+    );
+    assert!(
+        offenders.is_empty(),
+        "a site names the config document a directory holds by its filename, so a \
+         directory carrying a cfgd.toml is read as holding none; name it through \
+         `cfgd_core::config::config_document_in`:\n{}",
+        offenders.join("\n")
+    );
+}
+
 /// Every kind a CLI refusal is built with is named in the reference's Error
 /// kinds list, every row of that list names a kind the CLI produces, and the
 /// list's `CfgdError` domains are the ones `CfgdError::kind()` returns.

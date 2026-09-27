@@ -599,12 +599,12 @@ pub fn cmd_config_get(cli: &Cli, printer: &Printer, key: &str) -> anyhow::Result
     }
 
     let contents = std::fs::read_to_string(config_path)?;
-    let raw: serde_yaml::Value = match serde_yaml::from_str(&contents) {
+    let raw = match crate::cli::source::config_tree(&contents, config_path) {
         Ok(v) => v,
         Err(e) => {
             let msg = format!("failed to parse config: {}", e);
             return Err(crate::cli::cli_error_ctx(
-                e.into(),
+                e,
                 key,
                 "parse_failed",
                 msg,
@@ -1838,6 +1838,70 @@ spec:
         let parsed = cap.json().expect("doc captured json");
         assert_eq!(parsed["key"], "theme");
         assert_eq!(parsed["value"]["name"], "monokai");
+    }
+
+    /// `--config` accepts a `cfgd.toml`, so `config get` reads one in its own
+    /// format: every shape a YAML document answers with, and a TOML syntax
+    /// error refused as the document's own parse failure.
+    #[test]
+    fn cmd_config_get_reads_a_toml_document_in_its_own_format() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cfgd.toml");
+        std::fs::write(
+            &path,
+            "apiVersion = \"cfgd.io/v1alpha1\"\nkind = \"Config\"\n\n[metadata]\nname = \"t\"\n\n\
+             [spec]\nprofile = \"work\"\n\n[spec.theme]\nname = \"monokai\"\n",
+        )
+        .unwrap();
+        let cli = test_cli_for(path.clone());
+
+        let (printer, cap) = Printer::for_test_doc();
+        cmd_config_get(&cli, &printer, "profile").unwrap();
+        drop(printer);
+        assert_eq!(cap.human().trim(), "work");
+
+        let (printer, cap) = Printer::for_test_doc();
+        cmd_config_get(&cli, &printer, "theme.name").unwrap();
+        drop(printer);
+        assert_eq!(cap.human().trim(), "monokai");
+
+        let (printer, cap) = Printer::for_test_doc_with_format(OutputFormat::Json);
+        cmd_config_get(&cli, &printer, "theme").unwrap();
+        drop(printer);
+        let parsed = cap.json().expect("doc captured json");
+        assert_eq!(parsed["value"]["name"], "monokai");
+
+        std::fs::write(&path, "[spec\nprofile = \"work\"\n").unwrap();
+        let err = cmd_config_get(&cli, &test_printer(), "profile").unwrap_err();
+        let meta = err
+            .downcast_ref::<crate::cli::CliErrorMeta>()
+            .expect("CliErrorMeta carrier on parse_failed");
+        assert_eq!(meta.error_kind, "parse_failed");
+    }
+
+    // TOML has no null, so `~` on a cfgd.toml is refused by name before a
+    // byte is written; dropping the key would make the set a silent no-op.
+    #[test]
+    fn cmd_config_set_null_on_a_toml_document_is_refused_and_writes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = toml_scaffolded(dir.path());
+        let before = std::fs::read(&path).unwrap();
+        let cli = test_cli_for(path.clone());
+        let err = cmd_config_set(&cli, &test_printer(), "daemon.enabled", "~").unwrap_err();
+        let meta = err
+            .downcast_ref::<crate::cli::CliErrorMeta>()
+            .expect("CliErrorMeta carrier on parse_failed");
+        assert_eq!(meta.error_kind, "parse_failed", "{err}");
+        let message = err.to_string();
+        assert!(
+            message.contains("spec.daemon.enabled") && message.contains("TOML has no null"),
+            "the refusal names the key and the reason: {message}"
+        );
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            before,
+            "a refused write leaves the bytes alone"
+        );
     }
 
     // --- cmd_config_set ---

@@ -330,6 +330,20 @@ pub fn resolve_config_path(path: &Path) -> PathBuf {
     yaml
 }
 
+/// The config document a config directory names, whether or not the
+/// directory exists yet: [`resolve_config_path`]'s answer for a directory
+/// (`cfgd.yaml`, else `cfgd.toml`, else `cfgd.yaml`), and the
+/// [`CONFIG_FILENAME`] a new document would be written as inside a path that
+/// is not one. A caller holding a directory reaches for this, so a directory
+/// carrying a `cfgd.toml` is read through that file.
+pub fn config_document_in(dir: &Path) -> PathBuf {
+    if dir.is_dir() {
+        resolve_config_path(dir)
+    } else {
+        dir.join(CONFIG_FILENAME)
+    }
+}
+
 /// Load and parse the root cfgd.yaml config file
 pub fn load_config(path: &Path) -> Result<CfgdConfig> {
     let resolved = resolve_config_path(path);

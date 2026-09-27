@@ -1345,14 +1345,15 @@ pub(crate) fn run_state_dir(
 /// Resolve the effective config-file path honoring `--config` > `--config-dir` > default.
 /// `config_is_explicit` is true when the user supplied `--config`/`CFGD_CONFIG`
 /// (not the clap default). When the config arg is the default and a `config_dir`
-/// override is present, the config file is `<config_dir>/<CONFIG_FILENAME>`.
+/// override is present, the config file is the document that directory holds
+/// ([`cfgd_core::config::config_document_in`]).
 pub fn effective_config_file(
     config_value: &Path,
     config_is_explicit: bool,
     config_dir: Option<&Path>,
 ) -> PathBuf {
     match (config_is_explicit, config_dir) {
-        (false, Some(dir)) => dir.join(cfgd_core::config::CONFIG_FILENAME),
+        (false, Some(dir)) => cfgd_core::config::config_document_in(dir),
         _ => config_value.to_path_buf(),
     }
 }

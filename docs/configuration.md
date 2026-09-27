@@ -1,6 +1,6 @@
 # Configuration
 
-cfgd config files follow a structure inspired by the [Kubernetes Resource Model](https://github.com/kubernetes/design-proposals-archive/blob/main/architecture/resource-management.md): every document has `apiVersion`, `kind`, `metadata`, and `spec` fields. This gives a consistent shape across configs, profiles, modules, and sources. TOML is also supported (use `.toml` extension).
+cfgd config files follow a structure inspired by the [Kubernetes Resource Model](https://github.com/kubernetes/design-proposals-archive/blob/main/architecture/resource-management.md): every document has `apiVersion`, `kind`, `metadata`, and `spec` fields. This gives a consistent shape across configs, profiles, modules, and sources. TOML is also supported (use `.toml` extension): a `cfgd.toml` is found wherever a `cfgd.yaml` would be, and every command that writes the config (`init`, `config set`, `config unset`, `config migrate`, the `source` and `module registry` verbs) writes it back as TOML in the order it declares its keys.
 
 Every document declares an `apiVersion`, with `cfgd.io/v1alpha1` the current one, and a document written under a version this build cannot read is rejected at parse time with an error naming the versions it can, rather than being silently loaded under the current schema.
 
@@ -928,7 +928,7 @@ These flags work with any subcommand:
 | Flag | Short | Env Var | Description |
 |---|---|---|---|
 | `--config <path>` | — | `CFGD_CONFIG` | Path to `cfgd.yaml` (or a directory — cfgd infers `cfgd.yaml`, then `cfgd.toml`, inside it) |
-| `--config-dir <dir>` | — | `CFGD_CONFIG_DIR` | Override the config directory (`--config` wins over it) |
+| `--config-dir <dir>` | — | `CFGD_CONFIG_DIR` | Override the config directory, read through the `cfgd.yaml` or `cfgd.toml` it holds (`--config` wins over it) |
 | `--state-dir <dir>` | — | `CFGD_STATE_DIR` | Override the state directory (`state.db`, history, `apply.lock`) |
 | `--cache-dir <dir>` | — | `CFGD_CACHE_DIR` | Override the cache directory (source, module, and update-check caches) |
 | `--runtime-dir <dir>` | — | `CFGD_RUNTIME_DIR` | Override the runtime directory (daemon socket, locks) |

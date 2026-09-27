@@ -90,11 +90,8 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
 
     // 2. Check if already initialized
     // When --from is used, resolve_from handles the "already initialized" case
-    // and the clone creates cfgd.yaml — skip this check to reach the apply step
-    if planned_dir
-        .join(cfgd_core::config::CONFIG_FILENAME)
-        .exists()
-        && !from_used
+    // and the clone creates the config document — skip this check to reach the apply step
+    if let Some(document) = super::source::held_config_document(&planned_dir).filter(|_| !from_used)
     {
         let mut row = printer.status(
             Role::Info,
@@ -107,11 +104,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
             row = row.detail(detail);
         }
         drop(row);
-        crate::cli::config_schema::gate_on_load(
-            printer,
-            &args.migration_gate,
-            &planned_dir.join(cfgd_core::config::CONFIG_FILENAME),
-        );
+        crate::cli::config_schema::gate_on_load(printer, &args.migration_gate, &document);
         let output = InitOutput {
             target_dir: cfgd_core::to_posix_string(&planned_dir),
         };
@@ -146,32 +139,28 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
     }
     // When --from is a git source, resolve_from already cloned it above.
     // Only clone here if resolve_from didn't handle it (non-git --from or no --from).
-    // An existing cfgd.yaml means the target is already a config repo. The check above
+    // An existing config document means the target is already a config repo. The check above
     // returns early on that without `--from`; WITH `--from` control reaches
     // here, and neither branch below may run over it — `git clone` cannot write
     // into a populated directory (and the failed attempt used to take the
     // directory's contents with it), while `scaffold` would overwrite the
-    // user's cfgd.yaml with a fresh template.
-    let already_initialized = target_dir.join(cfgd_core::config::CONFIG_FILENAME).exists();
-    if let Some(url) = from.as_deref().filter(|f| is_clonable_source(f)) {
+    // user's config document with a fresh template.
+    let already_initialized = super::source::held_config_document(&target_dir).is_some();
+    let clonable = from.as_deref().filter(|f| is_clonable_source(f));
+    if let Some(url) = clonable {
         if !already_initialized && !target_dir.join(".git").exists() {
             clone_into(&target_dir, url, args.branch, printer)?;
         }
-        apply_clone_overrides(
-            &target_dir.join(cfgd_core::config::CONFIG_FILENAME),
-            args.name,
-            args.theme,
-        )?;
-    } else if already_initialized {
-        // `--from <plain path>`: the directory is the user's own config repo,
-        // so --name/--theme land as overrides on it, never as a re-scaffold.
-        apply_clone_overrides(
-            &target_dir.join(cfgd_core::config::CONFIG_FILENAME),
-            args.name,
-            args.theme,
-        )?;
-    } else {
+    } else if !already_initialized {
         scaffold(&target_dir, args.name, args.theme, printer)?;
+    }
+    // Resolved after the clone or scaffold above, because either one decides
+    // whether the directory holds a cfgd.yaml or a cfgd.toml.
+    let config_path = cfgd_core::config::config_document_in(&target_dir);
+    // `--from <plain path>` names the user's own config repo, so --name/--theme
+    // land as overrides on it, the same as on a clone.
+    if clonable.is_some() || already_initialized {
+        apply_clone_overrides(&config_path, args.name, args.theme)?;
     }
 
     // 5. Generate release workflow — only for scaffolded repos, not cloned ones.
@@ -222,11 +211,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
     // The load-time gate is withheld from init because the document did not
     // exist yet. It runs now, before the apply below reads the file, so the
     // question a behind-schema config earns is settled during setup.
-    crate::cli::config_schema::gate_on_load(
-        printer,
-        &args.migration_gate,
-        &target_dir.join(cfgd_core::config::CONFIG_FILENAME),
-    );
+    crate::cli::config_schema::gate_on_load(printer, &args.migration_gate, &config_path);
 
     // 7. Apply if requested
     let should_apply = should_run_apply(args.apply, args.apply_profile, args.apply_modules);
@@ -234,7 +219,6 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
     // consumers before the process exits nonzero on a failed apply.
     let mut apply_status = cfgd_core::state::ApplyStatus::Success;
     if should_apply {
-        let config_path = target_dir.join(cfgd_core::config::CONFIG_FILENAME);
         let profiles_dir = target_dir.join("profiles");
 
         // Module-only apply: no profile needed
@@ -364,7 +348,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                     .qualifier(name);
                 name.to_string()
             } else {
-                // No --apply-profile: use whatever's in cfgd.yaml, or pick interactively
+                // No --apply-profile: use whatever the config document names, or pick interactively
                 let mut cfg = config::load_config(&config_path)?;
                 drain_config_deprecations(printer, &mut cfg);
                 if let Some(ref p) = cfg.spec.profile {
@@ -495,7 +479,6 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
     if args.install_daemon {
         #[cfg(any(unix, windows))]
         {
-            let config_path = target_dir.join(cfgd_core::config::CONFIG_FILENAME);
             let mut cfg = config::load_config(&config_path)?;
             drain_config_deprecations(printer, &mut cfg);
             let profile = cfg.spec.profile.as_deref();
@@ -589,11 +572,11 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
 }
 
 /// Apply every `cfgd init` CLI override that rewrites a field of a *cloned*
-/// `cfgd.yaml`, in a single atomic read-modify-write. No-op when the cloned
-/// repo has no `cfgd.yaml` yet, or when no override flag was supplied.
+/// config document, in a single atomic read-modify-write. No-op when the cloned
+/// repo has no config document yet, or when no override flag was supplied.
 ///
 /// This is the single funnel for clone-path config overrides: any future CLI
-/// flag that overrides a field of the cloned `cfgd.yaml` MUST be applied here.
+/// flag that overrides a field of the cloned config document MUST be applied here.
 /// The scaffold (non-`--from`) path builds the file from scratch via
 /// `scaffold`, so the two branches diverge — centralizing the clone overrides
 /// here prevents a new flag from silently regressing on the clone path (the
@@ -605,7 +588,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
 /// / `apply_module` / `dry_run` / `yes` / `install_daemon` are behavioral and
 /// run identically on both the clone and scaffold paths; `branch` / `from` /
 /// `path` are clone mechanics, not config fields. None of them rewrite the
-/// cloned `cfgd.yaml`.
+/// cloned config document.
 fn apply_clone_overrides(
     config_path: &Path,
     name: Option<&str>,
@@ -748,7 +731,7 @@ pub(super) fn apply_plan(
     // that failed to resolve is absent from the plan, so naming it in the
     // header would describe work no phase below can show.
     let header_modules = cfgd_core::output::HeaderModule::of_resolved(modules);
-    let config_path = config_dir.join(cfgd_core::config::CONFIG_FILENAME);
+    let config_path = cfgd_core::config::config_document_in(config_dir);
     let title = if opts.dry_run {
         cfgd_core::reconciler::RunTitle::Plan
     } else {
@@ -1000,6 +983,7 @@ spec:
     );
     crate::cli::helpers::write_scaffold(
         cfgd_core::config::SchemaDocKind::Config,
+        // document-name-ok: the scaffold creates the document under its YAML name
         &dir.join(cfgd_core::config::CONFIG_FILENAME),
         &content,
     )?;

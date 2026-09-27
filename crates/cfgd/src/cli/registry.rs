@@ -140,10 +140,11 @@ pub(in crate::cli) fn build_registry_with_profile(
 /// Shared by the compliance/checkin CLI callers and the daemon's compliance hook
 /// so every surface content-checks identically.
 ///
-/// Reads `config_dir.join("cfgd.yaml")` — the literal default filename, NOT
-/// whatever `--config` named. `run` is the CLI caller's [`RunContext`]: when the
-/// two paths coincide (the common case — `--config` unset or pointed at the
-/// default `cfgd.yaml`) the run has already parsed that exact file, so this
+/// Reads the config document `config_dir` holds
+/// ([`cfgd_core::config::config_document_in`]), which a `--config` naming
+/// another file in that directory leaves where it is. `run` is the CLI
+/// caller's [`RunContext`]: when the two paths coincide (the common case —
+/// `--config` unset or pointed at the directory's document) the run has already parsed that exact file, so this
 /// takes the parse it already holds instead of reading the same bytes a third
 /// time, and its deprecations were surfaced once by whoever loaded it. When they
 /// differ (a `--config` naming a non-default filename), this reads a genuinely
@@ -159,7 +160,7 @@ pub(in crate::cli) fn build_compliance_file_manager(
     run: Option<&super::RunContext<'_>>,
 ) -> cfgd_core::errors::Result<CfgdFileManager> {
     let mut fm = CfgdFileManager::new(config_dir, resolved)?;
-    let compliance_config_path = config_dir.join("cfgd.yaml");
+    let compliance_config_path = cfgd_core::config::config_document_in(config_dir);
     let mut owned;
     let cfg: &CfgdConfig = match run {
         Some(run) if compliance_config_path == run.cli().config => run.config()?,

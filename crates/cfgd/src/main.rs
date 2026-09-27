@@ -187,8 +187,10 @@ fn main() -> anyhow::Result<()> {
     // `--config` / `--config-dir` fold so an explicit `--config`/`--config-dir`
     // (or `$CFGD_CONFIG*`) still wins — only the bare default is repointed.
     if cli.scope().is_system() && !config_is_explicit && cli.config_dir.is_none() {
-        cli.config = cfgd_core::resolve_config_dir(None, cfgd_core::Scope::System)
-            .join(cfgd_core::config::CONFIG_FILENAME);
+        cli.config = cfgd_core::config::config_document_in(&cfgd_core::resolve_config_dir(
+            None,
+            cfgd_core::Scope::System,
+        ));
     }
 
     cli.config =

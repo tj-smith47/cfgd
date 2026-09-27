@@ -296,11 +296,49 @@ pub(in crate::cli) fn config_tree(
 }
 
 /// `tree` serialized in the format [`config_tree`] read it in.
+///
+/// TOML has no null, so a tree holding one (`config set <key> "~"`) cannot
+/// be written as TOML at all. That is refused `parse_failed` naming the key,
+/// the refusal the same write earns on a YAML document from the parser; a
+/// dropped null would turn the write into a silent no-op.
 fn render_config_tree(tree: &serde_yaml::Value, path: &Path) -> anyhow::Result<String> {
-    if is_toml_document(path) {
-        Ok(toml::to_string(tree)?)
-    } else {
-        Ok(serde_yaml::to_string(tree)?)
+    if !is_toml_document(path) {
+        return Ok(serde_yaml::to_string(tree)?);
+    }
+    toml::to_string(tree).map_err(|e| {
+        let reason = match first_null_key(tree, &mut Vec::new()) {
+            Some(key) => format!("{key} is null, and TOML has no null value"),
+            None => e.to_string(),
+        };
+        crate::cli::cli_error(
+            cfgd_core::to_posix_string(path),
+            "parse_failed",
+            format!("config would become invalid: {reason}"),
+            serde_json::json!({
+                "path": cfgd_core::to_posix_string(path),
+                "reason": reason,
+            }),
+        )
+    })
+}
+
+/// The dotted key of the first null in `tree`, in document order.
+fn first_null_key(tree: &serde_yaml::Value, at: &mut Vec<String>) -> Option<String> {
+    match tree {
+        serde_yaml::Value::Null => Some(at.join(".")),
+        serde_yaml::Value::Mapping(map) => map.iter().find_map(|(k, v)| {
+            at.push(k.as_str().map_or_else(|| format!("{k:?}"), str::to_string));
+            let found = first_null_key(v, at);
+            at.pop();
+            found
+        }),
+        serde_yaml::Value::Sequence(items) => items.iter().enumerate().find_map(|(i, v)| {
+            at.push(i.to_string());
+            let found = first_null_key(v, at);
+            at.pop();
+            found
+        }),
+        _ => None,
     }
 }
 
@@ -335,6 +373,14 @@ pub(crate) fn mutate_config_yaml<F>(config_path: &Path, f: F) -> anyhow::Result<
 where
     F: FnOnce(&mut serde_yaml::Value) -> anyhow::Result<()>,
 {
+    if !config_path.is_file() {
+        return Err(
+            cfgd_core::errors::CfgdError::from(cfgd_core::errors::ConfigError::NotFound {
+                path: config_path.to_path_buf(),
+            })
+            .into(),
+        );
+    }
     let contents = std::fs::read_to_string(config_path)?;
     let mut raw = config_tree(&contents, config_path)?;
     let before = raw.clone();
@@ -398,9 +444,13 @@ fn align_what_the_write_left_pending(
 ) -> anyhow::Result<Vec<String>> {
     let (keys, materialized) =
         crate::cli::helpers::undeclared_scalar_keys_in(serde_yaml::to_value(cfg)?, raw);
+    // The document as the closure left it: a key filled below creates the
+    // mappings above it, which must not read as sections this write created
+    // when the next key is judged.
+    let written = raw.clone();
     let mut filled = Vec::new();
     for key in keys {
-        if !made_pending_by_the_write(before, &key) {
+        if !made_pending_by_the_write(before, &written, &key) {
             continue;
         }
         // Every key was read off `materialized` in the first place, so a miss
@@ -419,10 +469,16 @@ fn align_what_the_write_left_pending(
 /// Whether a key the written document does not declare is one this write
 /// made pending: the document declared it before the write (the write
 /// removed it), or a section above it was absent, null or empty before the
-/// write (the write created that section). Every other undeclared key was
-/// already missing from a section the document held, which is the question
-/// the load-time gate asks under `spec.migrationPolicy`.
-fn made_pending_by_the_write(before: &serde_yaml::Value, key: &str) -> bool {
+/// write and holds something in `written`, the tree the closure left (the
+/// write created that section). Every other undeclared key was already
+/// missing from a section the document held, or sits under a section the
+/// write did not touch, which is the question the load-time gate asks under
+/// `spec.migrationPolicy`.
+fn made_pending_by_the_write(
+    before: &serde_yaml::Value,
+    written: &serde_yaml::Value,
+    key: &str,
+) -> bool {
     let declared = match key.strip_prefix("spec.") {
         // `walk_yaml_path` reads a scalar union arm relative to `spec`.
         Some(rest) => before
@@ -433,13 +489,21 @@ fn made_pending_by_the_write(before: &serde_yaml::Value, key: &str) -> bool {
     if declared {
         return true;
     }
+    let created = |now: Option<&serde_yaml::Value>| matches!(now, Some(serde_yaml::Value::Mapping(map)) if !map.is_empty());
     let segments: Vec<&str> = key.split('.').collect();
     let mut node = before;
+    let mut now = Some(written);
     for segment in &segments[..segments.len() - 1] {
+        let now_below = now.and_then(|n| n.get(segment));
         match node.get(segment) {
-            None | Some(serde_yaml::Value::Null) => return true,
-            Some(serde_yaml::Value::Mapping(map)) if map.is_empty() => return true,
-            Some(section @ serde_yaml::Value::Mapping(_)) => node = section,
+            None | Some(serde_yaml::Value::Null) => return created(now_below),
+            Some(serde_yaml::Value::Mapping(map)) if map.is_empty() => {
+                return created(now_below);
+            }
+            Some(section @ serde_yaml::Value::Mapping(_)) => {
+                node = section;
+                now = now_below;
+            }
             // A scalar union arm stands for its mapping, which is present.
             Some(_) => return false,
         }

@@ -92,7 +92,7 @@ walks both `src` and `tests`.
 
 The binary answers for its own half: a verb that materialises a config from
 `--from` refuses to write into a default config directory that already holds a
-`cfgd.yaml`, is not empty, or is a symlink
+`cfgd.yaml` or `cfgd.toml`, is not empty, or is a symlink
 (`crates/cfgd/tests/from_default_dir_refusal.rs`). The question is asked about
 the DIRECTORY — `cfgd_core::names_the_same_path` against `default_config_dir()`,
 which folds both spellings lexically first and then asks the inode question for

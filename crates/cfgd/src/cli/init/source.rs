@@ -31,6 +31,11 @@ pub(super) fn is_clonable_source(value: &str) -> bool {
     path.join(".git").exists()
 }
 
+/// The config document `dir` holds, `cfgd.yaml` or `cfgd.toml`, when it holds one.
+pub(super) fn held_config_document(dir: &Path) -> Option<PathBuf> {
+    Some(cfgd_core::config::config_document_in(dir)).filter(|document| document.is_file())
+}
+
 /// The directory a `--from` run materialises into, read off the `--config` the
 /// caller gave: `None` when that is the default config directory, which
 /// [`resolve_from`] resolves for itself and then guards through
@@ -73,11 +78,11 @@ pub(super) fn plan_from(from: &str, target: Option<&Path>) -> anyhow::Result<std
             serde_json::json!({ "path": cfgd_core::to_posix_string(&path) }),
         ));
     }
-    if !path.join(cfgd_core::config::CONFIG_FILENAME).exists() {
+    if held_config_document(&path).is_none() {
         return Err(crate::cli::cli_error(
             cfgd_core::to_posix_string(&path),
             "no_config",
-            format!("No cfgd.yaml found in {}", path.posix()),
+            format!("No cfgd.yaml or cfgd.toml found in {}", path.posix()),
             serde_json::json!({ "path": cfgd_core::to_posix_string(&path) }),
         ));
     }
@@ -86,7 +91,7 @@ pub(super) fn plan_from(from: &str, target: Option<&Path>) -> anyhow::Result<std
 
 /// Resolve a --from value to a config directory path.
 /// Git sources (URLs or local repos) are cloned to the target dir.
-/// Plain local paths are used directly (must contain cfgd.yaml).
+/// Plain local paths are used directly (must contain a cfgd.yaml or cfgd.toml).
 pub(crate) fn resolve_from(
     from: &str,
     target: Option<&Path>,
@@ -96,7 +101,7 @@ pub(crate) fn resolve_from(
     let from = &*cfgd_core::resolve_repo_reference(from);
     let dest = plan_from(from, target)?;
     if is_clonable_source(from) {
-        if !dest.join(cfgd_core::config::CONFIG_FILENAME).exists() {
+        if held_config_document(&dest).is_none() {
             std::fs::create_dir_all(&dest)?;
             clone_into(&dest, from, branch, printer)?;
         } else {
@@ -126,8 +131,12 @@ fn occupied_default_destination(dest: &Path) -> Option<&'static str> {
     if std::fs::symlink_metadata(dest).is_ok_and(|meta| meta.file_type().is_symlink()) {
         return Some("it is a symlink");
     }
-    if dest.join(cfgd_core::config::CONFIG_FILENAME).exists() {
-        return Some("it already holds a cfgd.yaml");
+    if let Some(document) = held_config_document(dest) {
+        return Some(if document.extension().is_some_and(|ext| ext == "toml") {
+            "it already holds a cfgd.toml"
+        } else {
+            "it already holds a cfgd.yaml"
+        });
     }
     match std::fs::read_dir(dest) {
         Ok(mut entries) => entries.next().map(|_| "it is not empty"),

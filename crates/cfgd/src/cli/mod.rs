@@ -605,7 +605,7 @@ pub fn env_value_masking(
 }
 
 pub fn default_config_file() -> PathBuf {
-    cfgd_core::default_config_dir().join(cfgd_core::config::CONFIG_FILENAME)
+    cfgd_core::config::config_document_in(&cfgd_core::default_config_dir())
 }
 
 /// No built-in aliases — all aliases come from cfgd.yaml spec.aliases.

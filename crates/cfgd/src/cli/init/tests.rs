@@ -1482,6 +1482,22 @@ fn resolve_from_local_path_valid() {
     assert_eq!(result, dir.path());
 }
 
+/// A plain `--from` directory carrying `cfgd.toml` is a config repository
+/// the same as one carrying `cfgd.yaml`.
+#[test]
+fn resolve_from_local_path_holding_cfgd_toml_is_a_config_repo() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("cfgd.toml"),
+        "apiVersion = \"cfgd.io/v1alpha1\"\nkind = \"Config\"\n\n[metadata]\nname = \"test\"\n\n[spec]\n",
+    )
+    .unwrap();
+
+    let printer = quiet_printer();
+    let result = resolve_from(&dir.path().display().to_string(), None, "master", &printer).unwrap();
+    assert_eq!(result, dir.path());
+}
+
 #[test]
 fn resolve_from_local_path_no_config_fails() {
     let dir = tempfile::tempdir().unwrap();
@@ -5272,29 +5288,41 @@ mod cmd_init_apply_orchestration {
         tmp_root: &std::path::Path,
         extra_spec: &str,
     ) -> std::path::PathBuf {
+        make_bare_repo_holding(
+            tmp_root,
+            &[
+                (
+                    "cfgd.yaml",
+                    &format!(
+                        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: cloned-cfg\nspec:\n  profile: default\n{extra_spec}"
+                    ),
+                ),
+                ("profiles/default.yaml", DEFAULT_PROFILE),
+            ],
+        )
+    }
+
+    const DEFAULT_PROFILE: &str =
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n";
+
+    /// A bare repository whose one commit holds `files`, each a path relative
+    /// to the repository root and its contents.
+    fn make_bare_repo_holding(
+        tmp_root: &std::path::Path,
+        files: &[(&str, &str)],
+    ) -> std::path::PathBuf {
         let bare = tmp_root.join("upstream.git");
         let _bare_repo = git2::Repository::init_bare(&bare).unwrap();
 
         let src = tmp_root.join("src");
         let src_repo = git2::Repository::init(&src).unwrap();
-        std::fs::write(
-            src.join("cfgd.yaml"),
-            format!(
-                "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: cloned-cfg\nspec:\n  profile: default\n{extra_spec}"
-            ),
-        )
-        .unwrap();
-        std::fs::create_dir_all(src.join("profiles")).unwrap();
-        std::fs::write(
-            src.join("profiles").join("default.yaml"),
-            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
-        )
-        .unwrap();
         let mut index = src_repo.index().unwrap();
-        index.add_path(std::path::Path::new("cfgd.yaml")).unwrap();
-        index
-            .add_path(std::path::Path::new("profiles/default.yaml"))
-            .unwrap();
+        for (path, contents) in files {
+            let file = src.join(path);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(&file, contents).unwrap();
+            index.add_path(std::path::Path::new(path)).unwrap();
+        }
         index.write().unwrap();
         let tree_id = index.write_tree().unwrap();
         let tree = src_repo.find_tree(tree_id).unwrap();
@@ -5484,6 +5512,125 @@ mod cmd_init_apply_orchestration {
         assert!(
             cfg_yaml.contains("profile: default"),
             "spec.profile should be persisted to cfgd.yaml: {cfg_yaml}"
+        );
+    }
+
+    /// A cloned repository carrying `cfgd.toml` takes every flag that writes
+    /// the config document into that file: `--name`, `--theme` and
+    /// `--apply-profile` land in the TOML document, and no `cfgd.yaml` appears
+    /// beside it.
+    #[test]
+    #[serial]
+    fn cmd_init_from_a_repo_carrying_cfgd_toml_writes_every_override_into_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp.path());
+        let bare = make_bare_repo_holding(
+            tmp.path(),
+            &[
+                (
+                    "cfgd.toml",
+                    "apiVersion = \"cfgd.io/v1alpha1\"\nkind = \"Config\"\n\n[metadata]\nname = \"cloned-cfg\"\n\n[spec]\nfileStrategy = \"Symlink\"\n",
+                ),
+                ("profiles/default.yaml", DEFAULT_PROFILE),
+            ],
+        );
+        let target = tmp.path().join("dst");
+        let state_dir = tmp.path().join("state");
+        let url = cfgd_core::test_helpers::file_url(&bare);
+
+        let (printer, cap) = Printer::for_test_doc();
+        with_state_dir(&state_dir, || {
+            let args = InitArgs {
+                migration_gate: inert_migration_gate(),
+                on_conflict: crate::cli::OnConflict::Ask,
+                path: Some(target.to_str().unwrap()),
+                from: Some(&url),
+                branch: "master",
+                name: Some("acme"),
+                apply: false,
+                dry_run: true,
+                yes: true,
+                install_daemon: false,
+                theme: Some("dracula"),
+                apply_profile: Some("default"),
+                apply_modules: &[],
+                cache_dir: None,
+                state_dir: None,
+                runtime_dir: None,
+                scope: cfgd_core::Scope::User,
+            };
+            cmd_init_guarded(&printer, &args).expect("init over a TOML document succeeds");
+        });
+        drop(printer);
+
+        let out = cfgd_core::output::strip_ansi(&cap.human());
+        assert!(
+            out.contains("Set active profile: default"),
+            "the profile is set on the TOML document: {out}"
+        );
+        assert!(
+            !target.join("cfgd.yaml").exists(),
+            "no cfgd.yaml is written beside the cloned cfgd.toml"
+        );
+        let document = target.join("cfgd.toml");
+        let cfg = config::load_config(&document).unwrap();
+        assert_eq!(cfg.metadata.name, "acme");
+        assert_eq!(cfg.spec.theme().map(|t| t.name.as_str()), Some("dracula"));
+        assert_eq!(cfg.spec.profile.as_deref(), Some("default"));
+    }
+
+    /// `--apply-profile` on a clone that carries no config document refuses
+    /// with the typed missing-config error, which exits as a named thing not
+    /// found.
+    #[test]
+    #[serial]
+    fn cmd_init_apply_profile_on_a_clone_without_a_document_is_a_typed_refusal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp.path());
+        let bare =
+            make_bare_repo_holding(tmp.path(), &[("profiles/default.yaml", DEFAULT_PROFILE)]);
+        let target = tmp.path().join("dst");
+        let state_dir = tmp.path().join("state");
+        let url = cfgd_core::test_helpers::file_url(&bare);
+
+        let printer = quiet_printer();
+        let mut outcome = None;
+        with_state_dir(&state_dir, || {
+            let args = InitArgs {
+                migration_gate: inert_migration_gate(),
+                on_conflict: crate::cli::OnConflict::Ask,
+                path: Some(target.to_str().unwrap()),
+                from: Some(&url),
+                branch: "master",
+                name: None,
+                apply: false,
+                dry_run: true,
+                yes: true,
+                install_daemon: false,
+                theme: None,
+                apply_profile: Some("default"),
+                apply_modules: &[],
+                cache_dir: None,
+                state_dir: None,
+                runtime_dir: None,
+                scope: cfgd_core::Scope::User,
+            };
+            outcome = Some(cmd_init_guarded(&printer, &args));
+        });
+        let err = outcome
+            .unwrap()
+            .expect_err("no document to set the profile on");
+        let typed = err
+            .downcast_ref::<cfgd_core::errors::CfgdError>()
+            .expect("the refusal carries a CfgdError");
+        assert!(
+            matches!(
+                typed,
+                cfgd_core::errors::CfgdError::Config(
+                    cfgd_core::errors::ConfigError::NotFound { .. }
+                )
+            ),
+            "expected ConfigError::NotFound, got: {typed}"
         );
     }
 

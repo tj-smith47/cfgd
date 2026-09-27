@@ -279,7 +279,7 @@ pub fn cmd_module_create(
     // consumers before the process exits nonzero on a failed apply.
     let mut apply_status = cfgd_core::state::ApplyStatus::Success;
     if args.apply {
-        let config_path = config_dir.join(cfgd_core::config::CONFIG_FILENAME);
+        let config_path = cfgd_core::config::config_document_in(&config_dir);
         let mut cfg = config::load_config(&config_path)?;
         drain_config_deprecations(printer, &mut cfg);
         let mut registry = super::build_registry_with_config(Some(&cfg));
