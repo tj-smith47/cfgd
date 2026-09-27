@@ -6111,3 +6111,78 @@ fn init_apply_settles_the_hash_of_every_link_deployed_row_before_it_returns() {
          first tick has nothing to backfill: {module_row:?}"
     );
 }
+
+/// The answer a reader gives init's migration prompt is the answer the next
+/// command reads: init records it against the config it wrote, and a gate
+/// reaching the same file by the directory `--config` names finds it and
+/// asks nothing.
+#[test]
+fn an_answer_given_to_inits_migration_prompt_is_the_one_the_next_command_reads() {
+    use cfgd_core::output::PromptAnswer;
+    let dir = tempfile::tempdir().unwrap();
+    let state = tempfile::tempdir().unwrap();
+    let source = dir.path().join("source");
+    std::fs::create_dir_all(&source).unwrap();
+    let behind = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: source\nspec:\n  fileStrategy: Symlink\n";
+    std::fs::write(source.join("cfgd.yaml"), behind).unwrap();
+    let gate = crate::cli::config_schema::GateInvocation {
+        policy_override: None,
+        assume_yes: false,
+        is_daemon: false,
+        state_dir: Some(state.path()),
+        scope: cfgd_core::Scope::User,
+    };
+
+    let (printer, _said) = Printer::for_test_with_prompt_responses_at(
+        vec![PromptAnswer::Confirm(false)],
+        Verbosity::Normal,
+    );
+    let source_str = source.display().to_string();
+    let args = InitArgs {
+        migration_gate: gate,
+        on_conflict: crate::cli::OnConflict::Ask,
+        path: None,
+        from: Some(&source_str),
+        branch: "master",
+        name: None,
+        apply: false,
+        dry_run: false,
+        yes: false,
+        install_daemon: false,
+        theme: None,
+        apply_profile: None,
+        apply_modules: &[],
+        cache_dir: None,
+        state_dir: Some(state.path()),
+        runtime_dir: None,
+        scope: cfgd_core::Scope::User,
+    };
+    cmd_init_guarded(&printer, &args).unwrap();
+    assert_eq!(
+        printer.prompt_confirm("still queued?").ok(),
+        None,
+        "init asked, and was answered no"
+    );
+    assert_eq!(
+        std::fs::read_to_string(source.join("cfgd.yaml")).unwrap(),
+        behind,
+        "a no writes nothing"
+    );
+
+    let (again, _said_again) = Printer::for_test_with_prompt_responses_at(
+        vec![PromptAnswer::Confirm(true)],
+        Verbosity::Normal,
+    );
+    let next = cfgd_core::config::resolve_config_path(&source.join("."));
+    crate::cli::config_schema::gate_on_load(&again, &gate, &next);
+    assert_eq!(
+        again.prompt_confirm("still queued?").ok(),
+        Some(true),
+        "the next command read init's answer and asked nothing"
+    );
+    assert_eq!(
+        std::fs::read_to_string(source.join("cfgd.yaml")).unwrap(),
+        behind,
+        "the file is as init left it"
+    );
+}
