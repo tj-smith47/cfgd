@@ -783,15 +783,16 @@ pub(super) type SystemArm = (&'static str, &'static str);
 /// them. One table rather than a per-cascade one: which mediators a manager
 /// offers is the manager's own declaration, so a cascade that reached fewer of
 /// them only hid an arm its mediator had already named.
-const SYSTEM_MANAGER_ARMS: &[SystemArm] = &[
-    ("apt", "apt-get"),
-    ("dnf", "dnf"),
-    ("yum", "yum"),
-    ("zypper", "zypper"),
-    ("pacman", "pacman"),
-    ("apk", "apk"),
-    ("pkg", "pkg"),
-];
+///
+/// Read off the family table ([`super::simple::SIMPLE_FAMILIES`], whose row
+/// order is this order), each family paired with the program its own install
+/// runs, so an arm exists for every family and spawns what that family spawns.
+static SYSTEM_MANAGER_ARMS: std::sync::LazyLock<Vec<SystemArm>> = std::sync::LazyLock::new(|| {
+    super::simple::SIMPLE_FAMILIES
+        .iter()
+        .map(|(name, build)| (*name, build().install_program()))
+        .collect()
+});
 
 /// The arms a mediated bootstrap reaches on Windows, in the order it tries
 /// them. winget leads because it ships with Windows 10 and 11, so it is the one
@@ -824,7 +825,7 @@ pub(super) fn host_arms() -> &'static [SystemArm] {
     if cfg!(windows) {
         WINDOWS_MANAGER_ARMS
     } else {
-        SYSTEM_MANAGER_ARMS
+        &SYSTEM_MANAGER_ARMS
     }
 }
 

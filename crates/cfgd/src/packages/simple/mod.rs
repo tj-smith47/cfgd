@@ -168,6 +168,17 @@ impl SimpleManager {
         cmd
     }
 
+    /// The program the family's install runs, its `sudo` wrapper set aside:
+    /// `apt-get` for apt, the family's own name for the rest.
+    pub(super) fn install_program(&self) -> &'static str {
+        self.install_cmd
+            .strip_prefix(&["sudo"])
+            .unwrap_or(self.install_cmd)
+            .first()
+            .copied()
+            .unwrap_or(self.mgr_name)
+    }
+
     /// The same line for a script cfgd EMITS for ANOTHER host to run
     /// (`module export`), where `sudo` is stripped unconditionally: the
     /// question is what the consuming build script runs as (a container build,
@@ -439,14 +450,14 @@ pub(super) type FamilyRow = (&'static str, fn() -> SimpleManager);
 
 /// Every data-driven family, as `(name, constructor)`: the one table
 /// [`simple_manager`] resolves a name from and a caller iterates to reach every
-/// family.
+/// family. Row order is the order a mediated bootstrap tries the families in.
 pub(super) const SIMPLE_FAMILIES: &[FamilyRow] = &[
     ("apt", apt_manager),
     ("dnf", dnf_manager),
     ("yum", yum_manager),
-    ("apk", apk_manager),
-    ("pacman", pacman_manager),
     ("zypper", zypper_manager),
+    ("pacman", pacman_manager),
+    ("apk", apk_manager),
     ("pkg", pkg_manager),
 ];
 
