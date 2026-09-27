@@ -2478,7 +2478,7 @@ fn every_test_pinning_a_serialized_seam_joins_its_own_group() {
         files_read >= 15,
         "the walk read {files_read} files holding a pin or a reader; it has stopped seeing them"
     );
-    // Each needle's floor is a workspace-wide minimum, so a needle losing sites falls below it.
+    // Each needle's floor is a workspace-wide minimum; a needle whose count drops under it fails.
     for (pin, _, _, floor) in SERIAL_PINS {
         let found = hits.get(*pin).copied().unwrap_or(0);
         assert!(
