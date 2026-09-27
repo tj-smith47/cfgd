@@ -1878,6 +1878,7 @@ const SERIAL_FLOORS: &[(&str, usize)] = &[
     ("crates/cfgd-core/src/output/tests/hyperlinks.rs", 5),
     ("crates/cfgd-core/src/output/tests/themes_raw.rs", 4),
     ("crates/cfgd-core/src/output/theme.rs", 8),
+    ("crates/cfgd-core/src/platform/session.rs", 5),
     ("crates/cfgd-core/src/providers/skill/gemini.rs", 1),
     ("crates/cfgd-core/src/reconciler/managers.rs", 4),
     ("crates/cfgd-core/src/reconciler/scripts/tests.rs", 7),
