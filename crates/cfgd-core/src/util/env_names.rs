@@ -3,8 +3,9 @@
 //! every name a production read (`std::env::var`, `env_or`, a `*_BIN` seam such
 //! as `tool_cmd`) would otherwise spell as a literal. A `*_BIN` seam a module
 //! already names with its own const beside its command factory keeps that const.
-//! The `fake-cosign` fixture binary, built only under the `test-helpers`
-//! feature, keeps the names it reads, since no shipped binary reads them.
+//! Files built only for tests, the `fake-cosign` fixture binary and the
+//! `test_helpers.rs` modules, keep their own names, since no shipped binary
+//! reads them.
 //!
 //! A clap `env =` binding and every other reader or writer of the same variable
 //! name it through these, so a rename moves every reader together.

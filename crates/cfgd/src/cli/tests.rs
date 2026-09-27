@@ -1299,20 +1299,34 @@ fn the_startup_check_honours_the_invocations_policy_over_the_declared_one() {
 }
 
 /// Every `CFGD_*` environment name production binds or reads is spelled as a
-/// literal on exactly one production line of the workspace: its `CFGD_*_ENV`
-/// const in cfgd-core. A second spelling, in a reader beside the binding, a
+/// literal on exactly one production line of the workspace: its
+/// `CFGD_<NAME>_ENV` const in `cfgd-core/src/util/env_names.rs`, or, for a
+/// `*_BIN` seam a module already names with its own const beside its command
+/// factory, that const. A second spelling, in a reader beside the binding, a
 /// second binding, or a writer exporting the name to a child, is a copy a rename
-/// leaves behind: the flag keeps working while the other site goes quiet. The
-/// population is clap's own (`get_env` over the whole command tree) joined with
-/// every const `env_names.rs` declares, so a new binding and a new resolver-read
-/// const both join it unasked.
+/// leaves behind: the flag keeps working while the other site goes quiet.
 ///
-/// A production read never names its variable as a `"CFGD_…"` literal: the
-/// readers are `std::env::var`, `var_os`, `env!`, `option_env!` and every
-/// function that passes one of its own parameters on to a reader (`env_or`,
-/// `tool_cmd`, `resolve_knob`, …), derived from the sources, so a literal read
-/// the population above cannot see fails here by file and line. Tests keep their
-/// literals, since they assert the wire spelling.
+/// The population is clap's own (`get_env` over the whole command tree), every
+/// const `env_names.rs` declares, and every `"CFGD_…"` literal a production
+/// `const` or `static` holds, as a scalar or an array element, so a new binding,
+/// a new resolver-read const and a module's own seam name all join it unasked.
+/// Four checks run over it:
+///
+/// - a `const` or `static` outside `env_names.rs` holding a `CFGD_*` name that
+///   does not end in `_BIN` fails: that name moves into `env_names.rs`;
+/// - a name of the population spelled on a second production line fails;
+/// - a name clap binds with no const in `env_names.rs` fails;
+/// - a production read naming its variable as a `"CFGD_…"` literal fails by
+///   file and line. The readers are `std::env::var`, `var_os`, `env!`,
+///   `option_env!` and every function that passes one of its own parameters on
+///   to a reader (`env_or`, `tool_cmd`, `resolve_knob`, …), derived from the
+///   sources.
+///
+/// Files built only for tests are outside the rule: cfgd-core's `test_helpers.rs`
+/// and the `fake-cosign` fixture binary (both behind the `test-helpers`
+/// feature), and cfgd-operator's `test_helpers.rs` (a `#[cfg(test)]` module).
+/// Tests keep their literals, since they assert the wire spelling. Each crate's
+/// count of spellings has a floor, so a tree the walk stops reading fails.
 #[test]
 fn every_cfgd_env_name_is_spelled_once_in_production() {
     fn bound_env_names(cmd: &clap::Command, out: &mut std::collections::BTreeSet<String>) {
@@ -1381,17 +1395,24 @@ fn every_cfgd_env_name_is_spelled_once_in_production() {
     // The per-root reader hands back paths under `<cfgd>/..`, so the prefix to
     // strip is spelled the same way.
     let crates_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
-    // Compiled only under the `test-helpers` feature (the fake-cosign binary
-    // through its `required-features`), so no shipped binary reads what they
-    // spell.
-    let feature_only = |path: &std::path::Path| {
-        path.file_name()
-            .is_some_and(|n| n == "test_helpers.rs" || n == "fake_cosign.rs")
+    // Compiled only for tests, so no shipped binary reads what they spell:
+    // cfgd-core's two sit behind the `test-helpers` feature (fake-cosign through
+    // its `required-features`), and cfgd-operator declares its module
+    // `#[cfg(test)] mod test_helpers;`, which the per-file test cut cannot see.
+    // Matched by path, so a production file of the same name elsewhere is read.
+    const TEST_ONLY_FILES: [&str; 3] = [
+        "cfgd-core/src/test_helpers.rs",
+        "cfgd-core/src/bin/fake_cosign.rs",
+        "cfgd-operator/src/test_helpers.rs",
+    ];
+    let test_only = |path: &std::path::Path| {
+        let rel = path.strip_prefix(&crates_dir).unwrap_or(path);
+        TEST_ONLY_FILES.contains(&cfgd_core::to_posix_string(rel).as_str())
     };
     let sources: Vec<(String, String)> = trees
         .iter()
         .flat_map(|(_, files)| files)
-        .filter(|(path, _)| !feature_only(path))
+        .filter(|(path, _)| !test_only(path))
         .map(|(path, production)| {
             let rel = path.strip_prefix(&crates_dir).unwrap_or(path);
             (
@@ -1401,9 +1422,10 @@ fn every_cfgd_env_name_is_spelled_once_in_production() {
         })
         .collect();
 
-    // Every `CFGD_*` literal a production const holds, scalar or array element,
-    // joins the population, so a module's own name is held to one spelling too.
-    // Outside `env_names.rs` only a `*_BIN` seam may keep a const of its own.
+    // Every `CFGD_*` literal a production const or static holds, scalar or
+    // array element, joins the population, so a module's own name is held to
+    // one spelling too. Outside `env_names.rs` only a `*_BIN` seam may keep an
+    // item of its own.
     let mut stray_consts: Vec<String> = Vec::new();
     for (rel, production) in &sources {
         let code = blank_non_code(production);
@@ -1412,8 +1434,10 @@ fn every_cfgd_env_name_is_spelled_once_in_production() {
         for line in code.split_inclusive('\n') {
             let at = start;
             start += line.len();
-            if cfgd_core::test_helpers::item_keyword(line) != "const"
-                || cfgd_core::test_helpers::opens_function(line)
+            if !matches!(
+                cfgd_core::test_helpers::item_keyword(line),
+                "const" | "static"
+            ) || cfgd_core::test_helpers::opens_function(line)
             {
                 continue;
             }
@@ -1441,8 +1465,8 @@ fn every_cfgd_env_name_is_spelled_once_in_production() {
     }
     assert!(
         stray_consts.is_empty(),
-        "a production const outside crates/cfgd-core/src/util/env_names.rs holds a CFGD_* name \
-         that is no `*_BIN` seam; move it there as `CFGD_<NAME>_ENV`:\n{}",
+        "a production const or static outside crates/cfgd-core/src/util/env_names.rs holds a \
+         CFGD_* name that is no `*_BIN` seam; move it there as `CFGD_<NAME>_ENV`:\n{}",
         stray_consts.join("\n")
     );
 
@@ -1452,7 +1476,7 @@ fn every_cfgd_env_name_is_spelled_once_in_production() {
     for (tree, files) in &trees {
         let mut spelled = 0usize;
         for (path, production) in files {
-            if feature_only(path) {
+            if test_only(path) {
                 continue;
             }
             for (i, raw) in production.lines().enumerate() {
@@ -1460,8 +1484,14 @@ fn every_cfgd_env_name_is_spelled_once_in_production() {
                 // in the raw line, so the raw prefix is the code with its literals
                 // intact.
                 let code = &raw[..code_line(raw).len()];
-                for (name, sites) in spellings.iter_mut() {
-                    if code.contains(&format!("\"{name}\"")) {
+                let mut on_line: Vec<&str> = Vec::new();
+                for name in cfgd_env_literals(code) {
+                    // One site per name per line, however often the line repeats it.
+                    if on_line.contains(&name) {
+                        continue;
+                    }
+                    on_line.push(name);
+                    if let Some(sites) = spellings.get_mut(name) {
                         let rel = path.strip_prefix(&crates_dir).unwrap_or(path);
                         let rel = cfgd_core::to_posix_string(rel);
                         sites.push(format!("crates/{rel}:{}", i + 1));
