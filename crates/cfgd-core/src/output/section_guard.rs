@@ -637,6 +637,7 @@ mod tests {
             body(&s);
         }
         p.flush();
+        // long-line-ok: a hatch is read off its own line, so it cannot wrap
         // raw-capture-ok: two callers compare the RAW capture for exact colour equality/inequality (action_subject_keeps_role_style_under_default, action_status_leaves_the_glyph_on_the_role_style) — captured_text would strip the ANSI both exist to check
         let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
         raw.lines().skip(1).collect::<Vec<_>>().join("\n")
@@ -772,6 +773,7 @@ mod tests {
             sec.status_simple(Role::Ok, "server status: \x1b[2Kok\x1b[31m");
         }
         p.flush();
+        // long-line-ok: a hatch is read off its own line, so it cannot wrap
         // raw-capture-ok: the claim IS that no escape survives, and captured_text strips exactly what this test looks for
         let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
         assert!(
@@ -801,6 +803,7 @@ mod tests {
             owner.bullet("wrote init.lua");
         }
         p.flush();
+        // long-line-ok: a hatch is read off its own line, so it cannot wrap
         // raw-capture-ok: asserting the owner token's exact styled run reaches the renderer unrestyled — captured_text would strip the ANSI this test exists to check
         let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
         assert!(
@@ -891,6 +894,7 @@ mod tests {
             owner.status_simple(Role::Warn, "reload deferred: /proc is read-only");
         }
         p.flush();
+        // long-line-ok: a hatch is read off its own line, so it cannot wrap
         // raw-capture-ok: asserting the heading's exact styled run reaches the renderer unrestyled — captured_text would strip the ANSI this test exists to check
         let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
         assert!(

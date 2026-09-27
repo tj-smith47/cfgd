@@ -1327,7 +1327,8 @@ pub(in crate::cli) fn display_plan_preview(
 ///
 /// Examples:
 ///   PackageAction::Install { manager: "brew", packages: ["ripgrep"] } → "packages.brew"
-///   SystemAction::SetValue { configurator: "sysctl", key: "net.ipv4.ip_forward" } → "system.sysctl.net.ipv4.ip_forward"
+///   SystemAction::SetValue { configurator: "sysctl", key: "net.ipv4.ip_forward" }
+///     → "system.sysctl.net.ipv4.ip_forward"
 ///   FileAction::Create { target: "/etc/foo" } → "files./etc/foo"
 ///   SecretAction::Resolve { provider: "1password" } → "secrets.1password"
 ///   ScriptAction::Run { path: "scripts/setup.sh" } → "scripts.scripts/setup.sh"

@@ -103,6 +103,7 @@ impl SystemConfigurator for LaunchAgentConfigurator {
                 format!("Writing launch agent: {}", plist_path.posix()),
             );
 
+            // long-line-ok: a hatch is read off its own line, so it cannot wrap
             // user-scope-ok: the user's own LaunchAgent plist under their own home, written by their own unprivileged run
             cfgd_core::atomic_write_str(&plist_path, &plist_content)?;
 

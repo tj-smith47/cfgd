@@ -572,7 +572,8 @@ pub fn scan_system_settings() -> Result<SystemSettingsResult, CfgdError> {
         windows_registry: std::collections::BTreeMap::new(),
     };
 
-    // macOS: run `defaults domains` and parse comma-separated list — don't export all, just list them
+    // macOS: run `defaults domains` and parse comma-separated list — don't export all, just list
+    // them
     if cfgd_core::command_available("defaults")
         && let Ok(output) =
             cfgd_core::command_output(std::process::Command::new("defaults").arg("domains"))

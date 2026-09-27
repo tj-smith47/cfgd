@@ -5797,6 +5797,7 @@ fn print_module_review_summary_shows_control_characters_on_every_row() {
             "row {marker:?} carries a live carriage return: {row:?}"
         );
     }
+    // long-line-ok: a hatch is read off its own line, so it cannot wrap
     // raw-capture-ok: the claim is that no erase sequence survived anywhere on the screen, and a stripping read removes exactly what it looks for
     let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
     assert!(
@@ -5841,6 +5842,7 @@ fn print_module_review_summary_shows_control_characters_in_heading_and_trailer()
             "row {marker:?} carries a live carriage return: {row:?}"
         );
     }
+    // long-line-ok: a hatch is read off its own line, so it cannot wrap
     // raw-capture-ok: the claim is that no erase sequence survived anywhere on the screen, and a stripping read removes exactly what it looks for
     let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
     assert!(
@@ -6078,6 +6080,7 @@ fn a_remote_modules_post_apply_steps_reach_the_approval_screen_through_the_compo
         "sha256:dec0",
     );
     drop(printer);
+    // long-line-ok: a hatch is read off its own line, so it cannot wrap
     // raw-capture-ok: the escapes are half of what this test claims — a stripping read removes exactly what it compares
     let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
 
@@ -6188,6 +6191,7 @@ fn an_upgrade_diffs_script_changes_render_their_bodies_through_the_composer() {
     );
     super::registry::print_spec_changes(&printer, &changes);
     drop(printer);
+    // long-line-ok: a hatch is read off its own line, so it cannot wrap
     // raw-capture-ok: the escapes are half of what this test claims — a stripping read removes exactly what it compares
     let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
 

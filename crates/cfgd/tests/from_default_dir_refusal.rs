@@ -527,6 +527,7 @@ fn init_from_refuses_an_occupied_default_dir_before_provisioning_git() {
     assert!(
         !argv_log.exists(),
         "the refusal came first, so no manager was asked for anything: {}",
+        // long-line-ok: a hatch is read off its own line, so it cannot wrap
         // absent-file-ok: the assertion above is that this file is absent, and the read only fills the failure message when it is not
         std::fs::read_to_string(&argv_log).unwrap_or_default()
     );

@@ -1356,6 +1356,7 @@ mod tests {
         let (p, buf) = Printer::for_test_at(Verbosity::Normal);
         p.status_simple(Role::Ok, "Enrolled as user '\x1b[2Kroot\x1b[31m'");
         p.flush();
+        // long-line-ok: a hatch is read off its own line, so it cannot wrap
         // raw-capture-ok: the claim IS that no escape survives, and captured_text strips exactly what this test looks for
         let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
         assert!(
@@ -2931,6 +2932,7 @@ mod tests {
                 colors,
             );
             printer.emit(super::super::doc::Doc::new().with_data(payload.clone()));
+            // long-line-ok: a hatch is read off its own line, so it cannot wrap
             // raw-capture-ok: the escapes ARE this test's subject, and `captured_text` strips exactly them
             buf.lock().unwrap().clone()
         };

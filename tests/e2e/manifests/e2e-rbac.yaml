@@ -30,7 +30,8 @@ rules:
   - apiGroups: [""]
     resources: ["nodes"]
     verbs: ["get", "list", "watch"]
-  # Apps — deployments, daemonsets, replicasets (Helm creates these; rollout checks need replicasets)
+  # Apps — deployments, daemonsets, replicasets (Helm creates these; rollout checks need
+  # replicasets)
   - apiGroups: ["apps"]
     resources: ["deployments", "daemonsets", "replicasets"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]

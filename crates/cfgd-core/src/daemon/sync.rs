@@ -33,6 +33,7 @@ pub(crate) async fn handle_sync(
                 if require_signed_commits && !allow_unsigned {
                     let src = source_name.to_string();
                     let repo = repo_path.to_path_buf();
+                    // long-line-ok: a hatch is read off its own line, so it cannot wrap
                     // spawn-blocking-ok: closure resolves no home paths (git op on an explicit repo path)
                     let verify_result = tokio::task::spawn_blocking(move || {
                         crate::sources::verify_head_signature(&src, &repo)
@@ -54,6 +55,7 @@ pub(crate) async fn handle_sync(
                             // later tick.
                             let repo = repo_path.to_path_buf();
                             let accepted = movement.from.clone();
+                            // long-line-ok: a hatch is read off its own line, so it cannot wrap
                             // spawn-blocking-ok: closure resolves no home paths (git op on an explicit repo path)
                             let rolled_back = tokio::task::spawn_blocking(move || {
                                 crate::sources::reset_checkout_to(&repo, &accepted)

@@ -199,7 +199,8 @@ impl super::CfgdFileManager {
         })
     }
 
-    /// Build a plan of file actions by comparing desired state (from profile) to actual state (on disk).
+    /// Build a plan of file actions by comparing desired state (from profile) to actual state (on
+    /// disk).
     pub fn plan(&self, profile: &MergedProfile) -> Result<Vec<FileAction>> {
         let mut actions = Vec::new();
 

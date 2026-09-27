@@ -16,7 +16,8 @@
 //!
 //! | Slot | Bound |
 //! |---|---|
-//! | config, profile, composition, registry | the recorded input fingerprint, plus [`CONFIG_REUSE_MAX_AGE`] |
+//! | config, profile | the recorded input fingerprint, plus [`CONFIG_REUSE_MAX_AGE`] |
+//! | composition, registry | the recorded input fingerprint, plus [`CONFIG_REUSE_MAX_AGE`] |
 //! | resolved modules | the same, plus [`MODULE_REUSE_TTL`] |
 //! | state store | held for the daemon's life |
 //!

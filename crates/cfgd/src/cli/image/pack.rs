@@ -112,8 +112,8 @@ pub fn cmd_image_pack(
 
     // ONE section, named for the command, holding everything the run produced:
     // what is being packed, the pack verdict (carrying the digest as its
-    // detail), the lockfile write and the signing verdict. A second section named `Pack` under a `Pack
-    // Image` title spends the word twice on one screen for two different
+    // detail), the lockfile write and the signing verdict. A second section named `Pack` under a
+    // `Pack Image` title spends the word twice on one screen for two different
     // things.
     let (digest, platform_str, signed, attestation_attached) = {
         let pack_sec = printer.section("Pack Image");

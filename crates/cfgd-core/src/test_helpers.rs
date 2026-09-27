@@ -1266,6 +1266,7 @@ pub fn install_tracing_journal() {
     static INSTALL: std::sync::Once = std::sync::Once::new();
     INSTALL.call_once(|| {
         let subscriber = tracing_subscriber::fmt()
+            // long-line-ok: a hatch is read off its own line, so it cannot wrap
             // unfolded-writer-ok: a test capture read back as a String, not a stream anyone is looking at
             .with_writer(TracingJournalWriter)
             .with_max_level(tracing::Level::INFO)
@@ -4210,6 +4211,7 @@ impl CosignTestShimBuilder {
     /// per-invocation behavior env vars (`CFGD_FAKE_COSIGN_{LOG,KEYGEN,STDERR,
     /// EXIT}`). Prior values of every mutated var are captured for restoration
     /// on drop. A tempdir holds the argv log; it is removed with the guard.
+    // long-line-ok: a hatch is read off its own line, so it cannot wrap
     // env-mutator-ok: a builder exists only through `CosignTestShim::builder`, which the roster counts.
     pub fn install(self) -> CosignTestShim {
         let bin_path = fake_cosign_bin_path();
@@ -4767,6 +4769,7 @@ impl crate::providers::PackageManager for MockPackageManager {
     ) -> crate::errors::Result<()> {
         let _in_flight = self.witness.as_ref().map(|w| w.enter());
         if let Some(delay) = self.install_delay {
+            // long-line-ok: a hatch is read off its own line, so it cannot wrap
             // sleep-ok: simulates a slow install to widen the overlap window a ConcurrencyWitness observes — the witness peak is the actual assertion, not this duration
             std::thread::sleep(delay);
         }

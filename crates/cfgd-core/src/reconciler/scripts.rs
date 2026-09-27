@@ -768,6 +768,7 @@ fn execute_script_inner(
                 return Err(CfgdError::Config(ConfigError::Invalid {
                     message: format!(
                         "shell field cannot be set on file-shebang scripts — set the shebang line inside '{}' itself",
+                        // long-line-ok: a hatch is read off its own line, so it cannot wrap
                         // absolute-path-ok: a human-facing error names the script as the filesystem does
                         resolved.posix(),
                     ),
@@ -789,6 +790,7 @@ fn execute_script_inner(
                 return Err(CfgdError::Config(ConfigError::Invalid {
                     message: format!(
                         "script '{}' exists but is not executable ({})",
+                        // long-line-ok: a hatch is read off its own line, so it cannot wrap
                         // absolute-path-ok: a human-facing error names the script as the filesystem does
                         resolved.posix(),
                         hint,
@@ -1137,6 +1139,7 @@ pub(crate) fn run_filter_script(
                 return Err(CfgdError::Config(ConfigError::Invalid {
                     message: format!(
                         "patch script '{}' exists but is not executable ({})",
+                        // long-line-ok: a hatch is read off its own line, so it cannot wrap
                         // absolute-path-ok: a human-facing error names the script as the filesystem does
                         resolved.posix(),
                         hint,

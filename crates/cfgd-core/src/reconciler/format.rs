@@ -1139,10 +1139,10 @@ pub fn split_module_file_resource_id(id: &str) -> Option<(&str, String)> {
 /// and the `<module>:script` / `<module>:skip` / `<module>:files:<n>` /
 /// `<module>:packages:<a,b>` tracking ids an apply records. The bare `<module>`
 /// a tick recorded before either producer agreed on a spelling is a third
-/// shape, carrying no tail at all. A module name carries neither separator — [`crate::modules::validate_module_name`] is the
-/// one refusal, and every name that becomes a key of the module map answers to
-/// it, whichever of the four sources it arrived from — so the first separator
-/// is always where the owner ends.
+/// shape, carrying no tail at all. A module name carries neither separator —
+/// [`crate::modules::validate_module_name`] is the one refusal, and every name that becomes a key
+/// of the module map answers to it, whichever of the four sources it arrived from — so the first
+/// separator is always where the owner ends.
 ///
 /// Kept beside the composers that mint those ids: the daemon reads it to
 /// attribute a row, the CLI to classify one, and a second reading in either

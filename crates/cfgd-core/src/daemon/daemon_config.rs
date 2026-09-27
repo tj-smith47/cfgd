@@ -78,7 +78,8 @@ pub(crate) fn parse_daemon_config(daemon_cfg: &config::DaemonConfig) -> ParsedDa
     }
 }
 
-/// Build the list of per-module and default reconcile tasks from daemon config and resolved profile.
+/// Build the list of per-module and default reconcile tasks from daemon config and resolved
+/// profile.
 ///
 /// For each module in the resolved profile, checks if reconcile patches produce effective
 /// settings that differ from the global config. If so, creates a dedicated per-module task.

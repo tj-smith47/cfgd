@@ -365,8 +365,8 @@ pub fn startup_update_check(printer: &Printer, config_path: &std::path::Path, as
 /// `Printer` Doc. It returns that outcome so tests assert the decision SHAPE,
 /// not rendered text.
 ///
-/// Only [`cfgd_core::upgrade::StandaloneSkillOutcome::NoticeNeeded`] emits — exactly one consolidated
-/// notice covering both scopes. `Refreshed`/`Suppressed`/`Silent` emit nothing.
+/// Only [`cfgd_core::upgrade::StandaloneSkillOutcome::NoticeNeeded`] emits — exactly one
+/// consolidated notice covering both scopes. `Refreshed`/`Suppressed`/`Silent` emit nothing.
 fn surface_stale_skills(
     printer: &Printer,
     update_cfg: &cfgd_core::config::UpdateConfig,
@@ -406,8 +406,8 @@ fn emit_skill_stale_notice(printer: &Printer, staleness: cfgd_core::upgrade::Ski
     );
 }
 
-/// Extract the inner [`cfgd_core::errors::UpgradeError`] from a [`cfgd_core::errors::CfgdError`] for the startup
-/// check's fetch closure, which must yield the module-level error type that
+/// Extract the inner [`cfgd_core::errors::UpgradeError`] from a [`cfgd_core::errors::CfgdError`]
+/// for the startup check's fetch closure, which must yield the module-level error type that
 /// [`cfgd_core::upgrade::run_update_check`] threads.
 fn unwrap_upgrade_err(e: cfgd_core::errors::CfgdError) -> cfgd_core::errors::UpgradeError {
     match e {

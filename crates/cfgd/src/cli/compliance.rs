@@ -520,6 +520,7 @@ pub fn build_compliance_summary_doc(snapshot: &ComplianceSnapshot, now: &str, ar
         format!("Summary: {}", snapshot.summary.counts_line())
     } else {
         format!(
+            // long-line-ok: a hatch is read off its own line, so it cannot wrap
             // counts-line-ok: an all-pass verdict counts checks, with no warning or violation to state
             "All {} compliant",
             cfgd_core::pluralize(snapshot.summary.compliant, "check")

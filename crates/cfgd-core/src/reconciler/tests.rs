@@ -20666,11 +20666,11 @@ fn plan_env_folds_in_a_to_be_provisioned_managers_declared_path_dirs() {
 
 #[test]
 fn env_targets_folded_path_dirs_render_into_the_fish_managed_file() {
-    // The same folded PATH-dir set `plan_env_folds_in_a_to_be_provisioned_managers_declared_path_dirs`
-    // pins through the bash `.cfgd.env` render — proven here through fish's
-    // dialect too, so a divergence in `generate_fish_env_content`'s PATH
-    // folding (a different join char, a missing per-entry quote) cannot hide
-    // behind bash-only coverage.
+    // The same folded PATH-dir set
+    // `plan_env_folds_in_a_to_be_provisioned_managers_declared_path_dirs` pins through the bash
+    // `.cfgd.env` render — proven here through fish's dialect too, so a divergence in
+    // `generate_fish_env_content`'s PATH folding (a different join char, a missing per-entry quote)
+    // cannot hide behind bash-only coverage.
     let home = Path::new("/h");
     let mut probe = env_probe("/bin/bash");
     probe.fish_present = true;
@@ -26246,6 +26246,7 @@ fn a_lane_worker_blocks_behind_an_exclusively_held_path_lock() {
     let outcome = ConcurrentApply::new(registry, plan)
         .with_modules(modules)
         .run(move || {
+            // long-line-ok: a hatch is read off its own line, so it cannot wrap
             // sleep-ok: correctness here comes from the still-held write guard, not the duration — this only gives a correctly-guarded worker room to reach and block on it
             std::thread::sleep(std::time::Duration::from_millis(150));
             assert!(

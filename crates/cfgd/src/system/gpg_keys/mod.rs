@@ -109,8 +109,9 @@ impl KeyringEntry {
 /// Parse `gpg --list-keys --with-colons --with-fingerprint <email>` output
 /// into a list of `KeyringEntry` values.
 ///
-/// The format is documented at <https://git.gnupg.org/cgi-bin/gitweb.cgi?p=gnupg.git;a=blob;f=doc/DETAILS>
-/// Relevant record types used here:
+/// The format is documented at
+/// <https://git.gnupg.org/cgi-bin/gitweb.cgi?p=gnupg.git;a=blob;f=doc/DETAILS> Relevant record
+/// types used here:
 ///   - `pub` : public key record
 ///   - `uid` : user ID record (email extracted here)
 ///   - `fpr` : fingerprint record
@@ -472,6 +473,7 @@ impl SystemConfigurator for GpgKeysConfigurator {
                 "cfgd-gpg-{}.params",
                 cfgd_core::sha256_hex(spec.email.as_bytes())
             ));
+            // long-line-ok: a hatch is read off its own line, so it cannot wrap
             // user-scope-ok: a gpg batch parameter file carrying key material, read only by the gpg this run spawns
             cfgd_core::atomic_write_str(&param_path, &param)?;
 

@@ -48,8 +48,8 @@ pub fn cmd_module_push(
 
     // ONE section, named for the command, holding everything the run produced:
     // what is being pushed, the push verdict (carrying the digest as its
-    // detail), the signing verdict and the CRD apply. A second section named `Push` under a `Push Module`
-    // title spends the word twice on one screen for two different things.
+    // detail), the signing verdict and the CRD apply. A second section named `Push` under a `Push
+    // Module` title spends the word twice on one screen for two different things.
     // `push_module` keeps its `&Printer` signature (it has non-CLI callers
     // too), so the section is opened and scoped here rather than threaded into
     // the library call, and `depth_inheritance` is what settles its spinner at

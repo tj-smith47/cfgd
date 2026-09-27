@@ -87,6 +87,7 @@ pub(super) fn export_devcontainer(
         // divergence this command exists to prevent.
         let script = crate::packages::manager_install_script(DEVCONTAINER_MANAGER, &apt_packages)
             .ok_or_else(|| {
+            // long-line-ok: a hatch is read off its own line, so it cannot wrap
             // untyped-ok: the devcontainer manager is a registered family with an install command, so no input reaches this.
             anyhow::anyhow!("no install command declared for manager '{DEVCONTAINER_MANAGER}'")
         })?;

@@ -561,6 +561,7 @@ fn remove_with_retry(op: impl Fn() -> std::io::Result<()>, what: &str) {
             Ok(()) => return,
             Err(e) => {
                 last = Some(e);
+                // long-line-ok: a hatch is read off its own line, so it cannot wrap
                 // sleep-ok: waiting out a foreign scanner's transient handle; no in-process observable exists for another process's handle
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
@@ -634,6 +635,7 @@ fn a_source_lock_still_excludes_after_its_file_is_deleted_by_the_holder() {
             }
             Err(e) => {
                 last = Some(e);
+                // long-line-ok: a hatch is read off its own line, so it cannot wrap
                 // sleep-ok: waiting out a foreign scanner's transient handle; no in-process observable exists for another process's handle
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }

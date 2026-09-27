@@ -618,10 +618,10 @@ fn builtin_aliases() -> HashMap<String, String> {
 /// argv slot as its value (space form: `--flag value` or `-x value`).
 ///
 /// Mirrors the `#[arg(global = true)]` flags on the `Cli` struct that are NOT
-/// `ArgAction::Count` / `bool`. `every_value_taking_global_flag_is_skipped_by_the_subcommand_locator`
-/// walks the clap definition against this list and its inline sibling, so a
-/// new global flag that forgets them fails there rather than by reading its
-/// value as the subcommand. The short-flag-glued form (`-oVALUE`) is not
+/// `ArgAction::Count` / `bool`.
+/// `every_value_taking_global_flag_is_skipped_by_the_subcommand_locator` walks the clap definition
+/// against this list and its inline sibling, so a new global flag that forgets them fails there
+/// rather than by reading its value as the subcommand. The short-flag-glued form (`-oVALUE`) is not
 /// covered: cfgd's docs and tests only show the space form (`-o VALUE`) and
 /// the inline-`=` form (`-o=VALUE`), both of which this scanner handles
 /// via the same helpers used for long flags — no dedicated short-flag branch.
@@ -1105,7 +1105,8 @@ pub struct Cli {
     )]
     pub color: ColorWhen,
 
-    /// Theme preset for this invocation (overrides spec.output.theme.name; its overrides still apply)
+    /// Theme preset for this invocation (overrides spec.output.theme.name; its overrides still
+    /// apply)
     #[arg(
         long,
         global = true,
@@ -1149,11 +1150,13 @@ pub struct Cli {
     )]
     pub migration_policy: Option<String>,
 
-    /// Output format: table, wide, json, yaml, name, jsonpath=EXPR, template=TMPL, template-file=PATH
+    /// Output format: table, wide, json, yaml, name, jsonpath=EXPR, template=TMPL,
+    /// template-file=PATH
     #[arg(long, short = 'o', global = true, default_value = "table")]
     pub output: OutputFormatArg,
 
-    /// Wrap top-level array payloads under -o json/yaml in a KRM List envelope ({apiVersion, kind: List, items})
+    /// Wrap top-level array payloads under -o json/yaml in a KRM List envelope ({apiVersion, kind:
+    /// List, items})
     #[arg(long, global = true, env = "CFGD_LIST_ENVELOPE")]
     pub list_envelope: bool,
 
@@ -1168,7 +1171,8 @@ pub struct Cli {
     #[arg(long = "no-hints", global = true)]
     pub no_hints: bool,
 
-    /// [DEPRECATED — use --output jsonpath=EXPR] JSONPath expression to extract from structured output
+    /// [DEPRECATED — use --output jsonpath=EXPR] JSONPath expression to extract from structured
+    /// output
     #[arg(long, global = true, hide = true)]
     pub jsonpath: Option<String>,
 
@@ -1180,11 +1184,13 @@ pub struct Cli {
     #[arg(long, global = true, env = "CFGD_CONFIG_DIR")]
     pub config_dir: Option<PathBuf>,
 
-    /// Override cache directory for sources + modules (default: $CFGD_CACHE_DIR or platform cache dir)
+    /// Override cache directory for sources + modules (default: $CFGD_CACHE_DIR or platform cache
+    /// dir)
     #[arg(long, global = true, env = "CFGD_CACHE_DIR")]
     pub cache_dir: Option<PathBuf>,
 
-    /// Override runtime directory for sockets + locks (default: $CFGD_RUNTIME_DIR or platform runtime dir)
+    /// Override runtime directory for sockets + locks (default: $CFGD_RUNTIME_DIR or platform
+    /// runtime dir)
     #[arg(long, global = true, env = "CFGD_RUNTIME_DIR")]
     pub runtime_dir: Option<PathBuf>,
 
@@ -1574,7 +1580,8 @@ pub enum Command {
         long_about = "Check for, download, and install a newer cfgd release.\n\nWith --check, exit codes are:\n  0  already at latest version\n  1  network / IO error\n  2  update available (action needed, not an error)\n\ncfgd downloads the release archive and verifies its `<archive>.sha256`\nchecksum. When the `cosign` CLI is installed and the release attaches a\ncosign bundle, it also verifies the keyless cosign signature over that\nchecksum — proving the artifact came from cfgd's GitHub release workflow\n(Sigstore: Fulcio certificate + OIDC identity, recorded in the Rekor\ntransparency log; no public key to distribute). If cosign is missing or no\nbundle is attached, verification falls back to SHA256-only with a loud\nwarning (the human warning surfaces it, but a structured-output consumer\nmight miss it). Pass --require-cosign (or set CFGD_REQUIRE_COSIGN=1) to fail\nthe upgrade instead of falling back — recommended for unattended / CI\nupdates where a tampered GitHub asset would otherwise pass.\n\nExamples:\n  cfgd upgrade\n  cfgd upgrade --check\n  cfgd upgrade --require-cosign\n  CFGD_REQUIRE_COSIGN=1 cfgd upgrade"
     )]
     Upgrade {
-        /// Only check if an update is available (exit 0 = current, exit 2 = update available, exit 1 = error)
+        /// Only check if an update is available (exit 0 = current, exit 2 = update available, exit
+        /// 1 = error)
         #[arg(long)]
         check: bool,
 
@@ -2258,7 +2265,8 @@ pub struct ProfileCreateArgs {
     /// System settings as key=value (repeatable)
     #[arg(long = "system")]
     pub system: Vec<String>,
-    /// Files to manage (repeatable). Use <path> to adopt in place, or <source>:<target> for explicit mapping.
+    /// Files to manage (repeatable). Use <path> to adopt in place, or <source>:<target> for
+    /// explicit mapping.
     #[arg(long = "file")]
     pub files: Vec<String>,
     /// Mark all --file entries as private (local-only, excluded from git).
@@ -2431,7 +2439,8 @@ pub struct ModuleCreateArgs {
     /// platform's native manager (repeatable, e.g. --package brew.casks:firefox)
     #[arg(long = "package")]
     pub packages: Vec<String>,
-    /// Files to import (repeatable). Use <path> to adopt in place, or <source>:<target> for explicit mapping.
+    /// Files to import (repeatable). Use <path> to adopt in place, or <source>:<target> for
+    /// explicit mapping.
     #[arg(long = "file")]
     pub files: Vec<String>,
     /// Mark all --file entries as private (local-only, excluded from git).

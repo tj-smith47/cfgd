@@ -601,6 +601,7 @@ pub(super) fn npm_path_dirs_for(elevated: bool) -> Vec<String> {
         }) => vec![cfgd_core::to_posix_string(npm_bin_dir(&prefix))],
         Ok(NpmPrefixDecision { prefix: None, .. }) => Vec::new(),
         Err(e) => {
+            // long-line-ok: a hatch is read off its own line, so it cannot wrap
             // tracing-ok: the PATH contribution degrades to empty; the writable-prefix caveat is a different fact and is reported
             tracing::warn!(error = %e, "cannot resolve npm's global prefix for PATH");
             Vec::new()
@@ -615,6 +616,7 @@ fn npm_prefix_for_path(state: &dyn PackageStateStore) -> Option<NpmPrefixDecisio
     match resolve_npm_prefix(state) {
         Ok(decision) => Some(decision),
         Err(e) => {
+            // long-line-ok: a hatch is read off its own line, so it cannot wrap
             // tracing-ok: the PATH contribution degrades to empty; the writable-prefix caveat is a different fact and is reported
             tracing::warn!(error = %e, "cannot resolve npm's global prefix for PATH");
             None

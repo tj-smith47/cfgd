@@ -1698,6 +1698,7 @@ impl<'a> super::Reconciler<'a> {
                                     self.state
                                         .store_file_backup(apply_id, &path_str, &file_state)
                                 {
+                                    // long-line-ok: a hatch is read off its own line, so it cannot wrap
                                     // tracing-ok: the rollback copy could not be stored; no row states it, the write it protects settles on its own
                                     tracing::warn!(
                                         "failed to store file backup for {}: {}",
@@ -1718,6 +1719,7 @@ impl<'a> super::Reconciler<'a> {
                                 }
                             }
                             Err(e) => {
+                                // long-line-ok: a hatch is read off its own line, so it cannot wrap
                                 // tracing-ok: same, one step earlier - the target could not be read at all
                                 tracing::warn!(
                                     "failed to capture file state for backup of {}: {}",
@@ -2745,6 +2747,7 @@ impl<'a> super::Reconciler<'a> {
                             run.script_output.as_deref(),
                         )
                     {
+                        // long-line-ok: a hatch is read off its own line, so it cannot wrap
                         // tracing-ok: the journal row could not be closed; the action's own line is settled either way
                         tracing::warn!("failed to record journal completion: {e}");
                     }

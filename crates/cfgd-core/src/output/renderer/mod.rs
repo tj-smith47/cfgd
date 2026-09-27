@@ -1402,6 +1402,7 @@ mod tests {
             // `hint` is one of the emitters walked, and hints start off.
             r.set_hints_enabled(true);
             emit(&r, &sink);
+            // long-line-ok: a hatch is read off its own line, so it cannot wrap
             // raw-capture-ok: asserting a free-text emitter's raw output carries ANSI at all — captured_text would strip the escapes this test exists to check
             let out = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
             assert!(

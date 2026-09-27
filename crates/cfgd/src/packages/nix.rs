@@ -294,8 +294,9 @@ pub(super) fn parse_nix_profile_list_json(stdout: &str) -> HashSet<String> {
 /// reading the version off the FIRST store path's trailing `-<version>`
 /// segment (after stripping the store's leading `<hash>-`, then the
 /// element's own name if the store path repeats it). An element naming no
-/// readable store path lists as [`UNKNOWN_PACKAGE_VERSION`](cfgd_core::providers::UNKNOWN_PACKAGE_VERSION).
-/// Returns empty on missing or malformed JSON.
+/// readable store path lists as
+/// [`UNKNOWN_PACKAGE_VERSION`](cfgd_core::providers::UNKNOWN_PACKAGE_VERSION). Returns empty on
+/// missing or malformed JSON.
 pub(super) fn parse_nix_profile_list_versions(
     stdout: &str,
 ) -> Vec<cfgd_core::providers::PackageInfo> {

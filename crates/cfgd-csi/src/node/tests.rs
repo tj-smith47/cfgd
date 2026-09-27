@@ -434,8 +434,9 @@ async fn node_get_volume_stats_with_subdirectories() {
         .iter()
         .find(|u| u.unit == volume_usage::Unit::Inodes as i32)
         .unwrap();
-    // root dir (1) + subdir entry in readdir (1) + root.txt (1) + nested.txt (1) + subdir itself walked = total 4
-    // Actually: walk counts root(1), then readdir(root): subdir(+1), root.txt(+1), then walk(subdir): nested.txt(+1) = 4
+    // root dir (1) + subdir entry in readdir (1) + root.txt (1) + nested.txt (1) + subdir itself
+    // walked = total 4 Actually: walk counts root(1), then readdir(root): subdir(+1), root.txt(+1),
+    // then walk(subdir): nested.txt(+1) = 4
     assert_eq!(inodes_entry.used, 4);
 }
 

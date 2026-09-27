@@ -95,7 +95,8 @@ pub(super) fn merge_with_policy(
             for managed in layer_managed {
                 // Check Required-tier protection (bidirectional):
                 // 1. If a Required source already owns this file, no other source can override it.
-                // 2. If *this* layer is Required and another source already placed a file here, error.
+                // 2. If *this* layer is Required and another source already placed a file here,
+                //    error.
                 if let Some(owner) = file_owners.get(&managed.target) {
                     let cross_source = layer.source != owner.source;
                     if cross_source

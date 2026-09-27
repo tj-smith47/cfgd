@@ -1068,6 +1068,7 @@ async fn pool_timeout_surfaces_as_pool_exhausted() {
         db_hold
             .with_read_tx(move |_tx| {
                 let _ = acquired_tx.send(());
+                // long-line-ok: a hatch is read off its own line, so it cannot wrap
                 // sleep-ok: deliberately holds the reader past the pool's timeout to exercise the PoolExhausted path — the hold duration is the subject under test
                 std::thread::sleep(std::time::Duration::from_millis(400));
                 Ok(())
@@ -1133,11 +1134,13 @@ fn capture_warn_logs<F: FnOnce()>(f: F) -> String {
     let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let writer = CaptureWriter(buf.clone());
     let subscriber = tracing_subscriber::fmt()
+        // long-line-ok: a hatch is read off its own line, so it cannot wrap
         // unfolded-writer-ok: a test capture read back as a String, not a stream anyone is looking at
         .with_writer(writer)
         .with_max_level(tracing::Level::WARN) // WARN+ only; DEBUG is filtered out
         .finish();
     tracing::subscriber::with_default(subscriber, f);
+    // long-line-ok: a hatch is read off its own line, so it cannot wrap
     // raw-capture-ok: this buf is a tracing-log Arc<Mutex<Vec<u8>>>, not a Printer::for_test* text capture — captured_text doesn't type-check against it
     let bytes = buf.lock().expect("lock").clone();
     String::from_utf8(bytes).expect("utf8 logs")

@@ -340,6 +340,7 @@ fn module_show_scripts_full_renders_the_approved_dracula_bytes() {
         printer.arrow(),
     ));
     drop(printer);
+    // long-line-ok: a hatch is read off its own line, so it cannot wrap
     // raw-capture-ok: the pitch's own bytes are the expectation — captured_text would strip exactly what this test compares
     let out = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
     let rendered: Vec<&str> = out

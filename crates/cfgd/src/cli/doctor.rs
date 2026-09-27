@@ -513,6 +513,7 @@ fn collect_doctor_output(
                 let cached_path = cache_dir.as_ref().and_then(|cd| {
                     let p = cd.join(&source.name);
                     if p.exists() {
+                        // long-line-ok: a hatch is read off its own line, so it cannot wrap
                         // absolute-path-ok: the payload field; the row rendering it folds its own copy
                         Some(p.display_posix())
                     } else {
@@ -600,7 +601,8 @@ fn collect_doctor_output(
 /// Build the doctor `Doc` from a collected payload + display-only extras. Used
 /// by the live command and by snapshot tests under
 /// `tests/output_snapshots/doctor/`.
-// no-next-step: `doctor` is the diagnosis; every failing row below carries its own fix in its detail
+// no-next-step: `doctor` is the diagnosis; every failing row below carries its own fix in its
+// detail
 pub fn build_doctor_doc(output: &DoctorOutput, extras: &DoctorExtras) -> Doc {
     let mut doc = Doc::new().heading("Doctor");
 

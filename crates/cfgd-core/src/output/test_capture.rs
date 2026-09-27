@@ -1004,6 +1004,7 @@ mod tests {
         };
 
         for (name, buf) in flat {
+            // long-line-ok: a hatch is read off its own line, so it cannot wrap
             // raw-capture-ok: proving where the colour DECISION was made — captured_text would strip the escapes this test exists to check
             let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
             check(name, &raw);
@@ -1018,6 +1019,7 @@ mod tests {
             Printer::for_test_with_theme_colored(Theme::from_preset("dracula"), Verbosity::Normal);
         p.status_simple(Role::Ok, "wrote /etc/hosts");
         p.flush();
+        // long-line-ok: a hatch is read off its own line, so it cannot wrap
         // raw-capture-ok: proving this ONE constructor really does carry colour — captured_text would strip the escapes this test exists to check
         let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
         assert!(

@@ -77,6 +77,7 @@ impl SystemdUnitConfigurator {
     }
 }
 
+// long-line-ok: a hatch is read off its own line, so it cannot wrap
 // no-tool-ok: needs systemd running as pid 1, which installing the client package would not make true
 impl SystemConfigurator for SystemdUnitConfigurator {
     fn name(&self) -> &str {

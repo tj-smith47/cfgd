@@ -769,6 +769,7 @@ mod tests {
             Verbosity::Normal,
         );
         r.render_kv_block(&sink, 0, &[KvPair::new("Profile", "work")]);
+        // long-line-ok: a hatch is read off its own line, so it cannot wrap
         // raw-capture-ok: asserting on the raw secondary-slot SGR bytes themselves — captured_text would strip the ANSI this test exists to check
         let out = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
 
@@ -826,6 +827,7 @@ mod tests {
         let theme = Theme::from_preset("dracula").with_colors(true);
         let r = Renderer::new(theme.clone(), Verbosity::Normal);
         r.render_kv_block(&sink, 0, &[KvPair::annotated("Modules", "nvim", "skipped")]);
+        // long-line-ok: a hatch is read off its own line, so it cannot wrap
         // raw-capture-ok: the claim IS the muted SGR the renderer wraps the annotation in, which captured_text would strip
         let out = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
         assert!(
@@ -852,6 +854,7 @@ mod tests {
             let sink = StringSink(buf.clone());
             let r = Renderer::new(theme.clone(), Verbosity::Normal);
             r.render_kv_block(&sink, 0, &[KvPair::role_valued("Status", "Drifted", role)]);
+            // long-line-ok: a hatch is read off its own line, so it cannot wrap
             // raw-capture-ok: the claim IS the role's SGR around the value, which captured_text would strip
             let out = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
             assert!(

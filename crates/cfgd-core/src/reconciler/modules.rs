@@ -264,6 +264,7 @@ impl<'a> super::Reconciler<'a> {
             match std::fs::read(target) {
                 Ok(bytes) => crate::sha256_hex(&bytes),
                 Err(e) => {
+                    // long-line-ok: a hatch is read off its own line, so it cannot wrap
                     // tracing-ok: the manifest hash degrades to empty; no row carries the read failure
                     tracing::warn!("cannot read {} for hashing: {e}", target.posix());
                     String::new()
@@ -426,6 +427,7 @@ impl<'a> super::Reconciler<'a> {
                             &file_state,
                         )
                     {
+                        // long-line-ok: a hatch is read off its own line, so it cannot wrap
                         // tracing-ok: the rollback copy could not be stored; the deploy row says nothing about it
                         tracing::warn!("failed to backup module file {}: {}", target.posix(), e);
                     }

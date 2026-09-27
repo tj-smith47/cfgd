@@ -698,7 +698,8 @@ if [ "$FUNC_STATUS" = "Running" ]; then
     if [ "$FUNC_HEALTHY" = "True" ] || [ "$FUNC_INSTALLED" = "True" ]; then
         pass_test "XP-14"
     else
-        # Pod is Running, which is the primary assertion — pass even if conditions aren't populated yet
+        # Pod is Running, which is the primary assertion — pass even if conditions aren't populated
+        # yet
         echo "  Pod is Running (conditions may still be propagating)"
         pass_test "XP-14"
     fi

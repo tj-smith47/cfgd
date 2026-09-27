@@ -1,4 +1,5 @@
-// Daemon — file watchers, reconciliation loop, sync, notifications, health endpoint, service management
+// Daemon — file watchers, reconciliation loop, sync, notifications, health endpoint, service
+// management
 //
 // Locking convention (enforced by code review, not the compiler):
 //   * `DaemonState` lives behind `Arc<tokio::sync::Mutex<_>>`.

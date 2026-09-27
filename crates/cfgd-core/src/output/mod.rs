@@ -280,8 +280,8 @@ pub fn strip_ansi(s: &str) -> String {
 /// applies — a status subject, its qualifier, its detail, an advisory, a kv key
 /// or value, a bullet, a hint and its command lines, a note, a code-block
 /// line, a table cell, a
-/// heading and a section name. The guarantee is narrow and total: what comes back occupies exactly the
-/// columns it displays, on the line the renderer put it on. Nothing in it can
+/// heading and a section name. The guarantee is narrow and total: what comes back occupies exactly
+/// the columns it displays, on the line the renderer put it on. Nothing in it can
 /// reposition the cursor, erase what is already on screen, or repaint the
 /// description of the very thing an operator is being asked to approve.
 ///

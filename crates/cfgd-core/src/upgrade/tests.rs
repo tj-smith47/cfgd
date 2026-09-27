@@ -2151,6 +2151,7 @@ fn sha256_file_empty_file() {
         if hash.is_ok() {
             break;
         }
+        // long-line-ok: a hatch is read off its own line, so it cannot wrap
         // sleep-ok: waiting out a foreign scanner's transient handle; no in-process observable exists for another process's handle
         std::thread::sleep(std::time::Duration::from_millis(10));
         hash = sha256_file(tmp.path());
@@ -4125,7 +4126,8 @@ mod api_base_env_shim {
     #[test]
     #[serial]
     fn check_latest_with_none_repo_uses_default() {
-        // check_latest(env!("CARGO_PKG_VERSION"), None, ...) should use DEFAULT_REPO ("tj-smith47/cfgd").
+        // check_latest(env!("CARGO_PKG_VERSION"), None, ...) should use DEFAULT_REPO
+        // ("tj-smith47/cfgd").
         let mut server = mockito::Server::new();
         let mock = server
             .mock("GET", "/repos/tj-smith47/cfgd/releases/latest")

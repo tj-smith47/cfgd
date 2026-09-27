@@ -72,7 +72,8 @@ pub(super) const MAX_BACKUP_FILE_SIZE: u64 = 10 * 1024 * 1024;
 /// Named exponential-histogram bucket presets for latency metrics. Kept in
 /// cfgd-core so the SLO-adjacent choice is auditable in one place rather
 /// than divergent inline calls in cfgd-operator and cfgd-csi. Consumers
-/// feed the triple into `prometheus_client::metrics::histogram::exponential_buckets(start, factor, length)`.
+/// feed the triple into `prometheus_client::metrics::histogram::exponential_buckets(start, factor,
+/// length)`.
 pub const DURATION_BUCKETS_SHORT: (f64, f64, u16) = (0.001, 2.0, 16);
 pub const DURATION_BUCKETS_LONG: (f64, f64, u16) = (0.1, 2.0, 10);
 

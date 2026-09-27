@@ -252,6 +252,7 @@ fn compose_blocks(
                 continue;
             }
             let Some(line) = dialect.env_line(ev) else {
+                // long-line-ok: a hatch is read off its own line, so it cannot wrap
                 // tracing-ok: an env var the user declared under a name no shell can carry; the generated file simply omits it and no row names it
                 tracing::warn!("skipping env var with unsafe name: {}", ev.name);
                 continue;
@@ -260,6 +261,7 @@ fn compose_blocks(
         }
         for alias in block_entries(&layer.aliases, |alias| &alias.name) {
             let Some(line) = dialect.alias_line(alias) else {
+                // long-line-ok: a hatch is read off its own line, so it cannot wrap
                 // tracing-ok: an alias the user declared under a name no shell can carry; same omission
                 tracing::warn!("skipping alias with unsafe name: {}", alias.name);
                 continue;
@@ -509,6 +511,7 @@ pub(super) fn read_managed_baseline(path: &std::path::Path) -> Option<String> {
         Ok(bytes) => match String::from_utf8(bytes) {
             Ok(text) => Some(text),
             Err(_) => {
+                // long-line-ok: a hatch is read off its own line, so it cannot wrap
                 // tracing-ok: the file cfgd itself wrote is damaged; the regeneration below is the recovery and prints nothing
                 tracing::warn!(
                     path = %path.posix(),

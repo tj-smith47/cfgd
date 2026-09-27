@@ -255,6 +255,7 @@ mod tests {
     }
 
     fn sh(script: &str) -> std::process::Command {
+        // long-line-ok: a hatch is read off its own line, so it cannot wrap
         // raw-spawn-ok: builds the command only; every caller runs it through `run_command`, whose one spawn in `spawn_and_pump` holds the read guard.
         let mut cmd = std::process::Command::new("sh");
         cmd.arg("-c").arg(script);
@@ -521,6 +522,7 @@ mod tests {
             )
             .unwrap();
             assert!(out.status.success());
+            // long-line-ok: a hatch is read off its own line, so it cannot wrap
             // raw-capture-ok: the claim IS that no escape survives, and captured_text strips exactly what this test looks for
             let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
             assert!(

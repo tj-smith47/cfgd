@@ -64,6 +64,7 @@ impl KubeletConfigurator {
     }
 }
 
+// long-line-ok: a hatch is read off its own line, so it cannot wrap
 // no-tool-ok: kubelet comes from the node's own cluster provisioning, not from any package manager cfgd drives
 impl SystemConfigurator for KubeletConfigurator {
     fn name(&self) -> &str {

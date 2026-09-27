@@ -1129,6 +1129,7 @@ impl super::Reconciler<'_> {
                     .add_bootstrapped_path_dirs(&record.manager, &record.dirs),
             };
             if let Err(e) = written {
+                // long-line-ok: a hatch is read off its own line, so it cannot wrap
                 // tracing-ok: a state write nothing printed; the bootstrap itself already settled its own row
                 tracing::warn!(
                     "cannot record PATH directories for bootstrapped {}: {e}",

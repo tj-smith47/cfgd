@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# E2E tests for: cfgd behavioral tests (edge cases, inheritance, templates, drift, conflicts, encryption, system configurators)
+# E2E tests for: cfgd behavioral tests (edge cases, inheritance, templates, drift, conflicts,
+# encryption, system configurators)
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/setup-cli-env.sh"

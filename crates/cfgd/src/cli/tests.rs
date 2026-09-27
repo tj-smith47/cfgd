@@ -17718,6 +17718,7 @@ fn a_gated_items_extent_ends_where_the_item_does() {
         "    fn gated_away() {}\n",
         "}\n",
     );
+    // long-line-ok: a hatch is read off its own line, so it cannot wrap
     // unfloored-slice-ok: the subject is this fixture's own string, not a file, so there is no read to floor.
     let production = production_body(src);
     for kept in [

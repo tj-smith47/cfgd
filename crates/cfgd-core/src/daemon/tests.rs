@@ -4752,7 +4752,8 @@ fn extract_source_resources_full_profile() {
     assert!(resources.contains("env.EDITOR"));
     assert!(resources.contains("env.GOPATH"));
     assert!(resources.contains("system.sysctl"));
-    // Total: 1 formula + 1 cask + 1 apt + 1 cargo + 1 pipx + 1 dnf + 1 npm + 1 file + 2 env + 1 system
+    // Total: 1 formula + 1 cask + 1 apt + 1 cargo + 1 pipx + 1 dnf + 1 npm + 1 file + 2 env + 1
+    // system
     assert_eq!(resources.len(), 11);
 }
 
@@ -12080,6 +12081,7 @@ fn build_webhook_payload_accepts_empty_strings() {
 // ===========================================================================
 
 /// Install the process-global journal if this process has none, and empty it.
+// long-line-ok: a hatch is read off its own line, so it cannot wrap
 // serial-group-ok: clears the one process-global journal; every declaration reading it or starting a daemon holds the group.
 fn reset_daemon_log() {
     crate::test_helpers::reset_tracing_journal();
@@ -12142,6 +12144,7 @@ async fn wait_for_daemon_log(needle: &str, timeout: std::time::Duration) {
             "timed out after {timeout:?} waiting for the daemon log to contain \
              {needle:?}; got: {snapshot}"
         );
+        // long-line-ok: a hatch is read off its own line, so it cannot wrap
         // sleep-ok: this loop IS the observable — a bounded deadline poll, not a fixed-duration guess
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
     }
@@ -12205,6 +12208,7 @@ fn log_capture() -> (impl tracing::Subscriber + Send + Sync, LogBuf) {
 
     let buf: LogBuf = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let subscriber = tracing_subscriber::fmt()
+        // long-line-ok: a hatch is read off its own line, so it cannot wrap
         // unfolded-writer-ok: a test capture read back as a String, not a stream anyone is looking at
         .with_writer(LogCapture(buf.clone()))
         .with_max_level(tracing::Level::INFO)
@@ -12216,6 +12220,7 @@ fn log_capture() -> (impl tracing::Subscriber + Send + Sync, LogBuf) {
 }
 
 fn captured_logs(buf: &LogBuf) -> String {
+    // long-line-ok: a hatch is read off its own line, so it cannot wrap
     // raw-capture-ok: this buf is a tracing-log Arc<Mutex<Vec<u8>>>, not a Printer::for_test* text capture — captured_text doesn't type-check against it
     let bytes = buf.lock().expect("lock").clone();
     String::from_utf8(bytes).expect("utf8 logs")
@@ -14335,6 +14340,7 @@ spec:
         for _ in 0..3 {
             senders.reconcile_tx.send(()).await.unwrap();
         }
+        // long-line-ok: a hatch is read off its own line, so it cannot wrap
         // sleep-ok: no reconcile_tasks means the tick is a silent no-op — no printer/state signal exists to wait on before shutdown
         tokio::time::sleep(StdDuration::from_millis(50)).await;
         senders.shutdown_tx.send(()).unwrap();
@@ -14368,6 +14374,7 @@ spec:
         ));
         senders.sync_tx.send(()).await.unwrap();
         senders.sync_tx.send(()).await.unwrap();
+        // long-line-ok: a hatch is read off its own line, so it cannot wrap
         // sleep-ok: no sync_tasks means the tick is a silent no-op — no printer/state signal exists to wait on before shutdown
         tokio::time::sleep(StdDuration::from_millis(50)).await;
         senders.shutdown_tx.send(()).unwrap();
@@ -14399,6 +14406,7 @@ spec:
             sync_secs,
         ));
         senders.compliance_tx.send(()).await.unwrap();
+        // long-line-ok: a hatch is read off its own line, so it cannot wrap
         // sleep-ok: compliance disabled means the tick is a silent no-op — no printer/state signal exists to wait on before shutdown
         tokio::time::sleep(StdDuration::from_millis(50)).await;
         senders.shutdown_tx.send(()).unwrap();
@@ -14653,6 +14661,7 @@ spec:
             sync_secs,
         ));
         senders.compliance_tx.send(()).await.unwrap();
+        // long-line-ok: a hatch is read off its own line, so it cannot wrap
         // sleep-ok: proving the panicking handler didn't tear the loop down needs no forward signal — the assertion is that shutdown still completes cleanly
         tokio::time::sleep(StdDuration::from_millis(150)).await;
         senders.shutdown_tx.send(()).unwrap();
@@ -15074,6 +15083,7 @@ spec:
         let secs = Arc::new(AtomicU64::new(0));
         let (tx, mut rx) = mpsc::channel::<()>(8);
         let handle = super::super::spawn_interval_pump(secs, tx);
+        // long-line-ok: a hatch is read off its own line, so it cannot wrap
         // sleep-ok: give the runtime a chance to schedule the pump task; no observable exists for "the pump task has been polled once"
         tokio::time::sleep(StdDuration::from_millis(10)).await;
         handle.abort();
@@ -15790,7 +15800,8 @@ spec:
         // Only the __default__ reconcile task (no module patches)
         assert_eq!(setup.reconcile_tasks.len(), 1);
         assert_eq!(setup.reconcile_tasks[0].entity, "__default__");
-        // No external sources → only the seeded "local" source status (added in run_daemon, not setup)
+        // No external sources → only the seeded "local" source status (added in run_daemon, not
+        // setup)
         // Setup itself just produces the additions, which is empty here.
         assert!(setup.initial_source_status.is_empty());
         // No files in default profile → no managed paths
@@ -17455,6 +17466,7 @@ spec: {}
         let store = tmp.path().join(crate::state::STATE_DB_FILENAME);
         let deadline = std::time::Instant::now() + StdDuration::from_secs(5);
         while !store.exists() && std::time::Instant::now() < deadline {
+            // long-line-ok: a hatch is read off its own line, so it cannot wrap
             // sleep-ok: bounded deadline poll on a filesystem side effect, not a fixed-duration guess
             tokio::time::sleep(StdDuration::from_millis(10)).await;
         }
@@ -17503,6 +17515,7 @@ spec: {}
         ));
 
         senders.sync_tx.send(()).await.unwrap();
+        // long-line-ok: a hatch is read off its own line, so it cannot wrap
         // sleep-ok: no sync_tasks means the tick is a silent no-op — no printer/state signal exists to wait on before shutdown
         tokio::time::sleep(StdDuration::from_millis(60)).await;
         senders.shutdown_tx.send(()).unwrap();
@@ -17606,6 +17619,7 @@ spec: {}
         // a managed_paths entry — the handler tolerates unknown paths and
         // simply records into the debounce map.
         senders.file_tx.send(config_path.clone()).await.unwrap();
+        // long-line-ok: a hatch is read off its own line, so it cannot wrap
         // sleep-ok: an unmanaged path prints nothing when debounced — no signal exists to wait on before shutdown
         tokio::time::sleep(StdDuration::from_millis(80)).await;
         senders.shutdown_tx.send(()).unwrap();
@@ -17642,6 +17656,7 @@ spec: {}
         ));
 
         senders.compliance_tx.send(()).await.unwrap();
+        // long-line-ok: a hatch is read off its own line, so it cannot wrap
         // sleep-ok: without a compliance config the tick writes and prints nothing — no signal exists to wait on before shutdown
         tokio::time::sleep(StdDuration::from_millis(80)).await;
         senders.shutdown_tx.send(()).unwrap();
@@ -17692,6 +17707,7 @@ spec: {}
         // being perfectly healthy.
         let deadline = std::time::Instant::now() + StdDuration::from_secs(5);
         while std::time::Instant::now() < deadline && !ipc_path.exists() {
+            // long-line-ok: a hatch is read off its own line, so it cannot wrap
             // sleep-ok: bounded deadline poll on a filesystem side effect, not a fixed-duration guess
             tokio::time::sleep(StdDuration::from_millis(10)).await;
         }
@@ -17863,6 +17879,7 @@ spec: {}
         // concurrent test could observe / consume the signal.
         let (tx, mut rx) = mpsc::channel::<()>(8);
         let handle = super::super::spawn_sighup_pump(tx).expect("sighup pump registers");
+        // long-line-ok: a hatch is read off its own line, so it cannot wrap
         // sleep-ok: gives tokio's SIGHUP subscription a chance to wire up before the signal is raised — no observable exists for OS signal-handler registration
         tokio::time::sleep(StdDuration::from_millis(50)).await;
         // SAFETY: libc::kill against own PID is well-defined.
@@ -17981,6 +17998,7 @@ spec: {}
                 satisfied = true;
                 break;
             }
+            // long-line-ok: a hatch is read off its own line, so it cannot wrap
             // sleep-ok: bounded poll on the mock server's own matched() observable, not a fixed-duration guess
             tokio::time::sleep(StdDuration::from_millis(50)).await;
         }
@@ -18271,6 +18289,7 @@ spec: {}
 
         wait_for_daemon_log("daemon: running", DAEMON_LOG_WAIT_CEILING).await;
         senders.reconcile_tx.send(()).await.unwrap();
+        // long-line-ok: a hatch is read off its own line, so it cannot wrap
         // sleep-ok: a clean reconcile tick logs nothing of its own — no signal exists to wait on before shutdown
         tokio::time::sleep(StdDuration::from_millis(150)).await;
         senders.shutdown_tx.send(()).unwrap();
@@ -19045,8 +19064,9 @@ async fn handle_reconcile_required_uncached_source_skips_tick_and_preserves_pack
     // packages being phantom drift, uninstalling them under autoApply). The
     // compose chokepoint returns RequiredSourceUnavailable → tick SKIPPED, the
     // tracked source-delivered package survives, last_reconcile untouched, alert
-    // raised. Parallels handle_reconcile_constraint_violation_skips_tick_and_preserves_source_package
-    // but for the cache-only fail-OPEN gap the chokepoint fix closes.
+    // raised. Parallels
+    // handle_reconcile_constraint_violation_skips_tick_and_preserves_source_package but for the
+    // cache-only fail-OPEN gap the chokepoint fix closes.
     let tmp = tempfile::tempdir().unwrap();
     let _g = crate::with_test_home_guard(tmp.path());
     // Pin the unified cache root to an EMPTY dir → the required source is
@@ -19451,6 +19471,7 @@ mod ipc_socket_security {
             if sock_path.exists() {
                 break;
             }
+            // long-line-ok: a hatch is read off its own line, so it cannot wrap
             // sleep-ok: bounded poll on a filesystem side effect (the bound socket), not a fixed-duration guess
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
@@ -19508,6 +19529,7 @@ mod ipc_socket_security {
         let err = ensure_owner_private_dir(&bogus)
             .expect_err("expected refusal when parent dir cannot be made owner-private");
         let msg = format!("{err}");
+        // long-line-ok: a hatch is read off its own line, so it cannot wrap
         // unfolded-path-ok: the create refusal is worded by `ensure_owner_private_dir` against the path it was handed, which the ancestor walk's folds never reach.
         assert!(
             msg.contains(&bogus.display().to_string()),
@@ -22262,6 +22284,7 @@ mod backup_timers {
                 Instant::now() < deadline,
                 "the loop's backup timer never fired"
             );
+            // long-line-ok: a hatch is read off its own line, so it cannot wrap
             // sleep-ok: bounded deadline poll on a state-store observable, not a fixed-duration guess
             tokio::time::sleep(StdDuration::from_millis(25)).await;
         }

@@ -581,6 +581,7 @@ where
             "/status" => ("200 OK", serde_json::to_string_pretty(&status_response)?),
             "/drift" => {
                 let drift_events = match store_path_for_drift {
+                    // long-line-ok: a hatch is read off its own line, so it cannot wrap
                     // spawn-blocking-ok: closure resolves no home paths (sqlite open on an explicit store path)
                     Some(p) => tokio::task::spawn_blocking(move || {
                         StateStore::open(&p)
@@ -803,6 +804,7 @@ mod tests {
         let err = ensure_owner_private_dir(&file_path)
             .expect_err("a regular file standing in for the socket directory must be refused");
         let msg = err.to_string();
+        // long-line-ok: a hatch is read off its own line, so it cannot wrap
         // unfolded-path-ok: the kind refusal is worded by `ensure_owner_private_dir` against the path it was handed, which the ancestor walk's folds never reach.
         assert!(
             msg.contains("is not a directory") && msg.contains(&file_path.display().to_string()),
@@ -847,6 +849,7 @@ mod tests {
         };
         let mut waited = 0;
         while socket_mode(&sock) != Some(0o600) && waited < 200 {
+            // long-line-ok: a hatch is read off its own line, so it cannot wrap
             // sleep-ok: bounded poll on a filesystem permission side effect, not a fixed-duration guess
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             waited += 1;
@@ -919,6 +922,7 @@ mod tests {
         // stale file was removed and a fresh listener bound in its place.
         let mut got_response = None;
         for _ in 0..50 {
+            // long-line-ok: a hatch is read off its own line, so it cannot wrap
             // sleep-ok: bounded retry loop on the socket's own connect result, not a fixed-duration guess
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             let Ok(mut client) = UnixStream::connect(&sock).await else {

@@ -165,6 +165,7 @@ impl PackageManager for BrewTapManager {
         None
     }
 
+    // long-line-ok: a hatch is read off its own line, so it cannot wrap
     // bootstrap-arm-ok: a sub-manager installs nothing of its own — brew provisions the one binary all three share
     fn bootstrap(&self, _cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
         Ok(())
@@ -266,6 +267,7 @@ impl PackageManager for BrewCaskManager {
         None
     }
 
+    // long-line-ok: a hatch is read off its own line, so it cannot wrap
     // bootstrap-arm-ok: a sub-manager installs nothing of its own — brew provisions the one binary all three share
     fn bootstrap(&self, _cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
         Ok(())

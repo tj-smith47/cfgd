@@ -1627,6 +1627,7 @@ pub fn mint_decisions(store: &StateStore, review: &SourcePolicyReview) -> Vec<(S
             &mint.summary(),
             mint.content_hash.as_deref(),
         ) {
+            // long-line-ok: a hatch is read off its own line, so it cannot wrap
             // tracing-ok: the decision ROW could not be written; the decision itself renders from the plan
             tracing::warn!(error = %e, "failed to record pending decision");
             continue;
@@ -1874,12 +1875,28 @@ impl DeliveredItems {
 /// `files.~/.zshrc` against `/home/u/.zshrc` — so the translation happens here,
 /// once, per arm:
 ///
-/// | decision path | what it withholds |
-/// |---|---|
-/// | `files.<target>` | a `File` action on that target, and the same target inside a module's `DeployFiles` batch — profile files and module files are separate surfaces that can name one path, and withholding only the profile one would still write it. The decision keeps the DECLARED spelling, the planner expands `~`, so the path is expanded and folded to `/` here to meet the id |
-/// | `packages.<mgr>.<pkg>` | that one package inside a batch — a `PackageAction::Install`/`Uninstall` for `<mgr>` or a module's `InstallPackages` (matched on its resolved name). The batch keeps its other packages and is dropped only when it empties. `packages.brew.<pkg>` also matches the `brew-cask` manager: the decision vocabulary folds casks into `brew` and cannot tell a cask from a formula. Every other manager — a brew tap under `brew-tap`, a custom manager under its own name — mints under the exact name its planned batch carries, so the match here is verbatim. A `Skip` names no package and is never withheld |
-/// | `env.<NAME>` | every `Env` action. There is no per-variable action to withhold: one `WriteEnvFile` renders every declared variable into one file, `InjectSourceLine` loads that file and `RefreshLiveSession` mirrors it — so the env surface is withheld as the unit it is generated as, and a decided variable waits with the undecided one rather than an undecided one reaching the machine. That includes the post-apply regeneration: a manager bootstrapped in a withholding tick does not get its PATH dir into `~/.cfgd.env` until the decision clears (the next non-withholding tick plans env unconditionally and converges it) |
-/// | `system.<configurator>` | every `System` action for that configurator. The decision names a whole `spec.system.<configurator>` block, one level above the `<configurator>.<key>` id an individual drift carries |
+/// - `files.<target>`: a `File` action on that target, and the same target inside a module's
+///   `DeployFiles` batch — profile files and module files are separate surfaces that can name one
+///   path, and withholding only the profile one would still write it. The decision keeps the
+///   DECLARED spelling, the planner expands `~`, so the path is expanded and folded to `/` here to
+///   meet the id
+/// - `packages.<mgr>.<pkg>`: that one package inside a batch — a
+///   `PackageAction::Install`/`Uninstall` for `<mgr>` or a module's `InstallPackages` (matched on
+///   its resolved name). The batch keeps its other packages and is dropped only when it empties.
+///   `packages.brew.<pkg>` also matches the `brew-cask` manager: the decision vocabulary folds
+///   casks into `brew` and cannot tell a cask from a formula. Every other manager — a brew tap
+///   under `brew-tap`, a custom manager under its own name — mints under the exact name its planned
+///   batch carries, so the match here is verbatim. A `Skip` names no package and is never withheld
+/// - `env.<NAME>`: every `Env` action. There is no per-variable action to withhold: one
+///   `WriteEnvFile` renders every declared variable into one file, `InjectSourceLine` loads that
+///   file and `RefreshLiveSession` mirrors it — so the env surface is withheld as the unit it is
+///   generated as, and a decided variable waits with the undecided one rather than an undecided one
+///   reaching the machine. That includes the post-apply regeneration: a manager bootstrapped in a
+///   withholding tick does not get its PATH dir into `~/.cfgd.env` until the decision clears (the
+///   next non-withholding tick plans env unconditionally and converges it)
+/// - `system.<configurator>`: every `System` action for that configurator. The decision names a
+///   whole `spec.system.<configurator>` block, one level above the `<configurator>.<key>` id an
+///   individual drift carries
 ///
 /// No pending row can withhold a `Secret` or `Script` action as a whole, and a
 /// `Module` action is withheld only by the batch arms above — the packages a
@@ -1925,6 +1942,7 @@ impl DecisionExclusions {
         let mut out = Self::default();
         for path in paths {
             let unmatched = |detail: &str| {
+                // long-line-ok: a hatch is read off its own line, so it cannot wrap
                 // tracing-ok: a decision path that matches no planned resource; no row exists for it to restate
                 tracing::warn!(
                     decision = %path,

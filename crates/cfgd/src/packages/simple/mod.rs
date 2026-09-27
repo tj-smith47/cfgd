@@ -381,10 +381,11 @@ impl PackageManager for SimpleManager {
     /// version clears the floor. A `pkg version -t` spawn failure there folds to
     /// `false` — "this candidate does not satisfy the floor" — which only drops
     /// this manager from consideration; a sibling candidate or `Unreadable`'s own
-    /// check-error report (via [`version_meets_minimum_checked`](Self::version_meets_minimum_checked),
-    /// which the LIVE floor check in `reconciler::package_version_floor` calls
-    /// instead) still surfaces the failure. Folding here would be wrong on the
-    /// verify path, where a spawn failure must never be reported as `Below`.
+    /// check-error report (via
+    /// [`version_meets_minimum_checked`](Self::version_meets_minimum_checked), which the LIVE floor
+    /// check in `reconciler::package_version_floor` calls instead) still surfaces the failure.
+    /// Folding here would be wrong on the verify path, where a spawn failure must never be reported
+    /// as `Below`.
     fn version_meets_minimum(&self, available: &str, min_version: &str) -> bool {
         self.version_meets_minimum_checked(available, min_version)
             .unwrap_or(false)

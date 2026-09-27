@@ -217,6 +217,7 @@ pub(super) async fn verify_enrollment(
     let key_type = req.key_type.clone();
     let owned_keys: Vec<crate::gateway::db::UserPublicKey> =
         matching_keys.iter().map(|k| (*k).clone()).collect();
+    // long-line-ok: a hatch is read off its own line, so it cannot wrap
     // spawn-blocking-ok: closure resolves no home paths (both verifiers build a per-key homedir under a tempdir)
     let verified = match tokio::task::spawn_blocking(move || {
         let key_refs: Vec<_> = owned_keys.iter().collect();
@@ -361,7 +362,8 @@ pub(super) fn verify_ssh_signature(
     for (idx, key) in keys.iter().enumerate() {
         let signers_path = tmp_dir.path().join(format!("allowed_signers_{idx}"));
         // Write allowed_signers file: "username key_type key_data"
-        // The public_key field is the full OpenSSH public key line (e.g. "ssh-ed25519 AAAA... comment")
+        // The public_key field is the full OpenSSH public key line (e.g. "ssh-ed25519 AAAA...
+        // comment")
         let signer_line = format!("{} {}", key.username, key.public_key);
         if let Err(e) = std::fs::write(&signers_path, &signer_line) {
             tracing::warn!(error = %e, key_user = %key.username, "ssh verify: failed to write allowed_signers");

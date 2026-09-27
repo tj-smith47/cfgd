@@ -2020,6 +2020,7 @@ fn preview_bullet_styles_a_scripts_marker() {
     let (printer, buf) = Printer::for_test_with_theme_colored(theme.clone(), Verbosity::Normal);
     ApplyRun::new(ctx(RunTitle::Apply), &plan).preview(&printer);
     drop(printer);
+    // long-line-ok: a hatch is read off its own line, so it cannot wrap
     // raw-capture-ok: asserting the marker's exact styled run reaches the renderer unrestyled — captured_text would strip the ANSI this test exists to check
     let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
 
@@ -2063,6 +2064,7 @@ fn both_trees_paint_a_withheld_row_with_the_same_bytes() {
         let (printer, buf) = Printer::for_test_with_theme_colored(theme.clone(), Verbosity::Normal);
         render(&printer);
         drop(printer);
+        // long-line-ok: a hatch is read off its own line, so it cannot wrap
         // raw-capture-ok: the claim IS that the two renders carry the same escapes — captured_text would strip exactly what is being compared
         buf.lock().unwrap_or_else(|e| e.into_inner()).clone()
     };

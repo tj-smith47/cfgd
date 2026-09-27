@@ -1382,8 +1382,8 @@ mod cmd_generate_mockito {
     #[serial]
     fn cmd_generate_aborts_when_consent_prompt_declined() {
         // Drives the consent-disclosure branch with yes=false. The
-        // Printer::for_test_at(cfgd_core::output::Verbosity::Normal) prompt_confirm returns Err in non-interactive
-        // mode (via non_interactive_err) → `let proceed = ...?` propagates
+        // Printer::for_test_at(cfgd_core::output::Verbosity::Normal) prompt_confirm returns Err in
+        // non-interactive mode (via non_interactive_err) → `let proceed = ...?` propagates
         // the Err out of cmd_generate. The user-facing contract is that the API
         // is never hit.
         let tmp = tempfile::tempdir().unwrap();

@@ -3,7 +3,8 @@ use crate::errors;
 /// Check if a file is encrypted with the given backend.
 ///
 /// - `sops`: parses YAML/JSON and checks for a top-level `sops` key with `mac` and `lastmodified`.
-/// - `age`: checks if the file starts with the `age-encryption.org` header (reads as bytes to handle binary).
+/// - `age`: checks if the file starts with the `age-encryption.org` header (reads as bytes to
+///   handle binary).
 /// - Unknown backend: returns `FileError::UnknownEncryptionBackend`.
 pub fn is_file_encrypted(
     path: &std::path::Path,

@@ -973,7 +973,8 @@ fn every_family_verb_spawns_with_the_family_env() {
     for mgr in &managers {
         let SimpleManager {
             mgr_name: name,
-            // Read-only listing: a query asks no question, so it runs without the family environment.
+            // Read-only listing: a query asks no question, so it runs without the family
+            // environment.
             list_cmd: _,
             install_cmd,
             uninstall_cmd,

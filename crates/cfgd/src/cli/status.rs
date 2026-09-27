@@ -1091,6 +1091,7 @@ pub fn build_fleet_status_doc(
                 // a preceding `kv` block.
                 let (result_word, result_role) = last.status.human_display();
                 let mut rows = vec![KvPair::role_valued("Result", result_word, result_role)];
+                // long-line-ok: a hatch is read off its own line, so it cannot wrap
                 // decision-summary-ok: the `applies` record's own summary column, not a pending decision's
                 if let Some(summary) = &last.summary {
                     // Prose, never the stored column: the wire shape is what

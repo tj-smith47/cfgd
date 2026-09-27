@@ -69,6 +69,7 @@ fn load_terminal_settings() -> Result<Option<(std::path::PathBuf, serde_json::Va
     Ok(Some((path, settings)))
 }
 
+// long-line-ok: a hatch is read off its own line, so it cannot wrap
 // no-tool-ok: writes the rc files itself, so it drives no binary and every host with a shell can run it
 impl SystemConfigurator for ShellConfigurator {
     fn name(&self) -> &str {
@@ -181,6 +182,7 @@ impl SystemConfigurator for ShellConfigurator {
                     message: e.to_string(),
                 })
             })?;
+            // long-line-ok: a hatch is read off its own line, so it cannot wrap
             // user-scope-ok: the invoking user's own Windows Terminal settings.json; NTFS carries no mode bits to widen
             cfgd_core::atomic_write_str(&path, &updated)?;
 

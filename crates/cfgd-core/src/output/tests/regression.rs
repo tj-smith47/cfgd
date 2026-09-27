@@ -35,7 +35,8 @@ golden_doc!(regression, registry_added_pkg, |p, cap| {
     s.bullet("nodejs@20");
 });
 
-// BEFORE: cli/module/registry.rs:360  printer.info(&format!("  {} -> {}", file.source, file.target));
+// BEFORE: cli/module/registry.rs:360  printer.info(&format!("  {} -> {}", file.source,
+// file.target));
 golden_doc!(regression, registry_file_map, |p, cap| {
     let s = p.section("Files");
     s.bullet("./foo.txt → /etc/foo.txt");
@@ -146,7 +147,8 @@ golden_doc!(regression, module_show_script, |p, cap| {
     s.bullet("./install.sh");
 });
 
-// BEFORE: cli/module/export.rs:154  printer.info(&format!("  {}/install.sh", feature_dir.display()));
+// BEFORE: cli/module/export.rs:154  printer.info(&format!("  {}/install.sh",
+// feature_dir.display()));
 golden_doc!(regression, export_install_path, |p, cap| {
     let s = p.section("Exported");
     s.bullet("./build/feature/install.sh");

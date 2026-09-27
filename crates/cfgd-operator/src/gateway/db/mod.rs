@@ -180,6 +180,7 @@ where
     F: FnOnce() -> Result<R, GatewayError> + Send + 'static,
     R: Send + 'static,
 {
+    // long-line-ok: a hatch is read off its own line, so it cannot wrap
     // spawn-blocking-ok: closure resolves no home paths (sqlite work on an already-open pool connection)
     match tokio::task::spawn_blocking(f).await {
         Ok(r) => r,

@@ -145,7 +145,8 @@ pub struct ModuleSpec {
     pub scripts: Option<ScriptSpec>,
 
     /// System configurator settings contributed by this module.
-    /// Deep-merged into the profile system map; module values override profile values at leaf level.
+    /// Deep-merged into the profile system map; module values override profile values at leaf
+    /// level.
     #[serde(
         default,
         deserialize_with = "crate::config::null_as_default",

@@ -20,7 +20,8 @@ use crate::cli::{ColorWhen, OutputFormatArg};
                   kubectl cfgd version"
 )]
 pub(in crate::cli) struct PluginCli {
-    /// Output format: table, wide, json, yaml, name, jsonpath=EXPR, template=TMPL, template-file=PATH
+    /// Output format: table, wide, json, yaml, name, jsonpath=EXPR, template=TMPL,
+    /// template-file=PATH
     #[arg(long, short = 'o', global = true, default_value = "table")]
     output: OutputFormatArg,
 
@@ -38,7 +39,8 @@ pub(in crate::cli) struct PluginCli {
     )]
     color: ColorWhen,
 
-    /// Theme preset for this invocation (overrides spec.output.theme.name; spec.output.theme.overrides still apply)
+    /// Theme preset for this invocation (overrides spec.output.theme.name;
+    /// spec.output.theme.overrides still apply)
     #[arg(
         long,
         global = true,
@@ -522,9 +524,11 @@ pub fn build_debug_doc(
             format!("Created ephemeral debug container on pod {namespace}/{pod}"),
         )
         .kv_block([
+            // long-line-ok: a hatch is read off its own line, so it cannot wrap
             // modules-row-ok: the modules this invocation injects into a POD, named by the caller, not this host's resolved profile
             ("Modules", module_names.join(", ")),
             ("Mount Path", mount_dirs.join(", ")),
+            // long-line-ok: a hatch is read off its own line, so it cannot wrap
             // name-row-ok: PATH is the variable's own spelling; the row names what the container prepends to it
             ("PATH Entry", path_prefix.to_string()),
         ])
@@ -625,9 +629,11 @@ pub fn build_exec_doc(
             format!("Executing in {namespace}/{pod} with modules"),
         )
         .kv_block([
+            // long-line-ok: a hatch is read off its own line, so it cannot wrap
             // modules-row-ok: the modules this invocation injects into a POD, named by the caller, not this host's resolved profile
             ("Modules", module_names.join(", ")),
             ("Mount Path", mount_dirs.join(", ")),
+            // long-line-ok: a hatch is read off its own line, so it cannot wrap
             // name-row-ok: PATH is the variable's own spelling; the row names what the container prepends to it
             ("PATH Entry", path_prefix.to_string()),
         ])

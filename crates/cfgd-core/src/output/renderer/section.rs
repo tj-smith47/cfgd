@@ -807,6 +807,7 @@ mod tests {
         r.render_section_close(&sink);
         r.render_section_close(&sink);
 
+        // long-line-ok: a hatch is read off its own line, so it cannot wrap
         // raw-capture-ok: asserting the exact styled runs reach the renderer unrestyled — captured_text would strip the ANSI this test exists to check
         let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
         assert!(
@@ -841,6 +842,7 @@ mod tests {
         r.render_section_close(&sink);
         r.render_section_close(&sink);
 
+        // long-line-ok: a hatch is read off its own line, so it cannot wrap
         // raw-capture-ok: asserting the exact styled run reaches the renderer unrestyled — captured_text would strip the ANSI this test exists to check
         let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
         assert!(

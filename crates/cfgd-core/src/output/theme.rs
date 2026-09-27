@@ -413,7 +413,9 @@ fn preset_syntax_theme(preset: &str) -> Option<&'static str> {
 /// | `default`, `adventure-time` | `base16-ocean.dark` | syntect built-in |
 /// | `solarized-dark` | `Solarized (dark)` | syntect built-in |
 /// | `solarized-light` | `Solarized (light)` | syntect built-in |
-/// | `dracula`, `nord`, `monokai`, `gruvbox-dark`, `tokyo-night`, `one-dark`, `catppuccin-mocha` | the preset's own palette | bundled `.tmTheme` |
+/// | `dracula`, `nord`, `monokai` | the preset's own palette | bundled `.tmTheme` |
+/// | `gruvbox-dark`, `tokyo-night` | the preset's own palette | bundled `.tmTheme` |
+/// | `one-dark`, `catppuccin-mocha` | the preset's own palette | bundled `.tmTheme` |
 /// | `minimal` | none | the body renders plain |
 #[derive(Clone)]
 pub struct Theme {
