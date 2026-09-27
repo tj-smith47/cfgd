@@ -6482,7 +6482,11 @@ fn an_answer_given_to_inits_migration_prompt_is_the_one_the_next_command_reads()
         Verbosity::Normal,
     );
     let next = cfgd_core::config::resolve_config_path(&source.join("."));
-    crate::cli::config_schema::gate_on_load(&again, &gate, &next);
+    crate::cli::config_schema::gate_on_load(
+        &again,
+        &gate,
+        &crate::cli::startup::StartupDocument::load(&next),
+    );
     assert_eq!(
         again.prompt_confirm("still queued?").ok(),
         Some(true),

@@ -6,6 +6,7 @@ use serde::Serialize;
 
 use super::source::{clone_into, is_clonable_source, plan_from, resolve_from};
 use super::*;
+use crate::cli::startup::StartupDocument;
 
 // ─────────────────────────────────────────────────────
 // cfgd init — pure scaffolding
@@ -104,7 +105,11 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
             row = row.detail(detail);
         }
         drop(row);
-        crate::cli::config_schema::gate_on_load(printer, &args.migration_gate, &document);
+        crate::cli::config_schema::gate_on_load(
+            printer,
+            &args.migration_gate,
+            &StartupDocument::load(&document),
+        );
         let output = InitOutput {
             target_dir: cfgd_core::to_posix_string(&planned_dir),
         };
@@ -212,7 +217,11 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
     // The load-time gate is withheld from init because the document did not
     // exist yet. It runs now, before the apply below reads the file, so the
     // question a behind-schema config earns is settled during setup.
-    crate::cli::config_schema::gate_on_load(printer, &args.migration_gate, &config_path);
+    crate::cli::config_schema::gate_on_load(
+        printer,
+        &args.migration_gate,
+        &StartupDocument::load(&config_path),
+    );
 
     // 7. Apply if requested
     let should_apply = should_run_apply(args.apply, args.apply_profile, args.apply_modules);

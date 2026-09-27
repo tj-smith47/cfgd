@@ -344,7 +344,8 @@ pub fn plugin_main() -> anyhow::Result<()> {
     let config_path = std::env::var_os(cfgd_core::CFGD_CONFIG_ENV)
         .map(std::path::PathBuf::from)
         .unwrap_or_else(crate::cli::default_config_file);
-    let theme_config = crate::cli::resolve_theme_config(&config_path, cli.theme.as_deref());
+    let startup = crate::cli::startup::StartupDocument::load(&config_path);
+    let theme_config = crate::cli::resolve_theme_config(startup.config(), cli.theme.as_deref());
     let printer = Printer::with_theme_config(
         Verbosity::Normal,
         theme_config.as_ref(),
@@ -354,7 +355,7 @@ pub fn plugin_main() -> anyhow::Result<()> {
     // No hints flag in the plugin's global-flag subset, so the decision comes
     // from the persistent halves alone, whatever a printer happened to start
     // at.
-    .with_hints_enabled(crate::cli::resolve_hints_enabled(&config_path, None));
+    .with_hints_enabled(crate::cli::resolve_hints_enabled(startup.config(), None));
     tracing_writer.attach(&printer);
 
     // The same warning the primary CLI raises for a stored name no preset

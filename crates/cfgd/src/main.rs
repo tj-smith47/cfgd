@@ -123,9 +123,10 @@ fn main() -> anyhow::Result<()> {
         return cli::plugin::plugin_main();
     }
 
-    // Expand aliases before clap parsing
+    // Expand aliases before clap parsing. The config document the alias pass
+    // reads is the one every reader below shares until dispatch.
     let raw_args: Vec<String> = std::env::args().collect();
-    let expanded = cli::expand_aliases(raw_args);
+    let (expanded, startup) = cli::expand_aliases(raw_args);
 
     // Gate for the macOS config-location migration prompt (evaluated below,
     // after the Printer exists): an explicit `--config`/`CFGD_CONFIG` pins the
@@ -219,6 +220,10 @@ fn main() -> anyhow::Result<()> {
     // derived default.
     cli.config_explicit = config_is_explicit || cli.config_dir.is_some();
 
+    // The alias pass read `--config` off the raw argv; clap settled the path
+    // from the same flag and from everything the alias pass cannot see.
+    let startup = startup.reload_if_moved(&cli.config);
+
     // Resolve output format with --jsonpath backwards compat.
     // NOTE: --jsonpath is deprecated; --output jsonpath=EXPR is canonical.
     // The deprecation warning is emitted after Printer is constructed.
@@ -299,16 +304,17 @@ fn main() -> anyhow::Result<()> {
     // `--color always` deliberately outranks them.
     let color_choice = cli::resolve_color_choice(cli.no_color, cli.color);
 
-    let theme_config =
-        cli::resolve_theme_config(std::path::Path::new(&cli.config), cli.theme.as_deref());
-    let hints_enabled = cli::resolve_hints_enabled(
-        std::path::Path::new(&cli.config),
-        cli::paired_flag(cli.hints, cli.no_hints),
+    tracing::debug!(
+        path = %startup.path().display(), // native-ok: log line
+        reads = startup.reads(),
+        found = startup.config().is_some(),
+        "loaded config document"
     );
-    let mask_env_values = cli::resolve_mask_env_values(
-        std::path::Path::new(&cli.config),
-        cli.mask_env_values.as_deref(),
-    );
+    let theme_config = cli::resolve_theme_config(startup.config(), cli.theme.as_deref());
+    let hints_enabled =
+        cli::resolve_hints_enabled(startup.config(), cli::paired_flag(cli.hints, cli.no_hints));
+    let mask_env_values =
+        cli::resolve_mask_env_values(startup.config(), cli.mask_env_values.as_deref());
     let printer = cfgd_core::output::Printer::with_theme_config(
         verbosity,
         theme_config.as_ref(),
@@ -364,6 +370,7 @@ fn main() -> anyhow::Result<()> {
     {
         cli.config = cfgd_core::config::resolve_config_path(&new_config);
     }
+    let startup = startup.reload_if_moved(&cli.config);
 
     // The load-time migration gate, reached once per invocation, after the
     // config path has settled and before dispatch. It is withheld from the
@@ -377,7 +384,7 @@ fn main() -> anyhow::Result<()> {
         cli::config_schema::gate_on_load(
             &printer,
             &cli::config_schema::GateInvocation::of(&cli, is_daemon),
-            &cli.config,
+            &startup,
         );
     }
 
@@ -391,11 +398,11 @@ fn main() -> anyhow::Result<()> {
         Some(cli::Command::Daemon { .. }) | Some(cli::Command::Upgrade { .. }) | None
     );
     if !skip_startup_check {
-        // Only the override is resolved here; the stored half comes off the one
-        // load the check already makes.
+        // Only the override is resolved here; the stored half comes off the
+        // startup document.
         cli::upgrade::startup_update_check(
             &printer,
-            std::path::Path::new(&cli.config),
+            startup.config(),
             assume_yes,
             cli.update_policy_override(),
         );

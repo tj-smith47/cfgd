@@ -25,6 +25,7 @@ crates/
 ├── cfgd/src/               # Unified binary crate (workstation + node)
 │   ├── main.rs             # Entry point, clap dispatch, kubectl plugin argv[0] detection
 │   ├── cli/                # Clap command definitions, argument parsing
+│   │   ├── startup.rs      # StartupDocument: cfgd.yaml read once, shared by every reader before dispatch
 │   │   └── plugin.rs       # kubectl cfgd plugin: debug, exec, inject, status, version
 │   ├── files/              # File management: copy, template, diff, permissions
 │   ├── packages/           # PackageManager implementations (brew, apt, cargo, npm, pipx, dnf, winget, chocolatey, scoop)

@@ -349,6 +349,17 @@ pub fn config_document_in(dir: &Path) -> PathBuf {
 
 /// Load and parse the root cfgd.yaml config file
 pub fn load_config(path: &Path) -> Result<CfgdConfig> {
+    read_config_document(path).map(|(config, _)| config)
+}
+
+/// [`load_config`], keeping the bytes the document was parsed from beside it.
+///
+/// For a caller that compares the parse against the text on disk (the
+/// load-time migration gate asks which keys the text leaves out) and must not
+/// read the file a second time to get them. The path resolution, the size cap
+/// and the error for a missing file are [`load_config`]'s, because it is this
+/// function.
+pub fn read_config_document(path: &Path) -> Result<(CfgdConfig, String)> {
     let resolved = resolve_config_path(path);
     let path = resolved.as_path();
     crate::record_config_input(path);
@@ -389,7 +400,8 @@ pub fn load_config(path: &Path) -> Result<CfgdConfig> {
         message: format!("failed to read {}: {}", path.posix(), e),
     })?;
 
-    parse_config(&contents, path)
+    let config = parse_config(&contents, path)?;
+    Ok((config, contents))
 }
 
 /// Parse config from string, supporting both YAML and TOML based on file extension

@@ -86,6 +86,7 @@ pub fn cmd_upgrade(
     // The effective update config supplies the release channel for the version
     // check and gates the user-scope skill ride-along that `install_release`
     // runs after a successful install (no second prompt).
+    // startup-load-ok: the verb's own load after dispatch, draining its deprecations
     let update_cfg = match config::load_config(config_path) {
         Ok(mut c) => {
             crate::cli::helpers::drain_config_deprecations(printer, &mut c);
@@ -270,6 +271,19 @@ pub fn cmd_upgrade(
     Ok(())
 }
 
+/// The update block the startup check runs under: the startup document's
+/// `spec.update` (the default block when it declares none or did not load),
+/// with the invocation's policy over its own.
+pub(crate) fn startup_update_config(
+    doc: Option<&cfgd_core::config::CfgdConfig>,
+    override_policy: Option<cfgd_core::config::UpdatePolicy>,
+) -> cfgd_core::config::UpdateConfig {
+    // Cloned: `effective_update_config` takes the block by value to replace its
+    // `policy`, and the document it comes from is shared with the other readers.
+    let declared = doc.and_then(|c| c.spec.update.clone()).unwrap_or_default();
+    cfgd_core::upgrade::effective_update_config(declared, override_policy)
+}
+
 /// Run the policy-driven self-update check at CLI startup.
 ///
 /// Cheap by construction: it returns immediately for structured-output mode
@@ -286,11 +300,10 @@ pub fn cmd_upgrade(
 /// check never fails a normal command.
 pub fn startup_update_check(
     printer: &Printer,
-    config_path: &std::path::Path,
+    doc: Option<&cfgd_core::config::CfgdConfig>,
     assume_yes: bool,
     override_policy: Option<cfgd_core::config::UpdatePolicy>,
 ) {
-    use cfgd_core::config;
     use cfgd_core::upgrade::{self, UpdateCheckEffects};
 
     // Never interfere with machine-readable output.
@@ -298,11 +311,7 @@ pub fn startup_update_check(
         return;
     }
 
-    let declared = config::load_config(config_path)
-        .ok()
-        .and_then(|c| c.spec.update)
-        .unwrap_or_default();
-    let update_cfg = upgrade::effective_update_config(declared, override_policy);
+    let update_cfg = startup_update_config(doc, override_policy);
 
     // Cheap interval/Manual gate before constructing any effects.
     let now = cfgd_core::unix_secs_now();

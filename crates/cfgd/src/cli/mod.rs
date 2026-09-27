@@ -33,6 +33,7 @@ mod run_context;
 pub mod secret;
 pub mod skill;
 pub mod source;
+pub mod startup;
 pub mod status;
 pub mod sync;
 #[cfg(test)]
@@ -718,8 +719,19 @@ pub(super) fn find_subcommand_index(args: &[String]) -> Option<usize> {
 /// matches an alias, and replaces it with the alias's command tokens. Any remaining
 /// arguments after the alias name are appended.
 ///
-/// Returns the potentially-expanded args.
-pub fn expand_aliases(args: Vec<String>) -> Vec<String> {
+/// Returns the potentially-expanded args, and the config document the
+/// `--config` in them names: the one read every reader before dispatch shares,
+/// loaded whether or not an alias applies.
+pub fn expand_aliases(args: Vec<String>) -> (Vec<String>, startup::StartupDocument) {
+    let startup = startup::StartupDocument::load(&extract_config_path(&args));
+    let expanded = expand_aliases_from(args, startup.config());
+    (expanded, startup)
+}
+
+fn expand_aliases_from(
+    args: Vec<String>,
+    doc: Option<&cfgd_core::config::CfgdConfig>,
+) -> Vec<String> {
     if args.len() < 2 {
         return args;
     }
@@ -731,24 +743,12 @@ pub fn expand_aliases(args: Vec<String>) -> Vec<String> {
 
     let candidate = &args[subcommand_idx];
 
-    // Try to load config to get user aliases; fall back to empty if unavailable.
-    let config_path = extract_config_path(&args);
-    let user_aliases = config_path
-        .and_then(|p| {
-            if p.exists() {
-                cfgd_core::config::load_config(&p).ok()
-            } else {
-                None
-            }
-        })
-        .map(|c| c.spec.aliases)
-        .unwrap_or_default();
-
-    // Merge: user overrides built-in
-    let mut aliases = builtin_aliases();
-    aliases.extend(user_aliases);
-
-    let expansion = match aliases.get(candidate) {
+    // A user alias overrides a built-in one of the same name.
+    let builtins = builtin_aliases();
+    let expansion = match doc
+        .and_then(|config| config.spec.aliases.get(candidate))
+        .or_else(|| builtins.get(candidate))
+    {
         Some(cmd) => cmd,
         None => return args,
     };
@@ -762,16 +762,19 @@ pub fn expand_aliases(args: Vec<String>) -> Vec<String> {
 }
 
 /// Extract the --config path from raw args, or use the default.
-fn extract_config_path(args: &[String]) -> Option<PathBuf> {
+fn extract_config_path(args: &[String]) -> PathBuf {
     for (i, arg) in args.iter().enumerate() {
         if arg == "--config" {
-            return args.get(i + 1).map(PathBuf::from);
+            if let Some(val) = args.get(i + 1) {
+                return PathBuf::from(val);
+            }
+            break;
         }
         if let Some(val) = arg.strip_prefix("--config=") {
-            return Some(PathBuf::from(val));
+            return PathBuf::from(val);
         }
     }
-    Some(default_config_file())
+    default_config_file()
 }
 
 /// When to colorize output, in the `auto`/`always`/`never` spelling every
@@ -813,11 +816,12 @@ pub fn resolve_color_choice(no_color: bool, color: ColorWhen) -> cfgd_core::outp
     }
 }
 
-/// Read the `spec.output.theme` block every entry point builds its printer from.
+/// Read the `spec.output.theme` block every entry point builds its printer from,
+/// off the document the process read at startup ([`startup::StartupDocument`]).
 ///
-/// Best-effort by design: a missing, unreadable or malformed config falls back
-/// to the default theme rather than failing, because a printer has to exist
-/// before there is anything to report the failure ON.
+/// Best-effort by design: a missing, unreadable or malformed config (`doc` is
+/// `None`) falls back to the default theme: a printer has to exist before
+/// there is anything to report the failure ON.
 ///
 /// The whole block travels, not just its name — `overrides` is a documented
 /// field, and a printer built from the preset name alone drops it. Shared by
@@ -832,14 +836,10 @@ pub fn resolve_color_choice(no_color: bool, color: ColorWhen) -> cfgd_core::outp
 /// layer on top. With no config to read it stands alone as the whole block.
 // knob-resolver-ok: composes a whole ThemeConfig block; no single value has a default here.
 pub fn resolve_theme_config(
-    config_path: &Path,
+    doc: Option<&cfgd_core::config::CfgdConfig>,
     preset: Option<&str>,
 ) -> Option<cfgd_core::config::ThemeConfig> {
-    let stored = config_path
-        .exists()
-        .then(|| cfgd_core::config::load_config(config_path).ok())
-        .flatten()
-        .and_then(|c| c.spec.theme().cloned());
+    let stored = doc.and_then(|c| c.spec.theme().cloned());
     match preset {
         None => stored,
         Some(name) => {
@@ -866,11 +866,12 @@ pub fn unknown_theme_preset(name: &str) -> Option<String> {
 
 /// Resolve one per-invocation knob the way every other one resolves: the flag
 /// beats `env`, which beats the `spec.*` field `stored` reads, which beats the
-/// type's own default.
+/// type's own default. `doc` is the document the process read at startup
+/// ([`startup::StartupDocument::config`]), `None` when it did not load.
 ///
 /// The variable is read HERE: clap's `env =` binding does not see it,
 /// because that binding fills `flag` only where clap parsed an argv: every
-/// caller holding a path and no argv — a test of a knob, any future entry
+/// caller holding a document and no argv — a test of a knob, any future entry
 /// point resolving one before dispatch — would otherwise never see it. A knob
 /// whose flag IS bound through clap (`--mask-env-values`) loses nothing: the
 /// flag still answers first, and the read below finds the same value the
@@ -889,7 +890,7 @@ pub fn unknown_theme_preset(name: &str) -> Option<String> {
 /// polarities, so it is the one whose unreadable word this ignores in silence.
 // knob-resolver-ok: this IS the resolution every other resolver routes through.
 pub fn resolve_knob<T>(
-    config_path: &Path,
+    doc: Option<&cfgd_core::config::CfgdConfig>,
     flag: Option<T>,
     env: &str,
     stored: impl FnOnce(&cfgd_core::config::ConfigSpec) -> Option<T>,
@@ -914,12 +915,7 @@ where
             return value;
         }
     }
-    config_path
-        .exists()
-        .then(|| cfgd_core::config::load_config(config_path).ok())
-        .flatten()
-        .and_then(|c| stored(&c.spec))
-        .unwrap_or_default()
+    doc.and_then(|c| stored(&c.spec)).unwrap_or_default()
 }
 
 /// What this invocation says the migration policy is, over whatever the
@@ -936,10 +932,9 @@ where
 /// beside [`resolve_knob`]'s own env read.
 ///
 /// This is the one knob whose stored half is NOT read here. The load-time
-/// gate parses the document for itself to find out what is missing from it,
-/// and `spec.migrationPolicy` comes off that same parse — a second
-/// `load_config` would read and parse the same bytes again on every
-/// invocation, for a field already in hand.
+/// gate reads `spec.migrationPolicy` off the startup document it already
+/// holds to find out what is missing from the file, so the stored half
+/// travels with that document.
 pub fn migration_policy_override(flag: Option<&str>) -> Option<cfgd_schema::MigrationPolicy> {
     use std::str::FromStr;
     if let Some(raw) = flag {
@@ -964,10 +959,11 @@ pub fn migration_policy_override(flag: Option<&str>) -> Option<cfgd_schema::Migr
 /// outranked by nothing, since clap cannot express "this env var sets that
 /// flag's negation". Boolish spellings are accepted through the same table
 /// every other `CFGD_*` boolean env var uses.
-pub fn resolve_hints_enabled(config_path: &Path, hints: Option<bool>) -> bool {
-    resolve_knob(config_path, hints, CFGD_USAGE_HINTS_ENV, |spec| {
-        spec.usage_hints()
-    })
+pub fn resolve_hints_enabled(
+    doc: Option<&cfgd_core::config::CfgdConfig>,
+    hints: Option<bool>,
+) -> bool {
+    resolve_knob(doc, hints, CFGD_USAGE_HINTS_ENV, |spec| spec.usage_hints())
 }
 
 /// Resolve which declared env values this run renders masked, folding
@@ -982,12 +978,12 @@ pub fn resolve_hints_enabled(config_path: &Path, hints: Option<bool>) -> bool {
 /// A missing, unreadable or malformed config masks, which is also the safe
 /// direction — a config cfgd cannot read never reveals a value.
 pub fn resolve_mask_env_values(
-    config_path: &Path,
+    doc: Option<&cfgd_core::config::CfgdConfig>,
     flag: Option<&str>,
 ) -> cfgd_core::config::MaskEnvValues {
     use std::str::FromStr;
     resolve_knob(
-        config_path,
+        doc,
         flag.and_then(|raw| cfgd_core::config::MaskEnvValues::from_str(raw).ok()),
         CFGD_MASK_ENV_VALUES_ENV,
         |spec| spec.mask_env_values(),

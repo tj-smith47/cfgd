@@ -1,3 +1,4 @@
+use super::startup::StartupDocument;
 use super::*;
 use cfgd_core::reconciler::{MSG_NOTHING_TO_DO, is_unmanaged_file};
 use std::sync::{Arc, Mutex};
@@ -1053,7 +1054,8 @@ fn resolve_theme_config_carries_the_whole_block_not_just_the_preset_name() {
     )
     .expect("write config");
 
-    let theme = super::resolve_theme_config(&path, None).expect("spec.output.theme must resolve");
+    let theme = super::resolve_theme_config(StartupDocument::load(&path).config(), None)
+        .expect("spec.output.theme must resolve");
     assert_eq!(theme.name, "dracula");
     assert_eq!(
         theme.overrides.header.as_deref(),
@@ -1063,7 +1065,9 @@ fn resolve_theme_config_carries_the_whole_block_not_just_the_preset_name() {
 
     // `--theme` replaces the name and nothing else, exactly what
     // `cfgd config set theme.name nord` would have persisted.
-    let overridden = super::resolve_theme_config(&path, Some("nord")).expect("override resolves");
+    let overridden =
+        super::resolve_theme_config(StartupDocument::load(&path).config(), Some("nord"))
+            .expect("override resolves");
     assert_eq!(overridden.name, "nord");
     assert_eq!(overridden.overrides.header.as_deref(), Some("#ff0000"));
 }
@@ -1071,8 +1075,11 @@ fn resolve_theme_config_carries_the_whole_block_not_just_the_preset_name() {
 #[test]
 fn resolve_theme_config_override_stands_alone_without_a_config() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let theme = super::resolve_theme_config(&dir.path().join("absent.yaml"), Some("minimal"))
-        .expect("the flag needs no config file behind it");
+    let theme = super::resolve_theme_config(
+        StartupDocument::load(&dir.path().join("absent.yaml")).config(),
+        Some("minimal"),
+    )
+    .expect("the flag needs no config file behind it");
     assert_eq!(theme.name, "minimal");
     assert!(theme.overrides.is_empty());
 }
@@ -1083,14 +1090,18 @@ fn resolve_theme_config_falls_back_to_the_default_theme_when_it_cannot_read_one(
     // failure ON, so neither absence nor malformed YAML may be an error here.
     let dir = tempfile::tempdir().expect("tempdir");
     assert!(
-        super::resolve_theme_config(&dir.path().join("absent.yaml"), None).is_none(),
+        super::resolve_theme_config(
+            StartupDocument::load(&dir.path().join("absent.yaml")).config(),
+            None
+        )
+        .is_none(),
         "a missing config resolves no theme rather than failing"
     );
 
     let broken = dir.path().join("broken.yaml");
     std::fs::write(&broken, "spec: 'this is not a mapping\n").expect("write broken config");
     assert!(
-        super::resolve_theme_config(&broken, None).is_none(),
+        super::resolve_theme_config(StartupDocument::load(&broken).config(), None).is_none(),
         "an unparseable config resolves no theme rather than failing"
     );
 }
@@ -1101,7 +1112,10 @@ fn resolve_hints_enabled_defaults_off_with_no_config_flag_or_env() {
     let _unset = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_USAGE_HINTS");
     let dir = tempfile::tempdir().expect("tempdir");
     assert!(
-        !super::resolve_hints_enabled(&dir.path().join("absent.yaml"), None),
+        !super::resolve_hints_enabled(
+            StartupDocument::load(&dir.path().join("absent.yaml")).config(),
+            None
+        ),
         "tutorial hints stay off until something asks for them"
     );
 }
@@ -1120,7 +1134,7 @@ fn resolve_hints_enabled_reads_a_stored_demand_for_hints() {
     )
     .expect("write config");
     assert!(
-        super::resolve_hints_enabled(&path, None),
+        super::resolve_hints_enabled(StartupDocument::load(&path).config(), None),
         "spec.output.usageHints: true must turn hints on"
     );
 }
@@ -1137,7 +1151,7 @@ fn resolve_hints_enabled_reads_spec_output_usage_hints() {
     )
     .expect("write config");
     assert!(
-        !super::resolve_hints_enabled(&path, None),
+        !super::resolve_hints_enabled(StartupDocument::load(&path).config(), None),
         "spec.output.usageHints: false must turn hints off"
     );
 }
@@ -1156,7 +1170,7 @@ fn resolve_hints_enabled_reads_the_legacy_flat_usage_hints_key() {
     )
     .expect("write config");
     assert!(
-        !super::resolve_hints_enabled(&path, None),
+        !super::resolve_hints_enabled(StartupDocument::load(&path).config(), None),
         "the legacy flat key must still turn hints off"
     );
 }
@@ -1167,7 +1181,11 @@ fn resolve_mask_env_values_defaults_to_masking_every_value() {
     let _unset = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_MASK_ENV_VALUES");
     let dir = tempfile::tempdir().expect("tempdir");
     assert!(
-        super::resolve_mask_env_values(&dir.path().join("absent.yaml"), None).masks(),
+        super::resolve_mask_env_values(
+            StartupDocument::load(&dir.path().join("absent.yaml")).config(),
+            None
+        )
+        .masks(),
         "with nothing said, every declared env value masks"
     );
 }
@@ -1188,11 +1206,11 @@ fn resolve_mask_env_values_precedence_flag_beats_spec_beats_default() {
     )
     .expect("write config");
     assert!(
-        !super::resolve_mask_env_values(&path, None).masks(),
+        !super::resolve_mask_env_values(StartupDocument::load(&path).config(), None).masks(),
         "spec.output.maskEnvValues: none must stop masking"
     );
     assert!(
-        super::resolve_mask_env_values(&path, Some("all")).masks(),
+        super::resolve_mask_env_values(StartupDocument::load(&path).config(), Some("all")).masks(),
         "--mask-env-values all must outrank the stored none"
     );
 }
@@ -1288,7 +1306,7 @@ fn the_startup_check_honours_the_invocations_policy_over_the_declared_one() {
         );
         crate::cli::upgrade::startup_update_check(
             &printer,
-            &path,
+            StartupDocument::load(&path).config(),
             false,
             Some(UpdatePolicy::Manual),
         );
@@ -2014,7 +2032,7 @@ fn an_unparseable_config_still_masks_every_env_value() {
     let dir = tempfile::tempdir().expect("tempdir");
     let broken = dir.path().join("broken.yaml");
     std::fs::write(&broken, "spec: 'this is not a mapping\n").expect("write broken config");
-    assert!(super::resolve_mask_env_values(&broken, None).masks());
+    assert!(super::resolve_mask_env_values(StartupDocument::load(&broken).config(), None).masks());
 }
 
 #[test]
@@ -2032,32 +2050,34 @@ fn resolve_hints_enabled_precedence_flag_beats_env_beats_spec_beats_default() {
 
     // spec.usageHints: false, no env, no flag -> off.
     let _unset = EnvVarGuard::unset("CFGD_USAGE_HINTS");
-    assert!(!super::resolve_hints_enabled(&path, None));
+    assert!(!super::resolve_hints_enabled(
+        StartupDocument::load(&path).config(),
+        None
+    ));
 
     // The env var beats a config that says the opposite.
     let _on_env = EnvVarGuard::set("CFGD_USAGE_HINTS", "true");
     assert!(
-        super::resolve_hints_enabled(&path, None),
+        super::resolve_hints_enabled(StartupDocument::load(&path).config(), None),
         "CFGD_USAGE_HINTS=true must outrank spec.usageHints: false"
     );
 
     // The flag beats an env var that says the opposite, in both directions.
     let _off_env = EnvVarGuard::set("CFGD_USAGE_HINTS", "true");
     assert!(
-        !super::resolve_hints_enabled(&path, Some(false)),
+        !super::resolve_hints_enabled(StartupDocument::load(&path).config(), Some(false)),
         "--no-hints must outrank CFGD_USAGE_HINTS=true"
     );
     let _back_off = EnvVarGuard::set("CFGD_USAGE_HINTS", "false");
     assert!(
-        super::resolve_hints_enabled(&path, Some(true)),
+        super::resolve_hints_enabled(StartupDocument::load(&path).config(), Some(true)),
         "--hints must outrank CFGD_USAGE_HINTS=false"
     );
 }
 
 /// What this invocation says the migration policy is, over whatever the
-/// document declares. The stored half is not read here: the gate parses the
-/// document once for itself and takes `spec.migrationPolicy` off that parse,
-/// which
+/// document declares. The stored half is not read here: the gate takes
+/// `spec.migrationPolicy` off the startup document it is handed, which
 /// `the_gate_reads_the_stored_policy_off_its_own_parse_and_an_override_outranks_it`
 /// pins.
 #[test]
@@ -2128,7 +2148,10 @@ fn resolve_hints_enabled_folds_the_boolish_spellings_of_its_env_var() {
     ] {
         let _env = EnvVarGuard::set("CFGD_USAGE_HINTS", raw);
         assert_eq!(
-            super::resolve_hints_enabled(&stored_config(!expected), None),
+            super::resolve_hints_enabled(
+                StartupDocument::load(&stored_config(!expected)).config(),
+                None
+            ),
             expected,
             "CFGD_USAGE_HINTS={raw} must outrank the opposite stored demand"
         );
@@ -2137,7 +2160,10 @@ fn resolve_hints_enabled_folds_the_boolish_spellings_of_its_env_var() {
     for demand in [true, false] {
         let _env = EnvVarGuard::set("CFGD_USAGE_HINTS", "bogus");
         assert_eq!(
-            super::resolve_hints_enabled(&stored_config(demand), None),
+            super::resolve_hints_enabled(
+                StartupDocument::load(&stored_config(demand)).config(),
+                None
+            ),
             demand,
             "a word neither reading accepts leaves spec.output.usageHints standing"
         );
@@ -2332,9 +2358,10 @@ fn every_enum_valued_global_flag_accepts_its_config_spelling() {
 /// would answer a different order while reading as one of the family.
 ///
 /// The population is the free `resolve_*` functions of `cli/mod.rs` whose first
-/// parameter is a path (`&Path` however its reference and lifetime are spelled,
-/// `impl AsRef<Path>`, or a generic bounded by it), which is the SHAPE of a
-/// resolver folding a flag, a `CFGD_*` variable and a `spec.*` field into one
+/// parameter is where the config comes from: the startup document
+/// (`Option<&CfgdConfig>`, a `StartupDocument`) or a path (`&Path` however its
+/// reference and lifetime are spelled, `impl AsRef<Path>`, or a generic bounded
+/// by it). That is the SHAPE of a resolver folding a flag, a `CFGD_*` variable and a `spec.*` field into one
 /// answer: a parameter name is the author's to pick, so admitting on one lets
 /// the next resolver spell its way out of the rule. `resolve_color_choice` and
 /// `resolve_phase_filter` read no config and fall out on that test. An
@@ -2348,7 +2375,7 @@ fn every_knob_resolver_routes_through_resolve_knob() {
     };
 
     /// The type of a declaration's first parameter, normalized so every
-    /// spelling of "a path this resolver reads its config from" reads alike:
+    /// spelling of "where this resolver reads its config from" reads alike:
     /// the reference and a lifetime are stripped (`&'a Path`, `&'_ Path`) and
     /// the remaining whitespace folded out. A lifetime cannot be folded away
     /// with the whitespace, because `&'_ Path` would then read as `&'_Path`
@@ -2414,28 +2441,32 @@ fn every_knob_resolver_routes_through_resolve_knob() {
         Some((declared.split_whitespace().collect::<String>(), signature))
     }
 
-    /// Whether that parameter is the config path a knob resolver reads: any
-    /// type whose spelling NAMES `Path` or `PathBuf`, judged once the `&` and
-    /// any lifetime are off. The borrowed form, the owned `PathBuf`, an
-    /// `Option` of either, an `impl AsRef<Path>` and a generic parameter the
+    /// Whether that parameter is the config a knob resolver reads: any type
+    /// whose spelling NAMES `CfgdConfig`, `StartupDocument`, `Path` or
+    /// `PathBuf`, judged once the `&` and any lifetime are off. The borrowed
+    /// form, the owned one, an `Option` of either, an `impl AsRef<Path>` and a generic parameter the
     /// declaration bounds by `AsRef<Path>` in its generic list or its `where`
     /// clause are all admitted, so a resolver cannot spell its way out of the
     /// rule through its signature.
-    fn reads_a_config_path((declared, signature): &(String, String)) -> bool {
-        // Any spelling of either type counts, qualified or not: the question
+    fn reads_a_config((declared, signature): &(String, String)) -> bool {
+        // Any spelling of these types counts, qualified or not: the question
         // is what the parameter NAMES, and a wider read can only pull one more
         // declaration into the rule.
-        fn names_path(t: &str) -> bool {
-            t.contains("Path")
+        fn names_config_source(t: &str) -> bool {
+            ["Path", "CfgdConfig", "StartupDocument"]
+                .iter()
+                .any(|name| t.contains(name))
         }
-        names_path(declared)
+        names_config_source(declared)
             || (!declared.is_empty()
                 && declared
                     .chars()
                     .all(|c| c.is_ascii_alphanumeric() || c == '_')
                 && signature
                     .split_once(&format!("{declared}:"))
-                    .is_some_and(|(_, rest)| names_path(rest.split(',').next().unwrap_or(rest))))
+                    .is_some_and(|(_, rest)| {
+                        names_config_source(rest.split(',').next().unwrap_or(rest))
+                    }))
     }
 
     let source = production_slice_of(&workspace_root().join("crates/cfgd/src/cli/mod.rs"));
@@ -2453,7 +2484,7 @@ fn every_knob_resolver_routes_through_resolve_knob() {
         if owner.is_some() || !name.starts_with("resolve_") || hatched.contains(&name) {
             continue;
         }
-        if !first_param_type(&code).is_some_and(|t| reads_a_config_path(&t)) {
+        if !first_param_type(&code).is_some_and(|t| reads_a_config(&t)) {
             continue;
         }
         if calls_free_fn(&code, "resolve_knob") {
@@ -4992,18 +5023,18 @@ fn expand_aliases_no_builtins() {
     let tmp_home = tempfile::tempdir().unwrap();
     let _home = cfgd_core::with_test_home_guard(tmp_home.path());
     let args = vec!["cfgd".into(), "add".into(), "~/.zshrc".into()];
-    let expanded = expand_aliases(args.clone());
+    let expanded = expand_aliases(args.clone()).0;
     assert_eq!(expanded, args);
 
     let args = vec!["cfgd".into(), "remove".into(), "~/.zshrc".into()];
-    let expanded = expand_aliases(args.clone());
+    let expanded = expand_aliases(args.clone()).0;
     assert_eq!(expanded, args);
 }
 
 #[test]
 fn expand_aliases_no_match_passthrough() {
     let args = vec!["cfgd".into(), "apply".into(), "--dry-run".into()];
-    let expanded = expand_aliases(args.clone());
+    let expanded = expand_aliases(args.clone()).0;
     assert_eq!(expanded, args);
 }
 
@@ -5019,7 +5050,7 @@ fn expand_aliases_skips_global_flags() {
         "add".into(),
         "~/.zshrc".into(),
     ];
-    let expanded = expand_aliases(args.clone());
+    let expanded = expand_aliases(args.clone()).0;
     assert_eq!(expanded, args);
 }
 
@@ -5033,14 +5064,14 @@ fn expand_aliases_with_config_flag() {
         "add".into(),
         "~/.zshrc".into(),
     ];
-    let expanded = expand_aliases(args.clone());
+    let expanded = expand_aliases(args.clone()).0;
     assert_eq!(expanded, args);
 }
 
 #[test]
 fn expand_aliases_empty_args() {
     let args = vec!["cfgd".into()];
-    let expanded = expand_aliases(args.clone());
+    let expanded = expand_aliases(args.clone()).0;
     assert_eq!(expanded, args);
 }
 
@@ -6556,7 +6587,7 @@ fn secret_backend_defaults_to_sops() {
 #[test]
 fn expand_aliases_passthrough() {
     let args = vec!["cfgd".into(), "status".into()];
-    let result = super::expand_aliases(args.clone());
+    let result = super::expand_aliases(args.clone()).0;
     assert_eq!(result, args);
 }
 
@@ -6564,7 +6595,7 @@ fn expand_aliases_passthrough() {
 fn expand_aliases_no_alias_passthrough() {
     // With empty builtin_aliases, no expansion happens
     let args = vec!["cfgd".into(), "apply".into(), "--dry-run".into()];
-    let result = super::expand_aliases(args.clone());
+    let result = super::expand_aliases(args.clone()).0;
     assert_eq!(result, args);
 }
 
@@ -6598,7 +6629,7 @@ spec:
         "add".into(),
         "~/.zshrc".into(),
     ];
-    let expanded = super::expand_aliases(args);
+    let expanded = super::expand_aliases(args).0;
 
     assert_eq!(
         expanded,
@@ -6642,7 +6673,7 @@ spec:
         "apply".into(),
         "--dry-run".into(),
     ];
-    let expanded = super::expand_aliases(args.clone());
+    let expanded = super::expand_aliases(args.clone()).0;
     assert_eq!(expanded, args);
 }
 
@@ -6658,7 +6689,7 @@ fn extract_config_path_explicit() {
     ];
     assert_eq!(
         super::extract_config_path(&args),
-        Some(PathBuf::from("/tmp/my.yaml"))
+        PathBuf::from("/tmp/my.yaml")
     );
 }
 
@@ -6667,7 +6698,7 @@ fn extract_config_path_equals() {
     let args = vec!["cfgd".into(), "--config=/tmp/my.yaml".into()];
     assert_eq!(
         super::extract_config_path(&args),
-        Some(PathBuf::from("/tmp/my.yaml"))
+        PathBuf::from("/tmp/my.yaml")
     );
 }
 
@@ -15751,7 +15782,7 @@ fn expand_aliases_config_flag_inline_value() {
         "--config=/tmp/cfgd.yaml".into(),
         "status".into(),
     ];
-    let result = super::expand_aliases(args.clone());
+    let result = super::expand_aliases(args.clone()).0;
     assert_eq!(result, args);
 }
 
@@ -31129,7 +31160,7 @@ fn expand_aliases_flags_only_returns_args_unchanged() {
         "--verbose".to_string(),
         "--no-color".to_string(),
     ];
-    let result = super::expand_aliases(args.clone());
+    let result = super::expand_aliases(args.clone()).0;
     assert_eq!(result, args);
 }
 
@@ -31137,7 +31168,7 @@ fn expand_aliases_flags_only_returns_args_unchanged() {
 fn expand_aliases_double_dash_separator_returns_args_unchanged() {
     // Double-dash stops scanning → find_subcommand_index returns None.
     let args = vec!["cfgd".to_string(), "--".to_string(), "apply".to_string()];
-    let result = super::expand_aliases(args.clone());
+    let result = super::expand_aliases(args.clone()).0;
     assert_eq!(result, args);
 }
 
@@ -53594,19 +53625,19 @@ fn every_config_document_read_shape_is_seen_by_the_reader_walk() {
 /// anything else as YAML. A raw `serde_yaml::from_str` of those bytes reads a
 /// `cfgd.toml` as YAML and refuses the document `--config` accepted. The
 /// population is every loader call whose path argument names the config
-/// document, followed to the parse that reads what it returned; the two files
-/// owning the document's format, `source/helpers.rs` and `config_schema.rs`,
-/// are the ones allowed to hold the raw parse.
+/// document, followed to the parse that reads what it returned; the file
+/// owning the document's format, `source/helpers.rs`, is the one allowed to
+/// hold the raw parse. The load-time migration gate reads the startup
+/// document's bytes, which `cfgd_core::config::read_config_document` read.
 #[test]
 fn no_config_document_reader_parses_its_bytes_outside_config_tree() {
     /// The files reading the config document today and the reads each makes
     /// at least; a file seeing fewer has stopped being found.
-    const FLOOR_READS: [(&str, usize); 3] = [
+    const FLOOR_READS: [(&str, usize); 2] = [
         ("src/cli/source/helpers.rs", 1),
-        ("src/cli/config_schema.rs", 1),
         ("src/cli/config_cmd.rs", 1),
     ];
-    const OWN_FORMAT: &[&str] = &["src/cli/source/helpers.rs", "src/cli/config_schema.rs"];
+    const OWN_FORMAT: &[&str] = &["src/cli/source/helpers.rs"];
 
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut reads: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
@@ -53963,4 +53994,348 @@ fn every_compliance_counts_line_comes_from_the_one_builder() {
          and take a badge word from the status's serde name:\n{}",
         offenders.join("\n")
     );
+}
+
+/// Every line of `source` that reads the config document for itself: a call to
+/// one of the loaders, or a `read_to_string` naming the config on its line or
+/// the next, outside `StartupDocument::load` and not marked
+/// `// startup-load-ok: <why>` on the line or the one above.
+fn config_reads_outside_the_startup_document(source: &str) -> Vec<String> {
+    use cfgd_core::test_helpers::{
+        calls_free_fn, carries_hatch, code_line, declaration_end, declared_fn_name, impl_owner,
+    };
+    const LOADERS: [&str; 4] = [
+        "load_config",
+        "parse_config",
+        "read_pair",
+        "read_config_document",
+    ];
+    let raw: Vec<&str> = source.lines().collect();
+    let code: Vec<String> = raw.iter().map(|line| code_line(line)).collect();
+    let mut owned = vec![false; code.len()];
+    for (i, line) in code.iter().enumerate() {
+        if declared_fn_name(line).as_deref() == Some("load")
+            && impl_owner(&code, i).as_deref() == Some("StartupDocument")
+        {
+            let end = declaration_end(&code, i);
+            owned[i..=end].fill(true);
+        }
+    }
+    let hatched = |i: usize| {
+        carries_hatch(raw[i], "startup-load-ok")
+            || (i > 0 && carries_hatch(raw[i - 1], "startup-load-ok"))
+    };
+    code.iter()
+        .enumerate()
+        .filter(|(i, line)| {
+            let names_config = || {
+                let next = code.get(i + 1).map_or("", String::as_str);
+                format!("{line}{next}").to_lowercase().contains("config")
+            };
+            !owned[*i]
+                && (LOADERS.iter().any(|loader| calls_free_fn(line, loader))
+                    || (calls_free_fn(line, "read_to_string") && names_config()))
+                && !hatched(*i)
+        })
+        .map(|(i, _)| format!("{}: {}", i + 1, raw[i].trim()))
+        .collect()
+}
+
+/// `cfgd.yaml` is read once before dispatch: every reader there takes the
+/// startup document, so a loader call in one of the files that run before
+/// dispatch is a second read of a file already in hand, and a
+/// `StartupDocument::load` call site outside the counted ones is a second
+/// document. A verb's own load after dispatch carries
+/// `// startup-load-ok: <why>`.
+#[test]
+fn the_pre_dispatch_path_loads_the_document_once() {
+    use cfgd_core::test_helpers::{code_line, rust_sources_under, workspace_root};
+
+    let src = workspace_root().join("crates/cfgd/src");
+    let mut offenders = Vec::new();
+    for file in [
+        "main.rs",
+        "cli/mod.rs",
+        "cli/config_schema.rs",
+        "cli/upgrade.rs",
+        "cli/plugin/mod.rs",
+        "cli/startup.rs",
+    ] {
+        let body = floored_production_body(&src.join(file));
+        offenders.extend(
+            config_reads_outside_the_startup_document(&body)
+                .into_iter()
+                .map(|hit| format!("{file}:{hit}")),
+        );
+    }
+    assert!(
+        offenders.is_empty(),
+        "a reader before dispatch reads cfgd.yaml again; take the startup document:\n{}",
+        offenders.join("\n")
+    );
+
+    let expected: std::collections::BTreeMap<&str, usize> = [
+        ("cli/mod.rs", 1),
+        ("cli/plugin/mod.rs", 1),
+        ("cli/config_schema.rs", 1),
+        ("cli/init/cmd_init.rs", 2),
+        ("cli/startup.rs", 1),
+    ]
+    .into_iter()
+    .collect();
+    let mut found = std::collections::BTreeMap::new();
+    for file in rust_sources_under(&src) {
+        let body = floored_production_body(&file);
+        let calls: usize = body
+            .lines()
+            .map(|line| {
+                let code = code_line(line);
+                code.matches("StartupDocument::load(").count() + code.matches("Self::load(").count()
+            })
+            .sum();
+        if calls > 0 {
+            let rel = file.strip_prefix(&src).unwrap_or(&file);
+            found.insert(cfgd_core::to_posix_string(rel), calls);
+        }
+    }
+    let found: std::collections::BTreeMap<&str, usize> =
+        found.iter().map(|(file, n)| (file.as_str(), *n)).collect();
+    assert_eq!(
+        found, expected,
+        "the startup document is loaded at exactly these call sites"
+    );
+}
+
+/// The scan behind the pin above: a loader call is a read, one inside
+/// `StartupDocument::load` or under the hatch is not, and a `read_to_string`
+/// counts only when it names the config.
+#[test]
+fn the_config_read_scan_reads_loaders_and_skips_the_startup_load_and_its_hatch() {
+    let fixture = [
+        "fn theme(path: &Path) {",
+        "    let cfg = cfgd_core::config::load_config(path);",
+        "}",
+        "fn verb(path: &Path) {",
+        "    // startup-load-ok: the verb's own load after dispatch",
+        "    let cfg = config::load_config(path);",
+        "    let text = std::fs::read_to_string(&config_path);",
+        "    let other = std::fs::read_to_string(&script);",
+        "}",
+        "impl StartupDocument {",
+        "    pub fn load(config_path: &Path) -> Self {",
+        "        let pair = cfgd_core::config::read_config_document(config_path);",
+        "    }",
+        "}",
+    ]
+    .join("\n");
+    assert_eq!(
+        config_reads_outside_the_startup_document(&fixture),
+        vec![
+            "2: let cfg = cfgd_core::config::load_config(path);".to_string(),
+            "7: let text = std::fs::read_to_string(&config_path);".to_string(),
+        ]
+    );
+}
+
+/// A startup document for a directory is the document `load_config` reads
+/// there, recorded as one config input under its resolved name.
+#[test]
+fn a_startup_document_resolves_the_path_the_way_load_config_does() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let text = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: resolved\nspec:\n  profile: default\n";
+    std::fs::write(dir.path().join("cfgd.yaml"), text).expect("write config");
+
+    let recorder = cfgd_core::ConfigInputRecorder::start();
+    let document = StartupDocument::load(dir.path());
+    let inputs = recorder.finish();
+    let loaded = cfgd_core::config::load_config(dir.path()).expect("load_config reads it");
+
+    assert_eq!(document.path(), dir.path().join("cfgd.yaml"));
+    assert_eq!(
+        serde_yaml::to_value(document.config().expect("the document loads")).unwrap(),
+        serde_yaml::to_value(&loaded).unwrap()
+    );
+    assert_eq!(document.on_disk(), Some(text));
+    assert_eq!(inputs.len(), 1, "one read, recorded once");
+    assert_eq!(
+        inputs.paths().collect::<Vec<_>>(),
+        vec![dir.path().join("cfgd.yaml").as_path()]
+    );
+}
+
+/// Each reader before dispatch answers off the shared document what it
+/// answered off its own read, and off a document that did not load, its own
+/// fallback.
+#[test]
+#[serial_test::serial]
+fn every_pre_dispatch_reader_answers_the_same_from_the_shared_document() {
+    use cfgd_core::config::UpdatePolicy;
+    use cfgd_core::output::{Printer, Verbosity};
+
+    let _theme = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_THEME");
+    let _hints = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_USAGE_HINTS");
+    let _mask = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_MASK_ENV_VALUES");
+    let _policy = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_MIGRATION_POLICY");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("cfgd.yaml");
+    std::fs::write(
+        &path,
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: shared\nspec:\n  profile: default\n  aliases:\n    st: status --verbose\n  migrationPolicy: Warn\n  update:\n    policy: Manual\n  output:\n    theme:\n      name: nord\n    usageHints: true\n    maskEnvValues: none\n",
+    )
+    .expect("write config");
+
+    let gate_says = |config: &Path| {
+        let cli = Cli::try_parse_hermetic([
+            "cfgd".as_ref(),
+            "--config".as_ref(),
+            config.as_os_str(),
+            "--state-dir".as_ref(),
+            state.path().as_os_str(),
+            "status".as_ref(),
+        ])
+        .expect("the fixture argv parses");
+        let (printer, _stdout, stderr) = Printer::for_test_split_streams(Verbosity::Normal);
+        crate::cli::config_schema::gate_on_load(
+            &printer,
+            &crate::cli::config_schema::GateInvocation::of(&cli, false),
+            &StartupDocument::load(&cli.config),
+        );
+        printer.flush();
+        cfgd_core::test_helpers::captured_text(&stderr)
+    };
+    let alias = ["cfgd".to_string(), "st".to_string()].to_vec();
+
+    let shared = StartupDocument::load(&path);
+    let doc = shared.config();
+    assert_eq!(
+        super::expand_aliases_from(alias.clone(), doc),
+        ["cfgd", "status", "--verbose"]
+    );
+    assert_eq!(
+        super::resolve_theme_config(doc, None).map(|theme| theme.name),
+        Some("nord".to_string())
+    );
+    assert!(super::resolve_hints_enabled(doc, None));
+    assert!(!super::resolve_mask_env_values(doc, None).masks());
+    assert!(
+        gate_says(&path).contains("cfgd config migrate"),
+        "a stored Warn reports what the document is behind by"
+    );
+    assert_eq!(
+        crate::cli::upgrade::startup_update_config(doc, None).policy,
+        UpdatePolicy::Manual
+    );
+
+    let absent_path = dir.path().join("absent.yaml");
+    let absent = StartupDocument::load(&absent_path);
+    let doc = absent.config();
+    assert!(doc.is_none());
+    assert_eq!(super::expand_aliases_from(alias.clone(), doc), alias);
+    assert!(super::resolve_theme_config(doc, None).is_none());
+    assert!(!super::resolve_hints_enabled(doc, None));
+    assert!(super::resolve_mask_env_values(doc, None).masks());
+    assert!(gate_says(&absent_path).trim().is_empty());
+    assert_eq!(
+        crate::cli::upgrade::startup_update_config(doc, None).policy,
+        UpdatePolicy::default()
+    );
+}
+
+/// The same file, however spelled, keeps the one read already made; another
+/// file is read.
+#[test]
+fn reload_if_moved_reloads_only_when_the_document_differs() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let named = |name: &str| {
+        format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: {name}\nspec:\n  profile: default\n"
+        )
+    };
+    let path = dir.path().join("cfgd.yaml");
+    std::fs::write(&path, named("first")).expect("write config");
+    let other_dir = tempfile::tempdir().expect("tempdir");
+    let other = other_dir.path().join("cfgd.yaml");
+    std::fs::write(&other, named("other")).expect("write config");
+    let name_of =
+        |document: &StartupDocument| document.config().map(|config| config.metadata.name.clone());
+
+    let document = StartupDocument::load(&path);
+    // Rewritten on disk after the read, so a second read would show.
+    std::fs::write(&path, named("rewritten")).expect("rewrite config");
+    let document = document.reload_if_moved(dir.path());
+    assert_eq!(name_of(&document).as_deref(), Some("first"));
+    assert_eq!(document.reads(), 1);
+    assert_eq!(document.path(), path);
+
+    let document = document.reload_if_moved(&other);
+    assert_eq!(name_of(&document).as_deref(), Some("other"));
+    assert_eq!(document.reads(), 2);
+    assert_eq!(document.path(), other);
+}
+
+/// The alias pass reads `--config` off the raw argv, and clap reads it from
+/// the argv and from `CFGD_CONFIG`. Every shape ends on the document clap
+/// settled on, read once when the alias pass found the same file.
+///
+/// The argv with no `--config` at all is pinned against the real binary
+/// (`tests/startup_document_reads.rs`): clap caches the default path the first
+/// parse in a process computes, so an in-process parse cannot see this
+/// test's home.
+#[test]
+#[serial_test::serial]
+fn expand_aliases_and_clap_agree_on_the_config_path() {
+    let _config = cfgd_core::test_helpers::EnvVarGuard::unset(cfgd_core::CFGD_CONFIG_ENV);
+    let _xdg = cfgd_core::test_helpers::EnvVarGuard::unset("XDG_CONFIG_HOME");
+    let _systemd = cfgd_core::test_helpers::EnvVarGuard::unset("CONFIGURATION_DIRECTORY");
+    let home = tempfile::tempdir().expect("tempdir");
+    cfgd_core::with_test_home(home.path(), || {
+        let named = |name: &str| {
+            format!(
+                "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: {name}\nspec:\n  profile: default\n"
+            )
+        };
+        let default = super::default_config_file();
+        std::fs::create_dir_all(default.parent().expect("a parent")).expect("mkdir");
+        std::fs::write(&default, named("default")).expect("write default");
+        let x_dir = tempfile::tempdir().expect("tempdir");
+        let x = x_dir.path().join("cfgd.yaml");
+        std::fs::write(&x, named("x")).expect("write x");
+        let x_arg = x.to_string_lossy().into_owned();
+
+        let settle = |argv: Vec<String>, env: &[&str]| {
+            let (expanded, startup) = super::expand_aliases(argv);
+            let cli = Cli::try_parse_reading_env(expanded, env).expect("the argv parses");
+            let startup = startup.reload_if_moved(&cli.config);
+            (
+                startup.config().map(|config| config.metadata.name.clone()),
+                startup.reads(),
+            )
+        };
+        let argv = |parts: &[&str]| parts.iter().map(|p| (*p).to_string()).collect::<Vec<_>>();
+        let x_name = Some("x".to_string());
+
+        assert_eq!(
+            settle(argv(&["cfgd", "--config", &x_arg, "status"]), &[]),
+            (x_name.clone(), 1)
+        );
+        assert_eq!(
+            settle(argv(&["cfgd", &format!("--config={x_arg}"), "status"]), &[]),
+            (x_name.clone(), 1)
+        );
+        assert_eq!(
+            settle(argv(&["cfgd", "status", "--config", &x_arg]), &[]),
+            (x_name.clone(), 1),
+            "the alias pass reads `--config` after the subcommand too"
+        );
+        {
+            let _env =
+                cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_CONFIG_ENV, &x_arg);
+            assert_eq!(
+                settle(argv(&["cfgd", "status"]), &[cfgd_core::CFGD_CONFIG_ENV]),
+                (x_name.clone(), 2),
+                "CFGD_CONFIG is clap's alone, so the document is read again"
+            );
+        }
+    });
 }

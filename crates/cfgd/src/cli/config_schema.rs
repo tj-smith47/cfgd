@@ -9,6 +9,7 @@ use cfgd_core::state::StateStore;
 use cfgd_schema::MigrationPolicy;
 
 use crate::cli::helpers::no_config_error;
+use crate::cli::startup::StartupDocument;
 use crate::cli::{
     Cli, Command, ConfigCommand, Mutation, ProfileCommand, mutate_config_yaml, success_next_step,
 };
@@ -177,17 +178,6 @@ pub fn daemon_folded_policy(writes_nothing: bool, policy: MigrationPolicy) -> Mi
     }
 }
 
-/// The parsed config and the bytes it was parsed from — the two halves
-/// [`pending_alignment`] compares. `None` when the file is absent,
-/// unreadable or does not parse: a gate that cannot read the document has
-/// nothing to say about it, and the command boundary below reports the load
-/// failure on its own.
-fn read_pair(config_path: &Path) -> Option<(CfgdConfig, String)> {
-    let on_disk = std::fs::read_to_string(config_path).ok()?;
-    let cfg = cfgd_core::config::parse_config(&on_disk, config_path).ok()?;
-    Some((cfg, on_disk))
-}
-
 /// Materialize every pending key with the value the typed config already
 /// carries. The ONE writer this feature has: `--write`, the `Update` policy
 /// and an accepted prompt all reach it, so no two of them can write
@@ -342,19 +332,20 @@ fn open_store(printer: &Printer, invocation: &GateInvocation<'_>) -> Option<Stat
 /// declare, and under `write` materialize it.
 pub fn cmd_config_migrate(cli: &Cli, printer: &Printer, write: bool) -> anyhow::Result<()> {
     let config_path = &cli.config;
-    let Some((cfg, on_disk)) = read_pair(config_path) else {
+    let document = StartupDocument::load(config_path);
+    let (Some(cfg), Some(on_disk)) = (document.config(), document.on_disk()) else {
         return Err(no_config_error(printer, config_path));
     };
-    let pending = pending_alignment(&cfg, &on_disk, config_path);
+    let pending = pending_alignment(cfg, on_disk, config_path);
     let wrote = write && !pending.keys.is_empty();
     if wrote {
-        write_alignment(config_path, &cfg, &pending)?;
+        write_alignment(config_path, cfg, &pending)?;
     }
 
     // Each row is the key and the value the write would materialize, read
     // off the same typed value the write reads, so the report and the write
     // cannot name two things.
-    let materialized = serde_yaml::to_value(&cfg).unwrap_or(serde_yaml::Value::Null);
+    let materialized = serde_yaml::to_value(cfg).unwrap_or(serde_yaml::Value::Null);
     let rows: Vec<(String, String)> = pending
         .keys
         .iter()
@@ -402,7 +393,7 @@ pub fn cmd_config_migrate(cli: &Cli, printer: &Printer, write: bool) -> anyhow::
     Ok(())
 }
 
-/// The load-time gate: what the document at `config_path`, behind this
+/// The load-time gate: what the document `startup` holds, behind this
 /// build's schema, earns per `spec.migrationPolicy`. It runs before dispatch
 /// against `--config`, and inside `cfgd init` against the document init
 /// wrote.
@@ -411,15 +402,13 @@ pub fn cmd_config_migrate(cli: &Cli, printer: &Printer, write: bool) -> anyhow::
 /// (`--migration-policy` / `CFGD_MIGRATION_POLICY`), unfolded: the daemon
 /// fold is taken here, over the override and the stored policy alike, because
 /// the stored half never passes through the caller at all. With nothing
-/// overridden the stored policy is read
-/// off the parse below, with no second load of the same file, so a gate
-/// costs one read of the document whatever it decides — and an overridden
-/// `Ignore` costs none at all.
+/// overridden the stored policy is read off `startup`'s one parse, so the
+/// gate reads nothing from disk whatever it decides.
 ///
 /// The state store is opened HERE, and only where there is an answer to hold:
 /// `cfgd paths`, `cfgd explain` and every other read that records nothing leave
 /// the state root as they found it.
-pub fn gate_on_load(printer: &Printer, invocation: &GateInvocation<'_>, config_path: &Path) {
+pub fn gate_on_load(printer: &Printer, invocation: &GateInvocation<'_>, startup: &StartupDocument) {
     let GateInvocation {
         policy_override,
         assume_yes,
@@ -433,15 +422,16 @@ pub fn gate_on_load(printer: &Printer, invocation: &GateInvocation<'_>, config_p
     if overridden == Some(MigrationPolicy::Ignore) {
         return;
     }
-    let Some((cfg, on_disk)) = read_pair(config_path) else {
+    let (Some(cfg), Some(on_disk)) = (startup.config(), startup.on_disk()) else {
         return;
     };
+    let config_path = startup.path();
     let policy = overridden
         .unwrap_or_else(|| daemon_folded_policy(writes_nothing, cfg.spec.migration_policy));
     if policy == MigrationPolicy::Ignore {
         return;
     }
-    let pending = pending_alignment(&cfg, &on_disk, config_path);
+    let pending = pending_alignment(cfg, on_disk, config_path);
     if pending.keys.is_empty() {
         return;
     }
@@ -453,7 +443,7 @@ pub fn gate_on_load(printer: &Printer, invocation: &GateInvocation<'_>, config_p
         other => other,
     };
     match effective {
-        MigrationPolicy::Update => align(printer, config_path, &cfg, &pending),
+        MigrationPolicy::Update => align(printer, config_path, cfg, &pending),
         MigrationPolicy::Warn => printer.alert(warn_message(&pending)),
         MigrationPolicy::Prompt => {
             let Some((held, recorded)) = consult_recorded(
@@ -472,7 +462,7 @@ pub fn gate_on_load(printer: &Printer, invocation: &GateInvocation<'_>, config_p
                 .prompt_confirm(&prompt_message(&pending))
                 .unwrap_or(false);
             if accepted {
-                align(printer, config_path, &cfg, &pending);
+                align(printer, config_path, cfg, &pending);
             }
             // Recorded whichever way it was answered: a "no" is an answer,
             // and asking it again every run is how a knob nobody wants
@@ -542,7 +532,7 @@ mod tests {
             assume_yes,
             ..GateInvocation::of(cli, false)
         };
-        gate_on_load(printer, &invocation, &cli.config);
+        gate_on_load(printer, &invocation, &StartupDocument::load(&cli.config));
     }
 
     /// Whether a shell line writes a `cfgd.yaml`: a heredoc naming it, a
