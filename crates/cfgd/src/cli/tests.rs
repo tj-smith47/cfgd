@@ -54559,7 +54559,8 @@ fn the_pre_dispatch_path_loads_the_document_once() {
 /// can tell a summary above it from one below it; the order is read off
 /// `main.rs` instead. Positions come from the body with its literals and
 /// comments blanked, so a commented-out call or a message quoting one is no
-/// call.
+/// call, and the message counts only between the parentheses of the
+/// `tracing::debug!` it follows.
 #[test]
 fn the_startup_document_summary_follows_the_last_reload() {
     const SUMMARY: &str = "\"loaded config document\"";
@@ -54589,8 +54590,25 @@ fn the_startup_document_summary_follows_the_last_reload() {
     };
     let last_reload = reloads.iter().copied().max().unwrap_or_default();
     let opener = code[..summary].rfind("tracing::").unwrap_or_default();
+    let args = opener + "tracing::debug!(".len();
+    let mut depth = 1i32;
+    let close = code
+        .get(args..)
+        .unwrap_or_default()
+        .char_indices()
+        .find_map(|(i, c)| {
+            match c {
+                '(' => depth += 1,
+                ')' => depth -= 1,
+                _ => {}
+            }
+            (depth == 0).then_some(args + i)
+        })
+        .unwrap_or_default();
     assert!(
-        code[opener..].starts_with("tracing::debug!(") && opener > last_reload,
+        code[opener..].starts_with("tracing::debug!(")
+            && opener > last_reload
+            && (args..close).contains(&summary),
         "the startup document summary is a `tracing::debug!` after the last \
          `reload_if_moved`, so its read count covers every reload"
     );
