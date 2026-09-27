@@ -507,12 +507,45 @@ mod tests {
         gate_on_load(printer, &invocation, &cli.config);
     }
 
+    /// Whether a shell line writes a `cfgd.yaml`: a heredoc naming it, a
+    /// redirect into it, or a `tee` of it. A comment line mentioning the file
+    /// writes nothing.
+    fn writes_a_cfgd_yaml(line: &str) -> bool {
+        let code = line.trim_start();
+        if code.starts_with('#') {
+            return false;
+        }
+        let Some(file_at) = code.find("cfgd.yaml") else {
+            return false;
+        };
+        code.contains("<<") || code[..file_at].contains('>') || code.contains("tee ")
+    }
+
+    /// The word a heredoc opened on `line` ends at, and whether it was opened
+    /// with `<<-`, which lets the closing line carry leading tabs.
+    fn heredoc_terminator(line: &str) -> Option<(String, bool)> {
+        let after = &line[line.find("<<")? + 2..];
+        let (after, strip_tabs) = match after.strip_prefix('-') {
+            Some(rest) => (rest, true),
+            None => (after, false),
+        };
+        let word: String = after
+            .trim_start()
+            .trim_start_matches(['\'', '"'])
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect();
+        (!word.is_empty()).then_some((word, strip_tabs))
+    }
+
     /// Every `cfgd.yaml` a demo setup script writes is aligned to this build,
     /// so a recorded tape never stops on the migration prompt. The fixtures
     /// are the heredoc bodies the scripts `cat` into a `cfgd.yaml`; a `${VAR}`
     /// the shell would expand is replaced by a URL, the one shape the
     /// fixtures interpolate. A field added to the schema fails this until the
-    /// fixtures declare it.
+    /// fixtures declare it. Each script's heredocs are counted against every
+    /// line that writes a `cfgd.yaml`, so a fixture written in a shape the walk
+    /// cannot read fails here too.
     #[test]
     fn every_demo_fixture_config_declares_every_field_this_build_reads() {
         let scripts = cfgd_core::test_helpers::workspace_root().join("demo/scripts");
@@ -530,17 +563,42 @@ mod tests {
         let mut fixtures = Vec::new();
         for script in &setups {
             let text = std::fs::read_to_string(script).unwrap();
-            let mut lines = text.lines().enumerate();
-            while let Some((n, line)) = lines.next() {
-                let line = line.trim();
-                if !(line.starts_with("cat > ") && line.contains("/cfgd.yaml\" <<")) {
+            let lines: Vec<&str> = text.lines().collect();
+            let writes = lines.iter().filter(|line| writes_a_cfgd_yaml(line)).count();
+            let mut read = 0;
+            let mut at = 0;
+            while at < lines.len() {
+                let line = lines[at];
+                at += 1;
+                if !(writes_a_cfgd_yaml(line) && line.contains("<<")) {
                     continue;
                 }
-                let body: Vec<&str> = lines
-                    .by_ref()
-                    .map(|(_, line)| line)
-                    .take_while(|line| *line != "EOF")
-                    .collect();
+                let (terminator, strip_tabs) = heredoc_terminator(line).unwrap_or_else(|| {
+                    panic!(
+                        "{}:{at}: no heredoc terminator on `{line}`",
+                        script.display()
+                    )
+                });
+                let opened = at;
+                let mut body = Vec::new();
+                loop {
+                    let Some(next) = lines.get(at) else {
+                        panic!(
+                            "{}:{opened}: the heredoc's `{terminator}` is never reached",
+                            script.display()
+                        );
+                    };
+                    at += 1;
+                    let closing = if strip_tabs {
+                        next.trim_start_matches('\t')
+                    } else {
+                        next
+                    };
+                    if closing == terminator {
+                        break;
+                    }
+                    body.push(*next);
+                }
                 let mut doc = String::new();
                 let mut rest = body.join("\n");
                 while let Some(open) = rest.find("${") {
@@ -551,8 +609,15 @@ mod tests {
                 }
                 doc.push_str(&rest);
                 doc.push('\n');
-                fixtures.push((format!("{}:{}", script.display(), n + 1), doc));
+                fixtures.push((format!("{}:{opened}", script.display()), doc));
+                read += 1;
             }
+            assert_eq!(
+                read,
+                writes,
+                "{}: {writes} lines write a cfgd.yaml and the walk read {read} of them as heredocs",
+                script.display()
+            );
         }
         assert!(
             fixtures.len() >= 2,
