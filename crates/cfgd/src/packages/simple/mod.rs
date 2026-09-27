@@ -44,6 +44,7 @@ fn mgr_seam_env(mgr_name: &str) -> Option<&'static str> {
         "yum" => Some(YUM_BIN_ENV),
         "pacman" => Some(PACMAN_BIN_ENV),
         "zypper" => Some(ZYPPER_BIN_ENV),
+        "pkg" => Some(PKG_BIN_ENV),
         _ => None,
     }
 }
