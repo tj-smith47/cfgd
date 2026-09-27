@@ -36,8 +36,8 @@ runs with `ASSUME_ALWAYS_YES=yes` and zypper refreshes with
 `--non-interactive`. When a package ships a new version of a configuration file
 you edited, apt keeps your edited file, and takes dpkg's default answer in
 every other case. apt and pkg elevate through `sudo env …`, so a sudoers rule that
-limits your user to specific commands must also allow `/usr/bin/env` (FreeBSD:
-`/usr/bin/env`); a rule of `ALL` needs nothing more.
+limits your user to specific commands must also allow `/usr/bin/env`; a rule of
+`ALL` needs nothing more.
 
 Package managers that aren't installed on the current system are silently skipped. `cfgd apply --dry-run` shows which managers will be used and which packages will be installed or removed.
 
