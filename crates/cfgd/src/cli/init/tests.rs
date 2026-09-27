@@ -1913,7 +1913,7 @@ fn scaffold_config_declares_every_field_this_build_reads() {
         let path = dir.path().join("cfgd.yaml");
         let on_disk = std::fs::read_to_string(&path).unwrap();
         let cfg = cfgd_core::config::parse_config(&on_disk, &path).unwrap();
-        let pending = crate::cli::config_schema::pending_alignment(&cfg, &on_disk);
+        let pending = crate::cli::config_schema::pending_alignment(&cfg, &on_disk, &path);
         assert!(
             pending.keys.is_empty(),
             "theme {theme:?}: the scaffold leaves {:?} for the gate to ask about",

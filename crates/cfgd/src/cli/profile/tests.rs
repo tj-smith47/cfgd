@@ -837,6 +837,29 @@ fn profile_switch_updates_config() {
     assert_eq!(cfg.spec.profile.as_deref(), Some("work"));
 }
 
+// `--config` may name the document itself under any file name; the switch
+// writes that document and reads `profiles/` beside it. A `cfgd.yaml` in the
+// same directory is a different document the invocation never named.
+#[test]
+fn profile_switch_writes_the_document_config_names() {
+    let dir = setup_config_dir();
+    let custom = dir.path().join("custom.yaml");
+    std::fs::write(&custom, TEST_CONFIG_YAML).unwrap();
+    let mut cli = test_cli(dir.path());
+    cli.config = custom.clone();
+    let printer = make_printer();
+
+    cmd_profile_switch(&cli, "work", &printer).unwrap();
+
+    let switched = config::load_config(&custom).unwrap();
+    assert_eq!(switched.spec.profile.as_deref(), Some("work"));
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("cfgd.yaml")).unwrap(),
+        TEST_CONFIG_YAML,
+        "the document the invocation did not name is untouched"
+    );
+}
+
 #[test]
 fn profile_switch_nonexistent_fails() {
     let dir = setup_config_dir();

@@ -2724,9 +2724,9 @@ cfgd config get daemon                       # prints full daemon YAML block
 ### `cfgd config set <key> <value>`
 
 Set a config value by dotted key path. Creates intermediate sections as needed.
-The written section is complete: every field this build reads under it is
-declared, at its default where the command named no value, so the next command's
-migration check has nothing to ask about it.
+A section the write creates declares every field this build reads, each at its
+default where the command named no value, so the next command's migration check
+has nothing to ask about it.
 
 ```sh
 cfgd config set profile personal
@@ -2741,7 +2741,10 @@ cfgd config set aliases.deploy "apply --yes"
 ### `cfgd config unset <key>`
 
 Remove a config value (resets to default). Alias: `cfgd config rm`. A field
-with a default is written back at that default, so the section stays complete.
+with a default is written back at that default and reported as
+`Reset <key> to <default>`; `-o json` carries `"removed": false` and the `value`
+written. A field with no default (an optional key, an alias) leaves the file and
+is reported as `Unset <key>`, with `"removed": true`.
 
 ```sh
 cfgd config unset theme                          # remove entire theme section

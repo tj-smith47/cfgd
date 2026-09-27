@@ -356,7 +356,8 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                         serde_yaml::Value::String(name.to_string()),
                     );
                     Ok(())
-                })?;
+                })?
+                .config;
                 drain_config_deprecations(printer, &mut cfg);
                 printer
                     .status(Role::Ok, "Set active profile")

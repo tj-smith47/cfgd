@@ -122,7 +122,7 @@ pub(in crate::cli) fn sources_lock_update_warning(e: impl std::fmt::Display) -> 
 // --- Helpers consumed elsewhere in cli:: ---
 
 pub(in crate::cli) use helpers::{
-    build_pending_decisions_table_section, build_permission_input, mutate_config_yaml,
+    build_pending_decisions_table_section, build_permission_input, config_tree, mutate_config_yaml,
     source_cache_dir,
 };
 

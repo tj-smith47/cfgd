@@ -17322,6 +17322,7 @@ const RESULT_LINE_VERBS: &[&str] = &[
     "Renamed",
     "Replaced",
     "Reported",
+    "Reset",
     "Restored",
     "Rolled",
     "Rotated",

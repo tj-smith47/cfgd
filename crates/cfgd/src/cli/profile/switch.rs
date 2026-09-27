@@ -6,7 +6,7 @@ pub fn cmd_profile_switch(cli: &Cli, name: &str, printer: &Printer) -> anyhow::R
     printer.heading("Switch Profile");
 
     let config_dir = super::config_dir(cli);
-    let config_path = config_dir.join("cfgd.yaml");
+    let config_path = cfgd_core::config::resolve_config_path(&cli.config);
     if !config_path.exists() {
         return Err(no_config_error(printer, &config_path));
     }
@@ -53,7 +53,8 @@ pub fn cmd_profile_switch(cli: &Cli, name: &str, printer: &Printer) -> anyhow::R
             old_profile = previous.to_string();
         }
         Ok(())
-    })?;
+    })?
+    .config;
     drain_config_deprecations(printer, &mut cfg);
 
     let doc = Doc::new()

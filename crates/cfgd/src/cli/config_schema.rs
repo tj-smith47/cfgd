@@ -20,7 +20,8 @@ pub(in crate::cli) struct PendingAlignment {
 
 /// What the document at `on_disk` does not declare that the typed value `cfg`
 /// carries. `cfg` is the parse of those same bytes, so the two sides differ by
-/// exactly what the deserializer materialized.
+/// exactly what the deserializer materialized. `path` names the format the
+/// bytes are read in, the way `parse_config` reads it.
 ///
 /// Nothing here reports a VERSION. A document at another `apiVersion` cannot
 /// reach this function: `validate_api_version` refuses every version the
@@ -28,8 +29,13 @@ pub(in crate::cli) struct PendingAlignment {
 /// that parsed spells `API_VERSION`. The release that adds a second row to
 /// that table is the one that can report a version here, with a document that
 /// can populate it.
-pub(in crate::cli) fn pending_alignment(cfg: &CfgdConfig, on_disk: &str) -> PendingAlignment {
-    let declared = serde_yaml::from_str(on_disk).unwrap_or(serde_yaml::Value::Null);
+pub(in crate::cli) fn pending_alignment(
+    cfg: &CfgdConfig,
+    on_disk: &str,
+    path: &Path,
+) -> PendingAlignment {
+    let declared =
+        crate::cli::source::config_tree(on_disk, path).unwrap_or(serde_yaml::Value::Null);
     PendingAlignment {
         keys: crate::cli::helpers::undeclared_scalar_keys(cfg, &declared),
     }
@@ -155,12 +161,35 @@ fn read_pair(config_path: &Path) -> Option<(CfgdConfig, String)> {
 }
 
 /// Materialize every pending key with the value the typed config already
-/// carries. The write is [`mutate_config_yaml`] with nothing of its own to
-/// change: every write of the document aligns it, so the gate's write IS the
-/// alignment step, and `--write`, the `Update` policy and an accepted prompt
-/// cannot write differently from each other or from any other writer.
-fn write_alignment(config_path: &Path) -> anyhow::Result<()> {
-    mutate_config_yaml(config_path, |_| Ok(()))?;
+/// carries. The ONE writer this feature has: `--write`, the `Update` policy
+/// and an accepted prompt all reach it, so no two of them can write
+/// differently. The keys are written inside the closure: the alignment
+/// `mutate_config_yaml` performs covers only what a write itself made
+/// pending, and these keys were missing before this write began.
+///
+/// The two path walkers are `cli::config_cmd`'s own: the mutable one creates
+/// the intermediate mappings a key under an absent section needs, which is
+/// what `cfgd config set` already relies on.
+fn write_alignment(
+    config_path: &Path,
+    cfg: &CfgdConfig,
+    pending: &PendingAlignment,
+) -> anyhow::Result<()> {
+    let materialized = serde_yaml::to_value(cfg)?;
+    mutate_config_yaml(config_path, |raw| {
+        for key in &pending.keys {
+            // Every pending key was read off `materialized` in the first
+            // place, so a miss here is not a state this can reach; skipping
+            // is still the right answer to one, since the alternative is
+            // failing a write over a key nobody asked for.
+            let Ok(value) = crate::cli::config_cmd::walk_yaml_path(&materialized, key) else {
+                continue;
+            };
+            let (parent, leaf) = crate::cli::config_cmd::walk_yaml_path_mut(raw, key)?;
+            parent.insert(serde_yaml::Value::String(leaf), value.clone());
+        }
+        Ok(())
+    })?;
     Ok(())
 }
 
@@ -191,8 +220,8 @@ fn prompt_message(pending: &PendingAlignment) -> String {
 /// write is an alert: this runs before dispatch, so there is no command for
 /// the error to fail, and a reader who said yes and got silence would believe
 /// the file had been written.
-fn align(printer: &Printer, config_path: &Path, pending: &PendingAlignment) {
-    match write_alignment(config_path) {
+fn align(printer: &Printer, config_path: &Path, cfg: &CfgdConfig, pending: &PendingAlignment) {
+    match write_alignment(config_path, cfg, pending) {
         Ok(()) => printer.status_simple(
             Role::Ok,
             format!(
@@ -288,10 +317,10 @@ pub fn cmd_config_migrate(cli: &Cli, printer: &Printer, write: bool) -> anyhow::
     let Some((cfg, on_disk)) = read_pair(config_path) else {
         return Err(no_config_error(printer, config_path));
     };
-    let pending = pending_alignment(&cfg, &on_disk);
+    let pending = pending_alignment(&cfg, &on_disk, config_path);
     let wrote = write && !pending.keys.is_empty();
     if wrote {
-        write_alignment(config_path)?;
+        write_alignment(config_path, &cfg, &pending)?;
     }
 
     // Each row is the key and the value the write would materialize, read
@@ -381,7 +410,7 @@ pub fn gate_on_load(printer: &Printer, invocation: &GateInvocation<'_>, config_p
     if policy == MigrationPolicy::Ignore {
         return;
     }
-    let pending = pending_alignment(&cfg, &on_disk);
+    let pending = pending_alignment(&cfg, &on_disk, config_path);
     if pending.keys.is_empty() {
         return;
     }
@@ -393,7 +422,7 @@ pub fn gate_on_load(printer: &Printer, invocation: &GateInvocation<'_>, config_p
         other => other,
     };
     match effective {
-        MigrationPolicy::Update => align(printer, config_path, &pending),
+        MigrationPolicy::Update => align(printer, config_path, &cfg, &pending),
         MigrationPolicy::Warn => printer.alert(warn_message(&pending)),
         MigrationPolicy::Prompt => {
             let Some((held, recorded)) = consult_recorded(
@@ -412,7 +441,7 @@ pub fn gate_on_load(printer: &Printer, invocation: &GateInvocation<'_>, config_p
                 .prompt_confirm(&prompt_message(&pending))
                 .unwrap_or(false);
             if accepted {
-                align(printer, config_path, &pending);
+                align(printer, config_path, &cfg, &pending);
             }
             // Recorded whichever way it was answered: a "no" is an answer,
             // and asking it again every run is how a knob nobody wants
@@ -608,7 +637,7 @@ mod tests {
             let path = std::path::Path::new("cfgd.yaml");
             let cfg = cfgd_core::config::parse_config(doc, path)
                 .unwrap_or_else(|e| panic!("{at}: the fixture parses: {e}"));
-            let pending = pending_alignment(&cfg, doc);
+            let pending = pending_alignment(&cfg, doc, Path::new("cfgd.yaml"));
             assert!(
                 pending.keys.is_empty(),
                 "{at}: the fixture leaves {:?} for the migration gate to ask about",
@@ -651,7 +680,9 @@ mod tests {
         let reparsed =
             cfgd_core::config::parse_config(&after, &path).expect("the written document re-parses");
         assert!(
-            pending_alignment(&reparsed, &after).keys.is_empty(),
+            pending_alignment(&reparsed, &after, Path::new("cfgd.yaml"))
+                .keys
+                .is_empty(),
             "a second run has nothing left to do"
         );
     }
@@ -736,7 +767,9 @@ mod tests {
                 reloaded.deprecations
             );
             assert!(
-                pending_alignment(&reloaded, &after).keys.is_empty(),
+                pending_alignment(&reloaded, &after, Path::new("cfgd.yaml"))
+                    .keys
+                    .is_empty(),
                 "{old}: a second run must have nothing left to do"
             );
         }
@@ -783,7 +816,7 @@ mod tests {
             reloaded.deprecations
         );
         assert!(
-            !pending_alignment(&reloaded, &after)
+            !pending_alignment(&reloaded, &after, Path::new("cfgd.yaml"))
                 .keys
                 .iter()
                 .any(|k| k == "spec.output.theme"),
@@ -899,6 +932,49 @@ mod tests {
             "Ignore says nothing either: {ignored_said}"
         );
         assert!(!ignored_stored, "Ignore opens no store either");
+    }
+
+    /// A `cfgd.toml` is the same document in the other format `--config`
+    /// reads, so the gate reports it behind by the keys it does not declare
+    /// and an `Update` writes the alignment back as TOML.
+    #[test]
+    fn a_toml_document_is_gated_and_aligned_in_its_own_format() {
+        use cfgd_core::output::{Printer, Verbosity};
+        let dir = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cfgd.toml");
+        let doc = "apiVersion = \"cfgd.io/v1alpha1\"\nkind = \"Config\"\n\n[metadata]\nname = \"t\"\n\n[spec]\nprofile = \"work\"\n";
+        std::fs::write(&path, doc).unwrap();
+        let cfg = cfgd_core::config::parse_config(doc, &path).unwrap();
+        let mut behind = pending_alignment(&cfg, doc, &path).keys;
+        behind.sort();
+        assert_eq!(
+            behind,
+            ["spec.fileStrategy", "spec.migrationPolicy"],
+            "the TOML document is behind by exactly the keys it does not declare"
+        );
+
+        let cli = cli_with_config(&path, Some(state.path()));
+        let (printer, _stdout, _stderr) = Printer::for_test_split_streams(Verbosity::Normal);
+        gate(&printer, &cli, Some(MigrationPolicy::Update), false);
+        printer.flush();
+
+        let written = std::fs::read_to_string(&path).unwrap();
+        let table: toml::Table = written
+            .parse()
+            .unwrap_or_else(|e| panic!("the aligned document is still TOML: {e}\n{written}"));
+        assert_eq!(
+            table["spec"]["migrationPolicy"].as_str(),
+            Some("Prompt"),
+            "the alignment declares the policy: {written}"
+        );
+        let reparsed = cfgd_core::config::parse_config(&written, &path).unwrap();
+        assert!(
+            pending_alignment(&reparsed, &written, &path)
+                .keys
+                .is_empty(),
+            "nothing is left behind: {written}"
+        );
     }
 
     /// The document every gate fixture below is pointed at: it declares no
@@ -1265,7 +1341,7 @@ mod tests {
         std::fs::write(&path, BEHIND_DOC).unwrap();
         let cfg = cfgd_core::config::parse_config(BEHIND_DOC, &path).unwrap();
         assert!(
-            pending_alignment(&cfg, BEHIND_DOC)
+            pending_alignment(&cfg, BEHIND_DOC, Path::new("cfgd.yaml"))
                 .keys
                 .contains(&"spec.fileStrategy".to_string()),
             "the key the refusal lands on is one the alignment would write"
@@ -1289,6 +1365,137 @@ mod tests {
         );
     }
 
+    /// A document behind the schema by one key of a section it already holds
+    /// stays behind by exactly that key through every writer, whatever the
+    /// gate did about it: `Warn` and `Ignore` leave it, and a recorded "no" is
+    /// the reader declining the alignment. A write fills only what it left
+    /// undeclared itself, so none of the three writers answers the question
+    /// the reader was asked, and none adds anything beyond its own subject.
+    #[test]
+    fn a_write_leaves_a_key_the_reader_left_undeclared_undeclared() {
+        #[derive(Clone, Copy, Debug)]
+        enum Handling {
+            Warn,
+            Ignore,
+            RecordedNo,
+        }
+        #[derive(Clone, Copy, Debug)]
+        enum Writer {
+            ConfigSet,
+            SourceAdd,
+            ProfileSwitch,
+        }
+        const BEHIND_BY: &str = "spec.fileStrategy";
+
+        let mut offenders = Vec::new();
+        for handling in [Handling::Warn, Handling::Ignore, Handling::RecordedNo] {
+            for writer in [Writer::ConfigSet, Writer::SourceAdd, Writer::ProfileSwitch] {
+                let case = format!("{handling:?} then {writer:?}");
+                let dir = tempfile::tempdir().unwrap();
+                let state = tempfile::tempdir().unwrap();
+                let printer = cfgd_core::test_helpers::test_printer();
+                crate::cli::init::cmd_init::scaffold(dir.path(), Some("t"), None, &printer)
+                    .unwrap();
+                let path = dir.path().join("cfgd.yaml");
+                let mut tree: serde_yaml::Value =
+                    serde_yaml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+                let spec = tree["spec"].as_mapping_mut().unwrap();
+                spec.remove("fileStrategy");
+                spec.insert("profile".into(), "default".into());
+                std::fs::write(&path, serde_yaml::to_string(&tree).unwrap()).unwrap();
+                std::fs::write(
+                    dir.path().join("profiles").join("other.yaml"),
+                    "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: other\nspec: {}\n",
+                )
+                .unwrap();
+                let pending_now = || {
+                    let bytes = std::fs::read_to_string(&path).unwrap();
+                    let cfg = cfgd_core::config::parse_config(&bytes, &path).unwrap();
+                    pending_alignment(&cfg, &bytes, &path).keys
+                };
+                assert_eq!(
+                    pending_now(),
+                    vec![BEHIND_BY.to_string()],
+                    "{case}: the fixture is behind by one key of the spec section"
+                );
+
+                let cli = cli_running(&path, Some(state.path()), &["status"]);
+                let policy = match handling {
+                    Handling::Warn => MigrationPolicy::Warn,
+                    Handling::Ignore => MigrationPolicy::Ignore,
+                    Handling::RecordedNo => {
+                        StateStore::open_in_dir(state.path())
+                            .unwrap()
+                            .record_migration_answer(
+                                &path,
+                                cfgd_core::API_VERSION,
+                                false,
+                                &[BEHIND_BY.to_string()],
+                            )
+                            .unwrap();
+                        MigrationPolicy::Prompt
+                    }
+                };
+                let before_gate = std::fs::read_to_string(&path).unwrap();
+                gate(&printer, &cli, Some(policy), false);
+                assert_eq!(
+                    std::fs::read_to_string(&path).unwrap(),
+                    before_gate,
+                    "{case}: the gate leaves the document as the reader left it"
+                );
+
+                let before: serde_yaml::Value = serde_yaml::from_str(&before_gate).unwrap();
+                let subject = match writer {
+                    Writer::ConfigSet => {
+                        crate::cli::config_cmd::cmd_config_set(&cli, &printer, "profile", "other")
+                            .unwrap();
+                        "profile"
+                    }
+                    Writer::SourceAdd => {
+                        let source = cfgd_core::config::SourceSpec {
+                            name: "acme".to_string(),
+                            origin: serde_yaml::from_str(
+                                "type: Git\nurl: https://example.com/x.git\n",
+                            )
+                            .unwrap(),
+                            subscription: Default::default(),
+                            sync: Default::default(),
+                        };
+                        crate::cli::add_source_to_config(&path, &source).unwrap();
+                        "sources"
+                    }
+                    Writer::ProfileSwitch => {
+                        crate::cli::profile::cmd_profile_switch(&cli, "other", &printer).unwrap();
+                        "profile"
+                    }
+                };
+
+                let pending = pending_now();
+                if pending != [BEHIND_BY] {
+                    offenders.push(format!("{case}: pending after the write {pending:?}"));
+                }
+                let after: serde_yaml::Value =
+                    serde_yaml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+                let without_subject = |doc: &serde_yaml::Value| {
+                    let mut doc = doc.clone();
+                    doc["spec"].as_mapping_mut().unwrap().remove(subject);
+                    doc
+                };
+                if without_subject(&after) != without_subject(&before) {
+                    offenders.push(format!(
+                        "{case}: the write changed more than spec.{subject}:\n{}",
+                        serde_yaml::to_string(&after).unwrap()
+                    ));
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "a write answered the question the reader was asked:\n{}",
+            offenders.join("\n")
+        );
+    }
+
     /// A document that names no `migrationPolicy` is behind the schema by
     /// exactly that key; one that names it is behind by nothing. The detection
     /// reads the SERIALIZED typed value against the declared tree, so a field
@@ -1297,7 +1504,7 @@ mod tests {
     fn a_document_missing_a_defaulted_field_is_reported_as_behind_by_that_key() {
         let doc = "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: t\nspec:\n  profile: work\n";
         let cfg = cfgd_core::config::parse_config(doc, std::path::Path::new("cfgd.yaml")).unwrap();
-        let pending = pending_alignment(&cfg, doc);
+        let pending = pending_alignment(&cfg, doc, Path::new("cfgd.yaml"));
         assert!(
             pending.keys.contains(&"spec.migrationPolicy".to_string()),
             "the document names no migrationPolicy: {:?}",
@@ -1313,7 +1520,7 @@ mod tests {
         let cfg =
             cfgd_core::config::parse_config(&aligned, std::path::Path::new("cfgd.yaml")).unwrap();
         assert!(
-            !pending_alignment(&cfg, &aligned)
+            !pending_alignment(&cfg, &aligned, Path::new("cfgd.yaml"))
                 .keys
                 .contains(&"spec.migrationPolicy".to_string()),
             "a declared key is not pending"
@@ -1329,7 +1536,7 @@ mod tests {
     fn a_theme_written_as_the_unions_scalar_arm_declares_the_name_beneath_it() {
         let doc = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  output:\n    theme: dracula\n  fileStrategy: Symlink\n";
         let cfg = cfgd_core::config::parse_config(doc, std::path::Path::new("cfgd.yaml")).unwrap();
-        let pending = pending_alignment(&cfg, doc);
+        let pending = pending_alignment(&cfg, doc, Path::new("cfgd.yaml"));
         assert!(
             !pending
                 .keys
@@ -1351,7 +1558,7 @@ mod tests {
     fn no_reported_key_names_an_element_of_a_declared_list() {
         let doc = "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: t\nspec:\n  origin:\n    - type: Git\n      url: git@github.com:me/dotfiles.git\n";
         let cfg = cfgd_core::config::parse_config(doc, std::path::Path::new("cfgd.yaml")).unwrap();
-        let pending = pending_alignment(&cfg, doc);
+        let pending = pending_alignment(&cfg, doc, Path::new("cfgd.yaml"));
         assert!(
             !pending.keys.iter().any(|key| key
                 .split('.')
@@ -1385,7 +1592,7 @@ mod tests {
     fn every_key_pending_alignment_reports_is_one_the_config_writer_can_set() {
         let doc = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  output:\n    theme: dracula\n  fileStrategy: Symlink\n  profile: work\n";
         let cfg = cfgd_core::config::parse_config(doc, std::path::Path::new("cfgd.yaml")).unwrap();
-        let pending = pending_alignment(&cfg, doc);
+        let pending = pending_alignment(&cfg, doc, Path::new("cfgd.yaml"));
         assert!(
             pending.keys.contains(&"spec.migrationPolicy".to_string()),
             "the fixture reports something to write: {:?}",
@@ -1406,7 +1613,7 @@ mod tests {
         let written = serde_yaml::to_string(&written).unwrap();
         let cfg = cfgd_core::config::parse_config(&written, std::path::Path::new("cfgd.yaml"))
             .unwrap_or_else(|e| panic!("the written document parses: {e}"));
-        let pending = pending_alignment(&cfg, &written);
+        let pending = pending_alignment(&cfg, &written, Path::new("cfgd.yaml"));
         assert!(
             pending.keys.is_empty(),
             "a document carrying every reported key is behind by nothing: {:?}",
@@ -1440,7 +1647,7 @@ mod tests {
             );
             let cfg =
                 cfgd_core::config::parse_config(&doc, std::path::Path::new("cfgd.yaml")).unwrap();
-            let pending = pending_alignment(&cfg, &doc);
+            let pending = pending_alignment(&cfg, &doc, Path::new("cfgd.yaml"));
             let (_, new) = cfgd_core::config::LEGACY_OUTPUT_KEYS
                 .iter()
                 .find(|(o, _)| o == old)

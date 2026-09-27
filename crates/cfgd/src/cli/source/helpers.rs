@@ -270,37 +270,76 @@ fn find_source_in_config<'a>(
         })
 }
 
-/// The one read-parse-mutate-write loop for `cfgd.yaml`, returning the typed
-/// config the written document parses to.
+/// What one write of the config document left behind.
+#[derive(Debug)]
+pub(crate) struct ConfigWrite {
+    /// The typed config the written document parses to.
+    pub config: config::CfgdConfig,
+    /// The dotted keys the alignment wrote at the value the parse gave them,
+    /// e.g. `spec.daemon.reconcile.autoApply` put back after an unset.
+    pub filled: Vec<String>,
+}
+
+/// The config document at `path` as the tree every writer edits, read in the
+/// format its extension names: a `.toml` document is parsed as TOML, the way
+/// `parse_config` reads it, and every other document as YAML.
+pub(in crate::cli) fn config_tree(
+    contents: &str,
+    path: &Path,
+) -> anyhow::Result<serde_yaml::Value> {
+    if is_toml_document(path) {
+        let table: toml::Table = toml::from_str(contents)?;
+        Ok(serde_yaml::to_value(table)?)
+    } else {
+        Ok(serde_yaml::from_str(contents)?)
+    }
+}
+
+/// `tree` serialized in the format [`config_tree`] read it in.
+fn render_config_tree(tree: &serde_yaml::Value, path: &Path) -> anyhow::Result<String> {
+    if is_toml_document(path) {
+        Ok(toml::to_string(tree)?)
+    } else {
+        Ok(serde_yaml::to_string(tree)?)
+    }
+}
+
+fn is_toml_document(path: &Path) -> bool {
+    path.extension().and_then(|e| e.to_str()) == Some("toml")
+}
+
+/// The one read-parse-mutate-write loop for the config document, in the
+/// format its extension names.
 ///
-/// Loads the YAML at `config_path`, hands the mutable root `serde_yaml::Value`
-/// to `f`, parses the result as a `Config`, aligns it, and atomically writes
-/// it with the file's leading comment block re-prepended. A closure that
-/// leaves a document the parser refuses writes nothing: the refusal is
-/// `parse_failed`, naming the parser's reason.
+/// Loads the document at `config_path`, hands the mutable root
+/// `serde_yaml::Value` to `f`, parses the result as a `Config`, aligns what
+/// the closure made pending, and atomically writes it with the file's leading
+/// comment block re-prepended. A closure that leaves a document the parser
+/// refuses writes nothing: the refusal is `parse_failed`, naming the parser's
+/// reason.
 ///
-/// Aligning is what keeps the load-time migration gate asking one question.
-/// A present section declares every scalar this build reads under it, so a
-/// write that brings a section into existence (`config set daemon.reconcile.autoApply`
-/// on a document with no `daemon`) would otherwise leave it partial, and the
-/// next command would offer to add the siblings the reader never touched.
-/// Every scalar the parse carries that the document does not declare is
-/// written with the value the parse gave it, which is exactly what
-/// `cfgd config migrate --write` writes, so after any write the gate only
-/// names fields a newer build introduced. The alignment is silent: the verb's
-/// own confirmation stands for the write.
+/// The alignment keeps the load-time migration gate asking only its own
+/// question. A present section declares every scalar this build reads under
+/// it, so a write that brings a section into existence (`config set
+/// daemon.reconcile.autoApply` on a document with no `daemon`) would
+/// otherwise leave it partial, and an unset inside a present section would
+/// leave that section missing the key it removed. Each such key is written at
+/// the value the parse gave it. A key the document was already missing
+/// before the write, under a section it already held, is the gate's to ask
+/// about under `spec.migrationPolicy`, so the write leaves it alone.
 ///
-/// Use this for every write of `cfgd.yaml`; the open-coded `read_to_string →
-/// from_str → mutate → to_string → atomic_write_str` pattern is how writers
-/// once diverged on validation.
-pub(crate) fn mutate_config_yaml<F>(config_path: &Path, f: F) -> anyhow::Result<config::CfgdConfig>
+/// Use this for every write of the config document; the open-coded
+/// `read_to_string → from_str → mutate → to_string → atomic_write_str`
+/// pattern is how writers once diverged on validation.
+pub(crate) fn mutate_config_yaml<F>(config_path: &Path, f: F) -> anyhow::Result<ConfigWrite>
 where
     F: FnOnce(&mut serde_yaml::Value) -> anyhow::Result<()>,
 {
     let contents = std::fs::read_to_string(config_path)?;
-    let mut raw: serde_yaml::Value = serde_yaml::from_str(&contents)?;
+    let mut raw = config_tree(&contents, config_path)?;
+    let before = raw.clone();
     f(&mut raw)?;
-    let mut body = serde_yaml::to_string(&raw)?;
+    let mut body = render_config_tree(&raw, config_path)?;
     let cfg = config::parse_config(&body, config_path).map_err(|e| {
         crate::cli::cli_error(
             cfgd_core::to_posix_string(config_path),
@@ -312,8 +351,9 @@ where
             }),
         )
     })?;
-    if align_to_parse(&mut raw, &cfg)? {
-        body = serde_yaml::to_string(&raw)?;
+    let filled = align_what_the_write_left_pending(&mut raw, &before, &cfg)?;
+    if !filled.is_empty() {
+        body = render_config_tree(&raw, config_path)?;
     }
     let output = cfgd_core::config::with_leading_comments(&contents, &body);
     // Pre-flight the config dir for real write access so a read-only dir surfaces
@@ -334,36 +374,77 @@ where
         .into());
     }
     cfgd_core::atomic_write_str(config_path, &output)?;
-    Ok(cfg)
+    Ok(ConfigWrite {
+        config: cfg,
+        filled,
+    })
 }
 
 /// Materialize into `raw` every scalar `cfg` carries that `raw` does not
-/// declare, with the value `cfg` carries. `cfg` is the parse of `raw`, so the
-/// two differ by exactly what the deserializer defaulted. Returns whether
-/// anything was written.
+/// declare AND that this write made pending, with the value `cfg` carries.
+/// `cfg` is the parse of `raw`, so the two differ by exactly what the
+/// deserializer defaulted. Returns the keys written.
 ///
 /// The keys are the ones `config_schema::pending_alignment` reports, read by
-/// the same [`crate::cli::helpers::undeclared_scalar_keys`] over the tree
-/// already in hand, so the gate's report and this write cannot disagree. The
-/// mutable walker creates the intermediate mappings a key under an absent
-/// section needs, the way `cfgd config set` relies on it.
-fn align_to_parse(raw: &mut serde_yaml::Value, cfg: &config::CfgdConfig) -> anyhow::Result<bool> {
-    let keys = crate::cli::helpers::undeclared_scalar_keys(cfg, raw);
-    if keys.is_empty() {
-        return Ok(false);
-    }
-    let materialized = serde_yaml::to_value(cfg)?;
-    for key in &keys {
+/// the same traversal over the tree already in hand, then narrowed by
+/// [`made_pending_by_the_write`] against `before`, the document as it stood
+/// ahead of the closure. The mutable walker creates the intermediate mappings
+/// a key under an absent section needs, the way `cfgd config set` relies on
+/// it.
+fn align_what_the_write_left_pending(
+    raw: &mut serde_yaml::Value,
+    before: &serde_yaml::Value,
+    cfg: &config::CfgdConfig,
+) -> anyhow::Result<Vec<String>> {
+    let (keys, materialized) =
+        crate::cli::helpers::undeclared_scalar_keys_in(serde_yaml::to_value(cfg)?, raw);
+    let mut filled = Vec::new();
+    for key in keys {
+        if !made_pending_by_the_write(before, &key) {
+            continue;
+        }
         // Every key was read off `materialized` in the first place, so a miss
         // is a state this cannot reach; skipping it keeps a write the reader
         // asked for from failing over a key nobody asked for.
-        let Ok(value) = crate::cli::config_cmd::walk_yaml_path(&materialized, key) else {
+        let Ok(value) = crate::cli::config_cmd::walk_yaml_path(&materialized, &key) else {
             continue;
         };
-        let (parent, leaf) = crate::cli::config_cmd::walk_yaml_path_mut(raw, key)?;
+        let (parent, leaf) = crate::cli::config_cmd::walk_yaml_path_mut(raw, &key)?;
         parent.insert(serde_yaml::Value::String(leaf), value.clone());
+        filled.push(key);
     }
-    Ok(true)
+    Ok(filled)
+}
+
+/// Whether a key the written document does not declare is one this write
+/// made pending: the document declared it before the write (the write
+/// removed it), or a section above it was absent, null or empty before the
+/// write (the write created that section). Every other undeclared key was
+/// already missing from a section the document held, which is the question
+/// the load-time gate asks under `spec.migrationPolicy`.
+fn made_pending_by_the_write(before: &serde_yaml::Value, key: &str) -> bool {
+    let declared = match key.strip_prefix("spec.") {
+        // `walk_yaml_path` reads a scalar union arm relative to `spec`.
+        Some(rest) => before
+            .get("spec")
+            .is_some_and(|spec| crate::cli::config_cmd::walk_yaml_path(spec, rest).is_ok()),
+        None => crate::cli::config_cmd::walk_yaml_path(before, key).is_ok(),
+    };
+    if declared {
+        return true;
+    }
+    let segments: Vec<&str> = key.split('.').collect();
+    let mut node = before;
+    for segment in &segments[..segments.len() - 1] {
+        match node.get(segment) {
+            None | Some(serde_yaml::Value::Null) => return true,
+            Some(serde_yaml::Value::Mapping(map)) if map.is_empty() => return true,
+            Some(section @ serde_yaml::Value::Mapping(_)) => node = section,
+            // A scalar union arm stands for its mapping, which is present.
+            Some(_) => return false,
+        }
+    }
+    false
 }
 
 /// Load config YAML, find a named source, apply a mutation, and write back.

@@ -250,15 +250,26 @@ pub(in crate::cli) fn undeclared_scalar_keys<T: serde::Serialize>(
     value: &T,
     declared: &serde_yaml::Value,
 ) -> Vec<String> {
-    let Ok(mut tree) = serde_yaml::to_value(value) else {
+    let Ok(tree) = serde_yaml::to_value(value) else {
         return Vec::new();
     };
+    undeclared_scalar_keys_in(tree, declared).0
+}
+
+/// [`undeclared_scalar_keys`] over a value already serialized to `tree`,
+/// returning the keys with the tree they were read from. A writer that
+/// materializes the keys reads each value off that same tree, so the value
+/// is serialized once for both halves.
+pub(in crate::cli) fn undeclared_scalar_keys_in(
+    mut tree: serde_yaml::Value,
+    declared: &serde_yaml::Value,
+) -> (Vec<String>, serde_yaml::Value) {
     prune_absent_sections(&mut tree, 0);
     let mut out = Vec::new();
     collect_undeclared_scalars(&tree, declared, Sequences::Skip, &mut Vec::new(), &mut out);
     let mut keys: Vec<String> = out.iter().map(|path| dotted_path(path)).collect();
     keys.sort();
-    keys
+    (keys, tree)
 }
 
 fn dotted_path(path: &[YamlStep]) -> String {

@@ -832,29 +832,61 @@ pub fn cmd_config_unset(cli: &Cli, printer: &Printer, key: &str) -> anyhow::Resu
         }
     });
 
-    if let Err(e) = mutate_result {
-        let kind = classify_config_error(&e);
-        let msg = format!("{}", e);
-        let hints = writability_hint(kind, config_path);
-        return Err(crate::cli::cli_error_ctx_with_hints(
-            e,
-            key,
-            kind,
-            msg,
-            serde_json::json!({ "path": cfgd_core::to_posix_string(config_path) }),
-            hints,
-        ));
-    }
+    let written = match mutate_result {
+        Ok(written) => written,
+        Err(e) => {
+            let kind = classify_config_error(&e);
+            let msg = format!("{}", e);
+            let hints = writability_hint(kind, config_path);
+            return Err(crate::cli::cli_error_ctx_with_hints(
+                e,
+                key,
+                kind,
+                msg,
+                serde_json::json!({ "path": cfgd_core::to_posix_string(config_path) }),
+                hints,
+            ));
+        }
+    };
 
-    printer.emit(
+    // A key with a default inside a section the document keeps is written
+    // back at that default, so the file still names it: the row and the
+    // payload report the reset, and `removed` holds only for a key the file
+    // no longer carries.
+    let document_key = format!("spec.{written_key}");
+    let reset = written.filled.iter().any(|filled| {
+        filled == &document_key
+            || filled
+                .strip_prefix(document_key.as_str())
+                .is_some_and(|rest| rest.starts_with('.'))
+    });
+    let doc = if reset {
+        let default = serde_yaml::to_value(&written.config.spec)
+            .ok()
+            .and_then(|spec| walk_yaml_path(&spec, &written_key).ok().cloned())
+            .unwrap_or(serde_yaml::Value::Null);
+        let shown = match &default {
+            serde_yaml::Value::String(s) => s.clone(),
+            other => serde_json::to_string(other).unwrap_or_default(),
+        };
+        Doc::new()
+            .status(Role::Ok, format!("Reset {written_key} to {shown}"))
+            .with_data(serde_json::json!({
+                "key": written_key,
+                "previousValue": previous,
+                "removed": false,
+                "value": serde_json::to_value(&default).unwrap_or(serde_json::Value::Null),
+            }))
+    } else {
         Doc::new()
             .status(Role::Ok, format!("Unset {}", written_key))
             .with_data(serde_json::json!({
                 "key": written_key,
                 "previousValue": previous,
                 "removed": true,
-            })),
-    );
+            }))
+    };
+    printer.emit(doc);
 
     Ok(())
 }
@@ -1192,6 +1224,18 @@ spec:
         dir.join("cfgd.yaml")
     }
 
+    /// The same scaffold as a `cfgd.toml`, the document form `--config` also
+    /// accepts, returning its path.
+    fn toml_scaffolded(dir: &std::path::Path) -> std::path::PathBuf {
+        let yaml = scaffolded(dir);
+        let tree: serde_yaml::Value =
+            serde_yaml::from_str(&std::fs::read_to_string(&yaml).unwrap()).unwrap();
+        std::fs::remove_file(&yaml).unwrap();
+        let path = dir.join("cfgd.toml");
+        std::fs::write(&path, toml::to_string(&tree).unwrap()).unwrap();
+        path
+    }
+
     /// Why a written document is not aligned: the keys the load-time gate
     /// would still ask about, and every scalar of the section holding `key`
     /// that the typed value carries and the bytes do not declare.
@@ -1201,8 +1245,8 @@ spec:
             Ok(parsed) => parsed,
             Err(e) => return Some(format!("the written document does not parse: {e}")),
         };
-        let pending = crate::cli::config_schema::pending_alignment(&parsed, &bytes).keys;
-        let declared: serde_yaml::Value = serde_yaml::from_str(&bytes).unwrap();
+        let pending = crate::cli::config_schema::pending_alignment(&parsed, &bytes, path).keys;
+        let declared = crate::cli::source::config_tree(&bytes, path).unwrap();
         let typed = serde_yaml::to_value(&parsed.spec).unwrap();
         let section = key.rsplit_once('.').map_or(".", |(parent, _)| parent);
         let missing: Vec<String> = walk_yaml_path(&typed, section)
@@ -1258,16 +1302,31 @@ spec:
         );
         let printer = test_printer();
         let mut offenders = Vec::new();
-        for (key, value) in &leaves {
-            let dir = tempfile::tempdir().unwrap();
-            let path = scaffolded(dir.path());
-            let cli = test_cli_for(path.clone());
-            if let Err(e) = cmd_config_set(&cli, &printer, key, value) {
-                offenders.push(format!("config set {key} {value}: refused: {e}"));
-                continue;
-            }
-            if let Some(why) = misalignment(&path, key) {
-                offenders.push(format!("config set {key} {value}: {why}"));
+        for toml in [false, true] {
+            for (key, value) in &leaves {
+                let dir = tempfile::tempdir().unwrap();
+                let path = if toml {
+                    toml_scaffolded(dir.path())
+                } else {
+                    scaffolded(dir.path())
+                };
+                let cli = test_cli_for(path.clone());
+                let form = if toml { "cfgd.toml" } else { "cfgd.yaml" };
+                let case = format!("config set {key} {value} on {form}");
+                if let Err(e) = cmd_config_set(&cli, &printer, key, value) {
+                    offenders.push(format!("{case}: refused: {e}"));
+                    continue;
+                }
+                if toml {
+                    let written = std::fs::read_to_string(&path).unwrap();
+                    if let Err(e) = written.parse::<toml::Table>() {
+                        offenders.push(format!("{case}: the document is no longer TOML: {e}"));
+                        continue;
+                    }
+                }
+                if let Some(why) = misalignment(&path, key) {
+                    offenders.push(format!("{case}: {why}"));
+                }
             }
         }
         assert!(
@@ -1280,7 +1339,9 @@ spec:
     // The unset half, on a document declaring every leaf: removing a key
     // with a default re-declares it at that default, and removing the last
     // key of a section leaves either the section complete or no section at
-    // all, both of which the gate reads as aligned.
+    // all, both of which the gate reads as aligned. The payload says which
+    // of the two happened: `removed` only for a key the file no longer
+    // carries, and the value written back for a key reset to its default.
     #[test]
     fn every_config_document_unset_leaves_it_aligned() {
         let leaves = settable_config_leaves();
@@ -1295,23 +1356,58 @@ spec:
         let full_doc = std::fs::read_to_string(&full_path).unwrap();
 
         let mut offenders = Vec::new();
+        let mut payloads = std::collections::BTreeMap::new();
         for (key, _) in &leaves {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("cfgd.yaml");
             std::fs::write(&path, &full_doc).unwrap();
             let cli = test_cli_for(path.clone());
-            if let Err(e) = cmd_config_unset(&cli, &printer, key) {
+            let (json_printer, cap) = Printer::for_test_doc_with_format(OutputFormat::Json);
+            if let Err(e) = cmd_config_unset(&cli, &json_printer, key) {
                 offenders.push(format!("config unset {key}: refused: {e}"));
                 continue;
             }
+            drop(json_printer);
             if let Some(why) = misalignment(&path, key) {
                 offenders.push(format!("config unset {key}: {why}"));
             }
+            let payload = cap.json().expect("doc captured json");
+            let written: serde_yaml::Value =
+                serde_yaml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            let on_file = walk_yaml_path(&written, &format!("spec.{key}")).ok();
+            match on_file {
+                None if payload["removed"] != true => offenders.push(format!(
+                    "config unset {key}: the file no longer carries it, the payload says {payload}"
+                )),
+                Some(value)
+                    if payload["removed"] != false
+                        || payload["value"] != serde_json::to_value(value).unwrap() =>
+                {
+                    offenders.push(format!(
+                        "config unset {key}: the file holds {value:?}, the payload says {payload}"
+                    ))
+                }
+                _ => {}
+            }
+            payloads.insert(key.clone(), payload);
         }
         assert!(
             offenders.is_empty(),
-            "a config unset left the document partial:\n{}",
+            "a config unset left the document partial or misreported it:\n{}",
             offenders.join("\n")
+        );
+
+        let reset = &payloads["daemon.reconcile.autoApply"];
+        assert_eq!(
+            (&reset["removed"], &reset["value"]),
+            (&serde_json::json!(false), &serde_json::json!(false)),
+            "a field with a default is reported reset to that default: {reset}"
+        );
+        let removed = &payloads["profile"];
+        assert_eq!(
+            (&removed["removed"], removed.get("value")),
+            (&serde_json::json!(true), None),
+            "an optional field is reported removed: {removed}"
         );
     }
 
