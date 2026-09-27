@@ -3062,6 +3062,7 @@ fn every_test_reading_brews_path_dirs_settles_the_seam_and_serializes() {
     let mut reading = 0usize;
     for root in [crate_dir.join("src"), crate_dir.join("tests")] {
         for path in cfgd_core::test_helpers::rust_sources_under(&root) {
+            // unfloored-slice-ok: the test declarations judged here live in test regions.
             let body = cfgd_core::test_helpers::walked_file_body(&path);
             for (name, attrs, decl) in test_declarations(&body) {
                 let text = decl.join("\n");

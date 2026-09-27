@@ -3571,7 +3571,9 @@ mod local_source_fixture {
                 lock_path.is_file(),
                 "the lock lives beside the checkouts it guards: {:?}",
                 std::fs::read_dir(&cache_dir).map(|d| d
-                    .filter_map(|e| e.ok().map(|e| e.path()))
+                    .map(|entry| entry
+                        .expect("the walk must read every directory entry")
+                        .path())
                     .collect::<Vec<_>>())
             );
 
@@ -3761,7 +3763,11 @@ mod local_source_fixture {
                 .expect_err("a pin matching no tag fails the first-ever load");
             let left: Vec<_> = std::fs::read_dir(&cache_dir)
                 .expect("the cache root stays")
-                .filter_map(|e| e.ok().map(|e| e.file_name()))
+                .map(|entry| {
+                    entry
+                        .expect("the walk must read every directory entry")
+                        .file_name()
+                })
                 .collect();
             assert_eq!(
                 left,
@@ -4646,7 +4652,7 @@ mod bare_repo_load {
                 dir.join(".git").exists() || dir.join("HEAD").exists(),
                 "must be a git repo: {:?}",
                 std::fs::read_dir(&dir).map(|d| d
-                    .filter_map(|e| e.ok())
+                    .map(|entry| entry.expect("the walk must read every directory entry"))
                     .map(|e| e.file_name())
                     .collect::<Vec<_>>())
             );

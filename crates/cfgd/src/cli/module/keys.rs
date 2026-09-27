@@ -597,7 +597,7 @@ mod tests {
         );
         let backup_key_exists = std::fs::read_dir(tmp.path())
             .expect("read dir")
-            .filter_map(|e| e.ok())
+            .map(|entry| entry.expect("the walk must read every directory entry"))
             .any(|e| {
                 let name = e.file_name();
                 let n = name.to_string_lossy();
@@ -735,7 +735,7 @@ mod tests {
         assert!(tmp.path().join("cosign.key").exists());
         let backup_pub_present = std::fs::read_dir(tmp.path())
             .unwrap()
-            .filter_map(|e| e.ok())
+            .map(|entry| entry.expect("the walk must read every directory entry"))
             .any(|e| e.file_name().to_string_lossy().starts_with("cosign.pub."));
         assert!(
             !backup_pub_present,

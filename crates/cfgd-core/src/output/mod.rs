@@ -1143,7 +1143,7 @@ mod condense_script_label_tests {
                 continue;
             }
             // unfloored-slice-ok: each test item is skipped below, at the file's own line numbers.
-            let body = std::fs::read_to_string(&path).unwrap();
+            let body = crate::test_helpers::walked_file_body(&path);
             let lines: Vec<&str> = body.lines().collect();
             // Each test item is skipped where it stands: `output/mod.rs`,
             // `renderer/mod.rs` and `reconciler/format.rs` each carry a

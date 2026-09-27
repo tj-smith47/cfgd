@@ -5034,7 +5034,11 @@ fn every_upsert_refreshes_its_own_timestamp() {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/state");
     let mut files: Vec<_> = std::fs::read_dir(&dir)
         .expect("the state module is checked out")
-        .filter_map(|e| e.ok().map(|e| e.path()))
+        .map(|entry| {
+            entry
+                .expect("the walk must read every directory entry")
+                .path()
+        })
         .filter(|p| p.extension().is_some_and(|x| x == "rs"))
         .filter(|p| !crate::test_helpers::is_test_source(p))
         .collect();
@@ -5042,7 +5046,7 @@ fn every_upsert_refreshes_its_own_timestamp() {
     let mut upserts = 0usize;
     let mut offenders = Vec::new();
     for path in files {
-        let body = crate::test_helpers::walked_file_body(&path);
+        let body = crate::test_helpers::production_slice_of(&path);
         let lines: Vec<&str> = body.lines().collect();
         for (at, _) in body.match_indices("ON CONFLICT") {
             upserts += 1;

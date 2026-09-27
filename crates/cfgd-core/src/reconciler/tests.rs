@@ -432,7 +432,7 @@ fn apply_aborts_before_first_action_when_flag_preset() {
     );
     let leftover: Vec<_> = std::fs::read_dir(dir.path())
         .unwrap()
-        .filter_map(|e| e.ok())
+        .map(|entry| entry.expect("the walk must read every directory entry"))
         .map(|e| e.file_name().to_string_lossy().to_string())
         .filter(|n| n.contains(".tmp") || n.ends_with('~'))
         .collect();
@@ -26126,7 +26126,9 @@ fn a_lane_worker_resolves_tilde_against_the_callers_test_home() {
         home.path(),
         std::fs::read_dir(home.path())
             .map(|entries| entries
-                .filter_map(|e| e.ok().map(|e| e.file_name()))
+                .map(|entry| entry
+                    .expect("the walk must read every directory entry")
+                    .file_name())
                 .collect::<Vec<_>>())
             .unwrap_or_default()
     );

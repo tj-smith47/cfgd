@@ -5796,6 +5796,7 @@ pub fn test_only_files_below(root: &Path) -> std::collections::BTreeSet<PathBuf>
         .collect();
     crate_dirs.sort();
     for dir in &crate_dirs {
+        // unfloored-slice-ok: a manifest is no Rust source.
         let manifest: toml::Table = walked_file_body(&dir.join("Cargo.toml"))
             .parse()
             .unwrap_or_else(|e| panic!("{}: Cargo.toml must parse: {e}", dir.display()));
@@ -5839,6 +5840,7 @@ pub fn test_only_files_below(root: &Path) -> std::collections::BTreeSet<PathBuf>
         .collect();
     let mut declared: Vec<(PathBuf, Vec<(PathBuf, bool)>)> = Vec::new();
     for source in &sources {
+        // unfloored-slice-ok: a gate or module declaration counts wherever it stands.
         let body = walked_file_body(source);
         let inner_gate = body
             .lines()

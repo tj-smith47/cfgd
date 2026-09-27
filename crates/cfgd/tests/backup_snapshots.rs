@@ -738,7 +738,7 @@ fn newest_sidecar_beside(source: &Path) -> std::path::PathBuf {
     );
     std::fs::read_dir(dir)
         .expect("read the source directory")
-        .flatten()
+        .map(|entry| entry.expect("the walk must read every directory entry"))
         .filter(|e| e.file_name().to_string_lossy().starts_with(&base))
         // Mtime AND name, the tie-break `rollback_copy` itself breaks toward
         // the stamped spelling: a filesystem with coarse timestamps can stamp

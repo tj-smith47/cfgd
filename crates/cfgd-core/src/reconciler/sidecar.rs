@@ -475,7 +475,7 @@ mod tests {
         );
         let entries: Vec<_> = std::fs::read_dir(tmp.path())
             .unwrap()
-            .filter_map(|e| e.ok())
+            .map(|entry| entry.expect("the walk must read every directory entry"))
             .collect();
         assert_eq!(entries.len(), 2, "no second sidecar should be created");
         assert!(written.reused, "a reused sidecar says so");

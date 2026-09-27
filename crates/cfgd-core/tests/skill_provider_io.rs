@@ -300,7 +300,11 @@ fn project_scope_install_leaves_no_lock_file_in_project_dir() {
         // No stray files at all beyond AGENTS.md.
         let entries: Vec<_> = std::fs::read_dir(project.path())
             .expect("read project dir")
-            .filter_map(|e| e.ok().map(|e| e.file_name()))
+            .map(|entry| {
+                entry
+                    .expect("the walk must read every directory entry")
+                    .file_name()
+            })
             .collect();
         assert_eq!(
             entries,

@@ -719,7 +719,7 @@ mod tests {
         // No file should exist for the nameless entry.
         let entries: Vec<_> = std::fs::read_dir(&plist_dir)
             .unwrap()
-            .filter_map(|e| e.ok())
+            .map(|entry| entry.expect("the walk must read every directory entry"))
             .collect();
         assert_eq!(
             entries.len(),

@@ -4381,7 +4381,11 @@ fn no_daemon_state_write_reaches_a_source_row_by_position() {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/daemon");
     let mut files: Vec<_> = std::fs::read_dir(&dir)
         .expect("the daemon module is checked out")
-        .filter_map(|e| e.ok().map(|e| e.path()))
+        .map(|entry| {
+            entry
+                .expect("the walk must read every directory entry")
+                .path()
+        })
         .filter(|p| p.extension().is_some_and(|x| x == "rs"))
         .filter(|p| !crate::test_helpers::is_test_source(p))
         .collect();
@@ -4405,7 +4409,7 @@ fn no_daemon_state_write_reaches_a_source_row_by_position() {
     };
     let mut offenders = Vec::new();
     for path in &files {
-        let body = crate::test_helpers::walked_file_body(path);
+        let body = crate::test_helpers::production_slice_of(path);
         let lines: Vec<&str> = body.lines().collect();
         for (n, line) in lines.iter().enumerate() {
             if !positional_write(line) {
@@ -12356,6 +12360,7 @@ fn no_reader_of_the_global_daemon_journal_asserts_an_absence() {
     let mut offenders: Vec<String> = Vec::new();
     for path in crate::test_helpers::rust_sources_under(&crates_dir) {
         files += 1;
+        // unfloored-slice-ok: the journal readers judged here are tests.
         let body = crate::test_helpers::walked_file_body(&path);
         let (file_reads, file_offenders) = global_journal_reads(&body);
         reads += file_reads;
@@ -19924,6 +19929,7 @@ mod ipc_socket_security {
                 .unwrap_or(path.as_path())
                 .display()
                 .to_string();
+            // unfloored-slice-ok: the pins judged here are tests.
             let body = crate::test_helpers::walked_file_body(&path);
             let lines = crate::test_helpers::logical_source_lines(&body);
             let mut i = 0;

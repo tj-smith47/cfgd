@@ -421,9 +421,7 @@ mod tests {
         ) {
             // A test spawning git runs the same argv, so test code is judged too.
             // unfloored-slice-ok: test regions and test files are in the population.
-            let body = std::fs::read_to_string(&path).unwrap_or_else(|e| {
-                panic!("{}: the walk must read every source: {e}", path.display())
-            });
+            let body = crate::test_helpers::walked_file_body(&path);
             // Prose says the words on purpose — the rule is documented where it
             // is enforced, and a comment spawns no process.
             let code = body

@@ -3484,3 +3484,78 @@ mod tests_log_reconcile {
         let _: () = futures::executor::block_on(ready);
     }
 }
+
+/// Every kind whose status carries `conditions` exposes its readiness
+/// condition as a printer column. `Module` shipped without one, so a module
+/// the operator WITHHELD over its signature verdict (`Available: False`) and
+/// a served one were the same row in `kubectl get modules` — the one surface
+/// a cluster user reaches for. The column's condition type is checked against
+/// the literals the operator's controllers write, so a column bound to a
+/// condition nothing sets would trip here too.
+#[test]
+fn every_kind_with_conditions_exposes_its_readiness_condition_as_a_column() {
+    use kube::CustomResourceExt;
+
+    use crate::crds::{ClusterConfigPolicy, ConfigPolicy, DriftAlert, MachineConfig, Module};
+
+    // A condition literal in a test would pass for one a controller writes, so
+    // only the controllers' production regions are read.
+    let controllers = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/controllers");
+    let written: String = cfgd_core::test_helpers::rust_sources_under(&controllers)
+        .into_iter()
+        .map(|path| cfgd_core::test_helpers::production_slice_of(&path))
+        .collect();
+
+    let crds = [
+        ("MachineConfig", MachineConfig::crd()),
+        ("ConfigPolicy", ConfigPolicy::crd()),
+        ("ClusterConfigPolicy", ClusterConfigPolicy::crd()),
+        ("DriftAlert", DriftAlert::crd()),
+        ("Module", Module::crd()),
+    ];
+    let mut judged = 0usize;
+    for (kind, crd) in crds {
+        let version = &crd.spec.versions[0];
+        let schema = version
+            .schema
+            .as_ref()
+            .and_then(|s| s.open_api_v3_schema.as_ref())
+            .unwrap_or_else(|| panic!("{kind} must publish a schema"));
+        let conditions = schema
+            .properties
+            .as_ref()
+            .and_then(|p| p.get("status"))
+            .and_then(|s| s.properties.as_ref())
+            .and_then(|p| p.get("conditions"));
+        if conditions.and_then(|c| c.type_.as_deref()) != Some("array") {
+            continue;
+        }
+        judged += 1;
+        let condition_types: Vec<String> = version
+            .additional_printer_columns
+            .iter()
+            .flatten()
+            .filter_map(|c| {
+                let rest = c
+                    .json_path
+                    .strip_prefix(".status.conditions[?(@.type==\"")?;
+                let (ty, _) = rest.split_once("\")].status")?;
+                Some(ty.to_string())
+            })
+            .collect();
+        assert!(
+            !condition_types.is_empty(),
+            "{kind} writes conditions but exposes none of them as a printer column"
+        );
+        for ty in condition_types {
+            assert!(
+                written.contains(&format!("\"{ty}\"")),
+                "{kind}'s printer column binds to a `{ty}` condition no controller writes"
+            );
+        }
+    }
+    assert_eq!(
+        judged, 5,
+        "every kind carries conditions; the walk reached {judged}"
+    );
+}

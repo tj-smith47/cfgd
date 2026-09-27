@@ -27,6 +27,7 @@ fn suspend_is_never_called() {
         if path.ends_with(Path::new("output/tests/fences.rs")) {
             continue;
         }
+        // unfloored-slice-ok: a call anywhere, tests included, is the subject.
         let body = walked_file_body(&path);
         for (i, line) in body.lines().enumerate() {
             if line.contains(".suspend(") {
@@ -79,6 +80,7 @@ fn every_subscriber_writes_through_a_folding_writer() {
         if path.ends_with(Path::new("output/tests/fences.rs")) {
             continue;
         }
+        // unfloored-slice-ok: a subscriber anywhere, tests included, is the subject.
         let body = walked_file_body(&path);
         for (line_no, why) in unfolded_subscriber_offenders(&body) {
             let line = body.lines().nth(line_no).unwrap_or_default();
@@ -124,6 +126,7 @@ fn no_subscriber_drops_its_timestamp() {
         if path.ends_with(Path::new("output/tests/fences.rs")) {
             continue;
         }
+        // unfloored-slice-ok: a subscriber anywhere, tests included, is the subject.
         let body = walked_file_body(&path);
         let lines: Vec<&str> = body.lines().collect();
         for (i, line) in lines.iter().enumerate() {
@@ -671,6 +674,7 @@ fn package_context_is_only_built_through_its_constructors() {
         {
             continue;
         }
+        // unfloored-slice-ok: a literal anywhere, tests included, is the subject.
         let body = walked_file_body(&path);
         for (i, line) in body.lines().enumerate() {
             if line.contains("PackageContext {") {
@@ -727,6 +731,7 @@ fn no_decision_row_renderer_reads_the_stored_summary() {
             continue;
         }
         scanned += 1;
+        // unfloored-slice-ok: the listed renderers are judged whole, which can only add offenders.
         let body = walked_file_body(&path);
         let lines: Vec<&str> = body.lines().collect();
         for (i, line) in lines.iter().enumerate() {
@@ -784,7 +789,7 @@ fn the_summary_matcher_finds_the_reads_that_do_exist() {
         .find(|p| crate::to_posix_string(p).ends_with("reconciler/pending.rs"))
         .unwrap_or_else(|| panic!("reconciler/pending.rs must exist"));
     // unfloored-slice-ok: one file, asked only whether the reads exist in it.
-    let body = std::fs::read_to_string(&pending).unwrap_or_else(|e| panic!("{pending:?}: {e}"));
+    let body = walked_file_body(&pending);
     assert!(
         body.lines().any(reads_a_summary_field),
         "the fallback's own file must contain the reads this fence refuses \
@@ -840,7 +845,7 @@ fn every_daemon_info_event_names_its_subsystem() {
         {
             continue;
         }
-        let body = walked_file_body(&path);
+        let body = crate::test_helpers::production_slice_of(&path);
         // `service/` installs and uninstalls the unit from a one-shot command
         // the user is watching, so those DO report through the printer. The
         // loop itself has no terminal to report to.
@@ -1318,6 +1323,7 @@ fn no_core_env_file_fixture_hardcodes_the_primary_env_files_name_or_dialect() {
         if !path.starts_with(&core_src) || path.ends_with(Path::new("output/tests/fences.rs")) {
             continue;
         }
+        // unfloored-slice-ok: the env-file fixtures judged here live in test regions.
         let body = walked_file_body(&path);
         // The dialect-alone tells' one path-based hatch: the file that OWNS
         // the dialect (`env_engine.rs`, home of `path_line`/`fold_path_line`)
@@ -2029,6 +2035,7 @@ fn every_test_mutating_the_process_environment_serializes_itself() {
         if path.ends_with(Path::new("output/tests/fences.rs")) {
             continue;
         }
+        // unfloored-slice-ok: the tests judged here live in test regions.
         let body = walked_file_body(&path);
         if !body.contains("#[test]") && !body.contains("#[tokio::test") {
             continue;
@@ -2166,7 +2173,7 @@ fn every_test_mutating_the_process_environment_serializes_itself() {
     // watching no test at all.
     let own_path = root.join("crates/cfgd-core/src/output/tests/fences.rs");
     // unfloored-slice-ok: the roster and its hatches live in this file's tests.
-    let own = std::fs::read_to_string(&own_path).unwrap_or_else(|e| panic!("{own_path:?}: {e}"));
+    let own = walked_file_body(&own_path);
     let own_lines: Vec<&str> = own.lines().collect();
     let uncounted: Vec<&str> = entry_hits
         .iter()
@@ -2389,9 +2396,7 @@ fn every_test_pinning_a_serialized_seam_joins_its_own_group() {
         }
         let labelled = source_label(&path);
         // unfloored-slice-ok: the declarations judged here are tests.
-        let body = std::fs::read_to_string(&path).unwrap_or_else(|err| {
-            panic!("{labelled}: the walk cannot judge a file it cannot read: {err}")
-        });
+        let body = walked_file_body(&path);
         if !SERIAL_PINS
             .iter()
             .any(|(pin, _, reader, _)| body.contains(pin) || body.contains(reader))
@@ -2580,9 +2585,7 @@ fn every_declaration_taking_two_serial_locks_takes_them_in_one_order() {
         }
         let labelled = source_label(&path);
         // unfloored-slice-ok: the declarations judged here are tests.
-        let body = std::fs::read_to_string(&path).unwrap_or_else(|err| {
-            panic!("{labelled}: the walk cannot judge a file it cannot read: {err}")
-        });
+        let body = walked_file_body(&path);
         if !body.contains("serial_test::serial") {
             continue;
         }
@@ -2663,9 +2666,7 @@ fn every_scoped_tracing_capture_installs_the_journal_under_it() {
         }
         let labelled = source_label(&path);
         // unfloored-slice-ok: the declarations judged here are tests.
-        let body = std::fs::read_to_string(&path).unwrap_or_else(|err| {
-            panic!("{labelled}: the walk cannot judge a file it cannot read: {err}")
-        });
+        let body = walked_file_body(&path);
         if !SCOPED_CAPTURE_BINDS.iter().any(|bind| body.contains(bind)) {
             continue;
         }
@@ -2839,6 +2840,7 @@ fn no_item_outside_a_function_body_mutates_the_process_environment() {
         if path.ends_with(Path::new("output/tests/fences.rs")) {
             continue;
         }
+        // unfloored-slice-ok: an item anywhere, tests included, is the subject.
         let body = walked_file_body(&path);
         let lines: Vec<&str> = body.lines().collect();
         let relative = source_label(&path);
@@ -3148,11 +3150,14 @@ fn every_env_mutating_test_helper_is_named_in_the_mutator_roster() {
 /// through [`crate::test_helpers::test_module_cut_of`], the same floored cut
 /// with no test-only guard.
 ///
-/// A raw `read_to_string` inside a function that walks sources (one calling
-/// `rust_sources_under`, `workspace_rust_files`, `is_test_source` or
-/// `is_test_only_file`) reads the test region as if it were production, so it
-/// is judged the same way: it routes through a floored reader, or carries the
-/// hatch saying why the whole file is the walk's subject.
+/// A source walk is a test-scope function calling `rust_sources_under`,
+/// `workspace_rust_files`, `is_test_source` or `is_test_only_file`, or one
+/// enumerating `.rs` files itself with `read_dir`. A source walk reads each
+/// production file through `production_slice_of` (`floored_production_body` in
+/// the `cfgd` crate); when it reads a whole file, inline `#[cfg(test)]`
+/// included, it calls [`crate::test_helpers::walked_file_body`] and carries
+/// `// unfloored-slice-ok: <why>` (on that line or the one above). A raw
+/// `read_to_string` in a source walk fails whatever it carries.
 #[test]
 fn every_multi_file_production_walk_reads_through_the_floored_helper() {
     // Spelled in parts, or this walk's own needles are the first offenders it
@@ -3168,7 +3173,12 @@ fn every_multi_file_production_walk_reads_through_the_floored_helper() {
         concat!("is_test", "_source("),
         concat!("is_test_only", "_file("),
     ];
+    let enumerates_sources = |func: &str| {
+        func.contains(concat!("read", "_dir("))
+            && (func.contains(concat!("\"", "rs\"")) || func.contains(concat!("\".", "rs\"")))
+    };
     let raw_read = concat!("read_to", "_string(");
+    let whole_read = concat!("walked_file", "_body(");
     let mut offenders = Vec::new();
     let mut raw_reads = Vec::new();
     let mut walks = 0usize;
@@ -3185,8 +3195,7 @@ fn every_multi_file_production_walk_reads_through_the_floored_helper() {
             crate::test_helpers::test_module_cut_of(&path)
         } else {
             // unfloored-slice-ok: the walks judged here are tests.
-            std::fs::read_to_string(&path)
-                .unwrap_or_else(|e| panic!("{label}: the walk must read every source: {e}"))
+            walked_file_body(&path)
         };
         let lines: Vec<&str> = body.lines().collect();
         let mut spells = [false; 2];
@@ -3230,22 +3239,39 @@ fn every_multi_file_production_walk_reads_through_the_floored_helper() {
                 sources[slot] += 1;
             }
         }
+        // Production code reading files is outside the rule: only test scope
+        // walks sources.
+        let whole_test = own_file
+            || crate::test_helpers::is_test_source(&path)
+            || crate::test_helpers::is_test_only_file(&path);
+        let test_items = crate::test_helpers::inline_test_item_ranges(&body);
+        let in_test =
+            |n: usize| whole_test || test_items.iter().any(|(a, b)| (*a..*b).contains(&n));
         for (open, func) in source_functions(&label, &body) {
-            if !walk_calls.iter().any(|call| func.contains(call)) {
+            // `open` is 1-based and the slice starts on the declaration's line.
+            if !in_test(open - 1)
+                || !(walk_calls.iter().any(|call| func.contains(call)) || enumerates_sources(&func))
+            {
                 continue;
             }
             walks += 1;
             for (k, line) in func.lines().enumerate() {
-                if line.trim_start().starts_with("//") || !line.contains(raw_read) {
+                let code = line.trim_start();
+                if code.starts_with("//") || code.contains("fn ") {
                     continue;
                 }
-                // `open` is 1-based and the slice starts on the declaration's line.
                 let n = open - 1 + k;
-                let above = n.checked_sub(1).map(|i| lines[i]).unwrap_or_default();
-                if carries_hatch(line, hatch) || carries_hatch(above, hatch) {
+                if line.contains(raw_read) {
+                    raw_reads.push(format!("{label}:{}: {}", n + 1, line.trim()));
                     continue;
                 }
-                raw_reads.push(format!("{label}:{}: {}", n + 1, line.trim()));
+                if !line.contains(whole_read) {
+                    continue;
+                }
+                let above = n.checked_sub(1).map(|i| lines[i]).unwrap_or_default();
+                if !(carries_hatch(line, hatch) || carries_hatch(above, hatch)) {
+                    raw_reads.push(format!("{label}:{}: {}", n + 1, line.trim()));
+                }
             }
         }
     }
@@ -3261,12 +3287,14 @@ fn every_multi_file_production_walk_reads_through_the_floored_helper() {
     assert!(
         raw_reads.is_empty(),
         "a source walk reads each file through `production_slice_of`, \
-         `floored_production_body` or `test_module_cut_of`, or says why the whole \
-         file is its subject with `// unfloored-slice-ok: <why>`:\n{}",
+         `floored_production_body` or `test_module_cut_of`; a walk whose subject \
+         is the whole file reads it through `walked_file_body` and says why with \
+         `// unfloored-slice-ok: <why>`:\n{}",
         raw_reads.join("\n")
     );
+    // The count the workspace's test scope holds: 147 functions walking sources.
     assert!(
-        walks >= 140,
+        walks >= 147,
         "the walk found {walks} source walks; it has stopped reading the population it judges"
     );
     assert!(
@@ -3706,6 +3734,7 @@ fn the_item_lead_tell_reads_a_fold_and_not_a_mention() {
 fn no_test_scope_scanner_folds_an_item_lead_by_hand() {
     let mut offenders = Vec::new();
     for path in workspace_rust_files() {
+        // unfloored-slice-ok: the test region is cut from the whole file on this line.
         let body = test_region(&path, &walked_file_body(&path));
         let rel = crate::to_posix_string(path.strip_prefix(workspace_root()).unwrap_or(&path));
         offenders.extend(lead_fold_offenders(&rel, &body));
@@ -3764,6 +3793,7 @@ fn every_hatch_a_walk_reads_comes_from_the_one_line_reader() {
     let mut per_crate: std::collections::BTreeMap<String, usize> =
         std::collections::BTreeMap::new();
     for path in workspace_rust_files() {
+        // unfloored-slice-ok: the test region is cut from the whole file on this line.
         let body = test_region(&path, &walked_file_body(&path));
         let lines: Vec<&str> = body.lines().collect();
         let mut read_here = 0usize;
@@ -4270,6 +4300,7 @@ fn every_in_process_test_declaring_shell_items_holds_a_test_home() {
         if !crate::test_helpers::is_test_source(&path) || posix.contains("/src/") {
             continue;
         }
+        // unfloored-slice-ok: an integration test file is test code whole.
         let body = walked_file_body(&path);
         let lines: Vec<&str> = body.lines().collect();
         let relative = source_label(&path);
@@ -4792,8 +4823,7 @@ fn every_gc_failed_removal_pin_holds_its_payload_through_the_one_fixture() {
         }
         let relative = source_label(&path);
         // unfloored-slice-ok: the pins judged here are tests.
-        let body = std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("the walk could not read {relative} — {e}"));
+        let body = walked_file_body(&path);
         let lines: Vec<&str> = body.lines().collect();
         let floored = GC_FAILED_REMOVAL_PINS
             .iter()
@@ -5014,7 +5044,7 @@ fn every_production_spawn_in_the_workspace_goes_through_the_one_ladder() {
     let root = crate::test_helpers::workspace_root();
     let mut present: Vec<String> = std::fs::read_dir(root.join("crates"))
         .expect("the workspace's crate directory is readable")
-        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.expect("the walk must read every directory entry"))
         .filter(|entry| entry.path().join("src").is_dir())
         .map(|entry| format!("crates/{}/src", entry.file_name().to_string_lossy()))
         .collect();
@@ -5133,6 +5163,7 @@ fn every_distinctness_premise_reads_the_values_its_fixture_asserts() {
         {
             continue;
         }
+        // unfloored-slice-ok: the premises judged here are tests.
         let body = walked_file_body(&path);
         let lines: Vec<&str> = body.lines().collect();
         for (idx, line) in lines.iter().enumerate() {
@@ -5344,6 +5375,7 @@ fn no_walk_silently_drops_a_file_it_enumerated() {
     for path in workspace_rust_files() {
         let posix = crate::to_posix_string(&path);
         files += 1;
+        // unfloored-slice-ok: each file is split into its regions below.
         let body = walked_file_body(&path);
         let lines: Vec<&str> = body.lines().collect();
         // Scaffolding is judged whole: a `tests.rs` carries no `#[cfg(test)]`
@@ -5484,6 +5516,7 @@ fn every_path_a_test_substitutes_for_a_label_goes_through_the_one_normalizer() {
     let mut offenders = Vec::new();
     for path in workspace_rust_files() {
         let posix = crate::to_posix_string(&path);
+        // unfloored-slice-ok: the test region is taken from the whole file below.
         let body = walked_file_body(&path);
         let lines: Vec<&str> = body.lines().collect();
         let from = if crate::test_helpers::is_test_source(&path)
@@ -5640,6 +5673,7 @@ fn every_pin_that_runs_at_one_uid_says_so_in_its_name() {
     let mut offenders = Vec::new();
     for path in workspace_rust_files() {
         let relative = source_label(&path);
+        // unfloored-slice-ok: the pins judged here are tests.
         let body = crate::test_helpers::walked_file_body(&path);
         let lines: Vec<&str> = body.lines().collect();
         for (open, slice) in source_functions(&relative, &body) {
@@ -5855,6 +5889,7 @@ fn every_deserialized_script_body_is_refused_an_empty_run() {
     let mut unvalidated = Vec::new();
     for (file, field, validators) in SCRIPT_BODY_HOLDERS {
         for validator in *validators {
+            // unfloored-slice-ok: the validator is searched for one call, wherever it stands.
             let body = walked_file_body(&workspace_root().join(validator));
             let lines: Vec<&str> = body.lines().collect();
             let names_the_field = lines.iter().enumerate().any(|(i, line)| {
@@ -6240,6 +6275,7 @@ fn no_string_literal_carries_a_mid_sentence_space_run() {
     let mut scanned = 0usize;
     for path in workspace_rust_files() {
         scanned += 1;
+        // unfloored-slice-ok: a literal anywhere, tests included, is the subject.
         let body = walked_file_body(&path);
         let raw: Vec<&str> = body.lines().collect();
         for (n, line) in folded_literal_lines(&body) {
@@ -6703,6 +6739,7 @@ fn every_raw_spawn_in_test_code_holds_the_path_gate() {
     let mut per_file: Vec<(String, usize)> = Vec::new();
     for path in workspace_rust_files() {
         let label = source_label(&path);
+        // unfloored-slice-ok: the test region is cut from the whole file on this line.
         let region = test_region(&path, &walked_file_body(&path));
         let (unguarded, sites, hatched) = raw_spawns(&label, &region, HATCH);
         offenders.extend(unguarded);
@@ -7122,6 +7159,7 @@ fn no_scan_hand_copies_the_test_only_file_rule() {
             .unwrap_or_default();
         let entry = counted.entry(root).or_default();
         entry.0 += 1;
+        // unfloored-slice-ok: a hand copy anywhere, tests included, is the subject.
         let body = walked_file_body(&path);
         for (row, line) in body.lines().enumerate() {
             let code = crate::test_helpers::code_span(line);
@@ -7206,6 +7244,7 @@ fn no_scan_hand_copies_the_test_source_naming_rule() {
             continue;
         }
         files += 1;
+        // unfloored-slice-ok: a hand copy anywhere, tests included, is the subject.
         let body = walked_file_body(&path);
         let mut in_rule_test = false;
         for (row, line) in body.lines().enumerate() {

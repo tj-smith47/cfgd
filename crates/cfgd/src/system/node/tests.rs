@@ -2377,7 +2377,7 @@ fn seccomp_apply_skips_missing_fields() {
     // No files should have been written since each profile is missing a required field
     let entries: Vec<_> = fs::read_dir(&profiles_dir)
         .unwrap()
-        .filter_map(|e| e.ok())
+        .map(|entry| entry.expect("the walk must read every directory entry"))
         .collect();
     assert!(entries.is_empty(), "no profiles should be written");
 }

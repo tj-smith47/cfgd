@@ -1350,7 +1350,7 @@ fn every_cfgd_env_name_is_spelled_once_in_production() {
     );
     let module =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../cfgd-core/src/util/env_names.rs");
-    let module_body = walked_file_body(&module);
+    let module_body = floored_production_body(&module);
     let consts: Vec<&str> = module_body
         .lines()
         .filter(|l| cfgd_core::test_helpers::item_keyword(l) == "const")
@@ -17284,8 +17284,7 @@ fn no_env_file_fixture_hardcodes_the_primary_env_files_name_or_dialect() {
     let mut checked = 0usize;
     for p in rust_sources_under(&cli_dir) {
         // unfloored-slice-ok: the fixtures judged here live in test regions.
-        let body = std::fs::read_to_string(&p)
-            .unwrap_or_else(|e| panic!("{}: the walk must read every source: {e}", p.display()));
+        let body = walked_file_body(&p);
         checked += 1;
         let rel = p.strip_prefix(&cli_dir).unwrap_or(&p).to_path_buf();
         // A hand-spelled generated line can carry its two tells on two
@@ -17354,6 +17353,7 @@ fn no_check_error_fixture_spells_its_key_as_a_host_path() {
     ] {
         let before = read;
         for path in rust_sources_under(&root.join(dir)) {
+            // unfloored-slice-ok: the constructions judged here are test fixtures.
             let body = cfgd_core::test_helpers::walked_file_body(&path);
             let lines: Vec<&str> = body.lines().collect();
             for (n, line) in lines.iter().enumerate() {
@@ -17548,8 +17548,7 @@ fn every_daemon_log_marker_the_e2e_suites_grep_for_is_a_string_the_daemon_emits(
             continue;
         }
         // unfloored-slice-ok: a shell script has no test region to cut.
-        let body = std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("{}: the walk must read every script: {e}", path.display()));
+        let body = walked_file_body(&path);
         for (n, line) in body.lines().enumerate() {
             // A grep against anything else reads a manifest, a kubectl payload
             // or a proc file — none of them cfgd's own prose.
@@ -18419,6 +18418,7 @@ fn floored_production_body(path: &std::path::Path) -> String {
     {
         return String::new();
     }
+    // unfloored-slice-ok: this is the floored reader; the cut and its floor follow.
     let body = walked_file_body(path);
     // unfloored-slice-ok: the floor over what this cut returned is the assert below.
     let production = production_body(&body);
@@ -18504,7 +18504,7 @@ fn production_sources_per_root(roots: &[&str]) -> Vec<(String, Vec<(std::path::P
     let crates_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     let mut present: Vec<String> = std::fs::read_dir(&crates_dir)
         .expect("the workspace's crate directory is readable")
-        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.expect("the walk must read every directory entry"))
         .filter(|entry| entry.path().join("src").is_dir())
         .map(|entry| entry.file_name().to_string_lossy().into_owned())
         .collect();
@@ -22711,7 +22711,7 @@ fn open_state_store_override_matches_default_filename() {
     );
     let dbs: Vec<_> = std::fs::read_dir(dir.path())
         .unwrap()
-        .filter_map(|e| e.ok())
+        .map(|entry| entry.expect("the walk must read every directory entry"))
         .filter(|e| e.path().extension().is_some_and(|x| x == "db"))
         .collect();
     assert_eq!(
@@ -35827,7 +35827,7 @@ fn no_tests_file_carries_a_cfg_test_attribute_of_its_own() {
     let crates_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     let mut present: Vec<String> = std::fs::read_dir(&crates_dir)
         .expect("the workspace's crate directory is readable")
-        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.expect("the walk must read every directory entry"))
         .filter(|entry| entry.path().join("src").is_dir())
         .map(|entry| entry.file_name().to_string_lossy().into_owned())
         .collect();
@@ -35850,6 +35850,7 @@ fn no_tests_file_carries_a_cfg_test_attribute_of_its_own() {
                 continue;
             }
             read += 1;
+            // unfloored-slice-ok: a test file is judged whole, having no production region.
             let body = cfgd_core::test_helpers::walked_file_body(&path);
             for (n, line) in body.lines().enumerate() {
                 // The needle spelled in a walk's own source is a literal, and
@@ -35942,7 +35943,7 @@ fn every_two_root_walk_guards_each_root_it_reads() {
     let crates_dir = manifest.join("..");
     let mut crates: Vec<String> = std::fs::read_dir(&crates_dir)
         .expect("the workspace's crate directory is readable")
-        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.expect("the walk must read every directory entry"))
         .filter(|entry| entry.path().join(segment).is_dir())
         .map(|entry| entry.file_name().to_string_lossy().into_owned())
         .collect();
@@ -35978,6 +35979,7 @@ fn every_two_root_walk_guards_each_root_it_reads() {
         let mut read = 0usize;
         for path in rust_sources_under(&crates_dir.join(krate).join(segment)) {
             read += 1;
+            // unfloored-slice-ok: the root tells are judged wherever a walk spells them.
             let src = cfgd_core::test_helpers::walked_file_body(&path);
             let lines: Vec<&str> = src.lines().collect();
             // The root tells are string literals, so they are read off the raw
@@ -36118,6 +36120,7 @@ fn no_source_carries_a_dead_code_allowance() {
             sources.push(build);
         }
         for path in &sources {
+            // unfloored-slice-ok: an allowance anywhere in a crate is the subject.
             let body = walked_file_body(path);
             // The raw body is a superset of its code, so one naming none of the
             // three tells skips the blanking pass.
@@ -36276,6 +36279,7 @@ fn every_test_whose_plan_shape_a_host_tool_decides_plants_its_path() {
     for (r, root) in roots.iter().enumerate() {
         let mut read = 0usize;
         for path in rust_sources_under(root) {
+            // unfloored-slice-ok: the tests judged here live in test regions.
             let body = cfgd_core::test_helpers::walked_file_body(&path);
             let lines: Vec<&str> = body.lines().collect();
             let mut spans: Vec<(usize, usize)> = Vec::new();
@@ -36799,7 +36803,7 @@ fn every_manager_install_the_cli_emits_spells_its_weak_dependency_policy_once() 
         if path == declaration || cfgd_core::test_helpers::is_test_source(&path) {
             continue;
         }
-        let body = walked_file_body(&path);
+        let body = floored_production_body(&path);
         let lines: Vec<&str> = body.lines().collect();
         for (n, line) in lines.iter().enumerate() {
             let code = line.trim_start();
@@ -43547,6 +43551,7 @@ fn no_test_fixture_writes_a_native_path_into_a_declared_document() {
     let mut files = 0usize;
     let mut offenders: Vec<String> = Vec::new();
     for path in cfgd_core::test_helpers::rust_sources_under(&crates_dir) {
+        // unfloored-slice-ok: the test regions judged here are cut from the whole file below.
         let body = cfgd_core::test_helpers::walked_file_body(&path);
         let in_tests = cfgd_core::test_helpers::is_test_source(&path);
         // The complement of the production slice, so which end of a file a
@@ -45621,6 +45626,7 @@ fn no_test_reaches_a_real_package_manager_through_the_tool_provisioner() {
     let mut offenders = Vec::new();
 
     for path in rust_sources_under(&manifest.join("src")) {
+        // unfloored-slice-ok: the tests judged here live in test regions.
         let body = walked_file_body(&path);
         if !body.contains("#[test]") {
             continue;
@@ -47753,7 +47759,7 @@ fn every_hook_table_a_production_site_builds_reads_the_one_hook_set() {
         .expect("the cfgd crate sits under crates/");
     let mut present: Vec<String> = std::fs::read_dir(crates_dir)
         .expect("crates/ is readable")
-        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.expect("the walk must read every directory entry"))
         .filter(|entry| entry.path().join("src").is_dir())
         .map(|entry| entry.file_name().to_string_lossy().into_owned())
         .collect();
@@ -48867,6 +48873,7 @@ fn every_demo_gif_is_stamped_and_checked() {
     const SIDECAR: &str = "recorded-at";
     let root = cfgd_core::test_helpers::workspace_root();
     let demo = root.join("demo");
+    // unfloored-slice-ok: a recorded stamp list is no Rust source.
     let stamps: Vec<Vec<String>> = walked_file_body(&demo.join("recorded.txt"))
         .lines()
         .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
@@ -48922,6 +48929,7 @@ fn every_demo_gif_is_stamped_and_checked() {
         }
     }
 
+    // unfloored-slice-ok: a shell script has no test region to cut.
     let record_sh: String = walked_file_body(&root.join("demo/scripts/record.sh"))
         .lines()
         .filter(|l| !l.trim_start().starts_with('#'))
@@ -48934,6 +48942,7 @@ fn every_demo_gif_is_stamped_and_checked() {
     }
 
     let ci_path = root.join(".github/workflows/ci.yml");
+    // unfloored-slice-ok: a workflow file is no Rust source.
     let ci: serde_yaml::Value = serde_yaml::from_str(&walked_file_body(&ci_path))
         .unwrap_or_else(|e| panic!("{}: does not parse: {e}", ci_path.display()));
     if ci.get("on").and_then(|on| on.get("pull_request")) != Some(&serde_yaml::Value::Null) {
@@ -48975,6 +48984,7 @@ fn every_demo_gif_is_stamped_and_checked() {
         offenders.push(format!("ci.yml: no step runs {CHECK}"));
     }
 
+    // unfloored-slice-ok: a shell script has no test region to cut.
     let check = walked_file_body(&root.join(CHECK));
     let common = shell_array(&check, "COMMON");
     let excluded = shell_array(&check, "EXCLUDED");
@@ -49026,6 +49036,7 @@ fn every_demo_gif_is_stamped_and_checked() {
         .iter()
         .map(|c| {
             let manifest = c.join("Cargo.toml");
+            // unfloored-slice-ok: a manifest is no Rust source.
             let table = walked_file_body(&manifest)
                 .parse::<toml::Table>()
                 .unwrap_or_else(|e| panic!("{}: does not parse: {e}", manifest.display()));
@@ -49148,6 +49159,7 @@ fn every_demo_gif_is_stamped_and_checked() {
     );
 
     let build_rel = DEMO_BUILD_SCRIPT;
+    // unfloored-slice-ok: the build script is judged whole.
     let build_code: Vec<String> = walked_file_body(&root.join(build_rel))
         .lines()
         .filter(|l| !l.trim_start().starts_with('#'))
@@ -49229,6 +49241,7 @@ fn every_demo_gif_is_stamped_and_checked() {
         )),
     }
 
+    // unfloored-slice-ok: a Taskfile is no Rust source.
     let taskfile = walked_file_body(&root.join("Taskfile.yml"));
     if target_naming(&taskfile, CHECK).is_none() {
         offenders.push(format!("Taskfile.yml: no target runs {CHECK}"));
@@ -49833,7 +49846,7 @@ fn every_integration_test_spawns_the_binary_through_the_one_isolating_constructo
         {
             continue;
         }
-        let body = walked_file_body(&path);
+        let body = floored_production_body(&path);
         let blanked = blank_non_code(&body);
         // Only a call naming its variable as a literal; `fn systemd_dir(`
         // itself takes a parameter.
@@ -49875,6 +49888,7 @@ fn every_integration_test_spawns_the_binary_through_the_one_isolating_constructo
     let mut callers = 0usize;
     let mut offenders: Vec<String> = Vec::new();
     for path in cfgd_core::test_helpers::rust_sources_under(&dir) {
+        // unfloored-slice-ok: an integration test file is test code whole.
         let body = walked_file_body(&path);
         let name = cfgd_core::to_posix_string(path.strip_prefix(&dir).unwrap_or(&path));
         let uncommented = cfgd_core::test_helpers::blank_comments(&body);
@@ -50096,6 +50110,7 @@ fn every_in_process_parse_goes_through_the_hermetic_parser() {
     ];
     let mut parsers: Vec<String> = Vec::new();
     for path in rust_sources_under(&src) {
+        // unfloored-slice-ok: the parsers judged here are tests.
         let code = blank_non_code(&walked_file_body(&path));
         // An attribute row, a continuation of one and a blanked comment open
         // no item, so the derive carries down to the next item that does.
@@ -50220,6 +50235,7 @@ fn every_in_process_parse_goes_through_the_hermetic_parser() {
     for root in [src.clone(), manifest.join("tests")] {
         for path in rust_sources_under(&root) {
             let rel = cfgd_core::to_posix_string(path.strip_prefix(manifest).unwrap_or(&path));
+            // unfloored-slice-ok: the parses judged here are tests.
             let code = blank_non_code(&walked_file_body(&path));
             let calls: usize = HERMETIC.iter().map(|h| code.matches(h).count()).sum();
             if calls > 0 {
@@ -50761,6 +50777,7 @@ fn every_local_layer_ranks_through_the_one_constant() {
                 continue;
             }
             for path in rust_sources_under(&dir) {
+                // unfloored-slice-ok: a local layer ranked anywhere, tests included, counts.
                 let body = cfgd_core::test_helpers::walked_file_body(&path);
                 let lines: Vec<&str> = body.lines().collect();
                 for (i, line) in lines.iter().enumerate() {
@@ -53493,11 +53510,12 @@ fn every_directory_held_config_document_is_named_through_config_document_in() {
     let crates_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     let mut roots: Vec<std::path::PathBuf> = std::fs::read_dir(&crates_dir)
         .expect("the workspace's crate directory is readable")
-        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.expect("the walk must read every directory entry"))
         .map(|entry| entry.path())
         // An unpublished crate ships in no binary: the fixture crate writes
         // new documents for tests to read, which is no production site.
         .filter(|krate| {
+            // unfloored-slice-ok: a manifest is no Rust source.
             !cfgd_core::test_helpers::walked_file_body(&krate.join("Cargo.toml"))
                 .lines()
                 .any(|line| line.trim() == "publish = false")

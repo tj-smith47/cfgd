@@ -197,10 +197,14 @@ fn snapshot_dir(h: &Harness, name: &str) -> PathBuf {
 fn snapshots(dir: &Path) -> Vec<String> {
     let mut names: Vec<String> = match std::fs::read_dir(dir) {
         Ok(entries) => entries
-            .filter_map(|e| e.ok())
+            .map(|entry| entry.expect("the walk must read every directory entry"))
             .map(|e| e.file_name().to_string_lossy().into_owned())
             .collect(),
-        Err(_) => Vec::new(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(e) => panic!(
+            "{}: the snapshot directory must be readable: {e}",
+            dir.display()
+        ),
     };
     names.sort();
     names
