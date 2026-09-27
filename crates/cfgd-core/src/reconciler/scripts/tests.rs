@@ -39,9 +39,9 @@ fn module_env_vars_propagated_to_script_env() {
     assert_eq!(lookup("PATH"), Some("/custom/bin"));
     assert_eq!(lookup("GOPATH"), Some("/foo"));
     // Runtime metadata is still present.
-    assert_eq!(lookup("CFGD_MODULE_NAME"), Some("nvim"));
+    assert_eq!(lookup(crate::CFGD_MODULE_NAME_ENV), Some("nvim"));
     assert_eq!(lookup(crate::CFGD_PROFILE_ENV), Some("workstation"));
-    assert_eq!(lookup("CFGD_PHASE"), Some("postApply"));
+    assert_eq!(lookup(crate::CFGD_PHASE_ENV), Some("postApply"));
 }
 
 // build_module_script_env: `$VAR`/`${VAR}` in declared values are expanded
@@ -224,7 +224,7 @@ fn execute_script_workdir_override_expands_tilde_and_vars() {
             workdir: Some("$CFGD_MODULE_DIR".into()),
         });
         let env = vec![(
-            "CFGD_MODULE_DIR".to_string(),
+            crate::CFGD_MODULE_DIR_ENV.to_string(),
             module_dir.path().display().to_string(),
         )];
         execute_script(
@@ -2162,16 +2162,16 @@ fn build_script_env_reconcile_context_and_module_dir() {
     });
     let lookup = |k: &str| env.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
 
-    assert_eq!(lookup("CFGD_CONTEXT"), Some("reconcile"));
+    assert_eq!(lookup(crate::CFGD_CONTEXT_ENV), Some("reconcile"));
     assert_eq!(lookup(crate::CFGD_PROFILE_ENV), Some("node"));
     assert_eq!(
-        lookup("CFGD_PHASE"),
+        lookup(crate::CFGD_PHASE_ENV),
         Some(ScriptPhase::OnDrift.display_name())
     );
     assert_eq!(lookup(crate::CFGD_CONFIG_DIR_ENV), Some("/cfg"));
-    assert_eq!(lookup("CFGD_MODULE_DIR"), Some("/mods/x"));
+    assert_eq!(lookup(crate::CFGD_MODULE_DIR_ENV), Some("/mods/x"));
     assert_eq!(
-        lookup("CFGD_MODULE_NAME"),
+        lookup(crate::CFGD_MODULE_NAME_ENV),
         None,
         "module name must be omitted when None"
     );

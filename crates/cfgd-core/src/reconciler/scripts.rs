@@ -218,23 +218,26 @@ pub(crate) fn build_script_env(ctx: &ScriptEnvContext<'_>) -> Vec<(String, Strin
             ctx.profile_name.to_string(),
         ),
         (
-            "CFGD_CONTEXT".to_string(),
+            crate::CFGD_CONTEXT_ENV.to_string(),
             match ctx.context {
                 ReconcileContext::Apply => "apply".to_string(),
                 ReconcileContext::Reconcile => "reconcile".to_string(),
             },
         ),
         (
-            "CFGD_PHASE".to_string(),
+            crate::CFGD_PHASE_ENV.to_string(),
             ctx.phase.display_name().to_string(),
         ),
     ];
     if let Some(name) = ctx.module_name {
-        env.push(("CFGD_MODULE_NAME".to_string(), name.to_string()));
+        env.push((crate::CFGD_MODULE_NAME_ENV.to_string(), name.to_string()));
     }
     if let Some(dir) = ctx.module_dir {
-        // absolute-path-ok: an env var the script itself reads, not a display slot
-        env.push(("CFGD_MODULE_DIR".to_string(), dir.display().to_string()));
+        env.push((
+            crate::CFGD_MODULE_DIR_ENV.to_string(),
+            // absolute-path-ok: an env var the script itself reads, not a display slot
+            dir.display().to_string(),
+        ));
     }
     prepend_bootstrapped_path_dirs(&mut env, ctx.path_dirs);
     env

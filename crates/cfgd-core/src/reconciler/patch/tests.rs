@@ -1627,7 +1627,7 @@ mod unix_script {
             "env.sh",
             "#!/bin/sh\necho \"$CFGD_MODULE_NAME\"\n",
         );
-        let env = vec![("CFGD_MODULE_NAME".to_string(), "demo".to_string())];
+        let env = vec![(crate::CFGD_MODULE_NAME_ENV.to_string(), "demo".to_string())];
         let ctx = PatchContext::new(dir.path())
             .with_working_dir(dir.path())
             .with_env(&env);

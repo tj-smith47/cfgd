@@ -495,7 +495,7 @@ impl<'a> super::Reconciler<'a> {
         let placeholder = LayeredEnv::from_parts(
             &crate::reconciler::Owner::profile("cfgd").token(),
             &[crate::config::EnvVar {
-                name: "CFGD_MANAGED_ENV".to_string(),
+                name: crate::CFGD_MANAGED_ENV_ENV.to_string(),
                 value: String::new(),
                 platforms: vec![],
             }],

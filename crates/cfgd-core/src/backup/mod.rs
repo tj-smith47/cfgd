@@ -694,7 +694,7 @@ fn run_hooks(
     // only branch if something distinguishes them, so the operation rides
     // alongside rather than overloading the phase.
     env.push((
-        "CFGD_OPERATION".to_string(),
+        crate::CFGD_OPERATION_ENV.to_string(),
         operation.display_name().to_string(),
     ));
     let working_dir = script_default_workdir(unit.config_dir);

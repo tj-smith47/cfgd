@@ -5926,11 +5926,11 @@ fn build_script_env_includes_expected_vars() {
         "/home/user/.config/cfgd"
     );
     assert_eq!(map.get(crate::CFGD_PROFILE_ENV).unwrap(), "default");
-    assert_eq!(map.get("CFGD_CONTEXT").unwrap(), "apply");
-    assert_eq!(map.get("CFGD_PHASE").unwrap(), "preApply");
+    assert_eq!(map.get(crate::CFGD_CONTEXT_ENV).unwrap(), "apply");
+    assert_eq!(map.get(crate::CFGD_PHASE_ENV).unwrap(), "preApply");
     assert!(!map.contains_key("CFGD_DRY_RUN"));
-    assert!(!map.contains_key("CFGD_MODULE_NAME"));
-    assert!(!map.contains_key("CFGD_MODULE_DIR"));
+    assert!(!map.contains_key(crate::CFGD_MODULE_NAME_ENV));
+    assert!(!map.contains_key(crate::CFGD_MODULE_DIR_ENV));
 }
 
 #[test]
@@ -5945,9 +5945,12 @@ fn build_script_env_includes_module_vars() {
         path_dirs: &[],
     });
     let map: HashMap<String, String> = env.into_iter().collect();
-    assert_eq!(map.get("CFGD_MODULE_NAME").unwrap(), "nvim");
-    assert_eq!(map.get("CFGD_MODULE_DIR").unwrap(), "/modules/nvim");
-    assert_eq!(map.get("CFGD_CONTEXT").unwrap(), "reconcile");
+    assert_eq!(map.get(crate::CFGD_MODULE_NAME_ENV).unwrap(), "nvim");
+    assert_eq!(
+        map.get(crate::CFGD_MODULE_DIR_ENV).unwrap(),
+        "/modules/nvim"
+    );
+    assert_eq!(map.get(crate::CFGD_CONTEXT_ENV).unwrap(), "reconcile");
 }
 
 #[test]
@@ -15873,7 +15876,7 @@ fn build_script_env_all_phases() {
         });
         let map: HashMap<String, String> = env.into_iter().collect();
         assert_eq!(
-            map.get("CFGD_PHASE").unwrap(),
+            map.get(crate::CFGD_PHASE_ENV).unwrap(),
             expected_name,
             "phase {:?} should produce CFGD_PHASE={}",
             phase,
@@ -15915,8 +15918,8 @@ fn build_script_env_reconcile_context() {
         path_dirs: &[],
     });
     let map: HashMap<String, String> = env.into_iter().collect();
-    assert_eq!(map.get("CFGD_CONTEXT").unwrap(), "reconcile");
-    assert_eq!(map.get("CFGD_PHASE").unwrap(), "postReconcile");
+    assert_eq!(map.get(crate::CFGD_CONTEXT_ENV).unwrap(), "reconcile");
+    assert_eq!(map.get(crate::CFGD_PHASE_ENV).unwrap(), "postReconcile");
     assert_eq!(map.get(crate::CFGD_PROFILE_ENV).unwrap(), "server");
 }
 
@@ -15933,9 +15936,9 @@ fn build_script_env_module_name_without_dir() {
         path_dirs: &[],
     });
     let map: HashMap<String, String> = env.into_iter().collect();
-    assert_eq!(map.get("CFGD_MODULE_NAME").unwrap(), "zsh");
+    assert_eq!(map.get(crate::CFGD_MODULE_NAME_ENV).unwrap(), "zsh");
     assert!(
-        !map.contains_key("CFGD_MODULE_DIR"),
+        !map.contains_key(crate::CFGD_MODULE_DIR_ENV),
         "CFGD_MODULE_DIR should not be set when module_dir is None"
     );
 }

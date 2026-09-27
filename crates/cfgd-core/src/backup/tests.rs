@@ -586,9 +586,9 @@ fn hooks_see_the_backup_phase_in_the_environment() {
     let pre = h.root.join("pre-phase");
     let post = h.root.join("post-phase");
     let mut s = spec("db", &source);
-    s.pre_backup = vec![echo_env_hook(&["CFGD_PHASE"], &pre)];
+    s.pre_backup = vec![echo_env_hook(&[crate::CFGD_PHASE_ENV], &pre)];
     s.post_backup = vec![echo_env_hook(
-        &["CFGD_PHASE", crate::CFGD_PROFILE_ENV],
+        &[crate::CFGD_PHASE_ENV, crate::CFGD_PROFILE_ENV],
         &post,
     )];
 
@@ -2830,8 +2830,14 @@ fn restore_hooks_see_the_restore_operation() {
 
     let pre = h.root.join("pre-op");
     let post = h.root.join("post-op");
-    s.pre_backup = vec![echo_env_hook(&["CFGD_PHASE", "CFGD_OPERATION"], &pre)];
-    s.post_backup = vec![echo_env_hook(&["CFGD_PHASE", "CFGD_OPERATION"], &post)];
+    s.pre_backup = vec![echo_env_hook(
+        &[crate::CFGD_PHASE_ENV, crate::CFGD_OPERATION_ENV],
+        &pre,
+    )];
+    s.post_backup = vec![echo_env_hook(
+        &[crate::CFGD_PHASE_ENV, crate::CFGD_OPERATION_ENV],
+        &post,
+    )];
 
     h.restore(&s, None, None).expect("restore");
 
@@ -2846,7 +2852,7 @@ fn backup_hooks_see_the_backup_operation() {
     std::fs::write(&source, "v1").expect("source");
     let mut s = spec("db", &source);
     let pre = h.root.join("pre-op");
-    s.pre_backup = vec![echo_env_hook(&["CFGD_OPERATION"], &pre)];
+    s.pre_backup = vec![echo_env_hook(&[crate::CFGD_OPERATION_ENV], &pre)];
 
     h.run(&s);
 
@@ -3586,8 +3592,8 @@ fn a_rollback_runs_the_units_hooks_with_the_rollback_operation() {
     let pre = h.root.join("pre.txt");
     let post = h.root.join("post.txt");
     let mut s = spec("docs", &source);
-    s.pre_backup = vec![echo_env_hook(&["CFGD_OPERATION"], &pre)];
-    s.post_backup = vec![echo_env_hook(&["CFGD_OPERATION"], &post)];
+    s.pre_backup = vec![echo_env_hook(&[crate::CFGD_OPERATION_ENV], &pre)];
+    s.post_backup = vec![echo_env_hook(&[crate::CFGD_OPERATION_ENV], &post)];
 
     h.run(&s);
     std::fs::write(&source, b"later").expect("edit source");

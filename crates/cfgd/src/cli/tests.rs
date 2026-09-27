@@ -1984,10 +1984,10 @@ fn every_test_names_a_cfgd_variable_through_its_const() {
          integration tests cannot name it:\n{}",
         unlisted.join("\n")
     );
-    // 36 env_names.rs consts plus the three `pub` seams util/ re-exports reach
+    // 42 env_names.rs consts plus the three `pub` seams util/ re-exports reach
     // every crate; 27 more are crate-local seams.
     assert!(
-        everywhere >= 39 && owners.len() >= 66,
+        everywhere >= 45 && owners.len() >= 72,
         "the const population is {} names, {everywhere} reachable from every crate; the \
          scan has stopped reading the consts",
         owners.len()

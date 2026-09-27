@@ -1,7 +1,8 @@
-//! The `CFGD_*` environment names production binds or reads, one const each and
-//! spelled once for the whole workspace: every name clap binds to a flag, and
-//! every name a production read (`std::env::var`, `env_or`, a `*_BIN` seam such
-//! as `tool_cmd`) would otherwise spell as a literal. A `*_BIN` seam a module
+//! The `CFGD_*` environment names production binds, reads or writes, one const
+//! each and spelled once for the whole workspace: every name clap binds to a
+//! flag, every name a production read (`std::env::var`, `env_or`, a `*_BIN` seam
+//! such as `tool_cmd`) would otherwise spell as a literal, and every name cfgd
+//! exports to a hook script or writes into a generated env file. A `*_BIN` seam a module
 //! already names with its own const beside its command factory keeps that const.
 //! Files built only for tests (`test_helpers::is_test_only_file`: the
 //! `fake-cosign` fixture binary and every module gated to tests) keep their own
@@ -36,6 +37,19 @@ pub const CFGD_LIST_ENVELOPE_ENV: &str = "CFGD_LIST_ENVELOPE";
 pub const CFGD_STATE_DIR_ENV: &str = "CFGD_STATE_DIR";
 /// Config directory override (`--config-dir`); also exported to every hook script.
 pub const CFGD_CONFIG_DIR_ENV: &str = "CFGD_CONFIG_DIR";
+/// Exported to every hook script: `apply` or `reconcile`, the run that invoked it.
+pub const CFGD_CONTEXT_ENV: &str = "CFGD_CONTEXT";
+/// Exported to every hook script: the hook list running it (`preApply`, `preBackup`, …).
+pub const CFGD_PHASE_ENV: &str = "CFGD_PHASE";
+/// Exported to a module's hook scripts: the module's name.
+pub const CFGD_MODULE_NAME_ENV: &str = "CFGD_MODULE_NAME";
+/// Exported to a module's hook scripts: the module's directory.
+pub const CFGD_MODULE_DIR_ENV: &str = "CFGD_MODULE_DIR";
+/// Exported to `preBackup` / `postBackup` hooks: `backup`, `restore` or `rollback`.
+pub const CFGD_OPERATION_ENV: &str = "CFGD_OPERATION";
+/// The empty placeholder a generated env file keeps once every declared variable
+/// is gone, so the file still holds its banner.
+pub const CFGD_MANAGED_ENV_ENV: &str = "CFGD_MANAGED_ENV";
 /// Cache directory override (`--cache-dir`).
 pub const CFGD_CACHE_DIR_ENV: &str = "CFGD_CACHE_DIR";
 /// Runtime directory override (`--runtime-dir`).

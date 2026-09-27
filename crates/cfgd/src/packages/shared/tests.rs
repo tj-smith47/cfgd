@@ -3081,10 +3081,9 @@ fn every_test_reading_brews_path_dirs_settles_the_seam_and_serializes() {
             // unfloored-slice-ok: the test declarations judged here live in test regions.
             let body = cfgd_core::test_helpers::walked_file_body(&path);
             for (name, attrs, decl) in test_declarations(&body) {
-                let text = decl.join("\n");
                 // The needles are judged on the CODE, so this walk spelling them
-                // as literals is not itself a reader; the seam is judged on the
-                // raw text, where the settling call names it as one.
+                // as literals is not itself a reader, and a comment naming the
+                // seam settles nothing.
                 let code = decl
                     .iter()
                     .map(|l| code_of(l))
@@ -3100,7 +3099,7 @@ fn every_test_reading_brews_path_dirs_settles_the_seam_and_serializes() {
                 let serialized = attrs
                     .iter()
                     .any(|a| a.trim() == "#[serial_test::serial]" || a.trim() == "#[serial]");
-                let settles = text.contains("CFGD_BREW_BIN");
+                let settles = code.contains("BREW_BIN_ENV");
                 if !serialized || !settles {
                     offenders.push(format!("{}: {name}", path.display()));
                 }
@@ -3114,7 +3113,7 @@ fn every_test_reading_brews_path_dirs_settles_the_seam_and_serializes() {
     );
     assert!(
         offenders.is_empty(),
-        "a test reading brew's path directories names `CFGD_BREW_BIN` to settle the \
+        "a test reading brew's path directories names `BREW_BIN_ENV` to settle the \
          seam and carries `#[serial_test::serial]`:\n{}",
         offenders.join("\n")
     );
