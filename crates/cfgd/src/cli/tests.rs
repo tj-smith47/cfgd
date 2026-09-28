@@ -149,17 +149,17 @@ impl CliTestHarnessBuilder {
         self
     }
 
-    /// Put this host's package managers out of reach and plant apt as the one
-    /// manager present, holding nothing. A module entry naming apt in its
-    /// `prefer` list then resolves to the same manager on every OS, whatever
-    /// the runner carries. See [`PlantedManager`].
+    /// Put this host's package managers out of reach and plant
+    /// [`PLANTED_FAMILY`] as the one manager present, holding nothing. A module
+    /// entry naming it in its `prefer` list then resolves to the same manager
+    /// on every OS, whatever the runner carries. See [`PlantedManager`].
     fn planted_manager(mut self) -> Self {
         self.planted_manager = true;
         self
     }
 
     fn build(self) -> CliTestHarness {
-        let planted = self.planted_manager.then(PlantedManager::apt);
+        let planted = self.planted_manager.then(PlantedManager::plant);
         let config_dir = tempfile::tempdir().unwrap();
         let state_dir = tempfile::tempdir().unwrap();
         let cache_dir = tempfile::tempdir().unwrap();
@@ -213,11 +213,34 @@ impl CliTestHarnessBuilder {
     }
 }
 
+/// The family [`CliTestHarnessBuilder::planted_manager`] plants: the manager a
+/// fixture's `prefer` list names, and the seams of its install and list
+/// programs. The absent-package walk reads the manager from here as well.
+struct PlantedFamily {
+    manager: &'static str,
+    install_seam: &'static str,
+    list_seam: &'static str,
+}
+
+const PLANTED_FAMILY: PlantedFamily = PlantedFamily {
+    manager: "apt",
+    install_seam: crate::seams::APT_GET_BIN_ENV,
+    list_seam: crate::seams::DPKG_QUERY_BIN_ENV,
+};
+
 /// The machine [`CliTestHarnessBuilder::planted_manager`] describes: every
 /// manager seam pinned missing, the bootstrapped prefixes and both memos
-/// emptied, and apt's install and list programs planted as shims. The list
-/// shim answers an empty listing, so every package a module names through apt
-/// is planned for install.
+/// emptied, and [`PLANTED_FAMILY`]'s install and list programs planted as
+/// shims. The install shim is what makes the family available: its seam names
+/// a file that exists.
+///
+/// A package the fixture names through the family is planned for install by
+/// one of two paths:
+/// - On Unix the list shim runs and prints nothing, so no package is installed.
+/// - On Windows the list shim never runs. apt's listing argv carries a
+///   newline (`${Package}\n`), which Rust refuses to hand a `.cmd`, so the
+///   listing errors and the planner's `retain_uninstalled` keeps the module's
+///   declared set in full, its documented answer to an unreadable listing.
 ///
 /// Fields drop in declaration order: the shims hand their seams back to the
 /// missing pins, and `NoHostManagers` goes last because it holds the PATH lock
@@ -233,25 +256,20 @@ struct PlantedManager {
 
 impl PlantedManager {
     // serial-group-ok: every test taking the knob is held to #[serial_test::serial] by
-    // every_absent_package_fixture_builds_on_a_planted_manager.
-    fn apt() -> Self {
+    // every_module_package_plan_test_resolves_off_this_hosts_managers.
+    fn plant() -> Self {
         let managers = cfgd_core::test_helpers::NoHostManagers::pinned_missing();
         let dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
         let paths = cfgd_core::test_helpers::CommandPathMemoTtlGuard::always_expired();
         let avail = cfgd_core::test_helpers::AvailabilityMemoTtlGuard::always_expired();
         Self {
             _install: cfgd_core::test_helpers::ToolShim::install(
-                crate::seams::APT_GET_BIN_ENV,
+                PLANTED_FAMILY.install_seam,
                 0,
                 "",
                 "",
             ),
-            _list: cfgd_core::test_helpers::ToolShim::install(
-                crate::seams::DPKG_QUERY_BIN_ENV,
-                0,
-                "",
-                "",
-            ),
+            _list: cfgd_core::test_helpers::ToolShim::install(PLANTED_FAMILY.list_seam, 0, "", ""),
             _avail: avail,
             _paths: paths,
             _dirs: dirs,
@@ -25534,11 +25552,8 @@ spec:
 // Exercises: module-only path, empty_resolved_profile, module resolution
 //
 // The fixtures below name `cfgd-absent-*` packages through `prefer: [apt]`
-// and build with `.planted_manager()`: every host manager is out of reach and
-// apt is planted holding nothing, so each entry resolves to apt and plans an
-// install on every OS, whether or not the runner carries a manager of its own.
-// `every_absent_package_fixture_builds_on_a_planted_manager` holds each such
-// fixture to the knob.
+// and build with `.planted_manager()`, so each plans an install on every OS
+// (see `PlantedManager` for how).
 // -----------------------------------------------------------------------
 
 #[test]
@@ -25849,88 +25864,320 @@ spec:
     );
 }
 
-/// Every test here whose fixture names a `cfgd-absent-*` package builds each
-/// of its harnesses with `.planted_manager()`, and every test taking the knob
-/// is `#[serial_test::serial]`. Such a fixture asserts about a package cfgd
-/// plans to install, and without the knob whether it plans at all depends on
-/// the runner holding a package manager of its own. The knob pins the
-/// availability memo, which only the default serial group keeps to one holder.
+/// Every `cmd_plan`/`cmd_apply` test in this crate whose fixture holds a Module
+/// with a `packages:` entry resolves that entry off this host's own package
+/// managers. Resolution asks the managers the runner carries, so a test that
+/// leaves them in reach passes only on a host holding one.
+///
+/// The population is every `#[test]` in the crate's sources calling either verb
+/// whose own body, or a `const` it names, holds such a fixture. Each does one
+/// of three things:
+/// - builds every harness with `.planted_manager()`, is
+///   `#[serial_test::serial]` (the knob pins the availability memo), and names
+///   [`PLANTED_FAMILY`] in every entry's `prefer` list;
+/// - holds a `PackageManagerFactoryGuard::hermetic_*` guard, which puts an
+///   always-available fake in the native manager's place, with no entry
+///   preferring a built-in manager (a preferred built-in is asked as this host
+///   has it);
+/// - gives every entry a `prefer` list naming no built-in manager, so only a
+///   manager the fixture declares, or none, is ever a candidate.
+///
+/// `// host-manager-ok: <why>` on the test exempts it. A fixture a helper
+/// function writes is outside what this reads.
 #[test]
-fn every_absent_package_fixture_builds_on_a_planted_manager() {
-    use cfgd_core::test_helpers::{blank_non_code, declaration_end, declared_fn_name};
-    // Split so this walk's own body is not a fixture it finds.
-    const NEEDLE: &str = concat!("cfgd-", "absent-");
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli/tests.rs");
-    let text = cfgd_core::test_helpers::walked_file_body(&path);
-    let raw: Vec<&str> = text.lines().collect();
-    // Blanked over the whole file: a string literal spanning lines (a fixture
-    // source holding its own `fn`) is not code on any of them.
-    let blanked = blank_non_code(&text);
-    let code: Vec<&str> = blanked.lines().collect();
-    assert_eq!(code.len(), raw.len(), "blanking must keep every line");
-    let mut fixtures = 0usize;
+fn every_module_package_plan_test_resolves_off_this_hosts_managers() {
+    use cfgd_core::test_helpers::{
+        blank_non_code, carries_hatch, declaration_end, declared_fn_name, rust_sources_under,
+        walked_file_body,
+    };
+    const HATCH: &str = "// host-manager-ok:";
+    /// Each file holding such tests today, floored at its count, so a file
+    /// dropping out of the population fails on its own name: in `tests.rs`
+    /// six knob tests and two hermetic ones, and the fixture-declared managers
+    /// of `status.rs` and the plan snapshots.
+    const FILE_FLOORS: &[(&str, usize)] = &[
+        ("src/cli/tests.rs", 8),
+        ("src/cli/status.rs", 2),
+        ("tests/plan_snapshots.rs", 2),
+    ];
+    let built_in: Vec<String> = crate::packages::all_package_managers()
+        .iter()
+        .map(|m| m.name().to_string())
+        .collect();
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut per_file: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
     let mut knob_users = 0usize;
-    let mut offenders = Vec::new();
-    for (i, line) in code.iter().enumerate() {
-        let Some(name) = declared_fn_name(line) else {
-            continue;
-        };
-        let end = declaration_end(&code, i);
-        if code[i..=end]
-            .iter()
-            .any(|l| l.contains(".planted_manager()"))
-        {
-            knob_users += 1;
-            let serial = raw[..i]
-                .iter()
-                .rev()
-                .take_while(|l| {
-                    let head = l.trim_start();
-                    head.starts_with("#[") || head.starts_with("//")
-                })
-                .any(|l| l.trim() == "#[serial_test::serial]");
-            if !serial {
-                offenders.push(format!("{name} (takes the knob outside the serial group)"));
+    let mut offenders: Vec<String> = Vec::new();
+    for segment in ["src", "tests"] {
+        for path in rust_sources_under(&manifest.join(segment)) {
+            let text = walked_file_body(&path);
+            let label = cfgd_core::to_posix_string(path.strip_prefix(manifest).unwrap_or(&path));
+            let raw: Vec<&str> = text.lines().collect();
+            // Blanked over the whole file: a string literal spanning lines (a
+            // fixture source holding its own `fn`) is not code on any of them.
+            let blanked = blank_non_code(&text);
+            let code: Vec<&str> = blanked.lines().collect();
+            assert_eq!(
+                code.len(),
+                raw.len(),
+                "{label}: blanking must keep every line"
+            );
+            let consts = const_str_bodies(&text);
+            for (i, line) in code.iter().enumerate() {
+                let Some(name) = declared_fn_name(line) else {
+                    continue;
+                };
+                let attrs: Vec<&str> = raw[..i]
+                    .iter()
+                    .rev()
+                    .take_while(|l| {
+                        let head = l.trim_start();
+                        head.starts_with("#[") || head.starts_with("//")
+                    })
+                    .copied()
+                    .collect();
+                if !attrs.iter().any(|l| l.trim() == "#[test]") {
+                    continue;
+                }
+                let end = declaration_end(&code, i);
+                let body = &code[i..=end];
+                let knob = body.iter().any(|l| l.contains(".planted_manager()"));
+                let at = format!("{label}:{}: {name}", i + 1);
+                if knob {
+                    knob_users += 1;
+                    if !attrs.iter().any(|l| l.trim() == "#[serial_test::serial]") {
+                        offenders.push(format!("{at}: takes the knob outside the serial group"));
+                    }
+                }
+                if !body
+                    .iter()
+                    .any(|l| l.contains("cmd_plan(") || l.contains("cmd_apply("))
+                {
+                    continue;
+                }
+                let mut fixture = raw[i..=end].join("\n");
+                for (const_name, value) in &consts {
+                    if body.iter().any(|l| names_ident(l, const_name)) {
+                        fixture.push('\n');
+                        fixture.push_str(value);
+                    }
+                }
+                let entries = module_package_entries(&fixture);
+                if entries.is_empty() {
+                    continue;
+                }
+                *per_file.entry(label.clone()).or_default() += 1;
+                if attrs
+                    .iter()
+                    .chain(raw[i..=end].iter())
+                    .any(|l| carries_hatch(l, HATCH))
+                {
+                    continue;
+                }
+                let prefers_built_in = entries
+                    .iter()
+                    .any(|prefer| prefer.iter().any(|m| built_in.contains(m)));
+                if knob {
+                    // Per chain: a test building two harnesses plans through each.
+                    for (n, line) in body.iter().enumerate() {
+                        if !line.contains("CliTestHarness::builder()") {
+                            continue;
+                        }
+                        let close = (n..body.len())
+                            .find(|&k| body[k].contains(".build()"))
+                            .unwrap_or(body.len() - 1);
+                        if !body[n..=close]
+                            .iter()
+                            .any(|l| l.contains(".planted_manager()"))
+                        {
+                            offenders.push(format!(
+                                "{at}: the harness built on line {} lacks the knob",
+                                i + n + 1
+                            ));
+                        }
+                    }
+                    if entries
+                        .iter()
+                        .any(|prefer| !prefer.iter().any(|m| m == PLANTED_FAMILY.manager))
+                    {
+                        offenders.push(format!(
+                            "{at}: an entry's `prefer` list does not name `{}`, the family the \
+                             knob plants",
+                            PLANTED_FAMILY.manager
+                        ));
+                    }
+                } else if body
+                    .iter()
+                    .any(|l| l.contains("PackageManagerFactoryGuard::hermetic_"))
+                {
+                    if prefers_built_in {
+                        offenders.push(format!(
+                            "{at}: a `prefer` list names a built-in manager the hermetic set \
+                             leaves as this host has it"
+                        ));
+                    }
+                } else if prefers_built_in || entries.iter().any(Vec::is_empty) {
+                    offenders.push(format!(
+                        "{at}: an entry resolves through this host's own managers"
+                    ));
+                }
             }
-        }
-        if !raw[i..=end].iter().any(|l| l.contains(NEEDLE)) {
-            continue;
-        }
-        fixtures += 1;
-        // Per chain: a test building two harnesses plans through each.
-        let mut chains = 0usize;
-        for (at, line) in code.iter().enumerate().take(end + 1).skip(i) {
-            if !line.contains("CliTestHarness::builder()") {
-                continue;
-            }
-            chains += 1;
-            let close = (at..=end)
-                .find(|&n| code[n].contains(".build()"))
-                .unwrap_or(end);
-            if !code[at..=close]
-                .iter()
-                .any(|l| l.contains(".planted_manager()"))
-            {
-                offenders.push(format!("{name} (the harness built on line {})", at + 1));
-            }
-        }
-        if chains == 0 {
-            offenders.push(format!("{name} (builds no harness)"));
         }
     }
-    // The module-only plan block and the two plan/apply fixtures swept onto
-    // the knob beside it.
-    assert!(
-        fixtures >= 6 && knob_users >= 6,
-        "the walk found {fixtures} absent-package fixtures and {knob_users} tests taking the \
-         knob, fewer than this file holds"
-    );
     assert!(
         offenders.is_empty(),
-        "these tests plan an absent-package fixture without `.planted_manager()`, so they \
-         pass only on a host holding a package manager, or take the knob unserialized:\n  {}",
+        "these plan tests resolve a module package through this host's own managers, so they \
+         pass only on a runner holding one. Take `.planted_manager()` and prefer `{}`, hold a \
+         hermetic factory guard, or name only a manager the fixture declares; else carry \
+         `{HATCH} <why>`:\n  {}",
+        PLANTED_FAMILY.manager,
         offenders.join("\n  ")
     );
+    for (file, floor) in FILE_FLOORS {
+        let found = per_file.get(*file).copied().unwrap_or(0);
+        assert!(
+            found >= *floor,
+            "{file}: the walk found {found} plan tests with a module package fixture, under its \
+             floor of {floor}"
+        );
+    }
+    assert!(
+        knob_users >= 6,
+        "the walk found {knob_users} tests taking `.planted_manager()`, fewer than this file holds"
+    );
+}
+
+/// Every `const NAME: &str = <literal>;` in `text`, as its name and the
+/// literal's whole body: a raw string's text, or a quoted string's text still
+/// escaped for [`module_package_entries`] to undo. `str_consts` reads the first
+/// quoted run within a few rows and unescapes it for a hint's wording, which
+/// cuts a multi-row fixture short.
+fn const_str_bodies(text: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut rest = text;
+    while let Some(at) = rest.find("const ") {
+        rest = &rest[at + "const ".len()..];
+        let Some((name, tail)) = rest.split_once(": &str =") else {
+            continue;
+        };
+        if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            continue;
+        }
+        let tail = tail.trim_start();
+        let body = if let Some(raw) = tail.strip_prefix("r#\"") {
+            raw.split_once("\"#").map(|(b, _)| b)
+        } else if let Some(quoted) = tail.strip_prefix('"') {
+            let mut end = None;
+            let mut escaped = false;
+            for (n, c) in quoted.char_indices() {
+                match c {
+                    _ if escaped => escaped = false,
+                    '\\' => escaped = true,
+                    '"' => {
+                        end = Some(n);
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            end.map(|n| &quoted[..n])
+        } else {
+            None
+        };
+        if let Some(body) = body {
+            out.push((name.to_string(), body.to_string()));
+        }
+    }
+    out
+}
+
+/// Whether `code` names the identifier `ident` as a whole word.
+fn names_ident(code: &str, ident: &str) -> bool {
+    code.match_indices(ident).any(|(at, _)| {
+        let before = code[..at].chars().next_back();
+        let after = code[at + ident.len()..].chars().next();
+        !before.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+            && !after.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+    })
+}
+
+/// The `prefer` list of every package entry of every Module document in
+/// `text`: a test's source, its quoted literals read as the lines they hold
+/// once `\n` escapes and `\`-newline continuations are undone.
+fn module_package_entries(text: &str) -> Vec<Vec<String>> {
+    let mut unescaped = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match (c, chars.peek()) {
+            ('\\', Some('n')) => {
+                chars.next();
+                unescaped.push('\n');
+            }
+            ('\\', Some('\n')) => {
+                chars.next();
+                while chars.peek().is_some_and(|c| c.is_whitespace()) {
+                    chars.next();
+                }
+            }
+            _ => unescaped.push(c),
+        }
+    }
+    let indent = |l: &str| l.len() - l.trim_start().len();
+    let mut entries: Vec<Vec<String>> = Vec::new();
+    for doc in unescaped.split("apiVersion:").skip(1) {
+        if !doc.contains("kind: Module") {
+            continue;
+        }
+        let lines: Vec<&str> = doc.lines().collect();
+        let Some(at) = lines.iter().position(|l| l.trim() == "packages:") else {
+            continue;
+        };
+        let base = indent(lines[at]);
+        let mut entry_indent = None;
+        let mut open_prefer: Option<usize> = None;
+        for line in &lines[at + 1..] {
+            let item = line.trim();
+            if item.is_empty() {
+                continue;
+            }
+            let depth = indent(line);
+            if depth <= base {
+                break;
+            }
+            if item.starts_with("- ") && entry_indent.is_none_or(|e| e == depth) {
+                entry_indent = Some(depth);
+                entries.push(Vec::new());
+                open_prefer = None;
+                continue;
+            }
+            let Some(current) = entries.last_mut() else {
+                continue;
+            };
+            if let Some(list) = item.strip_prefix("prefer:") {
+                let list = list.trim();
+                if list.is_empty() {
+                    open_prefer = Some(depth);
+                } else {
+                    current.extend(
+                        list.trim_start_matches('[')
+                            .trim_end_matches(']')
+                            .split(',')
+                            .map(|m| m.trim().trim_matches('"').to_string())
+                            .filter(|m| !m.is_empty()),
+                    );
+                }
+                continue;
+            }
+            match open_prefer {
+                Some(p) if depth >= p && item.starts_with("- ") => {
+                    current.push(item[2..].trim().trim_matches('"').to_string());
+                }
+                Some(p) if depth <= p => open_prefer = None,
+                _ => {}
+            }
+        }
+    }
+    entries
 }
 
 // -----------------------------------------------------------------------
