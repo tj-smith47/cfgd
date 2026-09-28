@@ -34,3 +34,11 @@ authors = ["TJ Smith"]
 # to fit ubuntu-latest's ~14 GB free disk. No coverage or test-integrity loss.
 [profile.dev]
 debug = "line-tables-only"
+
+# The source walks parse every workspace file with `syn`; unoptimized, the
+# parse alone triples each walk.
+[profile.dev.package.syn]
+opt-level = 3
+
+[profile.dev.package.proc-macro2]
+opt-level = 3

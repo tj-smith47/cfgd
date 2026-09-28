@@ -201,4 +201,9 @@ tempfile = "3"
 serial_test = "4"
 mockito = "1"
 regex = "1"
+# The source walks read each workspace file's syntax tree to follow a needle
+# through every binding that carries it; `span-locations` gives each call node
+# its line. Dev-only: no shipped binary compiles either.
+syn = { version = "2", features = ["full", "visit"] }
+proc-macro2 = { version = "1", features = ["span-locations"] }
 
