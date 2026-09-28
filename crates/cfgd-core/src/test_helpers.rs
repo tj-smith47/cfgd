@@ -1655,7 +1655,7 @@ pub fn impl_owner(code: &[String], at: usize) -> Option<String> {
         // Read through the item's lead, so a generic `impl<'a> Type<'a>` and an
         // `unsafe impl` are impl heads too; the bare spelling alone handed the
         // functions of a generic impl to whichever impl above it was still open.
-        if item_keyword(head) != "impl" {
+        if !head.contains("impl") || item_keyword(head) != "impl" {
             return None;
         }
         let depth: i32 = code[i..at]
@@ -1683,6 +1683,17 @@ pub fn impl_owner(code: &[String], at: usize) -> Option<String> {
 /// The body is brace-balanced from the `fn` line, so a nested declaration is
 /// read as itself as well as inside its parent.
 pub fn fn_declarations(src: &str) -> Vec<(String, Option<String>, String)> {
+    declared_rows(src).into_iter().map(|(row, _)| row).collect()
+}
+
+/// One [`fn_declarations`] row and the lines of its source it spans.
+type SpannedRow = (
+    (String, Option<String>, String),
+    std::ops::RangeInclusive<usize>,
+);
+
+/// [`fn_declarations`] rows, each with the lines of `src` it spans.
+fn declared_rows(src: &str) -> Vec<SpannedRow> {
     let code: Vec<String> = src.lines().map(code_line).collect();
     let mut out = Vec::new();
     for (i, line) in code.iter().enumerate() {
@@ -1690,7 +1701,10 @@ pub fn fn_declarations(src: &str) -> Vec<(String, Option<String>, String)> {
             continue;
         };
         let end = declaration_end(&code, i);
-        out.push((name, impl_owner(&code, i), code[i..=end].join("\n")));
+        out.push((
+            (name, impl_owner(&code, i), code[i..=end].join("\n")),
+            i..=end,
+        ));
     }
     out
 }
@@ -5351,11 +5365,27 @@ pub fn hold_payload_unremovable(payload: &Path) -> UnremovablePayload {
 /// which owns the read and the per-file floor that keeps a re-blinding from
 /// passing quietly.
 pub fn production_slice(src: &str) -> String {
-    let blocks = inline_test_item_ranges(src);
+    keep_lines(src, &line_gates(src), |gate| gate.is_none())
+}
+
+/// The text a test can drive: [`production_slice`] with every item gated to the
+/// `test-helpers` feature kept ([`Gate::TestHelpers`]), since such an item is
+/// shipped code compiled for tests to call. Only [`Gate::Test`] items are
+/// dropped.
+///
+/// A walk asking what ships reads [`production_slice`]; one asking which path a
+/// test can reach from a seam reads this, or [`production_and_seams_of`] for a
+/// file on disk.
+pub fn production_and_seams_slice(src: &str) -> String {
+    keep_lines(src, &line_gates(src), |gate| gate != Some(Gate::Test))
+}
+
+/// The lines of `src` whose gate `keep` accepts, each ended by a newline.
+fn keep_lines(src: &str, gates: &[Option<Gate>], keep: impl Fn(Option<Gate>) -> bool) -> String {
     src.lines()
-        .enumerate()
-        .filter(|(at, _)| !blocks.iter().any(|(from, to)| (*from..*to).contains(at)))
-        .fold(String::with_capacity(src.len()), |mut out, (_, line)| {
+        .zip(gates)
+        .filter(|(_, gate)| keep(**gate))
+        .fold(String::with_capacity(src.len()), |mut out, (line, _)| {
             out.push_str(line);
             out.push('\n');
             out
@@ -5372,16 +5402,51 @@ pub fn production_slice(src: &str) -> String {
 /// same verdict whether a `#[cfg(test)] fn` stands beside the production code it
 /// serves or inside the trailing test module.
 pub fn test_region_mask(src: &str) -> String {
-    let blocks = inline_test_item_ranges(src);
-    src.lines()
-        .enumerate()
-        .fold(String::with_capacity(src.len()), |mut out, (at, line)| {
-            if blocks.iter().any(|(from, to)| (*from..*to).contains(&at)) {
+    src.lines().zip(line_gates(src)).fold(
+        String::with_capacity(src.len()),
+        |mut out, (line, gate)| {
+            if gate.is_some() {
                 out.push_str(line);
             }
             out.push('\n');
             out
-        })
+        },
+    )
+}
+
+/// What a test-only item's gate builds it for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Gate {
+    /// A predicate holding only when `test` does (`test`, `all(test, unix)`):
+    /// the item is a test, or serves only the crate's own tests.
+    Test,
+    /// A predicate the `test-helpers` feature satisfies without `test`
+    /// (`any(test, feature = "test-helpers")`, `all(unix, feature =
+    /// "test-helpers")`): a seam, compiled so another crate's tests can drive
+    /// production through it.
+    TestHelpers,
+}
+
+/// The gate each line of `src` sits under, one entry per line: `None` for
+/// production text, and for a line inside both kinds (a `#[cfg(test)]` module
+/// nested in a seam) the [`Gate::Test`] that drops it from every view but the
+/// test region.
+pub fn line_gates(src: &str) -> Vec<Option<Gate>> {
+    line_gates_over(src, &blank_non_code(src))
+}
+
+/// [`line_gates`] of `src`, whose [`blank_non_code`] fold `code` the caller
+/// already holds.
+fn line_gates_over(src: &str, code: &str) -> Vec<Option<Gate>> {
+    let mut gates = vec![None; src.lines().count()];
+    for (from, to, gate) in gated_item_ranges_over(src, code) {
+        for line in &mut gates[from..to] {
+            if *line != Some(Gate::Test) {
+                *line = Some(gate);
+            }
+        }
+    }
+    gates
 }
 
 /// The half-open line range each test-only item occupies, attribute line
@@ -5417,16 +5482,37 @@ pub fn test_region_mask(src: &str) -> String {
 /// the slice, so a reader deciding membership from the mask's content reads it
 /// as production. A caller that has to partition a file by index asks here.
 pub fn inline_test_item_ranges(src: &str) -> Vec<(usize, usize)> {
-    let code = blank_non_code(src);
+    let mut union: Vec<(usize, usize)> = Vec::new();
+    for (from, to, _) in gated_item_ranges(src) {
+        match union.last_mut() {
+            Some(last) if from < last.1 => last.1 = last.1.max(to),
+            _ => union.push((from, to)),
+        }
+    }
+    union
+}
+
+/// Every test-only item's line range, as [`inline_test_item_ranges`] reads it,
+/// with the [`Gate`] its attribute names, in the order the items start.
+///
+/// A [`Gate::Test`] item is read to its end. A [`Gate::TestHelpers`] item is
+/// read into as well, so a `#[cfg(test)]` item nested in a seam is yielded as a
+/// range of its own and the seam view drops it.
+pub fn gated_item_ranges(src: &str) -> Vec<(usize, usize, Gate)> {
+    gated_item_ranges_over(src, &blank_non_code(src))
+}
+
+/// [`gated_item_ranges`] of `src`, whose [`blank_non_code`] fold is `code`.
+fn gated_item_ranges_over(src: &str, code: &str) -> Vec<(usize, usize, Gate)> {
     let lines: Vec<&str> = code.lines().collect();
     let raw: Vec<&str> = src.lines().collect();
-    let mut blocks: Vec<(usize, usize)> = Vec::new();
+    let mut blocks: Vec<(usize, usize, Gate)> = Vec::new();
     let mut at = 0usize;
     while at < lines.len() {
-        if !is_test_gate_line(raw[at], lines[at]) {
+        let Some(gate) = test_gate_on(raw[at], lines[at]) else {
             at += 1;
             continue;
-        }
+        };
         // A platform gate stacks a second attribute between the marker and
         // the item, and a doc comment between them is blanked to spaces by
         // the fold above, so neither is the head this reads.
@@ -5450,18 +5536,39 @@ pub fn inline_test_item_ranges(src: &str) -> Vec<(usize, usize)> {
         }
         let indent = lines[at].len() - lines[at].trim_start().len();
         let end = gated_item_end(&lines, item, indent);
-        blocks.push((at, end));
-        at = end;
+        blocks.push((at, end, gate));
+        at = match gate {
+            Gate::Test => end,
+            Gate::TestHelpers => at + 1,
+        };
     }
     blocks
 }
 
-/// Whether a line is an outer `#[cfg(…)]` attribute building its item only for
-/// tests: the attribute read off the code line, so one written inside a
-/// literal or a comment gates nothing, and its predicate off the raw line.
-fn is_test_gate_line(raw: &str, code: &str) -> bool {
+/// The gate of a line that is an outer `#[cfg(…)]` attribute building its item
+/// only for tests, `None` for any other line: the attribute read off the code
+/// line, so one written inside a literal or a comment gates nothing, and its
+/// predicate off the raw line.
+fn test_gate_on(raw: &str, code: &str) -> Option<Gate> {
+    // `contains` is the fast search; the trims below run on the few lines it finds.
+    if !code.contains("#[cfg(") {
+        return None;
+    }
     let code = code.trim_end();
-    code.trim_start().starts_with("#[cfg(") && is_test_gate(raw[..code.len()].trim())
+    if !code.trim_start().starts_with("#[cfg(") {
+        return None;
+    }
+    let predicate = raw[..code.len()]
+        .trim()
+        .strip_prefix("#[cfg(")
+        .and_then(|rest| rest.strip_suffix(")]"))?;
+    if !cfg_requires_test(predicate) {
+        None
+    } else if cfg_holds_only_under(predicate, false) {
+        Some(Gate::Test)
+    } else {
+        Some(Gate::TestHelpers)
+    }
 }
 
 /// The line after the item whose head is at `from` ends, over lines already
@@ -5493,11 +5600,12 @@ fn gated_item_end(lines: &[&str], from: usize, indent: usize) -> usize {
     // own end. The indent still has to be the attribute's own, so a delimiter
     // closing something nested inside the item is not read as the item's.
     let closes_at_indent = |code: &str| {
-        let trimmed = code.trim_end().trim_end_matches([';', ',']);
-        let body = trimmed.trim_start();
-        !body.is_empty()
-            && body.chars().all(|c| matches!(c, '}' | ']' | ')'))
-            && trimmed.len() - body.len() == indent
+        let trimmed = code.trim_end().trim_end_matches([';', ',']).as_bytes();
+        trimmed.len() > indent
+            && trimmed[..indent].iter().all(|b| b.is_ascii_whitespace())
+            && trimmed[indent..]
+                .iter()
+                .all(|b| matches!(b, b'}' | b']' | b')'))
     };
     // `<` and `>` are counted apart from the brackets above because they are
     // what tells a wrapped struct FIELD (`captured: Mutex<` … `>,`) from a
@@ -5729,10 +5837,42 @@ pub fn walked_file_body(path: &Path) -> String {
 /// the empty string: a walk judging production code through here leaves it
 /// out whether or not the walk asks either predicate itself.
 pub fn production_slice_of(path: &Path) -> String {
+    sliced_views_of(path).production.clone()
+}
+
+/// The text a test can drive in the Rust source at `path`:
+/// [`production_and_seams_slice`] of it, read and floored the way
+/// [`production_slice_of`] is. A file built only for tests holds no seam
+/// either, so it reads as the empty string.
+pub fn production_and_seams_of(path: &Path) -> String {
+    sliced_views_of(path).seams.clone()
+}
+
+/// [`production_slice_of`] with its literals and comments blanked by
+/// [`blank_non_code`], line for line. The fold is the one the scan already ran
+/// over the file, so a walk judging code alone reads it here, without folding
+/// the text a second time.
+pub fn production_code_of(path: &Path) -> String {
+    sliced_views_of(path).production_code.clone()
+}
+
+/// What one scan of a Rust source yields: its production view, its seam view
+/// and each view's [`blank_non_code`] fold.
+#[derive(Clone, Default)]
+struct SourceViews {
+    production: String,
+    seams: String,
+    production_code: String,
+    seams_code: String,
+}
+
+/// The views of `path` [`cut_views_of`] keeps, or none for a file holding tests
+/// alone or built only for tests.
+fn sliced_views_of(path: &Path) -> std::borrow::Cow<'static, SourceViews> {
     if is_test_source(path) || is_test_only_file(path) {
-        return String::new();
+        return std::borrow::Cow::Owned(SourceViews::default());
     }
-    test_module_cut_of(path)
+    cut_views_of(path)
 }
 
 /// The Rust source at `path` with its trailing test module cut, floored the
@@ -5740,16 +5880,54 @@ pub fn production_slice_of(path: &Path) -> String {
 /// only for tests reads their shipped-to-tests region through here, where
 /// [`production_slice_of`] would answer that they hold no production code.
 pub fn test_module_cut_of(path: &Path) -> String {
+    cut_views_of(path).production.clone()
+}
+
+/// [`scan_views_of`] for `path`, scanned once per test process when it is a
+/// source of the workspace: the workspace memo and every walk naming a file
+/// read the same views, so a walk asking after a file the memo already read
+/// costs a lookup. A fixture a test writes elsewhere may be rewritten between
+/// two reads, so it is scanned on every call.
+fn cut_views_of(path: &Path) -> std::borrow::Cow<'static, SourceViews> {
+    type Views = std::collections::HashMap<PathBuf, &'static SourceViews>;
+    static VIEWS: std::sync::LazyLock<std::sync::Mutex<Views>> =
+        std::sync::LazyLock::new(Default::default);
+    let key = lexically_folded(path);
+    if !key.starts_with(WORKSPACE_ROOT.join("crates")) {
+        return std::borrow::Cow::Owned(scan_views_of(path));
+    }
+    let known = VIEWS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&key)
+        .copied();
+    if let Some(views) = known {
+        return std::borrow::Cow::Borrowed(views);
+    }
+    // Scanned outside the lock so walks on other threads keep reading; a file
+    // two threads scan at once is kept once, and the other copy is dropped.
+    let views = scan_views_of(path);
+    std::borrow::Cow::Borrowed(
+        *VIEWS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(key)
+            .or_insert_with(|| Box::leak(Box::new(views))),
+    )
+}
+
+/// The views of the Rust source at `path`, the production view floored at the
+/// lines preceding the file's first test item. The seam view holds every
+/// production line, so the floor holds for it too.
+fn scan_views_of(path: &Path) -> SourceViews {
     let body = std::fs::read_to_string(path)
         .unwrap_or_else(|e| panic!("{}: the walk must read every source: {e}", path.display()));
-    // unfloored-slice-ok: the floor over what this cut returned is the assert below.
-    let production = production_slice(&body);
+    let code = blank_non_code(&body);
+    let gates = line_gates_over(&body, &code);
+    let production = keep_lines(&body, &gates, |gate| gate.is_none());
     let before_tests = body
         .lines()
-        .position(|l| {
-            let attr = l.trim();
-            attr.starts_with("#[cfg(") && is_test_gate(attr)
-        })
+        .position(|l| l.contains("#[cfg(") && is_test_gate(l.trim()))
         .unwrap_or_else(|| body.lines().count());
     let walked = production.lines().count();
     assert!(
@@ -5757,7 +5935,12 @@ pub fn test_module_cut_of(path: &Path) -> String {
         "{}: the walk read {walked} lines of the {before_tests} that precede this file's first test item",
         path.display()
     );
-    production
+    SourceViews {
+        seams: keep_lines(&body, &gates, |gate| gate != Some(Gate::Test)),
+        production_code: keep_lines(&code, &gates, |gate| gate.is_none()),
+        seams_code: keep_lines(&code, &gates, |gate| gate != Some(Gate::Test)),
+        production,
+    }
 }
 
 /// The workspace root: the directory holding `crates/`.
@@ -5876,8 +6059,13 @@ pub fn is_test_source_below(root: &Path, path: &Path) -> bool {
 pub fn is_test_only_file(path: &Path) -> bool {
     static FILES: std::sync::LazyLock<std::collections::BTreeSet<PathBuf>> =
         std::sync::LazyLock::new(|| test_only_files_below(&WORKSPACE_ROOT));
-    // Folded lexically, since a walk rooted at `<crate>/../<sibling>` hands
-    // back paths carrying the `..`.
+    let folded = lexically_folded(path);
+    FILES.contains(folded.strip_prefix(&*WORKSPACE_ROOT).unwrap_or(&folded))
+}
+
+/// `path` with its `.` and `..` components folded away, since a walk rooted at
+/// `<crate>/../<sibling>` hands back paths carrying the `..`.
+fn lexically_folded(path: &Path) -> PathBuf {
     let mut folded = PathBuf::new();
     for part in path.components() {
         match part {
@@ -5888,7 +6076,7 @@ pub fn is_test_only_file(path: &Path) -> bool {
             other => folded.push(other),
         }
     }
-    FILES.contains(folded.strip_prefix(&*WORKSPACE_ROOT).unwrap_or(&folded))
+    folded
 }
 
 /// The production text of `path` a multi-file walk reads, and the text the
@@ -5911,7 +6099,11 @@ pub type RootSources = (String, Vec<(PathBuf, String)>);
 /// reading the tree itself paid the same second of I/O and floor checks again.
 /// A file `is_test_source` names holds tests alone, and one `is_test_only_file`
 /// names is built only for tests, so neither is a production source.
-static WORKSPACE_PRODUCTION: std::sync::LazyLock<Vec<RootSources>> =
+///
+/// The second half holds the [`production_and_seams_of`] text of each file
+/// whose seam view differs from its production text, from the same read and
+/// scan, for [`workspace_seam_declarations`].
+static WORKSPACE_SOURCES: std::sync::LazyLock<(Vec<RootSources>, SeamSources)> =
     std::sync::LazyLock::new(|| {
         let crates_dir = WORKSPACE_ROOT.join("crates");
         let mut present: Vec<String> = std::fs::read_dir(&crates_dir)
@@ -5921,7 +6113,8 @@ static WORKSPACE_PRODUCTION: std::sync::LazyLock<Vec<RootSources>> =
             .map(|entry| entry.file_name().to_string_lossy().into_owned())
             .collect();
         present.sort();
-        present
+        let mut seams = SeamSources::new();
+        let roots = present
             .into_iter()
             .map(|krate| {
                 let files: Vec<(PathBuf, String)> =
@@ -5929,18 +6122,26 @@ static WORKSPACE_PRODUCTION: std::sync::LazyLock<Vec<RootSources>> =
                         .into_iter()
                         .filter(|p| !is_test_source(p) && !is_test_only_file(p))
                         .map(|path| {
-                            let production = floored_production_body(&path);
-                            (path, production)
+                            let views = sliced_views_of(&path);
+                            if views.seams != views.production {
+                                seams.insert(path.clone(), views.seams.clone());
+                            }
+                            (path, views.production.clone())
                         })
                         .collect();
                 (krate, files)
             })
-            .collect()
+            .collect();
+        (roots, seams)
     });
+
+/// The seam view of each production source whose seam view differs from its
+/// production text.
+type SeamSources = std::collections::BTreeMap<PathBuf, String>;
 
 /// Every crate root's production sources, keyed by the crate's own name, for a
 /// walk whose population is the WHOLE workspace, in the order `roots` names
-/// them and borrowed from [`WORKSPACE_PRODUCTION`].
+/// them and borrowed from [`WORKSPACE_SOURCES`].
 ///
 /// The named set is checked against `crates/` itself, so a crate joining the
 /// workspace fails the caller's walk and never goes unread, and each root
@@ -5953,7 +6154,7 @@ static WORKSPACE_PRODUCTION: std::sync::LazyLock<Vec<RootSources>> =
 pub fn production_sources_per_root(
     roots: &[&str],
 ) -> Vec<(&'static str, &'static [(PathBuf, String)])> {
-    let workspace: &'static [RootSources] = &WORKSPACE_PRODUCTION;
+    let workspace: &'static [RootSources] = &WORKSPACE_SOURCES.0;
     let present: Vec<&str> = workspace.iter().map(|(krate, _)| krate.as_str()).collect();
     let mut named: Vec<&str> = roots.to_vec();
     named.sort_unstable();
@@ -5993,14 +6194,47 @@ pub const WORKSPACE_CRATES: &[&str] = &[
 /// Every function the workspace's production code declares, as
 /// [`fn_declarations`] rows, with the site declaring each: its crate root, its
 /// file and that file's production body, each at the row's own index.
+///
+/// The seam memo ([`workspace_seam_declarations`]) holds the same shape over
+/// the text a test can drive, where a site's body is the file's seam view.
 pub struct WorkspaceDeclarations {
     pub sites: Vec<(&'static str, &'static Path, &'static str)>,
     pub rows: Vec<(String, Option<String>, String)>,
+    /// Each row's gate: `None` for a function every build ships, and
+    /// [`Gate::TestHelpers`] for one only the seam view declares.
+    pub gates: Vec<Option<Gate>>,
     /// Each file's rows, which the initializer pushes contiguously.
     by_file: std::collections::BTreeMap<&'static Path, std::ops::Range<usize>>,
+    /// The lines of its site's body each row spans.
+    spans: Vec<std::ops::RangeInclusive<usize>>,
+    /// Whether the site bodies are seam views.
+    seams: bool,
 }
 
 impl WorkspaceDeclarations {
+    /// The lines of its site's body the row at `row` spans, first to last.
+    pub fn span_of(&self, row: usize) -> std::ops::RangeInclusive<usize> {
+        self.spans[row].clone()
+    }
+
+    /// The row at `row`'s declaration with its literals and comments blanked
+    /// by [`blank_non_code`], cut from the fold the scan of its file already
+    /// made, so a walk judging a row's code folds nothing again.
+    pub fn code_of(&self, row: usize) -> String {
+        let views = cut_views_of(self.sites[row].1);
+        let code = if self.seams {
+            &views.seams_code
+        } else {
+            &views.production_code
+        };
+        let span = &self.spans[row];
+        code.lines()
+            .skip(*span.start())
+            .take(span.end() - span.start() + 1)
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     /// The rows the production source at `path` declares, spelled from
     /// [`workspace_root`] as every site path is; empty for a file declaring no
     /// function or one outside the workspace's production sources.
@@ -6053,26 +6287,66 @@ impl WorkspaceDeclarations {
 /// one reads it, and declaring every function in seven crates is most of each
 /// such walk's time.
 static WORKSPACE_DECLARATIONS: std::sync::LazyLock<WorkspaceDeclarations> =
-    std::sync::LazyLock::new(|| {
-        let mut sites = Vec::new();
-        let mut rows = Vec::new();
-        let mut by_file = std::collections::BTreeMap::new();
-        for (root, files) in WORKSPACE_PRODUCTION.iter() {
-            for (path, production) in files {
-                let from = rows.len();
-                for row in fn_declarations(production) {
-                    sites.push((root.as_str(), path.as_path(), production.as_str()));
-                    rows.push(row);
+    std::sync::LazyLock::new(|| declare_workspace(None));
+
+/// [`WorkspaceDeclarations`] over the text a test can drive, built once per
+/// test process on the first walk asking for it. A file whose seam view is its
+/// production text shares the production memo's rows, so only the files
+/// holding a seam are declared again.
+static WORKSPACE_SEAM_DECLARATIONS: std::sync::LazyLock<WorkspaceDeclarations> =
+    std::sync::LazyLock::new(|| declare_workspace(Some(&WORKSPACE_DECLARATIONS)));
+
+/// The declarations of every production source, or with `production` given,
+/// of every source's seam view, reusing `production`'s rows for a file with
+/// no seam.
+fn declare_workspace(production: Option<&'static WorkspaceDeclarations>) -> WorkspaceDeclarations {
+    let (roots, seams) = &*WORKSPACE_SOURCES;
+    let mut declared = WorkspaceDeclarations {
+        sites: Vec::new(),
+        rows: Vec::new(),
+        gates: Vec::new(),
+        by_file: std::collections::BTreeMap::new(),
+        spans: Vec::new(),
+        seams: production.is_some(),
+    };
+    for (root, files) in roots {
+        for (path, text) in files {
+            let from = declared.rows.len();
+            let seam = production.and_then(|memo| Some((memo, seams.get(path)?)));
+            let body = seam.map_or(text.as_str(), |(_, seam)| seam.as_str());
+            let rows = match (production, seam) {
+                (Some(memo), None) => {
+                    let range = memo
+                        .by_file
+                        .get(path.as_path())
+                        .cloned()
+                        .unwrap_or_default();
+                    memo.rows[range.clone()]
+                        .iter()
+                        .cloned()
+                        .zip(memo.spans[range].iter().cloned())
+                        .collect()
                 }
-                by_file.insert(path.as_path(), from..rows.len());
+                _ => declared_rows(body),
+            };
+            for (row, span) in rows {
+                let shipped = seam.is_none_or(|(memo, _)| {
+                    memo.rows_in(path)
+                        .iter()
+                        .any(|(name, owner, _)| *name == row.0 && *owner == row.1)
+                });
+                declared.sites.push((root.as_str(), path.as_path(), body));
+                declared.gates.push((!shipped).then_some(Gate::TestHelpers));
+                declared.spans.push(span);
+                declared.rows.push(row);
             }
+            declared
+                .by_file
+                .insert(path.as_path(), from..declared.rows.len());
         }
-        WorkspaceDeclarations {
-            sites,
-            rows,
-            by_file,
-        }
-    });
+    }
+    declared
+}
 
 /// Every function the production region of the one Rust source at `path`
 /// declares, as [`fn_declarations`] rows read through [`production_slice_of`]:
@@ -6097,11 +6371,25 @@ pub fn workspace_declarations(roots: &[&str]) -> &'static WorkspaceDeclarations 
     &WORKSPACE_DECLARATIONS
 }
 
+/// [`WORKSPACE_SEAM_DECLARATIONS`], checked against `roots` the way
+/// [`workspace_declarations`] is, for a walk asking which functions a test can
+/// drive: production's, and every [`Gate::TestHelpers`] seam's.
+pub fn workspace_seam_declarations(roots: &[&str]) -> &'static WorkspaceDeclarations {
+    production_sources_per_root(roots);
+    &WORKSPACE_SEAM_DECLARATIONS
+}
+
 /// Whether a `cfg` predicate (the text inside `cfg(…)`) holds only in a test
 /// build: `test`, `feature = "test-helpers"` (a feature only test builds turn
 /// on), an `all(…)` with such a member, or an `any(…)` whose every member is
 /// one. A `not(…)`, and any other atom, holds in some shipped build.
 pub fn cfg_requires_test(predicate: &str) -> bool {
+    cfg_holds_only_under(predicate, true)
+}
+
+/// Whether a `cfg` predicate holds only when `test` does, or, with
+/// `helpers_count`, when `test` or the `test-helpers` feature does.
+fn cfg_holds_only_under(predicate: &str, helpers_count: bool) -> bool {
     let p = predicate.trim();
     if p == "test" {
         return true;
@@ -6110,7 +6398,7 @@ pub fn cfg_requires_test(predicate: &str) -> bool {
         .strip_prefix("feature")
         .and_then(|rest| rest.trim_start().strip_prefix('='))
     {
-        return value.trim() == "\"test-helpers\"";
+        return helpers_count && value.trim() == "\"test-helpers\"";
     }
     let call = |op: &str| {
         p.strip_prefix(op)
@@ -6120,10 +6408,15 @@ pub fn cfg_requires_test(predicate: &str) -> bool {
             .map(cfg_members)
     };
     if let Some(members) = call("any") {
-        return !members.is_empty() && members.iter().all(|m| cfg_requires_test(m));
+        return !members.is_empty()
+            && members
+                .iter()
+                .all(|m| cfg_holds_only_under(m, helpers_count));
     }
     if let Some(members) = call("all") {
-        return members.iter().any(|m| cfg_requires_test(m));
+        return members
+            .iter()
+            .any(|m| cfg_holds_only_under(m, helpers_count));
     }
     false
 }
@@ -6649,6 +6942,34 @@ mod tests {
     /// The claim is byte-for-byte: the result is the same length as the body
     /// and carries the same newlines, so a brace matched on it indexes the raw
     /// body, and no `{`, `}`, `"` or `.env(` survives inside any of the four.
+    /// A function is owned by the impl it sits in, whatever lead that impl's
+    /// head carries: a generic `impl<'a>` head read as no impl at all left its
+    /// methods ownerless, or handed them to an impl above that was still open.
+    #[test]
+    fn a_functions_owner_is_the_impl_it_sits_in_generic_or_plain() {
+        let owners: Vec<(String, Option<String>)> = fixture_declarations(concat!(
+            "impl<'a> Wrapper<'a> {\n",
+            "    fn generic_method(&self) {}\n",
+            "}\n",
+            "impl Plain {\n",
+            "    fn plain_method(&self) {}\n",
+            "}\n",
+            "fn free() {}\n",
+        ))
+        .into_iter()
+        .map(|(name, owner, _)| (name, owner))
+        .collect();
+        assert_eq!(
+            owners,
+            [
+                ("generic_method".to_string(), Some("Wrapper".to_string())),
+                ("plain_method".to_string(), Some("Plain".to_string())),
+                ("free".to_string(), None),
+            ],
+            "each function's owner is the impl whose body holds it"
+        );
+    }
+
     #[test]
     fn blank_non_code_blanks_every_row_a_literal_or_comment_spans() {
         let body = concat!(

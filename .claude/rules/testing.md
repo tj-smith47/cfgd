@@ -164,7 +164,18 @@ A source walk reads each production file through `production_slice_of` or
 `#[cfg(test)]` included, it calls `walked_file_body` and carries
 `// unfloored-slice-ok: <why>`. Both guarded readers slice a test-only file to nothing.
 `every_multi_file_production_walk_reads_through_the_floored_helper` fails a raw
-`read_to_string` in any source walk, and a `walked_file_body` read there without the hatch.
+`read_to_string` in any source walk, and a `walked_file_body` read there without the hatch,
+and floors each crate's reads through `floored_production_body` and
+`production_and_seams_of` at today's count.
+
+Each walk picks its view by its question. A walk asking what SHIPS reads the production
+view (`production_slice_of`, `workspace_declarations`). A walk asking what a TEST can
+drive (a call-graph fold that decides which tests must guard a verb, a seam-read guard)
+reads the seam view (`production_and_seams_of`, `workspace_seam_declarations`), which
+keeps every `test-helpers` item: a seam like `run_compliance_and_reconcile_ticks` is
+production code compiled for tests, and a production-only fold never sees the route a
+test takes through it. A walk judging code folds nothing itself: it reads
+`production_code_of(path)` or a memo row's `code_of(i)`, both cut from the file's one scan.
 
 Colour off means NO escapes — attributes included. `ThemedStyle::apply_to` is the ONE
 gate a styled span becomes bytes through, and a printer whose `ColorChoice` resolved

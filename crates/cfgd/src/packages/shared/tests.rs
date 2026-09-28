@@ -3032,9 +3032,10 @@ fn test_declarations(body: &str) -> Vec<(String, Vec<String>, Vec<String>)> {
 /// site spells, which is why a trait method carries the type it is declared on:
 /// `.path_dirs(` alone names every manager's, and only brew's reads this seam.
 fn brew_path_dir_readers() -> Vec<(String, Option<String>)> {
-    let declarations =
-        cfgd_core::test_helpers::workspace_declarations(cfgd_core::test_helpers::WORKSPACE_CRATES)
-            .rows_under("cfgd/src", 139);
+    let declarations = cfgd_core::test_helpers::workspace_seam_declarations(
+        cfgd_core::test_helpers::WORKSPACE_CRATES,
+    )
+    .rows_under("cfgd/src", 139);
     cfgd_core::test_helpers::callers_reaching(
         &declarations,
         &[("brew_path_dirs".to_string(), None)],

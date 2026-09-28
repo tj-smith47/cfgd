@@ -2874,10 +2874,11 @@ fn unguarded_env_reads(
         }
         // The guard is taken under `cfg(any(test, feature = "test-helpers"))`,
         // so the production half holds the read without the guard: each span is
-        // read whole, and a read is judged only on a production row.
+        // read whole, and a read is judged on every row a test can drive, a
+        // `test-helpers` seam's included.
         // unfloored-slice-ok: the test-only guard statements are part of every span judged.
         let body = walked_file_body(&path);
-        let test_items = crate::test_helpers::inline_test_item_ranges(&body);
+        let gates = crate::test_helpers::line_gates(&body);
         let lines: Vec<&str> = body.lines().collect();
         let relative = source_label(&path);
         // Each declaration as the line range it covers and whether its own
@@ -2899,7 +2900,7 @@ fn unguarded_env_reads(
         // once per enclosing slice would inflate the floor a deletion has to
         // clear.
         for (at, line) in lines.iter().enumerate() {
-            if test_items.iter().any(|(a, b)| (*a..*b).contains(&at))
+            if gates[at] == Some(crate::test_helpers::Gate::Test)
                 || !is_read(line, &code_half(line))
             {
                 continue;
@@ -3242,11 +3243,17 @@ fn every_env_mutating_test_helper_is_named_in_the_mutator_roster() {
 /// A source walk is a test-scope function calling `rust_sources_under`,
 /// `workspace_rust_files`, `is_test_source` or `is_test_only_file`, or one
 /// enumerating `.rs` files itself with `read_dir`. A source walk reads each
-/// production file through `production_slice_of` or `floored_production_body`;
-/// when it reads a whole file, inline `#[cfg(test)]`
-/// included, it calls [`crate::test_helpers::walked_file_body`] and carries
+/// production file through `production_slice_of` or `floored_production_body`,
+/// or through their siblings on the same floored scan, `production_and_seams_of`
+/// for the text a test can drive and `production_code_of` for the production
+/// text with its literals and comments blanked; when it reads a whole file,
+/// inline `#[cfg(test)]` included, it calls
+/// [`crate::test_helpers::walked_file_body`] and carries
 /// `// unfloored-slice-ok: <why>` (on that line or the one above). A raw
-/// `read_to_string` in a source walk fails whatever it carries.
+/// `read_to_string` in a source walk fails whatever it carries. The reads
+/// through `floored_production_body` and `production_and_seams_of` are floored
+/// per crate at the count each holds, so walks drifting off the floored helper
+/// fail here.
 #[test]
 fn every_multi_file_production_walk_reads_through_the_floored_helper() {
     // Spelled in parts, or this walk's own needles are the first offenders it
@@ -3265,6 +3272,15 @@ fn every_multi_file_production_walk_reads_through_the_floored_helper() {
     };
     let raw_read = concat!("read_to", "_string(");
     let whole_read = concat!("walked_file", "_body(");
+    // The reads through the floored helper, and through its seam-view sibling,
+    // per crate root, each floored at the count it holds today.
+    let floored_reads = [
+        concat!("floored_production", "_body("),
+        concat!("production_and_seams", "_of("),
+    ];
+    const FLOORED_READS: [(&str, usize); 2] = [("cfgd", 35), ("cfgd-core", 4)];
+    let crates_dir = workspace_root().join("crates");
+    let mut floored: std::collections::BTreeMap<String, usize> = Default::default();
     let mut offenders = Vec::new();
     let mut raw_reads = Vec::new();
     let mut walks = 0usize;
@@ -3292,6 +3308,15 @@ fn every_multi_file_production_walk_reads_through_the_floored_helper() {
             let code = line.trim_start();
             if line.contains(" fn ") || code.starts_with("fn ") {
                 continue;
+            }
+            if floored_reads.iter().any(|read| line.contains(read)) {
+                let root = path
+                    .strip_prefix(&crates_dir)
+                    .ok()
+                    .and_then(|rel| rel.components().next())
+                    .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                *floored.entry(root).or_default() += 1;
             }
             if !line.contains(needle) {
                 continue;
@@ -3382,6 +3407,19 @@ fn every_multi_file_production_walk_reads_through_the_floored_helper() {
         sources >= 4,
         "the walk found the slice helper in {sources} sources; it has stopped \
          reading the population it judges"
+    );
+    let short: Vec<String> = FLOORED_READS
+        .iter()
+        .filter_map(|&(root, floor)| {
+            let read = floored.get(root).copied().unwrap_or_default();
+            (read < floor).then(|| format!("{root}: {read} reads, floor {floor}"))
+        })
+        .collect();
+    assert!(
+        short.is_empty(),
+        "a crate reads fewer sources through `floored_production_body` or \
+         `production_and_seams_of` than it holds:\n{}\nread: {floored:?}",
+        short.join("\n")
     );
 }
 
@@ -3733,6 +3771,12 @@ fn a_gated_items_extent_ends_where_the_item_does() {
 /// `cfg(any(test, feature = "test-helpers"))` fn and mod, the gate cfgd-core's
 /// harness overrides are built under. Two readers once disagreed on 25
 /// functions, and both read the `test-helpers` gate as production.
+///
+/// A `test-helpers` item is a seam, so it has a view of its own: the seam view
+/// keeps it beside production and drops every `#[cfg(test)]` item, one nested
+/// in a seam included. The production view, the seam-only lines and the
+/// test-only lines are three disjoint parts that put the file back together
+/// line for line.
 #[test]
 fn the_production_slice_and_the_test_region_partition_every_test_only_shape() {
     let gate = concat!("#[cfg", "(test)]");
@@ -3753,6 +3797,8 @@ fn the_production_slice_and_the_test_region_partition_every_test_only_shape() {
         "@helpers\n",
         "pub mod helper_gated_mod {\n",
         "    pub fn inside_helper_mod() {}\n",
+        "    @gate\n",
+        "    fn test_inside_helper_mod() {}\n",
         "}\n",
         "pub fn production_after_helpers() {}\n",
         "@gate\n",
@@ -3790,9 +3836,77 @@ fn the_production_slice_and_the_test_region_partition_every_test_only_shape() {
             "nested_gated_method",
             "helper_gated_fn",
             "inside_helper_mod",
+            "test_inside_helper_mod",
             "a_pin",
         ],
         "the test half is every test-only function and nothing else"
+    );
+    let seams = crate::test_helpers::production_and_seams_of(&path);
+    assert_eq!(
+        declared(&seams),
+        [
+            "production_before",
+            "production_method",
+            "production_after_nested",
+            "helper_gated_fn",
+            "inside_helper_mod",
+            "production_after_helpers",
+        ],
+        "the seam view is production and every `test-helpers` item, and no test:\n{seams}"
+    );
+    assert_eq!(
+        seams,
+        crate::test_helpers::production_and_seams_slice(&src),
+        "the seam view of a file is the seam slice of its body"
+    );
+    // Each line routed by its gate is the next line of the view that keeps it,
+    // and every view is used up, so the three parts rebuild the file exactly.
+    let gates = crate::test_helpers::line_gates(&src);
+    assert_eq!(gates.len(), src.lines().count(), "one gate per line");
+    let (mut kept, mut seam_kept) = (production.lines(), seams.lines());
+    let mut rebuilt = String::new();
+    let mut test_only: Vec<&str> = Vec::new();
+    for (line, gate) in src.lines().zip(&gates) {
+        let from_view = match gate {
+            None => {
+                assert_eq!(
+                    seam_kept.next(),
+                    Some(line),
+                    "the seam view keeps production"
+                );
+                kept.next()
+            }
+            Some(crate::test_helpers::Gate::TestHelpers) => seam_kept.next(),
+            Some(crate::test_helpers::Gate::Test) => {
+                test_only.push(line);
+                Some(line)
+            }
+        };
+        assert_eq!(
+            from_view,
+            Some(line),
+            "a {gate:?} line is its view's next line"
+        );
+        rebuilt.push_str(line);
+        rebuilt.push('\n');
+    }
+    assert!(
+        kept.next().is_none() && seam_kept.next().is_none(),
+        "a view holds a line no gate routes to it"
+    );
+    assert_eq!(
+        rebuilt, src,
+        "the three parts rebuild the file byte for byte"
+    );
+    assert_eq!(
+        declared(&test_only.join("\n")),
+        [
+            "gated_fn",
+            "nested_gated_method",
+            "test_inside_helper_mod",
+            "a_pin"
+        ],
+        "the test-only part is every `#[cfg(test)]` function, one nested in a seam included"
     );
     // The memo's body reader and its rows, on the same file.
     assert_eq!(
@@ -3834,6 +3948,32 @@ fn the_production_slice_and_the_test_region_partition_every_test_only_shape() {
             "{file}: the memo's rows and the file's production half disagree"
         );
     }
+    // A seam in the tree: the production memo leaves it out, and the seam memo
+    // holds it as a `test-helpers` row.
+    let daemon = crates_dir.join("cfgd-core/src/daemon/mod.rs");
+    let seam = "run_compliance_and_reconcile_ticks";
+    assert!(
+        workspace
+            .rows_in(&daemon)
+            .iter()
+            .all(|(name, ..)| name != seam),
+        "the production memo reads the `test-helpers` seam `{seam}` as production"
+    );
+    let seams_memo =
+        crate::test_helpers::workspace_seam_declarations(crate::test_helpers::WORKSPACE_CRATES);
+    let gated: Vec<Option<crate::test_helpers::Gate>> = seams_memo
+        .rows
+        .iter()
+        .zip(&seams_memo.gates)
+        .zip(&seams_memo.sites)
+        .filter(|((row, _), site)| row.0 == seam && site.1 == daemon.as_path())
+        .map(|((_, gate), _)| *gate)
+        .collect();
+    assert_eq!(
+        gated,
+        [Some(crate::test_helpers::Gate::TestHelpers)],
+        "the seam memo holds `{seam}` once, gated to `test-helpers`"
+    );
 }
 
 /// A file built only for tests, or holding tests alone, has no production
@@ -6963,7 +7103,8 @@ fn every_production_site_re_leading_a_provision_goes_through_the_one_helper() {
     // A file's rows are contiguous, so the file-wide question is asked once
     // when its first row arrives and carried over the rest.
     let mut judged: Option<(&Path, bool)> = None;
-    for (&(_, path, production), (name, owner, code)) in workspace.sites.iter().zip(&workspace.rows)
+    for (at, (&(_, path, production), (name, owner, _))) in
+        workspace.sites.iter().zip(&workspace.rows).enumerate()
     {
         let wanted = match judged {
             Some((file, wanted)) if file == path => wanted,
@@ -6978,7 +7119,7 @@ fn every_production_site_re_leading_a_provision_goes_through_the_one_helper() {
             continue;
         }
         read.insert(path);
-        let code = crate::test_helpers::blank_non_code(code);
+        let code = workspace.code_of(at);
         if crate::test_helpers::calls_free_fn(&code, "provision_led_by")
             || code.contains(".provision_led_by(")
         {
@@ -7591,6 +7732,9 @@ fn no_scan_hand_copies_the_test_only_file_rule() {
         ("cfgd-schema", 2, 0),
         ("cfgd-test-fixtures", 1, 0),
     ];
+    // The calls across every root, counted the same way: a call moving from one
+    // crate to another keeps each crate's floor while the workspace loses one.
+    const TOTAL_ASKS: usize = 38;
     // Built from pieces so this file's own needles are not read as copies.
     let tells = [
         concat!("\"test_", "helpers.rs\""),
@@ -7637,6 +7781,12 @@ fn no_scan_hand_copies_the_test_only_file_rule() {
         "the scan read fewer sources, or found fewer calls routing a scan through \
          is_test_only_file, than each crate root holds:\n{}\ncounted: {counted:?}",
         short.join("\n")
+    );
+    let asked: usize = counted.values().map(|(_, asked)| asked).sum();
+    assert!(
+        asked >= TOTAL_ASKS,
+        "the workspace holds {asked} calls routing a scan through is_test_only_file, \
+         fewer than its {TOTAL_ASKS}: {counted:?}"
     );
     let unfloored: Vec<&String> = counted
         .keys()

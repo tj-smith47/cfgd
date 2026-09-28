@@ -304,14 +304,15 @@ fn no_production_site_compares_an_api_version_by_hand() {
 
     let declared =
         crate::test_helpers::workspace_declarations(crate::test_helpers::WORKSPACE_CRATES);
-    // The exempt bodies, picked out of the memo once and matched to their
-    // file inside the loop.
-    let exempt_bodies: Vec<(&Path, &str)> = declared
+    // The exempt declarations' rows, picked out of the memo once and matched
+    // to their file inside the loop.
+    let exempt_rows: Vec<(&Path, std::ops::RangeInclusive<usize>)> = declared
         .sites
         .iter()
         .zip(&declared.rows)
-        .filter(|(_, (name, ..))| EXEMPT.contains(&name.as_str()))
-        .map(|((_, site, _), (_, _, body))| (*site, body.as_str()))
+        .enumerate()
+        .filter(|(_, (_, (name, ..)))| EXEMPT.contains(&name.as_str()))
+        .map(|(at, ((_, site, _), _))| (*site, declared.span_of(at)))
         .collect();
     let mut per_root: Vec<(String, usize)> = Vec::new();
     let mut offenders: Vec<String> = Vec::new();
@@ -328,27 +329,19 @@ fn no_production_site_compares_an_api_version_by_hand() {
                 continue;
             }
             let production = production_slice_of(&path);
-            // `blank_non_code` carries the state a per-line read cannot: a
-            // `/* */` comment or a literal spanning rows leaves every row below
-            // it read as code. `code_line` is then the per-line cut each
-            // judgement is taken on, and both keep the row count, so the raw
-            // line beside it is the one a hatch and a report are read off.
-            let blanked = blank_non_code(&production);
+            // The `blank_non_code` fold carries the state a per-line read
+            // cannot: a `/* */` comment or a literal spanning rows leaves every
+            // row below it read as code. `code_line` is then the per-line cut
+            // each judgement is taken on, and both keep the row count, so the
+            // raw line beside it is the one a hatch and a report are read off.
+            let blanked = crate::test_helpers::production_code_of(&path);
             files += 1;
             let raw: Vec<&str> = production.lines().collect();
             let code: Vec<String> = blanked.lines().map(code_line).collect();
-            let joined = code.join("\n");
-            let exempt: Vec<std::ops::RangeInclusive<usize>> = exempt_bodies
+            let exempt: Vec<std::ops::RangeInclusive<usize>> = exempt_rows
                 .iter()
                 .filter(|(site, _)| *site == path.as_path())
-                .filter_map(|(_, body)| {
-                    // Blanked the way this file's rows are, so the body is
-                    // found at the rows it occupies.
-                    let body = blank_non_code(body);
-                    let at = joined.find(&body)?;
-                    let first = joined[..at].matches('\n').count();
-                    Some(first..=first + body.matches('\n').count())
-                })
+                .map(|(_, rows)| rows.clone())
                 .collect();
             let relative = crate::to_posix_string(path.strip_prefix(&workspace).unwrap_or(&path));
             for (first, last, statement) in statements(&code) {

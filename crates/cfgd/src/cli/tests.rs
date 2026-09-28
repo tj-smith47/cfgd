@@ -6,8 +6,8 @@ use std::sync::{Arc, Mutex};
 use cfgd_core::PathDisplayExt;
 use cfgd_core::test_helpers::{
     WORKSPACE_CRATES, blank_non_code, blank_string_literals, carries_hatch, code_line,
-    floored_production_body, production_sources_per_root, rust_sources_under, walked_file_body,
-    workspace_declarations,
+    floored_production_body, production_and_seams_of, production_sources_per_root,
+    rust_sources_under, walked_file_body, workspace_declarations, workspace_seam_declarations,
 };
 
 const TEST_CONFIG_YAML: &str =
@@ -1425,7 +1425,7 @@ fn update_check_entries() -> Vec<(String, Option<String>)> {
     // one-root-population-ok: a blind cfgd-core loses the stop asserted below,
     // and a blind cfgd loses `startup_update_check` and its pin's share of the
     // walk's floor.
-    let declarations = &workspace_declarations(WORKSPACE_CRATES).rows;
+    let declarations = &workspace_seam_declarations(WORKSPACE_CRATES).rows;
     let seeds = [("should_check".to_string(), None)];
     // A stop that no longer reaches the gate would silently stop nothing.
     assert!(
@@ -1665,7 +1665,7 @@ fn every_cfgd_env_name_is_spelled_once_in_production() {
     // The per-root reader hands back paths under `<cfgd>/..`, so the prefix to
     // strip is spelled the same way.
     let crates_dir = cfgd_core::test_helpers::workspace_root().join("crates");
-    let sources: Vec<(String, &str)> = trees
+    let sources: Vec<(String, &str, String)> = trees
         .iter()
         .flat_map(|&(_, files)| files)
         .map(|(path, production)| {
@@ -1673,6 +1673,7 @@ fn every_cfgd_env_name_is_spelled_once_in_production() {
             (
                 format!("crates/{}", cfgd_core::to_posix_string(rel)),
                 production.as_str(),
+                cfgd_core::test_helpers::production_code_of(path),
             )
         })
         .collect();
@@ -1682,8 +1683,7 @@ fn every_cfgd_env_name_is_spelled_once_in_production() {
     // one spelling too. Outside `env_names.rs` only a `*_BIN` seam may keep an
     // item of its own.
     let mut stray_consts: Vec<String> = Vec::new();
-    for (rel, production) in &sources {
-        let code = blank_non_code(production);
+    for (rel, production, code) in &sources {
         let readable = cfgd_core::test_helpers::blank_comments(production);
         let mut start = 0usize;
         for line in code.split_inclusive('\n') {
@@ -1806,10 +1806,9 @@ fn every_cfgd_env_name_is_spelled_once_in_production() {
         );
     }
     let mut literal_reads: Vec<String> = Vec::new();
-    for (rel, production) in &sources {
-        let code = blank_non_code(production);
+    for (rel, production, code) in &sources {
         for reader in &readers {
-            for span in free_call_args(&code, reader) {
+            for span in free_call_args(code, reader) {
                 if let Some(name) = cfgd_env_literals(&production[span.clone()]).next() {
                     let line = production[..span.start].matches('\n').count() + 1;
                     literal_reads.push(format!("{rel}:{line}: {reader}(\"{name}\")"));
@@ -2000,7 +1999,7 @@ fn manager_seam_population() -> SeamPopulation {
     let mut drawn_in: std::collections::BTreeMap<String, usize> = Default::default();
     let mut unsourced: Vec<String> = Vec::new();
     for path in rust_sources_under(&packages) {
-        let production = floored_production_body(&path);
+        let production = production_and_seams_of(&path);
         if production.trim().is_empty() {
             continue;
         }
@@ -17373,7 +17372,7 @@ fn every_action_row_subject_opens_on_a_lowercase_verb() {
             p.contains("/reconciler/") || p.contains("/backup/")
         })
         .map(|(path, body)| {
-            let blanked = blank_non_code(&body);
+            let blanked = cfgd_core::test_helpers::production_code_of(&path);
             (path, body, blanked)
         })
         .collect();
@@ -18855,10 +18854,12 @@ fn every_walk_declaring_the_workspace_reads_the_one_memo() {
         "fn_declarations",
         "file_declarations",
         "fixture_declarations",
+        "declare_workspace",
     ];
     // Spelled in parts, so the needles are no call and no list of their own.
     let declares = concat!("fn_", "declarations");
     let consumes = concat!("workspace_", "declarations(");
+    let consumes_seams = concat!("workspace_seam", "_declarations(");
     let names: Vec<&str> = WALK_ROOTS.iter().map(|(k, _, _)| *k).collect();
     assert_eq!(names, WORKSPACE_CRATES, "the walk reads every crate");
     // Checks the named set against `crates/` before the walk reads it.
@@ -18931,29 +18932,23 @@ fn every_walk_declaring_the_workspace_reads_the_one_memo() {
             // `fn` is no declaration, and a doc comment naming the declarer
             // calls nothing.
             let blanked = blank_non_code(&text);
-            if !blanked.contains(declares) && !blanked.contains(consumes) {
+            if !blanked.contains(declares)
+                && !blanked.contains(consumes)
+                && !blanked.contains(consumes_seams)
+            {
                 continue;
             }
             let code: Vec<&str> = blanked.lines().collect();
             // The spans in `test_helpers.rs` allowed to spell the declarer: the
-            // memo's initializer and the declarers' own bodies.
+            // declarers' own bodies, the memo's builder among them.
             let mut allowed: Vec<std::ops::RangeInclusive<usize>> = Vec::new();
-            if *path == memo_home {
-                let at = code
-                    .iter()
-                    .position(|l| l.starts_with("static WORKSPACE_DECLARATIONS"))
-                    .expect("the memo's initializer is declared in `test_helpers.rs`");
-                let end = at
-                    + code[at..]
-                        .iter()
-                        .position(|l| l.starts_with("    });"))
-                        .expect("the memo's initializer closes");
-                allowed.push(at..=end);
-            }
             for (i, line) in code.iter().enumerate() {
                 if let Some(name) = declared_fn_name(line) {
                     let end = declaration_end(&code, i);
-                    if code[i + 1..=end].iter().any(|l| l.contains(consumes)) {
+                    if code[i + 1..=end]
+                        .iter()
+                        .any(|l| l.contains(consumes) || l.contains(consumes_seams))
+                    {
                         readers += 1;
                     }
                     if *path == memo_home && DECLARERS.contains(&name.as_str()) {
@@ -21206,7 +21201,7 @@ fn every_rendered_url_is_stripped_of_its_userinfo() {
         if path.components().any(|c| c.as_os_str() == "cfgd-core") {
             core_files += 1;
         }
-        let code = cfgd_core::test_helpers::blank_non_code(&body);
+        let code = cfgd_core::test_helpers::production_code_of(&path);
         let code_lines: Vec<&str> = code.lines().collect();
         let raw_lines: Vec<&str> = body.lines().collect();
         for (at, label, whole_fn) in url_rendering_sites(&body, &code) {
@@ -21270,12 +21265,11 @@ fn every_rendered_url_is_stripped_of_its_userinfo() {
 /// The scan and the walk that reports it are split so the scan can be driven
 /// by a fixture: a walk reporting nothing over a clean tree cannot tell a
 /// detector that fires from one that never could.
-fn hand_folded_url_slots(body: &str) -> (Vec<(usize, String)>, Vec<&'static str>) {
-    let code = cfgd_core::test_helpers::blank_non_code(body);
+fn hand_folded_url_slots(body: &str, code: &str) -> (Vec<(usize, String)>, Vec<&'static str>) {
     let code_lines: Vec<&str> = code.lines().collect();
     let mut composers = Vec::new();
     let mut offenders = Vec::new();
-    for (at, label, whole_fn) in url_rendering_sites(body, &code) {
+    for (at, label, whole_fn) in url_rendering_sites(body, code) {
         if whole_fn {
             composers.push(
                 URL_RENDERING_COMPOSERS
@@ -21285,7 +21279,7 @@ fn hand_folded_url_slots(body: &str) -> (Vec<(usize, String)>, Vec<&'static str>
                     .expect("a whole-fn site is a roster composer"),
             );
         }
-        if folds_home_by_hand(&url_slot_span(&code, &code_lines, at, whole_fn)) {
+        if folds_home_by_hand(&url_slot_span(code, &code_lines, at, whole_fn)) {
             offenders.push((code[..at].matches('\n').count() + 1, label));
         }
     }
@@ -21334,7 +21328,7 @@ fn the_hand_folded_url_scan_reads_a_fold_as_code_and_a_neighbour_as_no_exemption
         "}\n",
     );
 
-    let (offenders, composers) = hand_folded_url_slots(fixture);
+    let (offenders, composers) = hand_folded_url_slots(fixture, &blank_non_code(fixture));
     let lines: Vec<usize> = offenders.iter().map(|(line, _)| *line).collect();
     assert_eq!(
         lines,
@@ -21381,7 +21375,8 @@ fn no_rendered_url_folds_the_home_directory_outside_display_source_origin() {
         .into_iter()
         .chain(core_production_sources())
     {
-        let (slots, composers) = hand_folded_url_slots(&body);
+        let (slots, composers) =
+            hand_folded_url_slots(&body, &cfgd_core::test_helpers::production_code_of(&path));
         composers_found.extend(composers);
         offenders.extend(
             slots
@@ -25733,7 +25728,7 @@ fn every_command_reaching_package_resolution_is_a_resolving_verb() {
         ("cfgd-test-fixtures", 0),
     ];
     let roots: Vec<&str> = ROOT_FLOORS.iter().map(|(root, _)| *root).collect();
-    let workspace = workspace_declarations(&roots);
+    let workspace = workspace_seam_declarations(&roots);
     let declarations = &workspace.rows;
     let seeds: Vec<(String, Option<String>)> = declarations
         .iter()
@@ -35928,11 +35923,14 @@ const MERGED_ENV_VIEW_TELLS: [&str; 2] = ["MergedEnvItems::new(", "LayeredEnv::o
 /// hatch is read off the RAW line, a hatch being a comment. A tell is judged
 /// before the line's own braces are processed, so a construction written on the
 /// line that CLOSES its loop is still inside that loop.
-fn merged_env_view_builds(production: &str, hatch: &str) -> (usize, usize, Vec<String>) {
+fn merged_env_view_builds(
+    production: &str,
+    code: &str,
+    hatch: &str,
+) -> (usize, usize, Vec<String>) {
     const LOOPY: [&str; 8] = [
         "for ", "while ", "loop {", ".map(", ".iter(", ".retain(", ".filter(", "|",
     ];
-    let code = cfgd_core::test_helpers::blank_non_code(production);
     let (mut merged, mut layered) = (0usize, 0usize);
     let mut offenders = Vec::new();
     // Each opener is kept as both halves: the loop tells are matched on the
@@ -36005,7 +36003,8 @@ fn the_merged_env_view_scan_reads_a_tell_as_code_and_a_loop_as_the_offence() {
         "    }\n",
         "}\n",
     );
-    let (merged, layered, offenders) = merged_env_view_builds(fixture, "per-row-merge-ok:");
+    let (merged, layered, offenders) =
+        merged_env_view_builds(fixture, &blank_non_code(fixture), "per-row-merge-ok:");
     cfgd_core::test_helpers::assert_slots_discriminate(&[("merged", merged), ("layered", layered)]);
     assert_eq!(
         merged, 2,
@@ -36096,7 +36095,11 @@ fn every_merged_env_view_is_built_once_per_command() {
             continue;
         }
         let production = cfgd_core::test_helpers::production_slice_of(&path);
-        let (merged, layered, found) = merged_env_view_builds(&production, HATCH);
+        let (merged, layered, found) = merged_env_view_builds(
+            &production,
+            &cfgd_core::test_helpers::production_code_of(&path),
+            HATCH,
+        );
         if merged > 0 {
             *counts.entry(name.clone()).or_default() += merged;
         }
@@ -36656,7 +36659,7 @@ fn every_held_floor_row_id_comes_from_the_composer_that_owns_it() {
                 "{krate}/src/{}",
                 cfgd_core::to_posix_string(path.strip_prefix(&root).unwrap_or(&path))
             );
-            let masked = blank_non_code(&production);
+            let masked = cfgd_core::test_helpers::production_code_of(&path);
             // The declaration line spells the name too, so a call is read past
             // it: the composer would otherwise count as its own caller.
             for line in masked.lines() {
@@ -36793,7 +36796,7 @@ fn every_module_package_description_comes_from_its_composer() {
                 "{krate}/src/{}",
                 cfgd_core::to_posix_string(path.strip_prefix(&root).unwrap_or(&path))
             );
-            let masked = blank_non_code(&production);
+            let masked = cfgd_core::test_helpers::production_code_of(&path);
             let code: Vec<&str> = masked.lines().collect();
             // Literals kept, comments blanked: the spelling lives inside a
             // literal, and a doc comment naming the shape composes nothing.
@@ -40449,7 +40452,7 @@ fn every_bootstrap_failure_names_what_it_installed() {
         // commented-out construction and a brace inside either are already
         // spaces. The FIELDS come back raw, because the message's own
         // placeholders are what `names_only_the_manager` reads.
-        let blanked = blank_non_code(body);
+        let blanked = cfgd_core::test_helpers::production_code_of(path);
         let mut from = 0usize;
         while let Some(hit) = blanked[from..].find("BootstrapFailed {") {
             let open = from + hit + "BootstrapFailed ".len();
@@ -46985,7 +46988,7 @@ impl ProvisioningVerb {
 /// that starts calling a provisioning verb joins the population with it.
 fn provisioning_dispatch_tells() -> Vec<(String, Option<&'static str>)> {
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let body = cfgd_core::test_helpers::production_slice_of(&manifest.join("src/cli/mod.rs"));
+    let body = production_and_seams_of(&manifest.join("src/cli/mod.rs"));
     let lines: Vec<&str> = body.lines().collect();
     let open = lines
         .iter()
@@ -47254,7 +47257,7 @@ fn the_call_graph_fold_keeps_two_functions_that_share_a_name_apart() {
 /// missing from the roster is a hole in it.
 #[test]
 fn every_function_that_can_reach_the_tool_provisioner_is_named_here() {
-    let declarations = workspace_declarations(WORKSPACE_CRATES).rows_under("cfgd/src", 139);
+    let declarations = workspace_seam_declarations(WORKSPACE_CRATES).rows_under("cfgd/src", 139);
     let derived = provisioning_reach(&declarations);
     assert!(
         !derived.is_empty(),
@@ -51324,7 +51327,7 @@ fn every_integration_test_spawns_the_binary_through_the_one_isolating_constructo
             continue;
         }
         let body = floored_production_body(&path);
-        let blanked = blank_non_code(&body);
+        let blanked = cfgd_core::test_helpers::production_code_of(&path);
         // Only a call naming its variable as a literal; `fn systemd_dir(`
         // itself takes a parameter.
         for (at, _) in blanked.match_indices("systemd_dir(\"") {
@@ -53039,8 +53042,7 @@ const UNTYPED_REFUSAL_CONSTRUCTORS: [&str; 5] =
 /// the same call, wherever it sits on its line: after a statement, inside a
 /// closure, on a closing line. The hatch is read off the raw line, on the
 /// call's own line or in the plain comment block directly above it.
-fn untyped_refusal_sites(body: &str) -> Vec<(usize, bool)> {
-    let code = blank_non_code(body);
+fn untyped_refusal_sites(body: &str, code: &str) -> Vec<(usize, bool)> {
     let raw: Vec<&str> = body.lines().collect();
     code.lines()
         .enumerate()
@@ -53104,7 +53106,7 @@ fn untyped_refusal_sites_reads_each_call_as_code_wherever_it_sits() {
     Ok(())
 }"#;
     assert_eq!(
-        untyped_refusal_sites(body),
+        untyped_refusal_sites(body, &blank_non_code(body)),
         vec![
             (6, false),
             (7, false),
@@ -53152,7 +53154,10 @@ fn no_reachable_cli_refusal_is_an_untyped_anyhow() {
             .lines()
             .filter(|l| carries_hatch(l, UNTYPED_REFUSAL_HATCH))
             .count();
-        for (line, ok) in untyped_refusal_sites(production) {
+        for (line, ok) in untyped_refusal_sites(
+            production,
+            &cfgd_core::test_helpers::production_code_of(path),
+        ) {
             let site = format!("{}:{line}", cfgd_core::to_posix_string(path));
             if ok {
                 hatched.push(site);
@@ -53203,8 +53208,8 @@ struct RefusalConstructor {
 /// payload parameter is read off the same signature by its name, `extras`.
 fn refusal_constructors(bodies: &[(std::path::PathBuf, String)]) -> Vec<RefusalConstructor> {
     let mut out: Vec<RefusalConstructor> = Vec::new();
-    for (_, body) in bodies {
-        let code = blank_non_code(body);
+    for (path, body) in bodies {
+        let code = cfgd_core::test_helpers::production_code_of(path);
         let commentless = cfgd_core::test_helpers::blank_comments(body);
         let mut offset = 0;
         for line in code.split_inclusive('\n') {
@@ -53253,7 +53258,7 @@ fn literal_refusals(
 ) -> Vec<LiteralRefusal> {
     let mut out = Vec::new();
     for (path, body) in bodies {
-        let code = blank_non_code(body);
+        let code = cfgd_core::test_helpers::production_code_of(path);
         let commentless = cfgd_core::test_helpers::blank_comments(body);
         for constructor in constructors {
             let needle = format!("{}(", constructor.name);
@@ -53362,8 +53367,8 @@ struct FlagComposer {
 fn flag_composers(bodies: &[(std::path::PathBuf, String)]) -> Vec<FlagComposer> {
     // (name, index of its `flag` parameter, its body with comments blanked)
     let mut candidates: Vec<(String, usize, String)> = Vec::new();
-    for (_, body) in bodies {
-        let code = blank_non_code(body);
+    for (path, body) in bodies {
+        let code = cfgd_core::test_helpers::production_code_of(path);
         let commentless = cfgd_core::test_helpers::blank_comments(body);
         let mut offset = 0;
         for line in code.split_inclusive('\n') {
@@ -54139,7 +54144,7 @@ fn every_refused_flag_is_spelled_the_way_help_prints_it() {
     let mut misread: Vec<String> = Vec::new();
     for (path, body) in &bodies {
         let file = cfgd_core::to_posix_string(path.strip_prefix(root).unwrap_or(path));
-        let code = blank_non_code(body);
+        let code = cfgd_core::test_helpers::production_code_of(path);
         let commentless = cfgd_core::test_helpers::blank_comments(body);
         let literal = |written: &str| {
             written
@@ -54501,7 +54506,7 @@ fn every_write_into_the_config_document_takes_the_section_rule() {
     let mut unanswered = Vec::new();
     for (path, body) in cli_production_bodies() {
         let file = cfgd_core::to_posix_string(path.strip_prefix(root).unwrap_or(&path));
-        let code = blank_non_code(&body);
+        let code = cfgd_core::test_helpers::production_code_of(&path);
         let code_lines: Vec<&str> = code.lines().collect();
         let raw_lines: Vec<&str> = body.lines().collect();
         let mut answered = std::collections::BTreeSet::new();
@@ -55180,9 +55185,9 @@ fn every_compliance_counts_line_comes_from_the_one_builder() {
     // A sentence counting something other than a compliance report's three
     // statuses (a policy's non-compliant machines, an all-pass verdict) says so.
     const HATCH: &str = "counts-line-ok:";
-    let hand_compositions = |body: &str| -> Vec<usize> {
+    let hand_compositions = |path: &Path, body: &str| -> Vec<usize> {
         let raw = cfgd_core::test_helpers::blank_comments(body);
-        let masked = blank_non_code(body);
+        let masked = cfgd_core::test_helpers::production_code_of(path);
         let (raw, masked) = (raw.as_bytes(), masked.as_bytes());
         (0..raw.len())
             .filter(|&at| {
@@ -55214,7 +55219,7 @@ fn every_compliance_counts_line_comes_from_the_one_builder() {
             )
         };
         let lines: Vec<&str> = production.lines().collect();
-        let hits: Vec<usize> = hand_compositions(production)
+        let hits: Vec<usize> = hand_compositions(path, production)
             .into_iter()
             .filter(|&at| {
                 let line = production[..at].matches('\n').count();
@@ -55380,7 +55385,7 @@ fn the_startup_document_summary_follows_the_last_reload() {
     const SUMMARY: &str = "\"loaded config document\"";
     let main = cfgd_core::test_helpers::workspace_root().join("crates/cfgd/src/main.rs");
     let body = floored_production_body(&main);
-    let code = cfgd_core::test_helpers::blank_non_code(&body);
+    let code = cfgd_core::test_helpers::production_code_of(&main);
     let reloads: Vec<usize> = code
         .match_indices("reload_if_moved(")
         .map(|(at, _)| at)
