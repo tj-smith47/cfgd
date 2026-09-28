@@ -2777,13 +2777,19 @@ fn every_production_path_read_takes_the_read_guard() {
          `path_env_read_guard()`, or carry `// {HATCH} <why>`:\n{}",
         offenders.join("\n")
     );
-    // Three: brew's PATH composition routes through
-    // `process_path_with_dirs_prepended` and reads nothing of its own.
-    assert!(
-        reads >= 3,
-        "the walk found {reads} production `PATH` reads; it has stopped \
-         finding them"
-    );
+    // cfgd-core's three: `reconciler/scripts.rs`'s script PATH and
+    // `util/process.rs`'s lookup and prepend. Brew's PATH composition routes
+    // through `process_path_with_dirs_prepended` and reads nothing of its own,
+    // and no other crate reads PATH directly.
+    const WALK_ROOTS: &[(&str, usize)] = &[("cfgd-core", 3)];
+    for (root, floor) in WALK_ROOTS {
+        let found = reads.get(*root).copied().unwrap_or(0);
+        assert!(
+            found >= *floor,
+            "the walk found {found} production `PATH` reads under {root}, below its floor of \
+             {floor}; it has stopped finding them"
+        );
+    }
 }
 
 /// Every production read of a `CFGD_*_BIN` tool seam sits inside a
@@ -2820,19 +2826,27 @@ fn every_production_seam_read_takes_the_read_guard() {
          `path_env_read_guard()`, or carry `// {HATCH} <why>`:\n{}",
         offenders.join("\n")
     );
-    // Three cfgd-core seam helpers, ten cfgd readers and the two hatched
-    // configuration reads.
-    assert!(
-        reads >= 15,
-        "the walk found {reads} production seam reads; it has stopped finding them"
-    );
+    // cfgd-core: the three `util/process.rs` seam helpers and the hatched
+    // systemd directory read in `util/paths.rs`. cfgd: the ten package and
+    // system readers that take the guard. cfgd-operator: the hatched lease
+    // timing read in `leader.rs`.
+    const WALK_ROOTS: &[(&str, usize)] = &[("cfgd-core", 4), ("cfgd", 10), ("cfgd-operator", 1)];
+    for (root, floor) in WALK_ROOTS {
+        let found = reads.get(*root).copied().unwrap_or(0);
+        assert!(
+            found >= *floor,
+            "the walk found {found} production seam reads under {root}, below its floor of \
+             {floor}; it has stopped finding them"
+        );
+    }
 }
 
 /// The two `env::var` spellings a guarded-read walk looks for.
 const ENV_READ_NEEDLES: &[&str] = &["env::var(", "env::var_os("];
 
 /// Every production line `is_read` accepts (handed the raw line and its
-/// [`code_half`]), counted, and the ones outside a span naming
+/// [`code_half`]), counted per crate (the directory under `crates/`), and the
+/// ones outside a span naming
 /// `path_env_read_guard()` that carry no `hatch`, labelled.
 ///
 /// The judgement is the INNERMOST declaration the read sits in, and the guard
@@ -2843,8 +2857,11 @@ const ENV_READ_NEEDLES: &[&str] = &["env::var(", "env::var_os("];
 /// read outside every declaration (a file-scope `static` or `LazyLock`
 /// initializer) is counted and fails: an initializer runs ordered by first use,
 /// inside no span any guard could bracket.
-fn unguarded_env_reads(is_read: impl Fn(&str, &str) -> bool, hatch: &str) -> (usize, Vec<String>) {
-    let mut reads = 0usize;
+fn unguarded_env_reads(
+    is_read: impl Fn(&str, &str) -> bool,
+    hatch: &str,
+) -> (std::collections::BTreeMap<String, usize>, Vec<String>) {
+    let mut reads = std::collections::BTreeMap::<String, usize>::new();
     let mut offenders = Vec::new();
     for path in workspace_rust_files() {
         // This file spells every needle in order to hunt for it, and the test
@@ -2880,7 +2897,11 @@ fn unguarded_env_reads(is_read: impl Fn(&str, &str) -> bool, hatch: &str) -> (us
             if !is_read(line, &code_half(line)) {
                 continue;
             }
-            reads += 1;
+            let label = relative.to_string();
+            let root = label.strip_prefix("crates/").unwrap_or(&label);
+            *reads
+                .entry(root.split('/').next().unwrap_or(root).to_string())
+                .or_default() += 1;
             let innermost = spans
                 .iter()
                 .filter(|(span, _)| span.contains(&at))

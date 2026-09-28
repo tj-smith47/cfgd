@@ -6695,8 +6695,11 @@ mod tests {
                 .expect("report the seam read");
         });
         assert!(
-            read.recv_timeout(std::time::Duration::from_millis(200))
-                .is_err(),
+            await_queued_path_reader(reader.thread().id(), std::time::Duration::from_secs(10)),
+            "the guarded read never queued on the pins' lock"
+        );
+        assert!(
+            read.try_recv().is_err(),
             "a guarded read ran while the pins were held"
         );
         drop(pins);
