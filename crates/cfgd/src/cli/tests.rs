@@ -911,10 +911,8 @@ fn every_destructive_backup_verb_mirrors_the_global_yes() {
         ("Gc", false),
         ("Rollback", true),
     ];
-    let source = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli/mod.rs"),
-    )
-    .expect("cli/mod.rs is checked out");
+    let source =
+        walked_file_body(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli/mod.rs"));
     let block = source
         .split("pub enum BackupCommand {")
         .nth(1)
@@ -18897,7 +18895,7 @@ fn every_walk_declaring_the_workspace_reads_the_one_memo() {
             {
                 let whole_test = is_test_source(path) || is_test_only_file(path);
                 let gates = if whole_test {
-                    Vec::new()
+                    Default::default()
                 } else {
                     cfgd_core::test_helpers::line_gates_of(path)
                 };
@@ -20468,10 +20466,8 @@ fn walked_mutations() -> &'static [(Mutation<'static>, &'static [&'static str])]
 #[test]
 fn every_composed_next_step_names_a_command() {
     let mutations = walked_mutations();
-    let source = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli/mod.rs"),
-    )
-    .unwrap();
+    let source =
+        walked_file_body(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli/mod.rs"));
     let declared = source
         .split("pub(in crate::cli) enum Mutation<'a> {")
         .nth(1)
@@ -20939,9 +20935,7 @@ fn every_listing_the_cli_renders_drops_a_column_no_row_can_fill() {
 #[test]
 fn every_subscription_knob_renders_a_title_case_label() {
     let keys_of = |path: &str, marker: &str| -> Vec<String> {
-        let body =
-            std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(path))
-                .expect("the source file is checked out");
+        let body = walked_file_body(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(path));
         // doc-comment-ok: locates a list in a source, deciding no exemption
         let at = body.find(marker).expect("the list is where the pin says");
         let open = array_of_pairs(&body, at);
@@ -20971,10 +20965,9 @@ fn every_subscription_knob_renders_a_title_case_label() {
         "a subscription knob `source update` writes is rendered by its label, \
          never by its wire key — these have none: {unlabelled:?}"
     );
-    let body = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli/source/mod.rs"),
-    )
-    .expect("the source file is checked out");
+    let body = walked_file_body(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli/source/mod.rs"),
+    );
     let at = body
         .find("SUBSCRIPTION_KNOB_LABELS")
         .expect("the table is where the pin says");
@@ -23537,7 +23530,7 @@ fn every_pull_failure_kind_is_listed_in_all() {
 
     let git =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../cfgd-core/src/daemon/git.rs");
-    let body = std::fs::read_to_string(&git).expect("daemon/git.rs is readable");
+    let body = walked_file_body(&git);
     let start = body
         .find("pub enum PullFailureKind {")
         .expect("PullFailureKind is declared in daemon/git.rs");
@@ -25961,7 +25954,7 @@ fn every_package_resolving_test_resolves_off_managers_it_controls() {
             .into_iter()
             .map(|path| {
                 // unfloored-slice-ok: the seam consts production declares, read by name.
-                let text = walked_file_body(&path);
+                let text = walked_file_body(&path).into_owned();
                 (path, text)
             })
             .collect::<Vec<_>>(),
@@ -26315,10 +26308,8 @@ fn seam_value(
 fn resolving_verb_variants() -> Vec<Vec<String>> {
     use clap::CommandFactory;
     let cli = Cli::command();
-    let declared = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli/mod.rs"),
-    )
-    .expect("cli/mod.rs is readable");
+    let declared =
+        walked_file_body(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli/mod.rs"));
     let pascal = |word: &str| -> String {
         word.split('-')
             .map(|part| {
@@ -40315,7 +40306,7 @@ fn enroll_error_hint_kinds() -> Vec<String> {
 #[test]
 fn every_catalog_sourced_sources_column_can_be_absent() {
     let cli_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli");
-    let types = std::fs::read_to_string(cli_dir.join("output_types.rs")).unwrap();
+    let types = walked_file_body(&cli_dir.join("output_types.rs"));
     let start = types
         .find("pub struct SourceListEntry {")
         .expect("SourceListEntry is declared in output_types.rs");
@@ -47810,7 +47801,7 @@ fn every_exit_code_surface_reports_an_erroring_check() {
     // beside it, so a new surface cannot be added to the clap tree and to the
     // assertion above while the matrix files stay as they were.
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let matrix = std::fs::read_to_string(root.join("tests/drift_exit_code.rs")).unwrap();
+    let matrix = walked_file_body(&root.join("tests/drift_exit_code.rs"));
     // `status` reads the store by default, so its live cell arms `--scan`.
     let scan = |name: &str| {
         if name == "status" {
@@ -50123,7 +50114,7 @@ fn every_host_script_proof_is_reachable_from_ci() {
     let workflows: Vec<String> = entries_of(&root.join(".github/workflows"))
         .iter()
         .filter(|p| p.extension().is_some_and(|x| x == "yml" || x == "yaml"))
-        .map(|p| walked_file_body(p))
+        .map(|p| walked_file_body(p).into_owned())
         .collect();
     assert!(
         workflows.len() >= WORKFLOW_FLOOR,
@@ -50894,7 +50885,7 @@ impl DemoRepo {
     }
 
     fn read(&self, rel: &str) -> String {
-        walked_file_body(&self.dir.path().join(rel))
+        walked_file_body(&self.dir.path().join(rel)).into_owned()
     }
 
     /// Commit every file in the tree; returns the commit id.

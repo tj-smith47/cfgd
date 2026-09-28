@@ -5554,19 +5554,44 @@ fn gated_item_ranges_over(src: &str, code: &str) -> Vec<(usize, usize, Gate)> {
 /// line, so one written inside a literal or a comment gates nothing, and its
 /// predicate off the raw line.
 fn test_gate_on(raw: &str, code: &str) -> Option<Gate> {
+    match cfg_attribute(raw, code)? {
+        (CfgAttribute::Outer, predicate) => gate_of(predicate),
+        (CfgAttribute::Inner, _) => None,
+    }
+}
+
+/// Where a `cfg` attribute applies: `#[cfg(…)]` to the item below it,
+/// `#![cfg(…)]` to the module or file holding it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CfgAttribute {
+    Outer,
+    Inner,
+}
+
+/// The kind and predicate of the one-line `cfg` attribute on `raw`, one source
+/// line whose literals and comments `code` blanks byte for byte; `None` for any
+/// other line. The attribute is found on `code`, so one spelled inside a
+/// literal or a comment is none, and its predicate is read off `raw`, whose
+/// `"test-helpers"` literal `code` blanks.
+fn cfg_attribute<'a>(raw: &'a str, code: &str) -> Option<(CfgAttribute, &'a str)> {
     // `contains` is the fast search; the trims below run on the few lines it finds.
-    if !code.contains("#[cfg(") {
+    if !code.contains("cfg(") {
         return None;
     }
     let code = code.trim_end();
-    if !code.trim_start().starts_with("#[cfg(") {
+    let lead = code.trim_start();
+    let (kind, opener) = if lead.starts_with("#![cfg(") {
+        (CfgAttribute::Inner, "#![cfg(")
+    } else if lead.starts_with("#[cfg(") {
+        (CfgAttribute::Outer, "#[cfg(")
+    } else {
         return None;
-    }
-    let predicate = raw[..code.len()]
+    };
+    raw[..code.len()]
         .trim()
-        .strip_prefix("#[cfg(")
-        .and_then(|rest| rest.strip_suffix(")]"))?;
-    gate_of(predicate)
+        .strip_prefix(opener)?
+        .strip_suffix(")]")
+        .map(|predicate| (kind, predicate))
 }
 
 /// The [`Gate`] a `cfg` predicate builds its item under, `None` for one some
@@ -5829,9 +5854,42 @@ pub fn plant_managed_env_files(
 /// a golden or a markdown page rather than a source's production region. A read
 /// whose absence is a legitimate state — an artifact the test itself decided not
 /// to write — stays a silent read and says so with `// absent-file-ok: <why>`.
-pub fn walked_file_body(path: &Path) -> String {
-    std::fs::read_to_string(path)
-        .unwrap_or_else(|e| panic!("{}: the walk must read every file: {e}", path.display()))
+///
+/// A Rust source of the workspace is read once per test process: every walk
+/// and every scan of it borrows that one body, so a file's text, its gates and
+/// its views all come from the same read. A fixture a test writes elsewhere may
+/// be rewritten between two reads, so it is read on every call.
+pub fn walked_file_body(path: &Path) -> std::borrow::Cow<'static, str> {
+    type Bodies = std::collections::HashMap<PathBuf, &'static str>;
+    static BODIES: std::sync::LazyLock<std::sync::Mutex<Bodies>> =
+        std::sync::LazyLock::new(Default::default);
+    let read = |path: &Path| {
+        std::fs::read_to_string(path)
+            .unwrap_or_else(|e| panic!("{}: the walk must read every file: {e}", path.display()))
+    };
+    let key = lexically_folded(path);
+    let source = key.extension().is_some_and(|ext| ext == "rs");
+    if !source || !key.starts_with(WORKSPACE_ROOT.join("crates")) {
+        return std::borrow::Cow::Owned(read(path));
+    }
+    let known = BODIES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&key)
+        .copied();
+    if let Some(body) = known {
+        return std::borrow::Cow::Borrowed(body);
+    }
+    // Read outside the lock so walks on other threads keep reading; a file two
+    // threads read at once is kept once, and the other copy is dropped.
+    let body = read(path);
+    std::borrow::Cow::Borrowed(
+        BODIES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(key)
+            .or_insert_with(|| Box::leak(body.into_boxed_str())),
+    )
 }
 
 /// The production region of the Rust source at `path`, read here so the two
@@ -5866,11 +5924,14 @@ pub fn production_code_of(path: &Path) -> String {
     sliced_views_of(path).production_code.clone()
 }
 
-/// What one scan of a Rust source yields: its production view, its seam view,
-/// each view's [`blank_non_code`] fold and the gate of each of its lines.
+/// What one scan of a Rust source yields: the body it scanned, its production
+/// view, its seam view, each view's [`blank_non_code`] fold, the gate of each
+/// of its lines and, once a walk asks for it, its test region.
 #[derive(Clone, Default)]
 struct SourceViews {
+    body: std::borrow::Cow<'static, str>,
     gates: Vec<Option<Gate>>,
+    region: std::sync::OnceLock<String>,
     production: String,
     seams: String,
     production_code: String,
@@ -5898,35 +5959,39 @@ pub fn test_module_cut_of(path: &Path) -> String {
 
 /// The test region of the Rust source at `path`: the whole file where it holds
 /// tests alone or is built only for tests, and otherwise [`test_region_mask`]
-/// of it, read off the gates the one scan of the file already holds. A walk
-/// over the test scope of several files reads each one here.
-pub fn test_region_of(path: &Path) -> String {
-    // unfloored-slice-ok: the region is the whole file or its gated lines, blanked in place.
-    let body = walked_file_body(path);
+/// of it, cut once from the body and gates the one scan of the file holds. A
+/// walk over the test scope of several files reads each one here.
+pub fn test_region_of(path: &Path) -> std::borrow::Cow<'static, str> {
     if is_test_source(path) || is_test_only_file(path) {
-        return body;
+        // unfloored-slice-ok: a file of tests alone is its own test region.
+        return walked_file_body(path);
     }
-    gated_lines_in_place(&body, &gates_for(path, &body))
+    view_of(path, |views| {
+        views
+            .region
+            .get_or_init(|| gated_lines_in_place(&views.body, &views.gates))
+            .as_str()
+    })
 }
 
-/// [`line_gates`] of the Rust source at `path`, from the one scan of it. A
-/// file holding tests alone carries no gate of its own, so a walk judging
-/// such a file whole asks [`is_test_source`] first.
-pub fn line_gates_of(path: &Path) -> Vec<Option<Gate>> {
-    gates_for(path, &walked_file_body(path))
+/// [`line_gates`] of the Rust source at `path`, from the one scan of it, which
+/// read the body [`walked_file_body`] returns for the same path. A file
+/// holding tests alone carries no gate of its own, so a walk judging such a
+/// file whole asks [`is_test_source`] first.
+pub fn line_gates_of(path: &Path) -> std::borrow::Cow<'static, [Option<Gate>]> {
+    view_of(path, |views| views.gates.as_slice())
 }
 
-/// The cached gates of `path`, checked to cover `body` line for line, so a
-/// file rewritten after its scan fails the walk instead of misaligning it.
-fn gates_for(path: &Path, body: &str) -> Vec<Option<Gate>> {
-    let gates = cut_views_of(path).gates.clone();
-    assert_eq!(
-        gates.len(),
-        body.lines().count(),
-        "{}: the scan and the read disagree on the file's lines",
-        path.display()
-    );
-    gates
+/// One part of the views of `path`, borrowed from the per-process scan of a
+/// workspace source and copied out of the one-off scan of a fixture.
+fn view_of<T: ToOwned + ?Sized>(
+    path: &Path,
+    part: impl Fn(&SourceViews) -> &T,
+) -> std::borrow::Cow<'static, T> {
+    match cut_views_of(path) {
+        std::borrow::Cow::Borrowed(views) => std::borrow::Cow::Borrowed(part(views)),
+        std::borrow::Cow::Owned(views) => std::borrow::Cow::Owned(part(&views).to_owned()),
+    }
 }
 
 /// [`scan_views_of`] for `path`, scanned once per test process when it is a
@@ -5966,14 +6031,13 @@ fn cut_views_of(path: &Path) -> std::borrow::Cow<'static, SourceViews> {
 /// lines preceding the file's first test item. The seam view holds every
 /// production line, so the floor holds for it too.
 fn scan_views_of(path: &Path) -> SourceViews {
-    let body = std::fs::read_to_string(path)
-        .unwrap_or_else(|e| panic!("{}: the walk must read every source: {e}", path.display()));
+    let body = walked_file_body(path);
     let code = blank_non_code(&body);
     let gates = line_gates_over(&body, &code);
     let production = keep_lines(&body, &gates, |gate| gate.is_none());
     let before_tests = body
         .lines()
-        .position(|l| l.contains("#[cfg(") && is_test_gate(l.trim()))
+        .position(|l| l.contains("#[cfg(") && attribute_gate(l).is_some())
         .unwrap_or_else(|| body.lines().count());
     let walked = production.lines().count();
     assert!(
@@ -5987,6 +6051,8 @@ fn scan_views_of(path: &Path) -> SourceViews {
         seams_code: keep_lines(&code, &gates, |gate| gate != Some(Gate::Test)),
         production,
         gates,
+        body,
+        region: std::sync::OnceLock::new(),
     }
 }
 
@@ -6535,23 +6601,7 @@ fn cfg_members(list: &str) -> Vec<&str> {
 /// and its predicate is read off the raw line, whose `"test-helpers"` literal
 /// the fold blanks.
 pub fn attribute_gate(line: &str) -> Option<Gate> {
-    let attr = code_span(line).trim();
-    if !code_line(line).trim_start().starts_with('#') {
-        return None;
-    }
-    attr.strip_prefix("#![cfg(")
-        .or_else(|| attr.strip_prefix("#[cfg("))
-        .and_then(|rest| rest.strip_suffix(")]"))
-        .and_then(gate_of)
-}
-
-/// Whether an attribute line (outer `#[cfg(…)]` or inner `#![cfg(…)]`, as
-/// rustfmt lays it on one line) builds its item only for tests.
-fn is_test_gate(attr: &str) -> bool {
-    attr.strip_prefix("#![cfg(")
-        .or_else(|| attr.strip_prefix("#[cfg("))
-        .and_then(|rest| rest.strip_suffix(")]"))
-        .is_some_and(cfg_requires_test)
+    cfg_attribute(line, &code_line(line)).and_then(|(_, predicate)| gate_of(predicate))
 }
 
 /// Every `mod x;` the Rust source at `source`, whose text is `body`, declares,
@@ -6609,7 +6659,7 @@ fn declared_module_files(source: &Path, body: &str) -> Vec<(PathBuf, bool)> {
                     base.display()
                 )
             });
-        out.push((file, attrs.iter().any(|a| is_test_gate(a))));
+        out.push((file, attrs.iter().any(|a| attribute_gate(a).is_some())));
     }
     out
 }
@@ -6693,7 +6743,7 @@ pub fn test_only_files_below(root: &Path) -> std::collections::BTreeSet<PathBuf>
             .lines()
             .map(str::trim)
             .take_while(|l| l.is_empty() || l.starts_with("//") || l.starts_with("#!["))
-            .any(is_test_gate);
+            .any(|l| attribute_gate(l).is_some());
         if inner_gate {
             found.push(source.clone());
         }

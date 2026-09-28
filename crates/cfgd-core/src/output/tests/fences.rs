@@ -1618,7 +1618,7 @@ fn every_source_label_is_workspace_relative_and_posix_folded() {
 #[test]
 fn no_walk_folding_a_label_spells_an_offender_path_natively() {
     let own_path = workspace_root().join("crates/cfgd-core/src/output/tests/fences.rs");
-    let own = std::fs::read_to_string(&own_path).unwrap_or_else(|e| panic!("{own_path:?}: {e}"));
+    let own = walked_file_body(&own_path);
     let label = source_label(&own_path);
     let native = format!("path.{}()", "display");
     let mut folding = 0usize;
@@ -3289,56 +3289,28 @@ fn every_multi_file_production_walk_reads_through_the_floored_helper() {
         concat!("floored_production", "_body("),
         concat!("production_and_seams", "_of("),
     ];
-    const FLOORED_READS: [(&str, usize); 2] = [("cfgd", 35), ("cfgd-core", 4)];
-    let gate_spellings = [
-        concat!("cfg", "(test"),
-        concat!("cfg", "(all(test"),
-        concat!("cfg", "(any(test"),
-        concat!("mod ", "tests"),
+    // Per crate root, each floored at the count it holds today: the functions
+    // walking sources, the sources spelling the pure cut, and the reads
+    // through the floored helper or its seam-view sibling.
+    const FLOORS: [(&str, usize, usize, usize); 3] = [
+        ("cfgd", 82, 8, 35),
+        ("cfgd-core", 64, 10, 4),
+        ("cfgd-operator", 2, 2, 0),
     ];
-    let searches = [
-        "starts_with",
-        "ends_with",
-        "contains",
-        "find",
-        "rfind",
-        "strip_prefix",
-        "split_once",
-        "matches",
-        "match_indices",
-    ];
-    // A literal opening on a gate's spelling, or on the attribute holding it,
-    // handed to a string search or compared whole.
-    let cuts_by_hand = |line: &str| {
-        if !gate_spellings
-            .iter()
-            .any(|spelling| line.contains(spelling))
-        {
-            return false;
-        }
-        let code = crate::test_helpers::code_span(line);
-        ["(\"", "== \""].iter().any(|open| {
-            code.match_indices(open).any(|(at, _)| {
-                let rest = &code[at + open.len()..];
-                let rest = rest
-                    .strip_prefix("#![")
-                    .or_else(|| rest.strip_prefix("#["))
-                    .unwrap_or(rest);
-                gate_spellings
-                    .iter()
-                    .any(|spelling| rest.starts_with(spelling))
-                    && (open.starts_with('=') || searches.iter().any(|m| code[..at].ends_with(m)))
-            })
-        })
-    };
     let mut hand_cuts = Vec::new();
     let crates_dir = workspace_root().join("crates");
     let mut floored: std::collections::BTreeMap<String, usize> = Default::default();
     let mut offenders = Vec::new();
     let mut raw_reads = Vec::new();
-    let mut walks = 0usize;
-    let mut sources = 0usize;
+    let mut walks: std::collections::BTreeMap<String, usize> = Default::default();
+    let mut sources: std::collections::BTreeMap<String, usize> = Default::default();
     for path in workspace_rust_files() {
+        let root = path
+            .strip_prefix(&crates_dir)
+            .ok()
+            .and_then(|rel| rel.components().next())
+            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+            .unwrap_or_default();
         // `test_helpers.rs` holds the shared walk BODIES, so exempting the file
         // would hide the newest multi-file walk from this rule. Only its own
         // PRODUCTION region is judged, because the unit tests of the cut below
@@ -3347,7 +3319,7 @@ fn every_multi_file_production_walk_reads_through_the_floored_helper() {
         let own_file = crate::to_posix_string(&path).ends_with("cfgd-core/src/test_helpers.rs");
         let label = source_label(&path);
         let body = if own_file {
-            crate::test_helpers::test_module_cut_of(&path)
+            crate::test_helpers::test_module_cut_of(&path).into()
         } else {
             // unfloored-slice-ok: the walks judged here are tests.
             walked_file_body(&path)
@@ -3363,13 +3335,7 @@ fn every_multi_file_production_walk_reads_through_the_floored_helper() {
                 continue;
             }
             if floored_reads.iter().any(|read| line.contains(read)) {
-                let root = path
-                    .strip_prefix(&crates_dir)
-                    .ok()
-                    .and_then(|rel| rel.components().next())
-                    .map(|c| c.as_os_str().to_string_lossy().into_owned())
-                    .unwrap_or_default();
-                *floored.entry(root).or_default() += 1;
+                *floored.entry(root.clone()).or_default() += 1;
             }
             if !line.contains(needle) {
                 continue;
@@ -3396,7 +3362,7 @@ fn every_multi_file_production_walk_reads_through_the_floored_helper() {
             offenders.push(format!("{label}:{}: {}", n + 1, line.trim()));
         }
         if spells {
-            sources += 1;
+            *sources.entry(root.clone()).or_default() += 1;
         }
         // Production code reading files is outside the rule: only test scope
         // walks sources.
@@ -3404,16 +3370,14 @@ fn every_multi_file_production_walk_reads_through_the_floored_helper() {
             || crate::test_helpers::is_test_source(&path)
             || crate::test_helpers::is_test_only_file(&path);
         let gates = if whole_test {
-            Vec::new()
+            Default::default()
         } else {
             crate::test_helpers::line_gates_of(&path)
         };
         let in_test = |n: usize| whole_test || gates[n].is_some();
         if !own_file {
-            for (n, line) in lines.iter().enumerate() {
-                if in_test(n) && !line.trim_start().starts_with("//") && cuts_by_hand(line) {
-                    hand_cuts.push(format!("{label}:{}: {}", n + 1, line.trim()));
-                }
+            for n in hand_cut_gate_rows(&lines, in_test) {
+                hand_cuts.push(format!("{label}:{}: {}", n + 1, lines[n].trim()));
             }
         }
         for (open, func) in source_functions(&label, &body) {
@@ -3423,7 +3387,7 @@ fn every_multi_file_production_walk_reads_through_the_floored_helper() {
             {
                 continue;
             }
-            walks += 1;
+            *walks.entry(root.clone()).or_default() += 1;
             for (k, line) in func.lines().enumerate() {
                 let code = line.trim_start();
                 if code.starts_with("//") || crate::test_helpers::opens_function(code) {
@@ -3469,28 +3433,211 @@ fn every_multi_file_production_walk_reads_through_the_floored_helper() {
          attribute with `attribute_gate`:\n{}",
         hand_cuts.join("\n")
     );
-    // The count the workspace's test scope holds: 147 functions walking sources.
+    let unfloored: Vec<&String> = walks
+        .keys()
+        .chain(sources.keys())
+        .chain(floored.keys())
+        .filter(|root| FLOORS.iter().all(|(floored_root, ..)| floored_root != root))
+        .collect();
     assert!(
-        walks >= 147,
-        "the walk found {walks} source walks; it has stopped reading the population it judges"
+        unfloored.is_empty(),
+        "a crate holding source walks takes a row in FLOORS at the count it holds: {unfloored:?}"
     );
-    assert!(
-        sources >= 4,
-        "the walk found the slice helper in {sources} sources; it has stopped \
-         reading the population it judges"
-    );
-    let short: Vec<String> = FLOORED_READS
+    let count = |counts: &std::collections::BTreeMap<String, usize>, root: &str| {
+        counts.get(root).copied().unwrap_or_default()
+    };
+    let short: Vec<String> = FLOORS
         .iter()
-        .filter_map(|&(root, floor)| {
-            let read = floored.get(root).copied().unwrap_or_default();
-            (read < floor).then(|| format!("{root}: {read} reads, floor {floor}"))
+        .flat_map(|&(root, walk_floor, source_floor, read_floor)| {
+            [
+                ("source walks", count(&walks, root), walk_floor),
+                (
+                    "sources spelling the pure cut",
+                    count(&sources, root),
+                    source_floor,
+                ),
+                ("floored reads", count(&floored, root), read_floor),
+            ]
+            .into_iter()
+            .filter(|&(_, found, floor)| found < floor)
+            .map(move |(what, found, floor)| format!("{root}: {found} {what}, floor {floor}"))
         })
         .collect();
     assert!(
         short.is_empty(),
-        "a crate reads fewer sources through `floored_production_body` or \
-         `production_and_seams_of` than it holds:\n{}\nread: {floored:?}",
+        "the walk has stopped reading the population it judges:\n{}\n\
+         walks: {walks:?}\nsources: {sources:?}\nfloored reads: {floored:?}",
         short.join("\n")
+    );
+}
+
+/// The rows of `lines` in test scope (`in_test`) that search for a test gate's
+/// spelling: a literal opening on one handed to a string search or compared
+/// whole, and a name handed to a search whose `let`, `const` or `static`
+/// initializer holds such a literal. Each cuts test text from production
+/// beside the one scanner.
+fn hand_cut_gate_rows(lines: &[&str], in_test: impl Fn(usize) -> bool) -> Vec<usize> {
+    let gate_spellings = [
+        concat!("cfg", "(test"),
+        concat!("cfg", "(all(test"),
+        concat!("cfg", "(any(test"),
+        concat!("mod ", "tests"),
+    ];
+    let searches = [
+        "starts_with",
+        "ends_with",
+        "contains",
+        "find",
+        "rfind",
+        "strip_prefix",
+        "split_once",
+        "matches",
+        "match_indices",
+    ];
+    // Text opening on a gate's spelling, or on the attribute holding it.
+    let opens_on_a_gate = |text: &str| {
+        let rest = text
+            .strip_prefix("#![")
+            .or_else(|| text.strip_prefix("#["))
+            .unwrap_or(text);
+        gate_spellings
+            .iter()
+            .any(|spelling| rest.starts_with(spelling))
+    };
+    // A literal opening on a gate's spelling handed to a string search or
+    // compared whole.
+    let cuts_by_hand = |line: &str| {
+        if !gate_spellings
+            .iter()
+            .any(|spelling| line.contains(spelling))
+        {
+            return false;
+        }
+        let code = crate::test_helpers::code_span(line);
+        ["(\"", "== \""].iter().any(|open| {
+            code.match_indices(open).any(|(at, _)| {
+                opens_on_a_gate(&code[at + open.len()..])
+                    && (open.starts_with('=') || searches.iter().any(|m| code[..at].ends_with(m)))
+            })
+        })
+    };
+    let is_ident = |c: char| c.is_alphanumeric() || c == '_';
+    // The name a `let`, `const` or `static` on `line` binds.
+    let bound_name = |line: &str| -> Option<String> {
+        let code = crate::test_helpers::strip_item_lead(line);
+        let rest = ["let mut ", "let ", "const ", "static "]
+            .iter()
+            .find_map(|keyword| code.strip_prefix(keyword))?;
+        let name: String = rest.chars().take_while(|&c| is_ident(c)).collect();
+        (!name.is_empty()).then_some(name)
+    };
+    // The names a search on `line` is handed: one passed to the search whole,
+    // and an array iterated on the same line, whose items reach the search
+    // through the closure.
+    let searched_names = |line: &str| -> Vec<String> {
+        let code = crate::test_helpers::code_line(line);
+        let mut names = Vec::new();
+        for method in searches {
+            let call = format!(".{method}(");
+            for (at, _) in code.match_indices(&call) {
+                let arg = code[at + call.len()..].trim_start_matches(['&', '*']);
+                let name: String = arg.chars().take_while(|&c| is_ident(c)).collect();
+                if !name.is_empty() && arg[name.len()..].trim_start().starts_with(')') {
+                    names.push(name);
+                }
+            }
+        }
+        if !names.is_empty() || searches.iter().any(|m| code.contains(&format!(".{m}("))) {
+            for (at, _) in code.match_indices(".iter()") {
+                let tail = code[..at].len() - code[..at].trim_end_matches(is_ident).len();
+                if tail > 0 {
+                    names.push(code[at - tail..at].to_string());
+                }
+            }
+        }
+        names
+    };
+    // A search handed a name whose binding holds a gate's spelling: the binding
+    // nearest above the search, or the first below it for an item the file
+    // declares further down, judged by the literals of its initializer.
+    let cuts_through_a_binding =
+        |lines: &[&str], bindings: &std::collections::HashMap<String, Vec<usize>>, n: usize| {
+            searched_names(lines[n]).iter().any(|name| {
+                let Some(sites) = bindings.get(name) else {
+                    return false;
+                };
+                let above = sites.partition_point(|&at| at <= n);
+                let Some(&at) = above.checked_sub(1).map(|i| &sites[i]).or(sites.get(above)) else {
+                    return false;
+                };
+                let statement = lines[at..]
+                    .iter()
+                    .take(12)
+                    .copied()
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let initializer = statement.split_once('=').map_or("", |(_, value)| value);
+                let initializer = initializer
+                    .split_once(';')
+                    .map_or(initializer, |(value, _)| value);
+                initializer
+                    .split('"')
+                    .skip(1)
+                    .step_by(2)
+                    .any(&opens_on_a_gate)
+            })
+        };
+    let mut bindings: std::collections::HashMap<String, Vec<usize>> = Default::default();
+    for (n, line) in lines.iter().enumerate() {
+        if let Some(name) = bound_name(line) {
+            bindings.entry(name).or_default().push(n);
+        }
+    }
+    (0..lines.len())
+        .filter(|&n| {
+            in_test(n)
+                && !lines[n].trim_start().starts_with("//")
+                && (cuts_by_hand(lines[n]) || cuts_through_a_binding(lines, &bindings, n))
+        })
+        .collect()
+}
+
+/// A search for a gate's spelling is a hand cut whichever way its needle
+/// reaches it: written into the call, bound by a `let` above it, held in a
+/// `const` array the search iterates, or declared as an item further down the
+/// file. A needle bound to any other text is no cut, and a row outside test
+/// scope is outside the rule.
+#[test]
+fn a_gate_search_is_a_hand_cut_whether_its_needle_is_written_or_bound() {
+    // Assembled from parts, so the rows below read as literals to the walk
+    // over this file.
+    let gate = concat!("#[cfg", "(test)]");
+    let all = concat!("#[cfg", "(all(test");
+    let module = concat!("mod ", "tests");
+    let fixture = [
+        "fn planted(body: &str) {".to_string(),
+        format!("    const GATES: [&str; 2] = [\"{gate}\", \"{module}\"];"),
+        format!("    let needle = \"{all}\";"),
+        "    let quiet = \"production\";".to_string(),
+        "    body.lines().position(|l| GATES.iter().any(|g| l.contains(g)));".to_string(),
+        "    body.lines().position(|l| l.starts_with(needle));".to_string(),
+        format!("    body.lines().position(|l| l.contains(\"{gate}\"));"),
+        "    body.lines().position(|l| l.starts_with(quiet));".to_string(),
+        "    body.lines().position(|l| l.contains(LATER));".to_string(),
+        "}".to_string(),
+        format!("const LATER: &str = \"{gate}\";"),
+    ];
+    let lines: Vec<&str> = fixture.iter().map(String::as_str).collect();
+    assert_eq!(
+        hand_cut_gate_rows(&lines, |_| true),
+        [4, 5, 6, 8],
+        "the iterated array, the let-bound needle, the written literal and the \
+         item declared below are each a hand cut; the needle bound to other text is none"
+    );
+    assert_eq!(
+        hand_cut_gate_rows(&lines, |n| n != 5),
+        [4, 6, 8],
+        "a row outside test scope is outside the rule"
     );
 }
 
@@ -3506,28 +3653,16 @@ fn names_a_hatch_marker(name: &str) -> bool {
     shouted.contains("HATCH") || shouted.ends_with("_MARKER") || shouted == "MARKER"
 }
 
-/// The region of a source a test lives in: the whole file where the file IS
-/// test scaffolding, and otherwise the complement of
-/// [`crate::test_helpers::production_slice`] — every inline test module kept,
-/// every other line blanked.
-///
-/// The half this walk judges: a marker-shaped name in production code names
-/// something else entirely, and a production file has no business carrying a
-/// walk's hatch.
-///
-/// The complement is what makes PLACEMENT stop mattering. A cut at a file's
-/// first `#[cfg(test)]` reads every production line below a test-only item as
-/// test text, so moving an item from beside the production code it serves to
-/// the foot of the file changed a walk's verdict; blanking in place also keeps
-/// a line's number its own, so an offender can be opened where it is
-/// reported.
-fn test_region(path: &Path, body: &str) -> String {
-    let scaffolding =
-        crate::test_helpers::is_test_source(path) || crate::test_helpers::is_test_only_file(path);
-    if scaffolding {
-        return body.to_string();
-    }
-    crate::test_helpers::test_region_mask(body)
+/// [`crate::test_helpers::test_region_of`] of `body`, written to `name` below
+/// a fresh directory: a fixture reaches the region through the same reader
+/// every walk over the test scope uses.
+fn written_test_region(name: &str, body: &str) -> String {
+    let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("temp dir: {e}"));
+    let path = dir.path().join(name);
+    let parent = path.parent().unwrap_or(dir.path());
+    std::fs::create_dir_all(parent).unwrap_or_else(|e| panic!("{}: {e}", parent.display()));
+    std::fs::write(&path, body).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    crate::test_helpers::test_region_of(&path).into_owned()
 }
 
 /// The partition of `file` into its test region and its production slice,
@@ -3539,7 +3674,7 @@ fn test_region(path: &Path, body: &str) -> String {
 /// hands that row to the production half, takes a line that belongs further
 /// down, and every row after it is off by one.
 fn assert_reassembles(file: &str) {
-    let region = test_region(Path::new("src/thing.rs"), file);
+    let region = written_test_region("thing.rs", file);
     // unfloored-slice-ok: the subject is one fixture held in memory; no source on disk is read
     let slice = crate::test_helpers::production_slice(file);
     let production: Vec<&str> = slice.lines().collect();
@@ -3613,7 +3748,7 @@ fn the_test_region_is_every_inline_test_item_and_nothing_else() {
          // {gate} in a comment opens nothing\n"
     );
     let file = file.as_str();
-    let region = test_region(Path::new("src/thing.rs"), file);
+    let region = written_test_region("thing.rs", file);
     let held: Vec<(usize, &str)> = region
         .lines()
         .enumerate()
@@ -3687,11 +3822,107 @@ fn the_test_region_is_every_inline_test_item_and_nothing_else() {
         "an unterminated item is one range, its marker through the end of the file"
     );
     assert_reassembles(&truncated);
+}
 
-    let scaffolding = format!("a\n{gate}\nb\n");
-    let whole = test_region(Path::new("src/tests.rs"), &scaffolding);
+/// A workspace source is read once per test process: every later read of its
+/// body borrows that one read, and its gates and test region are cut from it,
+/// so a gate row always indexes a row of the body a walk holds. A fixture
+/// written outside the workspace is read afresh on every call, since a test
+/// may rewrite it between two reads.
+#[test]
+fn a_workspace_source_is_read_once_and_its_views_borrow_that_read() {
+    use std::borrow::Cow;
+    let path = workspace_root().join("crates/cfgd-core/src/daemon/reconcile.rs");
+    let (first, again) = (walked_file_body(&path), walked_file_body(&path));
+    let (Cow::Borrowed(first), Cow::Borrowed(again)) = (first, again) else {
+        panic!("a workspace source is borrowed from the one read of it");
+    };
+    assert!(
+        std::ptr::eq(first, again),
+        "two reads of one source share its body"
+    );
+    let Cow::Borrowed(gates) = crate::test_helpers::line_gates_of(&path) else {
+        panic!("the gates of a workspace source are borrowed from its scan");
+    };
     assert_eq!(
-        whole, scaffolding,
+        gates.len(),
+        first.lines().count(),
+        "one gate per row of the body"
+    );
+    let Cow::Borrowed(region) = crate::test_helpers::test_region_of(&path) else {
+        panic!("the test region of a workspace source is borrowed from its scan");
+    };
+    assert_eq!(
+        region.lines().count(),
+        first.lines().count(),
+        "the region keeps every row"
+    );
+
+    let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("temp dir: {e}"));
+    let fixture = dir.path().join("fixture.rs");
+    for body in ["fn before() {}\n", "fn after() {}\n"] {
+        std::fs::write(&fixture, body).unwrap_or_else(|e| panic!("{}: {e}", fixture.display()));
+        assert_eq!(
+            walked_file_body(&fixture),
+            body,
+            "a fixture is read as it stands"
+        );
+    }
+}
+
+/// A test reading a Rust source of the workspace reads it through
+/// [`walked_file_body`], which hands every reader the one body the source's
+/// gates and views were cut from. A `read_to_string` whose statement anchors
+/// its path at the workspace (`CARGO_MANIFEST_DIR` or `workspace_root()`) and
+/// names a `.rs` file reads that source a second time.
+#[test]
+fn no_test_reads_a_workspace_source_past_the_one_cache() {
+    // Spelled in parts, or the walk that polices raw reads finds this one.
+    let raw_read = concat!("read_to", "_string(");
+    let mut files = 0usize;
+    let mut offenders = Vec::new();
+    for path in workspace_rust_files() {
+        files += 1;
+        let label = source_label(&path);
+        let region = crate::test_helpers::test_region_of(&path);
+        let lines: Vec<&str> = region.lines().collect();
+        for (n, line) in lines.iter().enumerate() {
+            if !code_half(line).contains(raw_read) {
+                continue;
+            }
+            // The statement around the read: its path is bound at most three
+            // lines above, and its argument wraps at most two lines below.
+            let window = lines[n.saturating_sub(3)..(n + 3).min(lines.len())].join("\n");
+            let anchored = ["CARGO_MANIFEST_DIR", "workspace_root()"]
+                .iter()
+                .any(|anchor| window.contains(anchor));
+            if anchored && window.contains(".rs\"") {
+                offenders.push(format!("{label}:{}: {}", n + 1, line.trim()));
+            }
+        }
+    }
+    assert!(
+        files > 300,
+        "the walk read {files} sources of the workspace"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a workspace source is read through `walked_file_body`, which reads it once \
+         per test process:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// A file holding tests alone is its own test region end to end: a production
+/// line in it, above or below a gate, is test text too.
+#[test]
+fn a_file_of_tests_alone_is_its_whole_test_region() {
+    // Assembled from two literals, so this scaffolding file declares no gate.
+    let gate = concat!("#[cfg", "(test)]");
+    let scaffolding = format!("fn above() {{}}\n{gate}\nfn below() {{}}\n");
+    assert_eq!(
+        written_test_region("tests/scaffolding.rs", &scaffolding),
+        scaffolding,
         "a scaffolding file is test text end to end"
     );
 }
@@ -5373,8 +5604,7 @@ const GC_ENGINE_COLLECT: &str = ".collect(&";
 fn unremovable_payload_tells() -> Vec<String> {
     let path = workspace_root().join("crates/cfgd-core/src/test_helpers.rs");
     let label = source_label(&path);
-    let body = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("the producer must be readable: {label} — {e}"));
+    let body = walked_file_body(&path);
     let slice = source_functions(&label, &body)
         .into_iter()
         .find(|(_, slice)| declared_fn_name(slice) == Some("hold_payload_unremovable"))
@@ -5897,15 +6127,14 @@ fn no_walk_silently_drops_a_file_it_enumerated() {
     for path in workspace_rust_files() {
         let posix = crate::to_posix_string(&path);
         files += 1;
-        // The one scanner's test region, blanked in place, so the production
-        // carve-out falls out of the REGION and a walk written in an inline test
-        // module is inside the population rather than outside it.
+        // The one scanner's test region, blanked in place: the production
+        // carve-out falls out of the REGION, and a walk written in an inline
+        // test module is in the population.
         let region = crate::test_helpers::test_region_of(&path);
         let lines: Vec<&str> = region.lines().collect();
         // A file holding test declarations the scanner found no test region for
-        // is not a file with nothing to judge: `files` has already counted it,
-        // so the drop reports itself rather than lowering a floor no single file
-        // can move.
+        // fails here by name: `files` has already counted it, and a floor on
+        // that count cannot see one file's region go missing.
         if region.trim().is_empty() {
             // unfloored-slice-ok: the whole file is searched for a test declaration.
             let body = walked_file_body(&path);
@@ -7664,6 +7893,53 @@ fn cfg_requires_test_holds_only_for_predicates_no_shipped_build_meets() {
     }
 }
 
+/// Every gate spelling the workspace writes, read by the one attribute parser
+/// the scan, the module walk and the file walk share: an outer and an inner
+/// `cfg(test)`, a `test-helpers` gate beside `test` and alone, and a platform
+/// gate every shipped build can meet. An outer spelling gates the item below
+/// it in the line scan too; an inner one gates its whole file, which the line
+/// scan leaves to [`crate::test_helpers::is_test_only_file`].
+#[test]
+fn every_gate_spelling_is_read_by_the_one_attribute_parser() {
+    use crate::test_helpers::{Gate, attribute_gate, line_gates};
+    let spellings = [
+        ("#[cfg(test)]", Some(Gate::Test), true),
+        ("#![cfg(test)]", Some(Gate::Test), false),
+        (
+            "#[cfg(any(test, feature = \"test-helpers\"))]",
+            Some(Gate::TestHelpers),
+            true,
+        ),
+        (
+            "#[cfg(feature = \"test-helpers\")]",
+            Some(Gate::TestHelpers),
+            true,
+        ),
+        ("#[cfg(target_os = \"linux\")]", None, true),
+    ];
+    for (attr, gate, outer) in spellings {
+        assert_eq!(attribute_gate(attr), gate, "{attr}");
+        assert_eq!(
+            attribute_gate(&format!("    {attr} // trailing note")),
+            gate,
+            "{attr}, indented and followed by a comment"
+        );
+        let scanned = line_gates(&format!("{attr}\nfn item() {{}}\n"));
+        let expected = if outer { gate } else { None };
+        assert_eq!(scanned, [expected, expected], "{attr} over one item");
+    }
+    assert_eq!(
+        attribute_gate("// #[cfg(test)]"),
+        None,
+        "a commented-out gate"
+    );
+    assert_eq!(
+        attribute_gate("    let s = \"#[cfg(test)]\";"),
+        None,
+        "a gate spelled inside a literal"
+    );
+}
+
 /// A checkout that sits under a directory named `tests` classifies its files
 /// the same as any other: only the components below the workspace root count.
 #[test]
@@ -7729,7 +8005,7 @@ fn no_scan_hand_copies_the_test_only_file_rule() {
     // cfgd-core's test_helpers.rs left out, both counted when the rule last moved.
     const FLOORS: [(&str, usize, usize); 7] = [
         ("cfgd", 259, 18),
-        ("cfgd-core", 243, 17),
+        ("cfgd-core", 243, 16),
         ("cfgd-crd", 2, 0),
         ("cfgd-csi", 11, 0),
         ("cfgd-operator", 64, 1),
@@ -7738,7 +8014,7 @@ fn no_scan_hand_copies_the_test_only_file_rule() {
     ];
     // The calls across every root, counted the same way: a call moving from one
     // crate to another keeps each crate's floor while the workspace loses one.
-    const TOTAL_ASKS: usize = 36;
+    const TOTAL_ASKS: usize = 35;
     // Built from pieces so this file's own needles are not read as copies.
     let tells = [
         concat!("\"test_", "helpers.rs\""),
@@ -7827,7 +8103,7 @@ fn no_scan_hand_copies_the_test_only_file_rule() {
 #[test]
 fn no_scan_hand_copies_the_test_source_naming_rule() {
     const FILES: usize = 581;
-    const ASKS: usize = 82;
+    const ASKS: usize = 81;
     // Built from pieces so this file's own needles are not read as copies.
     let tells = [
         concat!("\"tests", ".rs\""),

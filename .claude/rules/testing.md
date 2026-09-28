@@ -164,9 +164,10 @@ A source walk reads each production file through `production_slice_of` or
 `#[cfg(test)]` included, it calls `walked_file_body` and carries
 `// unfloored-slice-ok: <why>`. Both guarded readers slice a test-only file to nothing.
 `every_multi_file_production_walk_reads_through_the_floored_helper` fails a raw
-`read_to_string` in any source walk, and a `walked_file_body` read there without the hatch,
-and floors each crate's reads through `floored_production_body` and
-`production_and_seams_of` at today's count.
+`read_to_string` in any source walk, and a `walked_file_body` read there without the hatch.
+Its `FLOORS` table holds a row per crate at today's count of source walks, sources
+spelling the pure cut, and reads through `floored_production_body` and
+`production_and_seams_of`; a crate holding a walk without a row fails it.
 
 Each walk picks its view by its question. A walk asking what SHIPS reads the production
 view (`production_slice_of`, `workspace_declarations`). A walk asking what a TEST can
@@ -178,8 +179,9 @@ test takes through it. A walk judging code folds nothing itself: it reads
 `production_code_of(path)` or a memo row's `code_of(i)`, both cut from the file's one scan.
 A walk asking about TEST text reads `test_region_of(path)`, or `line_gates_of(path)` when it
 partitions a file by index; one attribute is judged by `attribute_gate`. A
-string search for a gate's spelling (`.starts_with("#[cfg(test)]")`, `.contains("mod tests")`)
-is a second cut beside the scanner, and the floored-helper walk fails it in test scope.
+string search for a gate's spelling (`.starts_with("#[cfg(test)]")`, `.contains("mod tests")`,
+or a needle a `let`/`const` binds to one) is a second cut beside the scanner, and the
+floored-helper walk fails it in test scope.
 
 Colour off means NO escapes — attributes included. `ThemedStyle::apply_to` is the ONE
 gate a styled span becomes bytes through, and a printer whose `ColorChoice` resolved

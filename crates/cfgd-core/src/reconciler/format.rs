@@ -1535,10 +1535,9 @@ mod tests {
             );
         }
 
-        let types = std::fs::read_to_string(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/reconciler/types.rs"),
-        )
-        .expect("types.rs is readable");
+        let types = crate::test_helpers::walked_file_body(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/reconciler/types.rs"),
+        );
         let body = types
             .split_once("pub fn pre_skip_reason(")
             .expect("pre_skip_reason is declared")

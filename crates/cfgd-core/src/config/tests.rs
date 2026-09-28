@@ -4244,10 +4244,9 @@ fn an_ungated_entry_serializes_exactly_as_it_did_before_the_field_existed() {
 /// deserializer, then the live schema for both shapes.
 #[test]
 fn every_list_or_map_package_field_declares_both_shapes_in_its_schema() {
-    let src = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/config/profile_spec.rs"),
-    )
-    .unwrap();
+    let src = crate::test_helpers::walked_file_body(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/config/profile_spec.rs"),
+    );
     let lines: Vec<&str> = src.lines().collect();
     let mut widened = Vec::new();
     let mut unpaired = Vec::new();

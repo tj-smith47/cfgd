@@ -8657,7 +8657,7 @@ async fn handle_reconcile_no_drift_when_no_actions() {
 #[test]
 fn every_error_only_arm_of_the_reconcile_tick_is_classified() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/daemon/reconcile.rs");
-    let body = std::fs::read_to_string(&path).expect("the reconcile tick is checked out");
+    let body = crate::test_helpers::walked_file_body(&path);
     // callee → why its `Ok` half carries nothing a reader of the log wants.
     let classified = [
         ("watcher.watch", "Ok(())"),
@@ -24564,7 +24564,7 @@ mod log_dialect {
 #[test]
 fn every_counted_clause_names_the_unit_it_counts() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/daemon/reconcile.rs");
-    let body = std::fs::read_to_string(&path).expect("the reconcile tick is checked out");
+    let body = crate::test_helpers::walked_file_body(&path);
     // binding → the nouns it is honestly counted in.
     let classified: &[(&str, &[&str])] = &[
         ("drift_total", &["action", "resource"]),
