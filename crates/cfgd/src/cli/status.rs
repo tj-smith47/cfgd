@@ -9162,6 +9162,7 @@ mod tests {
     /// answering one question differently is the drift this pins.
     #[test]
     fn a_platform_gated_package_reads_skipped_not_unscanned() {
+        let _pm = crate::cli::registry::PackageManagerFactoryGuard::hermetic_native();
         let tmp_home = tempfile::tempdir().unwrap();
         let _home = cfgd_core::with_test_home_guard(tmp_home.path());
         let config_dir = tempfile::tempdir().unwrap();
@@ -9518,14 +9519,22 @@ mod tests {
     }
 
     fn converged_module_env() -> ConvergedModuleEnv {
-        module_env_with("same content\n", "[]")
+        module_env_with("same content\n", TEST_MOD_WITHOUT_PACKAGES)
     }
+
+    /// The `test-mod` document declaring no package, its target spelled
+    /// `__TARGET__` for [`module_env_with`] to fill.
+    const TEST_MOD_WITHOUT_PACKAGES: &str = "apiVersion: cfgd.io/v1alpha1\nkind: Module\n\
+        metadata:\n  name: test-mod\nspec:\n  packages: []\n  files:\n\
+        \x20   - source: conf\n      target: __TARGET__\n";
 
     /// `converged_module_env` with the two knobs the state-rendering tests
     /// turn: what the deployed target actually holds (content identical to the
     /// module's source converges, anything else is content drift), and the
-    /// module's declared `packages:` block.
-    fn module_env_with(target_content: &str, packages_yaml: &str) -> ConvergedModuleEnv {
+    /// whole `module.yaml`, whose `__TARGET__` names the deployed target. The
+    /// document is a complete literal so a walk reading test fixtures parses
+    /// the packages the test declares.
+    fn module_env_with(target_content: &str, module_yaml: &str) -> ConvergedModuleEnv {
         let tmp_home = tempfile::tempdir().unwrap();
         let home = cfgd_core::with_test_home_guard(tmp_home.path());
         let config_dir = tempfile::tempdir().unwrap();
@@ -9542,11 +9551,7 @@ mod tests {
         let mod_dir = config_dir.path().join("modules").join("test-mod");
         std::fs::create_dir_all(&mod_dir).unwrap();
         std::fs::write(mod_dir.join("conf"), "same content\n").unwrap();
-        let module_yaml = format!(
-            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: test-mod\nspec:\n  packages: {}\n  files:\n    - source: conf\n      target: {}\n",
-            packages_yaml,
-            cfgd_core::to_posix_string(&target)
-        );
+        let module_yaml = module_yaml.replace("__TARGET__", &cfgd_core::to_posix_string(&target));
         std::fs::write(mod_dir.join("module.yaml"), module_yaml).unwrap();
 
         ConvergedModuleEnv {
@@ -9591,7 +9596,7 @@ mod tests {
     /// own drift finding.
     #[test]
     fn cmd_status_module_drifted_file_is_never_ok_under_deployed_files() {
-        let env = module_env_with("tampered\n", "[]");
+        let env = module_env_with("tampered\n", TEST_MOD_WITHOUT_PACKAGES);
         record_deployed(&env);
 
         let cli = test_cli_for(env.config_path.clone(), env.state_dir.path());
@@ -9667,7 +9672,9 @@ mod tests {
     fn cmd_status_module_scan_renders_package_state_per_declared_package() {
         let env = module_env_with(
             "same content\n",
-            "\n    - name: rustup\n      prefer:\n        - script\n      script: \"true\"",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: test-mod\nspec:\n\
+             \x20 packages:\n    - name: rustup\n      prefer:\n        - script\n\
+             \x20     script: \"true\"\n  files:\n    - source: conf\n      target: __TARGET__\n",
         );
         let cli = test_cli_for(env.config_path.clone(), env.state_dir.path());
         let (printer, buf) = test_printers();
@@ -10602,6 +10609,7 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn a_recorded_file_finding_marks_its_deployed_files_row_drifted() {
+        let _pm = crate::cli::registry::PackageManagerFactoryGuard::hermetic_native();
         let tmp_home = tempfile::tempdir().unwrap();
         let _home = cfgd_core::with_test_home_guard(tmp_home.path());
         let config_dir = tempfile::tempdir().unwrap();
@@ -10784,16 +10792,6 @@ mod tests {
         }
     }
 
-    /// The tag of a platform this host is not, for gating a declared entry
-    /// OFF the running test.
-    fn a_platform_this_host_is_not() -> &'static str {
-        if cfgd_core::platform::Platform::current().os == cfgd_core::platform::Os::Windows {
-            "linux"
-        } else {
-            "windows"
-        }
-    }
-
     /// The no-scan recorded fallback decides a recorded row's owner through
     /// the ONE predicate the scoped scans and the daemon's per-module tick
     /// ask — `row_attributable_to_module` over the chain's resolved scopes —
@@ -10808,16 +10806,29 @@ mod tests {
     /// `rsc.io/2fa`, `chocolatey` lowercases `Wget`) and a declared env var
     /// attributes by name. `-o json` agrees.
     ///
-    /// Every named manager is a probe-`PATH` stand-in, so the resolution the
-    /// scope is built from is the same on every host that can run the probe.
+    /// Every host manager is pinned missing and each named one planted at its
+    /// own seam, so the resolution the scope is built from is the same on
+    /// every host that can run the probe.
     #[test]
     #[serial_test::serial]
     #[cfg(unix)]
     fn a_no_scan_status_attributes_rows_through_the_one_ownership_predicate() {
+        use cfgd_core::test_helpers::EnvVarGuard;
         let _path_lock = cfgd_core::test_helpers::path_env_mutation_guard();
         let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
         let _fresh = cfgd_core::test_helpers::CommandPathMemoTtlGuard::always_expired();
-        let _probe = cfgd_core::test_helpers::ProbePath::containing(&["go", "choco", "brew"]);
+        let _sweep = cfgd_core::test_helpers::AvailabilityMemoTtlGuard::always_expired();
+        let _managers = cfgd_core::test_helpers::NoHostManagers::pinned_missing();
+        let planted = tempfile::tempdir().unwrap();
+        let plant = |stem: &str| {
+            let tool = cfgd_core::test_helpers::write_probe_tool(planted.path(), stem);
+            tool.to_str().expect("utf-8 tempdir").to_string()
+        };
+        let (go, choco, brew) = (plant("go"), plant("choco"), plant("brew"));
+        let _path = EnvVarGuard::set("PATH", planted.path().to_str().expect("utf-8 tempdir"));
+        let _go = EnvVarGuard::set(&crate::packages::shared::tool_seam_var("go"), &go);
+        let _choco = EnvVarGuard::set(&crate::packages::shared::tool_seam_var("choco"), &choco);
+        let _brew = EnvVarGuard::set(crate::packages::shared::BREW_BIN_ENV, &brew);
         let tmp_home = tempfile::tempdir().unwrap();
         let _home = cfgd_core::with_test_home_guard(tmp_home.path());
         let config_dir = tempfile::tempdir().unwrap();
@@ -10831,8 +10842,9 @@ mod tests {
         std::fs::create_dir_all(&mod_dir).unwrap();
         std::fs::write(
             mod_dir.join("module.yaml"),
-            format!(
-                "apiVersion: cfgd.io/v1alpha1\n\
+            // `plan9` is no OS, distro or arch cfgd targets, so the gate closes
+            // on every host the suite runs on.
+            "apiVersion: cfgd.io/v1alpha1\n\
                  kind: Module\n\
                  metadata:\n\
                  \x20 name: test-mod\n\
@@ -10848,7 +10860,7 @@ mod tests {
                  \x20   - name: rg\n\
                  \x20     prefer: [brew]\n\
                  \x20   - name: pkg-gated\n\
-                 \x20     platforms: [{}]\n\
+                 \x20     platforms: [plan9]\n\
                  \x20   - name: jq\n\
                  \x20     prefer: [brew, script]\n\
                  \x20     deny: [apt]\n\
@@ -10856,8 +10868,6 @@ mod tests {
                  \x20   - name: demo\n\
                  \x20     prefer: [script]\n\
                  \x20     script: \"true\"\n",
-                a_platform_this_host_is_not()
-            ),
         )
         .unwrap();
         {
@@ -11054,8 +11064,8 @@ mod tests {
         std::fs::create_dir_all(&mod_dir).unwrap();
         std::fs::write(
             mod_dir.join("module.yaml"),
-            format!(
-                "apiVersion: cfgd.io/v1alpha1\n\
+            // `plan9` gates the entry off every host the suite runs on.
+            "apiVersion: cfgd.io/v1alpha1\n\
                  kind: Module\n\
                  metadata:\n\
                  \x20 name: test-mod\n\
@@ -11065,9 +11075,7 @@ mod tests {
                  \x20     prefer: [script]\n\
                  \x20     script: \"true\"\n\
                  \x20   - name: pkg-gated\n\
-                 \x20     platforms: [{}]\n",
-                a_platform_this_host_is_not()
-            ),
+                 \x20     platforms: [plan9]\n",
         )
         .unwrap();
         {

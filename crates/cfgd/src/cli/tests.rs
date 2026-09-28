@@ -23652,6 +23652,7 @@ fn cmd_status_module_not_found_json() {
 
 #[test]
 fn cmd_status_module_found_output() {
+    let _pm = crate::cli::registry::PackageManagerFactoryGuard::hermetic_native();
     let h = CliTestHarness::builder()
             .module("my-mod", "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: my-mod\nspec:\n  packages:\n    - name: ripgrep\n  files: []\n")
             .build();
@@ -23670,6 +23671,7 @@ fn cmd_status_module_found_output() {
 
 #[test]
 fn cmd_status_module_found_json() {
+    let _pm = crate::cli::registry::PackageManagerFactoryGuard::hermetic_native();
     let h = CliTestHarness::builder()
             .json()
             .module("my-mod", "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: my-mod\nspec:\n  packages:\n    - name: ripgrep\n  files: []\n  depends:\n    - base\n")
@@ -25864,15 +25866,254 @@ spec:
     );
 }
 
-/// The verbs that resolve a Module's packages, as the `cmd_*` function a test
-/// calls in-process and the word a `cfgd_bin()` run passes.
-const PACKAGE_RESOLVING_VERBS: &[(&str, &str)] = &[
-    ("cmd_plan(", "plan"),
-    ("cmd_apply(", "apply"),
-    ("cmd_status(", "status"),
-    ("cmd_diff(", "diff"),
-    ("cmd_verify(", "verify"),
+/// A verb that resolves a Module's packages, as a test drives it: the function
+/// it calls in-process, and the argv words a `cfgd_bin()` run passes.
+struct ResolvingVerb {
+    call: &'static str,
+    argv: &'static [&'static str],
+    /// `module show` resolves only under `--resolved`: the flag a binary run
+    /// passes, and the argument an in-process call passes for it.
+    gate: Option<(&'static str, &'static str)>,
+}
+
+impl ResolvingVerb {
+    const fn always(call: &'static str, argv: &'static [&'static str]) -> Self {
+        Self {
+            call,
+            argv,
+            gate: None,
+        }
+    }
+
+    const fn gated_on(
+        call: &'static str,
+        argv: &'static [&'static str],
+        flag: &'static str,
+        argument: &'static str,
+    ) -> Self {
+        Self {
+            call,
+            argv,
+            gate: Some((flag, argument)),
+        }
+    }
+}
+
+/// Every verb that resolves a Module's packages. Derived from the producer by
+/// `every_command_reaching_package_resolution_is_a_resolving_verb`, so a verb
+/// that starts resolving fails that pin until it is a row here.
+const PACKAGE_RESOLVING_VERBS: &[ResolvingVerb] = &[
+    ResolvingVerb::always("cmd_apply", &["apply"]),
+    ResolvingVerb::always("run_apply", &["apply"]),
+    ResolvingVerb::always("cmd_backup_gc", &["backup", "gc"]),
+    ResolvingVerb::always("run_backup_gc", &["backup", "gc"]),
+    ResolvingVerb::always("cmd_backup_restore", &["backup", "restore"]),
+    ResolvingVerb::always("run_backup_restore", &["backup", "restore"]),
+    ResolvingVerb::always("cmd_backup_rollback", &["backup", "rollback"]),
+    ResolvingVerb::always("run_backup_rollback", &["backup", "rollback"]),
+    ResolvingVerb::always("cmd_backup_run", &["backup", "run"]),
+    ResolvingVerb::always("run_backup_run", &["backup", "run"]),
+    ResolvingVerb::always("cmd_checkin", &["checkin"]),
+    ResolvingVerb::always("cmd_compliance_export", &["compliance", "export"]),
+    ResolvingVerb::always("cmd_compliance_snapshot", &["compliance"]),
+    ResolvingVerb::always("cmd_decide", &["decide"]),
+    ResolvingVerb::always("cmd_diff", &["diff"]),
+    ResolvingVerb::always("cmd_diff_module", &["diff"]),
+    ResolvingVerb::always("cmd_doctor", &["doctor"]),
+    ResolvingVerb::always("run_doctor", &["doctor"]),
+    ResolvingVerb::always("cmd_init", &["init"]),
+    ResolvingVerb::always("cmd_module_create", &["module", "create"]),
+    ResolvingVerb::gated_on("cmd_module_show", &["module", "show"], "--resolved", "true"),
+    ResolvingVerb::always("cmd_plan", &["plan"]),
+    ResolvingVerb::always("cmd_source_remove", &["source", "remove"]),
+    ResolvingVerb::always("cmd_source_remove", &["source", "rm"]),
+    ResolvingVerb::always("run_source_remove", &["source", "remove"]),
+    ResolvingVerb::always("cmd_source_replace", &["source", "replace"]),
+    ResolvingVerb::always("cmd_status", &["status"]),
+    ResolvingVerb::always("cmd_status_module", &["status"]),
+    ResolvingVerb::always("cmd_sync", &["sync"]),
+    ResolvingVerb::always("run_sync", &["sync"]),
+    ResolvingVerb::always("cmd_verify", &["verify"]),
 ];
+
+/// Every `cmd_*` or `run_*` function that can reach package resolution is a
+/// row of [`PACKAGE_RESOLVING_VERBS`].
+///
+/// The seeds are the functions whose own body calls one of the resolution
+/// entry points, and the fold follows every caller of those until the set stops
+/// growing. The check is one-directional: a row no derivation names widens the
+/// population the walk judges, which costs a test nothing.
+#[test]
+fn every_command_reaching_package_resolution_is_a_resolving_verb() {
+    const ENTRIES: &[&str] = &[
+        "resolve_modules",
+        "resolve_package",
+        "resolve_module_packages",
+        "resolve_desired_state",
+        "resolve_desired_from_composition",
+    ];
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut declarations: Vec<(String, Option<String>, String)> = Vec::new();
+    for path in rust_sources_under(&manifest.join("src")) {
+        // A `tests.rs` is a test region whole, and its helpers are nobody's
+        // production route.
+        if cfgd_core::test_helpers::is_test_source(&path) {
+            continue;
+        }
+        let production = cfgd_core::test_helpers::production_slice_of(&path);
+        declarations.extend(cfgd_core::test_helpers::fn_declarations(&production));
+    }
+    let seeds: Vec<(String, Option<String>)> = declarations
+        .iter()
+        .filter(|(_, _, body)| {
+            ENTRIES
+                .iter()
+                .any(|entry| cfgd_core::test_helpers::reaches_fn(body, entry, None))
+        })
+        .map(|(name, owner, _)| (name.clone(), owner.clone()))
+        .collect();
+    let mut derived: Vec<String> = cfgd_core::test_helpers::callers_reaching(&declarations, &seeds)
+        .into_iter()
+        .map(|(name, _)| name)
+        .filter(|name| name.starts_with("cmd_") || name.starts_with("run_"))
+        .collect();
+    derived.sort();
+    derived.dedup();
+    assert!(
+        derived.len() >= 30,
+        "the derivation names {} commands reaching package resolution, fewer than this crate \
+         holds: {derived:?}",
+        derived.len()
+    );
+    let missing: Vec<&String> = derived
+        .iter()
+        .filter(|name| {
+            !PACKAGE_RESOLVING_VERBS
+                .iter()
+                .any(|v| v.call == name.as_str())
+        })
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "these commands reach package resolution and are not rows of PACKAGE_RESOLVING_VERBS, \
+         so a test driving one is outside the walk that keeps it off this host's managers:\n  \
+         {missing:?}"
+    );
+}
+
+/// One seam a built-in package manager reads, named the way production names
+/// it: a `CFGD_*_BIN` const, or the tool [`tool_seam_var`] derives one from.
+///
+/// [`tool_seam_var`]: crate::packages::shared::tool_seam_var
+enum ManagerSeam {
+    Const(&'static str),
+    Tool(&'static str),
+}
+
+impl ManagerSeam {
+    /// The variable name this seam reads.
+    fn var(&self) -> String {
+        match self {
+            Self::Const(name) => (*name).to_string(),
+            Self::Tool(tool) => crate::packages::shared::tool_seam_var(tool),
+        }
+    }
+}
+
+/// The seams each built-in package manager answers its availability from: a
+/// tool planted at any one of a row's seams makes that manager available.
+/// Held to production by `every_built_in_manager_answers_available_from_its_seam`.
+const MANAGER_AVAILABILITY_SEAMS: &[(&str, &[ManagerSeam])] = {
+    use crate::packages::shared::BREW_BIN_ENV;
+    use crate::packages::simple::APT_GET_BIN_ENV;
+    use crate::packages::versions::{
+        APK_BIN_ENV, DNF_BIN_ENV, PACMAN_BIN_ENV, PKG_BIN_ENV, YUM_BIN_ENV, ZYPPER_BIN_ENV,
+    };
+    use ManagerSeam::{Const, Tool};
+    &[
+        ("apk", &[Const(APK_BIN_ENV)]),
+        ("apt", &[Const(APT_GET_BIN_ENV)]),
+        ("brew", &[Const(BREW_BIN_ENV)]),
+        ("brew-cask", &[Const(BREW_BIN_ENV)]),
+        ("brew-tap", &[Const(BREW_BIN_ENV)]),
+        ("cargo", &[Tool("cargo")]),
+        ("chocolatey", &[Tool("choco")]),
+        ("dnf", &[Const(DNF_BIN_ENV)]),
+        ("flatpak", &[Tool("flatpak")]),
+        ("go", &[Tool("go")]),
+        ("nix", &[Tool("nix"), Tool("nix-env")]),
+        ("npm", &[Tool("npm")]),
+        ("pacman", &[Const(PACMAN_BIN_ENV)]),
+        ("pipx", &[Tool("pipx")]),
+        ("pkg", &[Const(PKG_BIN_ENV)]),
+        ("scoop", &[Tool("scoop")]),
+        ("snap", &[Tool("snap")]),
+        ("winget", &[Tool("winget")]),
+        ("yum", &[Const(YUM_BIN_ENV)]),
+        ("zypper", &[Const(ZYPPER_BIN_ENV)]),
+    ]
+};
+
+/// [`MANAGER_AVAILABILITY_SEAMS`] holds a row for every built-in manager, and
+/// each seam of a row is what makes its manager available.
+///
+/// Asked of the managers themselves, with every seam pinned missing and an
+/// empty `PATH`: each is unavailable before its seam is planted and available
+/// once it is, so a row naming a variable its manager never reads fails here.
+#[test]
+#[serial_test::serial]
+fn every_built_in_manager_answers_available_from_its_seam() {
+    let managers = crate::packages::all_package_managers();
+    let registered: std::collections::BTreeSet<&str> = managers.iter().map(|m| m.name()).collect();
+    let rows: std::collections::BTreeSet<&str> =
+        MANAGER_AVAILABILITY_SEAMS.iter().map(|(m, _)| *m).collect();
+    assert_eq!(
+        rows, registered,
+        "MANAGER_AVAILABILITY_SEAMS holds one row per built-in manager"
+    );
+    assert!(
+        MANAGER_AVAILABILITY_SEAMS
+            .iter()
+            .any(|(m, seams)| *m == PLANTED_FAMILY.manager
+                && seams.iter().any(|s| s.var() == PLANTED_FAMILY.install_seam)),
+        "the family the knob plants answers from the seam the knob plants"
+    );
+    let host = tempfile::tempdir().expect("tempdir");
+    let tool = cfgd_core::test_helpers::write_probe_tool(host.path(), "planted");
+    let tool = tool.to_str().expect("utf-8 tempdir");
+    let empty = tempfile::tempdir().expect("tempdir");
+    let _path_lock = cfgd_core::test_helpers::path_env_mutation_guard();
+    let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+    let _paths = cfgd_core::test_helpers::CommandPathMemoTtlGuard::always_expired();
+    let _avail = cfgd_core::test_helpers::AvailabilityMemoTtlGuard::always_expired();
+    let _managers = cfgd_core::test_helpers::NoHostManagers::pinned_missing();
+    let _path = cfgd_core::test_helpers::EnvVarGuard::set(
+        "PATH",
+        empty.path().to_str().expect("utf-8 tempdir"),
+    );
+    let mut wrong: Vec<String> = Vec::new();
+    for manager in &managers {
+        let name = manager.name();
+        let Some((_, seams)) = MANAGER_AVAILABILITY_SEAMS.iter().find(|(m, _)| *m == name) else {
+            continue;
+        };
+        if manager.is_available() {
+            wrong.push(format!("{name}: available with nothing planted"));
+            continue;
+        }
+        for seam in seams.iter().map(ManagerSeam::var) {
+            let _planted = cfgd_core::test_helpers::EnvVarGuard::set(&seam, tool);
+            if !manager.is_available() {
+                wrong.push(format!("{name}: unavailable with a tool planted at {seam}"));
+            }
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "MANAGER_AVAILABILITY_SEAMS names a seam its manager does not answer from:\n  {}",
+        wrong.join("\n  ")
+    );
+}
 
 /// Every test in this crate driving a verb that resolves a Module's packages
 /// resolves them off managers the test controls. Resolution asks the managers
@@ -25880,13 +26121,14 @@ const PACKAGE_RESOLVING_VERBS: &[(&str, &str)] = &[
 /// host holding one.
 ///
 /// A test drives a verb when it calls one of [`PACKAGE_RESOLVING_VERBS`]'
-/// `cmd_*` functions, or runs `cfgd_bin()` with the verb's word in a literal it
-/// reads. What a test reads is its own body plus one hop: the same-file
-/// functions it calls and the `const` items it names. Each literal there
-/// holding `kind`, `Module` and `packages` is parsed as YAML
-/// ([`module_package_prefers`]); one that does not parse, or holds a shape the
-/// Module schema refuses, fails the walk. A test holding a package entry does
-/// one of three things:
+/// functions, or runs `cfgd_bin()` with every argv word of one in literals it
+/// reads (and the row's gate, where it has one). What a test reads is its own
+/// body plus one hop: the same-file functions it calls and the `const` items it
+/// names. Each literal there holding `kind`, `Module` and `packages` is parsed
+/// as YAML ([`module_package_prefers`]), keeping the entries whose
+/// `platforms:` gate admits this host; one that fails to parse, or holds a
+/// shape the Module schema refuses, fails the walk. A test holding a package
+/// entry does one of three things:
 /// - builds every harness with `.planted_manager()`, is
 ///   `#[serial_test::serial]` (the knob pins the availability memo), and names
 ///   [`PLANTED_FAMILY`] in every entry's `prefer` list;
@@ -25894,10 +26136,10 @@ const PACKAGE_RESOLVING_VERBS: &[(&str, &str)] = &[
 ///   always-available fake in the native manager's place, with no entry
 ///   preferring a built-in manager (a preferred built-in is asked as this host
 ///   has it);
-/// - gives every entry a `prefer` list, and plants each built-in manager a list
-///   names through its `CFGD_<NAME>_BIN` seam (`tool_seam_var("<name>")` or the
-///   `<NAME>_BIN_ENV` const), so only a manager the test controls, or one the
-///   fixture declares, is ever a candidate.
+/// - gives every entry a `prefer` list, and sets a seam of each built-in manager
+///   a list names ([`MANAGER_AVAILABILITY_SEAMS`]) through `.env(`,
+///   `ToolShim::install(` or `EnvVarGuard::set(`, so only a manager the test
+///   controls, or one the fixture declares, is ever a candidate.
 ///
 /// `// host-manager-ok: <why>` on the test exempts it.
 #[test]
@@ -25906,15 +26148,16 @@ fn every_package_resolving_test_resolves_off_managers_it_controls() {
         blank_non_code, carries_hatch, declaration_end, declared_fn_name, rust_sources_under,
         walked_file_body,
     };
+    use std::collections::{BTreeMap, HashMap, HashSet};
     const HATCH: &str = "// host-manager-ok:";
+    const SEAM_SETTERS: &[&str] = &[".env(", "ToolShim::install(", "EnvVarGuard::set("];
     /// Each file holding such tests today, floored at its count, so a file
-    /// dropping out of the population fails on its own name: in `tests.rs`
-    /// six knob tests and four hermetic or fixture-declared ones, the
-    /// fixture-declared managers of `status.rs` and the plan snapshots, and the
-    /// seam-planted managers of the drift exit codes.
+    /// dropping out of the population fails on its own name.
     const FILE_FLOORS: &[(&str, usize)] = &[
-        ("src/cli/tests.rs", 10),
-        ("src/cli/status.rs", 3),
+        ("src/cli/tests.rs", 15),
+        ("src/cli/status.rs", 11),
+        ("src/cli/module/tests.rs", 1),
+        ("src/cli/init/tests.rs", 3),
         ("tests/plan_snapshots.rs", 2),
         ("tests/drift_exit_code.rs", 12),
     ];
@@ -25922,16 +26165,18 @@ fn every_package_resolving_test_resolves_off_managers_it_controls() {
         .iter()
         .map(|m| m.name().to_string())
         .collect();
-    let calls = |code: &str, callee: &str| {
-        code.match_indices(&format!("{callee}(")).any(|(at, _)| {
-            !code[..at]
-                .chars()
-                .next_back()
-                .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
-        })
-    };
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let mut per_file: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    let seam_consts = str_consts(
+        &rust_sources_under(&manifest.join("src/packages"))
+            .into_iter()
+            .map(|path| {
+                // unfloored-slice-ok: the seam consts production declares, read by name.
+                let text = walked_file_body(&path);
+                (path, text)
+            })
+            .collect::<Vec<_>>(),
+    );
+    let mut per_file: BTreeMap<String, usize> = BTreeMap::new();
     let mut knob_users = 0usize;
     let mut offenders: Vec<String> = Vec::new();
     for segment in ["src", "tests"] {
@@ -25949,13 +26194,35 @@ fn every_package_resolving_test_resolves_off_managers_it_controls() {
                 raw.len(),
                 "{label}: blanking must keep every line"
             );
-            let fns: Vec<(String, usize, usize)> = code
-                .iter()
-                .enumerate()
-                .filter_map(|(i, l)| declared_fn_name(l).map(|n| (n, i, declaration_end(&code, i))))
-                .collect();
-            let consts = const_spans(&code);
-            for (name, i, end) in &fns {
+            let mut fns: HashMap<String, Vec<(usize, usize)>> = HashMap::new();
+            let mut tests: Vec<(String, usize, usize)> = Vec::new();
+            for (i, line) in code.iter().enumerate() {
+                let Some(name) = declared_fn_name(line) else {
+                    continue;
+                };
+                let end = declaration_end(&code, i);
+                fns.entry(name.clone()).or_default().push((i, end));
+                let is_test = raw[..i]
+                    .iter()
+                    .rev()
+                    .take_while(|l| {
+                        let head = l.trim_start();
+                        head.starts_with("#[") || head.starts_with("//")
+                    })
+                    .any(|l| l.trim() == "#[test]");
+                if is_test {
+                    tests.push((name, i, end));
+                }
+            }
+            if tests.is_empty() {
+                continue;
+            }
+            let mut consts: HashMap<String, Vec<(usize, usize)>> = HashMap::new();
+            for (name, s, e) in const_spans(&code) {
+                consts.entry(name).or_default().push((s, e));
+            }
+            let mut file_consts: Option<HashMap<String, String>> = None;
+            for (name, i, end) in &tests {
                 let (i, end) = (*i, *end);
                 let attrs: Vec<&str> = raw[..i]
                     .iter()
@@ -25966,29 +26233,21 @@ fn every_package_resolving_test_resolves_off_managers_it_controls() {
                     })
                     .copied()
                     .collect();
-                if !attrs.iter().any(|l| l.trim() == "#[test]") {
-                    continue;
-                }
-                let own = &code[i..=end];
+                let (own_calls, own_idents) = code_tokens(&code[i..=end]);
                 let mut spans = vec![(i, end)];
-                spans.extend(
-                    fns.iter()
-                        .filter(|(callee, s, _)| *s != i && own.iter().any(|l| calls(l, callee)))
-                        .map(|(_, s, e)| (*s, *e)),
-                );
-                spans.extend(
-                    consts
-                        .iter()
-                        .filter(|(item, _, _)| own.iter().any(|l| names_identifier(l, item)))
-                        .map(|(_, s, e)| (*s, *e)),
-                );
-                let lines: Vec<usize> = spans.iter().flat_map(|&(s, e)| s..=e).collect();
-                let reach: Vec<&str> = lines.iter().map(|&k| code[k]).collect();
-                let literals: Vec<String> = spans
+                for callee in &own_calls {
+                    for &(s, e) in fns.get(*callee).into_iter().flatten() {
+                        if s != i {
+                            spans.push((s, e));
+                        }
+                    }
+                }
+                for ident in &own_idents {
+                    spans.extend(consts.get(*ident).into_iter().flatten().copied());
+                }
+                let reach: Vec<&str> = spans
                     .iter()
-                    .flat_map(|&(s, e)| {
-                        string_literal_values(&raw[s..=e].join("\n"), &code[s..=e].join("\n"))
-                    })
+                    .flat_map(|&(s, e)| code[s..=e].iter().copied())
                     .collect();
                 let knob = reach.iter().any(|l| l.contains(".planted_manager()"));
                 let at = format!("{label}:{}: {name}", i + 1);
@@ -25998,11 +26257,35 @@ fn every_package_resolving_test_resolves_off_managers_it_controls() {
                         offenders.push(format!("{at}: takes the knob outside the serial group"));
                     }
                 }
+                let (calls, _) = code_tokens(&reach);
                 let runs_binary = reach.iter().any(|l| l.contains("cfgd_bin()"));
-                if !PACKAGE_RESOLVING_VERBS.iter().any(|(call, word)| {
-                    reach.iter().any(|l| l.contains(call))
-                        || (runs_binary && literals.iter().any(|v| v == word))
-                }) {
+                let in_process = PACKAGE_RESOLVING_VERBS
+                    .iter()
+                    .any(|v| calls.contains(v.call));
+                if !in_process && !runs_binary {
+                    continue;
+                }
+                let reach_raw = spans
+                    .iter()
+                    .map(|&(s, e)| raw[s..=e].join("\n"))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let reach_code = reach.join("\n");
+                let literals: Vec<String> = string_literal_values(&reach_raw, &reach_code);
+                let drives = PACKAGE_RESOLVING_VERBS.iter().any(|v| {
+                    let called = calls.contains(v.call)
+                        && v.gate.is_none_or(|(_, argument)| {
+                            call_arguments(&reach_raw, &reach_code, &format!("{}(", v.call))
+                                .iter()
+                                .any(|args| args.iter().any(|a| a == argument))
+                        });
+                    let ran = runs_binary
+                        && v.argv.iter().all(|w| literals.iter().any(|l| l == w))
+                        && v.gate
+                            .is_none_or(|(flag, _)| literals.iter().any(|l| l == flag));
+                    called || ran
+                });
+                if !drives {
                     continue;
                 }
                 let mut entries: Vec<Vec<String>> = Vec::new();
@@ -26073,27 +26356,33 @@ fn every_package_resolving_test_resolves_off_managers_it_controls() {
                          managers"
                     ));
                 } else {
-                    let stem = |m: &str| m.to_uppercase().replace('-', "_");
+                    let local = file_consts
+                        .get_or_insert_with(|| const_str_bodies(&text).into_iter().collect());
+                    let set: HashSet<String> = SEAM_SETTERS
+                        .iter()
+                        .flat_map(|setter| call_arguments(&reach_raw, &reach_code, setter))
+                        .filter_map(|args| args.into_iter().next())
+                        .filter_map(|seam| seam_value(&seam, local, &seam_consts))
+                        .collect();
                     let mut unplanted: Vec<&str> = entries
                         .iter()
                         .flatten()
                         .map(String::as_str)
                         .filter(|m| built_in.iter().any(|b| b == m))
                         .filter(|m| {
-                            // The derivation's argument is a literal, which the
-                            // blanked line no longer holds.
-                            !lines.iter().any(|&k| {
-                                (code[k].contains("tool_seam_var(")
-                                    && raw[k].contains(&format!("tool_seam_var(\"{m}\")")))
-                                    || names_identifier(code[k], &format!("{}_BIN_ENV", stem(m)))
-                            })
+                            !MANAGER_AVAILABILITY_SEAMS
+                                .iter()
+                                .find(|(name, _)| name == m)
+                                .is_some_and(|(_, seams)| {
+                                    seams.iter().any(|s| set.contains(&s.var()))
+                                })
                         })
                         .collect();
+                    unplanted.sort_unstable();
                     unplanted.dedup();
                     if !unplanted.is_empty() {
                         offenders.push(format!(
-                            "{at}: prefers {unplanted:?}, built-in managers it leaves as this \
-                             host has them"
+                            "{at}: prefers {unplanted:?} and sets no seam they answer from"
                         ));
                     }
                 }
@@ -26104,8 +26393,8 @@ fn every_package_resolving_test_resolves_off_managers_it_controls() {
         offenders.is_empty(),
         "these tests resolve a module package through this host's own managers, so they pass \
          only on a runner holding one. Take `.planted_manager()` and prefer `{}`, hold a \
-         hermetic factory guard, or name only a manager the fixture declares; else carry \
-         `{HATCH} <why>`:\n  {}",
+         hermetic factory guard, or set the seam of every built-in manager a `prefer` list \
+         names; else carry `{HATCH} <why>`:\n  {}",
         PLANTED_FAMILY.manager,
         offenders.join("\n  ")
     );
@@ -26123,11 +26412,104 @@ fn every_package_resolving_test_resolves_off_managers_it_controls() {
     );
 }
 
+/// The functions `code` calls by name (a bare or path call, a method call
+/// excluded) and every identifier it spells.
+fn code_tokens<'a>(
+    code: &[&'a str],
+) -> (
+    std::collections::HashSet<&'a str>,
+    std::collections::HashSet<&'a str>,
+) {
+    let mut calls = std::collections::HashSet::new();
+    let mut idents = std::collections::HashSet::new();
+    for line in code {
+        let bytes = line.as_bytes();
+        let mut k = 0;
+        while k < bytes.len() {
+            let c = bytes[k];
+            if !(c.is_ascii_alphabetic() || c == b'_') {
+                k += 1;
+                continue;
+            }
+            let start = k;
+            while k < bytes.len() && (bytes[k].is_ascii_alphanumeric() || bytes[k] == b'_') {
+                k += 1;
+            }
+            let ident = &line[start..k];
+            idents.insert(ident);
+            if bytes.get(k) == Some(&b'(') && (start == 0 || bytes[start - 1] != b'.') {
+                calls.insert(ident);
+            }
+        }
+    }
+    (calls, idents)
+}
+
+/// The top-level arguments of every call `needle` opens in `code`, the
+/// [`blank_non_code`] form of `raw`, read off `raw` so a literal keeps its
+/// text. A needle naming a bare function claims no method call and no longer
+/// identifier ending in it.
+fn call_arguments(raw: &str, code: &str, needle: &str) -> Vec<Vec<String>> {
+    let bare = !needle.starts_with('.');
+    let mut out = Vec::new();
+    for (at, _) in code.match_indices(needle) {
+        if bare
+            && code[..at]
+                .chars()
+                .next_back()
+                .is_some_and(|c| c == '.' || c.is_ascii_alphanumeric() || c == '_')
+        {
+            continue;
+        }
+        let open = at + needle.len();
+        let mut depth = 1i32;
+        let Some(close) = code[open..].char_indices().find_map(|(n, c)| {
+            match c {
+                '(' | '[' | '{' => depth += 1,
+                ')' | ']' | '}' => depth -= 1,
+                _ => {}
+            }
+            (depth == 0).then_some(open + n)
+        }) else {
+            continue;
+        };
+        out.push(
+            top_level_args(&raw[open..close])
+                .into_iter()
+                .map(|a| a.trim().to_string())
+                .collect(),
+        );
+    }
+    out
+}
+
+/// The variable name a seam argument evaluates to: a `tool_seam_var("<tool>")`
+/// call, or a const read by its last path segment, from this file first and
+/// then from the seams `packages/` declares.
+fn seam_value(
+    argument: &str,
+    local: &std::collections::HashMap<String, String>,
+    declared: &std::collections::BTreeMap<String, String>,
+) -> Option<String> {
+    let argument = argument.trim_start_matches('&').trim();
+    if let Some((_, call)) = argument.split_once("tool_seam_var(") {
+        let (tool, _) = string_literal(call.trim_start())?;
+        return Some(crate::packages::shared::tool_seam_var(&tool));
+    }
+    let name = argument.rsplit("::").next()?;
+    local.get(name).or_else(|| declared.get(name)).cloned()
+}
+
 /// The `prefer` list of every `spec.packages` entry of every Module document
-/// in `text`, read the way serde reads the document. The error is a document
-/// that does not parse, or a field holding a shape the Module schema refuses.
+/// in `text` that applies to this host, each entry read through the
+/// production [`cfgd_core::config::ModulePackageEntry`]. An entry or a module
+/// whose `platforms:` gate leaves this host out is dropped, because the
+/// resolver never reaches it. The error is a document that fails to parse, or
+/// an entry the Module schema refuses.
 fn module_package_prefers(text: &str) -> Result<Vec<Vec<String>>, String> {
+    use cfgd_core::platform::PlatformGated;
     use serde::Deserialize;
+    let here = cfgd_core::platform::Platform::current();
     let mut out = Vec::new();
     for doc in serde_yaml::Deserializer::from_str(text) {
         let doc =
@@ -26135,34 +26517,29 @@ fn module_package_prefers(text: &str) -> Result<Vec<Vec<String>>, String> {
         if doc.get("kind").and_then(serde_yaml::Value::as_str) != Some("Module") {
             continue;
         }
-        let Some(packages) = doc.get("spec").and_then(|s| s.get("packages")) else {
+        let Some(spec) = doc.get("spec") else {
             continue;
         };
-        let packages = packages
-            .as_sequence()
-            .ok_or("holds a `spec.packages` that is not a list")?;
-        for entry in packages {
-            if !entry.is_mapping() {
-                return Err(format!(
-                    "holds a package entry that is not a mapping: {entry:?}"
-                ));
-            }
-            let Some(prefer) = entry.get("prefer") else {
-                out.push(Vec::new());
-                continue;
-            };
-            let prefer = prefer
-                .as_sequence()
-                .ok_or_else(|| format!("holds a `prefer` that is not a list: {prefer:?}"))?
-                .iter()
-                .map(|m| {
-                    m.as_str()
-                        .map(str::to_string)
-                        .ok_or_else(|| format!("holds a `prefer` item that is not a string: {m:?}"))
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            out.push(prefer);
+        let module_tags: Vec<String> = match spec.get("platforms") {
+            Some(tags) => serde_yaml::from_value(tags.clone())
+                .map_err(|e| format!("holds a `spec.platforms` the schema refuses: {e}"))?,
+            None => Vec::new(),
+        };
+        if !here.matches_any(&module_tags) {
+            continue;
         }
+        let Some(packages) = spec.get("packages") else {
+            continue;
+        };
+        let entries: Vec<cfgd_core::config::ModulePackageEntry> =
+            serde_yaml::from_value(packages.clone())
+                .map_err(|e| format!("holds a `spec.packages` the schema refuses: {e}"))?;
+        out.extend(
+            entries
+                .into_iter()
+                .filter(|entry| entry.applies_to(here))
+                .map(|entry| entry.prefer),
+        );
     }
     Ok(out)
 }
@@ -26281,6 +26658,21 @@ fn string_literal(text: &str) -> Option<(String, &str)> {
                 't' => value.push('\t'),
                 'r' => value.push('\r'),
                 '0' => value.push('\0'),
+                'x' => {
+                    let hex: String = (0..2)
+                        .filter_map(|_| chars.next().map(|(_, c)| c))
+                        .collect();
+                    value.push(char::from(u8::from_str_radix(&hex, 16).ok()?));
+                }
+                'u' => {
+                    chars.next().filter(|(_, c)| *c == '{')?;
+                    let hex: String = chars
+                        .by_ref()
+                        .map(|(_, c)| c)
+                        .take_while(|c| *c != '}')
+                        .collect();
+                    value.push(char::from_u32(u32::from_str_radix(&hex, 16).ok()?)?);
+                }
                 '\n' | '\r' => {
                     while chars.peek().is_some_and(|(_, c)| c.is_whitespace()) {
                         chars.next();
@@ -26292,6 +26684,25 @@ fn string_literal(text: &str) -> Option<(String, &str)> {
         }
     }
     None
+}
+
+/// The literal reader decodes every escape a Rust string literal carries, and
+/// a raw string closes only at its own count of hashes.
+#[test]
+fn the_literal_reader_decodes_every_escape_a_literal_carries() {
+    for (source, value) in [
+        (r#""\u{2014}""#, "\u{2014}"),
+        (r#""\x41""#, "A"),
+        (r###"r##"a"#b"##"###, "a\"#b"),
+        ("\"a\\\n    b\"", "ab"),
+        (r#""\\ \" \'""#, "\\ \" '"),
+    ] {
+        assert_eq!(
+            string_literal(source).map(|(v, _)| v).as_deref(),
+            Some(value),
+            "`{source}` reads as its value"
+        );
+    }
 }
 
 // -----------------------------------------------------------------------
@@ -26361,6 +26772,7 @@ spec:
 
 #[test]
 fn cmd_status_with_module_displays_module_info() {
+    let _pm = crate::cli::registry::PackageManagerFactoryGuard::hermetic_native();
     let module_yaml = r#"apiVersion: cfgd.io/v1alpha1
 kind: Module
 metadata:
@@ -26433,6 +26845,7 @@ spec:
 
 #[test]
 fn cmd_status_module_json_output_found() {
+    let _pm = crate::cli::registry::PackageManagerFactoryGuard::hermetic_native();
     let module_yaml = r#"apiVersion: cfgd.io/v1alpha1
 kind: Module
 metadata:
@@ -29012,12 +29425,13 @@ metadata:
 spec:
   packages:
     - name: bat
-      prefer: [cargo]
+      prefer: [apt]
     - name: fd
-      platforms: [macos]
+      platforms: [plan9]
 "#;
 
 #[test]
+#[serial_test::serial]
 fn cmd_doctor_with_module_with_packages_exercises_resolution_loop() {
     let profile_yaml = r#"apiVersion: cfgd.io/v1alpha1
 kind: Profile
@@ -29030,6 +29444,7 @@ spec:
     let h = CliTestHarness::builder()
         .profile("default", profile_yaml)
         .module("tools-mod", MODULE_WITH_PACKAGES_YAML)
+        .planted_manager()
         .build();
 
     super::doctor::run_doctor(&h.cli(), h.printer(), false).unwrap();

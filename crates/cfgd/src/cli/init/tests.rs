@@ -1088,10 +1088,8 @@ fn cmd_init_apply_module_leaves_a_tool_another_manager_holds_alone() {
     std::fs::create_dir_all(&module_dir).unwrap();
     std::fs::write(
         module_dir.join("module.yaml"),
-        format!(
-            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: held-init-mod\nspec:\n  packages:\n    - name: {}\n",
-            crate::cli::registry::HELD_BY_BREW
-        ),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: held-init-mod\nspec:\n  packages:\n    - name: __HELD__\n"
+            .replace("__HELD__", crate::cli::registry::HELD_BY_BREW),
     )
     .unwrap();
 
