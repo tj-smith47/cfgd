@@ -1723,19 +1723,46 @@ pub fn declaration_end<S: AsRef<str>>(code: &[S], start: usize) -> usize {
 /// derivation asking [`calls_free_fn`] alone stops at the first wrapper written
 /// as a method, and everything reaching the seam through it is never derived.
 ///
-/// The owner is matched by MENTION, not by resolving the receiver's type, so
-/// the method arm errs toward claiming a reach: a body calling `.name(` on some
-/// other value while naming the type anywhere reads as a caller. Every consumer
-/// must therefore be a superset check, where an extra name costs a wider
-/// population rather than a missed one.
+/// The owner is matched by MENTION, so the method arm errs toward claiming a
+/// reach: a body calling `.name(` on some other value while naming the type
+/// anywhere reads as a caller. Every consumer must therefore be a superset
+/// check, where an extra name costs a wider population and no missed member.
+/// A mention starts at an identifier boundary, so `InlineTable::new(` is no
+/// call of `Table::new`.
 pub fn reaches_fn(code: &str, name: &str, owner: Option<&str>) -> bool {
     match owner {
         None => calls_free_fn(code, name),
         Some(ty) => {
-            (code.contains(&format!(".{name}(")) && code.contains(ty))
-                || code.contains(&format!("{ty}::{name}("))
+            (code.contains(&format!(".{name}(")) && starts_at_boundary(code, ty))
+                || starts_at_boundary(code, &format!("{ty}::{name}("))
         }
     }
+}
+
+/// Whether `needle` occurs in `code` with no identifier character before it.
+fn starts_at_boundary(code: &str, needle: &str) -> bool {
+    code.match_indices(needle).any(|(at, _)| {
+        !code[..at]
+            .chars()
+            .next_back()
+            .is_some_and(|c| c.is_alphanumeric() || c == '_')
+    })
+}
+
+/// Whether a body declared in `caller_owner`'s impl reaches `name` in
+/// `owner`'s: [`reaches_fn`], or, inside the same impl, the `Self::name(` and
+/// `self.name(` calls that never spell the type out.
+fn reaches_declared(
+    body: &str,
+    caller_owner: Option<&str>,
+    name: &str,
+    owner: Option<&str>,
+) -> bool {
+    reaches_fn(body, name, owner)
+        || (owner.is_some()
+            && caller_owner == owner
+            && (starts_at_boundary(body, &format!("Self::{name}("))
+                || starts_at_boundary(body, &format!("self.{name}("))))
 }
 
 /// Every declaration reaching one of `seeds`, folded until the set stops
@@ -1765,7 +1792,7 @@ pub fn callers_reaching(
         for (name, owner) in &frontier {
             for (caller, caller_owner, body) in declarations {
                 if (caller, caller_owner) == (name, owner)
-                    || !reaches_fn(body, name, owner.as_deref())
+                    || !reaches_declared(body, caller_owner.as_deref(), name, owner.as_deref())
                 {
                     continue;
                 }

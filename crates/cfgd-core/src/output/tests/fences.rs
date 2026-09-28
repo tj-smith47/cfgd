@@ -6310,6 +6310,41 @@ fn an_associated_function_is_reached_through_its_path_call() {
         "snapshot",
         Some("Compliance")
     ));
+    assert!(!reaches_fn(
+        "let t = InlineTable::new();",
+        "new",
+        Some("Table")
+    ));
+    assert!(!reaches_fn(
+        "let t: InlineTable = x.new();",
+        "new",
+        Some("Table")
+    ));
+    let owned = |ty: &str| Some(ty.to_string());
+    let declarations = vec![
+        (
+            "path".to_string(),
+            owned("Compliance"),
+            "fn path() { Self::snapshot(&p) }".to_string(),
+        ),
+        (
+            "method".to_string(),
+            owned("Compliance"),
+            "fn method(&self) { self.snapshot() }".to_string(),
+        ),
+        (
+            "elsewhere".to_string(),
+            owned("Other"),
+            "fn elsewhere() { Self::snapshot(&p) }".to_string(),
+        ),
+    ];
+    let derived = crate::test_helpers::callers_reaching(
+        &declarations,
+        &[("snapshot".to_string(), owned("Compliance"))],
+    );
+    assert!(derived.contains(&("path".to_string(), owned("Compliance"))));
+    assert!(derived.contains(&("method".to_string(), owned("Compliance"))));
+    assert!(!derived.contains(&("elsewhere".to_string(), owned("Other"))));
 }
 
 /// A hatch is a marker in a comment: one a string literal holds is data, and a
