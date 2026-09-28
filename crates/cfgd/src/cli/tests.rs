@@ -26203,6 +26203,7 @@ fn every_package_resolving_test_resolves_off_managers_it_controls() {
         .map(|m| m.name().to_string())
         .collect();
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let variants = resolving_verb_variants();
     let seam_consts = str_consts(
         &rust_sources_under(&manifest.join("src/packages"))
             .into_iter()
@@ -26324,7 +26325,17 @@ fn every_package_resolving_test_resolves_off_managers_it_controls() {
                         })
                 });
                 let parsed = PACKAGE_RESOLVING_VERBS.iter().any(parses_argv);
-                if !called && !((runs_binary || dispatches) && parsed) {
+                let built = PACKAGE_RESOLVING_VERBS
+                    .iter()
+                    .zip(&variants)
+                    .any(|(v, paths)| {
+                        paths.iter().all(|path| names_identifier(&reach_code, path))
+                            && v.gate.is_none_or(|(flag, argument)| {
+                                let field = flag.trim_start_matches('-').replace('-', "_");
+                                reach_code.contains(&format!("{field}: {argument}"))
+                            })
+                    });
+                if !called && !(runs_binary && parsed) && !(dispatches && (parsed || built)) {
                     continue;
                 }
                 let mut entries: Vec<Vec<String>> = Vec::new();
@@ -26539,32 +26550,116 @@ fn seam_value(
     local.get(name).or_else(|| declared.get(name)).cloned()
 }
 
+/// The enum paths a test builds to dispatch each [`PACKAGE_RESOLVING_VERBS`]
+/// row through `execute(`, in row order: `Command::<V>` for its first argv
+/// word and `<V>Command::<W>` for a second.
+///
+/// Each word is looked up in `Cli::command()`, so an alias (`source rm`) reads
+/// as the subcommand it names, and a variant is the kebab-to-Pascal of that
+/// subcommand's name, which is how clap derives the name from the variant.
+/// Each derived path is then checked against the enums `cli/mod.rs` declares,
+/// so a subcommand whose variant stops matching its name fails here, and the
+/// walk never looks for a path no test can build.
+fn resolving_verb_variants() -> Vec<Vec<String>> {
+    use clap::CommandFactory;
+    let cli = Cli::command();
+    let declared = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli/mod.rs"),
+    )
+    .expect("cli/mod.rs is readable");
+    let pascal = |word: &str| -> String {
+        word.split('-')
+            .map(|part| {
+                let mut chars = part.chars();
+                chars
+                    .next()
+                    .map(|first| first.to_ascii_uppercase().to_string() + chars.as_str())
+                    .unwrap_or_default()
+            })
+            .collect()
+    };
+    PACKAGE_RESOLVING_VERBS
+        .iter()
+        .map(|verb| {
+            let mut command = &cli;
+            let mut parent = "Command".to_string();
+            let mut paths = Vec::new();
+            for word in verb.argv {
+                command = command
+                    .find_subcommand(word)
+                    .unwrap_or_else(|| panic!("{:?}: `{word}` is no subcommand", verb.argv));
+                let variant = pascal(command.get_name());
+                let enum_body = declared
+                    .split_once(&format!("pub enum {parent} {{"))
+                    .and_then(|(_, rest)| rest.split_once("\n}\n"))
+                    .map(|(body, _)| body)
+                    .unwrap_or_else(|| panic!("cli/mod.rs declares no `pub enum {parent}`"));
+                assert!(
+                    enum_body.lines().any(|l| {
+                        let l = l.trim_start();
+                        l.starts_with(&format!("{variant} {{"))
+                            || l.starts_with(&format!("{variant},"))
+                            || l.starts_with(&format!("{variant}("))
+                    }),
+                    "`{parent}` declares no `{variant}` for `{word}` in {:?}",
+                    verb.argv
+                );
+                paths.push(format!("{parent}::{variant}"));
+                parent = format!("{variant}Command");
+            }
+            paths
+        })
+        .collect()
+}
+
+/// The gate tag a fixture writes for an entry no host resolves.
+///
+/// A tag outside the os, distro and arch names cfgd spells is still a real
+/// architecture for some host (`riscv64` reaches [`Arch::Other`]), so
+/// [`module_package_prefers`] judges every such tag as one, and this is the one
+/// word it reads as no host at all. A fixture gating an entry off every host
+/// spells this word; any other unnamed tag is judged as the architecture it
+/// names.
+///
+/// [`Arch::Other`]: cfgd_core::platform::Arch::Other
+const NO_HOST_TAG: &str = "plan9";
+
 /// The `prefer` list of every `spec.packages` entry of every Module document
-/// in `text` that some platform cfgd names can resolve, each entry read
-/// through the production [`cfgd_core::config::ModulePackageEntry`]. The
-/// platforms are every [`Distro::ALL`](cfgd_core::platform::Distro::ALL)
-/// member on its own OS (`Unknown` on Linux) crossed with every
-/// [`Arch::NAMED`](cfgd_core::platform::Arch::NAMED) architecture, so a
-/// `platforms: [macos]` entry is judged on a Linux runner: the suite runs on
-/// every OS in CI, and the host the walk runs on must not decide which entries
-/// it reads. An entry whose module gate and own gate admit none of them (a
-/// `plan9` tag) is dropped on every host, because no resolver ever reaches it.
-/// The error is a document that fails to parse, or an entry the Module schema
-/// refuses.
+/// in `text` that some platform can resolve, each entry read through the
+/// production [`cfgd_core::config::ModulePackageEntry`]. The platforms are
+/// every [`Distro::ALL`](cfgd_core::platform::Distro::ALL) member on its own
+/// OS (`Unknown` on Linux) crossed with every
+/// [`Arch::NAMED`](cfgd_core::platform::Arch::NAMED) architecture and with an
+/// `Arch::Other` for each gate tag the document holds that no os, distro or
+/// named arch spells, so a `platforms: [macos]` or `platforms: [riscv64]`
+/// entry is judged on a Linux x86_64 runner: the host the walk runs on must
+/// not decide which entries it reads. An entry whose module gate and own gate
+/// admit none of them ([`NO_HOST_TAG`]) is dropped, because no resolver ever
+/// reaches it. The error is a document that fails to parse, or an entry the
+/// Module schema refuses.
 fn module_package_prefers(text: &str) -> Result<Vec<Vec<String>>, String> {
     use cfgd_core::platform::{Arch, Distro, Os, Platform, PlatformGated};
     use serde::Deserialize;
-    let platforms: Vec<Platform> = Distro::ALL
-        .iter()
-        .flat_map(|distro| {
-            Arch::NAMED.iter().map(move |arch| Platform {
-                os: distro.os().unwrap_or(Os::Linux),
-                distro: distro.clone(),
-                version: String::new(),
-                arch: arch.clone(),
+    let platforms_over = |arches: &[Arch]| -> Vec<Platform> {
+        Distro::ALL
+            .iter()
+            .flat_map(|distro| {
+                arches.iter().map(move |arch| Platform {
+                    os: distro.os().unwrap_or(Os::Linux),
+                    distro: distro.clone(),
+                    version: String::new(),
+                    arch: arch.clone(),
+                })
             })
-        })
-        .collect();
+            .collect()
+    };
+    let named = platforms_over(Arch::NAMED);
+    let spelled = |tag: &str| {
+        tag == NO_HOST_TAG
+            || named
+                .iter()
+                .any(|p| p.os.as_str() == tag || p.distro.as_str() == tag || p.arch.as_str() == tag)
+    };
     let mut out = Vec::new();
     for doc in serde_yaml::Deserializer::from_str(text) {
         let doc =
@@ -26580,16 +26675,24 @@ fn module_package_prefers(text: &str) -> Result<Vec<Vec<String>>, String> {
                 .map_err(|e| format!("holds a `spec.platforms` the schema refuses: {e}"))?,
             None => Vec::new(),
         };
-        let admitted: Vec<&Platform> = platforms
-            .iter()
-            .filter(|p| p.matches_any(&module_tags))
-            .collect();
         let Some(packages) = spec.get("packages") else {
             continue;
         };
         let entries: Vec<cfgd_core::config::ModulePackageEntry> =
             serde_yaml::from_value(packages.clone())
                 .map_err(|e| format!("holds a `spec.packages` the schema refuses: {e}"))?;
+        let unnamed: Vec<Arch> = module_tags
+            .iter()
+            .chain(entries.iter().flat_map(|entry| entry.platforms()))
+            .filter(|tag| !spelled(tag))
+            .map(|tag| Arch::Other(tag.clone()))
+            .collect();
+        let admitted: Vec<Platform> = named
+            .iter()
+            .cloned()
+            .chain(platforms_over(&unnamed))
+            .filter(|p| p.matches_any(&module_tags))
+            .collect();
         out.extend(
             entries
                 .into_iter()
@@ -37170,12 +37273,13 @@ fn reconciler_constructors() -> Vec<String> {
 /// A hatch below is a claim about what the binding it marks REACHES, so the
 /// walk asks the call graph rather than taking the marker's word, and the names
 /// it asks after come from the flag's own readers: the methods reading
-/// `self.prune_rows`, then every method reaching one of those through a
-/// self-call. A method that learns to record joins the set on its own, and the
+/// `self.prune_rows`, then every function
+/// [`callers_reaching`](cfgd_core::test_helpers::callers_reaching) folds onto
+/// them. A method that learns to record joins the set on its own, and the
 /// hatch that said it records nothing turns red.
 fn reconciler_removal_methods() -> Vec<String> {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../cfgd-core/src/reconciler");
-    let mut declarations: Vec<(String, String)> = Vec::new();
+    let mut declarations: Vec<(String, Option<String>, String)> = Vec::new();
     for path in rust_sources_under(&root) {
         // A `tests.rs` carries no `#[cfg(test)]` for the cut to read, and a
         // test is not a route the reconciler takes.
@@ -37183,42 +37287,24 @@ fn reconciler_removal_methods() -> Vec<String> {
             continue;
         }
         let production = cfgd_core::test_helpers::production_slice_of(&path);
-        declarations.extend(
-            cfgd_core::test_helpers::fn_declarations(&production)
-                .into_iter()
-                .map(|(name, _, body)| (name, body)),
-        );
+        declarations.extend(cfgd_core::test_helpers::fn_declarations(&production));
     }
     // The setter WRITES the field; every other reader is a removal it gates.
-    // A set, because the names are read back by membership alone and the
-    // collection they come from is ordered by path: two files declaring the
-    // same reader would otherwise both survive and meet the floor below with
-    // one method fewer than it claims.
-    let mut derived: std::collections::BTreeSet<String> = declarations
+    let readers: Vec<(String, Option<String>)> = declarations
         .iter()
-        .filter(|(_, body)| body.contains("self.prune_rows") && !body.contains("self.prune_rows ="))
-        .map(|(name, _)| name.clone())
+        .filter(|(_, _, body)| {
+            body.contains("self.prune_rows") && !body.contains("self.prune_rows =")
+        })
+        .map(|(name, owner, _)| (name.clone(), owner.clone()))
         .collect();
-    let mut frontier: Vec<String> = derived.iter().cloned().collect();
-    while !frontier.is_empty() {
-        let mut next: Vec<String> = Vec::new();
-        // A sibling method reaches these through `self.`, which no receiver
-        // type is spelled on, so the fold reads that shape rather than
-        // `reaches_fn`'s method arm.
-        for name in &frontier {
-            let needle = format!("self.{name}(");
-            for (caller, body) in &declarations {
-                if caller == name || !body.contains(&needle) {
-                    continue;
-                }
-                if !derived.contains(caller) && !next.contains(caller) {
-                    next.push(caller.clone());
-                }
-            }
-        }
-        derived.extend(next.iter().cloned());
-        frontier = next;
-    }
+    // A set, because the names are read back by membership alone: two impls
+    // declaring the same method would otherwise both survive and meet the
+    // floor below with one method fewer than it claims.
+    let derived: std::collections::BTreeSet<String> =
+        cfgd_core::test_helpers::callers_reaching(&declarations, &readers)
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
     assert!(
         derived.len() >= 3,
         "the removal flag is read by {derived:?}, fewer methods than the reconciler holds"
