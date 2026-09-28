@@ -25910,6 +25910,7 @@ fn every_module_package_plan_test_resolves_off_this_hosts_managers() {
     let mut offenders: Vec<String> = Vec::new();
     for segment in ["src", "tests"] {
         for path in rust_sources_under(&manifest.join(segment)) {
+            // unfloored-slice-ok: the population is test code, test files and inline test regions.
             let text = walked_file_body(&path);
             let label = cfgd_core::to_posix_string(path.strip_prefix(manifest).unwrap_or(&path));
             let raw: Vec<&str> = text.lines().collect();
