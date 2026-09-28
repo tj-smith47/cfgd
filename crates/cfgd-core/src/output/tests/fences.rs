@@ -3473,9 +3473,9 @@ fn every_multi_file_production_walk_reads_through_the_floored_helper() {
 
 /// The rows of `lines` in test scope (`in_test`) that search for a test gate's
 /// spelling: a literal opening on one handed to a string search or compared
-/// whole, and a name handed to a search whose `let`, `const` or `static`
-/// initializer holds such a literal. Each cuts test text from production
-/// beside the one scanner.
+/// whole, and a name handed to a search that [`Bindings`] reads back to text
+/// holding such a literal, reported at the row holding the search call. Each
+/// cuts test text from production beside the one scanner.
 fn hand_cut_gate_rows(lines: &[&str], in_test: impl Fn(usize) -> bool) -> Vec<usize> {
     let gate_spellings = [
         concat!("cfg", "(test"),
@@ -3513,9 +3513,17 @@ fn hand_cut_gate_rows(lines: &[&str], in_test: impl Fn(usize) -> bool) -> Vec<us
             })
         })
     };
-    let bindings = Bindings::of(lines);
-    let folded = crate::test_helpers::blank_non_code(&lines.join("\n"));
+    let joined = lines.join("\n");
+    let folded = crate::test_helpers::blank_non_code(&joined);
     let code_rows: Vec<&str> = folded.split('\n').collect();
+    // A name resolves to text of this file alone, so only a file writing a
+    // gate's spelling where its code is blanked can bind a needle to one.
+    let binds_a_gate = gate_spellings.iter().any(|spelling| {
+        joined
+            .match_indices(spelling)
+            .any(|(at, _)| folded.as_bytes()[at] == b' ')
+    });
+    let bindings = std::cell::OnceCell::new();
     let mut rows = Vec::new();
     let mut head = 0usize;
     while head < lines.len() {
@@ -3525,16 +3533,23 @@ fn hand_cut_gate_rows(lines: &[&str], in_test: impl Fn(usize) -> bool) -> Vec<us
                 rows.push(n);
             }
         }
-        // A search handed a name, alone or through the array a chain or a loop
-        // iterates, whose binding holds a gate's spelling.
-        if in_test(head) && !lines[head].trim_start().starts_with("//") {
-            let code = statement_code(&code_rows[head..end]);
-            let bound_cut = searched_names(&code).iter().any(|name| {
-                let resolved = bindings.resolve(name, head);
-                resolved.split('"').skip(1).step_by(2).any(&opens_on_a_gate)
-            });
-            if bound_cut && !rows.contains(&head) {
-                rows.push(head);
+        let rows_of = &code_rows[head..end];
+        if binds_a_gate
+            && rows_of.iter().any(|row| row.contains('.'))
+            && rows_of.iter().any(|row| row.contains('('))
+        {
+            let statement = Statement::of(lines, &code_rows, head, end);
+            for (name, call) in searched_names(&statement.code) {
+                let n = statement.row_at(call);
+                if !in_test(n) || rows.contains(&n) {
+                    continue;
+                }
+                let resolved = bindings
+                    .get_or_init(|| Bindings::of(lines, &code_rows))
+                    .resolve(name, n);
+                if resolved.split('"').skip(1).step_by(2).any(&opens_on_a_gate) {
+                    rows.push(n);
+                }
             }
         }
         head = end;
@@ -3560,182 +3575,520 @@ fn is_ident(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
 
+/// The names of `pattern`, a binding's pattern with any type annotation after
+/// each `:`.
+fn pattern_names(pattern: &str) -> impl Iterator<Item = &str> {
+    pattern
+        .split(',')
+        .flat_map(|part| {
+            part.split(':')
+                .next()
+                .unwrap_or_default()
+                .split(|c: char| !is_ident(c))
+        })
+        .filter(|name| {
+            !name.is_empty()
+                && !name.starts_with(|c: char| c.is_ascii_digit())
+                && !["mut", "ref", "_", "self"].contains(name)
+        })
+}
+
 /// The row after the statement opening on row `head` of `code`, a source's
-/// rows with their literals and comments blanked: its rustfmt chain links (rows
-/// opening on `.`) and the rows its open parentheses and brackets span, ending
-/// at a row that opens a block, since the rows inside a block are statements of
-/// their own.
+/// rows with their literals and comments blanked. A statement runs through its
+/// rustfmt chain links (rows opening on `.`) and to the close of every
+/// parenthesis, bracket and brace it opens, so a closure's block body belongs
+/// to the call it is handed to. A row ending on a brace opened outside every
+/// other delimiter opens a block whose rows are statements of their own, and
+/// ends the statement, unless the statement is a `let`, `const` or `static`,
+/// which ends at its own `;` whatever blocks and rows its value spans.
 fn statement_end(code: &[&str], head: usize) -> usize {
+    let lead = crate::test_helpers::strip_item_lead(code[head]);
+    let binds = ["let ", "const ", "static "]
+        .iter()
+        .any(|keyword| lead.starts_with(keyword))
+        && !crate::test_helpers::opens_function(lead);
     let mut depth = 0i64;
     let mut at = head;
     loop {
-        for c in code[at].bytes() {
+        let row = code[at].trim_end();
+        for c in row.bytes() {
             match c {
-                b'(' | b'[' => depth += 1,
-                b')' | b']' => depth -= 1,
+                b'(' | b'[' | b'{' => depth += 1,
+                b')' | b']' | b'}' => depth -= 1,
                 _ => {}
             }
         }
-        let opens_block = code[at].trim_end().ends_with('{');
+        let opens_block = !binds && row.ends_with('{') && depth <= 1;
         at += 1;
         if at >= code.len() || opens_block {
             return at;
         }
-        if depth <= 0 && !code[at].trim_start().starts_with('.') {
+        let open = if binds {
+            !row.ends_with(';')
+        } else {
+            code[at].trim_start().starts_with('.')
+        };
+        if depth <= 0 && !open {
             return at;
         }
     }
 }
 
-/// A statement's blanked rows, each trimmed and joined end to end, so a chain
-/// rustfmt split reads as the one expression it is. A statement without a `.`
-/// and a `(` holds no method call, so nothing is joined.
-fn statement_code(rows: &[&str]) -> String {
-    if !rows.iter().any(|row| row.contains('.')) || !rows.iter().any(|row| row.contains('(')) {
-        return String::new();
-    }
-    rows.iter().map(|row| row.trim()).collect()
-}
-
-/// The names a search in `code`, one statement's code, is handed: a name passed
-/// to the search whole, and every array a chain iterates in a statement that
-/// searches, whose items reach the search through the closure.
-fn searched_names(code: &str) -> Vec<&str> {
-    if !code.contains('.') || !code.contains('(') {
-        return Vec::new();
-    }
-    let mut names = Vec::new();
-    let mut searches = false;
-    for call in SEARCH_CALLS {
-        for (at, _) in code.match_indices(call) {
-            searches = true;
-            let arg = code[at + call.len()..].trim_start_matches(['&', '*']);
-            let len = arg.len() - arg.trim_start_matches(is_ident).len();
-            if len > 0 && arg[len..].trim_start().starts_with(')') {
-                names.push(&arg[..len]);
+/// The row after the one holding the delimiter that closes the one ending just
+/// before byte `open` of row `row` of `code`, a source's blanked rows.
+fn close_row(code: &[&str], row: usize, open: usize) -> usize {
+    let mut depth = 1i64;
+    for (n, text) in code.iter().enumerate().skip(row) {
+        let from = if n == row { open } else { 0 };
+        for c in text.bytes().skip(from) {
+            match c {
+                b'(' | b'[' | b'{' => depth += 1,
+                b')' | b']' | b'}' => depth -= 1,
+                _ => {}
+            }
+            if depth == 0 {
+                return n + 1;
             }
         }
     }
-    if searches {
-        for (at, _) in code.match_indices(".iter()") {
+    code.len()
+}
+
+/// The spans of the top-level comma-separated items of `code` from byte
+/// `open`, just past an opening delimiter, to the delimiter closing it.
+fn arguments(code: &str, open: usize) -> Vec<std::ops::Range<usize>> {
+    let mut spans = Vec::new();
+    let mut depth = 0usize;
+    let mut from = open;
+    for (at, c) in code.bytes().enumerate().skip(open) {
+        match c {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' if depth > 0 => depth -= 1,
+            b',' if depth == 0 => {
+                spans.push(from..at);
+                from = at + 1;
+            }
+            b')' | b']' | b'}' => {
+                spans.push(from..at);
+                from = code.len();
+                break;
+            }
+            _ => {}
+        }
+    }
+    spans.push(from..code.len());
+    spans.retain(|span| !code[span.clone()].trim().is_empty());
+    spans
+}
+
+/// One statement's rows, each cut to the span its code occupies and joined end
+/// to end, so a chain rustfmt split reads as the one expression it is: `code`
+/// holds that text blanked, and `raw` the same bytes as written.
+struct Statement {
+    head: usize,
+    code: String,
+    raw: String,
+    starts: Vec<usize>,
+}
+
+impl Statement {
+    fn of(lines: &[&str], code_rows: &[&str], head: usize, end: usize) -> Self {
+        let mut statement = Self {
+            head,
+            code: String::new(),
+            raw: String::new(),
+            starts: Vec::new(),
+        };
+        for (row, line) in code_rows[head..end].iter().zip(&lines[head..end]) {
+            let from = row.len() - row.trim_start().len();
+            let to = row.trim_end().len().max(from);
+            statement.starts.push(statement.code.len());
+            statement.code.push_str(&row[from..to]);
+            statement.raw.push_str(&line[from..to]);
+        }
+        statement
+    }
+
+    /// The row of the source holding byte `at` of the statement.
+    fn row_at(&self, at: usize) -> usize {
+        self.head
+            + self
+                .starts
+                .partition_point(|&start| start <= at)
+                .saturating_sub(1)
+    }
+}
+
+/// The names a search in `code`, one statement's code, is handed, each with
+/// the byte a search call opens at: a name passed to the search whole, at its
+/// own call, and every array a chain iterates in a statement that searches,
+/// whose items reach the search through the closure, at the first search after
+/// the chain.
+fn searched_names(code: &str) -> Vec<(&str, usize)> {
+    let mut names = Vec::new();
+    let mut calls = Vec::new();
+    for call in SEARCH_CALLS {
+        for (at, _) in code.match_indices(call) {
+            calls.push(at);
+            let arg = code[at + call.len()..].trim_start_matches(['&', '*']);
+            let len = arg.len() - arg.trim_start_matches(is_ident).len();
+            if len > 0 && arg[len..].trim_start().starts_with(')') {
+                names.push((&arg[..len], at));
+            }
+        }
+    }
+    calls.sort_unstable();
+    for iterate in [".iter()", ".into_iter()"] {
+        for (at, _) in code.match_indices(iterate) {
             let receiver = code[..at].trim_end_matches(is_ident);
-            if receiver.len() < at {
-                names.push(&code[receiver.len()..at]);
+            let call = calls.iter().find(|&&call| call > at).or(calls.last());
+            if let Some(&call) = call
+                && receiver.len() < at
+            {
+                names.push((&code[receiver.len()..at], call));
             }
         }
     }
     names
 }
 
+/// What a name a [`Bindings`] site declares is bound to.
+enum Bound {
+    /// The value of the `let`, `const` or `static` opening on the site's row.
+    Value,
+    /// The expression the `for` loop opening on the site's row iterates.
+    Iterated,
+    /// The receiver of the `.iter()` chain whose closure declares the name.
+    Receiver(String),
+    /// The argument in place `index` of every call of `function` in the file;
+    /// a `method` is called as `.function(` without its `self`.
+    Parameter {
+        function: String,
+        index: usize,
+        method: bool,
+    },
+}
+
+/// Every call of one function in a file: each call's row and its arguments as
+/// written.
+type Calls = Vec<(usize, Vec<String>)>;
+
 /// The bindings a Rust source's rows declare, so a walk judging a name reads
-/// the text it stands for. A `let`, `const` or `static` binds each name of its
-/// pattern to its initializer; a `for <pattern> in <expr>` binds each loop
-/// variable to the expression it iterates, whose own names resolve in turn.
+/// the text it stands for:
+/// - a `let`, `const` or `static` binds each name of its pattern to its value,
+///   read to the end of its statement;
+/// - a `for <pattern> in <expr>` binds each loop variable to the expression it
+///   iterates;
+/// - a closure handed down an `.iter()` or `.into_iter()` chain, through a
+///   `.copied()` or `.cloned()`, binds its parameters to the chain's receiver;
+/// - a function binds each parameter to the argument every call of it in the
+///   file passes in that place.
+///
+/// The names a bound text reads resolve in turn.
 struct Bindings<'a> {
     lines: &'a [&'a str],
-    sites: std::collections::HashMap<String, Vec<usize>>,
+    code: &'a [&'a str],
+    sites: std::collections::HashMap<String, Vec<(usize, Bound)>>,
+    calls: std::cell::RefCell<std::collections::HashMap<(String, bool), Calls>>,
+    expansions:
+        std::cell::RefCell<std::collections::HashMap<(String, usize), std::rc::Rc<Expansion>>>,
 }
 
 impl<'a> Bindings<'a> {
-    fn of(lines: &'a [&'a str]) -> Self {
-        let mut sites: std::collections::HashMap<String, Vec<usize>> = Default::default();
-        for (n, line) in lines.iter().enumerate() {
-            let code = crate::test_helpers::strip_item_lead(line);
-            let pattern = if let Some(rest) = code.strip_prefix("for ") {
-                rest.split_once(" in ").map(|(pattern, _)| pattern)
-            } else {
-                ["let ", "const ", "static "]
-                    .iter()
-                    .find_map(|keyword| code.strip_prefix(keyword))
-                    .map(|rest| rest.split([':', '=']).next().unwrap_or_default())
-            };
-            for name in pattern.unwrap_or_default().split(|c: char| !is_ident(c)) {
-                if !name.is_empty() && !["mut", "ref", "_"].contains(&name) {
-                    sites.entry(name.to_string()).or_default().push(n);
+    /// The bindings of `lines`, whose rows blanked by
+    /// [`crate::test_helpers::blank_non_code`] are `code`.
+    fn of(lines: &'a [&'a str], code: &'a [&'a str]) -> Self {
+        let mut sites: std::collections::HashMap<String, Vec<(usize, Bound)>> = Default::default();
+        let mut bind = |pattern: &str, row: usize, bound: &dyn Fn() -> Bound| {
+            for name in pattern_names(pattern) {
+                sites
+                    .entry(name.to_string())
+                    .or_default()
+                    .push((row, bound()));
+            }
+        };
+        for (n, row) in code.iter().enumerate() {
+            let lead = crate::test_helpers::strip_item_lead(row);
+            if crate::test_helpers::opens_function(lead) {
+                let statement = Statement::of(lines, code, n, statement_end(code, n));
+                let Some((function, params)) = parameters(&statement.code) else {
+                    continue;
+                };
+                let method = params.first().is_some_and(|p| p.contains("self"));
+                for (index, pattern) in params.iter().enumerate() {
+                    bind(pattern, n, &|| Bound::Parameter {
+                        function: function.to_string(),
+                        index,
+                        method,
+                    });
+                }
+            } else if let Some(rest) = lead.strip_prefix("for ") {
+                if let Some((pattern, _)) = rest.split_once(" in ") {
+                    bind(pattern, n, &|| Bound::Iterated);
+                }
+            } else if let Some(rest) = ["let ", "const ", "static "]
+                .iter()
+                .find_map(|keyword| lead.strip_prefix(keyword))
+            {
+                bind(rest.split('=').next().unwrap_or_default(), n, &|| {
+                    Bound::Value
+                });
+            }
+        }
+        // A closure's receiver stands on the row opening its chain, which is
+        // this row or the nearest above it that no chain link opens.
+        for (n, row) in code.iter().enumerate() {
+            if !row.contains("(|") && !row.contains("(move |") {
+                continue;
+            }
+            let first = (0..=n)
+                .rev()
+                .find(|&at| !code[at].trim_start().starts_with('.'))
+                .unwrap_or(0);
+            let statement = Statement::of(lines, code, first, n + 1);
+            for (at, params, receiver) in iterated_closures(&statement.code) {
+                if statement.row_at(at) == n {
+                    bind(params, n, &|| Bound::Receiver(receiver.to_string()));
                 }
             }
         }
-        Self { lines, sites }
-    }
-
-    /// The text the binding of `name` nearest above row `n` holds, or the
-    /// first below it for an item the file declares further down.
-    fn initializer(&self, name: &str, n: usize) -> Option<String> {
-        let sites = self.sites.get(name)?;
-        let above = sites.partition_point(|&at| at <= n);
-        let at = *above
-            .checked_sub(1)
-            .map(|i| &sites[i])
-            .or(sites.get(above))?;
-        let code = crate::test_helpers::strip_item_lead(self.lines[at]);
-        if code.starts_with("for ") {
-            let iterated = code.split_once(" in ").map_or("", |(_, rest)| rest);
-            return Some(iterated.trim_end().trim_end_matches('{').to_string());
+        for rows in sites.values_mut() {
+            rows.sort_by_key(|(row, _)| *row);
         }
-        let statement = self.lines[at..]
-            .iter()
-            .take(64)
-            .copied()
-            .collect::<Vec<_>>()
-            .join("\n");
-        let value = statement.split_once('=').map_or("", |(_, value)| value);
-        Some(
-            value
-                .split_once(';')
-                .map_or(value, |(value, _)| value)
-                .to_string(),
-        )
+        Self {
+            lines,
+            code,
+            sites,
+            calls: Default::default(),
+            expansions: Default::default(),
+        }
     }
 
-    /// `text` with the initializer of every name it reads appended, and of
-    /// every name those read in turn, three bindings deep.
+    /// The binding of `name` nearest above row `n`, or the first below it for
+    /// an item the file declares further down.
+    fn site(&self, name: &str, n: usize) -> Option<&(usize, Bound)> {
+        let sites = self.sites.get(name)?;
+        let above = sites.partition_point(|(at, _)| *at <= n);
+        above.checked_sub(1).map(|i| &sites[i]).or(sites.get(above))
+    }
+
+    /// The texts the binding on row `at` stands for, each with the row its own
+    /// names are read at.
+    fn values(&self, at: usize, bound: &Bound) -> Vec<(String, usize)> {
+        let before = at.saturating_sub(1);
+        let statement = || Statement::of(self.lines, self.code, at, statement_end(self.code, at));
+        match bound {
+            Bound::Value => {
+                let statement = statement();
+                statement.code.find('=').map_or_else(Vec::new, |eq| {
+                    let value = statement.raw[eq + 1..].trim_end().trim_end_matches(';');
+                    vec![(value.to_string(), before)]
+                })
+            }
+            Bound::Iterated => {
+                let statement = statement();
+                statement.code.find(" in ").map_or_else(Vec::new, |at| {
+                    let value = statement.raw[at + 4..].trim_end().trim_end_matches('{');
+                    vec![(value.to_string(), before)]
+                })
+            }
+            Bound::Receiver(receiver) => vec![(receiver.clone(), at)],
+            Bound::Parameter {
+                function,
+                index,
+                method,
+            } => {
+                let Some(place) = index.checked_sub(usize::from(*method)) else {
+                    return Vec::new();
+                };
+                self.calls_of(function, *method)
+                    .into_iter()
+                    .filter_map(|(row, args)| Some((args.get(place)?.clone(), row)))
+                    .collect()
+            }
+        }
+    }
+
+    /// Every call of `function` in the file, a `method` read as `.function(`.
+    fn calls_of(&self, function: &str, method: bool) -> Calls {
+        let key = (function.to_string(), method);
+        if let Some(calls) = self.calls.borrow().get(&key) {
+            return calls.clone();
+        }
+        let mut calls = Vec::new();
+        for (row, code) in self.code.iter().enumerate() {
+            for (at, _) in code.match_indices(function) {
+                let before = &code[..at];
+                let open = at + function.len() + 1;
+                if !code[open - 1..].starts_with('(')
+                    || before.ends_with(is_ident)
+                    || before.ends_with('.') != method
+                    || before.ends_with("fn ")
+                {
+                    continue;
+                }
+                let statement =
+                    Statement::of(self.lines, self.code, row, close_row(self.code, row, open));
+                let lead = code.len() - code.trim_start().len();
+                let args = arguments(&statement.code, open - lead)
+                    .into_iter()
+                    .map(|span| statement.raw[span].to_string())
+                    .collect();
+                calls.push((row, args));
+            }
+        }
+        self.calls.borrow_mut().insert(key, calls.clone());
+        calls
+    }
+
+    /// The bindings the names `text` reads at row `n` stand for, each as its
+    /// name and the row that binds it.
+    fn reads(&self, text: &str, n: usize) -> Vec<(String, usize)> {
+        let code = crate::test_helpers::blank_non_code(text);
+        let mut reads = Vec::new();
+        let mut start = None;
+        for (at, c) in code.char_indices().chain([(code.len(), ' ')]) {
+            if is_ident(c) {
+                start.get_or_insert(at);
+                continue;
+            }
+            let Some(from) = start.take() else {
+                continue;
+            };
+            let name = &code[from..at];
+            // A call, a macro, a field or a number names no binding.
+            let after = code[at..].trim_start();
+            if after.starts_with(['(', '!'])
+                || code[..from].ends_with('.')
+                || name.starts_with(|c: char| c.is_ascii_digit())
+            {
+                continue;
+            }
+            if let Some((site, _)) = self.site(name, n) {
+                reads.push((name.to_string(), *site));
+            }
+        }
+        reads
+    }
+
+    /// The texts the binding of `name` on row `site` stands for, and the
+    /// bindings the names in them read, worked out once per binding.
+    fn expansion(&self, name: &str, site: usize) -> std::rc::Rc<Expansion> {
+        let key = (name.to_string(), site);
+        if let Some(expansion) = self.expansions.borrow().get(&key) {
+            return expansion.clone();
+        }
+        let mut expansion = Expansion::default();
+        let bound = self.sites.get(name).and_then(|sites| {
+            let at = sites.partition_point(|(at, _)| *at < site);
+            sites.get(at).map(|(_, bound)| bound)
+        });
+        for (text, row) in bound.map_or_else(Vec::new, |bound| self.values(site, bound)) {
+            expansion.reads.extend(self.reads(&text, row));
+            expansion.texts.push(text);
+        }
+        let expansion = std::rc::Rc::new(expansion);
+        self.expansions.borrow_mut().insert(key, expansion.clone());
+        expansion
+    }
+
+    /// `text`, read at row `n`, with the text every name it reads is bound to
+    /// appended, and the text every name those read in turn is bound to.
     fn resolve(&self, text: &str, n: usize) -> String {
         let mut out = text.to_string();
         let mut seen = std::collections::HashSet::new();
-        let mut frontier = vec![text.to_string()];
-        for _ in 0..3 {
-            let mut next = Vec::new();
-            for text in &frontier {
-                let code = crate::test_helpers::blank_non_code(text);
-                let mut start = None;
-                for (at, c) in code.char_indices().chain([(code.len(), ' ')]) {
-                    if is_ident(c) {
-                        start.get_or_insert(at);
-                        continue;
-                    }
-                    let Some(from) = start.take() else {
-                        continue;
-                    };
-                    let name = &code[from..at];
-                    // A call, a macro, a field or a number names no binding.
-                    let after = code[at..].trim_start();
-                    if after.starts_with(['(', '!'])
-                        || code[..from].ends_with('.')
-                        || name.starts_with(|c: char| c.is_ascii_digit())
-                    {
-                        continue;
-                    }
-                    if seen.insert(name.to_string())
-                        && let Some(value) = self.initializer(name, n)
-                    {
-                        out.push('\n');
-                        out.push_str(&value);
-                        next.push(value);
-                    }
-                }
+        let mut frontier = self.reads(text, n);
+        while let Some((name, site)) = frontier.pop() {
+            if !seen.insert((name.clone(), site)) {
+                continue;
             }
-            frontier = next;
+            let expansion = self.expansion(&name, site);
+            for text in &expansion.texts {
+                out.push('\n');
+                out.push_str(text);
+            }
+            frontier.extend(expansion.reads.iter().cloned());
         }
         out
     }
 }
 
+/// The texts one binding stands for, and the bindings the names in them read.
+#[derive(Default)]
+struct Expansion {
+    texts: Vec<String>,
+    reads: Vec<(String, usize)>,
+}
+
+/// The name and the parameter patterns of the function whose signature is
+/// `code`, one statement's code.
+fn parameters(code: &str) -> Option<(&str, Vec<&str>)> {
+    let name_at = code.find("fn ")? + 3;
+    let rest = &code[name_at..];
+    let name = &rest[..rest.len() - rest.trim_start_matches(is_ident).len()];
+    let mut open = name_at + name.len();
+    if code[open..].starts_with('<') {
+        let mut depth = 0i64;
+        let bytes = code.as_bytes();
+        for (at, &c) in bytes.iter().enumerate().skip(open) {
+            match c {
+                b'<' => depth += 1,
+                b'>' if bytes[at - 1] != b'-' => depth -= 1,
+                _ => {}
+            }
+            if depth == 0 {
+                open = at + 1;
+                break;
+            }
+        }
+    }
+    code[open..].starts_with('(').then_some(())?;
+    let params = arguments(code, open + 1)
+        .into_iter()
+        .map(|span| code[span].trim())
+        .collect();
+    Some((name, params))
+}
+
+/// Each closure handed down an `.iter()` or `.into_iter()` chain in `code`, one
+/// statement's code, through a `.copied()` or `.cloned()`: the byte its
+/// parameter list opens at, that list, and the chain's receiver.
+fn iterated_closures(code: &str) -> Vec<(usize, &str, &str)> {
+    let mut closures = Vec::new();
+    for iterate in [".iter()", ".into_iter()"] {
+        for (at, _) in code.match_indices(iterate) {
+            let receiver = &code[code[..at].trim_end_matches(is_ident).len()..at];
+            let mut rest = &code[at + iterate.len()..];
+            for adapter in [".copied()", ".cloned()"] {
+                rest = rest.strip_prefix(adapter).unwrap_or(rest);
+            }
+            let Some(rest) = rest.strip_prefix('.') else {
+                continue;
+            };
+            let rest = rest.trim_start_matches(is_ident);
+            let Some(rest) = rest
+                .strip_prefix("(|")
+                .or_else(|| rest.strip_prefix("(move |"))
+            else {
+                continue;
+            };
+            if let Some((params, _)) = rest.split_once('|')
+                && !receiver.is_empty()
+            {
+                closures.push((code.len() - rest.len(), params, receiver));
+            }
+        }
+    }
+    closures
+}
+
 /// A search for a gate's spelling is a hand cut whichever way its needle
 /// reaches it: written into the call, bound by a `let` above it, held in a
-/// `const` array the search iterates on one row or down a chain rustfmt split,
-/// held in an array a `for` loop hands the search, or declared as an item
-/// further down the file. A needle bound to any other text is no cut, and a row
-/// outside test scope is outside the rule.
+/// `const` array the search iterates on one row, down a chain rustfmt split or
+/// inside a closure's block body, held in an array a `for` loop hands the
+/// search, or declared as an item further down the file. Each is reported at
+/// the row holding its search call. A needle bound to any other text is no cut,
+/// and a row outside test scope is outside the rule.
 #[test]
 fn a_gate_search_is_a_hand_cut_whether_its_needle_is_written_or_bound() {
     // Assembled from parts, so the rows below read as literals to the walk
@@ -3762,21 +4115,71 @@ fn a_gate_search_is_a_hand_cut_whether_its_needle_is_written_or_bound() {
         "    for gate in gates {".to_string(),
         "        if body.contains(gate) {}".to_string(),
         "    }".to_string(),
+        "    body.lines().position(|l| {".to_string(),
+        "        GATES.iter().any(|g| {".to_string(),
+        "            let t = l.trim_start();".to_string(),
+        "            t.starts_with(g.trim())".to_string(),
+        "        })".to_string(),
+        "    });".to_string(),
         "}".to_string(),
         format!("const LATER: &str = \"{gate}\";"),
     ];
     let lines: Vec<&str> = fixture.iter().map(String::as_str).collect();
     assert_eq!(
         hand_cut_gate_rows(&lines, |_| true),
-        [4, 5, 6, 8, 10, 16],
+        [4, 5, 6, 8, 12, 16, 21],
         "the iterated array, the let-bound needle, the written literal, the item \
-         declared below, the split chain and the loop are each a hand cut; the \
-         needle bound to other text is none"
+         declared below, the split chain, the loop and the closure's block body are \
+         each a hand cut at their search call; the needle bound to other text is none"
     );
     assert_eq!(
         hand_cut_gate_rows(&lines, |n| n != 5),
-        [4, 6, 8, 10, 16],
+        [4, 6, 8, 12, 16, 21],
         "a row outside test scope is outside the rule"
+    );
+}
+
+/// [`Bindings`] reads a name back through every binding the chain passes,
+/// however deep, and through a value's whole statement, however many rows it
+/// spans and whatever block it holds.
+#[test]
+fn a_binding_resolves_through_every_link_and_its_whole_statement() {
+    let mut fixture = vec![
+        "let first = \"deep\";".to_string(),
+        "let second = first;".to_string(),
+        "let third = second;".to_string(),
+        "let fourth = third;".to_string(),
+        "const LONG: [&str; 70] = [".to_string(),
+    ];
+    fixture.extend((0..69).map(|_| "    \"filler\",".to_string()));
+    fixture.push("    \"last\",".to_string());
+    fixture.push("];".to_string());
+    fixture.extend(
+        [
+            "let chosen = if cfg!(unix) {",
+            "    \"unix\"",
+            "} else {",
+            "    \"other\"",
+            "};",
+        ]
+        .map(String::from),
+    );
+    let lines: Vec<&str> = fixture.iter().map(String::as_str).collect();
+    let folded = crate::test_helpers::blank_non_code(&lines.join("\n"));
+    let code: Vec<&str> = folded.split('\n').collect();
+    let bindings = Bindings::of(&lines, &code);
+    let end = lines.len() - 1;
+    assert!(
+        bindings.resolve("fourth", end).contains("\"deep\""),
+        "a name four bindings from its literal resolves to it"
+    );
+    assert!(
+        bindings.resolve("LONG", end).contains("\"last\""),
+        "a value is read to its statement's end, 70 rows down"
+    );
+    assert!(
+        bindings.resolve("chosen", end).contains("\"other\""),
+        "a value holding a block is read past the row the block opens on"
     );
 }
 
@@ -4009,59 +4412,98 @@ fn a_workspace_source_is_read_once_and_its_views_borrow_that_read() {
     }
 }
 
+/// The rows of `lines` holding a `read_to_string` whose argument, with every
+/// name in it read back through [`Bindings`], anchors at the workspace
+/// (`CARGO_MANIFEST_DIR` or `workspace_root()`) and names a `.rs` file.
+fn workspace_source_reads(lines: &[&str]) -> Vec<usize> {
+    // Spelled in parts, or the walk that polices raw reads finds this one.
+    let raw_read = concat!("read_to", "_string(");
+    let folded = crate::test_helpers::blank_non_code(&lines.join("\n"));
+    let code_rows: Vec<&str> = folded.split('\n').collect();
+    let bindings = Bindings::of(lines, &code_rows);
+    let mut rows = Vec::new();
+    let mut head = 0usize;
+    while head < lines.len() {
+        let end = statement_end(&code_rows, head);
+        if code_rows[head..end]
+            .iter()
+            .any(|row| row.contains(raw_read))
+        {
+            let statement = Statement::of(lines, &code_rows, head, end);
+            for (at, _) in statement.code.match_indices(raw_read) {
+                let open = at + raw_read.len();
+                let close = arguments(&statement.code, open)
+                    .last()
+                    .map_or(open, |span| span.end);
+                let n = statement.row_at(at);
+                let resolved = bindings.resolve(&statement.raw[open..close], n);
+                let anchored = ["CARGO_MANIFEST_DIR", "workspace_root()"]
+                    .iter()
+                    .any(|anchor| resolved.contains(anchor));
+                if anchored && resolved.contains(".rs\"") && !rows.contains(&n) {
+                    rows.push(n);
+                }
+            }
+        }
+        head = end;
+    }
+    rows
+}
+
+/// A read of a workspace `.rs` source is reported at the row holding the call,
+/// however its path reaches it: written into the call, split below the `let`
+/// it initializes, handed to a closure down an iterated array, or passed to a
+/// function parameter by a caller. A read of any other file is none.
+#[test]
+fn a_workspace_source_read_is_found_at_its_call_whichever_way_its_path_reaches_it() {
+    // Assembled from parts, so the rows below read as literals to the walk
+    // over this file.
+    let read = concat!("std::fs::read_to", "_string(");
+    let fixture = [
+        "fn planted() {".to_string(),
+        format!("    let whole = {read}concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/src/lib.rs\"));"),
+        "    let split =".to_string(),
+        format!("        {read}workspace_root().join(\"crates/a/src/lib.rs\"));"),
+        "    const SOURCES: [&str; 1] = [\"src/main.rs\"];".to_string(),
+        "    let root = std::path::Path::new(env!(\"CARGO_MANIFEST_DIR\"));".to_string(),
+        format!("    let bodies: Vec<_> = SOURCES.iter().map(|s| {read}root.join(s))).collect();"),
+        format!("    let other = {read}workspace_root().join(\"Cargo.toml\"));"),
+        "    let first = source(\"crates/b/src/lib.rs\");".to_string(),
+        "    let second = source(\"chart/values.yaml\");".to_string(),
+        "}".to_string(),
+        "fn source(relative: &str) -> String {".to_string(),
+        format!("    {read}workspace_root().join(relative)).unwrap_or_default()"),
+        "}".to_string(),
+    ];
+    let lines: Vec<&str> = fixture.iter().map(String::as_str).collect();
+    assert_eq!(
+        workspace_source_reads(&lines),
+        [1, 3, 6, 12],
+        "the written path, the split read, the closure over an iterated array and the \
+         parameter a caller hands a source are each a read at their call; the manifest \
+         read is none"
+    );
+}
+
 /// A test reading a Rust source of the workspace reads it through
 /// [`walked_file_body`], which hands every reader the one body the source's
-/// gates and views were cut from. A `read_to_string` whose argument, with every
-/// name in it read back to its binding, anchors at the workspace
-/// (`CARGO_MANIFEST_DIR` or `workspace_root()`) and names a `.rs` file reads
+/// gates and views were cut from. A read [`workspace_source_reads`] finds reads
 /// that source a second time.
 #[test]
 fn no_test_reads_a_workspace_source_past_the_one_cache() {
-    // Spelled in parts, or the walk that polices raw reads finds this one.
     let raw_read = concat!("read_to", "_string(");
     let mut files = 0usize;
     let mut offenders = Vec::new();
     for path in workspace_rust_files() {
         files += 1;
-        let label = source_label(&path);
         let region = crate::test_helpers::test_region_of(&path);
-        let lines: Vec<&str> = region.lines().collect();
         if !region.contains(raw_read) {
             continue;
         }
-        let bindings = Bindings::of(&lines);
-        let folded = crate::test_helpers::blank_non_code(&region);
-        let code_rows: Vec<&str> = folded.split('\n').collect();
-        let mut head = 0usize;
-        while head < lines.len() {
-            let end = statement_end(&code_rows, head);
-            let statement = lines[head..end]
-                .iter()
-                .map(|row| row.trim())
-                .collect::<String>();
-            let code = crate::test_helpers::blank_non_code(&statement);
-            for (at, _) in code.match_indices(raw_read) {
-                let open = at + raw_read.len();
-                let mut depth = 1usize;
-                let close = code[open..]
-                    .find(|c: char| {
-                        match c {
-                            '(' => depth += 1,
-                            ')' => depth -= 1,
-                            _ => {}
-                        }
-                        depth == 0
-                    })
-                    .map_or(code.len(), |len| open + len);
-                let resolved = bindings.resolve(&statement[open..close], head);
-                let anchored = ["CARGO_MANIFEST_DIR", "workspace_root()"]
-                    .iter()
-                    .any(|anchor| resolved.contains(anchor));
-                if anchored && resolved.contains(".rs\"") {
-                    offenders.push(format!("{label}:{}: {}", head + 1, lines[head].trim()));
-                }
-            }
-            head = end;
+        let label = source_label(&path);
+        let lines: Vec<&str> = region.lines().collect();
+        for n in workspace_source_reads(&lines) {
+            offenders.push(format!("{label}:{}: {}", n + 1, lines[n].trim()));
         }
     }
     assert!(
