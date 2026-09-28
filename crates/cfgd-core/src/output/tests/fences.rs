@@ -6284,6 +6284,34 @@ fn only_a_plain_line_comment_carries_the_plan_format_walks_hatch() {
     }
 }
 
+/// A method is reached through `.name(` beside its owner's name, or through
+/// the path call `Owner::name(`; the same path call on another type reaches
+/// nothing.
+#[test]
+fn an_associated_function_is_reached_through_its_path_call() {
+    use crate::test_helpers::reaches_fn;
+    assert!(reaches_fn(
+        "let c = Compliance::snapshot(&p);",
+        "snapshot",
+        Some("Compliance")
+    ));
+    assert!(reaches_fn(
+        "let c: Compliance = x.snapshot();",
+        "snapshot",
+        Some("Compliance")
+    ));
+    assert!(!reaches_fn(
+        "let c = Other::snapshot(&p);",
+        "snapshot",
+        Some("Compliance")
+    ));
+    assert!(!reaches_fn(
+        "let c = x.snapshot();",
+        "snapshot",
+        Some("Compliance")
+    ));
+}
+
 /// A hatch is a marker in a comment: one a string literal holds is data, and a
 /// trailing comment after a literal still hatches its line.
 #[test]

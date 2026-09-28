@@ -1717,7 +1717,8 @@ pub fn declaration_end<S: AsRef<str>>(code: &[S], start: usize) -> usize {
 /// Whether this CODE reaches the function `name` declared in `owner`'s impl.
 ///
 /// A free function is reached by a call; a method is reached by `.name(` on a
-/// value of its own type, which is why the owner has to be named as well: one
+/// value of its own type, or by the path call `Owner::name(` an associated
+/// function takes, which is why the owner has to be named as well: one
 /// `path_dirs` per manager, and only one of them reads a given seam. A
 /// derivation asking [`calls_free_fn`] alone stops at the first wrapper written
 /// as a method, and everything reaching the seam through it is never derived.
@@ -1730,7 +1731,10 @@ pub fn declaration_end<S: AsRef<str>>(code: &[S], start: usize) -> usize {
 pub fn reaches_fn(code: &str, name: &str, owner: Option<&str>) -> bool {
     match owner {
         None => calls_free_fn(code, name),
-        Some(ty) => code.contains(&format!(".{name}(")) && code.contains(ty),
+        Some(ty) => {
+            (code.contains(&format!(".{name}(")) && code.contains(ty))
+                || code.contains(&format!("{ty}::{name}("))
+        }
     }
 }
 
