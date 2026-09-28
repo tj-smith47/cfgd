@@ -203,7 +203,8 @@ mockito = "1"
 regex = "1"
 # The source walks read each workspace file's syntax tree to follow a needle
 # through every binding that carries it; `span-locations` gives each call node
-# its line. Dev-only: no shipped binary compiles either.
+# its line. Dev-only: the shipped graph reaches syn through zvariant_utils
+# without `visit` or `span-locations`, so neither feature enters a binary.
 syn = { version = "2", features = ["full", "visit"] }
 proc-macro2 = { version = "1", features = ["span-locations"] }
 

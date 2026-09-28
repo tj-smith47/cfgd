@@ -180,7 +180,8 @@ test takes through it. A walk judging code folds nothing itself: it reads
 A walk asking about TEST text reads `test_region_of(path)`, or `line_gates_of(path)` when it
 partitions a file by index; one attribute is judged by `attribute_gate`. A
 string search for a gate's spelling (`.starts_with("#[cfg(test)]")`, `.contains("mod tests")`,
-or a needle a `let`, `const`, `static`, `for`, closure or function parameter binds to one) is a
+or a needle any binding carries to one: `let`, `const`, `static`, `for`, `if let`, `while let`,
+`match` arm, assignment, closure or function parameter, macro argument, format capture) is a
 second cut beside the scanner, and the floored-helper walk fails it in test scope.
 
 Colour off means NO escapes — attributes included. `ThemedStyle::apply_to` is the ONE

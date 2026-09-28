@@ -36,7 +36,7 @@ authors = ["TJ Smith"]
 debug = "line-tables-only"
 
 # The source walks parse every workspace file with `syn`; unoptimized, the
-# parse alone triples each walk.
+# parse costs the floored walk ~1.5x and the raw-read walk ~2x.
 [profile.dev.package.syn]
 opt-level = 3
 
