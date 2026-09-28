@@ -302,6 +302,8 @@ fn no_production_site_compares_an_api_version_by_hand() {
         .map(|root| crate::to_posix_string(root.strip_prefix(&workspace).unwrap_or(root)))
         .collect();
 
+    let declared =
+        crate::test_helpers::workspace_declarations(crate::test_helpers::WORKSPACE_CRATES);
     let mut per_root: Vec<(String, usize)> = Vec::new();
     let mut offenders: Vec<String> = Vec::new();
     for (root, relative_root) in roots.iter().zip(read.clone()) {
@@ -327,13 +329,17 @@ fn no_production_site_compares_an_api_version_by_hand() {
             let raw: Vec<&str> = production.lines().collect();
             let code: Vec<String> = blanked.lines().map(code_line).collect();
             let joined = code.join("\n");
-            // one-file-declarations-ok: this file's blanked text, whose line ranges
-            // index the rows judged here; the workspace memo lives in the cfgd
-            // crate's tests, which this crate cannot read.
-            let exempt: Vec<std::ops::RangeInclusive<usize>> = fn_declarations(&blanked)
-                .into_iter()
-                .filter(|(name, ..)| EXEMPT.contains(&name.as_str()))
-                .filter_map(|(_, _, body)| {
+            let exempt: Vec<std::ops::RangeInclusive<usize>> = declared
+                .sites
+                .iter()
+                .zip(&declared.rows)
+                .filter(|((_, site, _), (name, ..))| {
+                    *site == path.as_path() && EXEMPT.contains(&name.as_str())
+                })
+                .filter_map(|(_, (_, _, body))| {
+                    // Blanked the way this file's rows are, so the body is
+                    // found at the rows it occupies.
+                    let body = blank_non_code(body);
                     let at = joined.find(&body)?;
                     let first = joined[..at].matches('\n').count();
                     Some(first..=first + body.matches('\n').count())
@@ -411,6 +417,7 @@ fn no_production_site_compares_an_api_version_by_hand() {
         .join("src")
         .join("config")
         .join("parse.rs");
+    // one-file-declarations-ok: `config/parse.rs` alone, the one literal path above.
     let validator = fn_declarations(&blank_non_code(&production_slice_of(&parse_rs)))
         .into_iter()
         .find(|(name, ..)| name == "validate_api_version")

@@ -2365,6 +2365,7 @@ spec:
         use cfgd_core::test_helpers::{calls_free_fn, fn_declarations, production_slice_of};
 
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli/config_cmd.rs");
+        // one-file-declarations-ok: `config_cmd.rs` alone, the one literal path above.
         let declarations = fn_declarations(&production_slice_of(&path));
         let mut verbs = Vec::new();
         let mut missing = Vec::new();

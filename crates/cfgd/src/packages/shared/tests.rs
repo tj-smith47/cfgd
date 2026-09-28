@@ -3033,8 +3033,8 @@ fn test_declarations(body: &str) -> Vec<(String, Vec<String>, Vec<String>)> {
 /// `.path_dirs(` alone names every manager's, and only brew's reads this seam.
 fn brew_path_dir_readers() -> Vec<(String, Option<String>)> {
     let declarations =
-        crate::cli::tests::workspace_declarations(crate::cli::tests::WORKSPACE_CRATES)
-            .rows_under("cfgd/src");
+        cfgd_core::test_helpers::workspace_declarations(cfgd_core::test_helpers::WORKSPACE_CRATES)
+            .rows_under("cfgd/src", 139);
     cfgd_core::test_helpers::callers_reaching(
         &declarations,
         &[("brew_path_dirs".to_string(), None)],

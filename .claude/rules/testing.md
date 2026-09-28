@@ -159,8 +159,8 @@ no timeout to fire;
 (`output/tests/fences.rs`) walks every crate for an inverted pair and has no
 hatch.
 
-A source walk reads each production file through `production_slice_of`
-(`floored_production_body` in the `cfgd` crate); when it reads a whole file, inline
+A source walk reads each production file through `production_slice_of` or
+`floored_production_body`; when it reads a whole file, inline
 `#[cfg(test)]` included, it calls `walked_file_body` and carries
 `// unfloored-slice-ok: <why>`. Both guarded readers slice a test-only file to nothing.
 `every_multi_file_production_walk_reads_through_the_floored_helper` fails a raw

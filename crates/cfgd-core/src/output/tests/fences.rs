@@ -3217,17 +3217,18 @@ fn every_env_mutating_test_helper_is_named_in_the_mutator_roster() {
 }
 
 /// A walk that reads several sources reads each one through
-/// [`crate::test_helpers::production_slice_of`], or through the `cfgd` crate's
-/// own `floored_production_body`, which own both halves the walk needs: the
+/// [`crate::test_helpers::production_slice_of`], or through
+/// [`crate::test_helpers::floored_production_body`], which own both halves the walk needs: the
 /// read that must not be swallowed, and the per-file floor on what the cut
 /// returned.
 ///
 /// The pure [`crate::test_helpers::production_slice`] takes a body, so a caller
 /// reaching it inside a loop has already read the file itself and can only
 /// carry the floor by hand — which is how the same block came to be copied,
-/// and how most walks came to carry no floor at all. `cli::tests::production_body`
-/// is the same pure cut in the other crate, so both spellings are judged here;
-/// a rule that needled only one left the whole cfgd-crate population outside it.
+/// and how most walks came to carry no floor at all.
+/// [`crate::test_helpers::production_body`] is the same pure cut blanked in
+/// place, so both spellings are judged here; a rule that needled only one left
+/// the whole cfgd-crate population outside it.
 /// A caller that genuinely holds one compiled-in body and no path keeps the pure
 /// cut and says so with `// unfloored-slice-ok: <why>` on that line or the one
 /// above it. A walk over the files built only for tests reads their region
@@ -3237,8 +3238,8 @@ fn every_env_mutating_test_helper_is_named_in_the_mutator_roster() {
 /// A source walk is a test-scope function calling `rust_sources_under`,
 /// `workspace_rust_files`, `is_test_source` or `is_test_only_file`, or one
 /// enumerating `.rs` files itself with `read_dir`. A source walk reads each
-/// production file through `production_slice_of` (`floored_production_body` in
-/// the `cfgd` crate); when it reads a whole file, inline `#[cfg(test)]`
+/// production file through `production_slice_of` or `floored_production_body`;
+/// when it reads a whole file, inline `#[cfg(test)]`
 /// included, it calls [`crate::test_helpers::walked_file_body`] and carries
 /// `// unfloored-slice-ok: <why>` (on that line or the one above). A raw
 /// `read_to_string` in a source walk fails whatever it carries.
@@ -3297,7 +3298,7 @@ fn every_multi_file_production_walk_reads_through_the_floored_helper() {
                 }
                 spells[slot] = true;
                 // The bare identifier, judged by both its edges: a neighbouring
-                // identifier character is the floored helper of either crate
+                // identifier character is a floored helper
                 // (`production_slice_of`, `floored_production_body`) or one of
                 // its own test names, and anything else is the pure cut reached
                 // by name — called, handed to a `map`, or imported under a name
@@ -3362,7 +3363,7 @@ fn every_multi_file_production_walk_reads_through_the_floored_helper() {
     assert!(
         offenders.is_empty(),
         "read the file through `cfgd_core::test_helpers::production_slice_of` \
-         or `cli::tests::floored_production_body`, which read it and floor the \
+         or `floored_production_body`, which read it and floor the \
          cut at the lines preceding its test module, or say why one body needs \
          the pure cut with `// unfloored-slice-ok: <why>`; a walk over the files \
          built only for tests reads through `test_module_cut_of`:\n{}",
@@ -6680,42 +6681,35 @@ fn assigns_leader_scoped_field(code: &str, field: &str) -> bool {
 #[test]
 fn every_production_site_re_leading_a_provision_goes_through_the_one_helper() {
     let helper = Path::new("reconciler").join("types.rs");
+    let workspace =
+        crate::test_helpers::workspace_declarations(crate::test_helpers::WORKSPACE_CRATES);
     let mut offenders = Vec::new();
-    let mut read = 0usize;
+    let mut read: std::collections::BTreeSet<&Path> = std::collections::BTreeSet::new();
     let mut callers = 0usize;
-    for path in workspace_rust_files() {
-        // A whole test FILE carries no inner `#[cfg(test)]` for the slice to
-        // cut, so its fixtures would be judged as production sites.
-        let is_test_source = crate::test_helpers::is_test_source(&path);
-        let production = crate::test_helpers::production_slice_of(&path);
-        if path.ends_with(&helper)
-            || is_test_source
-            || !production.contains("ManagerAction::Provision")
-        {
+    for (&(_, path, production), (name, owner, code)) in workspace.sites.iter().zip(&workspace.rows)
+    {
+        if path.ends_with(&helper) || !production.contains("ManagerAction::Provision") {
             continue;
         }
-        read += 1;
-        // one-file-declarations-ok: only a file spelling `ManagerAction::Provision`
-        // is declared, and the workspace memo lives in the cfgd crate's tests.
-        for (name, owner, code) in crate::test_helpers::fn_declarations(&production) {
-            let code = crate::test_helpers::blank_non_code(&code);
-            if crate::test_helpers::calls_free_fn(&code, "provision_led_by")
-                || code.contains(".provision_led_by(")
-            {
-                callers += 1;
-                continue;
-            }
-            for field in LEADER_SCOPED_PROVISION_FIELDS {
-                if assigns_leader_scoped_field(&code, field) {
-                    offenders.push(format!(
-                        "{}: {owner}{name} writes `{field}` itself",
-                        path.display(),
-                        owner = owner.as_deref().map_or(String::new(), |o| format!("{o}::"))
-                    ));
-                }
+        read.insert(path);
+        let code = crate::test_helpers::blank_non_code(code);
+        if crate::test_helpers::calls_free_fn(&code, "provision_led_by")
+            || code.contains(".provision_led_by(")
+        {
+            callers += 1;
+            continue;
+        }
+        for field in LEADER_SCOPED_PROVISION_FIELDS {
+            if assigns_leader_scoped_field(&code, field) {
+                offenders.push(format!(
+                    "{}: {owner}{name} writes `{field}` itself",
+                    path.display(),
+                    owner = owner.as_deref().map_or(String::new(), |o| format!("{o}::"))
+                ));
             }
         }
     }
+    let read = read.len();
     assert!(
         read >= 6,
         "fewer files mention a provision node than the workspace holds, so the \

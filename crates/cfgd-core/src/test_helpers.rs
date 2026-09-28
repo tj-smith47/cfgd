@@ -5342,7 +5342,7 @@ pub fn hold_payload_unremovable(payload: &Path) -> UnremovablePayload {
 /// shape, and without the skip their whole test module read as production text.
 /// A brace written inside a string or a comment closes nothing, because
 /// [`inline_test_item_ranges`] reads the body through [`blank_non_code`];
-/// `cli::tests::production_body` still assumes the plainer shape.
+/// [`production_body`] still assumes the plainer shape.
 ///
 /// A walk over several files reads through [`production_slice_of`] instead,
 /// which owns the read and the per-file floor that keeps a re-blinding from
@@ -5779,6 +5779,359 @@ pub fn is_test_only_file(path: &Path) -> bool {
         }
     }
     FILES.contains(folded.strip_prefix(&*WORKSPACE_ROOT).unwrap_or(&folded))
+}
+
+/// A file's production text: every `#[cfg(test)]` item blanked, every other
+/// line left where it is.
+///
+/// A blanked line keeps its place, so line N of the result is line N of the
+/// file and an offender's reported position is the position a reader opens.
+///
+/// Truncating at the first `#[cfg(test)]` — which is what the `cfgd` crate's
+/// sweeps used to do — blanked the production code below that line too: a
+/// `#[cfg(test)] mod tests;` DECLARATION near the top left `cli/mod.rs`
+/// contributing 0% of itself, `explain/mod.rs` 5% and `reconciler/apply.rs` 3%,
+/// so the sweeps ran over a tenth of the population they claimed and the
+/// `cli/mod.rs` witness passed on an empty string.
+pub fn production_body(body: &str) -> String {
+    let lines: Vec<&str> = body.lines().collect();
+    let mut keep = vec![true; lines.len()];
+    let mut i = 0;
+    while i < lines.len() {
+        let trimmed = lines[i].trim_start();
+        if !(trimmed.starts_with("#[cfg(test)]") || trimmed.starts_with("#[cfg(all(test")) {
+            i += 1;
+            continue;
+        }
+        // rustfmt puts a multi-line item's closing delimiter at the
+        // attribute's own indent, and a one-line item closes itself — which is
+        // the half that was missing, and each shape it missed blanked the
+        // production code that followed it. The gated re-export `use
+        // source::{…};` at `cli/mod.rs:57` opens and closes a brace on one
+        // line, so the scan walked past it to the next top-level `}` 97 lines
+        // down and took `local_pull_next_step` out of every sweep; the
+        // `#[cfg(test)]` on a struct FIELD in `daemon/mod.rs` closes on a
+        // comma, which ran it through the three methods after it.
+        let indent = &lines[i][..lines[i].len() - trimmed.len()];
+        let mut end = i;
+        while end < lines.len() && lines[end].trim_start().starts_with('#') {
+            end += 1;
+        }
+        // Literals and the trailing comment are blanked first, so a delimiter
+        // inside one is never counted as the item's own.
+        let code_at = |k: usize| code_line(lines[k]);
+        let brackets = |code: &str| {
+            let opens = code
+                .chars()
+                .filter(|c| matches!(c, '{' | '[' | '('))
+                .count();
+            let shuts = code
+                .chars()
+                .filter(|c| matches!(c, '}' | ']' | ')'))
+                .count();
+            (opens, shuts)
+        };
+        // A closing line is judged on what it CLOSES, whatever delimiters it
+        // holds: `});`, `}]` and `)),` all end an item as surely as a lone
+        // `}`, and matching whole lines ran a gated `Lazy::new(|| {` … `});`
+        // past its own end. The indent still has to be the attribute's own, so
+        // a delimiter closing something nested inside the item is not read as
+        // the item's.
+        let closes_at_indent = |code: &str| {
+            let trimmed = code.trim_end().trim_end_matches([';', ',']);
+            let body = trimmed.trim_start();
+            !body.is_empty()
+                && body.chars().all(|c| matches!(c, '}' | ']' | ')'))
+                && trimmed.len() - body.len() == indent.len()
+        };
+        // `<` and `>` are counted apart from the brackets above because they
+        // are what tells a wrapped struct FIELD (`captured: Mutex<` … `>,`)
+        // from a wrapped generic parameter list (`fn g<` … `>(f: F)`): both
+        // balance their brackets on every line, and only the field is over
+        // when its angle brackets shut. `->` and `=>` are cut first, their `>`
+        // closing nothing.
+        let angles = |code: &str| {
+            let code = code.replace("->", "").replace("=>", "");
+            (code.matches('<').count(), code.matches('>').count())
+        };
+        let head = code_at(end);
+        let (opens, shuts) = brackets(&head);
+        if opens == shuts && (head.trim_end().ends_with([';', ',']) || head.contains('{')) {
+            // A one-line item closes on its own line — either on its
+            // terminator, or on the brace it opened and shut again, which is
+            // how rustfmt writes an empty body (`fn g() {}`).
+            end += 1;
+        } else if head.contains('{') {
+            // A braced item closes on a delimiter at its own indent.
+            while end < lines.len() {
+                let last = closes_at_indent(&code_at(end));
+                end += 1;
+                if last {
+                    break;
+                }
+            }
+        } else {
+            // A statement or field spread over several lines (a gated `static`
+            // whose TYPE wraps, a field whose type does) closes on the `;` or
+            // `,` that ends it, once every bracket AND angle bracket it opened
+            // is shut. A wrapped generic parameter list ends its line on a
+            // comma with its angle bracket still open, so the comma a one-line
+            // item closes on is not a terminator there.
+            //
+            // The comma ends a FIELD or a statement only, which is what its
+            // head `name: Type<` says: an ITEM's `where` clause shuts its last
+            // bound on a comma with every bracket and angle bracket closed, and
+            // reading that as the end hands the braced body below it to every
+            // walk here as production text.
+            // `unsafe` and `default` are gone from the list because the lead
+            // reader folds them off: `unsafe fn` arrives here as `fn`.
+            let head_is_item = matches!(
+                item_keyword(&head),
+                "fn" | "impl"
+                    | "struct"
+                    | "enum"
+                    | "trait"
+                    | "union"
+                    | "mod"
+                    | "use"
+                    | "type"
+                    | "static"
+                    | "const"
+                    | "let"
+                    | "macro_rules"
+                    | "async"
+                    | "extern"
+            );
+            let mut depth = 0i64;
+            let mut angle = 0i64;
+            while end < lines.len() {
+                let code = code_at(end);
+                let (opens, shuts) = brackets(&code);
+                depth += opens as i64 - shuts as i64;
+                let (lt, gt) = angles(&code);
+                angle += lt as i64 - gt as i64;
+                let last = closes_at_indent(&code)
+                    || (depth <= 0
+                        && angle <= 0
+                        && (code.trim_end().ends_with(';')
+                            || (code.trim_end().ends_with(',') && !head_is_item)));
+                end += 1;
+                if last {
+                    break;
+                }
+            }
+        }
+        for slot in keep.iter_mut().take(end).skip(i) {
+            *slot = false;
+        }
+        i = end;
+    }
+    lines
+        .iter()
+        .zip(keep)
+        .map(|(line, keep)| if keep { *line } else { "" })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The production text of `path`, floored the way [`production_slice_of`] floors
+/// its own cut: every non-blank line preceding the file's first `#[cfg(test)]`
+/// survives the blanking, and a file that contributes nothing at all fails the
+/// walk outright. A source read as empty is otherwise indistinguishable from one
+/// holding no offender, so a walk that went blind partway down a file still
+/// reports the population as swept.
+///
+/// A file `is_test_source` or `is_test_only_file` names has no production
+/// region, so it reads as the empty string, the same answer
+/// `production_slice_of` gives.
+pub fn floored_production_body(path: &Path) -> String {
+    if is_test_source(path) || is_test_only_file(path) {
+        return String::new();
+    }
+    // unfloored-slice-ok: this is the floored reader; the cut and its floor follow.
+    let body = walked_file_body(path);
+    // unfloored-slice-ok: the floor over what this cut returned is the assert below.
+    let production = production_body(&body);
+    let first_test = body
+        .lines()
+        .position(|l| {
+            let code = l.trim_start();
+            code.starts_with("#[cfg(test)]") || code.starts_with("#[cfg(all(test")
+        })
+        .unwrap_or_else(|| body.lines().count());
+    let before_tests = body
+        .lines()
+        .take(first_test)
+        .filter(|l| !l.trim().is_empty())
+        .count();
+    let walked = production.lines().filter(|l| !l.trim().is_empty()).count();
+    assert!(
+        walked > 0 && walked >= before_tests,
+        "{}: the walk read {walked} lines of the {before_tests} that precede this file's first test item",
+        path.display()
+    );
+    production
+}
+
+/// One crate's name and its production sources, each as its path and body.
+pub type RootSources = (String, Vec<(PathBuf, String)>);
+
+/// Every crate's production sources, keyed by the crate's own name and sorted
+/// by it, read and floored once per test process. A dozen walks judge the
+/// whole workspace, and under `cargo test` they share one process, so each
+/// reading the tree itself paid the same second of I/O and floor checks again.
+/// A file `is_test_source` names holds tests alone, and one `is_test_only_file`
+/// names is built only for tests, so neither is a production source.
+static WORKSPACE_PRODUCTION: std::sync::LazyLock<Vec<RootSources>> =
+    std::sync::LazyLock::new(|| {
+        let crates_dir = WORKSPACE_ROOT.join("crates");
+        let mut present: Vec<String> = std::fs::read_dir(&crates_dir)
+            .expect("the workspace's crate directory is readable")
+            .map(|entry| entry.expect("the walk must read every directory entry"))
+            .filter(|entry| entry.path().join("src").is_dir())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        present.sort();
+        present
+            .into_iter()
+            .map(|krate| {
+                let files: Vec<(PathBuf, String)> =
+                    rust_sources_under(&crates_dir.join(&krate).join("src"))
+                        .into_iter()
+                        .filter(|p| !is_test_source(p) && !is_test_only_file(p))
+                        .map(|path| {
+                            let production = floored_production_body(&path);
+                            (path, production)
+                        })
+                        .collect();
+                (krate, files)
+            })
+            .collect()
+    });
+
+/// Every crate root's production sources, keyed by the crate's own name, for a
+/// walk whose population is the WHOLE workspace, in the order `roots` names
+/// them and borrowed from [`WORKSPACE_PRODUCTION`].
+///
+/// The named set is checked against `crates/` itself, so a crate joining the
+/// workspace fails the caller's walk and never goes unread, and each root
+/// must yield at least one source — a tree read as empty is otherwise
+/// indistinguishable from one holding no offender. Both checks run per call,
+/// so the walk that fails names the root. The comparison is
+/// order-insensitive: both sides are sorted first, so a caller listing its
+/// roots in its own order is not failed with a message about a crate joining
+/// the workspace.
+pub fn production_sources_per_root(
+    roots: &[&str],
+) -> Vec<(&'static str, &'static [(PathBuf, String)])> {
+    let workspace: &'static [RootSources] = &WORKSPACE_PRODUCTION;
+    let present: Vec<&str> = workspace.iter().map(|(krate, _)| krate.as_str()).collect();
+    let mut named: Vec<&str> = roots.to_vec();
+    named.sort_unstable();
+    assert_eq!(
+        present, named,
+        "a crate joined or left the workspace, so its tree is judged by nobody"
+    );
+    roots
+        .iter()
+        .map(|krate| {
+            let (root, files) = workspace
+                .iter()
+                .find(|(present, _)| present == krate)
+                .expect("every named root is present, checked above");
+            assert!(
+                !files.is_empty(),
+                "the {krate} tree stopped contributing sources"
+            );
+            (root.as_str(), files.as_slice())
+        })
+        .collect()
+}
+
+/// Every crate of the workspace, for a walk reading all of them through
+/// [`workspace_declarations`] or [`production_sources_per_root`], which check
+/// it against `crates/` on every call.
+pub const WORKSPACE_CRATES: &[&str] = &[
+    "cfgd",
+    "cfgd-core",
+    "cfgd-crd",
+    "cfgd-csi",
+    "cfgd-operator",
+    "cfgd-schema",
+    "cfgd-test-fixtures",
+];
+
+/// Every function the workspace's production code declares, as
+/// [`fn_declarations`] rows, with the site declaring each: its crate root, its
+/// file and that file's production body, each at the row's own index.
+pub struct WorkspaceDeclarations {
+    pub sites: Vec<(&'static str, &'static Path, &'static str)>,
+    pub rows: Vec<(String, Option<String>, String)>,
+}
+
+impl WorkspaceDeclarations {
+    /// The rows declared in a file under `dir`, a directory of one crate's
+    /// `src` tree, spelled from `crates/` (`"cfgd-core/src/reconciler"`).
+    ///
+    /// At least `files_at_least` distinct files under `dir` must declare a
+    /// row: a directory that lost most of its sources otherwise still yields
+    /// some rows, and the walk over them judges less than it claims.
+    pub fn rows_under(
+        &self,
+        dir: &str,
+        files_at_least: usize,
+    ) -> Vec<&(String, Option<String>, String)> {
+        let dir = WORKSPACE_ROOT.join("crates").join(dir);
+        assert!(
+            dir.is_dir(),
+            "`{}` is no directory of the workspace",
+            dir.display()
+        );
+        let mut files: std::collections::BTreeSet<&Path> = std::collections::BTreeSet::new();
+        let rows: Vec<&(String, Option<String>, String)> = self
+            .sites
+            .iter()
+            .zip(&self.rows)
+            .filter(|((_, path, _), _)| path.starts_with(&dir))
+            .map(|((_, path, _), row)| {
+                files.insert(path);
+                row
+            })
+            .collect();
+        assert!(
+            files.len() >= files_at_least,
+            "`{}` declares functions in {} files, fewer than the {files_at_least} it held",
+            dir.display(),
+            files.len()
+        );
+        rows
+    }
+}
+
+/// [`WorkspaceDeclarations`] for the whole workspace, built once per test
+/// process: every walk that declares the workspace, a crate or a directory of
+/// one reads it, and declaring every function in seven crates is most of each
+/// such walk's time.
+static WORKSPACE_DECLARATIONS: std::sync::LazyLock<WorkspaceDeclarations> =
+    std::sync::LazyLock::new(|| {
+        let mut sites = Vec::new();
+        let mut rows = Vec::new();
+        for (root, files) in WORKSPACE_PRODUCTION.iter() {
+            for (path, production) in files {
+                for row in fn_declarations(production) {
+                    sites.push((root.as_str(), path.as_path(), production.as_str()));
+                    rows.push(row);
+                }
+            }
+        }
+        WorkspaceDeclarations { sites, rows }
+    });
+
+/// [`WORKSPACE_DECLARATIONS`], after [`production_sources_per_root`] has checked
+/// `roots` against the workspace and each root's sources for this caller.
+pub fn workspace_declarations(roots: &[&str]) -> &'static WorkspaceDeclarations {
+    production_sources_per_root(roots);
+    &WORKSPACE_DECLARATIONS
 }
 
 /// Whether a `cfg` predicate (the text inside `cfg(…)`) holds only in a test
