@@ -171,7 +171,7 @@ fn the_unsupported_api_version_refusal_names_every_readable_version() {
 #[test]
 fn no_production_site_compares_an_api_version_by_hand() {
     use crate::test_helpers::{
-        blank_non_code, calls_free_fn, carries_hatch, code_line, fn_declarations,
+        blank_non_code, calls_free_fn, carries_hatch, code_line, file_declarations,
         production_slice_of, rust_sources_under, workspace_root,
     };
 
@@ -304,6 +304,15 @@ fn no_production_site_compares_an_api_version_by_hand() {
 
     let declared =
         crate::test_helpers::workspace_declarations(crate::test_helpers::WORKSPACE_CRATES);
+    // The exempt bodies, picked out of the memo once and matched to their
+    // file inside the loop.
+    let exempt_bodies: Vec<(&Path, &str)> = declared
+        .sites
+        .iter()
+        .zip(&declared.rows)
+        .filter(|(_, (name, ..))| EXEMPT.contains(&name.as_str()))
+        .map(|((_, site, _), (_, _, body))| (*site, body.as_str()))
+        .collect();
     let mut per_root: Vec<(String, usize)> = Vec::new();
     let mut offenders: Vec<String> = Vec::new();
     for (root, relative_root) in roots.iter().zip(read.clone()) {
@@ -329,14 +338,10 @@ fn no_production_site_compares_an_api_version_by_hand() {
             let raw: Vec<&str> = production.lines().collect();
             let code: Vec<String> = blanked.lines().map(code_line).collect();
             let joined = code.join("\n");
-            let exempt: Vec<std::ops::RangeInclusive<usize>> = declared
-                .sites
+            let exempt: Vec<std::ops::RangeInclusive<usize>> = exempt_bodies
                 .iter()
-                .zip(&declared.rows)
-                .filter(|((_, site, _), (name, ..))| {
-                    *site == path.as_path() && EXEMPT.contains(&name.as_str())
-                })
-                .filter_map(|(_, (_, _, body))| {
+                .filter(|(site, _)| *site == path.as_path())
+                .filter_map(|(_, body)| {
                     // Blanked the way this file's rows are, so the body is
                     // found at the rows it occupies.
                     let body = blank_non_code(body);
@@ -417,18 +422,17 @@ fn no_production_site_compares_an_api_version_by_hand() {
         .join("src")
         .join("config")
         .join("parse.rs");
-    // one-file-declarations-ok: `config/parse.rs` alone, the one literal path above.
-    let validator = fn_declarations(&blank_non_code(&production_slice_of(&parse_rs)))
+    let validator = file_declarations(&parse_rs)
         .into_iter()
         .find(|(name, ..)| name == "validate_api_version")
-        .map(|(_, _, body)| body)
+        .map(|(_, _, body)| blank_non_code(&body))
         .expect("config/parse.rs declares the one apiVersion validator");
     assert!(
         calls_free_fn(&validator, "convertible_from"),
         "validate_api_version no longer asks the conversion table:\n{validator}"
     );
     // Judged by the same statement grammar the walk uses, on a body
-    // `fn_declarations` already handed back blanked.
+    // blanked the way the walk's rows are.
     let validator_rows: Vec<String> = validator.lines().map(str::to_string).collect();
     assert!(
         !statements(&validator_rows)

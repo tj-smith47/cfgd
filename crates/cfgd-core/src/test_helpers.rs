@@ -1652,7 +1652,10 @@ pub fn declared_fn_name(code: &str) -> Option<String> {
 pub fn impl_owner(code: &[String], at: usize) -> Option<String> {
     (0..at).rev().find_map(|i| {
         let head = code[i].trim_start();
-        if !head.starts_with("impl ") {
+        // Read through the item's lead, so a generic `impl<'a> Type<'a>` and an
+        // `unsafe impl` are impl heads too; the bare spelling alone handed the
+        // functions of a generic impl to whichever impl above it was still open.
+        if item_keyword(head) != "impl" {
             return None;
         }
         let depth: i32 = code[i..at]
@@ -5317,7 +5320,8 @@ pub fn hold_payload_unremovable(payload: &Path) -> UnremovablePayload {
 }
 
 /// The production region of a Rust source file a walk-style pin reads: the file
-/// with EVERY column-0 `#[cfg(test)]` item removed, module or not.
+/// with EVERY test-only item [`inline_test_item_ranges`] finds removed, module
+/// or not, nested or not.
 ///
 /// A pin that scans source has to drop the file's own `#[cfg(test)]` items,
 /// which describe the surface rather than rendering it. What it must not drop is
@@ -5334,15 +5338,14 @@ pub fn hold_payload_unremovable(payload: &Path) -> UnremovablePayload {
 /// does every line between and after the items.
 ///
 /// The shape relied on is rustfmt's, which every file in this workspace is
-/// formatted by: the attribute alone at column 0, and the item's own closing
-/// `}` alone at column 0. A platform gate stacks a second attribute
-/// (`#[cfg(test)]` / `#[cfg(unix)]` / `mod tests {`) between the marker and the
-/// item, so the scan skips every column-0 attribute line before reading the
-/// item — three daemon service files and `cli/kubectl.rs` carry exactly this
+/// formatted by: the attribute alone on its line, and a braced item's closing
+/// delimiter alone at the attribute's own indent. A platform gate stacks a
+/// second attribute (`#[cfg(test)]` / `#[cfg(unix)]` / `mod tests {`) between
+/// the marker and the item, so the scan skips every attribute line before
+/// reading the item — three daemon service files and `cli/kubectl.rs` carry exactly this
 /// shape, and without the skip their whole test module read as production text.
 /// A brace written inside a string or a comment closes nothing, because
-/// [`inline_test_item_ranges`] reads the body through [`blank_non_code`];
-/// [`production_body`] still assumes the plainer shape.
+/// [`inline_test_item_ranges`] reads the body through [`blank_non_code`].
 ///
 /// A walk over several files reads through [`production_slice_of`] instead,
 /// which owns the read and the per-file floor that keeps a re-blinding from
@@ -5359,8 +5362,8 @@ pub fn production_slice(src: &str) -> String {
         })
 }
 
-/// The complement of [`production_slice`]: every line inside a column-0
-/// `#[cfg(test)]` item kept, every other line blanked.
+/// The complement of [`production_slice`]: every line inside a test-only item
+/// kept, every other line blanked.
 ///
 /// Blanked in place, so a line's number in the mask is its number in the
 /// file and a walk reporting an offender names a line its reader can open. A
@@ -5381,22 +5384,26 @@ pub fn test_region_mask(src: &str) -> String {
         })
 }
 
-/// The half-open line range each column-0 `#[cfg(test)]` item occupies,
-/// attribute line through the item's own terminator.
+/// The half-open line range each test-only item occupies, attribute line
+/// through the item's own terminator: every item carrying a `#[cfg(…)]` whose
+/// predicate [`cfg_requires_test`] accepts (`test`, `all(test, unix)`,
+/// `any(test, feature = "test-helpers")`), at any indent.
 ///
 /// The ONE reader of rustfmt's shape, so the production half and the test half
 /// cannot disagree about where a file's test text is:
-/// [`production_slice`] drops these ranges and [`test_region_mask`] keeps them.
+/// [`production_slice`] drops these ranges and [`test_region_mask`] keeps them,
+/// and the workspace memo reads the production half through
+/// [`production_slice_of`].
 ///
 /// A `mod` is not the only item the marker carries. A `#[cfg(test)] fn`,
 /// `const`, `struct` or `impl` written beside the production code it serves is
-/// test text too, and reading only `mod` left it in BOTH halves' production
-/// side: a walk judging test text skipped it, so a marker lookup or a native
-/// path interpolated there answered to nothing. The item's end is read off its
-/// own brace depth — a `;`-terminated item ends on its last line, a braced one
-/// on the `}` that returns the depth to zero — over a body whose literals and
-/// comments are blanked by [`blank_non_code`], so a brace inside either one
-/// neither opens nor closes a range.
+/// test text too, and so is one nested inside an `impl` or a struct field.
+/// Reading only column 0 left `DesiredState::registry_built` and 24 more
+/// functions on the production side of one walk while another walk read them as
+/// tests. The item's end is read by `gated_item_end` over a body whose literals
+/// and comments are blanked by [`blank_non_code`], so a delimiter inside either
+/// one neither opens nor closes a range; the gate itself is judged on the raw
+/// line, since `feature = "test-helpers"` is a literal the blanking spaces out.
 ///
 /// An item the file never TERMINATES runs to the end of the file and is still
 /// yielded. A source truncated mid-write, or read while an editor holds it half
@@ -5412,56 +5419,156 @@ pub fn test_region_mask(src: &str) -> String {
 pub fn inline_test_item_ranges(src: &str) -> Vec<(usize, usize)> {
     let code = blank_non_code(src);
     let lines: Vec<&str> = code.lines().collect();
+    let raw: Vec<&str> = src.lines().collect();
     let mut blocks: Vec<(usize, usize)> = Vec::new();
     let mut at = 0usize;
     while at < lines.len() {
-        if lines[at] == "#[cfg(test)]" {
-            // A platform gate stacks a second attribute between the marker and
-            // the item, and a doc comment between them is blanked to spaces by
-            // the fold above, so neither is the head this reads.
-            let mut item = at + 1;
-            while lines
-                .get(item)
-                .is_some_and(|l| l.starts_with('#') || l.trim().is_empty())
-            {
-                item += 1;
-            }
-            let head = lines.get(item).copied().unwrap_or_default();
-            // A `mod tests;` DECLARATION carries no test text of its own — the
-            // tests live in another file — so dropping it takes the production
-            // lines below it with nothing to show for it. Its visibility is
-            // folded off first: 6 of the tree's 74 declarations are written
-            // `pub(crate) mod …;`, and reading the bare spelling alone let each
-            // of them leave the production half.
-            if item_keyword(head) == "mod" && head.trim_end().ends_with(';') {
-                at += 1;
-                continue;
-            }
-            let end = item_end(&lines, item).unwrap_or(lines.len());
-            blocks.push((at, end));
-            at = end;
+        if !is_test_gate_line(raw[at], lines[at]) {
+            at += 1;
             continue;
         }
-        at += 1;
+        // A platform gate stacks a second attribute between the marker and
+        // the item, and a doc comment between them is blanked to spaces by
+        // the fold above, so neither is the head this reads.
+        let mut item = at + 1;
+        while lines.get(item).is_some_and(|l| {
+            let l = l.trim_start();
+            l.starts_with('#') || l.is_empty()
+        }) {
+            item += 1;
+        }
+        let head = lines.get(item).copied().unwrap_or_default();
+        // A `mod tests;` DECLARATION carries no test text of its own — the
+        // tests live in another file — so dropping it takes the production
+        // lines below it with nothing to show for it. Its visibility is
+        // folded off first: 6 of the tree's 74 declarations are written
+        // `pub(crate) mod …;`, and reading the bare spelling alone let each
+        // of them leave the production half.
+        if item_keyword(head) == "mod" && head.trim_end().ends_with(';') {
+            at += 1;
+            continue;
+        }
+        let indent = lines[at].len() - lines[at].trim_start().len();
+        let end = gated_item_end(&lines, item, indent);
+        blocks.push((at, end));
+        at = end;
     }
     blocks
 }
 
-/// The line after the item starting at `from` ends, over lines already blanked
-/// of their literals and comments; `None` for an item the file never
-/// terminates, which [`inline_test_item_ranges`] reads as running to the end of
-/// the file.
-fn item_end(lines: &[&str], from: usize) -> Option<usize> {
-    let mut depth = 0i64;
-    for (at, line) in lines.iter().enumerate().skip(from) {
-        depth += line.matches('{').count() as i64;
-        depth -= line.matches('}').count() as i64;
-        let tail = line.trim_end();
-        if depth <= 0 && (tail.ends_with(';') || tail.ends_with('}')) {
-            return Some(at + 1);
+/// Whether a line is an outer `#[cfg(…)]` attribute building its item only for
+/// tests: the attribute read off the code line, so one written inside a
+/// literal or a comment gates nothing, and its predicate off the raw line.
+fn is_test_gate_line(raw: &str, code: &str) -> bool {
+    let code = code.trim_end();
+    code.trim_start().starts_with("#[cfg(") && is_test_gate(raw[..code.len()].trim())
+}
+
+/// The line after the item whose head is at `from` ends, over lines already
+/// blanked of their literals and comments, for an attribute written `indent`
+/// columns in; the end of the file for an item the file never terminates.
+///
+/// rustfmt puts a multi-line item's closing delimiter at the attribute's own
+/// indent, and a one-line item closes itself. Each shape a looser rule missed
+/// took production code with it: the gated re-export `use source::{…};` at
+/// `cli/mod.rs:57` opens and closes a brace on one line, so a scan for the next
+/// top-level `}` walked 97 lines past it and took `local_pull_next_step` out of
+/// every sweep; the `#[cfg(test)]` on a struct FIELD in `daemon/mod.rs` closes
+/// on a comma, which a brace count ran through the three methods after it.
+fn gated_item_end(lines: &[&str], from: usize, indent: usize) -> usize {
+    let brackets = |code: &str| {
+        let opens = code
+            .chars()
+            .filter(|c| matches!(c, '{' | '[' | '('))
+            .count();
+        let shuts = code
+            .chars()
+            .filter(|c| matches!(c, '}' | ']' | ')'))
+            .count();
+        (opens, shuts)
+    };
+    // A closing line is judged on what it CLOSES, whatever delimiters it
+    // holds: `});`, `}]` and `)),` all end an item as surely as a lone `}`,
+    // and matching whole lines ran a gated `Lazy::new(|| {` … `});` past its
+    // own end. The indent still has to be the attribute's own, so a delimiter
+    // closing something nested inside the item is not read as the item's.
+    let closes_at_indent = |code: &str| {
+        let trimmed = code.trim_end().trim_end_matches([';', ',']);
+        let body = trimmed.trim_start();
+        !body.is_empty()
+            && body.chars().all(|c| matches!(c, '}' | ']' | ')'))
+            && trimmed.len() - body.len() == indent
+    };
+    // `<` and `>` are counted apart from the brackets above because they are
+    // what tells a wrapped struct FIELD (`captured: Mutex<` … `>,`) from a
+    // wrapped generic parameter list (`fn g<` … `>(f: F)`): both balance their
+    // brackets on every line, and only the field is over when its angle
+    // brackets shut. `->` and `=>` are cut first, their `>` closing nothing.
+    let angles = |code: &str| {
+        let code = code.replace("->", "").replace("=>", "");
+        (code.matches('<').count(), code.matches('>').count())
+    };
+    let Some(head) = lines.get(from) else {
+        return lines.len();
+    };
+    let (opens, shuts) = brackets(head);
+    if opens == shuts && (head.trim_end().ends_with([';', ',']) || head.contains('{')) {
+        // A one-line item closes on its own line — either on its terminator,
+        // or on the brace it opened and shut again, which is how rustfmt
+        // writes an empty body (`fn g() {}`).
+        return from + 1;
+    }
+    if head.contains('{') {
+        return (from..lines.len())
+            .find(|&at| closes_at_indent(lines[at]))
+            .map_or(lines.len(), |at| at + 1);
+    }
+    // A statement or field spread over several lines (a gated `static` whose
+    // TYPE wraps, a field whose type does) closes on the `;` or `,` that ends
+    // it, once every bracket AND angle bracket it opened is shut. A wrapped
+    // generic parameter list ends its line on a comma with its angle bracket
+    // still open, so the comma a one-line item closes on is not a terminator
+    // there.
+    //
+    // The comma ends a FIELD or a statement only, which is what its head
+    // `name: Type<` says: an ITEM's `where` clause shuts its last bound on a
+    // comma with every bracket and angle bracket closed, and reading that as
+    // the end hands the braced body below it to every walk as production text.
+    // `unsafe` and `default` are absent from the list because the lead reader
+    // folds them off: `unsafe fn` arrives here as `fn`.
+    let head_is_item = matches!(
+        item_keyword(head),
+        "fn" | "impl"
+            | "struct"
+            | "enum"
+            | "trait"
+            | "union"
+            | "mod"
+            | "use"
+            | "type"
+            | "static"
+            | "const"
+            | "let"
+            | "macro_rules"
+            | "async"
+            | "extern"
+    );
+    let (mut depth, mut angle) = (0i64, 0i64);
+    for (at, code) in lines.iter().enumerate().skip(from) {
+        let (opens, shuts) = brackets(code);
+        depth += opens as i64 - shuts as i64;
+        let (lt, gt) = angles(code);
+        angle += lt as i64 - gt as i64;
+        let tail = code.trim_end();
+        if closes_at_indent(code)
+            || (depth <= 0
+                && angle <= 0
+                && (tail.ends_with(';') || (tail.ends_with(',') && !head_is_item)))
+        {
+            return at + 1;
         }
     }
-    None
+    lines.len()
 }
 
 /// Which lead [`item_lead`] folded off a code line.
@@ -5639,12 +5746,15 @@ pub fn test_module_cut_of(path: &Path) -> String {
     let production = production_slice(&body);
     let before_tests = body
         .lines()
-        .position(|l| l == "#[cfg(test)]")
+        .position(|l| {
+            let attr = l.trim();
+            attr.starts_with("#[cfg(") && is_test_gate(attr)
+        })
         .unwrap_or_else(|| body.lines().count());
     let walked = production.lines().count();
     assert!(
         walked > 0 && walked >= before_tests,
-        "{}: the walk read {walked} lines of the {before_tests} that precede this file's test module",
+        "{}: the walk read {walked} lines of the {before_tests} that precede this file's first test item",
         path.display()
     );
     production
@@ -5781,196 +5891,15 @@ pub fn is_test_only_file(path: &Path) -> bool {
     FILES.contains(folded.strip_prefix(&*WORKSPACE_ROOT).unwrap_or(&folded))
 }
 
-/// A file's production text: every `#[cfg(test)]` item blanked, every other
-/// line left where it is.
-///
-/// A blanked line keeps its place, so line N of the result is line N of the
-/// file and an offender's reported position is the position a reader opens.
-///
-/// Truncating at the first `#[cfg(test)]` — which is what the `cfgd` crate's
-/// sweeps used to do — blanked the production code below that line too: a
-/// `#[cfg(test)] mod tests;` DECLARATION near the top left `cli/mod.rs`
-/// contributing 0% of itself, `explain/mod.rs` 5% and `reconciler/apply.rs` 3%,
-/// so the sweeps ran over a tenth of the population they claimed and the
-/// `cli/mod.rs` witness passed on an empty string.
-pub fn production_body(body: &str) -> String {
-    let lines: Vec<&str> = body.lines().collect();
-    let mut keep = vec![true; lines.len()];
-    let mut i = 0;
-    while i < lines.len() {
-        let trimmed = lines[i].trim_start();
-        if !(trimmed.starts_with("#[cfg(test)]") || trimmed.starts_with("#[cfg(all(test")) {
-            i += 1;
-            continue;
-        }
-        // rustfmt puts a multi-line item's closing delimiter at the
-        // attribute's own indent, and a one-line item closes itself — which is
-        // the half that was missing, and each shape it missed blanked the
-        // production code that followed it. The gated re-export `use
-        // source::{…};` at `cli/mod.rs:57` opens and closes a brace on one
-        // line, so the scan walked past it to the next top-level `}` 97 lines
-        // down and took `local_pull_next_step` out of every sweep; the
-        // `#[cfg(test)]` on a struct FIELD in `daemon/mod.rs` closes on a
-        // comma, which ran it through the three methods after it.
-        let indent = &lines[i][..lines[i].len() - trimmed.len()];
-        let mut end = i;
-        while end < lines.len() && lines[end].trim_start().starts_with('#') {
-            end += 1;
-        }
-        // Literals and the trailing comment are blanked first, so a delimiter
-        // inside one is never counted as the item's own.
-        let code_at = |k: usize| code_line(lines[k]);
-        let brackets = |code: &str| {
-            let opens = code
-                .chars()
-                .filter(|c| matches!(c, '{' | '[' | '('))
-                .count();
-            let shuts = code
-                .chars()
-                .filter(|c| matches!(c, '}' | ']' | ')'))
-                .count();
-            (opens, shuts)
-        };
-        // A closing line is judged on what it CLOSES, whatever delimiters it
-        // holds: `});`, `}]` and `)),` all end an item as surely as a lone
-        // `}`, and matching whole lines ran a gated `Lazy::new(|| {` … `});`
-        // past its own end. The indent still has to be the attribute's own, so
-        // a delimiter closing something nested inside the item is not read as
-        // the item's.
-        let closes_at_indent = |code: &str| {
-            let trimmed = code.trim_end().trim_end_matches([';', ',']);
-            let body = trimmed.trim_start();
-            !body.is_empty()
-                && body.chars().all(|c| matches!(c, '}' | ']' | ')'))
-                && trimmed.len() - body.len() == indent.len()
-        };
-        // `<` and `>` are counted apart from the brackets above because they
-        // are what tells a wrapped struct FIELD (`captured: Mutex<` … `>,`)
-        // from a wrapped generic parameter list (`fn g<` … `>(f: F)`): both
-        // balance their brackets on every line, and only the field is over
-        // when its angle brackets shut. `->` and `=>` are cut first, their `>`
-        // closing nothing.
-        let angles = |code: &str| {
-            let code = code.replace("->", "").replace("=>", "");
-            (code.matches('<').count(), code.matches('>').count())
-        };
-        let head = code_at(end);
-        let (opens, shuts) = brackets(&head);
-        if opens == shuts && (head.trim_end().ends_with([';', ',']) || head.contains('{')) {
-            // A one-line item closes on its own line — either on its
-            // terminator, or on the brace it opened and shut again, which is
-            // how rustfmt writes an empty body (`fn g() {}`).
-            end += 1;
-        } else if head.contains('{') {
-            // A braced item closes on a delimiter at its own indent.
-            while end < lines.len() {
-                let last = closes_at_indent(&code_at(end));
-                end += 1;
-                if last {
-                    break;
-                }
-            }
-        } else {
-            // A statement or field spread over several lines (a gated `static`
-            // whose TYPE wraps, a field whose type does) closes on the `;` or
-            // `,` that ends it, once every bracket AND angle bracket it opened
-            // is shut. A wrapped generic parameter list ends its line on a
-            // comma with its angle bracket still open, so the comma a one-line
-            // item closes on is not a terminator there.
-            //
-            // The comma ends a FIELD or a statement only, which is what its
-            // head `name: Type<` says: an ITEM's `where` clause shuts its last
-            // bound on a comma with every bracket and angle bracket closed, and
-            // reading that as the end hands the braced body below it to every
-            // walk here as production text.
-            // `unsafe` and `default` are gone from the list because the lead
-            // reader folds them off: `unsafe fn` arrives here as `fn`.
-            let head_is_item = matches!(
-                item_keyword(&head),
-                "fn" | "impl"
-                    | "struct"
-                    | "enum"
-                    | "trait"
-                    | "union"
-                    | "mod"
-                    | "use"
-                    | "type"
-                    | "static"
-                    | "const"
-                    | "let"
-                    | "macro_rules"
-                    | "async"
-                    | "extern"
-            );
-            let mut depth = 0i64;
-            let mut angle = 0i64;
-            while end < lines.len() {
-                let code = code_at(end);
-                let (opens, shuts) = brackets(&code);
-                depth += opens as i64 - shuts as i64;
-                let (lt, gt) = angles(&code);
-                angle += lt as i64 - gt as i64;
-                let last = closes_at_indent(&code)
-                    || (depth <= 0
-                        && angle <= 0
-                        && (code.trim_end().ends_with(';')
-                            || (code.trim_end().ends_with(',') && !head_is_item)));
-                end += 1;
-                if last {
-                    break;
-                }
-            }
-        }
-        for slot in keep.iter_mut().take(end).skip(i) {
-            *slot = false;
-        }
-        i = end;
-    }
-    lines
-        .iter()
-        .zip(keep)
-        .map(|(line, keep)| if keep { *line } else { "" })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-/// The production text of `path`, floored the way [`production_slice_of`] floors
-/// its own cut: every non-blank line preceding the file's first `#[cfg(test)]`
-/// survives the blanking, and a file that contributes nothing at all fails the
-/// walk outright. A source read as empty is otherwise indistinguishable from one
-/// holding no offender, so a walk that went blind partway down a file still
-/// reports the population as swept.
+/// The production text of `path` a multi-file walk reads, and the text the
+/// workspace memo declares its functions from: [`production_slice_of`], whose
+/// read fails the walk on an unreadable file and whose floor fails it on a
+/// slice shorter than the lines preceding the file's first test item.
 ///
 /// A file `is_test_source` or `is_test_only_file` names has no production
-/// region, so it reads as the empty string, the same answer
-/// `production_slice_of` gives.
+/// region, so it reads as the empty string.
 pub fn floored_production_body(path: &Path) -> String {
-    if is_test_source(path) || is_test_only_file(path) {
-        return String::new();
-    }
-    // unfloored-slice-ok: this is the floored reader; the cut and its floor follow.
-    let body = walked_file_body(path);
-    // unfloored-slice-ok: the floor over what this cut returned is the assert below.
-    let production = production_body(&body);
-    let first_test = body
-        .lines()
-        .position(|l| {
-            let code = l.trim_start();
-            code.starts_with("#[cfg(test)]") || code.starts_with("#[cfg(all(test")
-        })
-        .unwrap_or_else(|| body.lines().count());
-    let before_tests = body
-        .lines()
-        .take(first_test)
-        .filter(|l| !l.trim().is_empty())
-        .count();
-    let walked = production.lines().filter(|l| !l.trim().is_empty()).count();
-    assert!(
-        walked > 0 && walked >= before_tests,
-        "{}: the walk read {walked} lines of the {before_tests} that precede this file's first test item",
-        path.display()
-    );
-    production
+    production_slice_of(path)
 }
 
 /// One crate's name and its production sources, each as its path and body.
@@ -6067,9 +5996,20 @@ pub const WORKSPACE_CRATES: &[&str] = &[
 pub struct WorkspaceDeclarations {
     pub sites: Vec<(&'static str, &'static Path, &'static str)>,
     pub rows: Vec<(String, Option<String>, String)>,
+    /// Each file's rows, which the initializer pushes contiguously.
+    by_file: std::collections::BTreeMap<&'static Path, std::ops::Range<usize>>,
 }
 
 impl WorkspaceDeclarations {
+    /// The rows the production source at `path` declares, spelled from
+    /// [`workspace_root`] as every site path is; empty for a file declaring no
+    /// function or one outside the workspace's production sources.
+    pub fn rows_in(&self, path: &Path) -> &[(String, Option<String>, String)] {
+        self.by_file
+            .get(path)
+            .map_or(&[], |range| &self.rows[range.clone()])
+    }
+
     /// The rows declared in a file under `dir`, a directory of one crate's
     /// `src` tree, spelled from `crates/` (`"cfgd-core/src/reconciler"`).
     ///
@@ -6116,16 +6056,39 @@ static WORKSPACE_DECLARATIONS: std::sync::LazyLock<WorkspaceDeclarations> =
     std::sync::LazyLock::new(|| {
         let mut sites = Vec::new();
         let mut rows = Vec::new();
+        let mut by_file = std::collections::BTreeMap::new();
         for (root, files) in WORKSPACE_PRODUCTION.iter() {
             for (path, production) in files {
+                let from = rows.len();
                 for row in fn_declarations(production) {
                     sites.push((root.as_str(), path.as_path(), production.as_str()));
                     rows.push(row);
                 }
+                by_file.insert(path.as_path(), from..rows.len());
             }
         }
-        WorkspaceDeclarations { sites, rows }
+        WorkspaceDeclarations {
+            sites,
+            rows,
+            by_file,
+        }
     });
+
+/// Every function the production region of the one Rust source at `path`
+/// declares, as [`fn_declarations`] rows read through [`production_slice_of`]:
+/// the rows [`WorkspaceDeclarations::rows_in`] holds for a workspace file, for
+/// a test that names one file by its literal path. A walk over several files
+/// reads the memo through [`workspace_declarations`].
+pub fn file_declarations(path: &Path) -> Vec<(String, Option<String>, String)> {
+    fn_declarations(&production_slice_of(path))
+}
+
+/// Every function a fixture source the test wrote itself declares, as
+/// [`fn_declarations`] rows. The `'static` bound admits a literal and refuses a
+/// body read off disk, which [`file_declarations`] or the memo reads.
+pub fn fixture_declarations(src: &'static str) -> Vec<(String, Option<String>, String)> {
+    fn_declarations(src)
+}
 
 /// [`WORKSPACE_DECLARATIONS`], after [`production_sources_per_root`] has checked
 /// `roots` against the workspace and each root's sources for this caller.

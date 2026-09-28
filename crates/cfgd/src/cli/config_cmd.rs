@@ -2362,11 +2362,10 @@ spec:
     /// with no hand list, so a fourth key verb joins it by being compiled.
     #[test]
     fn every_config_key_verb_folds_the_spec_prefix_before_it_reads_the_key() {
-        use cfgd_core::test_helpers::{calls_free_fn, fn_declarations, production_slice_of};
+        use cfgd_core::test_helpers::{calls_free_fn, file_declarations};
 
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli/config_cmd.rs");
-        // one-file-declarations-ok: `config_cmd.rs` alone, the one literal path above.
-        let declarations = fn_declarations(&production_slice_of(&path));
+        let declarations = file_declarations(&path);
         let mut verbs = Vec::new();
         let mut missing = Vec::new();
         for (name, owner, code) in &declarations {

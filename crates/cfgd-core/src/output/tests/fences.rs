@@ -2872,7 +2872,12 @@ fn unguarded_env_reads(
         {
             continue;
         }
-        let body = crate::test_helpers::production_slice_of(&path);
+        // The guard is taken under `cfg(any(test, feature = "test-helpers"))`,
+        // so the production half holds the read without the guard: each span is
+        // read whole, and a read is judged only on a production row.
+        // unfloored-slice-ok: the test-only guard statements are part of every span judged.
+        let body = walked_file_body(&path);
+        let test_items = crate::test_helpers::inline_test_item_ranges(&body);
         let lines: Vec<&str> = body.lines().collect();
         let relative = source_label(&path);
         // Each declaration as the line range it covers and whether its own
@@ -2894,7 +2899,9 @@ fn unguarded_env_reads(
         // once per enclosing slice would inflate the floor a deletion has to
         // clear.
         for (at, line) in lines.iter().enumerate() {
-            if !is_read(line, &code_half(line)) {
+            if test_items.iter().any(|(a, b)| (*a..*b).contains(&at))
+                || !is_read(line, &code_half(line))
+            {
                 continue;
             }
             let label = relative.to_string();
@@ -3226,9 +3233,6 @@ fn every_env_mutating_test_helper_is_named_in_the_mutator_roster() {
 /// reaching it inside a loop has already read the file itself and can only
 /// carry the floor by hand — which is how the same block came to be copied,
 /// and how most walks came to carry no floor at all.
-/// [`crate::test_helpers::production_body`] is the same pure cut blanked in
-/// place, so both spellings are judged here; a rule that needled only one left
-/// the whole cfgd-crate population outside it.
 /// A caller that genuinely holds one compiled-in body and no path keeps the pure
 /// cut and says so with `// unfloored-slice-ok: <why>` on that line or the one
 /// above it. A walk over the files built only for tests reads their region
@@ -3247,10 +3251,7 @@ fn every_env_mutating_test_helper_is_named_in_the_mutator_roster() {
 fn every_multi_file_production_walk_reads_through_the_floored_helper() {
     // Spelled in parts, or this walk's own needles are the first offenders it
     // finds.
-    let needles = [
-        concat!("production_", "slice"),
-        concat!("production_", "body"),
-    ];
+    let needle = concat!("production_", "slice");
     let hatch = concat!("unfloored-", "slice-ok:");
     let walk_calls = [
         concat!("rust_sources", "_under("),
@@ -3267,7 +3268,7 @@ fn every_multi_file_production_walk_reads_through_the_floored_helper() {
     let mut offenders = Vec::new();
     let mut raw_reads = Vec::new();
     let mut walks = 0usize;
-    let mut sources = [0usize; 2];
+    let mut sources = 0usize;
     for path in workspace_rust_files() {
         // `test_helpers.rs` holds the shared walk BODIES, so exempting the file
         // would hide the newest multi-file walk from this rule. Only its own
@@ -3283,7 +3284,7 @@ fn every_multi_file_production_walk_reads_through_the_floored_helper() {
             walked_file_body(&path)
         };
         let lines: Vec<&str> = body.lines().collect();
-        let mut spells = [false; 2];
+        let mut spells = false;
         for (n, line) in lines.iter().enumerate() {
             if line.trim_start().starts_with("//") {
                 continue;
@@ -3292,37 +3293,32 @@ fn every_multi_file_production_walk_reads_through_the_floored_helper() {
             if line.contains(" fn ") || code.starts_with("fn ") {
                 continue;
             }
-            for (slot, needle) in needles.iter().enumerate() {
-                if !line.contains(needle) {
-                    continue;
-                }
-                spells[slot] = true;
-                // The bare identifier, judged by both its edges: a neighbouring
-                // identifier character is a floored helper
-                // (`production_slice_of`, `floored_production_body`) or one of
-                // its own test names, and anything else is the pure cut reached
-                // by name — called, handed to a `map`, or imported under a name
-                // this walk would never see.
-                let bare = line.match_indices(needle).any(|(at, _)| {
-                    let after = line[at + needle.len()..].chars().next();
-                    let before = line[..at].chars().next_back();
-                    !after.is_some_and(|c| c.is_alphanumeric() || c == '_')
-                        && !before.is_some_and(|c| c.is_alphanumeric() || c == '_')
-                });
-                if !bare {
-                    continue;
-                }
-                let above = n.checked_sub(1).map(|i| lines[i]).unwrap_or_default();
-                if carries_hatch(line, hatch) || carries_hatch(above, hatch) {
-                    continue;
-                }
-                offenders.push(format!("{label}:{}: {}", n + 1, line.trim()));
+            if !line.contains(needle) {
+                continue;
             }
+            spells = true;
+            // The bare identifier, judged by both its edges: a neighbouring
+            // identifier character is a floored helper (`production_slice_of`)
+            // or one of its own test names, and anything else is the pure cut
+            // reached by name — called, handed to a `map`, or imported under a
+            // name this walk would never see.
+            let bare = line.match_indices(needle).any(|(at, _)| {
+                let after = line[at + needle.len()..].chars().next();
+                let before = line[..at].chars().next_back();
+                !after.is_some_and(|c| c.is_alphanumeric() || c == '_')
+                    && !before.is_some_and(|c| c.is_alphanumeric() || c == '_')
+            });
+            if !bare {
+                continue;
+            }
+            let above = n.checked_sub(1).map(|i| lines[i]).unwrap_or_default();
+            if carries_hatch(line, hatch) || carries_hatch(above, hatch) {
+                continue;
+            }
+            offenders.push(format!("{label}:{}: {}", n + 1, line.trim()));
         }
-        for (slot, spelled) in spells.iter().enumerate() {
-            if *spelled {
-                sources[slot] += 1;
-            }
+        if spells {
+            sources += 1;
         }
         // Production code reading files is outside the rule: only test scope
         // walks sources.
@@ -3383,16 +3379,9 @@ fn every_multi_file_production_walk_reads_through_the_floored_helper() {
         "the walk found {walks} source walks; it has stopped reading the population it judges"
     );
     assert!(
-        sources[0] >= 4,
-        "the walk found the slice helper in {} sources; it has stopped \
-         reading the population it judges",
-        sources[0]
-    );
-    assert!(
-        sources[1] >= 1,
-        "the walk found the body helper in {} sources; it has stopped \
-         reading the population it judges",
-        sources[1]
+        sources >= 4,
+        "the walk found the slice helper in {sources} sources; it has stopped \
+         reading the population it judges"
     );
 }
 
@@ -3595,6 +3584,291 @@ fn the_test_region_is_every_inline_test_item_and_nothing_else() {
     assert_eq!(
         whole, scaffolding,
         "a scaffolding file is test text end to end"
+    );
+}
+
+/// A test-only item's extent ends where the ITEM ends, whatever delimiter it
+/// closes on.
+///
+/// Every multi-file walk and the workspace memo read what
+/// [`crate::test_helpers::production_slice`] hands back, so an extent that runs
+/// past its item takes production code out of the population with it and the
+/// walk still reports the file as read. Two shapes did exactly that: the
+/// one-line `use source::{…};` at `cli/mod.rs:57`, whose brace opens and shuts
+/// on its own line, dropped the 97 lines down to the next top-level `}` and hid
+/// `local_pull_next_step` from every walk; and the gate on a struct FIELD in
+/// `daemon/mod.rs`, which closes on a comma, dropped the three methods declared
+/// after it.
+///
+/// Three more shapes rustfmt writes freely: an item whose braced body opens and
+/// shuts on one line, one closing on a compound delimiter (`});`), and a field
+/// whose TYPE wraps. Each is paired here with the neighbour an over-long extent
+/// would eat, and with the wrapped generic parameter list that must NOT be read
+/// as a field — a terminator rule loose enough to end the field early leaves
+/// half a gated function standing as production text. The `where` clause is
+/// that rule's other edge: its last bound ends a line on a comma with every
+/// delimiter shut, and `crates/cfgd/src/packages/npm.rs` had its gated helper's
+/// body handed to every walk until the comma was refused on an item's head.
+/// A block nested inside a gated item closes at a deeper indent, which is not
+/// the item's own end.
+#[test]
+fn a_gated_items_extent_ends_where_the_item_does() {
+    // Assembled, so this file declares no gated item of its own.
+    let gate = concat!("#[cfg", "(test)]");
+    let src = concat!(
+        "pub fn kept_before() {}\n",
+        "@gate\n",
+        "use source::{alpha, beta};\n",
+        "pub fn kept_after_one_line_use() {}\n",
+        "@gate\n",
+        "use source::{\n",
+        "    gamma,\n",
+        "};\n",
+        "pub fn kept_after_wrapped_use() {}\n",
+        "struct Holder {\n",
+        "    @gate\n",
+        "    captured: Mutex<Vec<String>>,\n",
+        "    kept_field: usize,\n",
+        "}\n",
+        "@gate\n",
+        "static WRAPPED: LazyLock<\n",
+        "    Mutex<HashMap<Duration, usize>>,\n",
+        "> = LazyLock::new(|| Mutex::new(HashMap::new()));\n",
+        "pub fn kept_after_wrapped_static() {}\n",
+        "@gate\n",
+        "fn gated_empty_body() {}\n",
+        "pub fn kept_after_self_closing_body() {}\n",
+        "@gate\n",
+        "static COMPOUND: LazyLock<Mutex<Vec<String>>> = LazyLock::new(|| {\n",
+        "    Mutex::new(Vec::new())\n",
+        "});\n",
+        "pub fn kept_after_compound_closer() {}\n",
+        "struct Wrapper {\n",
+        "    @gate\n",
+        "    wrapped_capture: Mutex<\n",
+        "        Vec<String>,\n",
+        "    >,\n",
+        "    kept_wrapped_neighbour: usize,\n",
+        "}\n",
+        "@gate\n",
+        "fn gated_wrapped_generics<\n",
+        "    F,\n",
+        "    R,\n",
+        ">(f: F) -> R {\n",
+        "    f()\n",
+        "}\n",
+        "pub fn kept_after_wrapped_generics() {}\n",
+        "@gate\n",
+        "fn gated_where_clause<F, R>(elevated: bool, f: F) -> R\n",
+        "where\n",
+        "    F: FnOnce() -> R,\n",
+        "{\n",
+        "    leaked_where_body(elevated);\n",
+        "    f()\n",
+        "}\n",
+        "pub fn kept_after_where_clause() {}\n",
+        "@gate\n",
+        "fn gated_nested_block() {\n",
+        "    if ready() {\n",
+        "        inner_call();\n",
+        "    }\n",
+        "    leaked_after_inner_close();\n",
+        "}\n",
+        "pub fn kept_after_nested_block() {}\n",
+        "@gate\n",
+        "mod tests {\n",
+        "    fn gated_away() {}\n",
+        "}\n",
+    )
+    .replace("@gate", gate);
+    // unfloored-slice-ok: the subject is this fixture's own string, so there is no read to floor.
+    let production = crate::test_helpers::production_slice(&src);
+    for kept in [
+        "kept_before",
+        "kept_after_one_line_use",
+        "kept_after_wrapped_use",
+        "kept_field",
+        "kept_after_wrapped_static",
+        "kept_after_self_closing_body",
+        "kept_after_compound_closer",
+        "kept_wrapped_neighbour",
+        "kept_after_wrapped_generics",
+        "kept_after_where_clause",
+        "kept_after_nested_block",
+    ] {
+        assert!(
+            production.contains(kept),
+            "the extent ran past its item and dropped `{kept}`:\n{production}"
+        );
+    }
+    for gated in [
+        "alpha, beta",
+        "gamma",
+        "captured:",
+        "WRAPPED",
+        "gated_away",
+        "gated_empty_body",
+        "COMPOUND",
+        "wrapped_capture",
+        "gated_wrapped_generics",
+        "gated_where_clause",
+        "leaked_where_body",
+        "leaked_after_inner_close",
+    ] {
+        assert!(
+            !production.contains(gated),
+            "a gated item survived the cut: `{gated}`:\n{production}"
+        );
+    }
+}
+
+/// The production half and the test half of a source are one partition, read
+/// by one scanner: every function a file declares is on exactly one side, and
+/// the workspace memo reads the side [`crate::test_helpers::production_slice_of`]
+/// does.
+///
+/// Each test-only shape the tree holds is here beside the production function
+/// an over-long cut would take with it: an inline `mod tests`, a
+/// `#[cfg(test)] fn` at column 0 and nested in an `impl`, and a
+/// `cfg(any(test, feature = "test-helpers"))` fn and mod, the gate cfgd-core's
+/// harness overrides are built under. Two readers once disagreed on 25
+/// functions, and both read the `test-helpers` gate as production.
+#[test]
+fn the_production_slice_and_the_test_region_partition_every_test_only_shape() {
+    let gate = concat!("#[cfg", "(test)]");
+    let helpers = concat!("#[cfg", "(any(test, feature = \"test-helpers\"))]");
+    let src = concat!(
+        "pub fn production_before() {}\n",
+        "@gate\n",
+        "fn gated_fn() {}\n",
+        "pub struct Held;\n",
+        "impl Held {\n",
+        "    pub fn production_method(&self) {}\n",
+        "    @gate\n",
+        "    fn nested_gated_method(&self) {}\n",
+        "    pub fn production_after_nested(&self) {}\n",
+        "}\n",
+        "@helpers\n",
+        "pub fn helper_gated_fn() {}\n",
+        "@helpers\n",
+        "pub mod helper_gated_mod {\n",
+        "    pub fn inside_helper_mod() {}\n",
+        "}\n",
+        "pub fn production_after_helpers() {}\n",
+        "@gate\n",
+        "mod tests {\n",
+        "    fn a_pin() {}\n",
+        "}\n",
+    )
+    .replace("@helpers", helpers)
+    .replace("@gate", gate);
+    let root = tempfile::tempdir().unwrap_or_else(|e| panic!("temp dir: {e}"));
+    let path = root.path().join("lib.rs");
+    std::fs::write(&path, &src).unwrap_or_else(|e| panic!("write the fixture: {e}"));
+    let declared = |text: &str| -> Vec<String> {
+        text.lines()
+            .filter_map(|line| {
+                crate::test_helpers::declared_fn_name(&crate::test_helpers::code_line(line))
+            })
+            .collect()
+    };
+    let production = crate::test_helpers::production_slice_of(&path);
+    assert_eq!(
+        declared(&production),
+        [
+            "production_before",
+            "production_method",
+            "production_after_nested",
+            "production_after_helpers",
+        ],
+        "the production half is every production function and nothing else:\n{production}"
+    );
+    assert_eq!(
+        declared(&crate::test_helpers::test_region_mask(&src)),
+        [
+            "gated_fn",
+            "nested_gated_method",
+            "helper_gated_fn",
+            "inside_helper_mod",
+            "a_pin",
+        ],
+        "the test half is every test-only function and nothing else"
+    );
+    // The memo's body reader and its rows, on the same file.
+    assert_eq!(
+        crate::test_helpers::floored_production_body(&path),
+        production,
+        "the memo reads the production half byte for byte"
+    );
+    let rows: Vec<String> = crate::test_helpers::file_declarations(&path)
+        .into_iter()
+        .map(|(name, ..)| name)
+        .collect();
+    assert_eq!(
+        rows,
+        declared(&production),
+        "the memo's rows are the production half's functions"
+    );
+    // The workspace files the two readers split on, read through the memo.
+    let workspace =
+        crate::test_helpers::workspace_declarations(crate::test_helpers::WORKSPACE_CRATES);
+    let crates_dir = workspace_root().join("crates");
+    for (file, gated) in [
+        ("cfgd/src/cli/helpers.rs", "registry_built"),
+        ("cfgd/src/packages/npm.rs", "npm_path_dirs_for"),
+        (
+            "cfgd-core/src/daemon/tick_cache.rs",
+            "set_module_reuse_ttl_override",
+        ),
+    ] {
+        let path = crates_dir.join(file);
+        let rows = workspace.rows_in(&path);
+        assert!(!rows.is_empty(), "{file} declares production functions");
+        assert!(
+            rows.iter().all(|(name, ..)| name != gated),
+            "{file}: the memo reads the test-only `{gated}` as production"
+        );
+        assert_eq!(
+            rows,
+            crate::test_helpers::file_declarations(&path).as_slice(),
+            "{file}: the memo's rows and the file's production half disagree"
+        );
+    }
+}
+
+/// A file built only for tests, or holding tests alone, has no production
+/// region, and the per-root population leaves both kinds out.
+#[test]
+fn floored_production_body_reads_no_test_only_file_as_production() {
+    let root = workspace_root();
+    for held in [
+        "crates/cfgd-core/src/test_helpers.rs",
+        "crates/cfgd/src/cli/test_support.rs",
+        "crates/cfgd/src/cli/tests.rs",
+    ] {
+        assert_eq!(
+            crate::test_helpers::floored_production_body(&root.join(held)),
+            "",
+            "{held} reads as production"
+        );
+    }
+    assert!(
+        !crate::test_helpers::floored_production_body(&root.join("crates/cfgd/src/cli/mod.rs"))
+            .is_empty()
+    );
+    // one-root-population-ok: the question is an absence, which no root has a
+    // count of; each root's own floor is `production_sources_per_root`'s.
+    let held: Vec<&PathBuf> =
+        crate::test_helpers::production_sources_per_root(crate::test_helpers::WORKSPACE_CRATES)
+            .into_iter()
+            .flat_map(|(_, sources)| sources.iter().map(|(path, _)| path))
+            .filter(|p| {
+                crate::test_helpers::is_test_only_file(p) || crate::test_helpers::is_test_source(p)
+            })
+            .collect();
+    assert!(
+        held.is_empty(),
+        "the population holds test-only files: {held:?}"
     );
 }
 
@@ -6686,9 +6960,21 @@ fn every_production_site_re_leading_a_provision_goes_through_the_one_helper() {
     let mut offenders = Vec::new();
     let mut read: std::collections::BTreeSet<&Path> = std::collections::BTreeSet::new();
     let mut callers = 0usize;
+    // A file's rows are contiguous, so the file-wide question is asked once
+    // when its first row arrives and carried over the rest.
+    let mut judged: Option<(&Path, bool)> = None;
     for (&(_, path, production), (name, owner, code)) in workspace.sites.iter().zip(&workspace.rows)
     {
-        if path.ends_with(&helper) || !production.contains("ManagerAction::Provision") {
+        let wanted = match judged {
+            Some((file, wanted)) if file == path => wanted,
+            _ => {
+                let wanted =
+                    !path.ends_with(&helper) && production.contains("ManagerAction::Provision");
+                judged = Some((path, wanted));
+                wanted
+            }
+        };
+        if !wanted {
             continue;
         }
         read.insert(path);
@@ -7297,8 +7583,8 @@ fn no_scan_hand_copies_the_test_only_file_rule() {
     // and the lines calling `is_test_only_file(` there, its definition in
     // cfgd-core's test_helpers.rs left out, both counted when the rule last moved.
     const FLOORS: [(&str, usize, usize); 7] = [
-        ("cfgd", 257, 20),
-        ("cfgd-core", 243, 14),
+        ("cfgd", 257, 19),
+        ("cfgd-core", 243, 15),
         ("cfgd-crd", 2, 0),
         ("cfgd-csi", 11, 0),
         ("cfgd-operator", 64, 1),

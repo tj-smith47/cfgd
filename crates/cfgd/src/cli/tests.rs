@@ -9,8 +9,6 @@ use cfgd_core::test_helpers::{
     floored_production_body, production_sources_per_root, rust_sources_under, walked_file_body,
     workspace_declarations,
 };
-// unfloored-slice-ok: the pure cut, for the sites below that each say why they hold one body.
-use cfgd_core::test_helpers::production_body;
 
 const TEST_CONFIG_YAML: &str =
     "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n";
@@ -2870,7 +2868,7 @@ fn every_enum_valued_global_flag_accepts_its_config_spelling() {
 #[test]
 fn every_knob_resolver_routes_through_resolve_knob() {
     use cfgd_core::test_helpers::{
-        calls_free_fn, carries_hatch, code_line, declared_fn_name, fn_declarations,
+        calls_free_fn, carries_hatch, code_line, declared_fn_name, file_declarations,
         production_slice_of, workspace_root,
     };
 
@@ -2969,7 +2967,8 @@ fn every_knob_resolver_routes_through_resolve_knob() {
                     }))
     }
 
-    let source = production_slice_of(&workspace_root().join("crates/cfgd/src/cli/mod.rs"));
+    let mod_rs = workspace_root().join("crates/cfgd/src/cli/mod.rs");
+    let source = production_slice_of(&mod_rs);
     let lines: Vec<&str> = source.lines().collect();
     let hatched: Vec<String> = lines
         .iter()
@@ -2980,8 +2979,7 @@ fn every_knob_resolver_routes_through_resolve_knob() {
 
     let mut routed = Vec::new();
     let mut hand_written = Vec::new();
-    // one-file-declarations-ok: `cli/mod.rs` alone, the file the hatch lines above are read off.
-    for (name, owner, code) in fn_declarations(&source) {
+    for (name, owner, code) in file_declarations(&mod_rs) {
         if owner.is_some() || !name.starts_with("resolve_") || hatched.contains(&name) {
             continue;
         }
@@ -18815,192 +18813,36 @@ fn no_command_words_the_up_to_date_verdict_for_itself() {
     );
 }
 
-/// A `#[cfg(test)]` item's extent ends where the ITEM ends, whatever delimiter
-/// it closes on.
-///
-/// Every sweep below reads what [`production_body`] hands back, so an extent
-/// that runs past its item takes production code out of the population with it
-/// and the sweep still reports the file as read. Two shapes did exactly that:
-/// the one-line `use source::{…};` at `cli/mod.rs:57`, whose brace opens and
-/// shuts on its own line, blanked the 97 lines down to the next top-level `}`
-/// and hid `local_pull_next_step` from every walk in this file; and the
-/// `#[cfg(test)]` on a struct FIELD in `daemon/mod.rs`, which closes on a
-/// comma, blanked the three methods declared after it.
-///
-/// Three more shapes the workspace does not hold today and rustfmt writes
-/// freely: an item whose braced body opens and shuts on one line, one closing
-/// on a compound delimiter (`});`), and a field whose TYPE wraps. Each is
-/// paired here with the neighbour an over-long extent would eat, and with the
-/// wrapped generic parameter list that must NOT be read as a field — a
-/// terminator rule loose enough to end the field early leaves half a gated
-/// function standing as production text. The `where` clause is that rule's
-/// other edge: its last bound ends a line on a comma with every delimiter
-/// shut, and `crates/cfgd/src/packages/npm.rs` had its gated helper's body
-/// handed to every walk here until the comma was refused on an item's head.
-#[test]
-fn a_gated_items_extent_ends_where_the_item_does() {
-    let src = concat!(
-        "pub fn kept_before() {}\n",
-        "#[cfg(test)]\n",
-        "use source::{alpha, beta};\n",
-        "pub fn kept_after_one_line_use() {}\n",
-        "#[cfg(test)]\n",
-        "use source::{\n",
-        "    gamma,\n",
-        "};\n",
-        "pub fn kept_after_wrapped_use() {}\n",
-        "struct Holder {\n",
-        "    #[cfg(test)]\n",
-        "    captured: Mutex<Vec<String>>,\n",
-        "    kept_field: usize,\n",
-        "}\n",
-        "#[cfg(test)]\n",
-        "static WRAPPED: LazyLock<\n",
-        "    Mutex<HashMap<Duration, usize>>,\n",
-        "> = LazyLock::new(|| Mutex::new(HashMap::new()));\n",
-        "pub fn kept_after_wrapped_static() {}\n",
-        "#[cfg(test)]\n",
-        "fn gated_empty_body() {}\n",
-        "pub fn kept_after_self_closing_body() {}\n",
-        "#[cfg(test)]\n",
-        "static COMPOUND: LazyLock<Mutex<Vec<String>>> = LazyLock::new(|| {\n",
-        "    Mutex::new(Vec::new())\n",
-        "});\n",
-        "pub fn kept_after_compound_closer() {}\n",
-        "struct Wrapper {\n",
-        "    #[cfg(test)]\n",
-        "    wrapped_capture: Mutex<\n",
-        "        Vec<String>,\n",
-        "    >,\n",
-        "    kept_wrapped_neighbour: usize,\n",
-        "}\n",
-        "#[cfg(test)]\n",
-        "fn gated_wrapped_generics<\n",
-        "    F,\n",
-        "    R,\n",
-        ">(f: F) -> R {\n",
-        "    f()\n",
-        "}\n",
-        "pub fn kept_after_wrapped_generics() {}\n",
-        "#[cfg(test)]\n",
-        "fn gated_where_clause<F, R>(elevated: bool, f: F) -> R\n",
-        "where\n",
-        "    F: FnOnce() -> R,\n",
-        "{\n",
-        "    leaked_where_body(elevated);\n",
-        "    f()\n",
-        "}\n",
-        "pub fn kept_after_where_clause() {}\n",
-        "#[cfg(test)]\n",
-        "mod tests {\n",
-        "    fn gated_away() {}\n",
-        "}\n",
-    );
-    // long-line-ok: a hatch is read off its own line, so it cannot wrap
-    // unfloored-slice-ok: the subject is this fixture's own string, so there is no read to floor.
-    let production = production_body(src);
-    for kept in [
-        "kept_before",
-        "kept_after_one_line_use",
-        "kept_after_wrapped_use",
-        "kept_field",
-        "kept_after_wrapped_static",
-        "kept_after_self_closing_body",
-        "kept_after_compound_closer",
-        "kept_wrapped_neighbour",
-        "kept_after_wrapped_generics",
-        "kept_after_where_clause",
-    ] {
-        assert!(
-            production.contains(kept),
-            "the extent ran past its item and blanked `{kept}`:\n{production}"
-        );
-    }
-    for gated in [
-        "alpha, beta",
-        "gamma",
-        "captured:",
-        "WRAPPED",
-        "gated_away",
-        "gated_empty_body",
-        "COMPOUND",
-        "wrapped_capture",
-        "gated_wrapped_generics",
-        "gated_where_clause",
-        "leaked_where_body",
-    ] {
-        assert!(
-            !production.contains(gated),
-            "a gated item survived the blanking: `{gated}`:\n{production}"
-        );
-    }
-}
-
-/// This crate's floored reader agrees with `production_slice_of`: a file built
-/// only for tests, or holding tests alone, has no production region, and the
-/// per-root population leaves both kinds out.
-#[test]
-fn floored_production_body_reads_no_test_only_file_as_production() {
-    let root = cfgd_core::test_helpers::workspace_root();
-    for held in [
-        "crates/cfgd-core/src/test_helpers.rs",
-        "crates/cfgd/src/cli/test_support.rs",
-        "crates/cfgd/src/cli/tests.rs",
-    ] {
-        assert_eq!(
-            floored_production_body(&root.join(held)),
-            "",
-            "{held} reads as production"
-        );
-    }
-    assert!(!floored_production_body(&root.join("crates/cfgd/src/cli/mod.rs")).is_empty());
-    // one-root-population-ok: the question is an absence, which no root has a
-    // count of; each root's own floor is `production_sources_per_root`'s.
-    let listed: Vec<&std::path::PathBuf> = production_sources_per_root(WORKSPACE_CRATES)
-        .into_iter()
-        .flat_map(|(_, sources)| sources.iter().map(|(path, _)| path))
-        .collect();
-    let held: Vec<&std::path::PathBuf> = listed
-        .into_iter()
-        .filter(|p| {
-            cfgd_core::test_helpers::is_test_only_file(p)
-                || cfgd_core::test_helpers::is_test_source(p)
-        })
-        .collect();
-    assert!(
-        held.is_empty(),
-        "the population holds test-only files: {held:?}"
-    );
-}
-
-/// Every `fn_declarations` call in the workspace declares an input the memo
-/// cannot serve, and says which: one file named by a literal path, or a fixture
-/// body the test wrote itself.
+/// No test declares functions itself: `fn_declarations` is spelled only
+/// inside `test_helpers.rs`, by the memo's initializer and the two one-input
+/// readers built on it.
 ///
 /// Declaring every function in seven crates is most of the time a walk over
 /// them takes, and under `cargo test` the walks share one process, so a walk
-/// declaring files it listed itself pays that again. A call reads the memo's
-/// rows through `workspace_declarations(..)` (`.rows`, or `.rows_under(dir, n)`
-/// for one directory), or carries `// one-file-declarations-ok: <why>` on its
-/// own line or the line above; the memo's own initializer is the one exempt
-/// call. Judging each call catches a walk that lists files in one helper and
-/// declares them in another. The memo's readers are floored per crate, so a
-/// walk leaving it fails here by count.
+/// declaring files it listed itself pays that again. A walk reads the memo
+/// through `workspace_declarations(..)` (`.rows`, `.rows_under(dir, n)` for one
+/// directory, `.rows_in(path)` for one of its files); a test naming one file by
+/// its literal path reads `file_declarations(path)`, and one holding a fixture
+/// literal reads `fixture_declarations(src)`, whose `'static` bound refuses a
+/// body read off disk. The one-input claim is the signature's, so no comment
+/// can make it for a loop. The memo's readers are floored per crate, so a walk
+/// leaving it fails here by count.
 ///
 /// The crate list the memo checks against `crates/` is `WORKSPACE_CRATES`, so
-/// a test line naming `"cfgd-operator"` beside `"cfgd-csi"` (on one line, or
-/// as rows of one list) is a hand copy of it and fails here too.
+/// a test line naming three or more of its members as bare quoted names, or
+/// three or more bare `"member",` rows of one bracketed list, is a hand copy of
+/// it and fails here too. A tuple carrying a count per crate names each member
+/// beside its number, and a two-root walk names two.
 #[test]
 fn every_walk_declaring_the_workspace_reads_the_one_memo() {
     use cfgd_core::test_helpers::{
-        blank_non_code, carries_hatch, declaration_end, declared_fn_name, inline_test_item_ranges,
-        is_test_only_file, is_test_source, item_keyword, workspace_root,
+        blank_non_code, declaration_end, declared_fn_name, inline_test_item_ranges,
+        is_test_only_file, is_test_source, workspace_root,
     };
-    const HATCH: &str = "// one-file-declarations-ok:";
     // Each crate's `.rs` files, and the functions reading the memo, each
     // floored at the count it holds today.
     const WALK_ROOTS: &[(&str, usize, usize)] = &[
-        ("cfgd", 259, 9),
+        ("cfgd", 259, 10),
         ("cfgd-core", 243, 2),
         ("cfgd-crd", 2, 0),
         ("cfgd-csi", 11, 0),
@@ -19008,15 +18850,35 @@ fn every_walk_declaring_the_workspace_reads_the_one_memo() {
         ("cfgd-schema", 2, 0),
         ("cfgd-test-fixtures", 1, 0),
     ];
+    // The functions of `test_helpers.rs` that may spell the declarer.
+    const DECLARERS: &[&str] = &[
+        "fn_declarations",
+        "file_declarations",
+        "fixture_declarations",
+    ];
     // Spelled in parts, so the needles are no call and no list of their own.
     let declares = concat!("fn_", "declarations");
     let consumes = concat!("workspace_", "declarations(");
-    let operator = concat!("\"cfgd-", "operator\"");
-    let csi = concat!("\"cfgd-", "csi\"");
     let names: Vec<&str> = WALK_ROOTS.iter().map(|(k, _, _)| *k).collect();
     assert_eq!(names, WORKSPACE_CRATES, "the walk reads every crate");
     // Checks the named set against `crates/` before the walk reads it.
     production_sources_per_root(&names);
+    let quoted: Vec<String> = WORKSPACE_CRATES
+        .iter()
+        .map(|k| format!("\"{k}\""))
+        .collect();
+    // A member written as a bare name: a literal that opens no tuple.
+    let bare_members = |line: &str| -> std::collections::BTreeSet<usize> {
+        quoted
+            .iter()
+            .enumerate()
+            .filter(|(_, member)| {
+                line.match_indices(member.as_str())
+                    .any(|(at, _)| !line[..at].trim_end().ends_with('('))
+            })
+            .map(|(slot, _)| slot)
+            .collect()
+    };
     let crates_dir = workspace_root().join("crates");
     let memo_home = crates_dir.join("cfgd-core/src/test_helpers.rs");
     let is_ident = |c: char| c.is_alphanumeric() || c == '_';
@@ -19034,34 +18896,49 @@ fn every_walk_declaring_the_workspace_reads_the_one_memo() {
                 "{}",
                 path.strip_prefix(&crates_dir).unwrap_or(path).display()
             );
-            if *path != memo_home && text.contains(csi) {
+            if *path != memo_home
+                && quoted.iter().filter(|m| text.contains(m.as_str())).count() >= 3
+            {
                 let whole_test = is_test_source(path) || is_test_only_file(path);
                 let test_items = inline_test_item_ranges(&text);
                 let in_test =
                     |n: usize| whole_test || test_items.iter().any(|(a, b)| (*a..*b).contains(&n));
-                let row = |l: &str, name: &str| l.trim() == format!("{name},");
+                // Bare rows, keyed by the line opening the list that holds them.
+                let mut rows: std::collections::BTreeMap<usize, std::collections::BTreeSet<usize>> =
+                    std::collections::BTreeMap::new();
                 for (n, line) in raw.iter().enumerate() {
                     if !in_test(n) || line.trim_start().starts_with("//") {
                         continue;
                     }
-                    let one_line = line.contains(operator) && line.contains(csi);
-                    let rows = row(line, csi)
-                        && raw[n.saturating_sub(8)..(n + 9).min(raw.len())]
-                            .iter()
-                            .any(|l| row(l, operator));
-                    if one_line || rows {
+                    let members = bare_members(line);
+                    if members.len() >= 3 {
                         lists.push(format!("{label}:{}", n + 1));
+                        continue;
+                    }
+                    let row = quoted.iter().position(|m| line.trim() == format!("{m},"));
+                    let opener = raw[..n].iter().rposition(|l| l.trim_end().ends_with('['));
+                    if let (Some(member), Some(opener)) = (row, opener) {
+                        rows.entry(opener).or_default().insert(member);
+                    }
+                }
+                for (opener, members) in rows {
+                    if members.len() >= 3 {
+                        lists.push(format!("{label}:{}", opener + 1));
                     }
                 }
             }
             // Blanked over the whole file: a fixture literal holding its own
-            // `fn` is no declaration, and the span of the one around it holds.
+            // `fn` is no declaration, and a doc comment naming the declarer
+            // calls nothing.
             let blanked = blank_non_code(&text);
             if !blanked.contains(declares) && !blanked.contains(consumes) {
                 continue;
             }
             let code: Vec<&str> = blanked.lines().collect();
-            let memo_init = (*path == memo_home).then(|| {
+            // The spans in `test_helpers.rs` allowed to spell the declarer: the
+            // memo's initializer and the declarers' own bodies.
+            let mut allowed: Vec<std::ops::RangeInclusive<usize>> = Vec::new();
+            if *path == memo_home {
                 let at = code
                     .iter()
                     .position(|l| l.starts_with("static WORKSPACE_DECLARATIONS"))
@@ -19071,25 +18948,17 @@ fn every_walk_declaring_the_workspace_reads_the_one_memo() {
                         .iter()
                         .position(|l| l.starts_with("    });"))
                         .expect("the memo's initializer closes");
-                at..=end
-            });
-            let mut in_use = false;
+                allowed.push(at..=end);
+            }
             for (i, line) in code.iter().enumerate() {
                 if let Some(name) = declared_fn_name(line) {
                     let end = declaration_end(&code, i);
                     if code[i + 1..=end].iter().any(|l| l.contains(consumes)) {
                         readers += 1;
                     }
-                    if name == declares {
-                        continue;
+                    if *path == memo_home && DECLARERS.contains(&name.as_str()) {
+                        allowed.push(i..=end);
                     }
-                }
-                if item_keyword(line) == "use" {
-                    in_use = true;
-                }
-                if in_use {
-                    in_use = !line.contains(';');
-                    continue;
                 }
                 let spelled = line.match_indices(declares).any(|(at, _)| {
                     !line[..at].chars().next_back().is_some_and(is_ident)
@@ -19098,15 +18967,9 @@ fn every_walk_declaring_the_workspace_reads_the_one_memo() {
                             .next()
                             .is_some_and(is_ident)
                 });
-                if !spelled
-                    || memo_init.as_ref().is_some_and(|span| span.contains(&i))
-                    || carries_hatch(raw[i], HATCH)
-                    || i.checked_sub(1)
-                        .is_some_and(|above| carries_hatch(raw[above], HATCH))
-                {
-                    continue;
+                if spelled && !allowed.iter().any(|span| span.contains(&i)) {
+                    calls.push(format!("{label}:{}: {}", i + 1, raw[i].trim()));
                 }
-                calls.push(format!("{label}:{}: {}", i + 1, raw[i].trim()));
             }
         }
         if files.len() < *file_floor || readers < *reader_floor {
@@ -19123,10 +18986,10 @@ fn every_walk_declaring_the_workspace_reads_the_one_memo() {
     );
     assert!(
         calls.is_empty(),
-        "these calls declare functions outside the memo; read \
-         `workspace_declarations(..)` (`.rows`, or `.rows_under(dir, files)` for one directory), \
-         or carry `{HATCH} <why>` on the call's line or the one above when the input is one \
-         literal file or a fixture:\n  {}",
+        "these lines spell the declarer outside `test_helpers.rs`; a walk reads \
+         `workspace_declarations(..)` (`.rows`, `.rows_under(dir, files)`, `.rows_in(path)`), \
+         one literal file reads `file_declarations(path)` and a fixture literal \
+         `fixture_declarations(src)`:\n  {}",
         calls.join("\n  ")
     );
     assert!(
@@ -37147,16 +37010,14 @@ fn pruning_setter_name() -> String {
 /// whole picture until it says otherwise; a walk anchored on one of them is
 /// blind to the next one somebody adds beside it.
 fn reconciler_constructors() -> Vec<String> {
-    let src = cfgd_core::test_helpers::production_slice_of(
+    let ctors: Vec<String> = cfgd_core::test_helpers::file_declarations(
         &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../cfgd-core/src/reconciler/mod.rs"),
-    );
-    // one-file-declarations-ok: `reconciler/mod.rs` alone, the one literal path above.
-    let ctors: Vec<String> = cfgd_core::test_helpers::fn_declarations(&src)
-        .into_iter()
-        .filter(|(_, _, body)| body.contains("prune_rows:"))
-        .map(|(name, _, _)| name)
-        .collect();
+    )
+    .into_iter()
+    .filter(|(_, _, body)| body.contains("prune_rows:"))
+    .map(|(name, _, _)| name)
+    .collect();
     assert!(
         ctors.len() >= 2,
         "the builder writes the removal flag's default from {ctors:?}, \
@@ -37238,14 +37099,15 @@ fn every_reconciler_a_production_site_builds_says_which_picture_it_saw() {
         .map(|ctor| format!("Reconciler::{ctor}("))
         .collect();
     let removals = reconciler_removal_methods();
-    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let crates_dir = cfgd_core::test_helpers::workspace_root().join("crates");
+    let declared = workspace_declarations(WORKSPACE_CRATES);
     // The two crates are NAMED and their roots resolved under `crates/`, so a
     // crate renamed out from under the walk fails by name rather than quietly
     // contributing nothing.
     let roots: Vec<std::path::PathBuf> = ["cfgd", "cfgd-core"]
         .iter()
         .map(|krate| {
-            let root = manifest.join("..").join(krate).join("src");
+            let root = crates_dir.join(krate).join("src");
             assert!(
                 root.is_dir(),
                 "the walk's root `{krate}` is no longer a crate of this workspace"
@@ -37270,6 +37132,7 @@ fn every_reconciler_a_production_site_builds_says_which_picture_it_saw() {
                 continue;
             }
             let production = cfgd_core::test_helpers::production_slice_of(&path);
+            let declarations = declared.rows_in(&path);
             let raw_lines: Vec<&str> = production.lines().collect();
             let lines = cfgd_core::test_helpers::logical_source_lines(&production);
             let code_at = |k: usize| cfgd_core::test_helpers::code_line(&lines[k].1);
@@ -37323,13 +37186,11 @@ fn every_reconciler_a_production_site_builds_says_which_picture_it_saw() {
                     // rows through a name its own body never spells. The file's
                     // own call graph answers that, seeded with the flag's
                     // readers, and a seed is not a reach of its own.
-                    // one-file-declarations-ok: the one file holding this constructor site.
-                    let declarations = cfgd_core::test_helpers::fn_declarations(&production);
                     let seeds: Vec<(String, Option<String>)> = removals
                         .iter()
                         .map(|m| (m.clone(), Some("Reconciler".to_string())))
                         .collect();
-                    let reaching = cfgd_core::test_helpers::callers_reaching(&declarations, &seeds);
+                    let reaching = cfgd_core::test_helpers::callers_reaching(declarations, &seeds);
                     let held = cfgd_core::test_helpers::declared_fn_name(
                         &cfgd_core::test_helpers::code_line(
                             enclosing.lines().next().unwrap_or_default(),
@@ -37513,6 +37374,7 @@ fn every_two_root_walk_guards_each_root_it_reads() {
         ("cfgd/src/cli/tests.rs", 20),
         ("cfgd-core/src/output/tests/fences.rs", 2),
     ];
+    let segment = "src";
     // A per-root floor is read by its SHAPE, never by the name of the const
     // holding it: a name match exempts a walk for spelling `WALK_ROOTS` even
     // where the const behind that name holds bare root names and the walk
@@ -37520,16 +37382,36 @@ fn every_two_root_walk_guards_each_root_it_reads() {
     // floor const, a root list carrying one or more counts per entry, and a per-root
     // accumulator pushed once per root and read back. An aggregate
     // `FLOOR_FILES: usize` states one count for the whole walk and is exactly
-    // what this pin exists to refuse.
-    let floors_per_root = |code: &str| {
-        code.lines().any(|l| {
+    // what this pin exists to refuse. A root list floors the roots it holds a
+    // row for, so it answers only when every root the walk names has one: a
+    // list naming one of the two roots a walk reads floors the other in
+    // aggregate. A row names its root the three ways `roots_named` reads one.
+    // `code` and `raw` hold the same rows, and the row names are literals, so
+    // they are read off `raw`.
+    let floors_per_root = |code: &str, raw: &str, named: &[&str]| {
+        let code: Vec<&str> = code.lines().collect();
+        let raw: Vec<&str> = raw.lines().collect();
+        code.iter().enumerate().any(|(i, l)| {
             (l.contains("FLOOR") && l.contains(": ["))
-                || (l.contains("WALK_ROOTS") && l.contains("&[(&str, usize"))
                 || (l.contains("per_root") && l.contains(".push("))
+                || (l.contains("WALK_ROOTS") && l.contains("&[(&str, usize") && {
+                    let end = (i..code.len())
+                        .find(|&k| code[k].contains("];"))
+                        .unwrap_or(code.len() - 1);
+                    let rows = raw[i..=end].join("\n");
+                    named.iter().all(|krate| {
+                        [
+                            format!("(\"{krate}\""),
+                            format!("(\"crates/{krate}/{segment}\""),
+                            format!("(\"../{krate}/{segment}\""),
+                        ]
+                        .iter()
+                        .any(|row| rows.contains(row))
+                    })
+                })
         })
     };
 
-    let segment = "src";
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let crates_dir = manifest.join("..");
     let mut crates: Vec<String> = std::fs::read_dir(&crates_dir)
@@ -37548,7 +37430,7 @@ fn every_two_root_walk_guards_each_root_it_reads() {
     // the same root that crate's own name gives, so a walk over one subtree of
     // its own crate names one root twice and stays out.
     let own_tell = format!("join(\"{segment}\")");
-    let roots_named = |text: &str, own: &str| {
+    let roots_named = |text: &str, own: &'static str| {
         let mut named: Vec<&str> = crates
             .iter()
             .filter(|krate| {
@@ -37561,7 +37443,7 @@ fn every_two_root_walk_guards_each_root_it_reads() {
         if text.contains(&own_tell) && !named.contains(&own) {
             named.push(own);
         }
-        named.len()
+        named
     };
 
     let mut per_file: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
@@ -37580,7 +37462,7 @@ fn every_two_root_walk_guards_each_root_it_reads() {
             // one.
             let mut spans: Vec<(usize, usize)> = Vec::new();
             for (i, line) in lines.iter().enumerate() {
-                if roots_named(line, krate) == 0 {
+                if roots_named(line, krate).is_empty() {
                     continue;
                 }
                 if let Some(span) = enclosing_fn_span(&lines, i)
@@ -37595,7 +37477,8 @@ fn every_two_root_walk_guards_each_root_it_reads() {
             });
             for (start, end) in spans {
                 let body = lines[start..=end].join("\n");
-                if roots_named(&body, krate) < 2 {
+                let named = roots_named(&body, krate);
+                if named.len() < 2 {
                     continue;
                 }
                 *per_file.entry(relative.clone()).or_default() += 1;
@@ -37607,7 +37490,9 @@ fn every_two_root_walk_guards_each_root_it_reads() {
                     .map(cfgd_core::test_helpers::code_line)
                     .collect::<Vec<_>>()
                     .join("\n");
-                if floors_per_root(&code) || body.lines().any(|l| carries_hatch(l, HATCH)) {
+                if floors_per_root(&code, &body, &named)
+                    || body.lines().any(|l| carries_hatch(l, HATCH))
+                {
                     continue;
                 }
                 // `enclosing_fn_span` opens the span at the first row of the
@@ -39167,10 +39052,8 @@ const PINNED_HINT_COMPOSERS: &[(&str, bool)] = &[
 fn hint_commands_minting_doors() -> Vec<String> {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../cfgd-core/src/output/component.rs");
-    let body = cfgd_core::test_helpers::production_slice_of(&path);
     let mut doors: Vec<String> = Vec::new();
-    // one-file-declarations-ok: `output/component.rs` alone, the one literal path above.
-    for (name, owner, code) in cfgd_core::test_helpers::fn_declarations(&body) {
+    for (name, owner, code) in cfgd_core::test_helpers::file_declarations(&path) {
         if owner.as_deref() != Some("HintCommands") {
             continue;
         }
@@ -47311,8 +47194,7 @@ fn the_provisioning_fixpoint_follows_a_wrapper_written_as_a_method() {
                fn wrap(&self) -> bool {\n        \
                provision_tool(\"cosign\")\n    }\n}\n\n\
                fn verb(t: &Tool) -> bool {\n    t.wrap()\n}\n";
-    // one-file-declarations-ok: the fixture literal above.
-    let derived = provisioning_reach(&cfgd_core::test_helpers::fn_declarations(src));
+    let derived = provisioning_reach(&cfgd_core::test_helpers::fixture_declarations(src));
     assert!(
         derived.contains(&("wrap".to_string(), Some("Tool".to_string()))),
         "the method calling the provisioner is the fold's seed: {derived:?}"
@@ -47335,8 +47217,7 @@ fn the_call_graph_fold_keeps_two_functions_that_share_a_name_apart() {
     let src = "fn hop() -> bool {\n    provision_tool(\"cosign\")\n}\n\n\
                impl Tool {\n    fn hop(&self) -> bool {\n        hop()\n    }\n}\n\n\
                fn verb(t: &Tool) -> bool {\n    t.hop()\n}\n";
-    // one-file-declarations-ok: the fixture literal above.
-    let declarations = cfgd_core::test_helpers::fn_declarations(src);
+    let declarations = cfgd_core::test_helpers::fixture_declarations(src);
     let derived = provisioning_reach(&declarations);
     assert!(
         derived.contains(&("hop".to_string(), Some("Tool".to_string()))),
@@ -52253,7 +52134,7 @@ fn no_walk_bearing_source_scans_syntax_by_hand() {
 /// both the override and the stored policy the fold applies to.
 #[test]
 fn every_config_load_site_answers_the_migration_policy() {
-    use cfgd_core::test_helpers::{fn_declarations, production_slice_of, workspace_root};
+    use cfgd_core::test_helpers::{file_declarations, production_slice_of, workspace_root};
     let declarations = workspace_declarations(WORKSPACE_CRATES).rows_under("cfgd/src/cli", 76);
     assert!(
         declarations.len() >= 400,
@@ -52273,9 +52154,7 @@ fn every_config_load_site_answers_the_migration_policy() {
         "the gate runs above every command boundary, and init is the one verb that runs it itself"
     );
     let init = workspace_root().join("crates/cfgd/src/cli/init/cmd_init.rs");
-    let init = production_slice_of(&init);
-    // one-file-declarations-ok: `init/cmd_init.rs` alone, the one literal path above.
-    let (_, _, init_body) = fn_declarations(&init)
+    let (_, _, init_body) = file_declarations(&init)
         .into_iter()
         .find(|(name, owner, _)| name == "cmd_init" && owner.is_none())
         .expect("`cmd_init` is declared in cmd_init.rs");
@@ -52316,10 +52195,7 @@ fn every_config_load_site_answers_the_migration_policy() {
         "the daemon fold runs once: `gate_on_load` folds the override and the stored policy \
          at one site, so main.rs must not fold the override on its way in"
     );
-    let schema =
-        production_slice_of(&workspace_root().join("crates/cfgd/src/cli/config_schema.rs"));
-    // one-file-declarations-ok: `config_schema.rs` alone, the one literal path above.
-    let gate = fn_declarations(&schema)
+    let gate = file_declarations(&workspace_root().join("crates/cfgd/src/cli/config_schema.rs"))
         .into_iter()
         .find(|(name, owner, _)| name == "gate_on_load" && owner.is_none())
         .map(|(_, _, code)| code)
