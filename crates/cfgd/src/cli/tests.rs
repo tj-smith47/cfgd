@@ -92,6 +92,7 @@ struct CliTestHarnessBuilder {
     modules: Vec<(String, String)>,
     output_format: cfgd_core::output::OutputFormat,
     prompt_responses: Vec<cfgd_core::output::PromptAnswer>,
+    planted_manager: bool,
 }
 
 impl CliTestHarnessBuilder {
@@ -105,6 +106,7 @@ impl CliTestHarnessBuilder {
             modules: Vec::new(),
             output_format: cfgd_core::output::OutputFormat::Table,
             prompt_responses: Vec::new(),
+            planted_manager: false,
         }
     }
 
@@ -147,7 +149,17 @@ impl CliTestHarnessBuilder {
         self
     }
 
+    /// Put this host's package managers out of reach and plant apt as the one
+    /// manager present, holding nothing. A module entry naming apt in its
+    /// `prefer` list then resolves to the same manager on every OS, whatever
+    /// the runner carries. See [`PlantedManager`].
+    fn planted_manager(mut self) -> Self {
+        self.planted_manager = true;
+        self
+    }
+
     fn build(self) -> CliTestHarness {
+        let planted = self.planted_manager.then(PlantedManager::apt);
         let config_dir = tempfile::tempdir().unwrap();
         let state_dir = tempfile::tempdir().unwrap();
         let cache_dir = tempfile::tempdir().unwrap();
@@ -196,6 +208,54 @@ impl CliTestHarnessBuilder {
             printer,
             buf,
             output_format: self.output_format,
+            _planted: planted,
+        }
+    }
+}
+
+/// The machine [`CliTestHarnessBuilder::planted_manager`] describes: every
+/// manager seam pinned missing, the bootstrapped prefixes and both memos
+/// emptied, and apt's install and list programs planted as shims. The list
+/// shim answers an empty listing, so every package a module names through apt
+/// is planned for install.
+///
+/// Fields drop in declaration order: the shims hand their seams back to the
+/// missing pins, and `NoHostManagers` goes last because it holds the PATH lock
+/// the rest are set under.
+struct PlantedManager {
+    _install: cfgd_core::test_helpers::ToolShim,
+    _list: cfgd_core::test_helpers::ToolShim,
+    _avail: cfgd_core::test_helpers::AvailabilityMemoTtlGuard,
+    _paths: cfgd_core::test_helpers::CommandPathMemoTtlGuard,
+    _dirs: cfgd_core::test_helpers::BootstrappedPathDirsGuard,
+    _managers: cfgd_core::test_helpers::NoHostManagers,
+}
+
+impl PlantedManager {
+    // serial-group-ok: every test taking the knob is held to #[serial_test::serial] by
+    // every_absent_package_fixture_builds_on_a_planted_manager.
+    fn apt() -> Self {
+        let managers = cfgd_core::test_helpers::NoHostManagers::pinned_missing();
+        let dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+        let paths = cfgd_core::test_helpers::CommandPathMemoTtlGuard::always_expired();
+        let avail = cfgd_core::test_helpers::AvailabilityMemoTtlGuard::always_expired();
+        Self {
+            _install: cfgd_core::test_helpers::ToolShim::install(
+                crate::seams::APT_GET_BIN_ENV,
+                0,
+                "",
+                "",
+            ),
+            _list: cfgd_core::test_helpers::ToolShim::install(
+                crate::seams::DPKG_QUERY_BIN_ENV,
+                0,
+                "",
+                "",
+            ),
+            _avail: avail,
+            _paths: paths,
+            _dirs: dirs,
+            _managers: managers,
         }
     }
 }
@@ -207,6 +267,7 @@ struct CliTestHarness {
     printer: cfgd_core::output::Printer,
     buf: Arc<Mutex<String>>,
     output_format: cfgd_core::output::OutputFormat,
+    _planted: Option<PlantedManager>,
 }
 
 impl CliTestHarness {
@@ -8455,26 +8516,15 @@ fn execute_explain_no_resource() {
 }
 
 #[test]
+#[serial_test::serial]
 fn cmd_apply_with_module_filter() {
-    let (config_dir, state_dir) = setup_test_env();
-
-    // Create a module
-    create_module_in_dir(
-        config_dir.path(),
-        "test-mod",
-        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: test-mod\nspec:\n  packages:\n    - name: curl\n",
-    );
-
-    // Profile referencing the module
+    let module_yaml = "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: test-mod\nspec:\n  packages:\n    - name: cfgd-absent-curl\n      prefer: [apt]\n";
     let profile = "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  modules:\n    - test-mod\n";
-    std::fs::write(
-        config_dir.path().join("profiles").join("default.yaml"),
-        profile,
-    )
-    .unwrap();
-
-    let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, buf) = test_printer_capture();
+    let h = CliTestHarness::builder()
+        .planted_manager()
+        .profile("default", profile)
+        .module("test-mod", module_yaml)
+        .build();
     let args = ApplyArgs {
         plan: None,
         on_conflict: crate::cli::OnConflict::Ask,
@@ -8491,14 +8541,13 @@ fn cmd_apply_with_module_filter() {
         shell: None,
     };
 
-    let result = super::apply::cmd_apply(&cli, &printer, &args);
+    let result = super::apply::cmd_apply(&h.cli(), h.printer(), &args);
     assert!(result.is_ok(), "apply failed: {:?}", result.err());
 
-    drop(printer);
-    let output = cfgd_core::test_helpers::captured_text(&buf);
+    let output = h.output();
     assert!(
-        output.contains("Plan") || output.contains("test-mod") || output.contains("Nothing"),
-        "apply with module filter should reference module or show plan, got: {output}"
+        output.contains("cfgd-absent-curl"),
+        "the dry run must preview the module's install, got: {output}"
     );
 }
 
@@ -25385,19 +25434,20 @@ fn action_path_env_write() {
 // -----------------------------------------------------------------------
 
 #[test]
+#[serial_test::serial]
 fn cmd_plan_rich_module_with_packages_env_and_files() {
-    let _pm_guard = crate::cli::registry::PackageManagerFactoryGuard::hermetic_native();
     let rich_module = r#"apiVersion: cfgd.io/v1alpha1
 kind: Module
 metadata:
   name: dev-tools
 spec:
   packages:
-    - name: ripgrep
-      prefer: [cargo]
-    - name: fd-find
-      prefer: [cargo]
-    - name: bat
+    - name: cfgd-absent-ripgrep
+      prefer: [apt]
+    - name: cfgd-absent-fd
+      prefer: [apt]
+    - name: cfgd-absent-bat
+      prefer: [apt]
   env:
     - name: EDITOR
       value: nvim
@@ -25423,6 +25473,7 @@ spec:
 "#;
 
     let h = CliTestHarness::builder()
+        .planted_manager()
         .profile("default", profile_with_module)
         .module("dev-tools", rich_module)
         .build();
@@ -25482,14 +25533,16 @@ spec:
 // cmd_plan with --module filter (module-only mode)
 // Exercises: module-only path, empty_resolved_profile, module resolution
 //
-// The fixtures below name `cfgd-absent-*` packages on purpose: a module's
-// declared packages are diffed against what their manager reports installed,
-// so a fixture naming a real package (`jq`, `fd`) asserts about whatever the
-// runner happens to carry rather than about the code. An absent name is
-// planned on every host.
+// The fixtures below name `cfgd-absent-*` packages through `prefer: [apt]`
+// and build with `.planted_manager()`: every host manager is out of reach and
+// apt is planted holding nothing, so each entry resolves to apt and plans an
+// install on every OS, whether or not the runner carries a manager of its own.
+// `every_absent_package_fixture_builds_on_a_planted_manager` holds each such
+// fixture to the knob.
 // -----------------------------------------------------------------------
 
 #[test]
+#[serial_test::serial]
 fn cmd_plan_module_only_mode() {
     let module_yaml = r#"apiVersion: cfgd.io/v1alpha1
 kind: Module
@@ -25498,9 +25551,12 @@ metadata:
 spec:
   packages:
     - name: cfgd-absent-alpha
+      prefer: [apt]
     - name: cfgd-absent-beta
+      prefer: [apt]
 "#;
     let h = CliTestHarness::builder()
+        .planted_manager()
         .module("standalone", module_yaml)
         .build();
 
@@ -25532,6 +25588,7 @@ spec:
 /// unions the requested modules — both still under full isolation (the
 /// active `default` profile's own `bat`/`vim` env never appears).
 #[test]
+#[serial_test::serial]
 fn cmd_plan_module_only_includes_transitive_deps_and_unions_repeated_flags() {
     let base_yaml = r#"apiVersion: cfgd.io/v1alpha1
 kind: Module
@@ -25540,6 +25597,7 @@ metadata:
 spec:
   packages:
     - name: cfgd-absent-alpha
+      prefer: [apt]
 "#;
     let a_yaml = r#"apiVersion: cfgd.io/v1alpha1
 kind: Module
@@ -25550,6 +25608,7 @@ spec:
     - base
   packages:
     - name: cfgd-absent-gamma
+      prefer: [apt]
 "#;
     let b_yaml = r#"apiVersion: cfgd.io/v1alpha1
 kind: Module
@@ -25558,8 +25617,10 @@ metadata:
 spec:
   packages:
     - name: cfgd-absent-delta
+      prefer: [apt]
 "#;
     let h = CliTestHarness::builder()
+        .planted_manager()
         .module("base", base_yaml)
         .module("a", a_yaml)
         .module("b", b_yaml)
@@ -25668,6 +25729,7 @@ fn cmd_apply_with_profile_alone_errors() {
 /// `Provision`) is a real mirror-sweep finding, reported separately rather
 /// than silently special-cased here.
 #[test]
+#[serial_test::serial]
 fn interplay_module_x_only_module_x_is_redundant_and_drops_no_module_owned_action() {
     let module_yaml = r#"apiVersion: cfgd.io/v1alpha1
 kind: Module
@@ -25676,8 +25738,10 @@ metadata:
 spec:
   packages:
     - name: cfgd-absent-alpha
+      prefer: [apt]
 "#;
     let plain = CliTestHarness::builder()
+        .planted_manager()
         .module("standalone", module_yaml)
         .json()
         .build();
@@ -25707,6 +25771,7 @@ spec:
     );
 
     let filtered = CliTestHarness::builder()
+        .planted_manager()
         .module("standalone", module_yaml)
         .json()
         .build();
@@ -25746,6 +25811,7 @@ spec:
 /// `report_no_in_scope_actions` warns that a filter excluded pending work,
 /// because `--skip` set `filter_active` before the plan was emptied.
 #[test]
+#[serial_test::serial]
 fn interplay_module_x_skip_module_x_speaks_via_accounting_not_up_to_date() {
     let module_yaml = r#"apiVersion: cfgd.io/v1alpha1
 kind: Module
@@ -25754,8 +25820,10 @@ metadata:
 spec:
   packages:
     - name: cfgd-absent-alpha
+      prefer: [apt]
 "#;
     let h = CliTestHarness::builder()
+        .planted_manager()
         .module("standalone", module_yaml)
         .build();
     let args = PlanArgs {
@@ -25778,6 +25846,90 @@ spec:
     assert!(
         out.contains("No actions in scope"),
         "expected the filter-excluded-work warning, got:\n{out}"
+    );
+}
+
+/// Every test here whose fixture names a `cfgd-absent-*` package builds each
+/// of its harnesses with `.planted_manager()`, and every test taking the knob
+/// is `#[serial_test::serial]`. Such a fixture asserts about a package cfgd
+/// plans to install, and without the knob whether it plans at all depends on
+/// the runner holding a package manager of its own. The knob pins the
+/// availability memo, which only the default serial group keeps to one holder.
+#[test]
+fn every_absent_package_fixture_builds_on_a_planted_manager() {
+    use cfgd_core::test_helpers::{blank_non_code, declaration_end, declared_fn_name};
+    // Split so this walk's own body is not a fixture it finds.
+    const NEEDLE: &str = concat!("cfgd-", "absent-");
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli/tests.rs");
+    let text = cfgd_core::test_helpers::walked_file_body(&path);
+    let raw: Vec<&str> = text.lines().collect();
+    // Blanked over the whole file: a string literal spanning lines (a fixture
+    // source holding its own `fn`) is not code on any of them.
+    let blanked = blank_non_code(&text);
+    let code: Vec<&str> = blanked.lines().collect();
+    assert_eq!(code.len(), raw.len(), "blanking must keep every line");
+    let mut fixtures = 0usize;
+    let mut knob_users = 0usize;
+    let mut offenders = Vec::new();
+    for (i, line) in code.iter().enumerate() {
+        let Some(name) = declared_fn_name(line) else {
+            continue;
+        };
+        let end = declaration_end(&code, i);
+        if code[i..=end]
+            .iter()
+            .any(|l| l.contains(".planted_manager()"))
+        {
+            knob_users += 1;
+            let serial = raw[..i]
+                .iter()
+                .rev()
+                .take_while(|l| {
+                    let head = l.trim_start();
+                    head.starts_with("#[") || head.starts_with("//")
+                })
+                .any(|l| l.trim() == "#[serial_test::serial]");
+            if !serial {
+                offenders.push(format!("{name} (takes the knob outside the serial group)"));
+            }
+        }
+        if !raw[i..=end].iter().any(|l| l.contains(NEEDLE)) {
+            continue;
+        }
+        fixtures += 1;
+        // Per chain: a test building two harnesses plans through each.
+        let mut chains = 0usize;
+        for (at, line) in code.iter().enumerate().take(end + 1).skip(i) {
+            if !line.contains("CliTestHarness::builder()") {
+                continue;
+            }
+            chains += 1;
+            let close = (at..=end)
+                .find(|&n| code[n].contains(".build()"))
+                .unwrap_or(end);
+            if !code[at..=close]
+                .iter()
+                .any(|l| l.contains(".planted_manager()"))
+            {
+                offenders.push(format!("{name} (the harness built on line {})", at + 1));
+            }
+        }
+        if chains == 0 {
+            offenders.push(format!("{name} (builds no harness)"));
+        }
+    }
+    // The module-only plan block and the two plan/apply fixtures swept onto
+    // the knob beside it.
+    assert!(
+        fixtures >= 6 && knob_users >= 6,
+        "the walk found {fixtures} absent-package fixtures and {knob_users} tests taking the \
+         knob, fewer than this file holds"
+    );
+    assert!(
+        offenders.is_empty(),
+        "these tests plan an absent-package fixture without `.planted_manager()`, so they \
+         pass only on a host holding a package manager, or take the knob unserialized:\n  {}",
+        offenders.join("\n  ")
     );
 }
 
