@@ -6695,6 +6695,8 @@ fn every_production_site_re_leading_a_provision_goes_through_the_one_helper() {
             continue;
         }
         read += 1;
+        // one-file-declarations-ok: only a file spelling `ManagerAction::Provision`
+        // is declared, and the workspace memo lives in the cfgd crate's tests.
         for (name, owner, code) in crate::test_helpers::fn_declarations(&production) {
             let code = crate::test_helpers::blank_non_code(&code);
             if crate::test_helpers::calls_free_fn(&code, "provision_led_by")

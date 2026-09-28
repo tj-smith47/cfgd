@@ -7,9 +7,7 @@ use cfgd_core::output::Printer;
 use cfgd_core::providers::{NoteSink, PackageContext};
 #[cfg(unix)]
 use cfgd_core::test_helpers::NullPackageState;
-use cfgd_core::test_helpers::{
-    code_line as code_of, declared_fn_name, fn_declarations, reaches_fn,
-};
+use cfgd_core::test_helpers::{code_line as code_of, declared_fn_name, reaches_fn};
 
 use super::*;
 
@@ -3034,22 +3032,9 @@ fn test_declarations(body: &str) -> Vec<(String, Vec<String>, Vec<String>)> {
 /// site spells, which is why a trait method carries the type it is declared on:
 /// `.path_dirs(` alone names every manager's, and only brew's reads this seam.
 fn brew_path_dir_readers() -> Vec<(String, Option<String>)> {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let sources: Vec<String> = cfgd_core::test_helpers::rust_sources_under(&root)
-        .into_iter()
-        // A `tests.rs` is a test region whole, carrying no `#[cfg(test)]` for
-        // the cut to read (held by
-        // `cli::tests::no_tests_file_carries_a_cfg_test_attribute_of_its_own`),
-        // and a test is not a route production takes.
-        .filter(|p| !cfgd_core::test_helpers::is_test_source(p))
-        .map(|p| cfgd_core::test_helpers::production_slice_of(&p))
-        .collect();
-    assert!(!sources.is_empty(), "the derivation read no sources at all");
-    let declarations: Vec<(String, Option<String>, String)> = sources
-        .iter()
-        .flat_map(|src| fn_declarations(src))
-        .collect();
-
+    let declarations =
+        crate::cli::tests::workspace_declarations(crate::cli::tests::WORKSPACE_CRATES)
+            .rows_under("cfgd/src");
     cfgd_core::test_helpers::callers_reaching(
         &declarations,
         &[("brew_path_dirs".to_string(), None)],

@@ -1771,12 +1771,12 @@ fn every_cfgd_env_name_is_spelled_once_in_production() {
     // read is itself a reader, folded until the set stops growing, so a
     // `CFGD_*` literal passed through `env_or`, `tool_cmd` or `resolve_knob`
     // is caught the same as one passed to `std::env::var`.
-    let declarations: Vec<(String, Vec<String>, String)> = sources
+    let declarations: Vec<(&str, Vec<String>, &str)> = workspace_declarations(&root_names)
+        .rows
         .iter()
-        .flat_map(|(_, production)| fn_declarations(production))
         .filter_map(|(name, _, decl)| {
-            let (params, body) = signature_split(&decl, &name)?;
-            Some((name, params, body))
+            let (params, body) = signature_split(decl, name)?;
+            Some((name.as_str(), params, body))
         })
         .collect();
     let mut readers: std::collections::BTreeSet<String> = ["var", "var_os", "env!", "option_env!"]
@@ -1795,7 +1795,7 @@ fn every_cfgd_env_name_is_spelled_once_in_production() {
                 })
             });
             if passes_a_param {
-                readers.insert(name.clone());
+                readers.insert(name.to_string());
             }
         }
         if readers.len() == known {
@@ -1908,7 +1908,7 @@ fn free_call_args(code: &str, name: &str) -> Vec<std::ops::Range<usize>> {
 
 /// A declaration's parameter names and the code after its parameter list,
 /// read off the code `fn_declarations` returns for `name`.
-fn signature_split(decl: &str, name: &str) -> Option<(Vec<String>, String)> {
+fn signature_split<'a>(decl: &'a str, name: &str) -> Option<(Vec<String>, &'a str)> {
     let head = decl.find(&format!("fn {name}"))? + "fn ".len() + name.len();
     let mut open = head;
     if decl[head..].starts_with('<') {
@@ -1941,7 +1941,7 @@ fn signature_split(decl: &str, name: &str) -> Option<(Vec<String>, String)> {
         .map(|p| p.trim().trim_start_matches("mut ").trim().to_string())
         .filter(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
         .collect();
-    Some((params, decl[close..].to_string()))
+    Some((params, &decl[close..]))
 }
 
 /// The `CFGD_*_BIN` seams the package managers read, and the tools those seams
@@ -19259,36 +19259,174 @@ fn production_sources_per_root(
         .collect()
 }
 
+/// Every crate of the workspace, for a walk reading all of them through
+/// [`workspace_declarations`] or [`production_sources_per_root`], which check
+/// it against `crates/` on every call.
+pub(crate) const WORKSPACE_CRATES: &[&str] = &[
+    "cfgd",
+    "cfgd-core",
+    "cfgd-crd",
+    "cfgd-csi",
+    "cfgd-operator",
+    "cfgd-schema",
+    "cfgd-test-fixtures",
+];
+
 /// Every function the workspace's production code declares, as
-/// [`fn_declarations`] rows, each with the crate root declaring it.
-struct WorkspaceDeclarations {
-    roots: Vec<&'static str>,
-    rows: Vec<(String, Option<String>, String)>,
+/// [`fn_declarations`] rows, with the site declaring each: its crate root, its
+/// file and that file's production body, each at the row's own index.
+pub(crate) struct WorkspaceDeclarations {
+    pub(crate) sites: Vec<(&'static str, &'static std::path::Path, &'static str)>,
+    pub(crate) rows: Vec<(String, Option<String>, String)>,
+}
+
+impl WorkspaceDeclarations {
+    /// The rows declared in a file under `dir`, a directory of one crate's
+    /// `src` tree, spelled from `crates/` (`"cfgd-core/src/reconciler"`).
+    pub(crate) fn rows_under(&self, dir: &str) -> Vec<&(String, Option<String>, String)> {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join(dir);
+        assert!(
+            dir.is_dir(),
+            "`{}` is no directory of the workspace",
+            dir.display()
+        );
+        let rows: Vec<&(String, Option<String>, String)> = self
+            .sites
+            .iter()
+            .zip(&self.rows)
+            .filter(|((_, path, _), _)| path.starts_with(&dir))
+            .map(|(_, row)| row)
+            .collect();
+        assert!(
+            !rows.is_empty(),
+            "`{}` declares no production function",
+            dir.display()
+        );
+        rows
+    }
 }
 
 /// [`WorkspaceDeclarations`] for the whole workspace, built once per test
-/// process: two call-graph walks fold over it, and declaring every function in
-/// seven crates is most of either walk's time.
+/// process: every walk that declares the workspace, a crate or a directory of
+/// one reads it, and declaring every function in seven crates is most of each
+/// such walk's time.
 static WORKSPACE_DECLARATIONS: std::sync::LazyLock<WorkspaceDeclarations> =
     std::sync::LazyLock::new(|| {
-        let mut roots = Vec::new();
+        let mut sites = Vec::new();
         let mut rows = Vec::new();
         for (root, files) in WORKSPACE_PRODUCTION.iter() {
-            for (_, production) in files {
+            for (path, production) in files {
                 for row in fn_declarations(production) {
-                    roots.push(root.as_str());
+                    sites.push((root.as_str(), path.as_path(), production.as_str()));
                     rows.push(row);
                 }
             }
         }
-        WorkspaceDeclarations { roots, rows }
+        WorkspaceDeclarations { sites, rows }
     });
 
 /// [`WORKSPACE_DECLARATIONS`], after [`production_sources_per_root`] has checked
 /// `roots` against the workspace and each root's sources for this caller.
-fn workspace_declarations(roots: &[&str]) -> &'static WorkspaceDeclarations {
+pub(crate) fn workspace_declarations(roots: &[&str]) -> &'static WorkspaceDeclarations {
     production_sources_per_root(roots);
     &WORKSPACE_DECLARATIONS
+}
+
+/// Every function in the workspace that declares a population of files reads
+/// the declarations from [`workspace_declarations`].
+///
+/// Declaring every function in seven crates is most of the time a walk over
+/// them takes, and under `cargo test` the walks share one process, so a walk
+/// running `fn_declarations` over files it listed itself pays that again. The
+/// tell is one function body that both lists files and declares functions;
+/// `// one-file-declarations-ok: <why>` inside the function exempts one whose
+/// input is one file at a time for a reason the memo cannot serve. The memo's
+/// own consumers are floored, so a walk leaving it fails here by count.
+#[test]
+fn every_walk_declaring_the_workspace_reads_the_one_memo() {
+    use cfgd_core::test_helpers::{
+        blank_non_code, carries_hatch, declaration_end, declared_fn_name, rust_sources_under,
+        walked_file_body,
+    };
+    const HATCH: &str = "// one-file-declarations-ok:";
+    /// Each root's sources floored at the count it holds today.
+    const WALK_ROOTS: &[(&str, usize)] = &[
+        ("cfgd", 135),
+        ("cfgd-core", 180),
+        ("cfgd-crd", 1),
+        ("cfgd-csi", 7),
+        ("cfgd-operator", 50),
+        ("cfgd-schema", 2),
+        ("cfgd-test-fixtures", 1),
+    ];
+    const LISTERS: &[&str] = &[
+        "rust_sources_under(",
+        "production_sources_per_root(",
+        "workspace_rust_files(",
+        "read_dir(",
+    ];
+    let declares = format!("{}(", "fn_declarations");
+    let consumes = format!("{}(", "workspace_declarations");
+    let names: Vec<&str> = WALK_ROOTS.iter().map(|(k, _)| *k).collect();
+    // Checks the named set against `crates/` before the walk reads it.
+    production_sources_per_root(&names);
+    let crates_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let mut offenders: Vec<String> = Vec::new();
+    let mut consumers = 0usize;
+    let mut under: Vec<String> = Vec::new();
+    for (krate, floor) in WALK_ROOTS {
+        let files = rust_sources_under(&crates_dir.join(krate).join("src"));
+        if files.len() < *floor {
+            under.push(format!("{krate}: {} of {floor}", files.len()));
+        }
+        for path in files {
+            // unfloored-slice-ok: test code is the population, every region of the file read whole.
+            let text = walked_file_body(&path);
+            // Blanked over the whole file: a fixture literal holding its own
+            // `fn` is no declaration, and the span of the one around it holds.
+            let blanked = blank_non_code(&text);
+            if !blanked.contains(&declares) && !blanked.contains(&consumes) {
+                continue;
+            }
+            let raw: Vec<&str> = text.lines().collect();
+            let code: Vec<&str> = blanked.lines().collect();
+            for (i, line) in code.iter().enumerate() {
+                let Some(name) = declared_fn_name(line) else {
+                    continue;
+                };
+                let end = declaration_end(&code, i);
+                let body = code[i + 1..=end].join("\n");
+                if body.contains(&consumes) {
+                    consumers += 1;
+                }
+                if !body.contains(&declares)
+                    || !LISTERS.iter().any(|l| body.contains(l))
+                    || raw[i..=end].iter().any(|l| carries_hatch(l, HATCH))
+                {
+                    continue;
+                }
+                offenders.push(format!("{}:{}: `{name}`", path.display(), i + 1));
+            }
+        }
+    }
+    assert!(
+        under.is_empty(),
+        "a root holds fewer sources than the walk read before: {}",
+        under.join(", ")
+    );
+    assert!(
+        offenders.is_empty(),
+        "these functions list files and declare their functions themselves; read \
+         `workspace_declarations(..)` (`.rows`, or `.rows_under(dir)` for one directory), or carry \
+         `{HATCH} <why>` when the input is one file at a time:\n  {}",
+        offenders.join("\n  ")
+    );
+    assert!(
+        consumers >= 9,
+        "{consumers} functions read `workspace_declarations`, fewer than the walks that do today"
+    );
 }
 
 /// Every production `.rs` under `src/cli/`, with its `#[cfg(test)]` items and
@@ -26042,8 +26180,9 @@ fn every_command_reaching_package_resolution_is_a_resolving_verb() {
         .collect();
     let declared_in = || {
         workspace
-            .roots
+            .sites
             .iter()
+            .map(|(root, _, _)| root)
             .zip(declarations)
             .filter(|(_, (name, owner, _))| reached.contains(&(name.as_str(), owner.as_deref())))
             .map(|(root, (name, _, _))| (*root, name.as_str()))
@@ -37327,17 +37466,8 @@ fn reconciler_constructors() -> Vec<String> {
 /// them. A method that learns to record joins the set on its own, and the
 /// hatch that said it records nothing turns red.
 fn reconciler_removal_methods() -> Vec<String> {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../cfgd-core/src/reconciler");
-    let mut declarations: Vec<(String, Option<String>, String)> = Vec::new();
-    for path in rust_sources_under(&root) {
-        // A `tests.rs` carries no `#[cfg(test)]` for the cut to read, and a
-        // test is not a route the reconciler takes.
-        if cfgd_core::test_helpers::is_test_source(&path) {
-            continue;
-        }
-        let production = cfgd_core::test_helpers::production_slice_of(&path);
-        declarations.extend(cfgd_core::test_helpers::fn_declarations(&production));
-    }
+    let declarations =
+        workspace_declarations(WORKSPACE_CRATES).rows_under("cfgd-core/src/reconciler");
     // The setter WRITES the field; every other reader is a removal it gates.
     let readers: Vec<(String, Option<String>)> = declarations
         .iter()
@@ -37484,6 +37614,8 @@ fn every_reconciler_a_production_site_builds_says_which_picture_it_saw() {
                     // rows through a name its own body never spells. The file's
                     // own call graph answers that, seeded with the flag's
                     // readers, and a seed is not a reach of its own.
+                    // one-file-declarations-ok: the call graph of the one file holding
+                    // this constructor site, declared when a site is found.
                     let declarations = cfgd_core::test_helpers::fn_declarations(&production);
                     let seeds: Vec<(String, Option<String>)> = removals
                         .iter()
@@ -39858,18 +39990,16 @@ fn every_hint_composer_declares_its_class() {
         ("cfgd-test-fixtures", 0),
     ];
     let names: Vec<&str> = WALK_ROOTS.iter().map(|(k, _)| *k).collect();
-    let trees = production_sources_per_root(&names);
+    let workspace = workspace_declarations(&names);
     let mint_tells = hint_mint_tells();
     let mut per_root: Vec<(&str, usize)> = Vec::new();
-    let mut declared: Vec<(String, &std::path::PathBuf, String, &String)> = Vec::new();
-    for ((krate, _), &(_, sources)) in WALK_ROOTS.iter().zip(&trees) {
+    let mut declared: Vec<(&str, &std::path::Path, &str, &str)> = Vec::new();
+    for (krate, _) in WALK_ROOTS {
         let mut found = 0usize;
-        for (path, body) in sources {
-            for (name, _, code) in cfgd_core::test_helpers::fn_declarations(body) {
-                if PINNED_HINT_COMPOSERS.iter().any(|(c, _)| *c == name) {
-                    found += 1;
-                    declared.push((name, path, code, body));
-                }
+        for (&(root, path, body), (name, _, code)) in workspace.sites.iter().zip(&workspace.rows) {
+            if root == *krate && PINNED_HINT_COMPOSERS.iter().any(|(c, _)| c == name) {
+                found += 1;
+                declared.push((name, path, code, body));
             }
         }
         per_root.push((krate, found));
@@ -39903,7 +40033,7 @@ fn every_hint_composer_declares_its_class() {
 
     let mut offenders: Vec<String> = Vec::new();
     for (composer, unconditional) in PINNED_HINT_COMPOSERS {
-        let found: Vec<&(String, &std::path::PathBuf, String, &String)> = declared
+        let found: Vec<&(&str, &std::path::Path, &str, &str)> = declared
             .iter()
             .filter(|(name, _, _, _)| name == composer)
             .collect();
@@ -40431,8 +40561,6 @@ fn every_hint_composer_states_whether_its_wording_is_unconditional() {
 /// handed, which is why an absent tell fails only the tutorial direction.
 #[test]
 fn every_hint_composer_the_workspace_declares_is_classified() {
-    use cfgd_core::test_helpers::fn_declarations;
-
     // Every crate root, the two that hold the composers today included: a hint
     // composed in `cfgd-operator` or `cfgd-csi` would compose one nobody
     // classified, and the walk would report the workspace as swept. One floor
@@ -40453,62 +40581,63 @@ fn every_hint_composer_the_workspace_declares_is_classified() {
         ("cfgd-test-fixtures", 0, 0),
     ];
     let names: Vec<&str> = WALK_ROOTS.iter().map(|(k, _, _)| *k).collect();
-    let trees = production_sources_per_root(&names);
+    let workspace = workspace_declarations(&names);
     let mint_tells = hint_mint_tells();
     let crates_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
 
     let mut per_root: Vec<(&str, usize)> = Vec::new();
     let mut offenders: Vec<String> = Vec::new();
     let mut matched = vec![false; UNCONDITIONAL_HINT_CALL_SITES.len()];
-    for ((krate, floor, mint_floor), &(_, sources)) in WALK_ROOTS.iter().zip(&trees) {
+    for (krate, floor, mint_floor) in WALK_ROOTS {
         let mut found = 0usize;
         let mut minted = 0usize;
-        for (path, production) in sources {
-            let rel = cfgd_core::to_posix_string(path.strip_prefix(&crates_dir).unwrap_or(path));
-            for (name, owner, code) in fn_declarations(production) {
-                let Some(signature) = code.split('{').next() else {
-                    continue;
-                };
-                let Some(returns) = signature.rsplit("->").next() else {
-                    continue;
-                };
-                // A sink takes `impl Into<HintCommands>` and returns `Self` or
-                // nothing; only a RETURN naming the type composes one.
-                if signature.rsplit_once("->").is_none() || !returns.contains("HintCommands") {
-                    // The other half of the class: a function composing no hint
-                    // of its own still ungates one by spelling the door, and a
-                    // walk reading signatures alone never sees it. That is how
-                    // the daemon's `Press Ctrl+C to stop` went gated on the
-                    // shipped default while two docs pages promised it.
-                    if owner.as_deref() != Some("HintCommands")
-                        && (code.contains("::unconditional(") || code.contains(".ungated()"))
+        for (&(root, path, _), (name, owner, code)) in workspace.sites.iter().zip(&workspace.rows) {
+            if root != *krate {
+                continue;
+            }
+            let Some(signature) = code.split('{').next() else {
+                continue;
+            };
+            let Some(returns) = signature.rsplit("->").next() else {
+                continue;
+            };
+            // A sink takes `impl Into<HintCommands>` and returns `Self` or
+            // nothing; only a RETURN naming the type composes one.
+            if signature.rsplit_once("->").is_none() || !returns.contains("HintCommands") {
+                // The other half of the class: a function composing no hint
+                // of its own still ungates one by spelling the door, and a
+                // walk reading signatures alone never sees it. That is how
+                // the daemon's `Press Ctrl+C to stop` went gated on the
+                // shipped default while two docs pages promised it.
+                if owner.as_deref() != Some("HintCommands")
+                    && (code.contains("::unconditional(") || code.contains(".ungated()"))
+                {
+                    minted += 1;
+                    let rel =
+                        cfgd_core::to_posix_string(path.strip_prefix(&crates_dir).unwrap_or(path));
+                    match UNCONDITIONAL_HINT_CALL_SITES
+                        .iter()
+                        .position(|(file, site)| *file == rel && *site == name)
                     {
-                        minted += 1;
-                        match UNCONDITIONAL_HINT_CALL_SITES
-                            .iter()
-                            .position(|(file, site)| *file == rel && *site == name)
-                        {
-                            Some(at) => matched[at] = true,
-                            None => offenders.push(format!(
-                                "{rel}: `{name}` mints an ungated hint and states no class"
-                            )),
-                        }
+                        Some(at) => matched[at] = true,
+                        None => offenders.push(format!(
+                            "{rel}: `{name}` mints an ungated hint and states no class"
+                        )),
                     }
-                    continue;
                 }
-                found += 1;
-                let Some((_, unconditional)) =
-                    PINNED_HINT_COMPOSERS.iter().find(|(n, _)| *n == name)
-                else {
-                    offenders.push(format!(
-                        "{}: `{name}` composes a hint and states no class",
-                        path.display()
-                    ));
-                    continue;
-                };
-                if let Some(clause) = composer_class_offence(&code, *unconditional, &mint_tells) {
-                    offenders.push(format!("{}: `{name}` {clause}", path.display()));
-                }
+                continue;
+            }
+            found += 1;
+            let Some((_, unconditional)) = PINNED_HINT_COMPOSERS.iter().find(|(n, _)| *n == name)
+            else {
+                offenders.push(format!(
+                    "{}: `{name}` composes a hint and states no class",
+                    path.display()
+                ));
+                continue;
+            };
+            if let Some(clause) = composer_class_offence(code, *unconditional, &mint_tells) {
+                offenders.push(format!("{}: `{name}` {clause}", path.display()));
             }
         }
         assert!(
@@ -47450,11 +47579,12 @@ fn no_test_reaches_a_real_package_manager_through_the_tool_provisioner() {
 /// today: a wrapper written as a METHOD. A fold following free calls alone
 /// stops at such a wrapper and never names the verb reaching the provisioner
 /// through it.
-fn provisioning_reach(
-    declarations: &[(String, Option<String>, String)],
+fn provisioning_reach<D: std::borrow::Borrow<(String, Option<String>, String)>>(
+    declarations: &[D],
 ) -> Vec<(String, Option<String>)> {
     let seeds: Vec<(String, Option<String>)> = declarations
         .iter()
+        .map(std::borrow::Borrow::borrow)
         // The crate's own `provision_tool` wrapper calls the core one, so it is
         // seeded by its own body like every other caller: the two are one bare
         // name and a self-call is what the fold skips, not this.
@@ -47536,24 +47666,7 @@ fn the_call_graph_fold_keeps_two_functions_that_share_a_name_apart() {
 /// missing from the roster is a hole in it.
 #[test]
 fn every_function_that_can_reach_the_tool_provisioner_is_named_here() {
-    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let mut declarations: Vec<(String, Option<String>, String)> = Vec::new();
-    for path in rust_sources_under(&manifest.join("src")) {
-        // A `tests.rs` is a test region whole, carrying no `#[cfg(test)]` for
-        // the cut to read (held by
-        // `no_tests_file_carries_a_cfg_test_attribute_of_its_own`), and its
-        // helpers are nobody's production route.
-        if cfgd_core::test_helpers::is_test_source(&path) {
-            continue;
-        }
-        let production = cfgd_core::test_helpers::production_slice_of(&path);
-        declarations.extend(cfgd_core::test_helpers::fn_declarations(&production));
-    }
-    assert!(
-        !declarations.is_empty(),
-        "the walk read no declarations at all"
-    );
-
+    let declarations = workspace_declarations(WORKSPACE_CRATES).rows_under("cfgd/src");
     let derived = provisioning_reach(&declarations);
     assert!(
         !derived.is_empty(),
@@ -52433,23 +52546,8 @@ fn no_walk_bearing_source_scans_syntax_by_hand() {
 /// both the override and the stored policy the fold applies to.
 #[test]
 fn every_config_load_site_answers_the_migration_policy() {
-    use cfgd_core::test_helpers::{
-        fn_declarations, production_slice_of, rust_sources_under, workspace_root,
-    };
-    let root = workspace_root().join("crates/cfgd/src/cli");
-    let sources = rust_sources_under(&root);
-    assert!(
-        sources.len() >= 40,
-        "the walk read only {} sources",
-        sources.len()
-    );
-    let mut declarations = Vec::new();
-    for path in sources
-        .iter()
-        .filter(|path| !cfgd_core::test_helpers::is_test_source(path))
-    {
-        declarations.extend(fn_declarations(&production_slice_of(path)));
-    }
+    use cfgd_core::test_helpers::{fn_declarations, production_slice_of, workspace_root};
+    let declarations = workspace_declarations(WORKSPACE_CRATES).rows_under("cfgd/src/cli");
     assert!(
         declarations.len() >= 400,
         "the walk found {} functions",

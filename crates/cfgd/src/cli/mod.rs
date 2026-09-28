@@ -3806,4 +3806,4 @@ fn keep_env_bindings(cmd: clap::Command, keep: &[&str]) -> clap::Command {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

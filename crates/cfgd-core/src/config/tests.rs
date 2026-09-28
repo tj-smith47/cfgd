@@ -327,6 +327,9 @@ fn no_production_site_compares_an_api_version_by_hand() {
             let raw: Vec<&str> = production.lines().collect();
             let code: Vec<String> = blanked.lines().map(code_line).collect();
             let joined = code.join("\n");
+            // one-file-declarations-ok: this file's blanked text, whose line ranges
+            // index the rows judged here; the workspace memo lives in the cfgd
+            // crate's tests, which this crate cannot read.
             let exempt: Vec<std::ops::RangeInclusive<usize>> = fn_declarations(&blanked)
                 .into_iter()
                 .filter(|(name, ..)| EXEMPT.contains(&name.as_str()))
