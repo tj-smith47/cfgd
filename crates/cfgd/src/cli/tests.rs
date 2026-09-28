@@ -25914,6 +25914,7 @@ const PACKAGE_RESOLVING_VERBS: &[ResolvingVerb] = &[
     ResolvingVerb::always("cmd_backup_run", &["backup", "run"]),
     ResolvingVerb::always("run_backup_run", &["backup", "run"]),
     ResolvingVerb::always("cmd_checkin", &["checkin"]),
+    ResolvingVerb::always("cmd_daemon", &["daemon"]),
     ResolvingVerb::always("cmd_compliance_export", &["compliance", "export"]),
     ResolvingVerb::always("cmd_compliance_snapshot", &["compliance"]),
     ResolvingVerb::always("cmd_decide", &["decide"]),
@@ -25936,13 +25937,16 @@ const PACKAGE_RESOLVING_VERBS: &[ResolvingVerb] = &[
     ResolvingVerb::always("cmd_verify", &["verify"]),
 ];
 
-/// Every `cmd_*` or `run_*` function that can reach package resolution is a
-/// row of [`PACKAGE_RESOLVING_VERBS`].
+/// Every `cmd_*` or `run_*` function this crate declares that can reach
+/// package resolution is a row of [`PACKAGE_RESOLVING_VERBS`].
 ///
 /// The seeds are the functions whose own body calls one of the resolution
 /// entry points, and the fold follows every caller of those until the set stops
-/// growing. The check is one-directional: a row no derivation names widens the
-/// population the walk judges, which costs a test nothing.
+/// growing. The fold reads every crate's production code, because a command
+/// can reach resolution through the library alone: `cmd_daemon` hands off to
+/// `cfgd_core::daemon::run_daemon`, whose tick handlers call
+/// `resolve_daemon_modules`. The check is one-directional: a row no derivation
+/// names widens the population the walk judges, which costs a test nothing.
 #[test]
 fn every_command_reaching_package_resolution_is_a_resolving_verb() {
     const ENTRIES: &[&str] = &[
@@ -25952,16 +25956,27 @@ fn every_command_reaching_package_resolution_is_a_resolving_verb() {
         "resolve_desired_state",
         "resolve_desired_from_composition",
     ];
-    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    /// The members of the derived set each root declares today, so a root
+    /// whose part of the call graph goes dark fails on its own name.
+    const ROOT_FLOORS: [(&str, usize); 7] = [
+        ("cfgd", 47),
+        ("cfgd-core", 20),
+        ("cfgd-crd", 0),
+        ("cfgd-csi", 0),
+        ("cfgd-operator", 0),
+        ("cfgd-schema", 0),
+        ("cfgd-test-fixtures", 0),
+    ];
+    let roots: Vec<&str> = ROOT_FLOORS.iter().map(|(root, _)| *root).collect();
+    let mut declared_in: Vec<(String, (String, Option<String>))> = Vec::new();
     let mut declarations: Vec<(String, Option<String>, String)> = Vec::new();
-    for path in rust_sources_under(&manifest.join("src")) {
-        // A `tests.rs` is a test region whole, and its helpers are nobody's
-        // production route.
-        if cfgd_core::test_helpers::is_test_source(&path) {
-            continue;
+    for (root, sources) in production_sources_per_root(&roots) {
+        for (_, production) in sources {
+            for (name, owner, body) in cfgd_core::test_helpers::fn_declarations(&production) {
+                declared_in.push((root.clone(), (name.clone(), owner.clone())));
+                declarations.push((name, owner, body));
+            }
         }
-        let production = cfgd_core::test_helpers::production_slice_of(&path);
-        declarations.extend(cfgd_core::test_helpers::fn_declarations(&production));
     }
     let seeds: Vec<(String, Option<String>)> = declarations
         .iter()
@@ -25972,9 +25987,30 @@ fn every_command_reaching_package_resolution_is_a_resolving_verb() {
         })
         .map(|(name, owner, _)| (name.clone(), owner.clone()))
         .collect();
-    let mut derived: Vec<String> = cfgd_core::test_helpers::callers_reaching(&declarations, &seeds)
+    let reached: std::collections::HashSet<(String, Option<String>)> =
+        cfgd_core::test_helpers::callers_reaching(&declarations, &seeds)
+            .into_iter()
+            .collect();
+    let under: Vec<String> = ROOT_FLOORS
+        .iter()
+        .filter_map(|(root, floor)| {
+            let found = declared_in
+                .iter()
+                .filter(|(r, member)| r == root && reached.contains(member))
+                .count();
+            (found < *floor).then(|| format!("{root}: {found}, floor {floor}"))
+        })
+        .collect();
+    assert!(
+        under.is_empty(),
+        "a root declares fewer members of the call graph reaching package resolution than it \
+         holds:\n  {}",
+        under.join("\n  ")
+    );
+    let mut derived: Vec<String> = declared_in
         .into_iter()
-        .map(|(name, _)| name)
+        .filter(|(root, member)| root == "cfgd" && reached.contains(member))
+        .map(|(_, (name, _))| name)
         .filter(|name| name.starts_with("cmd_") || name.starts_with("run_"))
         .collect();
     derived.sort();
@@ -26121,14 +26157,15 @@ fn every_built_in_manager_answers_available_from_its_seam() {
 /// host holding one.
 ///
 /// A test drives a verb when it calls one of [`PACKAGE_RESOLVING_VERBS`]'
-/// functions, or runs `cfgd_bin()` with every argv word of one in literals it
-/// reads (and the row's gate, where it has one). What a test reads is its own
-/// body plus one hop: the same-file functions it calls and the `const` items it
-/// names. Each literal there holding `kind`, `Module` and `packages` is parsed
-/// as YAML ([`module_package_prefers`]), keeping the entries whose
-/// `platforms:` gate admits this host; one that fails to parse, or holds a
-/// shape the Module schema refuses, fails the walk. A test holding a package
-/// entry does one of three things:
+/// functions, or runs `cfgd_bin()` or calls the `execute(` dispatcher with
+/// every argv word of one in literals it reads (and the row's gate, where it
+/// has one). What a test reads is its own body plus one hop: the same-file
+/// functions it calls and the `const` items it names. Each literal there
+/// holding `kind`, `Module` and `packages` is parsed as YAML
+/// ([`module_package_prefers`]), keeping the entries whose `platforms:` gate
+/// admits some platform cfgd names; one that fails to parse, or holds a shape
+/// the Module schema refuses, fails the walk. A test holding a package entry
+/// does one of three things:
 /// - builds every harness with `.planted_manager()`, is
 ///   `#[serial_test::serial]` (the knob pins the availability memo), and names
 ///   [`PLANTED_FAMILY`] in every entry's `prefer` list;
@@ -26259,10 +26296,11 @@ fn every_package_resolving_test_resolves_off_managers_it_controls() {
                 }
                 let (calls, _) = code_tokens(&reach);
                 let runs_binary = reach.iter().any(|l| l.contains("cfgd_bin()"));
+                let dispatches = calls.contains("execute");
                 let in_process = PACKAGE_RESOLVING_VERBS
                     .iter()
                     .any(|v| calls.contains(v.call));
-                if !in_process && !runs_binary {
+                if !in_process && !runs_binary && !dispatches {
                     continue;
                 }
                 let reach_raw = spans
@@ -26272,20 +26310,21 @@ fn every_package_resolving_test_resolves_off_managers_it_controls() {
                     .join("\n");
                 let reach_code = reach.join("\n");
                 let literals: Vec<String> = string_literal_values(&reach_raw, &reach_code);
-                let drives = PACKAGE_RESOLVING_VERBS.iter().any(|v| {
-                    let called = calls.contains(v.call)
+                let parses_argv = |v: &ResolvingVerb| {
+                    v.argv.iter().all(|w| literals.iter().any(|l| l == w))
+                        && v.gate
+                            .is_none_or(|(flag, _)| literals.iter().any(|l| l == flag))
+                };
+                let called = PACKAGE_RESOLVING_VERBS.iter().any(|v| {
+                    calls.contains(v.call)
                         && v.gate.is_none_or(|(_, argument)| {
                             call_arguments(&reach_raw, &reach_code, &format!("{}(", v.call))
                                 .iter()
                                 .any(|args| args.iter().any(|a| a == argument))
-                        });
-                    let ran = runs_binary
-                        && v.argv.iter().all(|w| literals.iter().any(|l| l == w))
-                        && v.gate
-                            .is_none_or(|(flag, _)| literals.iter().any(|l| l == flag));
-                    called || ran
+                        })
                 });
-                if !drives {
+                let parsed = PACKAGE_RESOLVING_VERBS.iter().any(parses_argv);
+                if !called && !((runs_binary || dispatches) && parsed) {
                     continue;
                 }
                 let mut entries: Vec<Vec<String>> = Vec::new();
@@ -26501,15 +26540,31 @@ fn seam_value(
 }
 
 /// The `prefer` list of every `spec.packages` entry of every Module document
-/// in `text` that applies to this host, each entry read through the
-/// production [`cfgd_core::config::ModulePackageEntry`]. An entry or a module
-/// whose `platforms:` gate leaves this host out is dropped, because the
-/// resolver never reaches it. The error is a document that fails to parse, or
-/// an entry the Module schema refuses.
+/// in `text` that some platform cfgd names can resolve, each entry read
+/// through the production [`cfgd_core::config::ModulePackageEntry`]. The
+/// platforms are every [`Distro::ALL`](cfgd_core::platform::Distro::ALL)
+/// member on its own OS (`Unknown` on Linux) crossed with every
+/// [`Arch::NAMED`](cfgd_core::platform::Arch::NAMED) architecture, so a
+/// `platforms: [macos]` entry is judged on a Linux runner: the suite runs on
+/// every OS in CI, and the host the walk runs on must not decide which entries
+/// it reads. An entry whose module gate and own gate admit none of them (a
+/// `plan9` tag) is dropped on every host, because no resolver ever reaches it.
+/// The error is a document that fails to parse, or an entry the Module schema
+/// refuses.
 fn module_package_prefers(text: &str) -> Result<Vec<Vec<String>>, String> {
-    use cfgd_core::platform::PlatformGated;
+    use cfgd_core::platform::{Arch, Distro, Os, Platform, PlatformGated};
     use serde::Deserialize;
-    let here = cfgd_core::platform::Platform::current();
+    let platforms: Vec<Platform> = Distro::ALL
+        .iter()
+        .flat_map(|distro| {
+            Arch::NAMED.iter().map(move |arch| Platform {
+                os: distro.os().unwrap_or(Os::Linux),
+                distro: distro.clone(),
+                version: String::new(),
+                arch: arch.clone(),
+            })
+        })
+        .collect();
     let mut out = Vec::new();
     for doc in serde_yaml::Deserializer::from_str(text) {
         let doc =
@@ -26525,9 +26580,10 @@ fn module_package_prefers(text: &str) -> Result<Vec<Vec<String>>, String> {
                 .map_err(|e| format!("holds a `spec.platforms` the schema refuses: {e}"))?,
             None => Vec::new(),
         };
-        if !here.matches_any(&module_tags) {
-            continue;
-        }
+        let admitted: Vec<&Platform> = platforms
+            .iter()
+            .filter(|p| p.matches_any(&module_tags))
+            .collect();
         let Some(packages) = spec.get("packages") else {
             continue;
         };
@@ -26537,7 +26593,7 @@ fn module_package_prefers(text: &str) -> Result<Vec<Vec<String>>, String> {
         out.extend(
             entries
                 .into_iter()
-                .filter(|entry| entry.applies_to(here))
+                .filter(|entry| admitted.iter().any(|p| entry.applies_to(p)))
                 .map(|entry| entry.prefer),
         );
     }
