@@ -1466,7 +1466,14 @@ fn update_check_callers_without_optout_clear(
     let mut offenders = Vec::new();
     for from in (0..lines.len()).filter(|&n| cfgd_core::test_helpers::opens_function(lines[n])) {
         let to = cfgd_core::test_helpers::declaration_end(&lines, from);
+        // A declaration names itself, and a helper binary's own `fn main` is
+        // no call to cfgd's, so the head's name is taken out before the calls
+        // are read.
         let segment = lines[from..=to].join("\n");
+        let segment = match cfgd_core::test_helpers::declared_fn_name(lines[from]) {
+            Some(name) => segment.replacen(&format!("fn {name}"), "fn", 1),
+            None => segment,
+        };
         let reaches = segment.contains(LOOP_VERSION_TICK)
             || entries.iter().any(|(name, owner)| {
                 cfgd_core::test_helpers::reaches_fn(&segment, name, owner.as_deref())
@@ -1501,13 +1508,7 @@ fn every_test_reaching_the_update_check_clears_the_opt_out_variables() {
     let mut judged = 0usize;
     let mut offenders: Vec<String> = Vec::new();
     for path in cfgd_core::test_helpers::rust_sources_under(&crates_dir) {
-        // unfloored-slice-ok: the test regions judged here are cut from the whole file below.
-        let body = cfgd_core::test_helpers::walked_file_body(&path);
-        let region = if cfgd_core::test_helpers::is_test_source(&path) {
-            body
-        } else {
-            cfgd_core::test_helpers::test_region_mask(&body)
-        };
+        let region = cfgd_core::test_helpers::test_region_of(&path);
         let (found, missing) = update_check_callers_without_optout_clear(&region, &entries);
         judged += found;
         let label = cfgd_core::to_posix_string(path.strip_prefix(&crates_dir).unwrap_or(&path));
@@ -2251,15 +2252,7 @@ fn every_test_names_a_cfgd_variable_through_its_const() {
                 continue;
             }
             for path in rust_sources_under(&tree) {
-                let whole = cfgd_core::test_helpers::is_test_source(&path)
-                    || cfgd_core::test_helpers::is_test_only_file(&path);
-                // unfloored-slice-ok: the test region is cut from the whole file here.
-                let body = cfgd_core::test_helpers::walked_file_body(&path);
-                let region: std::borrow::Cow<str> = if whole {
-                    std::borrow::Cow::Borrowed(&body)
-                } else {
-                    std::borrow::Cow::Owned(cfgd_core::test_helpers::test_region_mask(&body))
-                };
+                let region = cfgd_core::test_helpers::test_region_of(&path);
                 if region.trim().is_empty() {
                     continue;
                 }
@@ -2267,6 +2260,8 @@ fn every_test_names_a_cfgd_variable_through_its_const() {
                 let rel =
                     cfgd_core::to_posix_string(path.strip_prefix(&crates_dir).unwrap_or(&path));
                 let own_library = dir == "src" && !rel.contains("/src/bin/");
+                // unfloored-slice-ok: a hatch on the row above a test line is read raw.
+                let body = cfgd_core::test_helpers::walked_file_body(&path);
                 let raw_lines: Vec<&str> = body.lines().collect();
                 for (i, line) in region.lines().enumerate() {
                     let code = cfgd_core::test_helpers::code_span(line);
@@ -18835,8 +18830,8 @@ fn no_command_words_the_up_to_date_verdict_for_itself() {
 #[test]
 fn every_walk_declaring_the_workspace_reads_the_one_memo() {
     use cfgd_core::test_helpers::{
-        blank_non_code, declaration_end, declared_fn_name, inline_test_item_ranges,
-        is_test_only_file, is_test_source, workspace_root,
+        blank_non_code, declaration_end, declared_fn_name, is_test_only_file, is_test_source,
+        workspace_root,
     };
     // Each crate's `.rs` files, and the functions reading the memo, each
     // floored at the count it holds today.
@@ -18901,9 +18896,12 @@ fn every_walk_declaring_the_workspace_reads_the_one_memo() {
                 && quoted.iter().filter(|m| text.contains(m.as_str())).count() >= 3
             {
                 let whole_test = is_test_source(path) || is_test_only_file(path);
-                let test_items = inline_test_item_ranges(&text);
-                let in_test =
-                    |n: usize| whole_test || test_items.iter().any(|(a, b)| (*a..*b).contains(&n));
+                let gates = if whole_test {
+                    Vec::new()
+                } else {
+                    cfgd_core::test_helpers::line_gates_of(path)
+                };
+                let in_test = |n: usize| whole_test || gates[n].is_some();
                 // Bare rows, keyed by the line opening the list that holds them.
                 let mut rows: std::collections::BTreeMap<usize, std::collections::BTreeSet<usize>> =
                     std::collections::BTreeMap::new();
@@ -36772,6 +36770,9 @@ fn every_module_package_description_comes_from_its_composer() {
     /// The composer's own spelling, so a walk that stopped reading its file
     /// fails on that file's name.
     const SPELLED_FLOOR: [(&str, usize); 1] = [("cfgd-core/src/reconciler/format.rs", 1)];
+    /// The sources each root holds outside its test files, so neither tree can
+    /// go dark behind the other's spellings.
+    const ROOT_FLOOR: [(&str, usize); 2] = [("cfgd", 146), ("cfgd-core", 196)];
     /// The plan's description and the executed run's description, each named
     /// by its own file.
     const COMPOSER_CALLERS: [(&str, usize); 2] = [
@@ -36783,14 +36784,16 @@ fn every_module_package_description_comes_from_its_composer() {
     let mut spelled: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
     let mut taken: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
     let mut offenders: Vec<String> = Vec::new();
-    for krate in ["cfgd", "cfgd-core"] {
+    for (krate, floor) in ROOT_FLOOR {
         let root = crates_dir.join(krate).join("src");
+        let mut read = 0usize;
         for path in rust_sources_under(&root) {
             // A test module's fixtures spell recorded ids by hand on purpose:
             // they are the expected values the composer is judged against.
             if cfgd_core::test_helpers::is_test_source(&path) {
                 continue;
             }
+            read += 1;
             let production = cfgd_core::test_helpers::production_slice_of(&path);
             let file = format!(
                 "{krate}/src/{}",
@@ -36841,6 +36844,10 @@ fn every_module_package_description_comes_from_its_composer() {
                 }
             }
         }
+        assert!(
+            read >= floor,
+            "the walk read {read} of `{krate}`'s sources, fewer than the {floor} it holds"
+        );
     }
     assert!(
         offenders.is_empty(),
@@ -37308,12 +37315,9 @@ fn no_tests_file_carries_a_cfg_test_attribute_of_its_own() {
             // unfloored-slice-ok: a test file is judged whole, having no production region.
             let body = cfgd_core::test_helpers::walked_file_body(&path);
             for (n, line) in body.lines().enumerate() {
-                // The needle spelled in a walk's own source is a literal, and
-                // the property is stated in comments all over this tree, so
-                // both are blanked before the line is judged.
-                let code = cfgd_core::test_helpers::code_line(line);
-                let head = code.trim_start();
-                if head.starts_with("#[cfg(test)]") || head.starts_with("#[cfg(all(test") {
+                if cfgd_core::test_helpers::attribute_gate(line)
+                    == Some(cfgd_core::test_helpers::Gate::Test)
+                {
                     offenders.push(format!("{}:{}", path.display(), n + 1));
                 }
             }
@@ -37385,33 +37389,43 @@ fn every_two_root_walk_guards_each_root_it_reads() {
     // floor const, a root list carrying one or more counts per entry, and a per-root
     // accumulator pushed once per root and read back. An aggregate
     // `FLOOR_FILES: usize` states one count for the whole walk and is exactly
-    // what this pin exists to refuse. A root list floors the roots it holds a
-    // row for, so it answers only when every root the walk names has one: a
-    // list naming one of the two roots a walk reads floors the other in
-    // aggregate. A row names its root the three ways `roots_named` reads one.
-    // `code` and `raw` hold the same rows, and the row names are literals, so
-    // they are read off `raw`.
+    // what this pin exists to refuse. A floor array or a root list floors the
+    // roots it holds a row for, so either answers only when every root the
+    // walk names has one: an array naming one of the two roots a walk reads
+    // floors the other in aggregate. A row names its root the three ways
+    // `roots_named` reads one, or by a path under it (`"<crate>/src/…"`, a
+    // per-file floor). A floor array of bare counts (`[usize; 2]`) holds one
+    // per root by position, so it answers when it holds as many counts as the
+    // walk names roots. `code` and `raw` hold the same rows, and the row names
+    // are literals, so they are read off `raw`.
     let floors_per_root = |code: &str, raw: &str, named: &[&str]| {
         let code: Vec<&str> = code.lines().collect();
         let raw: Vec<&str> = raw.lines().collect();
+        let a_row_per_root = |i: usize| {
+            let end = (i..code.len())
+                .find(|&k| code[k].contains("];"))
+                .unwrap_or(code.len() - 1);
+            let rows = raw[i..=end].join("\n");
+            named.iter().all(|krate| {
+                [
+                    format!("(\"{krate}\""),
+                    format!("(\"{krate}/{segment}"),
+                    format!("(\"crates/{krate}/{segment}"),
+                    format!("(\"../{krate}/{segment}"),
+                ]
+                .iter()
+                .any(|row| rows.contains(row))
+            })
+        };
+        let a_count_per_root = |l: &str| {
+            l.split_once("[usize; ")
+                .and_then(|(_, rest)| rest.split(']').next()?.trim().parse::<usize>().ok())
+                .is_some_and(|counts| counts >= named.len())
+        };
         code.iter().enumerate().any(|(i, l)| {
-            (l.contains("FLOOR") && l.contains(": ["))
+            (l.contains("FLOOR") && l.contains(": [") && (a_row_per_root(i) || a_count_per_root(l)))
                 || (l.contains("per_root") && l.contains(".push("))
-                || (l.contains("WALK_ROOTS") && l.contains("&[(&str, usize") && {
-                    let end = (i..code.len())
-                        .find(|&k| code[k].contains("];"))
-                        .unwrap_or(code.len() - 1);
-                    let rows = raw[i..=end].join("\n");
-                    named.iter().all(|krate| {
-                        [
-                            format!("(\"{krate}\""),
-                            format!("(\"crates/{krate}/{segment}\""),
-                            format!("(\"../{krate}/{segment}\""),
-                        ]
-                        .iter()
-                        .any(|row| rows.contains(row))
-                    })
-                })
+                || (l.contains("WALK_ROOTS") && l.contains("&[(&str, usize") && a_row_per_root(i))
         })
     };
 
@@ -45000,18 +45014,11 @@ fn no_test_fixture_writes_a_native_path_into_a_declared_document() {
     let mut files = 0usize;
     let mut offenders: Vec<String> = Vec::new();
     for path in cfgd_core::test_helpers::rust_sources_under(&crates_dir) {
-        // unfloored-slice-ok: the test regions judged here are cut from the whole file below.
-        let body = cfgd_core::test_helpers::walked_file_body(&path);
-        let in_tests = cfgd_core::test_helpers::is_test_source(&path);
         // The complement of the production slice, so which end of a file a
         // test-only item sits at cannot change what is judged; blanked in
         // place, so a line's number stays the file's own and an offender can
         // be opened where it is reported.
-        let region = if in_tests {
-            body.clone()
-        } else {
-            cfgd_core::test_helpers::test_region_mask(&body)
-        };
+        let region = cfgd_core::test_helpers::test_region_of(&path);
         if region.lines().all(|line| line.is_empty()) {
             continue;
         }
@@ -50774,8 +50781,9 @@ const DEMO_TEST_FEATURE: &str = "test-helpers";
 /// Why `source`, a file under a crate's `src/` that the demo check does not
 /// count, could still be compiled into the binary, or `None` when it cannot.
 ///
-/// It cannot when the `mod` declaring it sits directly under a test gate
-/// (`cfg(test)`, `cfg(all(test, ...))` or `cfg(any(test, feature =
+/// It cannot when the `mod` declaring it sits directly under a test gate, an
+/// attribute [`cfgd_core::test_helpers::attribute_gate`] reads a gate off
+/// (`cfg(test)`, `cfg(all(test, ...))`, `cfg(any(test, feature =
 /// "test-helpers"))`), or when the declaring file is itself excluded, whose
 /// own declaration answers the same question one level up.
 fn ungated_excluded_module(
@@ -50783,11 +50791,6 @@ fn ungated_excluded_module(
     source: &std::path::Path,
     inputs: &std::collections::HashSet<String>,
 ) -> Option<String> {
-    const GATES: [&str; 3] = [
-        "cfg(test)",
-        "cfg(all(test",
-        "cfg(any(test, feature = \"test-helpers\"))",
-    ];
     let rel = repo_relative(root, source);
     let dir = source.parent()?;
     let stem = source.file_stem()?.to_string_lossy().into_owned();
@@ -50826,7 +50829,7 @@ fn ungated_excluded_module(
             .rev()
             .map(|l| l.trim())
             .take_while(|l| l.starts_with("#[") || l.starts_with("//"))
-            .any(|l| l.starts_with("#[") && GATES.iter().any(|g| l.contains(g)));
+            .any(|l| cfgd_core::test_helpers::attribute_gate(l).is_some());
         if !gated {
             return Some(format!(
                 "{rel}: {DEMO_SYNC_CHECK} does not count it, but `{declaration}` in {} is not under a test gate",

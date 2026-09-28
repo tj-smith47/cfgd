@@ -1149,13 +1149,10 @@ mod condense_script_label_tests {
             // `renderer/mod.rs` and `reconciler/format.rs` each carry a
             // test-only item above production code that a cut at the first
             // `#[cfg(test)]` would drop from the walk.
-            let tests = crate::test_helpers::inline_test_item_ranges(&body);
+            let gates = crate::test_helpers::line_gates_of(&path);
             for (n, line) in lines.iter().enumerate() {
                 let code = line.trim_start();
-                if tests.iter().any(|(from, to)| (*from..*to).contains(&n))
-                    || code.starts_with("//")
-                    || code.starts_with("use ")
-                {
+                if gates[n].is_some() || code.starts_with("//") || code.starts_with("use ") {
                     continue;
                 }
                 if !idioms.iter().any(|i| code.contains(i)) {

@@ -2878,7 +2878,7 @@ fn unguarded_env_reads(
         // `test-helpers` seam's included.
         // unfloored-slice-ok: the test-only guard statements are part of every span judged.
         let body = walked_file_body(&path);
-        let gates = crate::test_helpers::line_gates(&body);
+        let gates = crate::test_helpers::line_gates_of(&path);
         let lines: Vec<&str> = body.lines().collect();
         let relative = source_label(&path);
         // Each declaration as the line range it covers and whether its own
@@ -3113,8 +3113,9 @@ fn every_env_mutating_test_helper_is_named_in_the_mutator_roster() {
             continue;
         }
         files_read += 1;
-        // The trailing test module exercises the helpers, so its own tests
-        // reach every seed and would be derived as helpers themselves.
+        // The seam view: a `test`-gated item's own tests reach every seed and
+        // would be derived as helpers themselves, and a `test-helpers` item is
+        // a helper a test drives.
         let body = crate::test_helpers::test_module_cut_of(&path);
         let lines: Vec<&str> = body.lines().collect();
         let owners = impl_owners(&lines);
@@ -3237,7 +3238,7 @@ fn every_env_mutating_test_helper_is_named_in_the_mutator_roster() {
 /// A caller that genuinely holds one compiled-in body and no path keeps the pure
 /// cut and says so with `// unfloored-slice-ok: <why>` on that line or the one
 /// above it. A walk over the files built only for tests reads their region
-/// through [`crate::test_helpers::test_module_cut_of`], the same floored cut
+/// through [`crate::test_helpers::test_module_cut_of`], the floored seam view
 /// with no test-only guard.
 ///
 /// A source walk is a test-scope function calling `rust_sources_under`,
@@ -3254,6 +3255,16 @@ fn every_env_mutating_test_helper_is_named_in_the_mutator_roster() {
 /// through `floored_production_body` and `production_and_seams_of` are floored
 /// per crate at the count each holds, so walks drifting off the floored helper
 /// fail here.
+///
+/// Where a file's test text ends is the one scanner's answer too. A test-scope
+/// line searching a string for a test gate's spelling (`.starts_with("#[cfg(test)]")`,
+/// `.find("cfg(any(test")`, `== "#[cfg(test)]"`) or for a test module's head
+/// (`.contains("mod tests")`) decides that cut by itself, and a second cut
+/// disagrees with the first on every shape it was not written for: a composite
+/// gate, an item beside production code, a `test-helpers` seam. Such a walk
+/// reads [`crate::test_helpers::test_region_of`], `line_gates_of` or
+/// `attribute_gate` instead. `test_helpers.rs` is where the scanner
+/// lives, so its own test module is outside this search.
 #[test]
 fn every_multi_file_production_walk_reads_through_the_floored_helper() {
     // Spelled in parts, or this walk's own needles are the first offenders it
@@ -3279,6 +3290,48 @@ fn every_multi_file_production_walk_reads_through_the_floored_helper() {
         concat!("production_and_seams", "_of("),
     ];
     const FLOORED_READS: [(&str, usize); 2] = [("cfgd", 35), ("cfgd-core", 4)];
+    let gate_spellings = [
+        concat!("cfg", "(test"),
+        concat!("cfg", "(all(test"),
+        concat!("cfg", "(any(test"),
+        concat!("mod ", "tests"),
+    ];
+    let searches = [
+        "starts_with",
+        "ends_with",
+        "contains",
+        "find",
+        "rfind",
+        "strip_prefix",
+        "split_once",
+        "matches",
+        "match_indices",
+    ];
+    // A literal opening on a gate's spelling, or on the attribute holding it,
+    // handed to a string search or compared whole.
+    let cuts_by_hand = |line: &str| {
+        if !gate_spellings
+            .iter()
+            .any(|spelling| line.contains(spelling))
+        {
+            return false;
+        }
+        let code = crate::test_helpers::code_span(line);
+        ["(\"", "== \""].iter().any(|open| {
+            code.match_indices(open).any(|(at, _)| {
+                let rest = &code[at + open.len()..];
+                let rest = rest
+                    .strip_prefix("#![")
+                    .or_else(|| rest.strip_prefix("#["))
+                    .unwrap_or(rest);
+                gate_spellings
+                    .iter()
+                    .any(|spelling| rest.starts_with(spelling))
+                    && (open.starts_with('=') || searches.iter().any(|m| code[..at].ends_with(m)))
+            })
+        })
+    };
+    let mut hand_cuts = Vec::new();
     let crates_dir = workspace_root().join("crates");
     let mut floored: std::collections::BTreeMap<String, usize> = Default::default();
     let mut offenders = Vec::new();
@@ -3350,9 +3403,19 @@ fn every_multi_file_production_walk_reads_through_the_floored_helper() {
         let whole_test = own_file
             || crate::test_helpers::is_test_source(&path)
             || crate::test_helpers::is_test_only_file(&path);
-        let test_items = crate::test_helpers::inline_test_item_ranges(&body);
-        let in_test =
-            |n: usize| whole_test || test_items.iter().any(|(a, b)| (*a..*b).contains(&n));
+        let gates = if whole_test {
+            Vec::new()
+        } else {
+            crate::test_helpers::line_gates_of(&path)
+        };
+        let in_test = |n: usize| whole_test || gates[n].is_some();
+        if !own_file {
+            for (n, line) in lines.iter().enumerate() {
+                if in_test(n) && !line.trim_start().starts_with("//") && cuts_by_hand(line) {
+                    hand_cuts.push(format!("{label}:{}: {}", n + 1, line.trim()));
+                }
+            }
+        }
         for (open, func) in source_functions(&label, &body) {
             // `open` is 1-based and the slice starts on the declaration's line.
             if !in_test(open - 1)
@@ -3397,6 +3460,14 @@ fn every_multi_file_production_walk_reads_through_the_floored_helper() {
          is the whole file reads it through `walked_file_body` and says why with \
          `// unfloored-slice-ok: <why>`:\n{}",
         raw_reads.join("\n")
+    );
+    assert!(
+        hand_cuts.is_empty(),
+        "a test-scope search for a test gate's spelling cuts test text from \
+         production beside the one scanner; read the file's test region through \
+         `test_region_of`, its gates through `line_gates_of`, or judge one \
+         attribute with `attribute_gate`:\n{}",
+        hand_cuts.join("\n")
     );
     // The count the workspace's test scope holds: 147 functions walking sources.
     assert!(
@@ -3774,9 +3845,9 @@ fn a_gated_items_extent_ends_where_the_item_does() {
 ///
 /// A `test-helpers` item is a seam, so it has a view of its own: the seam view
 /// keeps it beside production and drops every `#[cfg(test)]` item, one nested
-/// in a seam included. The production view, the seam-only lines and the
-/// test-only lines are three disjoint parts that put the file back together
-/// line for line.
+/// in a seam included. The production view, the seam view and the test region
+/// put the file back together line for line, each line taken from the view its
+/// gate routes it to and none copied from the file.
 #[test]
 fn the_production_slice_and_the_test_region_partition_every_test_only_shape() {
     let gate = concat!("#[cfg", "(test)]");
@@ -3819,6 +3890,51 @@ fn the_production_slice_and_the_test_region_partition_every_test_only_shape() {
             .collect()
     };
     let production = crate::test_helpers::production_slice_of(&path);
+    let seams = crate::test_helpers::production_and_seams_of(&path);
+    let region = crate::test_helpers::test_region_of(&path);
+    let region_lines: Vec<&str> = region.lines().collect();
+    let gates = crate::test_helpers::line_gates_of(&path);
+    let (mut kept, mut seam_kept) = (production.lines(), seams.lines());
+    let mut rebuilt = String::new();
+    let mut test_only: Vec<&str> = Vec::new();
+    for (at, gate) in gates.iter().enumerate() {
+        let line = match gate {
+            None => {
+                let from_production = kept.next();
+                assert_eq!(
+                    seam_kept.next(),
+                    from_production,
+                    "line {at}: the seam view keeps production"
+                );
+                from_production
+            }
+            Some(crate::test_helpers::Gate::TestHelpers) => {
+                let from_seams = seam_kept.next();
+                assert_eq!(
+                    from_seams,
+                    region_lines.get(at).copied(),
+                    "line {at}: a `test-helpers` line is the seam view's next line and the \
+                     test region's own"
+                );
+                from_seams
+            }
+            Some(crate::test_helpers::Gate::Test) => {
+                let from_region = region_lines.get(at).copied();
+                test_only.extend(from_region);
+                from_region
+            }
+        };
+        rebuilt.push_str(line.unwrap_or("<no line>"));
+        rebuilt.push('\n');
+    }
+    assert!(
+        kept.next().is_none() && seam_kept.next().is_none(),
+        "a view holds a line no gate routes to it"
+    );
+    assert_eq!(
+        rebuilt, src,
+        "the three views rebuild the file byte for byte"
+    );
     assert_eq!(
         declared(&production),
         [
@@ -3841,7 +3957,6 @@ fn the_production_slice_and_the_test_region_partition_every_test_only_shape() {
         ],
         "the test half is every test-only function and nothing else"
     );
-    let seams = crate::test_helpers::production_and_seams_of(&path);
     assert_eq!(
         declared(&seams),
         [
@@ -3859,45 +3974,6 @@ fn the_production_slice_and_the_test_region_partition_every_test_only_shape() {
         crate::test_helpers::production_and_seams_slice(&src),
         "the seam view of a file is the seam slice of its body"
     );
-    // Each line routed by its gate is the next line of the view that keeps it,
-    // and every view is used up, so the three parts rebuild the file exactly.
-    let gates = crate::test_helpers::line_gates(&src);
-    assert_eq!(gates.len(), src.lines().count(), "one gate per line");
-    let (mut kept, mut seam_kept) = (production.lines(), seams.lines());
-    let mut rebuilt = String::new();
-    let mut test_only: Vec<&str> = Vec::new();
-    for (line, gate) in src.lines().zip(&gates) {
-        let from_view = match gate {
-            None => {
-                assert_eq!(
-                    seam_kept.next(),
-                    Some(line),
-                    "the seam view keeps production"
-                );
-                kept.next()
-            }
-            Some(crate::test_helpers::Gate::TestHelpers) => seam_kept.next(),
-            Some(crate::test_helpers::Gate::Test) => {
-                test_only.push(line);
-                Some(line)
-            }
-        };
-        assert_eq!(
-            from_view,
-            Some(line),
-            "a {gate:?} line is its view's next line"
-        );
-        rebuilt.push_str(line);
-        rebuilt.push('\n');
-    }
-    assert!(
-        kept.next().is_none() && seam_kept.next().is_none(),
-        "a view holds a line no gate routes to it"
-    );
-    assert_eq!(
-        rebuilt, src,
-        "the three parts rebuild the file byte for byte"
-    );
     assert_eq!(
         declared(&test_only.join("\n")),
         [
@@ -3907,6 +3983,13 @@ fn the_production_slice_and_the_test_region_partition_every_test_only_shape() {
             "a_pin"
         ],
         "the test-only part is every `#[cfg(test)]` function, one nested in a seam included"
+    );
+    // A walk over the files built only for tests reads their seam view.
+    let cut = crate::test_helpers::test_module_cut_of(&path);
+    assert_eq!(
+        declared(&cut),
+        declared(&seams),
+        "the cut keeps every `test-helpers` item and drops every test:\n{cut}"
     );
     // The memo's body reader and its rows, on the same file.
     assert_eq!(
@@ -3973,6 +4056,22 @@ fn the_production_slice_and_the_test_region_partition_every_test_only_shape() {
         gated,
         [Some(crate::test_helpers::Gate::TestHelpers)],
         "the seam memo holds `{seam}` once, gated to `test-helpers`"
+    );
+    // Two arms of one function gated apart share its name and owner, so each
+    // row's gate is read off its own line.
+    let reconciler = crates_dir.join("cfgd-core/src/reconciler/mod.rs");
+    let twins: Vec<Option<crate::test_helpers::Gate>> = seams_memo
+        .rows
+        .iter()
+        .zip(&seams_memo.gates)
+        .zip(&seams_memo.sites)
+        .filter(|((row, _), site)| row.0 == "resolved_home" && site.1 == reconciler.as_path())
+        .map(|((_, gate), _)| *gate)
+        .collect();
+    assert_eq!(
+        twins,
+        [None, Some(crate::test_helpers::Gate::TestHelpers)],
+        "the shipped arm of `resolved_home` is ungated and its `test-helpers` arm is gated"
     );
 }
 
@@ -4233,8 +4332,7 @@ fn the_item_lead_tell_reads_a_fold_and_not_a_mention() {
 fn no_test_scope_scanner_folds_an_item_lead_by_hand() {
     let mut offenders = Vec::new();
     for path in workspace_rust_files() {
-        // unfloored-slice-ok: the test region is cut from the whole file on this line.
-        let body = test_region(&path, &walked_file_body(&path));
+        let body = crate::test_helpers::test_region_of(&path);
         let rel = crate::to_posix_string(path.strip_prefix(workspace_root()).unwrap_or(&path));
         offenders.extend(lead_fold_offenders(&rel, &body));
     }
@@ -4292,8 +4390,7 @@ fn every_hatch_a_walk_reads_comes_from_the_one_line_reader() {
     let mut per_crate: std::collections::BTreeMap<String, usize> =
         std::collections::BTreeMap::new();
     for path in workspace_rust_files() {
-        // unfloored-slice-ok: the test region is cut from the whole file on this line.
-        let body = test_region(&path, &walked_file_body(&path));
+        let body = crate::test_helpers::test_region_of(&path);
         let lines: Vec<&str> = body.lines().collect();
         let mut read_here = 0usize;
         for (n, line) in lines.iter().enumerate() {
@@ -5761,81 +5858,6 @@ const WALK_FILE_READ: &str = "read_to_string";
 /// Spellings that drop that call's failure instead of reporting it.
 const SILENT_READ_TELLS: &[&str] = &["let Ok(", ".ok()", "unwrap_or_default()", "unwrap_or("];
 
-/// Whether a column-0 attribute line opens a region the compiler builds only
-/// when `test` is on.
-///
-/// Judged on the predicate's SHAPE rather than on one spelling of it: `test` is
-/// a cfg flag a composite predicate may carry (`#[cfg(all(test, feature =
-/// "crd"))]`, `#[cfg(any(test, feature = "test-helpers"))]`), and an exact match
-/// against `#[cfg(test)]` read every composite one as production and dropped its
-/// file whole. A `not(` WRAPPING the flag disqualifies it, because
-/// `#[cfg(not(test))]` and `#[cfg(not(any(test, …)))]` open the opposite
-/// region, while `#[cfg(all(test, not(windows)))]` negates a different flag and
-/// still opens a test region; and `test` is matched as a whole word with `-`
-/// counted into it so `feature = "test-helpers"` — a gate the compiler honours
-/// outside a test build — is not mistaken for the flag.
-fn opens_a_test_region(line: &str) -> bool {
-    let attribute = line.split_once("//").map_or(line, |(code, _)| code);
-    attribute.starts_with("#[cfg(")
-        && !negates_the_test_flag(attribute)
-        && carries_the_test_flag(attribute)
-}
-
-fn carries_the_test_flag(predicate: &str) -> bool {
-    predicate
-        .split(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-')
-        .any(|word| word == "test")
-}
-
-/// Whether any `not(…)` in the predicate carries the test flag inside its own
-/// parentheses.
-fn negates_the_test_flag(predicate: &str) -> bool {
-    let mut rest = predicate;
-    while let Some(at) = rest.find("not(") {
-        let inner = &rest[at + "not(".len()..];
-        let mut depth = 1usize;
-        let mut end = inner.len();
-        for (i, c) in inner.char_indices() {
-            match c {
-                '(' => depth += 1,
-                ')' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        end = i;
-                        break;
-                    }
-                }
-                _ => {}
-            }
-        }
-        if carries_the_test_flag(&inner[..end]) {
-            return true;
-        }
-        rest = &inner[end..];
-    }
-    false
-}
-
-#[test]
-fn a_negation_closes_a_test_region_only_when_it_wraps_the_flag() {
-    for opener in [
-        "#[cfg(test)]",
-        "#[cfg(all(test, feature = \"crd\"))]",
-        "#[cfg(any(test, feature = \"test-helpers\"))]",
-        "#[cfg(all(test, not(windows)))]",
-    ] {
-        assert!(opens_a_test_region(opener), "{opener} opens a test region");
-    }
-    for other in [
-        "#[cfg(not(test))]",
-        "#[cfg(not(any(test, feature = \"test-helpers\")))]",
-        "#[cfg(feature = \"test-helpers\")]",
-        "#[cfg(unix)]",
-    ] {
-        assert!(!opens_a_test_region(other), "{other} opens no test region");
-    }
-}
-
 /// A walk that cannot read a file it enumerated FAILS, rather than reading less
 /// than its floor promises.
 ///
@@ -5848,13 +5870,14 @@ fn a_negation_closes_a_test_region_only_when_it_wraps_the_flag() {
 /// inline.
 ///
 /// The population is every `.rs` source of every crate, judged over its TEST
-/// region: a file that IS scaffolding (one whose name opens on `test`, or one
-/// lying under a `tests/` directory) is judged whole, and every other file only
-/// from its first column-0 attribute that opens a test region, which is where the
-/// walks living in an inline test module begin. Six of them do,
-/// `reconciler/format.rs`'s among them, so a filename filter read a narrower
-/// population than the rule claims. A scaffolding name is matched by its PREFIX
-/// because `tests.rs` is one spelling of it and `tests_module.rs` is another: a
+/// region as [`crate::test_helpers::test_region_of`] reads it: a file that IS
+/// scaffolding (one whose name opens on `test`, or one lying under a `tests/`
+/// directory) is judged whole, and every other file over its test-only items,
+/// wherever they sit, which is where the walks living in an inline test module
+/// are. Six files hold such walks, `reconciler/format.rs` among them, so a
+/// filename filter read a narrower population than the rule claims. A
+/// scaffolding name is matched by its PREFIX because `tests.rs` is one
+/// spelling of it and `tests_module.rs` is another: a
 /// whole-file test module carries no anchor of its own, the parent's
 /// `#[cfg(test)] mod tests_module;` being what gates it, so an exact-name test
 /// dropped eleven files holding nothing but test declarations.
@@ -5874,28 +5897,19 @@ fn no_walk_silently_drops_a_file_it_enumerated() {
     for path in workspace_rust_files() {
         let posix = crate::to_posix_string(&path);
         files += 1;
-        // unfloored-slice-ok: each file is split into its regions below.
-        let body = walked_file_body(&path);
-        let lines: Vec<&str> = body.lines().collect();
-        // Scaffolding is judged whole: a `tests.rs` carries no `#[cfg(test)]`
-        // to cut at, and a file built only for tests (`is_test_only_file`) may
-        // carry one whose region is a fraction of the file;
-        // every other file is judged from its first one on, the anchor
-        // `production_slice` reads from the other side, so the production
+        // The one scanner's test region, blanked in place, so the production
         // carve-out falls out of the REGION and a walk written in an inline test
         // module is inside the population rather than outside it.
-        let from = if crate::test_helpers::is_test_source(&path)
-            || crate::test_helpers::is_test_only_file(&path)
-        {
-            Some(0)
-        } else {
-            lines.iter().position(|l| opens_a_test_region(l))
-        };
-        // A file holding test declarations whose region the anchor never found is
-        // not a file with nothing to judge: `files` has already counted it, so the
-        // drop reports itself rather than lowering a floor no single file can move.
-        let Some(from) = from else {
-            if lines.iter().any(|l| {
+        let region = crate::test_helpers::test_region_of(&path);
+        let lines: Vec<&str> = region.lines().collect();
+        // A file holding test declarations the scanner found no test region for
+        // is not a file with nothing to judge: `files` has already counted it,
+        // so the drop reports itself rather than lowering a floor no single file
+        // can move.
+        if region.trim().is_empty() {
+            // unfloored-slice-ok: the whole file is searched for a test declaration.
+            let body = walked_file_body(&path);
+            if body.lines().any(|l| {
                 let trimmed = l.trim_start();
                 trimmed.starts_with("#[test]") || trimmed.starts_with("#[tokio::test")
             }) {
@@ -5904,8 +5918,8 @@ fn no_walk_silently_drops_a_file_it_enumerated() {
                 ));
             }
             continue;
-        };
-        for (idx, line) in lines.iter().enumerate().skip(from) {
+        }
+        for (idx, line) in lines.iter().enumerate() {
             if !line.contains(WALK_FILE_READ) {
                 continue;
             }
@@ -5956,13 +5970,13 @@ const SUBSTITUTED_PATH_WORDS: [&str; 7] = [
 /// and a wholesale loss of the helper does.
 const NORMALIZER_CALL_FLOOR: usize = 50;
 
-/// Every line from `from` on holding a hand substitution: a `.replace(` whose
-/// first argument names a path and whose second is an angle-bracketed label,
-/// less the ones a `// hand-substitution-ok:` marker accounts for.
-fn hand_substitutions(lines: &[&str], from: usize) -> Vec<usize> {
+/// Every line holding a hand substitution: a `.replace(` whose first argument
+/// names a path and whose second is an angle-bracketed label, less the ones a
+/// `// hand-substitution-ok:` marker accounts for.
+fn hand_substitutions(lines: &[&str]) -> Vec<usize> {
     const CALL: &str = ".replace(";
     let mut found = Vec::new();
-    for (idx, line) in lines.iter().enumerate().skip(from) {
+    for (idx, line) in lines.iter().enumerate() {
         let masked = code_half(line);
         // The call is located on the blanked rendering, so a `.replace(` inside
         // a string literal is prose, and read raw, because the label the pair
@@ -6002,10 +6016,10 @@ fn hand_substitutions(lines: &[&str], from: usize) -> Vec<usize> {
 /// Judged on the pair: a `.replace(` whose first argument names a path and
 /// whose second is an angle-bracketed label, read to the call's balanced close
 /// so a call rustfmt split over rows is judged like an inline one. The region
-/// is the test one — a file under a `tests/` directory whole, every other from
-/// its first `#[cfg(test)]` on — because a production fold substitutes a path
-/// for a marker too, and `fold_home_in_text` is the one this rule is named
-/// after.
+/// is the test one [`crate::test_helpers::test_region_of`] reads — a file under
+/// a `tests/` directory whole, every other over its test-only items — because a
+/// production fold substitutes a path for a marker too, and
+/// `fold_home_in_text` is the one this rule is named after.
 ///
 /// `// hand-substitution-ok: <why>` hatches a substitution the helper cannot
 /// perform.
@@ -6015,23 +6029,14 @@ fn every_path_a_test_substitutes_for_a_label_goes_through_the_one_normalizer() {
     let mut offenders = Vec::new();
     for path in workspace_rust_files() {
         let posix = crate::to_posix_string(&path);
-        // unfloored-slice-ok: the test region is taken from the whole file below.
-        let body = walked_file_body(&path);
-        let lines: Vec<&str> = body.lines().collect();
-        let from = if crate::test_helpers::is_test_source(&path)
-            || crate::test_helpers::is_test_only_file(&path)
-        {
-            Some(0)
-        } else {
-            lines.iter().position(|l| opens_a_test_region(l))
-        };
-        let Some(from) = from else { continue };
-        for line in lines.iter().skip(from) {
+        let region = crate::test_helpers::test_region_of(&path);
+        let lines: Vec<&str> = region.lines().collect();
+        for line in &lines {
             // The code half of the line: a comment naming either spelling is
             // prose, and this file's own doc comment names both.
             normalized += code_half(line).matches("normalize_for_snapshot(").count();
         }
-        for idx in hand_substitutions(&lines, from) {
+        for idx in hand_substitutions(&lines) {
             offenders.push(format!("{posix}:{}: {}", idx + 1, lines[idx].trim()));
         }
     }
@@ -6075,17 +6080,17 @@ fn a_hand_substitution_split_over_rows_is_judged_like_an_inline_one() {
         ");",
     ];
     assert_eq!(
-        hand_substitutions(&inline, 0),
+        hand_substitutions(&inline),
         vec![0],
         "the inline spelling is the one the walk already reported"
     );
     assert_eq!(
-        hand_substitutions(&split, 0),
+        hand_substitutions(&split),
         vec![0],
         "a substitution whose label sits on a later row is judged too"
     );
     assert!(
-        hand_substitutions(&marked, 0).is_empty(),
+        hand_substitutions(&marked).is_empty(),
         "a marked substitution is accounted for on either spelling"
     );
 }
@@ -7330,8 +7335,7 @@ fn every_raw_spawn_in_test_code_holds_the_path_gate() {
     let mut per_file: Vec<(String, usize)> = Vec::new();
     for path in workspace_rust_files() {
         let label = source_label(&path);
-        // unfloored-slice-ok: the test region is cut from the whole file on this line.
-        let region = test_region(&path, &walked_file_body(&path));
+        let region = crate::test_helpers::test_region_of(&path);
         let (unguarded, sites, hatched) = raw_spawns(&label, &region, HATCH);
         offenders.extend(unguarded);
         if hatched > 0 {
@@ -7724,8 +7728,8 @@ fn no_scan_hand_copies_the_test_only_file_rule() {
     // and the lines calling `is_test_only_file(` there, its definition in
     // cfgd-core's test_helpers.rs left out, both counted when the rule last moved.
     const FLOORS: [(&str, usize, usize); 7] = [
-        ("cfgd", 257, 19),
-        ("cfgd-core", 243, 15),
+        ("cfgd", 259, 18),
+        ("cfgd-core", 243, 17),
         ("cfgd-crd", 2, 0),
         ("cfgd-csi", 11, 0),
         ("cfgd-operator", 64, 1),
@@ -7734,7 +7738,7 @@ fn no_scan_hand_copies_the_test_only_file_rule() {
     ];
     // The calls across every root, counted the same way: a call moving from one
     // crate to another keeps each crate's floor while the workspace loses one.
-    const TOTAL_ASKS: usize = 38;
+    const TOTAL_ASKS: usize = 36;
     // Built from pieces so this file's own needles are not read as copies.
     let tells = [
         concat!("\"test_", "helpers.rs\""),
@@ -7822,8 +7826,8 @@ fn no_scan_hand_copies_the_test_only_file_rule() {
 /// string literals blanked, so a message quoting the call counts for nothing.
 #[test]
 fn no_scan_hand_copies_the_test_source_naming_rule() {
-    const FILES: usize = 575;
-    const ASKS: usize = 87;
+    const FILES: usize = 581;
+    const ASKS: usize = 82;
     // Built from pieces so this file's own needles are not read as copies.
     let tells = [
         concat!("\"tests", ".rs\""),

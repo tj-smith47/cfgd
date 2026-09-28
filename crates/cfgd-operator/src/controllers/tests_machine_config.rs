@@ -1,5 +1,4 @@
 //! Reconcile-fn tests for `controllers/machine_config.rs`.
-#![cfg(test)]
 
 use std::sync::Arc;
 

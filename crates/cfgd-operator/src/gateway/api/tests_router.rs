@@ -3,7 +3,6 @@
 //! Each test drives the production `Router` (built via `api::router`) end-to-end
 //! via `tower::ServiceExt::oneshot`, exercising auth middleware, body parsing,
 //! per-route handlers, and the `GatewayError -> IntoResponse` mapping.
-#![cfg(test)]
 
 use axum::Router;
 use axum::body::Body;

@@ -3,7 +3,6 @@
 //! `reconcile_module` evaluates Module availability (against
 //! `ClusterConfigPolicy.security`) and signature verification, then
 //! patches the Module's `/status` and emits Available/Verified events.
-#![cfg(test)]
 
 use std::sync::Arc;
 

@@ -4,7 +4,6 @@
 //! through the shared `MockKubeHarness` (promoted to `pub(crate)` in
 //! `controllers/test_kube_harness.rs`). Each test queues the exact kube
 //! API call sequence and asserts on the captured request bodies.
-#![cfg(test)]
 
 use http::Method;
 

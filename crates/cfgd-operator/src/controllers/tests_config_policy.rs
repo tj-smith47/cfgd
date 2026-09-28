@@ -1,5 +1,4 @@
 //! Reconcile-fn tests for `controllers/config_policy.rs`.
-#![cfg(test)]
 
 use std::sync::Arc;
 

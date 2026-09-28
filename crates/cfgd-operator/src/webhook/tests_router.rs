@@ -5,7 +5,6 @@
 //! exercising body parsing, the `Json<AdmissionReview>` extractor,
 //! `DefaultBodyLimit` middleware, and the response-body shape that the
 //! kube-apiserver consumes.
-#![cfg(test)]
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};

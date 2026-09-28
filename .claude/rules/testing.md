@@ -176,6 +176,10 @@ keeps every `test-helpers` item: a seam like `run_compliance_and_reconcile_ticks
 production code compiled for tests, and a production-only fold never sees the route a
 test takes through it. A walk judging code folds nothing itself: it reads
 `production_code_of(path)` or a memo row's `code_of(i)`, both cut from the file's one scan.
+A walk asking about TEST text reads `test_region_of(path)`, or `line_gates_of(path)` when it
+partitions a file by index; one attribute is judged by `attribute_gate`. A
+string search for a gate's spelling (`.starts_with("#[cfg(test)]")`, `.contains("mod tests")`)
+is a second cut beside the scanner, and the floored-helper walk fails it in test scope.
 
 Colour off means NO escapes — attributes included. `ThemedStyle::apply_to` is the ONE
 gate a styled span becomes bytes through, and a printer whose `ColorChoice` resolved

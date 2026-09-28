@@ -4,7 +4,6 @@
 //! `MockKubeHarness`, asserting on the kube API call sequence and on the
 //! emitted metrics + events. See `test_kube_harness.rs` for the harness
 //! shape and `test_fixtures.rs` for the CRD object builders.
-#![cfg(test)]
 
 use std::sync::Arc;
 

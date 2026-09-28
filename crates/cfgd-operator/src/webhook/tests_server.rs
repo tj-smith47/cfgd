@@ -2,7 +2,6 @@
 //! entry point against an in-process self-signed cert and a stub kube
 //! client. Verifies the bind/accept/TLS-handshake loop and at least one
 //! HTTP request round-trip through the production path.
-#![cfg(test)]
 
 use std::io::Write;
 use std::sync::Arc;
