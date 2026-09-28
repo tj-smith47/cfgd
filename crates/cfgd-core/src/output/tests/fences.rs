@@ -6284,6 +6284,27 @@ fn only_a_plain_line_comment_carries_the_plan_format_walks_hatch() {
     }
 }
 
+/// A hatch is a marker in a comment: one a string literal holds is data, and a
+/// trailing comment after a literal still hatches its line.
+#[test]
+fn a_marker_inside_a_string_literal_is_no_hatch() {
+    const MARKER: &str = "// host-manager-ok:";
+    for (line, hatch) in [
+        ("    let s = \"// host-manager-ok: x\";", false),
+        ("    let s = r#\"// host-manager-ok: x\"#;", false),
+        ("    let s = \"a\"; // host-manager-ok: planted", true),
+        ("    // host-manager-ok: planted", true),
+        ("    /// // host-manager-ok: quoted in rustdoc", false),
+    ] {
+        assert_eq!(
+            carries_hatch(line, MARKER),
+            hatch,
+            "`{line}` reads as {}a hatch",
+            if hatch { "not " } else { "" }
+        );
+    }
+}
+
 /// A wrapped attribute reaches the walk above as one attribute.
 ///
 /// rustfmt breaks a `#[serde(...)]` that outgrows the line, and the two facts

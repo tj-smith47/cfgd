@@ -1624,10 +1624,13 @@ pub fn is_plain_line_comment(line: &str) -> bool {
 /// `///` or `//!` line does not: see [`is_plain_line_comment`] for why, and for
 /// the rustdoc lines in this tree that quote a marker while describing its
 /// rule, each of which a bare `contains` would have let hatch the item
-/// directly below it. Reach for this in place of `line.contains(marker)` at
-/// every site that decides whether a subject is exempt.
+/// directly below it. A marker inside a string literal on a code line is data
+/// the line holds, so the literals are blanked before the lookup. Reach for this
+/// in place of `line.contains(marker)` at every site that decides whether a
+/// subject is exempt.
 pub fn carries_hatch(line: &str, marker: &str) -> bool {
-    line.contains(marker) && (is_plain_line_comment(line) || !line.trim_start().starts_with("//"))
+    (is_plain_line_comment(line) || !line.trim_start().starts_with("//"))
+        && blank_string_literals(line).contains(marker)
 }
 
 /// The name a function declaration on this CODE line declares, if it declares
