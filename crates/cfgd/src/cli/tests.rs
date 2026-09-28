@@ -18147,8 +18147,7 @@ fn every_golden_with_an_env_target_row_declares_the_host_that_produced_it() {
     );
 
     for (golden, source, test_name) in DECLARED {
-        let body = std::fs::read_to_string(root.join(source))
-            .unwrap_or_else(|e| panic!("read {source}: {e}"));
+        let body = walked_file_body(&root.join(source));
         assert!(
             body.contains(&format!("fn {test_name}(")),
             "{source} no longer defines {test_name}, which {golden} is attributed to"
