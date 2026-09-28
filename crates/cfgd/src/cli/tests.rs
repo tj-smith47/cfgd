@@ -256,7 +256,7 @@ struct PlantedManager {
 
 impl PlantedManager {
     // serial-group-ok: every test taking the knob is held to #[serial_test::serial] by
-    // every_module_package_plan_test_resolves_off_this_hosts_managers.
+    // every_package_resolving_test_resolves_off_managers_it_controls.
     fn plant() -> Self {
         let managers = cfgd_core::test_helpers::NoHostManagers::pinned_missing();
         let dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
@@ -25864,14 +25864,29 @@ spec:
     );
 }
 
-/// Every `cmd_plan`/`cmd_apply` test in this crate whose fixture holds a Module
-/// with a `packages:` entry resolves that entry off this host's own package
-/// managers. Resolution asks the managers the runner carries, so a test that
-/// leaves them in reach passes only on a host holding one.
+/// The verbs that resolve a Module's packages, as the `cmd_*` function a test
+/// calls in-process and the word a `cfgd_bin()` run passes.
+const PACKAGE_RESOLVING_VERBS: &[(&str, &str)] = &[
+    ("cmd_plan(", "plan"),
+    ("cmd_apply(", "apply"),
+    ("cmd_status(", "status"),
+    ("cmd_diff(", "diff"),
+    ("cmd_verify(", "verify"),
+];
+
+/// Every test in this crate driving a verb that resolves a Module's packages
+/// resolves them off managers the test controls. Resolution asks the managers
+/// the runner carries, so a test that leaves them in reach passes only on a
+/// host holding one.
 ///
-/// The population is every `#[test]` in the crate's sources calling either verb
-/// whose own body, or a `const` it names, holds such a fixture. Each does one
-/// of three things:
+/// A test drives a verb when it calls one of [`PACKAGE_RESOLVING_VERBS`]'
+/// `cmd_*` functions, or runs `cfgd_bin()` with the verb's word in a literal it
+/// reads. What a test reads is its own body plus one hop: the same-file
+/// functions it calls and the `const` items it names. Each literal there
+/// holding `kind`, `Module` and `packages` is parsed as YAML
+/// ([`module_package_prefers`]); one that does not parse, or holds a shape the
+/// Module schema refuses, fails the walk. A test holding a package entry does
+/// one of three things:
 /// - builds every harness with `.planted_manager()`, is
 ///   `#[serial_test::serial]` (the knob pins the availability memo), and names
 ///   [`PLANTED_FAMILY`] in every entry's `prefer` list;
@@ -25879,13 +25894,14 @@ spec:
 ///   always-available fake in the native manager's place, with no entry
 ///   preferring a built-in manager (a preferred built-in is asked as this host
 ///   has it);
-/// - gives every entry a `prefer` list naming no built-in manager, so only a
-///   manager the fixture declares, or none, is ever a candidate.
+/// - gives every entry a `prefer` list, and plants each built-in manager a list
+///   names through its `CFGD_<NAME>_BIN` seam (`tool_seam_var("<name>")` or the
+///   `<NAME>_BIN_ENV` const), so only a manager the test controls, or one the
+///   fixture declares, is ever a candidate.
 ///
-/// `// host-manager-ok: <why>` on the test exempts it. A fixture a helper
-/// function writes is outside what this reads.
+/// `// host-manager-ok: <why>` on the test exempts it.
 #[test]
-fn every_module_package_plan_test_resolves_off_this_hosts_managers() {
+fn every_package_resolving_test_resolves_off_managers_it_controls() {
     use cfgd_core::test_helpers::{
         blank_non_code, carries_hatch, declaration_end, declared_fn_name, rust_sources_under,
         walked_file_body,
@@ -25893,17 +25909,27 @@ fn every_module_package_plan_test_resolves_off_this_hosts_managers() {
     const HATCH: &str = "// host-manager-ok:";
     /// Each file holding such tests today, floored at its count, so a file
     /// dropping out of the population fails on its own name: in `tests.rs`
-    /// six knob tests and two hermetic ones, and the fixture-declared managers
-    /// of `status.rs` and the plan snapshots.
+    /// six knob tests and four hermetic or fixture-declared ones, the
+    /// fixture-declared managers of `status.rs` and the plan snapshots, and the
+    /// seam-planted managers of the drift exit codes.
     const FILE_FLOORS: &[(&str, usize)] = &[
-        ("src/cli/tests.rs", 8),
-        ("src/cli/status.rs", 2),
+        ("src/cli/tests.rs", 10),
+        ("src/cli/status.rs", 3),
         ("tests/plan_snapshots.rs", 2),
+        ("tests/drift_exit_code.rs", 12),
     ];
     let built_in: Vec<String> = crate::packages::all_package_managers()
         .iter()
         .map(|m| m.name().to_string())
         .collect();
+    let calls = |code: &str, callee: &str| {
+        code.match_indices(&format!("{callee}(")).any(|(at, _)| {
+            !code[..at]
+                .chars()
+                .next_back()
+                .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
+        })
+    };
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut per_file: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
     let mut knob_users = 0usize;
@@ -25923,11 +25949,14 @@ fn every_module_package_plan_test_resolves_off_this_hosts_managers() {
                 raw.len(),
                 "{label}: blanking must keep every line"
             );
-            let consts = const_str_bodies(&text);
-            for (i, line) in code.iter().enumerate() {
-                let Some(name) = declared_fn_name(line) else {
-                    continue;
-                };
+            let fns: Vec<(String, usize, usize)> = code
+                .iter()
+                .enumerate()
+                .filter_map(|(i, l)| declared_fn_name(l).map(|n| (n, i, declaration_end(&code, i))))
+                .collect();
+            let consts = const_spans(&code);
+            for (name, i, end) in &fns {
+                let (i, end) = (*i, *end);
                 let attrs: Vec<&str> = raw[..i]
                     .iter()
                     .rev()
@@ -25940,9 +25969,28 @@ fn every_module_package_plan_test_resolves_off_this_hosts_managers() {
                 if !attrs.iter().any(|l| l.trim() == "#[test]") {
                     continue;
                 }
-                let end = declaration_end(&code, i);
-                let body = &code[i..=end];
-                let knob = body.iter().any(|l| l.contains(".planted_manager()"));
+                let own = &code[i..=end];
+                let mut spans = vec![(i, end)];
+                spans.extend(
+                    fns.iter()
+                        .filter(|(callee, s, _)| *s != i && own.iter().any(|l| calls(l, callee)))
+                        .map(|(_, s, e)| (*s, *e)),
+                );
+                spans.extend(
+                    consts
+                        .iter()
+                        .filter(|(item, _, _)| own.iter().any(|l| names_identifier(l, item)))
+                        .map(|(_, s, e)| (*s, *e)),
+                );
+                let lines: Vec<usize> = spans.iter().flat_map(|&(s, e)| s..=e).collect();
+                let reach: Vec<&str> = lines.iter().map(|&k| code[k]).collect();
+                let literals: Vec<String> = spans
+                    .iter()
+                    .flat_map(|&(s, e)| {
+                        string_literal_values(&raw[s..=e].join("\n"), &code[s..=e].join("\n"))
+                    })
+                    .collect();
+                let knob = reach.iter().any(|l| l.contains(".planted_manager()"));
                 let at = format!("{label}:{}: {name}", i + 1);
                 if knob {
                     knob_users += 1;
@@ -25950,20 +25998,22 @@ fn every_module_package_plan_test_resolves_off_this_hosts_managers() {
                         offenders.push(format!("{at}: takes the knob outside the serial group"));
                     }
                 }
-                if !body
-                    .iter()
-                    .any(|l| l.contains("cmd_plan(") || l.contains("cmd_apply("))
-                {
+                let runs_binary = reach.iter().any(|l| l.contains("cfgd_bin()"));
+                if !PACKAGE_RESOLVING_VERBS.iter().any(|(call, word)| {
+                    reach.iter().any(|l| l.contains(call))
+                        || (runs_binary && literals.iter().any(|v| v == word))
+                }) {
                     continue;
                 }
-                let mut fixture = raw[i..=end].join("\n");
-                for (const_name, value) in &consts {
-                    if body.iter().any(|l| names_ident(l, const_name)) {
-                        fixture.push('\n');
-                        fixture.push_str(value);
+                let mut entries: Vec<Vec<String>> = Vec::new();
+                for literal in literals.iter().filter(|v| {
+                    v.contains("kind") && v.contains("Module") && v.contains("packages")
+                }) {
+                    match module_package_prefers(literal) {
+                        Ok(found) => entries.extend(found),
+                        Err(why) => offenders.push(format!("{at}: a Module fixture {why}")),
                     }
                 }
-                let entries = module_package_entries(&fixture);
                 if entries.is_empty() {
                     continue;
                 }
@@ -25980,20 +26030,20 @@ fn every_module_package_plan_test_resolves_off_this_hosts_managers() {
                     .any(|prefer| prefer.iter().any(|m| built_in.contains(m)));
                 if knob {
                     // Per chain: a test building two harnesses plans through each.
-                    for (n, line) in body.iter().enumerate() {
+                    for (n, line) in reach.iter().enumerate() {
                         if !line.contains("CliTestHarness::builder()") {
                             continue;
                         }
-                        let close = (n..body.len())
-                            .find(|&k| body[k].contains(".build()"))
-                            .unwrap_or(body.len() - 1);
-                        if !body[n..=close]
+                        let close = (n..reach.len())
+                            .find(|&k| reach[k].contains(".build()"))
+                            .unwrap_or(reach.len() - 1);
+                        if !reach[n..=close]
                             .iter()
                             .any(|l| l.contains(".planted_manager()"))
                         {
                             offenders.push(format!(
-                                "{at}: the harness built on line {} lacks the knob",
-                                i + n + 1
+                                "{at}: a harness it builds lacks the knob: `{}`",
+                                line.trim()
                             ));
                         }
                     }
@@ -26007,7 +26057,7 @@ fn every_module_package_plan_test_resolves_off_this_hosts_managers() {
                             PLANTED_FAMILY.manager
                         ));
                     }
-                } else if body
+                } else if reach
                     .iter()
                     .any(|l| l.contains("PackageManagerFactoryGuard::hermetic_"))
                 {
@@ -26017,18 +26067,43 @@ fn every_module_package_plan_test_resolves_off_this_hosts_managers() {
                              leaves as this host has it"
                         ));
                     }
-                } else if prefers_built_in || entries.iter().any(Vec::is_empty) {
+                } else if entries.iter().any(Vec::is_empty) {
                     offenders.push(format!(
-                        "{at}: an entry resolves through this host's own managers"
+                        "{at}: an entry with no `prefer` list resolves through this host's own \
+                         managers"
                     ));
+                } else {
+                    let stem = |m: &str| m.to_uppercase().replace('-', "_");
+                    let mut unplanted: Vec<&str> = entries
+                        .iter()
+                        .flatten()
+                        .map(String::as_str)
+                        .filter(|m| built_in.iter().any(|b| b == m))
+                        .filter(|m| {
+                            // The derivation's argument is a literal, which the
+                            // blanked line no longer holds.
+                            !lines.iter().any(|&k| {
+                                (code[k].contains("tool_seam_var(")
+                                    && raw[k].contains(&format!("tool_seam_var(\"{m}\")")))
+                                    || names_identifier(code[k], &format!("{}_BIN_ENV", stem(m)))
+                            })
+                        })
+                        .collect();
+                    unplanted.dedup();
+                    if !unplanted.is_empty() {
+                        offenders.push(format!(
+                            "{at}: prefers {unplanted:?}, built-in managers it leaves as this \
+                             host has them"
+                        ));
+                    }
                 }
             }
         }
     }
     assert!(
         offenders.is_empty(),
-        "these plan tests resolve a module package through this host's own managers, so they \
-         pass only on a runner holding one. Take `.planted_manager()` and prefer `{}`, hold a \
+        "these tests resolve a module package through this host's own managers, so they pass \
+         only on a runner holding one. Take `.planted_manager()` and prefer `{}`, hold a \
          hermetic factory guard, or name only a manager the fixture declares; else carry \
          `{HATCH} <why>`:\n  {}",
         PLANTED_FAMILY.manager,
@@ -26038,8 +26113,8 @@ fn every_module_package_plan_test_resolves_off_this_hosts_managers() {
         let found = per_file.get(*file).copied().unwrap_or(0);
         assert!(
             found >= *floor,
-            "{file}: the walk found {found} plan tests with a module package fixture, under its \
-             floor of {floor}"
+            "{file}: the walk found {found} tests with a module package fixture, under its floor \
+             of {floor}"
         );
     }
     assert!(
@@ -26048,137 +26123,175 @@ fn every_module_package_plan_test_resolves_off_this_hosts_managers() {
     );
 }
 
-/// Every `const NAME: &str = <literal>;` in `text`, as its name and the
-/// literal's whole body: a raw string's text, or a quoted string's text still
-/// escaped for [`module_package_entries`] to undo. `str_consts` reads the first
-/// quoted run within a few rows and unescapes it for a hint's wording, which
-/// cuts a multi-row fixture short.
-fn const_str_bodies(text: &str) -> Vec<(String, String)> {
+/// The `prefer` list of every `spec.packages` entry of every Module document
+/// in `text`, read the way serde reads the document. The error is a document
+/// that does not parse, or a field holding a shape the Module schema refuses.
+fn module_package_prefers(text: &str) -> Result<Vec<Vec<String>>, String> {
+    use serde::Deserialize;
     let mut out = Vec::new();
-    let mut rest = text;
-    while let Some(at) = rest.find("const ") {
-        rest = &rest[at + "const ".len()..];
-        let Some((name, tail)) = rest.split_once(": &str =") else {
-            continue;
-        };
-        if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+    for doc in serde_yaml::Deserializer::from_str(text) {
+        let doc =
+            serde_yaml::Value::deserialize(doc).map_err(|e| format!("does not parse: {e}"))?;
+        if doc.get("kind").and_then(serde_yaml::Value::as_str) != Some("Module") {
             continue;
         }
-        let tail = tail.trim_start();
-        let body = if let Some(raw) = tail.strip_prefix("r#\"") {
-            raw.split_once("\"#").map(|(b, _)| b)
-        } else if let Some(quoted) = tail.strip_prefix('"') {
-            let mut end = None;
-            let mut escaped = false;
-            for (n, c) in quoted.char_indices() {
-                match c {
-                    _ if escaped => escaped = false,
-                    '\\' => escaped = true,
-                    '"' => {
-                        end = Some(n);
-                        break;
-                    }
-                    _ => {}
-                }
-            }
-            end.map(|n| &quoted[..n])
-        } else {
-            None
+        let Some(packages) = doc.get("spec").and_then(|s| s.get("packages")) else {
+            continue;
         };
-        if let Some(body) = body {
-            out.push((name.to_string(), body.to_string()));
+        let packages = packages
+            .as_sequence()
+            .ok_or("holds a `spec.packages` that is not a list")?;
+        for entry in packages {
+            if !entry.is_mapping() {
+                return Err(format!(
+                    "holds a package entry that is not a mapping: {entry:?}"
+                ));
+            }
+            let Some(prefer) = entry.get("prefer") else {
+                out.push(Vec::new());
+                continue;
+            };
+            let prefer = prefer
+                .as_sequence()
+                .ok_or_else(|| format!("holds a `prefer` that is not a list: {prefer:?}"))?
+                .iter()
+                .map(|m| {
+                    m.as_str()
+                        .map(str::to_string)
+                        .ok_or_else(|| format!("holds a `prefer` item that is not a string: {m:?}"))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            out.push(prefer);
+        }
+    }
+    Ok(out)
+}
+
+/// Every `const NAME` item in `code` (a [`blank_non_code`] file split into
+/// lines), as its name and the first and last line it spans.
+fn const_spans(code: &[&str]) -> Vec<(String, usize, usize)> {
+    let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let mut out = Vec::new();
+    for (i, line) in code.iter().enumerate() {
+        let Some((at, _)) = line
+            .match_indices("const ")
+            .find(|(at, _)| !line[..*at].chars().next_back().is_some_and(ident))
+        else {
+            continue;
+        };
+        let rest = &line[at + "const ".len()..];
+        let name: String = rest.chars().take_while(|&c| ident(c)).collect();
+        if name.is_empty() || !rest[name.len()..].trim_start().starts_with(':') {
+            continue;
+        }
+        let mut depth = 0i32;
+        let end = (i..code.len())
+            .find(|&k| {
+                let from = if k == i { at } else { 0 };
+                code[k][from..].chars().any(|c| {
+                    match c {
+                        '(' | '[' | '{' => depth += 1,
+                        ')' | ']' | '}' => depth -= 1,
+                        ';' if depth <= 0 => return true,
+                        _ => {}
+                    }
+                    false
+                })
+            })
+            .unwrap_or(i);
+        out.push((name, i, end));
+    }
+    out
+}
+
+/// Every `const NAME: &str` item in `text` holding a literal, as its name and
+/// its value: the literal, or the pieces a `concat!` joins, with escapes
+/// undone.
+fn const_str_bodies(text: &str) -> Vec<(String, String)> {
+    let blanked = cfgd_core::test_helpers::blank_non_code(text);
+    let raw: Vec<&str> = text.lines().collect();
+    let code: Vec<&str> = blanked.lines().collect();
+    const_spans(&code)
+        .into_iter()
+        .filter(|(name, s, _)| {
+            code[*s]
+                .split_once(&format!("{name}:"))
+                .is_some_and(|(_, ty)| {
+                    let ty = ty.trim_start();
+                    ty.starts_with("&str") || ty.starts_with("&'static str")
+                })
+        })
+        .filter_map(|(name, s, e)| {
+            // An item naming another const holds no literal of its own; the
+            // const it names carries the text.
+            let pieces = string_literal_values(&raw[s..=e].join("\n"), &code[s..=e].join("\n"));
+            (!pieces.is_empty()).then(|| (name, pieces.concat()))
+        })
+        .collect()
+}
+
+/// The value of every string literal in `raw`, found where `code`, its
+/// [`blank_non_code`] twin, keeps a literal's opening quote.
+fn string_literal_values(raw: &str, code: &str) -> Vec<String> {
+    assert_eq!(raw.len(), code.len(), "blanking keeps every byte in place");
+    let mut out = Vec::new();
+    let mut from = 0;
+    while let Some(off) = code[from..].find('"') {
+        let quote = from + off;
+        let hashes = raw[..quote].trim_end_matches('#');
+        let start = match hashes.strip_suffix('r') {
+            Some(before)
+                if !before
+                    .chars()
+                    .next_back()
+                    .is_some_and(|c| c != 'b' && (c.is_ascii_alphanumeric() || c == '_')) =>
+            {
+                before.len()
+            }
+            _ => quote,
+        };
+        match string_literal(&raw[start..]) {
+            Some((value, after)) => {
+                out.push(value);
+                from = raw.len() - after.len();
+            }
+            None => from = quote + 1,
         }
     }
     out
 }
 
-/// Whether `code` names the identifier `ident` as a whole word.
-fn names_ident(code: &str, ident: &str) -> bool {
-    code.match_indices(ident).any(|(at, _)| {
-        let before = code[..at].chars().next_back();
-        let after = code[at + ident.len()..].chars().next();
-        !before.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
-            && !after.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
-    })
-}
-
-/// The `prefer` list of every package entry of every Module document in
-/// `text`: a test's source, its quoted literals read as the lines they hold
-/// once `\n` escapes and `\`-newline continuations are undone.
-fn module_package_entries(text: &str) -> Vec<Vec<String>> {
-    let mut unescaped = String::with_capacity(text.len());
-    let mut chars = text.chars().peekable();
-    while let Some(c) = chars.next() {
-        match (c, chars.peek()) {
-            ('\\', Some('n')) => {
-                chars.next();
-                unescaped.push('\n');
-            }
-            ('\\', Some('\n')) => {
-                chars.next();
-                while chars.peek().is_some_and(|c| c.is_whitespace()) {
-                    chars.next();
+/// The value of the string literal `text` opens with, quoted or raw, and the
+/// text after it.
+fn string_literal(text: &str) -> Option<(String, &str)> {
+    if let Some(raw) = text.strip_prefix('r') {
+        let hashes = raw.len() - raw.trim_start_matches('#').len();
+        let body = raw[hashes..].strip_prefix('"')?;
+        let (value, after) = body.split_once(&format!("\"{}", "#".repeat(hashes)))?;
+        return Some((value.to_string(), after));
+    }
+    let quoted = text.strip_prefix('"')?;
+    let mut value = String::new();
+    let mut chars = quoted.char_indices().peekable();
+    while let Some((n, c)) = chars.next() {
+        match c {
+            '"' => return Some((value, &quoted[n + 1..])),
+            '\\' => match chars.next()?.1 {
+                'n' => value.push('\n'),
+                't' => value.push('\t'),
+                'r' => value.push('\r'),
+                '0' => value.push('\0'),
+                '\n' | '\r' => {
+                    while chars.peek().is_some_and(|(_, c)| c.is_whitespace()) {
+                        chars.next();
+                    }
                 }
-            }
-            _ => unescaped.push(c),
+                other => value.push(other),
+            },
+            _ => value.push(c),
         }
     }
-    let indent = |l: &str| l.len() - l.trim_start().len();
-    let mut entries: Vec<Vec<String>> = Vec::new();
-    for doc in unescaped.split("apiVersion:").skip(1) {
-        if !doc.contains("kind: Module") {
-            continue;
-        }
-        let lines: Vec<&str> = doc.lines().collect();
-        let Some(at) = lines.iter().position(|l| l.trim() == "packages:") else {
-            continue;
-        };
-        let base = indent(lines[at]);
-        let mut entry_indent = None;
-        let mut open_prefer: Option<usize> = None;
-        for line in &lines[at + 1..] {
-            let item = line.trim();
-            if item.is_empty() {
-                continue;
-            }
-            let depth = indent(line);
-            if depth <= base {
-                break;
-            }
-            if item.starts_with("- ") && entry_indent.is_none_or(|e| e == depth) {
-                entry_indent = Some(depth);
-                entries.push(Vec::new());
-                open_prefer = None;
-                continue;
-            }
-            let Some(current) = entries.last_mut() else {
-                continue;
-            };
-            if let Some(list) = item.strip_prefix("prefer:") {
-                let list = list.trim();
-                if list.is_empty() {
-                    open_prefer = Some(depth);
-                } else {
-                    current.extend(
-                        list.trim_start_matches('[')
-                            .trim_end_matches(']')
-                            .split(',')
-                            .map(|m| m.trim().trim_matches('"').to_string())
-                            .filter(|m| !m.is_empty()),
-                    );
-                }
-                continue;
-            }
-            match open_prefer {
-                Some(p) if depth >= p && item.starts_with("- ") => {
-                    current.push(item[2..].trim().trim_matches('"').to_string());
-                }
-                Some(p) if depth <= p => open_prefer = None,
-                _ => {}
-            }
-        }
-    }
-    entries
+    None
 }
 
 // -----------------------------------------------------------------------
@@ -38530,28 +38643,16 @@ fn first_string_literal(text: &str) -> Option<String> {
     None
 }
 
-/// Every `const NAME: &str = "…"` a walked file declares, so a hint that names
-/// its text through a constant is read as the text.
+/// Every `const NAME: &str` a walked file declares, as its value
+/// ([`const_str_bodies`]), so a hint that names its text through a constant is
+/// read as the text.
 fn str_consts(
     sources: &[(std::path::PathBuf, String)],
 ) -> std::collections::BTreeMap<String, String> {
-    let mut consts = std::collections::BTreeMap::new();
-    for (_, body) in sources {
-        let lines: Vec<&str> = body.lines().collect();
-        for (n, line) in lines.iter().enumerate() {
-            let Some(at) = line.find("const ") else {
-                continue;
-            };
-            let Some((name, _)) = line[at + "const ".len()..].split_once(": &str") else {
-                continue;
-            };
-            let window = lines[n..lines.len().min(n + 4)].join("\n");
-            if let Some(text) = first_string_literal(&window) {
-                consts.insert(name.trim().to_string(), text);
-            }
-        }
-    }
-    consts
+    sources
+        .iter()
+        .flat_map(|(_, body)| const_str_bodies(body))
+        .collect()
 }
 
 /// The hint composers this walk stands down for, each paired with whether its

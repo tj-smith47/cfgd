@@ -338,18 +338,17 @@ fn versionless_apk(dir: &Path) -> std::path::PathBuf {
     )
 }
 
-/// One module pinning a package's version onto the versionless manager above,
-/// and a profile that resolves it.
-fn write_pinned_package_config(dir: &Path, manager: &str) {
+/// A module pinning a package's version onto the versionless `apk` above.
+const PINNED_ON_APK: &str = "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: pinned\nspec:\n  packages:\n    - name: demo\n      minVersion: \"2\"\n      prefer: [apk]\n";
+
+/// The same module pinned onto the below-floor `dnf` further down.
+const PINNED_ON_DNF: &str = "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: pinned\nspec:\n  packages:\n    - name: demo\n      minVersion: \"2\"\n      prefer: [dnf]\n";
+
+/// `module` as the `pinned` module, and a profile that resolves it.
+fn write_pinned_package_config(dir: &Path, module: &str) {
     let module_dir = dir.join("modules").join("pinned");
     std::fs::create_dir_all(&module_dir).unwrap();
-    std::fs::write(
-        module_dir.join("module.yaml"),
-        format!(
-            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: pinned\nspec:\n  packages:\n    - name: demo\n      minVersion: \"2\"\n      prefer: [{manager}]\n"
-        ),
-    )
-    .unwrap();
+    std::fs::write(module_dir.join("module.yaml"), module).unwrap();
     let profiles_dir = dir.join("profiles");
     std::fs::create_dir_all(&profiles_dir).unwrap();
     std::fs::write(
@@ -371,7 +370,7 @@ fn write_pinned_package_config(dir: &Path, manager: &str) {
 fn a_pinned_package_whose_version_cannot_be_read_escalates_on_every_exit_code_surface() {
     let config_tmp = tempfile::tempdir().unwrap();
     let home_tmp = tempfile::tempdir().unwrap();
-    write_pinned_package_config(config_tmp.path(), "apk");
+    write_pinned_package_config(config_tmp.path(), PINNED_ON_APK);
     let apk = versionless_apk(config_tmp.path());
 
     for args in EXIT_CODE_SURFACES {
@@ -431,7 +430,7 @@ fn offerless_apk(dir: &Path) -> std::path::PathBuf {
 fn a_pinned_package_whose_manager_states_no_offer_still_resolves() {
     let config_tmp = tempfile::tempdir().unwrap();
     let home_tmp = tempfile::tempdir().unwrap();
-    write_pinned_package_config(config_tmp.path(), "apk");
+    write_pinned_package_config(config_tmp.path(), PINNED_ON_APK);
     let apk = offerless_apk(config_tmp.path());
 
     let run = |args: &[&str]| {
@@ -527,7 +526,7 @@ fn below_floor_dnf(dir: &Path) -> (std::path::PathBuf, std::path::PathBuf) {
 fn a_pinned_package_below_its_floor_exits_drift_detected_on_every_surface() {
     let config_tmp = tempfile::tempdir().unwrap();
     let home_tmp = tempfile::tempdir().unwrap();
-    write_pinned_package_config(config_tmp.path(), "dnf");
+    write_pinned_package_config(config_tmp.path(), PINNED_ON_DNF);
     let (dnf, rpm) = below_floor_dnf(config_tmp.path());
 
     for args in EXIT_CODE_SURFACES {
@@ -583,7 +582,7 @@ const SCOPED_PINNED_SURFACES: [&[&str]; 2] = [
 fn a_pinned_package_below_its_floor_is_drift_on_both_scoped_surfaces() {
     let config_tmp = tempfile::tempdir().unwrap();
     let home_tmp = tempfile::tempdir().unwrap();
-    write_pinned_package_config(config_tmp.path(), "dnf");
+    write_pinned_package_config(config_tmp.path(), PINNED_ON_DNF);
     let (dnf, rpm) = below_floor_dnf(config_tmp.path());
 
     for args in SCOPED_PINNED_SURFACES {
@@ -623,7 +622,7 @@ fn a_pinned_package_below_its_floor_is_drift_on_both_scoped_surfaces() {
 fn a_pinned_package_whose_version_cannot_be_read_escalates_on_both_scoped_surfaces() {
     let config_tmp = tempfile::tempdir().unwrap();
     let home_tmp = tempfile::tempdir().unwrap();
-    write_pinned_package_config(config_tmp.path(), "apk");
+    write_pinned_package_config(config_tmp.path(), PINNED_ON_APK);
     let apk = versionless_apk(config_tmp.path());
 
     for args in SCOPED_PINNED_SURFACES {
@@ -668,7 +667,7 @@ fn a_scoped_run_does_not_heal_a_version_row_the_machine_still_holds() {
     let config_tmp = tempfile::tempdir().unwrap();
     let home_tmp = tempfile::tempdir().unwrap();
     let state_tmp = tempfile::tempdir().unwrap();
-    write_pinned_package_config(config_tmp.path(), "dnf");
+    write_pinned_package_config(config_tmp.path(), PINNED_ON_DNF);
     let (dnf, rpm) = below_floor_dnf(config_tmp.path());
 
     let run_one = |args: &[&str]| {
