@@ -1464,9 +1464,13 @@ pub fn blank_string_literals(line: &str) -> String {
 /// whole body that has already been through [`blank_string_literals`], or the
 /// walk reads a spelling inside a literal as a call.
 pub fn calls_free_fn(code: &str, name: &str) -> bool {
-    let needle = format!("{name}(");
+    calls_through(code, &format!("{name}("))
+}
+
+/// [`calls_free_fn`] over a prebuilt `name(` needle.
+fn calls_through(code: &str, needle: &str) -> bool {
     let mut from = 0;
-    while let Some(at) = code[from..].find(&needle) {
+    while let Some(at) = code[from..].find(needle) {
         let at = from + at;
         let before = code[..at].chars().next_back();
         if !before.is_some_and(|c| c == '.' || c.is_ascii_alphanumeric() || c == '_') {
@@ -1730,12 +1734,52 @@ pub fn declaration_end<S: AsRef<str>>(code: &[S], start: usize) -> usize {
 /// A mention starts at an identifier boundary, so `InlineTable::new(` is no
 /// call of `Table::new`.
 pub fn reaches_fn(code: &str, name: &str, owner: Option<&str>) -> bool {
-    match owner {
-        None => calls_free_fn(code, name),
-        Some(ty) => {
-            (code.contains(&format!(".{name}(")) && starts_at_boundary(code, ty))
-                || starts_at_boundary(code, &format!("{ty}::{name}("))
+    Callee::new(name, owner).reached_by(code)
+}
+
+/// The call spellings reaching one declared function, built once so a fold
+/// testing every declaration against it formats nothing per body.
+struct Callee<'a> {
+    owner: Option<&'a str>,
+    free: String,
+    method: String,
+    path: String,
+    self_path: String,
+    self_method: String,
+}
+
+impl<'a> Callee<'a> {
+    fn new(name: &str, owner: Option<&'a str>) -> Self {
+        Self {
+            owner,
+            free: format!("{name}("),
+            method: format!(".{name}("),
+            path: format!("{}::{name}(", owner.unwrap_or_default()),
+            self_path: format!("Self::{name}("),
+            self_method: format!("self.{name}("),
         }
+    }
+
+    /// [`reaches_fn`]'s answer for `code`.
+    fn reached_by(&self, code: &str) -> bool {
+        match self.owner {
+            None => calls_through(code, &self.free),
+            Some(ty) => {
+                (code.contains(&self.method) && starts_at_boundary(code, ty))
+                    || starts_at_boundary(code, &self.path)
+            }
+        }
+    }
+
+    /// Whether a body declared in `caller_owner`'s impl reaches this function:
+    /// [`reaches_fn`], or, inside the same impl, the `Self::name(` and
+    /// `self.name(` calls that never spell the type out.
+    fn reached_from(&self, code: &str, caller_owner: Option<&str>) -> bool {
+        self.reached_by(code)
+            || (self.owner.is_some()
+                && caller_owner == self.owner
+                && (starts_at_boundary(code, &self.self_path)
+                    || starts_at_boundary(code, &self.self_method)))
     }
 }
 
@@ -1747,22 +1791,6 @@ fn starts_at_boundary(code: &str, needle: &str) -> bool {
             .next_back()
             .is_some_and(|c| c.is_alphanumeric() || c == '_')
     })
-}
-
-/// Whether a body declared in `caller_owner`'s impl reaches `name` in
-/// `owner`'s: [`reaches_fn`], or, inside the same impl, the `Self::name(` and
-/// `self.name(` calls that never spell the type out.
-fn reaches_declared(
-    body: &str,
-    caller_owner: Option<&str>,
-    name: &str,
-    owner: Option<&str>,
-) -> bool {
-    reaches_fn(body, name, owner)
-        || (owner.is_some()
-            && caller_owner == owner
-            && (starts_at_boundary(body, &format!("Self::{name}("))
-                || starts_at_boundary(body, &format!("self.{name}("))))
 }
 
 /// Every declaration reaching one of `seeds`, folded until the set stops
@@ -1781,8 +1809,10 @@ pub fn callers_reaching(
     seeds: &[(String, Option<String>)],
 ) -> Vec<(String, Option<String>)> {
     let mut derived: Vec<(String, Option<String>)> = Vec::new();
+    let mut seen: std::collections::HashSet<(String, Option<String>)> =
+        std::collections::HashSet::new();
     for seed in seeds {
-        if !derived.contains(seed) {
+        if seen.insert(seed.clone()) {
             derived.push(seed.clone());
         }
     }
@@ -1790,14 +1820,15 @@ pub fn callers_reaching(
     while !frontier.is_empty() {
         let mut next: Vec<(String, Option<String>)> = Vec::new();
         for (name, owner) in &frontier {
+            let callee = Callee::new(name, owner.as_deref());
             for (caller, caller_owner, body) in declarations {
                 if (caller, caller_owner) == (name, owner)
-                    || !reaches_declared(body, caller_owner.as_deref(), name, owner.as_deref())
+                    || !callee.reached_from(body, caller_owner.as_deref())
                 {
                     continue;
                 }
                 let entry = (caller.clone(), caller_owner.clone());
-                if !derived.contains(&entry) && !next.contains(&entry) {
+                if seen.insert(entry.clone()) {
                     next.push(entry);
                 }
             }
