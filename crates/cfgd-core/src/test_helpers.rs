@@ -1804,8 +1804,12 @@ fn starts_at_boundary(code: &str, needle: &str) -> bool {
 /// The self-call skip compares the whole `(name, owner)` pair, because two
 /// distinct functions sharing a bare name would otherwise collapse and a
 /// genuine edge between them be dropped.
-pub fn callers_reaching(
-    declarations: &[(String, Option<String>, String)],
+///
+/// The declarations are anything borrowing a `(name, owner, body)` row, so a
+/// fold over a shared, memoised set with a few rows held out takes references
+/// to the rows it keeps and copies no body.
+pub fn callers_reaching<D: std::borrow::Borrow<(String, Option<String>, String)>>(
+    declarations: &[D],
     seeds: &[(String, Option<String>)],
 ) -> Vec<(String, Option<String>)> {
     let mut derived: Vec<(String, Option<String>)> = Vec::new();
@@ -1821,7 +1825,8 @@ pub fn callers_reaching(
         let mut next: Vec<(String, Option<String>)> = Vec::new();
         for (name, owner) in &frontier {
             let callee = Callee::new(name, owner.as_deref());
-            for (caller, caller_owner, body) in declarations {
+            for declaration in declarations {
+                let (caller, caller_owner, body) = declaration.borrow();
                 if (caller, caller_owner) == (name, owner)
                     || !callee.reached_from(body, caller_owner.as_deref())
                 {

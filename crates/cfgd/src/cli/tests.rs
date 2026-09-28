@@ -1424,7 +1424,7 @@ fn update_check_entries() -> Vec<(String, Option<String>)> {
     // one-root-population-ok: a blind cfgd-core loses the stop asserted below,
     // and a blind cfgd loses `startup_update_check` and its pin's share of the
     // walk's floor.
-    let declarations: Vec<(String, Option<String>, String)> = production_sources_per_root(&[
+    let declarations = &workspace_declarations(&[
         "cfgd",
         "cfgd-core",
         "cfgd-crd",
@@ -1433,20 +1433,17 @@ fn update_check_entries() -> Vec<(String, Option<String>)> {
         "cfgd-schema",
         "cfgd-test-fixtures",
     ])
-    .into_iter()
-    .flat_map(|(_, sources)| sources)
-    .flat_map(|(_, production)| fn_declarations(&production))
-    .collect();
+    .rows;
     let seeds = [("should_check".to_string(), None)];
     // A stop that no longer reaches the gate would silently stop nothing.
     assert!(
-        cfgd_core::test_helpers::callers_reaching(&declarations, &seeds)
+        cfgd_core::test_helpers::callers_reaching(declarations, &seeds)
             .iter()
             .any(|(name, _)| name == TRIGGERED_ENTRY),
         "`{TRIGGERED_ENTRY}` no longer reaches `should_check`; the fold's stop names nothing"
     );
-    let stopped: Vec<(String, Option<String>, String)> = declarations
-        .into_iter()
+    let stopped: Vec<&(String, Option<String>, String)> = declarations
+        .iter()
         .filter(|(name, _, _)| name != TRIGGERED_ENTRY)
         .collect();
     let mut entries = cfgd_core::test_helpers::callers_reaching(&stopped, &seeds);
@@ -1676,14 +1673,14 @@ fn every_cfgd_env_name_is_spelled_once_in_production() {
     // The per-root reader hands back paths under `<cfgd>/..`, so the prefix to
     // strip is spelled the same way.
     let crates_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
-    let sources: Vec<(String, String)> = trees
+    let sources: Vec<(String, &str)> = trees
         .iter()
-        .flat_map(|(_, files)| files)
+        .flat_map(|&(_, files)| files)
         .map(|(path, production)| {
             let rel = path.strip_prefix(&crates_dir).unwrap_or(path);
             (
                 format!("crates/{}", cfgd_core::to_posix_string(rel)),
-                production.clone(),
+                production.as_str(),
             )
         })
         .collect();
@@ -1739,7 +1736,7 @@ fn every_cfgd_env_name_is_spelled_once_in_production() {
     let mut spellings: std::collections::BTreeMap<&str, Vec<String>> =
         names.iter().map(|n| (n.as_str(), Vec::new())).collect();
     let mut per_root: Vec<(&str, usize)> = Vec::new();
-    for (tree, files) in &trees {
+    for &(tree, files) in &trees {
         let mut spelled = 0usize;
         for (path, production) in files {
             // Built only for tests, so no shipped binary reads what they spell.
@@ -1767,7 +1764,7 @@ fn every_cfgd_env_name_is_spelled_once_in_production() {
                 }
             }
         }
-        per_root.push((tree.as_str(), spelled));
+        per_root.push((tree, spelled));
     }
 
     // Every function that hands one of its own parameters to an environment
@@ -2190,7 +2187,7 @@ fn every_test_names_a_cfgd_variable_through_its_const() {
                     owners.insert(
                         name.to_string(),
                         (
-                            (!everywhere).then(|| root.clone()),
+                            (!everywhere).then(|| root.to_string()),
                             ident.unwrap_or_default().trim().to_string(),
                         ),
                     );
@@ -19159,7 +19156,7 @@ fn floored_production_body_reads_no_test_only_file_as_production() {
     assert!(!floored_production_body(&root.join("crates/cfgd/src/cli/mod.rs")).is_empty());
     // one-root-population-ok: the question is an absence, which no root has a
     // count of; each root's own floor is `production_sources_per_root`'s.
-    let listed: Vec<std::path::PathBuf> = production_sources_per_root(&[
+    let listed: Vec<&std::path::PathBuf> = production_sources_per_root(&[
         "cfgd",
         "cfgd-core",
         "cfgd-crd",
@@ -19169,10 +19166,10 @@ fn floored_production_body_reads_no_test_only_file_as_production() {
         "cfgd-test-fixtures",
     ])
     .into_iter()
-    .flat_map(|(_, sources)| sources.into_iter().map(|(path, _)| path))
+    .flat_map(|(_, sources)| sources.iter().map(|(path, _)| path))
     .collect();
     let held: Vec<&std::path::PathBuf> = listed
-        .iter()
+        .into_iter()
         .filter(|p| {
             cfgd_core::test_helpers::is_test_only_file(p)
                 || cfgd_core::test_helpers::is_test_source(p)
@@ -19184,29 +19181,64 @@ fn floored_production_body_reads_no_test_only_file_as_production() {
     );
 }
 
+/// One crate's name and its production sources, each as its path and body.
+type RootSources = (String, Vec<(std::path::PathBuf, String)>);
+
+/// Every crate's production sources, keyed by the crate's own name and sorted
+/// by it, read and floored once per test process. A dozen walks judge the
+/// whole workspace, and under `cargo test` they share one process, so each
+/// reading the tree itself paid the same second of I/O and floor checks again.
+/// A file `is_test_source` names holds tests alone, and one `is_test_only_file`
+/// names is built only for tests, so neither is a production source.
+static WORKSPACE_PRODUCTION: std::sync::LazyLock<Vec<RootSources>> =
+    std::sync::LazyLock::new(|| {
+        let crates_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let mut present: Vec<String> = std::fs::read_dir(&crates_dir)
+            .expect("the workspace's crate directory is readable")
+            .map(|entry| entry.expect("the walk must read every directory entry"))
+            .filter(|entry| entry.path().join("src").is_dir())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        present.sort();
+        present
+            .into_iter()
+            .map(|krate| {
+                let files: Vec<(std::path::PathBuf, String)> =
+                    rust_sources_under(&crates_dir.join(&krate).join("src"))
+                        .into_iter()
+                        .filter(|p| {
+                            !cfgd_core::test_helpers::is_test_source(p)
+                                && !cfgd_core::test_helpers::is_test_only_file(p)
+                        })
+                        .map(|path| {
+                            let production = floored_production_body(&path);
+                            (path, production)
+                        })
+                        .collect();
+                (krate, files)
+            })
+            .collect()
+    });
+
 /// Every crate root's production sources, keyed by the crate's own name, for a
-/// walk whose population is the WHOLE workspace.
+/// walk whose population is the WHOLE workspace, in the order `roots` names
+/// them and borrowed from [`WORKSPACE_PRODUCTION`].
 ///
 /// The named set is checked against `crates/` itself, so a crate joining the
 /// workspace fails the caller's walk and never goes unread, and each root
 /// must yield at least one source — a tree read as empty is otherwise
-/// indistinguishable from one holding no offender. The comparison is
+/// indistinguishable from one holding no offender. Both checks run per call,
+/// so the walk that fails names the root. The comparison is
 /// order-insensitive: both sides are sorted first, so a caller listing its
 /// roots in its own order is not failed with a message about a crate joining
-/// the workspace. A file `is_test_source` names holds tests alone, and one
-/// `is_test_only_file` names is built only for tests, so neither is a
-/// production source.
-fn production_sources_per_root(roots: &[&str]) -> Vec<(String, Vec<(std::path::PathBuf, String)>)> {
-    let crates_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
-    let mut present: Vec<String> = std::fs::read_dir(&crates_dir)
-        .expect("the workspace's crate directory is readable")
-        .map(|entry| entry.expect("the walk must read every directory entry"))
-        .filter(|entry| entry.path().join("src").is_dir())
-        .map(|entry| entry.file_name().to_string_lossy().into_owned())
-        .collect();
-    present.sort();
-    let mut named: Vec<String> = roots.iter().map(|k| (*k).to_string()).collect();
-    named.sort();
+/// the workspace.
+fn production_sources_per_root(
+    roots: &[&str],
+) -> Vec<(&'static str, &'static [(std::path::PathBuf, String)])> {
+    let workspace: &'static [RootSources] = &WORKSPACE_PRODUCTION;
+    let present: Vec<&str> = workspace.iter().map(|(krate, _)| krate.as_str()).collect();
+    let mut named: Vec<&str> = roots.to_vec();
+    named.sort_unstable();
     assert_eq!(
         present, named,
         "a crate joined or left the workspace, so its tree is judged by nobody"
@@ -19214,25 +19246,49 @@ fn production_sources_per_root(roots: &[&str]) -> Vec<(String, Vec<(std::path::P
     roots
         .iter()
         .map(|krate| {
-            let files: Vec<(std::path::PathBuf, String)> =
-                rust_sources_under(&crates_dir.join(krate).join("src"))
-                    .into_iter()
-                    .filter(|p| {
-                        !cfgd_core::test_helpers::is_test_source(p)
-                            && !cfgd_core::test_helpers::is_test_only_file(p)
-                    })
-                    .map(|path| {
-                        let production = floored_production_body(&path);
-                        (path, production)
-                    })
-                    .collect();
+            let (root, files) = workspace
+                .iter()
+                .find(|(present, _)| present == krate)
+                .expect("every named root is present, checked above");
             assert!(
                 !files.is_empty(),
                 "the {krate} tree stopped contributing sources"
             );
-            ((*krate).to_string(), files)
+            (root.as_str(), files.as_slice())
         })
         .collect()
+}
+
+/// Every function the workspace's production code declares, as
+/// [`fn_declarations`] rows, each with the crate root declaring it.
+struct WorkspaceDeclarations {
+    roots: Vec<&'static str>,
+    rows: Vec<(String, Option<String>, String)>,
+}
+
+/// [`WorkspaceDeclarations`] for the whole workspace, built once per test
+/// process: two call-graph walks fold over it, and declaring every function in
+/// seven crates is most of either walk's time.
+static WORKSPACE_DECLARATIONS: std::sync::LazyLock<WorkspaceDeclarations> =
+    std::sync::LazyLock::new(|| {
+        let mut roots = Vec::new();
+        let mut rows = Vec::new();
+        for (root, files) in WORKSPACE_PRODUCTION.iter() {
+            for (_, production) in files {
+                for row in fn_declarations(production) {
+                    roots.push(root.as_str());
+                    rows.push(row);
+                }
+            }
+        }
+        WorkspaceDeclarations { roots, rows }
+    });
+
+/// [`WORKSPACE_DECLARATIONS`], after [`production_sources_per_root`] has checked
+/// `roots` against the workspace and each root's sources for this caller.
+fn workspace_declarations(roots: &[&str]) -> &'static WorkspaceDeclarations {
+    production_sources_per_root(roots);
+    &WORKSPACE_DECLARATIONS
 }
 
 /// Every production `.rs` under `src/cli/`, with its `#[cfg(test)]` items and
@@ -19283,7 +19339,7 @@ fn every_saved_plan_the_cli_records_comes_from_the_one_gate() {
     let trees = production_sources_per_root(&names);
     let mut offenders = Vec::new();
     let mut per_root: Vec<(&str, usize)> = Vec::new();
-    for (tree, files) in &trees {
+    for &(tree, files) in &trees {
         let mut judged = 0usize;
         for (path, body) in files {
             for (n, line) in body.lines().enumerate() {
@@ -19304,7 +19360,7 @@ fn every_saved_plan_the_cli_records_comes_from_the_one_gate() {
         }
         let root: &str = WALK_ROOTS
             .iter()
-            .find(|(k, _)| *k == tree.as_str())
+            .find(|(k, _)| *k == tree)
             .map(|(k, _)| *k)
             .expect("every walked tree is a named root");
         per_root.push((root, judged));
@@ -25968,16 +26024,8 @@ fn every_command_reaching_package_resolution_is_a_resolving_verb() {
         ("cfgd-test-fixtures", 0),
     ];
     let roots: Vec<&str> = ROOT_FLOORS.iter().map(|(root, _)| *root).collect();
-    let mut declared_in: Vec<(String, (String, Option<String>))> = Vec::new();
-    let mut declarations: Vec<(String, Option<String>, String)> = Vec::new();
-    for (root, sources) in production_sources_per_root(&roots) {
-        for (_, production) in sources {
-            for (name, owner, body) in cfgd_core::test_helpers::fn_declarations(&production) {
-                declared_in.push((root.clone(), (name.clone(), owner.clone())));
-                declarations.push((name, owner, body));
-            }
-        }
-    }
+    let workspace = workspace_declarations(&roots);
+    let declarations = &workspace.rows;
     let seeds: Vec<(String, Option<String>)> = declarations
         .iter()
         .filter(|(_, _, body)| {
@@ -25987,17 +26035,23 @@ fn every_command_reaching_package_resolution_is_a_resolving_verb() {
         })
         .map(|(name, owner, _)| (name.clone(), owner.clone()))
         .collect();
-    let reached: std::collections::HashSet<(String, Option<String>)> =
-        cfgd_core::test_helpers::callers_reaching(&declarations, &seeds)
-            .into_iter()
-            .collect();
+    let reached_rows = cfgd_core::test_helpers::callers_reaching(declarations, &seeds);
+    let reached: std::collections::HashSet<(&str, Option<&str>)> = reached_rows
+        .iter()
+        .map(|(name, owner)| (name.as_str(), owner.as_deref()))
+        .collect();
+    let declared_in = || {
+        workspace
+            .roots
+            .iter()
+            .zip(declarations)
+            .filter(|(_, (name, owner, _))| reached.contains(&(name.as_str(), owner.as_deref())))
+            .map(|(root, (name, _, _))| (*root, name.as_str()))
+    };
     let under: Vec<String> = ROOT_FLOORS
         .iter()
         .filter_map(|(root, floor)| {
-            let found = declared_in
-                .iter()
-                .filter(|(r, member)| r == root && reached.contains(member))
-                .count();
+            let found = declared_in().filter(|(r, _)| r == root).count();
             (found < *floor).then(|| format!("{root}: {found}, floor {floor}"))
         })
         .collect();
@@ -26007,10 +26061,9 @@ fn every_command_reaching_package_resolution_is_a_resolving_verb() {
          holds:\n  {}",
         under.join("\n  ")
     );
-    let mut derived: Vec<String> = declared_in
-        .into_iter()
-        .filter(|(root, member)| root == "cfgd" && reached.contains(member))
-        .map(|(_, (name, _))| name)
+    let mut derived: Vec<&str> = declared_in()
+        .filter(|(root, _)| *root == "cfgd")
+        .map(|(_, name)| name)
         .filter(|name| name.starts_with("cmd_") || name.starts_with("run_"))
         .collect();
     derived.sort();
@@ -26021,13 +26074,9 @@ fn every_command_reaching_package_resolution_is_a_resolving_verb() {
          holds: {derived:?}",
         derived.len()
     );
-    let missing: Vec<&String> = derived
-        .iter()
-        .filter(|name| {
-            !PACKAGE_RESOLVING_VERBS
-                .iter()
-                .any(|v| v.call == name.as_str())
-        })
+    let missing: Vec<&str> = derived
+        .into_iter()
+        .filter(|name| !PACKAGE_RESOLVING_VERBS.iter().any(|v| v.call == *name))
         .collect();
     assert!(
         missing.is_empty(),
@@ -39203,11 +39252,11 @@ fn first_string_literal(text: &str) -> Option<String> {
 /// Every `const NAME: &str` a walked file declares, as its value
 /// ([`const_str_bodies`]), so a hint that names its text through a constant is
 /// read as the text.
-fn str_consts(
-    sources: &[(std::path::PathBuf, String)],
+fn str_consts<'a>(
+    sources: impl IntoIterator<Item = &'a (std::path::PathBuf, String)>,
 ) -> std::collections::BTreeMap<String, String> {
     sources
-        .iter()
+        .into_iter()
         .flat_map(|(_, body)| const_str_bodies(body))
         .collect()
 }
@@ -39495,16 +39544,11 @@ fn every_closing_hint_names_a_command() {
     ];
     let names: Vec<&str> = WALK_ROOTS.iter().map(|(k, _)| *k).collect();
     let trees = production_sources_per_root(&names);
-    let sources: Vec<(std::path::PathBuf, String)> = trees
-        .iter()
-        .flat_map(|(_, files)| files.iter().cloned())
-        .collect();
-    let consts = str_consts(&sources);
+    let consts = str_consts(trees.iter().flat_map(|&(_, files)| files));
     let constructors = hint_constructors();
     let mut per_root: Vec<(&str, usize)> = Vec::new();
     let mut offenders = Vec::new();
-    for (tree, files) in &trees {
-        let tree = tree.as_str();
+    for &(tree, files) in &trees {
         let mut checked = 0usize;
         for (path, body) in files {
             let lines: Vec<&str> = body.lines().collect();
@@ -39673,15 +39717,10 @@ fn no_gated_hint_names_a_path_or_a_machine_state() {
     // A hint naming its text through a constant is read as the text, the way
     // `every_closing_hint_names_a_command` reads one: a `~/` moved into a
     // `const` is the same fact riding the same slot.
-    let consts = str_consts(
-        &trees
-            .iter()
-            .flat_map(|(_, files)| files.iter().cloned())
-            .collect::<Vec<_>>(),
-    );
+    let consts = str_consts(trees.iter().flat_map(|&(_, files)| files));
     let mut per_root: Vec<(&str, usize)> = Vec::new();
     let mut offenders: Vec<String> = Vec::new();
-    for ((krate, _), (_, sources)) in WALK_ROOTS.iter().zip(&trees) {
+    for ((krate, _), &(_, sources)) in WALK_ROOTS.iter().zip(&trees) {
         let mut checked = 0usize;
         for (path, body) in sources {
             let lines: Vec<&str> = body.lines().collect();
@@ -39823,7 +39862,7 @@ fn every_hint_composer_declares_its_class() {
     let mint_tells = hint_mint_tells();
     let mut per_root: Vec<(&str, usize)> = Vec::new();
     let mut declared: Vec<(String, &std::path::PathBuf, String, &String)> = Vec::new();
-    for ((krate, _), (_, sources)) in WALK_ROOTS.iter().zip(&trees) {
+    for ((krate, _), &(_, sources)) in WALK_ROOTS.iter().zip(&trees) {
         let mut found = 0usize;
         for (path, body) in sources {
             for (name, _, code) in cfgd_core::test_helpers::fn_declarations(body) {
@@ -40421,7 +40460,7 @@ fn every_hint_composer_the_workspace_declares_is_classified() {
     let mut per_root: Vec<(&str, usize)> = Vec::new();
     let mut offenders: Vec<String> = Vec::new();
     let mut matched = vec![false; UNCONDITIONAL_HINT_CALL_SITES.len()];
-    for ((krate, floor, mint_floor), (_, sources)) in WALK_ROOTS.iter().zip(&trees) {
+    for ((krate, floor, mint_floor), &(_, sources)) in WALK_ROOTS.iter().zip(&trees) {
         let mut found = 0usize;
         let mut minted = 0usize;
         for (path, production) in sources {
@@ -55494,13 +55533,13 @@ fn every_compliance_counts_line_comes_from_the_one_builder() {
             let line = production[..at].matches('\n').count();
             format!(
                 "{}:{}: {}",
-                cfgd_core::to_posix_string(&path),
+                cfgd_core::to_posix_string(path),
                 line + 1,
                 production.lines().nth(line).unwrap_or_default().trim()
             )
         };
         let lines: Vec<&str> = production.lines().collect();
-        let hits: Vec<usize> = hand_compositions(&production)
+        let hits: Vec<usize> = hand_compositions(production)
             .into_iter()
             .filter(|&at| {
                 let line = production[..at].matches('\n').count();
@@ -55510,12 +55549,12 @@ fn every_compliance_counts_line_comes_from_the_one_builder() {
                         .is_some_and(|above| carries_hatch(lines[above], HATCH)))
             })
             .collect();
-        if path == builder_home {
+        if *path == builder_home {
             builder_seen = !hits.is_empty();
         } else {
             offenders.extend(hits.into_iter().map(site));
         }
-        if path == dashboard {
+        if *path == dashboard {
             dashboard_seen = true;
             offenders.extend(
                 production
