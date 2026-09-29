@@ -707,6 +707,154 @@ spec:
         checkin.assert();
     }
 
+    /// The profile a compliance snapshot is labelled with, and the name its
+    /// patch scripts see as `CFGD_PROFILE`, is the one the invocation resolved:
+    /// `--profile` when given, the document's `profile:` otherwise. Driven
+    /// through `execute` with parsed argv, so the flag's own path to the
+    /// resolver is what is tested.
+    #[test]
+    #[cfg(unix)]
+    #[serial_test::serial]
+    fn compliance_and_checkin_label_the_snapshot_with_the_resolved_profile() {
+        use std::os::unix::fs::PermissionsExt;
+
+        const ROWS: &[(&str, &[&str], &str)] = &[
+            (
+                "compliance --profile",
+                &["--profile", "work", "compliance"],
+                "work",
+            ),
+            (
+                "compliance, the document's profile",
+                &["compliance"],
+                "base",
+            ),
+            (
+                "checkin --profile",
+                &["--profile", "work", "checkin"],
+                "work",
+            ),
+            ("checkin, the document's profile", &["checkin"], "base"),
+        ];
+
+        let mut server = mockito::Server::new();
+        let _checkin = server
+            .mock("POST", "/api/v1/checkin")
+            .with_status(200)
+            .with_body(r#"{"status":"ok","configChanged":false}"#)
+            .expect_at_least(0)
+            .create();
+
+        let mut wrong = Vec::new();
+        for (row, args, expected) in ROWS {
+            let config_dir = make_test_config_dir();
+            let root = config_dir.path();
+            let seen = root.join("seen-profile");
+            let target = root.join("patched.conf");
+            std::fs::write(&target, "keep=me\n").unwrap();
+            let script = root.join("scripts").join("record-profile.sh");
+            std::fs::create_dir_all(script.parent().unwrap()).unwrap();
+            std::fs::write(
+                &script,
+                format!(
+                    "#!/bin/sh\nprintf '%s' \"$CFGD_PROFILE\" > '{}'\ncat\n",
+                    cfgd_core::to_posix_string(&seen)
+                ),
+            )
+            .unwrap();
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+            std::fs::write(
+                root.join("cfgd.yaml"),
+                "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  \
+                 profile: base\n  compliance:\n    enabled: true\n    scope:\n      \
+                 packages: false\n      system: false\n      secrets: false\n",
+            )
+            .unwrap();
+            for name in ["base", "work"] {
+                std::fs::write(
+                    root.join("profiles").join(format!("{name}.yaml")),
+                    format!(
+                        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: {name}\n\
+                         spec:\n  files:\n    managed:\n      - target: {}\n        \
+                         strategy: Patch\n        patch:\n          \
+                         script: scripts/record-profile.sh\n",
+                        cfgd_core::to_posix_string(&target)
+                    ),
+                )
+                .unwrap();
+            }
+
+            let state_dir = tempfile::tempdir().unwrap();
+            let _home = cfgd_core::with_test_home_guard(root);
+            let _state_env = EnvVarGuard::set(
+                cfgd_core::CFGD_STATE_DIR_ENV,
+                state_dir.path().to_str().unwrap(),
+            );
+            let mut argv: Vec<String> = vec![
+                "cfgd".into(),
+                "--config".into(),
+                cfgd_core::to_posix_string(root.join("cfgd.yaml")),
+                "--state-dir".into(),
+                cfgd_core::to_posix_string(state_dir.path()),
+            ];
+            argv.extend(args.iter().map(|a| (*a).to_string()));
+            if args.contains(&"checkin") {
+                argv.extend([
+                    "--server-url".into(),
+                    server.url(),
+                    "--api-key".into(),
+                    "test-key".into(),
+                    "--device-id".into(),
+                    "dev-1".into(),
+                ]);
+            }
+            let cli = Cli::try_parse_hermetic(&argv).expect("the invocation parses");
+            let (printer, _cap) = Printer::for_test_doc();
+            let result = super::super::execute(
+                &cli,
+                &printer,
+                &super::super::paths::DirSources::all_default(),
+                &super::super::startup::StartupDocument::load(&cli.config),
+            );
+            drop(printer);
+            if let Err(e) = result {
+                wrong.push(format!("{row}: the invocation failed: {e:#}"));
+                continue;
+            }
+
+            let script_saw = std::fs::read_to_string(&seen).unwrap_or_default();
+            if script_saw != *expected {
+                wrong.push(format!(
+                    "{row}: the patch script saw CFGD_PROFILE={script_saw:?}, expected {expected:?}"
+                ));
+            }
+            if args.contains(&"compliance") {
+                let state = open_state_store(Some(state_dir.path()), cfgd_core::Scope::User)
+                    .expect("the state store opens");
+                let latest = state
+                    .compliance_history(None, 1)
+                    .expect("the history reads")
+                    .first()
+                    .and_then(|r| {
+                        state
+                            .get_compliance_snapshot(r.id)
+                            .expect("the snapshot reads")
+                    });
+                let label = latest.map(|s| s.profile);
+                if label.as_deref() != Some(*expected) {
+                    wrong.push(format!(
+                        "{row}: the stored snapshot is labelled {label:?}, expected {expected:?}"
+                    ));
+                }
+            }
+        }
+        assert!(
+            wrong.is_empty(),
+            "the snapshot's profile label does not follow the resolved profile:\n{}",
+            wrong.join("\n")
+        );
+    }
+
     /// Every string in a gateway response is remote input, and this command
     /// echoes `status` verbatim into a kv row. An `ESC[2K` in it erases the
     /// line it is written on, so what a user reads is not what the gateway
