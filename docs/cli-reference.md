@@ -2774,6 +2774,9 @@ with a default is written back at that default and reported as
 `Reset <key> to <default>`; `-o json` carries `"removed": false` and the `value`
 written. A field with no default (an optional key, an alias) leaves the file and
 is reported as `Unset <key>`, with `"removed": true`.
+A key the document does not hold is refused as a missing key, exit `6`, with
+the first part of it the document does not declare named as `config get` names
+it (`key 'ghost.path' not found ('ghost' is not declared)`).
 
 ```sh
 cfgd config unset theme                          # remove entire theme section

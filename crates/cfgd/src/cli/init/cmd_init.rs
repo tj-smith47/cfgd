@@ -635,7 +635,7 @@ fn apply_clone_overrides(
             // may still carry goes with the block it is replaced by, and any
             // overrides the cloned block held are dropped with it.
             spec.remove("theme");
-            let (output, leaf) = config_cmd::walk_spec_path_mut(spec, "output.theme")?;
+            let (output, leaf, _) = config_cmd::walk_spec_path_mut(spec, "output.theme")?;
             let mut block = serde_yaml::Mapping::new();
             block.insert(
                 serde_yaml::Value::String("name".into()),

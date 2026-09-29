@@ -604,15 +604,17 @@ pub(super) fn walk_yaml_path_mut<'a>(
     let found = blocking_shape(value);
     let root =
         section_mapping_mut(value).ok_or_else(|| descent_blocked(&[], &segments[..1], found))?;
-    walk_spec_path_mut(root, path)
+    walk_spec_path_mut(root, path).map(|(parent, leaf, _)| (parent, leaf))
 }
 
 /// [`walk_yaml_path_mut`] from a `spec` already in hand as a mapping, the
-/// shape [`spec_mapping_mut`] hands a writer.
+/// shape [`spec_mapping_mut`] hands a writer. The third element is the dotted
+/// path of the first parent the walk had to insert, `None` when `spec`
+/// already held every parent.
 pub(super) fn walk_spec_path_mut<'a>(
     spec: &'a mut serde_yaml::Mapping,
     path: &str,
-) -> anyhow::Result<(&'a mut serde_yaml::Mapping, String)> {
+) -> anyhow::Result<(&'a mut serde_yaml::Mapping, String, Option<String>)> {
     let segments = key_segments(path)?;
     let (leaf, parents) = segments
         .split_last()
@@ -620,19 +622,22 @@ pub(super) fn walk_spec_path_mut<'a>(
         .ok_or_else(|| anyhow::anyhow!("empty key path"))?;
 
     let mut parent = spec;
+    let mut inserted = None;
     // An absent key is inserted as Null, which reads as the empty section it
     // stands for, exactly as a `daemon:` holding nothing does.
     for (i, segment) in parents.iter().enumerate() {
-        let slot = parent
-            .entry(serde_yaml::Value::String((*segment).to_string()))
-            .or_insert(serde_yaml::Value::Null);
+        let name = serde_yaml::Value::String((*segment).to_string());
         let at = &segments[..=i];
+        if inserted.is_none() && !parent.contains_key(&name) {
+            inserted = Some(at.join("."));
+        }
+        let slot = parent.entry(name).or_insert(serde_yaml::Value::Null);
         promote_scalar_union(slot, at);
         let found = blocking_shape(slot);
         parent = section_mapping_mut(slot)
             .ok_or_else(|| descent_blocked(at, &segments[..i + 2], found))?;
     }
-    Ok((parent, (*leaf).to_string()))
+    Ok((parent, (*leaf).to_string(), inserted))
 }
 
 /// A key path's dot-separated segments, refused when one of them is empty.
@@ -928,7 +933,7 @@ pub(super) fn config_set_as(
                 previous = serde_json::to_value(&prior).unwrap_or(serde_json::Value::Null);
             }
         }
-        let (parent, leaf_key) = walk_spec_path_mut(spec, &written_key)?;
+        let (parent, leaf_key, _) = walk_spec_path_mut(spec, &written_key)?;
         let yaml_key = serde_yaml::Value::String(leaf_key);
         if let Some(prior) = parent.get(&yaml_key) {
             previous = serde_json::to_value(prior).unwrap_or(serde_json::Value::Null);
@@ -1008,7 +1013,7 @@ pub(super) fn config_unset_as(
                 removed_flat = true;
             }
         }
-        let (parent, leaf_key) = walk_spec_path_mut(spec, &written_key)?;
+        let (parent, leaf_key, inserted) = walk_spec_path_mut(spec, &written_key)?;
         let yaml_key = serde_yaml::Value::String(leaf_key.clone());
         match parent.remove(&yaml_key) {
             Some(prior) => {
@@ -1016,9 +1021,11 @@ pub(super) fn config_unset_as(
                 Ok(())
             }
             None if removed_flat => Ok(()),
+            // Named at the first segment the document lacks, as `get`'s walk
+            // does, so `as_asked` says which part of the key is not declared.
             None => Err(anyhow::Error::new(cfgd_core::errors::CfgdError::Config(
                 cfgd_core::errors::ConfigError::KeyNotFound {
-                    key: key.to_string(),
+                    key: inserted.unwrap_or_else(|| key.to_string()),
                     undeclared: None,
                 },
             ))),
@@ -2896,7 +2903,7 @@ spec:
         };
         let set: Verb = |cli, printer, key| cmd_config_set(cli, printer, key, "dracula");
         let unset: Verb = cmd_config_unset;
-        let cases: [(&str, Verb, &Cli, &str, &str, &str); 12] = [
+        let cases: [(&str, Verb, &Cli, &str, &str, &str); 13] = [
             (
                 "get",
                 get,
@@ -2992,6 +2999,14 @@ spec:
                 "theme.name",
                 "parse_failed",
                 "'output' holds a scalar where a mapping belongs; 'theme.name' is stored at 'output.theme.name'",
+            ),
+            (
+                "unset",
+                unset,
+                &bare_cli,
+                "ghost.path",
+                "key_not_found",
+                "key 'ghost.path' not found ('ghost' is not declared)",
             ),
         ];
         for (verb, run, cli, key, kind, message) in cases {
