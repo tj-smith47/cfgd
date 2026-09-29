@@ -1181,7 +1181,7 @@ fn resolve_theme_config_falls_back_to_the_default_theme_when_it_cannot_read_one(
             StartupDocument::load(&dir.path().join("absent.yaml")).config(),
             None
         )),
-        "a missing config resolves the default theme rather than failing"
+        "a missing config resolves the default theme"
     );
 
     let broken = dir.path().join("broken.yaml");
@@ -1191,7 +1191,7 @@ fn resolve_theme_config_falls_back_to_the_default_theme_when_it_cannot_read_one(
             StartupDocument::load(&broken).config(),
             None
         )),
-        "an unparseable config resolves the default theme rather than failing"
+        "an unparseable config resolves the default theme"
     );
 
     let unthemed = dir.path().join("unthemed.yaml");
